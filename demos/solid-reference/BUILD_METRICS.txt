@@ -1,0 +1,24 @@
+SolidJS Reference App — Build Metrics
+======================================
+
+Build tool: Vite 8.0.3
+SolidJS version: 1.9.12
+
+Bundle output:
+  dist/index.html                 0.32 kB (gzip: 0.25 kB)
+  dist/assets/index-Dn-5cbjF.js  22.66 kB (gzip: 8.82 kB)
+
+Total dist size: 22,990 bytes (23 kB)
+
+Tests: 14 passed (vitest 4.1.2)
+
+Features demonstrated:
+  - createSignal (reactive state)
+  - createEffect (side effects tracking signals)
+  - createResource (async data fetching)
+  - createMemo (derived/computed state)
+  - createContext / useContext (shared state)
+  - Suspense (loading states)
+  - For (keyed list rendering)
+  - Show (conditional rendering)
+  - ErrorBoundary (error handling)

@@ -1,0 +1,22 @@
+{
+  "name": "solid-reference",
+  "version": "1.0.0",
+  "description": "SolidJS reference implementation for IsoNim M9",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "solid-js": "^1.9.12",
+    "vite": "^8.0.3",
+    "vite-plugin-solid": "^2.11.11"
+  },
+  "devDependencies": {
+    "@solidjs/testing-library": "^0.8.10",
+    "jsdom": "^29.0.1",
+    "vitest": "^4.1.2"
+  }
+}
