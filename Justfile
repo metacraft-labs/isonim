@@ -7,16 +7,23 @@ test: test-c test-js
 test-c:
     nim c -r tests/test_signals.nim
     nim c -r tests/test_effects.nim
+    nim c -r tests/test_clock.nim
 
 # Run tests on JS target
 test-js:
     nim js -r tests/test_signals.nim
     nim js -r tests/test_effects.nim
+    nim js -r tests/test_clock.nim
 
 # Run only signal tests
 test-signals:
     nim c -r tests/test_signals.nim
     nim js -r tests/test_signals.nim
+
+# Run only clock/scheduler tests
+test-clock:
+    nim c -r tests/test_clock.nim
+    nim js -r tests/test_clock.nim
 
 # Run only effect/memo/owner/batch tests
 test-effects:
