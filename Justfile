@@ -9,6 +9,7 @@ test-c:
     nim c -r tests/test_effects.nim
     nim c -r tests/test_clock.nim
     nim c -r tests/test_context.nim
+    nim c -r tests/test_rxcore.nim
 
 # Run tests on JS target
 test-js:
@@ -16,6 +17,7 @@ test-js:
     nim js -r tests/test_effects.nim
     nim js -r tests/test_clock.nim
     nim js -r tests/test_context.nim
+    nim js -r tests/test_rxcore.nim
 
 # Run only signal tests
 test-signals:
@@ -36,6 +38,11 @@ test-context:
 test-effects:
     nim c -r tests/test_effects.nim
     nim js -r tests/test_effects.nim
+
+# Run only rxcore/renderer/mock-dom tests
+test-rxcore:
+    nim c -r tests/test_rxcore.nim
+    nim js -r tests/test_rxcore.nim
 
 # Run js-framework-benchmark
 bench-framework:

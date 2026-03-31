@@ -5,3 +5,7 @@ nimcache/
 /build/
 /dist/
 test_signals
+test_effects
+test_clock
+test_context
+test_rxcore
