@@ -1,0 +1,7 @@
+refs/
+nimcache/
+*.js
+*.js.map
+/build/
+/dist/
+test_signals
