@@ -5,7 +5,7 @@
 ##
 ## Port of SolidJS signal.ts signal creation and write propagation.
 
-import types, graph
+import types, graph, batch
 
 type
   SignalState*[T] = ref object of SignalStateBase
@@ -18,13 +18,21 @@ type
 
 proc writeSignal[T](state: SignalState[T]; value: T) =
   ## Write a new value and notify observers if the value changed.
+  ## Uses runUpdates to queue observer execution when batching.
   if state.comparator != nil:
     if state.comparator(state.value, value):
       return
   elif state.value == value:
     return
   state.value = value
-  notifyObservers(state)
+  if state.observers.len > 0:
+    runUpdates proc() =
+      for obs in state.observers:
+        obs.state = csStale
+        if obs.pure:
+          Updates.add(obs)
+        else:
+          Effects.add(obs)
 
 proc createSignal*[T](value: T; equals: EqualityFn[T] = nil): Signal[T] =
   ## Creates a new signal with the given initial value.
