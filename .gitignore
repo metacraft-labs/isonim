@@ -10,3 +10,5 @@ test_clock
 test_context
 test_rxcore
 test_dsl
+test_benchmark
+test_web

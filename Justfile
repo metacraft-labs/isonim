@@ -56,9 +56,22 @@ test-dsl:
 test-web:
     nim js -r tests/test_web.nim
 
-# Run js-framework-benchmark
-bench-framework:
-    @echo "TODO: implement after M8"
+# Build js-framework-benchmark entry
+bench-build:
+    mkdir -p benchmarks/keyed/isonim/dist
+    nim js -d:danger -o:benchmarks/keyed/isonim/dist/main.js benchmarks/keyed/isonim/src/main.nim
+
+# Show benchmark bundle size
+bench-size:
+    @wc -c benchmarks/keyed/isonim/dist/main.js
+
+# Run benchmark tests
+bench-test:
+    nim c -r tests/test_benchmark.nim
+    nim js -r tests/test_benchmark.nim
+
+# Build and report benchmark metrics
+bench-framework: bench-build bench-size
 
 # Build and serve SolidJS demo
 demo-solid:
