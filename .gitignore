@@ -12,5 +12,6 @@ test_rxcore
 test_dsl
 test_benchmark
 test_web
+test_demo_vm
 demos/solid-reference/node_modules/
 demos/solid-reference/dist/

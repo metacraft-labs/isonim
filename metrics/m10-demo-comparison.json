@@ -1,0 +1,37 @@
+{
+  "milestone": "M10",
+  "description": "Demo App — IsoNim Replica, Client-Only",
+  "solidjs_reference": {
+    "bundle_js_bytes": 22663,
+    "bundle_js_gzip_bytes": 8820,
+    "total_dist_bytes": 22990,
+    "tests_passed": 14,
+    "build_tool": "Vite 8.0.3",
+    "framework": "SolidJS 1.9.12"
+  },
+  "isonim_replica": {
+    "bundle_js_bytes": 129232,
+    "bundle_js_danger_flag": true,
+    "tests_passed": 14,
+    "compiler": "Nim 2.2.4",
+    "backend": "JS (-d:danger)"
+  },
+  "comparison": {
+    "bundle_size_ratio": 5.7,
+    "note": "IsoNim JS output is ~5.7x larger than minified SolidJS. Nim JS backend includes runtime overhead (GC, closures, seq). Tree-shaking and minification would reduce the gap."
+  },
+  "features_replicated": [
+    "createSignal (reactive state)",
+    "createEffect (side effects tracking signals)",
+    "createMemo (derived/computed state)",
+    "createContext / useContext (shared state)",
+    "forEachKeyed (keyed list rendering)",
+    "show (conditional rendering)",
+    "errorBoundary (error handling)",
+    "Task add/toggle/remove/clearCompleted",
+    "Filter by all/active/completed",
+    "Active/completed count memos",
+    "Effect log tracking task count changes",
+    "Task detail selection"
+  ]
+}
