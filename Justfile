@@ -20,6 +20,7 @@ test-js:
     nim js -r tests/test_context.nim
     nim js -r tests/test_rxcore.nim
     nim js -r tests/test_dsl.nim
+    nim js -r tests/test_web.nim
 
 # Run only signal tests
 test-signals:
@@ -50,6 +51,10 @@ test-rxcore:
 test-dsl:
     nim c -r tests/test_dsl.nim
     nim js -r tests/test_dsl.nim
+
+# Run only web renderer tests (JS-only)
+test-web:
+    nim js -r tests/test_web.nim
 
 # Run js-framework-benchmark
 bench-framework:

@@ -5,3 +5,59 @@
 ## and dispatches to the correct handler via DOM traversal.
 ##
 ## Port of dom-expressions event delegation.
+
+when not defined(js):
+  {.error: "isonim/web/events requires the JS backend".}
+
+import std/sets
+import isonim/web/dom_api
+
+# Track which events have been delegated on the document
+var delegatedEvents {.threadvar.}: HashSet[string]
+
+proc eventHandler(e: Event) {.exportc.} =
+  ## The document-level handler that walks up the DOM tree looking for
+  ## delegated event handlers stored as $$<eventName> properties on nodes.
+  var node = e.target
+  let key = cstring("$$" & $e.`type`)
+
+  while not node.isNodeNil:
+    let handler = node.getJsProp(key)
+    if not handler.isNull:
+      let dataKey = cstring("$$" & $e.`type` & "Data")
+      let data = node.getJsProp(dataKey)
+      if not data.isNull:
+        # handler.call(node, data, e) -- call with data
+        {.emit: [handler, ".call(", node, ",", data, ",", e, ");"].}
+      else:
+        # handler.call(node, e) -- call without data
+        {.emit: [handler, ".call(", node, ",", e, ");"].}
+      if e.cancelBubble:
+        return
+    # Walk up the tree
+    node = node.parentNode
+
+proc delegateEvents*(eventNames: openArray[string]) =
+  ## Registers document-level handlers for the given event names.
+  ## Each event type is only delegated once.
+  for name in eventNames:
+    if name notin delegatedEvents:
+      delegatedEvents.incl(name)
+      document.Node.addEventListener(cstring(name), eventHandler)
+
+proc addEventListenerWeb*(node: Node, name: string, handler: EventHandler,
+    delegate: bool = false) =
+  ## Attach an event listener to a node.
+  ## If delegate=true, stores the handler as a property for event delegation.
+  ## If delegate=false, uses native addEventListener.
+  if delegate:
+    let propName = cstring("$$" & name)
+    node.setJsPropHandler(propName, handler)
+  else:
+    node.addEventListener(cstring(name), handler)
+
+proc clearDelegatedEvents*() =
+  ## Remove all delegated event handlers from the document.
+  for name in delegatedEvents:
+    document.Node.removeEventListener(cstring(name), eventHandler)
+  delegatedEvents.clear()
