@@ -4,6 +4,7 @@
 
 import std/strutils
 import isonim/core/[signals, computation, context, batch]
+import isonim/viewmodel
 
 type
   Task* = object
@@ -16,6 +17,11 @@ type
     fActive = "active"
     fCompleted = "completed"
 
+  TaskService* = object
+    ## Injectable service for task operations.
+    ## Pass mock implementations for testing.
+    fetchDetails*: proc(id: int): (AsyncState, string)
+
   TaskStore* = ref object
     tasks*: Signal[seq[Task]]
     filter*: Signal[Filter]
@@ -24,6 +30,14 @@ type
     activeCount*: Memo[int]
     completedCount*: Memo[int]
     log*: Signal[seq[string]]
+
+  TaskViewModel* = ref object of ViewModel
+    ## ViewModel wrapping a TaskStore with async detail fetching.
+    store*: TaskStore
+    detailState*: Signal[AsyncState]
+    detailData*: Signal[string]
+    detailError*: Signal[string]
+    service*: TaskService
 
 var nextId {.threadvar.}: int
 
@@ -146,3 +160,41 @@ proc provideTaskStore*(store: TaskStore) =
 
 proc useTaskStore*(): TaskStore =
   useContext(TaskContext)
+
+# --- TaskViewModel ---
+
+proc defaultFetchDetails*(id: int): (AsyncState, string) =
+  ## Default service: returns ready with a placeholder string.
+  (asReady, "Details for task " & $id)
+
+proc defaultTaskService*(): TaskService =
+  ## Creates a TaskService with default implementations.
+  TaskService(fetchDetails: defaultFetchDetails)
+
+proc createTaskViewModel*(service: TaskService = defaultTaskService()): TaskViewModel =
+  ## Creates a TaskViewModel inside a reactive root.
+  ## Must be called inside a reactive root (or via withViewModel).
+  let store = createTaskStore()
+  var detailState = createSignal(asIdle)
+  var detailData = createSignal("")
+  var detailError = createSignal("")
+  result = TaskViewModel(
+    store: store,
+    detailState: detailState,
+    detailData: detailData,
+    detailError: detailError,
+    service: service,
+  )
+
+proc fetchTaskDetails*(vm: TaskViewModel; id: int) =
+  ## Fetches details for a task using the injected service.
+  ## Updates detailState through Idle -> Loading -> Ready/Error.
+  vm.detailState.val = asLoading
+  vm.detailData.val = ""
+  vm.detailError.val = ""
+  let (state, data) = vm.service.fetchDetails(id)
+  vm.detailState.val = state
+  if state == asError:
+    vm.detailError.val = data
+  else:
+    vm.detailData.val = data
