@@ -46,7 +46,63 @@ type
     count*: int
     noHydrate*: bool
 
-  SharedConfig* = object
-    context*: HydrationContext
+when defined(js):
+  import std/jsffi
+
+  type
+    HydrationRegistry* = ref object
+      ## Map of hydration key -> DOM node. JS Map under the hood.
+      map*: JsObject
+
+    HydrationEvent* = array[2, JsObject]
+      ## [element, event] pair captured before hydration completes.
+
+    SharedConfig* = object
+      context*: HydrationContext
+      registry*: HydrationRegistry
+      completed*: JsObject  ## WeakSet of completed elements
+      events*: JsObject     ## Array of [element, event] pairs
+      done*: bool
+      gather*: proc(root: cstring)
+      load*: proc(id: cstring): JsObject
+      has*: proc(id: cstring): bool
+
+  proc newHydrationRegistry*(): HydrationRegistry =
+    result = HydrationRegistry()
+    {.emit: [result.map, " = new Map();"].}
+
+  proc get*(r: HydrationRegistry, key: cstring): JsObject =
+    var res: JsObject
+    {.emit: [res, " = ", r.map, ".get(", key, ");"].}
+    return res
+
+  proc set*(r: HydrationRegistry, key: cstring, value: JsObject) =
+    {.emit: [r.map, ".set(", key, ", ", value, ");"].}
+
+  proc has*(r: HydrationRegistry, key: cstring): bool =
+    {.emit: [result, " = ", r.map, ".has(", key, ");"].}
+
+  proc delete*(r: HydrationRegistry, key: cstring) =
+    {.emit: [r.map, ".delete(", key, ");"].}
+
+else:
+  type
+    SharedConfig* = object
+      context*: HydrationContext
 
 var sharedConfig*: SharedConfig
+
+proc isHydrating*(): bool =
+  ## Returns true if we are currently in a hydration context.
+  sharedConfig.context != nil
+
+proc getHydrationKey*(): cstring =
+  ## Returns the current hydration key based on context id and count.
+  ## Matches ssrHydrationKey() which increments before returning,
+  ## so keys are 1-based: "1", "2", "3", ...
+  if sharedConfig.context == nil:
+    return cstring""
+  let ctx = sharedConfig.context
+  inc ctx.count
+  let key = ctx.id & $ctx.count
+  return cstring(key)
