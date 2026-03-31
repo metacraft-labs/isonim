@@ -12,6 +12,7 @@ type
     mnkText
 
   MockNode* = ref object
+    id*: int                              ## Unique node ID (for hashing)
     kind*: MockNodeKind
     tag*: string                          ## Element tag name
     text*: string                         ## Text content (for text nodes)
@@ -24,11 +25,15 @@ type
   MockRenderer* = object
     ## Mock renderer backend for unit testing.
 
+var nextMockNodeId* {.threadvar.}: int
+
 # Type alias for the abstract_renderer concept check
 type ElementHandle* = MockNode
 
 proc createElement*(r: MockRenderer; tag: string): MockNode =
+  inc nextMockNodeId
   MockNode(
+    id: nextMockNodeId,
     kind: mnkElement, tag: tag,
     attributes: initTable[string, string](),
     styles: initTable[string, string](),
@@ -37,7 +42,9 @@ proc createElement*(r: MockRenderer; tag: string): MockNode =
   )
 
 proc createTextNode*(r: MockRenderer; text: string): MockNode =
+  inc nextMockNodeId
   MockNode(
+    id: nextMockNodeId,
     kind: mnkText, text: text,
     attributes: initTable[string, string](),
     styles: initTable[string, string](),
@@ -81,7 +88,8 @@ proc setTextContent*(r: MockRenderer; node: MockNode; text: string) =
     node.text = text
   else:
     node.children.setLen(0)
-    let textNode = MockNode(kind: mnkText, text: text, parent: node,
+    inc nextMockNodeId
+    let textNode = MockNode(id: nextMockNodeId, kind: mnkText, text: text, parent: node,
                             attributes: initTable[string, string](),
                             styles: initTable[string, string](),
                             eventListeners: initTable[string, seq[proc()]]())
