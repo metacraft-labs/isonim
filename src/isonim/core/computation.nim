@@ -54,7 +54,7 @@ proc createComputation(fn: proc(); pure: bool; initial: bool = true) =
     fn: fn,
     updatedAt: 0,
     memoSignal: nil,
-    context: nil,
+    contextTable: nil,
   )
   if Owner != nil:
     Owner.owned.add(comp)
@@ -121,7 +121,7 @@ proc createMemo*[T](fn: proc(): T; equals: EqualityFn[T] = nil): Memo[T] =
     fn: wrappedFn,
     updatedAt: 0,
     memoSignal: memoSig,
-    context: nil,
+    contextTable: nil,
   )
   memoSig.computation = comp
 

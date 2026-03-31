@@ -11,7 +11,7 @@ proc createRoot*(fn: proc(dispose: proc())) =
   ## Creates a new reactive root with explicit disposal. Void variant.
   let prevOwner = Owner
   let prevListener = Listener
-  let root = OwnerBase(owned: @[], cleanups: @[], owner: prevOwner, context: nil)
+  let root = OwnerBase(owned: @[], cleanups: @[], owner: prevOwner, contextTable: nil)
 
   Owner = root
   Listener = nil

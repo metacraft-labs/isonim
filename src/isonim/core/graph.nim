@@ -7,6 +7,7 @@
 ## Port of SolidJS signal.ts dependency graph traversal.
 
 import types
+import std/tables
 
 type
   SignalStateBase* = ref object of RootObj
@@ -20,7 +21,7 @@ type
     owned*: seq[ComputationBase]     ## Child computations
     cleanups*: seq[proc()]            ## Cleanup callbacks
     owner*: OwnerBase                 ## Parent owner
-    context*: pointer                 ## Context table (placeholder for M4)
+    contextTable*: TableRef[int, RootRef]  ## Context values keyed by ContextId
 
   ComputationBase* = ref object of OwnerBase
     ## Type-erased base for computations.
