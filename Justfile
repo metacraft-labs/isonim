@@ -11,6 +11,15 @@ test-c:
     nim c -r tests/test_context.nim
     nim c -r tests/test_rxcore.nim
     nim c -r tests/test_dsl.nim
+    nim c -r tests/test_ssr.nim
+    nim c -r tests/test_streaming.nim
+    nim c -r tests/test_dsl_ssr.nim
+    nim c -r tests/test_round_trip.nim
+    nim c -r tests/test_benchmark.nim
+    nim c -r tests/test_viewmodel.nim
+    nim c -r tests/test_demo_vm.nim
+    nim c -r tests/test_terminal.nim
+    nim c -r tests/test_nginx_module.nim
 
 # Run tests on JS target
 test-js:
@@ -51,6 +60,14 @@ test-rxcore:
 test-dsl:
     nim c -r tests/test_dsl.nim
     nim js -r tests/test_dsl.nim
+    nim c -r tests/test_dsl_ssr.nim
+
+# Run SSR and round-trip tests
+test-ssr:
+    nim c -r tests/test_ssr.nim
+    nim c -r tests/test_streaming.nim
+    nim c -r tests/test_dsl_ssr.nim
+    nim c -r tests/test_round_trip.nim
 
 # Run only web renderer tests (JS-only)
 test-web:
