@@ -19,6 +19,7 @@ test-c:
     nim c -r tests/test_viewmodel.nim
     nim c -r tests/test_demo_vm.nim
     nim c -r tests/test_terminal.nim
+    nim c -r tests/test_native_renderer.nim
     nim c -r tests/test_nginx_module.nim
 
 # Run tests on JS target
