@@ -13,5 +13,15 @@ test_dsl
 test_benchmark
 test_web
 test_demo_vm
+test_dsl_ssr
+test_hydration
+test_nginx_module
+test_round_trip
+test_ssr
+test_streaming
+test_terminal
+test_viewmodel
+demos/terminal_counter
 demos/solid-reference/node_modules/
 demos/solid-reference/dist/
+result
