@@ -97,8 +97,12 @@ proc createMemo*[T](fn: proc(): T; equals: EqualityFn[T] = nil): Memo[T] =
     memoSig.value = newVal
     # Notify downstream observers of the memo signal
     notifyObservers(memoSig)
-    # Queue downstream observers for execution
-    for obs in memoSig.observers:
+    # Queue downstream observers for execution.
+    # Copy the observers list first because updateComputation may
+    # add or remove observers (e.g. show/forEachKeyed toggling
+    # subscriptions), which would mutate the seq during iteration.
+    let observers = memoSig.observers
+    for obs in observers:
       if obs.pure:
         if batchDepth > 0:
           Updates.add(obs)
