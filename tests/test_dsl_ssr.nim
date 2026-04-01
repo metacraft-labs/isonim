@@ -215,3 +215,75 @@ suite "SSR + renderToString integration":
 
     check "Welcome!" in html
     check "Please log in" notin html
+
+  test "buildHtmlString_showIf_ssr":
+    ## showIf in SSR mode renders body when condition is true
+    let loggedIn = true
+    let html = buildHtmlString:
+      tdiv:
+        showIf(loggedIn):
+          p: text "Welcome"
+
+    check "<p>Welcome</p>" in html
+    check "<div>" in html
+
+  test "buildHtmlString_showIf_ssr_false":
+    ## showIf in SSR mode renders nothing when condition is false (no fallback)
+    let loggedIn = false
+    let html = buildHtmlString:
+      tdiv:
+        showIf(loggedIn):
+          p: text "Welcome"
+
+    check "<p>Welcome</p>" notin html
+    check "<div></div>" == html
+
+  test "buildHtmlString_showIf_ssr_fallback":
+    ## showIf + showElse in SSR mode
+    let loggedIn = false
+    let html = buildHtmlString:
+      tdiv:
+        showIf(loggedIn):
+          p: text "Welcome"
+        showElse:
+          p: text "Please log in"
+
+    check "Welcome" notin html
+    check "<p>Please log in</p>" in html
+
+  test "buildHtmlString_showIf_ssr_fallback_true":
+    ## showIf + showElse in SSR mode when condition is true
+    let loggedIn = true
+    let html = buildHtmlString:
+      tdiv:
+        showIf(loggedIn):
+          p: text "Welcome"
+        showElse:
+          p: text "Please log in"
+
+    check "<p>Welcome</p>" in html
+    check "Please log in" notin html
+
+  test "buildHtmlString_forIn_ssr":
+    ## forIn in SSR mode renders list items
+    let items = @["Apple", "Banana", "Cherry"]
+    let html = buildHtmlString:
+      ul:
+        forIn(items):
+          li: text item
+
+    check "<ul>" in html
+    check "<li>Apple</li>" in html
+    check "<li>Banana</li>" in html
+    check "<li>Cherry</li>" in html
+
+  test "buildHtmlString_forIn_ssr_with_index":
+    ## forIn in SSR mode provides index variable
+    let items = @["a", "b"]
+    let html = buildHtmlString:
+      ul:
+        forIn(items):
+          li: text $index & ": " & item
+
+    check "<li>0: a</li>" in html
+    check "<li>1: b</li>" in html

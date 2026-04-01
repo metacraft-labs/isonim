@@ -257,3 +257,115 @@ suite "DSL":
 
       # Verify owner hierarchy
       check innerOwner.owner == outerOwner
+
+  test "test_showIf_basic":
+    ## showIf renders body when condition is true
+    createRoot proc(dispose: proc()) =
+      let renderer = MockRenderer()
+      var visible = createSignal(true)
+
+      let root = buildHtml(renderer):
+        tdiv:
+          showIf(visible.val):
+            p: text "shown"
+
+      # showIf creates a container; check that the text is visible
+      check root.tag == "div"
+      check root.textContent == "shown"
+
+  test "test_showIf_with_fallback":
+    ## showIf + showElse toggles between body and fallback
+    createRoot proc(dispose: proc()) =
+      let renderer = MockRenderer()
+      var visible = createSignal(true)
+
+      let root = buildHtml(renderer):
+        tdiv:
+          showIf(visible.val):
+            p: text "visible"
+          showElse:
+            p: text "hidden"
+
+      check root.textContent == "visible"
+
+      visible.val = false
+      check root.textContent == "hidden"
+
+      visible.val = true
+      check root.textContent == "visible"
+
+  test "test_showIf_reactive":
+    ## showIf responds to signal changes without fallback
+    createRoot proc(dispose: proc()) =
+      let renderer = MockRenderer()
+      var visible = createSignal(false)
+
+      let root = buildHtml(renderer):
+        tdiv:
+          showIf(visible.val):
+            p: text "now you see me"
+
+      # Initially false, no content rendered
+      check root.children.len == 0
+
+      visible.val = true
+      check root.textContent == "now you see me"
+
+      visible.val = false
+      check root.children.len == 0
+
+  test "test_forIn_basic":
+    ## forIn renders list items
+    createRoot proc(dispose: proc()) =
+      let renderer = MockRenderer()
+      var items = createSignal(@["a", "b", "c"])
+
+      let root = buildHtml(renderer):
+        ul:
+          forIn(items.val):
+            li: text $item
+
+      check root.tag == "ul"
+      check root.children.len == 3
+      check root.children[0].textContent == "a"
+      check root.children[1].textContent == "b"
+      check root.children[2].textContent == "c"
+
+  test "test_forIn_reactive":
+    ## forIn updates when signal changes
+    createRoot proc(dispose: proc()) =
+      let renderer = MockRenderer()
+      var items = createSignal(@["x", "y"])
+
+      let root = buildHtml(renderer):
+        ul:
+          forIn(items.val):
+            li: text $item
+
+      check root.children.len == 2
+      check root.children[0].textContent == "x"
+      check root.children[1].textContent == "y"
+
+      items.val = @["x", "y", "z"]
+      check root.children.len == 3
+      check root.children[2].textContent == "z"
+
+      items.val = @["y"]
+      check root.children.len == 1
+      check root.children[0].textContent == "y"
+
+  test "test_forIn_with_index":
+    ## forIn provides index variable
+    createRoot proc(dispose: proc()) =
+      let renderer = MockRenderer()
+      var items = createSignal(@["a", "b", "c"])
+
+      let root = buildHtml(renderer):
+        ul:
+          forIn(items.val):
+            li: text $index & ": " & $item
+
+      check root.children.len == 3
+      check root.children[0].textContent == "0: a"
+      check root.children[1].textContent == "1: b"
+      check root.children[2].textContent == "2: c"
