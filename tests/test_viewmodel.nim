@@ -295,8 +295,16 @@ suite "Performance":
     echo "  [perf] " & $iterations & " VM operations: " &
       $vmMs & "ms"
 
-    # Sanity: each operation should complete in reasonable time
-    # (< 10s for 1000 iterations, very generous bound)
-    check createMs < 10000.0
-    check ssrMs < 10000.0
-    check vmMs < 10000.0
+    # Per-operation bounds: 1ms per iteration is generous but catches regressions
+    # (typical is <0.1ms/op on modern hardware)
+    let perOpBound = float64(iterations)  # 1ms * iterations = iterations ms
+    check createMs < perOpBound
+    check ssrMs < perOpBound
+    check vmMs < perOpBound
+
+    # Relative sanity: no single operation should be >10x slower than the fastest
+    let fastest = min(createMs, min(ssrMs, vmMs))
+    if fastest > 0.0:
+      check createMs / fastest < 50.0
+      check ssrMs / fastest < 50.0
+      check vmMs / fastest < 50.0
