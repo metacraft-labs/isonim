@@ -75,3 +75,32 @@ proc loading*[T](r: Resource[T]): bool =
   ## Returns true if the resource is pending or refreshing.
   let s = r.state.val
   s == rsPending or s == rsRefreshing
+
+type
+  DeferredResource*[T] = object
+    resource*: Resource[T]
+    resolve*: proc(value: T)
+    reject*: proc(msg: string)
+
+proc createDeferredResource*[T](initialValue: T = default(T)): DeferredResource[T] =
+  ## Creates a resource that starts in rsPending state.
+  ## Call resolve(value) to transition to rsReady.
+  ## Call reject(msg) to transition to rsErrored.
+  var data = createSignal(initialValue)
+  var state = createSignal(rsPending)
+  var error = createSignal("")
+
+  let resolve = proc(value: T) =
+    data.val = value
+    error.val = ""
+    state.val = rsReady
+
+  let reject = proc(msg: string) =
+    error.val = msg
+    state.val = rsErrored
+
+  DeferredResource[T](
+    resource: Resource[T](data: data, state: state, error: error),
+    resolve: resolve,
+    reject: reject
+  )
