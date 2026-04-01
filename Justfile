@@ -36,6 +36,7 @@ test-js:
     nim js -r tests/test_terminal.nim
     nim js -r tests/test_hydration.nim
     nim js -r tests/test_ssr_hydration_e2e.nim
+    nim js -r tests/test_app_e2e.nim
 
 # Run only signal tests
 test-signals:
@@ -95,6 +96,18 @@ bench-test:
 
 # Build and report benchmark metrics
 bench-framework: bench-build bench-size
+
+# Run headless E2E app tests (Node.js DOM shim)
+test-app-e2e:
+    nim js -r tests/test_app_e2e.nim
+
+# Build demo app for browser testing
+demo-build:
+    nim js -o:demos/isonim-replica/dist/main.js demos/isonim-replica/src/main.nim
+
+# Run Playwright browser tests (requires: just demo-build && cd tests/browser && npm install)
+test-browser:
+    cd tests/browser && npx playwright test
 
 # Build and serve SolidJS demo
 demo-solid:

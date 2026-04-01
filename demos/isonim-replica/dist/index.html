@@ -1,0 +1,74 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Task Manager - IsoNim Demo</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        max-width: 600px;
+        margin: 40px auto;
+        padding: 0 20px;
+      }
+      h1 {
+        color: #333;
+      }
+      .task-list {
+        list-style: none;
+        padding: 0;
+      }
+      .task-list li {
+        padding: 8px 0;
+        border-bottom: 1px solid #eee;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .task-list li.completed span {
+        text-decoration: line-through;
+        color: #999;
+      }
+      .remove {
+        background: none;
+        border: none;
+        color: #cc3333;
+        cursor: pointer;
+        margin-left: auto;
+      }
+      .filters {
+        display: flex;
+        gap: 8px;
+        margin: 12px 0;
+      }
+      .filters button.selected {
+        font-weight: bold;
+        text-decoration: underline;
+      }
+      .empty {
+        color: #999;
+        font-style: italic;
+      }
+      .task-footer {
+        margin-top: 12px;
+        padding-top: 12px;
+        border-top: 1px solid #eee;
+      }
+      form {
+        display: flex;
+        gap: 8px;
+        margin: 12px 0;
+      }
+      input[type="text"] {
+        flex: 1;
+        padding: 8px;
+      }
+      button[type="submit"] {
+        padding: 8px 16px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script src="main.js"></script>
+  </body>
+</html>
