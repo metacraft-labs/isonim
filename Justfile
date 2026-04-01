@@ -30,6 +30,12 @@ test-js:
     nim js -r tests/test_rxcore.nim
     nim js -r tests/test_dsl.nim
     nim js -r tests/test_web.nim
+    nim js -r tests/test_demo_vm.nim
+    nim js -r tests/test_benchmark.nim
+    nim js -r tests/test_viewmodel.nim
+    nim js -r tests/test_terminal.nim
+    nim js -r tests/test_hydration.nim
+    nim js -r tests/test_ssr_hydration_e2e.nim
 
 # Run only signal tests
 test-signals:
