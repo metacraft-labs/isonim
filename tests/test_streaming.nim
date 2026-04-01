@@ -217,6 +217,62 @@ suite "OutputStream":
     # Also accumulates in buffer
     check s.getOutput() == "chunk1chunk2"
 
+  when defined(useFaststreams):
+    test "fast_output_stream_write":
+      ## faststreams-backed OutputStream accumulates written data.
+      let s = newFastOutputStream()
+      s.write("hello ")
+      s.write("world")
+      check s.getOutput() == "hello world"
+
+    test "fast_output_stream_flush":
+      ## flush on a faststreams-backed stream does not lose data.
+      let s = newFastOutputStream()
+      s.write("before flush")
+      s.flush()
+      s.write(" after flush")
+      check "before flush" in s.getOutput()
+
+    test "fast_output_stream_empty":
+      ## Empty faststreams-backed OutputStream returns empty string.
+      let s = newFastOutputStream()
+      check s.getOutput() == ""
+
+    test "fast_output_stream_large_write":
+      ## faststreams handles writes larger than a single page.
+      let s = newFastOutputStream()
+      let bigChunk = 'x'.repeat(64 * 1024)  # 64 KiB
+      s.write(bigChunk)
+      check s.getOutput() == bigChunk
+
+    test "fast_output_stream_streaming_ssr":
+      ## faststreams-backed OutputStream works with the streaming SSR pipeline.
+      var shellReceived = false
+      var allReceived = false
+
+      let options = StreamOptions(
+        onCompleteShell: proc() = shellReceived = true,
+        onCompleteAll: proc() = allReceived = true,
+      )
+
+      # Patch the stream context to use faststreams
+      let sr = renderToStream(proc(ctx: StreamContext): string =
+        ctx.output = newFastOutputStream()
+        ssrElement("div", children =
+          ctx.ssrSuspense(
+            fallback = "<p>Loading...</p>",
+            content = proc(): string = "<p>Content</p>",
+            boundaryId = "fast-1",
+          )
+        )
+      , options)
+
+      check shellReceived
+      sr.ctx.resolveBoundary("fast-1", "<p>Fast resolved</p>")
+      check allReceived
+      let fullOutput = sr.getFullOutput()
+      check "<template id=\"fast-1\"><p>Fast resolved</p></template>" in fullOutput
+
   test "no_suspense_completes_immediately":
     ## When there are no Suspense boundaries, both shell and all
     ## complete callbacks fire during renderToStream.

@@ -1,38 +1,93 @@
 ## isonim/ssr/stream.nim
 ##
-## Simple OutputStream abstraction for streaming SSR.
-## Can later be backed by faststreams without changing the API.
+## OutputStream abstraction for streaming SSR.
+##
+## Provides three backends:
+##   - `newStringOutputStream()` — simple string accumulator (no deps)
+##   - `newCallbackOutputStream(cb)` — forwards writes to a callback
+##   - `newFastOutputStream()` — backed by nim-faststreams (compile with -d:useFaststreams)
+##
+## The API is the same for all backends: `write`, `flush`, `getOutput`.
+
+when defined(useFaststreams):
+  import faststreams/outputs as fsOutputs
 
 type
+  StreamKind = enum
+    skString
+    skCallback
+    skFast
+
   WriteProc* = proc(data: string)
 
   OutputStream* = ref object
-    writeProc: WriteProc
-    buffer: string
+    case kind: StreamKind
+    of skString:
+      buffer: string
+    of skCallback:
+      writeProc: WriteProc
+      cbBuffer: string
+    of skFast:
+      when defined(useFaststreams):
+        fastStream: fsOutputs.OutputStream
+      else:
+        discard
     flushed: bool
 
 proc newStringOutputStream*(): OutputStream =
   ## Creates an OutputStream that collects output into an internal string buffer.
   ## Retrieve the result with getOutput().
-  OutputStream(writeProc: nil, buffer: "", flushed: false)
+  OutputStream(kind: skString, buffer: "", flushed: false)
 
 proc newCallbackOutputStream*(cb: WriteProc): OutputStream =
   ## Creates an OutputStream that forwards all writes to a callback.
-  OutputStream(writeProc: cb, buffer: "", flushed: false)
+  OutputStream(kind: skCallback, writeProc: cb, cbBuffer: "", flushed: false)
+
+when defined(useFaststreams):
+  proc newFastOutputStream*(): OutputStream =
+    ## Creates an OutputStream backed by nim-faststreams' memory output.
+    ## This provides high-performance buffered I/O with zero-copy page
+    ## management. The accumulated output can be retrieved with getOutput().
+    let handle = fsOutputs.memoryOutput()
+    OutputStream(kind: skFast, fastStream: handle.s, flushed: false)
 
 proc write*(s: OutputStream, data: string) =
-  ## Writes data to the stream. If a callback is set, calls it immediately.
-  ## Otherwise appends to the internal buffer.
-  if s.writeProc != nil:
+  ## Writes data to the stream.
+  case s.kind
+  of skString:
+    s.buffer.add data
+  of skCallback:
     s.writeProc(data)
-  s.buffer.add data
+    s.cbBuffer.add data
+  of skFast:
+    when defined(useFaststreams):
+      fsOutputs.write(s.fastStream, data)
 
 proc flush*(s: OutputStream) =
-  ## Marks the stream as flushed. For callback streams this is a no-op
-  ## since data is already forwarded. For string streams, signals that
-  ## the current buffer content is a complete chunk.
+  ## Flushes the stream. For faststreams, delegates to its flush.
+  ## For callback streams this is a no-op since data is already forwarded.
+  ## For string streams, signals that the current buffer content is a complete chunk.
   s.flushed = true
+  when defined(useFaststreams):
+    if s.kind == skFast:
+      fsOutputs.flush(s.fastStream)
 
 proc getOutput*(s: OutputStream): string =
-  ## Returns the accumulated output for a string stream.
-  s.buffer
+  ## Returns the accumulated output.
+  case s.kind
+  of skString:
+    s.buffer
+  of skCallback:
+    s.cbBuffer
+  of skFast:
+    when defined(useFaststreams):
+      fsOutputs.getOutput(s.fastStream, string)
+    else:
+      ""
+
+when defined(useFaststreams):
+  proc close*(s: OutputStream) =
+    ## Closes the underlying faststreams stream (if applicable).
+    ## For non-faststreams backends this is a no-op.
+    if s.kind == skFast:
+      fsOutputs.close(s.fastStream)
