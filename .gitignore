@@ -26,3 +26,4 @@ demos/terminal_counter
 demos/solid-reference/node_modules/
 demos/solid-reference/dist/
 result
+tests/test_native_renderer
