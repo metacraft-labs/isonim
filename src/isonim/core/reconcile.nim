@@ -1,23 +1,18 @@
 ## isonim/core/reconcile.nim
 ##
-## Array reconciliation algorithm for efficient list diffing.
+## Generic array reconciliation algorithm for efficient list diffing.
 ## Minimizes DOM mutations when reactive arrays change.
+## Works with any renderer/node type that implements the RendererBackend concept.
 ##
 ## Port of dom-expressions reconcileArrays algorithm.
 
 import std/tables
-import std/hashes
-import ../testing/mock_dom
 
-proc hash*(node: MockNode): Hash =
-  ## Hash MockNode by its unique ID (works on both C and JS backends).
-  result = hash(node.id)
-
-proc reconcileArrays*(
-    renderer: MockRenderer;
-    parent: MockNode;
-    currentNodes: var seq[MockNode];
-    newNodes: seq[MockNode]) =
+proc reconcileArrays*[R, N](
+    renderer: R;
+    parent: N;
+    currentNodes: var seq[N];
+    newNodes: seq[N]) =
   ## Efficiently reconcile the current list of child nodes with a new list.
   ## Uses a bidirectional scan with map fallback for efficient node reordering.
   ## Modifies currentNodes in-place to match newNodes.
@@ -81,7 +76,7 @@ proc reconcileArrays*(
 
   # Map fallback for the remaining range
   # Build a map from old node identity to old index
-  var oldMap = initTable[MockNode, int]()
+  var oldMap = initTable[N, int]()
   for i in cStart .. cEnd:
     oldMap[currentNodes[i]] = i
 
@@ -117,12 +112,8 @@ proc reconcileArrays*(
         renderer.appendChild(parent, nNode)
     else:
       # Existing node - check if it needs to move
-      # We need to ensure it's in the right position
-      # Remove and reinsert to guarantee order
-      # First check if it's already in the right place
       let curParent = renderer.parentNode(nNode)
       if curParent == parent:
-        # Check if next sibling matches expected
         let ns = renderer.nextSibling(nNode)
         if ns != nextRef:
           # Need to move

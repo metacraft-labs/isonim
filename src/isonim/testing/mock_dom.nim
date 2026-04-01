@@ -4,7 +4,7 @@
 ## with an in-memory tree of MockNode objects. Useful for unit testing
 ## renderer logic without requiring a real browser DOM.
 
-import std/tables
+import std/[tables, hashes]
 
 type
   MockNodeKind* = enum
@@ -131,3 +131,7 @@ proc textContent*(node: MockNode): string =
     return node.text
   for child in node.children:
     result.add(textContent(child))
+
+proc hash*(node: MockNode): Hash =
+  ## Hash MockNode by its unique ID (for use as Table key).
+  result = hash(node.id)

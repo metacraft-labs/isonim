@@ -86,7 +86,7 @@ suite "DSL":
       var items = createSignal(@["a", "b", "c"])
       let parent = renderer.createElement("div")
 
-      forEachKeyed[string](renderer, parent,
+      forEachKeyed(renderer, parent,
         proc(): seq[string] = items.val,
         proc(item: proc(): string, index: proc(): int): MockNode =
           let node = renderer.createElement("span")
@@ -125,7 +125,7 @@ suite "DSL":
       var items = createSignal(@[10, 20, 30])
       let parent = renderer.createElement("div")
 
-      indexEach[int](renderer, parent,
+      indexEach(renderer, parent,
         proc(): seq[int] = items.val,
         proc(item: proc(): int, index: int): MockNode =
           let node = renderer.createElement("span")

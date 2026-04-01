@@ -1,25 +1,24 @@
 ## isonim/dsl/components.nim
 ##
-## Built-in control-flow components: For, Index, Show, Switch, Match, ErrorBoundary.
-## These are reactive-aware flow control primitives used within the DSL.
+## Built-in control-flow components: For, Index, Show, ErrorBoundary.
+## Generic over renderer and node types -- works with any RendererBackend.
 ##
 ## Port of SolidJS rendering control flow components.
 
 import std/tables
 import ../core/[signals, computation, owner]
 import ../core/reconcile
-import ../testing/mock_dom
 
-proc forEachKeyed*[T](
-    renderer: MockRenderer;
-    parent: MockNode;
+proc forEachKeyed*[T, R, N](
+    renderer: R;
+    parent: N;
     each: proc(): seq[T];
-    body: proc(item: proc(): T, index: proc(): int): MockNode) =
+    body: proc(item: proc(): T, index: proc(): int): N) =
   ## Keyed list rendering using item identity (== comparison) for keys.
   ## Watches `each()` and reconciles the child nodes when the list changes.
   ## `body` renders a single item; receives accessor for item and index.
 
-  var currentNodes: seq[MockNode] = @[]
+  var currentNodes: seq[N] = @[]
   var currentItems: seq[T] = @[]
   var itemSignals: seq[Signal[T]] = @[]
   var indexSignals: seq[Signal[int]] = @[]
@@ -32,7 +31,7 @@ proc forEachKeyed*[T](
     for i, item in currentItems:
       oldItemMap[item] = i
 
-    var newNodes: seq[MockNode] = @[]
+    var newNodes: seq[N] = @[]
     var newItemSignals: seq[Signal[T]] = @[]
     var newIndexSignals: seq[Signal[int]] = @[]
 
@@ -64,17 +63,17 @@ proc forEachKeyed*[T](
     itemSignals = newItemSignals
     indexSignals = newIndexSignals
 
-proc indexEach*[T](
-    renderer: MockRenderer;
-    parent: MockNode;
+proc indexEach*[T, R, N](
+    renderer: R;
+    parent: N;
     each: proc(): seq[T];
-    body: proc(item: proc(): T, index: int): MockNode) =
+    body: proc(item: proc(): T, index: int): N) =
   ## Index-keyed list rendering. Uses position-based identity.
   ## Keeps stable node refs; updates signal value in-place when item at an
   ## index changes. Body-created effects are NOT owned by the tracking
   ## effect so they survive list updates.
 
-  var currentNodes: seq[MockNode] = @[]
+  var currentNodes: seq[N] = @[]
   var itemSignals: seq[Signal[T]] = @[]
   let savedOwner = getOwner()
 
@@ -92,7 +91,7 @@ proc indexEach*[T](
         # Use a proc to force separate closure capture per iteration
         proc makeAccessor(sig: Signal[T]): proc(): T =
           result = proc(): T = sig.val
-        var node: MockNode
+        var node: N
         runWithOwner(savedOwner, proc() =
           node = body(makeAccessor(itemSig), idx)
         )
@@ -112,16 +111,16 @@ proc indexEach*[T](
     for i in 0 ..< updateLen:
       itemSignals[i].val = newItems[i]
 
-proc show*(
-    renderer: MockRenderer;
-    parent: MockNode;
+proc show*[R, N](
+    renderer: R;
+    parent: N;
     condition: proc(): bool;
-    body: proc(): MockNode;
-    fallback: proc(): MockNode = nil) =
+    body: proc(): N;
+    fallback: proc(): N = nil) =
   ## Conditional rendering. Renders `body` when condition is true,
   ## `fallback` (if provided) when false.
 
-  var currentNode: MockNode = nil
+  var currentNode: N = nil
   var currentState = false
 
   createRenderEffect proc() =
@@ -143,15 +142,15 @@ proc show*(
       currentNode = fallback()
       renderer.appendChild(parent, currentNode)
 
-proc errorBoundary*(
-    renderer: MockRenderer;
-    parent: MockNode;
-    body: proc(): MockNode;
-    fallback: proc(err: ref CatchableError): MockNode) =
+proc errorBoundary*[R, N](
+    renderer: R;
+    parent: N;
+    body: proc(): N;
+    fallback: proc(err: ref CatchableError): N) =
   ## Error boundary. Renders `body`; if it throws, renders `fallback` with
   ## the caught error instead.
 
-  var node: MockNode
+  var node: N
   try:
     node = body()
   except CatchableError as e:
