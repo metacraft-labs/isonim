@@ -116,3 +116,7 @@ demo-solid:
 # Build and serve IsoNim demo
 demo-isonim:
     @echo "TODO: implement after M10"
+
+# Run Storybook for visual component development
+storybook:
+    cd demos/isonim-replica/storybook && npx storybook dev -p 6006
