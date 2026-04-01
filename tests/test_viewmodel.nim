@@ -177,8 +177,8 @@ suite "Demo SSR":
   setup:
     resetIdCounter()
 
-  test "e2e_demo_ssr_hydrate_full":
-    ## Demo renders via SSR, produces valid HTML.
+  test "e2e_demo_ssr_structure_verification":
+    ## Demo SSR output has correct structure (C-backend, no DOM hydration).
     let html = renderTaskApp()
 
     # Structure checks

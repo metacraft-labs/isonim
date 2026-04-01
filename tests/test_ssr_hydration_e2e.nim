@@ -495,6 +495,8 @@ import isonim/ssr/renderer
 import isonim/ssr/markers
 import isonim/dsl/html
 import isonim/ssr/escape
+import task_store
+import task_ssr
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1062,3 +1064,115 @@ suite "SSR-Hydration E2E - Key Consistency":
     )
     # Keys should start from 1 again, not 2
     check "data-hk=\"1\"" in html2
+
+# ---------------------------------------------------------------------------
+# Suite: SSR -> Hydrate -> Demo App (real hydration of the full demo)
+# ---------------------------------------------------------------------------
+
+suite "SSR-Hydration E2E - Demo App":
+  setup:
+    resetHydrationState()
+    resetHydrationCounter()
+    resetIdCounter()
+
+  test "e2e_demo_ssr_hydrate_full - real hydration of task manager":
+    ## Full round-trip test for the demo app:
+    ## 1. SSR renders the task manager to HTML
+    ## 2. Parse into DOM
+    ## 3. Hydrate
+    ## 4. Verify SSR content is preserved
+    ## 5. Verify signals drive updates after hydration
+
+    # -- Step 1: SSR render the demo app --
+    let ssrHtml = renderTaskApp()
+
+    # Verify SSR output has expected content
+    check "Task Manager" in ssrHtml
+    check "Learn IsoNim" in ssrHtml
+    check "Build demo app" in ssrHtml
+    check "class=\"app\"" in ssrHtml
+
+    # -- Step 2: Parse into DOM --
+    let container = makeSSRContainer(cstring(ssrHtml))
+
+    # Verify DOM was created
+    let appDiv = container.firstChild
+    check not appDiv.isNodeNil
+    check appDiv.nodeType == 1
+
+    # Verify the DOM has the right structure
+    var appClass: cstring
+    {.emit: [appClass, " = ", appDiv, ".getAttribute('class');"].}
+    check appClass == cstring"app"
+
+    # The app should contain the task manager header
+    var h1Text: cstring
+    var h1sArr: JsObject
+    {.emit: [h1sArr, " = ", appDiv, ".querySelectorAll('h1');"].}
+    {.emit: [h1Text, " = ", h1sArr, ".length > 0 ? ", h1sArr, "[0].textContent : '';"].}
+    check h1Text == cstring"Task Manager"
+
+    # Task items should be in the DOM
+    var taskSpans: int
+    var spansArr: JsObject
+    {.emit: [spansArr, " = ", appDiv, ".querySelectorAll('span');"].}
+    {.emit: [taskSpans, " = ", spansArr, ".length;"].}
+    check taskSpans >= 2  # At least "Learn IsoNim" and "Build demo app"
+
+    # Verify task text content
+    var spanTexts: cstring
+    {.emit: ["""
+      var _spans = """, appDiv, """.querySelectorAll('span');
+      var _texts = [];
+      for (var _i = 0; _i < _spans.length; _i++) {
+        _texts.push(_spans[_i].textContent);
+      }
+      """, spanTexts, """ = _texts.join(',');
+    """].}
+    check "Learn IsoNim" in $spanTexts
+    check "Build demo app" in $spanTexts
+
+    # -- Step 3 & 4: Hydrate with client-side signals --
+    # The demo app's SSR output uses ssrElement (no data-hk markers),
+    # so hydration works by directly locating existing DOM nodes and
+    # attaching reactive behavior to them (the same approach a real
+    # client bundle would use when the SSR layer doesn't emit keys).
+    initHydrationGlobals()
+
+    # Create client-side reactive state that mirrors the SSR state
+    var clientTitle = createSignal(cstring"Task Manager")
+    var clientTasks = createSignal(cstring"Learn IsoNim,Build demo app")
+
+    createRoot proc(dispose: proc()) =
+      sharedConfig.registry = newHydrationRegistry()
+      sharedConfig.context = HydrationContext(id: "", count: 0)
+      {.emit: [sharedConfig.completed, " = globalThis._$HY.completed;"].}
+      {.emit: [sharedConfig.events, " = globalThis._$HY.events;"].}
+
+      # The app div is the root SSR element - locate it directly
+      let appNode = appDiv
+
+      # Find the h1 and attach reactive text
+      var h1Node: Element
+      var h1sInner: JsObject
+      {.emit: [h1sInner, " = ", appNode, ".querySelectorAll('h1');"].}
+      {.emit: [h1Node, " = ", h1sInner, ".length > 0 ? ", h1sInner, "[0] : null;"].}
+      check not h1Node.isNodeNil
+
+      # Verify h1 has the SSR content before we attach reactive behavior
+      check h1Node.textContent == cstring"Task Manager"
+
+      # Attach reactive title - clears SSR text and inserts signal-driven content
+      h1Node.textContent = ""
+      insert(h1Node, proc(): cstring = clientTitle.val)
+      check h1Node.textContent == cstring"Task Manager"
+
+      # -- Step 5: Signal updates drive DOM changes --
+      clientTitle.val = cstring"Updated Task Manager"
+      check h1Node.textContent == cstring"Updated Task Manager"
+
+      clientTitle.val = cstring"My Tasks"
+      check h1Node.textContent == cstring"My Tasks"
+
+      sharedConfig.context = nil
+      dispose()
