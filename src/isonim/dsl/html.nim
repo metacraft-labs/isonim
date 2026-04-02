@@ -12,6 +12,16 @@ import transform
 
 var gensymCounter {.compileTime.} = 0
 
+proc attrNameStr(node: NimNode): string {.compileTime.} =
+  ## Extract an attribute name from an ident or acc-quoted ident (e.g. `aria-label`).
+  case node.kind
+  of nnkAccQuoted:
+    result = ""
+    for child in node:
+      result.add child.strVal
+  else:
+    result = node.strVal
+
 proc genName(prefix: string): NimNode {.compileTime.} =
   inc gensymCounter
   result = ident(prefix & $gensymCounter)
@@ -252,7 +262,7 @@ proc processNode(rendererSym: NimNode; node: NimNode; stmts: NimNode): NimNode {
       case arg.kind
       of nnkExprEqExpr:
         # attr = value
-        let attrName = arg[0].strVal
+        let attrName = attrNameStr(arg[0])
         let attrVal = arg[1]
 
         if isEventHandler(attrName):
@@ -500,7 +510,7 @@ proc ssrNodeExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.} =
       let arg = node[i]
       case arg.kind
       of nnkExprEqExpr:
-        let attrName = arg[0].strVal
+        let attrName = attrNameStr(arg[0])
         let attrVal = arg[1]
 
         if isEventHandler(attrName):
