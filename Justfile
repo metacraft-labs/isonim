@@ -139,6 +139,15 @@ demo-solid:
 demo-isonim:
     @echo "TODO: implement after M10"
 
-# Run Storybook for visual component development
-storybook:
+# Build IsoNim components for Storybook (Nim -> JS)
+build-storybook-components:
+    mkdir -p demos/isonim-replica/storybook/dist
+    nim js -o:demos/isonim-replica/storybook/dist/components.js demos/isonim-replica/src/storybook_components.nim
+
+# Run Storybook for visual component development (builds components first)
+storybook: build-storybook-components
     cd demos/isonim-replica/storybook && npx storybook dev -p 6006
+
+# Build Storybook static site (builds components first)
+storybook-build: build-storybook-components
+    cd demos/isonim-replica/storybook && npx storybook build
