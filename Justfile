@@ -39,6 +39,7 @@ test-js:
     nim js -r tests/test_hydration.nim
     nim js -r tests/test_ssr_hydration_e2e.nim
     nim js -r tests/test_app_e2e.nim
+    nim js -r tests/test_web_components_advanced.nim
 
 # Run only signal tests
 test-signals:
@@ -151,3 +152,13 @@ storybook: build-storybook-components
 # Build Storybook static site (builds components first)
 storybook-build: build-storybook-components
     cd demos/isonim-replica/storybook && npx storybook build
+
+# Build standalone Web Components demo (Nim -> JS)
+build-web-components:
+    mkdir -p demos/web-components/dist
+    nim js -o:demos/web-components/dist/components.js demos/web-components/src/components.nim
+
+# Build and serve the standalone Web Components demo page
+demo-web-components: build-web-components
+    @echo "Serving demos/web-components/ on http://localhost:8080"
+    cd demos/web-components && python3 -m http.server 8080

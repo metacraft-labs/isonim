@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>IsoNim Web Components Demo</title>
+    <style>
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      body {
+        font-family:
+          system-ui,
+          -apple-system,
+          sans-serif;
+        max-width: 800px;
+        margin: 0 auto;
+        padding: 32px 24px;
+        color: #333;
+        background: #fafafa;
+      }
+      h1 {
+        font-size: 1.8rem;
+        margin-bottom: 4px;
+      }
+      .subtitle {
+        color: #666;
+        margin-top: 0;
+        margin-bottom: 32px;
+      }
+      h2 {
+        font-size: 1.25rem;
+        margin-top: 40px;
+        margin-bottom: 12px;
+        padding-bottom: 6px;
+        border-bottom: 2px solid #e0e0e0;
+      }
+      section {
+        margin-bottom: 24px;
+      }
+      .demo-row {
+        display: flex;
+        gap: 24px;
+        align-items: center;
+        flex-wrap: wrap;
+        margin-bottom: 12px;
+      }
+      .event-log {
+        background: #263238;
+        color: #b2ff59;
+        border-radius: 8px;
+        padding: 12px 16px;
+        font-family: "Fira Code", "Consolas", monospace;
+        font-size: 0.85rem;
+        max-height: 180px;
+        overflow-y: auto;
+        margin-top: 8px;
+      }
+      .event-log:empty::before {
+        content: "(events will appear here)";
+        color: #607d8b;
+      }
+      .badge-row {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+      }
+      .description {
+        font-size: 0.9rem;
+        color: #666;
+        margin-bottom: 8px;
+      }
+      footer {
+        margin-top: 48px;
+        padding-top: 16px;
+        border-top: 1px solid #e0e0e0;
+        font-size: 0.85rem;
+        color: #999;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>IsoNim Web Components</h1>
+    <p class="subtitle">
+      Reusable custom elements built with IsoNim's reactive system — no
+      framework required.
+    </p>
+
+    <!-- Counter -->
+    <h2>Counter</h2>
+    <section>
+      <p class="description">
+        A reactive counter with custom events. The badge below updates via
+        inter-component communication.
+      </p>
+      <div class="demo-row">
+        <isonim-counter id="counter1" initial-count="5"></isonim-counter>
+        <isonim-badge
+          id="counter-badge"
+          count="5"
+          variant="info"
+        ></isonim-badge>
+      </div>
+      <div class="demo-row">
+        <isonim-counter initial-count="0"></isonim-counter>
+      </div>
+      <div id="counter-log" class="event-log"></div>
+    </section>
+
+    <!-- Toggle -->
+    <h2>Toggle</h2>
+    <section>
+      <p class="description">
+        Toggle switches dispatching change events. Toggling "Dark mode" changes
+        the page background.
+      </p>
+      <div class="demo-row">
+        <isonim-toggle id="dark-toggle" label="Dark mode"></isonim-toggle>
+        <isonim-toggle
+          id="notif-toggle"
+          label="Notifications"
+          checked
+        ></isonim-toggle>
+      </div>
+      <div id="toggle-log" class="event-log"></div>
+    </section>
+
+    <!-- Badge -->
+    <h2>Badge</h2>
+    <section>
+      <p class="description">
+        Reactive badges that update when attributes change. Try the counter
+        above to see the first badge react.
+      </p>
+      <div class="badge-row">
+        <isonim-badge count="3" variant="info"></isonim-badge>
+        <isonim-badge count="7" variant="warning"></isonim-badge>
+        <isonim-badge count="!" variant="error"></isonim-badge>
+      </div>
+    </section>
+
+    <!-- Todo List -->
+    <h2>Todo List</h2>
+    <section>
+      <p class="description">
+        A self-contained task list. Add, toggle, and remove tasks — all state
+        managed inside the Web Component.
+      </p>
+      <isonim-todo-list id="todo1"></isonim-todo-list>
+      <div id="todo-log" class="event-log"></div>
+    </section>
+
+    <!-- Inter-component Communication -->
+    <h2>Inter-component Communication</h2>
+    <section>
+      <p class="description">
+        Components communicate through standard DOM events. The counter above
+        dispatches
+        <code>count-changed</code> events that update the badge beside it. All
+        wiring is done in a plain <code>&lt;script&gt;</code> tag — no framework
+        glue needed.
+      </p>
+    </section>
+
+    <footer>Built with IsoNim — isomorphic reactive framework for Nim.</footer>
+
+    <script src="dist/components.js"></script>
+    <script>
+      // --- Inter-component communication ---
+
+      // Counter -> Badge: sync count
+      var counter1 = document.getElementById("counter1");
+      var counterBadge = document.getElementById("counter-badge");
+      var counterLog = document.getElementById("counter-log");
+
+      counter1.addEventListener("count-changed", function (e) {
+        counterBadge.setAttribute("count", e.detail.count);
+        logEvent(counterLog, "count-changed", "count=" + e.detail.count);
+      });
+
+      // Toggle events
+      var darkToggle = document.getElementById("dark-toggle");
+      var notifToggle = document.getElementById("notif-toggle");
+      var toggleLog = document.getElementById("toggle-log");
+
+      darkToggle.addEventListener("toggle-changed", function (e) {
+        document.body.style.background = e.detail.checked
+          ? "#1e1e1e"
+          : "#fafafa";
+        document.body.style.color = e.detail.checked ? "#e0e0e0" : "#333";
+        logEvent(toggleLog, "toggle-changed", "Dark mode=" + e.detail.checked);
+      });
+
+      notifToggle.addEventListener("toggle-changed", function (e) {
+        logEvent(
+          toggleLog,
+          "toggle-changed",
+          "Notifications=" + e.detail.checked,
+        );
+      });
+
+      // Todo events
+      var todo1 = document.getElementById("todo1");
+      var todoLog = document.getElementById("todo-log");
+
+      todo1.addEventListener("task-added", function (e) {
+        logEvent(todoLog, "task-added", 'text="' + e.detail.text + '"');
+      });
+      todo1.addEventListener("task-toggled", function (e) {
+        logEvent(
+          todoLog,
+          "task-toggled",
+          "id=" + e.detail.id + " done=" + e.detail.done,
+        );
+      });
+      todo1.addEventListener("task-removed", function (e) {
+        logEvent(todoLog, "task-removed", 'text="' + e.detail.text + '"');
+      });
+
+      // Add some initial tasks via the exposed API
+      todo1.addTask("Read the IsoNim docs");
+      todo1.addTask("Try WebComponents");
+      todo1.addTask("Build something cool");
+
+      // --- Event log helper ---
+      function logEvent(container, type, detail) {
+        var line = document.createElement("div");
+        var ts = new Date().toLocaleTimeString();
+        line.textContent = "[" + ts + "] " + type + ": " + detail;
+        container.appendChild(line);
+        container.scrollTop = container.scrollHeight;
+      }
+    </script>
+  </body>
+</html>
