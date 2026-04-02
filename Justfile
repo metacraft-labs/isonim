@@ -107,9 +107,29 @@ test-app-e2e:
 demo-build:
     nim js -o:demos/isonim-replica/dist/main.js demos/isonim-replica/src/main.nim
 
+# Build SSR test HTML (C target: generates tests/browser/dist/ssr.html)
+build-ssr-test:
+    mkdir -p tests/browser/dist
+    nim c -d:isServer -r tests/browser/generate_ssr.nim
+
+# Build hydration entry point (JS target: tests/browser/dist/main.js)
+build-hydrate:
+    mkdir -p tests/browser/dist
+    nim js -o:tests/browser/dist/main.js tests/browser/hydrate_entry.nim
+
+# Build all SSR test assets
+build-ssr-test-all: build-ssr-test build-hydrate
+
 # Run Playwright browser tests (requires: just demo-build && cd tests/browser && npm install)
-test-browser:
-    cd tests/browser && npx playwright test
+test-browser: test-browser-demo test-browser-ssr
+
+# Run Playwright demo app tests only
+test-browser-demo:
+    cd tests/browser && npx playwright test --project=demo-app
+
+# Run Playwright SSR hydration tests (requires: just build-ssr-test-all)
+test-browser-ssr: build-ssr-test-all
+    cd tests/browser && npx playwright test --project=ssr-hydration
 
 # Build and serve SolidJS demo
 demo-solid:
