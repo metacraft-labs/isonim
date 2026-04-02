@@ -27,3 +27,6 @@ demos/solid-reference/node_modules/
 demos/solid-reference/dist/
 result
 tests/test_native_renderer
+tests/test_corner_cases
+tests/test_accessibility
+tests/test_web_components_advanced

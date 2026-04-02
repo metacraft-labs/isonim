@@ -22,6 +22,7 @@ test-c:
     nim c -r tests/test_native_renderer.nim
     nim c -r tests/test_nginx_module.nim
     nim c -r tests/test_corner_cases.nim
+    nim c -r tests/test_accessibility.nim
 
 # Run tests on JS target
 test-js:
@@ -40,6 +41,7 @@ test-js:
     nim js -r tests/test_ssr_hydration_e2e.nim
     nim js -r tests/test_app_e2e.nim
     nim js -r tests/test_web_components_advanced.nim
+    nim js -r tests/test_accessibility.nim
 
 # Run only signal tests
 test-signals:
