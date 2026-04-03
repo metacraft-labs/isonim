@@ -32,3 +32,4 @@ tests/test_accessibility
 tests/test_web_components_advanced
 benchmarks/runner/
 benchmarks/results/
+node_modules/
