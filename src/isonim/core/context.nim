@@ -1,8 +1,12 @@
 ## Context providers for IsoNim.
 ## Allows passing values through the reactive owner tree without prop drilling.
 
-import std/tables
 import graph
+
+when defined(js):
+  import js_collections
+else:
+  import std/tables
 
 type
   ContextId = int
@@ -27,7 +31,10 @@ proc provide*[T](ctx: Context[T]; value: T) =
   ## Children of this owner will see this value via useContext.
   if Owner != nil:
     if Owner.contextTable.isNil:
-      Owner.contextTable = newTable[int, RootRef]()
+      when defined(js):
+        Owner.contextTable = newJsMap[int, RootRef]()
+      else:
+        Owner.contextTable = newTable[int, RootRef]()
     let wrapped = ContextValue[T](value: value)
     Owner.contextTable[ctx.id] = wrapped
 

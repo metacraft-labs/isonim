@@ -16,36 +16,38 @@ import isonim/rxcore
 
 # ---- Data model ----
 
-const adjectives = [
-  "pretty", "large", "big", "small", "tall", "short", "long", "handsome",
+const adjectives: array[25, cstring] = [
+  cstring"pretty", "large", "big", "small", "tall", "short", "long", "handsome",
   "plain", "quaint", "clean", "elegant", "easy", "angry", "crazy", "helpful",
   "mushy", "odd", "unsightly", "adorable", "important", "inexpensive",
   "cheap", "expensive", "fancy"
 ]
 
-const colours = [
-  "red", "yellow", "blue", "green", "pink", "brown", "purple", "brown",
+const colours: array[11, cstring] = [
+  cstring"red", "yellow", "blue", "green", "pink", "brown", "purple", "brown",
   "white", "black", "orange"
 ]
 
-const nouns = [
-  "table", "chair", "house", "bbq", "desk", "car", "pony", "cookie",
+const nouns: array[13, cstring] = [
+  cstring"table", "chair", "house", "bbq", "desk", "car", "pony", "cookie",
   "sandwich", "burger", "pizza", "mouse", "keyboard"
 ]
+
+proc `&`(a, b: cstring): cstring {.importcpp: "(# + #)".}
 
 type
   Row = ref object
     id: int
-    label: Signal[string]
+    label: Signal[cstring]
 
 var
   nextId = 1
   data: Signal[seq[Row]]
   selected: Signal[int]
 
-proc randomLabel(): string =
-  adjectives[rand(adjectives.high)] & " " &
-    colours[rand(colours.high)] & " " &
+proc randomLabel(): cstring =
+  adjectives[rand(adjectives.high)] & cstring" " &
+    colours[rand(colours.high)] & cstring" " &
     nouns[rand(nouns.high)]
 
 proc buildData(count: int): seq[Row] =
@@ -54,9 +56,12 @@ proc buildData(count: int): seq[Row] =
     result[i] = Row(id: nextId, label: createSignal(randomLabel()))
     inc nextId
 
-# JS parseInt helper
-proc jsParseInt(s: string): int =
+# JS type conversion helpers — avoid Nim string intermediaries
+proc jsParseInt(s: cstring): int =
   {.emit: [result, " = parseInt(", s, ", 10) || 0;"].}
+
+proc jsIntToStr(n: int): cstring =
+  {.emit: [result, " = String(", n, ");"].}
 
 # ---- Minimal browser renderer for reconcileArrays ----
 
@@ -95,10 +100,10 @@ proc createRowElement(row: Row): Node =
   let deleteLink = td3.firstChild
 
   # Set the id column
-  td1.textContent = cstring($row.id)
+  td1.textContent = jsIntToStr(row.id)
 
   # Set the label reactively
-  insert(selectLink, proc(): cstring = cstring(row.label.val))
+  insert(selectLink, proc(): cstring = row.label.val)
 
   # Highlight when selected
   effect proc() =
@@ -108,7 +113,7 @@ proc createRowElement(row: Row): Node =
       Element(tr).className = ""
 
   # Store row id for event delegation
-  let rowIdStr = cstring($row.id)
+  let rowIdStr = jsIntToStr(row.id)
   {.emit: [selectLink, ".$$rowId = ", rowIdStr, ";"].}
   {.emit: [deleteLink, ".$$rowId = ", rowIdStr, ";"].}
 
@@ -116,7 +121,7 @@ proc createRowElement(row: Row): Node =
   selectLink.setJsPropHandler(cstring"$$click", proc(ev: Event) =
     var rowIdCstr: cstring
     {.emit: [rowIdCstr, " = ", ev.target, ".$$rowId || ", ev.target, ".parentNode.$$rowId || '';"].}
-    let rowId = jsParseInt($rowIdCstr)
+    let rowId = jsParseInt(rowIdCstr)
     if selected.val == rowId:
       selected.val = 0
     else:
@@ -127,7 +132,7 @@ proc createRowElement(row: Row): Node =
   deleteLink.setJsPropHandler(cstring"$$click", proc(ev: Event) =
     var rowIdCstr: cstring
     {.emit: [rowIdCstr, " = ", ev.target, ".$$rowId || ", ev.target, ".parentNode.$$rowId || '';"].}
-    let rowId = jsParseInt($rowIdCstr)
+    let rowId = jsParseInt(rowIdCstr)
     var rows = data.val
     for i in 0 ..< rows.len:
       if rows[i].id == rowId:
@@ -185,7 +190,7 @@ proc main() =
       let rows = data.val
       var i = 0
       while i < rows.len:
-        rows[i].label.val = rows[i].label.val & " !!!"
+        rows[i].label.val = rows[i].label.val & cstring" !!!"
         i += 10
     )
 

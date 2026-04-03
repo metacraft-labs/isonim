@@ -7,7 +7,13 @@
 ## Port of SolidJS signal.ts dependency graph traversal.
 
 import types
-import std/tables
+
+when defined(js):
+  import js_collections
+  type ContextTable* = JsMap[int, RootRef]
+else:
+  import std/tables
+  type ContextTable* = TableRef[int, RootRef]
 
 type
   SignalStateBase* = ref object of RootObj
@@ -21,7 +27,7 @@ type
     owned*: seq[ComputationBase]     ## Child computations
     cleanups*: seq[proc()]            ## Cleanup callbacks
     owner*: OwnerBase                 ## Parent owner
-    contextTable*: TableRef[int, RootRef]  ## Context values keyed by ContextId
+    contextTable*: ContextTable       ## Context values keyed by ContextId
 
   ComputationBase* = ref object of OwnerBase
     ## Type-erased base for computations.

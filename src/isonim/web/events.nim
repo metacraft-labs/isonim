@@ -9,22 +9,30 @@
 when not defined(js):
   {.error: "isonim/web/events requires the JS backend".}
 
-import std/sets
+import isonim/core/js_collections
 import isonim/web/dom_api
 
-# Track which events have been delegated on the document
-var delegatedEvents {.threadvar.}: HashSet[string]
+# Track which events have been delegated on the document.
+# Uses JS-native Set to avoid pulling std/sets (and its hash table) into the bundle.
+var delegatedEvents: JsSet[cstring]
+
+proc ensureDelegatedEvents() =
+  ## Lazily initialize the set (JS Set can't be initialized at module scope as threadvar).
+  if delegatedEvents.isNil:
+    delegatedEvents = newJsSet[cstring]()
+
+proc jsConcatCstrings(a, b: cstring): cstring {.importcpp: "(# + #)".}
 
 proc eventHandler(e: Event) {.exportc.} =
   ## The document-level handler that walks up the DOM tree looking for
   ## delegated event handlers stored as $$<eventName> properties on nodes.
   var node = e.target
-  let key = cstring("$$" & $e.`type`)
+  let key = jsConcatCstrings(cstring"$$", e.`type`)
 
   while not node.isNodeNil:
     let handler = node.getJsProp(key)
     if not handler.isNull:
-      let dataKey = cstring("$$" & $e.`type` & "Data")
+      let dataKey = jsConcatCstrings(key, cstring"Data")
       let data = node.getJsProp(dataKey)
       if not data.isNull:
         # handler.call(node, data, e) -- call with data
@@ -40,10 +48,12 @@ proc eventHandler(e: Event) {.exportc.} =
 proc delegateEvents*(eventNames: openArray[string]) =
   ## Registers document-level handlers for the given event names.
   ## Each event type is only delegated once.
+  ensureDelegatedEvents()
   for name in eventNames:
-    if name notin delegatedEvents:
-      delegatedEvents.incl(name)
-      document.Node.addEventListener(cstring(name), eventHandler)
+    let cs = cstring(name)
+    if cs notin delegatedEvents:
+      delegatedEvents.incl(cs)
+      document.Node.addEventListener(cs, eventHandler)
 
 proc addEventListenerWeb*(node: Node, name: string, handler: EventHandler,
     delegate: bool = false) =
@@ -58,6 +68,7 @@ proc addEventListenerWeb*(node: Node, name: string, handler: EventHandler,
 
 proc clearDelegatedEvents*() =
   ## Remove all delegated event handlers from the document.
-  for name in delegatedEvents:
-    document.Node.removeEventListener(cstring(name), eventHandler)
+  ensureDelegatedEvents()
+  # JsSet doesn't have a Nim iterator, use JS forEach
+  {.emit: [delegatedEvents, ".forEach(function(name) { ", document, ".removeEventListener(name, ", eventHandler, "); });"].}
   delegatedEvents.clear()
