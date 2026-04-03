@@ -30,3 +30,5 @@ tests/test_native_renderer
 tests/test_corner_cases
 tests/test_accessibility
 tests/test_web_components_advanced
+benchmarks/runner/
+benchmarks/results/

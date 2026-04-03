@@ -24,6 +24,8 @@
             nimble
             nodejs
             just
+            chromium
+            chromedriver
           ];
 
           shellHook = ''

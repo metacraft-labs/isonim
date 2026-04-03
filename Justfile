@@ -99,6 +99,26 @@ bench-test:
     nim c -r tests/test_benchmark.nim
     nim js -r tests/test_benchmark.nim
 
+# Set up the krausest benchmark runner (clone + install, one-time)
+bench-setup:
+    @echo "Setting up benchmark runner..."
+    BENCH_SETUP_ONLY=1 bash benchmarks/run-comparison.sh || true
+    @echo "Runner ready at benchmarks/runner/"
+
+# Run IsoNim vs SolidJS comparison benchmark
+bench-compare: bench-build
+    bash benchmarks/run-comparison.sh
+
+# Run comparison with fewer iterations (quick check)
+bench-compare-quick: bench-build
+    BENCH_ITERATIONS=3 bash benchmarks/run-comparison.sh
+
+# View benchmark results (starts HTTP server)
+bench-results:
+    @if [ ! -d benchmarks/runner ]; then echo "Run 'just bench-compare' first"; exit 1; fi
+    @echo "Starting server... Open http://localhost:8080/webdriver-ts-results/dist/index.html"
+    cd benchmarks/runner && npm start
+
 # Build and report benchmark metrics
 bench-framework: bench-build bench-size
 
