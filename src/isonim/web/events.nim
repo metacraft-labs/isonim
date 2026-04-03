@@ -45,9 +45,17 @@ proc eventHandler(e: Event) {.exportc.} =
     # Walk up the tree
     node = node.parentNode
 
-proc delegateEvents*(eventNames: openArray[string]) =
+proc delegateEvents*(eventNames: openArray[cstring]) =
   ## Registers document-level handlers for the given event names.
   ## Each event type is only delegated once.
+  ensureDelegatedEvents()
+  for name in eventNames:
+    if name notin delegatedEvents:
+      delegatedEvents.incl(name)
+      document.Node.addEventListener(name, eventHandler)
+
+proc delegateEvents*(eventNames: openArray[string]) =
+  ## String overload for backward compatibility.
   ensureDelegatedEvents()
   for name in eventNames:
     let cs = cstring(name)
@@ -55,16 +63,21 @@ proc delegateEvents*(eventNames: openArray[string]) =
       delegatedEvents.incl(cs)
       document.Node.addEventListener(cs, eventHandler)
 
-proc addEventListenerWeb*(node: Node, name: string, handler: EventHandler,
+proc addEventListenerWeb*(node: Node, name: cstring, handler: EventHandler,
     delegate: bool = false) =
   ## Attach an event listener to a node.
   ## If delegate=true, stores the handler as a property for event delegation.
   ## If delegate=false, uses native addEventListener.
   if delegate:
-    let propName = cstring("$$" & name)
+    let propName = jsConcatCstrings(cstring"$$", name)
     node.setJsPropHandler(propName, handler)
   else:
-    node.addEventListener(cstring(name), handler)
+    node.addEventListener(name, handler)
+
+proc addEventListenerWeb*(node: Node, name: string, handler: EventHandler,
+    delegate: bool = false) =
+  ## String overload for backward compatibility.
+  addEventListenerWeb(node, cstring(name), handler, delegate)
 
 proc clearDelegatedEvents*() =
   ## Remove all delegated event handlers from the document.

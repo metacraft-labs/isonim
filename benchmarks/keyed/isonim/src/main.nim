@@ -5,7 +5,6 @@
 when not defined(js):
   {.error: "benchmark main.nim requires the JS backend".}
 
-import std/random
 import isonim/core/js_collections
 import isonim/web/dom_api
 import isonim/web/client
@@ -35,6 +34,11 @@ const nouns: array[13, cstring] = [
 
 proc `&`(a, b: cstring): cstring {.importcpp: "(# + #)".}
 
+# Use Math.random() directly instead of std/random to avoid pulling in
+# Nim's Rand value type (which triggers nimCopy for BigInt fields).
+proc jsRandom(max: int): int =
+  {.emit: [result, " = (Math.random() * ", max, ") | 0;"].}
+
 type
   Row = ref object
     id: int
@@ -46,9 +50,9 @@ var
   selected: Signal[int]
 
 proc randomLabel(): cstring =
-  adjectives[rand(adjectives.high)] & cstring" " &
-    colours[rand(colours.high)] & cstring" " &
-    nouns[rand(nouns.high)]
+  adjectives[jsRandom(adjectives.len)] & cstring" " &
+    colours[jsRandom(colours.len)] & cstring" " &
+    nouns[jsRandom(nouns.len)]
 
 proc buildData(count: int): seq[Row] =
   result = newSeq[Row](count)
@@ -146,7 +150,7 @@ proc createRowElement(row: Row): Node =
 # ---- App ----
 
 proc main() =
-  randomize()
+  # No randomize() needed — using Math.random() directly
 
   createRoot proc(dispose: proc()) =
     data = createSignal(newSeq[Row]())
@@ -155,7 +159,7 @@ proc main() =
     let tbody = document.getElementById("tbody")
 
     # Delegate click events at document level
-    delegateEvents(["click"])
+    delegateEvents([cstring"click"])
 
     # Wire up buttons
     let runBtn = document.getElementById("run")
