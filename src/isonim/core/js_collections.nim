@@ -24,17 +24,6 @@ proc `[]`*[K, V](m: JsMap[K, V], key: K): V {.importcpp: "#.get(#)".}
 proc `[]=`*[K, V](m: JsMap[K, V], key: K, val: V) {.importcpp: "#.set(#, #)".}
 proc contains*[K, V](m: JsMap[K, V], key: K): bool {.importcpp: "#.has(#)".}
 
-proc keysSeq*[K, V](m: JsMap[K, V]): seq[K] =
-  ## Returns all keys as a seq. Useful when you need to iterate and
-  ## potentially mutate the map (e.g. delete entries).
-  result = @[]
-  {.emit: [m, ".forEach(function(v, k) { ", result, ".push(k); });"].}
-
-iterator keys*[K, V](m: JsMap[K, V]): K =
-  let ks = keysSeq(m)
-  for k in ks:
-    yield k
-
 # --- JsArray: native JS array (reference semantics, no nimCopy) ---
 
 type JsArray*[T] {.importc: "Array".} = ref object
@@ -75,6 +64,19 @@ proc toSeq*[T](a: JsArray[T]): seq[T] =
 proc toJsArray*[T](s: seq[T]): JsArray[T] =
   ## View a Nim seq as a JsArray. Zero-cost cast on JS.
   {.emit: [result, " = ", s, ";"].}
+
+# --- JsMap keys (depends on JsArray, defined after it) ---
+
+proc keysArray*[K, V](m: JsMap[K, V]): JsArray[K] =
+  ## Returns all keys as a JsArray. No nimCopy — pure JS Array.from().
+  {.emit: [result, " = Array.from(", m, ".keys());"].}
+
+iterator keys*[K, V](m: JsMap[K, V]): K =
+  let ks = keysArray(m)
+  for i in 0 ..< ks.len:
+    yield ks[i]
+
+# --- JsSet ---
 
 proc newJsSet*[T](): JsSet[T] {.importcpp: "new Set()".}
 proc incl*[T](s: JsSet[T], val: T) {.importcpp: "#.add(#)".}

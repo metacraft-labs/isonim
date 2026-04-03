@@ -83,7 +83,7 @@ proc reconcileArrays*[R, N](
   # For each new node, look up its old index (or -1 if new)
   let rangeLen = nEnd - nStart + 1
   var
-    newToOld = newSeq[int](rangeLen)
+    newToOld = newNativeSeq[int](rangeLen)
     usedOld = newHashSet[int]()
 
   for i in 0 ..< rangeLen:
@@ -102,9 +102,9 @@ proc reconcileArrays*[R, N](
   # Compute LIS of newToOld (only entries != -1) using patience sorting O(n log n).
   # Returns indices into newToOld that form the longest increasing subsequence.
   var
-    tails: seq[int] = @[]      # tails[i] = smallest ending value of IS of length i+1
-    tailIdx: seq[int] = @[]    # index in newToOld of that tail value
-    parentLis: seq[int] = newSeq[int](rangeLen)
+    tails = newNativeSeq[int]()      # tails[i] = smallest ending value of IS of length i+1
+    tailIdx = newNativeSeq[int]()    # index in newToOld of that tail value
+    parentLis = newNativeSeq[int](rangeLen)
 
   for i in 0 ..< rangeLen:
     parentLis[i] = -1
@@ -134,7 +134,7 @@ proc reconcileArrays*[R, N](
   # Reconstruct LIS indices into a set for O(1) lookup
   var lisSet = newHashSet[int]()
   if tailIdx.len > 0:
-    var idx = tailIdx[^1]
+    var idx = tailIdx[tailIdx.len - 1]
     while idx >= 0:
       lisSet.incl(idx)
       idx = parentLis[idx]
