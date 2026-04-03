@@ -51,6 +51,12 @@ when defined(useFaststreams):
     let handle = fsOutputs.memoryOutput()
     OutputStream(kind: skFast, fastStream: handle.s, flushed: false)
 
+  proc wrapFastStream*(s: fsOutputs.OutputStream): OutputStream =
+    ## Wraps an existing faststreams OutputStream as an isonim OutputStream.
+    ## Writes go directly through the provided faststreams stream, enabling
+    ## zero-copy integration with any faststreams backend (nginx, chronos, etc.).
+    OutputStream(kind: skFast, fastStream: s, flushed: false)
+
 proc write*(s: OutputStream, data: string) =
   ## Writes data to the stream.
   case s.kind

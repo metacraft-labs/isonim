@@ -9,6 +9,28 @@ import isonim/core/owner
 import isonim/ssr/escape
 import isonim/ssr/markers
 
+when defined(useFaststreams):
+  import faststreams/outputs as fsOutputs
+
+  proc renderToOutputStream*(output: fsOutputs.OutputStream;
+                              fn: proc(): string;
+                              hydration: bool = true;
+                              nonce: string = "") =
+    ## Renders an SSR app directly to a faststreams OutputStream.
+    ## The HTML is written and flushed immediately -- no intermediate string
+    ## copy beyond what the component tree produces. Works with any
+    ## OutputStream backend (nginx, chronos, memory, etc.).
+    resetHydrationCounter()
+    var html = ""
+    createRoot proc(dispose: proc()) =
+      html = fn()
+      dispose()
+    # Write directly to the stream
+    fsOutputs.write(output, html)
+    if hydration:
+      fsOutputs.write(output, generateHydrationScript(nonce = nonce))
+    fsOutputs.flush(output)
+
 proc renderToString*(fn: proc(): string): string =
   ## Synchronous SSR. Creates a reactive root, runs the component,
   ## collects the HTML string output.

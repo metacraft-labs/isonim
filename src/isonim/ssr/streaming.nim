@@ -123,6 +123,53 @@ proc newStreamContext*(options: StreamOptions = StreamOptions()): StreamContext 
     boundaryCounter: 0,
   )
 
+when defined(useFaststreams):
+  import faststreams/outputs as fsOutputs
+
+  proc newStreamContext*(fsOutput: fsOutputs.OutputStream;
+                          options: StreamOptions = StreamOptions()): StreamContext =
+    ## Creates a streaming context with an external faststreams OutputStream.
+    ## Writes go directly through the provided stream, enabling zero-copy
+    ## integration with any faststreams backend (nginx, chronos, etc.).
+    StreamContext(
+      output: wrapFastStream(fsOutput),
+      shell: "",
+      boundaries: initTable[string, SuspenseBoundary](),
+      resolvedBoundaries: initTable[string, string](),
+      shellEmitted: false,
+      allResolved: false,
+      onCompleteShell: options.onCompleteShell,
+      onCompleteAll: options.onCompleteAll,
+      nonce: options.nonce,
+      chunks: @[],
+      boundaryCounter: 0,
+    )
+
+  proc renderToStream*(fn: proc(ctx: StreamContext): string;
+      fsOutput: fsOutputs.OutputStream;
+      options: StreamOptions = StreamOptions()): StreamResult =
+    ## Streaming SSR writing directly to a faststreams OutputStream.
+    ## Shell HTML is flushed immediately. Suspense boundaries flush
+    ## as they resolve. No intermediate string copy beyond what the
+    ## component tree produces.
+    resetHydrationCounter()
+    let ctx = newStreamContext(fsOutput, options)
+    currentStreamContext = ctx
+
+    # Render the shell synchronously
+    ctx.shell = fn(ctx)
+
+    # Emit shell immediately
+    ctx.emitShell()
+
+    # If no boundaries, everything is done
+    if ctx.boundaries.len == 0:
+      ctx.allResolved = true
+      if ctx.onCompleteAll != nil:
+        ctx.onCompleteAll()
+
+    result = StreamResult(ctx: ctx)
+
 proc renderToStream*(fn: proc(ctx: StreamContext): string;
     options: StreamOptions = StreamOptions()): StreamResult =
   ## Streaming SSR entry point. Renders the component tree, emitting
