@@ -87,12 +87,13 @@ test-web:
 
 # Build js-framework-benchmark entry
 bench-build:
-    mkdir -p benchmarks/keyed/isonim/dist
-    nim js -d:danger -o:benchmarks/keyed/isonim/dist/main.js benchmarks/keyed/isonim/src/main.nim
+    bash benchmarks/keyed/isonim/build.sh
 
-# Show benchmark bundle size
+# Show benchmark bundle size (raw, minified, gzipped)
 bench-size:
-    @wc -c benchmarks/keyed/isonim/dist/main.js
+    @echo "Raw:      $$(wc -c < benchmarks/keyed/isonim/dist/main.raw.js 2>/dev/null || echo '?') bytes"
+    @echo "Minified: $$(wc -c < benchmarks/keyed/isonim/dist/main.js) bytes"
+    @echo "Gzipped:  $$(gzip -c benchmarks/keyed/isonim/dist/main.js | wc -c) bytes"
 
 # Run benchmark tests
 bench-test:
