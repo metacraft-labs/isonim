@@ -39,7 +39,7 @@ iterator keys*[K, V](m: JsMap[K, V]): K =
 
 type JsArray*[T] {.importc: "Array".} = ref object
 
-proc newJsArray*[T](): JsArray[T] {.importcpp: "[]".}
+proc newJsArray*[T](): JsArray[T] {.importcpp: "new Array()".}
 proc newJsArray*[T](len: int): JsArray[T] {.importcpp: "new Array(#)".}
 proc `[]`*[T](a: JsArray[T], i: int): T {.importcpp: "#[#]".}
 proc `[]=`*[T](a: JsArray[T], i: int, v: T) {.importcpp: "#[#] = #".}

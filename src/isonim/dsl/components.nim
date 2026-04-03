@@ -6,7 +6,7 @@
 ## Port of SolidJS rendering control flow components.
 
 import std/tables
-import ../core/[signals, computation, owner]
+import ../core/[signals, computation, owner, platform]
 import ../core/reconcile
 
 proc forEachKeyed*[T, R, N](
@@ -18,7 +18,7 @@ proc forEachKeyed*[T, R, N](
   ## Watches `each()` and reconciles the child nodes when the list changes.
   ## `body` renders a single item; receives accessor for item and index.
 
-  var currentNodes: seq[N] = @[]
+  var currentNodes: NativeSeq[N] = newNativeSeq[N]()
   var currentItems: seq[T] = @[]
   var itemSignals: seq[Signal[T]] = @[]
   var indexSignals: seq[Signal[int]] = @[]
@@ -31,7 +31,7 @@ proc forEachKeyed*[T, R, N](
     for i, item in currentItems:
       oldItemMap[item] = i
 
-    var newNodes: seq[N] = @[]
+    var newNodes: NativeSeq[N] = newNativeSeq[N]()
     var newItemSignals: seq[Signal[T]] = @[]
     var newIndexSignals: seq[Signal[int]] = @[]
 
@@ -73,7 +73,7 @@ proc indexEach*[T, R, N](
   ## index changes. Body-created effects are NOT owned by the tracking
   ## effect so they survive list updates.
 
-  var currentNodes: seq[N] = @[]
+  var currentNodes: NativeSeq[N] = newNativeSeq[N]()
   var itemSignals: seq[Signal[T]] = @[]
   let savedOwner = getOwner()
 

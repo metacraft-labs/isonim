@@ -11,8 +11,8 @@ import platform
 proc reconcileArrays*[R, N](
     renderer: R;
     parent: N;
-    currentNodes: var seq[N];
-    newNodes: seq[N]) =
+    currentNodes: var NativeSeq[N];
+    newNodes: NativeSeq[N]) =
   ## Efficiently reconcile the current list of child nodes with a new list.
   ## Uses a bidirectional scan with map fallback for efficient node reordering.
   ## Modifies currentNodes in-place to match newNodes.
@@ -35,7 +35,7 @@ proc reconcileArrays*[R, N](
   if nLen == 0:
     for i in countdown(cLen - 1, 0):
       renderer.removeChild(parent, currentNodes[i])
-    currentNodes = @[]
+    currentNodes = newNativeSeq[N]()
     return
 
   # General case: bidirectional scan

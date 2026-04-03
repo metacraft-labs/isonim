@@ -20,7 +20,8 @@ proc notifySignalWrite(state: SignalStateBase) =
   ## Called after the value has been updated.
   if state.observers.len > 0:
     runUpdates proc() =
-      for obs in state.observers:
+      for i in 0 ..< state.observers.len:
+        let obs = state.observers[i]
         obs.state = csStale
         if obs.pure:
           Updates.add(obs)

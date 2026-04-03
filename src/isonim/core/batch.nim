@@ -5,11 +5,18 @@
 ##
 ## Port of SolidJS signal.ts batching logic.
 
-import types, graph
+import types, graph, platform
+export platform
 
-var Updates* {.threadvar.}: seq[ComputationBase]
-var Effects* {.threadvar.}: seq[ComputationBase]
-var batchDepth* {.threadvar.}: int
+when defined(js):
+  # On JS, NativeSeq is JsArray (ref) — must be initialized eagerly.
+  var Updates* = newNativeSeq[ComputationBase]()
+  var Effects* = newNativeSeq[ComputationBase]()
+  var batchDepth*: int
+else:
+  var Updates* {.threadvar.}: NativeSeq[ComputationBase]
+  var Effects* {.threadvar.}: NativeSeq[ComputationBase]
+  var batchDepth* {.threadvar.}: int
 
 # Forward declaration — implemented in computation.nim, registered here via callback
 var updateComputationCb*: proc(comp: ComputationBase)
@@ -19,9 +26,10 @@ proc flushUpdates*() =
   if batchDepth > 0:
     return
   inc ExecCount
-  var pendingUpdates = move(Updates)
-  var pendingEffects = move(Effects)
-  # After move, Updates and Effects are already empty seqs
+  let pendingUpdates = Updates
+  let pendingEffects = Effects
+  Updates = newNativeSeq[ComputationBase]()
+  Effects = newNativeSeq[ComputationBase]()
   if updateComputationCb != nil:
     for comp in pendingUpdates:
       if comp.state == csStale:
@@ -37,8 +45,8 @@ proc runUpdates*(fn: proc()) =
     fn()
     return
   inc batchDepth
-  Updates = @[]
-  Effects = @[]
+  Updates = newNativeSeq[ComputationBase]()
+  Effects = newNativeSeq[ComputationBase]()
   try:
     fn()
   finally:

@@ -143,10 +143,11 @@ proc createRowElement(row: Row): Node =
     {.emit: [rowIdCstr, " = ", ev.target, ".$$rowId || ", ev.target, ".parentNode.$$rowId || '';"].}
     let rowId = jsParseInt(rowIdCstr)
     let rows = data.val
-    # Filter out the deleted row — creates a new array so signal detects change
-    var filtered: Rows
-    {.emit: [filtered, " = ", rows, ".filter(function(r) { return r.id !== ", rowId, "; });"].}
-    data.val = filtered
+    for i in 0 ..< rows.len:
+      if rows[i].id == rowId:
+        rows.splice(i, 1)
+        break
+    data.val = rows  # always fires (equals = false)
   )
 
   return tr
@@ -157,7 +158,7 @@ proc main() =
   # No randomize() needed — using Math.random() directly
 
   createRoot proc(dispose: proc()) =
-    data = createSignal(newJsArray[Row]())
+    data = createSignal(newJsArray[Row](), equals = proc(a, b: Rows): bool = false)
     selected = createSignal(0)
 
     let tbody = document.getElementById("tbody")
@@ -191,10 +192,9 @@ proc main() =
     addBtn.Node.addEventListener(cstring"click", proc(ev: Event) =
       let rows = data.val
       let extra = buildData(1000)
-      # Concat: create new array with old + new rows
-      var combined: Rows
-      {.emit: [combined, " = ", rows, ".concat(", extra, ");"].}
-      data.val = combined
+      for r in extra:
+        rows.push(r)
+      data.val = rows
     )
 
     updateBtn.Node.addEventListener(cstring"click", proc(ev: Event) =
@@ -213,11 +213,8 @@ proc main() =
     swaprowsBtn.Node.addEventListener(cstring"click", proc(ev: Event) =
       let rows = data.val
       if rows.len > 998:
-        # Shallow copy so signal detects change (ref identity differs)
-        var copy: Rows
-        {.emit: [copy, " = ", rows, ".slice();"].}
-        copy.swap(1, 998)
-        data.val = copy
+        rows.swap(1, 998)
+        data.val = rows  # always fires (equals = false)
     )
 
     # Render rows reactively using keyed reconciliation
@@ -247,9 +244,6 @@ proc main() =
         nodeMap.del(id)
 
       # Reconcile the DOM - moves/inserts/removes only what changed
-      # Cast JsArray → seq for the reconciler (zero-cost on JS, same underlying array)
-      var curSeq = currentNodes.toSeq
-      reconcileArrays(BrowserRenderer(), tbody.Node, curSeq, newNodes.toSeq)
-      currentNodes = curSeq.toJsArray
+      reconcileArrays(BrowserRenderer(), tbody.Node, currentNodes, newNodes)
 
 main()
