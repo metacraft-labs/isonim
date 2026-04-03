@@ -22,9 +22,9 @@ proc createResource*[T](
 ): Resource[T] =
   ## Creates a synchronous resource (async version needs Future support).
   ## State transitions: unresolved -> pending -> ready (or errored)
-  var data = createSignal(initialValue)
-  var state = createSignal(rsUnresolved)
-  var error = createSignal("")
+  let data = createSignal(initialValue)
+  let state = createSignal(rsUnresolved)
+  let error = createSignal("")
 
   # Trigger initial fetch
   state.val = rsPending
@@ -45,13 +45,13 @@ proc createResource*[S, T](
 ): Resource[T] =
   ## Creates a resource that refetches when source changes.
   ## The source accessor is tracked -- when it changes, fetcher is re-called.
-  var data = createSignal(initialValue)
-  var state = createSignal(rsUnresolved)
-  var error = createSignal("")
+  let data = createSignal(initialValue)
+  let state = createSignal(rsUnresolved)
+  let error = createSignal("")
 
   createEffect proc() =
     let sourceVal = source()  # tracked dependency
-    let prevState = state.state.value  # untracked read of raw value
+    let prevState = state.value  # untracked read of raw value
     if prevState == rsReady or prevState == rsRefreshing:
       state.val = rsRefreshing
     else:
@@ -86,9 +86,9 @@ proc createDeferredResource*[T](initialValue: T = default(T)): DeferredResource[
   ## Creates a resource that starts in rsPending state.
   ## Call resolve(value) to transition to rsReady.
   ## Call reject(msg) to transition to rsErrored.
-  var data = createSignal(initialValue)
-  var state = createSignal(rsPending)
-  var error = createSignal("")
+  let data = createSignal(initialValue)
+  let state = createSignal(rsPending)
+  let error = createSignal("")
 
   let resolve = proc(value: T) =
     data.val = value

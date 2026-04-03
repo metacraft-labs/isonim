@@ -154,7 +154,7 @@ suite "IsoNim Task Store ViewModel":
   test "effect fires on task count change":
     createRoot proc(dispose: proc()) =
       var effectLog: seq[int] = @[]
-      var tasks = createSignal[seq[Task]](@[])
+      let tasks = createSignal[seq[Task]](@[])
 
       createEffect proc() =
         effectLog.add tasks.val.len
@@ -175,8 +175,8 @@ suite "IsoNim Task Store ViewModel":
   test "memo recomputes only when dependencies change":
     createRoot proc(dispose: proc()) =
       var memoCallCount = 0
-      var tasks = createSignal[seq[Task]](@[])
-      var filter = createSignal(fAll)
+      let tasks = createSignal[seq[Task]](@[])
+      let filter = createSignal(fAll)
 
       let filtered = createMemo[seq[Task]](proc(): seq[Task] =
         inc memoCallCount

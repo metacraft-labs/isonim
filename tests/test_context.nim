@@ -51,7 +51,7 @@ suite "Resource":
 
   test "resource with source refetches":
     createRoot proc(dispose: proc()) =
-      var source = createSignal(1)
+      let source = createSignal(1)
       var fetchCount = 0
       let r = createResource[int, int](
         proc(): int = source.val,
@@ -88,7 +88,7 @@ suite "Suspense":
 suite "Transition":
   test "startTransition batches updates":
     createRoot proc(dispose: proc()) =
-      var s = createSignal(0)
+      let s = createSignal(0)
       var runCount = 0
       createEffect proc() =
         discard s.val
@@ -243,7 +243,7 @@ suite "Transition with TestClock":
     withFakeTime:
       createRoot proc(dispose: proc()) =
         let (pending, start) = useTransition()
-        var s = createSignal(0)
+        let s = createSignal(0)
         var completed = false
 
         # Start a transition that schedules deferred work

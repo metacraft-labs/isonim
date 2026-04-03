@@ -102,7 +102,7 @@ suite "Effects with fake time":
     withFakeTime:
       var observed = -1
       createRoot proc(dispose: proc()) =
-        var s = createSignal(0)
+        let s = createSignal(0)
         createEffect proc() =
           observed = s.val
         check observed == 0

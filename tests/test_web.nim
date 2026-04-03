@@ -414,7 +414,7 @@ suite "Web Renderer - template":
 suite "Web Renderer - insert":
   test "test_insert_reactive_text - insert with signal accessor updates DOM text node on signal change":
     let container = makeContainer()
-    var count = createSignal(0)
+    let count = createSignal(0)
 
     createRoot proc(dispose: proc()) =
       insert(container, proc(): cstring = cstring($count.val))
@@ -504,7 +504,7 @@ suite "Web Renderer - counter demo compilation":
     let target = document.getElementById("test-counter-target")
     target.textContent = ""
 
-    var count = createSignal(0)
+    let count = createSignal(0)
 
     createRoot proc(dispose: proc()) =
       let el = tmpl("<div><span></span></div>")()

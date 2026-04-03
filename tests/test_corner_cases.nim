@@ -9,7 +9,7 @@ import isonim/ssr/[renderer, escape, markers]
 suite "Signal Edge Cases":
   test "NaN writing NaN again notifies observers (NaN != NaN)":
     createRoot proc(dispose: proc()) =
-      var s = createSignal(NaN)
+      let s = createSignal(NaN)
       var runCount = 0
       createEffect proc() =
         discard s.val
@@ -20,7 +20,7 @@ suite "Signal Edge Cases":
 
   test "Infinity propagates correctly":
     createRoot proc(dispose: proc()) =
-      var s = createSignal(0.0)
+      let s = createSignal(0.0)
       var observed = 0.0
       createEffect proc() =
         observed = s.val
@@ -46,7 +46,7 @@ suite "Signal Edge Cases":
 
   test "negative zero vs positive zero treated as equal":
     createRoot proc(dispose: proc()) =
-      var s = createSignal(0.0)
+      let s = createSignal(0.0)
       var runCount = 0
       createEffect proc() =
         discard s.val
@@ -57,7 +57,7 @@ suite "Signal Edge Cases":
 
   test "empty string signal works correctly":
     createRoot proc(dispose: proc()) =
-      var s = createSignal("")
+      let s = createSignal("")
       var observed = "init"
       createEffect proc() =
         observed = s.val
@@ -87,7 +87,7 @@ suite "Owner Disposal During Active Effect":
 
     createRoot proc(dispose: proc()) =
       disposeRoot = dispose
-      var s = createSignal(0)
+      let s = createSignal(0)
       onCleanup proc() =
         cleanupRan = true
       createEffect proc() =
@@ -107,7 +107,7 @@ suite "Owner Disposal During Active Effect":
 
   test "dispose child root while parent effect is executing":
     createRoot proc(outerDispose: proc()) =
-      var s = createSignal(0)
+      let s = createSignal(0)
       var parentRuns = 0
       var childRuns = 0
       var childCleanupRan = false
@@ -141,7 +141,7 @@ suite "Nested Reconciliation (forEachKeyed)":
   test "nested forEachKeyed with inner and outer list mutations":
     createRoot proc(dispose: proc()) =
       let renderer = MockRenderer()
-      var outerItems = createSignal(@[@[1, 2], @[3, 4], @[5, 6]])
+      let outerItems = createSignal(@[@[1, 2], @[3, 4], @[5, 6]])
       let parent = renderer.createElement("div")
 
       # Outer forEachKeyed: one container per inner list
@@ -301,7 +301,7 @@ suite "Resource Cancellation":
 
   test "resource with source signal refetch discards stale results":
     createRoot proc(dispose: proc()) =
-      var source = createSignal(1)
+      let source = createSignal(1)
       var fetchResults: seq[int] = @[]
       let r = createResource[int, int](
         proc(): int = source.val,

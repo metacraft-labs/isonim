@@ -388,7 +388,7 @@ registerCustomElement(
   cstring"adv-reactive",
   [propDef(cstring"value", cstring"default")],
   proc(ctx: CustomElementContext, getProp: proc(name: cstring): cstring) =
-    var current = createSignal(getProp(cstring"value"))
+    let current = createSignal(getProp(cstring"value"))
 
     let span = document.createElement("span")
     createRenderEffect proc() =
@@ -429,7 +429,7 @@ registerCustomElement(
   cstring"adv-light",
   [propDef(cstring"msg", cstring"light-dom")],
   proc(ctx: CustomElementContext, getProp: proc(name: cstring): cstring) =
-    var current = createSignal(getProp(cstring"msg"))
+    let current = createSignal(getProp(cstring"msg"))
     let span = document.createElement("span")
     createRenderEffect proc() =
       span.textContent = current.val
@@ -447,8 +447,8 @@ registerCustomElement(
   cstring"adv-multi",
   [propDef(cstring"a", cstring"1"), propDef(cstring"b", cstring"2")],
   proc(ctx: CustomElementContext, getProp: proc(name: cstring): cstring) =
-    var sigA = createSignal(getProp(cstring"a"))
-    var sigB = createSignal(getProp(cstring"b"))
+    let sigA = createSignal(getProp(cstring"a"))
+    let sigB = createSignal(getProp(cstring"b"))
 
     let span = document.createElement("span")
     createRenderEffect proc() =

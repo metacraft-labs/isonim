@@ -114,8 +114,8 @@ suite "SSR ↔ Client structural equivalence":
     ## Both modes evaluate reactive values the same way.
     createRoot proc(dispose: proc()) =
       let renderer = MockRenderer()
-      var count = createSignal(7)
-      var label = createSignal("items")
+      let count = createSignal(7)
+      let label = createSignal("items")
 
       # Client mode
       let clientRoot = buildHtml(renderer):
@@ -133,7 +133,7 @@ suite "SSR ↔ Client structural equivalence":
     ## Attributes render identically in both modes.
     createRoot proc(dispose: proc()) =
       let renderer = MockRenderer()
-      var cls = createSignal("active")
+      let cls = createSignal("active")
 
       # Client
       let clientRoot = buildHtml(renderer):

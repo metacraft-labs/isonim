@@ -8,7 +8,7 @@ import isonim/web/events
 import isonim/rxcore
 
 proc app(): Node =
-  var count = createSignal(0)
+  let count = createSignal(0)
   let el = tmpl("<div><h1></h1><button>-</button><span></span><button>+</button></div>")()
   let h1 = el.firstChild
   let decBtn = h1.nextSibling

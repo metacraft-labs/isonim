@@ -15,7 +15,7 @@ import isonim/core/[signals, computation, owner]
 
 proc createCounter*[R, N](renderer: R): N =
   ## A counter component that works with any RendererBackend.
-  var count = createSignal(0)
+  let count = createSignal(0)
   let container = renderer.createElement("div")
   let label = renderer.createTextNode("")
   let incBtn = renderer.createElement("button")
@@ -168,7 +168,7 @@ suite "Native Renderer - Reactive":
   test "reactive signal updates native widget":
     createRoot proc(dispose: proc()) =
       let r = NativeRenderer()
-      var name = createSignal("World")
+      let name = createSignal("World")
       let label = r.createElement("span")
 
       createRenderEffect proc() =

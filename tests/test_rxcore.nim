@@ -13,7 +13,7 @@ suite "rxcore API":
 
   test "effect tracks and re-runs":
     root proc(dispose: proc()) =
-      var s = createSignal(0)
+      let s = createSignal(0)
       var observed = -1
       effect proc() =
         observed = s.val
@@ -23,7 +23,7 @@ suite "rxcore API":
 
   test "memo creates cached accessor":
     root proc(dispose: proc()) =
-      var s = createSignal(3)
+      let s = createSignal(3)
       let doubled = memo(proc(): int = s.val * 2)
       check doubled() == 6
       s.val = 10
@@ -31,7 +31,7 @@ suite "rxcore API":
 
   test "createComponent invokes under untrack":
     root proc(dispose: proc()) =
-      var s = createSignal(0)
+      let s = createSignal(0)
 
       type Props = object
         value: int
@@ -166,7 +166,7 @@ suite "rxcore + MockRenderer integration":
   test "reactive text update via effect":
     let r = MockRenderer()
     root proc(dispose: proc()) =
-      var name = createSignal("world")
+      let name = createSignal("world")
       let container = r.createElement("div")
       let textNode = r.createTextNode("")
       r.appendChild(container, textNode)
@@ -181,7 +181,7 @@ suite "rxcore + MockRenderer integration":
   test "reactive attribute update via effect":
     let r = MockRenderer()
     root proc(dispose: proc()) =
-      var cls = createSignal("primary")
+      let cls = createSignal("primary")
       let el = r.createElement("div")
 
       effect proc() =
@@ -194,7 +194,7 @@ suite "rxcore + MockRenderer integration":
   test "memo-driven rendering":
     let r = MockRenderer()
     root proc(dispose: proc()) =
-      var count = createSignal(0)
+      let count = createSignal(0)
       let label = memo(proc(): string = "Count: " & $count.val)
       let el = r.createElement("span")
       let textNode = r.createTextNode("")

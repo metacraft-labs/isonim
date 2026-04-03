@@ -87,17 +87,17 @@ suite "Benchmark Operations":
     randomize(42)
 
   test "create replaces data with 1000 rows":
-    var data = createSignal(newSeq[Row]())
+    let data = createSignal(newSeq[Row]())
     data.val = buildData(1000)
     check data.val.len == 1000
 
   test "create 10k rows":
-    var data = createSignal(newSeq[Row]())
+    let data = createSignal(newSeq[Row]())
     data.val = buildData(10000)
     check data.val.len == 10000
 
   test "append adds 1000 rows to existing":
-    var data = createSignal(newSeq[Row]())
+    let data = createSignal(newSeq[Row]())
     data.val = buildData(1000)
     check data.val.len == 1000
     var rows = data.val
@@ -106,7 +106,7 @@ suite "Benchmark Operations":
     check data.val.len == 2000
 
   test "update every 10th row appends exclamation marks":
-    var data = createSignal(newSeq[Row]())
+    let data = createSignal(newSeq[Row]())
     data.val = buildData(100)
     let rows = data.val
     var i = 0
@@ -122,14 +122,14 @@ suite "Benchmark Operations":
     check not rows[5].label.val.endsWith(" !!!")
 
   test "clear removes all rows":
-    var data = createSignal(newSeq[Row]())
+    let data = createSignal(newSeq[Row]())
     data.val = buildData(1000)
     check data.val.len == 1000
     data.val = newSeq[Row]()
     check data.val.len == 0
 
   test "swap exchanges rows at indices 1 and 998":
-    var data = createSignal(newSeq[Row]())
+    let data = createSignal(newSeq[Row]())
     data.val = buildData(1000)
     var rows = data.val
     let id1 = rows[1].id
@@ -148,7 +148,7 @@ suite "Benchmark Operations":
     check data.val[998].label.val == label1
 
   test "swap is no-op when fewer than 999 rows":
-    var data = createSignal(newSeq[Row]())
+    let data = createSignal(newSeq[Row]())
     data.val = buildData(5)
     var rows = data.val
     let originalIds = @[rows[0].id, rows[1].id, rows[2].id, rows[3].id, rows[4].id]
@@ -162,7 +162,7 @@ suite "Benchmark Operations":
       check data.val[i].id == originalIds[i]
 
   test "remove deletes a single row by id":
-    var data = createSignal(newSeq[Row]())
+    let data = createSignal(newSeq[Row]())
     data.val = buildData(10)
     var rows = data.val
     let targetId = rows[5].id
@@ -176,7 +176,7 @@ suite "Benchmark Operations":
       check row.id != targetId
 
   test "select toggles selection signal":
-    var selected = createSignal(0)
+    let selected = createSignal(0)
     check selected.val == 0
     selected.val = 42
     check selected.val == 42
@@ -207,7 +207,7 @@ suite "Benchmark Reactive Integration":
 
   test "data signal triggers effect on replacement":
     var effectCount = 0
-    var data = createSignal(newSeq[Row]())
+    let data = createSignal(newSeq[Row]())
 
     createRoot proc(dispose: proc()) =
       createEffect proc() =
@@ -223,7 +223,7 @@ suite "Benchmark Reactive Integration":
 
   test "selected signal triggers effect":
     var effectCount = 0
-    var selected = createSignal(0)
+    let selected = createSignal(0)
 
     createRoot proc(dispose: proc()) =
       createEffect proc() =

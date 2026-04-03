@@ -12,9 +12,20 @@ type
     value*: T
     comparator*: EqualityFn[T]
 
-  Signal*[T] = object
-    ## User-facing reactive signal. Generic, type-safe.
-    state*: SignalState[T]
+  Signal*[T] = SignalState[T]
+    ## Signal is just the ref state — no wrapper object, no nimCopy on assignment.
+
+proc notifySignalWrite(state: SignalStateBase) =
+  ## Non-generic: notify all observers that the signal changed.
+  ## Called after the value has been updated.
+  if state.observers.len > 0:
+    runUpdates proc() =
+      for obs in state.observers:
+        obs.state = csStale
+        if obs.pure:
+          Updates.add(obs)
+        else:
+          Effects.add(obs)
 
 proc writeSignal[T](state: SignalState[T]; value: T) =
   ## Write a new value and notify observers if the value changed.
@@ -25,34 +36,26 @@ proc writeSignal[T](state: SignalState[T]; value: T) =
   elif state.value == value:
     return
   state.value = value
-  if state.observers.len > 0:
-    runUpdates proc() =
-      for obs in state.observers:
-        obs.state = csStale
-        if obs.pure:
-          Updates.add(obs)
-        else:
-          Effects.add(obs)
+  notifySignalWrite(state)
 
 proc createSignal*[T](value: T; equals: EqualityFn[T] = nil): Signal[T] =
   ## Creates a new signal with the given initial value.
-  let state = SignalState[T](
+  result = SignalState[T](
     value: value,
     comparator: equals,
     observers: @[],
     observerSlots: @[]
   )
-  result = Signal[T](state: state)
 
 proc val*[T](s: Signal[T]): T {.inline.} =
   ## Reads the signal value. Tracked if inside a computation.
-  trackRead(s.state)
-  s.state.value
+  trackRead(s)
+  s.value
 
-proc `val=`*[T](s: var Signal[T]; newVal: T) {.inline.} =
+proc `val=`*[T](s: Signal[T]; newVal: T) {.inline.} =
   ## Writes the signal value. Notifies observers if value changed.
-  writeSignal(s.state, newVal)
+  writeSignal(s, newVal)
 
-proc update*[T](s: var Signal[T]; fn: proc(prev: T): T) =
+proc update*[T](s: Signal[T]; fn: proc(prev: T): T) =
   ## Functional update: applies fn to the current value and writes the result.
-  writeSignal(s.state, fn(s.state.value))
+  writeSignal(s, fn(s.value))

@@ -48,8 +48,8 @@ proc forEachKeyed*[T, R, N](
         oldItemMap.del(item)
       else:
         # Create new node
-        var itemSig = createSignal(item)
-        var idxSig = createSignal(i)
+        let itemSig = createSignal(item)
+        let idxSig = createSignal(i)
         let node = body(
           proc(): T = itemSig.val,
           proc(): int = idxSig.val
@@ -86,7 +86,7 @@ proc indexEach*[T, R, N](
       # Add new nodes -- create body in the parent owner scope so
       # its effects survive re-runs of this tracking effect
       for i in oldLen ..< newLen:
-        var itemSig = createSignal(newItems[i])
+        let itemSig = createSignal(newItems[i])
         let idx = i
         # Use a proc to force separate closure capture per iteration
         proc makeAccessor(sig: Signal[T]): proc(): T =

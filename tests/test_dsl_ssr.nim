@@ -55,7 +55,7 @@ suite "buildHtmlString":
   test "dynamic_text":
     ## Dynamic expressions evaluated inline, no effects
     createRoot proc(dispose: proc()) =
-      var count = createSignal(42)
+      let count = createSignal(42)
       let html = buildHtmlString:
         span: text $count.val
 
@@ -65,7 +65,7 @@ suite "buildHtmlString":
   test "dynamic_attribute":
     ## Dynamic attributes evaluated inline
     createRoot proc(dispose: proc()) =
-      var cls = createSignal("active")
+      let cls = createSignal("active")
       let html = buildHtmlString:
         tdiv(class = cls.val)
 
@@ -124,7 +124,7 @@ suite "buildHtmlString":
   test "mixed_static_and_dynamic":
     ## Mix of static and dynamic content in one tree
     createRoot proc(dispose: proc()) =
-      var name = createSignal("World")
+      let name = createSignal("World")
       let html = buildHtmlString:
         tdiv:
           h1: text "Hello"
@@ -176,8 +176,8 @@ suite "SSR + renderToString integration":
   test "buildHtmlString_with_signals_in_renderToString":
     ## Signals work correctly in SSR context
     let html = renderToString(proc(): string =
-      var count = createSignal(5)
-      var label = createSignal("tasks")
+      let count = createSignal(5)
+      let label = createSignal("tasks")
       buildHtmlString:
         tdiv:
           span: text $count.val & " " & label.val

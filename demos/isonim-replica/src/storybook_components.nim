@@ -29,7 +29,7 @@ proc mountCounter*(container: Element): DisposeProc {.exportc.} =
   createRoot proc(dispose: proc()) =
     disposer = dispose
 
-    var count = createSignal(0)
+    let count = createSignal(0)
 
     let wrapper = document.createElement("div")
     wrapper.className = "counter"
@@ -73,7 +73,7 @@ proc mountTaskItem*(container: Element, text: cstring, done: bool = false): Disp
   createRoot proc(dispose: proc()) =
     disposer = dispose
 
-    var isDone = createSignal(done)
+    let isDone = createSignal(done)
 
     let li = document.createElement("li")
     createRenderEffect proc() =
@@ -270,7 +270,7 @@ proc registerStorybookWebComponents*() {.exportc.} =
     proc(ctx: CustomElementContext, getProp: proc(name: cstring): cstring) =
       var startVal: int
       {.emit: [startVal, " = parseInt(", getProp(cstring"initial-count"), ") || 0;"].}
-      var count = createSignal(startVal)
+      let count = createSignal(startVal)
 
       let wrapper = document.createElement("div")
       wrapper.className = "counter"
@@ -315,7 +315,7 @@ proc registerStorybookWebComponents*() {.exportc.} =
     "isonim-task-item",
     [propDef("text", ""), propDef("done", "false")],
     proc(ctx: CustomElementContext, getProp: proc(name: cstring): cstring) =
-      var isDone = createSignal(getProp(cstring"done") == cstring"true")
+      let isDone = createSignal(getProp(cstring"done") == cstring"true")
       let taskText = getProp(cstring"text")
 
       let li = document.createElement("li")

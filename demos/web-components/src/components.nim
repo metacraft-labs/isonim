@@ -37,7 +37,7 @@ registerCustomElement(
   proc(ctx: CustomElementContext, getProp: proc(name: cstring): cstring) =
     var startVal: int
     {.emit: [startVal, " = parseInt(", getProp(cstring"initial-count"), ") || 0;"].}
-    var count = createSignal(startVal)
+    let count = createSignal(startVal)
 
     let wrapper = document.createElement("div")
     wrapper.className = "counter"
@@ -111,9 +111,9 @@ registerCustomElement(
     # Treat the attribute as a boolean: present or "true" means checked
     var isChecked: bool
     {.emit: [isChecked, " = (", initialChecked, " !== '' && ", initialChecked, " !== 'false') || ", ctx.element, ".hasAttribute('checked');"].}
-    var checked = createSignal(isChecked)
+    let checked = createSignal(isChecked)
 
-    var labelText = createSignal(getProp(cstring"label"))
+    let labelText = createSignal(getProp(cstring"label"))
 
     let wrapper = document.createElement("label")
     wrapper.className = "toggle-wrapper"
@@ -194,8 +194,8 @@ registerCustomElement(
   "isonim-badge",
   [propDef("count", "0"), propDef("variant", "info")],
   proc(ctx: CustomElementContext, getProp: proc(name: cstring): cstring) =
-    var badgeCount = createSignal(getProp(cstring"count"))
-    var variant = createSignal(getProp(cstring"variant"))
+    let badgeCount = createSignal(getProp(cstring"count"))
+    let variant = createSignal(getProp(cstring"variant"))
 
     let badge = document.createElement("span")
     badge.className = "badge"
@@ -255,7 +255,7 @@ registerCustomElement(
   @[],
   proc(ctx: CustomElementContext, getProp: proc(name: cstring): cstring) =
     var nextId = 0
-    var tasks = createSignal(newSeq[TodoItem]())
+    let tasks = createSignal(newSeq[TodoItem]())
 
     # Expose addTask and getTasks as methods on the element
     let addTaskMethod = proc(text: cstring) =

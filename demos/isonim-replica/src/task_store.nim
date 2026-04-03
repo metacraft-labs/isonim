@@ -99,10 +99,10 @@ proc setSelectedId*(store: TaskStore; id: int) =
 proc createTaskStore*(): TaskStore =
   ## Creates the task store with all signals, memos, and the effect log.
   ## Must be called inside a reactive root.
-  var tasks = createSignal[seq[Task]](@[])
-  var filter = createSignal(fAll)
-  var selectedId = createSignal(-1)
-  var log = createSignal[seq[string]](@[])
+  let tasks = createSignal[seq[Task]](@[])
+  let filter = createSignal(fAll)
+  let selectedId = createSignal(-1)
+  let log = createSignal[seq[string]](@[])
 
   let filteredTasks = createMemo[seq[Task]](proc(): seq[Task] =
     let f = filter.val
@@ -175,9 +175,9 @@ proc createTaskViewModel*(service: TaskService = defaultTaskService()): TaskView
   ## Creates a TaskViewModel inside a reactive root.
   ## Must be called inside a reactive root (or via withViewModel).
   let store = createTaskStore()
-  var detailState = createSignal(asIdle)
-  var detailData = createSignal("")
-  var detailError = createSignal("")
+  let detailState = createSignal(asIdle)
+  let detailData = createSignal("")
+  let detailError = createSignal("")
   result = TaskViewModel(
     store: store,
     detailState: detailState,

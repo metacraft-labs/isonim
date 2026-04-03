@@ -36,7 +36,7 @@ suite "DSL":
     ## Signal-dependent text updates MockNode when signal changes
     createRoot proc(dispose: proc()) =
       let renderer = MockRenderer()
-      var count = createSignal(0)
+      let count = createSignal(0)
 
       let root = buildHtml(renderer):
         tdiv:
@@ -53,7 +53,7 @@ suite "DSL":
     ## Signal-dependent attribute updates via createRenderEffect
     createRoot proc(dispose: proc()) =
       let renderer = MockRenderer()
-      var cls = createSignal("red")
+      let cls = createSignal("red")
 
       let root = buildHtml(renderer):
         tdiv(class = cls.val)
@@ -83,7 +83,7 @@ suite "DSL":
     ## For adds/removes/reorders MockNodes matching array changes
     createRoot proc(dispose: proc()) =
       let renderer = MockRenderer()
-      var items = createSignal(@["a", "b", "c"])
+      let items = createSignal(@["a", "b", "c"])
       let parent = renderer.createElement("div")
 
       forEachKeyed(renderer, parent,
@@ -122,7 +122,7 @@ suite "DSL":
     ## Index keeps stable node refs; updates signal value in-place
     createRoot proc(dispose: proc()) =
       let renderer = MockRenderer()
-      var items = createSignal(@[10, 20, 30])
+      let items = createSignal(@[10, 20, 30])
       let parent = renderer.createElement("div")
 
       indexEach(renderer, parent,
@@ -158,7 +158,7 @@ suite "DSL":
     ## Show renders content when true, fallback when false
     createRoot proc(dispose: proc()) =
       let renderer = MockRenderer()
-      var visible = createSignal(true)
+      let visible = createSignal(true)
       let parent = renderer.createElement("div")
 
       show(renderer, parent,
@@ -232,7 +232,7 @@ suite "DSL":
       var innerDispose: proc()
       var outerVal = 0
       var innerVal = 0
-      var s = createSignal(0)
+      let s = createSignal(0)
 
       createRoot proc(d1: proc()) =
         outerDispose = d1
@@ -262,7 +262,7 @@ suite "DSL":
     ## showIf renders body when condition is true
     createRoot proc(dispose: proc()) =
       let renderer = MockRenderer()
-      var visible = createSignal(true)
+      let visible = createSignal(true)
 
       let root = buildHtml(renderer):
         tdiv:
@@ -277,7 +277,7 @@ suite "DSL":
     ## showIf + showElse toggles between body and fallback
     createRoot proc(dispose: proc()) =
       let renderer = MockRenderer()
-      var visible = createSignal(true)
+      let visible = createSignal(true)
 
       let root = buildHtml(renderer):
         tdiv:
@@ -298,7 +298,7 @@ suite "DSL":
     ## showIf responds to signal changes without fallback
     createRoot proc(dispose: proc()) =
       let renderer = MockRenderer()
-      var visible = createSignal(false)
+      let visible = createSignal(false)
 
       let root = buildHtml(renderer):
         tdiv:
@@ -318,7 +318,7 @@ suite "DSL":
     ## forIn renders list items
     createRoot proc(dispose: proc()) =
       let renderer = MockRenderer()
-      var items = createSignal(@["a", "b", "c"])
+      let items = createSignal(@["a", "b", "c"])
 
       let root = buildHtml(renderer):
         ul:
@@ -335,7 +335,7 @@ suite "DSL":
     ## forIn updates when signal changes
     createRoot proc(dispose: proc()) =
       let renderer = MockRenderer()
-      var items = createSignal(@["x", "y"])
+      let items = createSignal(@["x", "y"])
 
       let root = buildHtml(renderer):
         ul:
@@ -358,7 +358,7 @@ suite "DSL":
     ## forIn provides index variable
     createRoot proc(dispose: proc()) =
       let renderer = MockRenderer()
-      var items = createSignal(@["a", "b", "c"])
+      let items = createSignal(@["a", "b", "c"])
 
       let root = buildHtml(renderer):
         ul:

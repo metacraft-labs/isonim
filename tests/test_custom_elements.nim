@@ -455,7 +455,7 @@ suite "Web Components - Reactive":
         let initStr = getProp(cstring"initial")
         {.emit: [initVal, " = parseInt(", initStr, ") || 0;"].}
 
-        var count = createSignal(initVal)
+        let count = createSignal(initVal)
 
         let span = document.createElement("span")
         createRenderEffect proc() =

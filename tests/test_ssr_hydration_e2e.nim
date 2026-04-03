@@ -572,7 +572,7 @@ suite "SSR-Hydration E2E - Counter":
 
     # -- Step 1: SSR render --
     let ssrHtml = renderToString(proc(): string =
-      var count = createSignal(5)
+      let count = createSignal(5)
       buildHtmlString:
         tdiv(hydrate = true):
           span(hydrate = true): text $count.val
@@ -605,7 +605,7 @@ suite "SSR-Hydration E2E - Counter":
     initHydrationGlobals()
 
     # The count signal for the client-side component
-    var count = createSignal(5)
+    let count = createSignal(5)
 
     createRoot proc(dispose: proc()) =
       # Set up hydration context
@@ -670,7 +670,7 @@ suite "SSR-Hydration E2E - Counter":
 
     # SSR render
     let ssrHtml = renderToString(proc(): string =
-      var count = createSignal(0)
+      let count = createSignal(0)
       buildHtmlString:
         tdiv(hydrate = true):
           span(hydrate = true): text $count.val
@@ -680,7 +680,7 @@ suite "SSR-Hydration E2E - Counter":
     let container = makeSSRContainer(cstring(ssrHtml))
     initHydrationGlobals()
 
-    var count = createSignal(0)
+    let count = createSignal(0)
 
     createRoot proc(dispose: proc()) =
       sharedConfig.registry = newHydrationRegistry()
@@ -765,7 +765,7 @@ suite "SSR-Hydration E2E - List":
     # Hydrate
     initHydrationGlobals()
 
-    var items = createSignal(cstring"alpha,beta,gamma")
+    let items = createSignal(cstring"alpha,beta,gamma")
 
     createRoot proc(dispose: proc()) =
       sharedConfig.registry = newHydrationRegistry()
@@ -829,8 +829,8 @@ suite "SSR-Hydration E2E - List":
     let container = makeSSRContainer(cstring(ssrHtml))
     initHydrationGlobals()
 
-    var itemCount = createSignal(3)
-    var listText = createSignal(cstring"first,second,third")
+    let itemCount = createSignal(3)
+    let listText = createSignal(cstring"first,second,third")
 
     createRoot proc(dispose: proc()) =
       sharedConfig.registry = newHydrationRegistry()
@@ -889,7 +889,7 @@ suite "SSR-Hydration E2E - hydrate() entry point":
 
     # SSR render
     let ssrHtml = renderToString(proc(): string =
-      var c = createSignal(7)
+      let c = createSignal(7)
       buildHtmlString:
         tdiv(hydrate = true):
           span(hydrate = true): text $c.val
@@ -913,7 +913,7 @@ suite "SSR-Hydration E2E - hydrate() entry point":
     """].}
 
     # Create the client-side count signal
-    var clientCount = createSignal(7)
+    let clientCount = createSignal(7)
 
     # Use the hydrate() entry point
     hydrate(
@@ -1140,8 +1140,8 @@ suite "SSR-Hydration E2E - Demo App":
     initHydrationGlobals()
 
     # Create client-side reactive state that mirrors the SSR state
-    var clientTitle = createSignal(cstring"Task Manager")
-    var clientTasks = createSignal(cstring"Learn IsoNim,Build demo app")
+    let clientTitle = createSignal(cstring"Task Manager")
+    let clientTasks = createSignal(cstring"Learn IsoNim,Build demo app")
 
     createRoot proc(dispose: proc()) =
       sharedConfig.registry = newHydrationRegistry()

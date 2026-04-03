@@ -14,7 +14,7 @@ import isonim/core/[signals, computation, owner]
 
 proc createCounter*[R, N](renderer: R): N =
   ## Creates a counter component using any renderer backend.
-  var count = createSignal(0)
+  let count = createSignal(0)
 
   let container = renderer.createElement("div")
   let label = renderer.createTextNode("")

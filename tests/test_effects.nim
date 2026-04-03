@@ -4,7 +4,7 @@ import isonim/core/[types, graph, signals, owner, computation, batch]
 suite "Effects":
   test "createEffect tracks signal and re-runs on change":
     createRoot proc(dispose: proc()) =
-      var s = createSignal(0)
+      let s = createSignal(0)
       var observed = -1
       createEffect proc() =
         observed = s.val
@@ -14,7 +14,7 @@ suite "Effects":
 
   test "effect cleanup runs before re-execution":
     createRoot proc(dispose: proc()) =
-      var s = createSignal(0)
+      let s = createSignal(0)
       var cleanupRan = false
       createEffect proc() =
         discard s.val
@@ -26,8 +26,8 @@ suite "Effects":
 
   test "nested effects track independently":
     createRoot proc(dispose: proc()) =
-      var a = createSignal(0)
-      var b = createSignal(0)
+      let a = createSignal(0)
+      let b = createSignal(0)
       var outerRuns = 0
       var innerRuns = 0
       createEffect proc() =
@@ -45,8 +45,8 @@ suite "Effects":
 suite "Memos":
   test "createMemo caches and updates":
     createRoot proc(dispose: proc()) =
-      var a = createSignal(1)
-      var b = createSignal(2)
+      let a = createSignal(1)
+      let b = createSignal(2)
       let sum = createMemo(proc(): int = a.val + b.val)
       check sum.val == 3
       a.val = 10
@@ -54,7 +54,7 @@ suite "Memos":
 
   test "memo only recomputes when dependencies change":
     createRoot proc(dispose: proc()) =
-      var s = createSignal(0)
+      let s = createSignal(0)
       var computeCount = 0
       let doubled = createMemo proc(): int =
         inc computeCount
@@ -69,7 +69,7 @@ suite "Memos":
 
   test "memo diamond dependency":
     createRoot proc(dispose: proc()) =
-      var s = createSignal(1)
+      let s = createSignal(1)
       let doubled = createMemo(proc(): int = s.val * 2)
       let tripled = createMemo(proc(): int = s.val * 3)
       let sum = createMemo(proc(): int = doubled.val + tripled.val)
@@ -81,7 +81,7 @@ suite "Owners":
   test "createRoot disposal cleans up effects":
     var observed = -1
     var disposeRoot: proc()
-    var s = createSignal(0)
+    let s = createSignal(0)
     createRoot proc(dispose: proc()) =
       disposeRoot = dispose
       createEffect proc() =
@@ -98,7 +98,7 @@ suite "Owners":
       var parentObserved = -1
       var childObserved = -1
       var disposeChild: proc()
-      var s = createSignal(0)
+      let s = createSignal(0)
       createEffect proc() =
         parentObserved = s.val
       createRoot proc(innerDispose: proc()) =
@@ -127,7 +127,7 @@ suite "Owners":
     createRoot proc(dispose: proc()) =
       ownerRef = getOwner()
     var observed = -1
-    var s = createSignal(0)
+    let s = createSignal(0)
     runWithOwner(ownerRef) do:
       createEffect proc() =
         observed = s.val
@@ -136,7 +136,7 @@ suite "Owners":
 suite "Batch":
   test "batch coalesces multiple writes":
     createRoot proc(dispose: proc()) =
-      var s = createSignal(0)
+      let s = createSignal(0)
       var runCount = 0
       createEffect proc() =
         discard s.val
@@ -150,8 +150,8 @@ suite "Batch":
 
   test "untrack prevents dependency registration":
     createRoot proc(dispose: proc()) =
-      var a = createSignal(1)
-      var b = createSignal(2)
+      let a = createSignal(1)
+      let b = createSignal(2)
       var observed = -1
       createEffect proc() =
         observed = a.val + untrack(proc(): int = b.val)

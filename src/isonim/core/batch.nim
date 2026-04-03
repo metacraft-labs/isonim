@@ -19,10 +19,9 @@ proc flushUpdates*() =
   if batchDepth > 0:
     return
   inc ExecCount
-  let pendingUpdates = Updates
-  let pendingEffects = Effects
-  Updates = @[]
-  Effects = @[]
+  var pendingUpdates = move(Updates)
+  var pendingEffects = move(Effects)
+  # After move, Updates and Effects are already empty seqs
   if updateComputationCb != nil:
     for comp in pendingUpdates:
       if comp.state == csStale:

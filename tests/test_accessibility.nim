@@ -394,7 +394,7 @@ suite "Accessibility - ARIA Attributes":
     ## aria-checked should update when the underlying signal changes
     createRoot proc(dispose: proc()) =
       let renderer = MockRenderer()
-      var checked = createSignal(false)
+      let checked = createSignal(false)
 
       let root = buildHtml(renderer):
         tdiv(role = "checkbox", `aria-checked` = (if checked.val: "true" else: "false"))
@@ -411,7 +411,7 @@ suite "Accessibility - ARIA Attributes":
     ## aria-hidden should toggle when a signal changes
     createRoot proc(dispose: proc()) =
       let renderer = MockRenderer()
-      var hidden = createSignal(false)
+      let hidden = createSignal(false)
 
       let root = buildHtml(renderer):
         tdiv(`aria-hidden` = (if hidden.val: "true" else: "false")):
@@ -426,7 +426,7 @@ suite "Accessibility - ARIA Attributes":
     ## aria-expanded should reflect the expanded state
     createRoot proc(dispose: proc()) =
       let renderer = MockRenderer()
-      var expanded = createSignal(false)
+      let expanded = createSignal(false)
 
       let root = buildHtml(renderer):
         tdiv:
@@ -446,7 +446,7 @@ suite "Accessibility - ARIA Attributes":
     ## aria-live should be set on regions that update dynamically
     createRoot proc(dispose: proc()) =
       let renderer = MockRenderer()
-      var count = createSignal(0)
+      let count = createSignal(0)
 
       let root = buildHtml(renderer):
         tdiv(`aria-live` = "polite"):
@@ -993,7 +993,7 @@ suite "Accessibility - Screen Reader Text":
     ## sr-only spans should contain text accessible to screen readers
     createRoot proc(dispose: proc()) =
       let renderer = MockRenderer()
-      var count = createSignal(3)
+      let count = createSignal(3)
 
       let root = buildHtml(renderer):
         tdiv:
@@ -1087,7 +1087,7 @@ suite "Accessibility - Screen Reader Text":
     ## When a task is toggled, the aria-checked attribute should reflect the state
     createRoot proc(dispose: proc()) =
       let renderer = MockRenderer()
-      var done = createSignal(false)
+      let done = createSignal(false)
 
       let root = buildHtml(renderer):
         tdiv(role = "checkbox", `aria-checked` = (if done.val: "true" else: "false"), `aria-label` = "Complete task"):

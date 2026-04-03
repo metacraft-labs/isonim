@@ -15,7 +15,7 @@ proc startTransition*(fn: proc()) =
 
 proc useTransition*(): tuple[pending: proc(): bool, start: proc(fn: proc())] =
   ## Returns a pending signal and a start function.
-  var pendingSig = createSignal(false)
+  let pendingSig = createSignal(false)
   let pending = proc(): bool = pendingSig.val
   let start = proc(fn: proc()) =
     pendingSig.val = true

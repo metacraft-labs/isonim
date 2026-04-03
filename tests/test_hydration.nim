@@ -788,7 +788,7 @@ suite "Hydration - E2E Counter":
       };
     """].}
 
-    var count = createSignal(0)
+    let count = createSignal(0)
 
     # Hydrate with a counter component
     createRoot proc(dispose: proc()) =
@@ -866,7 +866,7 @@ suite "Hydration - E2E List":
       };
     """].}
 
-    var items = createSignal(cstring"a,b")
+    let items = createSignal(cstring"a,b")
 
     createRoot proc(dispose: proc()) =
       sharedConfig.registry = newHydrationRegistry()
