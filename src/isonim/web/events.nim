@@ -9,17 +9,17 @@
 when not defined(js):
   {.error: "isonim/web/events requires the JS backend".}
 
-import isonim/core/js_collections
+import isonim/core/platform
 import isonim/web/dom_api
 
 # Track which events have been delegated on the document.
 # Uses JS-native Set to avoid pulling std/sets (and its hash table) into the bundle.
-var delegatedEvents: JsSet[cstring]
+var delegatedEvents: HashSet[NativeString]
 
 proc ensureDelegatedEvents() =
   ## Lazily initialize the set (JS Set can't be initialized at module scope as threadvar).
   if delegatedEvents.isNil:
-    delegatedEvents = newJsSet[cstring]()
+    delegatedEvents = newHashSet[NativeString]()
 
 proc jsConcatCstrings(a, b: cstring): cstring {.importcpp: "(# + #)".}
 

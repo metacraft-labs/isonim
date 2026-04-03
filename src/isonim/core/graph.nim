@@ -7,13 +7,9 @@
 ## Port of SolidJS signal.ts dependency graph traversal.
 
 import types
+import platform
 
-when defined(js):
-  import js_collections
-  type ContextTable* = JsMap[int, RootRef]
-else:
-  import std/tables
-  type ContextTable* = TableRef[int, RootRef]
+type ContextTable* = HashMapRef[int, RootRef]
 
 type
   SignalStateBase* = ref object of RootObj

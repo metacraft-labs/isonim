@@ -2,11 +2,7 @@
 ## Allows passing values through the reactive owner tree without prop drilling.
 
 import graph
-
-when defined(js):
-  import js_collections
-else:
-  import std/tables
+import platform
 
 type
   ContextId = int
@@ -31,10 +27,7 @@ proc provide*[T](ctx: Context[T]; value: T) =
   ## Children of this owner will see this value via useContext.
   if Owner != nil:
     if Owner.contextTable.isNil:
-      when defined(js):
-        Owner.contextTable = newJsMap[int, RootRef]()
-      else:
-        Owner.contextTable = newTable[int, RootRef]()
+      Owner.contextTable = newHashMapRef[int, RootRef]()
     let wrapped = ContextValue[T](value: value)
     Owner.contextTable[ctx.id] = wrapped
 

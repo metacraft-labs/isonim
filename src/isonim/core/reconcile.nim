@@ -6,16 +6,7 @@
 ##
 ## Port of dom-expressions reconcileArrays algorithm.
 
-when defined(js):
-  import js_collections
-  template initNodeMap(N: typedesc): auto = newJsMap[N, int]()
-  template initIndexSet(): auto = newJsSet[int]()
-  template inclIndex(s: auto, val: int) = s.incl(val)
-else:
-  import std/tables
-  template initNodeMap(N: typedesc): auto = initTable[N, int]()
-  template initIndexSet(): auto = initTable[int, bool]()
-  template inclIndex(s: auto, val: int) = s[val] = true
+import platform
 
 proc reconcileArrays*[R, N](
     renderer: R;
@@ -85,7 +76,7 @@ proc reconcileArrays*[R, N](
 
   # LIS-based reconciliation for the remaining middle range.
   # Build a map from old node identity to old index
-  var oldMap = initNodeMap(N)
+  var oldMap = newHashMap[N, int]()
   for i in cStart .. cEnd:
     oldMap[currentNodes[i]] = i
 
@@ -93,13 +84,13 @@ proc reconcileArrays*[R, N](
   let rangeLen = nEnd - nStart + 1
   var
     newToOld = newSeq[int](rangeLen)
-    usedOld = initIndexSet()
+    usedOld = newHashSet[int]()
 
   for i in 0 ..< rangeLen:
     let nNode = newNodes[nStart + i]
     if nNode in oldMap:
       newToOld[i] = oldMap[nNode]
-      inclIndex(usedOld, oldMap[nNode])
+      usedOld.incl(oldMap[nNode])
     else:
       newToOld[i] = -1
 
@@ -141,11 +132,11 @@ proc reconcileArrays*[R, N](
     parentLis[i] = if lo > 0: tailIdx[lo - 1] else: -1
 
   # Reconstruct LIS indices into a set for O(1) lookup
-  var lisSet = initIndexSet()
+  var lisSet = newHashSet[int]()
   if tailIdx.len > 0:
     var idx = tailIdx[^1]
     while idx >= 0:
-      inclIndex(lisSet, idx)
+      lisSet.incl(idx)
       idx = parentLis[idx]
 
   # Work backwards, inserting/moving only non-LIS nodes
