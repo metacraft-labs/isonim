@@ -164,3 +164,23 @@ build-web-components:
 demo-web-components: build-web-components
     @echo "Serving demos/web-components/ on http://localhost:8080"
     cd demos/web-components && python3 -m http.server 8080
+
+# Collect benchmark metrics (sizes + test counts)
+bench-metrics:
+    ./scripts/collect-metrics.sh --all
+
+# Collect bundle size metrics only
+bench-metrics-sizes:
+    ./scripts/collect-metrics.sh --sizes
+
+# Collect test count metrics only
+bench-metrics-tests:
+    ./scripts/collect-metrics.sh --tests
+
+# Build all bundles, collect metrics, and report
+bench-all: bench-build demo-build build-web-components
+    @echo "=== Bundle Size Metrics ==="
+    ./scripts/collect-metrics.sh --sizes
+    @echo ""
+    @echo "=== Test Count Metrics ==="
+    ./scripts/collect-metrics.sh --tests

@@ -1,0 +1,77 @@
+name: Benchmarks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  size-benchmarks:
+    name: Bundle Size Metrics
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Build benchmark bundle
+        run: nix develop --command just bench-build
+
+      - name: Build demo bundle
+        run: nix develop --command just demo-build
+
+      - name: Build web components bundle
+        run: nix develop --command just build-web-components
+
+      - name: Collect size metrics
+        run: nix develop --command ./scripts/collect-metrics.sh --sizes > benchmark-results.json
+
+      - name: Show collected metrics
+        run: cat benchmark-results.json
+
+      - name: Store benchmark results
+        if: github.ref == 'refs/heads/main'
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: "IsoNim Bundle Sizes"
+          tool: customSmallerIsBetter
+          output-file-path: benchmark-results.json
+          gh-pages-branch: gh-pages
+          benchmark-data-dir-path: dev/bench
+          auto-push: true
+          alert-threshold: "120%"
+          comment-on-alert: true
+          fail-on-alert: false
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+  test-counts:
+    name: Test Count Metrics
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Collect test count metrics
+        run: nix develop --command ./scripts/collect-metrics.sh --tests > test-count-results.json
+
+      - name: Show collected metrics
+        run: cat test-count-results.json
+
+      - name: Store test count results
+        if: github.ref == 'refs/heads/main'
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: "IsoNim Test Counts"
+          tool: customBiggerIsBetter
+          output-file-path: test-count-results.json
+          gh-pages-branch: gh-pages
+          benchmark-data-dir-path: dev/bench/tests
+          auto-push: true
+          alert-threshold: "80%"
+          comment-on-alert: true
+          fail-on-alert: false
+          github-token: ${{ secrets.GITHUB_TOKEN }}
