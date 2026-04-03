@@ -23,10 +23,16 @@ when defined(js):
     NativeString* = cstring
       ## String type native to the platform: JS string on browser,
       ## Nim string on server.
+    NativeSeq*[T] = JsArray[T]
+      ## Sequence type with reference semantics: JS Array on browser,
+      ## Nim seq on server. Assignment copies the reference (not the data)
+      ## on JS, matching JS framework behavior.
 
   template newHashMap*[K, V](): HashMap[K, V] = newJsMap[K, V]()
   template newHashSet*[T](): HashSet[T] = newJsSet[T]()
   template newHashMapRef*[K, V](): HashMapRef[K, V] = newJsMap[K, V]()
+  template newNativeSeq*[T](): NativeSeq[T] = newJsArray[T]()
+  template newNativeSeq*[T](len: int): NativeSeq[T] = newJsArray[T](len)
 
   template toNative*(s: string): NativeString = cstring(s)
   template toNative*(s: cstring): NativeString = s
@@ -46,9 +52,12 @@ else:
     HashSet*[T] = sets.HashSet[T]
     HashMapRef*[K, V] = TableRef[K, V]
     NativeString* = string
+    NativeSeq*[T] = seq[T]
 
   template newHashMap*[K, V](): HashMap[K, V] = initTable[K, V]()
   template newHashSet*[T](): HashSet[T] = sets.initHashSet[T]()
   template newHashMapRef*[K, V](): HashMapRef[K, V] = newTable[K, V]()
+  template newNativeSeq*[T](): NativeSeq[T] = newSeq[T]()
+  template newNativeSeq*[T](len: int): NativeSeq[T] = newSeq[T](len)
 
   template toNative*(s: string): NativeString = s

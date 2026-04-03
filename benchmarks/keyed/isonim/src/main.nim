@@ -44,9 +44,14 @@ type
     id: int
     label: Signal[cstring]
 
+  Rows = JsArray[Row]
+    ## Native JS array of Row refs. Assignment copies the reference
+    ## (not the data), matching SolidJS behavior. Eliminates nimCopy
+    ## on every signal read/write.
+
 var
   nextId = 1
-  data: Signal[seq[Row]]
+  data: Signal[Rows]
   selected: Signal[int]
 
 proc randomLabel(): cstring =
@@ -54,8 +59,8 @@ proc randomLabel(): cstring =
     colours[jsRandom(colours.len)] & cstring" " &
     nouns[jsRandom(nouns.len)]
 
-proc buildData(count: int): seq[Row] =
-  result = newSeq[Row](count)
+proc buildData(count: int): Rows =
+  result = newJsArray[Row](count)
   for i in 0 ..< count:
     result[i] = Row(id: nextId, label: createSignal(randomLabel()))
     inc nextId
@@ -137,12 +142,11 @@ proc createRowElement(row: Row): Node =
     var rowIdCstr: cstring
     {.emit: [rowIdCstr, " = ", ev.target, ".$$rowId || ", ev.target, ".parentNode.$$rowId || '';"].}
     let rowId = jsParseInt(rowIdCstr)
-    var rows = data.val
-    for i in 0 ..< rows.len:
-      if rows[i].id == rowId:
-        rows.delete(i)
-        break
-    data.val = rows
+    let rows = data.val
+    # Filter out the deleted row — creates a new array so signal detects change
+    var filtered: Rows
+    {.emit: [filtered, " = ", rows, ".filter(function(r) { return r.id !== ", rowId, "; });"].}
+    data.val = filtered
   )
 
   return tr
@@ -153,7 +157,7 @@ proc main() =
   # No randomize() needed — using Math.random() directly
 
   createRoot proc(dispose: proc()) =
-    data = createSignal(newSeq[Row]())
+    data = createSignal(newJsArray[Row]())
     selected = createSignal(0)
 
     let tbody = document.getElementById("tbody")
@@ -172,7 +176,7 @@ proc main() =
     # Node cache: row.id -> DOM node
     var nodeMap = newJsMap[int, Node]()
     # Current DOM nodes tracked for reconciliation
-    var currentNodes: seq[Node] = @[]
+    var currentNodes = newJsArray[Node]()
 
     runBtn.Node.addEventListener(cstring"click", proc(ev: Event) =
       nodeMap.clear()
@@ -185,9 +189,12 @@ proc main() =
     )
 
     addBtn.Node.addEventListener(cstring"click", proc(ev: Event) =
-      var rows = data.val
-      rows.add(buildData(1000))
-      data.val = rows
+      let rows = data.val
+      let extra = buildData(1000)
+      # Concat: create new array with old + new rows
+      var combined: Rows
+      {.emit: [combined, " = ", rows, ".concat(", extra, ");"].}
+      data.val = combined
     )
 
     updateBtn.Node.addEventListener(cstring"click", proc(ev: Event) =
@@ -200,16 +207,17 @@ proc main() =
 
     clearBtn.Node.addEventListener(cstring"click", proc(ev: Event) =
       nodeMap.clear()
-      data.val = newSeq[Row]()
+      data.val = newJsArray[Row]()
     )
 
     swaprowsBtn.Node.addEventListener(cstring"click", proc(ev: Event) =
-      var rows = data.val
+      let rows = data.val
       if rows.len > 998:
-        let tmp = rows[1]
-        rows[1] = rows[998]
-        rows[998] = tmp
-        data.val = rows
+        # Shallow copy so signal detects change (ref identity differs)
+        var copy: Rows
+        {.emit: [copy, " = ", rows, ".slice();"].}
+        copy.swap(1, 998)
+        data.val = copy
     )
 
     # Render rows reactively using keyed reconciliation
@@ -217,7 +225,7 @@ proc main() =
       let rows = data.val
 
       # Build new node list, reusing existing DOM nodes for known rows
-      var newNodes = newSeq[Node](rows.len)
+      var newNodes = newJsArray[Node](rows.len)
       for i in 0 ..< rows.len:
         let row = rows[i]
         if row.id in nodeMap:
@@ -231,7 +239,7 @@ proc main() =
       var activeIds = newJsSet[int]()
       for row in rows:
         activeIds.incl(row.id)
-      var toRemove: seq[int] = @[]
+      var toRemove = newJsArray[int]()
       for id in nodeMap.keys:
         if id notin activeIds:
           toRemove.add(id)
@@ -239,6 +247,9 @@ proc main() =
         nodeMap.del(id)
 
       # Reconcile the DOM - moves/inserts/removes only what changed
-      reconcileArrays(BrowserRenderer(), tbody.Node, currentNodes, newNodes)
+      # Cast JsArray → seq for the reconciler (zero-cost on JS, same underlying array)
+      var curSeq = currentNodes.toSeq
+      reconcileArrays(BrowserRenderer(), tbody.Node, curSeq, newNodes.toSeq)
+      currentNodes = curSeq.toJsArray
 
 main()

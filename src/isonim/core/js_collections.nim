@@ -35,6 +35,47 @@ iterator keys*[K, V](m: JsMap[K, V]): K =
   for k in ks:
     yield k
 
+# --- JsArray: native JS array (reference semantics, no nimCopy) ---
+
+type JsArray*[T] {.importc: "Array".} = ref object
+
+proc newJsArray*[T](): JsArray[T] {.importcpp: "[]".}
+proc newJsArray*[T](len: int): JsArray[T] {.importcpp: "new Array(#)".}
+proc `[]`*[T](a: JsArray[T], i: int): T {.importcpp: "#[#]".}
+proc `[]=`*[T](a: JsArray[T], i: int, v: T) {.importcpp: "#[#] = #".}
+proc len*[T](a: JsArray[T]): int {.importcpp: "#.length".}
+proc add*[T](a: JsArray[T], v: T) {.importcpp: "#.push(#)".}
+proc push*[T](a: JsArray[T], v: T) {.importcpp: "#.push(#)".}
+proc pop*[T](a: JsArray[T]): T {.importcpp: "#.pop()".}
+proc splice*[T](a: JsArray[T], start: int, deleteCount: int) {.importcpp: "#.splice(#, #)".}
+proc `high`*[T](a: JsArray[T]): int {.importcpp: "(#.length - 1)".}
+proc setLen*[T](a: JsArray[T], newLen: int) {.importcpp: "#.length = #".}
+
+proc swap*[T](a: JsArray[T], i, j: int) =
+  ## Swap two elements in-place. No copy, just reference swap.
+  {.emit: ["var _t = ", a, "[", i, "]; ", a, "[", i, "] = ", a, "[", j, "]; ", a, "[", j, "] = _t;"].}
+
+proc delete*[T](a: JsArray[T], i: int) =
+  ## Remove element at index i (shifts remaining elements).
+  a.splice(i, 1)
+
+iterator items*[T](a: JsArray[T]): T =
+  for i in 0 ..< a.len:
+    yield a[i]
+
+iterator pairs*[T](a: JsArray[T]): (int, T) =
+  for i in 0 ..< a.len:
+    yield (i, a[i])
+
+proc toSeq*[T](a: JsArray[T]): seq[T] =
+  ## View a JsArray as a Nim seq. On JS both are the same underlying array.
+  ## This is a zero-cost cast, not a copy.
+  {.emit: [result, " = ", a, ";"].}
+
+proc toJsArray*[T](s: seq[T]): JsArray[T] =
+  ## View a Nim seq as a JsArray. Zero-cost cast on JS.
+  {.emit: [result, " = ", s, ";"].}
+
 proc newJsSet*[T](): JsSet[T] {.importcpp: "new Set()".}
 proc incl*[T](s: JsSet[T], val: T) {.importcpp: "#.add(#)".}
 proc contains*[T](s: JsSet[T], val: T): bool {.importcpp: "#.has(#)".}
