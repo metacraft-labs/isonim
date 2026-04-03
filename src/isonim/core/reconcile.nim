@@ -83,59 +83,90 @@ proc reconcileArrays*[R, N](
     currentNodes = newNodes
     return
 
-  # Map fallback for the remaining range
+  # LIS-based reconciliation for the remaining middle range.
   # Build a map from old node identity to old index
   var oldMap = initNodeMap(N)
   for i in cStart .. cEnd:
     oldMap[currentNodes[i]] = i
 
-  # For each new node, check if it exists in old
+  # For each new node, look up its old index (or -1 if new)
+  let rangeLen = nEnd - nStart + 1
   var
-    newIndices = newSeq[int](nEnd - nStart + 1) # maps new range index -> old index (-1 if new)
+    newToOld = newSeq[int](rangeLen)
     usedOld = initIndexSet()
 
-  for i in 0 ..< newIndices.len:
+  for i in 0 ..< rangeLen:
     let nNode = newNodes[nStart + i]
     if nNode in oldMap:
-      newIndices[i] = oldMap[nNode]
+      newToOld[i] = oldMap[nNode]
       inclIndex(usedOld, oldMap[nNode])
     else:
-      newIndices[i] = -1
+      newToOld[i] = -1
 
   # Remove old nodes not present in new list
   for i in cStart .. cEnd:
     if i notin usedOld:
       renderer.removeChild(parent, currentNodes[i])
 
-  # Now insert/move nodes to match new order
-  # Work backwards from the end of the range
+  # Compute LIS of newToOld (only entries != -1) using patience sorting O(n log n).
+  # Returns indices into newToOld that form the longest increasing subsequence.
+  var
+    tails: seq[int] = @[]      # tails[i] = smallest ending value of IS of length i+1
+    tailIdx: seq[int] = @[]    # index in newToOld of that tail value
+    parentLis: seq[int] = newSeq[int](rangeLen)
+
+  for i in 0 ..< rangeLen:
+    parentLis[i] = -1
+
+  for i in 0 ..< rangeLen:
+    if newToOld[i] < 0: continue  # skip new nodes
+
+    # Binary search for the leftmost tail >= newToOld[i]
+    var lo = 0
+    var hi = tails.len
+    while lo < hi:
+      let mid = (lo + hi) div 2
+      if tails[mid] < newToOld[i]:
+        lo = mid + 1
+      else:
+        hi = mid
+
+    if lo == tails.len:
+      tails.add(newToOld[i])
+      tailIdx.add(i)
+    else:
+      tails[lo] = newToOld[i]
+      tailIdx[lo] = i
+
+    parentLis[i] = if lo > 0: tailIdx[lo - 1] else: -1
+
+  # Reconstruct LIS indices into a set for O(1) lookup
+  var lisSet = initIndexSet()
+  if tailIdx.len > 0:
+    var idx = tailIdx[^1]
+    while idx >= 0:
+      inclIndex(lisSet, idx)
+      idx = parentLis[idx]
+
+  # Work backwards, inserting/moving only non-LIS nodes
   let refNode = if nEnd + 1 < nLen: newNodes[nEnd + 1] else: nil
   var nextRef = refNode
-  for i in countdown(nEnd - nStart, 0):
+  for i in countdown(rangeLen - 1, 0):
     let nNode = newNodes[nStart + i]
-    if newIndices[i] == -1:
+    if newToOld[i] == -1:
       # New node - insert it
       if nextRef != nil:
         renderer.insertBefore(parent, nNode, nextRef)
       else:
         renderer.appendChild(parent, nNode)
-    else:
-      # Existing node - check if it needs to move
-      let curParent = renderer.parentNode(nNode)
-      if curParent == parent:
-        let ns = renderer.nextSibling(nNode)
-        if ns != nextRef:
-          # Need to move
-          renderer.removeChild(parent, nNode)
-          if nextRef != nil:
-            renderer.insertBefore(parent, nNode, nextRef)
-          else:
-            renderer.appendChild(parent, nNode)
+    elif i notin lisSet:
+      # Existing node not in LIS - needs to move
+      renderer.removeChild(parent, nNode)
+      if nextRef != nil:
+        renderer.insertBefore(parent, nNode, nextRef)
       else:
-        if nextRef != nil:
-          renderer.insertBefore(parent, nNode, nextRef)
-        else:
-          renderer.appendChild(parent, nNode)
+        renderer.appendChild(parent, nNode)
+    # else: in LIS, already in correct relative position - skip
     nextRef = nNode
 
   currentNodes = newNodes
