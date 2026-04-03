@@ -1,14 +1,17 @@
 ## js-framework-benchmark implementation for IsoNim
 ## Keyed implementation using Signal-based reactive rows
+## Uses reconcileArrays for efficient keyed DOM reconciliation.
 
 when not defined(js):
   {.error: "benchmark main.nim requires the JS backend".}
 
 import std/random
+import isonim/core/js_collections
 import isonim/web/dom_api
 import isonim/web/client
 import isonim/web/events
 import isonim/core/signals
+import isonim/core/reconcile
 import isonim/rxcore
 
 # ---- Data model ----
@@ -54,6 +57,25 @@ proc buildData(count: int): seq[Row] =
 # JS parseInt helper
 proc jsParseInt(s: string): int =
   {.emit: [result, " = parseInt(", s, ", 10) || 0;"].}
+
+# ---- Minimal browser renderer for reconcileArrays ----
+
+type BrowserRenderer = object
+
+proc appendChild(r: BrowserRenderer, parent: Node, child: Node) =
+  parent.appendChild(child)
+
+proc insertBefore(r: BrowserRenderer, parent: Node, child: Node, refNode: Node) =
+  parent.insertBefore(child, refNode)
+
+proc removeChild(r: BrowserRenderer, parent: Node, child: Node) =
+  parent.removeChild(child)
+
+proc parentNode(r: BrowserRenderer, node: Node): Node =
+  node.parentNode
+
+proc nextSibling(r: BrowserRenderer, node: Node): Node =
+  node.nextSibling
 
 # ---- Row template ----
 
@@ -138,13 +160,18 @@ proc main() =
     let clearBtn = document.getElementById("clear")
     let swaprowsBtn = document.getElementById("swaprows")
 
+    # Node cache: row.id -> DOM node
+    var nodeMap = newJsMap[int, Node]()
+    # Current DOM nodes tracked for reconciliation
+    var currentNodes: seq[Node] = @[]
+
     runBtn.Node.addEventListener(cstring"click", proc(ev: Event) =
-      tbody.textContent = ""
+      nodeMap.clear()
       data.val = buildData(1000)
     )
 
     runlotsBtn.Node.addEventListener(cstring"click", proc(ev: Event) =
-      tbody.textContent = ""
+      nodeMap.clear()
       data.val = buildData(10000)
     )
 
@@ -163,7 +190,7 @@ proc main() =
     )
 
     clearBtn.Node.addEventListener(cstring"click", proc(ev: Event) =
-      tbody.textContent = ""
+      nodeMap.clear()
       data.val = newSeq[Row]()
     )
 
@@ -176,21 +203,33 @@ proc main() =
         data.val = rows
     )
 
-    # Render rows reactively
-    var currentNodes: seq[Node] = @[]
-
+    # Render rows reactively using keyed reconciliation
     createEffect proc() =
       let rows = data.val
 
-      # Clear tbody and rebuild (keyed approach - full reconciliation)
-      # For the benchmark, we need to rebuild the DOM for the rows
-      # A more sophisticated approach would use keyed reconciliation,
-      # but the benchmark measures the framework's actual perf characteristics
-      tbody.textContent = ""
-      currentNodes = newSeq[Node](rows.len)
+      # Build new node list, reusing existing DOM nodes for known rows
+      var newNodes = newSeq[Node](rows.len)
       for i in 0 ..< rows.len:
-        let rowEl = createRowElement(rows[i])
-        currentNodes[i] = rowEl
-        tbody.Node.appendChild(rowEl)
+        let row = rows[i]
+        if row.id in nodeMap:
+          newNodes[i] = nodeMap[row.id]
+        else:
+          let node = createRowElement(row)
+          nodeMap[row.id] = node
+          newNodes[i] = node
+
+      # Remove entries from nodeMap for rows no longer present
+      var activeIds = newJsSet[int]()
+      for row in rows:
+        activeIds.incl(row.id)
+      var toRemove: seq[int] = @[]
+      for id in nodeMap.keys:
+        if id notin activeIds:
+          toRemove.add(id)
+      for id in toRemove:
+        nodeMap.del(id)
+
+      # Reconcile the DOM - moves/inserts/removes only what changed
+      reconcileArrays(BrowserRenderer(), tbody.Node, currentNodes, newNodes)
 
 main()

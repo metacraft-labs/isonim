@@ -6,7 +6,16 @@
 ##
 ## Port of dom-expressions reconcileArrays algorithm.
 
-import std/tables
+when defined(js):
+  import js_collections
+  template initNodeMap(N: typedesc): auto = newJsMap[N, int]()
+  template initIndexSet(): auto = newJsSet[int]()
+  template inclIndex(s: auto, val: int) = s.incl(val)
+else:
+  import std/tables
+  template initNodeMap(N: typedesc): auto = initTable[N, int]()
+  template initIndexSet(): auto = initTable[int, bool]()
+  template inclIndex(s: auto, val: int) = s[val] = true
 
 proc reconcileArrays*[R, N](
     renderer: R;
@@ -76,20 +85,20 @@ proc reconcileArrays*[R, N](
 
   # Map fallback for the remaining range
   # Build a map from old node identity to old index
-  var oldMap = initTable[N, int]()
+  var oldMap = initNodeMap(N)
   for i in cStart .. cEnd:
     oldMap[currentNodes[i]] = i
 
   # For each new node, check if it exists in old
   var
     newIndices = newSeq[int](nEnd - nStart + 1) # maps new range index -> old index (-1 if new)
-    usedOld = initTable[int, bool]()
+    usedOld = initIndexSet()
 
   for i in 0 ..< newIndices.len:
     let nNode = newNodes[nStart + i]
     if nNode in oldMap:
       newIndices[i] = oldMap[nNode]
-      usedOld[oldMap[nNode]] = true
+      inclIndex(usedOld, oldMap[nNode])
     else:
       newIndices[i] = -1
 
