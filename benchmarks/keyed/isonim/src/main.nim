@@ -123,11 +123,9 @@ proc createRowElement(row: Row): Node =
     {.emit: [rowIdCstr, " = ", ev.target, ".$$rowId || ", ev.target, ".parentNode.$$rowId || '';"].}
     let rowId = jsParseInt(rowIdCstr)
     let rows = data.val
-    for i in 0 ..< rows.len:
-      if rows[i].id == rowId:
-        rows.splice(i, 1)
-        break
-    data.val = rows  # always fires (equals = false)
+    var filtered: Rows
+    {.emit: [filtered, " = ", rows, ".filter(function(r){ return r.id !== ", rowId, "; });"].}
+    data.val = filtered
   )
 
   return tr
@@ -165,9 +163,9 @@ proc main() =
     addBtn.Node.addEventListener(cstring"click", proc(ev: Event) =
       let rows = data.val
       let extra = buildData(1000)
-      for r in extra:
-        rows.push(r)
-      data.val = rows
+      var combined: Rows
+      {.emit: [combined, " = ", rows, ".concat(", extra, ");"].}
+      data.val = combined
     )
 
     updateBtn.Node.addEventListener(cstring"click", proc(ev: Event) =
