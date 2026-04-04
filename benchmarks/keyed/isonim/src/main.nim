@@ -239,10 +239,25 @@ proc main() =
           oldEnd -= 1
           newEnd -= 1
 
+        # Handle pure deletions: prefix/suffix matched everything in new,
+        # but old has extra elements in [start..oldEnd] that must be removed.
+        if start > newEnd and start <= oldEnd:
+          for idx in start .. oldEnd:
+            tbody.Node.removeChild(mapped[idx])
+
+        # Handle pure insertions: new has elements in [start..newEnd] not in old.
+        elif start > oldEnd and start <= newEnd:
+          let refNode = if newEnd + 1 < newLen: temp[newEnd + 1] else: nil
+          for idx in start .. newEnd:
+            temp[idx] = createRowElement(newItems[idx])
+            if refNode.isNodeNil:
+              tbody.Node.appendChild(temp[idx])
+            else:
+              tbody.Node.insertBefore(temp[idx], refNode)
+
         # 3. Reconcile the changed middle range.
-        # Follows SolidJS's dom-expressions reconcile algorithm:
-        # two-pointer walk with swap detection and lazy Map fallback.
-        if start <= newEnd:
+        # Follows SolidJS's dom-expressions reconcile algorithm.
+        elif start <= newEnd:
           var s = start       # old pointer (front)
           var l = oldEnd + 1  # old pointer (back, exclusive)
           var i = start       # new pointer (front)
