@@ -75,7 +75,7 @@ proc jsIntToStr(n: int): cstring =
 
 let rowTmpl = tmpl(
   "<tr><td class='col-md-1'></td>" &
-  "<td class='col-md-4'><a> </a></td>" &
+  "<td class='col-md-4'><a></a></td>" &
   "<td class='col-md-1'><a><span class='glyphicon glyphicon-remove' aria-hidden='true'></span></a></td>" &
   "<td class='col-md-6'></td></tr>"
 )
@@ -91,23 +91,15 @@ proc createRowElement(row: Row): Node =
   # Set the id column
   td1.textContent = jsIntToStr(row.id)
 
-  # Single combined effect for label + selection (matches SolidJS pattern)
-  let textNode = selectLink.firstChild  # the " " text node from template
-  var prevClass: cstring
-  var prevLabel: cstring
+  # Set the label reactively
+  insert(selectLink, proc(): cstring = row.label.val)
 
-  createRenderEffect proc() =
-    let cls = if selected.val == row.id: cstring"danger" else: cstring""
-    let lbl = row.label.val
-    if cls != prevClass:
-      prevClass = cls
-      if cls.len == 0:
-        {.emit: [tr, ".removeAttribute('class');"].}
-      else:
-        Element(tr).className = cls
-    if lbl != prevLabel:
-      prevLabel = lbl
-      {.emit: [textNode, ".data = ", lbl, ";"].}
+  # Highlight when selected
+  effect proc() =
+    if selected.val == row.id:
+      Element(tr).className = "danger"
+    else:
+      Element(tr).className = ""
 
   # Store row id for event delegation
   let rowIdStr = jsIntToStr(row.id)
@@ -125,15 +117,17 @@ proc createRowElement(row: Row): Node =
       selected.val = rowId
   )
 
-  # Click to delete (delegated) — SolidJS uses .toSpliced()
+  # Click to delete (delegated)
   deleteLink.setJsPropHandler(cstring"$$click", proc(ev: Event) =
     var rowIdCstr: cstring
     {.emit: [rowIdCstr, " = ", ev.target, ".$$rowId || ", ev.target, ".parentNode.$$rowId || '';"].}
     let rowId = jsParseInt(rowIdCstr)
     let rows = data.val
-    var filtered: Rows
-    {.emit: [filtered, " = ", rows, ".filter(function(r){ return r.id !== ", rowId, "; });"].}
-    data.val = filtered
+    for i in 0 ..< rows.len:
+      if rows[i].id == rowId:
+        rows.splice(i, 1)
+        break
+    data.val = rows  # always fires (equals = false)
   )
 
   return tr
@@ -171,10 +165,9 @@ proc main() =
     addBtn.Node.addEventListener(cstring"click", proc(ev: Event) =
       let rows = data.val
       let extra = buildData(1000)
-      # Concat creates a new array — mapArray needs distinct refs
-      var combined: Rows
-      {.emit: [combined, " = ", rows, ".concat(", extra, ");"].}
-      data.val = combined
+      for r in extra:
+        rows.push(r)
+      data.val = rows
     )
 
     updateBtn.Node.addEventListener(cstring"click", proc(ev: Event) =
@@ -192,8 +185,8 @@ proc main() =
     swaprowsBtn.Node.addEventListener(cstring"click", proc(ev: Event) =
       let rows = data.val
       if rows.len > 998:
-        # Must .slice() like SolidJS — mapArray compares old vs new arrays
-        # by identity. In-place mutation on the same ref is invisible.
+        # .slice() creates a new array ref so mapArray detects the change.
+        # SolidJS also does: const e = t().slice(); swap; n(e)
         var copy: Rows
         {.emit: [copy, " = ", rows, ".slice();"].}
         copy.swap(1, 998)
