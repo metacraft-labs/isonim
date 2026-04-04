@@ -237,39 +237,96 @@ proc main() =
           oldEnd -= 1
           newEnd -= 1
 
-        # 3. Process the changed middle range
+        # 3. Reconcile the changed middle range.
+        # Follows SolidJS's dom-expressions reconcile algorithm:
+        # two-pointer walk with swap detection and lazy Map fallback.
         if start <= newEnd:
-          # Build a map from old Row identity → old index
-          var oldMap = newJsMap[int, int]()  # row.id → old index
-          for i in start .. oldEnd:
-            oldMap[items[i].id] = i
+          var s = start       # old pointer (front)
+          var l = oldEnd + 1  # old pointer (back, exclusive)
+          var i = start       # new pointer (front)
+          var o = newEnd + 1  # new pointer (back, exclusive)
+          let sentinel = if l < oldLen: mapped[l].nextSibling else: nil
+          var fallbackMap: JsMap[int, int]  # lazy: only built if needed
 
-          for i in start .. newEnd:
-            let rowId = newItems[i].id
-            if rowId in oldMap:
-              temp[i] = mapped[oldMap[rowId]]
-              oldMap.del(rowId)
+          while s < l or i < o:
+            if s < l and i < o and items[s] == newItems[i]:
+              # Match at front — no move needed
+              temp[i] = mapped[s]
+              s += 1; i += 1
+            elif s < l and i < o and items[s] != newItems[i]:
+              # Mismatch — shrink from back first
+              while l > s and o > i and items[l - 1] == newItems[o - 1]:
+                l -= 1; o -= 1
+                temp[o] = mapped[l]
+
+              if l == s:
+                # Only insertions remain
+                let refNode = if o < newEnd + 1:
+                  (if i > start: temp[i - 1].nextSibling else: temp[o])
+                else: sentinel
+                while i < o:
+                  temp[i] = createRowElement(newItems[i])
+                  tbody.Node.insertBefore(temp[i], refNode)
+                  i += 1
+              elif o == i:
+                # Only deletions remain
+                while s < l:
+                  tbody.Node.removeChild(mapped[s])
+                  s += 1
+              elif items[s] == newItems[o - 1] and newItems[i] == items[l - 1]:
+                # *** SWAP DETECTION ***
+                # Old front = new back AND new front = old back → swap
+                let nextSib = mapped[s].nextSibling
+                temp[i] = mapped[l - 1]
+                tbody.Node.insertBefore(mapped[l - 1], nextSib)
+                temp[o - 1] = mapped[s]
+                let backRef = if o < newEnd + 1: temp[o].Node else: sentinel
+                tbody.Node.insertBefore(mapped[s], backRef)
+                s += 1; l -= 1; i += 1; o -= 1
+              else:
+                # General case — lazy Map fallback
+                if fallbackMap.isNil:
+                  fallbackMap = newJsMap[int, int]()
+                  for idx in i ..< o:
+                    fallbackMap[newItems[idx].id] = idx
+                let targetIdx = if items[s].id in fallbackMap: fallbackMap[items[s].id] else: -1
+                if targetIdx >= 0 and targetIdx >= i and targetIdx < o:
+                  # Found in new list — check for contiguous run
+                  var runLen = 1
+                  var probe = s + 1
+                  while probe < l and probe < o:
+                    let pi = if items[probe].id in fallbackMap: fallbackMap[items[probe].id] else: -1
+                    if pi == targetIdx + runLen:
+                      runLen += 1; probe += 1
+                    else: break
+                  if runLen > targetIdx - i:
+                    # Insert missing new nodes before the run
+                    let refNode = mapped[s]
+                    while i < targetIdx:
+                      temp[i] = createRowElement(newItems[i])
+                      tbody.Node.insertBefore(temp[i], refNode)
+                      i += 1
+                  else:
+                    # Replace
+                    temp[i] = mapped[s]
+                    tbody.Node.replaceChild(mapped[s], temp[i])
+                    s += 1; i += 1
+                else:
+                  # Not found — old item was removed
+                  tbody.Node.removeChild(mapped[s])
+                  s += 1
+            elif s >= l:
+              # Old exhausted — insert remaining new
+              let refNode = if o <= newEnd: temp[o] else: sentinel
+              while i < o:
+                temp[i] = createRowElement(newItems[i])
+                tbody.Node.insertBefore(temp[i], refNode)
+                i += 1
             else:
-              # Genuinely new item — create DOM node
-              temp[i] = createRowElement(newItems[i])
-
-          # Remove DOM nodes for deleted items (remaining in oldMap)
-          let removedKeys = oldMap.keysArray()
-          for i in 0 ..< removedKeys.len:
-            let idx = oldMap[removedKeys[i]]
-            tbody.Node.removeChild(mapped[idx])
-
-        # 4. Reconcile DOM order for the changed range.
-        # Walk backwards, inserting before the next sibling.
-        # The nextSibling check skips nodes already in position.
-        for i in countdown(newEnd, start):
-          let node = temp[i]
-          let nextNode = if i + 1 < newLen: temp[i + 1] else: nil
-          if node.nextSibling != nextNode:
-            if nextNode.isNodeNil:
-              tbody.Node.appendChild(node)
-            else:
-              tbody.Node.insertBefore(node, nextNode)
+              # New exhausted — remove remaining old
+              while s < l:
+                tbody.Node.removeChild(mapped[s])
+                s += 1
 
         items = newItems  # JsArray ref copy — free
         mapped = temp
