@@ -279,13 +279,16 @@ proc main() =
                   s += 1
               elif items[s] == newItems[o - 1] and newItems[i] == items[l - 1]:
                 # *** SWAP DETECTION ***
-                # Old front = new back AND new front = old back → swap
-                let nextSib = mapped[s].nextSibling
-                temp[i] = mapped[l - 1]
-                tbody.Node.insertBefore(mapped[l - 1], nextSib)
-                temp[o - 1] = mapped[s]
-                let backRef = if o < newEnd + 1: temp[o].Node else: sentinel
-                tbody.Node.insertBefore(mapped[s], backRef)
+                # Matches SolidJS: save refs BEFORE mutations, 2 insertBefore
+                let nodeA = mapped[s]          # old front node (will become new back)
+                let nodeB = mapped[l - 1]      # old back node (will become new front)
+                let refAfterB = nodeB.nextSibling  # save BEFORE any mutation
+                # Move B to front position (before A's next sibling)
+                tbody.Node.insertBefore(nodeB, nodeA.nextSibling)
+                # Move A to back position (before B's original nextSibling)
+                tbody.Node.insertBefore(nodeA, refAfterB)
+                temp[i] = nodeB
+                temp[o - 1] = nodeA
                 s += 1; l -= 1; i += 1; o -= 1
               else:
                 # General case — lazy Map fallback
