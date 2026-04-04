@@ -1,6 +1,6 @@
 ## js-framework-benchmark implementation for IsoNim
 ## Keyed implementation using Signal-based reactive rows
-## Uses reconcileArrays for efficient keyed DOM reconciliation.
+## Uses SolidJS-style mapArray for efficient keyed DOM reconciliation.
 
 when not defined(js):
   {.error: "benchmark main.nim requires the JS backend".}
@@ -10,7 +10,6 @@ import isonim/web/dom_api
 import isonim/web/client
 import isonim/web/events
 import isonim/core/signals
-import isonim/core/reconcile
 import isonim/rxcore
 
 # ---- Data model ----
@@ -71,25 +70,6 @@ proc jsParseInt(s: cstring): int =
 
 proc jsIntToStr(n: int): cstring =
   {.emit: [result, " = String(", n, ");"].}
-
-# ---- Minimal browser renderer for reconcileArrays ----
-
-type BrowserRenderer = object
-
-proc appendChild(r: BrowserRenderer, parent: Node, child: Node) =
-  parent.appendChild(child)
-
-proc insertBefore(r: BrowserRenderer, parent: Node, child: Node, refNode: Node) =
-  parent.insertBefore(child, refNode)
-
-proc removeChild(r: BrowserRenderer, parent: Node, child: Node) =
-  parent.removeChild(child)
-
-proc parentNode(r: BrowserRenderer, node: Node): Node =
-  node.parentNode
-
-proc nextSibling(r: BrowserRenderer, node: Node): Node =
-  node.nextSibling
 
 # ---- Row template ----
 
@@ -174,18 +154,11 @@ proc main() =
     let clearBtn = document.getElementById("clear")
     let swaprowsBtn = document.getElementById("swaprows")
 
-    # Node cache: row.id -> DOM node
-    var nodeMap = newJsMap[int, Node]()
-    # Current DOM nodes tracked for reconciliation
-    var currentNodes = newJsArray[Node]()
-
     runBtn.Node.addEventListener(cstring"click", proc(ev: Event) =
-      nodeMap.clear()
       data.val = buildData(1000)
     )
 
     runlotsBtn.Node.addEventListener(cstring"click", proc(ev: Event) =
-      nodeMap.clear()
       data.val = buildData(10000)
     )
 
@@ -206,7 +179,6 @@ proc main() =
     )
 
     clearBtn.Node.addEventListener(cstring"click", proc(ev: Event) =
-      nodeMap.clear()
       data.val = newJsArray[Row]()
     )
 
@@ -217,33 +189,89 @@ proc main() =
         data.val = rows  # always fires (equals = false)
     )
 
-    # Render rows reactively using keyed reconciliation
-    createEffect proc() =
-      let rows = data.val
+    # SolidJS-style mapArray: keyed list rendering with persistent
+    # items/mapped arrays. Only creates/moves/removes what changed.
+    # Prefix/suffix scan makes swap O(1) DOM ops.
+    block:
+      var items = newJsArray[Row]()
+      var mapped = newJsArray[Node]()
 
-      # Build new node list, reusing existing DOM nodes for known rows
-      var newNodes = newJsArray[Node](rows.len)
-      for i in 0 ..< rows.len:
-        let row = rows[i]
-        if row.id in nodeMap:
-          newNodes[i] = nodeMap[row.id]
-        else:
-          let node = createRowElement(row)
-          nodeMap[row.id] = node
-          newNodes[i] = node
+      createEffect proc() =
+        let newItems = data.val
+        let newLen = newItems.len
+        let oldLen = items.len
 
-      # Remove entries from nodeMap for rows no longer present
-      var activeIds = newJsSet[int]()
-      for row in rows:
-        activeIds.incl(row.id)
-      var toRemove = newJsArray[int]()
-      for id in nodeMap.keys:
-        if id notin activeIds:
-          toRemove.add(id)
-      for id in toRemove:
-        nodeMap.del(id)
+        # Fast path: empty list — clear all
+        if newLen == 0:
+          for i in 0 ..< oldLen:
+            tbody.Node.removeChild(mapped[i])
+          items = newJsArray[Row]()
+          mapped = newJsArray[Node]()
+          return
 
-      # Reconcile the DOM - moves/inserts/removes only what changed
-      reconcileArrays(BrowserRenderer(), tbody.Node, currentNodes, newNodes)
+        # Fast path: first run — create all
+        if oldLen == 0:
+          let newMapped = newJsArray[Node](newLen)
+          for i in 0 ..< newLen:
+            let node = createRowElement(newItems[i])
+            newMapped[i] = node
+            tbody.Node.appendChild(node)
+          items = newItems
+          mapped = newMapped
+          return
+
+        let temp = newJsArray[Node](newLen)
+
+        # 1. Skip common prefix (identity match)
+        var start = 0
+        let minLen = if oldLen < newLen: oldLen else: newLen
+        while start < minLen and items[start] == newItems[start]:
+          temp[start] = mapped[start]
+          start += 1
+
+        # 2. Skip common suffix (identity match)
+        var oldEnd = oldLen - 1
+        var newEnd = newLen - 1
+        while oldEnd >= start and newEnd >= start and items[oldEnd] == newItems[newEnd]:
+          temp[newEnd] = mapped[oldEnd]
+          oldEnd -= 1
+          newEnd -= 1
+
+        # 3. Process the changed middle range
+        if start <= newEnd:
+          # Build a map from old Row identity → old index
+          var oldMap = newJsMap[int, int]()  # row.id → old index
+          for i in start .. oldEnd:
+            oldMap[items[i].id] = i
+
+          for i in start .. newEnd:
+            let rowId = newItems[i].id
+            if rowId in oldMap:
+              temp[i] = mapped[oldMap[rowId]]
+              oldMap.del(rowId)
+            else:
+              # Genuinely new item — create DOM node
+              temp[i] = createRowElement(newItems[i])
+
+          # Remove DOM nodes for deleted items (remaining in oldMap)
+          let removedKeys = oldMap.keysArray()
+          for i in 0 ..< removedKeys.len:
+            let idx = oldMap[removedKeys[i]]
+            tbody.Node.removeChild(mapped[idx])
+
+        # 4. Reconcile DOM order for the changed range.
+        # Walk backwards, inserting before the next sibling.
+        # The nextSibling check skips nodes already in position.
+        for i in countdown(newEnd, start):
+          let node = temp[i]
+          let nextNode = if i + 1 < newLen: temp[i + 1] else: nil
+          if node.nextSibling != nextNode:
+            if nextNode.isNodeNil:
+              tbody.Node.appendChild(node)
+            else:
+              tbody.Node.insertBefore(node, nextNode)
+
+        items = newItems  # JsArray ref copy — free
+        mapped = temp
 
 main()
