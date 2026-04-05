@@ -1,0 +1,1 @@
+proc IndexPage*() = discard

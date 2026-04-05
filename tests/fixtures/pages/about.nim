@@ -1,0 +1,1 @@
+proc AboutPage*() = discard

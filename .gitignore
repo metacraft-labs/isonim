@@ -34,6 +34,7 @@ tests/test_router
 tests/test_server_functions
 tests/test_ssr_routing
 tests/test_form_actions
+tests/test_file_routes
 benchmarks/runner/
 benchmarks/results/
 node_modules/

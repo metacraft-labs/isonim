@@ -26,6 +26,7 @@ test-c:
     nim c -r tests/test_router.nim
     nim c -r tests/test_ssr_routing.nim
     nim c -r tests/test_server_functions.nim
+    nim c -r tests/test_file_routes.nim
 
 # Run tests on JS target
 test-js:
