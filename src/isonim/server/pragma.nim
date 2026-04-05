@@ -20,6 +20,11 @@ proc endpointPath(procName: string): string =
   ## For M3, this is simply "/api/<procname>".
   "/api/" & procName
 
+proc actionEndpointPath(procName: string): string =
+  ## Derive the action endpoint path from the proc name.
+  ## Actions live under "/api/actions/<procname>".
+  "/api/actions/" & procName
+
 macro server*(prc: untyped): untyped =
   ## Marks a proc as a server function.
   ## On C target: compiles the proc body normally and registers an RPC handler.
@@ -136,6 +141,150 @@ macro server*(prc: untyped): untyped =
   result = newStmtList()
 
   # Emit the impl proc (C only, for handler dispatch)
+  result.add(
+    newNimNode(nnkWhenStmt).add(
+      newNimNode(nnkElifBranch).add(
+        newCall(ident"not", newCall(ident"defined", ident"js")),
+        newStmtList(implProc)
+      )
+    )
+  )
+
+  # Emit the public proc
+  result.add(publicProc)
+
+  # Emit the registration (C only)
+  result.add(
+    newNimNode(nnkWhenStmt).add(
+      newNimNode(nnkElifBranch).add(
+        newCall(ident"not", newCall(ident"defined", ident"js")),
+        newStmtList(
+          newCall(ident"registerRpc", endpointLit, handlerLambda)
+        )
+      )
+    )
+  )
+
+
+macro action*(prc: untyped): untyped =
+  ## Marks a proc as a form action (extends {.server.}).
+  ## Generates an actionUrl constant and handles form-encoded arguments.
+  ##
+  ## On C target: registers a handler at "/api/actions/<procname>" that accepts
+  ## both JSON and form-encoded data. Also generates a `<procName>Url` constant.
+  ##
+  ## On JS target: replaces the body with a fetch call (same as {.server.}) and
+  ## generates the `<procName>Url` constant.
+
+  prc.expectKind(nnkProcDef)
+
+  let procName = prc[0]
+  let procNameStr = $procName
+  let params = prc[3]       # formal params node
+  let origBody = prc[6]     # original proc body
+
+  # Extract return type
+  let returnType = params[0]
+  if returnType.kind == nnkEmpty:
+    error("Action functions must have a return type", prc)
+
+  let endpoint = actionEndpointPath(procNameStr)
+  let endpointLit = newLit(endpoint)
+
+  # Generate the URL constant: <procName>Url = "/api/actions/<procName>"
+  let urlConstName = ident(procNameStr & "Url")
+  let urlConstDef = newNimNode(nnkConstSection).add(
+    newNimNode(nnkConstDef).add(
+      postfix(urlConstName, "*"),
+      newEmptyNode(),
+      endpointLit
+    )
+  )
+
+  # Collect parameter names and types
+  var paramNames: seq[NimNode] = @[]
+  var paramTypes: seq[NimNode] = @[]
+  for i in 1 ..< params.len:
+    let identDefs = params[i]
+    let pType = identDefs[^2]
+    for j in 0 ..< identDefs.len - 2:
+      paramNames.add(identDefs[j])
+      paramTypes.add(pType)
+
+  # --- Build the JS body ---
+  var jsonPairs = newNimNode(nnkTableConstr)
+  for i in 0 ..< paramNames.len:
+    jsonPairs.add(newColonExpr(newLit($paramNames[i]), newCall(ident"%", paramNames[i])))
+
+  let argsJsonExpr = newCall(bindSym"%*", jsonPairs)
+
+  let jsBody = quote do:
+    let argsJson = `argsJsonExpr`
+    let responseJson = rpcFetchSync(`endpointLit`, argsJson)
+    result = to(responseJson, typeof(result))
+
+  # --- Build the C-side impl and handler ---
+  let implName = ident(procNameStr & "_actionImpl")
+
+  var implProc = prc.copy()
+  implProc[0] = implName
+  implProc[6] = origBody
+  implProc[4] = newEmptyNode()
+
+  let argsIdent = ident("argsNode")
+  var handlerStmts = newStmtList()
+  var implCallArgs: seq[NimNode] = @[]
+
+  for i in 0 ..< paramNames.len:
+    let localName = ident("p_" & $paramNames[i])
+    let pType = paramTypes[i]
+    let pNameStr = newLit($paramNames[i])
+    handlerStmts.add(
+      newLetStmt(localName,
+        newCall(ident"to", newNimNode(nnkBracketExpr).add(argsIdent, pNameStr), pType))
+    )
+    implCallArgs.add(localName)
+
+  var implCall = newCall(implName)
+  for arg in implCallArgs:
+    implCall.add(arg)
+
+  handlerStmts.add(
+    newAssignment(ident"result", newCall(bindSym"%", implCall))
+  )
+
+  let handlerLambda = newProc(
+    name = newEmptyNode(),
+    params = [
+      ident"JsonNode",
+      newIdentDefs(argsIdent, ident"JsonNode"),
+    ],
+    body = handlerStmts,
+    procType = nnkLambda
+  )
+
+  # --- Build the public proc ---
+  var publicProc = prc.copy()
+  publicProc[4] = newEmptyNode()
+
+  let whenStmt = newNimNode(nnkWhenStmt).add(
+    newNimNode(nnkElifBranch).add(
+      newCall(ident"defined", ident"js"),
+      newStmtList(jsBody)
+    ),
+    newNimNode(nnkElse).add(
+      newStmtList(origBody)
+    )
+  )
+  publicProc[6] = whenStmt
+
+  # --- Assemble the output ---
+  result = newStmtList()
+
+  # Emit the URL constant (both targets)
+  result.add(urlConstDef)
+
+  # Emit the impl proc (C only)
   result.add(
     newNimNode(nnkWhenStmt).add(
       newNimNode(nnkElifBranch).add(
