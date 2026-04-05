@@ -32,6 +32,7 @@ tests/test_accessibility
 tests/test_web_components_advanced
 tests/test_router
 tests/test_server_functions
+tests/test_ssr_routing
 benchmarks/runner/
 benchmarks/results/
 node_modules/
