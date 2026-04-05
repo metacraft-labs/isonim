@@ -26,6 +26,7 @@ test-c:
     nim c -r tests/test_router.nim
     nim c -r tests/test_ssr_routing.nim
     nim c -r tests/test_server_functions.nim
+    nim c -r tests/test_data_loading.nim
     nim c -r tests/test_file_routes.nim
 
 # Run tests on JS target
@@ -48,6 +49,7 @@ test-js:
     nim js -r tests/test_accessibility.nim
     nim js -r tests/test_router.nim
     nim js -r tests/test_server_functions.nim
+    nim js -r tests/test_data_loading.nim
 
 # Run only signal tests
 test-signals:
@@ -84,6 +86,11 @@ test-dsl:
 test-server:
     nim c -r tests/test_server_functions.nim
     nim js -r tests/test_server_functions.nim
+
+# Run data loading (server resource) tests
+test-data-loading:
+    nim c -r tests/test_data_loading.nim
+    nim js -r tests/test_data_loading.nim
 
 # Run SSR and round-trip tests
 test-ssr:
