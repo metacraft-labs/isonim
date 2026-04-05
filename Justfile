@@ -24,6 +24,7 @@ test-c:
     nim c -r tests/test_corner_cases.nim
     nim c -r tests/test_accessibility.nim
     nim c -r tests/test_router.nim
+    nim c -r tests/test_server_functions.nim
 
 # Run tests on JS target
 test-js:
@@ -44,6 +45,7 @@ test-js:
     nim js -r tests/test_web_components_advanced.nim
     nim js -r tests/test_accessibility.nim
     nim js -r tests/test_router.nim
+    nim js -r tests/test_server_functions.nim
 
 # Run only signal tests
 test-signals:
@@ -75,6 +77,11 @@ test-dsl:
     nim c -r tests/test_dsl.nim
     nim js -r tests/test_dsl.nim
     nim c -r tests/test_dsl_ssr.nim
+
+# Run only server function tests
+test-server:
+    nim c -r tests/test_server_functions.nim
+    nim js -r tests/test_server_functions.nim
 
 # Run SSR and round-trip tests
 test-ssr:
