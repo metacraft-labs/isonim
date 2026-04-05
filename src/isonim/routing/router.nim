@@ -4,41 +4,82 @@
 ## and accepts manual path setting on C (for SSR).
 ##
 ## The router is renderer-agnostic — no DOM operations here.
+##
+## M1: supports nested routes, match chains, RouteParams, and Outlet.
 
 import ../core/[signals, computation]
 when defined(js):
   import ../core/owner
-import match
+import match, params, outlet
+export params, outlet
 
 type
   RouteEntry* = object
     pattern*: RoutePattern
     component*: proc()          ## the component to render
-    children*: seq[RouteEntry]  ## nested routes (reserved for M1)
-    layout*: proc()             ## optional layout wrapper (reserved for M1)
+    children*: seq[RouteEntry]  ## nested child routes
+    layout*: proc()             ## optional layout wrapper
 
   Router* = ref object
     routes*: seq[RouteEntry]
     currentPath*: Signal[string]
     params*: Signal[seq[(string, string)]]
-    matchedIndex*: Signal[int]  ## index into routes, -1 if no match
+    matchedIndex*: Signal[int]  ## index into top-level routes, -1 if no match
+    routeParams*: RouteParams   ## reactive param signals (M1)
+    matchChain*: Signal[seq[MatchChainEntry]]  ## full match chain for nested routes (M1)
 
 var activeRouter*: Router
   ## The currently active router instance. Used by global navigate().
 
-proc findMatch(router: Router; path: string): (int, seq[(string, string)]) =
-  ## Find the first matching route. Returns (index, params) or (-1, @[]).
-  for i in 0 ..< router.routes.len:
-    let m = matchPath(router.routes[i].pattern, path)
-    if m.matched:
-      return (i, m.params)
+proc findMatchChain(routes: seq[RouteEntry]; path: string): (int, seq[MatchChainEntry]) =
+  ## Find the first matching route, including nested children.
+  ## Returns (top-level index, chain of matched entries with params).
+  for i in 0 ..< routes.len:
+    let route = routes[i]
+    if route.children.len > 0:
+      # Parent route: try prefix match, then match children against remainder
+      let m = matchPrefix(route.pattern, path)
+      if m.matched:
+        let rest = remainingPath(route.pattern, path)
+        # Try each child
+        for child in route.children:
+          let cm = matchPath(child.pattern, rest)
+          if cm.matched:
+            var chain: seq[MatchChainEntry]
+            # Add the parent (layout) entry
+            let parentComp = if route.layout != nil: route.layout else: route.component
+            chain.add(MatchChainEntry(component: parentComp, params: m.params))
+            # Add the child entry
+            chain.add(MatchChainEntry(component: child.component, params: cm.params))
+            return (i, chain)
+        # No child matched — try exact match on the parent itself
+        let exactM = matchPath(route.pattern, path)
+        if exactM.matched and route.component != nil:
+          var chain: seq[MatchChainEntry]
+          let comp = if route.layout != nil: route.layout else: route.component
+          chain.add(MatchChainEntry(component: comp, params: exactM.params))
+          return (i, chain)
+    else:
+      # Leaf route: exact match
+      let m = matchPath(route.pattern, path)
+      if m.matched:
+        var chain: seq[MatchChainEntry]
+        chain.add(MatchChainEntry(component: route.component, params: m.params))
+        return (i, chain)
   return (-1, @[])
 
 proc updateMatch(router: Router) =
-  ## Update matchedIndex and params signals from currentPath.
-  let (idx, pars) = router.findMatch(router.currentPath.val)
+  ## Update matchedIndex, params, routeParams, and matchChain from currentPath.
+  let path = router.currentPath.val
+  let (idx, chain) = findMatchChain(router.routes, path)
+  # Merge all params from chain
+  var allParams: seq[(string, string)]
+  for entry in chain:
+    allParams.add(entry.params)
   router.matchedIndex.val = idx
-  router.params.val = pars
+  router.params.val = allParams
+  router.routeParams.updateFrom(allParams)
+  router.matchChain.val = chain
 
 when defined(js):
   type
@@ -87,12 +128,19 @@ proc createRouter*(routes: seq[RouteEntry]; initialPath: string): Router =
     currentPath: createSignal(initialPath),
     params: createSignal(newSeq[(string, string)]()),
     matchedIndex: createSignal(-1),
+    routeParams: newRouteParams(),
+    matchChain: createSignal(newSeq[MatchChainEntry]()),
   )
 
   # Perform initial match
-  let (idx, pars) = router.findMatch(initialPath)
+  let (idx, chain) = findMatchChain(routes, initialPath)
+  var allParams: seq[(string, string)]
+  for entry in chain:
+    allParams.add(entry.params)
   router.matchedIndex.value = idx
-  router.params.value = pars
+  router.params.value = allParams
+  router.routeParams.updateFrom(allParams)
+  router.matchChain.value = chain
 
   # Set up reactive effect: when currentPath changes, re-match
   createEffect proc() =
