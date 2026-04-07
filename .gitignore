@@ -38,3 +38,4 @@ tests/test_file_routes
 benchmarks/runner/
 benchmarks/results/
 node_modules/
+test_data_loading
