@@ -399,6 +399,51 @@ proc ssrChildrenExpr(body: NimNode; stmts: NimNode): NimNode {.compileTime.} =
       let expr = ssrChildrenExpr(child, stmts)
       if expr != nil:
         parts.add(expr)
+    of nnkIfStmt:
+      # Handle plain `if` statements whose branches contain DSL nodes.
+      # Transform into an if-expression that returns the concatenated HTML
+      # string for each branch, so DSL nodes inside branches are rendered.
+      var ifExpr = newNimNode(nnkIfExpr)
+      for branch in child:
+        case branch.kind
+        of nnkElifBranch:
+          let cond = branch[0]
+          let branchBody = branch[^1]
+          let branchStmts = newStmtList()
+          let branchHtml = ssrChildrenExpr(branchBody, branchStmts)
+          var branchBlock: NimNode
+          if branchStmts.len > 0:
+            branchBlock = newStmtList()
+            for s in branchStmts:
+              branchBlock.add(s)
+            branchBlock.add(branchHtml)
+          else:
+            branchBlock = branchHtml
+          ifExpr.add(newNimNode(nnkElifExpr).add(cond, branchBlock))
+        of nnkElse:
+          let branchBody = branch[^1]
+          let branchStmts = newStmtList()
+          let branchHtml = ssrChildrenExpr(branchBody, branchStmts)
+          var branchBlock: NimNode
+          if branchStmts.len > 0:
+            branchBlock = newStmtList()
+            for s in branchStmts:
+              branchBlock.add(s)
+            branchBlock.add(branchHtml)
+          else:
+            branchBlock = branchHtml
+          ifExpr.add(newNimNode(nnkElseExpr).add(branchBlock))
+        else:
+          discard
+      # If there's no else branch, add one that returns ""
+      var hasElse = false
+      for branch in child:
+        if branch.kind == nnkElse:
+          hasElse = true
+          break
+      if not hasElse:
+        ifExpr.add(newNimNode(nnkElseExpr).add(newStrLitNode("")))
+      parts.add(ifExpr)
     else:
       # Pass through arbitrary Nim statements
       stmts.add(child)
@@ -456,16 +501,24 @@ proc ssrForInExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.} =
   let bodyBlock = node[^1]
 
   let resSym = genName("forRes")
-  let childExpr = ssrChildrenExpr(bodyBlock, stmts)
+  # Use a local stmts list so that arbitrary Nim statements inside the forIn
+  # body (let bindings, if-else, etc.) are emitted inside the for loop rather
+  # than being hoisted to the outer scope where `item`/`index` aren't defined.
+  let innerStmts = newStmtList()
+  let childExpr = ssrChildrenExpr(bodyBlock, innerStmts)
 
-  # Build: block: var res = ""; for index, item in seqExpr: res.add(childExpr); res
+  # Build the for-loop body: first the inner statements, then res.add(childExpr)
+  let loopBody = newStmtList()
+  for s in innerStmts:
+    loopBody.add(s)
+  loopBody.add(newCall(newDotExpr(resSym, ident"add"), childExpr))
+
+  # Build: block: var res = ""; for index, item in seqExpr: <loopBody>; res
   let forLoop = newNimNode(nnkForStmt).add(
     ident"index",
     ident"item",
     seqExpr,
-    newStmtList(
-      newCall(newDotExpr(resSym, ident"add"), childExpr)
-    )
+    loopBody
   )
 
   let blockBody = newStmtList(
