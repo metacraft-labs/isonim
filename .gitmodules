@@ -1,0 +1,3 @@
+[submodule "src/isonim/layout/yoga"]
+	path = src/isonim/layout/yoga
+	url = https://github.com/facebook/yoga.git
