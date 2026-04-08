@@ -125,12 +125,23 @@ proc makeFilterCallback*(onFilter: proc(f: FilterMode); f: FilterMode): proc() =
 proc renderFilterButton*[R, E](r: R; label: string; active: bool;
                                 onClick: proc();
                                 engine: LayoutEngine = nil): E =
+  ## Each filter pill gets explicit directional padding so the text has room.
   let btn = mkElem[R, E](r, "div", engine, {
-    "padding": "8",
-    "border-radius": "16"})
+    "padding-top": "8",
+    "padding-bottom": "8",
+    "padding-left": "16",
+    "padding-right": "16",
+    "border-radius": "16",
+    "align-items": "center",
+    "justify-content": "center"})
   if active:
     mkStyle[R, E](r, btn, engine, "background-color", themeColor("primary"))
-  let text = mkText[R, E](r, label, engine, {"font-size": "14", "height": "18"})
+  # Give text node explicit width based on character count (~9px per char at font-size 14)
+  let textWidth = max(label.len * 9, 30)
+  let text = mkText[R, E](r, label, engine, {
+    "font-size": "14",
+    "height": "18",
+    "width": $textWidth})
   if active:
     mkStyle[R, E](r, text, engine, "color", "#FFFFFF")
   else:
@@ -200,18 +211,22 @@ proc renderTaskApp*[R, E](r: R; state: TaskAppState;
   if tasks.len == 0:
     let empty = mkElem[R, E](r, "div", engine, {
       "padding": "48",
-      "align-items": "center"})
+      "align-items": "center",
+      "justify-content": "center"})
     let emptyText = mkElem[R, E](r, "span", engine, {
       "color": themeColor("text-secondary"),
       "font-size": "18",
-      "height": "44"})
+      "height": "44",
+      "width": "300",
+      "align-self": "center"})
     r.setTextContent(emptyText, "No tasks yet.\nTap + to add one.")
     mkAppend[R, E](r, empty, emptyText, engine)
     mkAppend[R, E](r, root, empty, engine)
   else:
     let list = mkElem[R, E](r, "div", engine, {
       "gap": "8",
-      "padding": "8"})
+      "padding": "8",
+      "margin-top": "4"})
     for task in tasks:
       let row = renderTaskRow[R, E](r, task,
         makeIdCallback(onToggle, task.id),
@@ -224,8 +239,10 @@ proc renderTaskApp*[R, E](r: R; state: TaskAppState;
   let filterBar = mkElem[R, E](r, "div", engine, {
     "flex-direction": "row",
     "justify-content": "center",
-    "gap": "4",
-    "padding": "12"})
+    "align-items": "center",
+    "gap": "8",
+    "padding": "16",
+    "margin-top": "8"})
 
   for filt in [fmAll, fmActive, fmCompleted]:
     let label = case filt
@@ -242,11 +259,15 @@ proc renderTaskApp*[R, E](r: R; state: TaskAppState;
   if state.completedCount() > 0:
     let clearBtn = mkElem[R, E](r, "div", engine, {
       "padding": "12",
-      "align-items": "center"})
+      "align-items": "center",
+      "justify-content": "center",
+      "margin-top": "4"})
     let clearText = mkElem[R, E](r, "span", engine, {
       "color": themeColor("error"),
       "font-size": "14",
-      "height": "18"})
+      "height": "18",
+      "width": "130",
+      "align-self": "center"})
     r.setTextContent(clearText, "Clear Completed")
     mkAppend[R, E](r, clearBtn, clearText, engine)
     r.addEventListener(clearBtn, "click", onClear)
