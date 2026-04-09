@@ -1,21 +1,25 @@
 # IsoNim
 
-Isomorphic reactive web framework for Nim, inspired by SolidJS.
+Cross-platform reactive UI framework for Nim, inspired by SolidJS.
 
 ## Overview
 
-IsoNim brings SolidJS's fine-grained reactivity model to Nim. It provides signals, effects, and memos as reactive primitives -- no virtual DOM diffing, no re-renders of entire component trees. Reactive updates target exactly the DOM nodes (or string fragments) that depend on changed data.
+IsoNim brings SolidJS's fine-grained reactivity model to Nim. It provides signals, effects, and memos as reactive primitives -- no virtual DOM diffing, no re-renders of entire component trees. Reactive updates target exactly the nodes that depend on changed data.
 
-Unlike other Nim web frameworks, IsoNim is **isomorphic**: the same component code compiles to both client-side DOM operations and server-side HTML strings. It also ships with a pluggable renderer architecture, so the reactive core works with browser DOM, terminal UIs, mock backends for testing, or nginx native modules for SSR.
+IsoNim is **cross-platform**: the same component code compiles to browser DOM (JS target), server-side HTML strings (C target), native iOS views (UIKit via objc_msgSend), native Android views (JNI command buffer), or desktop GUIs (Freya via Rust FFI). It ships with a pluggable renderer architecture, Yoga-based flexbox layout, and Tailwind CSS support across all targets.
 
 ## Features
 
 - **Fine-grained reactivity** -- signals, effects, memos with automatic dependency tracking (no virtual DOM)
+- **Cross-platform** -- same DSL renders to web, iOS (UIKit), Android (Material), desktop (Freya), terminal
 - **Karax-style DSL** -- `buildHtml` macro for type-safe, compile-time-checked HTML
+- **Tailwind CSS** -- real Tailwind CLI integration; utility classes work on all platforms
 - **Server-side rendering** -- `buildHtmlString`, `renderToString`, and streaming SSR with Suspense
 - **Isomorphic components** -- `isomorphicHtml` compiles the same code for server and client
 - **DSL control flow** -- `showIf`/`showElse`, `forIn` directives integrated into the macro
-- **GUI-agnostic core** -- pluggable renderers (browser DOM, terminal, mock, SSR)
+- **Yoga layout engine** -- cross-platform flexbox positioning (embedded in renderer)
+- **Native controls** -- compile-time switch between branded (identical) and native (UIKit/Material) controls
+- **GUI-agnostic core** -- pluggable renderers (browser DOM, iOS, Android, Freya, terminal, mock, SSR)
 - **Client hydration** with event replay
 - **ViewModel/View testing** -- test reactive logic without a DOM
 - **Pluggable clock** -- `TestClock` and `withFakeTime` for deterministic time-dependent tests
@@ -114,15 +118,37 @@ buildHtml(renderer):
     p: text "Ready"
 ```
 
+### Tailwind CSS (cross-platform)
+
+```sh
+# Build step: extract Tailwind styles from source
+node tools/tailwind-extract.mjs
+```
+
+```nim
+# Same classes work on web, iOS, Android, and desktop
+buildHtml(renderer):
+  tdiv(class = "flex flex-col p-4 bg-slate-50 rounded-lg gap-2"):
+    span(class = "text-xl font-bold text-gray-900"):
+      text "Powered by real Tailwind CSS"
+    button(class = "px-4 py-2 bg-indigo-500 text-white rounded-md"):
+      text "Click me"
+```
+
+On web, the classes use the generated `build/tailwind.css`. On native, they're expanded to `setStyle` calls at compile time using data from the real Tailwind CSS CLI.
+
 ## Architecture
 
 IsoNim is layered so each concern is isolated:
 
 1. **Reactive core** (`core/`) -- signals, effects, memos, owners, batch, context, resources, suspense, transitions
 2. **rxcore adapter** (`rxcore.nim`) -- 7-proc interface that renderers import instead of core internals
-3. **Renderers** -- MockRenderer (testing), browser DOM (`web/`), terminal (`renderers/`), SSR (`ssr/`)
-4. **DSL macros** (`dsl/html.nim`) -- `buildHtml`, `buildHtmlString`, `isomorphicHtml`
+3. **Renderers** -- MockRenderer (testing), browser DOM (`web/`), UIKit (`isonim-cocoa`), Android (`isonim-android`), Freya (`isonim-freya`), terminal (`renderers/`), SSR (`ssr/`)
+4. **DSL macros** (`dsl/html.nim`) -- `buildHtml`, `buildHtmlString`, `isomorphicHtml`, with Tailwind CSS expansion
 5. **Control flow** (`dsl/components.nim`) -- `show`, `forEachKeyed`, `indexEach`, `errorBoundary`
+6. **Component layer** (`components/`) -- cross-platform controls with compile-time backend selection
+7. **Layout engine** (`layout/`) -- Yoga flexbox for cross-platform positioning
+8. **Theme system** (`theming/`) -- branded, native, and adaptive theme modes
 
 ## Project Structure
 
@@ -132,9 +158,18 @@ src/isonim/
 ├── dsl/            # HTML DSL macros (buildHtml, buildHtmlString, isomorphicHtml)
 │   ├── html.nim    #   DSL entry points
 │   ├── components.nim  # Control flow (show, forEachKeyed, errorBoundary)
-│   ├── transform.nim   # AST helpers (tag resolution, dynamic detection)
+│   ├── transform.nim   # AST helpers (tag resolution, style property detection)
+│   ├── tailwind.nim    # Compile-time Tailwind CSS class expansion
 │   └── sugar.nim       # Syntax sugar
-├── renderers/      # Alternative renderers (terminal)
+├── components/     # Cross-platform UI components
+│   ├── task_app.nim        # App orchestrator (show + forEachKeyed)
+│   ├── task_manager.nim    # Data model + signal-based TaskStore
+│   ├── branded_controls.nim    # Styled controls (identical on all platforms)
+│   ├── native_ios_controls.nim # iOS UIKit controls
+│   └── native_android_controls.nim # Android Material controls
+├── layout/         # Yoga flexbox layout engine
+├── theming/        # Cross-platform theme system
+├── renderers/      # Alternative renderers (terminal, native prototype)
 ├── web/            # Browser DOM renderer, hydration, events
 ├── ssr/            # Server-side rendering (renderToString, streaming, escape)
 ├── ssr_nginx/      # nginx native SSR module
@@ -142,10 +177,22 @@ src/isonim/
 ├── rxcore.nim      # Adapter seam between core and renderers
 └── viewmodel.nim   # ViewModel pattern for testable UI logic
 
-tests/              # 18 test files covering signals, effects, DSL, SSR, hydration, ...
+tools/
+└── tailwind-extract.mjs  # Build step: runs Tailwind CLI, generates JSON for native
+
+tests/              # 18+ test files covering signals, effects, DSL, SSR, hydration, ...
 demos/              # Demo apps (SolidJS reference, IsoNim replica, terminal counter)
 benchmarks/         # js-framework-benchmark keyed entry
 ```
+
+## Platform Repos
+
+| Repo | Platform | Renderer |
+|------|----------|----------|
+| `isonim` | Core framework + web | DomRenderer, MockRenderer, SSR |
+| `isonim-cocoa` | iOS + macOS | UIKitRenderer (objc_msgSend + Yoga) |
+| `isonim-android` | Android | AndroidRenderer (JNI command buffer) |
+| `isonim-freya` | Desktop (Freya) | FreyaRenderer (Rust FFI) |
 
 ## Testing
 
