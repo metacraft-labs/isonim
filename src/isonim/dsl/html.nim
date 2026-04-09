@@ -273,25 +273,18 @@ proc processNode(rendererSym: NimNode; node: NimNode; stmts: NimNode): NimNode {
             newDotExpr(rendererSym, ident"addEventListener"),
             elSym, newStrLitNode(evName), attrVal))
         elif attrName == "class" and not isDynamic(attrVal):
-          # Static class attribute — expand Tailwind utilities to setStyle calls
-          # on native platforms. On JS, pass through as setAttribute.
-          when defined(js):
-            stmts.add(newCall(
-              newDotExpr(rendererSym, ident"setAttribute"),
-              elSym, newStrLitNode("class"), attrVal))
-          else:
+          # Static class attribute — always set as attribute (for CSS/debugging),
+          # AND expand recognized Tailwind utilities to setStyle calls on native.
+          stmts.add(newCall(
+            newDotExpr(rendererSym, ident"setAttribute"),
+            elSym, newStrLitNode("class"), attrVal))
+          when not defined(js):
             let classStr = attrVal.strVal
             let styles = expandTailwindClassesCompileTime(classStr)
-            if styles.len > 0:
-              for (prop, val) in styles:
-                stmts.add(newCall(
-                  newDotExpr(rendererSym, ident"setStyle"),
-                  elSym, newStrLitNode(prop), newStrLitNode(val)))
-            else:
-              # No recognized utilities — pass through as attribute
+            for (prop, val) in styles:
               stmts.add(newCall(
-                newDotExpr(rendererSym, ident"setAttribute"),
-                elSym, newStrLitNode("class"), attrVal))
+                newDotExpr(rendererSym, ident"setStyle"),
+                elSym, newStrLitNode(prop), newStrLitNode(val)))
         elif isStyleProperty(attrName):
           # CSS style property: emit setStyle instead of setAttribute
           let cssName = toStyleName(attrName)
