@@ -59,3 +59,34 @@ proc isEventHandler*(name: string): bool =
 proc eventName*(attrName: string): string =
   ## Extracts event name from on* attribute: "onclick" -> "click"
   attrName[2 .. ^1].toLowerAscii()
+
+# CSS style properties recognized by the DSL.
+# These are emitted as setStyle calls instead of setAttribute.
+const styleProperties* = [
+  # Layout (Yoga / flexbox)
+  "width", "height", "min-width", "min-height", "max-width", "max-height",
+  "padding", "padding-left", "padding-right", "padding-top", "padding-bottom",
+  "margin", "margin-left", "margin-right", "margin-top", "margin-bottom",
+  "gap", "flex", "flex-grow", "flex-shrink", "flex-wrap",
+  "flex-direction", "align-items", "align-self", "justify-content",
+  "display", "position",
+  # Visual
+  "background-color", "color", "opacity",
+  "font-size", "font-weight", "text-align", "text-decoration",
+  "border-radius", "border-color", "border-width",
+]
+
+proc toStyleName*(nimName: string): string =
+  ## Converts a Nim identifier to a CSS property name.
+  ## Underscores become hyphens: background_color -> background-color.
+  ## Backtick-quoted names (already resolved by the parser) pass through.
+  nimName.replace("_", "-")
+
+proc isStyleProperty*(name: string): bool =
+  ## Checks if an attribute name (after underscore-to-hyphen conversion)
+  ## is a recognized CSS style property.
+  let cssName = toStyleName(name)
+  for sp in styleProperties:
+    if cssName == sp:
+      return true
+  return false

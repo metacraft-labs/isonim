@@ -62,12 +62,12 @@ proc renderTaskRow*[R, E](r: R; task: TaskData;
     "align-items": "center",
     "padding": "12",
     "background-color": themeColor("surface"),
-    "border-radius": "8"})
+    "border-radius": "12"})
 
   # Checkbox (styled div)
   let checkbox = mkElem[R, E](r, "div", engine, {
-    "width": "28",
-    "height": "28",
+    "width": "24",
+    "height": "24",
     "border-radius": "6",
     "align-items": "center",
     "justify-content": "center"})
@@ -75,12 +75,14 @@ proc renderTaskRow*[R, E](r: R; task: TaskData;
     mkStyle[R, E](r, checkbox, engine, "background-color", themeColor("primary"))
     let check = mkText[R, E](r, "\u2713", engine, {
       "color": "#FFFFFF",
-      "font-size": "16",
-      "height": "20",
-      "width": "20"})
+      "font-size": "14",
+      "text-align": "center",
+      "height": "18",
+      "width": "18"})
     mkAppend[R, E](r, checkbox, check, engine)
   else:
     mkStyle[R, E](r, checkbox, engine, "border-color", themeColor("border"))
+    mkStyle[R, E](r, checkbox, engine, "border-width", "2")
     mkStyle[R, E](r, checkbox, engine, "background-color", "transparent")
   r.addEventListener(checkbox, "click", onToggle)
 
@@ -103,9 +105,10 @@ proc renderTaskRow*[R, E](r: R; task: TaskData;
     "justify-content": "center"})
   let delIcon = mkText[R, E](r, "\u2715", engine, {
     "color": themeColor("error"),
-    "font-size": "18",
-    "height": "22",
-    "width": "22"})
+    "font-size": "20",
+    "text-align": "center",
+    "height": "24",
+    "width": "24"})
   mkAppend[R, E](r, delBtn, delIcon, engine)
   r.addEventListener(delBtn, "click", onDelete)
 
@@ -166,6 +169,7 @@ proc renderTaskApp*[R, E](r: R; state: TaskAppState;
   # Title
   let title = mkElem[R, E](r, "span", engine, {
     "font-size": "32",
+    "font-weight": "bold",
     "height": "40"})
   r.setTextContent(title, "Tasks")
   mkStyle[R, E](r, title, engine, "color", themeColor("text-primary"))
@@ -178,7 +182,7 @@ proc renderTaskApp*[R, E](r: R; state: TaskAppState;
     "gap": "8"})
 
   let input = mkElem[R, E](r, "input", engine, {
-    "background-color": themeColor("surface"),
+    "background-color": "#F1F5F9",
     "border-radius": "8",
     "padding": "12",
     "font-size": "16",
@@ -189,7 +193,7 @@ proc renderTaskApp*[R, E](r: R; state: TaskAppState;
 
   let addBtn = mkElem[R, E](r, "div", engine, {
     "background-color": themeColor("primary"),
-    "border-radius": "8",
+    "border-radius": "24",
     "padding": "12",
     "width": "48",
     "height": "48",
@@ -198,25 +202,35 @@ proc renderTaskApp*[R, E](r: R; state: TaskAppState;
   let plusIcon = mkText[R, E](r, "+", engine, {
     "color": "#FFFFFF",
     "font-size": "24",
+    "text-align": "center",
     "height": "28",
     "width": "28"})
   mkAppend[R, E](r, addBtn, plusIcon, engine)
+
+  # Wire add button: read input text, call onAdd, clear input
+  r.addEventListener(addBtn, "click", proc() =
+    let text = r.textContent(input)
+    if text.len > 0:
+      onAdd(text)
+      r.setTextContent(input, "")
+  )
 
   mkAppend[R, E](r, inputRow, input, engine)
   mkAppend[R, E](r, inputRow, addBtn, engine)
   mkAppend[R, E](r, root, inputRow, engine)
 
-  # Task list
+  # Task list — flex-grow to fill available space, pushing filter bar to bottom
   let tasks = state.filteredTasks()
   if tasks.len == 0:
     let empty = mkElem[R, E](r, "div", engine, {
-      "padding": "48",
+      "flex-grow": "1",
       "align-items": "center",
       "justify-content": "center"})
     let emptyText = mkElem[R, E](r, "span", engine, {
       "color": themeColor("text-secondary"),
       "font-size": "18",
-      "height": "44",
+      "text-align": "center",
+      "height": "52",
       "width": "300",
       "align-self": "center"})
     r.setTextContent(emptyText, "No tasks yet.\nTap + to add one.")
@@ -224,6 +238,7 @@ proc renderTaskApp*[R, E](r: R; state: TaskAppState;
     mkAppend[R, E](r, root, empty, engine)
   else:
     let list = mkElem[R, E](r, "div", engine, {
+      "flex-grow": "1",
       "gap": "8",
       "padding": "8",
       "margin-top": "4"})
@@ -235,14 +250,13 @@ proc renderTaskApp*[R, E](r: R; state: TaskAppState;
       mkAppend[R, E](r, list, row, engine)
     mkAppend[R, E](r, root, list, engine)
 
-  # Filter bar
+  # Filter bar — pinned to bottom via flex layout
   let filterBar = mkElem[R, E](r, "div", engine, {
     "flex-direction": "row",
     "justify-content": "center",
     "align-items": "center",
     "gap": "8",
-    "padding": "16",
-    "margin-top": "8"})
+    "padding": "12"})
 
   for filt in [fmAll, fmActive, fmCompleted]:
     let label = case filt
@@ -256,21 +270,23 @@ proc renderTaskApp*[R, E](r: R; state: TaskAppState;
   mkAppend[R, E](r, root, filterBar, engine)
 
   # Clear completed button
+  let clearBtn = mkElem[R, E](r, "div", engine, {
+    "padding": "8",
+    "align-items": "center",
+    "justify-content": "center"})
+  let clearText = mkElem[R, E](r, "span", engine, {
+    "font-size": "14",
+    "height": "18",
+    "width": "130",
+    "align-self": "center"})
   if state.completedCount() > 0:
-    let clearBtn = mkElem[R, E](r, "div", engine, {
-      "padding": "12",
-      "align-items": "center",
-      "justify-content": "center",
-      "margin-top": "4"})
-    let clearText = mkElem[R, E](r, "span", engine, {
-      "color": themeColor("error"),
-      "font-size": "14",
-      "height": "18",
-      "width": "130",
-      "align-self": "center"})
+    mkStyle[R, E](r, clearText, engine, "color", themeColor("error"))
     r.setTextContent(clearText, "Clear Completed")
-    mkAppend[R, E](r, clearBtn, clearText, engine)
     r.addEventListener(clearBtn, "click", onClear)
-    mkAppend[R, E](r, root, clearBtn, engine)
+  else:
+    mkStyle[R, E](r, clearText, engine, "color", themeColor("text-disabled"))
+    r.setTextContent(clearText, "Clear Completed")
+  mkAppend[R, E](r, clearBtn, clearText, engine)
+  mkAppend[R, E](r, root, clearBtn, engine)
 
   root

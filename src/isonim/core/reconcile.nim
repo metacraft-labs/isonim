@@ -58,11 +58,12 @@ proc reconcileArrays*[R, N](
   # Simple cases after prefix/suffix matching
   if cStart > cEnd:
     # Only insertions remain
-    let refNode = if nEnd + 1 < nLen: newNodes[nEnd + 1] else: nil
-    for i in nStart .. nEnd:
-      if refNode != nil:
+    if nEnd + 1 < nLen:
+      let refNode = newNodes[nEnd + 1]
+      for i in nStart .. nEnd:
         renderer.insertBefore(parent, newNodes[i], refNode)
-      else:
+    else:
+      for i in nStart .. nEnd:
         renderer.appendChild(parent, newNodes[i])
     currentNodes = newNodes
     return
@@ -139,25 +140,30 @@ proc reconcileArrays*[R, N](
       lisSet.incl(idx)
       idx = parentLis[idx]
 
-  # Work backwards, inserting/moving only non-LIS nodes
-  let refNode = if nEnd + 1 < nLen: newNodes[nEnd + 1] else: nil
-  var nextRef = refNode
+  # Work backwards, inserting/moving only non-LIS nodes.
+  # Track whether we have a valid reference node for insertBefore.
+  var hasRef = nEnd + 1 < nLen
+  var nextRef: N
+  if hasRef:
+    nextRef = newNodes[nEnd + 1]
+
   for i in countdown(rangeLen - 1, 0):
     let nNode = newNodes[nStart + i]
     if newToOld[i] == -1:
       # New node - insert it
-      if nextRef != nil:
+      if hasRef:
         renderer.insertBefore(parent, nNode, nextRef)
       else:
         renderer.appendChild(parent, nNode)
     elif i notin lisSet:
       # Existing node not in LIS - needs to move
       renderer.removeChild(parent, nNode)
-      if nextRef != nil:
+      if hasRef:
         renderer.insertBefore(parent, nNode, nextRef)
       else:
         renderer.appendChild(parent, nNode)
     # else: in LIS, already in correct relative position - skip
     nextRef = nNode
+    hasRef = true
 
   currentNodes = newNodes

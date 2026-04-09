@@ -271,6 +271,22 @@ proc processNode(rendererSym: NimNode; node: NimNode; stmts: NimNode): NimNode {
           stmts.add(newCall(
             newDotExpr(rendererSym, ident"addEventListener"),
             elSym, newStrLitNode(evName), attrVal))
+        elif isStyleProperty(attrName):
+          # CSS style property: emit setStyle instead of setAttribute
+          let cssName = toStyleName(attrName)
+          if not isDynamic(attrVal):
+            stmts.add(newCall(
+              newDotExpr(rendererSym, ident"setStyle"),
+              elSym, newStrLitNode(cssName), attrVal))
+          else:
+            let effectBody = newProc(
+              params = [newEmptyNode()],
+              body = newStmtList(
+                newCall(newDotExpr(rendererSym, ident"setStyle"),
+                        elSym, newStrLitNode(cssName), attrVal)
+              )
+            )
+            stmts.add(newCall(ident"createRenderEffect", effectBody))
         elif not isDynamic(attrVal):
           # Static attribute
           stmts.add(newCall(

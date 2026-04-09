@@ -47,6 +47,41 @@ proc addChild*(engine: LayoutEngine; parentHandle, childHandle: int64) =
     YGNodeInsertChild(engine.nodes[parentIdx].yogaNode,
                        engine.nodes[childIdx].yogaNode, childCount)
 
+proc removeChild*(engine: LayoutEngine; parentHandle, childHandle: int64) =
+  ## Remove a child from its parent in the Yoga tree.
+  if parentHandle in engine.handleToIndex and childHandle in engine.handleToIndex:
+    let parentIdx = engine.handleToIndex[parentHandle]
+    let childIdx = engine.handleToIndex[childHandle]
+    # Remove from parent's children seq
+    for i, c in engine.nodes[parentIdx].children:
+      if c == childIdx:
+        engine.nodes[parentIdx].children.delete(i)
+        break
+    # Remove from Yoga tree
+    YGNodeRemoveChild(engine.nodes[parentIdx].yogaNode,
+                       engine.nodes[childIdx].yogaNode)
+
+proc insertChildBefore*(engine: LayoutEngine;
+                         parentHandle, childHandle, refHandle: int64) =
+  ## Insert a child before a reference child in the Yoga tree.
+  if parentHandle in engine.handleToIndex and childHandle in engine.handleToIndex:
+    let parentIdx = engine.handleToIndex[parentHandle]
+    let childIdx = engine.handleToIndex[childHandle]
+    if refHandle in engine.handleToIndex:
+      let refIdx = engine.handleToIndex[refHandle]
+      # Find the position of refIdx in parent's children
+      var pos = engine.nodes[parentIdx].children.len
+      for i, c in engine.nodes[parentIdx].children:
+        if c == refIdx:
+          pos = i
+          break
+      engine.nodes[parentIdx].children.insert(childIdx, pos)
+      YGNodeInsertChild(engine.nodes[parentIdx].yogaNode,
+                         engine.nodes[childIdx].yogaNode, cuint(pos))
+    else:
+      # Fallback: append at end
+      engine.addChild(parentHandle, childHandle)
+
 proc setLayoutStyle*(engine: LayoutEngine; viewHandle: int64; prop, value: string) =
   ## Apply a CSS-like style property to the Yoga node for this view.
   ## Non-layout properties (colors, fonts, etc.) are silently ignored.

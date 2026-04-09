@@ -43,7 +43,7 @@ proc forEachKeyed*[T, R, N](
         newItemSignals.add(itemSignals[oldIdx])
         newIndexSignals.add(indexSignals[oldIdx])
         # Update index value (item is same by identity)
-        indexSignals[oldIdx].val = i
+        `val=`(indexSignals[oldIdx], i)
         # Remove from map so duplicate items get new nodes
         oldItemMap.del(item)
       else:
@@ -120,26 +120,29 @@ proc show*[R, N](
   ## Conditional rendering. Renders `body` when condition is true,
   ## `fallback` (if provided) when false.
 
-  var currentNode: N = nil
+  var currentNode: N
+  var hasNode = false
   var currentState = false
 
   createRenderEffect proc() =
     let newState = condition()
-    if newState == currentState and currentNode != nil:
+    if newState == currentState and hasNode:
       return
 
     # Remove current node if any
-    if currentNode != nil:
+    if hasNode:
       renderer.removeChild(parent, currentNode)
-      currentNode = nil
+      hasNode = false
 
     currentState = newState
 
     if newState:
       currentNode = body()
+      hasNode = true
       renderer.appendChild(parent, currentNode)
     elif fallback != nil:
       currentNode = fallback()
+      hasNode = true
       renderer.appendChild(parent, currentNode)
 
 proc errorBoundary*[R, N](
