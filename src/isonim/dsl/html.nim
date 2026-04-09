@@ -9,6 +9,7 @@
 
 import std/macros
 import transform
+import tailwind
 
 var gensymCounter {.compileTime.} = 0
 
@@ -271,6 +272,26 @@ proc processNode(rendererSym: NimNode; node: NimNode; stmts: NimNode): NimNode {
           stmts.add(newCall(
             newDotExpr(rendererSym, ident"addEventListener"),
             elSym, newStrLitNode(evName), attrVal))
+        elif attrName == "class" and not isDynamic(attrVal):
+          # Static class attribute — expand Tailwind utilities to setStyle calls
+          # on native platforms. On JS, pass through as setAttribute.
+          when defined(js):
+            stmts.add(newCall(
+              newDotExpr(rendererSym, ident"setAttribute"),
+              elSym, newStrLitNode("class"), attrVal))
+          else:
+            let classStr = attrVal.strVal
+            let styles = expandTailwindClassesCompileTime(classStr)
+            if styles.len > 0:
+              for (prop, val) in styles:
+                stmts.add(newCall(
+                  newDotExpr(rendererSym, ident"setStyle"),
+                  elSym, newStrLitNode(prop), newStrLitNode(val)))
+            else:
+              # No recognized utilities — pass through as attribute
+              stmts.add(newCall(
+                newDotExpr(rendererSym, ident"setAttribute"),
+                elSym, newStrLitNode("class"), attrVal))
         elif isStyleProperty(attrName):
           # CSS style property: emit setStyle instead of setAttribute
           let cssName = toStyleName(attrName)
