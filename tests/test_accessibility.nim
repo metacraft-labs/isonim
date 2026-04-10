@@ -365,7 +365,7 @@ suite "Accessibility - ARIA Attributes":
     ## div with role="button" should have the role attribute set
     createRoot proc(dispose: proc()) =
       let renderer = MockRenderer()
-      let root = buildHtml(renderer):
+      let root = ui(renderer):
         tdiv(role = "button"):
           text "Click me"
 
@@ -376,7 +376,7 @@ suite "Accessibility - ARIA Attributes":
     ## Buttons and inputs should support aria-label
     createRoot proc(dispose: proc()) =
       let renderer = MockRenderer()
-      let root = buildHtml(renderer):
+      let root = ui(renderer):
         tdiv:
           button(`aria-label` = "Close dialog"):
             text "X"
@@ -396,7 +396,7 @@ suite "Accessibility - ARIA Attributes":
       let renderer = MockRenderer()
       let checked = createSignal(false)
 
-      let root = buildHtml(renderer):
+      let root = ui(renderer):
         tdiv(role = "checkbox", `aria-checked` = (if checked.val: "true" else: "false"))
 
       check root.attributes["aria-checked"] == "false"
@@ -413,7 +413,7 @@ suite "Accessibility - ARIA Attributes":
       let renderer = MockRenderer()
       let hidden = createSignal(false)
 
-      let root = buildHtml(renderer):
+      let root = ui(renderer):
         tdiv(`aria-hidden` = (if hidden.val: "true" else: "false")):
           text "Decorative content"
 
@@ -428,7 +428,7 @@ suite "Accessibility - ARIA Attributes":
       let renderer = MockRenderer()
       let expanded = createSignal(false)
 
-      let root = buildHtml(renderer):
+      let root = ui(renderer):
         tdiv:
           button(`aria-expanded` = (if expanded.val: "true" else: "false")):
             text "Toggle section"
@@ -448,7 +448,7 @@ suite "Accessibility - ARIA Attributes":
       let renderer = MockRenderer()
       let count = createSignal(0)
 
-      let root = buildHtml(renderer):
+      let root = ui(renderer):
         tdiv(`aria-live` = "polite"):
           span: text ($count.val & " items remaining")
 
@@ -463,7 +463,7 @@ suite "Accessibility - ARIA Attributes":
     createRoot proc(dispose: proc()) =
       let renderer = MockRenderer()
 
-      let root = buildHtml(renderer):
+      let root = ui(renderer):
         tdiv:
           label(id = "task-label"):
             text "Task name"
@@ -553,7 +553,7 @@ suite "Accessibility - Semantic HTML Structure":
     createRoot proc(dispose: proc()) =
       let renderer = MockRenderer()
 
-      let root = buildHtml(renderer):
+      let root = ui(renderer):
         tdiv:
           h1: text "Main Title"
           h2: text "Section"
@@ -569,7 +569,7 @@ suite "Accessibility - Semantic HTML Structure":
       let renderer = MockRenderer()
       var clicked = 0
 
-      let root = buildHtml(renderer):
+      let root = ui(renderer):
         button(onclick = proc() = inc clicked):
           text "Submit"
 
@@ -583,7 +583,7 @@ suite "Accessibility - Semantic HTML Structure":
       let renderer = MockRenderer()
 
       # Label via 'for' attribute
-      let root = buildHtml(renderer):
+      let root = ui(renderer):
         tdiv:
           label(`for` = "task-input"):
             text "Task name"
@@ -602,7 +602,7 @@ suite "Accessibility - Semantic HTML Structure":
     createRoot proc(dispose: proc()) =
       let renderer = MockRenderer()
 
-      let root = buildHtml(renderer):
+      let root = ui(renderer):
         label:
           text "Email"
           input(ttype = "email")
@@ -618,7 +618,7 @@ suite "Accessibility - Semantic HTML Structure":
     createRoot proc(dispose: proc()) =
       let renderer = MockRenderer()
 
-      let root = buildHtml(renderer):
+      let root = ui(renderer):
         nav(`aria-label` = "Main navigation"):
           ul:
             li:
@@ -634,7 +634,7 @@ suite "Accessibility - Semantic HTML Structure":
     createRoot proc(dispose: proc()) =
       let renderer = MockRenderer()
 
-      let root = buildHtml(renderer):
+      let root = ui(renderer):
         main(role = "main"):
           h1: text "Tasks"
           section:
@@ -995,7 +995,7 @@ suite "Accessibility - Screen Reader Text":
       let renderer = MockRenderer()
       let count = createSignal(3)
 
-      let root = buildHtml(renderer):
+      let root = ui(renderer):
         tdiv:
           span(class = "sr-only"):
             text ($count.val & " items remaining")
@@ -1013,7 +1013,7 @@ suite "Accessibility - Screen Reader Text":
     createRoot proc(dispose: proc()) =
       let renderer = MockRenderer()
 
-      let root = buildHtml(renderer):
+      let root = ui(renderer):
         tdiv:
           img(src = "/logo.png", alt = "Company logo")
           img(src = "/decorative.png", alt = "", `aria-hidden` = "true")
@@ -1032,7 +1032,7 @@ suite "Accessibility - Screen Reader Text":
     createRoot proc(dispose: proc()) =
       let renderer = MockRenderer()
 
-      let root = buildHtml(renderer):
+      let root = ui(renderer):
         tdiv:
           button(`aria-label` = "Remove task"):
             text "x"
@@ -1053,7 +1053,7 @@ suite "Accessibility - Screen Reader Text":
     createRoot proc(dispose: proc()) =
       let renderer = MockRenderer()
 
-      let root = buildHtml(renderer):
+      let root = ui(renderer):
         tdiv:
           span(class = srOnlyClass()):
             text "5 tasks completed"
@@ -1068,7 +1068,7 @@ suite "Accessibility - Screen Reader Text":
       let renderer = MockRenderer()
       let store = createTaskStore()
 
-      let root = buildHtml(renderer):
+      let root = ui(renderer):
         tdiv(`aria-live` = "polite", role = "status"):
           span(class = "sr-only"):
             text ($store.activeCount.val & " active tasks")
@@ -1089,7 +1089,7 @@ suite "Accessibility - Screen Reader Text":
       let renderer = MockRenderer()
       let done = createSignal(false)
 
-      let root = buildHtml(renderer):
+      let root = ui(renderer):
         tdiv(role = "checkbox", `aria-checked` = (if done.val: "true" else: "false"), `aria-label` = "Complete task"):
           text "Buy groceries"
 

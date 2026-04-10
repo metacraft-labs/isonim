@@ -1,7 +1,7 @@
 ## Branded controls — renders task app components using Tailwind CSS utility
 ## classes for a pixel-identical appearance on all platforms.
 ##
-## On native platforms (iOS/Android/Freya), the buildHtml macro expands
+## On native platforms (iOS/Android/Freya), the ui macro expands
 ## Tailwind classes to setStyle calls at compile time. On web, classes are
 ## passed through to the browser's Tailwind CSS engine.
 ##
@@ -20,11 +20,11 @@ proc initTheme*() =
   setTheme(isoTheme())
 
 proc createAppRoot*[R, E](r: R): E =
-  buildHtml(r):
+  ui(r):
     tdiv(class = "p-4 bg-slate-50")
 
 proc createTitle*[R, E](r: R; text: string): E =
-  let el = buildHtml(r):
+  let el = ui(r):
     span(class = "text-4xl font-bold h-10")
   r.setTextContent(el, text)
   r.setStyle(el, "color", themeColor("text-primary"))
@@ -32,7 +32,7 @@ proc createTitle*[R, E](r: R; text: string): E =
 
 proc createInputRow*[R, E](r: R; placeholder: string;
                             onAdd: proc(text: string)): E =
-  let row = buildHtml(r):
+  let row = ui(r):
     tdiv(class = "flex flex-row p-2 gap-2")
 
   let input = r.createElement("input")
@@ -45,7 +45,7 @@ proc createInputRow*[R, E](r: R; placeholder: string;
   r.setStyle(input, "color", themeColor("text-primary"))
   r.setAttribute(input, "placeholder", placeholder)
 
-  let addBtn = buildHtml(r):
+  let addBtn = ui(r):
     tdiv(class = "w-12 h-12 rounded-full items-center justify-center")
   r.setStyle(addBtn, "background-color", themeColor("primary"))
 
@@ -69,17 +69,17 @@ proc createInputRow*[R, E](r: R; placeholder: string;
   row
 
 proc createTaskList*[R, E](r: R): E =
-  buildHtml(r):
+  ui(r):
     tdiv(class = "grow gap-2 p-2 mt-1")
 
 proc createTaskRow*[R, E](r: R; task: proc(): TaskData;
                            onToggle, onDelete: proc()): E =
-  let row = buildHtml(r):
+  let row = ui(r):
     tdiv(class = "flex flex-row items-center p-3 rounded-xl")
   r.setStyle(row, "background-color", themeColor("surface"))
 
   # Checkbox
-  let checkbox = buildHtml(r):
+  let checkbox = ui(r):
     tdiv(class = "w-6 h-6 rounded-md items-center justify-center")
 
   let check = r.createTextNode("\u2713")
@@ -106,7 +106,7 @@ proc createTaskRow*[R, E](r: R; task: proc(): TaskData;
   r.addEventListener(checkbox, "click", onToggle)
 
   # Text label
-  let label = buildHtml(r):
+  let label = ui(r):
     span(class = "text-base grow h-5 ml-3")
 
   createRenderEffect proc() =
@@ -118,7 +118,7 @@ proc createTaskRow*[R, E](r: R; task: proc(): TaskData;
       r.setStyle(label, "color", themeColor("text-primary"))
 
   # Delete button
-  let delBtn = buildHtml(r):
+  let delBtn = ui(r):
     tdiv(class = "p-2 items-center justify-center")
 
   let delIcon = r.createTextNode("\u2715")
@@ -136,10 +136,10 @@ proc createTaskRow*[R, E](r: R; task: proc(): TaskData;
   row
 
 proc createEmptyState*[R, E](r: R; message: string): E =
-  let empty = buildHtml(r):
+  let empty = ui(r):
     tdiv(class = "grow items-center justify-center")
 
-  let emptyText = buildHtml(r):
+  let emptyText = ui(r):
     span(class = "text-lg text-center h-14 self-center")
   r.setStyle(emptyText, "width", "300")
   r.setStyle(emptyText, "color", themeColor("text-secondary"))
@@ -149,7 +149,7 @@ proc createEmptyState*[R, E](r: R; message: string): E =
 
 proc createFilterBar*[R, E](r: R; currentFilter: proc(): FilterMode;
                              onFilter: proc(f: FilterMode)): E =
-  let bar = buildHtml(r):
+  let bar = ui(r):
     tdiv(class = "flex flex-row justify-center items-center gap-2 p-3")
 
   for filt in [fmAll, fmActive, fmCompleted]:
@@ -159,7 +159,7 @@ proc createFilterBar*[R, E](r: R; currentFilter: proc(): FilterMode;
       of fmCompleted: "Completed"
     let filtCapture = filt
 
-    let btn = buildHtml(r):
+    let btn = ui(r):
       tdiv(class = "py-2 px-4 rounded-2xl items-center justify-center")
 
     let textWidth = max(label.len * 9, 30)
@@ -185,10 +185,10 @@ proc createFilterBar*[R, E](r: R; currentFilter: proc(): FilterMode;
 
 proc createClearButton*[R, E](r: R; hasCompleted: proc(): bool;
                                onClear: proc()): E =
-  let clearBtn = buildHtml(r):
+  let clearBtn = ui(r):
     tdiv(class = "p-2 items-center justify-center")
 
-  let clearText = buildHtml(r):
+  let clearText = ui(r):
     span(class = "text-sm h-5 self-center")
   r.setStyle(clearText, "width", "130")
   r.setTextContent(clearText, "Clear Completed")

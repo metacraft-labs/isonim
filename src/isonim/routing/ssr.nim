@@ -5,7 +5,7 @@
 ## module (or any C-target caller) can render the correct page for
 ## a given request URI.
 ##
-## SSR components return strings (via buildHtmlString), while the
+## SSR components return strings (via uiString), while the
 ## client-side router stores proc() components (side-effect based).
 ## This module bridges the two: it reuses the router's URL matching
 ## but renders string-returning components.

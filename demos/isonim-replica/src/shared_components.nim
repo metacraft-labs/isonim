@@ -1,6 +1,6 @@
 ## Shared isomorphic components for the IsoNim demo app.
 ##
-## These components use `isomorphicHtml` to compile to either:
+## These components use `isomorphicUi` to compile to either:
 ## - Client mode: element tree via renderer API (MockRenderer, browser DOM, etc.)
 ## - SSR mode: HTML strings (when compiled with `-d:isServer`)
 ##
@@ -16,12 +16,12 @@ when not defined(isServer):
   import isonim/testing/mock_dom
 
 # ---------------------------------------------------------------------------
-# Simple isomorphic components using isomorphicHtml
+# Simple isomorphic components using isomorphicUi
 # ---------------------------------------------------------------------------
 
 proc pageHeader*(renderer: auto): auto =
   ## Static page header -- same output in SSR and client modes.
-  isomorphicHtml(renderer):
+  isomorphicUi(renderer):
     header(class = "page-header"):
       h1: text "IsoNim Task Manager"
       p(class = "subtitle"):
@@ -30,36 +30,36 @@ proc pageHeader*(renderer: auto): auto =
 proc taskCountBadge*(renderer: auto; count: int): auto =
   ## Renders a count badge. In SSR mode, evaluates count once.
   ## In client mode, count should be passed from a signal read.
-  isomorphicHtml(renderer):
+  isomorphicUi(renderer):
     span(class = "badge"):
       text $count
 
 proc emptyState*(renderer: auto): auto =
   ## Empty state placeholder.
-  isomorphicHtml(renderer):
+  isomorphicUi(renderer):
     tdiv(class = "empty-state"):
       p: text "No tasks yet"
       p(class = "hint"):
         text "Add your first task above"
 
 # ---------------------------------------------------------------------------
-# SSR-specific rendering using buildHtmlString
+# SSR-specific rendering using uiString
 # ---------------------------------------------------------------------------
 
 proc renderTaskListSsr*(store: TaskStore): string =
   ## Server-side renders the full task list.
-  ## Uses buildHtmlString for structure, ssrFor for iteration.
+  ## Uses uiString for structure, ssrFor for iteration.
   let tasks = store.filteredTasks.val
   if tasks.len == 0:
-    return buildHtmlString:
+    return uiString:
       p(class = "empty"):
         text "No tasks"
 
-  buildHtmlString:
+  uiString:
     ul(class = "task-list"):
       raw ssrFor(tasks, proc(task: Task, index: int): string =
         let doneClass = if task.done: "completed" else: ""
-        buildHtmlString:
+        uiString:
           li(class = doneClass):
             input(ttype = "checkbox")
             span: text task.text
@@ -77,7 +77,7 @@ proc renderTaskFooterSsr*(store: TaskStore): string =
   let suffix = if ac != 1: "s" else: ""
   let countText = $ac & " item" & suffix & " left"
 
-  buildHtmlString:
+  uiString:
     footer(class = "task-footer"):
       span: text countText
       tdiv(class = "filters"):
@@ -90,13 +90,13 @@ proc renderTaskFooterSsr*(store: TaskStore): string =
 
 proc renderFullPageSsr*(store: TaskStore): string =
   ## Full-page SSR rendering of the task manager.
-  ## Demonstrates buildHtmlString composing multiple components.
-  let pageHeaderHtml = buildHtmlString:
+  ## Demonstrates uiString composing multiple components.
+  let pageHeaderHtml = uiString:
     header(class = "page-header"):
       h1: text "IsoNim Task Manager"
       p(class = "subtitle"):
         text "A reactive UI demo -- same code, server and client"
-  let taskHeaderHtml = buildHtmlString:
+  let taskHeaderHtml = uiString:
     header:
       h1: text "Task Manager"
       form:
@@ -105,7 +105,7 @@ proc renderFullPageSsr*(store: TaskStore): string =
           text "Add"
   let taskListHtml = renderTaskListSsr(store)
   let footerHtml = renderTaskFooterSsr(store)
-  buildHtmlString:
+  uiString:
     tdiv(class = "app"):
       raw pageHeaderHtml
       section:

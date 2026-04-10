@@ -52,7 +52,7 @@ proc completedCount*(state: TaskAppState): int =
   state.tasks.countIt(it.completed)
 
 # ===========================================================================
-# Signal-based TaskStore — for reactive rendering via buildHtml DSL
+# Signal-based TaskStore — for reactive rendering via ui DSL
 # ===========================================================================
 
 import isonim/core/[signals, computation]

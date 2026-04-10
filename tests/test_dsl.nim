@@ -7,10 +7,10 @@ import isonim/dsl/components
 
 suite "DSL":
   test "test_dsl_static_html":
-    ## buildHtml with static content produces correct MockNode tree
+    ## ui with static content produces correct MockNode tree
     createRoot proc(dispose: proc()) =
       let renderer = MockRenderer()
-      let root = buildHtml(renderer):
+      let root = ui(renderer):
         tdiv(class = "container"):
           h1: text "Hello"
           p: text "World"
@@ -38,7 +38,7 @@ suite "DSL":
       let renderer = MockRenderer()
       let count = createSignal(0)
 
-      let root = buildHtml(renderer):
+      let root = ui(renderer):
         tdiv:
           span: text $count.val
 
@@ -55,7 +55,7 @@ suite "DSL":
       let renderer = MockRenderer()
       let cls = createSignal("red")
 
-      let root = buildHtml(renderer):
+      let root = ui(renderer):
         tdiv(class = cls.val)
 
       check root.attributes["class"] == "red"
@@ -69,7 +69,7 @@ suite "DSL":
       let renderer = MockRenderer()
       var clicked = 0
 
-      let root = buildHtml(renderer):
+      let root = ui(renderer):
         button(onclick = proc() = inc clicked):
           text "Click me"
 
@@ -215,7 +215,7 @@ suite "DSL":
       var innerOwner: OwnerBase
 
       # Simulate nested component pattern
-      let root = buildHtml(renderer):
+      let root = ui(renderer):
         tdiv:
           tdiv:
             text "inner"
@@ -264,7 +264,7 @@ suite "DSL":
       let renderer = MockRenderer()
       let visible = createSignal(true)
 
-      let root = buildHtml(renderer):
+      let root = ui(renderer):
         tdiv:
           showIf(visible.val):
             p: text "shown"
@@ -279,7 +279,7 @@ suite "DSL":
       let renderer = MockRenderer()
       let visible = createSignal(true)
 
-      let root = buildHtml(renderer):
+      let root = ui(renderer):
         tdiv:
           showIf(visible.val):
             p: text "visible"
@@ -300,7 +300,7 @@ suite "DSL":
       let renderer = MockRenderer()
       let visible = createSignal(false)
 
-      let root = buildHtml(renderer):
+      let root = ui(renderer):
         tdiv:
           showIf(visible.val):
             p: text "now you see me"
@@ -320,7 +320,7 @@ suite "DSL":
       let renderer = MockRenderer()
       let items = createSignal(@["a", "b", "c"])
 
-      let root = buildHtml(renderer):
+      let root = ui(renderer):
         ul:
           forIn(items.val):
             li: text $item
@@ -337,7 +337,7 @@ suite "DSL":
       let renderer = MockRenderer()
       let items = createSignal(@["x", "y"])
 
-      let root = buildHtml(renderer):
+      let root = ui(renderer):
         ul:
           forIn(items.val):
             li: text $item
@@ -360,7 +360,7 @@ suite "DSL":
       let renderer = MockRenderer()
       let items = createSignal(@["a", "b", "c"])
 
-      let root = buildHtml(renderer):
+      let root = ui(renderer):
         ul:
           forIn(items.val):
             li: text $index & ": " & $item

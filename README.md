@@ -12,10 +12,10 @@ IsoNim is **cross-platform**: the same component code compiles to browser DOM (J
 
 - **Fine-grained reactivity** -- signals, effects, memos with automatic dependency tracking (no virtual DOM)
 - **Cross-platform** -- same DSL renders to web, iOS (UIKit), Android (Material), desktop (Freya), terminal
-- **Karax-style DSL** -- `buildHtml` macro for type-safe, compile-time-checked HTML
+- **Karax-style DSL** -- `ui` macro for type-safe, compile-time-checked HTML
 - **Tailwind CSS** -- real Tailwind CLI integration; utility classes work on all platforms
-- **Server-side rendering** -- `buildHtmlString`, `renderToString`, and streaming SSR with Suspense
-- **Isomorphic components** -- `isomorphicHtml` compiles the same code for server and client
+- **Server-side rendering** -- `uiString`, `renderToString`, and streaming SSR with Suspense
+- **Isomorphic components** -- `isomorphicUi` compiles the same code for server and client
 - **DSL control flow** -- `showIf`/`showElse`, `forIn` directives integrated into the macro
 - **Yoga layout engine** -- cross-platform flexbox positioning (embedded in renderer)
 - **Native controls** -- compile-time switch between branded (identical) and native (UIKit/Material) controls
@@ -70,7 +70,7 @@ import isonim/testing/mock_dom
 
 let renderer = MockRenderer()
 var count = createSignal(0)
-let root = buildHtml(renderer):
+let root = ui(renderer):
   tdiv(class = "counter"):
     span: text $count.val
     button(onclick = proc() = count.val = count.val + 1):
@@ -84,7 +84,7 @@ import isonim/dsl/html
 import isonim/ssr/[renderer, escape]
 
 let html = renderToString(proc(): string =
-  buildHtmlString:
+  uiString:
     tdiv(class = "app"):
       h1: text "Hello from SSR"
       showIf(loggedIn):
@@ -99,7 +99,7 @@ let html = renderToString(proc(): string =
 ```nim
 proc myComponent(renderer: auto): auto =
   var count = createSignal(0)
-  isomorphicHtml(renderer):
+  isomorphicUi(renderer):
     tdiv:
       span: text $count.val
 # Compiles to DOM ops (default) or HTML strings (-d:isServer)
@@ -108,7 +108,7 @@ proc myComponent(renderer: auto): auto =
 ### DSL control flow
 
 ```nim
-buildHtml(renderer):
+ui(renderer):
   ul:
     forIn(items.val):
       li: text $item
@@ -127,7 +127,7 @@ node tools/tailwind-extract.mjs
 
 ```nim
 # Same classes work on web, iOS, Android, and desktop
-buildHtml(renderer):
+ui(renderer):
   tdiv(class = "flex flex-col p-4 bg-slate-50 rounded-lg gap-2"):
     span(class = "text-xl font-bold text-gray-900"):
       text "Powered by real Tailwind CSS"
@@ -144,7 +144,7 @@ IsoNim is layered so each concern is isolated:
 1. **Reactive core** (`core/`) -- signals, effects, memos, owners, batch, context, resources, suspense, transitions
 2. **rxcore adapter** (`rxcore.nim`) -- 7-proc interface that renderers import instead of core internals
 3. **Renderers** -- MockRenderer (testing), browser DOM (`web/`), UIKit (`isonim-cocoa`), Android (`isonim-android`), Freya (`isonim-freya`), terminal (`renderers/`), SSR (`ssr/`)
-4. **DSL macros** (`dsl/html.nim`) -- `buildHtml`, `buildHtmlString`, `isomorphicHtml`, with Tailwind CSS expansion
+4. **DSL macros** (`dsl/html.nim`) -- `ui`, `uiString`, `isomorphicUi`, with Tailwind CSS expansion
 5. **Control flow** (`dsl/components.nim`) -- `show`, `forEachKeyed`, `indexEach`, `errorBoundary`
 6. **Component layer** (`components/`) -- cross-platform controls with compile-time backend selection
 7. **Layout engine** (`layout/`) -- Yoga flexbox for cross-platform positioning
@@ -155,7 +155,7 @@ IsoNim is layered so each concern is isolated:
 ```
 src/isonim/
 ├── core/           # Reactive primitives (signals, effects, memos, batch, context, ...)
-├── dsl/            # HTML DSL macros (buildHtml, buildHtmlString, isomorphicHtml)
+├── dsl/            # HTML DSL macros (ui, uiString, isomorphicUi)
 │   ├── html.nim    #   DSL entry points
 │   ├── components.nim  # Control flow (show, forEachKeyed, errorBoundary)
 │   ├── transform.nim   # AST helpers (tag resolution, style property detection)

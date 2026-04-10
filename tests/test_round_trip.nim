@@ -1,7 +1,7 @@
 ## SSR → Client round-trip integration tests.
 ##
 ## Verifies that:
-## 1. buildHtmlString and buildHtml produce structurally equivalent output
+## 1. uiString and ui produce structurally equivalent output
 ## 2. SSR HTML contains correct hydration markers
 ## 3. The same component renders consistently across modes
 ## 4. Full-page SSR with the demo task store produces valid HTML
@@ -64,13 +64,13 @@ proc countOccurrences(haystack, needle: string): int =
 
 suite "SSR ↔ Client structural equivalence":
   test "same_static_structure":
-    ## buildHtml and buildHtmlString produce the same tag structure
+    ## ui and uiString produce the same tag structure
     ## for static content.
     createRoot proc(dispose: proc()) =
       let renderer = MockRenderer()
 
       # Client mode
-      let clientRoot = buildHtml(renderer):
+      let clientRoot = ui(renderer):
         tdiv(class = "container"):
           h1: text "Title"
           p: text "Body"
@@ -78,7 +78,7 @@ suite "SSR ↔ Client structural equivalence":
             span: text "Footer text"
 
       # SSR mode
-      let ssrHtml = buildHtmlString:
+      let ssrHtml = uiString:
         tdiv(class = "container"):
           h1: text "Title"
           p: text "Body"
@@ -118,11 +118,11 @@ suite "SSR ↔ Client structural equivalence":
       let label = createSignal("items")
 
       # Client mode
-      let clientRoot = buildHtml(renderer):
+      let clientRoot = ui(renderer):
         span: text $count.val & " " & label.val
 
       # SSR mode
-      let ssrHtml = buildHtmlString:
+      let ssrHtml = uiString:
         span: text $count.val & " " & label.val
 
       check clientRoot.textContent == "7 items"
@@ -136,11 +136,11 @@ suite "SSR ↔ Client structural equivalence":
       let cls = createSignal("active")
 
       # Client
-      let clientRoot = buildHtml(renderer):
+      let clientRoot = ui(renderer):
         tdiv(class = cls.val, id = "main")
 
       # SSR
-      let ssrHtml = buildHtmlString:
+      let ssrHtml = uiString:
         tdiv(class = cls.val, id = "main")
 
       check clientRoot.attributes["class"] == "active"
@@ -155,11 +155,11 @@ suite "SSR ↔ Client structural equivalence":
     createRoot proc(dispose: proc()) =
       let renderer = MockRenderer()
 
-      let clientRoot = buildHtml(renderer):
+      let clientRoot = ui(renderer):
         button(onclick = proc() = inc clicked):
           text "Click"
 
-      let ssrHtml = buildHtmlString:
+      let ssrHtml = uiString:
         button(onclick = proc() = inc clicked):
           text "Click"
 
@@ -176,7 +176,7 @@ suite "SSR hydration markers":
   test "hydration_keys_in_dynamic_elements":
     ## Elements with hydrate=true get data-hk attributes in SSR mode.
     resetHydrationCounter()
-    let html = buildHtmlString:
+    let html = uiString:
       tdiv(hydrate = true):
         span(hydrate = true):
           text "Dynamic"
@@ -188,7 +188,7 @@ suite "SSR hydration markers":
     ## Hydration keys are sequential within a render.
     resetHydrationCounter()
     let html = renderToString(proc(): string =
-      buildHtmlString:
+      uiString:
         tdiv(hydrate = true):
           span(hydrate = true): text "A"
           span(hydrate = true): text "B"

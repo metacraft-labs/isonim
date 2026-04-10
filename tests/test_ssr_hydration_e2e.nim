@@ -2,7 +2,7 @@
 ##
 ## These tests run under `nim js -r` which executes via Node.js.
 ## They verify the full cycle:
-##   1. Render HTML via SSR (renderToString / buildHtmlString)
+##   1. Render HTML via SSR (renderToString / uiString)
 ##   2. Parse that HTML into a DOM tree (JS DOM shim)
 ##   3. Hydrate the DOM tree (attach reactive behavior to existing nodes)
 ##   4. Verify that signals drive DOM updates after hydration
@@ -573,7 +573,7 @@ suite "SSR-Hydration E2E - Counter":
     # -- Step 1: SSR render --
     let ssrHtml = renderToString(proc(): string =
       let count = createSignal(5)
-      buildHtmlString:
+      uiString:
         tdiv(hydrate = true):
           span(hydrate = true): text $count.val
           button(hydrate = true): text "+"
@@ -671,7 +671,7 @@ suite "SSR-Hydration E2E - Counter":
     # SSR render
     let ssrHtml = renderToString(proc(): string =
       let count = createSignal(0)
-      buildHtmlString:
+      uiString:
         tdiv(hydrate = true):
           span(hydrate = true): text $count.val
           button(hydrate = true): text "+"
@@ -738,10 +738,10 @@ suite "SSR-Hydration E2E - List":
     # SSR render a list
     let ssrHtml = renderToString(proc(): string =
       let items = @["alpha", "beta", "gamma"]
-      buildHtmlString:
+      uiString:
         ul(hydrate = true):
           raw ssrFor(items, proc(item: string, index: int): string =
-            buildHtmlString:
+            uiString:
               li: text item
           )
     )
@@ -814,7 +814,7 @@ suite "SSR-Hydration E2E - List":
 
     # SSR render
     let ssrHtml = renderToString(proc(): string =
-      buildHtmlString:
+      uiString:
         tdiv(hydrate = true):
           span(hydrate = true): text "Item count: 3"
           ul(hydrate = true):
@@ -890,7 +890,7 @@ suite "SSR-Hydration E2E - hydrate() entry point":
     # SSR render
     let ssrHtml = renderToString(proc(): string =
       let c = createSignal(7)
-      buildHtmlString:
+      uiString:
         tdiv(hydrate = true):
           span(hydrate = true): text $c.val
     )
@@ -952,7 +952,7 @@ suite "SSR-Hydration E2E - hydrate() entry point":
     ## and globalThis._$HY.done is set.
 
     let ssrHtml = renderToString(proc(): string =
-      buildHtmlString:
+      uiString:
         tdiv(hydrate = true): text "hello"
     )
 
@@ -999,7 +999,7 @@ suite "SSR-Hydration E2E - Key Consistency":
 
     # SSR render: three elements with hydrate=true
     let ssrHtml = renderToString(proc(): string =
-      buildHtmlString:
+      uiString:
         tdiv(hydrate = true):
           span(hydrate = true): text "A"
           p(hydrate = true): text "B"
@@ -1053,13 +1053,13 @@ suite "SSR-Hydration E2E - Key Consistency":
     ## renderToString should produce keys starting from 1 again.
 
     let html1 = renderToString(proc(): string =
-      buildHtmlString:
+      uiString:
         tdiv(hydrate = true): text "first"
     )
     check "data-hk=\"1\"" in html1
 
     let html2 = renderToString(proc(): string =
-      buildHtmlString:
+      uiString:
         tdiv(hydrate = true): text "second"
     )
     # Keys should start from 1 again, not 2

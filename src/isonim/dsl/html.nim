@@ -1,11 +1,11 @@
 ## isonim/dsl/html.nim
 ##
-## buildHtml macro -- Karax-style HTML DSL entry point.
+## ui macro -- Karax-style HTML DSL entry point.
 ## Transforms a DSL block into renderer-specific calls at compile time.
 ##
 ## Two modes:
-## - `buildHtml(renderer): body` -- client mode, creates element tree via renderer API
-## - `buildHtmlString: body` -- SSR mode, generates HTML string concatenation
+## - `ui(renderer): body` -- client mode, creates element tree via renderer API
+## - `uiString: body` -- SSR mode, generates HTML string concatenation
 
 import std/macros
 import transform
@@ -334,12 +334,12 @@ proc processNode(rendererSym: NimNode; node: NimNode; stmts: NimNode): NimNode {
 
   return nil
 
-macro buildHtml*(renderer: untyped; body: untyped): untyped =
+macro ui*(renderer: untyped; body: untyped): untyped =
   ## Karax-style DSL macro (client mode). Takes a renderer and a body block,
   ## produces code that creates a tree of elements via the renderer API.
   ##
   ## Usage:
-  ##   let root = buildHtml(myRenderer):
+  ##   let root = ui(myRenderer):
   ##     tdiv(class = "container"):
   ##       h1: text "Hello"
   ##       span: text $count.val
@@ -371,7 +371,7 @@ macro buildHtml*(renderer: untyped; body: untyped): untyped =
     rootSym = processNode(renderer, body, stmts)
 
   else:
-    error("buildHtml expects a DSL body block", body)
+    error("ui expects a DSL body block", body)
 
   # Return the root element
   if rootSym != nil:
@@ -650,12 +650,12 @@ proc ssrNodeExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.} =
   else:
     return nil
 
-macro buildHtmlString*(body: untyped): untyped =
+macro uiString*(body: untyped): untyped =
   ## SSR-mode DSL macro. Produces an HTML string from the DSL block.
   ## No renderer needed -- generates string concatenation code.
   ##
   ## Usage:
-  ##   let html = buildHtmlString:
+  ##   let html = uiString:
   ##     tdiv(class = "container"):
   ##       h1: text "Hello"
   ##       span: text $count.val
@@ -687,34 +687,44 @@ macro buildHtmlString*(body: untyped): untyped =
     resultExpr = ssrNodeExpr(body, stmts)
 
   else:
-    error("buildHtmlString expects a DSL body block", body)
+    error("uiString expects a DSL body block", body)
 
   if resultExpr != nil:
     stmts.add(resultExpr)
 
   result = newBlockStmt(stmts)
 
-macro isomorphicHtml*(renderer: untyped; body: untyped): untyped =
-  ## Isomorphic DSL macro: compiles to `buildHtml` in client mode
-  ## or `buildHtmlString` in SSR mode (when `-d:isServer` is defined).
+macro isomorphicUi*(renderer: untyped; body: untyped): untyped =
+  ## Isomorphic DSL macro: compiles to `ui` in client mode
+  ## or `uiString` in SSR mode (when `-d:isServer` is defined).
   ##
   ## Usage:
   ##   proc myComponent(renderer: auto): auto =
-  ##     isomorphicHtml(renderer):
+  ##     isomorphicUi(renderer):
   ##       tdiv: text "works everywhere"
   ##
   ## In client mode, returns a renderer element node.
   ## In SSR mode, returns an HTML string. The renderer param is ignored.
   result = newNimNode(nnkWhenStmt)
 
-  # when defined(isServer): buildHtmlString: body
+  # when defined(isServer): uiString: body
   let serverBranch = newNimNode(nnkElifBranch)
   serverBranch.add(newCall(ident"defined", ident"isServer"))
-  serverBranch.add(newCall(ident"buildHtmlString", body))
+  serverBranch.add(newCall(ident"uiString", body))
 
-  # else: buildHtml(renderer): body
+  # else: ui(renderer): body
   let clientBranch = newNimNode(nnkElse)
-  clientBranch.add(newCall(ident"buildHtml", renderer, body))
+  clientBranch.add(newCall(ident"ui", renderer, body))
 
   result.add(serverBranch)
   result.add(clientBranch)
+
+# Backward-compatible aliases (deprecated)
+template buildHtml*(renderer: untyped; body: untyped): untyped {.deprecated: "use `ui` instead".} =
+  ui(renderer, body)
+
+template buildHtmlString*(body: untyped): untyped {.deprecated: "use `uiString` instead".} =
+  uiString(body)
+
+template isomorphicHtml*(renderer: untyped; body: untyped): untyped {.deprecated: "use `isomorphicUi` instead".} =
+  isomorphicUi(renderer, body)

@@ -1,4 +1,4 @@
-## Tests for buildHtmlString (SSR mode DSL) and isomorphicHtml.
+## Tests for uiString (SSR mode DSL) and isomorphicUi.
 ## Verifies that the same DSL syntax generates correct HTML strings
 ## for server-side rendering.
 
@@ -11,10 +11,10 @@ import isonim/ssr/markers
 import isonim/testing/mock_dom
 import isonim/ssr/renderer
 
-suite "buildHtmlString":
+suite "uiString":
   test "static_elements":
     ## Basic static HTML generation
-    let html = buildHtmlString:
+    let html = uiString:
       tdiv(class = "container"):
         h1: text "Hello"
         p: text "World"
@@ -27,7 +27,7 @@ suite "buildHtmlString":
 
   test "nested_elements":
     ## Deeply nested element generation
-    let html = buildHtmlString:
+    let html = uiString:
       tdiv:
         section:
           article:
@@ -40,7 +40,7 @@ suite "buildHtmlString":
 
   test "void_elements":
     ## Self-closing void elements (br, input, img, etc.)
-    let html = buildHtmlString:
+    let html = uiString:
       tdiv:
         input(ttype = "text", placeholder = "Enter text")
         br()
@@ -56,7 +56,7 @@ suite "buildHtmlString":
     ## Dynamic expressions evaluated inline, no effects
     createRoot proc(dispose: proc()) =
       let count = createSignal(42)
-      let html = buildHtmlString:
+      let html = uiString:
         span: text $count.val
 
       check "<span>42</span>" in html
@@ -66,7 +66,7 @@ suite "buildHtmlString":
     ## Dynamic attributes evaluated inline
     createRoot proc(dispose: proc()) =
       let cls = createSignal("active")
-      let html = buildHtmlString:
+      let html = uiString:
         tdiv(class = cls.val)
 
       check "class=\"active\"" in html
@@ -75,7 +75,7 @@ suite "buildHtmlString":
   test "event_handlers_ignored":
     ## Event handlers are silently ignored in SSR mode
     var clicked = 0
-    let html = buildHtmlString:
+    let html = uiString:
       button(onclick = proc() = inc clicked):
         text "Click"
 
@@ -85,7 +85,7 @@ suite "buildHtmlString":
 
   test "html_escaping":
     ## Special characters are escaped in text and attributes
-    let html = buildHtmlString:
+    let html = uiString:
       tdiv(title = "a\"b&c"):
         text "<script>alert('xss')</script>"
 
@@ -95,7 +95,7 @@ suite "buildHtmlString":
 
   test "multiple_attributes":
     ## Multiple attributes rendered correctly
-    let html = buildHtmlString:
+    let html = uiString:
       a(href = "/page", class = "link", target = "_blank"):
         text "Link"
 
@@ -107,7 +107,7 @@ suite "buildHtmlString":
 
   test "empty_element":
     ## Element with no children
-    let html = buildHtmlString:
+    let html = uiString:
       tdiv(class = "empty")
 
     check "<div class=\"empty\"></div>" == html
@@ -115,7 +115,7 @@ suite "buildHtmlString":
   test "hydration_key":
     ## Elements with hydrate=true get data-hk attributes
     resetHydrationCounter()
-    let html = buildHtmlString:
+    let html = uiString:
       tdiv(hydrate = true):
         text "hydrated"
 
@@ -125,7 +125,7 @@ suite "buildHtmlString":
     ## Mix of static and dynamic content in one tree
     createRoot proc(dispose: proc()) =
       let name = createSignal("World")
-      let html = buildHtmlString:
+      let html = uiString:
         tdiv:
           h1: text "Hello"
           p: text $("Welcome, " & name.val)
@@ -136,12 +136,12 @@ suite "buildHtmlString":
       check "<footer>Static footer</footer>" in html
       dispose()
 
-suite "isomorphicHtml":
+suite "isomorphicUi":
   test "client_mode":
-    ## isomorphicHtml produces element tree in client mode (no -d:isServer)
+    ## isomorphicUi produces element tree in client mode (no -d:isServer)
     createRoot proc(dispose: proc()) =
       let renderer = MockRenderer()
-      let root = isomorphicHtml(renderer):
+      let root = isomorphicUi(renderer):
         tdiv(class = "app"):
           h1: text "IsoNim"
 
@@ -155,10 +155,10 @@ suite "isomorphicHtml":
       dispose()
 
 suite "SSR + renderToString integration":
-  test "buildHtmlString_in_renderToString":
-    ## buildHtmlString works inside renderToString
+  test "uiString_in_renderToString":
+    ## uiString works inside renderToString
     let html = renderToString(proc(): string =
-      buildHtmlString:
+      uiString:
         tdiv(class = "page"):
           header:
             h1: text "My App"
@@ -173,25 +173,25 @@ suite "SSR + renderToString integration":
     check "<main><p>Content here</p></main>" in html
     check "<footer><p>Footer</p></footer>" in html
 
-  test "buildHtmlString_with_signals_in_renderToString":
+  test "uiString_with_signals_in_renderToString":
     ## Signals work correctly in SSR context
     let html = renderToString(proc(): string =
       let count = createSignal(5)
       let label = createSignal("tasks")
-      buildHtmlString:
+      uiString:
         tdiv:
           span: text $count.val & " " & label.val
     )
 
     check "5 tasks" in html
 
-  test "buildHtmlString_with_loop":
-    ## Use ssrFor with buildHtmlString for list items
+  test "uiString_with_loop":
+    ## Use ssrFor with uiString for list items
     let items = @["Apple", "Banana", "Cherry"]
-    let html = buildHtmlString:
+    let html = uiString:
       ul:
         raw ssrFor(items, proc(item: string, index: int): string =
-          buildHtmlString:
+          uiString:
             li: text item
         )
 
@@ -200,26 +200,26 @@ suite "SSR + renderToString integration":
     check "<li>Banana</li>" in html
     check "<li>Cherry</li>" in html
 
-  test "buildHtmlString_with_conditional":
-    ## Use ssrShow with buildHtmlString
+  test "uiString_with_conditional":
+    ## Use ssrShow with uiString
     let loggedIn = true
     let bodyFn = proc(): string =
-      buildHtmlString:
+      uiString:
         span: text "Welcome!"
     let fallbackFn = proc(): string =
-      buildHtmlString:
+      uiString:
         span: text "Please log in"
-    let html = buildHtmlString:
+    let html = uiString:
       tdiv:
         raw ssrShow(loggedIn, bodyFn, fallbackFn)
 
     check "Welcome!" in html
     check "Please log in" notin html
 
-  test "buildHtmlString_showIf_ssr":
+  test "uiString_showIf_ssr":
     ## showIf in SSR mode renders body when condition is true
     let loggedIn = true
-    let html = buildHtmlString:
+    let html = uiString:
       tdiv:
         showIf(loggedIn):
           p: text "Welcome"
@@ -227,10 +227,10 @@ suite "SSR + renderToString integration":
     check "<p>Welcome</p>" in html
     check "<div>" in html
 
-  test "buildHtmlString_showIf_ssr_false":
+  test "uiString_showIf_ssr_false":
     ## showIf in SSR mode renders nothing when condition is false (no fallback)
     let loggedIn = false
-    let html = buildHtmlString:
+    let html = uiString:
       tdiv:
         showIf(loggedIn):
           p: text "Welcome"
@@ -238,10 +238,10 @@ suite "SSR + renderToString integration":
     check "<p>Welcome</p>" notin html
     check "<div></div>" == html
 
-  test "buildHtmlString_showIf_ssr_fallback":
+  test "uiString_showIf_ssr_fallback":
     ## showIf + showElse in SSR mode
     let loggedIn = false
-    let html = buildHtmlString:
+    let html = uiString:
       tdiv:
         showIf(loggedIn):
           p: text "Welcome"
@@ -251,10 +251,10 @@ suite "SSR + renderToString integration":
     check "Welcome" notin html
     check "<p>Please log in</p>" in html
 
-  test "buildHtmlString_showIf_ssr_fallback_true":
+  test "uiString_showIf_ssr_fallback_true":
     ## showIf + showElse in SSR mode when condition is true
     let loggedIn = true
-    let html = buildHtmlString:
+    let html = uiString:
       tdiv:
         showIf(loggedIn):
           p: text "Welcome"
@@ -264,10 +264,10 @@ suite "SSR + renderToString integration":
     check "<p>Welcome</p>" in html
     check "Please log in" notin html
 
-  test "buildHtmlString_forIn_ssr":
+  test "uiString_forIn_ssr":
     ## forIn in SSR mode renders list items
     let items = @["Apple", "Banana", "Cherry"]
-    let html = buildHtmlString:
+    let html = uiString:
       ul:
         forIn(items):
           li: text item
@@ -277,10 +277,10 @@ suite "SSR + renderToString integration":
     check "<li>Banana</li>" in html
     check "<li>Cherry</li>" in html
 
-  test "buildHtmlString_forIn_ssr_with_index":
+  test "uiString_forIn_ssr_with_index":
     ## forIn in SSR mode provides index variable
     let items = @["a", "b"]
-    let html = buildHtmlString:
+    let html = uiString:
       ul:
         forIn(items):
           li: text $index & ": " & item

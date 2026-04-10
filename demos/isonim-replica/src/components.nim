@@ -1,5 +1,5 @@
 ## Rendering components for the IsoNim demo app.
-## Uses buildHtml macro for element creation, generic control flow components.
+## Uses ui macro for element creation, generic control flow components.
 ## Works with any RendererBackend (MockRenderer for tests, browser DOM for web).
 
 import isonim/core/[signals, computation]
@@ -9,7 +9,7 @@ import task_store
 
 proc renderTaskHeader*[R, N](renderer: R; parent: N; store: TaskStore) =
   ## Renders the task header with add-task form.
-  let header = buildHtml(renderer):
+  let header = ui(renderer):
     header:
       h1: text "Task Manager"
       form:
@@ -29,7 +29,7 @@ proc renderTaskItem[R, N](renderer: R; parent: N; store: TaskStore;
     else:
       renderer.setAttribute(li, "class", "")
 
-  let checkbox = buildHtml(renderer):
+  let checkbox = ui(renderer):
     input(ttype = "checkbox", onchange = proc() = store.toggleTask(item().id))
   renderer.appendChild(li, checkbox)
 
@@ -41,7 +41,7 @@ proc renderTaskItem[R, N](renderer: R; parent: N; store: TaskStore;
   )
   renderer.appendChild(li, span)
 
-  let removeBtn = buildHtml(renderer):
+  let removeBtn = ui(renderer):
     button(class = "remove", onclick = proc() = store.removeTask(item().id)):
       text "x"
   renderer.appendChild(li, removeBtn)
@@ -83,7 +83,7 @@ proc renderTaskList*[R, N](renderer: R; parent: N; store: TaskStore) =
           )
           renderer.appendChild(li, span)
 
-          let removeBtn = buildHtml(renderer):
+          let removeBtn = ui(renderer):
             button(class = "remove", onclick = proc() = store.removeTask(item().id)):
               text "x"
           renderer.appendChild(li, removeBtn)
@@ -92,7 +92,7 @@ proc renderTaskList*[R, N](renderer: R; parent: N; store: TaskStore) =
       ul
     ,
     proc(): N =
-      buildHtml(renderer):
+      ui(renderer):
         p(class = "empty"):
           text "No tasks"
   )
@@ -133,7 +133,7 @@ proc renderTaskFooter*[R, N](renderer: R; parent: N; store: TaskStore) =
       show(renderer, footer,
         proc(): bool = store.completedCount.val > 0,
         proc(): N =
-          buildHtml(renderer):
+          ui(renderer):
             button(onclick = proc() = store.clearCompleted()):
               text "Clear completed"
       )

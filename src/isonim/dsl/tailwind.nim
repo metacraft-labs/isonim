@@ -10,7 +10,7 @@
 ##   1. `node tools/tailwind-extract.mjs` — runs Tailwind CSS, produces
 ##      build/tailwind.css (for web) and build/tailwind-styles.json (for native)
 ##   2. This module loads tailwind-styles.json at Nim compile time
-##   3. The buildHtml macro calls expandTailwindClasses() to expand class
+##   3. The ui macro calls expandTailwindClasses() to expand class
 ##      attributes to setStyle calls
 ##
 ## On web (-d:js), class attributes pass through to the browser
