@@ -65,7 +65,7 @@ createRoot proc(dispose: proc()) =
 
 ```nim
 import isonim/core/[signals, computation]
-import isonim/dsl/html
+import isonim/dsl/ui
 import isonim/testing/mock_dom
 
 let renderer = MockRenderer()
@@ -80,7 +80,7 @@ let root = ui(renderer):
 ### Server-side rendering
 
 ```nim
-import isonim/dsl/html
+import isonim/dsl/ui
 import isonim/ssr/[renderer, escape]
 
 let html = renderToString(proc(): string =
@@ -144,7 +144,7 @@ IsoNim is layered so each concern is isolated:
 1. **Reactive core** (`core/`) -- signals, effects, memos, owners, batch, context, resources, suspense, transitions
 2. **rxcore adapter** (`rxcore.nim`) -- 7-proc interface that renderers import instead of core internals
 3. **Renderers** -- MockRenderer (testing), browser DOM (`web/`), UIKit (`isonim-cocoa`), Android (`isonim-android`), Freya (`isonim-freya`), terminal (`renderers/`), SSR (`ssr/`)
-4. **DSL macros** (`dsl/html.nim`) -- `ui`, `uiString`, `isomorphicUi`, with Tailwind CSS expansion
+4. **DSL macros** (`dsl/ui.nim`) -- `ui`, `uiString`, `isomorphicUi`, with Tailwind CSS expansion
 5. **Control flow** (`dsl/components.nim`) -- `show`, `forEachKeyed`, `indexEach`, `errorBoundary`
 6. **Component layer** (`components/`) -- cross-platform controls with compile-time backend selection
 7. **Layout engine** (`layout/`) -- Yoga flexbox for cross-platform positioning

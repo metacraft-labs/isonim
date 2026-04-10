@@ -493,7 +493,7 @@ import isonim/web/hydration
 import isonim/rxcore
 import isonim/ssr/renderer
 import isonim/ssr/markers
-import isonim/dsl/html
+import isonim/dsl/ui
 import isonim/ssr/escape
 import task_store
 import task_ssr

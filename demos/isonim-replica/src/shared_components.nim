@@ -7,7 +7,7 @@
 ## This demonstrates the key SolidJS-native pattern: write once, render anywhere.
 
 import isonim/core/[signals, computation]
-import isonim/dsl/html
+import isonim/dsl/ui
 import isonim/ssr/escape
 import isonim/ssr/renderer
 import task_store

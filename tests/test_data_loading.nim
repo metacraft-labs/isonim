@@ -54,7 +54,7 @@ proc failingFetch(): string {.server.} =
 when not defined(js):
   import isonim/ssr/renderer
   import isonim/ssr/escape
-  import isonim/dsl/html
+  import isonim/dsl/ui
   import isonim/routing/[match, params, ssr]
 
   suite "createServerResource — C target (SSR)":

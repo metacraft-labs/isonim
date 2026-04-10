@@ -1,4 +1,4 @@
-## isonim/dsl/html.nim
+## isonim/dsl/ui.nim
 ##
 ## ui macro -- Karax-style HTML DSL entry point.
 ## Transforms a DSL block into renderer-specific calls at compile time.

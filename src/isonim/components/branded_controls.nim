@@ -10,7 +10,7 @@
 import isonim/components/task_manager
 import isonim/theming/theme
 import isonim/core/[computation]
-import isonim/dsl/html
+import isonim/dsl/ui
 
 # ---------------------------------------------------------------------------
 # Public component procs — branded implementations using Tailwind

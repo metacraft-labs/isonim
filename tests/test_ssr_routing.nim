@@ -10,7 +10,7 @@ import unittest
 import isonim/core/signals
 import isonim/routing/[match, params, ssr]
 import isonim/ssr/escape
-import isonim/dsl/html
+import isonim/dsl/ui
 
 # ---------------------------------------------------------------------------
 # Test components — each returns HTML via uiString

@@ -350,7 +350,7 @@ import unittest
 import std/tables
 import isonim/core/[signals, computation, owner, batch, graph]
 import isonim/testing/mock_dom
-import isonim/dsl/html
+import isonim/dsl/ui
 import isonim/dsl/components
 import isonim/accessibility
 import task_store

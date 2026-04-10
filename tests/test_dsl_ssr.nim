@@ -5,7 +5,7 @@
 import unittest
 import std/[strutils, tables]
 import isonim/core/[signals, owner]
-import isonim/dsl/html
+import isonim/dsl/ui
 import isonim/ssr/escape
 import isonim/ssr/markers
 import isonim/testing/mock_dom
