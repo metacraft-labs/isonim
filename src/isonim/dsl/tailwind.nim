@@ -25,12 +25,19 @@ import std/[json, tables, strutils, os]
 const tailwindJsonPath = currentSourcePath().parentDir().parentDir().parentDir().parentDir() /
                           "build" / "tailwind-styles.json"
 
-when fileExists(tailwindJsonPath):
-  const tailwindJsonStr = staticRead(tailwindJsonPath)
-  const hasTailwindStyles* = true
+when defined(nimscript) or defined(js):
+  # fileExists not available at compile time for JS target
+  const tailwindJsonStr = static:
+    try: staticRead(tailwindJsonPath)
+    except: "{}"
+  const hasTailwindStyles* = tailwindJsonStr != "{}"
 else:
-  const tailwindJsonStr = "{}"
-  const hasTailwindStyles* = false
+  when fileExists(tailwindJsonPath):
+    const tailwindJsonStr = staticRead(tailwindJsonPath)
+    const hasTailwindStyles* = true
+  else:
+    const tailwindJsonStr = "{}"
+    const hasTailwindStyles* = false
 
 proc buildStyleMap(): Table[string, seq[tuple[prop, val: string]]] {.compileTime.} =
   let j = parseJson(tailwindJsonStr)

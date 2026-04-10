@@ -103,6 +103,31 @@ test-ssr:
 test-web:
     nim js -r tests/test_web.nim
 
+# --- IsoNim Editor ---
+
+# Build the editor (Nim → JS)
+editor-build:
+    mkdir -p build/editor
+    nim js -o:build/editor/editor.js src/isonim/editor/main.nim
+    cp src/isonim/editor/index.html build/editor/index.html
+    @echo "Built: build/editor/ — open build/editor/index.html"
+
+# Build and serve the editor
+editor-serve: editor-build
+    @echo "Serving editor on http://localhost:8090"
+    cd build/editor && python3 -m http.server 8090
+
+# Run editor ViewModel tests
+test-editor:
+    nim c -r tests/test_editor_viewmodels.nim
+    nim c -r tests/test_editor_user_project.nim
+    nim c -r tests/test_editor_shell_views.nim
+    nim c -r tests/test_editor_task_views.nim
+    nim c -r tests/test_editor_interactivity.nim
+    nim c -r tests/test_editor_responsive.nim
+
+# --- Benchmarks ---
+
 # Build js-framework-benchmark entry
 bench-build:
     bash benchmarks/keyed/isonim/build.sh
