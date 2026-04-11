@@ -15,7 +15,7 @@
 // Screenshots are saved to: build/editor/screenshots/<view>-<size>.png
 
 import { execSync, spawn } from 'child_process';
-import { mkdirSync } from 'fs';
+import { mkdirSync, rmSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -121,13 +121,16 @@ const views = {
 let selectedViews = Object.keys(views);
 let selectedSizes = Object.keys(sizes);
 let skipBuild = false;
+let isFiltered = false;  // true when --view or --size narrows the selection
 
 for (let i = 2; i < process.argv.length; i++) {
   const arg = process.argv[i];
   if (arg === '--view' && process.argv[i + 1]) {
     selectedViews = [process.argv[++i]];
+    isFiltered = true;
   } else if (arg === '--size' && process.argv[i + 1]) {
     selectedSizes = [process.argv[++i]];
+    isFiltered = true;
   } else if (arg === '--no-build') {
     skipBuild = true;
   } else if (arg === '--list') {
@@ -180,6 +183,11 @@ async function main() {
   await new Promise(resolve => setTimeout(resolve, 1000));
 
   // Step 3: Take screenshots
+  // Clean output directory when regenerating all screenshots (no --view/--size filter)
+  if (!isFiltered && existsSync(screenshotDir)) {
+    console.log('==> Cleaning screenshot directory (full regeneration)...');
+    rmSync(screenshotDir, { recursive: true });
+  }
   mkdirSync(screenshotDir, { recursive: true });
   console.log('==> Capturing screenshots...');
 
