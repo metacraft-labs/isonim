@@ -80,13 +80,14 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
           let gKind = group.kind
           let gExpanded = group.expanded
           let gItems = group.items
+          # Consistent-weight outlined Unicode icons
           let icon = case gKind
-            of skFoundation: "\xE2\x97\x86"    # ◆
-            of skComponent: "\xE2\xA7\x89"      # ⧉
-            of skPattern: "\xE2\x96\xA4"         # ▤
-            of skPage: "\xE2\x96\xA3"            # ▣
-            of skFlow: "\xE2\x96\xB6"            # ▶
-            of skGuideline: "\xE2\x93\x98"       # ⓘ
+            of skFoundation: "\xE2\x97\x87"    # ◇ diamond outline
+            of skComponent: "\xE2\x97\xBB"      # ◻ square outline
+            of skPattern: "\xE2\x97\xA8"         # ◨ half-filled square
+            of skPage: "\xE2\x96\xA1"            # □ square
+            of skFlow: "\xE2\x96\xB7"            # ▷ triangle outline
+            of skGuideline: "\xE2\x97\x8B"       # ○ circle outline
           let chevronText = if gExpanded: "\xE2\x96\xBE" else: "\xE2\x96\xB8"
 
           tdiv(display = "flex", flex_direction = "column",

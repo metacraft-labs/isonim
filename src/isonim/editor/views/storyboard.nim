@@ -144,27 +144,64 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
              transition = "border-color 0.15s, box-shadow 0.15s",
              overflow = "hidden", display = "flex", flex_direction = "column"):
 
-          # Card content: step number + mini wireframe
+          # Card content: step number + contextual wireframe
+          let stepNum = card.stepNum
+          let lbl = stepLabel.toLowerAscii()
+          let hasInput = "type" in lbl or "input" in lbl
+          let hasTask = "tap" in lbl or "click" in lbl or "button" in lbl
+          let isEmpty = "open" in lbl or "first" in lbl or "empty" in lbl
+          let isFilter = "filter" in lbl or "active" in lbl or "completed" in lbl
           tdiv(flex = "1", display = "flex", flex_direction = "column",
-               align_items = "center", justify_content = "center",
-               background_color = bgBase, gap = "8px",
-               margin = "8px 8px 0 8px", border_radius = "4px"):
-            # Step number badge
-            tdiv(width = "28px", height = "28px", border_radius = "14px",
-                 border = "2px solid " & accent, opacity = "0.5",
-                 display = "flex", align_items = "center",
-                 justify_content = "center"):
-              span(font_size = "12px", color = accent, font_weight = "700"):
-                text $(card.stepNum)
-            # Mini page wireframe
+               background_color = bgBase, gap = "0px",
+               margin = "8px 8px 0 8px", border_radius = "4px",
+               overflow = "hidden"):
+            # Top: step number bar
+            tdiv(display = "flex", align_items = "center", gap = "6px",
+                 padding = "6px 10px",
+                 background_color = bgSurface):
+              tdiv(width = "18px", height = "18px", border_radius = "9px",
+                   background_color = accent, opacity = "0.3",
+                   display = "flex", align_items = "center",
+                   justify_content = "center"):
+                span(font_size = "9px", color = textPrimary, font_weight = "700"):
+                  text $stepNum
+              tdiv(height = "4px", width = "50%", border_radius = "2px",
+                   background_color = gold, opacity = "0.3")
+            # Body: contextual wireframe
             tdiv(display = "flex", flex_direction = "column",
-                 gap = "3px", padding = "0 20px", width = "100%"):
-              tdiv(height = "4px", width = "40%", border_radius = "2px",
-                   background_color = textDim, opacity = "0.3")
-              tdiv(height = "6px", width = "80%", border_radius = "3px",
-                   background_color = textDim, opacity = "0.15")
-              tdiv(height = "6px", width = "70%", border_radius = "3px",
-                   background_color = textDim, opacity = "0.12")
+                 gap = "4px", padding = "6px 10px", flex = "1"):
+              # Input row (highlighted if typing step)
+              tdiv(display = "flex", align_items = "center", gap = "4px"):
+                tdiv(flex = "1", height = "10px", border_radius = "4px",
+                     background_color = (if hasInput: bgSurface else: bgBase),
+                     border = (if hasInput: "1px solid " & accent else: "1px solid " & border),
+                     opacity = (if hasInput: "0.8" else: "0.4"))
+                tdiv(width = "10px", height = "10px", border_radius = "5px",
+                     background_color = (if hasTask: accent else: textDim),
+                     opacity = (if hasTask: "0.6" else: "0.2"))
+              # Task rows (shown/hidden based on step context)
+              if not isEmpty:
+                for j in 0..1:
+                  tdiv(display = "flex", align_items = "center", gap = "4px"):
+                    tdiv(width = "7px", height = "7px", border_radius = "2px",
+                         border = "1px solid " & textDim, opacity = "0.3")
+                    tdiv(height = "4px", flex = "1", border_radius = "2px",
+                         background_color = textDim,
+                         opacity = (if j == 0: "0.25" else: "0.15"))
+              else:
+                # Empty state indicator
+                tdiv(display = "flex", align_items = "center",
+                     justify_content = "center", flex = "1",
+                     opacity = "0.2"):
+                  span(font_size = "14px", color = textDim):
+                    text "\xE2\x88\x85"  # empty set symbol
+              # Filter bar (highlighted if filter step)
+              if isFilter:
+                tdiv(display = "flex", gap = "3px", margin_top = "2px"):
+                  for k in 0..2:
+                    tdiv(height = "5px", width = "20px", border_radius = "3px",
+                         background_color = (if k == 1: accent else: textDim),
+                         opacity = (if k == 1: "0.4" else: "0.15"))
 
           # Card label (the user action)
           tdiv(padding = "6px 10px", font_size = "10px",
