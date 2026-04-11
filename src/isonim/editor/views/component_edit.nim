@@ -8,6 +8,8 @@ import isonim/core/[signals, computation]
 import isonim/dsl/ui
 import isonim/editor/viewmodels
 import isonim/editor/types
+import isonim/editor/views/controls
+import isonim/editor/views/inspector_sections
 
 const
   bgBase = "#0B1120"
@@ -175,34 +177,52 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
                box_shadow = (if isActive: "inset 0 -2px 0 " & accent else: "none")):
             text name
 
-      # Spacing section
-      tdiv(padding = "16px", display = "flex", flex_direction = "column",
-           gap = "16px"):
-        tdiv(display = "flex", align_items = "center",
-             justify_content = "space-between"):
-          span(font_size = "11px", font_weight = "600", color = textSecondary,
-               text_transform = "uppercase", letter_spacing = "0.5px"):
-            text "Spacing"
-          span(font_size = "10px", color = accent, font_family = "monospace"):
-            text "class: p-4"
   r.appendChild(container, inspector)
 
-  # Box model diagram
-  let boxModel = renderBoxModel[R, E](r, "0", "0", "0", "0", "16", "16", "16", "16")
-  r.appendChild(inspector, boxModel)
+  # Inspector section content — show the active section
+  # Default: Spacing with box model + scrub inputs
+  let activeTab = vm.inspector.activeSection.val
 
-  # Property rows
-  let propsSection = ui(r):
-    tdiv(padding = "0 16px 16px 16px", display = "flex",
-         flex_direction = "column", gap = "4px"):
-      span(font_size = "10px", color = textDim, margin_bottom = "4px"):
-        text "Individual sides"
-  r.appendChild(inspector, propsSection)
+  case activeTab
+  of isLayout:
+    let layoutSec = renderLayoutSection[R, E](r, vm)
+    r.appendChild(inspector, layoutSec)
+  of isFill:
+    let fillSec = renderFillSection[R, E](r, vm)
+    r.appendChild(inspector, fillSec)
+  of isEffects:
+    let effectsSec = renderEffectsSection[R, E](r, vm)
+    r.appendChild(inspector, effectsSec)
+  of isStroke:
+    let strokeSec = renderStrokeSection[R, E](r, vm)
+    r.appendChild(inspector, strokeSec)
+  of isTransitions:
+    let transSec = renderTransitionsSection[R, E](r, vm)
+    r.appendChild(inspector, transSec)
+  else:
+    # Spacing section (default)
+    let spacingHeader = ui(r):
+      tdiv(padding = "12px 12px 0 12px", display = "flex",
+           align_items = "center", justify_content = "space-between"):
+        span(font_size = "11px", font_weight = "600", color = textSecondary,
+             text_transform = "uppercase", letter_spacing = "0.5px"):
+          text "Spacing"
+        span(font_size = "10px", color = accent, font_family = "monospace"):
+          text "class: p-4"
+    r.appendChild(inspector, spacingHeader)
 
-  for (label, val) in [("padding-top", "16"), ("padding-right", "16"),
-                        ("padding-bottom", "16"), ("padding-left", "16"),
-                        ("margin-top", "0"), ("margin-bottom", "0")]:
-    let row = renderPropertyRow[R, E](r, label, val, "px")
-    r.appendChild(propsSection, row)
+    let boxModel = renderBoxModel[R, E](r, "0", "0", "0", "0", "16", "16", "16", "16")
+    r.appendChild(inspector, boxModel)
+
+    let propsSection = ui(r):
+      tdiv(padding = "0 12px 12px 12px", display = "flex",
+           flex_direction = "column", gap = "3px")
+    r.appendChild(inspector, propsSection)
+
+    for (label, val) in [("padding-top", "16"), ("padding-right", "16"),
+                          ("padding-bottom", "16"), ("padding-left", "16"),
+                          ("margin-top", "0"), ("margin-bottom", "0")]:
+      let row = renderScrubInput[R, E](r, label, val, "px")
+      r.appendChild(propsSection, row)
 
   container

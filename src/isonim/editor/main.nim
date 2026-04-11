@@ -42,7 +42,6 @@ import isonim/editor/types
 
 proc getHashView(): EditorView =
   ## Read URL hash to determine initial view for screenshot navigation.
-  ## #storyboard, #component-detail, #component-edit, #vector-editor
   var hash: cstring
   {.emit: [hash, " = window.location.hash || ''"].}
   let h = $hash
@@ -51,12 +50,25 @@ proc getHashView(): EditorView =
   elif "vector-editor" in h: evVectorEditor
   else: evStoryboard
 
+proc getHashInspectorSection(): InspectorSection =
+  ## Read URL hash for inspector section. E.g., #component-edit-fill
+  var hash: cstring
+  {.emit: [hash, " = window.location.hash || ''"].}
+  let h = $hash
+  if "layout" in h: isLayout
+  elif "fill" in h: isFill
+  elif "effects" in h: isEffects
+  elif "stroke" in h: isStroke
+  elif "transitions" in h: isTransitions
+  else: isSpacing  # default
+
 proc main() =
   injectResponsiveStyles()
   createRoot proc(dispose: proc()) =
     let vm = createEditorVM()
     vm.sidebar.groups.val = buildStoryboard()
     vm.activeView.val = getHashView()
+    vm.inspector.activeSection.val = getHashInspectorSection()
 
     let r = DomRenderer()
     let shell = renderEditorShell[DomRenderer, DomElement](r, vm)

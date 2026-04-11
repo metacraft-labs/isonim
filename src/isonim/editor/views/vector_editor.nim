@@ -155,29 +155,76 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
              background_color = bgCard, border = "1px solid " & border,
              border_radius = "4px"):
 
-          # Mock SVG shapes on the artboard
-          # Circle
-          tdiv(position = "absolute", left = "100px", top = "80px",
-               width = "80px", height = "80px", border_radius = "40px",
-               border = "2px solid " & accent, background_color = "transparent")
-          # Rectangle
-          tdiv(position = "absolute", left = "40px", top = "180px",
-               width = "120px", height = "60px", border_radius = "4px",
-               border = "2px solid " & gold, background_color = "transparent")
-          # Line
-          tdiv(position = "absolute", left = "180px", top = "100px",
-               width = "80px", height = "2px",
-               background_color = textSecondary,
-               transform = "rotate(30deg)")
-          # Selected shape indicator (blue handles)
-          tdiv(position = "absolute", left = "96px", top = "76px",
-               width = "88px", height = "88px",
-               border = "1px dashed " & accent):
-            # Corner handles
-            for pos in ["top: -3px; left: -3px", "top: -3px; right: -3px",
-                        "bottom: -3px; left: -3px", "bottom: -3px; right: -3px"]:
-              tdiv(position = "absolute", width = "6px", height = "6px",
-                   background_color = accent, border_radius = "1px")
+          # SVG shapes with bezier curve editing visible
+
+          # Bezier path (a curved check-mark shape) — shown as segments
+          # Path segments shown as connected lines
+          tdiv(position = "absolute", left = "40px", top = "60px",
+               width = "220px", height = "180px"):
+
+            # Path stroke visualization (curved line approximated with divs)
+            # Segment 1: curve from bottom-left to center
+            tdiv(position = "absolute", left = "20px", top = "120px",
+                 width = "80px", height = "2px",
+                 background_color = accent,
+                 transform = "rotate(-35deg)", transform_origin = "left center")
+            # Segment 2: curve from center up-right
+            tdiv(position = "absolute", left = "85px", top = "85px",
+                 width = "100px", height = "2px",
+                 background_color = accent,
+                 transform = "rotate(-50deg)", transform_origin = "left center")
+
+            # Anchor points (blue squares)
+            tdiv(position = "absolute", left = "16px", top = "117px",
+                 width = "8px", height = "8px",
+                 background_color = accent, border = "1.5px solid white")
+            tdiv(position = "absolute", left = "82px", top = "82px",
+                 width = "8px", height = "8px",
+                 background_color = accent, border = "1.5px solid white")
+            tdiv(position = "absolute", left = "160px", top = "25px",
+                 width = "8px", height = "8px",
+                 background_color = accent, border = "1.5px solid white")
+
+            # Bezier handles — thin lines + circle endpoints
+            # Handle from anchor 1
+            tdiv(position = "absolute", left = "20px", top = "100px",
+                 width = "40px", height = "1px",
+                 background_color = accent, opacity = "0.5",
+                 transform = "rotate(-20deg)", transform_origin = "left center")
+            tdiv(position = "absolute", left = "56px", top = "92px",
+                 width = "6px", height = "6px", border_radius = "3px",
+                 background_color = "white", border = "1.5px solid " & accent)
+
+            # Handle from anchor 2 (both sides)
+            tdiv(position = "absolute", left = "62px", top = "93px",
+                 width = "24px", height = "1px",
+                 background_color = accent, opacity = "0.5",
+                 transform = "rotate(15deg)", transform_origin = "right center")
+            tdiv(position = "absolute", left = "58px", top = "91px",
+                 width = "6px", height = "6px", border_radius = "3px",
+                 background_color = "white", border = "1.5px solid " & accent)
+            tdiv(position = "absolute", left = "96px", top = "70px",
+                 width = "30px", height = "1px",
+                 background_color = accent, opacity = "0.5",
+                 transform = "rotate(-40deg)", transform_origin = "left center")
+            tdiv(position = "absolute", left = "122px", top = "52px",
+                 width = "6px", height = "6px", border_radius = "3px",
+                 background_color = "white", border = "1.5px solid " & accent)
+
+            # Handle from anchor 3
+            tdiv(position = "absolute", left = "140px", top = "40px",
+                 width = "24px", height = "1px",
+                 background_color = accent, opacity = "0.5",
+                 transform = "rotate(10deg)", transform_origin = "right center")
+            tdiv(position = "absolute", left = "136px", top = "37px",
+                 width = "6px", height = "6px", border_radius = "3px",
+                 background_color = "white", border = "1.5px solid " & accent)
+
+          # Rectangle shape (non-selected, just outline)
+          tdiv(position = "absolute", left = "40px", top = "200px",
+               width = "100px", height = "50px", border_radius = "4px",
+               border = "2px solid " & gold, background_color = "transparent",
+               opacity = "0.6")
 
         # Rulers (top + left)
         tdiv(position = "absolute", top = "0", left = "0", right = "0",

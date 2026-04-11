@@ -87,6 +87,31 @@ const views = {
     initialUrl: 'http://127.0.0.1:8091/#vector-editor',
     setup: async (page) => {},
   },
+  'inspector-layout': {
+    description: 'Inspector Layout section — display, flex, alignment controls',
+    initialUrl: 'http://127.0.0.1:8091/#component-edit-layout',
+    setup: async (page) => {},
+  },
+  'inspector-fill': {
+    description: 'Inspector Fill section — color picker with 2D field, hue, swatches',
+    initialUrl: 'http://127.0.0.1:8091/#component-edit-fill',
+    setup: async (page) => {},
+  },
+  'inspector-effects': {
+    description: 'Inspector Effects section — shadow editor, rotation dial, scale',
+    initialUrl: 'http://127.0.0.1:8091/#component-edit-effects',
+    setup: async (page) => {},
+  },
+  'inspector-stroke': {
+    description: 'Inspector Stroke section — border, border-radius editor',
+    initialUrl: 'http://127.0.0.1:8091/#component-edit-stroke',
+    setup: async (page) => {},
+  },
+  'inspector-transitions': {
+    description: 'Inspector Transitions section — bezier curve editor, duration',
+    initialUrl: 'http://127.0.0.1:8091/#component-edit-transitions',
+    setup: async (page) => {},
+  },
 };
 
 // ---------------------------------------------------------------------------
