@@ -10,6 +10,7 @@ import isonim/editor/dom_renderer
 import isonim/dsl/ui
 import isonim/editor/viewmodels
 import isonim/editor/stories
+import examples/wanderlust/stories as wanderlust
 import isonim/editor/views/shell
 
 proc injectResponsiveStyles() =
@@ -66,7 +67,8 @@ proc main() =
   injectResponsiveStyles()
   createRoot proc(dispose: proc()) =
     let vm = createEditorVM()
-    vm.sidebar.groups.val = buildStoryboard()
+    # Load the Wanderlust travel app as the guest project
+    vm.sidebar.groups.val = wanderlust.buildWanderlustStoryboard()
     vm.activeView.val = getHashView()
     vm.inspector.activeSection.val = getHashInspectorSection()
 

@@ -168,7 +168,7 @@ async function main() {
       if (!nimPath) { console.error('nim not found'); process.exit(1); }
     }
     mkdirSync(editorDir, { recursive: true });
-    execSync(`${nimPath} js --path:src --hints:off -o:build/editor/editor.js src/isonim/editor/main.nim`, {
+    execSync(`${nimPath} js --path:src --path:. --hints:off -o:build/editor/editor.js src/isonim/editor/main.nim`, {
       cwd: projectRoot, stdio: 'pipe',
     });
     execSync(`cp src/isonim/editor/index.html build/editor/index.html`, { cwd: projectRoot });
