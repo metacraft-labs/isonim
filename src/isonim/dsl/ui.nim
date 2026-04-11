@@ -39,8 +39,73 @@ proc processShowIf(rendererSym, parentSym: NimNode; children: NimNode;
 proc processForIn(rendererSym, parentSym: NimNode; node: NimNode;
                   stmts: NimNode) {.compileTime.}
 
+proc processChildren(rendererSym, parentSym: NimNode; body: NimNode;
+                     stmts: NimNode) {.compileTime.}
+
+proc processIfStmt(rendererSym, parentSym: NimNode; node: NimNode;
+                   stmts: NimNode) {.compileTime.} =
+  ## Process an if/elif/else statement, transforming DSL children in each branch.
+  var newIf = newNimNode(nnkIfStmt)
+  for branch in node:
+    case branch.kind
+    of nnkElifBranch:
+      let cond = branch[0]
+      let body = branch[1]
+      let branchStmts = newStmtList()
+      processChildren(rendererSym, parentSym, body, branchStmts)
+      newIf.add(newNimNode(nnkElifBranch).add(cond, branchStmts))
+    of nnkElse:
+      let body = branch[0]
+      let branchStmts = newStmtList()
+      processChildren(rendererSym, parentSym, body, branchStmts)
+      newIf.add(newNimNode(nnkElse).add(branchStmts))
+    else:
+      discard
+  stmts.add(newIf)
+
+proc processForStmt(rendererSym, parentSym: NimNode; node: NimNode;
+                   stmts: NimNode) {.compileTime.} =
+  ## Process a for loop, transforming DSL children in the body.
+  ## for x in collection: dslBody
+  let body = node[^1]
+  let bodyStmts = newStmtList()
+  processChildren(rendererSym, parentSym, body, bodyStmts)
+  var newFor = newNimNode(nnkForStmt)
+  for i in 0 ..< node.len - 1:
+    newFor.add(node[i])
+  newFor.add(bodyStmts)
+  stmts.add(newFor)
+
+proc processCaseStmt(rendererSym, parentSym: NimNode; node: NimNode;
+                    stmts: NimNode) {.compileTime.} =
+  ## Process a case statement, transforming DSL children in each branch.
+  var newCase = newNimNode(nnkCaseStmt)
+  newCase.add(node[0])  # case expression
+  for i in 1 ..< node.len:
+    let branch = node[i]
+    case branch.kind
+    of nnkOfBranch:
+      let body = branch[^1]
+      let branchStmts = newStmtList()
+      processChildren(rendererSym, parentSym, body, branchStmts)
+      var newBranch = newNimNode(nnkOfBranch)
+      for j in 0 ..< branch.len - 1:
+        newBranch.add(branch[j])
+      newBranch.add(branchStmts)
+      newCase.add(newBranch)
+    of nnkElse:
+      let body = branch[0]
+      let branchStmts = newStmtList()
+      processChildren(rendererSym, parentSym, body, branchStmts)
+      newCase.add(newNimNode(nnkElse).add(branchStmts))
+    else:
+      newCase.add(branch)
+  stmts.add(newCase)
+
 proc processChildren(rendererSym, parentSym: NimNode; body: NimNode; stmts: NimNode) {.compileTime.} =
   ## Process a statement list of DSL children.
+  ## Handles element nodes, text nodes, control flow (if/for/case),
+  ## and passes through arbitrary Nim statements.
   var i = 0
   while i < body.len:
     let child = body[i]
@@ -61,8 +126,14 @@ proc processChildren(rendererSym, parentSym: NimNode; body: NimNode; stmts: NimN
                             parentSym, childNode))
     of nnkStmtList:
       processChildren(rendererSym, parentSym, child, stmts)
+    of nnkIfStmt, nnkWhenStmt:
+      processIfStmt(rendererSym, parentSym, child, stmts)
+    of nnkForStmt:
+      processForStmt(rendererSym, parentSym, child, stmts)
+    of nnkCaseStmt:
+      processCaseStmt(rendererSym, parentSym, child, stmts)
     else:
-      # Pass through arbitrary Nim statements (let, var, if, etc.)
+      # Pass through arbitrary Nim statements (let, var, discard, etc.)
       stmts.add(child)
     inc i
 

@@ -63,17 +63,26 @@ proc eventName*(attrName: string): string =
 # CSS style properties recognized by the DSL.
 # These are emitted as setStyle calls instead of setAttribute.
 const styleProperties* = [
-  # Layout (Yoga / flexbox)
+  # Layout (Yoga / flexbox / grid)
   "width", "height", "min-width", "min-height", "max-width", "max-height",
   "padding", "padding-left", "padding-right", "padding-top", "padding-bottom",
   "margin", "margin-left", "margin-right", "margin-top", "margin-bottom",
   "gap", "flex", "flex-grow", "flex-shrink", "flex-wrap",
   "flex-direction", "align-items", "align-self", "justify-content",
-  "display", "position",
+  "display", "position", "top", "right", "bottom", "left", "z-index",
+  "overflow", "overflow-x", "overflow-y",
   # Visual
-  "background-color", "color", "opacity",
-  "font-size", "font-weight", "text-align", "text-decoration",
-  "border-radius", "border-color", "border-width",
+  "background-color", "background", "background-image", "background-size",
+  "color", "opacity",
+  "font-size", "font-weight", "font-family", "font-style",
+  "text-align", "text-decoration", "text-transform", "text-overflow",
+  "letter-spacing", "line-height", "white-space", "word-wrap",
+  "border", "border-radius", "border-color", "border-width", "border-style",
+  "border-top", "border-right", "border-bottom", "border-left",
+  "box-shadow", "outline", "cursor", "transition",
+  "transform", "transform-origin",
+  # Scrollbar
+  "scrollbar-width",
 ]
 
 proc toStyleName*(nimName: string): string =

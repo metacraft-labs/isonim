@@ -1,296 +1,330 @@
 ## IsoNim Editor — shell View (three-panel layout).
 ##
-## Maps EditorVM state to visual output via the `ui` DSL.
-## All styling via Tailwind classes and theme tokens.
+## Fully dogfoods IsoNim: all elements via ui macro with if/for/case.
+## Only uses manual setStyle for reactive effects (createRenderEffect).
 
 import isonim/core/[signals, computation]
 import isonim/dsl/[ui, components]
 import isonim/editor/viewmodels
 import isonim/editor/types
+import isonim/editor/views/storyboard
+
+# ---------------------------------------------------------------------------
+# Theme tokens
+# ---------------------------------------------------------------------------
+const
+  bgBase = "#0B1120"
+  bgSurface = "#1E293B"
+  bgSidebar = "#111827"
+  bgToolbar = "#151D2E"
+  bgCard = "#151D2E"
+  border = "#334155"
+  borderStrong = "#475569"
+  borderFaint = "#1E293B"
+  textPrimary = "#F1F5F9"
+  textSecondary = "#94A3B8"
+  textMuted = "#64748B"
+  textDim = "#475569"
+  accent = "#3B82F6"
+  accentSoft = "#1E3A5F"
+  gold = "#F59E0B"
 
 proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
   ## Left panel: storyboard navigation tree.
-  let sidebar = ui(r):
-    tdiv(class = "flex flex-col h-full bg-gray-900 border-gray-700")
-  r.setStyle(sidebar, "width", "280")
-  r.setStyle(sidebar, "border-right", "1px solid")
-  r.setStyle(sidebar, "border-color", "#1E293B")
-  r.setStyle(sidebar, "overflow-y", "auto")
+  ## Built entirely with the ui DSL — if/for inside the body.
+  ui(r):
+    tdiv(class = "editor-sidebar",
+         display = "flex", flex_direction = "column",
+         width = "260px", min_width = "260px", height = "100%",
+         background_color = bgSidebar,
+         border_right = "1px solid " & borderStrong,
+         overflow_y = "auto", overflow_x = "hidden"):
 
-  # Header
-  let header = ui(r):
-    tdiv(class = "flex items-center justify-between p-4")
-  let logo = ui(r):
-    span(class = "text-sm font-bold")
-  r.setTextContent(logo, "isonim editor")
-  r.setStyle(logo, "color", "#E6A817")
-  r.appendChild(header, logo)
-  r.appendChild(sidebar, header)
+      # Header
+      tdiv(display = "flex", align_items = "center",
+           justify_content = "space-between",
+           padding = "14px 16px 10px 16px",
+           border_bottom = "1px solid " & borderFaint):
+        span(font_size = "13px", font_weight = "700",
+             color = gold, letter_spacing = "0.3px"):
+          text "IsoNim Editor"
+        tdiv(display = "flex", align_items = "center", gap = "8px"):
+          span(font_size = "10px", color = textDim):
+            text "v0.1"
+          tdiv(class = "editor-mobile-toggle",
+               width = "28px", height = "28px",
+               align_items = "center", justify_content = "center",
+               border_radius = "4px", background_color = bgSurface,
+               color = textSecondary, font_size = "14px", cursor = "pointer"):
+            text "\xE2\x98\xB0"
 
-  # Search input
-  let searchRow = ui(r):
-    tdiv(class = "px-3 pb-3")
-  let searchInput = r.createElement("input")
-  r.setStyle(searchInput, "width", "100%")
-  r.setStyle(searchInput, "height", "32")
-  r.setStyle(searchInput, "background-color", "#1E293B")
-  r.setStyle(searchInput, "border-radius", "6")
-  r.setStyle(searchInput, "padding", "8")
-  r.setStyle(searchInput, "font-size", "13")
-  r.setStyle(searchInput, "color", "#CBD5E1")
-  r.setAttribute(searchInput, "placeholder", "Search stories...")
-  r.appendChild(searchRow, searchInput)
-  r.appendChild(sidebar, searchRow)
+      # Search input
+      tdiv(padding = "10px 12px"):
+        tdiv(display = "flex", align_items = "center",
+             background_color = bgSurface,
+             border = "1px solid " & border,
+             border_radius = "6px", padding = "0 10px", height = "32px"):
+          span(font_size = "11px", opacity = "0.5", margin_right = "6px"):
+            text "\xF0\x9F\x94\x8D"
+          input(class = "editor-input",
+                background_color = "transparent", border = "none",
+                font_size = "12px", color = textSecondary,
+                outline = "none", flex = "1",
+                placeholder = "Search stories\xE2\x80\xA6")
 
-  # Story groups
-  let groupList = ui(r):
-    tdiv(class = "flex flex-col gap-1 px-2")
+      # Story groups
+      tdiv(display = "flex", flex_direction = "column",
+           gap = "2px", padding = "0 8px 16px 8px"):
+        for group in vm.sidebar.groups.val:
+          let gName = group.name
+          let gKind = group.kind
+          let gExpanded = group.expanded
+          let gItems = group.items
+          let icon = case gKind
+            of skFoundation: "\xF0\x9F\x93\xA6"
+            of skComponent: "\xF0\x9F\xA7\xA9"
+            of skPage: "\xF0\x9F\x93\x84"
+            of skFlow: "\xF0\x9F\x8E\xAC"
+          let chevronText = if gExpanded: "\xE2\x96\xBE" else: "\xE2\x96\xB8"
 
-  createRenderEffect proc() =
-    # Clear and rebuild group list on filter change
-    let groups = vm.sidebar.filteredItems.val
-    # In a real implementation, forEachKeyed would handle this reactively.
-    # For the static layout milestone, we render from initial state.
+          tdiv(display = "flex", flex_direction = "column",
+               margin_bottom = "2px"):
+            # Group header
+            tdiv(display = "flex", align_items = "center",
+                 gap = "6px", padding = "5px 8px",
+                 border_radius = "4px", cursor = "pointer"):
+              span(font_size = "11px"):
+                text icon
+              span(font_size = "10px", font_weight = "600",
+                   color = textSecondary, text_transform = "uppercase",
+                   letter_spacing = "0.8px"):
+                text gName
+              span(font_size = "9px", color = textMuted, margin_left = "auto"):
+                text chevronText
 
-  # Render initial groups
-  for group in vm.sidebar.groups.val:
-    let groupEl = ui(r):
-      tdiv(class = "flex flex-col")
+            # Items (if expanded)
+            if gExpanded:
+              var itemIdx = 0
+              for item in gItems:
+                let iName = item.name
+                let iDesc = item.description
+                let isSelected = (gKind == skComponent and itemIdx == 0)
 
-    # Group header
-    let groupHeader = ui(r):
-      tdiv(class = "flex items-center gap-2 px-2 py-1")
-    r.setStyle(groupHeader, "cursor", "pointer")
-
-    let kindIcon = ui(r):
-      span(class = "text-xs")
-    let icon = case group.kind
-      of skFoundation: "\u{1F4E6}"
-      of skComponent: "\u{1F9E9}"
-      of skPage: "\u{1F4C4}"
-      of skFlow: "\u{1F3AC}"
-    r.setTextContent(kindIcon, icon)
-    r.appendChild(groupHeader, kindIcon)
-
-    let groupName = ui(r):
-      span(class = "text-xs font-medium")
-    r.setTextContent(groupName, group.name)
-    r.setStyle(groupName, "color", "#94A3B8")
-    r.appendChild(groupHeader, groupName)
-    r.appendChild(groupEl, groupHeader)
-
-    # Items (if expanded)
-    if group.expanded:
-      for item in group.items:
-        let itemEl = ui(r):
-          tdiv(class = "flex flex-col px-6 py-1")
-        r.setStyle(itemEl, "cursor", "pointer")
-
-        let itemName = ui(r):
-          span(class = "text-xs")
-        r.setTextContent(itemName, item.name)
-        r.setStyle(itemName, "color", "#64748B")
-        r.appendChild(itemEl, itemName)
-
-        if item.description.len > 0:
-          let itemDesc = ui(r):
-            span(class = "text-xs")
-          r.setTextContent(itemDesc, item.description)
-          r.setStyle(itemDesc, "color", "#475569")
-          r.setStyle(itemDesc, "font-size", "11")
-          r.appendChild(itemEl, itemDesc)
-
-        r.appendChild(groupEl, itemEl)
-
-    r.appendChild(groupList, groupEl)
-
-  r.appendChild(sidebar, groupList)
-  sidebar
+                tdiv(display = "flex", flex_direction = "column",
+                     padding = (if isSelected: "4px 12px 4px 28px" else: "4px 12px 4px 30px"),
+                     border_radius = "4px", cursor = "pointer",
+                     transition = "background-color 0.1s",
+                     background_color = (if isSelected: accentSoft else: "transparent"),
+                     border_left = (if isSelected: "2px solid " & accent else: "none")):
+                  span(font_size = "12px", line_height = "1.4",
+                       color = textPrimary,
+                       font_weight = (if isSelected: "500" else: "400")):
+                    text iName
+                  if iDesc.len > 0:
+                    span(font_size = "11px", color = textMuted,
+                         line_height = "1.3", margin_top = "2px"):
+                      text iDesc
+                inc itemIdx
 
 proc renderPreviewPane*[R, E](r: R; vm: EditorVM): E =
   ## Center panel: component preview with toolbar.
+  ## viewBtn/editBtn need refs for reactive effect, so we extract them.
   let pane = ui(r):
-    tdiv(class = "flex flex-col grow")
-  r.setStyle(pane, "background-color", "#0F172A")
+    tdiv(class = "editor-preview",
+         display = "flex", flex_direction = "column",
+         flex = "1", min_width = "0", height = "100%",
+         background_color = bgBase)
 
-  # Toolbar
+  # Toolbar — mode toggle buttons need refs for reactive styling
   let toolbar = ui(r):
-    tdiv(class = "flex items-center justify-between px-4")
-  r.setStyle(toolbar, "height", "48")
-  r.setStyle(toolbar, "border-bottom", "1px solid")
-  r.setStyle(toolbar, "border-color", "#1E293B")
+    tdiv(display = "flex", align_items = "center",
+         justify_content = "space-between",
+         height = "44px", min_height = "44px", padding = "0 16px",
+         background_color = bgToolbar,
+         border_bottom = "1px solid " & border)
 
-  # Mode toggle
   let modeToggle = ui(r):
-    tdiv(class = "flex items-center gap-2")
+    tdiv(display = "flex", align_items = "center", gap = "1px",
+         background_color = bgSurface, border_radius = "6px",
+         padding = "3px")
 
   let viewBtn = ui(r):
-    tdiv(class = "px-3 py-1 rounded-md text-xs")
-  r.setTextContent(viewBtn, "View")
-  r.setStyle(viewBtn, "cursor", "pointer")
+    tdiv(padding = "4px 14px", border_radius = "4px",
+         font_size = "12px", font_weight = "500",
+         cursor = "pointer", transition = "all 0.15s"):
+      text "View"
 
   let editBtn = ui(r):
-    tdiv(class = "px-3 py-1 rounded-md text-xs")
-  r.setTextContent(editBtn, "Edit")
-  r.setStyle(editBtn, "cursor", "pointer")
+    tdiv(padding = "4px 14px", border_radius = "4px",
+         font_size = "12px", font_weight = "500",
+         cursor = "pointer", transition = "all 0.15s"):
+      text "Edit"
 
+  # Reactive effect — only place we need manual setStyle
   createRenderEffect proc() =
     if vm.editMode.val == emView:
-      r.setStyle(viewBtn, "background-color", "#334155")
-      r.setStyle(viewBtn, "color", "#E2E8F0")
+      r.setStyle(viewBtn, "background-color", accent)
+      r.setStyle(viewBtn, "color", textPrimary)
       r.setStyle(editBtn, "background-color", "transparent")
-      r.setStyle(editBtn, "color", "#64748B")
+      r.setStyle(editBtn, "color", textMuted)
     else:
-      r.setStyle(editBtn, "background-color", "#334155")
-      r.setStyle(editBtn, "color", "#E2E8F0")
+      r.setStyle(editBtn, "background-color", accent)
+      r.setStyle(editBtn, "color", textPrimary)
       r.setStyle(viewBtn, "background-color", "transparent")
-      r.setStyle(viewBtn, "color", "#64748B")
+      r.setStyle(viewBtn, "color", textMuted)
 
   r.appendChild(modeToggle, viewBtn)
   r.appendChild(modeToggle, editBtn)
   r.appendChild(toolbar, modeToggle)
 
-  # Platform selector
+  # Breadcrumb + platform selector — built inline
+  let breadcrumb = ui(r):
+    tdiv(display = "flex", align_items = "center", gap = "6px"):
+      span(font_size = "8px", color = textDim):
+        text "\xE2\x97\x8B"
+      span(font_size = "12px", color = textMuted):
+        text "No selection"
+  r.appendChild(toolbar, breadcrumb)
+
   let platformSel = ui(r):
-    tdiv(class = "flex items-center gap-1")
-  for plat in [pfWeb, pfIOS, pfAndroid]:
-    let platBtn = ui(r):
-      tdiv(class = "px-2 py-1 rounded text-xs")
-    let label = case plat
-      of pfWeb: "Web"
-      of pfIOS: "iOS"
-      of pfAndroid: "Android"
-    r.setTextContent(platBtn, label)
-    r.setStyle(platBtn, "cursor", "pointer")
-    r.setStyle(platBtn, "color", "#64748B")
-    r.appendChild(platformSel, platBtn)
+    tdiv(display = "flex", align_items = "center", gap = "1px",
+         background_color = bgSurface, border_radius = "6px",
+         padding = "3px"):
+      for i, plat in [pfWeb, pfIOS, pfAndroid]:
+        let label = case plat
+          of pfWeb: "Web"
+          of pfIOS: "iOS"
+          of pfAndroid: "Android"
+        let isFirst = (i == 0)
+        tdiv(padding = "4px 10px", border_radius = "4px",
+             font_size = "11px", font_weight = "500",
+             cursor = "pointer", transition = "all 0.15s",
+             background_color = (if isFirst: accent else: "transparent"),
+             color = (if isFirst: textPrimary else: textMuted)):
+          text label
   r.appendChild(toolbar, platformSel)
 
   r.appendChild(pane, toolbar)
 
-  # Preview area (iframe placeholder)
+  # Preview area — fully inline
   let previewArea = ui(r):
-    tdiv(class = "grow flex items-center justify-center")
-
-  createRenderEffect proc() =
-    if vm.hasSelection.val:
-      discard  # Show story in iframe
-    # else show "Select a story" message
-
-  let placeholder = ui(r):
-    tdiv(class = "flex flex-col items-center gap-2")
-  let placeholderText = ui(r):
-    span(class = "text-sm")
-  r.setTextContent(placeholderText, "Select a story from the sidebar")
-  r.setStyle(placeholderText, "color", "#475569")
-  r.appendChild(placeholder, placeholderText)
-  r.appendChild(previewArea, placeholder)
-
+    tdiv(flex = "1", display = "flex",
+         align_items = "center", justify_content = "center",
+         background_color = bgBase, position = "relative",
+         background_image = "radial-gradient(circle, " & borderFaint & " 1px, transparent 1px)",
+         background_size = "24px 24px"):
+      tdiv(display = "flex", flex_direction = "column",
+           align_items = "center", gap = "10px",
+           padding = "32px", background_color = bgBase,
+           border_radius = "12px"):
+        tdiv(font_size = "40px", opacity = "0.25"):
+          text "\xF0\x9F\x8E\xA8"
+        span(font_size = "14px", color = textMuted, font_weight = "500"):
+          text "Select a story from the sidebar"
+        span(font_size = "12px", color = textDim):
+          text "Components render here with live preview"
   r.appendChild(pane, previewArea)
   pane
 
 proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
   ## Right panel: property inspector + agent chat.
-  let panel = ui(r):
-    tdiv(class = "flex flex-col h-full")
-  r.setStyle(panel, "width", "320")
-  r.setStyle(panel, "background-color", "#0F172A")
-  r.setStyle(panel, "border-left", "1px solid")
-  r.setStyle(panel, "border-color", "#1E293B")
-  r.setStyle(panel, "overflow-y", "auto")
+  ## Fully inline except for tab active-state styling.
+  ui(r):
+    tdiv(class = "editor-inspector",
+         display = "flex", flex_direction = "column",
+         width = "300px", min_width = "300px", height = "100%",
+         background_color = bgSidebar,
+         border_left = "1px solid " & borderStrong):
 
-  # Section tabs
-  let tabs = ui(r):
-    tdiv(class = "flex px-2 pt-2 gap-1")
-  r.setStyle(tabs, "border-bottom", "1px solid")
-  r.setStyle(tabs, "border-color", "#1E293B")
+      # Section tabs
+      tdiv(class = "editor-tabbar",
+           display = "flex", align_items = "stretch",
+           height = "36px", min_height = "36px",
+           border_bottom = "1px solid " & border,
+           overflow_x = "auto", scrollbar_width = "none"):
+        for i, name in ["Layout", "Size", "Space", "Pos", "Fill", "Stroke", "Type", "FX", "Trans", "Filter", "State"]:
+          let isActive = (i == 0)
+          tdiv(display = "flex", align_items = "center",
+               padding = "0 8px", font_size = "11px", font_weight = "500",
+               cursor = "pointer", white_space = "nowrap",
+               transition = "color 0.15s",
+               color = (if isActive: accent else: textMuted),
+               box_shadow = (if isActive: "inset 0 -2px 0 " & accent else: "none")):
+            text name
 
-  let sectionNames = ["Layout", "Size", "Spacing", "Fill", "Border", "Type", "Effects", "State"]
-  for name in sectionNames:
-    let tab = ui(r):
-      tdiv(class = "px-2 py-1 text-xs rounded-t")
-    r.setTextContent(tab, name)
-    r.setStyle(tab, "color", "#64748B")
-    r.setStyle(tab, "cursor", "pointer")
-    r.appendChild(tabs, tab)
-  r.appendChild(panel, tabs)
+      # Property content area — empty state
+      tdiv(flex = "1", display = "flex", flex_direction = "column",
+           align_items = "center", justify_content = "center",
+           padding = "24px 16px", overflow_y = "auto"):
+        tdiv(font_size = "28px", opacity = "0.25", margin_bottom = "8px"):
+          text "\xF0\x9F\x94\x8D"
+        span(font_size = "12px", color = textMuted):
+          text "Select an element to inspect"
+        span(font_size = "11px", color = textDim, margin_top = "4px"):
+          text "Click any element in the preview"
 
-  # Property content area
-  let content = ui(r):
-    tdiv(class = "flex flex-col p-3 gap-3 grow")
+      # Agent chat area
+      tdiv(display = "flex", flex_direction = "column",
+           height = "220px", min_height = "220px",
+           border_top = "1px solid " & borderStrong,
+           background_color = bgSidebar):
 
-  createRenderEffect proc() =
-    if vm.inspector.hasElement.val:
-      discard  # Show properties for selected element
-    # else show "No element selected"
+        # Chat header
+        tdiv(display = "flex", align_items = "center", gap = "8px",
+             padding = "10px 12px",
+             border_bottom = "1px solid " & borderFaint):
+          span(font_size = "13px"):
+            text "\xE2\x9C\xA8"
+          span(font_size = "11px", font_weight = "600",
+               color = textSecondary, text_transform = "uppercase",
+               letter_spacing = "0.5px"):
+            text "AI Assistant"
 
-  let noSelection = ui(r):
-    tdiv(class = "flex flex-col items-center justify-center grow")
-  let noSelText = ui(r):
-    span(class = "text-xs")
-  r.setTextContent(noSelText, "Select an element to inspect")
-  r.setStyle(noSelText, "color", "#475569")
-  r.appendChild(noSelection, noSelText)
-  r.appendChild(content, noSelection)
-  r.appendChild(panel, content)
+        # Chat messages area
+        tdiv(flex = "1", overflow_y = "auto", padding = "12px"):
+          tdiv(display = "flex", align_items = "center",
+               justify_content = "center", height = "100%"):
+            span(font_size = "12px", color = textDim, font_style = "italic"):
+              text "Ask the AI to modify components\xE2\x80\xA6"
 
-  # Agent chat area (bottom section)
-  let chatSection = ui(r):
-    tdiv(class = "flex flex-col")
-  r.setStyle(chatSection, "height", "200")
-  r.setStyle(chatSection, "border-top", "1px solid")
-  r.setStyle(chatSection, "border-color", "#1E293B")
-
-  let chatHeader = ui(r):
-    tdiv(class = "flex items-center px-3 py-2")
-  let chatTitle = ui(r):
-    span(class = "text-xs font-medium")
-  r.setTextContent(chatTitle, "AI Assistant")
-  r.setStyle(chatTitle, "color", "#94A3B8")
-  r.appendChild(chatHeader, chatTitle)
-  r.appendChild(chatSection, chatHeader)
-
-  # Chat input
-  let chatInputRow = ui(r):
-    tdiv(class = "flex items-center gap-2 px-3 pb-3")
-  let chatInput = r.createElement("input")
-  r.setStyle(chatInput, "flex-grow", "1")
-  r.setStyle(chatInput, "height", "32")
-  r.setStyle(chatInput, "background-color", "#1E293B")
-  r.setStyle(chatInput, "border-radius", "6")
-  r.setStyle(chatInput, "padding", "8")
-  r.setStyle(chatInput, "font-size", "13")
-  r.setStyle(chatInput, "color", "#CBD5E1")
-  r.setAttribute(chatInput, "placeholder", "Ask the AI...")
-  r.appendChild(chatInputRow, chatInput)
-
-  let sendBtn = ui(r):
-    tdiv(class = "px-3 py-1 rounded-md text-xs font-medium")
-  r.setTextContent(sendBtn, "Send")
-  r.setStyle(sendBtn, "background-color", "#E6A817")
-  r.setStyle(sendBtn, "color", "#0F172A")
-  r.setStyle(sendBtn, "cursor", "pointer")
-  r.appendChild(chatInputRow, sendBtn)
-
-  r.appendChild(chatSection, chatInputRow)
-  r.appendChild(panel, chatSection)
-
-  panel
+        # Chat input row
+        tdiv(display = "flex", align_items = "center", gap = "8px",
+             padding = "8px 12px 12px 12px"):
+          input(class = "editor-input",
+                flex = "1", height = "34px",
+                background_color = bgSurface,
+                border = "1px solid " & border,
+                border_radius = "8px", padding = "0 12px",
+                font_size = "13px", color = textPrimary,
+                outline = "none",
+                placeholder = "Ask the AI\xE2\x80\xA6")
+          tdiv(display = "flex", align_items = "center",
+               justify_content = "center",
+               width = "34px", height = "34px",
+               border_radius = "8px", font_size = "16px", font_weight = "700",
+               background_color = accent, color = textPrimary,
+               cursor = "pointer", transition = "background-color 0.15s"):
+            text "\xE2\x86\x91"
 
 proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
-  ## Top-level editor layout: sidebar + preview + inspector.
+  ## Top-level editor layout: sidebar + storyboard/preview + inspector.
   let shell = ui(r):
-    tdiv(class = "flex h-full")
-  r.setStyle(shell, "font-family", "system-ui, -apple-system, sans-serif")
-  r.setStyle(shell, "background-color", "#0F172A")
-  r.setStyle(shell, "color", "#E2E8F0")
+    tdiv(display = "flex", width = "100%", height = "100%",
+         font_family = "-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif",
+         font_size = "14px", background_color = bgBase,
+         color = textPrimary, overflow = "hidden")
 
   let sidebarEl = renderSidebar[R, E](r, vm)
+  let storyboardEl = renderStoryboardCanvas[R, E](r, vm)
   let previewEl = renderPreviewPane[R, E](r, vm)
   let inspectorEl = renderInspectorPanel[R, E](r, vm)
 
+  # Default: storyboard visible, component editing hidden
+  r.setStyle(previewEl, "display", "none")
+  r.setStyle(inspectorEl, "display", "none")
+
   r.appendChild(shell, sidebarEl)
+  r.appendChild(shell, storyboardEl)
   r.appendChild(shell, previewEl)
   r.appendChild(shell, inspectorEl)
-
   shell

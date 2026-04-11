@@ -36,16 +36,97 @@ type
     emView    ## Normal view — component interactions work
     emEdit    ## Click-to-select — inspector populates on click
 
+  # --- Editor default view ---
+  EditorView* = enum
+    evStoryboard   ## Default: canvas showing screens + flow arrows
+    evComponent    ## Single component editing with full inspector
+
+  # --- Storyboard canvas ---
+  CanvasItem* = object
+    ## A screen/page thumbnail on the storyboard canvas.
+    storyRef*: StoryRef
+    x*, y*: float          ## Position on canvas
+    width*, height*: float ## Thumbnail dimensions
+    label*: string
+
+  FlowConnection* = object
+    ## Arrow connecting two screens on the storyboard.
+    fromItem*: int         ## Index into canvasItems
+    toItem*: int
+    trigger*: string       ## e.g. "Taps + button", "Swipes left"
+    label*: string         ## Optional annotation
+
   # --- Inspector ---
   InspectorSection* = enum
-    isLayout
-    isSize
-    isSpacing
-    isFill
-    isBorder
-    isTypography
-    isEffects
-    isState       ## ViewModel signal editor
+    isLayout         ## Display, flex/grid, alignment, gap, overflow
+    isSize           ## Width, height, min/max, flex grow/shrink
+    isSpacing        ## Visual box model: margin + padding
+    isPosition       ## Position mode, top/right/bottom/left, z-index
+    isFill           ## Background color, gradients, opacity
+    isStroke         ## Border width, color, style, radius
+    isTypography     ## Font, weight, size, line-height, alignment, decoration
+    isEffects        ## Shadows, blur, backdrop-blur, blend, transforms
+    isTransitions    ## CSS transitions and animations
+    isFilters        ## CSS filter functions (brightness, contrast, etc.)
+    isState          ## ViewModel signal editor
+
+  # --- CSS value input ---
+  CSSUnit* = enum
+    cuPx, cuEm, cuRem, cuPercent, cuVw, cuVh, cuAuto, cuNone
+
+  CSSValueInput* = object
+    ## A numeric CSS value with unit, for scrub-able inputs.
+    value*: float
+    unit*: CSSUnit
+    property*: string  ## CSS property name
+
+  # --- Layout helpers ---
+  DisplayMode* = enum
+    dmBlock, dmFlex, dmGrid, dmInline, dmInlineBlock, dmInlineFlex, dmNone
+
+  FlexDirection* = enum
+    fdRow, fdRowReverse, fdColumn, fdColumnReverse
+
+  AlignValue* = enum
+    avStart, avCenter, avEnd, avStretch, avBaseline, avSpaceBetween, avSpaceAround, avSpaceEvenly
+
+  # --- Vector editor ---
+  VectorTool* = enum
+    vtSelect       ## Select / move / resize
+    vtPen          ## Pen tool: click corners, drag curves
+    vtPencil       ## Freehand drawing
+    vtRectangle    ## Rectangle / rounded rect
+    vtEllipse      ## Circle / ellipse
+    vtPolygon      ## Regular polygon (n-gon)
+    vtStar         ## Star shape
+    vtLine         ## Straight line / arrow
+    vtText         ## Text on canvas
+    vtPathEdit     ## Direct node/handle editing
+
+  BooleanOp* = enum
+    boUnion, boSubtract, boIntersect, boExclude, boFlatten
+
+  NodeType* = enum
+    ntSmooth       ## Symmetric handles (curve through)
+    ntCorner       ## Sharp corner (no handles)
+    ntAsymmetric   ## Independent handle lengths
+
+  FillType* = enum
+    ftSolid, ftLinearGradient, ftRadialGradient, ftPattern, ftNone
+
+  StrokeCapStyle* = enum
+    scButt, scRound, scSquare
+
+  StrokeJoinStyle* = enum
+    sjMiter, sjRound, sjBevel
+
+  VectorSymbol* = object
+    ## A reusable vector symbol in the design system.
+    name*: string
+    category*: string    ## e.g. "Icons", "Illustrations", "Logos"
+    svgContent*: string  ## Raw SVG source
+    tags*: seq[string]   ## Searchable tags
+    width*, height*: float
 
   PropertyOrigin* = enum
     poTailwindClass   ## From a Tailwind utility in class="..."

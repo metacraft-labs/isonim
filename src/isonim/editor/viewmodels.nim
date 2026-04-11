@@ -21,11 +21,36 @@ type
     searchFilter*: Signal[string]
     filteredItems*: Memo[seq[StoryGroup]]
 
+  StoryboardVM* = ref object of ViewModel
+    ## Canvas showing screen thumbnails connected by flow arrows.
+    canvasItems*: Signal[seq[CanvasItem]]
+    connections*: Signal[seq[FlowConnection]]
+    zoom*: Signal[float]         ## Canvas zoom level (0.25..4.0)
+    panX*, panY*: Signal[float]  ## Canvas pan offset
+    selectedItem*: Signal[int]   ## Index into canvasItems (-1 = none)
+    hoveredItem*: Signal[int]
+
   InspectorVM* = ref object of ViewModel
     selectedElement*: Signal[ElementRef]
     activeSection*: Signal[InspectorSection]
     hasElement*: Memo[bool]
     properties*: Memo[seq[PropertyInfo]]
+    ## CSS-specific state
+    displayMode*: Signal[DisplayMode]
+    flexDirection*: Signal[FlexDirection]
+
+  VectorEditorVM* = ref object of ViewModel
+    ## Embedded vector editor for SVG symbols.
+    activeTool*: Signal[VectorTool]
+    symbols*: Signal[seq[VectorSymbol]]
+    searchFilter*: Signal[string]
+    filteredSymbols*: Memo[seq[VectorSymbol]]
+    selectedSymbol*: Signal[int]  ## Index into symbols (-1 = none)
+    isEditing*: Memo[bool]
+    zoom*: Signal[float]
+    showGrid*: Signal[bool]
+    snapToGrid*: Signal[bool]
+    gridSize*: Signal[float]
 
   AgentChatVM* = ref object of ViewModel
     messages*: Signal[seq[ChatMessage]]
@@ -50,12 +75,15 @@ type
     currentAction*: Memo[string]
 
   EditorVM* = ref object of ViewModel
+    activeView*: Signal[EditorView]
     selectedStory*: Signal[StoryRef]
     editMode*: Signal[EditMode]
     panels*: Signal[PanelVisibility]
     platform*: Signal[Platform]
     sidebar*: SidebarVM
+    storyboard*: StoryboardVM
     inspector*: InspectorVM
+    vectorEditor*: VectorEditorVM
     chat*: AgentChatVM
     review*: ReviewResultsVM
     flowPlayer*: FlowPlayerVM
@@ -166,6 +194,19 @@ proc createSidebarVM*(): SidebarVM =
 
   SidebarVM(groups: groups, searchFilter: searchFilter, filteredItems: filteredItems)
 
+proc createStoryboardVM*(): StoryboardVM =
+  let canvasItems = createSignal[seq[CanvasItem]](@[])
+  let connections = createSignal[seq[FlowConnection]](@[])
+  let zoom = createSignal(1.0)
+  let panX = createSignal(0.0)
+  let panY = createSignal(0.0)
+  let selectedItem = createSignal(-1)
+  let hoveredItem = createSignal(-1)
+
+  StoryboardVM(canvasItems: canvasItems, connections: connections,
+               zoom: zoom, panX: panX, panY: panY,
+               selectedItem: selectedItem, hoveredItem: hoveredItem)
+
 proc createInspectorVM*(): InspectorVM =
   let selectedElement = createSignal(ElementRef())
   let activeSection = createSignal(isLayout)
@@ -178,8 +219,48 @@ proc createInspectorVM*(): InspectorVM =
     selectedElement.val.properties
   )
 
+  let displayMode = createSignal(dmFlex)
+  let flexDirection = createSignal(fdRow)
+
   InspectorVM(selectedElement: selectedElement, activeSection: activeSection,
-              hasElement: hasElement, properties: properties)
+              hasElement: hasElement, properties: properties,
+              displayMode: displayMode, flexDirection: flexDirection)
+
+proc createVectorEditorVM*(): VectorEditorVM =
+  let activeTool = createSignal(vtSelect)
+  let symbols = createSignal[seq[VectorSymbol]](@[])
+  let searchFilter = createSignal("")
+  let selectedSymbol = createSignal(-1)
+  let zoom = createSignal(1.0)
+  let showGrid = createSignal(true)
+  let snapToGrid = createSignal(true)
+  let gridSize = createSignal(8.0)
+
+  let isEditing = createMemo[bool](proc(): bool =
+    selectedSymbol.val >= 0
+  )
+
+  let filteredSymbols = createMemo[seq[VectorSymbol]](proc(): seq[VectorSymbol] =
+    let query = searchFilter.val.toLowerAscii()
+    let all = symbols.val
+    if query.len == 0:
+      return all
+    result = @[]
+    for s in all:
+      if query in s.name.toLowerAscii() or query in s.category.toLowerAscii():
+        result.add s
+      else:
+        for tag in s.tags:
+          if query in tag.toLowerAscii():
+            result.add s
+            break
+  )
+
+  VectorEditorVM(activeTool: activeTool, symbols: symbols,
+                 searchFilter: searchFilter, filteredSymbols: filteredSymbols,
+                 selectedSymbol: selectedSymbol, isEditing: isEditing,
+                 zoom: zoom, showGrid: showGrid, snapToGrid: snapToGrid,
+                 gridSize: gridSize)
 
 proc createAgentChatVM*(): AgentChatVM =
   let messages = createSignal[seq[ChatMessage]](@[])
@@ -238,13 +319,16 @@ proc createFlowPlayerVM*(): FlowPlayerVM =
 
 proc createEditorVM*(): EditorVM =
   ## Create the top-level editor ViewModel with all sub-VMs wired up.
+  let activeView = createSignal(evStoryboard)
   let selectedStory = createSignal(StoryRef())
   let editMode = createSignal(emView)
   let panels = createSignal(PanelVisibility(sidebar: true, inspector: true))
   let platform = createSignal(pfWeb)
 
   let sidebar = createSidebarVM()
+  let storyboard = createStoryboardVM()
   let inspector = createInspectorVM()
+  let vectorEditor = createVectorEditorVM()
   let chat = createAgentChatVM()
   let review = createReviewResultsVM()
   let flowPlayer = createFlowPlayerVM()
@@ -253,8 +337,9 @@ proc createEditorVM*(): EditorVM =
     selectedStory.val.name.len > 0
   )
 
-  EditorVM(selectedStory: selectedStory, editMode: editMode,
-           panels: panels, platform: platform,
-           sidebar: sidebar, inspector: inspector, chat: chat,
-           review: review, flowPlayer: flowPlayer,
+  EditorVM(activeView: activeView, selectedStory: selectedStory,
+           editMode: editMode, panels: panels, platform: platform,
+           sidebar: sidebar, storyboard: storyboard,
+           inspector: inspector, vectorEditor: vectorEditor,
+           chat: chat, review: review, flowPlayer: flowPlayer,
            hasSelection: hasSelection)

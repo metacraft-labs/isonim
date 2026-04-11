@@ -39,7 +39,9 @@ proc textContent*(r: DomRenderer; node: DomElement): string =
   $node.textContent
 
 proc setStyle*(r: DomRenderer; node: DomElement; prop, value: string) =
-  {.emit: [node, ".style.setProperty(", prop, ",", value, ")"].}
+  let p = prop.cstring
+  let v = value.cstring
+  {.emit: [node, ".style.setProperty(", p, ",", v, ")"].}
 
 proc addEventListener*(r: DomRenderer; node: DomElement; event: string;
                         handler: proc()) =
