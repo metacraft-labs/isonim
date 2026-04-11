@@ -117,6 +117,10 @@ editor-serve: editor-build
     @echo "Serving editor on http://localhost:8090"
     cd build/editor && python3 -m http.server 8090
 
+# Build, screenshot at multiple viewports, save to build/editor/screenshots/
+editor-screenshot:
+    node tools/editor-screenshot.mjs
+
 # Run editor ViewModel tests
 test-editor:
     nim c -r tests/test_editor_viewmodels.nim
