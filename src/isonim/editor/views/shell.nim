@@ -341,8 +341,10 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
     r.setStyle(componentDetailEl, "display", if view == evComponentDetail: "flex" else: "none")
     r.setStyle(componentEditEl, "display", if view == evComponentEdit: "flex" else: "none")
     r.setStyle(vectorEditorEl, "display", if view == evVectorEditor: "flex" else: "none")
-    r.setStyle(inspectorEl, "display",
-      if view in {evComponentEdit}: "flex" else: "none")
+    # Hide sidebar in vector editor (it has its own tool palette)
+    r.setStyle(sidebarEl, "display", if view == evVectorEditor: "none" else: "flex")
+    # Shell inspector not needed — each view has its own
+    r.setStyle(inspectorEl, "display", "none")
 
   r.appendChild(shell, sidebarEl)
   r.appendChild(shell, storyboardEl)

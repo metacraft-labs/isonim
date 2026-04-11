@@ -64,13 +64,14 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
             text "Vector Editor"
           span(font_size = "11px", color = textDim):
             text "\xE2\x80\x94 check-icon.svg"
-        # Boolean operations
-        tdiv(display = "flex", align_items = "center", gap = "4px"):
-          for op in ["Union", "Subtract", "Intersect", "Exclude"]:
+        # Boolean operations (grouped)
+        tdiv(display = "flex", align_items = "center", gap = "2px",
+             background_color = bgSurface, border_radius = "6px",
+             padding = "3px", border = "1px solid " & border):
+          for op in ["Union", "Sub", "Inter", "Excl"]:
             tdiv(padding = "4px 8px", border_radius = "4px",
                  font_size = "10px", font_weight = "500",
-                 background_color = bgSurface, color = textMuted,
-                 cursor = "pointer", border = "1px solid " & border):
+                 color = textMuted, cursor = "pointer"):
               text op
         # Zoom / export
         tdiv(display = "flex", align_items = "center", gap = "8px"):

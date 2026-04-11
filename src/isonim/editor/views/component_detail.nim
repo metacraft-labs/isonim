@@ -115,12 +115,12 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
 
         # === Section 1: Hero Example ===
         tdiv(display = "flex", flex_direction = "column", gap = "12px"):
-          span(font_size = "10px", font_weight = "600", color = textDim,
+          span(font_size = "11px", font_weight = "700", color = textSecondary,
                text_transform = "uppercase", letter_spacing = "1px"):
             text "DEFAULT STATE"
           # Hero card — large preview
           tdiv(background_color = bgCard, border = "1px solid " & border,
-               border_radius = "12px", padding = "24px",
+               border_radius = "12px", padding = "16px 20px",
                display = "flex", align_items = "center", gap = "12px"):
             # Mock task row at large scale
             tdiv(width = "18px", height = "18px", border_radius = "4px",
@@ -134,7 +134,7 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
 
         # === Section 2: Variants Gallery ===
         tdiv(display = "flex", flex_direction = "column", gap = "12px"):
-          span(font_size = "10px", font_weight = "600", color = textDim,
+          span(font_size = "11px", font_weight = "700", color = textSecondary,
                text_transform = "uppercase", letter_spacing = "1px"):
             text "VARIANTS"
           tdiv(display = "flex", flex_wrap = "wrap", gap = "12px"):
@@ -162,7 +162,7 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
 
         # === Section 3: Props / API Table ===
         tdiv(display = "flex", flex_direction = "column", gap = "12px"):
-          span(font_size = "10px", font_weight = "600", color = textDim,
+          span(font_size = "11px", font_weight = "700", color = textSecondary,
                text_transform = "uppercase", letter_spacing = "1px"):
             text "PROPERTIES"
           tdiv(background_color = bgCard, border = "1px solid " & border,
@@ -205,7 +205,7 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
 
         # === Section 4: Usage Guidelines (Do/Don't) ===
         tdiv(display = "flex", flex_direction = "column", gap = "12px"):
-          span(font_size = "10px", font_weight = "600", color = textDim,
+          span(font_size = "11px", font_weight = "700", color = textSecondary,
                text_transform = "uppercase", letter_spacing = "1px"):
             text "USAGE GUIDELINES"
           tdiv(display = "flex", flex_direction = "column", gap = "8px"):
@@ -224,7 +224,7 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
 
         # === Section 5: Accessibility ===
         tdiv(display = "flex", flex_direction = "column", gap = "12px"):
-          span(font_size = "10px", font_weight = "600", color = textDim,
+          span(font_size = "11px", font_weight = "700", color = textSecondary,
                text_transform = "uppercase", letter_spacing = "1px"):
             text "ACCESSIBILITY"
           tdiv(display = "flex", flex_direction = "column", gap = "8px"):
@@ -245,7 +245,7 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
 
         # === Section 6: Related Components ===
         tdiv(display = "flex", flex_direction = "column", gap = "12px"):
-          span(font_size = "10px", font_weight = "600", color = textDim,
+          span(font_size = "11px", font_weight = "700", color = textSecondary,
                text_transform = "uppercase", letter_spacing = "1px"):
             text "RELATED"
           tdiv(display = "flex", gap = "12px"):
