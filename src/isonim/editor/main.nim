@@ -4,7 +4,7 @@
 when not defined(js):
   {.error: "The editor must be compiled with `nim js`".}
 
-import std/dom
+import std/[dom, strutils]
 import isonim/core/[signals, computation, owner]
 import isonim/editor/dom_renderer
 import isonim/dsl/ui
@@ -38,11 +38,25 @@ proc injectResponsiveStyles() =
   """
   document.head.appendChild(style)
 
+import isonim/editor/types
+
+proc getHashView(): EditorView =
+  ## Read URL hash to determine initial view for screenshot navigation.
+  ## #storyboard, #component-detail, #component-edit, #vector-editor
+  var hash: cstring
+  {.emit: [hash, " = window.location.hash || ''"].}
+  let h = $hash
+  if "component-detail" in h: evComponentDetail
+  elif "component-edit" in h: evComponentEdit
+  elif "vector-editor" in h: evVectorEditor
+  else: evStoryboard
+
 proc main() =
   injectResponsiveStyles()
   createRoot proc(dispose: proc()) =
     let vm = createEditorVM()
     vm.sidebar.groups.val = buildStoryboard()
+    vm.activeView.val = getHashView()
 
     let r = DomRenderer()
     let shell = renderEditorShell[DomRenderer, DomElement](r, vm)

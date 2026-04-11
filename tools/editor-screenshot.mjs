@@ -72,6 +72,21 @@ const views = {
     setup: async (page) => {},
     clip: (vp) => ({ x: 280, y: 0, width: vp.width - 280 - 320, height: vp.height }),
   },
+  'component-detail': {
+    description: 'Component detail page — hero, variants, props, guidelines',
+    initialUrl: 'http://127.0.0.1:8091/#component-detail',
+    setup: async (page) => {},
+  },
+  'component-edit': {
+    description: 'Component edit mode — live preview + CSS inspector',
+    initialUrl: 'http://127.0.0.1:8091/#component-edit',
+    setup: async (page) => {},
+  },
+  'vector-editor': {
+    description: 'Vector graphics editor — tool palette, SVG canvas, properties',
+    initialUrl: 'http://127.0.0.1:8091/#vector-editor',
+    setup: async (page) => {},
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -157,7 +172,8 @@ async function main() {
         deviceScaleFactor: 2,
       });
       const page = await context.newPage();
-      await page.goto('http://127.0.0.1:8091/');
+      const url = view.initialUrl || 'http://127.0.0.1:8091/';
+      await page.goto(url);
       await page.waitForTimeout(500);
 
       // Run view-specific setup

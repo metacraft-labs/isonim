@@ -40,8 +40,10 @@ type
 
   # --- Editor default view ---
   EditorView* = enum
-    evStoryboard   ## Default: canvas showing screens + flow arrows
-    evComponent    ## Single component editing with full inspector
+    evStoryboard       ## Default: canvas showing user flow diagrams
+    evComponentDetail  ## Component page: hero, variants, props, guidelines
+    evComponentEdit    ## Editable state: CSS inspector + live preview
+    evVectorEditor     ## SVG vector editor for design system symbols
 
   # --- Storyboard canvas ---
   CanvasItem* = object
@@ -71,6 +73,24 @@ type
     isTransitions    ## CSS transitions and animations
     isFilters        ## CSS filter functions (brightness, contrast, etc.)
     isState          ## ViewModel signal editor
+
+  # --- Component detail page ---
+  UsageExample* = object
+    ## A Do/Don't example pair.
+    description*: string
+    isDo*: bool          ## true = Do, false = Don't
+
+  ComponentProp* = object
+    ## A configurable property on a component.
+    name*: string
+    propType*: string    ## e.g. "string", "bool", "FilterMode"
+    defaultVal*: string
+    description*: string
+
+  AccessibilityNote* = object
+    ## Keyboard/ARIA/screen reader guidance.
+    topic*: string       ## e.g. "Keyboard", "ARIA", "Screen Reader"
+    description*: string
 
   # --- CSS value input ---
   CSSUnit* = enum

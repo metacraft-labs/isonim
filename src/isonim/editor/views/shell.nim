@@ -8,6 +8,9 @@ import isonim/dsl/[ui, components]
 import isonim/editor/viewmodels
 import isonim/editor/types
 import isonim/editor/views/storyboard
+import isonim/editor/views/component_detail
+import isonim/editor/views/component_edit
+import isonim/editor/views/vector_editor
 
 # ---------------------------------------------------------------------------
 # Theme tokens
@@ -319,15 +322,32 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
 
   let sidebarEl = renderSidebar[R, E](r, vm)
   let storyboardEl = renderStoryboardCanvas[R, E](r, vm)
-  let previewEl = renderPreviewPane[R, E](r, vm)
+  let componentDetailEl = renderComponentDetail[R, E](r, vm)
+  let componentEditEl = renderComponentEditView[R, E](r, vm)
+  let vectorEditorEl = renderVectorEditor[R, E](r, vm)
   let inspectorEl = renderInspectorPanel[R, E](r, vm)
 
-  # Default: storyboard visible, component editing hidden
-  r.setStyle(previewEl, "display", "none")
+  # Show view based on activeView signal
+  # Default: storyboard visible, everything else hidden
+  r.setStyle(componentDetailEl, "display", "none")
+  r.setStyle(componentEditEl, "display", "none")
+  r.setStyle(vectorEditorEl, "display", "none")
   r.setStyle(inspectorEl, "display", "none")
+
+  # Reactive view switching
+  createRenderEffect proc() =
+    let view = vm.activeView.val
+    r.setStyle(storyboardEl, "display", if view == evStoryboard: "flex" else: "none")
+    r.setStyle(componentDetailEl, "display", if view == evComponentDetail: "flex" else: "none")
+    r.setStyle(componentEditEl, "display", if view == evComponentEdit: "flex" else: "none")
+    r.setStyle(vectorEditorEl, "display", if view == evVectorEditor: "flex" else: "none")
+    r.setStyle(inspectorEl, "display",
+      if view in {evComponentEdit}: "flex" else: "none")
 
   r.appendChild(shell, sidebarEl)
   r.appendChild(shell, storyboardEl)
-  r.appendChild(shell, previewEl)
+  r.appendChild(shell, componentDetailEl)
+  r.appendChild(shell, componentEditEl)
+  r.appendChild(shell, vectorEditorEl)
   r.appendChild(shell, inspectorEl)
   shell
