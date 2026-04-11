@@ -95,8 +95,46 @@ proc renderLayoutSection*[R, E](r: R; vm: EditorVM): E =
   r.appendChild(section, alignRow)
 
   # Gap
+  # Justify content
+  let justifyRow = ui(r):
+    tdiv(display = "flex", align_items = "center", gap = "6px",
+         height = "28px"):
+      span(font_size = "11px", color = textMuted, width = "70px"):
+        text "Justify"
+      tdiv(display = "flex", gap = "1px", background_color = bgSurface,
+           border_radius = "4px", padding = "2px"):
+        for i, jc in ["\xE2\xAC\x85", "\xE2\xAC\x8D", "\xE2\xAC\x86", "\xE2\x86\x94", "\xE2\x87\x94"]:
+          let isActive = (i == 0)  # Start
+          tdiv(padding = "3px 5px", border_radius = "3px",
+               font_size = "10px", cursor = "pointer",
+               background_color = (if isActive: accent else: "transparent"),
+               color = (if isActive: textPrimary else: textMuted)):
+            text jc
+  r.appendChild(section, justifyRow)
+
+  # Wrap
+  let wrapRow = ui(r):
+    tdiv(display = "flex", align_items = "center", gap = "6px",
+         height = "28px"):
+      span(font_size = "11px", color = textMuted, width = "70px"):
+        text "Wrap"
+      tdiv(display = "flex", gap = "1px", background_color = bgSurface,
+           border_radius = "4px", padding = "2px"):
+        for i, w in ["No wrap", "Wrap"]:
+          let isActive = (i == 0)
+          tdiv(padding = "3px 8px", border_radius = "3px",
+               font_size = "10px", font_weight = "500", cursor = "pointer",
+               background_color = (if isActive: accent else: "transparent"),
+               color = (if isActive: textPrimary else: textMuted)):
+            text w
+  r.appendChild(section, wrapRow)
+
+  # Gap + overflow
   let gap = renderScrubInput[R, E](r, "Gap", "8", "px")
   r.appendChild(section, gap)
+
+  let overflow = renderScrubInput[R, E](r, "Overflow", "visible", "")
+  r.appendChild(section, overflow)
 
   section
 

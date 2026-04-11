@@ -143,12 +143,13 @@ proc renderColorPicker*[R, E](r: R; hexColor: string; opacity: string = "100"): 
 
 proc renderBezierEditor*[R, E](r: R; x1, y1, x2, y2: float): E =
   ## Bezier curve editor: square with control points + preset thumbnails.
-  let sz = "140"
+  let sz = "180"
+  let szf = 180.0
   # Compute control point positions from bezier values (0..1 mapped to canvas)
-  let cp1x = int(x1 * 140)
-  let cp1y = int((1 - y1) * 140)
-  let cp2x = int(x2 * 140)
-  let cp2y = int((1 - y2) * 140)
+  let cp1x = int(x1 * szf)
+  let cp1y = int((1 - y1) * szf)
+  let cp2x = int(x2 * szf)
+  let cp2y = int((1 - y2) * szf)
 
   let editor = ui(r):
     tdiv(display = "flex", flex_direction = "column", gap = "8px"):
@@ -196,7 +197,7 @@ proc renderBezierEditor*[R, E](r: R; x1, y1, x2, y2: float): E =
          background_color = accent, opacity = "0.4")
   r.setStyle(line2, "right", "0px")
   r.setStyle(line2, "top", "0px")
-  r.setStyle(line2, "width", $(140 - cp2x) & "px")
+  r.setStyle(line2, "width", $(int(szf) - cp2x) & "px")
   r.appendChild(canvas, line2)
 
   # CP2 dot

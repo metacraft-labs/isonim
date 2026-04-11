@@ -176,49 +176,56 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
 
             # Anchor points (blue squares)
             tdiv(position = "absolute", left = "16px", top = "117px",
-                 width = "8px", height = "8px",
-                 background_color = accent, border = "1.5px solid white")
+                 width = "10px", height = "10px",
+                 background_color = accent, border = "2px solid white",
+                 box_shadow = "0 0 4px rgba(59,130,246,0.5)")
             tdiv(position = "absolute", left = "82px", top = "82px",
-                 width = "8px", height = "8px",
-                 background_color = accent, border = "1.5px solid white")
+                 width = "10px", height = "10px",
+                 background_color = accent, border = "2px solid white",
+                 box_shadow = "0 0 4px rgba(59,130,246,0.5)")
             tdiv(position = "absolute", left = "160px", top = "25px",
-                 width = "8px", height = "8px",
-                 background_color = accent, border = "1.5px solid white")
+                 width = "10px", height = "10px",
+                 background_color = accent, border = "2px solid white",
+                 box_shadow = "0 0 4px rgba(59,130,246,0.5)")
 
             # Bezier handles — thin lines + circle endpoints
             # Handle from anchor 1
             tdiv(position = "absolute", left = "20px", top = "100px",
                  width = "40px", height = "1px",
-                 background_color = accent, opacity = "0.5",
+                 background_color = accent, opacity = "0.7",
                  transform = "rotate(-20deg)", transform_origin = "left center")
             tdiv(position = "absolute", left = "56px", top = "92px",
-                 width = "6px", height = "6px", border_radius = "3px",
-                 background_color = "white", border = "1.5px solid " & accent)
+                 width = "10px", height = "10px", border_radius = "5px",
+                 background_color = "white", border = "2px solid " & accent,
+                 box_shadow = "0 0 4px rgba(59,130,246,0.4)")
 
             # Handle from anchor 2 (both sides)
             tdiv(position = "absolute", left = "62px", top = "93px",
                  width = "24px", height = "1px",
-                 background_color = accent, opacity = "0.5",
+                 background_color = accent, opacity = "0.7",
                  transform = "rotate(15deg)", transform_origin = "right center")
             tdiv(position = "absolute", left = "58px", top = "91px",
-                 width = "6px", height = "6px", border_radius = "3px",
-                 background_color = "white", border = "1.5px solid " & accent)
+                 width = "10px", height = "10px", border_radius = "5px",
+                 background_color = "white", border = "2px solid " & accent,
+                 box_shadow = "0 0 4px rgba(59,130,246,0.4)")
             tdiv(position = "absolute", left = "96px", top = "70px",
                  width = "30px", height = "1px",
-                 background_color = accent, opacity = "0.5",
+                 background_color = accent, opacity = "0.7",
                  transform = "rotate(-40deg)", transform_origin = "left center")
             tdiv(position = "absolute", left = "122px", top = "52px",
-                 width = "6px", height = "6px", border_radius = "3px",
-                 background_color = "white", border = "1.5px solid " & accent)
+                 width = "10px", height = "10px", border_radius = "5px",
+                 background_color = "white", border = "2px solid " & accent,
+                 box_shadow = "0 0 4px rgba(59,130,246,0.4)")
 
             # Handle from anchor 3
             tdiv(position = "absolute", left = "140px", top = "40px",
                  width = "24px", height = "1px",
-                 background_color = accent, opacity = "0.5",
+                 background_color = accent, opacity = "0.7",
                  transform = "rotate(10deg)", transform_origin = "right center")
             tdiv(position = "absolute", left = "136px", top = "37px",
-                 width = "6px", height = "6px", border_radius = "3px",
-                 background_color = "white", border = "1.5px solid " & accent)
+                 width = "10px", height = "10px", border_radius = "5px",
+                 background_color = "white", border = "2px solid " & accent,
+                 box_shadow = "0 0 4px rgba(59,130,246,0.4)")
 
           # Rectangle shape (non-selected, just outline)
           tdiv(position = "absolute", left = "40px", top = "200px",
