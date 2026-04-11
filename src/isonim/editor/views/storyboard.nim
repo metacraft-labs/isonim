@@ -55,16 +55,16 @@ proc layoutScreens(groups: seq[StoryGroup]): seq[ScreenLayout] =
                                 label: group.name & " / " & item.name,
                                 kind: skComponent, groupName: group.name)
         x += cardW + gapX
-        if x > 1200: x = 40.0; y += cardH + gapY
+        if x > 760: x = 40.0; y += cardH + gapY
   if x > 40.0: y += cardH + gapY; x = 40.0
 
   for group in groups:
     if group.kind == skPage:
       for item in group.items:
-        result.add ScreenLayout(x: x, y: y, w: 280, h: 200,
+        result.add ScreenLayout(x: x, y: y, w: 260, h: 200,
                                 label: item.name, kind: skPage,
                                 groupName: "Pages")
-        x += 280 + gapX
+        x += 260 + gapX
   if x > 40.0: y += 200 + gapY; x = 40.0
 
   for group in groups:
@@ -122,7 +122,7 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
   # Inner scrollable canvas with positioned cards
   let inner = ui(r):
     tdiv(position = "relative", min_width = "1400px",
-         min_height = "1000px", padding = "20px")
+         min_height = "1000px", padding = "20px 40px 20px 20px")
 
   let screens = layoutScreens(vm.sidebar.groups.val)
 
@@ -157,10 +157,21 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
       of skPage: "\xE2\x96\xA3"                     # ▣ filled square
       of skFlow: "\xE2\x96\xB6"                     # ▶ play
 
+    # Accent border for the first component card (selected demo)
+    let cardBorder = if sc.kind == skComponent and i == (
+      # Find first component index
+      block:
+        var firstComp = -1
+        for k, s in screens:
+          if s.kind == skComponent:
+            firstComp = k; break
+        firstComp
+    ): "1px solid " & accent else: "1px solid " & border
+
     let card = ui(r):
       tdiv(position = "absolute",
            background_color = bgCard,
-           border = "1px solid " & border,
+           border = cardBorder,
            border_radius = "8px", cursor = "pointer",
            transition = "border-color 0.15s, box-shadow 0.15s",
            overflow = "hidden", display = "flex", flex_direction = "column"):
