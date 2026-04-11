@@ -12,17 +12,30 @@ import examples/wanderlust/components/viewmodels
 # DestinationCard
 # ===========================================================================
 
+proc destGradient(dest: Destination): string =
+  ## Unique warm gradient per destination based on name hash.
+  let h = dest.id mod 6
+  case h
+  of 0: "linear-gradient(135deg, #E07A5F 0%, #C45A3C 40%, #3D7C8C 100%)"  # terracotta → teal
+  of 1: "linear-gradient(135deg, #F2A68B 0%, #D4A654 50%, #2A5A66 100%)"  # peach → gold → teal
+  of 2: "linear-gradient(135deg, #D4A654 0%, #E07A5F 50%, #C45A3C 100%)"  # gold → terracotta
+  of 3: "linear-gradient(135deg, #5BA3B5 0%, #2A5A66 40%, #1C1917 100%)"  # light teal → dark
+  of 4: "linear-gradient(135deg, #F2CC8F 0%, #E07A5F 50%, #3D7C8C 100%)"  # amber → terracotta → teal
+  else: "linear-gradient(135deg, #3D7C8C 0%, #5BA3B5 40%, #F2A68B 100%)"  # teal → peach
+
 proc renderDestinationCard*[R, E](r: R; dest: Destination): E =
   let saved = dest.isSaved
+  let gradient = destGradient(dest)
   ui(r):
-    tdiv(width = "280px", border_radius = radiusLg & "px",
+    tdiv(width = "260px", min_width = "260px",
+         border_radius = radiusLg & "px",
          overflow = "hidden", background_color = colorBgPrimary,
          box_shadow = elevationMd, cursor = "pointer",
          transition = "box-shadow " & durationNormal & " " & easingDefault):
 
       # Image placeholder (colored gradient based on destination)
       tdiv(height = "160px", position = "relative",
-           background = "linear-gradient(135deg, " & colorPrimary & ", " & colorSecondary & ")"):
+           background = gradient):
         # Destination name overlay
         tdiv(position = "absolute", bottom = "0", left = "0", right = "0",
              padding = space4 & "px " & space4 & "px",
