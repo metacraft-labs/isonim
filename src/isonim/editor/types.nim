@@ -43,6 +43,7 @@ type
     evStoryboard       ## Default: canvas showing user flow diagrams
     evComponentDetail  ## Component page: hero, variants, props, guidelines
     evComponentEdit    ## Editable state: CSS inspector + live preview
+    evPagePreview      ## Full page preview (Home, Destination Detail, etc.)
     evVectorEditor     ## SVG vector editor for design system symbols
 
   # --- Storyboard canvas ---

@@ -82,6 +82,11 @@ const views = {
     initialUrl: 'http://127.0.0.1:8091/#component-edit',
     setup: async (page) => {},
   },
+  'page-preview': {
+    description: 'Page preview — Wanderlust Home page in device frame',
+    initialUrl: 'http://127.0.0.1:8091/#page-preview',
+    setup: async (page) => {},
+  },
   'vector-editor': {
     description: 'Vector graphics editor — tool palette, SVG canvas, properties',
     initialUrl: 'http://127.0.0.1:8091/#vector-editor',

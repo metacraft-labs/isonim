@@ -48,6 +48,7 @@ proc getHashView(): EditorView =
   let h = $hash
   if "component-detail" in h: evComponentDetail
   elif "component-edit" in h: evComponentEdit
+  elif "page-preview" in h: evPagePreview
   elif "vector-editor" in h: evVectorEditor
   else: evStoryboard
 
