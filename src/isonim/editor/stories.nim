@@ -201,6 +201,17 @@ proc buildStoryboard*(): seq[StoryGroup] =
     items: pageStories().mapIt(
       StoryItem(name: it.name, description: it.description, kind: skPage, group: "Pages")))
 
+  # Patterns
+  groups.add StoryGroup(
+    name: "Patterns", kind: skPattern, expanded: false,
+    description: "Common UI compositions and layouts",
+    items: @[
+      StoryItem(name: "Form Layout", description: "Input fields with labels and validation", kind: skPattern, group: "Patterns"),
+      StoryItem(name: "List with Actions", description: "Scrollable list with item actions", kind: skPattern, group: "Patterns"),
+      StoryItem(name: "Empty State", description: "Illustration + message + CTA pattern", kind: skPattern, group: "Patterns"),
+      StoryItem(name: "Loading Skeleton", description: "Placeholder shimmer while data loads", kind: skPattern, group: "Patterns"),
+    ])
+
   # User Flows
   for flow in userFlows():
     groups.add StoryGroup(
@@ -208,5 +219,17 @@ proc buildStoryboard*(): seq[StoryGroup] =
       description: flow.description,
       items: flow.steps.mapIt(
         StoryItem(name: it.action, description: it.description, kind: skFlow, group: flow.name)))
+
+  # Guidelines
+  groups.add StoryGroup(
+    name: "Guidelines", kind: skGuideline, expanded: false,
+    description: "Usage rules, content, motion, accessibility",
+    items: @[
+      StoryItem(name: "Do / Don't", description: "Component usage rules with examples", kind: skGuideline, group: "Guidelines"),
+      StoryItem(name: "Content & Voice", description: "Tone, terminology, error messages", kind: skGuideline, group: "Guidelines"),
+      StoryItem(name: "Motion", description: "Animation durations, easing curves", kind: skGuideline, group: "Guidelines"),
+      StoryItem(name: "Accessibility", description: "Keyboard nav, ARIA, screen readers", kind: skGuideline, group: "Guidelines"),
+      StoryItem(name: "Responsive", description: "Breakpoints and adaptive behavior", kind: skGuideline, group: "Guidelines"),
+    ])
 
   groups

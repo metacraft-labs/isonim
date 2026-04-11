@@ -1,9 +1,9 @@
 ## IsoNim Editor — Storyboard canvas View.
 ##
-## Default landing view: freeform canvas showing screen thumbnails
-## connected by flow arrows. Fully dogfoods the ui DSL with
-## if/for/case inside the body. Manual setStyle only for dynamic
-## pixel coordinates from layoutScreens().
+## Default landing view: shows user flows as connected screen sequences.
+## Only flow items appear on the canvas — foundations, components, and
+## pages are accessed via the sidebar. This follows the Figma/Overflow
+## pattern: canvas shows spatial relationships, sidebar shows details.
 
 import std/strutils
 import isonim/core/[signals, computation]
@@ -25,72 +25,51 @@ const
   gold = "#F59E0B"
 
 type
-  ScreenLayout = object
+  FlowRow = object
+    ## A single user flow rendered as a horizontal sequence of cards.
+    flowName: string
+    flowDesc: string
+    cards: seq[FlowCard]
+  FlowCard = object
     x, y, w, h: float
     label: string
-    kind: StoryKind
-    groupName: string
+    stepNum: int
 
-proc layoutScreens(groups: seq[StoryGroup]): seq[ScreenLayout] =
-  var x = 40.0
-  var y = 40.0
-  let cardW = 240.0
-  let cardH = 160.0
-  let gapX = 32.0
-  let gapY = 48.0
-
-  for group in groups:
-    if group.kind == skFoundation:
-      for item in group.items:
-        result.add ScreenLayout(x: x, y: y, w: 210, h: 100,
-                                label: item.name, kind: skFoundation,
-                                groupName: "Foundations")
-        x += 210 + gapX
-  if x > 40.0: y += 100 + gapY + 20; x = 40.0
-
-  for group in groups:
-    if group.kind == skComponent:
-      for item in group.items:
-        result.add ScreenLayout(x: x, y: y, w: cardW, h: cardH,
-                                label: group.name & " / " & item.name,
-                                kind: skComponent, groupName: group.name)
-        x += cardW + gapX
-        if x > 760: x = 40.0; y += cardH + gapY
-  if x > 40.0: y += cardH + gapY; x = 40.0
-
-  for group in groups:
-    if group.kind == skPage:
-      for item in group.items:
-        result.add ScreenLayout(x: x, y: y, w: 260, h: 200,
-                                label: item.name, kind: skPage,
-                                groupName: "Pages")
-        x += 260 + gapX
-  if x > 40.0: y += 200 + gapY; x = 40.0
-
+proc layoutFlows(groups: seq[StoryGroup]): seq[FlowRow] =
+  ## Arrange only user flow groups as horizontal card sequences.
   for group in groups:
     if group.kind == skFlow:
-      for item in group.items:
-        result.add ScreenLayout(x: x, y: y, w: 200, h: 140,
-                                label: item.name, kind: skFlow,
-                                groupName: group.name)
-        x += 200 + gapX
-      y += 140 + gapY; x = 40.0
+      var row = FlowRow(flowName: group.name, flowDesc: group.description)
+      var x = 0.0
+      let cardW = 220.0
+      let cardH = 150.0
+      let gapX = 48.0  # wider gap to fit arrows
+      for i, item in group.items:
+        row.cards.add FlowCard(x: x, y: 0, w: cardW, h: cardH,
+                               label: item.name, stepNum: i + 1)
+        x += cardW + gapX
+      result.add row
 
 proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
+  let flows = layoutFlows(vm.sidebar.groups.val)
+
   let canvas = ui(r):
     tdiv(class = "editor-preview",
          flex = "1", display = "flex", flex_direction = "column",
          min_width = "0", height = "100%",
          background_color = bgBase):
 
-      # Toolbar — fully inline with DSL
+      # Toolbar
       tdiv(display = "flex", align_items = "center",
            justify_content = "space-between",
            height = "44px", min_height = "44px", padding = "0 16px",
            background_color = bgCard,
            border_bottom = "1px solid " & border):
-        span(font_size = "13px", font_weight = "600", color = textPrimary):
-          text "Storyboard"
+        tdiv(display = "flex", align_items = "center", gap = "10px"):
+          span(font_size = "13px", font_weight = "600", color = textPrimary):
+            text "User Flows"
+          span(font_size = "11px", color = textDim):
+            text $(flows.len) & " flows"
         # Zoom controls
         tdiv(display = "flex", align_items = "center", gap = "8px"):
           tdiv(width = "28px", height = "28px",
@@ -112,211 +91,142 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
              cursor = "pointer"):
           text "Fit"
 
-  # Canvas area — needs ref for appending positioned children
+  # Canvas area
   let canvasArea = ui(r):
     tdiv(flex = "1", overflow = "auto", position = "relative",
          background_color = bgBase,
          background_image = "radial-gradient(circle, " & borderFaint & " 1px, transparent 1px)",
          background_size = "24px 24px")
 
-  # Inner scrollable canvas with positioned cards
+  # Inner scrollable content
   let inner = ui(r):
-    tdiv(position = "relative", min_width = "1400px",
-         min_height = "1000px", padding = "20px 40px 20px 20px")
+    tdiv(position = "relative", min_width = "1200px",
+         min_height = "600px", padding = "32px 40px")
 
-  let screens = layoutScreens(vm.sidebar.groups.val)
+  # Render each flow as a labeled row of connected cards
+  var rowY = 0.0
+  for fi, flow in flows:
+    let fName = flow.flowName
+    let fDesc = flow.flowDesc
+    let rowTop = int(rowY)
 
-  # Section labels — positioned absolutely, need dynamic top
-  var drawnSections: seq[StoryKind] = @[]
-  for sc in screens:
-    if sc.kind notin drawnSections:
-      drawnSections.add sc.kind
-      let sectionName = case sc.kind
-        of skFoundation: "FOUNDATIONS"
-        of skComponent: "COMPONENTS"
-        of skPage: "PAGES"
-        of skFlow: "USER FLOWS"
-      let sLabel = ui(r):
-        tdiv(position = "absolute", left = "20px",
-             font_size = "10px", font_weight = "700",
-             color = textDim, letter_spacing = "1.5px"):
-          text sectionName
-      # Dynamic coordinate — legitimate setStyle usage
-      r.setStyle(sLabel, "top", $(int(sc.y) - 28) & "px")
-      r.appendChild(inner, sLabel)
+    # Flow title + description
+    let flowHeader = ui(r):
+      tdiv(position = "absolute", left = "0px",
+           display = "flex", flex_direction = "column", gap = "2px"):
+        tdiv(display = "flex", align_items = "center", gap = "8px"):
+          tdiv(width = "20px", height = "20px", border_radius = "10px",
+               background_color = accent, opacity = "0.2",
+               display = "flex", align_items = "center", justify_content = "center"):
+            span(font_size = "10px", color = accent, font_weight = "700"):
+              text $(fi + 1)
+          span(font_size = "13px", font_weight = "600", color = textPrimary):
+            text fName
+        span(font_size = "11px", color = textMuted, margin_left = "28px"):
+          text fDesc
+    r.setStyle(flowHeader, "top", $rowTop & "px")
+    r.appendChild(inner, flowHeader)
 
-  # Screen cards — positioned absolutely with dynamic coordinates
-  for i, sc in screens:
-    # Clean text-based icons instead of emojis
-    let kindIcon = case sc.kind
-      of skFoundation:
-        if "Color" in sc.label: "\xE2\x97\x89"     # ◉ filled circle
-        elif "Typo" in sc.label: "Aa"
-        else: "\xE2\x96\xA4"                        # ▤ grid
-      of skComponent: "\xE2\xA7\x89"                # ⧉ overlapping squares
-      of skPage: "\xE2\x96\xA3"                     # ▣ filled square
-      of skFlow: "\xE2\x96\xB6"                     # ▶ play
+    # Cards start below the header
+    let cardsTop = rowY + 40
+    for ci, card in flow.cards:
+      let cx = int(card.x)
+      let cy = int(cardsTop)
+      let cw = int(card.w)
+      let ch = int(card.h)
+      let stepLabel = card.label
 
-    # Accent border for the first component card (selected demo)
-    let cardBorder = if sc.kind == skComponent and i == (
-      # Find first component index
-      block:
-        var firstComp = -1
-        for k, s in screens:
-          if s.kind == skComponent:
-            firstComp = k; break
-        firstComp
-    ): "1px solid " & accent else: "1px solid " & border
+      let cardEl = ui(r):
+        tdiv(position = "absolute",
+             background_color = bgCard,
+             border = "1px solid " & border,
+             border_radius = "8px", cursor = "pointer",
+             transition = "border-color 0.15s, box-shadow 0.15s",
+             overflow = "hidden", display = "flex", flex_direction = "column"):
 
-    let card = ui(r):
-      tdiv(position = "absolute",
-           background_color = bgCard,
-           border = cardBorder,
-           border_radius = "8px", cursor = "pointer",
-           transition = "border-color 0.15s, box-shadow 0.15s",
-           overflow = "hidden", display = "flex", flex_direction = "column"):
-
-        # Card preview content area
-        tdiv(flex = "1", display = "flex", flex_direction = "column",
-             align_items = "center", justify_content = "center",
-             background_color = bgBase, gap = "4px",
-             margin = "8px 8px 0 8px", border_radius = "4px",
-             width = "auto", height = "auto"):
-          # Wireframes — if/for inside DSL
-          if sc.kind == skComponent:
-            if "FilterBar" in sc.label:
-              # FilterBar: 3 pill buttons in a row
-              tdiv(display = "flex", align_items = "center",
-                   gap = "6px", padding = "16px 16px"):
-                for j in 0..2:
-                  tdiv(height = "16px", padding = "0 12px",
-                       border_radius = "8px",
-                       background_color = (if j == 0: accent else: bgSurface),
-                       opacity = (if j == 0: "0.4" else: "0.3"),
-                       border = "1px solid " & border)
-            elif "InputRow" in sc.label:
-              # InputRow: text input + round add button
-              tdiv(display = "flex", align_items = "center",
-                   gap = "8px", padding = "12px 16px", width = "100%"):
-                tdiv(flex = "1", height = "16px", border_radius = "4px",
-                     background_color = bgSurface,
-                     border = "1px solid " & border)
-                tdiv(width = "16px", height = "16px", border_radius = "8px",
-                     background_color = accent, opacity = "0.4")
-            else:
-              # TaskRow: checkbox rows
-              tdiv(display = "flex", flex_direction = "column",
-                   gap = "6px", padding = "10px 16px", width = "100%"):
-                for j in 0..1:
-                  tdiv(display = "flex", align_items = "center", gap = "8px"):
-                    tdiv(width = "10px", height = "10px", border_radius = "2px",
-                         border = "1.5px solid " & textMuted)
-                    tdiv(height = "5px", flex = "1", border_radius = "3px",
-                         background_color = textDim,
-                         opacity = (if j == 0: "0.4" else: "0.25"))
-          elif sc.kind == skPage:
-            # Full page: mock app frame with header + input + task list
+          # Card content: step number + mini wireframe
+          tdiv(flex = "1", display = "flex", flex_direction = "column",
+               align_items = "center", justify_content = "center",
+               background_color = bgBase, gap = "8px",
+               margin = "8px 8px 0 8px", border_radius = "4px"):
+            # Step number badge
+            tdiv(width = "28px", height = "28px", border_radius = "14px",
+                 border = "2px solid " & accent, opacity = "0.5",
+                 display = "flex", align_items = "center",
+                 justify_content = "center"):
+              span(font_size = "12px", color = accent, font_weight = "700"):
+                text $(card.stepNum)
+            # Mini page wireframe
             tdiv(display = "flex", flex_direction = "column",
-                 width = "100%", height = "100%"):
-              # App header bar
-              tdiv(display = "flex", align_items = "center",
-                   padding = "6px 12px",
-                   background_color = bgSurface, border_radius = "4px 4px 0 0"):
-                tdiv(height = "7px", width = "50%", border_radius = "3px",
-                     background_color = gold, opacity = "0.4")
-              # App body
-              tdiv(display = "flex", flex_direction = "column",
-                   gap = "4px", padding = "8px 12px", flex = "1"):
-                # Input row
-                tdiv(height = "10px", width = "100%", border_radius = "5px",
-                     background_color = bgSurface, border = "1px solid " & border)
-                # Task rows
-                for j in 0..3:
-                  tdiv(display = "flex", align_items = "center", gap = "6px"):
-                    tdiv(width = "8px", height = "8px", border_radius = "2px",
-                         border = "1px solid " & textDim,
-                         opacity = (if j < 2: "0.4" else: "0.2"))
-                    tdiv(height = "4px", flex = "1", border_radius = "2px",
-                         background_color = textDim,
-                         opacity = (if j < 2: "0.25" else: "0.12"))
-                # Filter bar
-                tdiv(display = "flex", gap = "4px", margin_top = "2px"):
-                  for k in 0..2:
-                    tdiv(height = "6px", width = "28px", border_radius = "3px",
-                         background_color = (if k == 0: accent else: textDim),
-                         opacity = (if k == 0: "0.3" else: "0.15"))
-          elif sc.kind == skFlow:
-            # Flow step: numbered circle
-            tdiv(display = "flex", flex_direction = "column",
-                 align_items = "center", gap = "6px"):
-              tdiv(width = "28px", height = "28px",
-                   border_radius = "14px", border = "2px solid " & accent,
-                   display = "flex", align_items = "center",
-                   justify_content = "center", opacity = "0.4"):
-                span(font_size = "11px", color = accent, font_weight = "600"):
-                  text "\xE2\x96\xB6"
-          else:
-            # Foundation: category icon
-            span(font_size = "24px", opacity = "0.3"):
-              text kindIcon
+                 gap = "3px", padding = "0 20px", width = "100%"):
+              tdiv(height = "4px", width = "40%", border_radius = "2px",
+                   background_color = textDim, opacity = "0.3")
+              tdiv(height = "6px", width = "80%", border_radius = "3px",
+                   background_color = textDim, opacity = "0.15")
+              tdiv(height = "6px", width = "70%", border_radius = "3px",
+                   background_color = textDim, opacity = "0.12")
 
-        # Card label
-        tdiv(padding = "6px 10px", font_size = "11px",
-             font_weight = "500", color = textSecondary,
-             overflow = "hidden"):
-          text sc.label
+          # Card label (the user action)
+          tdiv(padding = "6px 10px", font_size = "10px",
+               color = textSecondary, overflow = "hidden",
+               line_height = "1.3"):
+            text stepLabel
 
-    # Dynamic positioning — the only setStyle needed per card
-    r.setStyle(card, "left", $int(sc.x) & "px")
-    r.setStyle(card, "top", $int(sc.y) & "px")
-    r.setStyle(card, "width", $int(sc.w) & "px")
-    r.setStyle(card, "height", $int(sc.h) & "px")
-    r.appendChild(inner, card)
+      r.setStyle(cardEl, "left", $cx & "px")
+      r.setStyle(cardEl, "top", $cy & "px")
+      r.setStyle(cardEl, "width", $cw & "px")
+      r.setStyle(cardEl, "height", $ch & "px")
+      r.appendChild(inner, cardEl)
 
-  # Flow arrows — positioned with dynamic coordinates
-  var prevFlowX: int = 0
-  var prevFlowY: int = 0
-  var prevFlowW: int = 0
-  var prevFlowH: int = 0
-  var currentFlowGroup = ""
-  for i, sc in screens:
-    if sc.kind == skFlow:
-      let scx = int(sc.x)
-      let scy = int(sc.y)
-      let scw = int(sc.w)
-      let sch = int(sc.h)
-      if sc.groupName == currentFlowGroup and prevFlowW > 0:
-        let ax = prevFlowX + prevFlowW
-        let aw = scx - ax
-        let ay = scy + sch div 2 - 12
-        if aw > 4:
+      # Arrow to next card (if not last)
+      if ci < flow.cards.len - 1:
+        let ax = cx + cw
+        let nextX = int(flow.cards[ci + 1].x)
+        let aw = nextX - ax
+        let ay = cy + ch div 2 - 12
+        if aw > 8:
           let arrow = ui(r):
             tdiv(position = "absolute", height = "24px",
                  display = "flex", align_items = "center",
-                 justify_content = "center", z_index = "10"):
+                 z_index = "10"):
+              # Line
               tdiv(flex = "1", height = "2px",
-                   background_color = accent)
-              # CSS triangle arrowhead
+                   background_color = accent, opacity = "0.5")
+              # Triangle arrowhead
               tdiv(width = "0", height = "0",
                    border_top = "6px solid transparent",
                    border_bottom = "6px solid transparent",
-                   border_left = "8px solid " & accent)
+                   border_left = "8px solid " & accent,
+                   opacity = "0.5")
           r.setStyle(arrow, "left", $ax & "px")
           r.setStyle(arrow, "top", $ay & "px")
           r.setStyle(arrow, "width", $aw & "px")
           r.appendChild(inner, arrow)
-      currentFlowGroup = sc.groupName
-      prevFlowX = scx; prevFlowY = scy
-      prevFlowW = scw; prevFlowH = sch
-    else:
-      currentFlowGroup = ""; prevFlowW = 0
+
+    rowY = cardsTop + 150 + 48  # card height + gap between flow rows
+
+  # Empty state if no flows
+  if flows.len == 0:
+    let empty = ui(r):
+      tdiv(position = "absolute", left = "0", right = "0",
+           top = "0", bottom = "0",
+           display = "flex", flex_direction = "column",
+           align_items = "center", justify_content = "center",
+           gap = "12px"):
+        tdiv(font_size = "40px", opacity = "0.2"):
+          text "\xF0\x9F\x8E\xAC"
+        span(font_size = "14px", color = textMuted, font_weight = "500"):
+          text "No user flows defined"
+        span(font_size = "12px", color = textDim):
+          text "The AI agent will generate flows from your components"
+    r.appendChild(inner, empty)
 
   r.appendChild(canvasArea, inner)
 
   # Minimap
   let minimap = ui(r):
     tdiv(position = "absolute", bottom = "12px", right = "12px",
-         width = "140px", height = "90px",
+         width = "140px", height = "80px",
          background_color = bgCard,
          border = "1px solid " & border,
          border_radius = "6px", overflow = "hidden",

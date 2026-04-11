@@ -6,8 +6,10 @@ type
   StoryKind* = enum
     skFoundation    ## Design token display (colors, typography, spacing)
     skComponent     ## Individual component in a specific state
+    skPattern       ## Composition pattern (forms, tables, navigation)
     skPage          ## Full page composition with realistic data
     skFlow          ## Multi-step user navigation sequence
+    skGuideline     ## Usage guideline (do/don't, content, motion, a11y)
 
   StoryRef* = object
     ## Reference to a specific story in the storyboard.

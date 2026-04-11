@@ -81,10 +81,12 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
           let gExpanded = group.expanded
           let gItems = group.items
           let icon = case gKind
-            of skFoundation: "\xF0\x9F\x93\xA6"
-            of skComponent: "\xF0\x9F\xA7\xA9"
-            of skPage: "\xF0\x9F\x93\x84"
-            of skFlow: "\xF0\x9F\x8E\xAC"
+            of skFoundation: "\xE2\x97\x86"    # ◆
+            of skComponent: "\xE2\xA7\x89"      # ⧉
+            of skPattern: "\xE2\x96\xA4"         # ▤
+            of skPage: "\xE2\x96\xA3"            # ▣
+            of skFlow: "\xE2\x96\xB6"            # ▶
+            of skGuideline: "\xE2\x93\x98"       # ⓘ
           let chevronText = if gExpanded: "\xE2\x96\xBE" else: "\xE2\x96\xB8"
 
           tdiv(display = "flex", flex_direction = "column",
