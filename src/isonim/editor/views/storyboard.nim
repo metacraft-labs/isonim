@@ -150,7 +150,10 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
           let hasInput = "type" in lbl or "input" in lbl
           let hasTask = "tap" in lbl or "click" in lbl or "button" in lbl
           let isEmpty = "open" in lbl or "first" in lbl or "empty" in lbl
-          let isFilter = "filter" in lbl or "active" in lbl or "completed" in lbl
+          let isFilter = "filter" in lbl
+          let isToggle = "toggle" in lbl or "check" in lbl
+          let isClear = "clear" in lbl or "remove" in lbl
+          let isComplete = "completed" in lbl or "strikethrough" in lbl or "done" in lbl
           tdiv(flex = "1", display = "flex", flex_direction = "column",
                background_color = bgBase, gap = "0px",
                margin = "8px 8px 0 8px", border_radius = "4px",
@@ -179,29 +182,51 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
                 tdiv(width = "10px", height = "10px", border_radius = "5px",
                      background_color = (if hasTask: accent else: textDim),
                      opacity = (if hasTask: "0.6" else: "0.2"))
-              # Task rows (shown/hidden based on step context)
-              if not isEmpty:
-                for j in 0..1:
-                  tdiv(display = "flex", align_items = "center", gap = "4px"):
-                    tdiv(width = "7px", height = "7px", border_radius = "2px",
-                         border = "1px solid " & textDim, opacity = "0.3")
-                    tdiv(height = "4px", flex = "1", border_radius = "2px",
-                         background_color = textDim,
-                         opacity = (if j == 0: "0.25" else: "0.15"))
-              else:
-                # Empty state indicator
+              # Task rows
+              if isClear:
+                # Cleared: show fewer rows, dimmed
+                tdiv(display = "flex", align_items = "center", gap = "4px"):
+                  tdiv(width = "7px", height = "7px", border_radius = "2px",
+                       border = "1px solid " & textDim, opacity = "0.2")
+                  tdiv(height = "4px", flex = "1", border_radius = "2px",
+                       background_color = textDim, opacity = "0.1")
+                # "cleared" indicator
+                tdiv(display = "flex", align_items = "center",
+                     justify_content = "center", margin_top = "2px",
+                     opacity = "0.25"):
+                  span(font_size = "8px", color = textMuted):
+                    text "\xE2\x9C\x93 cleared"
+              elif isEmpty:
+                # Empty state
                 tdiv(display = "flex", align_items = "center",
                      justify_content = "center", flex = "1",
                      opacity = "0.2"):
                   span(font_size = "14px", color = textDim):
-                    text "\xE2\x88\x85"  # empty set symbol
-              # Filter bar (highlighted if filter step)
+                    text "\xE2\x88\x85"
+              else:
+                # Normal or toggled task rows
+                let rowCount = if isToggle: 3 else: 2
+                for j in 0 ..< rowCount:
+                  let isChecked = isToggle and j == 0
+                  tdiv(display = "flex", align_items = "center", gap = "4px"):
+                    tdiv(width = "7px", height = "7px", border_radius = "2px",
+                         background_color = (if isChecked: accent else: "transparent"),
+                         border = (if isChecked: "1px solid " & accent else: "1px solid " & textDim),
+                         opacity = (if isChecked: "0.6" else: "0.3"))
+                    tdiv(height = "4px", flex = "1", border_radius = "2px",
+                         background_color = (if isChecked: textDim else: textDim),
+                         opacity = (if isChecked: "0.12" else: "0.25"),
+                         text_decoration = (if isChecked: "line-through" else: "none"))
+              # Filter bar
               if isFilter:
                 tdiv(display = "flex", gap = "3px", margin_top = "2px"):
                   for k in 0..2:
+                    let isActive = case lbl
+                      of "all": k == 0
+                      else: k == 1
                     tdiv(height = "5px", width = "20px", border_radius = "3px",
-                         background_color = (if k == 1: accent else: textDim),
-                         opacity = (if k == 1: "0.4" else: "0.15"))
+                         background_color = (if isActive: accent else: textDim),
+                         opacity = (if isActive: "0.4" else: "0.15"))
 
           # Card label (the user action)
           tdiv(padding = "6px 10px", font_size = "10px",
