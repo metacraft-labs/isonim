@@ -147,14 +147,15 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
 
   # Screen cards — positioned absolutely with dynamic coordinates
   for i, sc in screens:
+    # Clean text-based icons instead of emojis
     let kindIcon = case sc.kind
       of skFoundation:
-        if "Color" in sc.label: "\xF0\x9F\x8E\xA8"
+        if "Color" in sc.label: "\xE2\x97\x89"     # ◉ filled circle
         elif "Typo" in sc.label: "Aa"
-        else: "\xE2\x97\xBB"
-      of skComponent: "\xF0\x9F\xA7\xA9"
-      of skPage: "\xF0\x9F\x93\xB1"
-      of skFlow: "\xE2\x96\xB6"
+        else: "\xE2\x96\xA4"                        # ▤ grid
+      of skComponent: "\xE2\xA7\x89"                # ⧉ overlapping squares
+      of skPage: "\xE2\x96\xA3"                     # ▣ filled square
+      of skFlow: "\xE2\x96\xB6"                     # ▶ play
 
     let card = ui(r):
       tdiv(position = "absolute",
@@ -172,29 +173,79 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
              width = "auto", height = "auto"):
           # Wireframes — if/for inside DSL
           if sc.kind == skComponent:
-            tdiv(display = "flex", flex_direction = "column",
-                 gap = "6px", padding = "10px 16px", width = "100%"):
-              for j in 0..1:
-                tdiv(display = "flex", align_items = "center", gap = "8px"):
-                  tdiv(width = "10px", height = "10px", border_radius = "2px",
-                       border = "1.5px solid " & textMuted)
-                  tdiv(height = "5px", flex = "1", border_radius = "3px",
-                       background_color = textDim,
-                       opacity = (if j == 0: "0.4" else: "0.25"))
+            if "FilterBar" in sc.label:
+              # FilterBar: 3 pill buttons in a row
+              tdiv(display = "flex", align_items = "center",
+                   gap = "6px", padding = "16px 16px"):
+                for j in 0..2:
+                  tdiv(height = "16px", padding = "0 12px",
+                       border_radius = "8px",
+                       background_color = (if j == 0: accent else: bgSurface),
+                       opacity = (if j == 0: "0.4" else: "0.3"),
+                       border = "1px solid " & border)
+            elif "InputRow" in sc.label:
+              # InputRow: text input + round add button
+              tdiv(display = "flex", align_items = "center",
+                   gap = "8px", padding = "12px 16px", width = "100%"):
+                tdiv(flex = "1", height = "16px", border_radius = "4px",
+                     background_color = bgSurface,
+                     border = "1px solid " & border)
+                tdiv(width = "16px", height = "16px", border_radius = "8px",
+                     background_color = accent, opacity = "0.4")
+            else:
+              # TaskRow: checkbox rows
+              tdiv(display = "flex", flex_direction = "column",
+                   gap = "6px", padding = "10px 16px", width = "100%"):
+                for j in 0..1:
+                  tdiv(display = "flex", align_items = "center", gap = "8px"):
+                    tdiv(width = "10px", height = "10px", border_radius = "2px",
+                         border = "1.5px solid " & textMuted)
+                    tdiv(height = "5px", flex = "1", border_radius = "3px",
+                         background_color = textDim,
+                         opacity = (if j == 0: "0.4" else: "0.25"))
           elif sc.kind == skPage:
+            # Full page: mock app frame with header + input + task list
             tdiv(display = "flex", flex_direction = "column",
-                 gap = "5px", padding = "10px 16px", width = "100%"):
-              tdiv(height = "8px", width = "45%", border_radius = "4px",
-                   background_color = gold, opacity = "0.3")
-              tdiv(height = "10px", width = "85%", border_radius = "5px",
-                   background_color = textDim, opacity = "0.2")
-              for j in 0..2:
-                tdiv(height = "6px", width = "90%", border_radius = "3px",
-                     background_color = textDim, opacity = "0.15")
+                 width = "100%", height = "100%"):
+              # App header bar
+              tdiv(display = "flex", align_items = "center",
+                   padding = "6px 12px",
+                   background_color = bgSurface, border_radius = "4px 4px 0 0"):
+                tdiv(height = "7px", width = "50%", border_radius = "3px",
+                     background_color = gold, opacity = "0.4")
+              # App body
+              tdiv(display = "flex", flex_direction = "column",
+                   gap = "4px", padding = "8px 12px", flex = "1"):
+                # Input row
+                tdiv(height = "10px", width = "100%", border_radius = "5px",
+                     background_color = bgSurface, border = "1px solid " & border)
+                # Task rows
+                for j in 0..3:
+                  tdiv(display = "flex", align_items = "center", gap = "6px"):
+                    tdiv(width = "8px", height = "8px", border_radius = "2px",
+                         border = "1px solid " & textDim,
+                         opacity = (if j < 2: "0.4" else: "0.2"))
+                    tdiv(height = "4px", flex = "1", border_radius = "2px",
+                         background_color = textDim,
+                         opacity = (if j < 2: "0.25" else: "0.12"))
+                # Filter bar
+                tdiv(display = "flex", gap = "4px", margin_top = "2px"):
+                  for k in 0..2:
+                    tdiv(height = "6px", width = "28px", border_radius = "3px",
+                         background_color = (if k == 0: accent else: textDim),
+                         opacity = (if k == 0: "0.3" else: "0.15"))
           elif sc.kind == skFlow:
-            span(font_size = "20px", opacity = "0.3"):
-              text "\xE2\x96\xB6"
+            # Flow step: numbered circle
+            tdiv(display = "flex", flex_direction = "column",
+                 align_items = "center", gap = "6px"):
+              tdiv(width = "28px", height = "28px",
+                   border_radius = "14px", border = "2px solid " & accent,
+                   display = "flex", align_items = "center",
+                   justify_content = "center", opacity = "0.4"):
+                span(font_size = "11px", color = accent, font_weight = "600"):
+                  text "\xE2\x96\xB6"
           else:
+            # Foundation: category icon
             span(font_size = "24px", opacity = "0.3"):
               text kindIcon
 

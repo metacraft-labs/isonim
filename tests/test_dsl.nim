@@ -369,3 +369,88 @@ suite "DSL":
       check root.children[0].textContent == "0: a"
       check root.children[1].textContent == "1: b"
       check root.children[2].textContent == "2: c"
+
+  test "test_dsl_if_true_branch":
+    ## if statement inside ui body renders the true branch
+    createRoot proc(dispose: proc()) =
+      let renderer = MockRenderer()
+      let cond = true
+      let root = ui(renderer):
+        tdiv:
+          if cond:
+            span: text "yes"
+          else:
+            span: text "no"
+
+      check root.children.len == 1
+      check root.children[0].tag == "span"
+      check root.children[0].textContent == "yes"
+
+  test "test_dsl_if_false_branch":
+    ## if statement inside ui body renders the else branch
+    createRoot proc(dispose: proc()) =
+      let renderer = MockRenderer()
+      let cond = false
+      let root = ui(renderer):
+        tdiv:
+          if cond:
+            span: text "yes"
+          else:
+            span: text "no"
+
+      check root.children.len == 1
+      check root.children[0].tag == "span"
+      check root.children[0].textContent == "no"
+
+  test "test_dsl_for_loop":
+    ## for loop inside ui body creates children for each iteration
+    createRoot proc(dispose: proc()) =
+      let renderer = MockRenderer()
+      let items = @["alpha", "beta", "gamma"]
+      let root = ui(renderer):
+        ul:
+          for item in items:
+            let s = item  # copy to avoid lent capture
+            li: text s
+
+      check root.tag == "ul"
+      check root.children.len == 3
+      check root.children[0].textContent == "alpha"
+      check root.children[1].textContent == "beta"
+      check root.children[2].textContent == "gamma"
+
+  test "test_dsl_case_statement":
+    ## case statement inside ui body selects the correct branch
+    createRoot proc(dispose: proc()) =
+      let renderer = MockRenderer()
+      type Color = enum red, green, blue
+      let c = green
+      let root = ui(renderer):
+        tdiv:
+          case c
+          of red:
+            span: text "RED"
+          of green:
+            span: text "GREEN"
+          of blue:
+            span: text "BLUE"
+
+      check root.children.len == 1
+      check root.children[0].textContent == "GREEN"
+
+  test "test_dsl_nested_if_for":
+    ## if and for can be nested inside each other in the DSL
+    createRoot proc(dispose: proc()) =
+      let renderer = MockRenderer()
+      let showList = true
+      let items = @["x", "y"]
+      let root = ui(renderer):
+        tdiv:
+          if showList:
+            for item in items:
+              let s = item
+              span: text s
+
+      check root.children.len == 2
+      check root.children[0].textContent == "x"
+      check root.children[1].textContent == "y"
