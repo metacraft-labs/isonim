@@ -117,9 +117,29 @@ editor-serve: editor-build
     @echo "Serving editor on http://localhost:8090"
     cd build/editor && python3 -m http.server 8090
 
-# Build, screenshot at multiple viewports, save to build/editor/screenshots/
+# Screenshot all views at all sizes → build/editor/screenshots/
 editor-screenshot:
     node tools/editor-screenshot.mjs
+
+# Screenshot a specific view (shell, sidebar-only, inspector-only, preview-only)
+editor-screenshot-view view:
+    node tools/editor-screenshot.mjs --view {{view}}
+
+# Screenshot at a specific size (wide, laptop, medium, tablet, narrow, mobile)
+editor-screenshot-size size:
+    node tools/editor-screenshot.mjs --size {{size}}
+
+# Screenshot a specific view at a specific size
+editor-shot view size:
+    node tools/editor-screenshot.mjs --view {{view}} --size {{size}}
+
+# Quick screenshot — shell at wide, skip rebuild
+editor-quick:
+    node tools/editor-screenshot.mjs --view shell --size wide --no-build
+
+# List available views and sizes
+editor-screenshot-list:
+    node tools/editor-screenshot.mjs --list
 
 # Run editor ViewModel tests
 test-editor:

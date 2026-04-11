@@ -1,6 +1,8 @@
 {
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "@tailwindcss/cli": "^4.2.2",
+    "playwright": "^1.59.1",
     "postcss": "^8.5.9",
     "tailwindcss": "^4.2.2",
     "terser": "^5.46.1"

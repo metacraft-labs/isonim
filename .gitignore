@@ -39,3 +39,9 @@ benchmarks/runner/
 benchmarks/results/
 node_modules/
 test_data_loading
+tests/test_editor_viewmodels
+tests/test_editor_user_project
+tests/test_editor_shell_views
+tests/test_editor_task_views
+tests/test_editor_interactivity
+tests/test_editor_responsive
