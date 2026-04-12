@@ -24,10 +24,11 @@ proc injectResponsiveStyles() =
       .editor-sidebar { width: 100% !important; min-width: 100% !important; }
       .editor-preview { display: none !important; }
       .editor-inspector { display: none !important; }
+      .editor-chat { display: none !important; }
       .editor-mobile-toggle { display: flex !important; }
     }
     .editor-mobile-toggle { display: none; }
-    /* Tablet: shrink inspector */
+    /* Tablet: shrink panels */
     @media (max-width: 1024px) and (min-width: 769px) {
       .editor-sidebar { width: 220px !important; min-width: 220px !important; }
       .editor-inspector { width: 260px !important; min-width: 260px !important; }

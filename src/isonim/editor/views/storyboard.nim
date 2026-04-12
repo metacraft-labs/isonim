@@ -42,9 +42,9 @@ proc layoutFlows(groups: seq[StoryGroup]): seq[FlowRow] =
     if group.kind == skFlow:
       var row = FlowRow(flowName: group.name, flowDesc: group.description)
       var x = 0.0
-      let cardW = 220.0
-      let cardH = 150.0
-      let gapX = 48.0  # wider gap to fit arrows
+      let cardW = 260.0
+      let cardH = 200.0
+      let gapX = 48.0
       for i, item in group.items:
         row.cards.add FlowCard(x: x, y: 0, w: cardW, h: cardH,
                                label: item.name, stepNum: i + 1)
@@ -145,22 +145,13 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
              transition = "border-color 0.15s, box-shadow 0.15s",
              overflow = "hidden", display = "flex", flex_direction = "column")
 
-      # Card content area: step badge + mini preview
+      # Card content area: full mini preview (no overlay badge)
       let stepNum = card.stepNum
       let lbl = stepLabel.toLowerAscii()
       let cardContent = ui(r):
         tdiv(flex = "1", position = "relative",
-             margin = "6px 6px 0 6px", border_radius = "4px",
-             overflow = "hidden", background_color = "#FAFAF9"):
-          # Step badge overlay
-          tdiv(position = "absolute", top = "3px", left = "3px",
-               width = "16px", height = "16px", border_radius = "8px",
-               background_color = accent,
-               display = "flex", align_items = "center",
-               justify_content = "center", z_index = "5",
-               box_shadow = "0 1px 3px rgba(0,0,0,0.3)"):
-            span(font_size = "8px", color = textPrimary, font_weight = "700"):
-              text $stepNum
+             margin = "4px 4px 0 4px", border_radius = "4px",
+             overflow = "hidden", background_color = "#FAFAF9")
       r.appendChild(cardEl, cardContent)
 
       # Choose and render mini-preview based on step keywords
@@ -191,11 +182,14 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
       r.setStyle(preview, "inset", "0")
       r.appendChild(cardContent, preview)
 
-      # Card label (the user action)
+      # Card label: "N. Action description"
+      let labelText = $stepNum & ". " & stepLabel
       let cardLabel = ui(r):
-        tdiv(padding = "6px 10px", font_size = "10px",
+        tdiv(padding = "6px 8px", font_size = "10px",
              color = textSecondary, overflow = "hidden",
              line_height = "1.3"):
+          span(font_weight = "600", color = accent):
+            text $stepNum & ". "
           text stepLabel
       r.appendChild(cardEl, cardLabel)
 
@@ -230,7 +224,7 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
           r.setStyle(arrow, "width", $aw & "px")
           r.appendChild(inner, arrow)
 
-    rowY = cardsTop + 150 + 48  # card height + gap between flow rows
+    rowY = cardsTop + 200 + 56  # card height + gap between flow rows
 
   # Empty state if no flows
   if flows.len == 0:

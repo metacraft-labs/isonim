@@ -12,6 +12,7 @@ import isonim/editor/views/component_detail
 import isonim/editor/views/component_edit
 import isonim/editor/views/page_preview
 import isonim/editor/views/vector_editor
+import isonim/editor/views/chat_panel
 
 # ---------------------------------------------------------------------------
 # Theme tokens
@@ -327,14 +328,13 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
   let componentEditEl = renderComponentEditView[R, E](r, vm)
   let pagePreviewEl = renderPagePreview[R, E](r, vm)
   let vectorEditorEl = renderVectorEditor[R, E](r, vm)
-  let inspectorEl = renderInspectorPanel[R, E](r, vm)
+  let chatEl = renderChatPanel[R, E](r, vm)  # ever-present on all views
 
   # Default: storyboard visible, everything else hidden
   r.setStyle(componentDetailEl, "display", "none")
   r.setStyle(componentEditEl, "display", "none")
   r.setStyle(pagePreviewEl, "display", "none")
   r.setStyle(vectorEditorEl, "display", "none")
-  r.setStyle(inspectorEl, "display", "none")
 
   # Reactive view switching
   createRenderEffect proc() =
@@ -345,7 +345,8 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
     r.setStyle(pagePreviewEl, "display", if view == evPagePreview: "flex" else: "none")
     r.setStyle(vectorEditorEl, "display", if view == evVectorEditor: "flex" else: "none")
     r.setStyle(sidebarEl, "display", if view == evVectorEditor: "none" else: "flex")
-    r.setStyle(inspectorEl, "display", "none")
+    # Chat always visible
+    r.setStyle(chatEl, "display", "flex")
 
   r.appendChild(shell, sidebarEl)
   r.appendChild(shell, storyboardEl)
@@ -353,5 +354,5 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
   r.appendChild(shell, componentEditEl)
   r.appendChild(shell, pagePreviewEl)
   r.appendChild(shell, vectorEditorEl)
-  r.appendChild(shell, inspectorEl)
+  r.appendChild(shell, chatEl)  # always last (right side)
   shell
