@@ -95,16 +95,22 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
             of skGuideline: "\xE2\x97\x8B"       # ○ circle outline
           let chevronText = if gExpanded: "\xE2\x96\xBE" else: "\xE2\x96\xB8"
 
+          let isFlow = gKind == skFlow
           tdiv(display = "flex", flex_direction = "column",
-               margin_bottom = "2px"):
-            # Group header
+               margin_bottom = (if isFlow: "4px" else: "2px")):
+            # Group header — flows get accent styling for prominence
             tdiv(display = "flex", align_items = "center",
-                 gap = "6px", padding = "5px 8px",
-                 border_radius = "4px", cursor = "pointer"):
-              span(font_size = "11px"):
+                 gap = "6px",
+                 padding = (if isFlow: "6px 8px" else: "5px 8px"),
+                 border_radius = "4px", cursor = "pointer",
+                 background_color = (if isFlow and gExpanded: accentSoft else: "transparent")):
+              span(font_size = (if isFlow: "12px" else: "11px"),
+                   color = (if isFlow: accent else: textSecondary)):
                 text icon
-              span(font_size = "10px", font_weight = "600",
-                   color = textSecondary, text_transform = "uppercase",
+              span(font_size = (if isFlow: "11px" else: "10px"),
+                   font_weight = (if isFlow: "700" else: "600"),
+                   color = (if isFlow: textPrimary else: textSecondary),
+                   text_transform = "uppercase",
                    letter_spacing = "0.8px"):
                 text gName
               span(font_size = "9px", color = textMuted, margin_left = "auto"):

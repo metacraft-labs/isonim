@@ -1,7 +1,7 @@
 ## Wanderlust — Storyboard definitions
 ##
-## Builds the complete design system: foundations, components,
-## patterns, pages, flows, and guidelines.
+## Ordered by importance (progressive disclosure):
+## User Flows → Pages → Components → Patterns → Foundations → Guidelines
 
 import isonim/editor/types
 import examples/wanderlust/components/viewmodels
@@ -11,29 +11,88 @@ proc buildWanderlustStoryboard*(): seq[StoryGroup] =
   var groups: seq[StoryGroup]
 
   # =======================================================================
-  # Foundations
+  # 1. USER FLOWS — most important, shown first, expanded by default
   # =======================================================================
   groups.add StoryGroup(
-    name: "Foundations", kind: skFoundation, expanded: true,
-    description: "Design tokens for the Wanderlust travel app",
+    name: "Plan a Trip", kind: skFlow, expanded: true,
+    description: "User discovers a destination and builds an itinerary",
     items: @[
-      StoryItem(name: "Colors", description: "Terracotta primary, teal secondary, amber accent, neutral scale",
-                kind: skFoundation, group: "Foundations"),
-      StoryItem(name: "Typography", description: "Playfair Display headings, Inter body, JetBrains Mono code",
-                kind: skFoundation, group: "Foundations"),
-      StoryItem(name: "Spacing & Radii", description: "4-80px scale, sm/md/lg/xl/full radii",
-                kind: skFoundation, group: "Foundations"),
-      StoryItem(name: "Elevation", description: "Four shadow levels: sm, md, lg, xl",
-                kind: skFoundation, group: "Foundations"),
-      StoryItem(name: "Motion", description: "Duration scale (0.1-0.5s), easing curves",
-                kind: skFoundation, group: "Foundations"),
+      StoryItem(name: "Browses trending destinations on home",
+                description: "Home page with destination cards",
+                kind: skFlow, group: "Plan a Trip"),
+      StoryItem(name: "Taps Santorini card to see details",
+                description: "Destination detail with photos and reviews",
+                kind: skFlow, group: "Plan a Trip"),
+      StoryItem(name: "Taps 'Plan Trip' to start building",
+                description: "Empty trip planner with date picker",
+                kind: skFlow, group: "Plan a Trip"),
+      StoryItem(name: "Adds activities to Day 1",
+                description: "Day view with activity search",
+                kind: skFlow, group: "Plan a Trip"),
+      StoryItem(name: "Reviews budget and confirms trip",
+                description: "Trip summary with budget breakdown",
+                kind: skFlow, group: "Plan a Trip"),
+    ])
+
+  groups.add StoryGroup(
+    name: "Discover & Save", kind: skFlow, expanded: true,
+    description: "User searches for destinations and saves favorites",
+    items: @[
+      StoryItem(name: "Types 'beach' in search bar",
+                description: "Search active with suggestions",
+                kind: skFlow, group: "Discover & Save"),
+      StoryItem(name: "Applies Beach and Budget filters",
+                description: "Filtered results grid",
+                kind: skFlow, group: "Discover & Save"),
+      StoryItem(name: "Taps heart icon to save Lisbon",
+                description: "Card shows saved state",
+                kind: skFlow, group: "Discover & Save"),
+    ])
+
+  groups.add StoryGroup(
+    name: "Travel Day", kind: skFlow, expanded: true,
+    description: "User follows their itinerary during an active trip",
+    items: @[
+      StoryItem(name: "Opens active trip from home",
+                description: "Morocco trip card highlighted",
+                kind: skFlow, group: "Travel Day"),
+      StoryItem(name: "Views Day 3 itinerary",
+                description: "Timeline with 6 activities",
+                kind: skFlow, group: "Travel Day"),
+      StoryItem(name: "Checks off Jardin Majorelle visit",
+                description: "Activity marked as complete",
+                kind: skFlow, group: "Travel Day"),
+      StoryItem(name: "Adds spontaneous souk shopping",
+                description: "New activity added to timeline",
+                kind: skFlow, group: "Travel Day"),
     ])
 
   # =======================================================================
-  # Components
+  # 2. PAGES — full screen compositions
   # =======================================================================
   groups.add StoryGroup(
-    name: "DestinationCard", kind: skComponent, expanded: true,
+    name: "Pages", kind: skPage, expanded: true,
+    description: "Full screens with realistic data",
+    items: @[
+      StoryItem(name: "Home / Discover", description: "Hero destination + trending + saved places",
+                kind: skPage, group: "Pages"),
+      StoryItem(name: "Search Results", description: "Grid of destinations with active filters",
+                kind: skPage, group: "Pages"),
+      StoryItem(name: "Destination Detail", description: "Santorini: photos, overview, reviews, weather",
+                kind: skPage, group: "Pages"),
+      StoryItem(name: "Trip Planner", description: "Morocco trip: day-by-day itinerary builder",
+                kind: skPage, group: "Pages"),
+      StoryItem(name: "Day View", description: "Day 3 in Marrakech: timeline of activities",
+                kind: skPage, group: "Pages"),
+      StoryItem(name: "Profile", description: "User profile: trips, countries, saved destinations",
+                kind: skPage, group: "Pages"),
+    ])
+
+  # =======================================================================
+  # 3. COMPONENTS — individual UI elements with states
+  # =======================================================================
+  groups.add StoryGroup(
+    name: "DestinationCard", kind: skComponent, expanded: false,
     description: "Hero card showing a travel destination with image, rating, price",
     items: @[
       StoryItem(name: "Default", description: "Santorini — beach destination, saved",
@@ -60,8 +119,6 @@ proc buildWanderlustStoryboard*(): seq[StoryGroup] =
                 kind: skComponent, group: "TripCard"),
       StoryItem(name: "Completed", description: "Past trip with full budget",
                 kind: skComponent, group: "TripCard"),
-      StoryItem(name: "Cancelled", description: "Cancelled trip, muted state",
-                kind: skComponent, group: "TripCard"),
     ])
 
   groups.add StoryGroup(
@@ -74,8 +131,6 @@ proc buildWanderlustStoryboard*(): seq[StoryGroup] =
                 kind: skComponent, group: "ActivityItem"),
       StoryItem(name: "Rest", description: "Hammam spa session, booked",
                 kind: skComponent, group: "ActivityItem"),
-      StoryItem(name: "Transport", description: "Airport transfer",
-                kind: skComponent, group: "ActivityItem"),
     ])
 
   groups.add StoryGroup(
@@ -83,8 +138,6 @@ proc buildWanderlustStoryboard*(): seq[StoryGroup] =
     description: "User review with stars, text, helpful count",
     items: @[
       StoryItem(name: "5-star", description: "Glowing review, fully expanded",
-                kind: skComponent, group: "ReviewCard"),
-      StoryItem(name: "4-star", description: "Positive with caveats",
                 kind: skComponent, group: "ReviewCard"),
       StoryItem(name: "Collapsed", description: "Long review, truncated",
                 kind: skComponent, group: "ReviewCard"),
@@ -97,8 +150,6 @@ proc buildWanderlustStoryboard*(): seq[StoryGroup] =
       StoryItem(name: "Empty", description: "Placeholder visible",
                 kind: skComponent, group: "SearchBar"),
       StoryItem(name: "Active", description: "Focused with suggestions",
-                kind: skComponent, group: "SearchBar"),
-      StoryItem(name: "With query", description: "User has typed 'bali'",
                 kind: skComponent, group: "SearchBar"),
     ])
 
@@ -114,18 +165,16 @@ proc buildWanderlustStoryboard*(): seq[StoryGroup] =
 
   groups.add StoryGroup(
     name: "WeatherBadge", kind: skComponent, expanded: false,
-    description: "Compact weather indicator for destinations",
+    description: "Compact weather indicator",
     items: @[
       StoryItem(name: "Sunny", description: "26°C clear skies",
                 kind: skComponent, group: "WeatherBadge"),
       StoryItem(name: "Cloudy", description: "18°C overcast",
                 kind: skComponent, group: "WeatherBadge"),
-      StoryItem(name: "Rain", description: "14°C with rain",
-                kind: skComponent, group: "WeatherBadge"),
     ])
 
   # =======================================================================
-  # Patterns
+  # 4. PATTERNS — common compositions
   # =======================================================================
   groups.add StoryGroup(
     name: "Patterns", kind: skPattern, expanded: false,
@@ -141,90 +190,29 @@ proc buildWanderlustStoryboard*(): seq[StoryGroup] =
                 kind: skPattern, group: "Patterns"),
       StoryItem(name: "Loading Skeleton", description: "Shimmer placeholders for cards and lists",
                 kind: skPattern, group: "Patterns"),
-      StoryItem(name: "Photo Gallery", description: "Grid of destination photos with lightbox",
-                kind: skPattern, group: "Patterns"),
     ])
 
   # =======================================================================
-  # Pages
+  # 5. FOUNDATIONS — design tokens
   # =======================================================================
   groups.add StoryGroup(
-    name: "Pages", kind: skPage, expanded: true,
-    description: "Full screens with realistic data",
+    name: "Foundations", kind: skFoundation, expanded: false,
+    description: "Design tokens for the Wanderlust travel app",
     items: @[
-      StoryItem(name: "Home / Discover", description: "Hero destination + trending + saved places",
-                kind: skPage, group: "Pages"),
-      StoryItem(name: "Search Results", description: "Grid of destinations with active filters",
-                kind: skPage, group: "Pages"),
-      StoryItem(name: "Destination Detail", description: "Santorini: photos, overview, reviews, weather",
-                kind: skPage, group: "Pages"),
-      StoryItem(name: "Trip Planner", description: "Morocco trip: day-by-day itinerary builder",
-                kind: skPage, group: "Pages"),
-      StoryItem(name: "Day View", description: "Day 3 in Marrakech: timeline of activities",
-                kind: skPage, group: "Pages"),
-      StoryItem(name: "Profile", description: "User profile: trips, countries, saved destinations",
-                kind: skPage, group: "Pages"),
+      StoryItem(name: "Colors", description: "Terracotta primary, teal secondary, amber accent",
+                kind: skFoundation, group: "Foundations"),
+      StoryItem(name: "Typography", description: "Playfair Display headings, Inter body",
+                kind: skFoundation, group: "Foundations"),
+      StoryItem(name: "Spacing & Radii", description: "4-80px scale, sm/md/lg/xl radii",
+                kind: skFoundation, group: "Foundations"),
+      StoryItem(name: "Elevation", description: "Four shadow levels",
+                kind: skFoundation, group: "Foundations"),
+      StoryItem(name: "Motion", description: "Durations and easing curves",
+                kind: skFoundation, group: "Foundations"),
     ])
 
   # =======================================================================
-  # User Flows
-  # =======================================================================
-  groups.add StoryGroup(
-    name: "Plan a Trip", kind: skFlow, expanded: false,
-    description: "User discovers a destination and builds an itinerary",
-    items: @[
-      StoryItem(name: "Browses trending destinations on home",
-                description: "Home page with destination cards",
-                kind: skFlow, group: "Plan a Trip"),
-      StoryItem(name: "Taps Santorini card to see details",
-                description: "Destination detail with photos and reviews",
-                kind: skFlow, group: "Plan a Trip"),
-      StoryItem(name: "Taps 'Plan Trip' to start building",
-                description: "Empty trip planner with date picker",
-                kind: skFlow, group: "Plan a Trip"),
-      StoryItem(name: "Adds activities to Day 1",
-                description: "Day view with activity search",
-                kind: skFlow, group: "Plan a Trip"),
-      StoryItem(name: "Reviews budget and confirms trip",
-                description: "Trip summary with budget breakdown",
-                kind: skFlow, group: "Plan a Trip"),
-    ])
-
-  groups.add StoryGroup(
-    name: "Discover & Save", kind: skFlow, expanded: false,
-    description: "User searches for destinations and saves favorites",
-    items: @[
-      StoryItem(name: "Types 'beach' in search bar",
-                description: "Search active with suggestions",
-                kind: skFlow, group: "Discover & Save"),
-      StoryItem(name: "Applies Beach and Budget filters",
-                description: "Filtered results grid",
-                kind: skFlow, group: "Discover & Save"),
-      StoryItem(name: "Taps heart icon to save Lisbon",
-                description: "Card shows saved state",
-                kind: skFlow, group: "Discover & Save"),
-    ])
-
-  groups.add StoryGroup(
-    name: "Travel Day", kind: skFlow, expanded: false,
-    description: "User follows their itinerary during an active trip",
-    items: @[
-      StoryItem(name: "Opens active trip from home",
-                description: "Morocco trip card highlighted",
-                kind: skFlow, group: "Travel Day"),
-      StoryItem(name: "Views Day 3 itinerary",
-                description: "Timeline with 6 activities",
-                kind: skFlow, group: "Travel Day"),
-      StoryItem(name: "Checks off Jardin Majorelle visit",
-                description: "Activity marked as complete",
-                kind: skFlow, group: "Travel Day"),
-      StoryItem(name: "Adds spontaneous souk shopping",
-                description: "New activity added to timeline",
-                kind: skFlow, group: "Travel Day"),
-    ])
-
-  # =======================================================================
-  # Guidelines
+  # 6. GUIDELINES — usage rules (least urgent, last)
   # =======================================================================
   groups.add StoryGroup(
     name: "Guidelines", kind: skGuideline, expanded: false,
@@ -232,15 +220,13 @@ proc buildWanderlustStoryboard*(): seq[StoryGroup] =
     items: @[
       StoryItem(name: "Do / Don't", description: "Component usage rules with visual examples",
                 kind: skGuideline, group: "Guidelines"),
-      StoryItem(name: "Content & Voice", description: "Warm, inspiring, practical — never pushy or generic",
+      StoryItem(name: "Content & Voice", description: "Warm, inspiring, practical tone",
                 kind: skGuideline, group: "Guidelines"),
-      StoryItem(name: "Photography", description: "Authentic travel photos, not stock. Warm tones preferred",
+      StoryItem(name: "Photography", description: "Authentic travel photos, warm tones",
                 kind: skGuideline, group: "Guidelines"),
-      StoryItem(name: "Motion", description: "Gentle transitions, parallax on scroll, card hover lifts",
+      StoryItem(name: "Motion", description: "Gentle transitions, parallax on scroll",
                 kind: skGuideline, group: "Guidelines"),
-      StoryItem(name: "Accessibility", description: "Color contrast, touch targets, screen reader flows",
-                kind: skGuideline, group: "Guidelines"),
-      StoryItem(name: "Responsive", description: "Mobile-first: 1 col → 2 col → 3 col grid breakpoints",
+      StoryItem(name: "Accessibility", description: "Color contrast, touch targets, screen readers",
                 kind: skGuideline, group: "Guidelines"),
     ])
 

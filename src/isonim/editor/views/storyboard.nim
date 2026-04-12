@@ -42,9 +42,9 @@ proc layoutFlows(groups: seq[StoryGroup]): seq[FlowRow] =
     if group.kind == skFlow:
       var row = FlowRow(flowName: group.name, flowDesc: group.description)
       var x = 0.0
-      let cardW = 260.0
-      let cardH = 200.0
-      let gapX = 48.0
+      let cardW = 320.0
+      let cardH = 240.0
+      let gapX = 56.0
       for i, item in group.items:
         row.cards.add FlowCard(x: x, y: 0, w: cardW, h: cardH,
                                label: item.name, stepNum: i + 1)
@@ -71,26 +71,43 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
             text "User Flows"
           span(font_size = "11px", color = textDim):
             text $(flows.len) & " flows"
-        # Zoom controls
-        tdiv(display = "flex", align_items = "center", gap = "8px"):
-          tdiv(width = "28px", height = "28px",
+        # Zoom controls (Figma-style)
+        tdiv(display = "flex", align_items = "center", gap = "4px",
+             background_color = bgSurface, border_radius = "6px",
+             padding = "3px"):
+          tdiv(width = "26px", height = "26px",
                display = "flex", align_items = "center", justify_content = "center",
-               border_radius = "4px", background_color = bgSurface,
+               border_radius = "4px",
                color = textSecondary, font_size = "14px", cursor = "pointer"):
             text "\xE2\x88\x92"
-          span(font_size = "11px", color = textMuted,
-               min_width = "36px", text_align = "center"):
-            text "100%"
-          tdiv(width = "28px", height = "28px",
+          # Zoom slider track
+          tdiv(width = "80px", height = "4px", border_radius = "2px",
+               background_color = bgBase, position = "relative",
+               cursor = "pointer"):
+            # Slider thumb
+            tdiv(position = "absolute", left = "50%", top = "-4px",
+                 width = "12px", height = "12px", border_radius = "6px",
+                 background_color = accent, margin_left = "-6px",
+                 cursor = "grab", box_shadow = "0 1px 3px rgba(0,0,0,0.3)")
+          tdiv(width = "26px", height = "26px",
                display = "flex", align_items = "center", justify_content = "center",
-               border_radius = "4px", background_color = bgSurface,
+               border_radius = "4px",
                color = textSecondary, font_size = "14px", cursor = "pointer"):
             text "+"
-        tdiv(padding = "4px 12px", border_radius = "4px",
-             font_size = "11px", font_weight = "500",
-             background_color = bgSurface, color = textMuted,
-             cursor = "pointer"):
-          text "Fit"
+          # Percentage label
+          tdiv(padding = "0 6px", min_width = "36px", text_align = "center",
+               font_size = "11px", color = textMuted,
+               border_left = "1px solid " & border, margin_left = "2px"):
+            text "100%"
+        # Fit + Pan hint
+        tdiv(display = "flex", align_items = "center", gap = "4px"):
+          tdiv(padding = "4px 10px", border_radius = "4px",
+               font_size = "11px", font_weight = "500",
+               background_color = bgSurface, color = textMuted,
+               cursor = "pointer"):
+            text "Fit"
+          span(font_size = "10px", color = textDim):
+            text "Scroll to pan"
 
   # Canvas area
   let canvasArea = ui(r):
@@ -101,8 +118,8 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
 
   # Inner scrollable content
   let inner = ui(r):
-    tdiv(position = "relative", min_width = "1200px",
-         min_height = "600px", padding = "32px 40px")
+    tdiv(position = "relative", min_width = "1800px",
+         min_height = "900px", padding = "32px 40px")
 
   # Render each flow as a labeled row of connected cards
   var rowY = 0.0
@@ -224,7 +241,7 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
           r.setStyle(arrow, "width", $aw & "px")
           r.appendChild(inner, arrow)
 
-    rowY = cardsTop + 200 + 56  # card height + gap between flow rows
+    rowY = cardsTop + 240 + 60  # card height + gap between flow rows
 
   # Empty state if no flows
   if flows.len == 0:
