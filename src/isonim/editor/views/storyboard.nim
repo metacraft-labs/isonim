@@ -10,6 +10,7 @@ import isonim/core/[signals, computation]
 import isonim/dsl/[ui, components]
 import isonim/editor/viewmodels
 import isonim/editor/types
+import examples/wanderlust/components/flow_previews as flowPreviews
 
 const
   bgBase = "#0B1120"
@@ -142,97 +143,61 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
              border = "1px solid " & border,
              border_radius = "8px", cursor = "pointer",
              transition = "border-color 0.15s, box-shadow 0.15s",
-             overflow = "hidden", display = "flex", flex_direction = "column"):
+             overflow = "hidden", display = "flex", flex_direction = "column")
 
-          # Card content: step number + contextual wireframe
-          let stepNum = card.stepNum
-          let lbl = stepLabel.toLowerAscii()
-          let hasInput = "type" in lbl or "input" in lbl
-          let hasTask = "tap" in lbl or "click" in lbl or "button" in lbl
-          let isEmpty = "open" in lbl or "first" in lbl or "empty" in lbl
-          let isFilter = "filter" in lbl
-          let isToggle = "toggle" in lbl or "check" in lbl
-          let isClear = "clear" in lbl or "remove" in lbl
-          let isComplete = "completed" in lbl or "strikethrough" in lbl or "done" in lbl
-          tdiv(flex = "1", display = "flex", flex_direction = "column",
-               background_color = bgBase, gap = "0px",
-               margin = "8px 8px 0 8px", border_radius = "4px",
-               overflow = "hidden"):
-            # Top: step number bar
-            tdiv(display = "flex", align_items = "center", gap = "6px",
-                 padding = "6px 10px",
-                 background_color = bgSurface):
-              tdiv(width = "18px", height = "18px", border_radius = "9px",
-                   background_color = accent, opacity = "0.3",
-                   display = "flex", align_items = "center",
-                   justify_content = "center"):
-                span(font_size = "9px", color = textPrimary, font_weight = "700"):
-                  text $stepNum
-              tdiv(height = "4px", width = "50%", border_radius = "2px",
-                   background_color = gold, opacity = "0.3")
-            # Body: contextual wireframe
-            tdiv(display = "flex", flex_direction = "column",
-                 gap = "4px", padding = "6px 10px", flex = "1"):
-              # Input row (highlighted if typing step)
-              tdiv(display = "flex", align_items = "center", gap = "4px"):
-                tdiv(flex = "1", height = "10px", border_radius = "4px",
-                     background_color = (if hasInput: bgSurface else: bgBase),
-                     border = (if hasInput: "1px solid " & accent else: "1px solid " & border),
-                     opacity = (if hasInput: "0.8" else: "0.4"))
-                tdiv(width = "10px", height = "10px", border_radius = "5px",
-                     background_color = (if hasTask: accent else: textDim),
-                     opacity = (if hasTask: "0.6" else: "0.2"))
-              # Task rows
-              if isClear:
-                # Cleared: show fewer rows, dimmed
-                tdiv(display = "flex", align_items = "center", gap = "4px"):
-                  tdiv(width = "7px", height = "7px", border_radius = "2px",
-                       border = "1px solid " & textDim, opacity = "0.2")
-                  tdiv(height = "4px", flex = "1", border_radius = "2px",
-                       background_color = textDim, opacity = "0.1")
-                # "cleared" indicator
-                tdiv(display = "flex", align_items = "center",
-                     justify_content = "center", margin_top = "2px",
-                     opacity = "0.25"):
-                  span(font_size = "8px", color = textMuted):
-                    text "\xE2\x9C\x93 cleared"
-              elif isEmpty:
-                # Empty state
-                tdiv(display = "flex", align_items = "center",
-                     justify_content = "center", flex = "1",
-                     opacity = "0.2"):
-                  span(font_size = "14px", color = textDim):
-                    text "\xE2\x88\x85"
-              else:
-                # Normal or toggled task rows
-                let rowCount = if isToggle: 3 else: 2
-                for j in 0 ..< rowCount:
-                  let isChecked = isToggle and j == 0
-                  tdiv(display = "flex", align_items = "center", gap = "4px"):
-                    tdiv(width = "7px", height = "7px", border_radius = "2px",
-                         background_color = (if isChecked: accent else: "transparent"),
-                         border = (if isChecked: "1px solid " & accent else: "1px solid " & textDim),
-                         opacity = (if isChecked: "0.6" else: "0.3"))
-                    tdiv(height = "4px", flex = "1", border_radius = "2px",
-                         background_color = (if isChecked: textDim else: textDim),
-                         opacity = (if isChecked: "0.12" else: "0.25"),
-                         text_decoration = (if isChecked: "line-through" else: "none"))
-              # Filter bar
-              if isFilter:
-                tdiv(display = "flex", gap = "3px", margin_top = "2px"):
-                  for k in 0..2:
-                    let isActive = case lbl
-                      of "all": k == 0
-                      else: k == 1
-                    tdiv(height = "5px", width = "20px", border_radius = "3px",
-                         background_color = (if isActive: accent else: textDim),
-                         opacity = (if isActive: "0.4" else: "0.15"))
+      # Card content area: step badge + mini preview
+      let stepNum = card.stepNum
+      let lbl = stepLabel.toLowerAscii()
+      let cardContent = ui(r):
+        tdiv(flex = "1", position = "relative",
+             margin = "6px 6px 0 6px", border_radius = "4px",
+             overflow = "hidden", background_color = "#FAFAF9"):
+          # Step badge overlay
+          tdiv(position = "absolute", top = "3px", left = "3px",
+               width = "16px", height = "16px", border_radius = "8px",
+               background_color = accent,
+               display = "flex", align_items = "center",
+               justify_content = "center", z_index = "5",
+               box_shadow = "0 1px 3px rgba(0,0,0,0.3)"):
+            span(font_size = "8px", color = textPrimary, font_weight = "700"):
+              text $stepNum
+      r.appendChild(cardEl, cardContent)
 
-          # Card label (the user action)
-          tdiv(padding = "6px 10px", font_size = "10px",
-               color = textSecondary, overflow = "hidden",
-               line_height = "1.3"):
-            text stepLabel
+      # Choose and render mini-preview based on step keywords
+      let preview =
+        if "home" in lbl or "browse" in lbl or "trending" in lbl or "opens" in lbl:
+          flowPreviews.renderMiniHome[R, E](r)
+        elif "detail" in lbl or ("taps" in lbl and "card" in lbl):
+          flowPreviews.renderMiniDetail[R, E](r)
+        elif "plan" in lbl or "building" in lbl or "date" in lbl:
+          flowPreviews.renderMiniPlanner[R, E](r)
+        elif "day" in lbl or "itinerary" in lbl or "view" in lbl or "timeline" in lbl:
+          flowPreviews.renderMiniDayView[R, E](r)
+        elif "search" in lbl or "type" in lbl or "beach" in lbl:
+          flowPreviews.renderMiniSearch[R, E](r)
+        elif "save" in lbl or "heart" in lbl or "favorite" in lbl:
+          flowPreviews.renderMiniSaved[R, E](r)
+        elif "budget" in lbl or "confirm" in lbl or "review" in lbl:
+          flowPreviews.renderMiniBudget[R, E](r)
+        elif "filter" in lbl or "applies" in lbl:
+          flowPreviews.renderMiniSearch[R, E](r)
+        elif "check" in lbl or "complete" in lbl or "mark" in lbl:
+          flowPreviews.renderMiniDayView[R, E](r)
+        elif "add" in lbl or "spontaneous" in lbl:
+          flowPreviews.renderMiniDayView[R, E](r)
+        else:
+          flowPreviews.renderMiniHome[R, E](r)
+      r.setStyle(preview, "position", "absolute")
+      r.setStyle(preview, "inset", "0")
+      r.appendChild(cardContent, preview)
+
+      # Card label (the user action)
+      let cardLabel = ui(r):
+        tdiv(padding = "6px 10px", font_size = "10px",
+             color = textSecondary, overflow = "hidden",
+             line_height = "1.3"):
+          text stepLabel
+      r.appendChild(cardEl, cardLabel)
 
       r.setStyle(cardEl, "left", $cx & "px")
       r.setStyle(cardEl, "top", $cy & "px")

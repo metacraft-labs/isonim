@@ -10,6 +10,8 @@ import isonim/editor/viewmodels
 import isonim/editor/types
 import isonim/editor/views/controls
 import isonim/editor/views/inspector_sections
+import examples/wanderlust/components/views as wViews
+import examples/wanderlust/mock_data as wData
 
 const
   bgBase = "#0B1120"
@@ -108,11 +110,11 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
            border_bottom = "1px solid " & border):
         tdiv(display = "flex", align_items = "center", gap = "8px"):
           span(font_size = "11px", color = textDim):
-            text "TaskRow"
+            text "DestinationCard"
           span(font_size = "11px", color = textDim):
             text "\xE2\x80\xBA"
           span(font_size = "12px", font_weight = "500", color = textPrimary):
-            text "Active task"
+            text "Default (Santorini)"
         tdiv(display = "flex", align_items = "center", gap = "8px"):
           tdiv(padding = "4px 12px", border_radius = "4px",
                font_size = "11px", font_weight = "500",
@@ -123,25 +125,12 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
                background_color = bgSurface, color = textMuted):
             text "View"
 
-      # Canvas — darker bg for contrast with component card
+      # Canvas — darker bg for contrast with component
       tdiv(flex = "1", display = "flex",
            align_items = "center", justify_content = "center",
            background_color = "#0D1525",
            background_image = "radial-gradient(circle, #1a2236 1px, transparent 1px)",
-           background_size = "20px 20px"):
-        tdiv(padding = "16px 24px", border = "2px solid " & accent,
-             border_radius = "8px",
-             background_color = "#1E293B", display = "flex",
-             align_items = "center", gap = "12px",
-             box_shadow = "0 0 0 4px " & accent & "33, 0 4px 20px rgba(0,0,0,0.4)"):
-          tdiv(width = "18px", height = "18px", border_radius = "4px",
-               border = "2px solid " & textMuted)
-          span(font_size = "15px", color = textPrimary):
-            text "Buy groceries for dinner"
-          tdiv(margin_left = "auto", padding = "4px 8px",
-               border_radius = "4px", background_color = bgSurface,
-               font_size = "11px", color = textMuted):
-            text "\xC3\x97"
+           background_size = "20px 20px")
 
       # Breadcrumb
       tdiv(display = "flex", align_items = "center",
@@ -149,11 +138,21 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
            background_color = bgSurface,
            border_top = "1px solid " & border,
            font_size = "11px", color = textMuted, gap = "4px"):
-        span(color = textDim): text "TaskApp"
+        span(color = textDim): text "DiscoverPage"
         span: text "\xE2\x80\xBA"
-        span(color = textDim): text "TaskList"
+        span(color = textDim): text "DestinationGrid"
         span: text "\xE2\x80\xBA"
-        span(color = accent, font_weight = "500"): text "TaskRow"
+        span(color = accent, font_weight = "500"): text "DestinationCard"
+  # Insert real DestinationCard into the canvas area with selection highlight
+  let canvasArea = r.nextSibling(r.firstChild(preview))  # second child = canvas
+  let selectionWrapper = ui(r):
+    tdiv(border = "2px solid " & accent, border_radius = "16px",
+         box_shadow = "0 0 0 4px " & accent & "33, 0 8px 30px rgba(0,0,0,0.4)",
+         overflow = "hidden")
+  let destCard = wViews.renderDestinationCard[R, E](r, wData.santoriniDest())
+  r.appendChild(selectionWrapper, destCard)
+  r.appendChild(canvasArea, selectionWrapper)
+
   r.appendChild(container, preview)
 
   # Right: CSS Inspector
