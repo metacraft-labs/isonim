@@ -57,10 +57,12 @@ proc renderDestinationCard*[R, E](r: R; dest: Destination): E =
 
       # Card body
       tdiv(padding = space4 & "px"):
-        # Tagline
-        span(font_size = fontSizeSm & "px", color = colorTextSecondary,
+        # Tagline (max 2 lines with ellipsis)
+        tdiv(font_size = fontSizeSm & "px", color = colorTextSecondary,
              line_height = lineHeightNormal,
-             font_style = "italic"):
+             font_style = "italic",
+             overflow = "hidden", text_overflow = "ellipsis",
+             display = "-webkit-box"):
           text dest.tagline
 
         # Tags row
@@ -122,9 +124,15 @@ proc renderTripCard*[R, E](r: R; trip: Trip): E =
          overflow = "hidden", background_color = colorBgPrimary,
          box_shadow = elevationSm, border = "1px solid " & colorNeutral200):
 
-      # Header with gradient
+      # Header with status-colored gradient
+      let tripGrad = case trip.status
+        of tsPlanning: "linear-gradient(135deg, " & colorAccentDark & ", " & colorAccent & ")"
+        of tsUpcoming: "linear-gradient(135deg, " & colorSecondaryDark & ", " & colorSecondary & ")"
+        of tsActive: "linear-gradient(135deg, " & colorPrimaryDark & ", " & colorPrimary & ")"
+        of tsCompleted: "linear-gradient(135deg, #166534, " & colorSuccess & ")"
+        of tsCancelled: "linear-gradient(135deg, " & colorNeutral700 & ", " & colorNeutral500 & ")"
       tdiv(height = "80px", position = "relative",
-           background = "linear-gradient(135deg, " & colorSecondaryDark & ", " & colorSecondary & ")"):
+           background = tripGrad):
         tdiv(position = "absolute", bottom = space3 & "px", left = space4 & "px"):
           span(font_family = fontFamilyDisplay, font_size = fontSizeLg & "px",
                font_weight = fontWeightBold, color = colorTextInverse):

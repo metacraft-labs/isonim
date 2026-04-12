@@ -59,14 +59,35 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
 
   # Render the actual page inside a device frame
   let deviceFrame = ui(r):
-    tdiv(width = "100%", max_width = "480px",
+    tdiv(width = "100%", max_width = "520px",
          background_color = "#FFFFFF",
-         border_radius = "12px",
-         box_shadow = "0 20px 60px rgba(0,0,0,0.4)",
-         overflow = "hidden")
+         border_radius = "16px",
+         box_shadow = "0 20px 60px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.05)",
+         overflow = "hidden",
+         display = "flex", flex_direction = "column")
+
+  # Phone status bar
+  let statusBar = ui(r):
+    tdiv(display = "flex", align_items = "center",
+         justify_content = "space-between",
+         padding = "6px 20px",
+         background_color = "#FFFFFF",
+         font_size = "11px", color = "#1C1917"):
+      span(font_weight = "600"):
+        text "9:41"
+      tdiv(display = "flex", align_items = "center", gap = "4px"):
+        span(font_size = "10px"):
+          text "\xE2\x96\x82\xE2\x96\x82\xE2\x96\x82\xE2\x96\x82"
+        span(font_size = "10px"):
+          text "WiFi"
+        span(font_size = "10px"):
+          text "\xF0\x9F\x94\x8B"
+  r.appendChild(deviceFrame, statusBar)
 
   # Render the Home page
   let homePage = wPages.renderHomePage[R, E](r)
+  r.setStyle(homePage, "flex", "1")
+  r.setStyle(homePage, "overflow-y", "auto")
   r.appendChild(deviceFrame, homePage)
   r.appendChild(frame, deviceFrame)
   r.appendChild(container, frame)
