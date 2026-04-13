@@ -42,8 +42,8 @@ proc layoutFlows(groups: seq[StoryGroup]): seq[FlowRow] =
     if group.kind == skFlow:
       var row = FlowRow(flowName: group.name, flowDesc: group.description)
       var x = 0.0
-      let cardW = 320.0
-      let cardH = 240.0
+      let cardW = 400.0
+      let cardH = 520.0
       let gapX = 56.0
       for i, item in group.items:
         row.cards.add FlowCard(x: x, y: 0, w: cardW, h: cardH,
@@ -118,8 +118,8 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
 
   # Inner scrollable content
   let inner = ui(r):
-    tdiv(position = "relative", min_width = "1800px",
-         min_height = "900px", padding = "32px 40px")
+    tdiv(position = "relative", min_width = "2400px",
+         min_height = "1800px", padding = "32px 40px")
 
   # Render each flow as a labeled row of connected cards
   var rowY = 0.0
@@ -167,8 +167,9 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
       let lbl = stepLabel.toLowerAscii()
       let cardContent = ui(r):
         tdiv(flex = "1", position = "relative",
-             margin = "4px 4px 0 4px", border_radius = "4px",
-             overflow = "hidden", background_color = "#FAFAF9")
+             margin = "8px 8px 0 8px", border_radius = "8px",
+             overflow = "hidden", background_color = "#FAFAF9",
+             box_shadow = "inset 0 0 0 1px rgba(0,0,0,0.06)")
       r.appendChild(cardEl, cardContent)
 
       # Choose and render mini-preview based on step keywords
@@ -200,12 +201,11 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
       r.appendChild(cardContent, preview)
 
       # Card label: "N. Action description"
-      let labelText = $stepNum & ". " & stepLabel
       let cardLabel = ui(r):
-        tdiv(padding = "6px 8px", font_size = "10px",
+        tdiv(padding = "8px 12px", font_size = "11px",
              color = textSecondary, overflow = "hidden",
-             line_height = "1.3"):
-          span(font_weight = "600", color = accent):
+             line_height = "1.4"):
+          span(font_weight = "700", color = accent, font_size = "12px"):
             text $stepNum & ". "
           text stepLabel
       r.appendChild(cardEl, cardLabel)
@@ -241,7 +241,7 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
           r.setStyle(arrow, "width", $aw & "px")
           r.appendChild(inner, arrow)
 
-    rowY = cardsTop + 240 + 60  # card height + gap between flow rows
+    rowY = cardsTop + 520 + 64  # card height + gap between flow rows
 
   # Empty state if no flows
   if flows.len == 0:
