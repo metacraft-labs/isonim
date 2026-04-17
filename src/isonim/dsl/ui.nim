@@ -28,6 +28,21 @@ proc genName(prefix: string): NimNode {.compileTime.} =
   result = ident(prefix & $gensymCounter)
 
 # ---------------------------------------------------------------------------
+# Void elements (shared between client and SSR modes)
+# ---------------------------------------------------------------------------
+
+const voidElements* = [
+  "area", "base", "br", "col", "embed", "hr", "img",
+  "input", "keygen", "link", "menuitem", "meta", "param",
+  "source", "track", "wbr",
+]
+
+proc isVoidElement*(tag: string): bool {.compileTime.} =
+  for v in voidElements:
+    if tag == v: return true
+  return false
+
+# ---------------------------------------------------------------------------
 # Client mode (renderer-based element creation)
 # ---------------------------------------------------------------------------
 
@@ -40,10 +55,10 @@ proc processForIn(rendererSym, parentSym: NimNode; node: NimNode;
                   stmts: NimNode) {.compileTime.}
 
 proc processChildren(rendererSym, parentSym: NimNode; body: NimNode;
-                     stmts: NimNode) {.compileTime.}
+    stmts: NimNode) {.compileTime.}
 
 proc processIfStmt(rendererSym, parentSym: NimNode; node: NimNode;
-                   stmts: NimNode) {.compileTime.} =
+    stmts: NimNode) {.compileTime.} =
   ## Process an if/elif/else statement, transforming DSL children in each branch.
   var newIf = newNimNode(nnkIfStmt)
   for branch in node:
@@ -64,7 +79,7 @@ proc processIfStmt(rendererSym, parentSym: NimNode; node: NimNode;
   stmts.add(newIf)
 
 proc processForStmt(rendererSym, parentSym: NimNode; node: NimNode;
-                   stmts: NimNode) {.compileTime.} =
+    stmts: NimNode) {.compileTime.} =
   ## Process a for loop, transforming DSL children in the body.
   ## for x in collection: dslBody
   let body = node[^1]
@@ -124,6 +139,17 @@ proc processChildren(rendererSym, parentSym: NimNode; body: NimNode; stmts: NimN
         if childNode != nil:
           stmts.add(newCall(newDotExpr(rendererSym, ident"appendChild"),
                             parentSym, childNode))
+    of nnkIdent:
+      # Bare identifier — check if it's a known HTML void element (e.g. `br`, `hr`)
+      let tagName = resolveTagName(child.strVal)
+      if isVoidElement(tagName):
+        let elSym = genName("el")
+        stmts.add(newLetStmt(elSym,
+          newCall(newDotExpr(rendererSym, ident"createElement"), newStrLitNode(tagName))))
+        stmts.add(newCall(newDotExpr(rendererSym, ident"appendChild"),
+                          parentSym, elSym))
+      else:
+        stmts.add(child)
     of nnkStmtList:
       processChildren(rendererSym, parentSym, child, stmts)
     of nnkIfStmt, nnkWhenStmt:
@@ -454,17 +480,6 @@ macro ui*(renderer: untyped; body: untyped): untyped =
 # SSR mode (string concatenation)
 # ---------------------------------------------------------------------------
 
-const ssrVoidElements = [
-  "area", "base", "br", "col", "embed", "hr", "img",
-  "input", "keygen", "link", "menuitem", "meta", "param",
-  "source", "track", "wbr",
-]
-
-proc isVoidElement(tag: string): bool {.compileTime.} =
-  for v in ssrVoidElements:
-    if tag == v: return true
-  return false
-
 proc ssrNodeExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.}
 
 proc ssrShowIfExpr(children: NimNode; idx: int; stmts: NimNode): (NimNode, int) {.compileTime.}
@@ -496,6 +511,14 @@ proc ssrChildrenExpr(body: NimNode; stmts: NimNode): NimNode {.compileTime.} =
         let expr = ssrNodeExpr(child, stmts)
         if expr != nil:
           parts.add(expr)
+    of nnkIdent:
+      # Bare identifier — check if it's a known HTML void element (e.g. `br`, `hr`, `img`)
+      let tagName = resolveTagName(child.strVal)
+      if isVoidElement(tagName):
+        parts.add(newStrLitNode("<" & tagName & " />"))
+      else:
+        # Not a void element — pass through as Nim code
+        stmts.add(child)
     of nnkStmtList:
       let expr = ssrChildrenExpr(child, stmts)
       if expr != nil:
@@ -721,20 +744,8 @@ proc ssrNodeExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.} =
   else:
     return nil
 
-macro uiString*(body: untyped): untyped =
-  ## SSR-mode DSL macro. Produces an HTML string from the DSL block.
-  ## No renderer needed -- generates string concatenation code.
-  ##
-  ## Usage:
-  ##   let html = uiString:
-  ##     tdiv(class = "container"):
-  ##       h1: text "Hello"
-  ##       span: text $count.val
-  ##
-  ## Dynamic expressions are evaluated inline (no effects).
-  ## Event handlers are silently ignored.
-  ## Use `hydrate = true` on elements that need `data-hk` markers.
-
+proc uiSsrImpl(body: NimNode): NimNode {.compileTime.} =
+  ## Shared SSR implementation used by both `ui` (no renderer) and `uiString`.
   let stmts = newStmtList()
   var resultExpr: NimNode = nil
 
@@ -758,16 +769,36 @@ macro uiString*(body: untyped): untyped =
     resultExpr = ssrNodeExpr(body, stmts)
 
   else:
-    error("uiString expects a DSL body block", body)
+    error("ui expects a DSL body block", body)
 
   if resultExpr != nil:
     stmts.add(resultExpr)
 
   result = newBlockStmt(stmts)
 
+macro ui*(body: untyped): untyped =
+  ## SSR-mode DSL macro. When `ui` is called without a renderer argument,
+  ## it produces an HTML string from the DSL block.
+  ##
+  ## Usage:
+  ##   proc myPage(): string =
+  ##     ui:
+  ##       tdiv(class = "container"):
+  ##         h1: text "Hello"
+  ##         p: text $someVar
+  ##
+  ## This is the same DSL syntax as `ui(renderer): body`, but targeting
+  ## string output instead of a renderer element tree. Dynamic expressions
+  ## are evaluated inline (no reactive effects). Event handlers are ignored.
+  result = uiSsrImpl(body)
+
+macro uiString*(body: untyped): untyped {.deprecated: "use `ui` instead".} =
+  ## Deprecated: use `ui` without a renderer argument instead.
+  result = uiSsrImpl(body)
+
 macro isomorphicUi*(renderer: untyped; body: untyped): untyped =
-  ## Isomorphic DSL macro: compiles to `ui` in client mode
-  ## or `uiString` in SSR mode (when `-d:isServer` is defined).
+  ## Isomorphic DSL macro: compiles to `ui(renderer)` in client mode
+  ## or `ui` (SSR string mode) when `-d:isServer` is defined.
   ##
   ## Usage:
   ##   proc myComponent(renderer: auto): auto =
@@ -778,12 +809,12 @@ macro isomorphicUi*(renderer: untyped; body: untyped): untyped =
   ## In SSR mode, returns an HTML string. The renderer param is ignored.
   result = newNimNode(nnkWhenStmt)
 
-  # when defined(isServer): uiString: body
+  # when defined(isServer): ui: body  (SSR string mode)
   let serverBranch = newNimNode(nnkElifBranch)
   serverBranch.add(newCall(ident"defined", ident"isServer"))
-  serverBranch.add(newCall(ident"uiString", body))
+  serverBranch.add(uiSsrImpl(body))
 
-  # else: ui(renderer): body
+  # else: ui(renderer): body  (client renderer mode)
   let clientBranch = newNimNode(nnkElse)
   clientBranch.add(newCall(ident"ui", renderer, body))
 
@@ -794,8 +825,8 @@ macro isomorphicUi*(renderer: untyped; body: untyped): untyped =
 template buildHtml*(renderer: untyped; body: untyped): untyped {.deprecated: "use `ui` instead".} =
   ui(renderer, body)
 
-template buildHtmlString*(body: untyped): untyped {.deprecated: "use `uiString` instead".} =
-  uiString(body)
+template buildHtmlString*(body: untyped): untyped {.deprecated: "use `ui` instead".} =
+  ui(body)
 
 template isomorphicHtml*(renderer: untyped; body: untyped): untyped {.deprecated: "use `isomorphicUi` instead".} =
   isomorphicUi(renderer, body)
