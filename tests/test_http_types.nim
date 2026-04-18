@@ -1,6 +1,7 @@
 import unittest
 import std/strutils
 import isonim/server/http_types
+import isonim/server/handler
 import faststreams/inputs as fsInputs
 import faststreams/outputs as fsOutputs
 
@@ -146,3 +147,55 @@ suite "Zero-Copy HTTP Types":
     resp.writeBody("chunk2")
     # In dev mode, all chunks accumulate
     check resp.getResponseBody() == "chunk1chunk2"
+
+suite "Router":
+  test "handler receives request":
+    var router = newRouter()
+    var handlerCalled = false
+    var receivedPath = ""
+    var receivedMethod = hmGet
+
+    router.get "/api/users", proc(req: HttpRequest, resp: HttpResponse) =
+      handlerCalled = true
+      receivedPath = req.pathString()
+      receivedMethod = req.httpMethod
+      resp.statusCode = 200
+      resp.writeBody("ok")
+
+    let req = newHttpRequest("/api/users", hmGet)
+    let resp = newHttpResponse()
+    router.dispatch(req, resp)
+
+    check handlerCalled
+    check receivedPath == "/api/users"
+    check receivedMethod == hmGet
+    check resp.statusCode == 200
+    check resp.getResponseBody() == "ok"
+
+  test "handler writes response":
+    var router = newRouter()
+    router.get "/hello", proc(req: HttpRequest, resp: HttpResponse) =
+      resp.statusCode = 200
+      resp.writeHeader("Content-Type", "text/html")
+      resp.writeBody("<h1>Hello</h1>")
+
+    let req = newHttpRequest("/hello", hmGet)
+    let resp = newHttpResponse()
+    router.dispatch(req, resp)
+
+    check resp.statusCode == 200
+    check resp.getResponseBody() == "<h1>Hello</h1>"
+    let headers = resp.getResponseHeaders()
+    check headers.len >= 1
+
+  test "router not found":
+    var router = newRouter()
+    router.get "/exists", proc(req: HttpRequest, resp: HttpResponse) =
+      resp.writeBody("found")
+
+    let req = newHttpRequest("/does-not-exist", hmGet)
+    let resp = newHttpResponse()
+    router.dispatch(req, resp)
+
+    check resp.statusCode == 404
+    check "Not Found" in resp.getResponseBody()
