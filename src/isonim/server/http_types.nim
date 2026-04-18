@@ -1,9 +1,9 @@
 ## Zero-copy HTTP request/response types for IsoNim.
 ##
 ## Request headers are accessed via openArray[byte] — borrowed views that
-## cannot be stored, preventing use-after-free. Response body uses a simple
-## buffer for the dev server; in nginx mode, these would be replaced by
-## pointers into nginx pool memory.
+## cannot be stored, preventing use-after-free. Response body uses a
+## FastStreams OutputStream; request body is a FastStreams InputStream.
+## In nginx mode, these would be replaced by pointers into nginx pool memory.
 ##
 ## Since Nim 2.2 does not support openArray as a return type, zero-copy
 ## access is provided via:
@@ -12,6 +12,8 @@
 ##   - Owned-copy procs: `pathString`, `headerString` (clearly marked as allocating)
 
 import std/strutils
+import faststreams/inputs as fsInputs
+import faststreams/outputs as fsOutputs
 
 type
   HttpMethod* = enum
@@ -41,17 +43,17 @@ type
     pathStr: string             # Owned storage (dev server) or borrowed (nginx)
     methodVal: HttpMethod
     hdrs: HttpHeaders
-    # body: InputStream will be added in M1
+    bodyStream: fsInputs.InputStreamHandle  # FastStreams InputStream for request body
 
   HttpResponseKind = enum
     rkDev     # Dev server: collects output into string
 
   HttpResponse* = ref object
     statusCode*: int
+    bodyStream: fsOutputs.OutputStreamHandle  # FastStreams OutputStream for response body
     case kind: HttpResponseKind
     of rkDev:
       responseHeaders: seq[HeaderEntry]
-      bodyBuffer: string
     headersSent*: bool
 
 # ---------------------------------------------------------------------------
@@ -60,7 +62,8 @@ type
 
 proc newHttpRequest*(
     path: string, httpMethod: HttpMethod = hmGet,
-    headers: seq[(string, string)] = @[]): HttpRequest =
+    headers: seq[(string, string)] = @[],
+    bodyData: string = ""): HttpRequest =
   ## Create an HttpRequest for testing or dev-server use.
   var entries: seq[HeaderEntry]
   for (n, v) in headers:
@@ -68,17 +71,32 @@ proc newHttpRequest*(
   HttpRequest(
     pathStr: path,
     methodVal: httpMethod,
-    hdrs: HttpHeaders(kind: hkOwned, entries: entries)
+    hdrs: HttpHeaders(kind: hkOwned, entries: entries),
+    bodyStream: fsInputs.memoryInput(bodyData)
   )
 
 proc newHttpResponse*(): HttpResponse =
   HttpResponse(
     statusCode: 200,
+    bodyStream: fsOutputs.memoryOutput(),
     kind: rkDev,
     responseHeaders: @[],
-    bodyBuffer: "",
     headersSent: false
   )
+
+# ---------------------------------------------------------------------------
+# Request/Response — body stream access
+# ---------------------------------------------------------------------------
+
+proc body*(req: HttpRequest): fsInputs.InputStream =
+  ## The request body as a FastStreams InputStream.
+  ## Read lazily — no buffering of the entire body.
+  req.bodyStream
+
+proc body*(resp: HttpResponse): fsOutputs.OutputStream =
+  ## The response body as a FastStreams OutputStream.
+  ## Serializers write directly to this stream.
+  resp.bodyStream
 
 # ---------------------------------------------------------------------------
 # Request — zero-copy access via callbacks
@@ -195,22 +213,20 @@ proc sendHeaders*(resp: HttpResponse) =
   resp.headersSent = true
 
 proc writeBody*(resp: HttpResponse, data: string) =
-  ## Write string data to the response body.
-  ## In M2, this will write to a FastStreams OutputStream instead.
+  ## Write string data to the response body stream.
   if not resp.headersSent:
     sendHeaders(resp)
-  case resp.kind
-  of rkDev:
-    resp.bodyBuffer.add(data)
+  fsOutputs.write(resp.bodyStream, data)
 
 proc writeBody*(resp: HttpResponse, data: openArray[byte]) =
-  ## Write byte data to the response body.
+  ## Write byte data to the response body stream.
   if not resp.headersSent:
     sendHeaders(resp)
-  case resp.kind
-  of rkDev:
-    for b in data:
-      resp.bodyBuffer.add(char(b))
+  fsOutputs.write(resp.bodyStream, data)
+
+proc flush*(resp: HttpResponse) =
+  ## Flush the response body stream to the client.
+  fsOutputs.flush(resp.bodyStream)
 
 # ---------------------------------------------------------------------------
 # Response — read-back (dev server / testing)
@@ -218,9 +234,7 @@ proc writeBody*(resp: HttpResponse, data: openArray[byte]) =
 
 proc getResponseBody*(resp: HttpResponse): string =
   ## Get the collected response body (dev server mode).
-  case resp.kind
-  of rkDev:
-    resp.bodyBuffer
+  fsOutputs.getOutput(resp.bodyStream, string)
 
 proc getResponseHeaders*(resp: HttpResponse): seq[(string, string)] =
   ## Get the collected response headers (dev server mode).

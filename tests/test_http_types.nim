@@ -1,5 +1,8 @@
 import unittest
+import std/strutils
 import isonim/server/http_types
+import faststreams/inputs as fsInputs
+import faststreams/outputs as fsOutputs
 
 suite "Zero-Copy HTTP Types":
   test "path equality comparison":
@@ -84,3 +87,62 @@ suite "Zero-Copy HTTP Types":
     # Cannot write more headers after body
     expect ValueError:
       resp.writeHeader("Too-Late", "value")
+
+  test "request body as input stream":
+    let req = newHttpRequest("/api/data", hmPost, @[], "Hello, Body!")
+    let stream = req.body
+    # Read from the stream
+    var buf: array[20, byte]
+    var bytesRead = 0
+    while fsInputs.readable(stream, 1):
+      buf[bytesRead] = fsInputs.read(stream)
+      bytesRead += 1
+      if bytesRead >= 12: break
+    check bytesRead == 12
+    var bodyStr = ""
+    for i in 0 ..< bytesRead:
+      bodyStr.add(char(buf[i]))
+    check bodyStr == "Hello, Body!"
+
+  test "JSON body from input stream":
+    # Simulate JSON body
+    let jsonBody = """{"name": "Alice", "age": 30}"""
+    let req = newHttpRequest("/api/users", hmPost, @[
+      ("Content-Type", "application/json")
+    ], jsonBody)
+    # Read body into string from stream
+    var bodyStr = ""
+    let stream = req.body
+    while fsInputs.readable(stream, 1):
+      bodyStr.add(char(fsInputs.read(stream)))
+    check "Alice" in bodyStr
+    check "30" in bodyStr
+
+  test "empty body stream":
+    let req = newHttpRequest("/api/empty", hmGet)
+    let stream = req.body
+    # Empty body should not be readable
+    var bytesRead = 0
+    while fsInputs.readable(stream, 1):
+      discard fsInputs.read(stream)
+      bytesRead += 1
+    check bytesRead == 0
+
+  test "response body as output stream":
+    let resp = newHttpResponse()
+    resp.statusCode = 200
+    resp.writeHeader("Content-Type", "text/plain")
+
+    # Write to the response body stream
+    let stream = resp.body
+    fsOutputs.write(stream, "Hello from ")
+    fsOutputs.write(stream, "OutputStream!")
+
+    check resp.getResponseBody() == "Hello from OutputStream!"
+
+  test "streaming response with writeBody":
+    let resp = newHttpResponse()
+    resp.writeBody("chunk1")
+    resp.writeBody("chunk2")
+    # In dev mode, all chunks accumulate
+    check resp.getResponseBody() == "chunk1chunk2"
