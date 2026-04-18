@@ -776,6 +776,256 @@ proc uiSsrImpl(body: NimNode): NimNode {.compileTime.} =
 
   result = newBlockStmt(stmts)
 
+# ---------------------------------------------------------------------------
+# Streaming SSR mode (direct OutputStream writes, no string concatenation)
+# ---------------------------------------------------------------------------
+
+proc streamWriteChildren(streamSym: NimNode; body: NimNode;
+    stmts: NimNode) {.compileTime.}
+
+proc streamWriteNode(streamSym: NimNode; node: NimNode;
+    stmts: NimNode) {.compileTime.} =
+  ## Generate stream.write() calls for a single node.
+
+  if node.kind in {nnkCall, nnkCommand}:
+    let name = if node[0].kind == nnkIdent: node[0].strVal else: ""
+
+    if name == "text":
+      let arg = node[1]
+      # stream.write(escapeHtml(arg))
+      stmts.add(newCall(newDotExpr(streamSym, ident"write"),
+        newCall(ident"escapeHtml", arg)))
+      return
+
+    if name == "raw":
+      # stream.write(arg) — no escaping
+      stmts.add(newCall(newDotExpr(streamSym, ident"write"), node[1]))
+      return
+
+    # Element node
+    let htmlTag = resolveTagName(name)
+    let isVoid = isVoidElement(htmlTag)
+
+    # Write opening tag start
+    stmts.add(newCall(newDotExpr(streamSym, ident"write"),
+      newStrLitNode("<" & htmlTag)))
+
+    # Collect attributes and children
+    var childBody: NimNode = nil
+
+    for i in 1 ..< node.len:
+      let arg = node[i]
+      case arg.kind
+      of nnkExprEqExpr:
+        let attrName = attrNameStr(arg[0])
+        let attrVal = arg[1]
+
+        if isEventHandler(attrName):
+          discard  # Ignored in SSR
+        elif attrName == "needsId" or attrName == "hydrate":
+          stmts.add(newCall(newDotExpr(streamSym, ident"write"),
+            newCall(ident"ssrHydrationKey")))
+        else:
+          # Write attribute: stream.write(" name=\""); stream.write(escapeAttr(val)); stream.write("\"")
+          stmts.add(newCall(newDotExpr(streamSym, ident"write"),
+            newStrLitNode(" " & attrName & "=\"")))
+          stmts.add(newCall(newDotExpr(streamSym, ident"write"),
+            newCall(ident"escapeAttr", attrVal)))
+          stmts.add(newCall(newDotExpr(streamSym, ident"write"),
+            newStrLitNode("\"")))
+      of nnkStmtList:
+        childBody = arg
+      of nnkCall, nnkCommand:
+        if childBody == nil:
+          childBody = newStmtList(arg)
+        else:
+          childBody.add(arg)
+      else:
+        discard
+
+    if isVoid:
+      stmts.add(newCall(newDotExpr(streamSym, ident"write"),
+        newStrLitNode(" />")))
+    else:
+      stmts.add(newCall(newDotExpr(streamSym, ident"write"),
+        newStrLitNode(">")))
+
+      if childBody != nil:
+        streamWriteChildren(streamSym, childBody, stmts)
+
+      stmts.add(newCall(newDotExpr(streamSym, ident"write"),
+        newStrLitNode("</" & htmlTag & ">")))
+
+proc streamWriteShowIf(streamSym: NimNode; children: NimNode;
+    idx: int; stmts: NimNode): int {.compileTime.} =
+  let showNode = children[idx]
+  let condExpr = showNode[1]
+  let bodyBlock = showNode[^1]
+
+  var fallbackBlock: NimNode = nil
+  var nextIdx = idx + 1
+  if nextIdx < children.len:
+    let nextChild = children[nextIdx]
+    if nextChild.kind in {nnkCall, nnkCommand}:
+      let nextName = if nextChild[0].kind == nnkIdent: nextChild[0].strVal else: ""
+      if nextName == "showElse":
+        fallbackBlock = nextChild[^1]
+        nextIdx = nextIdx + 1
+
+  # Generate: if condition: <write body> else: <write fallback>
+  let bodyStmts = newStmtList()
+  streamWriteChildren(streamSym, bodyBlock, bodyStmts)
+
+  if fallbackBlock != nil:
+    let fallbackStmts = newStmtList()
+    streamWriteChildren(streamSym, fallbackBlock, fallbackStmts)
+    stmts.add(newNimNode(nnkIfStmt).add(
+      newNimNode(nnkElifBranch).add(condExpr, bodyStmts),
+      newNimNode(nnkElse).add(fallbackStmts)
+    ))
+  else:
+    stmts.add(newNimNode(nnkIfStmt).add(
+      newNimNode(nnkElifBranch).add(condExpr, bodyStmts)
+    ))
+
+  return nextIdx
+
+proc streamWriteForIn(streamSym: NimNode; node: NimNode;
+    stmts: NimNode) {.compileTime.} =
+  let seqExpr = node[1]
+  let bodyBlock = node[^1]
+
+  let loopBody = newStmtList()
+  streamWriteChildren(streamSym, bodyBlock, loopBody)
+
+  let forLoop = newNimNode(nnkForStmt).add(
+    ident"index",
+    ident"item",
+    seqExpr,
+    loopBody
+  )
+  stmts.add(forLoop)
+
+proc streamWriteChildren(streamSym: NimNode; body: NimNode;
+    stmts: NimNode) {.compileTime.} =
+  var i = 0
+  while i < body.len:
+    let child = body[i]
+    case child.kind
+    of nnkCall, nnkCommand:
+      let name = if child[0].kind == nnkIdent: child[0].strVal else: ""
+      if name == "showIf":
+        i = streamWriteShowIf(streamSym, body, i, stmts)
+        continue
+      elif name == "forIn":
+        streamWriteForIn(streamSym, child, stmts)
+        inc i
+        continue
+      else:
+        streamWriteNode(streamSym, child, stmts)
+    of nnkIdent:
+      let tagName = resolveTagName(child.strVal)
+      if isVoidElement(tagName):
+        stmts.add(newCall(newDotExpr(streamSym, ident"write"),
+          newStrLitNode("<" & tagName & " />")))
+      else:
+        stmts.add(child)
+    of nnkStmtList:
+      streamWriteChildren(streamSym, child, stmts)
+    of nnkIfStmt:
+      var newIf = newNimNode(nnkIfStmt)
+      for branch in child:
+        case branch.kind
+        of nnkElifBranch:
+          let branchStmts = newStmtList()
+          streamWriteChildren(streamSym, branch[^1], branchStmts)
+          newIf.add(newNimNode(nnkElifBranch).add(branch[0], branchStmts))
+        of nnkElse:
+          let branchStmts = newStmtList()
+          streamWriteChildren(streamSym, branch[^1], branchStmts)
+          newIf.add(newNimNode(nnkElse).add(branchStmts))
+        else:
+          discard
+      stmts.add(newIf)
+    of nnkForStmt:
+      let forBody = newStmtList()
+      streamWriteChildren(streamSym, child[^1], forBody)
+      var newFor = newNimNode(nnkForStmt)
+      for j in 0 ..< child.len - 1:
+        newFor.add(child[j])
+      newFor.add(forBody)
+      stmts.add(newFor)
+    of nnkCaseStmt:
+      var newCase = newNimNode(nnkCaseStmt)
+      newCase.add(child[0])
+      for j in 1 ..< child.len:
+        let branch = child[j]
+        case branch.kind
+        of nnkOfBranch:
+          let branchStmts = newStmtList()
+          streamWriteChildren(streamSym, branch[^1], branchStmts)
+          var newBranch = newNimNode(nnkOfBranch)
+          for k in 0 ..< branch.len - 1:
+            newBranch.add(branch[k])
+          newBranch.add(branchStmts)
+          newCase.add(newBranch)
+        of nnkElse:
+          let branchStmts = newStmtList()
+          streamWriteChildren(streamSym, branch[^1], branchStmts)
+          newCase.add(newNimNode(nnkElse).add(branchStmts))
+        else:
+          newCase.add(branch)
+      stmts.add(newCase)
+    else:
+      stmts.add(child)
+    inc i
+
+proc uiStreamImpl*(streamSym: NimNode; body: NimNode): NimNode {.compileTime.} =
+  ## Streaming SSR codegen: emits stream.write() calls for each HTML fragment.
+  ## No intermediate string concatenation — each piece is written directly.
+  let stmts = newStmtList()
+
+  case body.kind
+  of nnkStmtList:
+    if body.len == 1:
+      streamWriteNode(streamSym, body[0], stmts)
+    else:
+      stmts.add(newCall(newDotExpr(streamSym, ident"write"),
+        newStrLitNode("<div>")))
+      for child in body:
+        streamWriteNode(streamSym, child, stmts)
+      stmts.add(newCall(newDotExpr(streamSym, ident"write"),
+        newStrLitNode("</div>")))
+  of nnkCall, nnkCommand:
+    streamWriteNode(streamSym, body, stmts)
+  else:
+    error("ui expects a DSL body block", body)
+
+  result = newBlockStmt(stmts)
+
+macro uiWrite*(stream: untyped; body: untyped): untyped =
+  ## Streaming SSR macro. Writes HTML directly to a FastStreams OutputStream.
+  ## No intermediate string allocation — each HTML fragment is written via
+  ## stream.write() as it is generated.
+  ##
+  ## Usage:
+  ##   var output = memoryOutput()
+  ##   uiWrite(output):
+  ##     tdiv(class = "container"):
+  ##       h1: text "Hello"
+  ##       p: text $someVar
+  ##
+  ## Generates:
+  ##   output.write("<div class=\"container\">")
+  ##   output.write("<h1>")
+  ##   output.write(escapeHtml("Hello"))
+  ##   output.write("</h1>")
+  ##   output.write("<p>")
+  ##   output.write(escapeHtml($someVar))
+  ##   output.write("</p>")
+  ##   output.write("</div>")
+  result = uiStreamImpl(stream, body)
+
 macro ui*(body: untyped): untyped =
   ## SSR-mode DSL macro. When `ui` is called without a renderer argument,
   ## it produces an HTML string from the DSL block.

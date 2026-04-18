@@ -232,3 +232,91 @@ suite "renderToStream":
     let result = fsOutputs.getOutput(output.s, string)
     check result == html
     check "direct" in result
+
+suite "uiWrite (streaming SSR codegen)":
+  test "test_stream_codegen_matches_string_codegen":
+    # String mode
+    let htmlString = ui:
+      tdiv(class = "container"):
+        h1: text "Hello"
+        p: text "World"
+
+    # Stream mode (zero-copy codegen)
+    let output = fsOutputs.memoryOutput()
+    uiWrite(output.s):
+      tdiv(class = "container"):
+        h1: text "Hello"
+        p: text "World"
+    let streamResult = fsOutputs.getOutput(output.s, string)
+
+    check htmlString == streamResult
+
+  test "test_stream_codegen_with_dynamic_content":
+    let name = "Alice"
+    let age = 30
+
+    let htmlString = ui:
+      tdiv:
+        span: text name
+        span: text $age
+
+    let output = fsOutputs.memoryOutput()
+    uiWrite(output.s):
+      tdiv:
+        span: text name
+        span: text $age
+    let streamResult = fsOutputs.getOutput(output.s, string)
+
+    check htmlString == streamResult
+    check "Alice" in streamResult
+    check "30" in streamResult
+
+  test "test_stream_codegen_with_conditional":
+    let visible = true
+
+    let output = fsOutputs.memoryOutput()
+    uiWrite(output.s):
+      tdiv:
+        if visible:
+          p: text "shown"
+        else:
+          p: text "hidden"
+    let result = fsOutputs.getOutput(output.s, string)
+    check "shown" in result
+    check "hidden" notin result
+
+  test "test_stream_codegen_with_loop":
+    let items = @["a", "b", "c"]
+
+    let output = fsOutputs.memoryOutput()
+    uiWrite(output.s):
+      ul:
+        for item in items:
+          li: text item
+    let result = fsOutputs.getOutput(output.s, string)
+    check "<li>" in result
+    check "a" in result
+    check "b" in result
+    check "c" in result
+
+  test "test_stream_codegen_void_elements":
+    let output = fsOutputs.memoryOutput()
+    uiWrite(output.s):
+      tdiv:
+        br
+        hr
+        input(`type` = "text", name = "q")
+    let result = fsOutputs.getOutput(output.s, string)
+    check "<br />" in result
+    check "<hr />" in result
+    check "type=\"text\"" in result
+
+  test "test_renderComponentToStream_uses_stream_codegen":
+    let output = fsOutputs.memoryOutput()
+    renderComponentToStream(output.s):
+      tdiv(class = "test"):
+        h1: text "Stream!"
+    let result = fsOutputs.getOutput(output.s, string)
+    check "<div" in result
+    check "test" in result
+    check "Stream!" in result
