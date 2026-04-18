@@ -978,28 +978,117 @@ proc streamWriteChildren(streamSym: NimNode; body: NimNode;
       stmts.add(child)
     inc i
 
+proc isStreamWriteStrLit(node: NimNode; streamSym: NimNode): bool {.compileTime.} =
+  ## Check if a statement is `stream.write("literal")`.
+  if node.kind != nnkCall: return false
+  if node.len != 2: return false
+  let callee = node[0]
+  if callee.kind != nnkDotExpr: return false
+  if callee[1].kind != nnkIdent or callee[1].strVal != "write": return false
+  if node[1].kind != nnkStrLit: return false
+  return true
+
+proc getWriteStrLit(node: NimNode): string {.compileTime.} =
+  ## Extract the string literal from a `stream.write("literal")` call.
+  node[1].strVal
+
+proc coalesceWrites*(stmts: NimNode; streamSym: NimNode): NimNode {.compileTime.} =
+  ## Merge consecutive stream.write(strLit) calls into a single write call
+  ## with the concatenated string literal. Non-write statements (dynamic
+  ## content, control flow) act as barriers that flush the accumulated string.
+  result = newStmtList()
+  var accum = ""
+
+  for i in 0 ..< stmts.len:
+    let stmt = stmts[i]
+    if isStreamWriteStrLit(stmt, streamSym):
+      accum.add(getWriteStrLit(stmt))
+    else:
+      # Flush accumulated string before the non-write statement
+      if accum.len > 0:
+        result.add(newCall(newDotExpr(streamSym, ident"write"),
+          newStrLitNode(accum)))
+        accum = ""
+      # Recursively coalesce inside control flow blocks
+      case stmt.kind
+      of nnkIfStmt:
+        var newIf = newNimNode(nnkIfStmt)
+        for branch in stmt:
+          case branch.kind
+          of nnkElifBranch:
+            let coalesced = coalesceWrites(branch[^1], streamSym)
+            newIf.add(newNimNode(nnkElifBranch).add(branch[0], coalesced))
+          of nnkElse:
+            let coalesced = coalesceWrites(branch[^1], streamSym)
+            newIf.add(newNimNode(nnkElse).add(coalesced))
+          else:
+            newIf.add(branch)
+        result.add(newIf)
+      of nnkForStmt:
+        let coalesced = coalesceWrites(stmt[^1], streamSym)
+        var newFor = newNimNode(nnkForStmt)
+        for j in 0 ..< stmt.len - 1:
+          newFor.add(stmt[j])
+        newFor.add(coalesced)
+        result.add(newFor)
+      of nnkCaseStmt:
+        var newCase = newNimNode(nnkCaseStmt)
+        newCase.add(stmt[0])
+        for j in 1 ..< stmt.len:
+          let branch = stmt[j]
+          case branch.kind
+          of nnkOfBranch:
+            let coalesced = coalesceWrites(branch[^1], streamSym)
+            var newBranch = newNimNode(nnkOfBranch)
+            for k in 0 ..< branch.len - 1:
+              newBranch.add(branch[k])
+            newBranch.add(coalesced)
+            newCase.add(newBranch)
+          of nnkElse:
+            let coalesced = coalesceWrites(branch[^1], streamSym)
+            newCase.add(newNimNode(nnkElse).add(coalesced))
+          else:
+            newCase.add(branch)
+        result.add(newCase)
+      of nnkBlockStmt:
+        if stmt.len == 2:
+          let coalesced = coalesceWrites(stmt[1], streamSym)
+          result.add(newNimNode(nnkBlockStmt).add(stmt[0], coalesced))
+        else:
+          result.add(stmt)
+      else:
+        result.add(stmt)
+
+  # Final flush
+  if accum.len > 0:
+    result.add(newCall(newDotExpr(streamSym, ident"write"),
+      newStrLitNode(accum)))
+
 proc uiStreamImpl*(streamSym: NimNode; body: NimNode): NimNode {.compileTime.} =
   ## Streaming SSR codegen: emits stream.write() calls for each HTML fragment.
-  ## No intermediate string concatenation — each piece is written directly.
-  let stmts = newStmtList()
+  ## Adjacent static string writes are coalesced into a single write call
+  ## at compile time.
+  let rawStmts = newStmtList()
 
   case body.kind
   of nnkStmtList:
     if body.len == 1:
-      streamWriteNode(streamSym, body[0], stmts)
+      streamWriteNode(streamSym, body[0], rawStmts)
     else:
-      stmts.add(newCall(newDotExpr(streamSym, ident"write"),
+      rawStmts.add(newCall(newDotExpr(streamSym, ident"write"),
         newStrLitNode("<div>")))
       for child in body:
-        streamWriteNode(streamSym, child, stmts)
-      stmts.add(newCall(newDotExpr(streamSym, ident"write"),
+        streamWriteNode(streamSym, child, rawStmts)
+      rawStmts.add(newCall(newDotExpr(streamSym, ident"write"),
         newStrLitNode("</div>")))
   of nnkCall, nnkCommand:
-    streamWriteNode(streamSym, body, stmts)
+    streamWriteNode(streamSym, body, rawStmts)
   else:
     error("ui expects a DSL body block", body)
 
-  result = newBlockStmt(stmts)
+  # Coalesce adjacent string literal writes into single calls
+  let coalescedStmts = coalesceWrites(rawStmts, streamSym)
+  result = newBlockStmt(coalescedStmts)
 
 macro uiWrite*(stream: untyped; body: untyped): untyped =
   ## Streaming SSR macro. Writes HTML directly to a FastStreams OutputStream.
