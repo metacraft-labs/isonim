@@ -777,85 +777,144 @@ proc uiSsrImpl(body: NimNode): NimNode {.compileTime.} =
   result = newBlockStmt(stmts)
 
 # ---------------------------------------------------------------------------
-# Streaming SSR mode (direct OutputStream writes, no string concatenation)
+# Streaming SSR mode — IR-based pipeline
+#
+# Three-phase codegen:
+#   1. DSL → seq[StreamOp]    (collect)
+#   2. seq[StreamOp] → optimize (coalesce adjacent sokStatic)
+#   3. seq[StreamOp] → NimNode (emit stream.write() calls)
 # ---------------------------------------------------------------------------
 
-proc streamWriteChildren(streamSym: NimNode; body: NimNode;
-    stmts: NimNode) {.compileTime.}
+type
+  StreamOpKind* = enum
+    sokStatic         ## Literal string fragment (e.g. "<div class=\"x\">")
+    sokEscapedHtml    ## Dynamic text content (needs HTML escaping)
+    sokEscapedAttr    ## Dynamic attribute value (needs attr escaping)
+    sokRaw            ## Raw expression (no escaping, e.g. raw "...")
+    sokHydrationKey   ## Insert hydration key marker
+    sokNimStmt        ## Pass-through Nim statement (let, var, discard, etc.)
+    sokIf             ## if/elif/else control flow
+    sokFor            ## for loop
+    sokForIn          ## forIn DSL directive
+    sokCase           ## case statement
 
-proc streamWriteNode(streamSym: NimNode; node: NimNode;
-    stmts: NimNode) {.compileTime.} =
-  ## Generate stream.write() calls for a single node.
+  StreamOp* = ref object
+    case kind*: StreamOpKind
+    of sokStatic:
+      text*: string
+    of sokEscapedHtml, sokEscapedAttr, sokRaw:
+      expr*: NimNode
+    of sokHydrationKey:
+      discard
+    of sokNimStmt:
+      stmt*: NimNode
+    of sokIf:
+      ifBranches*: seq[tuple[cond: NimNode, body: seq[StreamOp]]]
+        ## cond is nil for the else branch
+    of sokFor:
+      forVars*: seq[NimNode]    ## loop variables
+      forIter*: NimNode         ## iterator expression
+      forBody*: seq[StreamOp]
+    of sokForIn:
+      seqExpr*: NimNode
+      forInBody*: seq[StreamOp]
+    of sokCase:
+      caseExpr*: NimNode
+      caseOfBranches*: seq[tuple[values: seq[NimNode], body: seq[StreamOp]]]
+      caseElse*: seq[StreamOp]  ## empty if no else branch
 
-  if node.kind in {nnkCall, nnkCommand}:
-    let name = if node[0].kind == nnkIdent: node[0].strVal else: ""
+# ---------------------------------------------------------------------------
+# Phase 1: Collect DSL → seq[StreamOp]
+# ---------------------------------------------------------------------------
 
-    if name == "text":
-      let arg = node[1]
-      # writeEscapedHtml(stream, arg) — zero allocation
-      stmts.add(newCall(ident"writeEscapedHtml", streamSym, arg))
-      return
+proc escapeAttrCompileTime(s: string): string {.compileTime.} =
+  ## Escape " and & for HTML attribute context at compile time.
+  result = newStringOfCap(s.len)
+  for c in s:
+    case c
+    of '"': result.add "&quot;"
+    of '&': result.add "&amp;"
+    else: result.add c
 
-    if name == "raw":
-      # stream.write(arg) — no escaping
-      stmts.add(newCall(newDotExpr(streamSym, ident"write"), node[1]))
-      return
+proc collectNode(node: NimNode; ops: var seq[StreamOp]) {.compileTime.}
 
-    # Element node
-    let htmlTag = resolveTagName(name)
-    let isVoid = isVoidElement(htmlTag)
+proc collectShowIf(children: NimNode; idx: int;
+    ops: var seq[StreamOp]): int {.compileTime.}
 
-    # Write opening tag start
-    stmts.add(newCall(newDotExpr(streamSym, ident"write"),
-      newStrLitNode("<" & htmlTag)))
+proc collectForIn(node: NimNode; ops: var seq[StreamOp]) {.compileTime.}
 
-    # Collect attributes and children
-    var childBody: NimNode = nil
-
-    for i in 1 ..< node.len:
-      let arg = node[i]
-      case arg.kind
-      of nnkExprEqExpr:
-        let attrName = attrNameStr(arg[0])
-        let attrVal = arg[1]
-
-        if isEventHandler(attrName):
-          discard  # Ignored in SSR
-        elif attrName == "needsId" or attrName == "hydrate":
-          stmts.add(newCall(newDotExpr(streamSym, ident"write"),
-            newCall(ident"ssrHydrationKey")))
-        else:
-          # writeEscapedAttr(stream, val) — zero allocation for attr values
-          stmts.add(newCall(newDotExpr(streamSym, ident"write"),
-            newStrLitNode(" " & attrName & "=\"")))
-          stmts.add(newCall(ident"writeEscapedAttr", streamSym, attrVal))
-          stmts.add(newCall(newDotExpr(streamSym, ident"write"),
-            newStrLitNode("\"")))
-      of nnkStmtList:
-        childBody = arg
-      of nnkCall, nnkCommand:
-        if childBody == nil:
-          childBody = newStmtList(arg)
-        else:
-          childBody.add(arg)
+proc collectChildren(body: NimNode; ops: var seq[StreamOp]) {.compileTime.} =
+  var i = 0
+  while i < body.len:
+    let child = body[i]
+    case child.kind
+    of nnkCall, nnkCommand:
+      let name = if child[0].kind == nnkIdent: child[0].strVal else: ""
+      if name == "showIf":
+        i = collectShowIf(body, i, ops)
+        continue
+      elif name == "forIn":
+        collectForIn(child, ops)
       else:
-        discard
-
-    if isVoid:
-      stmts.add(newCall(newDotExpr(streamSym, ident"write"),
-        newStrLitNode(" />")))
+        collectNode(child, ops)
+    of nnkIdent:
+      let tagName = resolveTagName(child.strVal)
+      if isVoidElement(tagName):
+        ops.add(StreamOp(kind: sokStatic, text: "<" & tagName & " />"))
+      else:
+        ops.add(StreamOp(kind: sokNimStmt, stmt: child))
+    of nnkStmtList:
+      collectChildren(child, ops)
+    of nnkIfStmt:
+      var branches: seq[tuple[cond: NimNode, body: seq[StreamOp]]]
+      for branch in child:
+        case branch.kind
+        of nnkElifBranch:
+          var branchOps: seq[StreamOp]
+          collectChildren(branch[^1], branchOps)
+          branches.add((cond: branch[0], body: branchOps))
+        of nnkElse:
+          var branchOps: seq[StreamOp]
+          collectChildren(branch[^1], branchOps)
+          branches.add((cond: NimNode(nil), body: branchOps))
+        else: discard
+      ops.add(StreamOp(kind: sokIf, ifBranches: branches))
+    of nnkForStmt:
+      var forBody: seq[StreamOp]
+      collectChildren(child[^1], forBody)
+      var forVars: seq[NimNode]
+      for j in 0 ..< child.len - 2:
+        forVars.add(child[j])
+      ops.add(StreamOp(kind: sokFor,
+        forVars: forVars,
+        forIter: child[^2],
+        forBody: forBody))
+    of nnkCaseStmt:
+      var ofBranches: seq[tuple[values: seq[NimNode], body: seq[StreamOp]]]
+      var elseOps: seq[StreamOp]
+      for j in 1 ..< child.len:
+        let branch = child[j]
+        case branch.kind
+        of nnkOfBranch:
+          var branchOps: seq[StreamOp]
+          collectChildren(branch[^1], branchOps)
+          var values: seq[NimNode]
+          for k in 0 ..< branch.len - 1:
+            values.add(branch[k])
+          ofBranches.add((values: values, body: branchOps))
+        of nnkElse:
+          collectChildren(branch[^1], elseOps)
+        else: discard
+      ops.add(StreamOp(kind: sokCase,
+        caseExpr: child[0],
+        caseOfBranches: ofBranches,
+        caseElse: elseOps))
     else:
-      stmts.add(newCall(newDotExpr(streamSym, ident"write"),
-        newStrLitNode(">")))
+      ops.add(StreamOp(kind: sokNimStmt, stmt: child))
+    inc i
 
-      if childBody != nil:
-        streamWriteChildren(streamSym, childBody, stmts)
-
-      stmts.add(newCall(newDotExpr(streamSym, ident"write"),
-        newStrLitNode("</" & htmlTag & ">")))
-
-proc streamWriteShowIf(streamSym: NimNode; children: NimNode;
-    idx: int; stmts: NimNode): int {.compileTime.} =
+proc collectShowIf(children: NimNode; idx: int;
+    ops: var seq[StreamOp]): int {.compileTime.} =
   let showNode = children[idx]
   let condExpr = showNode[1]
   let bodyBlock = showNode[^1]
@@ -870,225 +929,240 @@ proc streamWriteShowIf(streamSym: NimNode; children: NimNode;
         fallbackBlock = nextChild[^1]
         nextIdx = nextIdx + 1
 
-  # Generate: if condition: <write body> else: <write fallback>
-  let bodyStmts = newStmtList()
-  streamWriteChildren(streamSym, bodyBlock, bodyStmts)
+  var bodyOps: seq[StreamOp]
+  collectChildren(bodyBlock, bodyOps)
+
+  var branches: seq[tuple[cond: NimNode, body: seq[StreamOp]]]
+  branches.add((cond: condExpr, body: bodyOps))
 
   if fallbackBlock != nil:
-    let fallbackStmts = newStmtList()
-    streamWriteChildren(streamSym, fallbackBlock, fallbackStmts)
-    stmts.add(newNimNode(nnkIfStmt).add(
-      newNimNode(nnkElifBranch).add(condExpr, bodyStmts),
-      newNimNode(nnkElse).add(fallbackStmts)
-    ))
-  else:
-    stmts.add(newNimNode(nnkIfStmt).add(
-      newNimNode(nnkElifBranch).add(condExpr, bodyStmts)
-    ))
+    var fallbackOps: seq[StreamOp]
+    collectChildren(fallbackBlock, fallbackOps)
+    branches.add((cond: NimNode(nil), body: fallbackOps))
 
+  ops.add(StreamOp(kind: sokIf, ifBranches: branches))
   return nextIdx
 
-proc streamWriteForIn(streamSym: NimNode; node: NimNode;
-    stmts: NimNode) {.compileTime.} =
+proc collectForIn(node: NimNode; ops: var seq[StreamOp]) {.compileTime.} =
   let seqExpr = node[1]
   let bodyBlock = node[^1]
 
-  let loopBody = newStmtList()
-  streamWriteChildren(streamSym, bodyBlock, loopBody)
+  var bodyOps: seq[StreamOp]
+  collectChildren(bodyBlock, bodyOps)
 
-  let forLoop = newNimNode(nnkForStmt).add(
-    ident"index",
-    ident"item",
-    seqExpr,
-    loopBody
-  )
-  stmts.add(forLoop)
+  ops.add(StreamOp(kind: sokForIn,
+    seqExpr: seqExpr,
+    forInBody: bodyOps))
 
-proc streamWriteChildren(streamSym: NimNode; body: NimNode;
-    stmts: NimNode) {.compileTime.} =
-  var i = 0
-  while i < body.len:
-    let child = body[i]
-    case child.kind
-    of nnkCall, nnkCommand:
-      let name = if child[0].kind == nnkIdent: child[0].strVal else: ""
-      if name == "showIf":
-        i = streamWriteShowIf(streamSym, body, i, stmts)
-        continue
-      elif name == "forIn":
-        streamWriteForIn(streamSym, child, stmts)
-        inc i
-        continue
-      else:
-        streamWriteNode(streamSym, child, stmts)
-    of nnkIdent:
-      let tagName = resolveTagName(child.strVal)
-      if isVoidElement(tagName):
-        stmts.add(newCall(newDotExpr(streamSym, ident"write"),
-          newStrLitNode("<" & tagName & " />")))
-      else:
-        stmts.add(child)
-    of nnkStmtList:
-      streamWriteChildren(streamSym, child, stmts)
-    of nnkIfStmt:
-      var newIf = newNimNode(nnkIfStmt)
-      for branch in child:
-        case branch.kind
-        of nnkElifBranch:
-          let branchStmts = newStmtList()
-          streamWriteChildren(streamSym, branch[^1], branchStmts)
-          newIf.add(newNimNode(nnkElifBranch).add(branch[0], branchStmts))
-        of nnkElse:
-          let branchStmts = newStmtList()
-          streamWriteChildren(streamSym, branch[^1], branchStmts)
-          newIf.add(newNimNode(nnkElse).add(branchStmts))
+proc collectNode(node: NimNode; ops: var seq[StreamOp]) {.compileTime.} =
+  if node.kind in {nnkCall, nnkCommand}:
+    let name = if node[0].kind == nnkIdent: node[0].strVal else: ""
+
+    if name == "text":
+      ops.add(StreamOp(kind: sokEscapedHtml, expr: node[1]))
+      return
+    if name == "raw":
+      ops.add(StreamOp(kind: sokRaw, expr: node[1]))
+      return
+
+    let htmlTag = resolveTagName(name)
+    let isVoid = isVoidElement(htmlTag)
+
+    # Build opening tag, concatenating static attributes at compile time
+    var openTag = "<" & htmlTag
+    var childBody: NimNode = nil
+
+    # We accumulate static parts into openTag and flush when a dynamic
+    # part or hydration key is encountered.
+    var pendingOps: seq[StreamOp]
+
+    for i in 1 ..< node.len:
+      let arg = node[i]
+      case arg.kind
+      of nnkExprEqExpr:
+        let attrName = attrNameStr(arg[0])
+        let attrVal = arg[1]
+
+        if isEventHandler(attrName):
+          discard  # Ignored in SSR
+        elif attrName == "needsId" or attrName == "hydrate":
+          # Flush accumulated static text, emit hydration key
+          pendingOps.add(StreamOp(kind: sokStatic, text: openTag))
+          openTag = ""
+          pendingOps.add(StreamOp(kind: sokHydrationKey))
+        elif not isDynamic(attrVal):
+          # Static attribute — concatenate into the opening tag string
+          # Escape the value at compile time for HTML attribute context
+          openTag.add(" " & attrName & "=\"" & escapeAttrCompileTime(attrVal.strVal) & "\"")
         else:
-          discard
-      stmts.add(newIf)
-    of nnkForStmt:
-      let forBody = newStmtList()
-      streamWriteChildren(streamSym, child[^1], forBody)
-      var newFor = newNimNode(nnkForStmt)
-      for j in 0 ..< child.len - 1:
-        newFor.add(child[j])
-      newFor.add(forBody)
-      stmts.add(newFor)
-    of nnkCaseStmt:
-      var newCase = newNimNode(nnkCaseStmt)
-      newCase.add(child[0])
-      for j in 1 ..< child.len:
-        let branch = child[j]
-        case branch.kind
-        of nnkOfBranch:
-          let branchStmts = newStmtList()
-          streamWriteChildren(streamSym, branch[^1], branchStmts)
-          var newBranch = newNimNode(nnkOfBranch)
-          for k in 0 ..< branch.len - 1:
-            newBranch.add(branch[k])
-          newBranch.add(branchStmts)
-          newCase.add(newBranch)
-        of nnkElse:
-          let branchStmts = newStmtList()
-          streamWriteChildren(streamSym, branch[^1], branchStmts)
-          newCase.add(newNimNode(nnkElse).add(branchStmts))
+          # Dynamic attribute — flush static, add escaped attr
+          openTag.add(" " & attrName & "=\"")
+          pendingOps.add(StreamOp(kind: sokStatic, text: openTag))
+          openTag = ""
+          pendingOps.add(StreamOp(kind: sokEscapedAttr, expr: attrVal))
+          openTag = "\""
+      of nnkStmtList:
+        childBody = arg
+      of nnkCall, nnkCommand:
+        if childBody == nil:
+          childBody = newStmtList(arg)
         else:
-          newCase.add(branch)
-      stmts.add(newCase)
+          childBody.add(arg)
+      else: discard
+
+    if isVoid:
+      openTag.add(" />")
+      pendingOps.add(StreamOp(kind: sokStatic, text: openTag))
+      for op in pendingOps:
+        ops.add(op)
     else:
-      stmts.add(child)
-    inc i
+      openTag.add(">")
+      pendingOps.add(StreamOp(kind: sokStatic, text: openTag))
+      for op in pendingOps:
+        ops.add(op)
 
-proc isStreamWriteStrLit(node: NimNode; streamSym: NimNode): bool {.compileTime.} =
-  ## Check if a statement is `stream.write("literal")`.
-  if node.kind != nnkCall: return false
-  if node.len != 2: return false
-  let callee = node[0]
-  if callee.kind != nnkDotExpr: return false
-  if callee[1].kind != nnkIdent or callee[1].strVal != "write": return false
-  if node[1].kind != nnkStrLit: return false
-  return true
+      if childBody != nil:
+        collectChildren(childBody, ops)
 
-proc getWriteStrLit(node: NimNode): string {.compileTime.} =
-  ## Extract the string literal from a `stream.write("literal")` call.
-  node[1].strVal
+      ops.add(StreamOp(kind: sokStatic, text: "</" & htmlTag & ">"))
 
-proc coalesceWrites*(stmts: NimNode; streamSym: NimNode): NimNode {.compileTime.} =
-  ## Merge consecutive stream.write(strLit) calls into a single write call
-  ## with the concatenated string literal. Non-write statements (dynamic
-  ## content, control flow) act as barriers that flush the accumulated string.
-  result = newStmtList()
+# ---------------------------------------------------------------------------
+# Phase 2: Optimize — coalesce adjacent sokStatic ops
+# ---------------------------------------------------------------------------
+
+proc coalesce(ops: seq[StreamOp]): seq[StreamOp] {.compileTime.} =
+  ## Merge adjacent sokStatic ops into one. Recurse into control flow.
+  result = @[]
   var accum = ""
 
-  for i in 0 ..< stmts.len:
-    let stmt = stmts[i]
-    if isStreamWriteStrLit(stmt, streamSym):
-      accum.add(getWriteStrLit(stmt))
+  for op in ops:
+    if op.kind == sokStatic:
+      accum.add(op.text)
     else:
-      # Flush accumulated string before the non-write statement
       if accum.len > 0:
-        result.add(newCall(newDotExpr(streamSym, ident"write"),
-          newStrLitNode(accum)))
+        result.add(StreamOp(kind: sokStatic, text: accum))
         accum = ""
-      # Recursively coalesce inside control flow blocks
-      case stmt.kind
-      of nnkIfStmt:
-        var newIf = newNimNode(nnkIfStmt)
-        for branch in stmt:
-          case branch.kind
-          of nnkElifBranch:
-            let coalesced = coalesceWrites(branch[^1], streamSym)
-            newIf.add(newNimNode(nnkElifBranch).add(branch[0], coalesced))
-          of nnkElse:
-            let coalesced = coalesceWrites(branch[^1], streamSym)
-            newIf.add(newNimNode(nnkElse).add(coalesced))
-          else:
-            newIf.add(branch)
-        result.add(newIf)
-      of nnkForStmt:
-        let coalesced = coalesceWrites(stmt[^1], streamSym)
-        var newFor = newNimNode(nnkForStmt)
-        for j in 0 ..< stmt.len - 1:
-          newFor.add(stmt[j])
-        newFor.add(coalesced)
-        result.add(newFor)
-      of nnkCaseStmt:
-        var newCase = newNimNode(nnkCaseStmt)
-        newCase.add(stmt[0])
-        for j in 1 ..< stmt.len:
-          let branch = stmt[j]
-          case branch.kind
-          of nnkOfBranch:
-            let coalesced = coalesceWrites(branch[^1], streamSym)
-            var newBranch = newNimNode(nnkOfBranch)
-            for k in 0 ..< branch.len - 1:
-              newBranch.add(branch[k])
-            newBranch.add(coalesced)
-            newCase.add(newBranch)
-          of nnkElse:
-            let coalesced = coalesceWrites(branch[^1], streamSym)
-            newCase.add(newNimNode(nnkElse).add(coalesced))
-          else:
-            newCase.add(branch)
-        result.add(newCase)
-      of nnkBlockStmt:
-        if stmt.len == 2:
-          let coalesced = coalesceWrites(stmt[1], streamSym)
-          result.add(newNimNode(nnkBlockStmt).add(stmt[0], coalesced))
-        else:
-          result.add(stmt)
+      case op.kind
+      of sokIf:
+        var newBranches: seq[tuple[cond: NimNode, body: seq[StreamOp]]]
+        for branch in op.ifBranches:
+          newBranches.add((cond: branch.cond, body: coalesce(branch.body)))
+        result.add(StreamOp(kind: sokIf, ifBranches: newBranches))
+      of sokFor:
+        result.add(StreamOp(kind: sokFor,
+          forVars: op.forVars, forIter: op.forIter,
+          forBody: coalesce(op.forBody)))
+      of sokForIn:
+        result.add(StreamOp(kind: sokForIn,
+          seqExpr: op.seqExpr,
+          forInBody: coalesce(op.forInBody)))
+      of sokCase:
+        var newBranches: seq[tuple[values: seq[NimNode], body: seq[StreamOp]]]
+        for branch in op.caseOfBranches:
+          newBranches.add((values: branch.values, body: coalesce(branch.body)))
+        result.add(StreamOp(kind: sokCase,
+          caseExpr: op.caseExpr,
+          caseOfBranches: newBranches,
+          caseElse: coalesce(op.caseElse)))
       else:
-        result.add(stmt)
+        result.add(op)
 
-  # Final flush
   if accum.len > 0:
-    result.add(newCall(newDotExpr(streamSym, ident"write"),
-      newStrLitNode(accum)))
+    result.add(StreamOp(kind: sokStatic, text: accum))
+
+# ---------------------------------------------------------------------------
+# Phase 3: Emit AST from optimized ops
+# ---------------------------------------------------------------------------
+
+proc emit(ops: seq[StreamOp]; streamSym: NimNode;
+    stmts: NimNode) {.compileTime.} =
+  for op in ops:
+    case op.kind
+    of sokStatic:
+      stmts.add(newCall(newDotExpr(streamSym, ident"write"),
+        newStrLitNode(op.text)))
+    of sokEscapedHtml:
+      stmts.add(newCall(ident"writeEscapedHtml", streamSym, op.expr))
+    of sokEscapedAttr:
+      stmts.add(newCall(ident"writeEscapedAttr", streamSym, op.expr))
+    of sokRaw:
+      stmts.add(newCall(newDotExpr(streamSym, ident"write"), op.expr))
+    of sokHydrationKey:
+      stmts.add(newCall(newDotExpr(streamSym, ident"write"),
+        newCall(ident"ssrHydrationKey")))
+    of sokNimStmt:
+      stmts.add(op.stmt)
+    of sokIf:
+      var ifNode = newNimNode(nnkIfStmt)
+      for branch in op.ifBranches:
+        let branchStmts = newStmtList()
+        emit(branch.body, streamSym, branchStmts)
+        if branch.cond != nil:
+          ifNode.add(newNimNode(nnkElifBranch).add(branch.cond, branchStmts))
+        else:
+          ifNode.add(newNimNode(nnkElse).add(branchStmts))
+      stmts.add(ifNode)
+    of sokFor:
+      let forBody = newStmtList()
+      emit(op.forBody, streamSym, forBody)
+      var forNode = newNimNode(nnkForStmt)
+      for v in op.forVars:
+        forNode.add(v)
+      forNode.add(op.forIter)
+      forNode.add(forBody)
+      stmts.add(forNode)
+    of sokForIn:
+      let loopBody = newStmtList()
+      emit(op.forInBody, streamSym, loopBody)
+      let forLoop = newNimNode(nnkForStmt).add(
+        ident"index", ident"item", op.seqExpr, loopBody)
+      stmts.add(forLoop)
+    of sokCase:
+      var caseNode = newNimNode(nnkCaseStmt)
+      caseNode.add(op.caseExpr)
+      for branch in op.caseOfBranches:
+        let branchStmts = newStmtList()
+        emit(branch.body, streamSym, branchStmts)
+        var ofBranch = newNimNode(nnkOfBranch)
+        for v in branch.values:
+          ofBranch.add(v)
+        ofBranch.add(branchStmts)
+        caseNode.add(ofBranch)
+      if op.caseElse.len > 0:
+        let elseStmts = newStmtList()
+        emit(op.caseElse, streamSym, elseStmts)
+        caseNode.add(newNimNode(nnkElse).add(elseStmts))
+      stmts.add(caseNode)
+
+# ---------------------------------------------------------------------------
+# Pipeline entry point
+# ---------------------------------------------------------------------------
 
 proc uiStreamImpl*(streamSym: NimNode; body: NimNode): NimNode {.compileTime.} =
-  ## Streaming SSR codegen: emits stream.write() calls for each HTML fragment.
+  ## Streaming SSR codegen pipeline: DSL → collect → coalesce → emit.
   ## Adjacent static string writes are coalesced into a single write call
   ## at compile time.
-  let rawStmts = newStmtList()
+  var ops: seq[StreamOp]
 
   case body.kind
   of nnkStmtList:
     if body.len == 1:
-      streamWriteNode(streamSym, body[0], rawStmts)
+      collectNode(body[0], ops)
     else:
-      rawStmts.add(newCall(newDotExpr(streamSym, ident"write"),
-        newStrLitNode("<div>")))
+      ops.add(StreamOp(kind: sokStatic, text: "<div>"))
       for child in body:
-        streamWriteNode(streamSym, child, rawStmts)
-      rawStmts.add(newCall(newDotExpr(streamSym, ident"write"),
-        newStrLitNode("</div>")))
+        collectNode(child, ops)
+      ops.add(StreamOp(kind: sokStatic, text: "</div>"))
   of nnkCall, nnkCommand:
-    streamWriteNode(streamSym, body, rawStmts)
+    collectNode(body, ops)
   else:
     error("ui expects a DSL body block", body)
 
-  # Coalesce adjacent string literal writes into single calls
-  let coalescedStmts = coalesceWrites(rawStmts, streamSym)
-  result = newBlockStmt(coalescedStmts)
+  let optimized = coalesce(ops)
+
+  let stmts = newStmtList()
+  emit(optimized, streamSym, stmts)
+  result = newBlockStmt(stmts)
 
 macro uiWrite*(stream: untyped; body: untyped): untyped =
   ## Streaming SSR macro. Writes HTML directly to a FastStreams OutputStream.
