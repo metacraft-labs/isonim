@@ -1,11 +1,38 @@
 ## isonim/dsl/ui.nim
 ##
-## ui macro -- Karax-style HTML DSL entry point.
-## Transforms a DSL block into renderer-specific calls at compile time.
+## ui macro — Karax-style HTML DSL entry point.
+## Transforms a DSL block into target-specific code at compile time.
 ##
-## Two modes:
-## - `ui(renderer): body` -- client mode, creates element tree via renderer API
-## - `uiString: body` -- SSR mode, generates HTML string concatenation
+## Three output modes:
+##
+## - ``ui(renderer): body`` — client mode. Creates a reactive element tree
+##   via the renderer API (createElement, setAttribute, appendChild, etc.).
+##   Dynamic attributes and text are wrapped in ``createRenderEffect`` for
+##   fine-grained reactivity. Event handlers are attached via addEventListener.
+##
+## - ``ui: body`` — SSR string mode. Generates HTML via string concatenation
+##   (``&`` operator chains). Nim's compiler already folds adjacent string
+##   literals and optimises the concatenation in native code, so no
+##   additional coalescing is needed here.
+##
+## - ``uiWrite(stream): body`` — streaming SSR mode. Emits ``stream.write()``
+##   calls for each HTML fragment. Uses an intermediate representation
+##   (``StreamOp``) with a coalescing pass that merges adjacent static
+##   string writes into a single call. This IR-based pipeline is specific
+##   to the streaming path because ``stream.write()`` calls are individually
+##   costly (function call overhead) and benefit from batching, unlike
+##   string concatenation which the Nim compiler handles, or element
+##   creation which has no meaningful merge semantics.
+##
+## The three backends intentionally have separate codegen implementations
+## rather than sharing an IR, because they have fundamentally different
+## output structures:
+## - String mode produces expression trees (``a & b & c``)
+## - Client mode produces statement sequences with reactive effects
+## - Stream mode produces flat write calls that benefit from coalescing
+##
+## Sharing an IR would add complexity without benefit — each backend's
+## optimisations are specific to its output target.
 
 import std/macros
 import transform
@@ -779,10 +806,21 @@ proc uiSsrImpl(body: NimNode): NimNode {.compileTime.} =
 # ---------------------------------------------------------------------------
 # Streaming SSR mode — IR-based pipeline
 #
-# Three-phase codegen:
-#   1. DSL → seq[StreamOp]    (collect)
-#   2. seq[StreamOp] → optimize (coalesce adjacent sokStatic)
-#   3. seq[StreamOp] → NimNode (emit stream.write() calls)
+# This backend uses an intermediate representation (StreamOp) because
+# stream.write() calls have per-call overhead that benefits from batching.
+# The IR enables a coalescing pass that merges adjacent static string
+# fragments into a single write call at compile time.
+#
+# The string-mode backend (above) does NOT use this IR because Nim's
+# compiler already optimises string concatenation chains in native code,
+# making a macro-level coalescing pass redundant. The client-mode backend
+# (further above) also doesn't use it because createElement/appendChild
+# calls have no meaningful merge semantics.
+#
+# Pipeline:
+#   1. collect:  DSL → seq[StreamOp]
+#   2. coalesce: merge adjacent sokStatic ops
+#   3. emit:     seq[StreamOp] → NimNode AST (stream.write / writeEscapedHtml)
 # ---------------------------------------------------------------------------
 
 type
