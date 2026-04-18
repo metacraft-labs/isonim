@@ -792,9 +792,8 @@ proc streamWriteNode(streamSym: NimNode; node: NimNode;
 
     if name == "text":
       let arg = node[1]
-      # stream.write(escapeHtml(arg))
-      stmts.add(newCall(newDotExpr(streamSym, ident"write"),
-        newCall(ident"escapeHtml", arg)))
+      # writeEscapedHtml(stream, arg) — zero allocation
+      stmts.add(newCall(ident"writeEscapedHtml", streamSym, arg))
       return
 
     if name == "raw":
@@ -826,11 +825,10 @@ proc streamWriteNode(streamSym: NimNode; node: NimNode;
           stmts.add(newCall(newDotExpr(streamSym, ident"write"),
             newCall(ident"ssrHydrationKey")))
         else:
-          # Write attribute: stream.write(" name=\""); stream.write(escapeAttr(val)); stream.write("\"")
+          # writeEscapedAttr(stream, val) — zero allocation for attr values
           stmts.add(newCall(newDotExpr(streamSym, ident"write"),
             newStrLitNode(" " & attrName & "=\"")))
-          stmts.add(newCall(newDotExpr(streamSym, ident"write"),
-            newCall(ident"escapeAttr", attrVal)))
+          stmts.add(newCall(ident"writeEscapedAttr", streamSym, attrVal))
           stmts.add(newCall(newDotExpr(streamSym, ident"write"),
             newStrLitNode("\"")))
       of nnkStmtList:
@@ -1018,12 +1016,16 @@ macro uiWrite*(stream: untyped; body: untyped): untyped =
   ## Generates:
   ##   output.write("<div class=\"container\">")
   ##   output.write("<h1>")
-  ##   output.write(escapeHtml("Hello"))
+  ##   writeEscapedHtml(output, "Hello")
   ##   output.write("</h1>")
   ##   output.write("<p>")
-  ##   output.write(escapeHtml($someVar))
+  ##   writeEscapedHtml(output, $someVar)
   ##   output.write("</p>")
   ##   output.write("</div>")
+  ##
+  ## Text content and attribute values are escaped directly to the stream
+  ## via writeEscapedHtml/writeEscapedAttr — no intermediate string for
+  ## the escaped result.
   result = uiStreamImpl(stream, body)
 
 macro ui*(body: untyped): untyped =

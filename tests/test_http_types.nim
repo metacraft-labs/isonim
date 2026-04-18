@@ -320,3 +320,33 @@ suite "uiWrite (streaming SSR codegen)":
     check "<div" in result
     check "test" in result
     check "Stream!" in result
+
+  test "test_stream_codegen_escapes_without_allocation":
+    # Verify that special HTML characters are correctly escaped
+    # through the streaming path (writeEscapedHtml, no intermediate string)
+    let output = fsOutputs.memoryOutput()
+    uiWrite(output.s):
+      tdiv:
+        p: text "<script>alert('xss')</script>"
+        span: text "Tom & Jerry"
+        a(href = "/search?q=\"test\""): text "link"
+    let result = fsOutputs.getOutput(output.s, string)
+    # Text content escaped
+    check "&lt;script&gt;" in result
+    check "&amp;" in result
+    check "<script>" notin result  # raw script tag must NOT appear
+    # Attribute values escaped
+    check "&quot;" in result
+
+  test "test_writeEscapedHtml_direct":
+    # Test the writeEscapedHtml proc directly on a memory output stream
+    let output = fsOutputs.memoryOutput()
+    writeEscapedHtml(output.s, "Hello <world> & \"friends\"")
+    let result = fsOutputs.getOutput(output.s, string)
+    check result == "Hello &lt;world&gt; &amp; \"friends\""
+
+  test "test_writeEscapedAttr_direct":
+    let output = fsOutputs.memoryOutput()
+    writeEscapedAttr(output.s, "value with \"quotes\" & ampersand")
+    let result = fsOutputs.getOutput(output.s, string)
+    check result == "value with &quot;quotes&quot; &amp; ampersand"
