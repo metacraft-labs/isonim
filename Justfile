@@ -28,6 +28,7 @@ test-c:
     nim c -r tests/test_server_functions.nim
     nim c -r tests/test_data_loading.nim
     nim c -r tests/test_file_routes.nim
+    nim c -r tests/test_http_types.nim
 
 # Run tests on JS target
 test-js:
