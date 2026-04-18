@@ -2,6 +2,9 @@ import unittest
 import std/strutils
 import isonim/server/http_types
 import isonim/server/handler
+import isonim/server/render_stream
+import isonim/dsl/ui
+import isonim/ssr/escape
 import faststreams/inputs as fsInputs
 import faststreams/outputs as fsOutputs
 
@@ -199,3 +202,33 @@ suite "Router":
 
     check resp.statusCode == 404
     check "Not Found" in resp.getResponseBody()
+
+suite "renderToStream":
+  test "test_render_to_stream_matches_string":
+    # Render a component to string
+    let htmlString = ui:
+      tdiv(class = "container"):
+        h1: text "Hello"
+        p: text "World"
+
+    # Render same component to OutputStream
+    let output = fsOutputs.memoryOutput()
+    renderComponentToStream(output.s):
+      tdiv(class = "container"):
+        h1: text "Hello"
+        p: text "World"
+    let streamResult = fsOutputs.getOutput(output.s, string)
+
+    check htmlString == streamResult
+    check "Hello" in streamResult
+    check "container" in streamResult
+
+  test "test_render_to_stream_writes_directly":
+    let output = fsOutputs.memoryOutput()
+    let html = ui:
+      tdiv:
+        span: text "direct"
+    renderToStream(output.s, html)
+    let result = fsOutputs.getOutput(output.s, string)
+    check result == html
+    check "direct" in result
