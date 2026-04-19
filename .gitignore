@@ -45,3 +45,7 @@ tests/test_editor_shell_views
 tests/test_editor_task_views
 tests/test_editor_interactivity
 tests/test_editor_responsive
+examples/streaming_stress/mock_db
+examples/streaming_stress/db_client
+examples/streaming_stress/server
+examples/streaming_stress/streaming_handler
