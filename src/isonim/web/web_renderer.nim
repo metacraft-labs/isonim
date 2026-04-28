@@ -102,3 +102,35 @@ proc nextSibling*(r: WebRenderer; node: Element): Node =
 
 proc parentNode*(r: WebRenderer; node: Element): Node =
   Node(node).parentNode
+
+# ---------------------------------------------------------------------------
+# Style manipulation
+# ---------------------------------------------------------------------------
+
+proc setStyle*(r: WebRenderer; node: Element; prop: string; value: string) =
+  ## Set a CSS style property on a real DOM element.
+  dom_api.setStyleProperty(node, cstring(prop), cstring(value))
+
+proc removeChild*(r: WebRenderer; parent: Element; child: Element) =
+  ## Remove a child element from its parent in the real DOM.
+  discard dom_api.removeChild(Node(parent), Node(child))
+
+proc insertBefore*(r: WebRenderer; parent: Element; child: Element;
+                    reference: Element) =
+  ## Insert a child element before a reference element in the real DOM.
+  discard dom_api.insertBefore(Node(parent), Node(child), Node(reference))
+
+proc clearChildren*(r: WebRenderer; node: Element) =
+  ## Remove all children from a real DOM element.
+  ## Uses innerHTML = "" for efficiency.
+  node.innerHTML = cstring""
+
+proc clearEventListeners*(r: WebRenderer; node: Element) =
+  ## Placeholder for clearing event listeners on a real DOM element.
+  ## In practice, the generic view code re-creates event listeners
+  ## after clearChildren, so this is a no-op for the web renderer
+  ## (the old element's listeners are replaced by new ones).
+  ##
+  ## For a full implementation, we would need to clone+replace the
+  ## node, but the current generic view pattern does not require it.
+  discard

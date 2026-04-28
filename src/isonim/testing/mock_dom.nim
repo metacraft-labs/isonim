@@ -117,6 +117,16 @@ proc nextSibling*(r: MockRenderer; node: MockNode): MockNode =
 proc parentNode*(r: MockRenderer; node: MockNode): MockNode =
   node.parent
 
+proc clearChildren*(r: MockRenderer; node: MockNode) =
+  ## Remove all children from a mock node.
+  for c in node.children:
+    c.parent = nil
+  node.children.setLen(0)
+
+proc clearEventListeners*(r: MockRenderer; node: MockNode) =
+  ## Remove all event listeners from a mock node.
+  node.eventListeners.clear()
+
 # ---- Test helpers ----
 
 proc fireEvent*(node: MockNode; event: string) =

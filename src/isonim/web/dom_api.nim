@@ -66,5 +66,8 @@ proc setJsPropCstring*(n: Node, name: cstring, value: cstring) {.importcpp: "#[#
 proc setJsPropHandler*(n: Node, name: cstring, value: EventHandler) {.importcpp: "#[#] = #".}
 proc getJsPropBool*(n: Node, name: cstring): bool {.importcpp: "#[#]".}
 proc isNodeNil*(n: Node): bool {.importcpp: "(# == null)".}
+
+proc setStyleProperty*(e: Element, prop: cstring, value: cstring) {.importcpp: "#.style[#] = #".}
+  ## Set a CSS style property on an element via `element.style[prop] = value`.
 proc isNull*(n: JsRoot): bool {.importcpp: "(# == null)".}
 proc disabled*(n: Node): bool {.importcpp: "(#.disabled || false)".}
