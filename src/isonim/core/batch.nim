@@ -71,3 +71,12 @@ proc untrack*[T](fn: proc(): T): T =
     result = fn()
   finally:
     Listener = prevListener
+
+proc untrack*(fn: proc()) =
+  ## Suspends dependency tracking inside fn (void variant).
+  let prevListener = Listener
+  Listener = nil
+  try:
+    fn()
+  finally:
+    Listener = prevListener

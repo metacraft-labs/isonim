@@ -160,5 +160,14 @@ proc val*[T](m: Memo[T]): T =
   trackRead(m.signal)
   m.signal.value
 
+proc onMount*(fn: proc()) =
+  ## Runs fn once after the current reactive root is fully set up.
+  ## SolidJS equivalent: onMount(() => { ... })
+  ##
+  ## Implemented as createEffect(() => untrack(fn)) — creates an effect
+  ## that runs once. Because fn is called inside untrack, no signal reads
+  ## inside fn create subscriptions, so the effect never re-executes.
+  createEffect(proc() = untrack(fn))
+
 # Register updateComputation as the callback for batch.nim
 updateComputationCb = updateComputation

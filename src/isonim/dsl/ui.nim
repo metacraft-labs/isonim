@@ -386,60 +386,67 @@ proc processNode(rendererSym: NimNode; node: NimNode; stmts: NimNode): NimNode {
 
       case arg.kind
       of nnkExprEqExpr:
-        # attr = value
-        let attrName = attrNameStr(arg[0])
-        let attrVal = arg[1]
+        # Check for ref=varName — `ref` is a Nim keyword, so the parser
+        # produces ExprEqExpr(RefTy, Ident "varName") instead of
+        # ExprEqExpr(Ident "ref", ...).
+        if arg[0].kind == nnkRefTy:
+          # ref = varName — assign the created element to the variable
+          stmts.add(newAssignment(arg[1], elSym))
+        else:
+          # attr = value
+          let attrName = attrNameStr(arg[0])
+          let attrVal = arg[1]
 
-        if isEventHandler(attrName):
-          # Event handler: onclick = proc() = ...
-          let evName = eventName(attrName)
-          stmts.add(newCall(
-            newDotExpr(rendererSym, ident"addEventListener"),
-            elSym, newStrLitNode(evName), attrVal))
-        elif attrName == "class" and not isDynamic(attrVal):
-          # Static class attribute — always set as attribute (for CSS/debugging),
-          # AND expand recognized Tailwind utilities to setStyle calls on native.
-          stmts.add(newCall(
-            newDotExpr(rendererSym, ident"setAttribute"),
-            elSym, newStrLitNode("class"), attrVal))
-          when not defined(js):
-            let classStr = attrVal.strVal
-            let styles = expandTailwindClassesCompileTime(classStr)
-            for (prop, val) in styles:
+          if isEventHandler(attrName):
+            # Event handler: onclick = proc() = ...
+            let evName = eventName(attrName)
+            stmts.add(newCall(
+              newDotExpr(rendererSym, ident"addEventListener"),
+              elSym, newStrLitNode(evName), attrVal))
+          elif attrName == "class" and not isDynamic(attrVal):
+            # Static class attribute — always set as attribute (for CSS/debugging),
+            # AND expand recognized Tailwind utilities to setStyle calls on native.
+            stmts.add(newCall(
+              newDotExpr(rendererSym, ident"setAttribute"),
+              elSym, newStrLitNode("class"), attrVal))
+            when not defined(js):
+              let classStr = attrVal.strVal
+              let styles = expandTailwindClassesCompileTime(classStr)
+              for (prop, val) in styles:
+                stmts.add(newCall(
+                  newDotExpr(rendererSym, ident"setStyle"),
+                  elSym, newStrLitNode(prop), newStrLitNode(val)))
+          elif isStyleProperty(attrName):
+            # CSS style property: emit setStyle instead of setAttribute
+            let cssName = toStyleName(attrName)
+            if not isDynamic(attrVal):
               stmts.add(newCall(
                 newDotExpr(rendererSym, ident"setStyle"),
-                elSym, newStrLitNode(prop), newStrLitNode(val)))
-        elif isStyleProperty(attrName):
-          # CSS style property: emit setStyle instead of setAttribute
-          let cssName = toStyleName(attrName)
-          if not isDynamic(attrVal):
+                elSym, newStrLitNode(cssName), attrVal))
+            else:
+              let effectBody = newProc(
+                params = [newEmptyNode()],
+                body = newStmtList(
+                  newCall(newDotExpr(rendererSym, ident"setStyle"),
+                          elSym, newStrLitNode(cssName), attrVal)
+                )
+              )
+              stmts.add(newCall(ident"createRenderEffect", effectBody))
+          elif not isDynamic(attrVal):
+            # Static attribute
             stmts.add(newCall(
-              newDotExpr(rendererSym, ident"setStyle"),
-              elSym, newStrLitNode(cssName), attrVal))
+              newDotExpr(rendererSym, ident"setAttribute"),
+              elSym, newStrLitNode(attrName), attrVal))
           else:
+            # Dynamic attribute - wrap in effect
             let effectBody = newProc(
               params = [newEmptyNode()],
               body = newStmtList(
-                newCall(newDotExpr(rendererSym, ident"setStyle"),
-                        elSym, newStrLitNode(cssName), attrVal)
+                newCall(newDotExpr(rendererSym, ident"setAttribute"),
+                        elSym, newStrLitNode(attrName), attrVal)
               )
             )
             stmts.add(newCall(ident"createRenderEffect", effectBody))
-        elif not isDynamic(attrVal):
-          # Static attribute
-          stmts.add(newCall(
-            newDotExpr(rendererSym, ident"setAttribute"),
-            elSym, newStrLitNode(attrName), attrVal))
-        else:
-          # Dynamic attribute - wrap in effect
-          let effectBody = newProc(
-            params = [newEmptyNode()],
-            body = newStmtList(
-              newCall(newDotExpr(rendererSym, ident"setAttribute"),
-                      elSym, newStrLitNode(attrName), attrVal)
-            )
-          )
-          stmts.add(newCall(ident"createRenderEffect", effectBody))
 
       of nnkStmtList:
         # Child block

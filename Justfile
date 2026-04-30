@@ -30,6 +30,8 @@ test-c:
     nim c -r tests/test_file_routes.nim
     nim c -r tests/test_http_types.nim
     nim c -r tests/test_streaming_stress.nim
+    nim c -r tests/test_third_party.nim
+    nim c -r tests/poc_monaco_host.nim
 
 # Run tests on JS target
 test-js:
@@ -48,6 +50,8 @@ test-js:
     nim js -r tests/test_ssr_hydration_e2e.nim
     nim js -r tests/test_app_e2e.nim
     nim js -r tests/test_web_components_advanced.nim
+    nim js -r tests/test_third_party.nim
+    nim js -r tests/poc_monaco_host.nim
     nim js -r tests/test_accessibility.nim
     nim js -r tests/test_router.nim
     nim js -r tests/test_server_functions.nim
