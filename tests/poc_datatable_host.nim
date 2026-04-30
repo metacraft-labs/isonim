@@ -81,42 +81,26 @@ proc EventLogPanel(renderer: MockRenderer;
   ## Returns the root, the table element, and the DataTable instance for
   ## test assertions.
 
+  var tableRef: MockNode
   var dtInstance: MockDataTable
 
-  # Build the surrounding UI with the DSL.
-  # The <table> is created by IsoNim but its contents are owned by the library.
+  # Build the full UI with the DSL, including the table and its header.
+  # The <thead> is created by IsoNim since DataTables reads it from the
+  # existing markup, but <tbody> is entirely library-managed.
   let root = ui(renderer):
     tdiv(class = "event-log-panel"):
       tdiv(class = "toolbar"):
         input(class = "search-input", placeholder = "Search events...")
-      # The table below will be handed to the library.
-      # We build the header in the DSL since DataTables reads <thead> from
-      # the existing markup, but <tbody> is entirely library-managed.
-      tdiv(class = "table-container")
+      tdiv(class = "table-container"):
+        table(class = "event-table display", ref = tableRef):
+          thead:
+            tr:
+              th: text "Event"
+              th: text "Timestamp"
+              th: text "Value"
 
-  # --- Imperative "onMount" section ---
-  # Create the table element and hand it to the library.
-  # This is equivalent to the SolidJS `ref` + `onMount` pattern,
-  # done imperatively because the DSL doesn't have `ref` sugar yet.
-  let tableEl = renderer.createElement("table")
-  renderer.setAttribute(tableEl, "class", "event-table display")
-
-  # Build a <thead> that the library can read
-  let thead = renderer.createElement("thead")
-  let headerRow = renderer.createElement("tr")
-  for colName in ["Event", "Timestamp", "Value"]:
-    let th = renderer.createElement("th")
-    renderer.setTextContent(th, colName)
-    renderer.appendChild(headerRow, th)
-  renderer.appendChild(thead, headerRow)
-  renderer.appendChild(tableEl, thead)
-
-  # Mount the table into the container
-  let container = root.children[1]  # .table-container
-  renderer.appendChild(container, tableEl)
-
-  # Initialize the library on the element
-  dtInstance = initMockDataTable(tableEl, @[
+  # Initialize the library on the table element (SolidJS onMount equivalent)
+  dtInstance = initMockDataTable(tableRef, @[
     ColumnDef(title: "Event", field: "event"),
     ColumnDef(title: "Timestamp", field: "ts"),
     ColumnDef(title: "Value", field: "val"),
@@ -135,7 +119,7 @@ proc EventLogPanel(renderer: MockRenderer;
   onCleanup proc() =
     dtInstance.destroy()
 
-  result = (root: root, tableEl: tableEl, dt: dtInstance)
+  result = (root: root, tableEl: tableRef, dt: dtInstance)
 
 
 # ---------------------------------------------------------------------------

@@ -3,7 +3,7 @@
 ## Demonstrates how IsoNim components can host libraries like xterm.js that
 ## manage their own DOM subtree inside a container element. The pattern:
 ##
-## 1. IsoNim creates a container div and hands it to the library
+## 1. IsoNim creates a container div and hands it to the library via `ref`
 ## 2. The library attaches its own canvas/DOM to the container
 ## 3. IsoNim drives the library reactively via signals and effects
 ## 4. IsoNim UI (toolbar, status bar) coexists with the library-owned area
@@ -13,6 +13,7 @@ import unittest
 import std/[strutils, tables]
 import isonim/testing/mock_dom
 import isonim/core/[signals, computation, owner]
+import isonim/dsl/ui
 
 # =============================================================================
 # Mock terminal library (stands in for xterm.js)
@@ -79,34 +80,22 @@ proc createTerminalPanel*(
   ##   - A terminal container (library-owned)
   ##   - A status bar showing dimensions (IsoNim-rendered, reactive)
 
-  let root = r.createElement("div")
-  r.setAttribute(root, "class", "terminal-panel")
+  var toolbarEl, containerEl, statusBarEl: MockNode
 
-  # -- Toolbar (IsoNim-rendered) --
-  let toolbar = r.createElement("div")
-  r.setAttribute(toolbar, "class", "toolbar")
-
-  let copyBtn = r.createElement("button")
-  r.appendChild(copyBtn, r.createTextNode("Copy"))
-  r.appendChild(toolbar, copyBtn)
-
-  let pasteBtn = r.createElement("button")
-  r.appendChild(pasteBtn, r.createTextNode("Paste"))
-  r.appendChild(toolbar, pasteBtn)
-
-  r.appendChild(root, toolbar)
-
-  # -- Terminal container (handed to the library) --
-  let container = r.createElement("div")
-  r.setAttribute(container, "class", "terminal-container")
-  r.appendChild(root, container)
+  let root = ui(r):
+    tdiv(class = "terminal-panel"):
+      tdiv(class = "toolbar", ref = toolbarEl):
+        button: text "Copy"
+        button: text "Paste"
+      tdiv(class = "terminal-container", ref = containerEl):
+        discard
+      tdiv(class = "status-bar", ref = statusBarEl):
+        text $dimensions.val.cols & "x" & $dimensions.val.rows
 
   # -- Initialize the mock terminal library --
   let dims = dimensions.val
   let term = newMockTerminal(rows = dims.rows, cols = dims.cols)
-  term.open(container)
-
-  # Register input callback: terminal input flows back to IsoNim
+  term.open(containerEl)
   term.onData(onInput)
 
   # -- Reactive effect: write output signal to terminal --
@@ -120,26 +109,15 @@ proc createTerminalPanel*(
     let dims = dimensions.val
     term.resize(dims.cols, dims.rows)
 
-  # -- Status bar (IsoNim-rendered, reactive) --
-  let statusBar = r.createElement("div")
-  r.setAttribute(statusBar, "class", "status-bar")
-  let statusText = r.createTextNode("")
-  r.appendChild(statusBar, statusText)
-  r.appendChild(root, statusBar)
-
-  createRenderEffect proc() =
-    let dims = dimensions.val
-    r.setTextContent(statusText, $dims.cols & "x" & $dims.rows)
-
   # -- Cleanup: dispose terminal on unmount --
   onCleanup proc() =
     term.dispose()
 
   TerminalPanel(
     root: root,
-    toolbar: toolbar,
-    container: container,
-    statusBar: statusBar,
+    toolbar: toolbarEl,
+    container: containerEl,
+    statusBar: statusBarEl,
     terminal: term,
   )
 
