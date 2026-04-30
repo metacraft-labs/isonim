@@ -16,7 +16,8 @@ IsoNim is **cross-platform**: the same component code compiles to browser DOM (J
 - **Tailwind CSS** -- real Tailwind CLI integration; utility classes work on all platforms
 - **Server-side rendering** -- `uiString`, `renderToString`, and streaming SSR with Suspense
 - **Isomorphic components** -- `isomorphicUi` compiles the same code for server and client
-- **DSL control flow** -- `showIf`/`showElse`, `forIn` directives integrated into the macro
+- **Natural control flow** -- standard Nim `if`/`for`/`case` work inside the DSL macro
+- **Reactive control flow** -- `showIf`/`showElse`, `forIn` for signal-driven DOM updates
 - **Yoga layout engine** -- cross-platform flexbox positioning (embedded in renderer)
 - **Native controls** -- compile-time switch between branded (identical) and native (UIKit/Material) controls
 - **GUI-agnostic core** -- pluggable renderers (browser DOM, iOS, Android, Freya, terminal, mock, SSR)
@@ -87,9 +88,9 @@ let html = renderToString(proc(): string =
   uiString:
     tdiv(class = "app"):
       h1: text "Hello from SSR"
-      showIf(loggedIn):
+      if loggedIn:
         p: text "Welcome!"
-      showElse:
+      else:
         p: text "Please log in"
 )
 ```
@@ -107,16 +108,37 @@ proc myComponent(renderer: auto): auto =
 
 ### DSL control flow
 
+Standard Nim control flow works directly inside the `ui` macro -- no special directives needed:
+
+```nim
+ui(renderer):
+  ul:
+    for item in items:
+      li: text item
+  if loading:
+    p: text "Loading..."
+  else:
+    p: text "Ready"
+  case status
+  of "ok": span: text "OK"
+  of "error": span: text "Error"
+  else: span: text "Unknown"
+```
+
+For **reactive** control flow that updates the DOM when signals change, use `showIf`/`showElse` (backed by `show()` with incremental DOM swap) and `forIn` (backed by `forEachKeyed()` with keyed reconciliation):
+
 ```nim
 ui(renderer):
   ul:
     forIn(items.val):
-      li: text $item
+      li: text $item        # `item` and `index` are injected accessors
   showIf(loading.val):
     p: text "Loading..."
   showElse:
     p: text "Ready"
 ```
+
+Use natural `for`/`if`/`case` for static or one-shot rendering (SSR, initial layout). Use `showIf`/`forIn` when the condition or list is a signal and you need the DOM to update reactively.
 
 ### Tailwind CSS (cross-platform)
 
@@ -145,7 +167,7 @@ IsoNim is layered so each concern is isolated:
 2. **rxcore adapter** (`rxcore.nim`) -- 7-proc interface that renderers import instead of core internals
 3. **Renderers** -- MockRenderer (testing), browser DOM (`web/`), UIKit (`isonim-cocoa`), Android (`isonim-android`), Freya (`isonim-freya`), terminal (`renderers/`), SSR (`ssr/`)
 4. **DSL macros** (`dsl/ui.nim`) -- `ui`, `uiString`, `isomorphicUi`, with Tailwind CSS expansion
-5. **Control flow** (`dsl/components.nim`) -- `show`, `forEachKeyed`, `indexEach`, `errorBoundary`
+5. **Control flow** (`dsl/components.nim`) -- reactive primitives: `show`, `forEachKeyed`, `indexEach`, `errorBoundary`
 6. **Component layer** (`components/`) -- cross-platform controls with compile-time backend selection
 7. **Layout engine** (`layout/`) -- Yoga flexbox for cross-platform positioning
 8. **Theme system** (`theming/`) -- branded, native, and adaptive theme modes
@@ -187,12 +209,12 @@ benchmarks/         # js-framework-benchmark keyed entry
 
 ## Platform Repos
 
-| Repo | Platform | Renderer |
-|------|----------|----------|
-| `isonim` | Core framework + web | DomRenderer, MockRenderer, SSR |
-| `isonim-cocoa` | iOS + macOS | UIKitRenderer (objc_msgSend + Yoga) |
-| `isonim-android` | Android | AndroidRenderer (JNI command buffer) |
-| `isonim-freya` | Desktop (Freya) | FreyaRenderer (Rust FFI) |
+| Repo             | Platform             | Renderer                             |
+| ---------------- | -------------------- | ------------------------------------ |
+| `isonim`         | Core framework + web | DomRenderer, MockRenderer, SSR       |
+| `isonim-cocoa`   | iOS + macOS          | UIKitRenderer (objc_msgSend + Yoga)  |
+| `isonim-android` | Android              | AndroidRenderer (JNI command buffer) |
+| `isonim-freya`   | Desktop (Freya)      | FreyaRenderer (Rust FFI)             |
 
 ## Testing
 

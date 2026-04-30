@@ -595,6 +595,73 @@ proc ssrChildrenExpr(body: NimNode; stmts: NimNode): NimNode {.compileTime.} =
       if not hasElse:
         ifExpr.add(newNimNode(nnkElseExpr).add(newStrLitNode("")))
       parts.add(ifExpr)
+    of nnkForStmt:
+      # Handle plain `for` loops whose body contains DSL nodes.
+      # Transform into: block: var res = ""; for vars in iter: res.add(childHtml); res
+      let forBody = child[^1]
+      let forIter = child[^2]
+      let resSym = genName("forRes")
+      let innerStmts = newStmtList()
+      let childExpr = ssrChildrenExpr(forBody, innerStmts)
+
+      let loopBody = newStmtList()
+      for s in innerStmts:
+        loopBody.add(s)
+      loopBody.add(newCall(newDotExpr(resSym, ident"add"), childExpr))
+
+      var forLoop = newNimNode(nnkForStmt)
+      for j in 0 ..< child.len - 2:
+        forLoop.add(child[j])
+      forLoop.add(forIter)
+      forLoop.add(loopBody)
+
+      let blockBody = newStmtList(
+        newVarStmt(resSym, newStrLitNode("")),
+        forLoop,
+        resSym
+      )
+      parts.add(newBlockStmt(blockBody))
+    of nnkCaseStmt:
+      # Handle plain `case` statements whose branches contain DSL nodes.
+      # Transform into a case-expression that returns concatenated HTML.
+      var caseExpr = newNimNode(nnkCaseStmt)
+      caseExpr.add(child[0])  # case expression
+      for j in 1 ..< child.len:
+        let branch = child[j]
+        case branch.kind
+        of nnkOfBranch:
+          let branchBody = branch[^1]
+          let branchStmts = newStmtList()
+          let branchHtml = ssrChildrenExpr(branchBody, branchStmts)
+          var branchBlock: NimNode
+          if branchStmts.len > 0:
+            branchBlock = newStmtList()
+            for s in branchStmts:
+              branchBlock.add(s)
+            branchBlock.add(branchHtml)
+          else:
+            branchBlock = branchHtml
+          var newBranch = newNimNode(nnkOfBranch)
+          for k in 0 ..< branch.len - 1:
+            newBranch.add(branch[k])
+          newBranch.add(branchBlock)
+          caseExpr.add(newBranch)
+        of nnkElse:
+          let branchBody = branch[^1]
+          let branchStmts = newStmtList()
+          let branchHtml = ssrChildrenExpr(branchBody, branchStmts)
+          var branchBlock: NimNode
+          if branchStmts.len > 0:
+            branchBlock = newStmtList()
+            for s in branchStmts:
+              branchBlock.add(s)
+            branchBlock.add(branchHtml)
+          else:
+            branchBlock = branchHtml
+          caseExpr.add(newNimNode(nnkElse).add(branchBlock))
+        else:
+          caseExpr.add(branch)
+      parts.add(caseExpr)
     else:
       # Pass through arbitrary Nim statements
       stmts.add(child)

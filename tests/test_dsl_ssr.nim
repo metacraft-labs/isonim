@@ -287,3 +287,84 @@ suite "SSR + renderToString integration":
 
     check "<li>0: a</li>" in html
     check "<li>1: b</li>" in html
+
+suite "SSR natural control flow":
+  test "uiString_if_true":
+    ## Natural if/else in SSR mode renders correct branch
+    let loggedIn = true
+    let html = uiString:
+      tdiv:
+        if loggedIn:
+          p: text "Welcome"
+        else:
+          p: text "Please log in"
+
+    check "<p>Welcome</p>" in html
+    check "Please log in" notin html
+
+  test "uiString_if_false":
+    ## Natural if/else in SSR mode renders else branch
+    let loggedIn = false
+    let html = uiString:
+      tdiv:
+        if loggedIn:
+          p: text "Welcome"
+        else:
+          p: text "Please log in"
+
+    check "Welcome" notin html
+    check "<p>Please log in</p>" in html
+
+  test "uiString_if_no_else":
+    ## Natural if without else renders nothing when false
+    let show = false
+    let html = uiString:
+      tdiv:
+        if show:
+          p: text "shown"
+
+    check "<div></div>" == html
+
+  test "uiString_for_loop":
+    ## Natural for loop in SSR mode renders list items
+    let items = @["Apple", "Banana", "Cherry"]
+    let html = uiString:
+      ul:
+        for item in items:
+          li: text item
+
+    check "<ul>" in html
+    check "<li>Apple</li>" in html
+    check "<li>Banana</li>" in html
+    check "<li>Cherry</li>" in html
+
+  test "uiString_case_statement":
+    ## Natural case statement in SSR mode selects correct branch
+    type Color = enum red, green, blue
+    let c = green
+    let html = uiString:
+      tdiv:
+        case c
+        of red:
+          span: text "RED"
+        of green:
+          span: text "GREEN"
+        of blue:
+          span: text "BLUE"
+
+    check "<span>GREEN</span>" in html
+    check "RED" notin html
+    check "BLUE" notin html
+
+  test "uiString_nested_if_for":
+    ## Nested if and for in SSR mode
+    let showList = true
+    let items = @["x", "y"]
+    let html = uiString:
+      tdiv:
+        if showList:
+          for item in items:
+            span: text item
+
+    check "<span>x</span>" in html
+    check "<span>y</span>" in html
