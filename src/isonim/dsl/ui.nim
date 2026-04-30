@@ -41,14 +41,31 @@ import tailwind
 var gensymCounter {.compileTime.} = 0
 
 proc attrNameStr(node: NimNode): string {.compileTime.} =
-  ## Extract an attribute name from an ident or acc-quoted ident (e.g. `aria-label`).
+  ## Extract an attribute name from an attribute key node.
+  ##
+  ## Handles:
+  ## - `nnkIdent` — plain identifier (e.g. `class = ...`)
+  ## - `nnkAccQuoted` — backtick-escaped identifier composed of several
+  ##   tokens (e.g. `\`data-label\` = ...`)
+  ## - `nnkSym` — already-resolved symbol (rare in untyped macros, can
+  ##   appear when an attribute name happens to match an ident in scope)
+  ## - `nnkOpenSymChoice` / `nnkClosedSymChoice` — when an attribute
+  ##   name collides with an overloaded system identifier (e.g.
+  ##   `min`, `max`); we read the name from the first child symbol
   case node.kind
+  of nnkIdent, nnkSym:
+    result = node.strVal
   of nnkAccQuoted:
     result = ""
     for child in node:
+      # Inner tokens may themselves be Idents or Syms.
       result.add child.strVal
+  of nnkOpenSymChoice, nnkClosedSymChoice:
+    # All choices share the same name; pull it from the first one.
+    result = node[0].strVal
   else:
-    result = node.strVal
+    error("DSL attribute name must be an ident, accent-quoted ident, or " &
+          "(open|closed) sym choice; got " & $node.kind, node)
 
 proc genName(prefix: string): NimNode {.compileTime.} =
   inc gensymCounter
