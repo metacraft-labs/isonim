@@ -140,6 +140,45 @@ ui(renderer):
 
 Use natural `for`/`if`/`case` for static or one-shot rendering (SSR, initial layout). Use `showIf`/`forIn` when the condition or list is a signal and you need the DOM to update reactively.
 
+### Components
+
+A component is a plain Nim proc that takes a renderer and returns a node. No base class, no registration — just functions:
+
+```nim
+proc Button(r: auto; label: string; onClick: proc()): auto =
+  ui(r):
+    button(class="btn", onclick=onClick):
+      text label
+
+proc Counter(r: auto; count: Signal[int]): auto =
+  ui(r):
+    tdiv(class="counter"):
+      span: text $count.val      # reactive — DSL auto-wraps in effect
+      Button(r, "+1", proc() =
+        count.val = count.val + 1)
+```
+
+Components compose naturally — call them inside a `ui` block and the result is appended to the parent:
+
+```nim
+ui(renderer):
+  tdiv(class="app"):
+    h1: text "My App"
+    Counter(renderer, myCount)     # component call, appended as child
+    Counter(renderer, otherCount)  # another instance
+```
+
+Components that take signals get fine-grained reactivity — only the DOM nodes that read a signal update when it changes. The DSL wraps dynamic attribute expressions in `createRenderEffect` automatically.
+
+For reactive lists of components, use `forIn` (keyed reconciliation) or `indexEach` (index-keyed):
+
+```nim
+ui(renderer):
+  ul:
+    forIn(todos.val):
+      TodoItem(renderer, item, index)  # each item rendered by a component
+```
+
 ### Tailwind CSS (cross-platform)
 
 ```sh
