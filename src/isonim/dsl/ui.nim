@@ -45,24 +45,31 @@ proc attrNameStr(node: NimNode): string {.compileTime.} =
   ##
   ## Handles:
   ## - `nnkIdent` — plain identifier (e.g. `class = ...`)
+  ## - `nnkSym` — already-resolved symbol (can appear when an attribute
+  ##   name happens to match an ident in scope, or after template
+  ##   expansion in a typed context)
   ## - `nnkAccQuoted` — backtick-escaped identifier composed of several
-  ##   tokens (e.g. `\`data-label\` = ...`)
-  ## - `nnkSym` — already-resolved symbol (rare in untyped macros, can
-  ##   appear when an attribute name happens to match an ident in scope)
+  ##   tokens (e.g. `\`data-label\` = ...`); each inner token is
+  ##   recursively resolved
   ## - `nnkOpenSymChoice` / `nnkClosedSymChoice` — when an attribute
   ##   name collides with an overloaded system identifier (e.g.
-  ##   `min`, `max`); we read the name from the first child symbol
+  ##   `min`, `max`); the underlying name is read from the first
+  ##   child symbol (all choices share the same identifier name)
   case node.kind
   of nnkIdent, nnkSym:
     result = node.strVal
   of nnkAccQuoted:
+    # Inner tokens may themselves be Idents, Syms, or sym choices.
     result = ""
     for child in node:
-      # Inner tokens may themselves be Idents or Syms.
-      result.add child.strVal
+      result.add attrNameStr(child)
   of nnkOpenSymChoice, nnkClosedSymChoice:
-    # All choices share the same name; pull it from the first one.
-    result = node[0].strVal
+    result = attrNameStr(node[0])
+  of nnkStrLit:
+    # Some Nim parser paths wrap accent-quoted multi-token names in a
+    # string literal (e.g. when reaching a hyphenated identifier in a
+    # template parameter that already coalesced the tokens).
+    result = node.strVal
   else:
     error("DSL attribute name must be an ident, accent-quoted ident, or " &
           "(open|closed) sym choice; got " & $node.kind, node)
