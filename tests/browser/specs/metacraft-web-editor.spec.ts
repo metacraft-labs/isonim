@@ -288,6 +288,12 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
 
     await page.goto("/?view=vector#vector-editor");
     await expect(page.getByText("Vector Editor")).toBeVisible();
+    const vectorHost = page.locator('[data-vector-adapter="fabric"]').first();
+    await expect(vectorHost).toHaveAttribute(
+      "data-vector-library-backed",
+      "true",
+    );
+    await expect(vectorHost).toHaveAttribute("data-vector-svgo-backed", "true");
     await page
       .getByRole("button", { name: "Select Rectangle vector tool" })
       .click();

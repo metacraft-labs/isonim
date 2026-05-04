@@ -52,10 +52,16 @@ type
     ## Embedded vector editor for SVG symbols.
     activeTool*: Signal[VectorTool]
     symbols*: Signal[seq[VectorSymbol]]
+    document*: Signal[VectorDocument]
+    adapter*: Signal[VectorAdapterContract]
+    diagnostics*: Signal[seq[VectorDiagnostic]]
+    undoStack*: Signal[seq[VectorEditTransaction]]
+    redoStack*: Signal[seq[VectorEditTransaction]]
     searchFilter*: Signal[string]
     filteredSymbols*: Memo[seq[VectorSymbol]]
     selectedSymbol*: Signal[int] ## Index into symbols (-1 = none)
     isEditing*: Memo[bool]
+    isDirty*: Memo[bool]
     zoom*: Signal[float]
     showGrid*: Signal[bool]
     snapToGrid*: Signal[bool]
@@ -144,6 +150,9 @@ func defaultWorkspacePermissions*(): EditorWorkspacePermissions =
     createVariant: false,
     duplicate: false,
     delete: false)
+
+func vectorDocumentFromSymbol*(symbol: VectorSymbol): VectorDocument
+func validateVectorAccessibility*(doc: VectorDocument): seq[VectorDiagnostic]
 
 func commandLabel*(kind: EditorCommandKind): string =
   case kind
@@ -779,6 +788,11 @@ proc selectVectorSymbol*(editor: EditorVM; index: int): bool {.discardable.} =
     return false
 
   editor.vectorEditor.selectedSymbol.val = index
+  editor.vectorEditor.document.val = vectorDocumentFromSymbol(symbols[index])
+  editor.vectorEditor.diagnostics.val =
+    editor.vectorEditor.document.val.validateVectorAccessibility()
+  editor.vectorEditor.undoStack.val = @[]
+  editor.vectorEditor.redoStack.val = @[]
   true
 
 proc setAgentState*(editor: EditorVM; state: AsyncState) =
@@ -2281,9 +2295,401 @@ proc createInspectorVM*(): InspectorVM =
     displayMode: displayMode,
     flexDirection: flexDirection)
 
+func hasCapability*(adapter: VectorAdapterContract;
+    capability: VectorAdapterCapability): bool =
+  capability in adapter.capabilities
+
+func vectorLibrarySpike*(): seq[VectorLibraryCandidate] =
+  ## Current M29 selection record. Browser editing uses Fabric for mature
+  ## interaction primitives and SVGO for optimization in tooling/browser paths.
+  @[
+    VectorLibraryCandidate(
+      name: "Fabric.js",
+      version: "7.3.1",
+      license: "MIT",
+      backend: vbFabric,
+      capabilities: @[
+        vacSelection, vacHitTesting, vacTransformControls, vacDrawingTools,
+        vacTextEditing, vacGrouping, vacLayerOrdering, vacSerialization,
+        vacSvgImport, vacSvgExport
+      ],
+      runtimeNotes: "Canvas-backed browser object model with built-in selection, transforms, grouping, drawing tools, SVG import/export, and serialization.",
+      interopNotes: "Loaded as a local UMD browser bundle and isolated behind isonim/editor/browser_vector_adapter.",
+      selected: true,
+      selectionReason: "Best coverage of interaction primitives without hand-rolled pointer geometry."),
+    VectorLibraryCandidate(
+      name: "SVGO",
+      version: "4.0.1",
+      license: "MIT",
+      backend: vbFabric,
+      capabilities: @[vacOptimization, vacSerialization],
+      runtimeNotes: "Optimization library paired with Fabric export/import.",
+      interopNotes: "Copied as a browser-capable bundle for future direct browser optimization; headless VM currently uses deterministic safe normalization.",
+      selected: true,
+      selectionReason: "Mature optimizer for SVG source cleanup."),
+    VectorLibraryCandidate(
+      name: "SVG.js plus plugins",
+      version: "3.2.5",
+      license: "MIT",
+      backend: vbSvgJsPlugins,
+      capabilities: @[vacSerialization, vacSvgImport, vacSvgExport],
+      runtimeNotes: "DOM-native SVG manipulation is useful, but core package does not provide complete editor-grade selection, transform controls, drawing, grouping, and pointer geometry.",
+      interopNotes: "Rejected as sole backend for M29; can remain a future supplemental DOM layer if needed.",
+      selected: false,
+      selectionReason: "Insufficient by itself for a mature full editor interaction stack."),
+    VectorLibraryCandidate(
+      name: "Method Draw / SVG-Edit family",
+      version: "maintained forks vary",
+      license: "MIT-compatible in common forks",
+      backend: vbMethodDraw,
+      capabilities: @[vacSelection, vacHitTesting, vacTransformControls,
+        vacDrawingTools, vacPathEditing, vacTextEditing, vacGrouping,
+        vacLayerOrdering, vacSvgImport, vacSvgExport],
+      runtimeNotes: "Complete editor lineage, but harder to integrate as a small typed adapter and less aligned with the current Nim-generated shell.",
+      interopNotes: "Credible future replacement if path-node editing becomes the dominant requirement.",
+      selected: false,
+      selectionReason: "Larger embedded app surface than needed for IsoNim's framework-owned VM contract.")
+  ]
+
+func selectedVectorAdapter*(): VectorAdapterContract =
+  VectorAdapterContract(
+    backend: vbFabric,
+    libraryName: "Fabric.js",
+    libraryVersion: "7.3.1",
+    adapterModule: "isonim/editor/browser_vector_adapter",
+    browserGlobal: "fabric",
+    license: "MIT",
+    capabilities: @[
+      vacSelection, vacHitTesting, vacTransformControls, vacDrawingTools,
+      vacTextEditing, vacGrouping, vacLayerOrdering, vacSerialization,
+      vacSvgImport, vacSvgExport, vacAccessibilityMetadata, vacOptimization
+    ],
+    usesThirdPartyInteraction: true,
+    unsupportedAdvancedOperations: @[
+      "Boolean path union/subtract/intersect/exclude are not exposed until backed by a mature supplemental path library.",
+      "Direct bezier node editing remains adapter-gated and is not hand-rolled in IsoNim."
+    ])
+
+func symbolSchemaKey(symbol: VectorSymbol): string =
+  "symbols." & symbol.name.normalize & ".svg"
+
+func sourceFor(symbol: VectorSymbol): VectorSourceOrigin =
+  VectorSourceOrigin(
+    symbolKey: symbol.name,
+    schemaKey: symbol.symbolSchemaKey,
+    sourceMapKey: symbol.symbolSchemaKey)
+
+func defaultVectorA11y(symbol: VectorSymbol): VectorAccessibilityMeta =
+  VectorAccessibilityMeta(
+    title: symbol.name,
+    desc: symbol.category & " vector symbol",
+    ariaLabel: symbol.name,
+    role: varSemantic,
+    focusable: false)
+
+func vectorDocumentFromSymbol*(symbol: VectorSymbol): VectorDocument =
+  let source = sourceFor(symbol)
+  let width = if symbol.width > 0: symbol.width else: 24.0
+  let height = if symbol.height > 0: symbol.height else: 24.0
+  VectorDocument(
+    id: symbol.name.normalize,
+    name: symbol.name,
+    viewBox: "0 0 " & $width & " " & $height,
+    width: width,
+    height: height,
+    layers: @[VectorLayer(id: "base", name: "Base", visible: true,
+      locked: false, objectIds: @["path-1"])],
+    objects: @[VectorObject(
+      id: "path-1",
+      name: symbol.name & " path",
+      kind: vskPath,
+      layerId: "base",
+      x: 0,
+      y: 0,
+      width: width,
+      height: height,
+      pathData: "M4 12l5 5L20 6",
+      fill: "none",
+      stroke: "currentColor",
+      strokeWidth: 2,
+      opacity: 1,
+      source: source,
+      a11y: defaultVectorA11y(symbol))],
+    symbols: @[VectorSymbolDefinition(id: symbol.name.normalize,
+      name: symbol.name,
+      svgContent: symbol.svgContent,
+      source: source,
+      a11y: defaultVectorA11y(symbol))],
+    selectedIds: @[],
+    source: source,
+    a11y: defaultVectorA11y(symbol))
+
+func objectIndex(doc: VectorDocument; id: string): int =
+  for i, item in doc.objects:
+    if item.id == id:
+      return i
+  -1
+
+func layerIndex(doc: VectorDocument; id: string): int =
+  for i, layer in doc.layers:
+    if layer.id == id:
+      return i
+  -1
+
+func escapeSvg(value: string): string =
+  value.replace("&", "&amp;").replace("\"", "&quot;").replace("<", "&lt;").
+    replace(">", "&gt;")
+
+func renderVectorObject(obj: VectorObject): string =
+  let transform =
+    if obj.rotation != 0:
+      " transform=\"rotate(" & $obj.rotation & " " & $(obj.x + obj.width / 2) &
+        " " & $(obj.y + obj.height / 2) & ")\""
+    else:
+      ""
+  case obj.kind
+  of vskRect:
+    "<rect id=\"" & obj.id.escapeSvg & "\" x=\"" & $obj.x & "\" y=\"" & $obj.y &
+      "\" width=\"" & $obj.width & "\" height=\"" & $obj.height &
+      "\" fill=\"" & obj.fill.escapeSvg & "\" stroke=\"" & obj.stroke.escapeSvg &
+      "\" stroke-width=\"" & $obj.strokeWidth & "\" opacity=\"" & $obj.opacity &
+      "\"" & transform & " />"
+  of vskEllipse:
+    "<ellipse id=\"" & obj.id.escapeSvg & "\" cx=\"" & $(obj.x + obj.width / 2) &
+      "\" cy=\"" & $(obj.y + obj.height / 2) & "\" rx=\"" & $(obj.width / 2) &
+      "\" ry=\"" & $(obj.height / 2) & "\" fill=\"" & obj.fill.escapeSvg &
+      "\" stroke=\"" & obj.stroke.escapeSvg & "\" stroke-width=\"" &
+      $obj.strokeWidth & "\" opacity=\"" & $obj.opacity & "\"" & transform & " />"
+  of vskLine:
+    "<line id=\"" & obj.id.escapeSvg & "\" x1=\"" & $obj.x & "\" y1=\"" & $obj.y &
+      "\" x2=\"" & $(obj.x + obj.width) & "\" y2=\"" & $(obj.y + obj.height) &
+      "\" stroke=\"" & obj.stroke.escapeSvg & "\" stroke-width=\"" &
+      $obj.strokeWidth & "\"" & transform & " />"
+  of vskText:
+    "<text id=\"" & obj.id.escapeSvg & "\" x=\"" & $obj.x & "\" y=\"" & $obj.y &
+      "\" fill=\"" & obj.fill.escapeSvg & "\"" & transform & ">" &
+      obj.text.escapeSvg & "</text>"
+  of vskGroup:
+    "<g id=\"" & obj.id.escapeSvg & "\"" & transform & "></g>"
+  of vskSymbolUse:
+    "<use id=\"" & obj.id.escapeSvg & "\" href=\"#" & obj.symbolRef.escapeSvg &
+      "\" x=\"" & $obj.x & "\" y=\"" & $obj.y & "\"" & transform & " />"
+  of vskPath:
+    "<path id=\"" & obj.id.escapeSvg & "\" d=\"" & obj.pathData.escapeSvg &
+      "\" fill=\"" & obj.fill.escapeSvg & "\" stroke=\"" & obj.stroke.escapeSvg &
+      "\" stroke-width=\"" & $obj.strokeWidth & "\" opacity=\"" & $obj.opacity &
+      "\"" & transform & " />"
+
+func exportVectorDocumentSvg*(doc: VectorDocument): string =
+  var body = ""
+  if doc.a11y.title.len > 0:
+    body.add "<title>" & doc.a11y.title.escapeSvg & "</title>"
+  if doc.a11y.desc.len > 0:
+    body.add "<desc>" & doc.a11y.desc.escapeSvg & "</desc>"
+  for symbol in doc.symbols:
+    if symbol.svgContent.len > 0:
+      body.add "<symbol id=\"" & symbol.id.escapeSvg & "\">" &
+        symbol.svgContent & "</symbol>"
+  for layer in doc.layers:
+    if not layer.visible:
+      continue
+    body.add "<g id=\"" & layer.id.escapeSvg & "\" data-layer=\"" &
+      layer.name.escapeSvg & "\">"
+    for objectId in layer.objectIds:
+      let idx = doc.objectIndex(objectId)
+      if idx >= 0:
+        body.add renderVectorObject(doc.objects[idx])
+    body.add "</g>"
+  "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"" & doc.viewBox.escapeSvg &
+    "\" width=\"" & $doc.width & "\" height=\"" & $doc.height &
+    "\" role=\"" & (if doc.a11y.role == varDecorative: "presentation" else: "img") &
+    "\" aria-label=\"" & doc.a11y.ariaLabel.escapeSvg & "\">" & body & "</svg>"
+
+func optimizeVectorSvg*(svg: string): string =
+  svg.replace("\n", "").replace("  ", " ").replace("> <", "><").strip()
+
+func vectorSourcePlan(doc: VectorDocument; beforeSvg, afterSvg: string): SourceEditPlan =
+  SourceEditPlan(
+    file: doc.source.file,
+    property: "svgContent",
+    oldValue: beforeSvg,
+    newValue: afterSvg,
+    originDetail: "vector-symbol:" & doc.name,
+    scope: pesShared,
+    planKind: cspStructuredSchemaUpdate,
+    schemaKey: doc.source.schemaKey,
+    reversible: true,
+    previewBefore: beforeSvg,
+    previewAfter: afterSvg,
+    formatterHook: "svgo",
+    regeneratorHook: "vector-symbol",
+    conflictKey: doc.source.schemaKey,
+    expectedOldValue: beforeSvg)
+
+func validateVectorAccessibility*(doc: VectorDocument): seq[VectorDiagnostic] =
+  if doc.a11y.role != varDecorative:
+    if doc.a11y.title.len == 0:
+      result.add VectorDiagnostic(kind: vdkMissingTitle,
+        message: "Semantic SVG symbols need a title.",
+        schemaKey: doc.source.schemaKey)
+    if doc.a11y.desc.len == 0:
+      result.add VectorDiagnostic(kind: vdkMissingDescription,
+        message: "Semantic SVG symbols need a desc.",
+        schemaKey: doc.source.schemaKey)
+    if doc.a11y.ariaLabel.len == 0:
+      result.add VectorDiagnostic(kind: vdkMissingAria,
+        message: "Semantic SVG symbols need an ARIA label.",
+        schemaKey: doc.source.schemaKey)
+  if doc.a11y.role == varDecorative and doc.a11y.focusable:
+    result.add VectorDiagnostic(kind: vdkInvalidFocusability,
+      message: "Decorative SVG symbols must not be focusable.",
+      schemaKey: doc.source.schemaKey)
+  for obj in doc.objects:
+    if obj.fill == obj.stroke and obj.fill.len > 0 and obj.fill != "none":
+      result.add VectorDiagnostic(kind: vdkContrastViolation,
+        message: "Vector fill and stroke are identical; verify contrast.",
+        objectId: obj.id,
+        schemaKey: obj.source.schemaKey)
+
+proc commitVectorDocument(editor: EditorVM; operation: VectorOperationKind;
+    beforeDoc, afterDoc: VectorDocument): VectorOperationResult =
+  let beforeSvg = beforeDoc.exportVectorDocumentSvg.optimizeVectorSvg
+  let afterSvg = afterDoc.exportVectorDocumentSvg.optimizeVectorSvg
+  let plan = afterDoc.vectorSourcePlan(beforeSvg, afterSvg)
+  editor.vectorEditor.document.val = afterDoc
+  editor.vectorEditor.diagnostics.val = afterDoc.validateVectorAccessibility()
+  editor.vectorEditor.undoStack.update proc(prev: seq[VectorEditTransaction]): seq[
+      VectorEditTransaction] =
+    result = prev
+    result.add VectorEditTransaction(operation: operation,
+      beforeDocument: beforeDoc,
+      afterDocument: afterDoc,
+      sourceEdit: plan)
+  editor.vectorEditor.redoStack.val = @[]
+  editor.inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
+      SourceEditPlan] =
+    result = prev
+    result.add plan
+  editor.workspaceEditStage.val = wesDirty
+  VectorOperationResult(ok: true, operation: operation, document: afterDoc,
+    sourceEdit: plan, diagnostics: editor.vectorEditor.diagnostics.val)
+
+proc duplicateVectorSelection*(editor: EditorVM): VectorOperationResult {.discardable.} =
+  let beforeDoc = editor.vectorEditor.document.val
+  if beforeDoc.selectedIds.len == 0:
+    return VectorOperationResult(ok: false, operation: vokDuplicate,
+      diagnostics: @[VectorDiagnostic(kind: vdkMissingSelection,
+        message: "Select a vector object before duplicating.")])
+  var afterDoc = beforeDoc
+  for id in beforeDoc.selectedIds:
+    let idx = afterDoc.objectIndex(id)
+    if idx < 0:
+      continue
+    var clone = afterDoc.objects[idx]
+    clone.id = clone.id & "-copy"
+    clone.name = clone.name & " copy"
+    clone.x += 8
+    clone.y += 8
+    afterDoc.objects.add clone
+    let layerPos = afterDoc.layerIndex(clone.layerId)
+    if layerPos >= 0:
+      afterDoc.layers[layerPos].objectIds.add clone.id
+    afterDoc.selectedIds = @[clone.id]
+  editor.commitVectorDocument(vokDuplicate, beforeDoc, afterDoc)
+
+proc deleteVectorSelection*(editor: EditorVM): VectorOperationResult {.discardable.} =
+  let beforeDoc = editor.vectorEditor.document.val
+  if beforeDoc.selectedIds.len == 0:
+    return VectorOperationResult(ok: false, operation: vokDelete,
+      diagnostics: @[VectorDiagnostic(kind: vdkMissingSelection,
+        message: "Select a vector object before deleting.")])
+  var afterDoc = beforeDoc
+  afterDoc.objects = afterDoc.objects.filterIt(it.id notin beforeDoc.selectedIds)
+  for i in 0 ..< afterDoc.layers.len:
+    afterDoc.layers[i].objectIds = afterDoc.layers[i].objectIds.filterIt(
+      it notin beforeDoc.selectedIds)
+  afterDoc.selectedIds = @[]
+  editor.commitVectorDocument(vokDelete, beforeDoc, afterDoc)
+
+proc groupVectorSelection*(editor: EditorVM): VectorOperationResult {.discardable.} =
+  let beforeDoc = editor.vectorEditor.document.val
+  if beforeDoc.selectedIds.len < 2:
+    return VectorOperationResult(ok: false, operation: vokGroup,
+      diagnostics: @[VectorDiagnostic(kind: vdkMissingSelection,
+        message: "Select at least two vector objects before grouping.")])
+  var afterDoc = beforeDoc
+  let groupId = "group-" & $(afterDoc.objects.len + 1)
+  let layerId =
+    if afterDoc.objects.len > 0: afterDoc.objects[0].layerId else: "base"
+  afterDoc.objects.add VectorObject(id: groupId, name: "Group",
+    kind: vskGroup, layerId: layerId, children: beforeDoc.selectedIds,
+    source: beforeDoc.source, a11y: beforeDoc.a11y)
+  let layerPos = afterDoc.layerIndex(layerId)
+  if layerPos >= 0:
+    afterDoc.layers[layerPos].objectIds.add groupId
+  afterDoc.selectedIds = @[groupId]
+  editor.commitVectorDocument(vokGroup, beforeDoc, afterDoc)
+
+proc reuseVectorSymbol*(editor: EditorVM; symbolId: string): VectorOperationResult {.discardable.} =
+  let beforeDoc = editor.vectorEditor.document.val
+  var afterDoc = beforeDoc
+  let useId = "use-" & symbolId.normalize & "-" & $(afterDoc.objects.len + 1)
+  afterDoc.objects.add VectorObject(id: useId, name: "Use " & symbolId,
+    kind: vskSymbolUse, layerId: "base", x: 4, y: 4, width: 16, height: 16,
+    symbolRef: symbolId, source: beforeDoc.source, a11y: beforeDoc.a11y)
+  let layerPos = afterDoc.layerIndex("base")
+  if layerPos >= 0:
+    afterDoc.layers[layerPos].objectIds.add useId
+  afterDoc.selectedIds = @[useId]
+  editor.commitVectorDocument(vokReuseSymbol, beforeDoc, afterDoc)
+
+proc selectVectorObjects*(editor: EditorVM; ids: seq[string]): bool {.discardable.} =
+  var doc = editor.vectorEditor.document.val
+  for id in ids:
+    if doc.objectIndex(id) < 0:
+      editor.vectorEditor.diagnostics.val = @[VectorDiagnostic(
+        kind: vdkMissingObject,
+        message: "Unknown vector object '" & id & "'.")]
+      return false
+  doc.selectedIds = ids
+  editor.vectorEditor.document.val = doc
+  editor.vectorEditor.diagnostics.val = @[]
+  true
+
+proc undoVectorEdit*(editor: EditorVM): bool {.discardable.} =
+  let stack = editor.vectorEditor.undoStack.val
+  if stack.len == 0:
+    return false
+  let tx = stack[^1]
+  editor.vectorEditor.undoStack.val = stack[0 ..< stack.len - 1]
+  editor.vectorEditor.redoStack.update proc(prev: seq[VectorEditTransaction]): seq[
+      VectorEditTransaction] =
+    result = prev
+    result.add tx
+  editor.vectorEditor.document.val = tx.beforeDocument
+  true
+
+proc redoVectorEdit*(editor: EditorVM): bool {.discardable.} =
+  let stack = editor.vectorEditor.redoStack.val
+  if stack.len == 0:
+    return false
+  let tx = stack[^1]
+  editor.vectorEditor.redoStack.val = stack[0 ..< stack.len - 1]
+  editor.vectorEditor.undoStack.update proc(prev: seq[VectorEditTransaction]): seq[
+      VectorEditTransaction] =
+    result = prev
+    result.add tx
+  editor.vectorEditor.document.val = tx.afterDocument
+  true
+
 proc createVectorEditorVM*(): VectorEditorVM =
   let activeTool = createSignal(vtSelect)
   let symbols = createSignal[seq[VectorSymbol]](@[])
+  let document = createSignal(VectorDocument())
+  let adapter = createSignal(selectedVectorAdapter())
+  let diagnostics = createSignal[seq[VectorDiagnostic]](@[])
+  let undoStack = createSignal[seq[VectorEditTransaction]](@[])
+  let redoStack = createSignal[seq[VectorEditTransaction]](@[])
   let searchFilter = createSignal("")
   let selectedSymbol = createSignal(-1)
   let zoom = createSignal(1.0)
@@ -2293,6 +2699,9 @@ proc createVectorEditorVM*(): VectorEditorVM =
 
   let isEditing = createMemo[bool](proc(): bool =
     selectedSymbol.val >= 0
+  )
+  let isDirty = createMemo[bool](proc(): bool =
+    undoStack.val.len > 0
   )
 
   let filteredSymbols = createMemo[seq[VectorSymbol]](proc(): seq[VectorSymbol] =
@@ -2314,10 +2723,16 @@ proc createVectorEditorVM*(): VectorEditorVM =
   VectorEditorVM(
     activeTool: activeTool,
     symbols: symbols,
+    document: document,
+    adapter: adapter,
+    diagnostics: diagnostics,
+    undoStack: undoStack,
+    redoStack: redoStack,
     searchFilter: searchFilter,
     filteredSymbols: filteredSymbols,
     selectedSymbol: selectedSymbol,
     isEditing: isEditing,
+    isDirty: isDirty,
     zoom: zoom,
     showGrid: showGrid,
     snapToGrid: snapToGrid,

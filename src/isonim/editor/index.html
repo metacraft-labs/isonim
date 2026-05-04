@@ -1,16 +1,28 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>IsoNim Editor</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <style>
-    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body { height: 100%; overflow: hidden; }
-  </style>
-</head>
-<body>
-  <script src="editor.js"></script>
-</body>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>IsoNim Editor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      *,
+      *::before,
+      *::after {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        height: 100%;
+        overflow: hidden;
+      }
+    </style>
+  </head>
+  <body>
+    <script src="fabric.min.js"></script>
+    <script type="module" src="svgo.browser.js"></script>
+    <script src="editor.js"></script>
+  </body>
 </html>

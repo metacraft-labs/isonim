@@ -1129,6 +1129,109 @@ suite "Editor ViewModels (M27 workspace file writes)":
       check recorder.fullReloadSeen
       dispose()
 
+  test "vector_editor_library_spike_selects_mature_backend":
+    let candidates = vectorLibrarySpike()
+    let selected = candidates.filterIt(it.selected)
+    check selected.anyIt(it.name == "Fabric.js" and it.license == "MIT")
+    check selected.anyIt(it.name == "SVGO" and it.license == "MIT")
+    let adapter = selectedVectorAdapter()
+    check adapter.backend == vbFabric
+    check adapter.usesThirdPartyInteraction
+    check adapter.hasCapability(vacSelection)
+    check adapter.hasCapability(vacHitTesting)
+    check adapter.hasCapability(vacTransformControls)
+    check adapter.hasCapability(vacGrouping)
+    check adapter.hasCapability(vacSvgImport)
+    check adapter.hasCapability(vacSvgExport)
+    check adapter.unsupportedAdvancedOperations.len > 0
+
+  test "vector_editor_adapter_contract_is_library_backed":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      check vm.vectorEditor.adapter.val.libraryName == "Fabric.js"
+      check vm.vectorEditor.adapter.val.browserGlobal == "fabric"
+      check vm.vectorEditor.adapter.val.adapterModule ==
+        "isonim/editor/browser_vector_adapter"
+      check vm.vectorEditor.adapter.val.usesThirdPartyInteraction
+      check vm.vectorEditor.adapter.val.hasCapability(vacDrawingTools)
+      dispose()
+
+  test "vector_editor_model_supports_shapes_paths_layers_and_symbols":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      vm.vectorEditor.symbols.val = @[
+        VectorSymbol(name: "Logo", category: "Icons",
+          svgContent: "<path d=\"M0 0h24v24H0z\" />",
+          tags: @["brand"], width: 24, height: 24)
+      ]
+      check vm.selectVectorSymbol(0)
+      let doc = vm.vectorEditor.document.val
+      check doc.name == "Logo"
+      check doc.layers.len == 1
+      check doc.objects.len == 1
+      check doc.objects[0].kind == vskPath
+      check doc.symbols.len == 1
+      check doc.a11y.title == "Logo"
+      check exportVectorDocumentSvg(doc).contains("<svg")
+
+      var edited = doc
+      edited.objects.add VectorObject(id: "rect-1", name: "Rect",
+        kind: vskRect, layerId: "base", x: 2, y: 2, width: 10, height: 8,
+        fill: "none", stroke: "currentColor", strokeWidth: 1,
+        source: doc.source, a11y: doc.a11y)
+      edited.layers[0].objectIds.add "rect-1"
+      edited.selectedIds = @["path-1", "rect-1"]
+      vm.vectorEditor.document.val = edited
+      check vm.groupVectorSelection().ok
+      check vm.vectorEditor.document.val.objects.anyIt(it.kind == vskGroup)
+      check vm.reuseVectorSymbol("logo").ok
+      check vm.vectorEditor.document.val.objects.anyIt(it.kind == vskSymbolUse)
+      check validateVectorAccessibility(vm.vectorEditor.document.val).len == 0
+      dispose()
+
+  test "vector_editor_operations_are_undoable_and_source_backed":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("vector")
+      defer: removeDir(root)
+
+      let svgFile = root / "symbols.schema"
+      atomicWrite(svgFile, "logo=<svg><path id=\"path-1\" /></svg>")
+      let recorder = WorkspaceEditRecorder()
+      let schema = @[
+        WorkspaceEditableSchemaEntry(key: "symbols.logo.svg",
+          kind: wskSvgSymbol, file: svgFile, path: "symbols.logo.svg",
+          story: writeStory, property: "svgContent")
+      ]
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "M29 vector workspace",
+        storyGroups = @[],
+        vectorSymbols = @[
+          VectorSymbol(name: "Logo", category: "Icons",
+            svgContent: "<path id=\"path-1\" d=\"M0 0h24v24H0z\" />",
+            width: 24, height: 24)
+        ],
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true),
+        editAdapter = adapterFor(root, schema, recorder = recorder)))
+      check vm.selectVectorSymbol(0)
+      atomicWrite(svgFile,
+        vm.vectorEditor.document.val.exportVectorDocumentSvg.optimizeVectorSvg)
+      check vm.selectVectorObjects(@["path-1"])
+      let duplicated = vm.duplicateVectorSelection()
+      check duplicated.ok
+      check duplicated.sourceEdit.schemaKey == "symbols.logo.svg"
+      check duplicated.sourceEdit.formatterHook == "svgo"
+      check vm.vectorEditor.undoStack.val.len == 1
+      check vm.inspector.pendingSourceEdits.val.len == 1
+      check vm.undoVectorEdit()
+      check vm.redoVectorEdit()
+
+      let saved = vm.applyWorkspaceFileEdits()
+      check saved.ok
+      check readFile(svgFile).contains("<svg")
+      check recorder.fullReloadSeen
+      dispose()
+
   test "foundation_token_edit_updates_dependent_properties":
     createRoot proc(dispose: proc()) =
       let root = tempWorkspaceDir("foundation")

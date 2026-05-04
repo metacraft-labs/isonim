@@ -4,11 +4,13 @@
 ## Left: tool palette. Center: SVG canvas with grid. Right: properties
 ## (stroke, fill, transform). Bottom: layers panel.
 
-import std/strutils
 import isonim/core/[signals, computation]
-import isonim/dsl/[ui, components]
+import isonim/dsl/ui
 import isonim/editor/viewmodels
 import isonim/editor/types
+
+when defined(js):
+  import isonim/editor/browser_vector_adapter
 
 const
   bgBase = "#0B1120"
@@ -22,7 +24,6 @@ const
   textMuted = "#64748B"
   textDim = "#475569"
   accent = "#3B82F6"
-  gold = "#F59E0B"
 
 type
   ToolDef = object
@@ -219,103 +220,49 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
 
   r.appendChild(mainArea, toolPalette)
 
-  # Center: SVG Canvas
+  # Center: Fabric-backed SVG Canvas
+  var fabricHost: E
   let canvas = ui(r):
     tdiv(flex = "1", display = "flex", flex_direction = "column",
           overflow = "hidden"):
 
-      # Canvas area with grid
       tdiv(flex = "1", position = "relative",
             background_color = bgBase,
             background_image = "linear-gradient(" & borderFaint &
             " 1px, transparent 1px), linear-gradient(90deg, " & borderFaint &
             " 1px, transparent 1px)",
             background_size = "16px 16px",
-            overflow = "hidden"):
+            overflow = "auto", padding = "28px 28px 40px 28px"):
 
-        # Artboard
-        tdiv(position = "absolute", left = "80px", top = "60px",
-              width = "300px", height = "300px",
-              background_color = bgCard, border = "1px solid " & border,
-              border_radius = "4px"):
+        tdiv(display = "flex", flex_direction = "column", gap = "8px",
+              min_width = "760px", width = "760px"):
+          tdiv(display = "flex", align_items = "center",
+                justify_content = "space-between"):
+            span(font_size = "11px", color = textMuted):
+              text "Fabric.js adapter handles selection, hit testing, transforms, grouping, drawing, and SVG export."
+            tdiv(display = "flex", gap = "6px"):
+              for action in ["duplicate", "delete", "group", "ungroup", "export"]:
+                let actionName = action
+                var actionBtn: E
+                tdiv(ref = actionBtn,
+                      `role` = "button", tabindex = "0",
+                      `aria-label` = "Vector " & actionName,
+                      `data-vector-action` = actionName,
+                      padding = "4px 8px", border_radius = "4px",
+                      background_color = bgSurface,
+                      border = "1px solid " & border,
+                      color = textSecondary, font_size = "11px",
+                      cursor = "pointer"):
+                  text actionName
 
-          # SVG shapes with bezier curve editing visible
-
-          # Bezier path (a curved check-mark shape) — shown as segments
-          # Path segments shown as connected lines
-          tdiv(position = "absolute", left = "40px", top = "60px",
-                width = "220px", height = "180px"):
-
-            # Path stroke visualization (curved line approximated with divs)
-            # Segment 1: curve from bottom-left to center
-            tdiv(position = "absolute", left = "20px", top = "120px",
-                  width = "80px", height = "2px",
-                  background_color = accent,
-                  transform = "rotate(-35deg)", transform_origin = "left center")
-            # Segment 2: curve from center up-right
-            tdiv(position = "absolute", left = "85px", top = "85px",
-                  width = "100px", height = "2px",
-                  background_color = accent,
-                  transform = "rotate(-50deg)", transform_origin = "left center")
-
-            # Anchor points (blue squares)
-            tdiv(position = "absolute", left = "16px", top = "117px",
-                  width = "10px", height = "10px",
-                  background_color = accent, border = "2px solid white",
-                  box_shadow = "0 0 4px rgba(59,130,246,0.5)")
-            tdiv(position = "absolute", left = "82px", top = "82px",
-                  width = "10px", height = "10px",
-                  background_color = accent, border = "2px solid white",
-                  box_shadow = "0 0 4px rgba(59,130,246,0.5)")
-            tdiv(position = "absolute", left = "160px", top = "25px",
-                  width = "10px", height = "10px",
-                  background_color = accent, border = "2px solid white",
-                  box_shadow = "0 0 4px rgba(59,130,246,0.5)")
-
-            # Bezier handles — thin lines + circle endpoints
-            # Handle from anchor 1
-            tdiv(position = "absolute", left = "20px", top = "100px",
-                  width = "40px", height = "1px",
-                  background_color = accent, opacity = "0.7",
-                  transform = "rotate(-20deg)", transform_origin = "left center")
-            tdiv(position = "absolute", left = "56px", top = "92px",
-                  width = "10px", height = "10px", border_radius = "5px",
-                  background_color = "white", border = "2px solid " & accent,
-                  box_shadow = "0 0 4px rgba(59,130,246,0.4)")
-
-            # Handle from anchor 2 (both sides)
-            tdiv(position = "absolute", left = "62px", top = "93px",
-                  width = "24px", height = "1px",
-                  background_color = accent, opacity = "0.7",
-                  transform = "rotate(15deg)", transform_origin = "right center")
-            tdiv(position = "absolute", left = "58px", top = "91px",
-                  width = "10px", height = "10px", border_radius = "5px",
-                  background_color = "white", border = "2px solid " & accent,
-                  box_shadow = "0 0 4px rgba(59,130,246,0.4)")
-            tdiv(position = "absolute", left = "96px", top = "70px",
-                  width = "30px", height = "1px",
-                  background_color = accent, opacity = "0.7",
-                  transform = "rotate(-40deg)", transform_origin = "left center")
-            tdiv(position = "absolute", left = "122px", top = "52px",
-                  width = "10px", height = "10px", border_radius = "5px",
-                  background_color = "white", border = "2px solid " & accent,
-                  box_shadow = "0 0 4px rgba(59,130,246,0.4)")
-
-            # Handle from anchor 3
-            tdiv(position = "absolute", left = "140px", top = "40px",
-                  width = "24px", height = "1px",
-                  background_color = accent, opacity = "0.7",
-                  transform = "rotate(10deg)", transform_origin = "right center")
-            tdiv(position = "absolute", left = "136px", top = "37px",
-                  width = "10px", height = "10px", border_radius = "5px",
-                  background_color = "white", border = "2px solid " & accent,
-                  box_shadow = "0 0 4px rgba(59,130,246,0.4)")
-
-          # Rectangle shape (non-selected, just outline)
-          tdiv(position = "absolute", left = "40px", top = "200px",
-                width = "100px", height = "50px", border_radius = "4px",
-                border = "2px solid " & gold, background_color = "transparent",
-                opacity = "0.6")
+          tdiv(ref = fabricHost,
+                `data-vector-adapter` = "fabric",
+                `data-vector-library-backed` = "pending",
+                width = "720px", height = "420px",
+                background_color = bgCard,
+                border = "1px solid " & border,
+                border_radius = "4px",
+                overflow = "hidden")
 
         # Rulers (top + left)
         tdiv(position = "absolute", top = "0", left = "0", right = "0",
@@ -369,6 +316,17 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
               r.bindVectorLayerState(layerNode, vm, i)
 
   r.appendChild(mainArea, canvas)
+  when defined(js):
+    createRenderEffect proc() =
+      var symbolName = "Vector Symbol"
+      var svgContent = ""
+      let symbols = vm.vectorEditor.symbols.val
+      let selected = vm.vectorEditor.selectedSymbol.val
+      if selected >= 0 and selected < symbols.len:
+        symbolName = symbols[selected].name
+        svgContent = symbols[selected].svgContent
+      mountFabricVectorEditor(fabricHost, symbolName, svgContent,
+        vm.vectorEditor.activeTool.val.toolSlug)
 
   # Right: Properties panel
   let propsPanel = ui(r):

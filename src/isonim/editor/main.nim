@@ -34,13 +34,16 @@ proc demoInspectorElement(): ElementRef =
 proc demoVectorSymbols(): seq[VectorSymbol] =
   @[
     VectorSymbol(
-      name: "Compass", category: "Icons", svgContent: "<svg></svg>",
+      name: "Compass", category: "Icons",
+      svgContent: "<path d=\"M12 2l4 14-4-2-4 2 4-14z\" />",
       tags: @["travel", "navigation"], width: 24, height: 24),
     VectorSymbol(
-      name: "Heart", category: "Icons", svgContent: "<svg></svg>",
+      name: "Heart", category: "Icons",
+      svgContent: "<path d=\"M12 21s-7-4.4-9-9a5 5 0 018-6 5 5 0 018 6c-2 4.6-9 9-9 9z\" />",
       tags: @["save", "favorite"], width: 24, height: 24),
     VectorSymbol(
-      name: "Pin", category: "Icons", svgContent: "<svg></svg>",
+      name: "Pin", category: "Icons",
+      svgContent: "<path d=\"M12 22s7-6.1 7-13a7 7 0 10-14 0c0 6.9 7 13 7 13z\" />",
       tags: @["map", "place"], width: 24, height: 24)
   ]
 

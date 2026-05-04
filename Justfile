@@ -116,6 +116,8 @@ editor-build:
     mkdir -p build/editor
     nim js --path:src --path:. --path:../nim-everywhere/src -o:build/editor/editor.js src/isonim/editor/main.nim
     cp src/isonim/editor/index.html build/editor/index.html
+    cp node_modules/fabric/dist/index.min.js build/editor/fabric.min.js
+    cp node_modules/svgo/dist/svgo.browser.js build/editor/svgo.browser.js
     @echo "Built: build/editor/ — open build/editor/index.html"
 
 # Build and serve the editor

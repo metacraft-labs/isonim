@@ -120,4 +120,75 @@ test.describe("IsoNim packaged editor example", () => {
     await expect(view).toHaveAttribute("aria-pressed", "true");
     await expect(page).toHaveURL(/mode=view/);
   });
+
+  test("e2e_vector_editor_pointer_keyboard_and_rendering", async ({ page }) => {
+    await page.goto("/?view=vector#vector-editor");
+    await expect(page.getByText("Vector Editor")).toBeVisible();
+
+    const host = page.locator('[data-vector-adapter="fabric"]').first();
+    await expect(host).toHaveAttribute("data-vector-library-backed", "true");
+    await expect(host).toHaveAttribute("data-vector-backend-version", "7.3.1");
+    await expect(host).toHaveAttribute("data-vector-svgo-backed", "true");
+    await expect(
+      host.locator('canvas[data-vector-canvas="fabric"]'),
+    ).toBeVisible();
+
+    const rect = page.getByRole("button", {
+      name: "Select Rectangle vector tool",
+    });
+    await rect.click();
+    await expect(rect).toHaveAttribute("aria-pressed", "true");
+    await expect(host).toHaveAttribute("data-vector-tool", "rectangle");
+
+    const box = await host.locator("canvas").first().boundingBox();
+    expect(box).not.toBeNull();
+    await page.mouse.move(box!.x + 125, box!.y + 150);
+    await page.mouse.down();
+    await page.mouse.move(box!.x + 178, box!.y + 180);
+    await page.mouse.up();
+    await expect(host).toHaveAttribute("data-selected-vector-object", /\w/);
+
+    const countBefore = Number(
+      await host.evaluate((node) =>
+        node.getAttribute("data-vector-object-count"),
+      ),
+    );
+    await host.focus();
+    await page.keyboard.press(
+      process.platform === "darwin" ? "Meta+D" : "Control+D",
+    );
+    await expect
+      .poll(async () =>
+        Number(
+          await host.evaluate((node) =>
+            node.getAttribute("data-vector-object-count"),
+          ),
+        ),
+      )
+      .toBeGreaterThan(countBefore);
+
+    await page.getByRole("button", { name: "Vector export" }).click();
+    await expect(host).toHaveAttribute("data-vector-export-has-svg", "true");
+    await expect(host).toHaveAttribute("data-vector-export-optimized", "true");
+    await expect
+      .poll(async () =>
+        Number(
+          await host.evaluate((node) =>
+            node.getAttribute("data-vector-svg-length"),
+          ),
+        ),
+      )
+      .toBeGreaterThan(100);
+
+    await page.getByRole("button", { name: "Vector delete" }).click();
+    await expect
+      .poll(async () =>
+        Number(
+          await host.evaluate((node) =>
+            node.getAttribute("data-vector-object-count"),
+          ),
+        ),
+      )
+      .toBe(countBefore);
+  });
 });

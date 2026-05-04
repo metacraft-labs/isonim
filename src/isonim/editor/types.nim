@@ -211,6 +211,165 @@ type
   StrokeJoinStyle* = enum
     sjMiter, sjRound, sjBevel
 
+  VectorBackendKind* = enum
+    vbFabric
+    vbSvgJsPlugins
+    vbMethodDraw
+    vbCustom
+
+  VectorAdapterCapability* = enum
+    vacSelection
+    vacHitTesting
+    vacTransformControls
+    vacDrawingTools
+    vacPathEditing
+    vacTextEditing
+    vacGrouping
+    vacLayerOrdering
+    vacSerialization
+    vacSvgImport
+    vacSvgExport
+    vacAccessibilityMetadata
+    vacOptimization
+
+  VectorLibraryCandidate* = object
+    name*: string
+    version*: string
+    license*: string
+    backend*: VectorBackendKind
+    capabilities*: seq[VectorAdapterCapability]
+    runtimeNotes*: string
+    interopNotes*: string
+    selected*: bool
+    selectionReason*: string
+
+  VectorAdapterContract* = object
+    backend*: VectorBackendKind
+    libraryName*: string
+    libraryVersion*: string
+    adapterModule*: string
+    browserGlobal*: string
+    license*: string
+    capabilities*: seq[VectorAdapterCapability]
+    usesThirdPartyInteraction*: bool
+    unsupportedAdvancedOperations*: seq[string]
+
+  VectorShapeKind* = enum
+    vskRect
+    vskEllipse
+    vskLine
+    vskPath
+    vskText
+    vskGroup
+    vskSymbolUse
+
+  VectorAccessibilityRole* = enum
+    varDecorative
+    varSemantic
+    varInteractive
+
+  VectorAccessibilityMeta* = object
+    title*: string
+    desc*: string
+    ariaLabel*: string
+    role*: VectorAccessibilityRole
+    focusable*: bool
+
+  VectorSourceOrigin* = object
+    symbolKey*: string
+    file*: string
+    schemaKey*: string
+    sourceMapKey*: string
+
+  VectorObject* = object
+    id*: string
+    name*: string
+    kind*: VectorShapeKind
+    layerId*: string
+    x*, y*, width*, height*: float
+    rotation*: float
+    pathData*: string
+    text*: string
+    fill*: string
+    stroke*: string
+    strokeWidth*: float
+    opacity*: float
+    children*: seq[string]
+    symbolRef*: string
+    source*: VectorSourceOrigin
+    a11y*: VectorAccessibilityMeta
+
+  VectorLayer* = object
+    id*: string
+    name*: string
+    visible*: bool
+    locked*: bool
+    objectIds*: seq[string]
+
+  VectorSymbolDefinition* = object
+    id*: string
+    name*: string
+    svgContent*: string
+    source*: VectorSourceOrigin
+    a11y*: VectorAccessibilityMeta
+
+  VectorDocument* = object
+    id*: string
+    name*: string
+    viewBox*: string
+    width*, height*: float
+    layers*: seq[VectorLayer]
+    objects*: seq[VectorObject]
+    symbols*: seq[VectorSymbolDefinition]
+    selectedIds*: seq[string]
+    source*: VectorSourceOrigin
+    a11y*: VectorAccessibilityMeta
+
+  VectorOperationKind* = enum
+    vokImportSvg
+    vokOptimizeSvg
+    vokExportSvg
+    vokSelect
+    vokDuplicate
+    vokDelete
+    vokGroup
+    vokUngroup
+    vokReorderLayer
+    vokSetProperty
+    vokReuseSymbol
+
+  VectorDiagnosticKind* = enum
+    vdkMissingLibrary
+    vdkUnsupportedOperation
+    vdkMissingDocument
+    vdkMissingSelection
+    vdkMissingObject
+    vdkInvalidSvg
+    vdkMissingTitle
+    vdkMissingDescription
+    vdkMissingAria
+    vdkContrastViolation
+    vdkInvalidFocusability
+
+  VectorDiagnostic* = object
+    kind*: VectorDiagnosticKind
+    message*: string
+    objectId*: string
+    schemaKey*: string
+
+  VectorOperationResult* = object
+    ok*: bool
+    operation*: VectorOperationKind
+    document*: VectorDocument
+    sourceEdit*: SourceEditPlan
+    diagnostics*: seq[VectorDiagnostic]
+
+  VectorEditTransaction* = object
+    operation*: VectorOperationKind
+    beforeDocument*: VectorDocument
+    afterDocument*: VectorDocument
+    sourceEdit*: SourceEditPlan
+
   VectorSymbol* = object
     ## A reusable vector symbol in the design system.
     name*: string
