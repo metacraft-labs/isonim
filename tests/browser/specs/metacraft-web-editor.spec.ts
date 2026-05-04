@@ -221,4 +221,40 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
         .getByTestId("customer-detail"),
     ).toBeVisible();
   });
+
+  test("supports figma-style zooming and panning on flow pages", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.getByRole("button", { name: "Open Flow editor view" }).click();
+    await expect(page.getByText("User Flows")).toBeVisible();
+
+    const canvas = page.locator('[data-figma-canvas="true"]');
+    const content = page.locator('[data-figma-canvas-content="true"]');
+    const inlineTransform = async () =>
+      await content.evaluate((node) => (node as HTMLElement).style.transform);
+    await expect(canvas).toBeVisible();
+    await expect.poll(inlineTransform).toBe("translate(0px, 0px) scale(1)");
+
+    await page.getByRole("button", { name: "Zoom storyboard in" }).click();
+    await expect.poll(inlineTransform).not.toBe("translate(0px, 0px) scale(1)");
+
+    await page.getByRole("button", { name: "Fit storyboard" }).click();
+    await expect.poll(inlineTransform).toBe("translate(0px, 0px) scale(1)");
+
+    const box = await canvas.boundingBox();
+    if (!box) throw new Error("Flow canvas is not visible");
+    await page.mouse.move(box.x + 20, box.y + 20);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 100, box.y + 60);
+    await page.mouse.up();
+    await expect.poll(inlineTransform).toBe("translate(80px, 40px) scale(1)");
+
+    await page.keyboard.down("Control");
+    await page.mouse.wheel(0, -240);
+    await page.keyboard.up("Control");
+    await expect
+      .poll(inlineTransform)
+      .not.toBe("translate(80px, 40px) scale(1)");
+  });
 });

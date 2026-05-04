@@ -320,6 +320,55 @@ suite "Editor Shell Views (M2)":
 
       dispose()
 
+  test "storyboard exposes figma-style zoom and pan state":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = @[
+        StoryGroup(
+          name: "Checkout flow",
+          kind: skFlow,
+          description: "Project-owned user flow",
+          expanded: true,
+          items: @[
+            StoryItem(name: "Cart", description: "Cart screen",
+                      kind: skFlow, group: "Checkout flow")
+        ])
+      ]
+
+      let storyboard = renderStoryboardCanvas[MockRenderer, MockNode](r, vm)
+      let zoomIn = findByAttr(storyboard, "aria-label", "Zoom storyboard in")
+      let zoomOut = findByAttr(storyboard, "aria-label", "Zoom storyboard out")
+      let fit = findByAttr(storyboard, "aria-label", "Fit storyboard")
+      let canvas = findByAttr(storyboard, "data-figma-canvas", "true")
+      let content = findByAttr(storyboard, "data-figma-canvas-content", "true")
+
+      check zoomIn != nil
+      check zoomOut != nil
+      check fit != nil
+      check canvas != nil
+      check content != nil
+      check content.styles["transform"] == "translate(0.0px, 0.0px) scale(1.0)"
+
+      zoomIn.fireEvent("click")
+      check vm.storyboard.zoom.val > 1.0
+      check content.styles["transform"].contains("scale(")
+
+      zoomOut.fireEvent("click")
+      check vm.storyboard.zoom.val <= 1.0
+
+      vm.storyboard.panX.val = 120
+      vm.storyboard.panY.val = -80
+      check content.styles["transform"].contains("translate(120.0px, -80.0px)")
+
+      fit.fireEvent("click")
+      check vm.storyboard.zoom.val == 1.0
+      check vm.storyboard.panX.val == 0
+      check vm.storyboard.panY.val == 0
+      check content.styles["transform"] == "translate(0.0px, 0.0px) scale(1.0)"
+
+      dispose()
+
   test "component detail edit action opens functional edit mode":
     createRoot proc(dispose: proc()) =
       let r = MockRenderer()

@@ -106,6 +106,105 @@ proc storyClickHandler(vm: EditorVM; story: StoryRef): proc() =
   let captured = story
   result = proc() = discard vm.selectStory(captured)
 
+proc clampZoom(value: float): float =
+  min(4.0, max(0.25, value))
+
+proc zoomStoryboardAt(vm: EditorVM; nextZoom, localX, localY: float) =
+  let oldZoom = vm.storyboard.zoom.val
+  let zoom = clampZoom(nextZoom)
+  if oldZoom <= 0 or zoom == oldZoom:
+    vm.storyboard.zoom.val = zoom
+    return
+
+  let contentX = (localX - vm.storyboard.panX.val) / oldZoom
+  let contentY = (localY - vm.storyboard.panY.val) / oldZoom
+  vm.storyboard.zoom.val = zoom
+  vm.storyboard.panX.val = localX - contentX * zoom
+  vm.storyboard.panY.val = localY - contentY * zoom
+
+proc zoomStoryboardFromCenter(vm: EditorVM; nextZoom: float) =
+  zoomStoryboardAt(vm, nextZoom, 640.0, 360.0)
+
+proc panStoryboard(vm: EditorVM; dx, dy: float) =
+  vm.storyboard.panX.val = vm.storyboard.panX.val + dx
+  vm.storyboard.panY.val = vm.storyboard.panY.val + dy
+
+proc resetStoryboardView(vm: EditorVM) =
+  vm.storyboard.zoom.val = 1.0
+  vm.storyboard.panX.val = 0
+  vm.storyboard.panY.val = 0
+
+proc installFigmaCanvasNavigation[R, E](r: R; viewport, content: E;
+    vm: EditorVM) =
+  ## Browser-only wheel and drag navigation for the flow canvas. MockRenderer
+  ## receives stable attributes so headless tests can assert the contract.
+  r.setAttribute(viewport, "data-figma-canvas", "true")
+  r.setAttribute(content, "data-figma-canvas-content", "true")
+
+  when defined(js):
+    let panBy = proc(dx, dy: float) =
+      vm.panStoryboard(dx, dy)
+    let zoomBy = proc(factor, localX, localY: float) =
+      vm.zoomStoryboardAt(vm.storyboard.zoom.val * factor, localX, localY)
+    let host = viewport
+    let inner = content
+    {.emit: ["""
+      if (!""", host, """.__isonimFlowPanZoomInstalled) {
+        const host = """, host, """;
+        const inner = """, inner,
+        """;
+        host.__isonimFlowPanZoomInstalled = true;
+        host.style.cursor = 'grab';
+        host.style.overflow = 'hidden';
+        host.style.touchAction = 'none';
+        inner.style.willChange = 'transform';
+
+        host.addEventListener('wheel', (event) => {
+          const rect = host.getBoundingClientRect();
+          const localX = event.clientX - rect.left;
+          const localY = event.clientY - rect.top;
+          if (event.ctrlKey || event.metaKey) {
+            const factor = Math.exp(-event.deltaY * 0.0015);
+            """, zoomBy,
+        """(factor, localX, localY);
+          } else {
+            """, panBy,
+        """(-event.deltaX, -event.deltaY);
+          }
+          event.preventDefault();
+        }, { passive: false });
+
+        let dragging = false;
+        let lastX = 0;
+        let lastY = 0;
+        host.addEventListener('mousedown', (event) => {
+          if (event.button !== 0 && event.button !== 1) return;
+          const target = event.target instanceof Element
+            ? event.target
+            : event.target?.parentElement;
+          if (target?.closest('[data-flow-card="true"], [role="button"]')) return;
+          dragging = true;
+          lastX = event.clientX;
+          lastY = event.clientY;
+          host.style.cursor = 'grabbing';
+          event.preventDefault();
+        });
+        window.addEventListener('mousemove', (event) => {
+          if (!dragging) return;
+          """, panBy,
+        """(event.clientX - lastX, event.clientY - lastY);
+          lastX = event.clientX;
+          lastY = event.clientY;
+          event.preventDefault();
+        });
+        window.addEventListener('mouseup', () => {
+          if (!dragging) return;
+          dragging = false;
+          host.style.cursor = 'grab';
+        });
+      }
+    """].}
+
 proc toggleFlowPlayback(vm: EditorVM) =
   if vm.flowPlayer.playState.val == psPlaying:
     vm.flowPlayer.pause()
@@ -234,9 +333,9 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
                 `role` = "button", tabindex = "0",
                 `aria-label` = "Zoom storyboard out",
                 onclick = proc() =
-            vm.storyboard.zoom.val = max(0.25, vm.storyboard.zoom.val - 0.25),
+            vm.zoomStoryboardFromCenter(vm.storyboard.zoom.val / 1.2),
                 onkeydown = proc() =
-            vm.storyboard.zoom.val = max(0.25, vm.storyboard.zoom.val - 0.25),
+            vm.zoomStoryboardFromCenter(vm.storyboard.zoom.val / 1.2),
                 display = "flex", align_items = "center",
                 justify_content = "center",
                 border_radius = "4px",
@@ -255,42 +354,41 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
                 `role` = "button", tabindex = "0",
                 `aria-label` = "Zoom storyboard in",
                 onclick = proc() =
-            vm.storyboard.zoom.val = min(4.0, vm.storyboard.zoom.val + 0.25),
+            vm.zoomStoryboardFromCenter(vm.storyboard.zoom.val * 1.2),
                 onkeydown = proc() =
-            vm.storyboard.zoom.val = min(4.0, vm.storyboard.zoom.val + 0.25),
+            vm.zoomStoryboardFromCenter(vm.storyboard.zoom.val * 1.2),
                 display = "flex", align_items = "center",
                 justify_content = "center",
                 border_radius = "4px",
                 color = textSecondary, font_size = "14px", cursor = "pointer"):
             text "+"
           # Percentage label
+          var zoomLabel: E
           tdiv(padding = "0 6px", min_width = "36px", text_align = "center",
+                ref = zoomLabel,
                 font_size = "11px", color = textMuted,
                 border_left = "1px solid " & border, margin_left = "2px"):
             text "100%"
+          block:
+            createRenderEffect proc() =
+              r.setTextContent(zoomLabel, $(int(vm.storyboard.zoom.val * 100)) & "%")
         # Fit + Pan hint
         tdiv(display = "flex", align_items = "center", gap = "4px"):
           tdiv(padding = "4px 10px", border_radius = "4px",
                 `role` = "button", tabindex = "0",
                 `aria-label` = "Fit storyboard",
-                onclick = proc() =
-            vm.storyboard.zoom.val = 1.0
-            vm.storyboard.panX.val = 0
-            vm.storyboard.panY.val = 0,
-                onkeydown = proc() =
-            vm.storyboard.zoom.val = 1.0
-            vm.storyboard.panX.val = 0
-            vm.storyboard.panY.val = 0,
+                onclick = proc() = vm.resetStoryboardView(),
+                onkeydown = proc() = vm.resetStoryboardView(),
                 font_size = "11px", font_weight = "500",
                 background_color = bgSurface, color = textMuted,
                 cursor = "pointer"):
             text "Fit"
           span(font_size = "10px", color = textDim):
-            text "Scroll to pan"
+            text "Drag or wheel to pan"
 
   # Canvas area
   let canvasArea = ui(r):
-    tdiv(flex = "1", overflow = "auto", position = "relative",
+    tdiv(flex = "1", overflow = "hidden", position = "relative",
           background_color = bgBase,
           background_image = "radial-gradient(circle, " & borderFaint &
           " 1px, transparent 1px)",
@@ -299,7 +397,14 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
   # Inner scrollable content
   let inner = ui(r):
     tdiv(position = "relative", min_width = "2400px",
-          min_height = "1800px", padding = "32px 40px")
+          min_height = "1800px", padding = "32px 40px",
+          transform_origin = "0 0")
+  createRenderEffect proc() =
+    let zoom = vm.storyboard.zoom.val
+    let panX = vm.storyboard.panX.val
+    let panY = vm.storyboard.panY.val
+    r.setStyle(inner, "transform",
+      "translate(" & $panX & "px, " & $panY & "px) scale(" & $zoom & ")")
 
   # Render each flow as a labeled row of connected cards
   var rowY = 0.0
@@ -337,6 +442,7 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
 
       let cardEl = ui(r):
         tdiv(position = "absolute",
+              `data-flow-card` = "true",
               background_color = bgCard,
               border = "1px solid " & border,
               border_radius = "8px", cursor = "pointer",
@@ -423,6 +529,7 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
     r.appendChild(inner, empty)
 
   r.appendChild(canvasArea, inner)
+  r.installFigmaCanvasNavigation(canvasArea, inner, vm)
 
   # Minimap
   let minimap = ui(r):
