@@ -485,6 +485,100 @@ let leaked = (class = "rounded-xl", background_color = "#ffffff")
       check vm.review.warningCount.val >= 4
       dispose()
 
+suite "Editor ViewModels (M25 edit commands)":
+
+  func commandStory(): StoryRef =
+    StoryRef(group: "DestinationCard", name: "Default",
+      kind: skComponent, index: 0)
+
+  func commandElement(sourceFile = "examples/wanderlust/components/views.nim";
+      sourceLine = 42): ElementRef =
+    ElementRef(
+      tag: "article",
+      sourceFile: sourceFile,
+      sourceLine: sourceLine,
+      sourceColumn: 7,
+      properties: @[
+        PropertyInfo(name: "padding", value: "16px",
+          origin: poTailwindClass, originDetail: "class:p-4",
+          sourceFile: sourceFile, sourceLine: sourceLine)
+      ])
+
+  proc installCommandStory(vm: EditorVM) =
+    vm.sidebar.groups.val = @[
+      StoryGroup(name: "DestinationCard", kind: skComponent,
+        description: "Card component", expanded: true, items: @[
+          StoryItem(name: "Default", description: "Default state",
+            kind: skComponent, group: "DestinationCard")
+      ])
+    ]
+    check vm.selectStory(commandStory())
+
+  test "editor_commands_require_valid_selection_and_capability":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+
+      for kind in allEditorCommandKinds():
+        let state = vm.evaluateCommand(kind)
+        check state.label.len > 0
+        check state.status == ecsDisabled
+        check state.diagnostic.contains("Select a story")
+
+      vm.installCommandStory()
+      check vm.evaluateCommand(eckEdit).status == ecsAvailable
+      check vm.runEditorCommand(eckEdit).status == ecsSucceeded
+      check vm.editMode.val == emEdit
+      check vm.activeView.val == evComponentEdit
+      check vm.runEditorCommand(eckInspect).status == ecsSucceeded
+      check vm.editMode.val == emView
+
+      let noElementSave = vm.evaluateCommand(eckSave)
+      check noElementSave.status == ecsDisabled
+      check noElementSave.diagnostic.contains("Select an element")
+
+      check vm.selectInspectorElement(commandElement(sourceFile = "",
+        sourceLine = 0))
+      let missingSource = vm.evaluateCommand(eckOpenSource)
+      check missingSource.status == ecsDisabled
+      check missingSource.diagnostic.contains("No source metadata")
+
+      check vm.selectInspectorElement(commandElement())
+      let readOnly = vm.evaluateCommand(eckSave)
+      check readOnly.status == ecsDisabled
+      check readOnly.diagnostic.contains("read-only")
+
+      vm.workspacePermissions.val = EditorWorkspacePermissions(
+        readSource: true,
+        writeSource: true,
+        createStory: true,
+        createVariant: true,
+        duplicate: true,
+        delete: true)
+      let adapterMissing = vm.evaluateCommand(eckSave)
+      check adapterMissing.status == ecsDisabled
+      check adapterMissing.diagnostic.contains("adapter")
+
+      vm.sourceAdapterReady.val = true
+      let noPendingEdits = vm.evaluateCommand(eckSave)
+      check noPendingEdits.status == ecsDisabled
+      check noPendingEdits.diagnostic.contains("pending source edits")
+
+      let edit = vm.editCssProperty("padding", "24px", pesLocal)
+      check edit.status == pesAccepted
+      for kind in [eckApply, eckSave, eckDuplicate, eckDelete,
+          eckCreateVariant, eckCreateStory, eckOpenSource]:
+        let state = vm.evaluateCommand(kind)
+        check state.status == ecsAvailable
+        check state.sourceFile == "examples/wanderlust/components/views.nim"
+        check state.sourceLine == 42
+
+      let discardState = vm.runEditorCommand(eckDiscard)
+      check discardState.status == ecsSucceeded
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check vm.chat.accumulatedEdits.val.len == 0
+
+      dispose()
+
 suite "Editor ViewModels (M20 story flow preview runtime)":
 
   func findItem(groups: seq[StoryGroup]; groupName, itemName: string;

@@ -516,10 +516,14 @@ proc renderPreviewPane*[R, E](r: R; vm: EditorVM): E =
       text "Edit"
   r.makeButton(viewBtn, "Switch to view mode")
   r.makeButton(editBtn, "Switch to edit mode")
-  r.addEventListener(viewBtn, "click", proc() = vm.setEditMode(emView))
-  r.addEventListener(editBtn, "click", proc() = vm.setEditMode(emEdit))
-  r.addEventListener(viewBtn, "keydown", proc() = vm.setEditMode(emView))
-  r.addEventListener(editBtn, "keydown", proc() = vm.setEditMode(emEdit))
+  r.addEventListener(viewBtn, "click", proc() =
+    discard vm.runEditorCommand(eckInspect))
+  r.addEventListener(editBtn, "click", proc() =
+    discard vm.runEditorCommand(eckEdit))
+  r.addEventListener(viewBtn, "keydown", proc() =
+    discard vm.runEditorCommand(eckInspect))
+  r.addEventListener(editBtn, "keydown", proc() =
+    discard vm.runEditorCommand(eckEdit))
 
   # Reactive effect — only place we need manual setStyle
   createRenderEffect proc() =
@@ -533,6 +537,16 @@ proc renderPreviewPane*[R, E](r: R; vm: EditorVM): E =
       r.setStyle(editBtn, "color", textPrimary)
       r.setStyle(viewBtn, "background-color", "transparent")
       r.setStyle(viewBtn, "color", textMuted)
+    let inspectState = vm.evaluateCommand(eckInspect)
+    let editState = vm.evaluateCommand(eckEdit)
+    r.setAttribute(viewBtn, "aria-disabled",
+      if inspectState.status == ecsDisabled: "true" else: "false")
+    r.setAttribute(editBtn, "aria-disabled",
+      if editState.status == ecsDisabled: "true" else: "false")
+    if editState.diagnostic.len > 0:
+      r.setAttribute(editBtn, "title", editState.diagnostic)
+    else:
+      r.removeAttribute(editBtn, "title")
 
   r.appendChild(modeToggle, viewBtn)
   r.appendChild(modeToggle, editBtn)

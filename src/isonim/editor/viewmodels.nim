@@ -94,6 +94,9 @@ type
     panels*: Signal[PanelVisibility]
     platform*: Signal[Platform]
     viewport*: Signal[PreviewViewport]
+    workspacePermissions*: Signal[EditorWorkspacePermissions]
+    sourceAdapterReady*: Signal[bool]
+    commandStates*: Signal[seq[EditorCommandState]]
     sidebar*: SidebarVM
     storyboard*: StoryboardVM
     inspector*: InspectorVM
@@ -106,6 +109,44 @@ type
 
 func isEmptyStory(story: StoryRef): bool =
   story.group.len == 0 and story.name.len == 0
+
+func defaultWorkspacePermissions*(): EditorWorkspacePermissions =
+  EditorWorkspacePermissions(
+    readSource: true,
+    writeSource: false,
+    createStory: false,
+    createVariant: false,
+    duplicate: false,
+    delete: false)
+
+func commandLabel*(kind: EditorCommandKind): string =
+  case kind
+  of eckEdit: "Edit"
+  of eckInspect: "Inspect"
+  of eckApply: "Apply"
+  of eckRevert: "Revert"
+  of eckSave: "Save"
+  of eckDiscard: "Discard"
+  of eckDuplicate: "Duplicate"
+  of eckDelete: "Delete"
+  of eckCreateVariant: "Create variant"
+  of eckCreateStory: "Create story"
+  of eckOpenSource: "Open source"
+
+func allEditorCommandKinds*(): seq[EditorCommandKind] =
+  @[
+    eckEdit,
+    eckInspect,
+    eckApply,
+    eckRevert,
+    eckSave,
+    eckDiscard,
+    eckDuplicate,
+    eckDelete,
+    eckCreateVariant,
+    eckCreateStory,
+    eckOpenSource
+  ]
 
 func sameStory(a, b: StoryRef): bool =
   a.group == b.group and a.name == b.name and a.kind == b.kind
@@ -371,6 +412,142 @@ proc selectVectorSymbol*(editor: EditorVM; index: int): bool {.discardable.} =
 proc setAgentState*(editor: EditorVM; state: AsyncState) =
   editor.chat.sessionStatus.val = state
 
+func hasSource(element: ElementRef): bool =
+  element.sourceFile.len > 0 and element.sourceLine > 0
+
+func hasSource(prop: PropertyInfo): bool =
+  prop.sourceFile.len > 0 and prop.sourceLine > 0
+
+proc selectedSourceContext(editor: EditorVM): tuple[file: string, line: int] =
+  let element = editor.inspector.selectedElement.val
+  if element.hasSource:
+    return (element.sourceFile, element.sourceLine)
+  for prop in element.properties:
+    if prop.hasSource:
+      return (prop.sourceFile, prop.sourceLine)
+  let preview = editor.preview.current.val
+  if preview.metadata.sourceFile.len > 0 and preview.metadata.sourceLine > 0:
+    return (preview.metadata.sourceFile, preview.metadata.sourceLine)
+  ("", 0)
+
+func sourceChangingCommand(kind: EditorCommandKind): bool =
+  kind in {eckApply, eckSave, eckDuplicate, eckDelete, eckCreateVariant,
+    eckCreateStory}
+
+proc commandRequirementFailure(editor: EditorVM;
+    kind: EditorCommandKind): string =
+  let story = editor.selectedStory.val
+  let element = editor.inspector.selectedElement.val
+  let permissions = editor.workspacePermissions.val
+  let source = editor.selectedSourceContext()
+
+  if story.isEmptyStory:
+    return "Select a story before using " & commandLabel(kind) & "."
+
+  if kind.sourceChangingCommand:
+    if element.tag.len == 0:
+      return "Select an element before using " & commandLabel(kind) & "."
+    if source.file.len == 0:
+      return "No source metadata is available for the selected element."
+    if not permissions.writeSource:
+      return "This workspace is read-only for source changes."
+    if not editor.sourceAdapterReady.val:
+      return "No source edit adapter is ready."
+
+  case kind
+  of eckEdit:
+    ""
+  of eckInspect:
+    ""
+  of eckOpenSource:
+    if not permissions.readSource:
+      "This workspace does not allow source reads."
+    elif source.file.len == 0:
+      "No source metadata is available for the current selection."
+    else:
+      ""
+  of eckApply, eckSave:
+    if editor.inspector.pendingSourceEdits.val.len == 0:
+      "There are no pending source edits."
+    else:
+      ""
+  of eckRevert, eckDiscard:
+    if editor.inspector.pendingSourceEdits.val.len == 0 and
+        editor.chat.accumulatedEdits.val.len == 0:
+      "There are no edits to discard."
+    else:
+      ""
+  of eckDuplicate:
+    if not permissions.duplicate:
+      "This workspace does not allow duplicate operations."
+    else:
+      ""
+  of eckDelete:
+    if not permissions.delete:
+      "This workspace does not allow delete operations."
+    else:
+      ""
+  of eckCreateVariant:
+    if not permissions.createVariant:
+      "This workspace does not allow variant creation."
+    else:
+      ""
+  of eckCreateStory:
+    if not permissions.createStory:
+      "This workspace does not allow story creation."
+    else:
+      ""
+
+proc evaluateCommand*(editor: EditorVM;
+    kind: EditorCommandKind): EditorCommandState =
+  let failure = editor.commandRequirementFailure(kind)
+  let source = editor.selectedSourceContext()
+  EditorCommandState(
+    kind: kind,
+    label: commandLabel(kind),
+    status: if failure.len == 0: ecsAvailable else: ecsDisabled,
+    diagnostic: failure,
+    sourceFile: source.file,
+    sourceLine: source.line)
+
+proc commandState*(editor: EditorVM;
+    kind: EditorCommandKind): EditorCommandState =
+  for state in editor.commandStates.val:
+    if state.kind == kind:
+      return state
+  editor.evaluateCommand(kind)
+
+proc commandAvailable*(editor: EditorVM; kind: EditorCommandKind): bool =
+  editor.evaluateCommand(kind).status == ecsAvailable
+
+proc setCommandState(editor: EditorVM; state: EditorCommandState) =
+  editor.commandStates.update proc(prev: seq[EditorCommandState]): seq[
+      EditorCommandState] =
+    result = prev
+    for i in 0 ..< result.len:
+      if result[i].kind == state.kind:
+        result[i] = state
+        return
+    result.add state
+
+proc refreshCommandStates*(editor: EditorVM) =
+  var states: seq[EditorCommandState] = @[]
+  for kind in allEditorCommandKinds():
+    states.add editor.evaluateCommand(kind)
+  editor.commandStates.val = states
+
+proc failCommand(editor: EditorVM; kind: EditorCommandKind;
+    diagnostic: string): EditorCommandState =
+  let source = editor.selectedSourceContext()
+  result = EditorCommandState(
+    kind: kind,
+    label: commandLabel(kind),
+    status: ecsFailed,
+    diagnostic: diagnostic,
+    sourceFile: source.file,
+    sourceLine: source.line)
+  editor.setCommandState(result)
+
 proc setEditMode*(editor: EditorVM; mode: EditMode) =
   editor.editMode.val = mode
   if mode == emEdit and editor.activeView.val in {evComponentDetail,
@@ -381,6 +558,40 @@ proc setEditMode*(editor: EditorVM; mode: EditMode) =
 
 proc setVectorTool*(editor: EditorVM; tool: VectorTool) =
   editor.vectorEditor.activeTool.val = tool
+
+proc runEditorCommand*(editor: EditorVM;
+    kind: EditorCommandKind): EditorCommandState {.discardable.} =
+  ## Dispatch a framework-owned editor command with deterministic state.
+  let available = editor.evaluateCommand(kind)
+  if available.status == ecsDisabled:
+    return editor.failCommand(kind, available.diagnostic)
+
+  var running = available
+  running.status = ecsRunning
+  editor.setCommandState(running)
+
+  case kind
+  of eckEdit:
+    editor.setEditMode(emEdit)
+  of eckInspect:
+    editor.setEditMode(emView)
+  of eckApply:
+    discard
+  of eckRevert, eckDiscard:
+    editor.inspector.pendingSourceEdits.val = @[]
+    editor.chat.accumulatedEdits.val = @[]
+    editor.inspector.editDiagnostics.val = @[]
+  of eckSave:
+    discard
+  of eckDuplicate, eckDelete, eckCreateVariant, eckCreateStory:
+    discard
+  of eckOpenSource:
+    discard
+
+  result = editor.evaluateCommand(kind)
+  result.status = ecsSucceeded
+  result.diagnostic = ""
+  editor.setCommandState(result)
 
 # ===========================================================================
 # SidebarVM actions
@@ -1016,6 +1227,9 @@ proc createEditorVM*(): EditorVM =
   let panels = createSignal(PanelVisibility(sidebar: true, inspector: true))
   let platform = createSignal(pfWeb)
   let viewport = createSignal(pvDesktop)
+  let workspacePermissions = createSignal(defaultWorkspacePermissions())
+  let sourceAdapterReady = createSignal(false)
+  let commandStates = createSignal[seq[EditorCommandState]](@[])
 
   let sidebar = createSidebarVM()
   let storyboard = createStoryboardVM()
@@ -1037,6 +1251,9 @@ proc createEditorVM*(): EditorVM =
     panels: panels,
     platform: platform,
     viewport: viewport,
+    workspacePermissions: workspacePermissions,
+    sourceAdapterReady: sourceAdapterReady,
+    commandStates: commandStates,
     sidebar: sidebar,
     storyboard: storyboard,
     inspector: inspector,

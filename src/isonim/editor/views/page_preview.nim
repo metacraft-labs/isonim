@@ -25,7 +25,15 @@ proc makeButton[R, E](r: R; node: E; label: string) =
 proc bindModeButton[R, E](r: R; node: E; vm: EditorVM; mode: EditMode) =
   createRenderEffect proc() =
     let active = vm.editMode.val == mode
+    let command = if mode == emEdit: eckEdit else: eckInspect
+    let state = vm.evaluateCommand(command)
     r.setAttribute(node, "aria-pressed", if active: "true" else: "false")
+    r.setAttribute(node, "aria-disabled",
+      if state.status == ecsDisabled: "true" else: "false")
+    if state.diagnostic.len > 0:
+      r.setAttribute(node, "title", state.diagnostic)
+    else:
+      r.removeAttribute(node, "title")
     r.setStyle(node, "background-color", if active: accent else: "transparent")
     r.setStyle(node, "color", if active: textPrimary else: textMuted)
 
@@ -140,10 +148,14 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
       text "Edit"
   r.makeButton(viewBtn, "Switch to view mode")
   r.makeButton(editBtn, "Switch to edit mode")
-  r.addEventListener(viewBtn, "click", proc() = vm.setEditMode(emView))
-  r.addEventListener(editBtn, "click", proc() = vm.setEditMode(emEdit))
-  r.addEventListener(viewBtn, "keydown", proc() = vm.setEditMode(emView))
-  r.addEventListener(editBtn, "keydown", proc() = vm.setEditMode(emEdit))
+  r.addEventListener(viewBtn, "click", proc() =
+    discard vm.runEditorCommand(eckInspect))
+  r.addEventListener(editBtn, "click", proc() =
+    discard vm.runEditorCommand(eckEdit))
+  r.addEventListener(viewBtn, "keydown", proc() =
+    discard vm.runEditorCommand(eckInspect))
+  r.addEventListener(editBtn, "keydown", proc() =
+    discard vm.runEditorCommand(eckEdit))
   r.bindModeButton(viewBtn, vm, emView)
   r.bindModeButton(editBtn, vm, emEdit)
   r.appendChild(modeToggle, viewBtn)

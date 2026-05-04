@@ -61,6 +61,50 @@ type
     emView ## Normal view — component interactions work
     emEdit ## Click-to-select — inspector populates on click
 
+  EditorCommandKind* = enum
+    eckEdit
+    eckInspect
+    eckApply
+    eckRevert
+    eckSave
+    eckDiscard
+    eckDuplicate
+    eckDelete
+    eckCreateVariant
+    eckCreateStory
+    eckOpenSource
+
+  EditorCommandStatus* = enum
+    ecsAvailable
+    ecsDisabled
+    ecsRunning
+    ecsSucceeded
+    ecsFailed
+
+  EditorCommandPermission* = enum
+    ecpReadSource
+    ecpWriteSource
+    ecpCreateStory
+    ecpCreateVariant
+    ecpDuplicate
+    ecpDelete
+
+  EditorWorkspacePermissions* = object
+    readSource*: bool
+    writeSource*: bool
+    createStory*: bool
+    createVariant*: bool
+    duplicate*: bool
+    delete*: bool
+
+  EditorCommandState* = object
+    kind*: EditorCommandKind
+    label*: string
+    status*: EditorCommandStatus
+    diagnostic*: string
+    sourceFile*: string
+    sourceLine*: int
+
   # --- Editor default view ---
   EditorView* = enum
     evStoryboard      ## Default: canvas showing user flow diagrams

@@ -460,6 +460,8 @@ suite "Editor Shell Views (M2)":
       let r = MockRenderer()
       let vm = createEditorVM()
       vm.sidebar.groups.val = buildStoryboard()
+      check vm.selectStory(StoryRef(group: "TaskRow", name: "Active task",
+        kind: skComponent, index: 0))
       vm.activeView.val = evComponentDetail
       vm.editMode.val = emView
 
@@ -472,6 +474,51 @@ suite "Editor Shell Views (M2)":
       editButton.fireEvent("click")
       check vm.editMode.val == emEdit
       check vm.activeView.val == evComponentEdit
+
+      dispose()
+
+  test "editor_edit_buttons_dispatch_commands":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = buildStoryboard()
+
+      let disabledDetail = renderComponentDetail[MockRenderer, MockNode](r, vm)
+      let disabledEdit = findByAttr(disabledDetail, "aria-label",
+        "Open selected component in edit mode")
+      check disabledEdit != nil
+      check disabledEdit.attributes["aria-disabled"] == "true"
+      disabledEdit.fireEvent("click")
+      check vm.editMode.val == emView
+      check vm.commandState(eckEdit).status == ecsFailed
+      check vm.commandState(eckEdit).diagnostic.contains("Select a story")
+
+      check vm.selectStory(StoryRef(group: "TaskRow", name: "Active task",
+        kind: skComponent, index: 0))
+      vm.activeView.val = evComponentDetail
+      let detail = renderComponentDetail[MockRenderer, MockNode](r, vm)
+      let detailEdit = findByAttr(detail, "aria-label",
+        "Open selected component in edit mode")
+      check detailEdit != nil
+      check detailEdit.attributes["aria-disabled"] == "false"
+      detailEdit.fireEvent("click")
+      check vm.commandState(eckEdit).status == ecsSucceeded
+      check vm.editMode.val == emEdit
+      check vm.activeView.val == evComponentEdit
+
+      let pagePreview = renderPagePreview[MockRenderer, MockNode](r, vm)
+      let viewButton = findByAttr(pagePreview, "aria-label",
+        "Switch to view mode")
+      let editButton = findByAttr(pagePreview, "aria-label",
+        "Switch to edit mode")
+      check viewButton != nil
+      check editButton != nil
+      viewButton.fireEvent("click")
+      check vm.commandState(eckInspect).status == ecsSucceeded
+      check vm.editMode.val == emView
+      editButton.fireEvent("keydown")
+      check vm.commandState(eckEdit).status == ecsSucceeded
+      check vm.editMode.val == emEdit
 
       dispose()
 

@@ -118,11 +118,17 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
   r.setAttribute(editButton, "tabindex", "0")
   r.setAttribute(editButton, "aria-label", "Open selected component in edit mode")
   r.addEventListener(editButton, "click", proc() =
-    vm.setEditMode(emEdit)
-    vm.setActiveView(evComponentEdit))
+    discard vm.runEditorCommand(eckEdit))
   r.addEventListener(editButton, "keydown", proc() =
-    vm.setEditMode(emEdit)
-    vm.setActiveView(evComponentEdit))
+    discard vm.runEditorCommand(eckEdit))
+  createRenderEffect proc() =
+    let state = vm.evaluateCommand(eckEdit)
+    r.setAttribute(editButton, "aria-disabled",
+      if state.status == ecsDisabled: "true" else: "false")
+    if state.diagnostic.len > 0:
+      r.setAttribute(editButton, "title", state.diagnostic)
+    else:
+      r.removeAttribute(editButton, "title")
 
   # Scrollable content
   let content = ui(r):
@@ -189,9 +195,11 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
     let story = vm.selectedStory.val
     let preview = vm.preview.current.val
     let title =
-      if preview.title.len > 0:
+      if story.kind in {skComponent, skPattern, skFoundation, skGuideline} and
+          preview.title.len > 0:
         preview.title
-      elif story.group.len > 0 and story.name.len > 0:
+      elif story.kind in {skComponent, skPattern, skFoundation, skGuideline} and
+          story.group.len > 0 and story.name.len > 0:
         story.group & " / " & story.name
       else:
         "Component preview"
@@ -199,9 +207,10 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
       story.kind in {skComponent, skPattern}
 
     r.setTextContent(headerTitle, title)
-    r.setTextContent(projectName, story.name)
+    r.setTextContent(projectName,
+      if story.kind in {skComponent, skPattern}: story.name else: "")
     r.setTextContent(projectDescription,
-      if preview.bodyText.len > 0:
+      if story.kind in {skComponent, skPattern} and preview.bodyText.len > 0:
         preview.bodyText
       else:
         "Project-owned component state")

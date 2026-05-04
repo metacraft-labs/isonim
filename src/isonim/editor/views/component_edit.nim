@@ -164,7 +164,8 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
       tdiv(height = "120px", border_radius = "10px",
             background_color = "#DBEAFE")
       span(font_size = "18px", font_weight = "700"):
-        text vm.selectedStory.val.name
+        text (if vm.selectedStory.val.kind == skComponent:
+            vm.selectedStory.val.name else: "Component preview")
       span(font_size = "13px", color = "#64748B", line_height = "1.4"):
         text "Project component preview"
       tdiv(display = "flex", gap = "8px"):
@@ -181,16 +182,30 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
   r.setAttribute(viewModeButton, "role", "button")
   r.setAttribute(viewModeButton, "tabindex", "0")
   r.setAttribute(viewModeButton, "aria-label", "Switch to view mode")
-  r.addEventListener(editModeButton, "click", proc() = vm.setEditMode(emEdit))
-  r.addEventListener(editModeButton, "keydown", proc() = vm.setEditMode(emEdit))
-  r.addEventListener(viewModeButton, "click", proc() = vm.setEditMode(emView))
-  r.addEventListener(viewModeButton, "keydown", proc() = vm.setEditMode(emView))
+  r.addEventListener(editModeButton, "click", proc() =
+    discard vm.runEditorCommand(eckEdit))
+  r.addEventListener(editModeButton, "keydown", proc() =
+    discard vm.runEditorCommand(eckEdit))
+  r.addEventListener(viewModeButton, "click", proc() =
+    discard vm.runEditorCommand(eckInspect))
+  r.addEventListener(viewModeButton, "keydown", proc() =
+    discard vm.runEditorCommand(eckInspect))
   createRenderEffect proc() =
     let editing = vm.editMode.val == emEdit
+    let editState = vm.evaluateCommand(eckEdit)
+    let inspectState = vm.evaluateCommand(eckInspect)
     r.setAttribute(editModeButton, "aria-pressed",
       if editing: "true" else: "false")
     r.setAttribute(viewModeButton, "aria-pressed",
       if editing: "false" else: "true")
+    r.setAttribute(editModeButton, "aria-disabled",
+      if editState.status == ecsDisabled: "true" else: "false")
+    r.setAttribute(viewModeButton, "aria-disabled",
+      if inspectState.status == ecsDisabled: "true" else: "false")
+    if editState.diagnostic.len > 0:
+      r.setAttribute(editModeButton, "title", editState.diagnostic)
+    else:
+      r.removeAttribute(editModeButton, "title")
     r.setStyle(editModeButton, "background-color",
       if editing: accent else: bgSurface)
     r.setStyle(editModeButton, "color",

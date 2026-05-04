@@ -93,4 +93,31 @@ test.describe("IsoNim packaged editor example", () => {
     await expect(page.getByText("1 inspector edit(s)")).toBeVisible();
     await expect(page.getByText("Connected / ready")).toBeVisible();
   });
+
+  test("e2e_editor_edit_buttons_keyboard_and_pointer", async ({ page }) => {
+    await page
+      .getByRole("button", { name: "Select story Pages / Destination Detail" })
+      .click();
+
+    const edit = page.getByRole("button", { name: "Switch to edit mode" });
+    const view = page.getByRole("button", { name: "Switch to view mode" });
+
+    await expect(edit).toHaveAttribute("aria-disabled", "false");
+    await edit.click();
+    await expect(edit).toHaveAttribute("aria-pressed", "true");
+    await expect(page).toHaveURL(/mode=edit/);
+
+    await view.focus();
+    await page.keyboard.press("Enter");
+    await expect(view).toHaveAttribute("aria-pressed", "true");
+    await expect(page).toHaveURL(/mode=view/);
+
+    await page.goBack();
+    await expect(edit).toHaveAttribute("aria-pressed", "true");
+    await expect(page).toHaveURL(/mode=edit/);
+
+    await page.goBack();
+    await expect(view).toHaveAttribute("aria-pressed", "true");
+    await expect(page).toHaveURL(/mode=view/);
+  });
 });

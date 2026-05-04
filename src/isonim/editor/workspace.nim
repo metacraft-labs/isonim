@@ -36,11 +36,22 @@ type
     previewHook*: ProjectPreviewHook
     agentPromptAdapter*: AgentPromptAdapter
     agentCancelAdapter*: AgentCancelAdapter
+    permissions*: EditorWorkspacePermissions
+    sourceAdapterReady*: bool
     platform*: Platform
     panels*: PanelVisibility
 
 proc defaultPanelVisibility*(): PanelVisibility =
   PanelVisibility(sidebar: true, inspector: true)
+
+proc defaultEditorPermissions*(): EditorWorkspacePermissions =
+  EditorWorkspacePermissions(
+    readSource: true,
+    writeSource: false,
+    createStory: false,
+    createVariant: false,
+    duplicate: false,
+    delete: false)
 
 proc emptyEditorWorkspace*(): EditorWorkspace =
   ## Build an empty workspace with production defaults.
@@ -58,6 +69,8 @@ proc emptyEditorWorkspace*(): EditorWorkspace =
     previewHook: defaultPreviewHook,
     agentPromptAdapter: nil,
     agentCancelAdapter: nil,
+    permissions: defaultEditorPermissions(),
+    sourceAdapterReady: false,
     platform: pfWeb,
     panels: defaultPanelVisibility()
   )
@@ -81,6 +94,8 @@ proc newEditorWorkspace*(title: string;
                           previewHook: ProjectPreviewHook = defaultPreviewHook;
                           agentPromptAdapter: AgentPromptAdapter = nil;
                           agentCancelAdapter: AgentCancelAdapter = nil;
+                          permissions = defaultEditorPermissions();
+                          sourceAdapterReady = false;
                           platform = pfWeb;
                           panels = defaultPanelVisibility()): EditorWorkspace =
   ## Convenience constructor for project-owned workspace definitions.
@@ -104,6 +119,8 @@ proc newEditorWorkspace*(title: string;
     previewHook: previewHook,
     agentPromptAdapter: agentPromptAdapter,
     agentCancelAdapter: agentCancelAdapter,
+    permissions: permissions,
+    sourceAdapterReady: sourceAdapterReady,
     platform: platform,
     panels: panels
   )
@@ -133,6 +150,8 @@ proc applyWorkspace*(vm: EditorVM; workspace: EditorWorkspace) =
   vm.chat.stopReason.val = ""
   vm.chat.configureAgentAdapters(workspace.agentPromptAdapter,
                                   workspace.agentCancelAdapter)
+  vm.workspacePermissions.val = workspace.permissions
+  vm.sourceAdapterReady.val = workspace.sourceAdapterReady
   vm.flowPlayer.currentStep.val = 0
   vm.activeView.val = workspace.initialView
   vm.inspector.activeSection.val = workspace.initialInspectorSection
