@@ -70,6 +70,9 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       .click();
     await expect(frame).toHaveCSS("width", "1280px");
 
+    await expect(page).toHaveURL(/view=page/);
+    await expect(page).toHaveURL(/viewport=desktop/);
+
     await page.getByRole("button", { name: "Toggle left sidebar" }).click();
     await expect(page.locator(".editor-sidebar")).toBeHidden();
     await page.getByRole("button", { name: "Toggle right sidebar" }).click();
@@ -142,5 +145,80 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(
       page.getByRole("button", { name: "Select Rectangle vector tool" }),
     ).toHaveAttribute("aria-pressed", "true");
+  });
+
+  test("keeps editor state in browser history", async ({ page }) => {
+    await page.goto("/");
+
+    await expect(page).toHaveURL(/view=page/);
+    await expect(
+      page
+        .frameLocator('iframe[title="Project preview"]')
+        .getByTestId("back-office-app"),
+    ).toBeVisible();
+
+    await page.getByRole("button", { name: "Open Flow editor view" }).click();
+    await expect(page).toHaveURL(/view=flow/);
+    await expect(page.getByText("User Flows")).toBeVisible();
+
+    await page.getByRole("button", { name: "Open Page editor view" }).click();
+    await expect(page).toHaveURL(/view=page/);
+    await expect(
+      page
+        .frameLocator('iframe[title="Project preview"]')
+        .getByTestId("back-office-app"),
+    ).toBeVisible();
+
+    await page.getByRole("button", { name: "Preview Mobile viewport" }).click();
+    await expect(page).toHaveURL(/viewport=mobile/);
+    await expect(page.getByLabel("Preview device frame")).toHaveCSS(
+      "width",
+      "390px",
+    );
+
+    await page
+      .getByRole("button", {
+        name: "Select story Back-office pages / Customer detail",
+      })
+      .click();
+    await expect(page).toHaveURL(/story=Customer%20detail/);
+    await expect(
+      page
+        .frameLocator('iframe[title="Project preview"]')
+        .getByTestId("customer-detail"),
+    ).toBeVisible();
+
+    await page.goBack();
+    await expect(page).toHaveURL(/viewport=mobile/);
+    await expect(page).not.toHaveURL(/story=Customer%20detail/);
+    await expect(
+      page
+        .frameLocator('iframe[title="Project preview"]')
+        .getByTestId("back-office-app"),
+    ).toBeVisible();
+
+    await page.goBack();
+    await expect(page).toHaveURL(/view=page/);
+    await expect(page).toHaveURL(/viewport=desktop/);
+    await expect(page.getByLabel("Preview device frame")).toHaveCSS(
+      "width",
+      "1280px",
+    );
+
+    await page.goBack();
+    await expect(page).toHaveURL(/view=flow/);
+    await expect(page.getByText("User Flows")).toBeVisible();
+
+    await page.goForward();
+    await expect(page).toHaveURL(/view=page/);
+    await page.goForward();
+    await expect(page).toHaveURL(/viewport=mobile/);
+    await page.goForward();
+    await expect(page).toHaveURL(/story=Customer%20detail/);
+    await expect(
+      page
+        .frameLocator('iframe[title="Project preview"]')
+        .getByTestId("customer-detail"),
+    ).toBeVisible();
   });
 });

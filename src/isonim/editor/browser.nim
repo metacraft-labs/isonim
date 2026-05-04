@@ -15,6 +15,12 @@ import isonim/editor/viewmodels
 import isonim/editor/workspace
 import isonim/editor/views/shell
 
+var
+  routeSyncScheduled = false
+  routeHistoryInitialized = false
+  applyingRoute = false
+  lastSyncedRoute = ""
+
 proc injectEditorStyles*() =
   ## Inject base responsive styles required by the editor shell.
   let style = document.createElement("style")
@@ -81,6 +87,266 @@ proc hashInspectorSection*(): InspectorSection =
   else:
     isSpacing
 
+proc routeParam(name: string): string =
+  var value: cstring
+  let key = name.cstring
+  {.emit: [value, " = (new URLSearchParams(window.location.search)).get(", key,
+      ") || ''"].}
+  $value
+
+proc currentRouteUrl(): string =
+  var value: cstring
+  {.emit: [value, " = window.location.pathname + window.location.search"].}
+  $value
+
+proc currentPathname(): string =
+  var value: cstring
+  {.emit: [value, " = window.location.pathname"].}
+  $value
+
+proc encodeParam(value: string): string =
+  var encoded: cstring
+  let raw = value.cstring
+  {.emit: [encoded, " = encodeURIComponent(", raw, ")"].}
+  $encoded
+
+proc writeRouteUrl(url: string; replace: bool) =
+  let next = url.cstring
+  if replace:
+    {.emit: ["window.history.replaceState({ isonimEditor: true }, '', ", next,
+        ")"].}
+  else:
+    {.emit: ["window.history.pushState({ isonimEditor: true }, '', ", next, ")"].}
+
+proc deferRouteWrite(cb: proc()) =
+  {.emit: ["setTimeout(", cb, ", 0)"].}
+
+proc addPopstateListener(handler: proc()) =
+  {.emit: ["window.addEventListener('popstate', ", handler, ")"].}
+
+proc removePopstateListener(handler: proc()) =
+  {.emit: ["window.removeEventListener('popstate', ", handler, ")"].}
+
+func viewSlug(view: EditorView): string =
+  case view
+  of evStoryboard: "flow"
+  of evComponentDetail: "detail"
+  of evComponentEdit: "edit"
+  of evPagePreview: "page"
+  of evVectorEditor: "vector"
+
+func viewFromSlug(slug: string; fallback: EditorView): EditorView =
+  case slug.normalize
+  of "flow", "storyboard": evStoryboard
+  of "detail", "component-detail": evComponentDetail
+  of "edit", "component-edit": evComponentEdit
+  of "page", "page-preview": evPagePreview
+  of "vector", "vector-editor": evVectorEditor
+  else: fallback
+
+func storyKindSlug(kind: StoryKind): string =
+  case kind
+  of skFoundation: "foundation"
+  of skComponent: "component"
+  of skPattern: "pattern"
+  of skPage: "page"
+  of skFlow: "flow"
+  of skGuideline: "guideline"
+
+func storyKindFromSlug(slug: string; fallback: StoryKind): StoryKind =
+  case slug.normalize
+  of "foundation": skFoundation
+  of "component": skComponent
+  of "pattern": skPattern
+  of "page": skPage
+  of "flow": skFlow
+  of "guideline": skGuideline
+  else: fallback
+
+func viewportSlug(viewport: PreviewViewport): string =
+  case viewport
+  of pvDesktop: "desktop"
+  of pvTablet: "tablet"
+  of pvMobile: "mobile"
+
+func viewportFromSlug(slug: string; fallback: PreviewViewport): PreviewViewport =
+  case slug.normalize
+  of "desktop": pvDesktop
+  of "tablet": pvTablet
+  of "mobile": pvMobile
+  else: fallback
+
+func editModeSlug(mode: EditMode): string =
+  case mode
+  of emView: "view"
+  of emEdit: "edit"
+
+func editModeFromSlug(slug: string; fallback: EditMode): EditMode =
+  case slug.normalize
+  of "view": emView
+  of "edit": emEdit
+  else: fallback
+
+func inspectorSectionSlug(section: InspectorSection): string =
+  case section
+  of isLayout: "layout"
+  of isSize: "size"
+  of isSpacing: "spacing"
+  of isPosition: "position"
+  of isFill: "fill"
+  of isStroke: "stroke"
+  of isTypography: "typography"
+  of isEffects: "effects"
+  of isTransitions: "transitions"
+  of isFilters: "filters"
+  of isState: "state"
+
+func inspectorSectionFromSlug(slug: string;
+    fallback: InspectorSection): InspectorSection =
+  case slug.normalize
+  of "layout": isLayout
+  of "size": isSize
+  of "spacing", "space": isSpacing
+  of "position", "pos": isPosition
+  of "fill": isFill
+  of "stroke": isStroke
+  of "typography", "type": isTypography
+  of "effects", "fx": isEffects
+  of "transitions", "transition": isTransitions
+  of "filters", "filter": isFilters
+  of "state": isState
+  else: fallback
+
+func boolSlug(value: bool): string =
+  if value: "1" else: "0"
+
+func boolFromSlug(slug: string; fallback: bool): bool =
+  case slug.normalize
+  of "1", "true", "yes", "on": true
+  of "0", "false", "no", "off": false
+  else: fallback
+
+func parseRouteIndex(value: string; fallback: int): int =
+  if value.len == 0:
+    return fallback
+  try:
+    parseInt(value)
+  except ValueError:
+    fallback
+
+proc editorRouteUrl(vm: EditorVM): string =
+  var parts = @[
+    "view=" & encodeParam(viewSlug(vm.activeView.val)),
+    "viewport=" & encodeParam(viewportSlug(vm.viewport.val)),
+    "mode=" & encodeParam(editModeSlug(vm.editMode.val)),
+    "sidebar=" & boolSlug(vm.panels.val.sidebar),
+    "inspector=" & boolSlug(vm.panels.val.inspector),
+    "section=" & encodeParam(inspectorSectionSlug(
+        vm.inspector.activeSection.val))
+  ]
+
+  let story = vm.selectedStory.val
+  if story.group.len > 0 and story.name.len > 0:
+    parts.add "storyGroup=" & encodeParam(story.group)
+    parts.add "story=" & encodeParam(story.name)
+    parts.add "kind=" & encodeParam(storyKindSlug(story.kind))
+    parts.add "index=" & $story.index
+
+  currentPathname() & "?" & parts.join("&")
+
+proc syncEditorRouteNow(vm: EditorVM; replace: bool) =
+  let next = editorRouteUrl(vm)
+  let current = currentRouteUrl()
+  if next == current or next == lastSyncedRoute:
+    lastSyncedRoute = current
+    return
+
+  writeRouteUrl(next, replace)
+  lastSyncedRoute = next
+
+proc scheduleEditorRouteSync(vm: EditorVM) =
+  if applyingRoute or routeSyncScheduled:
+    return
+
+  routeSyncScheduled = true
+  deferRouteWrite proc() =
+    routeSyncScheduled = false
+    if not applyingRoute:
+      syncEditorRouteNow(vm, replace = not routeHistoryInitialized)
+      routeHistoryInitialized = true
+
+proc applyEditorRoute(vm: EditorVM) =
+  let viewParam = routeParam("view")
+  if viewParam.len > 0:
+    vm.activeView.val = viewFromSlug(viewParam, vm.activeView.val)
+  elif hasEditorRouteOverride():
+    vm.activeView.val = hashEditorView()
+
+  let sectionParam = routeParam("section")
+  if sectionParam.len > 0:
+    vm.inspector.activeSection.val = inspectorSectionFromSlug(sectionParam,
+      vm.inspector.activeSection.val)
+  elif hasEditorRouteOverride():
+    vm.inspector.activeSection.val = hashInspectorSection()
+
+  let viewportParam = routeParam("viewport")
+  if viewportParam.len > 0:
+    vm.changeViewport(viewportFromSlug(viewportParam, vm.viewport.val))
+
+  let modeParam = routeParam("mode")
+  if modeParam.len > 0:
+    vm.setEditMode(editModeFromSlug(modeParam, vm.editMode.val))
+
+  let panels = vm.panels.val
+  let sidebarParam = routeParam("sidebar")
+  let inspectorParam = routeParam("inspector")
+  if sidebarParam.len > 0 or inspectorParam.len > 0:
+    vm.panels.val = PanelVisibility(
+      sidebar: boolFromSlug(sidebarParam, panels.sidebar),
+      inspector: boolFromSlug(inspectorParam, panels.inspector))
+
+  let storyGroup = routeParam("storyGroup")
+  let storyName = routeParam("story")
+  if storyGroup.len > 0 and storyName.len > 0:
+    let story = StoryRef(
+      group: storyGroup,
+      name: storyName,
+      kind: storyKindFromSlug(routeParam("kind"), vm.selectedStory.val.kind),
+      index: parseRouteIndex(routeParam("index"), 0))
+    discard vm.selectStory(story)
+    if viewParam.len > 0:
+      vm.activeView.val = viewFromSlug(viewParam, vm.activeView.val)
+
+proc installEditorHistorySync(vm: EditorVM) =
+  routeSyncScheduled = false
+  routeHistoryInitialized = false
+  lastSyncedRoute = ""
+  applyingRoute = true
+  if hasEditorRouteOverride():
+    applyEditorRoute(vm)
+  applyingRoute = false
+  syncEditorRouteNow(vm, replace = true)
+  routeHistoryInitialized = true
+
+  createRenderEffect proc() =
+    discard vm.activeView.val
+    discard vm.selectedStory.val
+    discard vm.viewport.val
+    discard vm.editMode.val
+    discard vm.panels.val
+    discard vm.inspector.activeSection.val
+    scheduleEditorRouteSync(vm)
+
+  let onPopstate = proc() =
+    applyingRoute = true
+    applyEditorRoute(vm)
+    lastSyncedRoute = currentRouteUrl()
+    applyingRoute = false
+
+  addPopstateListener(onPopstate)
+  onCleanup proc() =
+    removePopstateListener(onPopstate)
+
 proc mountEditor*(workspace: EditorWorkspace;
                   root: Element = document.body;
                   useHashRoute = true;
@@ -96,9 +362,8 @@ proc mountEditor*(workspace: EditorWorkspace;
   createRoot proc(dispose: proc()) =
     let vm = createEditorVM(workspace)
     mounted = vm
-    if useHashRoute and hasEditorRouteOverride():
-      vm.activeView.val = hashEditorView()
-      vm.inspector.activeSection.val = hashInspectorSection()
+    if useHashRoute:
+      installEditorHistorySync(vm)
 
     let r = DomRenderer()
     let shell = renderEditorShell[DomRenderer, DomElement](r, vm)
