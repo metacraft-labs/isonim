@@ -35,6 +35,9 @@ proc removeAttribute*(r: DomRenderer; node: DomElement; name: string) =
 proc setTextContent*(r: DomRenderer; node: DomElement; text: string) =
   node.textContent = text.cstring
 
+proc clearChildren*(r: DomRenderer; node: DomElement) =
+  node.innerHTML = cstring""
+
 proc textContent*(r: DomRenderer; node: DomElement): string =
   $node.textContent
 

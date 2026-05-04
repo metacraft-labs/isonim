@@ -89,6 +89,14 @@ proc demoVectorEditAdapter(vectorSource: ref string): WorkspaceEditAdapter =
       fullReload: bool): WorkspaceOperationResult =
     WorkspaceOperationResult(ok: true, affectedStories: stories,
       fullReload: fullReload)
+  result.review = proc(patches: seq[WorkspaceFilePatch]): WorkspaceReviewResult =
+    WorkspaceReviewResult(ok: true, violations: @[
+      Violation(severity: vsWarning, category: vcAccessibility,
+        message: "Review passed with accessible vector metadata intact.",
+        file: "examples/wanderlust/design-system/vector-symbols.svg",
+        line: 1,
+        autoFixable: false)
+    ])
 
 proc main() =
   let groups = wanderlust.buildWanderlustStoryboard()
@@ -110,9 +118,39 @@ proc main() =
         "' with tool state complete and " &
         $context.accumulatedEdits.len & " inspector edit(s).")
       editor.chat.toolCalls.val = @["fake.applyDesignEdit"]
+      discard editor.chat.addAgentPermissionRequest(AgentPermissionRequest(
+        title: "Write workspace source",
+        detail: "Apply the generated SVG source edit through the workspace adapter.",
+        options: @["allow", "deny"]))
+      discard editor.chat.addAgentEditProposal(AgentEditProposal(
+        title: "Compass icon source edit",
+        summary: "examples/wanderlust/design-system/vector-symbols.svg svgContent",
+        sourceEdits: @[SourceEditPlan(
+          file: "examples/wanderlust/design-system/vector-symbols.svg",
+          line: 1,
+          property: "svgContent",
+          oldValue: "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path d=\"M12 2l4 14-4-2-4 2 4-14z\" /></svg>",
+          newValue: "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><title>Compass</title><path d=\"M12 2l5 15-5-3-5 3 5-15z\" /></svg>",
+          originDetail: "fake-agent:svgContent",
+          scope: pesShared,
+          planKind: cspStructuredSchemaUpdate,
+          schemaKey: "symbols.compass.svg",
+          reversible: true,
+          previewBefore: "compass before",
+          previewAfter: "compass after",
+          formatterHook: "svgo",
+          regeneratorHook: "wanderlust-vector",
+          conflictKey: "symbols.compass.svg",
+          expectedOldValue: "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path d=\"M12 2l4 14-4-2-4 2 4-14z\" /></svg>")],
+        diffs: @[AgentFileDiff(
+          file: "examples/wanderlust/design-system/vector-symbols.svg",
+          beforeText: "compass before",
+          afterText: "compass after",
+          summary: "svgContent updated")]))
       editor.chat.stopReason.val = "complete"
       true,
     agentCancelAdapter = proc(): bool = true,
+    agentBackend = absAgentHarbor,
     id = "wanderlust",
     description = "Travel app workspace for IsoNim Editor development",
     permissions = EditorWorkspacePermissions(readSource: true,

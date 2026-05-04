@@ -73,9 +73,17 @@ test.describe("IsoNim packaged editor example", () => {
     await expect(page.locator(".editor-chat")).toBeHidden();
   });
 
-  test("e2e_editor_agent_fake_adapter_prompt_turn", async ({ page }) => {
-    await page.getByLabel("Edit inspector property padding").fill("28");
-    await page.getByLabel("Edit inspector property padding").blur();
+  test("e2e_agent_assisted_edit_flow", async ({ page }) => {
+    await expect(page.getByText("No agent messages")).toBeVisible();
+    await expect(page.getByText("AI Designer: Fake adapter")).toHaveCount(0);
+    await expect(
+      page.getByRole("button", {
+        name: "Allow agent permission agent-permission-1",
+      }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "Accept agent edit agent-proposal-1" }),
+    ).toHaveCount(0);
 
     await page
       .getByRole("textbox", { name: "Agent prompt" })
@@ -90,7 +98,31 @@ test.describe("IsoNim packaged editor example", () => {
       ),
     ).toBeVisible();
     await expect(page.getByText("tool state complete")).toBeVisible();
-    await expect(page.getByText("1 inspector edit(s)")).toBeVisible();
+    await expect(page.getByText("0 inspector edit(s)")).toBeVisible();
+    await expect(page.getByText("Permission Requests")).toBeVisible();
+    await expect(page.getByText("Agent Proposed Edits")).toBeVisible();
+    await expect(
+      page.getByRole("button", {
+        name: "Allow agent permission agent-permission-1",
+      }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Accept agent edit agent-proposal-1" }),
+    ).toBeVisible();
+    await page
+      .getByRole("button", {
+        name: "Allow agent permission agent-permission-1",
+      })
+      .click();
+    await expect(page.getByText("agent-permission-1=granted")).toBeVisible();
+    await page
+      .getByRole("button", { name: "Accept agent edit agent-proposal-1" })
+      .click();
+    await expect(page.getByText("agent-proposal-1=accepted")).toBeVisible();
+    await page
+      .getByRole("button", { name: "Revert agent edit agent-proposal-1" })
+      .click();
+    await expect(page.getByText("agent-proposal-1=reverted")).toBeVisible();
     await expect(page.getByText("Connected / ready")).toBeVisible();
   });
 

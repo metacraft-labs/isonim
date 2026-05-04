@@ -37,6 +37,22 @@ proc buildEditorHarborTaskRequest*(config: EditorHarborConfig; story: StoryRef;
     prompt: editorContextToAcpContentBlocks(story, element, edits, userPrompt),
     acpAgent: config.acpAgent))
 
+proc buildEditorHarborTaskRequest*(config: EditorHarborConfig;
+    context: AgentPromptContext; userPrompt: string): CreateTaskRequest =
+  buildHarborTaskRequest(HarborTaskConfig(
+    workspace: AgentWorkspaceContext(
+      tenantId: config.tenantId,
+      projectId: config.projectId,
+      cwd: config.workspaceRoot,
+      repoMode: config.repoMode,
+      repoUrl: config.repoUrl,
+      branch: config.branch,
+      commit: config.commit,
+      executionHostId: config.executionHostId,
+      workingCopyMode: config.workingCopyMode),
+    prompt: editorPromptContextToAcpContentBlocks(context, userPrompt),
+    acpAgent: config.acpAgent))
+
 proc addContextMessage(chat: AgentChatVM; text: string) =
   if text.len == 0:
     return
@@ -180,3 +196,72 @@ proc applyAgentEvents*(chat: AgentChatVM; review: ReviewResultsVM;
     events: openArray[AgentEvent]) =
   for event in events:
     chat.applyAgentEvent(review, event)
+
+func proposalPlanFromEvent(event: AgentEvent): SourceEditPlan =
+  let before =
+    if event.linesRemoved > 0: "-" & $event.linesRemoved & " lines"
+    else: ""
+  let after =
+    if event.diff.len > 0: event.diff
+    elif event.text.len > 0: event.text
+    elif event.linesAdded > 0: "+" & $event.linesAdded & " lines"
+    else: "agent edit"
+  SourceEditPlan(
+    file: event.filePath,
+    line: event.line,
+    property: "source",
+    oldValue: before,
+    newValue: after,
+    originDetail: "nim-agents:" & $event.kind,
+    scope: pesLocal,
+    planKind: cspInlineStyleUpdate,
+    reversible: true,
+    previewBefore: before,
+    previewAfter: after,
+    conflictKey: event.filePath & ":" & $event.line & ":agent",
+    expectedOldValue: before)
+
+func proposalDiffFromEvent(event: AgentEvent): AgentFileDiff =
+  AgentFileDiff(
+    file: event.filePath,
+    beforeText: "-" & $event.linesRemoved & " lines",
+    afterText:
+      if event.diff.len > 0: event.diff
+      elif event.text.len > 0: event.text
+      else: "+" & $event.linesAdded & " lines",
+    summary: event.filePath & " +" & $event.linesAdded & " -" &
+      $event.linesRemoved)
+
+proc applyAgentEvent*(editor: EditorVM; event: AgentEvent) =
+  editor.chat.applyAgentEvent(editor.review, event)
+  case event.kind
+  of aekFileEdit, aekDiff:
+    if event.filePath.len > 0:
+      discard editor.chat.addAgentEditProposal(AgentEditProposal(
+        title: "Agent source edit",
+        summary: proposalDiffFromEvent(event).summary,
+        sourceEdits: @[proposalPlanFromEvent(event)],
+        diffs: @[proposalDiffFromEvent(event)]))
+  of aekReview:
+    if editor.chat.proposedEdits.val.len > 0:
+      var proposals = editor.chat.proposedEdits.val
+      proposals[^1].reviewDiagnostics.add AgentDiagnosticSnapshot(
+        source: "agent-review",
+        severity: event.reviewSeverity,
+        category: event.reviewCategory,
+        message: event.text,
+        file: event.filePath,
+        line: event.line)
+      editor.chat.proposedEdits.val = proposals
+  of aekToolCall:
+    if event.status == "permission_required":
+      discard editor.chat.addAgentPermissionRequest(AgentPermissionRequest(
+        title: event.toolName,
+        detail: event.text,
+        options: @["allow", "deny"]))
+  else:
+    discard
+
+proc applyAgentEvents*(editor: EditorVM; events: openArray[AgentEvent]) =
+  for event in events:
+    editor.applyAgentEvent(event)

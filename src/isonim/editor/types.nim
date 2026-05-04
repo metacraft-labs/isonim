@@ -635,11 +635,53 @@ type
     text*: string
     timestamp*: float
 
+  AgentBackendSelection* = enum
+    absUnconfigured
+    absAcp
+    absAgentHarbor
+
+  AgentSourceMapEntry* = object
+    elementTag*: string
+    property*: string
+    file*: string
+    line*: int
+    originDetail*: string
+    schemaKey*: string
+    tokenName*: string
+    variantKey*: string
+
+  AgentDesignSystemSchemaEntry* = object
+    key*: string
+    kind*: string
+    file*: string
+    path*: string
+    property*: string
+
+  AgentFileDiff* = object
+    file*: string
+    beforeText*: string
+    afterText*: string
+    summary*: string
+
+  AgentDiagnosticSnapshot* = object
+    source*: string
+    severity*: string
+    category*: string
+    message*: string
+    file*: string
+    line*: int
+    property*: string
+
   AgentPromptContext* = object
     selectedStory*: StoryRef
     selectedElement*: ElementRef
     accumulatedEdits*: seq[EditRecord]
+    sourceMap*: seq[AgentSourceMapEntry]
+    designSystemSchema*: seq[AgentDesignSystemSchemaEntry]
+    diagnostics*: seq[AgentDiagnosticSnapshot]
+    currentFileDiffs*: seq[AgentFileDiff]
     platform*: Platform
+    backend*: AgentBackendSelection
 
   AgentPromptAdapter* = proc(prompt: string;
                               context: AgentPromptContext): bool {.closure.}
@@ -664,6 +706,38 @@ type
     sourceEdit*: SourceEditPlan
     beforeElement*: ElementRef
     afterElement*: ElementRef
+
+  AgentEditProposalStatus* = enum
+    aepsProposed
+    aepsAccepted
+    aepsPartiallyAccepted
+    aepsRejected
+    aepsReverted
+    aepsFailed
+
+  AgentPermissionStatus* = enum
+    apsPending
+    apsGranted
+    apsDenied
+    apsCancelled
+
+  AgentPermissionRequest* = object
+    id*: string
+    title*: string
+    detail*: string
+    options*: seq[string]
+    status*: AgentPermissionStatus
+
+  AgentEditProposal* = object
+    id*: string
+    title*: string
+    summary*: string
+    sourceEdits*: seq[SourceEditPlan]
+    diffs*: seq[AgentFileDiff]
+    reviewDiagnostics*: seq[AgentDiagnosticSnapshot]
+    status*: AgentEditProposalStatus
+    selectedEditIndexes*: seq[int]
+    appliedPatches*: seq[WorkspaceFilePatch]
 
   # --- Review ---
   ViolationSeverity* = enum

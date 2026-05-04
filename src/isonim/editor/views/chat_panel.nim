@@ -39,6 +39,9 @@ proc chatStatusText(vm: EditorVM): string =
     of asError: "Error"
   label & " / " & vm.chat.connectionState.val
 
+proc proposalStatusText(status: AgentEditProposalStatus): string
+proc permissionStatusText(status: AgentPermissionStatus): string
+
 proc chatTranscriptText(vm: EditorVM): string =
   var parts: seq[string] = @[]
   for msg in vm.chat.messages.val:
@@ -50,9 +53,35 @@ proc chatTranscriptText(vm: EditorVM): string =
     parts.add sender & ": " & msg.text
   if vm.chat.toolCalls.val.len > 0:
     parts.add "Tools: " & vm.chat.toolCalls.val.join(", ")
+  if vm.chat.proposedEdits.val.len > 0:
+    var proposalParts: seq[string] = @[]
+    for proposal in vm.chat.proposedEdits.val:
+      proposalParts.add proposal.id & "=" & proposalStatusText(proposal.status)
+    parts.add "Proposals: " & proposalParts.join(", ")
+  if vm.chat.permissionRequests.val.len > 0:
+    var permissionParts: seq[string] = @[]
+    for request in vm.chat.permissionRequests.val:
+      permissionParts.add request.id & "=" & permissionStatusText(request.status)
+    parts.add "Permissions: " & permissionParts.join(", ")
   if vm.chat.stopReason.val.len > 0:
     parts.add "Stop: " & vm.chat.stopReason.val
   parts.join(" | ")
+
+proc proposalStatusText(status: AgentEditProposalStatus): string =
+  case status
+  of aepsProposed: "proposed"
+  of aepsAccepted: "accepted"
+  of aepsPartiallyAccepted: "partially accepted"
+  of aepsRejected: "rejected"
+  of aepsReverted: "reverted"
+  of aepsFailed: "failed"
+
+proc permissionStatusText(status: AgentPermissionStatus): string =
+  case status
+  of apsPending: "pending"
+  of apsGranted: "granted"
+  of apsDenied: "denied"
+  of apsCancelled: "cancelled"
 
 proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   let messages = signals.val(vm.chat.messages)
@@ -248,6 +277,150 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
     r.appendChild(messagesArea, bubble)
 
   r.appendChild(panel, messagesArea)
+
+  let reviewLoopArea = ui(r):
+    tdiv(
+      padding = "10px 12px",
+      border_top = "1px solid " & borderFaint,
+      display = "flex",
+      flex_direction = "column",
+      gap = "8px")
+  proc appendReviewHeading(label: string) =
+    let heading = ui(r):
+      span(
+        font_size = "10px",
+        font_weight = "600",
+        color = textSecondary,
+        text_transform = "uppercase",
+        letter_spacing = "0.5px"):
+        text label
+    r.appendChild(reviewLoopArea, heading)
+
+  proc appendReviewSummary(label: string) =
+    let summary = ui(r):
+      span(font_size = "11px", color = textSecondary):
+        text label
+    r.appendChild(reviewLoopArea, summary)
+
+  proc syncReviewLoop() =
+    r.clearChildren(reviewLoopArea)
+    appendReviewHeading("Permission Requests")
+    if vm.chat.permissionRequests.val.len == 0:
+      appendReviewSummary("No pending agent permissions")
+    else:
+      for request in vm.chat.permissionRequests.val:
+        let requestId = request.id
+        let requestSummary = request.title & " - " &
+          permissionStatusText(request.status)
+        let row = ui(r):
+          tdiv(display = "flex", flex_direction = "column", gap = "6px")
+        let summary = ui(r):
+          span(font_size = "11px", color = textSecondary):
+            text requestSummary
+        r.appendChild(row, summary)
+        let actions = ui(r):
+          tdiv(display = "flex", gap = "6px")
+        let allowBtn = ui(r):
+          tdiv(
+            `role` = "button",
+            tabindex = "0",
+            `aria-label` = "Allow agent permission " & requestId,
+            padding = "5px 7px",
+            border = "1px solid " & border,
+            border_radius = "5px",
+            font_size = "10px",
+            color = textPrimary,
+            cursor = "pointer"):
+            text "Allow"
+        r.addEventListener(allowBtn, "click", proc() =
+          discard vm.chat.setAgentPermissionStatus(requestId, apsGranted))
+        let denyBtn = ui(r):
+          tdiv(
+            `role` = "button",
+            tabindex = "0",
+            `aria-label` = "Deny agent permission " & requestId,
+            padding = "5px 7px",
+            border = "1px solid " & border,
+            border_radius = "5px",
+            font_size = "10px",
+            color = textSecondary,
+            cursor = "pointer"):
+            text "Deny"
+        r.addEventListener(denyBtn, "click", proc() =
+          discard vm.chat.setAgentPermissionStatus(requestId, apsDenied))
+        r.appendChild(actions, allowBtn)
+        r.appendChild(actions, denyBtn)
+        r.appendChild(row, actions)
+        r.appendChild(reviewLoopArea, row)
+
+    appendReviewHeading("Agent Proposed Edits")
+    if vm.chat.proposedEdits.val.len == 0:
+      appendReviewSummary("No proposed agent edits")
+    else:
+      for proposal in vm.chat.proposedEdits.val:
+        let proposalId = proposal.id
+        let proposalSummary = proposal.summary & " - " &
+          proposalStatusText(proposal.status)
+        let card = ui(r):
+          tdiv(display = "flex", flex_direction = "column", gap = "6px")
+        let summary = ui(r):
+          span(font_size = "11px", color = textSecondary):
+            text proposalSummary
+        r.appendChild(card, summary)
+        let actions = ui(r):
+          tdiv(display = "flex", gap = "6px", flex_wrap = "wrap")
+        let acceptBtn = ui(r):
+          tdiv(
+            `role` = "button",
+            tabindex = "0",
+            `aria-label` = "Accept agent edit " & proposalId,
+            padding = "5px 7px",
+            border = "1px solid " & border,
+            border_radius = "5px",
+            font_size = "10px",
+            color = textPrimary,
+            cursor = "pointer"):
+            text "Accept"
+        r.addEventListener(acceptBtn, "click", proc() =
+          discard vm.acceptAgentProposedEdit(proposalId))
+        let rejectBtn = ui(r):
+          tdiv(
+            `role` = "button",
+            tabindex = "0",
+            `aria-label` = "Reject agent edit " & proposalId,
+            padding = "5px 7px",
+            border = "1px solid " & border,
+            border_radius = "5px",
+            font_size = "10px",
+            color = textSecondary,
+            cursor = "pointer"):
+            text "Reject"
+        r.addEventListener(rejectBtn, "click", proc() =
+          discard vm.rejectAgentProposedEdit(proposalId))
+        let revertBtn = ui(r):
+          tdiv(
+            `role` = "button",
+            tabindex = "0",
+            `aria-label` = "Revert agent edit " & proposalId,
+            padding = "5px 7px",
+            border = "1px solid " & border,
+            border_radius = "5px",
+            font_size = "10px",
+            color = textSecondary,
+            cursor = "pointer"):
+            text "Revert"
+        r.addEventListener(revertBtn, "click", proc() =
+          discard vm.revertAgentProposedEdit(proposalId))
+        r.appendChild(actions, acceptBtn)
+        r.appendChild(actions, rejectBtn)
+        r.appendChild(actions, revertBtn)
+        r.appendChild(card, actions)
+        r.appendChild(reviewLoopArea, card)
+
+  syncReviewLoop()
+  createRenderEffect proc() =
+    syncReviewLoop()
+  r.appendChild(panel, reviewLoopArea)
 
   var transcriptTextNode: E
   let transcript = ui(r):

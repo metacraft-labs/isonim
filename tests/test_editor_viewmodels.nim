@@ -1,8 +1,10 @@
 ## Tests for IsoNim Editor ViewModels (M0)
 
 import std/[options, unittest, strutils, sequtils, os]
+import nim_agents
 import isonim/core/[signals, computation, owner]
 import isonim/viewmodel
+import isonim/editor/agent_harbor
 import isonim/editor/viewmodels
 import isonim/editor/workspace
 import isonim/editor/views/page_preview
@@ -817,6 +819,7 @@ suite "Editor ViewModels (M27 workspace file writes)":
   type WorkspaceEditRecorder = ref object
     reloadedStories: seq[StoryRef]
     fullReloadSeen: bool
+    reviewCount: int
 
   let writeStory = StoryRef(group: "DestinationCard", name: "Default",
     kind: skComponent, index: 0)
@@ -920,6 +923,7 @@ suite "Editor ViewModels (M27 workspace file writes)":
       recorder.fullReloadSeen = fullReload
       okOp()
     result.review = proc(patches: seq[WorkspaceFilePatch]): WorkspaceReviewResult =
+      inc recorder.reviewCount
       for patch in patches:
         if patch.afterContent.contains("unsafe"):
           return WorkspaceReviewResult(ok: false,
@@ -1664,6 +1668,248 @@ suite "Editor ViewModels (M27 workspace file writes)":
       check mismatch.status == pesRejected
       check mismatch.diagnostics.anyIt(
         it.kind == cvdInconsistentStoryMetadata)
+      dispose()
+
+  test "editor_agent_context_includes_source_and_design_system_state":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("agent-context")
+      defer: removeDir(root)
+
+      let schemaFile = root / "card.schema"
+      atomicWrite(schemaFile, "padding=16px")
+      let recorder = WorkspaceEditRecorder()
+      let schema = @[
+        WorkspaceEditableSchemaEntry(
+          key: "components.card.padding",
+          kind: wskComponentVariant,
+          file: schemaFile,
+          path: "components.card.padding",
+          story: writeStory,
+          property: "padding")
+      ]
+      let adapter = adapterFor(root, schema, recorder = recorder)
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "M30 agent context workspace",
+        storyGroups = @[StoryGroup(name: "DestinationCard",
+          kind: skComponent, items: @[StoryItem(name: "Default",
+            kind: skComponent, group: "DestinationCard")])],
+        initialStory = some(writeStory),
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true),
+        editAdapter = adapter,
+        agentBackend = absAcp))
+
+      check vm.selectInspectorElement(ElementRef(
+        tag: "article",
+        sourceFile: schemaFile,
+        sourceLine: 1,
+        properties: @[PropertyInfo(
+          name: "padding",
+          value: "16px",
+          origin: poConstant,
+          originDetail: "schema:components.card.padding",
+          sourceFile: schemaFile,
+          sourceLine: 1,
+          schemaKey: "components.card.padding",
+          directStyleAllowed: true)]))
+      let edit = vm.editCssProperty("padding", "24px", pesShared, peoInspector)
+      check edit.status == pesAccepted
+      vm.workspaceEditDiagnostics.val = @[WorkspaceEditDiagnostic(
+        kind: wedSourceConflict,
+        message: "pending branch update",
+        file: schemaFile,
+        schemaKey: "components.card.padding",
+        property: "padding")]
+      vm.review.violations.val = @[Violation(
+        severity: vsWarning,
+        category: vcAccessibility,
+        message: "padding still passes minimum hit target",
+        file: schemaFile,
+        line: 1)]
+
+      var captured = AgentPromptContext()
+      vm.chat.configureAgentAdapters(
+        proc(prompt: string; context: AgentPromptContext): bool =
+          captured = context
+          true,
+        nil,
+        absAcp)
+      vm.chat.inputText.val = "Make the card easier to scan"
+      check vm.sendAgentPrompt()
+
+      check captured.backend == absAcp
+      check captured.selectedStory.name == "Default"
+      check captured.selectedElement.tag == "article"
+      check captured.accumulatedEdits.len == 1
+      check captured.sourceMap.anyIt(it.schemaKey == "components.card.padding")
+      check captured.designSystemSchema.anyIt(
+        it.key == "components.card.padding" and it.file == schemaFile)
+      check captured.diagnostics.anyIt(
+        it.source == "workspace" and it.category == $wedSourceConflict)
+      check captured.diagnostics.anyIt(
+        it.source == "review" and it.category == $vcAccessibility)
+      check captured.currentFileDiffs.anyIt(
+        it.file == schemaFile and it.summary.contains("padding"))
+      check vm.chat.lastPromptContext.val.designSystemSchema.len == 1
+      dispose()
+
+  test "editor_agent_stream_events_update_review_loop_state":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("agent-events")
+      defer: removeDir(root)
+
+      let schemaFile = root / "card.schema"
+      atomicWrite(schemaFile, "padding=16px")
+      let schema = @[
+        WorkspaceEditableSchemaEntry(
+          key: "components.card.padding",
+          kind: wskComponentVariant,
+          file: schemaFile,
+          path: "components.card.padding",
+          story: writeStory,
+          property: "padding")
+      ]
+      let recorder = WorkspaceEditRecorder()
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "M30 event stream workspace",
+        storyGroups = @[],
+        initialStory = some(writeStory),
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true),
+        editAdapter = adapterFor(root, schema, recorder = recorder),
+        agentBackend = absAgentHarbor))
+
+      vm.applyAgentEvents(@[
+        AgentEvent(kind: aekConnection, state: acsStreaming),
+        AgentEvent(kind: aekPlan, planEntries: @["Inspect schema",
+          "Propose spacing"]),
+        AgentEvent(kind: aekMessageChunk, text: "I found the card schema."),
+        AgentEvent(kind: aekToolCall, toolCallId: "tool-1",
+          toolName: "edit", status: "permission_required",
+          text: "Need write access to update card.schema"),
+        AgentEvent(kind: aekFileEdit, filePath: schemaFile, line: 1,
+          linesAdded: 1, linesRemoved: 1, text: "padding=24px"),
+        AgentEvent(kind: aekReview, filePath: schemaFile, line: 1,
+          reviewSeverity: "warning", reviewCategory: "accessibility",
+          text: "Spacing still meets target size"),
+        AgentEvent(kind: aekCompleted, stopReason: srEndTurn)
+      ])
+
+      check vm.chat.connectionState.val == "completed"
+      check vm.chat.stopReason.val == "end_turn"
+      check vm.chat.planEntries.val == @["Inspect schema", "Propose spacing"]
+      check vm.chat.messages.val.anyIt(
+        it.kind == cmkAgent and it.text == "I found the card schema.")
+      check vm.chat.permissionRequests.val.len == 1
+      check vm.chat.permissionRequests.val[0].status == apsPending
+      check vm.chat.proposedEdits.val.len == 1
+      check vm.chat.proposedEdits.val[0].status == aepsProposed
+      check vm.chat.proposedEdits.val[0].reviewDiagnostics.anyIt(
+        it.source == "agent-review" and it.category == "accessibility")
+      check vm.review.violations.val.anyIt(
+        it.file == schemaFile and it.category == vcAccessibility)
+
+      vm.applyAgentEvent(AgentEvent(kind: aekCancelled,
+        stopReason: srCancelled))
+      check vm.chat.connectionState.val == "cancelled"
+      check vm.chat.stopReason.val == "cancelled"
+
+      vm.applyAgentEvent(AgentEvent(kind: aekError, text: "stream failed",
+        stopReason: srError))
+      check vm.chat.sessionStatus.val == asError
+      check vm.chat.messages.val.anyIt(
+        it.kind == cmkError and it.text == "stream failed")
+      dispose()
+
+  test "editor_agent_edits_require_review_and_user_acceptance":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("agent-review")
+      defer: removeDir(root)
+
+      let schemaFile = root / "card.schema"
+      atomicWrite(schemaFile, "padding=16px\nmargin=8px")
+      let recorder = WorkspaceEditRecorder()
+      let schema = @[
+        WorkspaceEditableSchemaEntry(
+          key: "components.card.padding",
+          kind: wskComponentVariant,
+          file: schemaFile,
+          path: "components.card.padding",
+          story: writeStory,
+          property: "padding"),
+        WorkspaceEditableSchemaEntry(
+          key: "components.card.margin",
+          kind: wskComponentVariant,
+          file: schemaFile,
+          path: "components.card.margin",
+          story: writeStory,
+          property: "margin")
+      ]
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "M30 agent review workspace",
+        storyGroups = @[],
+        initialStory = some(writeStory),
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true),
+        editAdapter = adapterFor(root, schema, recorder = recorder),
+        agentBackend = absAgentHarbor))
+
+      let permissionId = vm.chat.addAgentPermissionRequest(
+        AgentPermissionRequest(title: "Write source",
+          detail: "Agent wants to update card schema.",
+          options: @["allow", "deny"]))
+      check vm.chat.permissionRequests.val[0].status == apsPending
+      check vm.chat.setAgentPermissionStatus(permissionId, apsGranted)
+      check vm.chat.permissionRequests.val[0].status == apsGranted
+      check vm.chat.setAgentPermissionStatus(permissionId, apsCancelled)
+      check vm.chat.permissionRequests.val[0].status == apsCancelled
+
+      let rejectedId = vm.chat.addAgentEditProposal(AgentEditProposal(
+        title: "Unsafe proposal",
+        summary: "unsafe spacing",
+        sourceEdits: @[planFor(schemaFile, "padding", "16px", "unsafe",
+          "components.card.padding")]))
+      check vm.rejectAgentProposedEdit(rejectedId)
+      check readFile(schemaFile).contains("padding=16px")
+      check vm.chat.proposedEdits.val[0].status == aepsRejected
+
+      let proposalId = vm.chat.addAgentEditProposal(AgentEditProposal(
+        title: "Spacing proposal",
+        summary: "padding and margin",
+        sourceEdits: @[
+          planFor(schemaFile, "padding", "16px", "24px",
+            "components.card.padding"),
+          planFor(schemaFile, "margin", "8px", "12px",
+            "components.card.margin")
+        ],
+        diffs: @[AgentFileDiff(file: schemaFile, beforeText: "padding=16px",
+          afterText: "padding=24px", summary: "padding update")]))
+
+      var rerunPrompt = ""
+      vm.chat.configureAgentAdapters(
+        proc(prompt: string; context: AgentPromptContext): bool =
+          rerunPrompt = prompt
+          true,
+        nil,
+        absAgentHarbor)
+      check vm.rerunAgentProposedEdit(proposalId)
+      check rerunPrompt.contains("padding and margin")
+
+      check readFile(schemaFile).contains("padding=16px")
+      let accepted = vm.acceptAgentProposedEdit(proposalId, @[0])
+      check accepted.ok
+      check recorder.reviewCount > 0
+      check readFile(schemaFile).contains("padding=24px")
+      check readFile(schemaFile).contains("margin=8px")
+      check vm.chat.proposedEdits.val.anyIt(
+        it.id == proposalId and it.status == aepsPartiallyAccepted and
+        it.appliedPatches.len == 1)
+
+      let reverted = vm.revertAgentProposedEdit(proposalId)
+      check reverted.ok
+      check readFile(schemaFile).contains("padding=16px")
+      check vm.chat.proposedEdits.val.anyIt(
+        it.id == proposalId and it.status == aepsReverted)
       dispose()
 
 suite "Editor ViewModels (M20 story flow preview runtime)":

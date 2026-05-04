@@ -88,6 +88,10 @@ type
     connectionState*: Signal[string]
     planEntries*: Signal[seq[string]]
     toolCalls*: Signal[seq[string]]
+    proposedEdits*: Signal[seq[AgentEditProposal]]
+    permissionRequests*: Signal[seq[AgentPermissionRequest]]
+    lastPromptContext*: Signal[AgentPromptContext]
+    backend*: Signal[AgentBackendSelection]
     stopReason*: Signal[string]
     messageCount*: Memo[int]
     promptAdapter*: AgentPromptAdapter
@@ -947,6 +951,7 @@ proc failCommand(editor: EditorVM; kind: EditorCommandKind;
   editor.setCommandState(result)
 
 proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardable.}
+proc sendAgentPrompt*(editor: EditorVM): bool {.discardable.}
 
 proc setEditMode*(editor: EditorVM; mode: EditMode) =
   editor.editMode.val = mode
@@ -2006,6 +2011,151 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
 # AgentChatVM actions
 # ===========================================================================
 
+func agentProposalId(count: int): string =
+  "agent-proposal-" & $(count + 1)
+
+func sourceMapEntries(element: ElementRef;
+    pending: seq[SourceEditPlan]): seq[AgentSourceMapEntry] =
+  for prop in element.properties:
+    result.add AgentSourceMapEntry(
+      elementTag: element.tag,
+      property: prop.name,
+      file: prop.sourceFile,
+      line: prop.sourceLine,
+      originDetail: prop.originDetail,
+      schemaKey: prop.schemaKey,
+      tokenName: prop.tokenName,
+      variantKey: prop.variantKey)
+  for plan in pending:
+    result.add AgentSourceMapEntry(
+      elementTag: element.tag,
+      property: plan.property,
+      file: plan.file,
+      line: plan.line,
+      originDetail: plan.originDetail,
+      schemaKey: plan.schemaKey,
+      tokenName: plan.tokenName,
+      variantKey: plan.variantKey)
+
+func schemaSnapshot(adapter: WorkspaceEditAdapter): seq[AgentDesignSystemSchemaEntry] =
+  if adapter.isNil:
+    return @[]
+  for entry in adapter.schema:
+    result.add AgentDesignSystemSchemaEntry(
+      key: entry.key,
+      kind: $entry.kind,
+      file: entry.file,
+      path: entry.path,
+      property: entry.property)
+
+func propertyDiagnosticSnapshot(
+    diagnostics: seq[PropertyEditDiagnostic]): seq[AgentDiagnosticSnapshot] =
+  for diagnostic in diagnostics:
+    result.add AgentDiagnosticSnapshot(
+      source: "inspector",
+      severity: "warning",
+      category: $diagnostic.kind,
+      message: diagnostic.message,
+      file: diagnostic.file,
+      line: diagnostic.line,
+      property: diagnostic.property)
+
+func workspaceDiagnosticSnapshot(
+    diagnostics: seq[WorkspaceEditDiagnostic]): seq[AgentDiagnosticSnapshot] =
+  for diagnostic in diagnostics:
+    result.add AgentDiagnosticSnapshot(
+      source: "workspace",
+      severity: "error",
+      category: $diagnostic.kind,
+      message: diagnostic.message,
+      file: diagnostic.file,
+      property: diagnostic.property)
+
+func reviewDiagnosticSnapshot(
+    violations: seq[Violation]): seq[AgentDiagnosticSnapshot] =
+  for violation in violations:
+    result.add AgentDiagnosticSnapshot(
+      source: "review",
+      severity: $violation.severity,
+      category: $violation.category,
+      message: violation.message,
+      file: violation.file,
+      line: violation.line)
+
+func vectorDiagnosticSnapshot(
+    diagnostics: seq[VectorDiagnostic]): seq[AgentDiagnosticSnapshot] =
+  for diagnostic in diagnostics:
+    result.add AgentDiagnosticSnapshot(
+      source: "vector",
+      severity: "warning",
+      category: $diagnostic.kind,
+      message: diagnostic.message,
+      file: diagnostic.schemaKey,
+      property: diagnostic.objectId)
+
+func foundationDiagnosticSnapshot(
+    diagnostics: seq[FoundationEditDiagnostic]): seq[AgentDiagnosticSnapshot] =
+  for diagnostic in diagnostics:
+    result.add AgentDiagnosticSnapshot(
+      source: "foundation",
+      severity: "warning",
+      category: $diagnostic.kind,
+      message: diagnostic.message,
+      file: diagnostic.file,
+      line: diagnostic.line,
+      property: diagnostic.key)
+
+func variantDiagnosticSnapshot(
+    diagnostics: seq[ComponentVariantDiagnostic]): seq[AgentDiagnosticSnapshot] =
+  for diagnostic in diagnostics:
+    result.add AgentDiagnosticSnapshot(
+      source: "variant",
+      severity: "warning",
+      category: $diagnostic.kind,
+      message: diagnostic.message,
+      file: diagnostic.file,
+      line: diagnostic.line,
+      property: diagnostic.variantKey & "." & diagnostic.field)
+
+func sourcePreviewDiffs(previews: seq[CSSSourcePreview]): seq[AgentFileDiff] =
+  for preview in previews:
+    result.add AgentFileDiff(
+      file: preview.plan.file,
+      beforeText: preview.beforeText,
+      afterText: preview.afterText,
+      summary: preview.plan.property & ": " & preview.plan.oldValue &
+        " -> " & preview.plan.newValue)
+
+func workspacePatchDiffs(patches: seq[WorkspaceFilePatch]): seq[AgentFileDiff] =
+  for patch in patches:
+    result.add AgentFileDiff(
+      file: patch.file,
+      beforeText: patch.beforeContent,
+      afterText: patch.afterContent,
+      summary: patch.plan.property & ": " & patch.plan.oldValue &
+        " -> " & patch.plan.newValue)
+
+proc buildAgentPromptContext*(editor: EditorVM): AgentPromptContext =
+  result = AgentPromptContext(
+    selectedStory: editor.selectedStory.val,
+    selectedElement: editor.inspector.selectedElement.val,
+    accumulatedEdits: editor.chat.accumulatedEdits.val,
+    sourceMap: sourceMapEntries(editor.inspector.selectedElement.val,
+      editor.inspector.pendingSourceEdits.val),
+    designSystemSchema: schemaSnapshot(editor.workspaceEditAdapter),
+    diagnostics:
+      propertyDiagnosticSnapshot(editor.inspector.editDiagnostics.val) &
+      workspaceDiagnosticSnapshot(editor.workspaceEditDiagnostics.val) &
+      reviewDiagnosticSnapshot(editor.review.violations.val) &
+      vectorDiagnosticSnapshot(editor.vectorEditor.diagnostics.val) &
+      foundationDiagnosticSnapshot(editor.foundations.diagnostics.val) &
+      variantDiagnosticSnapshot(editor.variants.diagnostics.val),
+    currentFileDiffs:
+      sourcePreviewDiffs(editor.inspector.sourcePreviews.val) &
+      workspacePatchDiffs(editor.workspaceEditPatches.val),
+    platform: editor.platform.val,
+    backend: editor.chat.backend.val)
+
 proc addUserMessage*(chat: AgentChatVM; text: string) =
   chat.messages.update proc(prev: seq[ChatMessage]): seq[ChatMessage] =
     result = prev
@@ -2027,9 +2177,163 @@ proc clearAccumulatedEdits*(chat: AgentChatVM) =
 
 proc configureAgentAdapters*(chat: AgentChatVM;
     promptAdapter: AgentPromptAdapter = nil;
-    cancelAdapter: AgentCancelAdapter = nil) =
+    cancelAdapter: AgentCancelAdapter = nil;
+    backend = absUnconfigured) =
   chat.promptAdapter = promptAdapter
   chat.cancelAdapter = cancelAdapter
+  chat.backend.val = backend
+
+proc addAgentEditProposal*(chat: AgentChatVM; proposal: AgentEditProposal): string =
+  var next = proposal
+  if next.id.len == 0:
+    next.id = agentProposalId(chat.proposedEdits.val.len)
+  if next.status notin {aepsAccepted, aepsPartiallyAccepted, aepsRejected,
+      aepsReverted, aepsFailed}:
+    next.status = aepsProposed
+  if next.selectedEditIndexes.len == 0:
+    for i in 0 ..< next.sourceEdits.len:
+      next.selectedEditIndexes.add i
+  chat.proposedEdits.update proc(prev: seq[AgentEditProposal]): seq[
+      AgentEditProposal] =
+    result = prev
+    result.add next
+  next.id
+
+proc addAgentPermissionRequest*(chat: AgentChatVM;
+    request: AgentPermissionRequest): string =
+  var next = request
+  if next.id.len == 0:
+    next.id = "agent-permission-" & $(chat.permissionRequests.val.len + 1)
+  if next.status notin {apsGranted, apsDenied, apsCancelled}:
+    next.status = apsPending
+  chat.permissionRequests.update proc(prev: seq[AgentPermissionRequest]): seq[
+      AgentPermissionRequest] =
+    result = prev
+    result.add next
+  next.id
+
+proc setAgentPermissionStatus*(chat: AgentChatVM; id: string;
+    status: AgentPermissionStatus): bool {.discardable.} =
+  var found = false
+  chat.permissionRequests.update proc(prev: seq[AgentPermissionRequest]): seq[
+      AgentPermissionRequest] =
+    result = prev
+    for request in result.mitems:
+      if request.id == id:
+        request.status = status
+        found = true
+  found
+
+proc setAgentProposalStatus(chat: AgentChatVM; id: string;
+    status: AgentEditProposalStatus; patches: seq[WorkspaceFilePatch] = @[]): bool =
+  var found = false
+  chat.proposedEdits.update proc(prev: seq[AgentEditProposal]): seq[
+      AgentEditProposal] =
+    result = prev
+    for proposal in result.mitems:
+      if proposal.id == id:
+        proposal.status = status
+        if patches.len > 0:
+          proposal.appliedPatches = patches
+        found = true
+  found
+
+proc rejectAgentProposedEdit*(editor: EditorVM; id: string): bool {.discardable.} =
+  editor.chat.setAgentProposalStatus(id, aepsRejected)
+
+proc acceptAgentProposedEdit*(editor: EditorVM; id: string;
+    editIndexes: seq[int] = @[]): WorkspaceEditResult {.discardable.} =
+  var proposal = AgentEditProposal()
+  var found = false
+  for candidate in editor.chat.proposedEdits.val:
+    if candidate.id == id:
+      proposal = candidate
+      found = true
+      break
+  if not found:
+    return WorkspaceEditResult(ok: false, stage: wesFailed,
+      diagnostics: @[workspaceDiagnostic(wedMissingSchema,
+        "Agent edit proposal was not found.")])
+
+  var selected: seq[int] =
+    if editIndexes.len > 0: editIndexes else: proposal.selectedEditIndexes
+  if selected.len == 0:
+    for i in 0 ..< proposal.sourceEdits.len:
+      selected.add i
+  var accepted: seq[SourceEditPlan] = @[]
+  for index in selected:
+    if index >= 0 and index < proposal.sourceEdits.len:
+      accepted.add proposal.sourceEdits[index]
+  if accepted.len == 0:
+    return WorkspaceEditResult(ok: false, stage: wesFailed,
+      diagnostics: @[workspaceDiagnostic(wedMissingSchema,
+        "Agent edit proposal does not contain selected source edits.")])
+
+  editor.inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
+      SourceEditPlan] =
+    result = prev
+    result.add accepted
+  editor.workspaceEditStage.val = wesDirty
+  result = editor.applyWorkspaceFileEdits()
+  if result.ok:
+    let status =
+      if accepted.len == proposal.sourceEdits.len: aepsAccepted
+      else: aepsPartiallyAccepted
+    discard editor.chat.setAgentProposalStatus(id, status, result.patches)
+  else:
+    discard editor.chat.setAgentProposalStatus(id, aepsFailed)
+
+proc revertAgentProposedEdit*(editor: EditorVM; id: string): WorkspaceEditResult {.
+    discardable.} =
+  var proposal = AgentEditProposal()
+  var found = false
+  for candidate in editor.chat.proposedEdits.val:
+    if candidate.id == id:
+      proposal = candidate
+      found = true
+      break
+  if not found:
+    return WorkspaceEditResult(ok: false, stage: wesFailed,
+      diagnostics: @[workspaceDiagnostic(wedMissingSchema,
+        "Agent edit proposal was not found.")])
+  var reversals: seq[SourceEditPlan] = @[]
+  for patch in proposal.appliedPatches:
+    var reverse = patch.plan
+    swap(reverse.oldValue, reverse.newValue)
+    reverse.expectedOldValue = reverse.oldValue
+    reverse.previewBefore = patch.afterContent
+    reverse.previewAfter = patch.beforeContent
+    reversals.add reverse
+  if reversals.len == 0:
+    for plan in proposal.sourceEdits:
+      if plan.reversible:
+        var reverse = plan
+        swap(reverse.oldValue, reverse.newValue)
+        reverse.expectedOldValue = reverse.oldValue
+        reverse.previewBefore = plan.previewAfter
+        reverse.previewAfter = plan.previewBefore
+        reversals.add reverse
+  if reversals.len == 0:
+    return WorkspaceEditResult(ok: false, stage: wesFailed,
+      diagnostics: @[workspaceDiagnostic(wedPatchFailed,
+        "Agent edit proposal has no reversible source edits.")])
+  editor.inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
+      SourceEditPlan] =
+    result = prev
+    result.add reversals
+  editor.workspaceEditStage.val = wesDirty
+  result = editor.applyWorkspaceFileEdits()
+  if result.ok:
+    discard editor.chat.setAgentProposalStatus(id, aepsReverted, result.patches)
+  else:
+    discard editor.chat.setAgentProposalStatus(id, aepsFailed)
+
+proc rerunAgentProposedEdit*(editor: EditorVM; id: string): bool {.discardable.} =
+  for proposal in editor.chat.proposedEdits.val:
+    if proposal.id == id:
+      editor.chat.inputText.val = "Re-run proposed edit: " & proposal.summary
+      return editor.sendAgentPrompt()
+  false
 
 proc sendAgentPrompt*(editor: EditorVM): bool {.discardable.} =
   let prompt = editor.chat.inputText.val.strip()
@@ -2049,11 +2353,8 @@ proc sendAgentPrompt*(editor: EditorVM): bool {.discardable.} =
         text: "No agent adapter configured.", timestamp: 0.0)
     return false
 
-  let context = AgentPromptContext(
-    selectedStory: editor.selectedStory.val,
-    selectedElement: editor.inspector.selectedElement.val,
-    accumulatedEdits: editor.chat.accumulatedEdits.val,
-    platform: editor.platform.val)
+  let context = editor.buildAgentPromptContext()
+  editor.chat.lastPromptContext.val = context
   if editor.chat.promptAdapter(prompt, context):
     if editor.chat.sessionStatus.val == asLoading:
       editor.chat.sessionStatus.val = asReady
@@ -3197,6 +3498,10 @@ proc createAgentChatVM*(): AgentChatVM =
   let connectionState = createSignal("disconnected")
   let planEntries = createSignal[seq[string]](@[])
   let toolCalls = createSignal[seq[string]](@[])
+  let proposedEdits = createSignal[seq[AgentEditProposal]](@[])
+  let permissionRequests = createSignal[seq[AgentPermissionRequest]](@[])
+  let lastPromptContext = createSignal(AgentPromptContext())
+  let backend = createSignal(absUnconfigured)
   let stopReason = createSignal("")
 
   let messageCount = createMemo[int](proc(): int = messages.val.len)
@@ -3209,6 +3514,10 @@ proc createAgentChatVM*(): AgentChatVM =
     connectionState: connectionState,
     planEntries: planEntries,
     toolCalls: toolCalls,
+    proposedEdits: proposedEdits,
+    permissionRequests: permissionRequests,
+    lastPromptContext: lastPromptContext,
+    backend: backend,
     stopReason: stopReason,
     messageCount: messageCount)
 

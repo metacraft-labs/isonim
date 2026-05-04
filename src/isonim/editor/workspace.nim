@@ -38,6 +38,7 @@ type
     previewHook*: ProjectPreviewHook
     agentPromptAdapter*: AgentPromptAdapter
     agentCancelAdapter*: AgentCancelAdapter
+    agentBackend*: AgentBackendSelection
     permissions*: EditorWorkspacePermissions
     sourceAdapterReady*: bool
     editAdapter*: WorkspaceEditAdapter
@@ -72,6 +73,7 @@ proc emptyEditorWorkspace*(): EditorWorkspace =
     previewHook: defaultPreviewHook,
     agentPromptAdapter: nil,
     agentCancelAdapter: nil,
+    agentBackend: absUnconfigured,
     permissions: defaultEditorPermissions(),
     sourceAdapterReady: false,
     editAdapter: nil,
@@ -100,6 +102,7 @@ proc newEditorWorkspace*(title: string;
                           previewHook: ProjectPreviewHook = defaultPreviewHook;
                           agentPromptAdapter: AgentPromptAdapter = nil;
                           agentCancelAdapter: AgentCancelAdapter = nil;
+                          agentBackend = absUnconfigured;
                           permissions = defaultEditorPermissions();
                           sourceAdapterReady = false;
                           editAdapter: WorkspaceEditAdapter = nil;
@@ -128,6 +131,7 @@ proc newEditorWorkspace*(title: string;
     previewHook: previewHook,
     agentPromptAdapter: agentPromptAdapter,
     agentCancelAdapter: agentCancelAdapter,
+    agentBackend: agentBackend,
     permissions: permissions,
     sourceAdapterReady: sourceAdapterReady,
     editAdapter: editAdapter,
@@ -179,7 +183,8 @@ proc applyWorkspace*(vm: EditorVM; workspace: EditorWorkspace) =
   vm.chat.toolCalls.val = @[]
   vm.chat.stopReason.val = ""
   vm.chat.configureAgentAdapters(workspace.agentPromptAdapter,
-                                  workspace.agentCancelAdapter)
+                                  workspace.agentCancelAdapter,
+                                  workspace.agentBackend)
   vm.workspacePermissions.val = workspace.permissions
   vm.workspaceEditAdapter = workspace.editAdapter
   vm.sourceAdapterReady.val = workspace.sourceAdapterReady or
