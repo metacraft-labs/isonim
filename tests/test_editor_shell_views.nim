@@ -508,6 +508,9 @@ suite "Editor Shell Views (M2)":
 
       check frame != nil
       check frame.attributes["srcdoc"].contains("real-component")
+      check frame.attributes["scrolling"] == "no"
+      check frame.styles["overflow"] == "hidden"
+      check frame.attributes["height"] == "1"
       check detail.textContent.contains("Rendered by project-owned component code.")
 
       dispose()

@@ -155,8 +155,9 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
         iframe(ref = projectFrame,
             title = "Component preview",
             width = "1280",
-            height = "900",
+            height = "1",
             border = "0",
+            scrolling = "no",
             background_color = "#FFFFFF")
   r.appendChild(content, projectPreviewSection)
 
@@ -205,10 +206,63 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
       else:
         "Project-owned component state")
     r.setAttribute(projectFrame, "title", "Component preview " & title)
+    r.setAttribute(projectFrame, "height", "1")
     r.setAttribute(projectFrame, "srcdoc",
       if showProject: preview.documentHtml else: "")
+    r.setStyle(projectFrame, "width", "100%")
+    r.setStyle(projectFrame, "min-height", "1px")
+    r.setStyle(projectFrame, "overflow", "hidden")
     r.setStyle(projectSection, "display", if showProject: "flex" else: "none")
     r.setStyle(genericContent, "display", if showProject: "none" else: "flex")
+
+    when defined(js):
+      let frame = projectFrame
+      {.emit: ["""
+        const frame = """, frame, """;
+        if (frame && !frame.__isonimAutoHeightInstalled) {
+          frame.__isonimAutoHeightInstalled = true;
+          frame.style.overflow = 'hidden';
+          frame.setAttribute('scrolling', 'no');
+          const resizeFrame = () => {
+            try {
+              const doc = frame.contentDocument;
+              if (!doc) return;
+              const body = doc.body;
+              const html = doc.documentElement;
+              if (!body || !html) return;
+              body.style.overflow = 'hidden';
+              html.style.overflow = 'hidden';
+              const height = Math.max(
+                body.scrollHeight, body.offsetHeight,
+                html.clientHeight, html.scrollHeight, html.offsetHeight
+              );
+              frame.style.height = `${height}px`;
+              frame.setAttribute('height', String(height));
+            } catch (_) {
+              // Cross-origin frames keep their declared height.
+            }
+          };
+          frame.addEventListener('load', resizeFrame);
+          requestAnimationFrame(resizeFrame);
+        } else if (frame) {
+          requestAnimationFrame(() => {
+            try {
+              const doc = frame.contentDocument;
+              const body = doc?.body;
+              const html = doc?.documentElement;
+              if (!body || !html) return;
+              body.style.overflow = 'hidden';
+              html.style.overflow = 'hidden';
+              const height = Math.max(
+                body.scrollHeight, body.offsetHeight,
+                html.clientHeight, html.scrollHeight, html.offsetHeight
+              );
+              frame.style.height = `${height}px`;
+              frame.setAttribute('height', String(height));
+            } catch (_) {}
+          });
+        }
+      """].}
 
   # === Props / API Table ===
   let propsLabel = sectionLabel[R, E](r, "PROPERTIES")

@@ -193,6 +193,50 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
         )
         .getByTestId("component-topbar"),
     ).toBeVisible();
+    const topbarFrame = page.locator(
+      'iframe[title="Component preview Operational components / Topbar"]',
+    );
+    await expect(topbarFrame).toHaveAttribute("scrolling", "no");
+    await expect
+      .poll(async () =>
+        topbarFrame.evaluate((node) => {
+          const frame = node as HTMLIFrameElement;
+          const doc = frame.contentDocument;
+          return {
+            frameHeight: frame.clientHeight,
+            bodyScrollHeight: doc?.body?.scrollHeight ?? 0,
+            bodyOverflow: doc?.body?.style.overflow ?? "",
+          };
+        }),
+      )
+      .toEqual(
+        expect.objectContaining({
+          bodyOverflow: "hidden",
+        }),
+      );
+    await expect
+      .poll(async () =>
+        topbarFrame.evaluate((node) => {
+          const frame = node as HTMLIFrameElement;
+          const doc = frame.contentDocument;
+          return frame.clientHeight >= (doc?.body?.scrollHeight ?? 0);
+        }),
+      )
+      .toBe(true);
+    await expect(
+      page
+        .getByText(
+          "Topbar renders from the same IsoNim component function used by the back-office pages.",
+        )
+        .first(),
+    ).toBeVisible();
+    await expect(
+      page
+        .frameLocator(
+          'iframe[title="Component preview Operational components / Topbar"]',
+        )
+        .getByText("Rendered from the same IsoNim component functions"),
+    ).toHaveCount(0);
     await page
       .getByRole("button", {
         name: "Select story Operational components / Status badge tones",
