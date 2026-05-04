@@ -241,7 +241,9 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
             span(font_size = "11px", color = textMuted):
               text "Fabric.js adapter handles selection, hit testing, transforms, grouping, drawing, and SVG export."
             tdiv(display = "flex", gap = "6px"):
-              for action in ["duplicate", "delete", "group", "ungroup", "export"]:
+              for action in ["import-sample", "zoom-in", "zoom-out", "pan-right",
+                  "set-fill", "set-stroke", "duplicate", "delete", "group",
+                  "ungroup", "transform-selection", "export"]:
                 let actionName = action
                 var actionBtn: E
                 tdiv(ref = actionBtn,

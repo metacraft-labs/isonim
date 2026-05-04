@@ -1232,6 +1232,95 @@ suite "Editor ViewModels (M27 workspace file writes)":
       check recorder.fullReloadSeen
       dispose()
 
+  test "vector_editor_import_properties_shapes_and_viewbox_are_source_backed":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("vector-properties")
+      defer: removeDir(root)
+
+      let svgFile = root / "symbols.schema"
+      atomicWrite(svgFile,
+        "badge=<svg viewBox=\"0 0 64 64\"><rect id=\"badge-bg\" x=\"4\" y=\"4\" width=\"56\" height=\"40\" fill=\"#60A5FA\" stroke=\"#1D4ED8\" stroke-width=\"2\" /></svg>")
+      let recorder = WorkspaceEditRecorder()
+      let schema = @[
+        WorkspaceEditableSchemaEntry(key: "symbols.badge.svg",
+          kind: wskSvgSymbol, file: svgFile, path: "symbols.badge.svg",
+          story: writeStory, property: "svgContent")
+      ]
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "M29 vector import workspace",
+        storyGroups = @[],
+        vectorSymbols = @[
+          VectorSymbol(name: "Badge", category: "Icons",
+            svgContent: "<svg viewBox=\"0 0 64 64\"><rect id=\"badge-bg\" x=\"4\" y=\"4\" width=\"56\" height=\"40\" fill=\"#60A5FA\" stroke=\"#1D4ED8\" stroke-width=\"2\" stroke-dasharray=\"4 2\" stroke-linecap=\"round\" stroke-linejoin=\"bevel\" /></svg>",
+            width: 64, height: 64)
+        ],
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true),
+        editAdapter = adapterFor(root, schema, recorder = recorder)))
+
+      check vm.selectVectorSymbol(0)
+      atomicWrite(svgFile,
+        vm.vectorEditor.document.val.exportVectorDocumentSvg.optimizeVectorSvg)
+      check vm.vectorEditor.document.val.viewBox == "0 0 64 64"
+      check vm.vectorEditor.document.val.objects.len == 1
+      check vm.vectorEditor.document.val.objects[0].id == "badge-bg"
+      check vm.vectorEditor.document.val.objects[0].dashArray == "4 2"
+      check vm.vectorEditor.document.val.objects[0].strokeCap == scRound
+      check vm.vectorEditor.document.val.objects[0].strokeJoin == sjBevel
+
+      check vm.setVectorObjectProperty(VectorPropertyEditRequest(
+        objectId: "badge-bg", kind: vpkFill, value: "#EF4444")).ok
+      check vm.setVectorObjectProperty(VectorPropertyEditRequest(
+        objectId: "badge-bg", kind: vpkStroke, value: "#22C55E")).ok
+      check vm.setVectorObjectProperty(VectorPropertyEditRequest(
+        objectId: "badge-bg", kind: vpkDashArray, value: "8 4")).ok
+      check vm.setVectorObjectProperty(VectorPropertyEditRequest(
+        objectId: "badge-bg", kind: vpkStrokeCap, value: "square")).ok
+      check vm.setVectorObjectProperty(VectorPropertyEditRequest(
+        objectId: "badge-bg", kind: vpkStrokeJoin, value: "round")).ok
+      check vm.setVectorObjectProperty(VectorPropertyEditRequest(
+        objectId: "badge-bg", kind: vpkOpacity, value: "0.5")).ok
+      check vm.setVectorObjectProperty(VectorPropertyEditRequest(
+        objectId: "badge-bg", kind: vpkTransform, value: "15")).ok
+      check vm.setVectorDocumentViewBox("0 0 128 128").ok
+      check vm.addVectorPolygon(6).ok
+      check vm.addVectorStar(5).ok
+
+      let svg = vm.vectorEditor.document.val.exportVectorDocumentSvg
+      check svg.contains("viewBox=\"0 0 128 128\"")
+      check svg.contains("fill=\"#EF4444\"")
+      check svg.contains("stroke=\"#22C55E\"")
+      check svg.contains("stroke-dasharray=\"8 4\"")
+      check svg.contains("stroke-linecap=\"square\"")
+      check svg.contains("stroke-linejoin=\"round\"")
+      check svg.contains("opacity=\"0.5\"")
+      check svg.contains("rotate(15")
+      check svg.contains("polygon-")
+      check svg.contains("star-")
+      check vm.inspector.pendingSourceEdits.val.len >= 9
+      let pendingBeforeUndo = vm.inspector.pendingSourceEdits.val.len
+      check vm.undoVectorEdit()
+      check vm.vectorEditor.document.val.objects.allIt(it.id != "star-3")
+      check vm.inspector.pendingSourceEdits.val.len == pendingBeforeUndo - 1
+      check vm.workspaceEditStage.val == wesDirty
+      check vm.redoVectorEdit()
+      check vm.vectorEditor.document.val.objects.anyIt(it.id == "star-3")
+      check vm.inspector.pendingSourceEdits.val.len == pendingBeforeUndo
+      let saved = vm.applyWorkspaceFileEdits()
+      check saved.ok
+      let savedSvg = readFile(svgFile)
+      check savedSvg.contains("viewBox=\"0 0 128 128\"")
+      check savedSvg.contains("fill=\"#EF4444\"")
+      check savedSvg.contains("stroke=\"#22C55E\"")
+      check savedSvg.contains("stroke-linecap=\"square\"")
+      check savedSvg.contains("star-3")
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check vm.vectorEditor.undoStack.val.len == 0
+      check not vm.vectorEditor.isDirty.val
+      check vm.workspaceEditStage.val == wesClean
+      check recorder.fullReloadSeen
+      dispose()
+
   test "foundation_token_edit_updates_dependent_properties":
     createRoot proc(dispose: proc()) =
       let root = tempWorkspaceDir("foundation")

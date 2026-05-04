@@ -65,6 +65,13 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
       if (action === 'group') editor.groupSelected();
       if (action === 'ungroup') editor.ungroupSelected();
       if (action === 'export') editor.exportSvg();
+      if (action === 'import-sample') editor.importSvg(editor.sampleImportSvg);
+      if (action === 'zoom-in') editor.zoomBy(1.2);
+      if (action === 'zoom-out') editor.zoomBy(0.8);
+      if (action === 'pan-right') editor.panBy(48, 24);
+      if (action === 'set-fill') editor.setSelectedProperty('fill', '#EF4444');
+      if (action === 'set-stroke') editor.setSelectedProperty('stroke', '#22C55E');
+      if (action === 'transform-selection') editor.transformSelected();
       event.preventDefault();
     };
     document.addEventListener('click', runDelegatedAction);
@@ -117,6 +124,7 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
     backend: 'fabric',
     version: '7.3.1',
     initialSvg,
+    sampleImportSvg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect id="imported-rect" x="8" y="10" width="30" height="22" fill="#60A5FA" stroke="#1D4ED8" stroke-width="3"/><path id="imported-path" d="M12 48 L28 36 L48 50" fill="none" stroke="#F59E0B" stroke-width="4" stroke-linecap="round"/></svg>',
     canvas,
     svgoOptimize: null,
     setTool(nextTool) {
@@ -126,6 +134,8 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
       canvas.defaultCursor = nextTool === 'select' ? 'default' : 'crosshair';
       if (nextTool === 'rectangle') this.addRect();
       if (nextTool === 'ellipse') this.addEllipse();
+      if (nextTool === 'polygon') this.addPolygon();
+      if (nextTool === 'star') this.addStar();
       if (nextTool === 'line') this.addLine();
       if (nextTool === 'text') this.addText();
       canvas.renderAll();
@@ -138,6 +148,17 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
       host.dataset.selectedVectorObject = this.selectedName();
       host.dataset.vectorObjectCount = String(canvas.getObjects().length);
       host.dataset.vectorSvgLength = String(canvas.toSVG().length);
+      host.dataset.vectorZoom = String(canvas.getZoom());
+      host.dataset.vectorPanX = String(canvas.viewportTransform ? canvas.viewportTransform[4] : 0);
+      host.dataset.vectorPanY = String(canvas.viewportTransform ? canvas.viewportTransform[5] : 0);
+      const obj = canvas.getActiveObject();
+      host.dataset.vectorControlsVisible = obj && obj.hasControls !== false ? 'true' : 'false';
+      host.dataset.vectorActiveFill = obj && obj.fill ? String(obj.fill) : '';
+      host.dataset.vectorActiveStroke = obj && obj.stroke ? String(obj.stroke) : '';
+      host.dataset.vectorActiveLeft = obj && obj.left != null ? String(Math.round(obj.left)) : '';
+      host.dataset.vectorActiveTop = obj && obj.top != null ? String(Math.round(obj.top)) : '';
+      host.dataset.vectorActiveAngle = obj && obj.angle != null ? String(Math.round(obj.angle)) : '';
+      host.dataset.vectorActiveScaleX = obj && obj.scaleX != null ? String(Number(obj.scaleX).toFixed(2)) : '';
     },
     addRect() {
       const obj = new fabricLib.Rect({
@@ -152,6 +173,31 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
         left: 398, top: 202, radius: 36, fill: 'rgba(245,158,11,0.20)',
         stroke: '#F59E0B', strokeWidth: 2, selectable: true,
         name: 'drawn-ellipse'
+      });
+      canvas.add(obj); canvas.setActiveObject(obj); this.syncSelection();
+    },
+    addPolygon() {
+      const obj = new fabricLib.Polygon([
+        { x: 0, y: -48 }, { x: 42, y: -24 }, { x: 42, y: 24 },
+        { x: 0, y: 48 }, { x: -42, y: 24 }, { x: -42, y: -24 }
+      ], {
+        left: 470, top: 92, fill: 'rgba(147,197,253,0.18)',
+        stroke: '#93C5FD', strokeWidth: 2, selectable: true,
+        name: 'drawn-polygon'
+      });
+      canvas.add(obj); canvas.setActiveObject(obj); this.syncSelection();
+    },
+    addStar() {
+      const points = [];
+      for (let i = 0; i < 10; i += 1) {
+        const radius = i % 2 === 0 ? 48 : 20;
+        const angle = Math.PI * i / 5 - Math.PI / 2;
+        points.push({ x: Math.cos(angle) * radius, y: Math.sin(angle) * radius });
+      }
+      const obj = new fabricLib.Polygon(points, {
+        left: 552, top: 240, fill: 'rgba(245,158,11,0.18)',
+        stroke: '#F59E0B', strokeWidth: 2, selectable: true,
+        name: 'drawn-star'
       });
       canvas.add(obj); canvas.setActiveObject(obj); this.syncSelection();
     },
@@ -201,6 +247,71 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
       active.toActiveSelection(); canvas.renderAll(); this.syncSelection();
       return true;
     },
+    importSvg(svgText) {
+      const wrapped = svgText && svgText.includes('<svg')
+        ? svgText
+        : `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">${svgText || ''}</svg>`;
+      if (typeof fabricLib.loadSVGFromString !== 'function') {
+        host.dataset.vectorImportBacked = 'false';
+        return false;
+      }
+      fabricLib.loadSVGFromString(wrapped).then(({ objects }) => {
+        const imported = (objects || []).filter(Boolean);
+        imported.forEach((obj, index) => {
+          obj.set({
+            left: (obj.left || 0) + 72 + index * 12,
+            top: (obj.top || 0) + 238,
+            selectable: true,
+            name: obj.name || obj.id || `imported-${obj.type || 'object'}-${index + 1}`
+          });
+          canvas.add(obj);
+        });
+        if (imported.length > 0) canvas.setActiveObject(imported[0]);
+        canvas.renderAll();
+        host.dataset.vectorImportBacked = 'fabric';
+        host.dataset.vectorImportedCount = String(imported.length);
+        this.syncSelection();
+      }).catch((error) => {
+        host.dataset.vectorImportBacked = 'error';
+        host.dataset.vectorImportError = String(error && error.message ? error.message : error);
+      });
+      return true;
+    },
+    zoomBy(factor) {
+      const next = Math.max(0.1, Math.min(8, canvas.getZoom() * factor));
+      canvas.zoomToPoint(new fabricLib.Point(canvasEl.width / 2, canvasEl.height / 2), next);
+      canvas.requestRenderAll();
+      this.syncSelection();
+      return true;
+    },
+    panBy(dx, dy) {
+      canvas.relativePan(new fabricLib.Point(dx, dy));
+      canvas.requestRenderAll();
+      this.syncSelection();
+      return true;
+    },
+    setSelectedProperty(prop, value) {
+      const obj = canvas.getActiveObject();
+      if (!obj) return false;
+      obj.set(prop, value);
+      canvas.requestRenderAll();
+      this.syncSelection();
+      return true;
+    },
+    transformSelected() {
+      const obj = canvas.getActiveObject();
+      if (!obj) return false;
+      obj.set({
+        angle: (obj.angle || 0) + 15,
+        scaleX: (obj.scaleX || 1) * 1.1,
+        scaleY: (obj.scaleY || 1) * 1.1
+      });
+      obj.setCoords();
+      canvas.fire('object:modified', { target: obj });
+      canvas.requestRenderAll();
+      this.syncSelection();
+      return true;
+    },
     exportSvg() {
       const exported = canvas.toSVG();
       const optimized = this.svgoOptimize
@@ -233,6 +344,7 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
       event.preventDefault();
     }
   });
+  state.importSvg(initialSvg);
   state.setTool(activeTool);
   state.syncSelection();
   import('./svgo.browser.js').then((svgo) => {
@@ -269,5 +381,12 @@ proc runFabricVectorAction*[E](host: E; action: string) =
   if (action === 'group') editor.groupSelected();
   if (action === 'ungroup') editor.ungroupSelected();
   if (action === 'export') editor.exportSvg();
+  if (action === 'import-sample') editor.importSvg(editor.sampleImportSvg);
+  if (action === 'zoom-in') editor.zoomBy(1.2);
+  if (action === 'zoom-out') editor.zoomBy(0.8);
+  if (action === 'pan-right') editor.panBy(48, 24);
+  if (action === 'set-fill') editor.setSelectedProperty('fill', '#EF4444');
+  if (action === 'set-stroke') editor.setSelectedProperty('stroke', '#22C55E');
+  if (action === 'transform-selection') editor.transformSelected();
 })()
   """].}

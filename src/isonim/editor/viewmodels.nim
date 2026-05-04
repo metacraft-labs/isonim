@@ -63,6 +63,7 @@ type
     isEditing*: Memo[bool]
     isDirty*: Memo[bool]
     zoom*: Signal[float]
+    panX*, panY*: Signal[float]
     showGrid*: Signal[bool]
     snapToGrid*: Signal[bool]
     gridSize*: Signal[float]
@@ -782,13 +783,16 @@ proc changeViewport*(editor: EditorVM; viewport: PreviewViewport) =
   editor.viewport.val = viewport
   editor.platform.val = platformForViewport(viewport)
 
+func importVectorDocumentSvg*(symbol: VectorSymbol; svg: string): VectorDocument
+
 proc selectVectorSymbol*(editor: EditorVM; index: int): bool {.discardable.} =
   let symbols = editor.vectorEditor.symbols.val
   if index < 0 or index >= symbols.len:
     return false
 
   editor.vectorEditor.selectedSymbol.val = index
-  editor.vectorEditor.document.val = vectorDocumentFromSymbol(symbols[index])
+  editor.vectorEditor.document.val =
+    importVectorDocumentSvg(symbols[index], symbols[index].svgContent)
   editor.vectorEditor.diagnostics.val =
     editor.vectorEditor.document.val.validateVectorAccessibility()
   editor.vectorEditor.undoStack.val = @[]
@@ -946,6 +950,13 @@ proc setEditMode*(editor: EditorVM; mode: EditMode) =
 
 proc setVectorTool*(editor: EditorVM; tool: VectorTool) =
   editor.vectorEditor.activeTool.val = tool
+
+proc setVectorZoom*(editor: EditorVM; zoom: float) =
+  editor.vectorEditor.zoom.val = max(0.1, min(8.0, zoom))
+
+proc panVectorCanvas*(editor: EditorVM; dx, dy: float) =
+  editor.vectorEditor.panX.val = editor.vectorEditor.panX.val + dx
+  editor.vectorEditor.panY.val = editor.vectorEditor.panY.val + dy
 
 proc runEditorCommand*(editor: EditorVM;
     kind: EditorCommandKind): EditorCommandState {.discardable.} =
@@ -1962,6 +1973,8 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
       return editor.failWorkspaceEdit(diagnostics, patches)
 
   editor.inspector.markCssPropertyEditsSaved()
+  editor.vectorEditor.undoStack.val = @[]
+  editor.vectorEditor.redoStack.val = @[]
   editor.chat.accumulatedEdits.val = @[]
   editor.workspaceEditStage.val = wesClean
   editor.workspaceEditDiagnostics.val = @[]
@@ -2387,6 +2400,56 @@ func defaultVectorA11y(symbol: VectorSymbol): VectorAccessibilityMeta =
     role: varSemantic,
     focusable: false)
 
+func vectorAttr(source, name: string): string =
+  let key = name & "=\""
+  let start = source.find(key)
+  if start < 0:
+    return ""
+  let valueStart = start + key.len
+  let valueEnd = source.find("\"", valueStart)
+  if valueEnd < 0:
+    return ""
+  source[valueStart ..< valueEnd]
+
+func vectorFloatAttr(source, name: string; fallback: float): float =
+  let raw = source.vectorAttr(name)
+  if raw.len == 0:
+    return fallback
+  try:
+    raw.parseFloat
+  except ValueError:
+    fallback
+
+func strokeCapFromString(value: string): StrokeCapStyle =
+  case value.toLowerAscii
+  of "round": scRound
+  of "square": scSquare
+  else: scButt
+
+func strokeJoinFromString(value: string): StrokeJoinStyle =
+  case value.toLowerAscii
+  of "round": sjRound
+  of "bevel": sjBevel
+  else: sjMiter
+
+func strokeCapName(value: StrokeCapStyle): string =
+  case value
+  of scRound: "round"
+  of scSquare: "square"
+  else: "butt"
+
+func strokeJoinName(value: StrokeJoinStyle): string =
+  case value
+  of sjRound: "round"
+  of sjBevel: "bevel"
+  else: "miter"
+
+func vectorObjectBase(id, name: string; kind: VectorShapeKind;
+    source: VectorSourceOrigin; a11y: VectorAccessibilityMeta): VectorObject =
+  VectorObject(id: id, name: name, kind: kind, layerId: "base",
+    fill: "none", stroke: "currentColor", strokeWidth: 1, opacity: 1,
+    strokeCap: scButt, strokeJoin: sjMiter, source: source, a11y: a11y)
+
 func vectorDocumentFromSymbol*(symbol: VectorSymbol): VectorDocument =
   let source = sourceFor(symbol)
   let width = if symbol.width > 0: symbol.width else: 24.0
@@ -2412,6 +2475,8 @@ func vectorDocumentFromSymbol*(symbol: VectorSymbol): VectorDocument =
       fill: "none",
       stroke: "currentColor",
       strokeWidth: 2,
+      strokeCap: scRound,
+      strokeJoin: sjRound,
       opacity: 1,
       source: source,
       a11y: defaultVectorA11y(symbol))],
@@ -2447,24 +2512,39 @@ func renderVectorObject(obj: VectorObject): string =
         " " & $(obj.y + obj.height / 2) & ")\""
     else:
       ""
+  let commonPaint = " fill=\"" & obj.fill.escapeSvg & "\" stroke=\"" &
+    obj.stroke.escapeSvg & "\" stroke-width=\"" & $obj.strokeWidth &
+    "\" stroke-linecap=\"" & obj.strokeCap.strokeCapName &
+    "\" stroke-linejoin=\"" & obj.strokeJoin.strokeJoinName &
+    "\" opacity=\"" & $obj.opacity & "\""
+  let dash =
+    if obj.dashArray.len > 0: " stroke-dasharray=\"" &
+        obj.dashArray.escapeSvg & "\""
+    else: ""
+  let blend =
+    if obj.blendMode.len > 0: " style=\"mix-blend-mode:" &
+        obj.blendMode.escapeSvg & "\""
+    else: ""
   case obj.kind
   of vskRect:
     "<rect id=\"" & obj.id.escapeSvg & "\" x=\"" & $obj.x & "\" y=\"" & $obj.y &
       "\" width=\"" & $obj.width & "\" height=\"" & $obj.height &
-      "\" fill=\"" & obj.fill.escapeSvg & "\" stroke=\"" & obj.stroke.escapeSvg &
-      "\" stroke-width=\"" & $obj.strokeWidth & "\" opacity=\"" & $obj.opacity &
-      "\"" & transform & " />"
+      "\"" & commonPaint & dash & transform & blend & " />"
   of vskEllipse:
     "<ellipse id=\"" & obj.id.escapeSvg & "\" cx=\"" & $(obj.x + obj.width / 2) &
       "\" cy=\"" & $(obj.y + obj.height / 2) & "\" rx=\"" & $(obj.width / 2) &
-      "\" ry=\"" & $(obj.height / 2) & "\" fill=\"" & obj.fill.escapeSvg &
-      "\" stroke=\"" & obj.stroke.escapeSvg & "\" stroke-width=\"" &
-      $obj.strokeWidth & "\" opacity=\"" & $obj.opacity & "\"" & transform & " />"
+      "\" ry=\"" & $(obj.height / 2) & "\"" & commonPaint & dash & transform &
+      blend & " />"
   of vskLine:
     "<line id=\"" & obj.id.escapeSvg & "\" x1=\"" & $obj.x & "\" y1=\"" & $obj.y &
       "\" x2=\"" & $(obj.x + obj.width) & "\" y2=\"" & $(obj.y + obj.height) &
-      "\" stroke=\"" & obj.stroke.escapeSvg & "\" stroke-width=\"" &
-      $obj.strokeWidth & "\"" & transform & " />"
+      "\" fill=\"none\" stroke=\"" & obj.stroke.escapeSvg &
+      "\" stroke-width=\"" & $obj.strokeWidth & "\" stroke-linecap=\"" &
+      obj.strokeCap.strokeCapName & "\" stroke-linejoin=\"" &
+      obj.strokeJoin.strokeJoinName & "\"" & dash & transform & blend & " />"
+  of vskPolygon, vskStar:
+    "<path id=\"" & obj.id.escapeSvg & "\" d=\"" & obj.pathData.escapeSvg &
+      "\"" & commonPaint & dash & transform & blend & " />"
   of vskText:
     "<text id=\"" & obj.id.escapeSvg & "\" x=\"" & $obj.x & "\" y=\"" & $obj.y &
       "\" fill=\"" & obj.fill.escapeSvg & "\"" & transform & ">" &
@@ -2476,9 +2556,7 @@ func renderVectorObject(obj: VectorObject): string =
       "\" x=\"" & $obj.x & "\" y=\"" & $obj.y & "\"" & transform & " />"
   of vskPath:
     "<path id=\"" & obj.id.escapeSvg & "\" d=\"" & obj.pathData.escapeSvg &
-      "\" fill=\"" & obj.fill.escapeSvg & "\" stroke=\"" & obj.stroke.escapeSvg &
-      "\" stroke-width=\"" & $obj.strokeWidth & "\" opacity=\"" & $obj.opacity &
-      "\"" & transform & " />"
+      "\"" & commonPaint & dash & transform & blend & " />"
 
 func exportVectorDocumentSvg*(doc: VectorDocument): string =
   var body = ""
@@ -2507,6 +2585,96 @@ func exportVectorDocumentSvg*(doc: VectorDocument): string =
 
 func optimizeVectorSvg*(svg: string): string =
   svg.replace("\n", "").replace("  ", " ").replace("> <", "><").strip()
+
+func importedObjectFromTag(tag: string; index: int; source: VectorSourceOrigin;
+    a11y: VectorAccessibilityMeta): VectorObject =
+  let id = if tag.vectorAttr("id").len > 0: tag.vectorAttr("id") else: "import-" & $index
+  var obj = vectorObjectBase(id, id, vskPath, source, a11y)
+  obj.fill = tag.vectorAttr("fill")
+  if obj.fill.len == 0:
+    obj.fill = "none"
+  obj.stroke = tag.vectorAttr("stroke")
+  if obj.stroke.len == 0:
+    obj.stroke = "currentColor"
+  obj.strokeWidth = tag.vectorFloatAttr("stroke-width", 1)
+  obj.opacity = tag.vectorFloatAttr("opacity", 1)
+  obj.dashArray = tag.vectorAttr("stroke-dasharray")
+  obj.strokeCap = tag.vectorAttr("stroke-linecap").strokeCapFromString
+  obj.strokeJoin = tag.vectorAttr("stroke-linejoin").strokeJoinFromString
+  obj.blendMode = tag.vectorAttr("mix-blend-mode")
+  if tag.startsWith("<rect"):
+    obj.kind = vskRect
+    obj.x = tag.vectorFloatAttr("x", 0)
+    obj.y = tag.vectorFloatAttr("y", 0)
+    obj.width = tag.vectorFloatAttr("width", 0)
+    obj.height = tag.vectorFloatAttr("height", 0)
+  elif tag.startsWith("<circle"):
+    let r = tag.vectorFloatAttr("r", 0)
+    obj.kind = vskEllipse
+    obj.x = tag.vectorFloatAttr("cx", r) - r
+    obj.y = tag.vectorFloatAttr("cy", r) - r
+    obj.width = r * 2
+    obj.height = r * 2
+  elif tag.startsWith("<ellipse"):
+    let rx = tag.vectorFloatAttr("rx", 0)
+    let ry = tag.vectorFloatAttr("ry", 0)
+    obj.kind = vskEllipse
+    obj.x = tag.vectorFloatAttr("cx", rx) - rx
+    obj.y = tag.vectorFloatAttr("cy", ry) - ry
+    obj.width = rx * 2
+    obj.height = ry * 2
+  elif tag.startsWith("<line"):
+    let x1 = tag.vectorFloatAttr("x1", 0)
+    let y1 = tag.vectorFloatAttr("y1", 0)
+    obj.kind = vskLine
+    obj.x = x1
+    obj.y = y1
+    obj.width = tag.vectorFloatAttr("x2", x1) - x1
+    obj.height = tag.vectorFloatAttr("y2", y1) - y1
+  else:
+    obj.kind = vskPath
+    obj.pathData = tag.vectorAttr("d")
+  obj
+
+func importVectorDocumentSvg*(symbol: VectorSymbol; svg: string): VectorDocument =
+  let base = symbol.vectorDocumentFromSymbol
+  if "<svg" notin svg:
+    return base
+  var doc = base
+  doc.objects = @[]
+  doc.layers = @[VectorLayer(id: "base", name: "Base", visible: true,
+    locked: false, objectIds: @[])]
+  doc.symbols = @[VectorSymbolDefinition(id: symbol.name.normalize,
+    name: symbol.name, svgContent: svg, source: doc.source, a11y: doc.a11y)]
+  let svgOpenEnd = svg.find(">")
+  if svgOpenEnd >= 0:
+    let openTag = svg[0 .. svgOpenEnd]
+    let importedViewBox = openTag.vectorAttr("viewBox")
+    if importedViewBox.len > 0:
+      doc.viewBox = importedViewBox
+    doc.width = openTag.vectorFloatAttr("width", doc.width)
+    doc.height = openTag.vectorFloatAttr("height", doc.height)
+  var index = 0
+  for tagName in ["rect", "circle", "ellipse", "line", "path"]:
+    var cursor = 0
+    while true:
+      let start = svg.find("<" & tagName, cursor)
+      if start < 0:
+        break
+      let stop = svg.find(">", start)
+      if stop < 0:
+        break
+      inc index
+      let tag = svg[start .. stop]
+      let obj = importedObjectFromTag(tag, index, doc.source, doc.a11y)
+      doc.objects.add obj
+      doc.layers[0].objectIds.add obj.id
+      cursor = stop + 1
+  if doc.objects.len == 0:
+    doc.objects = base.objects
+    doc.layers = base.layers
+  doc.selectedIds = if doc.objects.len > 0: @[doc.objects[0].id] else: @[]
+  doc
 
 func vectorSourcePlan(doc: VectorDocument; beforeSvg, afterSvg: string): SourceEditPlan =
   SourceEditPlan(
@@ -2643,6 +2811,110 @@ proc reuseVectorSymbol*(editor: EditorVM; symbolId: string): VectorOperationResu
   afterDoc.selectedIds = @[useId]
   editor.commitVectorDocument(vokReuseSymbol, beforeDoc, afterDoc)
 
+proc setVectorObjectProperty*(editor: EditorVM;
+    request: VectorPropertyEditRequest): VectorOperationResult {.discardable.} =
+  let beforeDoc = editor.vectorEditor.document.val
+  let idx = beforeDoc.objectIndex(request.objectId)
+  if idx < 0:
+    return VectorOperationResult(ok: false, operation: vokSetProperty,
+      diagnostics: @[VectorDiagnostic(kind: vdkMissingObject,
+        message: "Unknown vector object '" & request.objectId & "'.",
+        objectId: request.objectId)])
+  var afterDoc = beforeDoc
+  case request.kind
+  of vpkFill:
+    afterDoc.objects[idx].fill = request.value
+  of vpkStroke:
+    afterDoc.objects[idx].stroke = request.value
+  of vpkGradient:
+    afterDoc.objects[idx].gradient = request.value
+    afterDoc.objects[idx].fill = "url(#" & request.value & ")"
+  of vpkDashArray:
+    afterDoc.objects[idx].dashArray = request.value
+  of vpkStrokeCap:
+    afterDoc.objects[idx].strokeCap = request.value.strokeCapFromString
+  of vpkStrokeJoin:
+    afterDoc.objects[idx].strokeJoin = request.value.strokeJoinFromString
+  of vpkOpacity:
+    try:
+      afterDoc.objects[idx].opacity = max(0.0, min(1.0, request.value.parseFloat))
+    except ValueError:
+      return VectorOperationResult(ok: false, operation: vokSetProperty,
+        diagnostics: @[VectorDiagnostic(kind: vdkInvalidSvg,
+          message: "Opacity must be a number between 0 and 1.",
+          objectId: request.objectId)])
+  of vpkTransform:
+    try:
+      afterDoc.objects[idx].rotation = request.value.parseFloat
+    except ValueError:
+      return VectorOperationResult(ok: false, operation: vokSetProperty,
+        diagnostics: @[VectorDiagnostic(kind: vdkInvalidSvg,
+          message: "Transform rotation must be numeric.",
+          objectId: request.objectId)])
+  of vpkBlendMode:
+    afterDoc.objects[idx].blendMode = request.value
+  editor.commitVectorDocument(vokSetProperty, beforeDoc, afterDoc)
+
+proc setVectorDocumentViewBox*(editor: EditorVM;
+    viewBox: string): VectorOperationResult {.discardable.} =
+  let beforeDoc = editor.vectorEditor.document.val
+  if viewBox.splitWhitespace.len != 4:
+    return VectorOperationResult(ok: false, operation: vokSetViewBox,
+      diagnostics: @[VectorDiagnostic(kind: vdkInvalidSvg,
+        message: "ViewBox must contain four numeric values.")])
+  var afterDoc = beforeDoc
+  afterDoc.viewBox = viewBox
+  editor.commitVectorDocument(vokSetViewBox, beforeDoc, afterDoc)
+
+func polygonPath(cx, cy, radius: float; sides: int): string =
+  var points: seq[string] = @[]
+  for i in 0 ..< sides:
+    let angle = (2 * PI * float(i) / float(sides)) - PI / 2
+    points.add $(cx + cos(angle) * radius) & " " & $(cy + sin(angle) * radius)
+  if points.len == 0:
+    return ""
+  "M" & points.join("L") & "Z"
+
+func starPath(cx, cy, outerRadius, innerRadius: float; pointsCount: int): string =
+  var points: seq[string] = @[]
+  for i in 0 ..< pointsCount * 2:
+    let radius = if i mod 2 == 0: outerRadius else: innerRadius
+    let angle = (PI * float(i) / float(pointsCount)) - PI / 2
+    points.add $(cx + cos(angle) * radius) & " " & $(cy + sin(angle) * radius)
+  if points.len == 0:
+    return ""
+  "M" & points.join("L") & "Z"
+
+proc addVectorPolygon*(editor: EditorVM; sides: int = 6): VectorOperationResult {.discardable.} =
+  let beforeDoc = editor.vectorEditor.document.val
+  var afterDoc = beforeDoc
+  let id = "polygon-" & $(afterDoc.objects.len + 1)
+  afterDoc.objects.add VectorObject(id: id, name: "Polygon",
+    kind: vskPolygon, layerId: "base", x: 120, y: 80, width: 96, height: 96,
+    pathData: polygonPath(168, 128, 48, max(3, sides)), fill: "none",
+    stroke: "currentColor", strokeWidth: 2, opacity: 1, strokeCap: scButt,
+    strokeJoin: sjRound, source: beforeDoc.source, a11y: beforeDoc.a11y)
+  let layerPos = afterDoc.layerIndex("base")
+  if layerPos >= 0:
+    afterDoc.layers[layerPos].objectIds.add id
+  afterDoc.selectedIds = @[id]
+  editor.commitVectorDocument(vokAddShape, beforeDoc, afterDoc)
+
+proc addVectorStar*(editor: EditorVM; pointsCount: int = 5): VectorOperationResult {.discardable.} =
+  let beforeDoc = editor.vectorEditor.document.val
+  var afterDoc = beforeDoc
+  let id = "star-" & $(afterDoc.objects.len + 1)
+  afterDoc.objects.add VectorObject(id: id, name: "Star",
+    kind: vskStar, layerId: "base", x: 240, y: 80, width: 104, height: 104,
+    pathData: starPath(292, 132, 52, 22, max(3, pointsCount)), fill: "none",
+    stroke: "currentColor", strokeWidth: 2, opacity: 1, strokeCap: scButt,
+    strokeJoin: sjRound, source: beforeDoc.source, a11y: beforeDoc.a11y)
+  let layerPos = afterDoc.layerIndex("base")
+  if layerPos >= 0:
+    afterDoc.layers[layerPos].objectIds.add id
+  afterDoc.selectedIds = @[id]
+  editor.commitVectorDocument(vokAddShape, beforeDoc, afterDoc)
+
 proc selectVectorObjects*(editor: EditorVM; ids: seq[string]): bool {.discardable.} =
   var doc = editor.vectorEditor.document.val
   for id in ids:
@@ -2666,7 +2938,22 @@ proc undoVectorEdit*(editor: EditorVM): bool {.discardable.} =
       VectorEditTransaction] =
     result = prev
     result.add tx
+  editor.inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
+      SourceEditPlan] =
+    result = prev
+    if prev.len > 0:
+      for i in countdown(prev.high, 0):
+        let plan = prev[i]
+        if plan.file == tx.sourceEdit.file and
+            plan.schemaKey == tx.sourceEdit.schemaKey and
+            plan.property == tx.sourceEdit.property and
+            plan.oldValue == tx.sourceEdit.oldValue and
+            plan.newValue == tx.sourceEdit.newValue:
+          result.delete(i)
+          break
   editor.vectorEditor.document.val = tx.beforeDocument
+  editor.workspaceEditStage.val =
+    if editor.inspector.pendingSourceEdits.val.len == 0: wesClean else: wesDirty
   true
 
 proc redoVectorEdit*(editor: EditorVM): bool {.discardable.} =
@@ -2680,6 +2967,11 @@ proc redoVectorEdit*(editor: EditorVM): bool {.discardable.} =
     result = prev
     result.add tx
   editor.vectorEditor.document.val = tx.afterDocument
+  editor.inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
+      SourceEditPlan] =
+    result = prev
+    result.add tx.sourceEdit
+  editor.workspaceEditStage.val = wesDirty
   true
 
 proc createVectorEditorVM*(): VectorEditorVM =
@@ -2693,6 +2985,8 @@ proc createVectorEditorVM*(): VectorEditorVM =
   let searchFilter = createSignal("")
   let selectedSymbol = createSignal(-1)
   let zoom = createSignal(1.0)
+  let panX = createSignal(0.0)
+  let panY = createSignal(0.0)
   let showGrid = createSignal(true)
   let snapToGrid = createSignal(true)
   let gridSize = createSignal(8.0)
@@ -2734,6 +3028,8 @@ proc createVectorEditorVM*(): VectorEditorVM =
     isEditing: isEditing,
     isDirty: isDirty,
     zoom: zoom,
+    panX: panX,
+    panY: panY,
     showGrid: showGrid,
     snapToGrid: snapToGrid,
     gridSize: gridSize)

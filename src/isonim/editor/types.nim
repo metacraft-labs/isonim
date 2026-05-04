@@ -259,6 +259,8 @@ type
     vskEllipse
     vskLine
     vskPath
+    vskPolygon
+    vskStar
     vskText
     vskGroup
     vskSymbolUse
@@ -293,7 +295,12 @@ type
     fill*: string
     stroke*: string
     strokeWidth*: float
+    dashArray*: string
+    strokeCap*: StrokeCapStyle
+    strokeJoin*: StrokeJoinStyle
     opacity*: float
+    gradient*: string
+    blendMode*: string
     children*: seq[string]
     symbolRef*: string
     source*: VectorSourceOrigin
@@ -336,7 +343,25 @@ type
     vokUngroup
     vokReorderLayer
     vokSetProperty
+    vokSetViewBox
+    vokAddShape
     vokReuseSymbol
+
+  VectorPropertyKind* = enum
+    vpkFill
+    vpkStroke
+    vpkGradient
+    vpkDashArray
+    vpkStrokeCap
+    vpkStrokeJoin
+    vpkOpacity
+    vpkTransform
+    vpkBlendMode
+
+  VectorPropertyEditRequest* = object
+    objectId*: string
+    kind*: VectorPropertyKind
+    value*: string
 
   VectorDiagnosticKind* = enum
     vdkMissingLibrary

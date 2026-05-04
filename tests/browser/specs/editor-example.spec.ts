@@ -147,12 +147,93 @@ test.describe("IsoNim packaged editor example", () => {
     await page.mouse.move(box!.x + 178, box!.y + 180);
     await page.mouse.up();
     await expect(host).toHaveAttribute("data-selected-vector-object", /\w/);
+    await expect(host).toHaveAttribute("data-vector-controls-visible", "true");
+
+    const countBeforeImport = Number(
+      await host.evaluate((node) =>
+        node.getAttribute("data-vector-object-count"),
+      ),
+    );
+
+    await page.getByRole("button", { name: "Vector import-sample" }).click();
+    await expect(host).toHaveAttribute("data-vector-import-backed", "fabric");
+    await expect
+      .poll(async () =>
+        Number(
+          await host.evaluate((node) =>
+            node.getAttribute("data-vector-imported-count"),
+          ),
+        ),
+      )
+      .toBeGreaterThan(1);
+
+    const zoomBefore = Number(
+      await host.evaluate((node) => node.getAttribute("data-vector-zoom")),
+    );
+    await page.getByRole("button", { name: "Vector zoom-in" }).click();
+    await expect
+      .poll(async () =>
+        Number(
+          await host.evaluate((node) => node.getAttribute("data-vector-zoom")),
+        ),
+      )
+      .toBeGreaterThan(zoomBefore);
+
+    const panBefore = Number(
+      await host.evaluate((node) => node.getAttribute("data-vector-pan-x")),
+    );
+    await page.getByRole("button", { name: "Vector pan-right" }).click();
+    await expect
+      .poll(async () =>
+        Number(
+          await host.evaluate((node) => node.getAttribute("data-vector-pan-x")),
+        ),
+      )
+      .toBeGreaterThan(panBefore);
+
+    await page.getByRole("button", { name: "Vector set-fill" }).click();
+    await expect(host).toHaveAttribute("data-vector-active-fill", "#EF4444");
+    await page.getByRole("button", { name: "Vector set-stroke" }).click();
+    await expect(host).toHaveAttribute("data-vector-active-stroke", "#22C55E");
+
+    await page
+      .getByRole("button", { name: "Select Polygon vector tool" })
+      .click();
+    await expect(host).toHaveAttribute(
+      "data-selected-vector-object",
+      "drawn-polygon",
+    );
+    await page.getByRole("button", { name: "Select Star vector tool" }).click();
+    await expect(host).toHaveAttribute(
+      "data-selected-vector-object",
+      "drawn-star",
+    );
+
+    const angleBefore = Number(
+      await host.evaluate((node) =>
+        node.getAttribute("data-vector-active-angle"),
+      ),
+    );
+    await page
+      .getByRole("button", { name: "Vector transform-selection" })
+      .click();
+    await expect
+      .poll(async () =>
+        Number(
+          await host.evaluate((node) =>
+            node.getAttribute("data-vector-active-angle"),
+          ),
+        ),
+      )
+      .toBeGreaterThan(angleBefore);
 
     const countBefore = Number(
       await host.evaluate((node) =>
         node.getAttribute("data-vector-object-count"),
       ),
     );
+    expect(countBefore).toBeGreaterThan(countBeforeImport);
+
     await host.focus();
     await page.keyboard.press(
       process.platform === "darwin" ? "Meta+D" : "Control+D",
