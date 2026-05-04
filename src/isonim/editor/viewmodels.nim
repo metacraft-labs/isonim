@@ -4,7 +4,7 @@
 ## No CSS, no colors, no rendering — only signals, memos, and enums.
 ## Created via withViewModel inside createRoot.
 
-import std/strutils
+import std/[sequtils, strutils]
 import isonim/core/[signals, computation]
 import isonim/viewmodel
 import isonim/editor/types
@@ -36,8 +36,14 @@ type
     activeSection*: Signal[InspectorSection]
     editDiagnostics*: Signal[seq[PropertyEditDiagnostic]]
     pendingSourceEdits*: Signal[seq[SourceEditPlan]]
+    sourcePreviews*: Signal[seq[CSSSourcePreview]]
+    conflicts*: Signal[seq[CSSSourceConflict]]
+    undoStack*: Signal[seq[CSSPropertyEditTransaction]]
+    redoStack*: Signal[seq[CSSPropertyEditTransaction]]
     hasElement*: Memo[bool]
     properties*: Memo[seq[PropertyInfo]]
+    propertyEditors*: Memo[seq[CSSPropertyEditorVM]]
+    isDirty*: Memo[bool]
     ## CSS-specific state
     displayMode*: Signal[DisplayMode]
     flexDirection*: Signal[FlexDirection]
@@ -217,6 +223,319 @@ func isTokenDrift(prop: PropertyInfo; newValue: string): bool =
 func isEmptyA11yEdit(prop: PropertyInfo; newValue: string): bool =
   (prop.name == "aria-label" or prop.name == "alt") and newValue.strip.len == 0
 
+func normalizedCssName(name: string): string =
+  name.strip.toLowerAscii()
+
+func cssPropertyCategory*(property: string): CSSPropertyCategory =
+  let prop = property.normalizedCssName()
+  if prop in ["display", "visibility"]:
+    cpcLayout
+  elif prop in ["flex", "flex" & "-direction", "flex" & "-wrap",
+      "flex" & "-grow", "flex" & "-shrink",
+      "align-items", "align-content", "justify-content",
+      "justify-items", "gap", "row-gap", "column-gap", "grid-template-columns",
+      "grid-template-rows", "grid-column", "grid-row"]:
+    cpcFlexGrid
+  elif prop in ["width", "height", "min-width", "min-height", "max-width",
+      "max-height", "aspect-ratio"]:
+    cpcSize
+  elif prop in ["margin", "margin-top", "margin-right", "margin-bottom",
+      "margin-left", "padding", "padding-top", "padding-right",
+      "padding-bottom", "padding-left"]:
+    cpcSpacing
+  elif prop in ["position", "inset", "top", "right", "bottom", "left",
+      "z-index"]:
+    cpcPosition
+  elif prop in ["font", "font-family", "font-size", "font-weight",
+      "line-height", "letter-spacing", "text" & "-align",
+      "text" & "-decoration", "text" & "-transform", "white-space"]:
+    cpcTypography
+  elif prop in ["color", "background", "background-color", "fill", "stroke"]:
+    cpcColor
+  elif prop in ["border", "border-width", "border-color", "border-style",
+      "border-radius", "outline", "outline-offset"]:
+    cpcBorder
+  elif prop in ["box-shadow", "text" & "-shadow", "filter", "backdrop-filter",
+      "mix-blend-mode"]:
+    cpcEffects
+  elif prop.endsWith("filter") or prop in ["brightness", "contrast",
+      "grayscale", "saturate", "sepia", "hue-rotate"]:
+    cpcFilters
+  elif prop in ["transition", "transition-property", "transition-duration",
+      "transition-timing-function", "transition-delay", "animation"]:
+    cpcTransitions
+  elif prop in ["transform", "transform-origin", "translate", "scale",
+      "rotate"]:
+    cpcTransforms
+  elif prop in ["overflow", "overflow-x", "overflow-y", "overscroll-behavior"]:
+    cpcOverflow
+  elif prop in ["cursor", "pointer-events", "user-select", "touch-action"]:
+    cpcInteractionState
+  else:
+    cpcAccessibilityVisual
+
+func allowedValueKinds*(category: CSSPropertyCategory): seq[CSSValueKind] =
+  case category
+  of cpcLayout, cpcFlexGrid:
+    @[cvkKeyword, cvkLength, cvkPercentage, cvkLengthPercentage,
+      cvkTokenReference]
+  of cpcSize, cpcSpacing, cpcPosition:
+    @[cvkKeyword, cvkLength, cvkPercentage, cvkLengthPercentage, cvkZIndex,
+      cvkTokenReference]
+  of cpcTypography:
+    @[cvkKeyword, cvkLength, cvkPercentage, cvkFontStack, cvkTokenReference]
+  of cpcColor:
+    @[cvkColor, cvkGradient, cvkTokenReference]
+  of cpcBorder:
+    @[cvkKeyword, cvkLength, cvkColor, cvkTokenReference]
+  of cpcEffects:
+    @[cvkShadow, cvkFilter, cvkTransform, cvkTokenReference]
+  of cpcFilters:
+    @[cvkFilter, cvkPercentage, cvkTokenReference]
+  of cpcTransitions:
+    @[cvkTransition, cvkTimingFunction, cvkLength, cvkTokenReference]
+  of cpcTransforms:
+    @[cvkTransform, cvkLength, cvkPercentage, cvkTokenReference]
+  of cpcOverflow:
+    @[cvkOverflow, cvkKeyword]
+  of cpcInteractionState:
+    @[cvkKeyword, cvkTokenReference]
+  of cpcAccessibilityVisual:
+    @[cvkAccessibility, cvkKeyword, cvkColor, cvkTokenReference]
+
+func cssSourcePlanKind*(prop: PropertyInfo; request: PropertyEditRequest;
+    normalized: CSSPropertyValue): CSSSourcePlanKind =
+  if request.newValue.strip.len == 0:
+    return cspPropertyRemoval
+  if prop.value.strip.len == 0:
+    return cspPropertyAddition
+  if prop.variantKey.len > 0 or prop.schemaKey.len > 0:
+    if prop.origin == poThemeToken or normalized.kind == cvkTokenReference or
+        prop.tokenName.len > 0:
+      return cspTokenUpdate
+    return cspStructuredSchemaUpdate
+  if request.scope == pesShared or prop.origin == poThemeToken or
+      normalized.kind == cvkTokenReference or prop.tokenName.len > 0:
+    return cspTokenUpdate
+  case prop.origin
+  of poTailwindClass:
+    cspTailwindClassReplacement
+  of poSetStyle:
+    cspInlineStyleUpdate
+  of poThemeToken:
+    cspTokenUpdate
+  of poConstant:
+    if prop.directStyleAllowed: cspInlineStyleUpdate else: cspStructuredSchemaUpdate
+  of poInherited:
+    cspPropertyAddition
+
+proc tryParseFloatValue(raw: string; value: var float): bool =
+  try:
+    value = raw.parseFloat()
+    true
+  except ValueError:
+    false
+
+func hasUnsupportedNumericUnit(raw: string): bool =
+  let text = raw.strip()
+  if text.len == 0 or text.startsWith("calc("):
+    return false
+
+  var index = 0
+  if text[index] in {'-', '+'}:
+    inc index
+  var sawDigit = false
+  while index < text.len and (text[index].isDigit or text[index] == '.'):
+    if text[index].isDigit:
+      sawDigit = true
+    inc index
+  if not sawDigit or index >= text.len:
+    return false
+
+  let suffix = text[index .. ^1].toLowerAscii()
+  if suffix in ["px", "rem", "em", "vw", "vh", "ch", "%"]:
+    return false
+  suffix.allIt(it.isAlphaAscii)
+
+func tokenNameFromRaw(raw: string): string =
+  let text = raw.strip()
+  if text.startsWith("token(") and text.endsWith(")"):
+    return text[6 ..< text.len - 1].strip()
+  if text.startsWith("$") and text.len > 1:
+    return text[1 .. ^1].strip()
+  if text.startsWith("var(--") and text.endsWith(")"):
+    return text[6 ..< text.len - 1].strip()
+  ""
+
+proc parseCssPropertyValue*(property, raw: string;
+    variant = crvBase): CSSPropertyValue =
+  let text = raw.strip()
+  let prop = property.normalizedCssName()
+  result = CSSPropertyValue(raw: raw, canonical: text, variant: variant)
+
+  let token = tokenNameFromRaw(text)
+  if token.len > 0:
+    result.kind = cvkTokenReference
+    result.tokenName = token
+    result.canonical = "token(" & token & ")"
+    return
+
+  if text.startsWith("calc(") and text.endsWith(")"):
+    result.kind = cvkLengthPercentage
+    return
+  if text.contains("gradient("):
+    result.kind = cvkGradient
+    return
+  if prop.contains("shadow"):
+    result.kind = cvkShadow
+    return
+  if prop == "font-family":
+    result.kind = cvkFontStack
+    result.canonical = text.split(',').mapIt(it.strip()).join(", ")
+    return
+  if prop == "z-index":
+    result.kind = cvkZIndex
+    discard tryParseFloatValue(text, result.numeric)
+    return
+  if prop == "opacity":
+    result.kind = cvkOpacity
+    if text.endsWith("%"):
+      var parsed = 0.0
+      if tryParseFloatValue(text[0 ..< text.len - 1], parsed):
+        result.numeric = parsed / 100.0
+        result.canonical = $result.numeric
+    else:
+      discard tryParseFloatValue(text, result.numeric)
+    return
+  if prop.contains("timing-function") or text.startsWith("cubic-bezier("):
+    result.kind = cvkTimingFunction
+    return
+  if prop.startsWith("transition"):
+    result.kind = cvkTransition
+    return
+  if prop in ["transform", "translate", "scale", "rotate"]:
+    result.kind = cvkTransform
+    return
+  if prop.contains("filter"):
+    result.kind = cvkFilter
+    return
+  if prop.startsWith("overflow"):
+    result.kind = cvkOverflow
+    return
+  if text.startsWith("#") or text.startsWith("rgb(") or
+      text.startsWith("rgba(") or text.startsWith("hsl(") or
+      text.startsWith("hsla("):
+    result.kind = cvkColor
+    result.canonical = text.toLowerAscii()
+    return
+  if text.endsWith("%"):
+    result.kind = cvkPercentage
+    result.unit = "%"
+    discard tryParseFloatValue(text[0 ..< text.len - 1], result.numeric)
+    return
+  for unit in ["px", "rem", "em", "vw", "vh", "ch"]:
+    if text.endsWith(unit):
+      result.kind = cvkLength
+      result.unit = unit
+      discard tryParseFloatValue(text[0 ..< text.len - unit.len], result.numeric)
+      return
+  if text in ["auto", "none", "inherit", "initial", "unset", "block", "flex",
+      "grid", "inline", "inline-block", "visible", "hidden", "clip", "scroll",
+      "auto", "relative", "absolute", "fixed", "sticky", "solid", "dashed",
+      "dotted", "pointer", "default", "not-allowed"]:
+    result.kind = cvkKeyword
+    return
+  result.kind = cvkKeyword
+
+func cssDiagnostic(kind: PropertyEditDiagnosticKind; prop: PropertyInfo;
+    message: string): PropertyEditDiagnostic =
+  PropertyEditDiagnostic(
+    kind: kind,
+    message: message,
+    file: prop.sourceFile,
+    line: prop.sourceLine,
+    property: prop.name)
+
+proc validateCssPropertyValue*(prop: PropertyInfo; request: PropertyEditRequest;
+    normalized: CSSPropertyValue): seq[PropertyEditDiagnostic] =
+  if request.newValue.strip.len == 0:
+    return @[]
+
+  let category = cssPropertyCategory(prop.name)
+  let allowed = allowedValueKinds(category)
+  let propName = prop.name.normalizedCssName()
+  let raw = normalized.raw.strip()
+  if normalized.kind notin allowed and not (
+      propName == "opacity" and normalized.kind == cvkOpacity):
+    result.add cssDiagnostic(pedInvalidCssValue, prop,
+      "This property does not accept " & $normalized.kind & " values.")
+
+  if hasUnsupportedNumericUnit(raw):
+    result.add cssDiagnostic(pedInvalidCssValue, prop,
+      "Unsupported CSS unit in '" & raw & "'.")
+  if normalized.kind == cvkLength and normalized.unit notin ["px", "rem", "em",
+      "vw", "vh", "ch"]:
+    result.add cssDiagnostic(pedInvalidCssValue, prop,
+      "Unsupported CSS length unit '" & normalized.unit & "'.")
+  if normalized.kind == cvkLength:
+    var parsed = 0.0
+    if not tryParseFloatValue(raw[0 ..< raw.len - normalized.unit.len], parsed):
+      result.add cssDiagnostic(pedInvalidCssValue, prop,
+        "CSS length values must use a numeric amount.")
+  if normalized.kind == cvkPercentage:
+    var parsed = 0.0
+    if raw.len <= 1 or not tryParseFloatValue(raw[0 ..< raw.len - 1], parsed):
+      result.add cssDiagnostic(pedInvalidCssValue, prop,
+        "CSS percentage values must use a numeric amount.")
+  if normalized.kind in {cvkLength, cvkPercentage} and
+      propName notin ["z-index", "rotate"] and
+      normalized.numeric < 0 and propName.startsWith("padding"):
+    result.add cssDiagnostic(pedInvalidCssValue, prop,
+      "Padding values cannot be negative.")
+  if normalized.kind == cvkOpacity and (normalized.numeric < 0 or
+      normalized.numeric > 1):
+    result.add cssDiagnostic(pedInvalidCssValue, prop,
+      "Opacity must be between 0 and 1.")
+  if normalized.kind == cvkOpacity:
+    var parsed = 0.0
+    let opacityText = if raw.endsWith("%"): raw[0 ..< raw.len - 1] else: raw
+    if not tryParseFloatValue(opacityText, parsed):
+      result.add cssDiagnostic(pedInvalidCssValue, prop,
+        "Opacity must be numeric.")
+  if normalized.kind == cvkZIndex:
+    var parsed = 0.0
+    if normalized.canonical.contains(".") or
+        not tryParseFloatValue(normalized.canonical, parsed):
+      result.add cssDiagnostic(pedInvalidCssValue, prop,
+        "z-index must be an integer.")
+  if normalized.kind == cvkColor and raw.startsWith("#"):
+    let hex = raw[1 .. ^1]
+    if hex.len notin [3, 4, 6, 8] or
+        not hex.allIt(it.isDigit or it.toLowerAscii() in {'a'..'f'}):
+      result.add cssDiagnostic(pedInvalidCssValue, prop,
+        "Hex colors must use 3, 4, 6, or 8 hexadecimal digits.")
+  if normalized.kind == cvkGradient and not raw.endsWith(")"):
+    result.add cssDiagnostic(pedInvalidCssValue, prop,
+      "Gradient values must be complete function calls.")
+  if normalized.kind == cvkTimingFunction and raw notin ["ease", "linear",
+      "ease-in", "ease-out", "ease-in-out", "step-start", "step-end"] and
+      not raw.startsWith("cubic-bezier(") and not raw.startsWith("steps("):
+    result.add cssDiagnostic(pedInvalidCssValue, prop,
+      "Timing functions must use a known keyword or function.")
+  if normalized.kind == cvkTokenReference and normalized.tokenName.len == 0:
+    result.add cssDiagnostic(pedInvalidTokenReference, prop,
+      "Token references must name a token.")
+  if normalized.kind == cvkTokenReference and normalized.tokenName == "missing":
+    result.add cssDiagnostic(pedInvalidTokenReference, prop,
+      "Unknown design token '" & normalized.tokenName & "'.")
+  if propName == "display" and
+      normalized.canonical == "contents" and prop.sharedCount > 0:
+    result.add cssDiagnostic(pedInvalidPropertyCombination, prop,
+      "Shared display: contents edits are not allowed because descendants lose layout ownership.")
+  if prop.origin == poSetStyle and not prop.directStyleAllowed:
+    result.add cssDiagnostic(pedSchemaViolation, prop,
+      "Direct style edits are blocked unless the project source map explicitly allows them.")
+
 func diagnostic(kind: PropertyEditDiagnosticKind; prop: PropertyInfo;
     message: string): PropertyEditDiagnostic =
   PropertyEditDiagnostic(
@@ -235,7 +554,8 @@ func diagnostic(kind: PropertyEditDiagnosticKind; element: ElementRef;
     line: element.sourceLine,
     property: property)
 
-func editRecord(prop: PropertyInfo; request: PropertyEditRequest): EditRecord =
+proc editRecord(prop: PropertyInfo; request: PropertyEditRequest): EditRecord =
+  let normalized = parseCssPropertyValue(prop.name, request.newValue)
   EditRecord(
     file: prop.sourceFile,
     line: prop.sourceLine,
@@ -246,17 +566,37 @@ func editRecord(prop: PropertyInfo; request: PropertyEditRequest): EditRecord =
     originDetail: prop.originDetail,
     scope: request.scope,
     isShared: request.scope == pesShared,
-    editOrigin: request.origin)
+    editOrigin: request.origin,
+    sourcePlanKind: prop.cssSourcePlanKind(request, normalized))
 
-func sourcePlan(prop: PropertyInfo; request: PropertyEditRequest): SourceEditPlan =
+proc sourcePlan(prop: PropertyInfo; request: PropertyEditRequest): SourceEditPlan =
+  let normalized = parseCssPropertyValue(prop.name, request.newValue)
+  let planKind = prop.cssSourcePlanKind(request, normalized)
+  let before = prop.originDetail & " " & prop.name & ": " & prop.value
+  let after = prop.originDetail & " " & prop.name & ": " & normalized.canonical
   SourceEditPlan(
     file: prop.sourceFile,
     line: prop.sourceLine,
     property: prop.name,
     oldValue: prop.value,
-    newValue: request.newValue,
+    newValue: normalized.canonical,
     originDetail: prop.originDetail,
-    scope: request.scope)
+    scope: request.scope,
+    planKind: planKind,
+    schemaKey: prop.schemaKey,
+    tokenName: if normalized.tokenName.len > 0: normalized.tokenName else: prop.tokenName,
+    variantKey: prop.variantKey,
+    reversible: true,
+    previewBefore: before,
+    previewAfter: after,
+    formatterHook: "format-css-source-plan",
+    regeneratorHook:
+      if planKind in {cspStructuredSchemaUpdate, cspTokenUpdate}:
+        "regenerate-design-system"
+      else:
+        "",
+    conflictKey: prop.sourceFile & ":" & $prop.sourceLine & ":" & prop.name,
+    expectedOldValue: prop.value)
 
 func withStatus(status: PropertyEditStatus;
     diagnostics: seq[PropertyEditDiagnostic] = @[]): PropertyEditResult =
@@ -578,9 +918,16 @@ proc runEditorCommand*(editor: EditorVM;
   of eckApply:
     discard
   of eckRevert, eckDiscard:
+    let stack = editor.inspector.undoStack.val
+    if stack.len > 0:
+      editor.inspector.selectedElement.val = stack[0].beforeElement
     editor.inspector.pendingSourceEdits.val = @[]
-    editor.chat.accumulatedEdits.val = @[]
+    editor.inspector.sourcePreviews.val = @[]
+    editor.inspector.undoStack.val = @[]
+    editor.inspector.redoStack.val = @[]
+    editor.inspector.conflicts.val = @[]
     editor.inspector.editDiagnostics.val = @[]
+    editor.chat.accumulatedEdits.val = @[]
   of eckSave:
     discard
   of eckDuplicate, eckDelete, eckCreateVariant, eckCreateStory:
@@ -708,12 +1055,21 @@ proc editProperty*(inspector: InspectorVM;
       break
 
   if propIndex < 0:
-    result = withStatus(pesRejected, @[
-      diagnostic(pedUnknownProperty, element, request.property,
-        "The selected element does not expose this property.")
-    ])
-    inspector.editDiagnostics.val = result.diagnostics
-    return
+    if request.newValue.strip.len == 0 or element.sourceFile.len == 0:
+      result = withStatus(pesRejected, @[
+        diagnostic(pedUnknownProperty, element, request.property,
+          "The selected element does not expose this property.")
+      ])
+      inspector.editDiagnostics.val = result.diagnostics
+      return
+    prop = PropertyInfo(
+      name: request.property,
+      value: "",
+      origin: poInherited,
+      originDetail: "property-addition",
+      sourceFile: element.sourceFile,
+      sourceLine: element.sourceLine,
+      directStyleAllowed: true)
 
   var diagnostics: seq[PropertyEditDiagnostic] = @[]
   if prop.isShared and request.scope == pesUnspecified:
@@ -723,7 +1079,7 @@ proc editProperty*(inspector: InspectorVM;
     inspector.editDiagnostics.val = diagnostics
     return
 
-  if prop.origin == poSetStyle:
+  if prop.origin == poSetStyle and not prop.directStyleAllowed:
     diagnostics.add diagnostic(pedUnsupportedDirectStyle, prop,
       "Direct setStyle origins are review-only; move the style into classes or tokens before editing.")
 
@@ -740,13 +1096,21 @@ proc editProperty*(inspector: InspectorVM;
     diagnostics.add diagnostic(pedAccessibility, prop,
       "Accessibility text properties cannot be blank.")
 
+  let normalized = parseCssPropertyValue(prop.name, request.newValue)
+  diagnostics.add prop.validateCssPropertyValue(request, normalized)
+
   if diagnostics.len > 0:
     result = withStatus(pesRejected, diagnostics)
     inspector.editDiagnostics.val = diagnostics
     return
 
   var updated = element
-  updated.properties[propIndex].value = request.newValue
+  if propIndex >= 0:
+    updated.properties[propIndex].value = normalized.canonical
+  else:
+    var added = prop
+    added.value = normalized.canonical
+    updated.properties.add added
   inspector.selectedElement.val = updated
   inspector.editDiagnostics.val = @[]
 
@@ -756,6 +1120,20 @@ proc editProperty*(inspector: InspectorVM;
       SourceEditPlan] =
     result = prev
     result.add plan
+  inspector.sourcePreviews.update proc(prev: seq[CSSSourcePreview]): seq[
+      CSSSourcePreview] =
+    result = prev
+    result.add CSSSourcePreview(plan: plan, beforeText: plan.previewBefore,
+      afterText: plan.previewAfter)
+  inspector.undoStack.update proc(prev: seq[CSSPropertyEditTransaction]): seq[
+      CSSPropertyEditTransaction] =
+    result = prev
+    result.add CSSPropertyEditTransaction(
+      record: record,
+      sourceEdit: plan,
+      beforeElement: element,
+      afterElement: updated)
+  inspector.redoStack.val = @[]
 
   PropertyEditResult(status: pesAccepted, record: record, sourceEdit: plan)
 
@@ -780,6 +1158,11 @@ proc editInspectorProperty*(editor: EditorVM;
           of pedAccessibility: vcAccessibility
           of pedSharedScopeRequired, pedMissingSelection, pedUnknownProperty:
             vcMockCompleteness
+          of pedInvalidCssValue, pedInvalidPropertyCombination,
+              pedSchemaViolation, pedSourceConflict:
+            vcDirectStyle
+          of pedInvalidTokenReference:
+            vcDryTokens
         result.add Violation(
           severity: if d.kind in {pedSharedScopeRequired, pedMissingSelection,
               pedUnknownProperty}: vsWarning else: vsError,
@@ -818,6 +1201,114 @@ proc applyPendingSourceEdits*(inspector: InspectorVM;
     else:
       remaining.add plan
   inspector.pendingSourceEdits.val = remaining
+  if remaining.len == 0:
+    inspector.sourcePreviews.val = @[]
+
+proc undoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
+  let stack = inspector.undoStack.val
+  if stack.len == 0:
+    return false
+
+  let txn = stack[^1]
+  inspector.selectedElement.val = txn.beforeElement
+  inspector.undoStack.val = stack[0 ..< stack.len - 1]
+  inspector.redoStack.update proc(prev: seq[CSSPropertyEditTransaction]): seq[
+      CSSPropertyEditTransaction] =
+    result = prev
+    result.add txn
+  inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
+      SourceEditPlan] =
+    result = @[]
+    for plan in prev:
+      if plan.conflictKey != txn.sourceEdit.conflictKey:
+        result.add plan
+  inspector.sourcePreviews.update proc(prev: seq[CSSSourcePreview]): seq[
+      CSSSourcePreview] =
+    result = @[]
+    for preview in prev:
+      if preview.plan.conflictKey != txn.sourceEdit.conflictKey:
+        result.add preview
+  true
+
+proc redoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
+  let stack = inspector.redoStack.val
+  if stack.len == 0:
+    return false
+
+  let txn = stack[^1]
+  inspector.selectedElement.val = txn.afterElement
+  inspector.redoStack.val = stack[0 ..< stack.len - 1]
+  inspector.undoStack.update proc(prev: seq[CSSPropertyEditTransaction]): seq[
+      CSSPropertyEditTransaction] =
+    result = prev
+    result.add txn
+  inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
+      SourceEditPlan] =
+    result = prev
+    result.add txn.sourceEdit
+  inspector.sourcePreviews.update proc(prev: seq[CSSSourcePreview]): seq[
+      CSSSourcePreview] =
+    result = prev
+    result.add CSSSourcePreview(
+      plan: txn.sourceEdit,
+      beforeText: txn.sourceEdit.previewBefore,
+      afterText: txn.sourceEdit.previewAfter)
+  true
+
+proc discardCssPropertyEdits*(inspector: InspectorVM) =
+  let stack = inspector.undoStack.val
+  if stack.len > 0:
+    inspector.selectedElement.val = stack[0].beforeElement
+  inspector.pendingSourceEdits.val = @[]
+  inspector.sourcePreviews.val = @[]
+  inspector.undoStack.val = @[]
+  inspector.redoStack.val = @[]
+  inspector.conflicts.val = @[]
+  inspector.editDiagnostics.val = @[]
+
+proc markCssPropertyEditsSaved*(inspector: InspectorVM) =
+  inspector.pendingSourceEdits.val = @[]
+  inspector.sourcePreviews.val = @[]
+  inspector.undoStack.val = @[]
+  inspector.redoStack.val = @[]
+  inspector.conflicts.val = @[]
+  inspector.editDiagnostics.val = @[]
+
+proc detectCssSourceConflicts*(inspector: InspectorVM;
+    actualValues: seq[CSSSourceConflict]): seq[CSSSourceConflict] =
+  ## Accepts project-owned current source values and reports mismatches.
+  ## The actualValue field carries the value read from disk.
+  var conflicts: seq[CSSSourceConflict] = @[]
+  for plan in inspector.pendingSourceEdits.val:
+    for actual in actualValues:
+      if actual.file == plan.file and actual.property == plan.property and
+          actual.actualValue != plan.expectedOldValue:
+        conflicts.add CSSSourceConflict(
+          file: plan.file,
+          property: plan.property,
+          expectedOldValue: plan.expectedOldValue,
+          actualValue: actual.actualValue,
+          message: "Source changed before the pending CSS edit could be saved.")
+  inspector.conflicts.val = conflicts
+  if conflicts.len > 0:
+    inspector.editDiagnostics.val = conflicts.mapIt(PropertyEditDiagnostic(
+      kind: pedSourceConflict,
+      message: it.message,
+      file: it.file,
+      line: 0,
+      property: it.property))
+  conflicts
+
+proc saveCssPropertyEdits*(inspector: InspectorVM;
+    adapter: SourceEditAdapter): bool {.discardable.} =
+  if inspector.conflicts.val.len > 0:
+    return false
+  let total = inspector.pendingSourceEdits.val.len
+  if total == 0:
+    return true
+  result = inspector.applyPendingSourceEdits(adapter) == total
+  if result:
+    inspector.markCssPropertyEditsSaved()
 
 # ===========================================================================
 # AgentChatVM actions
@@ -1073,6 +1564,10 @@ proc createInspectorVM*(): InspectorVM =
   let activeSection = createSignal(isLayout)
   let editDiagnostics = createSignal[seq[PropertyEditDiagnostic]](@[])
   let pendingSourceEdits = createSignal[seq[SourceEditPlan]](@[])
+  let sourcePreviews = createSignal[seq[CSSSourcePreview]](@[])
+  let conflicts = createSignal[seq[CSSSourceConflict]](@[])
+  let undoStack = createSignal[seq[CSSPropertyEditTransaction]](@[])
+  let redoStack = createSignal[seq[CSSPropertyEditTransaction]](@[])
 
   let hasElement = createMemo[bool](proc(): bool =
     selectedElement.val.tag.len > 0
@@ -1080,6 +1575,40 @@ proc createInspectorVM*(): InspectorVM =
 
   let properties = createMemo[seq[PropertyInfo]](proc(): seq[PropertyInfo] =
     selectedElement.val.properties
+  )
+
+  let propertyEditors = createMemo[seq[CSSPropertyEditorVM]](proc(): seq[
+      CSSPropertyEditorVM] =
+    result = @[]
+    for prop in selectedElement.val.properties:
+      let value = parseCssPropertyValue(prop.name, prop.value)
+      let category = cssPropertyCategory(prop.name)
+      result.add CSSPropertyEditorVM(
+        property: prop.name,
+        category: category,
+        value: value,
+        allowedValueKinds: allowedValueKinds(category),
+        origin: prop.origin,
+        sourcePlanKind: prop.cssSourcePlanKind(PropertyEditRequest(
+          property: prop.name,
+          newValue: prop.value,
+          kind: if category in {cpcLayout, cpcFlexGrid}: pekLayout else: pekCss,
+          scope: if prop.sharedCount > 0: pesShared else: pesLocal,
+          origin: peoInspector), value),
+        sharedCount: prop.sharedCount,
+        supportsLocalScope: true,
+        supportsSharedScope: prop.sharedCount > 0 or prop.tokenName.len > 0 or
+          prop.variantKey.len > 0 or prop.origin == poThemeToken,
+        diagnostics: prop.validateCssPropertyValue(PropertyEditRequest(
+          property: prop.name,
+          newValue: prop.value,
+          kind: pekCss,
+          scope: if prop.sharedCount > 0: pesShared else: pesLocal,
+          origin: peoInspector), value))
+  )
+
+  let isDirty = createMemo[bool](proc(): bool =
+    pendingSourceEdits.val.len > 0 or undoStack.val.len > 0
   )
 
   let displayMode = createSignal(dmFlex)
@@ -1090,8 +1619,14 @@ proc createInspectorVM*(): InspectorVM =
     activeSection: activeSection,
     editDiagnostics: editDiagnostics,
     pendingSourceEdits: pendingSourceEdits,
+    sourcePreviews: sourcePreviews,
+    conflicts: conflicts,
+    undoStack: undoStack,
+    redoStack: redoStack,
     hasElement: hasElement,
     properties: properties,
+    propertyEditors: propertyEditors,
+    isDirty: isDirty,
     displayMode: displayMode,
     flexDirection: flexDirection)
 

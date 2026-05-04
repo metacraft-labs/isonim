@@ -579,6 +579,239 @@ suite "Editor ViewModels (M25 edit commands)":
 
       dispose()
 
+suite "Editor ViewModels (M26 source-backed CSS property editors)":
+
+  func cssProp(name, value: string; origin: PropertyOrigin; detail: string;
+      file = "examples/wanderlust/design/tokens.nim"; line = 12;
+      sharedCount = 0; schemaKey = ""; tokenName = ""; variantKey = "";
+      directStyleAllowed = false): PropertyInfo =
+    PropertyInfo(
+      name: name,
+      value: value,
+      origin: origin,
+      originDetail: detail,
+      sourceFile: file,
+      sourceLine: line,
+      sharedCount: sharedCount,
+      schemaKey: schemaKey,
+      tokenName: tokenName,
+      variantKey: variantKey,
+      directStyleAllowed: directStyleAllowed)
+
+  func cssElement(properties: seq[PropertyInfo]): ElementRef =
+    ElementRef(
+      tag: "article",
+      sourceFile: "examples/wanderlust/components/destination_card.nim",
+      sourceLine: 44,
+      sourceColumn: 5,
+      properties: properties)
+
+  test "css_property_editors_parse_validate_and_normalize_values":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      let element = cssElement(@[
+        cssProp("padding", "16px", poTailwindClass, "class:p-4"),
+        cssProp("background", "token(surface.card)", poThemeToken,
+          "schema:colors.surface.card", sharedCount = 4,
+          tokenName = "surface.card"),
+        cssProp("box-shadow", "0 2px 8px rgba(0,0,0,.2)", poConstant,
+          "schema:elevation.card", schemaKey = "elevation.card"),
+        cssProp("font-family", "Inter, system-ui", poConstant,
+          "schema:typography.body", schemaKey = "typography.body"),
+        cssProp("opacity", "1", poTailwindClass, "class:opacity-100"),
+        cssProp("transition-timing-function", "ease-out", poConstant,
+          "schema:motion.easeOut", schemaKey = "motion.easeOut"),
+        cssProp("z-index", "10", poTailwindClass, "class:z-10"),
+        cssProp("overflow", "hidden", poTailwindClass, "class:overflow-hidden"),
+        cssProp("width", "calc(100% - 2rem)", poConstant,
+          "schema:size.card", schemaKey = "size.card"),
+        cssProp("color", "#FFAA00", poThemeToken,
+          "schema:colors.text.accent", tokenName = "text.accent"),
+        cssProp("background", "linear-gradient(#fff, #000)", poConstant,
+          "schema:colors.heroGradient", schemaKey = "colors.heroGradient"),
+        cssProp("filter", "blur(4px)", poConstant,
+          "schema:effects.blur", schemaKey = "effects.blur"),
+        cssProp("transition", "opacity 120ms ease-out", poConstant,
+          "schema:motion.fade", schemaKey = "motion.fade"),
+        cssProp("transform", "translateX(4px)", poConstant,
+          "schema:motion.nudge", schemaKey = "motion.nudge"),
+        cssProp("cursor", "pointer", poTailwindClass, "class:cursor-pointer"),
+        cssProp("outline-offset", "2px", poConstant,
+          "schema:a11y.focusRing", schemaKey = "a11y.focusRing")
+      ])
+
+      check vm.selectInspectorElement(element)
+      let editors = vm.inspector.propertyEditors.val
+      check editors.len == 16
+      check editors.anyIt(it.property == "padding" and
+        it.category == cpcSpacing and it.value.kind == cvkLength and
+        it.value.unit == "px" and it.value.numeric == 16)
+      check editors.anyIt(it.property == "background" and
+        it.value.kind == cvkTokenReference and
+        it.value.tokenName == "surface.card" and it.supportsSharedScope)
+      check editors.anyIt(it.property == "box-shadow" and
+        it.value.kind == cvkShadow)
+      check editors.anyIt(it.property == "font-family" and
+        it.value.kind == cvkFontStack and
+        it.value.canonical == "Inter, system-ui")
+      check editors.anyIt(it.property == "transition-timing-function" and
+        it.value.kind == cvkTimingFunction)
+      check editors.anyIt(it.property == "width" and
+        it.value.kind == cvkLengthPercentage)
+      check editors.anyIt(it.property == "color" and
+        it.value.kind == cvkColor and it.value.canonical == "#ffaa00")
+      check editors.anyIt(it.property == "background" and
+        it.value.kind == cvkGradient)
+      check editors.anyIt(it.property == "filter" and
+        it.value.kind == cvkFilter)
+      check editors.anyIt(it.property == "transition" and
+        it.value.kind == cvkTransition)
+      check editors.anyIt(it.property == "transform" and
+        it.value.kind == cvkTransform)
+      check editors.anyIt(it.property == "cursor" and
+        it.category == cpcInteractionState and it.value.kind == cvkKeyword)
+      check editors.anyIt(it.property == "outline-offset" and
+        it.category == cpcBorder and it.value.kind == cvkLength)
+
+      let validOpacity = vm.editCssProperty("opacity", "75%", pesLocal)
+      check validOpacity.status == pesAccepted
+      check vm.inspector.selectedElement.val.properties.anyIt(
+        it.name == "opacity" and it.value == "0.75")
+
+      let invalidPadding = vm.editCssProperty("padding", "-4px", pesLocal)
+      check invalidPadding.status == pesRejected
+      check invalidPadding.diagnostics.anyIt(it.kind == pedInvalidCssValue)
+
+      let invalidToken = vm.editCssProperty("background", "token(missing)",
+        pesShared)
+      check invalidToken.status == pesRejected
+      check invalidToken.diagnostics.anyIt(it.kind == pedInvalidTokenReference)
+
+      let invalidUnit = vm.editCssProperty("padding", "12pt", pesLocal)
+      check invalidUnit.status == pesRejected
+      check invalidUnit.diagnostics.anyIt(it.kind == pedInvalidCssValue)
+
+      let invalidTiming = vm.editCssProperty("transition-timing-function",
+        "sproing", pesLocal)
+      check invalidTiming.status == pesRejected
+      check invalidTiming.diagnostics.anyIt(it.kind == pedInvalidCssValue)
+      dispose()
+
+  test "css_property_editors_choose_schema_token_or_source_plan":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      check vm.selectInspectorElement(cssElement(@[
+        cssProp("padding", "16px", poTailwindClass, "class:p-4"),
+        cssProp("background", "token(surface.card)", poThemeToken,
+          "schema:colors.surface.card", sharedCount = 3,
+          tokenName = "surface.card"),
+        cssProp("border-radius", "8px", poConstant,
+          "schema:radius.card", schemaKey = "radius.card"),
+        cssProp("transform", "scale(1)", poSetStyle,
+          "style.transform", directStyleAllowed = true),
+        cssProp("opacity", "1", poTailwindClass, "class:opacity-100"),
+        cssProp("display", "grid", poConstant,
+          "schema:components.card.variants.compact.display",
+          schemaKey = "components.card.variants.compact.display",
+          variantKey = "compact")
+      ]))
+
+      let tailwind = vm.editCssProperty("padding", "24px", pesLocal)
+      check tailwind.status == pesAccepted
+      check tailwind.sourceEdit.planKind == cspTailwindClassReplacement
+      check tailwind.sourceEdit.previewBefore.contains("padding: 16px")
+      check tailwind.sourceEdit.previewAfter.contains("padding: 24px")
+      check tailwind.sourceEdit.reversible
+
+      let token = vm.editCssProperty("background", "token(surface.raised)",
+        pesShared)
+      check token.status == pesAccepted
+      check token.sourceEdit.planKind == cspTokenUpdate
+      check token.sourceEdit.tokenName == "surface.raised"
+      check token.sourceEdit.regeneratorHook == "regenerate-design-system"
+
+      let schema = vm.editCssProperty("border-radius", "12px", pesLocal)
+      check schema.status == pesAccepted
+      check schema.sourceEdit.planKind == cspStructuredSchemaUpdate
+      check schema.sourceEdit.schemaKey == "radius.card"
+
+      let inline = vm.editCssProperty("transform", "scale(1.1)", pesLocal)
+      check inline.status == pesAccepted
+      check inline.sourceEdit.planKind == cspInlineStyleUpdate
+
+      let removal = vm.editCssProperty("opacity", "", pesLocal)
+      check removal.status == pesAccepted
+      check removal.sourceEdit.planKind == cspPropertyRemoval
+
+      let addition = vm.editCssProperty("margin-top", "2rem", pesLocal)
+      check addition.status == pesAccepted
+      check addition.sourceEdit.planKind == cspPropertyAddition
+      let variant = vm.editCssProperty("display", "flex", pesShared)
+      check variant.status == pesAccepted
+      check variant.sourceEdit.planKind == cspStructuredSchemaUpdate
+      check variant.sourceEdit.variantKey == "compact"
+      check variant.sourceEdit.scope == pesShared
+      check vm.inspector.sourcePreviews.val.len == 7
+      dispose()
+
+  test "css_property_editors_support_shared_scope_and_undo_redo":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      check vm.selectInspectorElement(cssElement(@[
+        cssProp("gap", "16px", poThemeToken, "schema:spacing.cardGap",
+          sharedCount = 6, tokenName = "spacing.cardGap"),
+        cssProp("padding", "16px", poTailwindClass, "class:p-4")
+      ]))
+
+      let missingScope = vm.editLayoutProperty("gap", "24px")
+      check missingScope.status == pesNeedsScope
+      check vm.inspector.pendingSourceEdits.val.len == 0
+
+      let shared = vm.editLayoutProperty("gap", "24px", pesShared)
+      check shared.status == pesAccepted
+      check shared.sourceEdit.scope == pesShared
+      check vm.inspector.isDirty.val
+      check vm.inspector.undoStack.val.len == 1
+      check vm.inspector.pendingSourceEdits.val.len == 1
+
+      check vm.inspector.undoCssPropertyEdit()
+      check vm.inspector.selectedElement.val.properties[0].value == "16px"
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check vm.inspector.redoStack.val.len == 1
+
+      check vm.inspector.redoCssPropertyEdit()
+      check vm.inspector.selectedElement.val.properties[0].value == "24px"
+      check vm.inspector.pendingSourceEdits.val.len == 1
+
+      let conflicts = vm.inspector.detectCssSourceConflicts(@[
+        CSSSourceConflict(
+          file: shared.sourceEdit.file,
+          property: "gap",
+          expectedOldValue: "16px",
+          actualValue: "20px")
+      ])
+      check conflicts.len == 1
+      check vm.inspector.saveCssPropertyEdits(proc(plan: SourceEditPlan): bool =
+        true) == false
+
+      vm.inspector.conflicts.val = @[]
+      var savedPlans: seq[SourceEditPlan] = @[]
+      check vm.inspector.saveCssPropertyEdits(proc(plan: SourceEditPlan): bool =
+        savedPlans.add plan
+        true)
+      check savedPlans.len == 1
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check vm.inspector.undoStack.val.len == 0
+      check not vm.inspector.isDirty.val
+
+      let local = vm.editCssProperty("padding", "32px", pesLocal)
+      check local.status == pesAccepted
+      vm.inspector.discardCssPropertyEdits()
+      check vm.inspector.selectedElement.val.properties.anyIt(
+        it.name == "padding" and it.value == "16px")
+      check not vm.inspector.isDirty.val
+      dispose()
+
 suite "Editor ViewModels (M20 story flow preview runtime)":
 
   func findItem(groups: seq[StoryGroup]; groupName, itemName: string;

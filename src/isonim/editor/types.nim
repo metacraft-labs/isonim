@@ -235,6 +235,100 @@ type
     sourceLine*: int      ## Line in source file
     sourceFile*: string   ## Source file path
     sharedCount*: int     ## How many elements share this origin (0 = local only)
+    schemaKey*: string    ## Project schema key when this is schema-owned
+    tokenName*: string    ## Token name when token-backed
+    variantKey*: string   ## Responsive/state variant key when variant-backed
+    directStyleAllowed*: bool ## True only when the source map permits direct edits
+
+  CSSPropertyCategory* = enum
+    cpcLayout
+    cpcFlexGrid
+    cpcSize
+    cpcSpacing
+    cpcPosition
+    cpcTypography
+    cpcColor
+    cpcBorder
+    cpcEffects
+    cpcFilters
+    cpcTransitions
+    cpcTransforms
+    cpcOverflow
+    cpcInteractionState
+    cpcAccessibilityVisual
+
+  CSSValueKind* = enum
+    cvkKeyword
+    cvkLength
+    cvkPercentage
+    cvkLengthPercentage
+    cvkColor
+    cvkGradient
+    cvkShadow
+    cvkFontStack
+    cvkZIndex
+    cvkOpacity
+    cvkTimingFunction
+    cvkTokenReference
+    cvkTransform
+    cvkTransition
+    cvkFilter
+    cvkOverflow
+    cvkAccessibility
+
+  CSSSourcePlanKind* = enum
+    cspStructuredSchemaUpdate
+    cspTokenUpdate
+    cspTailwindClassReplacement
+    cspInlineStyleUpdate
+    cspPropertyAddition
+    cspPropertyRemoval
+
+  CSSResponsiveVariant* = enum
+    crvBase
+    crvHover
+    crvFocus
+    crvActive
+    crvDisabled
+    crvSm
+    crvMd
+    crvLg
+    crvXl
+
+  CSSPropertyValue* = object
+    ## Parsed and normalized CSS value used by the source-backed edit engine.
+    kind*: CSSValueKind
+    raw*: string
+    canonical*: string
+    unit*: string
+    numeric*: float
+    tokenName*: string
+    variant*: CSSResponsiveVariant
+
+  CSSPropertyEditorVM* = object
+    ## Headless property editor contract. Views may render controls from this.
+    property*: string
+    category*: CSSPropertyCategory
+    value*: CSSPropertyValue
+    allowedValueKinds*: seq[CSSValueKind]
+    origin*: PropertyOrigin
+    sourcePlanKind*: CSSSourcePlanKind
+    sharedCount*: int
+    supportsLocalScope*: bool
+    supportsSharedScope*: bool
+    diagnostics*: seq[PropertyEditDiagnostic]
+
+  CSSSourcePreview* = object
+    plan*: SourceEditPlan
+    beforeText*: string
+    afterText*: string
+
+  CSSSourceConflict* = object
+    file*: string
+    property*: string
+    expectedOldValue*: string
+    actualValue*: string
+    message*: string
 
   PropertyEditKind* = enum
     pekCss
@@ -264,6 +358,11 @@ type
     pedSharedScopeRequired
     pedMissingSelection
     pedUnknownProperty
+    pedInvalidCssValue
+    pedInvalidTokenReference
+    pedInvalidPropertyCombination
+    pedSchemaViolation
+    pedSourceConflict
 
   PropertyEditDiagnostic* = object
     kind*: PropertyEditDiagnosticKind
@@ -288,6 +387,17 @@ type
     newValue*: string
     originDetail*: string
     scope*: PropertyEditScope
+    planKind*: CSSSourcePlanKind
+    schemaKey*: string
+    tokenName*: string
+    variantKey*: string
+    reversible*: bool
+    previewBefore*: string
+    previewAfter*: string
+    formatterHook*: string
+    regeneratorHook*: string
+    conflictKey*: string
+    expectedOldValue*: string
 
   SourceEditAdapter* = proc(plan: SourceEditPlan): bool {.closure.}
 
@@ -341,6 +451,13 @@ type
     scope*: PropertyEditScope
     isShared*: bool
     editOrigin*: PropertyEditOrigin
+    sourcePlanKind*: CSSSourcePlanKind
+
+  CSSPropertyEditTransaction* = object
+    record*: EditRecord
+    sourceEdit*: SourceEditPlan
+    beforeElement*: ElementRef
+    afterElement*: ElementRef
 
   # --- Review ---
   ViolationSeverity* = enum
