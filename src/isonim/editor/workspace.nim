@@ -26,6 +26,8 @@ type
     connections*: seq[FlowConnection]
     flowSteps*: seq[FlowStep]
     vectorSymbols*: seq[VectorSymbol]
+    foundationTokens*: seq[FoundationTokenEntry]
+    componentVariants*: seq[ComponentVariantDefinition]
     initialView*: EditorView
     initialStory*: Option[StoryRef]
     initialCanvasItem*: Option[int]
@@ -86,6 +88,8 @@ proc newEditorWorkspace*(title: string;
                           connections: seq[FlowConnection] = @[];
                           flowSteps: seq[FlowStep] = @[];
                           vectorSymbols: seq[VectorSymbol] = @[];
+                          foundationTokens: seq[FoundationTokenEntry] = @[];
+                          componentVariants: seq[ComponentVariantDefinition] = @[];
                           initialView = evStoryboard;
                           initialStory = none(StoryRef);
                           initialCanvasItem = none(int);
@@ -112,6 +116,8 @@ proc newEditorWorkspace*(title: string;
     connections: connections,
     flowSteps: flowSteps,
     vectorSymbols: vectorSymbols,
+    foundationTokens: foundationTokens,
+    componentVariants: componentVariants,
     initialView: initialView,
     initialStory: initialStory,
     initialCanvasItem: initialCanvasItem,
@@ -136,6 +142,12 @@ proc applyWorkspace*(vm: EditorVM; workspace: EditorWorkspace) =
   vm.storyboard.connections.val = workspace.connections
   vm.flowPlayer.steps.val = workspace.flowSteps
   vm.vectorEditor.symbols.val = workspace.vectorSymbols
+  vm.foundations.tokens.val = workspace.foundationTokens
+  vm.foundations.impacts.val = @[]
+  vm.foundations.diagnostics.val = @[]
+  vm.variants.variants.val = workspace.componentVariants
+  vm.variants.selectedVariant.val = -1
+  vm.variants.diagnostics.val = @[]
   vm.preview.hook = workspace.previewHook
   vm.selectedStory.val = StoryRef()
   vm.storyboard.selectedItem.val = -1

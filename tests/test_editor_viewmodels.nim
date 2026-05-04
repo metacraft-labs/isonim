@@ -1129,6 +1129,190 @@ suite "Editor ViewModels (M27 workspace file writes)":
       check recorder.fullReloadSeen
       dispose()
 
+  test "foundation_token_edit_updates_dependent_properties":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("foundation")
+      defer: removeDir(root)
+
+      let tokenFile = root / "tokens.schema"
+      atomicWrite(tokenFile, "surface.card=#ffffff\ntext.default=#111827")
+      let story = writeStory
+      let schema = @[
+        WorkspaceEditableSchemaEntry(key: "tokens.surface.card",
+          kind: wskToken, file: tokenFile, path: "tokens.surface.card",
+          story: story, property: "surface.card"),
+        WorkspaceEditableSchemaEntry(key: "tokens.text.default",
+          kind: wskToken, file: tokenFile, path: "tokens.text.default",
+          story: story, property: "text.default")
+      ]
+      let recorder = WorkspaceEditRecorder()
+      let adapter = adapterFor(root, schema, recorder = recorder)
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "M28 foundation workspace",
+        storyGroups = @[StoryGroup(name: "Foundations", kind: skFoundation,
+          items: @[StoryItem(name: "Colors", kind: skFoundation,
+            group: "Foundations")])],
+        foundationTokens = @[
+          FoundationTokenEntry(key: "surface.card", kind: ftkSemanticColor,
+            value: "#ffffff", sourceFile: tokenFile, sourceLine: 1,
+            schemaKey: "tokens.surface.card", property: "surface.card",
+            affectedStories: @[story]),
+          FoundationTokenEntry(key: "text.default",
+            kind: ftkAccessibilityConstraint, value: "#111827",
+            foreground: "#111827", background: "#ffffff", minContrast: 4.5,
+            sourceFile: tokenFile, sourceLine: 2,
+            schemaKey: "tokens.text.default", property: "text.default",
+            affectedStories: @[story])
+        ],
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true, createStory: false, createVariant: false,
+          duplicate: false, delete: false),
+        editAdapter = adapter,
+        initialStory = some(StoryRef(group: "Foundations", name: "Colors",
+          kind: skFoundation, index: 0))))
+
+      check vm.selectInspectorElement(ElementRef(
+        tag: "article",
+        sourceFile: tokenFile,
+        sourceLine: 1,
+        properties: @[PropertyInfo(name: "background",
+          value: "token(surface.card)", origin: poThemeToken,
+          originDetail: "themeColor(\"surface.card\")",
+          sourceFile: tokenFile, sourceLine: 1,
+          schemaKey: "tokens.surface.card", tokenName: "surface.card",
+          sharedCount: 3)]))
+
+      let edit = vm.editFoundationToken("surface.card", "#f8fafc")
+      check edit.status == pesAccepted
+      check edit.sourceEdit.planKind == cspTokenUpdate
+      check edit.sourceEdit.schemaKey == "tokens.surface.card"
+      check edit.impacts.len == 1
+      check edit.impacts[0].affectedProperties.len == 1
+      check edit.impacts[0].affectedStories.len == 1
+      check vm.foundations.impacts.val[0].message.contains("surface.card")
+      check vm.inspector.pendingSourceEdits.val.len == 1
+      check vm.workspaceEditStage.val == wesDirty
+
+      let saved = vm.applyWorkspaceFileEdits()
+      check saved.ok
+      check readFile(tokenFile).contains("surface.card=#f8fafc")
+      check not vm.inspector.isDirty.val
+      check recorder.reloadedStories.len == 1
+      check not recorder.fullReloadSeen
+
+      let contrast = vm.editFoundationToken("text.default", "#ffffff")
+      check contrast.status == pesRejected
+      check contrast.diagnostics.anyIt(it.kind == fedContrastViolation)
+
+      vm.foundations.tokens.val = @[
+        FoundationTokenEntry(key: "semantic.a", kind: ftkSemanticColor,
+          value: "token(semantic.b)", aliasOf: "semantic.b",
+          sourceFile: tokenFile, sourceLine: 1,
+          schemaKey: "tokens.semantic.a", property: "semantic.a"),
+        FoundationTokenEntry(key: "semantic.b", kind: ftkSemanticColor,
+          value: "token(semantic.a)", aliasOf: "semantic.a",
+          sourceFile: tokenFile, sourceLine: 2,
+          schemaKey: "tokens.semantic.b", property: "semantic.b")
+      ]
+      let cycle = vm.editFoundationToken("semantic.a", "token(semantic.b)")
+      check cycle.status == pesRejected
+      check cycle.diagnostics.anyIt(it.kind == fedAliasCycle)
+      dispose()
+
+  test "component_variant_editor_updates_story_fixtures":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("variant")
+      defer: removeDir(root)
+
+      let fixtureFile = root / "fixtures.schema"
+      let metadataFile = root / "stories.schema"
+      atomicWrite(fixtureFile, "title=Paris\nstate=featured")
+      atomicWrite(metadataFile, "story=Default")
+      let story = writeStory
+      let schema = @[
+        WorkspaceEditableSchemaEntry(key: "fixtures.destination.title",
+          kind: wskStoryFixture, file: fixtureFile,
+          path: "fixtures.destination.title", story: story, property: "title"),
+        WorkspaceEditableSchemaEntry(key: "stories.destination.default.name",
+          kind: wskComponentVariant, file: metadataFile,
+          path: "stories.destination.default.name", story: story,
+          property: "story")
+      ]
+      let recorder = WorkspaceEditRecorder()
+      let adapter = adapterFor(root, schema, recorder = recorder)
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "M28 variant workspace",
+        storyGroups = @[StoryGroup(name: "DestinationCard",
+          kind: skComponent, items: @[StoryItem(name: "Default",
+            kind: skComponent, group: "DestinationCard")])],
+        componentVariants = @[ComponentVariantDefinition(
+          component: "DestinationCard",
+          variantKey: "default",
+          story: story,
+          fixtureName: "destination.featured",
+          metadataName: "Default",
+          fields: @[
+            ComponentVariantField(name: "title",
+              kind: cvfkSampleData, value: "Paris", sourceFile: fixtureFile,
+              sourceLine: 1, schemaKey: "fixtures.destination.title"),
+            ComponentVariantField(name: "story",
+              kind: cvfkStoryMetadata, value: "Default",
+              sourceFile: metadataFile, sourceLine: 1,
+              schemaKey: "stories.destination.default.name")
+          ],
+          usageExamples: @[UsageExample(description: "Use for featured destinations.",
+            isDo: true)])],
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true, createStory: false, createVariant: false,
+          duplicate: false, delete: false),
+        editAdapter = adapter,
+        initialStory = some(story)))
+
+      let edit = vm.editComponentVariantField("DestinationCard", "default",
+        "title", "Sofia")
+      check edit.status == pesAccepted
+      check edit.sourceEdit.schemaKey == "fixtures.destination.title"
+      check edit.affectedStory.name == "Default"
+      check vm.variants.variants.val[0].fields[0].value == "Sofia"
+      check vm.variants.selectedVariant.val == 0
+      check vm.inspector.pendingSourceEdits.val.len == 1
+
+      let saved = vm.applyWorkspaceFileEdits()
+      check saved.ok
+      check readFile(fixtureFile).contains("title=Sofia")
+      check vm.workspaceEditAffectedStories.val.len == 1
+      check not vm.workspaceEditFullReload.val
+
+      vm.variants.variants.val = @[ComponentVariantDefinition(
+        component: "DestinationCard",
+        variantKey: "broken",
+        story: story,
+        fixtureName: "",
+        fields: @[ComponentVariantField(name: "title",
+          kind: cvfkSampleData, value: "Paris", sourceFile: fixtureFile,
+          sourceLine: 1, schemaKey: "fixtures.destination.title")])]
+      let missingFixture = vm.editComponentVariantField("DestinationCard",
+        "broken", "title", "Sofia")
+      check missingFixture.status == pesRejected
+      check missingFixture.diagnostics.anyIt(
+        it.kind == cvdMissingVariantFixture)
+
+      vm.variants.variants.val = @[ComponentVariantDefinition(
+        component: "DestinationCard",
+        variantKey: "metadata-mismatch",
+        story: story,
+        fixtureName: "destination.featured",
+        metadataName: "Other Story",
+        fields: @[ComponentVariantField(name: "story",
+          kind: cvfkStoryMetadata, value: "Default", sourceFile: metadataFile,
+          sourceLine: 1, schemaKey: "stories.destination.default.name")])]
+      let mismatch = vm.editComponentVariantField("DestinationCard",
+        "metadata-mismatch", "story", "Default")
+      check mismatch.status == pesRejected
+      check mismatch.diagnostics.anyIt(
+        it.kind == cvdInconsistentStoryMetadata)
+      dispose()
+
 suite "Editor ViewModels (M20 story flow preview runtime)":
 
   func findItem(groups: seq[StoryGroup]; groupName, itemName: string;

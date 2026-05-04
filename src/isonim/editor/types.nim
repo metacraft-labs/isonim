@@ -596,6 +596,103 @@ type
       fullReload: bool): WorkspaceOperationResult {.closure.}
     review*: proc(patches: seq[WorkspaceFilePatch]): WorkspaceReviewResult {.closure.}
 
+  # --- Foundations and component variant editors ---
+  FoundationTokenKind* = enum
+    ftkColorPalette
+    ftkSemanticColor
+    ftkTypographyScale
+    ftkSpacingScale
+    ftkRadiusScale
+    ftkShadow
+    ftkMotion
+    ftkDensity
+    ftkAccessibilityConstraint
+
+  FoundationEditDiagnosticKind* = enum
+    fedInvalidTokenValue
+    fedContrastViolation
+    fedAliasCycle
+    fedMissingTokenSchema
+
+  FoundationTokenEntry* = object
+    key*: string
+    kind*: FoundationTokenKind
+    value*: string
+    aliasOf*: string
+    foreground*: string
+    background*: string
+    minContrast*: float
+    sourceFile*: string
+    sourceLine*: int
+    schemaKey*: string
+    property*: string
+    affectedStories*: seq[StoryRef]
+
+  FoundationTokenImpact* = object
+    tokenKey*: string
+    affectedProperties*: seq[PropertyInfo]
+    affectedStories*: seq[StoryRef]
+    message*: string
+
+  FoundationEditDiagnostic* = object
+    kind*: FoundationEditDiagnosticKind
+    message*: string
+    key*: string
+    file*: string
+    line*: int
+
+  FoundationEditResult* = object
+    status*: PropertyEditStatus
+    sourceEdit*: SourceEditPlan
+    impacts*: seq[FoundationTokenImpact]
+    diagnostics*: seq[FoundationEditDiagnostic]
+
+  ComponentVariantFieldKind* = enum
+    cvfkProp
+    cvfkState
+    cvfkSampleData
+    cvfkResponsiveBehavior
+    cvfkUsageExample
+    cvfkStoryMetadata
+
+  ComponentVariantDiagnosticKind* = enum
+    cvdMissingVariantFixture
+    cvdInconsistentStoryMetadata
+    cvdMissingVariantSchema
+    cvdInvalidVariantValue
+
+  ComponentVariantField* = object
+    name*: string
+    kind*: ComponentVariantFieldKind
+    value*: string
+    sourceFile*: string
+    sourceLine*: int
+    schemaKey*: string
+
+  ComponentVariantDefinition* = object
+    component*: string
+    variantKey*: string
+    story*: StoryRef
+    fixtureName*: string
+    metadataName*: string
+    fields*: seq[ComponentVariantField]
+    usageExamples*: seq[UsageExample]
+
+  ComponentVariantDiagnostic* = object
+    kind*: ComponentVariantDiagnosticKind
+    message*: string
+    component*: string
+    variantKey*: string
+    field*: string
+    file*: string
+    line*: int
+
+  ComponentVariantEditResult* = object
+    status*: PropertyEditStatus
+    sourceEdit*: SourceEditPlan
+    diagnostics*: seq[ComponentVariantDiagnostic]
+    affectedStory*: StoryRef
+
   # --- Preview ---
   Platform* = enum
     pfWeb

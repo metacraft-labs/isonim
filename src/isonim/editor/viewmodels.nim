@@ -4,7 +4,7 @@
 ## No CSS, no colors, no rendering — only signals, memos, and enums.
 ## Created via withViewModel inside createRoot.
 
-import std/[sequtils, strutils]
+import std/[math, sequtils, strutils]
 import isonim/core/[signals, computation]
 import isonim/viewmodel
 import isonim/editor/types
@@ -61,6 +61,18 @@ type
     snapToGrid*: Signal[bool]
     gridSize*: Signal[float]
 
+  FoundationEditorVM* = ref object of ViewModel
+    tokens*: Signal[seq[FoundationTokenEntry]]
+    impacts*: Signal[seq[FoundationTokenImpact]]
+    diagnostics*: Signal[seq[FoundationEditDiagnostic]]
+    hasDiagnostics*: Memo[bool]
+
+  ComponentVariantEditorVM* = ref object of ViewModel
+    variants*: Signal[seq[ComponentVariantDefinition]]
+    diagnostics*: Signal[seq[ComponentVariantDiagnostic]]
+    selectedVariant*: Signal[int]
+    hasDiagnostics*: Memo[bool]
+
   AgentChatVM* = ref object of ViewModel
     messages*: Signal[seq[ChatMessage]]
     sessionStatus*: Signal[AsyncState]
@@ -113,6 +125,8 @@ type
     storyboard*: StoryboardVM
     inspector*: InspectorVM
     vectorEditor*: VectorEditorVM
+    foundations*: FoundationEditorVM
+    variants*: ComponentVariantEditorVM
     chat*: AgentChatVM
     review*: ReviewResultsVM
     preview*: ProjectPreviewVM
@@ -1336,6 +1350,300 @@ proc saveCssPropertyEdits*(inspector: InspectorVM;
   if result:
     inspector.markCssPropertyEditsSaved()
 
+# ===========================================================================
+# Foundation and component variant editor actions
+# ===========================================================================
+
+func sameTokenKey(a, b: string): bool =
+  a.toLowerAscii() == b.toLowerAscii()
+
+proc addStoryOnce(stories: var seq[StoryRef]; story: StoryRef) =
+  if story.isEmptyStoryRef:
+    return
+  for existing in stories:
+    if sameStory(existing, story):
+      return
+  stories.add story
+
+proc parseHexChannel(hex: string; start: int): int =
+  try:
+    parseHexInt(hex[start .. start + 1])
+  except ValueError:
+    0
+
+proc hexColorChannels(raw: string): tuple[ok: bool, r, g, b: int] =
+  let text = raw.strip()
+  if not text.startsWith("#"):
+    return
+  let hex = text[1 .. ^1]
+  if hex.len == 3 and hex.allIt(it.isDigit or it.toLowerAscii() in {'a'..'f'}):
+    return (true,
+      parseHexInt($hex[0] & $hex[0]),
+      parseHexInt($hex[1] & $hex[1]),
+      parseHexInt($hex[2] & $hex[2]))
+  if hex.len == 6 and hex.allIt(it.isDigit or it.toLowerAscii() in {'a'..'f'}):
+    return (true, hex.parseHexChannel(0), hex.parseHexChannel(2),
+      hex.parseHexChannel(4))
+
+proc linearChannel(channel: int): float =
+  let c = channel.float / 255.0
+  if c <= 0.03928:
+    c / 12.92
+  else:
+    pow((c + 0.055) / 1.055, 2.4)
+
+proc relativeLuminance(raw: string): tuple[ok: bool, value: float] =
+  let rgb = hexColorChannels(raw)
+  if not rgb.ok:
+    return
+  (true, 0.2126 * linearChannel(rgb.r) + 0.7152 * linearChannel(rgb.g) +
+    0.0722 * linearChannel(rgb.b))
+
+proc contrastRatio(foreground, background: string): float =
+  let fg = relativeLuminance(foreground)
+  let bg = relativeLuminance(background)
+  if not fg.ok or not bg.ok:
+    return 0.0
+  let lighter = max(fg.value, bg.value)
+  let darker = min(fg.value, bg.value)
+  (lighter + 0.05) / (darker + 0.05)
+
+proc foundationDiagnostic(kind: FoundationEditDiagnosticKind;
+    token: FoundationTokenEntry; message: string): FoundationEditDiagnostic =
+  FoundationEditDiagnostic(
+    kind: kind,
+    message: message,
+    key: token.key,
+    file: token.sourceFile,
+    line: token.sourceLine)
+
+func sourcePlan(token: FoundationTokenEntry; newValue: string): SourceEditPlan =
+  SourceEditPlan(
+    file: token.sourceFile,
+    line: token.sourceLine,
+    property: token.property,
+    oldValue: token.value,
+    newValue: newValue.strip(),
+    originDetail: "schema:" & token.schemaKey,
+    scope: pesShared,
+    planKind: cspTokenUpdate,
+    schemaKey: token.schemaKey,
+    tokenName: token.key,
+    reversible: true,
+    previewBefore: token.property & ": " & token.value,
+    previewAfter: token.property & ": " & newValue.strip(),
+    formatterHook: "format-foundation-token",
+    regeneratorHook: "regenerate-design-system",
+    conflictKey: token.sourceFile & ":" & $token.sourceLine & ":" & token.property,
+    expectedOldValue: token.value)
+
+proc aliasTarget(tokens: seq[FoundationTokenEntry]; key: string): string =
+  for token in tokens:
+    if token.key.sameTokenKey(key):
+      if token.aliasOf.len > 0:
+        return token.aliasOf
+      return token.value
+  ""
+
+proc hasAliasCycle(tokens: seq[FoundationTokenEntry]; startKey,
+    newAlias: string): bool =
+  var seen: seq[string] = @[startKey.toLowerAscii()]
+  var current = newAlias
+  while current.len > 0:
+    let lowered = current.toLowerAscii()
+    if lowered in seen:
+      return true
+    seen.add lowered
+    current = tokens.aliasTarget(current)
+
+proc foundationImpact*(editor: EditorVM; tokenKey: string): FoundationTokenImpact =
+  result.tokenKey = tokenKey
+  for prop in editor.inspector.selectedElement.val.properties:
+    if prop.tokenName.sameTokenKey(tokenKey) or
+        prop.value.tokenNameFromRaw.sameTokenKey(tokenKey):
+      result.affectedProperties.add prop
+  for token in editor.foundations.tokens.val:
+    if token.key.sameTokenKey(tokenKey):
+      for story in token.affectedStories:
+        result.affectedStories.addStoryOnce story
+  result.message = $result.affectedProperties.len & " properties and " &
+    $result.affectedStories.len & " stories depend on " & tokenKey & "."
+
+proc validateFoundationTokenEdit(editor: EditorVM; token: FoundationTokenEntry;
+    newValue: string): seq[FoundationEditDiagnostic] =
+  let value = newValue.strip()
+  if token.schemaKey.len == 0 or token.sourceFile.len == 0:
+    result.add foundationDiagnostic(fedMissingTokenSchema, token,
+      "Foundation token edits require a project schema entry.")
+  if value.len == 0:
+    result.add foundationDiagnostic(fedInvalidTokenValue, token,
+      "Foundation token values cannot be blank.")
+  if token.kind in {ftkColorPalette, ftkSemanticColor}:
+    let parsed = hexColorChannels(value)
+    let aliasLike = value.startsWith("token(") or value.startsWith("$")
+    if not parsed.ok and not aliasLike:
+      result.add foundationDiagnostic(fedInvalidTokenValue, token,
+        "Color tokens must use a hex color or token alias.")
+  if token.kind == ftkSemanticColor and
+      (value.startsWith("token(") or value.startsWith("$")):
+    let target = tokenNameFromRaw(value)
+    if editor.foundations.tokens.val.hasAliasCycle(token.key, target):
+      result.add foundationDiagnostic(fedAliasCycle, token,
+        "Semantic token aliases cannot form a cycle.")
+  if token.kind == ftkAccessibilityConstraint and token.minContrast > 0:
+    let foreground = if value.len > 0: value else: token.foreground
+    let ratio = contrastRatio(foreground, token.background)
+    if ratio > 0 and ratio < token.minContrast:
+      result.add foundationDiagnostic(fedContrastViolation, token,
+        "Token contrast ratio " & $ratio & " is below " & $token.minContrast & ".")
+
+proc editFoundationToken*(editor: EditorVM; key, newValue: string): FoundationEditResult {.discardable.} =
+  var tokenIndex = -1
+  var token = FoundationTokenEntry()
+  for i, candidate in editor.foundations.tokens.val:
+    if candidate.key.sameTokenKey(key):
+      tokenIndex = i
+      token = candidate
+      break
+  if tokenIndex < 0:
+    let diagnostic = FoundationEditDiagnostic(
+      kind: fedMissingTokenSchema,
+      message: "Unknown foundation token '" & key & "'.",
+      key: key)
+    editor.foundations.diagnostics.val = @[diagnostic]
+    return FoundationEditResult(status: pesRejected,
+      diagnostics: @[diagnostic])
+
+  let diagnostics = editor.validateFoundationTokenEdit(token, newValue)
+  if diagnostics.len > 0:
+    editor.foundations.diagnostics.val = diagnostics
+    return FoundationEditResult(status: pesRejected, diagnostics: diagnostics)
+
+  let plan = token.sourcePlan(newValue)
+  var updatedTokens = editor.foundations.tokens.val
+  updatedTokens[tokenIndex].value = newValue.strip()
+  if newValue.strip().startsWith("token(") or newValue.strip().startsWith("$"):
+    updatedTokens[tokenIndex].aliasOf = tokenNameFromRaw(newValue)
+  editor.foundations.tokens.val = updatedTokens
+
+  let impact = editor.foundationImpact(key)
+  editor.foundations.impacts.val = @[impact]
+  editor.foundations.diagnostics.val = @[]
+  editor.inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
+      SourceEditPlan] =
+    result = prev
+    result.add plan
+  editor.inspector.sourcePreviews.update proc(prev: seq[CSSSourcePreview]): seq[
+      CSSSourcePreview] =
+    result = prev
+    result.add CSSSourcePreview(plan: plan, beforeText: plan.previewBefore,
+      afterText: plan.previewAfter)
+  editor.workspaceEditStage.val = wesDirty
+  FoundationEditResult(status: pesAccepted, sourceEdit: plan, impacts: @[impact])
+
+proc variantDiagnostic(kind: ComponentVariantDiagnosticKind;
+    variant: ComponentVariantDefinition; field: ComponentVariantField;
+    message: string): ComponentVariantDiagnostic =
+  ComponentVariantDiagnostic(
+    kind: kind,
+    message: message,
+    component: variant.component,
+    variantKey: variant.variantKey,
+    field: field.name,
+    file: field.sourceFile,
+    line: field.sourceLine)
+
+func sourcePlan(variant: ComponentVariantDefinition;
+    field: ComponentVariantField; newValue: string): SourceEditPlan =
+  SourceEditPlan(
+    file: field.sourceFile,
+    line: field.sourceLine,
+    property: field.name,
+    oldValue: field.value,
+    newValue: newValue.strip(),
+    originDetail: "schema:" & field.schemaKey,
+    scope: pesShared,
+    planKind:
+      if field.kind in {cvfkSampleData, cvfkStoryMetadata}: cspStructuredSchemaUpdate
+      else: cspStructuredSchemaUpdate,
+    schemaKey: field.schemaKey,
+    variantKey: variant.variantKey,
+    reversible: true,
+    previewBefore: field.name & ": " & field.value,
+    previewAfter: field.name & ": " & newValue.strip(),
+    formatterHook: "format-component-variant",
+    regeneratorHook: "regenerate-design-system",
+    conflictKey: field.sourceFile & ":" & $field.sourceLine & ":" & field.name,
+    expectedOldValue: field.value)
+
+proc validateComponentVariantEdit(variant: ComponentVariantDefinition;
+    field: ComponentVariantField; newValue: string): seq[ComponentVariantDiagnostic] =
+  if field.schemaKey.len == 0 or field.sourceFile.len == 0:
+    result.add variantDiagnostic(cvdMissingVariantSchema, variant, field,
+      "Component variant edits require a project schema entry.")
+  if newValue.strip.len == 0:
+    result.add variantDiagnostic(cvdInvalidVariantValue, variant, field,
+      "Component variant values cannot be blank.")
+  if field.kind == cvfkSampleData and variant.fixtureName.len == 0:
+    result.add variantDiagnostic(cvdMissingVariantFixture, variant, field,
+      "Variant sample data edits require a fixture name.")
+  if field.kind == cvfkStoryMetadata and variant.metadataName.len > 0 and
+      variant.metadataName != variant.story.name:
+    result.add variantDiagnostic(cvdInconsistentStoryMetadata, variant, field,
+      "Variant story metadata must match the selected story.")
+
+proc editComponentVariantField*(editor: EditorVM; component, variantKey, fieldName,
+    newValue: string): ComponentVariantEditResult {.discardable.} =
+  var variantIndex = -1
+  var fieldIndex = -1
+  var variant = ComponentVariantDefinition()
+  var field = ComponentVariantField()
+  for i, candidate in editor.variants.variants.val:
+    if candidate.component == component and candidate.variantKey == variantKey:
+      variantIndex = i
+      variant = candidate
+      for j, f in candidate.fields:
+        if f.name == fieldName:
+          fieldIndex = j
+          field = f
+          break
+      break
+  if variantIndex < 0 or fieldIndex < 0:
+    let diagnostic = ComponentVariantDiagnostic(
+      kind: cvdMissingVariantSchema,
+      message: "Unknown component variant field.",
+      component: component,
+      variantKey: variantKey,
+      field: fieldName)
+    editor.variants.diagnostics.val = @[diagnostic]
+    return ComponentVariantEditResult(status: pesRejected,
+      diagnostics: @[diagnostic])
+
+  let diagnostics = validateComponentVariantEdit(variant, field, newValue)
+  if diagnostics.len > 0:
+    editor.variants.diagnostics.val = diagnostics
+    return ComponentVariantEditResult(status: pesRejected,
+      diagnostics: diagnostics, affectedStory: variant.story)
+
+  let plan = variant.sourcePlan(field, newValue)
+  var updated = editor.variants.variants.val
+  updated[variantIndex].fields[fieldIndex].value = newValue.strip()
+  editor.variants.variants.val = updated
+  editor.variants.selectedVariant.val = variantIndex
+  editor.variants.diagnostics.val = @[]
+  editor.inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
+      SourceEditPlan] =
+    result = prev
+    result.add plan
+  editor.inspector.sourcePreviews.update proc(prev: seq[CSSSourcePreview]): seq[
+      CSSSourcePreview] =
+    result = prev
+    result.add CSSSourcePreview(plan: plan, beforeText: plan.previewBefore,
+      afterText: plan.previewAfter)
+  editor.workspaceEditStage.val = wesDirty
+  ComponentVariantEditResult(status: pesAccepted, sourceEdit: plan,
+    affectedStory: variant.story)
+
 func workspacePlanKeys(plan: SourceEditPlan): seq[string] =
   if plan.schemaKey.len > 0:
     result.add plan.schemaKey
@@ -2015,6 +2323,28 @@ proc createVectorEditorVM*(): VectorEditorVM =
     snapToGrid: snapToGrid,
     gridSize: gridSize)
 
+proc createFoundationEditorVM*(): FoundationEditorVM =
+  let tokens = createSignal[seq[FoundationTokenEntry]](@[])
+  let impacts = createSignal[seq[FoundationTokenImpact]](@[])
+  let diagnostics = createSignal[seq[FoundationEditDiagnostic]](@[])
+  let hasDiagnostics = createMemo[bool](proc(): bool = diagnostics.val.len > 0)
+  FoundationEditorVM(
+    tokens: tokens,
+    impacts: impacts,
+    diagnostics: diagnostics,
+    hasDiagnostics: hasDiagnostics)
+
+proc createComponentVariantEditorVM*(): ComponentVariantEditorVM =
+  let variants = createSignal[seq[ComponentVariantDefinition]](@[])
+  let diagnostics = createSignal[seq[ComponentVariantDiagnostic]](@[])
+  let selectedVariant = createSignal(-1)
+  let hasDiagnostics = createMemo[bool](proc(): bool = diagnostics.val.len > 0)
+  ComponentVariantEditorVM(
+    variants: variants,
+    diagnostics: diagnostics,
+    selectedVariant: selectedVariant,
+    hasDiagnostics: hasDiagnostics)
+
 proc createAgentChatVM*(): AgentChatVM =
   let messages = createSignal[seq[ChatMessage]](@[])
   let sessionStatus = createSignal(asIdle)
@@ -2118,6 +2448,8 @@ proc createEditorVM*(): EditorVM =
   let storyboard = createStoryboardVM()
   let inspector = createInspectorVM()
   let vectorEditor = createVectorEditorVM()
+  let foundations = createFoundationEditorVM()
+  let variants = createComponentVariantEditorVM()
   let chat = createAgentChatVM()
   let review = createReviewResultsVM()
   let preview = createProjectPreviewVM(selectedStory, platform)
@@ -2146,6 +2478,8 @@ proc createEditorVM*(): EditorVM =
     storyboard: storyboard,
     inspector: inspector,
     vectorEditor: vectorEditor,
+    foundations: foundations,
+    variants: variants,
     chat: chat,
     review: review,
     preview: preview,
