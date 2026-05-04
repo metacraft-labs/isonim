@@ -1,6 +1,6 @@
 ## Tests for IsoNim Editor ViewModels (M0)
 
-import std/[unittest, strutils]
+import std/[unittest, strutils, sequtils]
 import isonim/core/[signals, computation, owner]
 import isonim/viewmodel
 import isonim/editor/viewmodels
@@ -333,4 +333,151 @@ suite "Editor ViewModels (M18 headless contracts)":
       check vm.chat.sessionStatus.val == asReady
       check vm.selectedStory.val.name == ""
       check vm.hasSelection.val == false
+      dispose()
+
+suite "Editor ViewModels (M19 inspector edit engine)":
+
+  func property(name, value: string; origin: PropertyOrigin; detail: string;
+      file: string; line: int; sharedCount = 0): PropertyInfo =
+    PropertyInfo(
+      name: name,
+      value: value,
+      origin: origin,
+      originDetail: detail,
+      sourceFile: file,
+      sourceLine: line,
+      sharedCount: sharedCount)
+
+  test "editor_inspector_edit_records_source_origin":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      let element = ElementRef(
+        tag: "article",
+        sourceFile: "examples/wanderlust/components/views.nim",
+        sourceLine: 42,
+        sourceColumn: 7,
+        properties: @[
+          property("padding", "16px", poTailwindClass, "class:p-4",
+            "examples/wanderlust/components/views.nim", 42),
+          property("aria-label", "Destination card", poConstant,
+            "const destinationCardLabel",
+            "examples/wanderlust/components/views.nim", 43)
+      ])
+
+      check vm.selectInspectorElement(element)
+      let edit = vm.editCssProperty("padding", "24px", pesLocal)
+
+      check edit.status == pesAccepted
+      check vm.inspector.selectedElement.val.properties[0].value == "24px"
+      check vm.chat.accumulatedEdits.val.len == 1
+      check vm.chat.accumulatedEdits.val[0].file ==
+        "examples/wanderlust/components/views.nim"
+      check vm.chat.accumulatedEdits.val[0].line == 42
+      check vm.chat.accumulatedEdits.val[0].oldValue == "16px"
+      check vm.chat.accumulatedEdits.val[0].newValue == "24px"
+      check vm.chat.accumulatedEdits.val[0].origin == poTailwindClass
+      check vm.chat.accumulatedEdits.val[0].originDetail == "class:p-4"
+      check vm.chat.accumulatedEdits.val[0].scope == pesLocal
+      check not vm.chat.accumulatedEdits.val[0].isShared
+      check vm.inspector.pendingSourceEdits.val.len == 1
+      check vm.inspector.pendingSourceEdits.val[0].originDetail == "class:p-4"
+
+      var applied: seq[SourceEditPlan] = @[]
+      proc adapter(plan: SourceEditPlan): bool =
+        applied.add plan
+        true
+
+      check vm.inspector.applyPendingSourceEdits(adapter) == 1
+      check applied.len == 1
+      check applied[0].file == "examples/wanderlust/components/views.nim"
+      check applied[0].property == "padding"
+      check applied[0].oldValue == "16px"
+      check applied[0].newValue == "24px"
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      dispose()
+
+  test "editor_inspector_shared_property_requires_scope_choice":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      vm.selectInspectorElement(ElementRef(
+        tag: "main",
+        sourceFile: "apps/back-office/src/backoffice_ui/components.nim",
+        sourceLine: 38,
+        sourceColumn: 13,
+        properties: @[
+          property("gap", "24px", poThemeToken,
+            "Metacraft spacing scale for dashboard bands",
+            "apps/back-office/src/backoffice_ui/components.nim", 73,
+            sharedCount = 5),
+          property("background", "var(--mc-surface)", poThemeToken,
+            "metacraft_design/generated/tokens.css",
+            "apps/back-office/src/backoffice_ui/components.nim", 13,
+            sharedCount = 9),
+          property("border-radius", "8px", poSetStyle,
+            "setStyle panel radius",
+            "apps/back-office/src/backoffice_ui/components.nim", 80)
+      ]))
+
+      let missingScope = vm.editLayoutProperty("gap", "32px")
+      check missingScope.status == pesNeedsScope
+      check vm.inspector.selectedElement.val.properties[0].value == "24px"
+      check vm.inspector.editDiagnostics.val.len == 1
+      check vm.inspector.editDiagnostics.val[0].kind == pedSharedScopeRequired
+      check vm.chat.accumulatedEdits.val.len == 0
+      check vm.inspector.pendingSourceEdits.val.len == 0
+
+      let sharedEdit = vm.editLayoutProperty("gap", "32px", pesShared)
+      check sharedEdit.status == pesAccepted
+      check vm.inspector.selectedElement.val.properties[0].value == "32px"
+      check vm.chat.accumulatedEdits.val[0].isShared
+      check vm.chat.accumulatedEdits.val[0].scope == pesShared
+
+      let tokenDrift = vm.editCssProperty("background", "#ffffff", pesLocal)
+      check tokenDrift.status == pesRejected
+      check tokenDrift.diagnostics[0].kind == pedTokenDrift
+
+      let directStyle = vm.editCssProperty("border-radius", "12px", pesLocal)
+      check directStyle.status == pesRejected
+      check directStyle.diagnostics[0].kind == pedUnsupportedDirectStyle
+      dispose()
+
+  test "editor_review_flags_non_idiomatic_isonim_patterns":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      vm.review.reviewIsoNimSources(@[
+        SourceSnapshot(
+          file: "examples/wanderlust/components/views.nim",
+          content: """
+proc destinationCard(): string =
+  uiString:
+    tdiv:
+      showIf(isSaved):
+        span: text "Saved"
+      forIn(destinations):
+        article: text item.name
+  result.add "<section>raw</section>"
+  button(setStyle = "color: #ffffff")
+  img(src = "hero.jpg")
+"""),
+        SourceSnapshot(
+          file: "examples/wanderlust/components/viewmodels.nim",
+          content: """
+type CardVM = object
+  title: string
+let leaked = (class = "rounded-xl", background_color = "#ffffff")
+""")
+      ])
+
+      let violations = vm.review.violations.val
+      check violations.anyIt(it.category == vcDeprecatedDsl and
+        it.file == "examples/wanderlust/components/views.nim")
+      check violations.anyIt(it.category == vcHtmlBuilder and
+        it.message.contains("Ad hoc HTML"))
+      check violations.anyIt(it.category == vcViewModelBoundary and
+        it.file == "examples/wanderlust/components/viewmodels.nim")
+      check violations.anyIt(it.category == vcDirectStyle)
+      check violations.anyIt(it.category == vcDryTokens)
+      check violations.anyIt(it.category == vcAccessibility)
+      check vm.review.errorCount.val >= 2
+      check vm.review.warningCount.val >= 4
       dispose()

@@ -33,6 +33,8 @@ type
   InspectorVM* = ref object of ViewModel
     selectedElement*: Signal[ElementRef]
     activeSection*: Signal[InspectorSection]
+    editDiagnostics*: Signal[seq[PropertyEditDiagnostic]]
+    pendingSourceEdits*: Signal[seq[SourceEditPlan]]
     hasElement*: Memo[bool]
     properties*: Memo[seq[PropertyInfo]]
     ## CSS-specific state
@@ -103,6 +105,63 @@ func viewForStory(story: StoryRef): EditorView =
     evPagePreview
   of skComponent, skPattern, skFoundation, skGuideline:
     evComponentDetail
+
+func isShared(prop: PropertyInfo): bool =
+  prop.sharedCount > 0
+
+func isViewModelSource(file: string): bool =
+  "viewmodel" in file.toLowerAscii()
+
+func isTokenDrift(prop: PropertyInfo; newValue: string): bool =
+  prop.origin == poThemeToken and newValue.strip.startsWith("#")
+
+func isEmptyA11yEdit(prop: PropertyInfo; newValue: string): bool =
+  (prop.name == "aria-label" or prop.name == "alt") and newValue.strip.len == 0
+
+func diagnostic(kind: PropertyEditDiagnosticKind; prop: PropertyInfo;
+    message: string): PropertyEditDiagnostic =
+  PropertyEditDiagnostic(
+    kind: kind,
+    message: message,
+    file: prop.sourceFile,
+    line: prop.sourceLine,
+    property: prop.name)
+
+func diagnostic(kind: PropertyEditDiagnosticKind; element: ElementRef;
+    property, message: string): PropertyEditDiagnostic =
+  PropertyEditDiagnostic(
+    kind: kind,
+    message: message,
+    file: element.sourceFile,
+    line: element.sourceLine,
+    property: property)
+
+func editRecord(prop: PropertyInfo; request: PropertyEditRequest): EditRecord =
+  EditRecord(
+    file: prop.sourceFile,
+    line: prop.sourceLine,
+    property: prop.name,
+    oldValue: prop.value,
+    newValue: request.newValue,
+    origin: prop.origin,
+    originDetail: prop.originDetail,
+    scope: request.scope,
+    isShared: request.scope == pesShared,
+    editOrigin: request.origin)
+
+func sourcePlan(prop: PropertyInfo; request: PropertyEditRequest): SourceEditPlan =
+  SourceEditPlan(
+    file: prop.sourceFile,
+    line: prop.sourceLine,
+    property: prop.name,
+    oldValue: prop.value,
+    newValue: request.newValue,
+    originDetail: prop.originDetail,
+    scope: request.scope)
+
+func withStatus(status: PropertyEditStatus;
+    diagnostics: seq[PropertyEditDiagnostic] = @[]): PropertyEditResult =
+  PropertyEditResult(status: status, diagnostics: diagnostics)
 
 proc findCanvasItem(vm: EditorVM; story: StoryRef): int =
   result = -1
@@ -177,9 +236,11 @@ proc selectInspectorElement*(editor: EditorVM;
     element: ElementRef): bool {.discardable.} =
   if element.tag.len == 0:
     editor.inspector.selectedElement.val = ElementRef()
+    editor.inspector.editDiagnostics.val = @[]
     return false
 
   editor.inspector.selectedElement.val = element
+  editor.inspector.editDiagnostics.val = @[]
   true
 
 proc changePlatform*(editor: EditorVM; platform: Platform) =
@@ -220,12 +281,145 @@ proc setSearch*(sidebar: SidebarVM; query: string) =
 
 proc selectElement*(inspector: InspectorVM; element: ElementRef) =
   inspector.selectedElement.val = element
+  inspector.editDiagnostics.val = @[]
 
 proc setSection*(inspector: InspectorVM; section: InspectorSection) =
   inspector.activeSection.val = section
 
 proc clearSelection*(inspector: InspectorVM) =
   inspector.selectedElement.val = ElementRef()
+  inspector.editDiagnostics.val = @[]
+
+proc editProperty*(inspector: InspectorVM;
+    request: PropertyEditRequest): PropertyEditResult {.discardable.} =
+  ## Update the selected element and produce source-aware edit data.
+  let element = inspector.selectedElement.val
+  if element.tag.len == 0:
+    result = withStatus(pesRejected, @[
+      diagnostic(pedMissingSelection, element, request.property,
+        "Select an element before editing inspector properties.")
+    ])
+    inspector.editDiagnostics.val = result.diagnostics
+    return
+
+  var propIndex = -1
+  var prop = PropertyInfo()
+  for i, candidate in element.properties:
+    if candidate.name == request.property:
+      propIndex = i
+      prop = candidate
+      break
+
+  if propIndex < 0:
+    result = withStatus(pesRejected, @[
+      diagnostic(pedUnknownProperty, element, request.property,
+        "The selected element does not expose this property.")
+    ])
+    inspector.editDiagnostics.val = result.diagnostics
+    return
+
+  var diagnostics: seq[PropertyEditDiagnostic] = @[]
+  if prop.isShared and request.scope == pesUnspecified:
+    diagnostics.add diagnostic(pedSharedScopeRequired, prop,
+      "Shared properties require an explicit local or shared scope.")
+    result = withStatus(pesNeedsScope, diagnostics)
+    inspector.editDiagnostics.val = diagnostics
+    return
+
+  if prop.origin == poSetStyle:
+    diagnostics.add diagnostic(pedUnsupportedDirectStyle, prop,
+      "Direct setStyle origins are review-only; move the style into classes or tokens before editing.")
+
+  if (request.kind == pekCss or request.kind == pekLayout) and
+      prop.sourceFile.isViewModelSource:
+    diagnostics.add diagnostic(pedViewModelBoundary, prop,
+      "CSS and layout edits cannot be applied from ViewModel-owned source.")
+
+  if prop.isTokenDrift(request.newValue):
+    diagnostics.add diagnostic(pedTokenDrift, prop,
+      "Theme-token properties must stay on token values instead of literal colors.")
+
+  if prop.isEmptyA11yEdit(request.newValue):
+    diagnostics.add diagnostic(pedAccessibility, prop,
+      "Accessibility text properties cannot be blank.")
+
+  if diagnostics.len > 0:
+    result = withStatus(pesRejected, diagnostics)
+    inspector.editDiagnostics.val = diagnostics
+    return
+
+  var updated = element
+  updated.properties[propIndex].value = request.newValue
+  inspector.selectedElement.val = updated
+  inspector.editDiagnostics.val = @[]
+
+  let record = prop.editRecord(request)
+  let plan = prop.sourcePlan(request)
+  inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[SourceEditPlan] =
+    result = prev
+    result.add plan
+
+  PropertyEditResult(status: pesAccepted, record: record, sourceEdit: plan)
+
+proc editInspectorProperty*(editor: EditorVM;
+    request: PropertyEditRequest): PropertyEditResult {.discardable.} =
+  result = editor.inspector.editProperty(request)
+  if result.status == pesAccepted:
+    let acceptedRecord = result.record
+    editor.chat.accumulatedEdits.update proc(prev: seq[EditRecord]): seq[EditRecord] =
+      result = prev
+      result.add acceptedRecord
+  elif result.diagnostics.len > 0:
+    let editDiagnostics = result.diagnostics
+    editor.review.violations.update proc(prev: seq[Violation]): seq[Violation] =
+      result = prev
+      for d in editDiagnostics:
+        let category =
+          case d.kind
+          of pedUnsupportedDirectStyle: vcDirectStyle
+          of pedViewModelBoundary: vcViewModelBoundary
+          of pedTokenDrift: vcDryTokens
+          of pedAccessibility: vcAccessibility
+          of pedSharedScopeRequired, pedMissingSelection, pedUnknownProperty:
+            vcMockCompleteness
+        result.add Violation(
+          severity: if d.kind in {pedSharedScopeRequired, pedMissingSelection,
+              pedUnknownProperty}: vsWarning else: vsError,
+          category: category,
+          message: d.message,
+          file: d.file,
+          line: d.line,
+          autoFixable: d.kind in {pedUnsupportedDirectStyle, pedTokenDrift,
+              pedAccessibility})
+
+proc editCssProperty*(editor: EditorVM; property, newValue: string;
+    scope = pesUnspecified; origin = peoInspector): PropertyEditResult {.discardable.} =
+  editor.editInspectorProperty(PropertyEditRequest(
+    property: property, newValue: newValue, kind: pekCss, scope: scope,
+    origin: origin))
+
+proc editLayoutProperty*(editor: EditorVM; property, newValue: string;
+    scope = pesUnspecified; origin = peoInspector): PropertyEditResult {.discardable.} =
+  editor.editInspectorProperty(PropertyEditRequest(
+    property: property, newValue: newValue, kind: pekLayout, scope: scope,
+    origin: origin))
+
+proc editStateProperty*(editor: EditorVM; property, newValue: string;
+    scope = pesUnspecified; origin = peoInspector): PropertyEditResult {.discardable.} =
+  editor.editInspectorProperty(PropertyEditRequest(
+    property: property, newValue: newValue, kind: pekState, scope: scope,
+    origin: origin))
+
+proc applyPendingSourceEdits*(inspector: InspectorVM;
+    adapter: SourceEditAdapter): int =
+  ## Apply pending plans through a project-owned adapter. No file IO is owned here.
+  var remaining: seq[SourceEditPlan] = @[]
+  for plan in inspector.pendingSourceEdits.val:
+    if adapter(plan):
+      inc result
+    else:
+      remaining.add plan
+  inspector.pendingSourceEdits.val = remaining
 
 # ===========================================================================
 # AgentChatVM actions
@@ -249,6 +443,103 @@ proc recordEdit*(chat: AgentChatVM; edit: EditRecord) =
 
 proc clearAccumulatedEdits*(chat: AgentChatVM) =
   chat.accumulatedEdits.val = @[]
+
+# ===========================================================================
+# ReviewResultsVM actions
+# ===========================================================================
+
+func containsLiteralColor(line: string): bool =
+  let stripped = line.strip()
+  if stripped.startsWith("#") or stripped.startsWith("##"):
+    return false
+  for i in 0 ..< stripped.len:
+    if stripped[i] == '#' and i + 3 < stripped.len:
+      return true
+
+func reviewViolation(severity: ViolationSeverity; category: ViolationCategory;
+    message, file: string; line: int; autoFixable: bool): Violation =
+  Violation(
+    severity: severity,
+    category: category,
+    message: message,
+    file: file,
+    line: line,
+    autoFixable: autoFixable)
+
+proc reviewIsoNimSources*(review: ReviewResultsVM;
+    snapshots: seq[SourceSnapshot]) =
+  ## Run headless source diagnostics supplied by a project adapter.
+  var found: seq[Violation] = @[]
+  for snapshot in snapshots:
+    let lowerFile = snapshot.file.toLowerAscii()
+    let vmFile = lowerFile.contains("viewmodel")
+    for index, line in pairs(snapshot.content.splitLines):
+      let lineNo = index + 1
+      let stripped = line.strip()
+      if stripped.len == 0 or stripped.startsWith("#") or stripped.startsWith("##"):
+        continue
+
+      if stripped.contains("showIf(") or stripped.contains("forIn("):
+        found.add reviewViolation(
+          vsWarning,
+          vcDeprecatedDsl,
+          "Deprecated DSL forms should be replaced with natural Nim control flow.",
+          snapshot.file,
+          lineNo,
+          true)
+
+      if stripped.contains("buildHtml") or stripped.contains("writeBody(\"<") or
+          stripped.contains("result.add \"<") or stripped.contains("result &= \"<"):
+        found.add reviewViolation(
+          vsWarning,
+          vcHtmlBuilder,
+          "Ad hoc HTML builders bypass the IsoNim DSL rendering contract.",
+          snapshot.file,
+          lineNo,
+          false)
+
+      if stripped.contains("setStyle(") or stripped.contains("setStyle ="):
+        found.add reviewViolation(
+          vsError,
+          vcDirectStyle,
+          "Direct setStyle edits are unsupported by the inspector edit engine.",
+          snapshot.file,
+          lineNo,
+          true)
+
+      let classAssignment = "class" & " ="
+      if vmFile and (stripped.contains(classAssignment) or
+          stripped.contains("setStyle(") or stripped.contains("setStyle =") or
+          stripped.contains("background_color") or stripped.contains("border_radius") or
+          stripped.contains("font_size")):
+        found.add reviewViolation(
+          vsError,
+          vcViewModelBoundary,
+          "ViewModel source must not own CSS classes or style properties.",
+          snapshot.file,
+          lineNo,
+          true)
+
+      if stripped.containsLiteralColor:
+        found.add reviewViolation(
+          vsWarning,
+          vcDryTokens,
+          "Literal colors should stay behind theme tokens.",
+          snapshot.file,
+          lineNo,
+          true)
+
+      if (stripped.contains("<img") or stripped.contains("img(")) and
+          not stripped.contains("alt"):
+        found.add reviewViolation(
+          vsWarning,
+          vcAccessibility,
+          "Images need accessible alt text.",
+          snapshot.file,
+          lineNo,
+          true)
+
+  review.violations.val = found
 
 # ===========================================================================
 # FlowPlayerVM actions
@@ -330,6 +621,8 @@ proc createStoryboardVM*(): StoryboardVM =
 proc createInspectorVM*(): InspectorVM =
   let selectedElement = createSignal(ElementRef())
   let activeSection = createSignal(isLayout)
+  let editDiagnostics = createSignal[seq[PropertyEditDiagnostic]](@[])
+  let pendingSourceEdits = createSignal[seq[SourceEditPlan]](@[])
 
   let hasElement = createMemo[bool](proc(): bool =
     selectedElement.val.tag.len > 0
@@ -345,6 +638,8 @@ proc createInspectorVM*(): InspectorVM =
   InspectorVM(
     selectedElement: selectedElement,
     activeSection: activeSection,
+    editDiagnostics: editDiagnostics,
+    pendingSourceEdits: pendingSourceEdits,
     hasElement: hasElement,
     properties: properties,
     displayMode: displayMode,

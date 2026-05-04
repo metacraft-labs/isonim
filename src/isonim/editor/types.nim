@@ -168,6 +168,67 @@ type
     sourceFile*: string   ## Source file path
     sharedCount*: int     ## How many elements share this origin (0 = local only)
 
+  PropertyEditKind* = enum
+    pekCss
+    pekLayout
+    pekState
+
+  PropertyEditScope* = enum
+    pesUnspecified
+    pesLocal
+    pesShared
+
+  PropertyEditOrigin* = enum
+    peoInspector
+    peoReviewFix
+    peoAgent
+
+  PropertyEditStatus* = enum
+    pesAccepted
+    pesRejected
+    pesNeedsScope
+
+  PropertyEditDiagnosticKind* = enum
+    pedUnsupportedDirectStyle
+    pedViewModelBoundary
+    pedTokenDrift
+    pedAccessibility
+    pedSharedScopeRequired
+    pedMissingSelection
+    pedUnknownProperty
+
+  PropertyEditDiagnostic* = object
+    kind*: PropertyEditDiagnosticKind
+    message*: string
+    file*: string
+    line*: int
+    property*: string
+
+  PropertyEditRequest* = object
+    property*: string
+    newValue*: string
+    kind*: PropertyEditKind
+    scope*: PropertyEditScope
+    origin*: PropertyEditOrigin
+
+  SourceEditPlan* = object
+    ## Source patch description produced by headless editing.
+    file*: string
+    line*: int
+    property*: string
+    oldValue*: string
+    newValue*: string
+    originDetail*: string
+    scope*: PropertyEditScope
+
+  SourceEditAdapter* = proc(plan: SourceEditPlan): bool {.closure.}
+
+  PropertyEditResult* = object
+    status*: PropertyEditStatus
+    record*: EditRecord
+    sourceEdit*: SourceEditPlan
+    diagnostics*: seq[PropertyEditDiagnostic]
+
   ElementRef* = object
     ## Reference to a selected element in the preview.
     tag*: string          ## e.g. "div", "span", "button"
@@ -197,6 +258,11 @@ type
     property*: string
     oldValue*: string
     newValue*: string
+    origin*: PropertyOrigin
+    originDetail*: string
+    scope*: PropertyEditScope
+    isShared*: bool
+    editOrigin*: PropertyEditOrigin
 
   # --- Review ---
   ViolationSeverity* = enum
@@ -210,6 +276,9 @@ type
     vcStoryCoverage
     vcMockCompleteness
     vcAccessibility
+    vcDirectStyle
+    vcDeprecatedDsl
+    vcHtmlBuilder
 
   Violation* = object
     severity*: ViolationSeverity
@@ -218,6 +287,11 @@ type
     file*: string
     line*: int
     autoFixable*: bool
+
+  SourceSnapshot* = object
+    ## Project-owned source text supplied to headless review.
+    file*: string
+    content*: string
 
   # --- Preview ---
   Platform* = enum
