@@ -114,7 +114,7 @@ test-web:
 # Build the editor (Nim → JS)
 editor-build:
     mkdir -p build/editor
-    nim js --path:src --path:. -o:build/editor/editor.js src/isonim/editor/main.nim
+    nim js --path:src --path:. --path:../nim-everywhere/src -o:build/editor/editor.js src/isonim/editor/main.nim
     cp src/isonim/editor/index.html build/editor/index.html
     @echo "Built: build/editor/ — open build/editor/index.html"
 
@@ -219,17 +219,17 @@ test-app-e2e:
 
 # Build demo app for browser testing
 demo-build:
-    nim js -o:demos/isonim-replica/dist/main.js demos/isonim-replica/src/main.nim
+    nim js --path:../nim-everywhere/src -o:demos/isonim-replica/dist/main.js demos/isonim-replica/src/main.nim
 
 # Build SSR test HTML (C target: generates tests/browser/dist/ssr.html)
 build-ssr-test:
     mkdir -p tests/browser/dist
-    nim c -d:isServer -r tests/browser/generate_ssr.nim
+    nim c --path:../nim-everywhere/src -d:isServer -r tests/browser/generate_ssr.nim
 
 # Build hydration entry point (JS target: tests/browser/dist/main.js)
 build-hydrate:
     mkdir -p tests/browser/dist
-    nim js -o:tests/browser/dist/main.js tests/browser/hydrate_entry.nim
+    nim js --path:../nim-everywhere/src -o:tests/browser/dist/main.js tests/browser/hydrate_entry.nim
 
 # Build all SSR test assets
 build-ssr-test-all: build-ssr-test build-hydrate
@@ -256,7 +256,7 @@ demo-isonim:
 # Build IsoNim components for Storybook (Nim -> JS)
 build-storybook-components:
     mkdir -p demos/isonim-replica/storybook/dist
-    nim js -o:demos/isonim-replica/storybook/dist/components.js demos/isonim-replica/src/storybook_components.nim
+    nim js --path:../nim-everywhere/src -o:demos/isonim-replica/storybook/dist/components.js demos/isonim-replica/src/storybook_components.nim
 
 # Run Storybook for visual component development (builds components first)
 storybook: build-storybook-components
@@ -269,7 +269,7 @@ storybook-build: build-storybook-components
 # Build standalone Web Components demo (Nim -> JS)
 build-web-components:
     mkdir -p demos/web-components/dist
-    nim js -o:demos/web-components/dist/components.js demos/web-components/src/components.nim
+    nim js --path:../nim-everywhere/src -o:demos/web-components/dist/components.js demos/web-components/src/components.nim
 
 # Build and serve the standalone Web Components demo page
 demo-web-components: build-web-components

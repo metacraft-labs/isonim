@@ -8,3 +8,4 @@ srcDir        = "src"
 # Dependencies
 requires "nim >= 2.0.0"
 requires "faststreams >= 0.3.0"
+requires "nim_everywhere >= 0.1.0"

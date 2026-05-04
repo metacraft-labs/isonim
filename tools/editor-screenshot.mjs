@@ -14,27 +14,27 @@
 //
 // Screenshots are saved to: build/editor/screenshots/<view>-<size>.png
 
-import { execSync, spawn } from 'child_process';
-import { mkdirSync, rmSync, existsSync } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
+import { execSync, spawn } from "child_process";
+import { mkdirSync, rmSync, existsSync } from "fs";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const projectRoot = join(__dirname, '..');
-const editorDir = join(projectRoot, 'build', 'editor');
-const screenshotDir = join(editorDir, 'screenshots');
+const projectRoot = join(__dirname, "..");
+const editorDir = join(projectRoot, "build", "editor");
+const screenshotDir = join(editorDir, "screenshots");
 
 // ---------------------------------------------------------------------------
 // Viewports
 // ---------------------------------------------------------------------------
 
 const sizes = {
-  'wide':      { width: 1920, height: 1080 },
-  'laptop':    { width: 1440, height: 900 },
-  'medium':    { width: 1280, height: 800 },
-  'tablet':    { width: 1024, height: 768 },
-  'narrow':    { width: 768,  height: 1024 },
-  'mobile':    { width: 375,  height: 812 },
+  wide: { width: 1920, height: 1080 },
+  laptop: { width: 1440, height: 900 },
+  medium: { width: 1280, height: 800 },
+  tablet: { width: 1024, height: 768 },
+  narrow: { width: 768, height: 1024 },
+  mobile: { width: 375, height: 812 },
 };
 
 // ---------------------------------------------------------------------------
@@ -42,14 +42,14 @@ const sizes = {
 // ---------------------------------------------------------------------------
 
 const views = {
-  'shell': {
-    description: 'Editor shell — sidebar + preview + inspector (default state)',
+  shell: {
+    description: "Editor shell — sidebar + preview + inspector (default state)",
     setup: async (page) => {
       // Default state — nothing to do
     },
   },
-  'shell-story-selected': {
-    description: 'Editor shell with a story selected in the sidebar',
+  "shell-story-selected": {
+    description: "Editor shell with a story selected in the sidebar",
     setup: async (page) => {
       // Click first story item to select it
       const items = await page.$$('[style*="cursor: pointer"]');
@@ -57,64 +57,73 @@ const views = {
       await page.waitForTimeout(200);
     },
   },
-  'sidebar-only': {
-    description: 'Just the sidebar (cropped)',
+  "sidebar-only": {
+    description: "Just the sidebar (cropped)",
     setup: async (page) => {},
     clip: { x: 0, y: 0, width: 280, height: 1080 },
   },
-  'inspector-only': {
-    description: 'Just the inspector panel (cropped)',
+  "inspector-only": {
+    description: "Just the inspector panel (cropped)",
     setup: async (page) => {},
     clip: (vp) => ({ x: vp.width - 320, y: 0, width: 320, height: vp.height }),
   },
-  'preview-only': {
-    description: 'Just the preview pane (cropped)',
+  "preview-only": {
+    description: "Just the preview pane (cropped)",
     setup: async (page) => {},
-    clip: (vp) => ({ x: 280, y: 0, width: vp.width - 280 - 320, height: vp.height }),
+    clip: (vp) => ({
+      x: 280,
+      y: 0,
+      width: vp.width - 280 - 320,
+      height: vp.height,
+    }),
   },
-  'component-detail': {
-    description: 'Component detail page — hero, variants, props, guidelines',
-    initialUrl: 'http://127.0.0.1:8091/#component-detail',
-    setup: async (page) => {},
-  },
-  'component-edit': {
-    description: 'Component edit mode — live preview + CSS inspector',
-    initialUrl: 'http://127.0.0.1:8091/#component-edit',
-    setup: async (page) => {},
-  },
-  'page-preview': {
-    description: 'Page preview — Wanderlust Home page in device frame',
-    initialUrl: 'http://127.0.0.1:8091/#page-preview',
+  "component-detail": {
+    description: "Component detail page — hero, variants, props, guidelines",
+    initialUrl: "http://127.0.0.1:8091/#component-detail",
     setup: async (page) => {},
   },
-  'vector-editor': {
-    description: 'Vector graphics editor — tool palette, SVG canvas, properties',
-    initialUrl: 'http://127.0.0.1:8091/#vector-editor',
+  "component-edit": {
+    description: "Component edit mode — live preview + CSS inspector",
+    initialUrl: "http://127.0.0.1:8091/#component-edit",
     setup: async (page) => {},
   },
-  'inspector-layout': {
-    description: 'Inspector Layout section — display, flex, alignment controls',
-    initialUrl: 'http://127.0.0.1:8091/#component-edit-layout',
+  "page-preview": {
+    description: "Page preview — Wanderlust Home page in device frame",
+    initialUrl: "http://127.0.0.1:8091/#page-preview",
     setup: async (page) => {},
   },
-  'inspector-fill': {
-    description: 'Inspector Fill section — color picker with 2D field, hue, swatches',
-    initialUrl: 'http://127.0.0.1:8091/#component-edit-fill',
+  "vector-editor": {
+    description:
+      "Vector graphics editor — tool palette, SVG canvas, properties",
+    initialUrl: "http://127.0.0.1:8091/#vector-editor",
     setup: async (page) => {},
   },
-  'inspector-effects': {
-    description: 'Inspector Effects section — shadow editor, rotation dial, scale',
-    initialUrl: 'http://127.0.0.1:8091/#component-edit-effects',
+  "inspector-layout": {
+    description: "Inspector Layout section — display, flex, alignment controls",
+    initialUrl: "http://127.0.0.1:8091/#component-edit-layout",
     setup: async (page) => {},
   },
-  'inspector-stroke': {
-    description: 'Inspector Stroke section — border, border-radius editor',
-    initialUrl: 'http://127.0.0.1:8091/#component-edit-stroke',
+  "inspector-fill": {
+    description:
+      "Inspector Fill section — color picker with 2D field, hue, swatches",
+    initialUrl: "http://127.0.0.1:8091/#component-edit-fill",
     setup: async (page) => {},
   },
-  'inspector-transitions': {
-    description: 'Inspector Transitions section — bezier curve editor, duration',
-    initialUrl: 'http://127.0.0.1:8091/#component-edit-transitions',
+  "inspector-effects": {
+    description:
+      "Inspector Effects section — shadow editor, rotation dial, scale",
+    initialUrl: "http://127.0.0.1:8091/#component-edit-effects",
+    setup: async (page) => {},
+  },
+  "inspector-stroke": {
+    description: "Inspector Stroke section — border, border-radius editor",
+    initialUrl: "http://127.0.0.1:8091/#component-edit-stroke",
+    setup: async (page) => {},
+  },
+  "inspector-transitions": {
+    description:
+      "Inspector Transitions section — bezier curve editor, duration",
+    initialUrl: "http://127.0.0.1:8091/#component-edit-transitions",
     setup: async (page) => {},
   },
 };
@@ -126,24 +135,24 @@ const views = {
 let selectedViews = Object.keys(views);
 let selectedSizes = Object.keys(sizes);
 let skipBuild = false;
-let isFiltered = false;  // true when --view or --size narrows the selection
+let isFiltered = false; // true when --view or --size narrows the selection
 
 for (let i = 2; i < process.argv.length; i++) {
   const arg = process.argv[i];
-  if (arg === '--view' && process.argv[i + 1]) {
+  if (arg === "--view" && process.argv[i + 1]) {
     selectedViews = [process.argv[++i]];
     isFiltered = true;
-  } else if (arg === '--size' && process.argv[i + 1]) {
+  } else if (arg === "--size" && process.argv[i + 1]) {
     selectedSizes = [process.argv[++i]];
     isFiltered = true;
-  } else if (arg === '--no-build') {
+  } else if (arg === "--no-build") {
     skipBuild = true;
-  } else if (arg === '--list') {
-    console.log('Views:');
+  } else if (arg === "--list") {
+    console.log("Views:");
     for (const [name, v] of Object.entries(views)) {
       console.log(`  ${name.padEnd(25)} ${v.description}`);
     }
-    console.log('\nSizes:');
+    console.log("\nSizes:");
     for (const [name, s] of Object.entries(sizes)) {
       console.log(`  ${name.padEnd(10)} ${s.width}x${s.height}`);
     }
@@ -153,10 +162,16 @@ for (let i = 2; i < process.argv.length; i++) {
 
 // Validate
 for (const v of selectedViews) {
-  if (!views[v]) { console.error(`Unknown view: ${v}`); process.exit(1); }
+  if (!views[v]) {
+    console.error(`Unknown view: ${v}`);
+    process.exit(1);
+  }
 }
 for (const s of selectedSizes) {
-  if (!sizes[s]) { console.error(`Unknown size: ${s}`); process.exit(1); }
+  if (!sizes[s]) {
+    console.error(`Unknown size: ${s}`);
+    process.exit(1);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -166,37 +181,57 @@ for (const s of selectedSizes) {
 async function main() {
   // Step 1: Build
   if (!skipBuild) {
-    console.log('==> Building editor...');
-    let nimPath = 'nim';
-    try { execSync('nim --version', { stdio: 'ignore' }); } catch {
-      nimPath = execSync('find /nix/store -maxdepth 3 -name nim \\( -type f -o -type l \\) ! -path "*bootstrap*" ! -path "*unwrapped*" 2>/dev/null | head -1', { encoding: 'utf8' }).trim();
-      if (!nimPath) { console.error('nim not found'); process.exit(1); }
+    console.log("==> Building editor...");
+    let nimPath = "nim";
+    try {
+      execSync("nim --version", { stdio: "ignore" });
+    } catch {
+      nimPath = execSync(
+        'find /nix/store -maxdepth 3 -name nim \\( -type f -o -type l \\) ! -path "*bootstrap*" ! -path "*unwrapped*" 2>/dev/null | head -1',
+        { encoding: "utf8" },
+      ).trim();
+      if (!nimPath) {
+        console.error("nim not found");
+        process.exit(1);
+      }
     }
     mkdirSync(editorDir, { recursive: true });
-    execSync(`${nimPath} js --path:src --path:. --hints:off -o:build/editor/editor.js src/isonim/editor/main.nim`, {
-      cwd: projectRoot, stdio: 'pipe',
+    execSync(
+      `${nimPath} js --path:src --path:. --path:../nim-everywhere/src --hints:off -o:build/editor/editor.js src/isonim/editor/main.nim`,
+      {
+        cwd: projectRoot,
+        stdio: "pipe",
+      },
+    );
+    execSync(`cp src/isonim/editor/index.html build/editor/index.html`, {
+      cwd: projectRoot,
     });
-    execSync(`cp src/isonim/editor/index.html build/editor/index.html`, { cwd: projectRoot });
-    console.log('    Built.');
+    console.log("    Built.");
   }
 
   // Step 2: Start server
-  console.log('==> Starting server...');
-  const server = spawn('python3', ['-m', 'http.server', '8091', '--bind', '127.0.0.1'], {
-    cwd: editorDir, stdio: 'ignore', detached: true,
-  });
-  await new Promise(resolve => setTimeout(resolve, 1000));
+  console.log("==> Starting server...");
+  const server = spawn(
+    "python3",
+    ["-m", "http.server", "8091", "--bind", "127.0.0.1"],
+    {
+      cwd: editorDir,
+      stdio: "ignore",
+      detached: true,
+    },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 1000));
 
   // Step 3: Take screenshots
   // Clean output directory when regenerating all screenshots (no --view/--size filter)
   if (!isFiltered && existsSync(screenshotDir)) {
-    console.log('==> Cleaning screenshot directory (full regeneration)...');
+    console.log("==> Cleaning screenshot directory (full regeneration)...");
     rmSync(screenshotDir, { recursive: true });
   }
   mkdirSync(screenshotDir, { recursive: true });
-  console.log('==> Capturing screenshots...');
+  console.log("==> Capturing screenshots...");
 
-  const { chromium } = await import('playwright');
+  const { chromium } = await import("playwright");
   const browser = await chromium.launch({ headless: true });
 
   let count = 0;
@@ -210,7 +245,7 @@ async function main() {
         deviceScaleFactor: 2,
       });
       const page = await context.newPage();
-      const url = view.initialUrl || 'http://127.0.0.1:8091/';
+      const url = view.initialUrl || "http://127.0.0.1:8091/";
       await page.goto(url);
       await page.waitForTimeout(500);
 
@@ -221,12 +256,14 @@ async function main() {
       // Determine clip region
       let clip = undefined;
       if (view.clip) {
-        clip = typeof view.clip === 'function' ? view.clip(vp) : view.clip;
+        clip = typeof view.clip === "function" ? view.clip(vp) : view.clip;
       }
 
       const path = join(screenshotDir, `${viewName}-${sizeName}.png`);
       await page.screenshot({ path, clip });
-      console.log(`    ${viewName}-${sizeName} (${vp.width}x${vp.height}): ${path}`);
+      console.log(
+        `    ${viewName}-${sizeName} (${vp.width}x${vp.height}): ${path}`,
+      );
       count++;
 
       await context.close();
@@ -236,11 +273,15 @@ async function main() {
   await browser.close();
 
   // Step 4: Stop server
-  try { process.kill(-server.pid, 'SIGTERM'); } catch {}
-  console.log(`==> Done. ${count} screenshots saved to build/editor/screenshots/`);
+  try {
+    process.kill(-server.pid, "SIGTERM");
+  } catch {}
+  console.log(
+    `==> Done. ${count} screenshots saved to build/editor/screenshots/`,
+  );
 }
 
-main().catch(err => {
+main().catch((err) => {
   console.error(err);
   process.exit(1);
 });
