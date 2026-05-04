@@ -92,6 +92,7 @@ type
     editMode*: Signal[EditMode]
     panels*: Signal[PanelVisibility]
     platform*: Signal[Platform]
+    viewport*: Signal[PreviewViewport]
     sidebar*: SidebarVM
     storyboard*: StoryboardVM
     inspector*: InspectorVM
@@ -116,6 +117,51 @@ func viewForStory(story: StoryRef): EditorView =
     evPagePreview
   of skComponent, skPattern, skFoundation, skGuideline:
     evComponentDetail
+
+func platformForViewport*(viewport: PreviewViewport): Platform =
+  case viewport
+  of pvDesktop:
+    pfWeb
+  of pvTablet:
+    pfIOS
+  of pvMobile:
+    pfAndroid
+
+func viewportForPlatform*(platform: Platform): PreviewViewport =
+  case platform
+  of pfWeb:
+    pvDesktop
+  of pfIOS:
+    pvTablet
+  of pfAndroid:
+    pvMobile
+
+func previewViewportLabel*(viewport: PreviewViewport): string =
+  case viewport
+  of pvDesktop:
+    "Desktop"
+  of pvTablet:
+    "Tablet"
+  of pvMobile:
+    "Mobile"
+
+func previewViewportWidth*(viewport: PreviewViewport): int =
+  case viewport
+  of pvDesktop:
+    1280
+  of pvTablet:
+    834
+  of pvMobile:
+    390
+
+func previewViewportHeight*(viewport: PreviewViewport): int =
+  case viewport
+  of pvDesktop:
+    900
+  of pvTablet:
+    1112
+  of pvMobile:
+    844
 
 func isShared(prop: PropertyInfo): bool =
   prop.sharedCount > 0
@@ -305,6 +351,11 @@ proc selectInspectorElement*(editor: EditorVM;
 
 proc changePlatform*(editor: EditorVM; platform: Platform) =
   editor.platform.val = platform
+  editor.viewport.val = viewportForPlatform(platform)
+
+proc changeViewport*(editor: EditorVM; viewport: PreviewViewport) =
+  editor.viewport.val = viewport
+  editor.platform.val = platformForViewport(viewport)
 
 proc selectVectorSymbol*(editor: EditorVM; index: int): bool {.discardable.} =
   let symbols = editor.vectorEditor.symbols.val
@@ -319,6 +370,11 @@ proc setAgentState*(editor: EditorVM; state: AsyncState) =
 
 proc setEditMode*(editor: EditorVM; mode: EditMode) =
   editor.editMode.val = mode
+  if mode == emEdit and editor.activeView.val in {evComponentDetail,
+      evPagePreview}:
+    editor.activeView.val = evComponentEdit
+  elif mode == emView and editor.activeView.val == evComponentEdit:
+    editor.activeView.val = evPagePreview
 
 proc setVectorTool*(editor: EditorVM; tool: VectorTool) =
   editor.vectorEditor.activeTool.val = tool
@@ -891,6 +947,7 @@ proc createEditorVM*(): EditorVM =
   let editMode = createSignal(emView)
   let panels = createSignal(PanelVisibility(sidebar: true, inspector: true))
   let platform = createSignal(pfWeb)
+  let viewport = createSignal(pvDesktop)
 
   let sidebar = createSidebarVM()
   let storyboard = createStoryboardVM()
@@ -911,6 +968,7 @@ proc createEditorVM*(): EditorVM =
     editMode: editMode,
     panels: panels,
     platform: platform,
+    viewport: viewport,
     sidebar: sidebar,
     storyboard: storyboard,
     inspector: inspector,

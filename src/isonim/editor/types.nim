@@ -319,6 +319,11 @@ type
     pfIOS
     pfAndroid
 
+  PreviewViewport* = enum
+    pvDesktop
+    pvTablet
+    pvMobile
+
   ProjectPreviewStatus* = enum
     ppsMissingSelection
     ppsUnsupportedStory
@@ -330,6 +335,7 @@ type
     story*: StoryRef
     title*: string
     bodyText*: string
+    documentHtml*: string
     metadata*: StoryRenderMetadata
 
   ProjectPreviewHook* = proc(story: StoryRef;

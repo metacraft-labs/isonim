@@ -136,7 +136,7 @@ proc applyWorkspace*(vm: EditorVM; workspace: EditorWorkspace) =
   vm.flowPlayer.currentStep.val = 0
   vm.activeView.val = workspace.initialView
   vm.inspector.activeSection.val = workspace.initialInspectorSection
-  vm.platform.val = workspace.platform
+  vm.changePlatform(workspace.platform)
   vm.panels.val = workspace.panels
   if workspace.initialReviewBaseline.isSome:
     vm.review.violations.val = workspace.initialReviewBaseline.get()

@@ -85,6 +85,7 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
           background_color = bgBase, overflow_y = "auto")
 
   # Header bar
+  var editButton: E
   let header = ui(r):
     tdiv(display = "flex", align_items = "center",
           justify_content = "space-between",
@@ -99,7 +100,8 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
         span(font_size = "13px", font_weight = "600", color = textPrimary):
           text "DestinationCard"
       tdiv(display = "flex", align_items = "center", gap = "8px"):
-        tdiv(padding = "4px 12px", border_radius = "4px",
+        tdiv(ref = editButton,
+              padding = "4px 12px", border_radius = "4px",
               font_size = "11px", font_weight = "500",
               background_color = accent, color = textPrimary,
               cursor = "pointer"):
@@ -107,9 +109,18 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
         tdiv(padding = "4px 12px", border_radius = "4px",
               font_size = "11px", font_weight = "500",
               background_color = bgSurface, color = textMuted,
-              cursor = "pointer"):
+              cursor = "default"):
           text "Code"
   r.appendChild(page, header)
+  r.setAttribute(editButton, "role", "button")
+  r.setAttribute(editButton, "tabindex", "0")
+  r.setAttribute(editButton, "aria-label", "Open selected component in edit mode")
+  r.addEventListener(editButton, "click", proc() =
+    vm.setEditMode(emEdit)
+    vm.setActiveView(evComponentEdit))
+  r.addEventListener(editButton, "keydown", proc() =
+    vm.setEditMode(emEdit)
+    vm.setActiveView(evComponentEdit))
 
   # Scrollable content
   let content = ui(r):

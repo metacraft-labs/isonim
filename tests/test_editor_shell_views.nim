@@ -265,6 +265,26 @@ suite "Editor Shell Views (M2)":
 
       dispose()
 
+  test "component detail edit action opens functional edit mode":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = buildStoryboard()
+      vm.activeView.val = evComponentDetail
+      vm.editMode.val = emView
+
+      let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
+      let editButton = findByAttr(shell, "aria-label",
+        "Open selected component in edit mode")
+      check editButton != nil
+      check editButton.attributes["role"] == "button"
+
+      editButton.fireEvent("click")
+      check vm.editMode.val == emEdit
+      check vm.activeView.val == evComponentEdit
+
+      dispose()
+
   test "editor_dom_mount_has_empty_agent_state":
     createRoot proc(dispose: proc()) =
       let r = MockRenderer()

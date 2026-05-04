@@ -1,7 +1,6 @@
-## IsoNim Editor — Page Preview View.
+## IsoNim Editor - Page Preview View.
 ##
-## Renders a project-neutral page frame inside the editor preview area.
-## Uses a phone-frame or desktop-frame wrapper around the actual page.
+## Renders project-owned preview documents in an editor-owned responsive frame.
 
 import isonim/core/[computation, signals]
 import isonim/dsl/ui
@@ -10,11 +9,104 @@ import isonim/editor/viewmodels
 const
   bgBase = "#0B1120"
   bgCard = "#151D2E"
+  bgSurface = "#1E293B"
   border = "#334155"
   textPrimary = "#F1F5F9"
   textMuted = "#64748B"
   textDim = "#475569"
   accent = "#3B82F6"
+
+proc makeButton[R, E](r: R; node: E; label: string) =
+  r.setAttribute(node, "role", "button")
+  r.setAttribute(node, "tabindex", "0")
+  r.setAttribute(node, "aria-label", label)
+
+proc bindModeButton[R, E](r: R; node: E; vm: EditorVM; mode: EditMode) =
+  createRenderEffect proc() =
+    let active = vm.editMode.val == mode
+    r.setAttribute(node, "aria-pressed", if active: "true" else: "false")
+    r.setStyle(node, "background-color", if active: accent else: "transparent")
+    r.setStyle(node, "color", if active: textPrimary else: textMuted)
+
+proc bindViewportButton[R, E](r: R; node: E; vm: EditorVM;
+    viewport: PreviewViewport) =
+  createRenderEffect proc() =
+    let active = vm.viewport.val == viewport
+    r.setAttribute(node, "aria-pressed", if active: "true" else: "false")
+    r.setStyle(node, "background-color", if active: accent else: "transparent")
+    r.setStyle(node, "color", if active: textPrimary else: textMuted)
+
+proc bindPanelButton[R, E](r: R; node: E; vm: EditorVM;
+    panel: EditorPanel) =
+  let captured = panel
+  createRenderEffect proc() =
+    let panels = vm.panels.val
+    let active =
+      case captured
+      of epSidebar: panels.sidebar
+      of epInspector: panels.inspector
+    r.setAttribute(node, "aria-pressed", if active: "true" else: "false")
+    r.setStyle(node, "background-color", if active: accent else: "transparent")
+    r.setStyle(node, "color", if active: textPrimary else: textMuted)
+
+proc panelButton[R, E](r: R; vm: EditorVM; panel: EditorPanel;
+    label, textValue: string): E =
+  result = ui(r):
+    tdiv(width = "28px", height = "24px", border_radius = "4px",
+          display = "flex", align_items = "center", justify_content = "center",
+          font_size = "13px", font_weight = "700",
+          cursor = "pointer", transition = "all 0.15s"):
+      text textValue
+  r.makeButton(result, label)
+  r.addEventListener(result, "click", proc() = vm.togglePanel(panel))
+  r.addEventListener(result, "keydown", proc() = vm.togglePanel(panel))
+  r.bindPanelButton(result, vm, panel)
+
+proc viewportButton[R, E](r: R; vm: EditorVM; viewport: PreviewViewport): E =
+  let label = previewViewportLabel(viewport)
+  result = ui(r):
+    tdiv(padding = "4px 10px", border_radius = "4px",
+          font_size = "11px", font_weight = "500",
+          cursor = "pointer", transition = "all 0.15s"):
+      text label
+  r.makeButton(result, "Preview " & label & " viewport")
+  r.addEventListener(result, "click", proc() = vm.changeViewport(viewport))
+  r.addEventListener(result, "keydown", proc() = vm.changeViewport(viewport))
+  r.bindViewportButton(result, vm, viewport)
+
+proc enablePanScrolling[R, E](r: R; node: E) =
+  when defined(js):
+    {.emit: [node, """
+      .style.cursor = 'grab';
+      (() => {
+        const el = """, node, """;
+        let dragging = false;
+        let startX = 0;
+        let startY = 0;
+        let startLeft = 0;
+        let startTop = 0;
+        el.addEventListener('mousedown', (event) => {
+          if (event.button !== 0) return;
+          dragging = true;
+          startX = event.clientX;
+          startY = event.clientY;
+          startLeft = el.scrollLeft;
+          startTop = el.scrollTop;
+          el.style.cursor = 'grabbing';
+          event.preventDefault();
+        });
+        window.addEventListener('mousemove', (event) => {
+          if (!dragging) return;
+          el.scrollLeft = startLeft - (event.clientX - startX);
+          el.scrollTop = startTop - (event.clientY - startY);
+        });
+        window.addEventListener('mouseup', () => {
+          if (!dragging) return;
+          dragging = false;
+          el.style.cursor = 'grab';
+        });
+      })()
+    """].}
 
 proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
   let container = ui(r):
@@ -22,112 +114,165 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
           flex = "1", display = "flex", flex_direction = "column",
           min_width = "0", height = "100%",
           background_color = bgBase):
+      discard
 
-      # Header
-      tdiv(display = "flex", align_items = "center",
-            justify_content = "space-between",
-            height = "44px", min_height = "44px", padding = "0 20px",
-            background_color = bgCard,
-            border_bottom = "1px solid " & border):
-        tdiv(display = "flex", align_items = "center", gap = "8px"):
-          span(font_size = "11px", color = textDim):
-            text "Pages"
-          span(font_size = "11px", color = textDim):
-            text "\xE2\x80\xBA"
-          span(font_size = "13px", font_weight = "600", color = textPrimary):
-            text "Home / Discover"
-        tdiv(display = "flex", align_items = "center", gap = "8px"):
-          # Viewport size selector
-          for size in ["Mobile", "Tablet", "Desktop"]:
-            let isActive = (size == "Desktop")
-            tdiv(padding = "4px 10px", border_radius = "4px",
-                  font_size = "11px", font_weight = "500", cursor = "pointer",
-                  background_color = (if isActive: accent else: "transparent"),
-                  color = (if isActive: textPrimary else: textMuted)):
-              text size
-
-  # Page content in a scrollable frame
-  let frame = ui(r):
-    tdiv(flex = "1", overflow_y = "auto", overflow_x = "hidden",
-          display = "flex", justify_content = "center",
-          padding = "16px",
-          background_color = "#0D1525",
-          background_image = "radial-gradient(circle, #1a2236 1px, transparent 1px)",
-          background_size = "20px 20px")
-
-  # Render the actual page inside a device frame
-  let deviceFrame = ui(r):
-    tdiv(width = "100%", max_width = "520px",
-          background_color = "#FFFFFF",
-          border_radius = "16px",
-          box_shadow = "0 20px 60px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.05)",
-          overflow = "hidden",
-          display = "flex", flex_direction = "column")
-
-  # Phone status bar
-  let statusBar = ui(r):
+  let toolbar = ui(r):
     tdiv(display = "flex", align_items = "center",
           justify_content = "space-between",
-          padding = "6px 20px",
-          background_color = "#FFFFFF",
-          font_size = "11px", color = "#1C1917"):
-      span(font_weight = "600"):
-        text "9:41"
-      tdiv(display = "flex", align_items = "center", gap = "4px"):
-        span(font_size = "10px"):
-          text "\xE2\x96\x82\xE2\x96\x82\xE2\x96\x82\xE2\x96\x82"
-        span(font_size = "10px"):
-          text "WiFi"
-        span(font_size = "10px"):
-          text "\xF0\x9F\x94\x8B"
-  r.appendChild(deviceFrame, statusBar)
-
-  proc currentPageName(): string =
-    if vm.preview.current.val.title.len > 0:
-      vm.preview.current.val.title
-    elif vm.selectedStory.val.name.len > 0:
-      vm.selectedStory.val.name
-    else:
-      "Project page"
-
-  proc currentPreviewBody(): string =
-    if vm.preview.current.val.bodyText.len > 0:
-      vm.preview.current.val.bodyText
-    else:
-      "Workspace page preview"
+          gap = "12px", height = "44px", min_height = "44px",
+          padding = "0 16px", background_color = bgCard,
+          border_bottom = "1px solid " & border):
+      discard
 
   var titleNode: E
-  var bodyNode: E
-  let homePage = ui(r):
-    tdiv(flex = "1", overflow_y = "auto",
-          padding = "24px", display = "flex",
-          flex_direction = "column", gap = "18px",
-          background_color = "#FFFFFF", color = "#111827"):
-      tdiv(display = "flex", align_items = "center",
-            justify_content = "space-between"):
-        tdiv(display = "flex", flex_direction = "column", gap = "4px"):
-          span(ref = titleNode, font_size = "24px", font_weight = "800"):
-            text currentPageName()
-          span(ref = bodyNode, font_size = "13px", color = "#64748B"):
-            text currentPreviewBody()
-        tdiv(width = "36px", height = "36px", border_radius = "999px",
-              background_color = "#DBEAFE")
-      tdiv(height = "140px", border_radius = "14px",
-            background_color = "#E0F2FE")
-      tdiv(display = "grid", grid_template_columns = "1fr 1fr",
-            gap = "12px"):
-        for i in 0 .. 3:
-          tdiv(height = "92px", border_radius = "10px",
-                background_color = (if i == 0: "#EEF2FF" else: "#F1F5F9"))
-      tdiv(display = "flex", flex_direction = "column", gap = "8px"):
-        for i in 0 .. 2:
-          tdiv(height = "42px", border_radius = "8px",
-                background_color = "#F8FAFC",
-                border = "1px solid #E2E8F0")
+  var sourceNode: E
+  let breadcrumb = ui(r):
+    tdiv(display = "flex", flex_direction = "column", min_width = "0",
+          gap = "2px"):
+      span(ref = titleNode, font_size = "13px", font_weight = "600",
+            color = textPrimary, white_space = "nowrap",
+            overflow = "hidden", text_overflow = "ellipsis"):
+        text ""
+      span(ref = sourceNode, font_size = "11px", color = textDim,
+            white_space = "nowrap", overflow = "hidden",
+            text_overflow = "ellipsis"):
+        text ""
+  r.appendChild(toolbar, breadcrumb)
+
+  let controls = ui(r):
+    tdiv(display = "flex", align_items = "center", gap = "8px"):
+      discard
+
+  let panelToggle = ui(r):
+    tdiv(display = "flex", align_items = "center", gap = "1px",
+          background_color = bgSurface, border_radius = "6px",
+          padding = "3px"):
+      discard
+  r.appendChild(panelToggle,
+    panelButton[R, E](r, vm, epSidebar, "Toggle left sidebar", "\xE2\x87\xA4"))
+  r.appendChild(panelToggle,
+    panelButton[R, E](r, vm, epInspector, "Toggle right sidebar", "\xE2\x87\xA5"))
+  r.appendChild(controls, panelToggle)
+
+  let modeToggle = ui(r):
+    tdiv(display = "flex", align_items = "center", gap = "1px",
+          background_color = bgSurface, border_radius = "6px",
+          padding = "3px"):
+      discard
+
+  let viewBtn = ui(r):
+    tdiv(padding = "4px 12px", border_radius = "4px",
+          font_size = "11px", font_weight = "500",
+          cursor = "pointer", transition = "all 0.15s"):
+      text "View"
+  let editBtn = ui(r):
+    tdiv(padding = "4px 12px", border_radius = "4px",
+          font_size = "11px", font_weight = "500",
+          cursor = "pointer", transition = "all 0.15s"):
+      text "Edit"
+  r.makeButton(viewBtn, "Switch to view mode")
+  r.makeButton(editBtn, "Switch to edit mode")
+  r.addEventListener(viewBtn, "click", proc() = vm.setEditMode(emView))
+  r.addEventListener(editBtn, "click", proc() = vm.setEditMode(emEdit))
+  r.addEventListener(viewBtn, "keydown", proc() = vm.setEditMode(emView))
+  r.addEventListener(editBtn, "keydown", proc() = vm.setEditMode(emEdit))
+  r.bindModeButton(viewBtn, vm, emView)
+  r.bindModeButton(editBtn, vm, emEdit)
+  r.appendChild(modeToggle, viewBtn)
+  r.appendChild(modeToggle, editBtn)
+  r.appendChild(controls, modeToggle)
+
+  let viewportToggle = ui(r):
+    tdiv(display = "flex", align_items = "center", gap = "1px",
+          background_color = bgSurface, border_radius = "6px",
+          padding = "3px"):
+      discard
+  for viewport in [pvDesktop, pvTablet, pvMobile]:
+    r.appendChild(viewportToggle, viewportButton[R, E](r, vm, viewport))
+  r.appendChild(controls, viewportToggle)
+  r.appendChild(toolbar, controls)
+  r.appendChild(container, toolbar)
+
+  var frameHost: E
+  let frameHostNode = ui(r):
+    tdiv(ref = frameHost,
+          flex = "1", overflow = "auto", display = "flex",
+          align_items = "flex-start", justify_content = "flex-start",
+          padding = "16px", background_color = "#0D1525",
+          background_image = "radial-gradient(circle, #1a2236 1px, transparent 1px)",
+          background_size = "20px 20px"):
+      discard
+
+  var deviceFrame: E
+  var fallbackPanel: E
+  var fallbackTitle: E
+  var fallbackBody: E
+  var previewFrame: E
+  let frame = ui(r):
+    tdiv(ref = deviceFrame,
+          `aria-label` = "Preview device frame",
+          background_color = "#FFFFFF",
+          border = "1px solid rgba(255,255,255,0.12)",
+          box_shadow = "0 20px 60px rgba(0,0,0,0.38)",
+          overflow = "hidden", display = "flex",
+          flex_direction = "column", flex = "0 0 auto",
+          transition = "width 0.15s"):
+      tdiv(ref = fallbackPanel,
+            class = "editor-preview-fallback",
+            padding = "24px", display = "none",
+            flex_direction = "column", gap = "10px",
+            background_color = "#FFFFFF", color = "#111827"):
+        span(ref = fallbackTitle, font_size = "24px", font_weight = "800"):
+          text ""
+        span(ref = fallbackBody, font_size = "13px", color = "#64748B"):
+          text ""
+      iframe(ref = previewFrame,
+          title = "Project preview",
+          width = "100%",
+          height = "100%",
+          border = "0")
+  r.appendChild(frameHostNode, frame)
+  r.appendChild(container, frameHostNode)
+  enablePanScrolling[R, E](r, frameHost)
+
   createRenderEffect proc() =
-    r.setTextContent(titleNode, currentPageName())
-    r.setTextContent(bodyNode, currentPreviewBody())
-  r.appendChild(deviceFrame, homePage)
-  r.appendChild(frame, deviceFrame)
-  r.appendChild(container, frame)
+    let preview = vm.preview.current.val
+    let viewport = vm.viewport.val
+    let width = previewViewportWidth(viewport)
+    let height = previewViewportHeight(viewport)
+    let title =
+      if preview.title.len > 0:
+        preview.title
+      elif vm.selectedStory.val.name.len > 0:
+        vm.selectedStory.val.group & " / " & vm.selectedStory.val.name
+      else:
+        "Project preview"
+    let source =
+      if preview.metadata.sourceFile.len > 0:
+        preview.metadata.sourceFile & ":" & $preview.metadata.sourceLine
+      else:
+        previewViewportLabel(viewport) & " preview"
+
+    r.setTextContent(titleNode, title)
+    r.setTextContent(sourceNode, source)
+    r.setTextContent(fallbackTitle, title)
+    r.setTextContent(fallbackBody,
+      if preview.bodyText.len > 0: preview.bodyText else: "Workspace page preview")
+    r.setStyle(deviceFrame, "width", $width & "px")
+    r.setStyle(deviceFrame, "height", $height & "px")
+    r.setStyle(deviceFrame, "min-width", $width & "px")
+    r.setStyle(deviceFrame, "min-height", $height & "px")
+    r.setStyle(deviceFrame, "border-radius",
+      if viewport == pvDesktop: "8px" else: "18px")
+    r.setStyle(previewFrame, "width", "100%")
+    r.setStyle(previewFrame, "height", "100%")
+    if preview.documentHtml.len > 0:
+      r.setAttribute(previewFrame, "srcdoc", preview.documentHtml)
+      r.setStyle(fallbackPanel, "display", "none")
+      r.setStyle(previewFrame, "display", "block")
+    else:
+      r.setAttribute(previewFrame, "srcdoc", "")
+      r.setStyle(fallbackPanel, "display", "flex")
+      r.setStyle(previewFrame, "display", "none")
+
   container

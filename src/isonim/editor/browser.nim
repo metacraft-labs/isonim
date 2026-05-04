@@ -54,6 +54,15 @@ proc hashEditorView*(): EditorView =
   else:
     evStoryboard
 
+proc hasEditorRouteOverride*(): bool =
+  ## Only override workspace initial state when the URL explicitly asks for a
+  ## view. A bare mount should honor the consumer workspace defaults.
+  var hash: cstring
+  var search: cstring
+  {.emit: [hash, " = window.location.hash || ''"].}
+  {.emit: [search, " = window.location.search || ''"].}
+  ($hash).len > 0 or "view=" in $search
+
 proc hashInspectorSection*(): InspectorSection =
   ## Read URL hash for inspector section deep links.
   var hash: cstring
@@ -87,7 +96,7 @@ proc mountEditor*(workspace: EditorWorkspace;
   createRoot proc(dispose: proc()) =
     let vm = createEditorVM(workspace)
     mounted = vm
-    if useHashRoute:
+    if useHashRoute and hasEditorRouteOverride():
       vm.activeView.val = hashEditorView()
       vm.inspector.activeSection.val = hashInspectorSection()
 

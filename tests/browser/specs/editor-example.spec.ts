@@ -42,7 +42,9 @@ test.describe("IsoNim packaged editor example", () => {
 
     await story.click();
     await expect(story).toHaveAttribute("aria-current", "true");
-    await expect(page.getByText("Pages / Destination Detail")).toBeVisible();
+    await expect(
+      page.getByText("Pages / Destination Detail").first(),
+    ).toBeVisible();
     await expect(page.getByText("Santorini detail with reviews")).toBeVisible();
     await expect(
       page.getByText("examples/wanderlust/components/views.nim:42"),

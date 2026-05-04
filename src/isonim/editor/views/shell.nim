@@ -3,6 +3,8 @@
 ## Fully dogfoods IsoNim: all elements via ui macro with if/for/case.
 ## Only uses manual setStyle for reactive effects (createRenderEffect).
 
+import std/strutils
+
 import isonim/core/[signals, computation]
 import isonim/dsl/[ui, components]
 import isonim/editor/viewmodels
@@ -75,6 +77,29 @@ proc activeViewHandler(vm: EditorVM; view: EditorView): proc() =
   let captured = view
   result = proc() = vm.setActiveView(captured)
 
+proc searchInputHandler[R, E](r: R; vm: EditorVM; input: E): proc() =
+  let capturedInput = input
+  result = proc() = vm.sidebar.setSearch(r.inputValue(capturedInput))
+
+proc matchesSidebarSearch(query: string; group: StoryGroup): bool =
+  if query.len == 0:
+    return true
+  let q = query.toLowerAscii()
+  if q in group.name.toLowerAscii() or q in group.description.toLowerAscii():
+    return true
+  for item in group.items:
+    if q in item.name.toLowerAscii() or q in item.description.toLowerAscii():
+      return true
+
+proc matchesSidebarSearch(query: string; group: StoryGroup;
+    item: StoryItem): bool =
+  if query.len == 0:
+    return true
+  let q = query.toLowerAscii()
+  if q in group.name.toLowerAscii() or q in group.description.toLowerAscii():
+    return true
+  q in item.name.toLowerAscii() or q in item.description.toLowerAscii()
+
 proc isSelectedStory(vm: EditorVM; story: StoryRef): bool =
   let selected = vm.selectedStory.val
   selected.group == story.group and selected.name == story.name and
@@ -107,6 +132,23 @@ proc bindSidebarStoryState[R, E](r: R; node: E; vm: EditorVM;
         if isSelected: accentSoft else: "transparent")
     r.setStyle(node, "border-left", if isSelected: "2px solid " &
         accent else: "none")
+
+proc bindSidebarGroupFilter[R, E](r: R; node: E; vm: EditorVM;
+    group: StoryGroup) =
+  let captured = group
+  createRenderEffect proc() =
+    r.setStyle(node, "display",
+      if matchesSidebarSearch(vm.sidebar.searchFilter.val, captured): "flex"
+      else: "none")
+
+proc bindSidebarItemFilter[R, E](r: R; node: E; vm: EditorVM;
+    group: StoryGroup; item: StoryItem) =
+  let capturedGroup = group
+  let capturedItem = item
+  createRenderEffect proc() =
+    r.setStyle(node, "display",
+      if matchesSidebarSearch(vm.sidebar.searchFilter.val, capturedGroup,
+          capturedItem): "flex" else: "none")
 
 proc bindPlatformState[R, E](r: R; node: E; vm: EditorVM;
     platform: Platform) =
@@ -158,6 +200,7 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
             text "\xE2\x98\xB0"
 
       # Search input
+      var searchInput: E
       tdiv(padding = "10px 12px"):
         tdiv(display = "flex", align_items = "center",
               background_color = bgSurface,
@@ -166,10 +209,17 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
           span(font_size = "11px", opacity = "0.5", margin_right = "6px"):
             text "\xF0\x9F\x94\x8D"
           input(class = "editor-input",
+                ref = searchInput,
                 background_color = "transparent", border = "none",
                 font_size = "12px", color = textSecondary,
                 outline = "none", flex = "1",
+                `aria-label` = "Search stories",
                 placeholder = "Search stories\xE2\x80\xA6")
+      block:
+        let onSearch = searchInputHandler[R, E](r, vm, searchInput)
+        r.addEventListener(searchInput, "input", onSearch)
+        r.addEventListener(searchInput, "change", onSearch)
+        r.addEventListener(searchInput, "keyup", onSearch)
 
       # Story groups
       tdiv(display = "flex", flex_direction = "column",
@@ -190,7 +240,9 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
           let chevronText = if gExpanded: "\xE2\x96\xBE" else: "\xE2\x96\xB8"
 
           let isFlow = gKind == skFlow
+          var groupNode: E
           tdiv(display = "flex", flex_direction = "column",
+                ref = groupNode,
                 margin_bottom = (if isFlow: "4px" else: "2px")):
             # Group header — flows get accent styling for prominence
             let toggleGroup = groupToggleHandler(vm, gName)
@@ -256,7 +308,10 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
                       text iDesc
                 block:
                   r.bindSidebarStoryState(storyNode, vm, story)
+                  r.bindSidebarItemFilter(storyNode, vm, group, item)
                 inc itemIdx
+          block:
+            r.bindSidebarGroupFilter(groupNode, vm, group)
 
 proc renderPreviewPane*[R, E](r: R; vm: EditorVM): E =
   ## Center panel: component preview with toolbar.

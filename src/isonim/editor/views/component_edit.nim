@@ -98,6 +98,8 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
           background_color = bgBase)
 
   # Left: Live Preview
+  var editModeButton: E
+  var viewModeButton: E
   let preview = ui(r):
     tdiv(flex = "1", display = "flex", flex_direction = "column",
           border_right = "1px solid " & border):
@@ -116,12 +118,16 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
           span(font_size = "12px", font_weight = "500", color = textPrimary):
             text "Default (Santorini)"
         tdiv(display = "flex", align_items = "center", gap = "8px"):
-          tdiv(padding = "4px 12px", border_radius = "4px",
+          tdiv(ref = editModeButton,
+                padding = "4px 12px", border_radius = "4px",
                 font_size = "11px", font_weight = "500",
+                cursor = "pointer",
                 background_color = accent, color = textPrimary):
-            text "Editing"
-          tdiv(padding = "4px 12px", border_radius = "4px",
+            text "Edit"
+          tdiv(ref = viewModeButton,
+                padding = "4px 12px", border_radius = "4px",
                 font_size = "11px", font_weight = "500",
+                cursor = "pointer",
                 background_color = bgSurface, color = textMuted):
             text "View"
 
@@ -168,6 +174,31 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
               background_color = "#F1F5F9")
   r.appendChild(selectionWrapper, previewCard)
   r.appendChild(canvasArea, selectionWrapper)
+
+  r.setAttribute(editModeButton, "role", "button")
+  r.setAttribute(editModeButton, "tabindex", "0")
+  r.setAttribute(editModeButton, "aria-label", "Switch to edit mode")
+  r.setAttribute(viewModeButton, "role", "button")
+  r.setAttribute(viewModeButton, "tabindex", "0")
+  r.setAttribute(viewModeButton, "aria-label", "Switch to view mode")
+  r.addEventListener(editModeButton, "click", proc() = vm.setEditMode(emEdit))
+  r.addEventListener(editModeButton, "keydown", proc() = vm.setEditMode(emEdit))
+  r.addEventListener(viewModeButton, "click", proc() = vm.setEditMode(emView))
+  r.addEventListener(viewModeButton, "keydown", proc() = vm.setEditMode(emView))
+  createRenderEffect proc() =
+    let editing = vm.editMode.val == emEdit
+    r.setAttribute(editModeButton, "aria-pressed",
+      if editing: "true" else: "false")
+    r.setAttribute(viewModeButton, "aria-pressed",
+      if editing: "false" else: "true")
+    r.setStyle(editModeButton, "background-color",
+      if editing: accent else: bgSurface)
+    r.setStyle(editModeButton, "color",
+      if editing: textPrimary else: textMuted)
+    r.setStyle(viewModeButton, "background-color",
+      if editing: bgSurface else: accent)
+    r.setStyle(viewModeButton, "color",
+      if editing: textMuted else: textPrimary)
 
   r.appendChild(container, preview)
 
