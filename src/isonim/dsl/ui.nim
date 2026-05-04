@@ -40,6 +40,15 @@ import tailwind
 
 var gensymCounter {.compileTime.} = 0
 
+const
+  deprecatedShowIfMessage =
+    "DEPRECATED IsoNim DSL directive `showIf`/`showElse`: migrate immediately " &
+    "to natural Nim `if`/`else` inside `ui`, `uiString`, or `uiWrite` blocks."
+  deprecatedForInMessage =
+    "DEPRECATED IsoNim DSL directive `forIn`: migrate immediately to natural " &
+    "Nim `for item in items` / `for index, item in items` loops inside `ui`, " &
+    "`uiString`, or `uiWrite` blocks."
+
 proc attrNameStr(node: NimNode): string {.compileTime.} =
   ## Extract an attribute name from an attribute key node.
   ##
@@ -97,7 +106,8 @@ proc isVoidElement*(tag: string): bool {.compileTime.} =
 # Client mode (renderer-based element creation)
 # ---------------------------------------------------------------------------
 
-proc processNode(rendererSym: NimNode; node: NimNode; stmts: NimNode): NimNode {.compileTime.}
+proc processNode(rendererSym: NimNode; node: NimNode;
+    stmts: NimNode): NimNode {.compileTime.}
 
 proc processShowIf(rendererSym, parentSym: NimNode; children: NimNode;
                     idx: int; stmts: NimNode): int {.compileTime.}
@@ -146,7 +156,7 @@ proc processCaseStmt(rendererSym, parentSym: NimNode; node: NimNode;
                     stmts: NimNode) {.compileTime.} =
   ## Process a case statement, transforming DSL children in each branch.
   var newCase = newNimNode(nnkCaseStmt)
-  newCase.add(node[0])  # case expression
+  newCase.add(node[0]) # case expression
   for i in 1 ..< node.len:
     let branch = node[i]
     case branch.kind
@@ -168,7 +178,8 @@ proc processCaseStmt(rendererSym, parentSym: NimNode; node: NimNode;
       newCase.add(branch)
   stmts.add(newCase)
 
-proc processChildren(rendererSym, parentSym: NimNode; body: NimNode; stmts: NimNode) {.compileTime.} =
+proc processChildren(rendererSym, parentSym: NimNode; body: NimNode;
+    stmts: NimNode) {.compileTime.} =
   ## Process a statement list of DSL children.
   ## Handles element nodes, text nodes, control flow (if/for/case),
   ## and passes through arbitrary Nim statements.
@@ -220,6 +231,7 @@ proc processShowIf(rendererSym, parentSym: NimNode; children: NimNode;
   ## showIf(condition): body
   ## optionally followed by showElse: fallback
   let showNode = children[idx]
+  warning(deprecatedShowIfMessage, showNode)
   # Extract condition expression (first arg after the name)
   let condExpr = showNode[1]
   # Extract body (the stmt list, last arg)
@@ -231,7 +243,8 @@ proc processShowIf(rendererSym, parentSym: NimNode; children: NimNode;
   if nextIdx < children.len:
     let nextChild = children[nextIdx]
     if nextChild.kind in {nnkCall, nnkCommand}:
-      let nextName = if nextChild[0].kind == nnkIdent: nextChild[0].strVal else: ""
+      let nextName = if nextChild[0].kind == nnkIdent: nextChild[
+          0].strVal else: ""
       if nextName == "showElse":
         fallbackBlock = nextChild[^1]
         nextIdx = nextIdx + 1
@@ -284,6 +297,7 @@ proc processForIn(rendererSym, parentSym: NimNode; node: NimNode;
   ## Process a forIn directive.
   ## forIn(seq_expr): body
   ## Generates a call to forEachKeyed with injected `item` and `index` variables.
+  warning(deprecatedForInMessage, node)
   let seqExpr = node[1]
   let bodyBlock = node[^1]
 
@@ -341,18 +355,19 @@ proc processForIn(rendererSym, parentSym: NimNode; node: NimNode;
       newIdentDefs(itemParam, newNimNode(nnkProcTy).add(
         newNimNode(nnkFormalParams).add(elemType),
         newEmptyNode()
-      )),
-      newIdentDefs(indexParam, newNimNode(nnkProcTy).add(
-        newNimNode(nnkFormalParams).add(ident"int"),
-        newEmptyNode()
-      ))
-    ],
+    )),
+    newIdentDefs(indexParam, newNimNode(nnkProcTy).add(
+      newNimNode(nnkFormalParams).add(ident"int"),
+      newEmptyNode()
+    ))
+  ],
     body = bodyProcStmts
   )
 
   stmts.add(newCall(ident"forEachKeyed", rendererSym, parentSym, eachProc, bodyProc))
 
-proc processNode(rendererSym: NimNode; node: NimNode; stmts: NimNode): NimNode {.compileTime.} =
+proc processNode(rendererSym: NimNode; node: NimNode;
+    stmts: NimNode): NimNode {.compileTime.} =
   ## Process a single DSL node. Returns the NimNode symbol for the created element,
   ## or nil for text nodes (which are appended by this proc directly).
 
@@ -540,7 +555,8 @@ macro ui*(renderer: untyped; body: untyped): untyped =
 
 proc ssrNodeExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.}
 
-proc ssrShowIfExpr(children: NimNode; idx: int; stmts: NimNode): (NimNode, int) {.compileTime.}
+proc ssrShowIfExpr(children: NimNode; idx: int; stmts: NimNode): (NimNode,
+    int) {.compileTime.}
 proc ssrForInExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.}
 
 proc ssrChildrenExpr(body: NimNode; stmts: NimNode): NimNode {.compileTime.} =
@@ -656,7 +672,7 @@ proc ssrChildrenExpr(body: NimNode; stmts: NimNode): NimNode {.compileTime.} =
       # Handle plain `case` statements whose branches contain DSL nodes.
       # Transform into a case-expression that returns concatenated HTML.
       var caseExpr = newNimNode(nnkCaseStmt)
-      caseExpr.add(child[0])  # case expression
+      caseExpr.add(child[0]) # case expression
       for j in 1 ..< child.len:
         let branch = child[j]
         case branch.kind
@@ -708,9 +724,11 @@ proc ssrChildrenExpr(body: NimNode; stmts: NimNode): NimNode {.compileTime.} =
     for i in 1 ..< parts.len:
       result = newCall(ident"&", result, parts[i])
 
-proc ssrShowIfExpr(children: NimNode; idx: int; stmts: NimNode): (NimNode, int) {.compileTime.} =
+proc ssrShowIfExpr(children: NimNode; idx: int; stmts: NimNode): (NimNode,
+    int) {.compileTime.} =
   ## Generates an if/else string expression for showIf/showElse in SSR mode.
   let showNode = children[idx]
+  warning(deprecatedShowIfMessage, showNode)
   let condExpr = showNode[1]
   let bodyBlock = showNode[^1]
 
@@ -720,7 +738,8 @@ proc ssrShowIfExpr(children: NimNode; idx: int; stmts: NimNode): (NimNode, int) 
   if nextIdx < children.len:
     let nextChild = children[nextIdx]
     if nextChild.kind in {nnkCall, nnkCommand}:
-      let nextName = if nextChild[0].kind == nnkIdent: nextChild[0].strVal else: ""
+      let nextName = if nextChild[0].kind == nnkIdent: nextChild[
+          0].strVal else: ""
       if nextName == "showElse":
         fallbackBlock = nextChild[^1]
         nextIdx = nextIdx + 1
@@ -746,6 +765,7 @@ proc ssrShowIfExpr(children: NimNode; idx: int; stmts: NimNode): (NimNode, int) 
 proc ssrForInExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.} =
   ## Generates a loop string expression for forIn in SSR mode.
   ## forIn(seq_expr): body -> block: var res = ""; for index, item in seqExpr: res.add(childHtml); res
+  warning(deprecatedForInMessage, node)
   let seqExpr = node[1]
   let bodyBlock = node[^1]
 
@@ -923,16 +943,16 @@ proc uiSsrImpl(body: NimNode): NimNode {.compileTime.} =
 
 type
   StreamOpKind* = enum
-    sokStatic         ## Literal string fragment (e.g. "<div class=\"x\">")
-    sokEscapedHtml    ## Dynamic text content (needs HTML escaping)
-    sokEscapedAttr    ## Dynamic attribute value (needs attr escaping)
-    sokRaw            ## Raw expression (no escaping, e.g. raw "...")
-    sokHydrationKey   ## Insert hydration key marker
-    sokNimStmt        ## Pass-through Nim statement (let, var, discard, etc.)
-    sokIf             ## if/elif/else control flow
-    sokFor            ## for loop
-    sokForIn          ## forIn DSL directive
-    sokCase           ## case statement
+    sokStatic       ## Literal string fragment (e.g. "<div class=\"x\">")
+    sokEscapedHtml  ## Dynamic text content (needs HTML escaping)
+    sokEscapedAttr  ## Dynamic attribute value (needs attr escaping)
+    sokRaw          ## Raw expression (no escaping, e.g. raw "...")
+    sokHydrationKey ## Insert hydration key marker
+    sokNimStmt      ## Pass-through Nim statement (let, var, discard, etc.)
+    sokIf           ## if/elif/else control flow
+    sokFor          ## for loop
+    sokForIn        ## forIn DSL directive
+    sokCase         ## case statement
 
   StreamOp* = ref object
     case kind*: StreamOpKind
@@ -945,19 +965,19 @@ type
     of sokNimStmt:
       stmt*: NimNode
     of sokIf:
-      ifBranches*: seq[tuple[cond: NimNode, body: seq[StreamOp]]]
+      ifBranches*: seq[tuple[cond: NimNode; body: seq[StreamOp]]]
         ## cond is nil for the else branch
     of sokFor:
-      forVars*: seq[NimNode]    ## loop variables
-      forIter*: NimNode         ## iterator expression
+      forVars*: seq[NimNode]   ## loop variables
+      forIter*: NimNode        ## iterator expression
       forBody*: seq[StreamOp]
     of sokForIn:
       seqExpr*: NimNode
       forInBody*: seq[StreamOp]
     of sokCase:
       caseExpr*: NimNode
-      caseOfBranches*: seq[tuple[values: seq[NimNode], body: seq[StreamOp]]]
-      caseElse*: seq[StreamOp]  ## empty if no else branch
+      caseOfBranches*: seq[tuple[values: seq[NimNode]; body: seq[StreamOp]]]
+      caseElse*: seq[StreamOp] ## empty if no else branch
 
 # ---------------------------------------------------------------------------
 # Phase 1: Collect DSL → seq[StreamOp]
@@ -1002,7 +1022,7 @@ proc collectChildren(body: NimNode; ops: var seq[StreamOp]) {.compileTime.} =
     of nnkStmtList:
       collectChildren(child, ops)
     of nnkIfStmt:
-      var branches: seq[tuple[cond: NimNode, body: seq[StreamOp]]]
+      var branches: seq[tuple[cond: NimNode; body: seq[StreamOp]]]
       for branch in child:
         case branch.kind
         of nnkElifBranch:
@@ -1026,7 +1046,7 @@ proc collectChildren(body: NimNode; ops: var seq[StreamOp]) {.compileTime.} =
         forIter: child[^2],
         forBody: forBody))
     of nnkCaseStmt:
-      var ofBranches: seq[tuple[values: seq[NimNode], body: seq[StreamOp]]]
+      var ofBranches: seq[tuple[values: seq[NimNode]; body: seq[StreamOp]]]
       var elseOps: seq[StreamOp]
       for j in 1 ..< child.len:
         let branch = child[j]
@@ -1052,6 +1072,7 @@ proc collectChildren(body: NimNode; ops: var seq[StreamOp]) {.compileTime.} =
 proc collectShowIf(children: NimNode; idx: int;
     ops: var seq[StreamOp]): int {.compileTime.} =
   let showNode = children[idx]
+  warning(deprecatedShowIfMessage, showNode)
   let condExpr = showNode[1]
   let bodyBlock = showNode[^1]
 
@@ -1060,7 +1081,8 @@ proc collectShowIf(children: NimNode; idx: int;
   if nextIdx < children.len:
     let nextChild = children[nextIdx]
     if nextChild.kind in {nnkCall, nnkCommand}:
-      let nextName = if nextChild[0].kind == nnkIdent: nextChild[0].strVal else: ""
+      let nextName = if nextChild[0].kind == nnkIdent: nextChild[
+          0].strVal else: ""
       if nextName == "showElse":
         fallbackBlock = nextChild[^1]
         nextIdx = nextIdx + 1
@@ -1068,7 +1090,7 @@ proc collectShowIf(children: NimNode; idx: int;
   var bodyOps: seq[StreamOp]
   collectChildren(bodyBlock, bodyOps)
 
-  var branches: seq[tuple[cond: NimNode, body: seq[StreamOp]]]
+  var branches: seq[tuple[cond: NimNode; body: seq[StreamOp]]]
   branches.add((cond: condExpr, body: bodyOps))
 
   if fallbackBlock != nil:
@@ -1080,6 +1102,7 @@ proc collectShowIf(children: NimNode; idx: int;
   return nextIdx
 
 proc collectForIn(node: NimNode; ops: var seq[StreamOp]) {.compileTime.} =
+  warning(deprecatedForInMessage, node)
   let seqExpr = node[1]
   let bodyBlock = node[^1]
 
@@ -1120,7 +1143,7 @@ proc collectNode(node: NimNode; ops: var seq[StreamOp]) {.compileTime.} =
         let attrVal = arg[1]
 
         if isEventHandler(attrName):
-          discard  # Ignored in SSR
+          discard # Ignored in SSR
         elif attrName == "needsId" or attrName == "hydrate":
           # Flush accumulated static text, emit hydration key
           pendingOps.add(StreamOp(kind: sokStatic, text: openTag))
@@ -1129,7 +1152,8 @@ proc collectNode(node: NimNode; ops: var seq[StreamOp]) {.compileTime.} =
         elif not isDynamic(attrVal):
           # Static attribute — concatenate into the opening tag string
           # Escape the value at compile time for HTML attribute context
-          openTag.add(" " & attrName & "=\"" & escapeAttrCompileTime(attrVal.strVal) & "\"")
+          openTag.add(" " & attrName & "=\"" & escapeAttrCompileTime(
+              attrVal.strVal) & "\"")
         else:
           # Dynamic attribute — flush static, add escaped attr
           openTag.add(" " & attrName & "=\"")
@@ -1180,7 +1204,7 @@ proc coalesce(ops: seq[StreamOp]): seq[StreamOp] {.compileTime.} =
         accum = ""
       case op.kind
       of sokIf:
-        var newBranches: seq[tuple[cond: NimNode, body: seq[StreamOp]]]
+        var newBranches: seq[tuple[cond: NimNode; body: seq[StreamOp]]]
         for branch in op.ifBranches:
           newBranches.add((cond: branch.cond, body: coalesce(branch.body)))
         result.add(StreamOp(kind: sokIf, ifBranches: newBranches))
@@ -1193,7 +1217,7 @@ proc coalesce(ops: seq[StreamOp]): seq[StreamOp] {.compileTime.} =
           seqExpr: op.seqExpr,
           forInBody: coalesce(op.forInBody)))
       of sokCase:
-        var newBranches: seq[tuple[values: seq[NimNode], body: seq[StreamOp]]]
+        var newBranches: seq[tuple[values: seq[NimNode]; body: seq[StreamOp]]]
         for branch in op.caseOfBranches:
           newBranches.add((values: branch.values, body: coalesce(branch.body)))
         result.add(StreamOp(kind: sokCase,
@@ -1379,5 +1403,6 @@ template buildHtml*(renderer: untyped; body: untyped): untyped {.deprecated: "us
 template buildHtmlString*(body: untyped): untyped {.deprecated: "use `ui` instead".} =
   ui(body)
 
-template isomorphicHtml*(renderer: untyped; body: untyped): untyped {.deprecated: "use `isomorphicUi` instead".} =
+template isomorphicHtml*(renderer: untyped;
+    body: untyped): untyped {.deprecated: "use `isomorphicUi` instead".} =
   isomorphicUi(renderer, body)

@@ -17,7 +17,7 @@ IsoNim is **cross-platform**: the same component code compiles to browser DOM (J
 - **Server-side rendering** -- `uiString`, `renderToString`, and streaming SSR with Suspense
 - **Isomorphic components** -- `isomorphicUi` compiles the same code for server and client
 - **Natural control flow** -- standard Nim `if`/`for`/`case` work inside the DSL macro
-- **Reactive control flow** -- `showIf`/`showElse`, `forIn` for signal-driven DOM updates
+- **Natural control flow** -- standard Nim `if`/`else`, `for`, and `case` inside DSL blocks
 - **Yoga layout engine** -- cross-platform flexbox positioning (embedded in renderer)
 - **Native controls** -- compile-time switch between branded (identical) and native (UIKit/Material) controls
 - **GUI-agnostic core** -- pluggable renderers (browser DOM, iOS, Android, Freya, terminal, mock, SSR)
@@ -125,20 +125,20 @@ ui(renderer):
   else: span: text "Unknown"
 ```
 
-For **reactive** control flow that updates the DOM when signals change, use `showIf`/`showElse` (backed by `show()` with incremental DOM swap) and `forIn` (backed by `forEachKeyed()` with keyed reconciliation):
+Use natural Nim control flow inside the DSL:
 
 ```nim
 ui(renderer):
   ul:
-    forIn(items.val):
-      li: text $item        # `item` and `index` are injected accessors
-  showIf(loading.val):
+    for index, item in items.val:
+      li: text $item
+  if loading.val:
     p: text "Loading..."
-  showElse:
+  else:
     p: text "Ready"
 ```
 
-Use natural `for`/`if`/`case` for static or one-shot rendering (SSR, initial layout). Use `showIf`/`forIn` when the condition or list is a signal and you need the DOM to update reactively.
+`showIf`/`showElse` and `forIn` are deprecated migration shims. New code should use natural Nim syntax immediately.
 
 ### Components
 
@@ -170,13 +170,13 @@ ui(renderer):
 
 Components that take signals get fine-grained reactivity — only the DOM nodes that read a signal update when it changes. The DSL wraps dynamic attribute expressions in `createRenderEffect` automatically.
 
-For reactive lists of components, use `forIn` (keyed reconciliation) or `indexEach` (index-keyed):
+For lists of components, use natural Nim loops:
 
 ```nim
 ui(renderer):
   ul:
-    forIn(todos.val):
-      TodoItem(renderer, item, index)  # each item rendered by a component
+    for index, todo in todos.val:
+      TodoItem(renderer, todo, index)  # each item rendered by a component
 ```
 
 ### Tailwind CSS (cross-platform)
