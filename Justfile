@@ -151,6 +151,7 @@ editor-screenshot-list:
 test-editor:
     nim c -r tests/test_editor_workspace.nim
     nim c -r tests/test_editor_viewmodels.nim
+    nim c -r --path:../nim-acp/src tests/test_editor_agent_context.nim
     nim c -r tests/test_editor_user_project.nim
     nim c -r tests/test_editor_shell_views.nim
     nim c -r tests/test_editor_task_views.nim
