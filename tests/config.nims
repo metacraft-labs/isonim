@@ -1,4 +1,5 @@
 switch("path", "$projectDir/../src")
+switch("path", "$projectDir/..")
 switch("path", "$projectDir/../demos/isonim-replica/src")
 
 # Local workspace paths for sibling repos

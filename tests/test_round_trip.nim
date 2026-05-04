@@ -9,7 +9,7 @@
 import unittest
 import std/[strutils, tables]
 import isonim/core/[signals, computation, owner]
-import isonim/dsl/[html, components]
+import isonim/dsl/[ui, components]
 import isonim/ssr/[renderer, escape, markers]
 import isonim/testing/mock_dom
 

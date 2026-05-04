@@ -4,7 +4,7 @@
 
 import isonim/core/[signals, computation]
 import isonim/testing/mock_dom
-import isonim/dsl/[html, components]
+import isonim/dsl/[ui, components]
 import task_store
 
 proc renderTaskHeader*[R, N](renderer: R; parent: N; store: TaskStore) =

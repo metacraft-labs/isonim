@@ -238,6 +238,10 @@ type
     description*: string    ## Narrative context
 
   # --- Panel visibility ---
+  EditorPanel* = enum
+    epSidebar
+    epInspector
+
   PanelVisibility* = object
     sidebar*: bool
     inspector*: bool
