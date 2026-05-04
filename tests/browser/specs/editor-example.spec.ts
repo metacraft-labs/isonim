@@ -44,16 +44,15 @@ test.describe("IsoNim packaged editor example", () => {
     await page.getByLabel("Edit inspector property padding").blur();
 
     await page
+      .getByRole("button", { name: "Open User Journeys section" })
+      .click();
+    await page
       .getByRole("button", {
-        name: "Select story Plan a Trip / Taps Santorini card to see details",
+        name: "Select flow step Taps Santorini card to see details",
       })
       .click();
     await expect(
-      page
-        .getByText(
-          "Flow action renders project screen Pages / Destination Detail",
-        )
-        .first(),
+      page.getByText("Pages / Destination Detail").first(),
     ).toBeVisible();
 
     await page.goto("/?view=vector#vector-editor");

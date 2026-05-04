@@ -63,6 +63,9 @@ suite "Editor Shell Views (M2)":
       check findByAttr(sidebar, "aria-label", "Toggle Pages section") != nil
       check findByAttr(sidebar, "aria-label", "Toggle Components section") != nil
       check findByAttr(sidebar, "aria-label", "Toggle Foundations section") != nil
+      check findByAttr(sidebar, "aria-label", "Open First Task journey") != nil
+      check findByAttr(sidebar, "aria-label",
+        "Select story First Task / User opens the app for the first time") == nil
 
       dispose()
 
@@ -346,6 +349,59 @@ suite "Editor Shell Views (M2)":
       check flowFrame != nil
       check flowFrame.attributes["srcdoc"].contains("real-flow-screen")
       check flowFrame.styles["pointer-events"] == "none"
+
+      dispose()
+
+  test "storyboard journey cards open matching page stories":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      let cartPage = StoryRef(group: "Pages", name: "Cart Page",
+        kind: skPage, index: 0)
+      vm.sidebar.groups.val = @[
+        StoryGroup(
+          name: "Checkout flow",
+          kind: skFlow,
+          description: "Project-owned user flow",
+          expanded: true,
+          items: @[
+            StoryItem(name: "Cart", description: "Cart screen",
+                      kind: skFlow, group: "Checkout flow")
+        ]),
+        StoryGroup(
+          name: "Pages",
+          kind: skPage,
+          description: "Concrete pages",
+          expanded: true,
+          items: @[
+            StoryItem(name: "Cart Page", description: "Full cart page",
+                      kind: skPage, group: "Pages")
+        ])
+      ]
+      vm.flowPlayer.steps.val = @[
+        FlowStep(
+          screenRef: cartPage,
+          action: "Cart",
+          description: "Open cart page")
+      ]
+      vm.preview.hook = proc(story: StoryRef;
+          platform: Platform): ProjectPreview =
+        ProjectPreview(
+          status: ppsRendered,
+          story: story,
+          title: story.name,
+          documentHtml: "<main data-testid=\"" & story.name & "\"></main>")
+
+      let storyboard = renderStoryboardCanvas[MockRenderer, MockNode](r, vm)
+      let flowFrame = findByAttr(storyboard, "title", "Flow preview Cart")
+      let card = findByAttr(storyboard, "aria-label", "Select flow step Cart")
+
+      check flowFrame != nil
+      check flowFrame.attributes["srcdoc"].contains("Cart Page")
+      check card != nil
+      card.fireEvent("click")
+      check vm.selectedStory.val == cartPage
+      check vm.activeView.val == evPagePreview
 
       dispose()
 

@@ -38,7 +38,7 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       page.getByRole("button", {
         name: "Select story Partner operations / Partner invitation",
       }),
-    ).toBeHidden();
+    ).toHaveCount(0);
     await page
       .getByRole("button", { name: "Toggle User Journeys section" })
       .click();
@@ -50,7 +50,24 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(
       page.locator('iframe[title="Flow preview Issue CodeTracer license"]'),
     ).toHaveAttribute("srcdoc", /customer-detail/);
+    await page
+      .getByRole("button", {
+        name: "Select flow step Issue CodeTracer license",
+      })
+      .click();
+    await expect(
+      page.getByRole("button", {
+        name: "Select story Back-office pages / Customer detail",
+      }),
+    ).toHaveAttribute("aria-current", "true");
+    await expect(page).toHaveURL(/kind=page/);
+    await expect(page).toHaveURL(/story=Customer%20detail/);
     await page.getByRole("button", { name: "Open Pages section" }).click();
+    await page
+      .getByRole("button", {
+        name: "Select story Back-office pages / Operations dashboard",
+      })
+      .click();
     await expect(
       page
         .frameLocator('iframe[title="Project preview"]')
@@ -73,7 +90,7 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       page.getByRole("button", {
         name: "Select story Partner operations / Partner invitation",
       }),
-    ).toBeHidden();
+    ).toHaveCount(0);
     await page.getByRole("textbox", { name: "Search stories" }).fill("");
 
     await expect(
@@ -150,14 +167,15 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     ).toBeVisible();
 
     await page
+      .getByRole("button", { name: "Open User Journeys section" })
+      .click();
+    await page
       .getByRole("button", {
-        name: "Select story Customer and license flows / Issue CodeTracer license",
+        name: "Select flow step Issue CodeTracer license",
       })
       .click();
     await expect(
-      page
-        .getByText("Customer and license flows / Issue CodeTracer license")
-        .first(),
+      page.getByText("Back-office pages / Customer detail").first(),
     ).toBeVisible();
     await expect(
       page
@@ -166,7 +184,7 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     ).toBeVisible();
     await expect(
       page
-        .getByText("apps/back-office/src/backoffice_server/router.nim")
+        .getByText("apps/back-office/src/backoffice_ui/components.nim")
         .first(),
     ).toBeVisible();
 

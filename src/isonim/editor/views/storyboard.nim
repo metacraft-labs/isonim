@@ -84,7 +84,20 @@ proc renderProjectMiniPreview[R, E](r: R; vm: EditorVM; story: StoryRef;
   r.setStyle(frame, "pointer-events", "none")
   frame
 
-proc layoutFlows(groups: seq[StoryGroup]): seq[FlowRow] =
+func hasConcreteScreenRef(story: StoryRef): bool =
+  story.group.len > 0 and story.name.len > 0 and story.kind != skFlow
+
+func resolveFlowCardStory(item: StoryItem; index: int;
+    steps: seq[FlowStep]): StoryRef =
+  ## Flow sidebar items are journey steps. The canvas card should open the
+  ## concrete page/component story for that step when the workspace provides
+  ## a matching FlowStep.
+  for step in steps:
+    if step.action == item.name and step.screenRef.hasConcreteScreenRef:
+      return step.screenRef
+  StoryRef(group: item.group, name: item.name, kind: item.kind, index: index)
+
+proc layoutFlows(groups: seq[StoryGroup]; steps: seq[FlowStep]): seq[FlowRow] =
   ## Arrange only user flow groups as horizontal card sequences.
   for group in groups:
     if group.kind == skFlow:
@@ -94,8 +107,7 @@ proc layoutFlows(groups: seq[StoryGroup]): seq[FlowRow] =
       let cardH = 520.0
       let gapX = 56.0
       for i, item in group.items:
-        let story = StoryRef(group: item.group, name: item.name,
-                              kind: item.kind, index: i)
+        let story = resolveFlowCardStory(item, i, steps)
         row.cards.add FlowCard(x: x, y: 0, w: cardW, h: cardH,
                                 label: item.name, stepNum: i + 1,
                                 story: story)
@@ -212,7 +224,7 @@ proc toggleFlowPlayback(vm: EditorVM) =
     vm.flowPlayer.play()
 
 proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
-  let flows = layoutFlows(vm.sidebar.groups.val)
+  let flows = layoutFlows(vm.sidebar.groups.val, vm.flowPlayer.steps.val)
 
   let canvas = ui(r):
     tdiv(class = "editor-preview",

@@ -95,6 +95,11 @@ func groupInSection(group: StoryGroup; section: SidebarSection): bool =
   of ssGuidelines:
     group.kind == skGuideline
 
+func groupShowsStoriesInSidebar(group: StoryGroup): bool =
+  ## User Journeys are opened as journey rows; their step/page cards live on
+  ## the storyboard canvas and navigate to the matching Pages story.
+  group.kind != skFlow
+
 proc makeButton[R, E](r: R; node: E; label: string) =
   r.setAttribute(node, "role", "button")
   r.setAttribute(node, "tabindex", "0")
@@ -103,6 +108,11 @@ proc makeButton[R, E](r: R; node: E; label: string) =
 proc groupToggleHandler(vm: EditorVM; groupName: string): proc() =
   let captured = groupName
   result = proc() = vm.sidebar.toggleGroup(captured)
+
+proc journeyOpenHandler(vm: EditorVM): proc() =
+  result = proc() =
+    vm.setActiveView(evStoryboard)
+    vm.sidebar.setSectionExpanded(ssUserJourneys, true)
 
 proc sectionToggleHandler(vm: EditorVM; section: SidebarSection): proc() =
   let captured = section
@@ -362,6 +372,7 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
                 if groupInSection(group, section):
                   let gName = $group.name
                   let gItems = group.items
+                  let gShowsStories = groupShowsStoriesInSidebar(group)
                   let gIcon = case group.kind
                     of skFoundation: "\xE2\x97\x87"
                     of skComponent: "\xE2\x97\xBB"
@@ -379,14 +390,21 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
                   tdiv(display = "flex", flex_direction = "column",
                         ref = groupNode, margin_bottom = "2px"):
                     let toggleGroup = groupToggleHandler(vm, gName)
+                    let openJourney = journeyOpenHandler(vm)
                     tdiv(display = "flex", align_items = "center",
                           ref = groupHeader,
                           `role` = "button", tabindex = "0",
-                          `aria-label` = "Toggle " & gName & " stories",
+                          `aria-label` = (
+                              if gShowsStories: "Toggle " & gName & " stories"
+                              else: "Open " & gName & " journey"),
                           `aria-expanded` = (
-                              if gExpanded: "true" else: "false"),
-                          onclick = toggleGroup,
-                          onkeydown = toggleGroup,
+                              if gShowsStories:
+                                if gExpanded: "true" else: "false"
+                              else: "false"),
+                          onclick = (
+                              if gShowsStories: toggleGroup else: openJourney),
+                          onkeydown = (
+                              if gShowsStories: toggleGroup else: openJourney),
                           gap = "6px", padding = "5px 8px 5px 18px",
                           border_radius = "4px", cursor = "pointer"):
                       span(font_size = "11px", color = textSecondary):
@@ -398,62 +416,67 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
                       span(ref = groupChevron,
                             font_size = "9px", color = textMuted,
                             margin_left = "auto"):
-                        text gChevron
+                        if gShowsStories:
+                          text gChevron
 
-                    tdiv(ref = groupBody,
-                          display = (if gExpanded: "flex" else: "none"),
-                          flex_direction = "column", gap = "1px"):
-                      var itemIdx = 0
-                      for item in gItems:
-                        let iName = $item.name
-                        let iDesc = $item.description
-                        let iGroup = $item.group
-                        let iKind = item.kind
-                        let story = StoryRef(group: iGroup, name: iName,
-                                              kind: iKind, index: itemIdx)
-                        let selectStory = storySelectHandler(vm, story)
-                        let selected = vm.isSelectedStory(story)
-                        let storyPadding =
-                          if selected: "4px 12px 4px 28px"
-                          else: "4px 12px 4px 30px"
-                        let storyBackground =
-                          if selected: accentSoft else: "transparent"
-                        let storyBorder =
-                          if selected: "2px solid " & accent else: "none"
-                        let storyWeight =
-                          if selected: "500" else: "400"
-                        var storyNode: E
+                    if gShowsStories:
+                      tdiv(ref = groupBody,
+                            display = (if gExpanded: "flex" else: "none"),
+                            flex_direction = "column", gap = "1px"):
+                        var itemIdx = 0
+                        for item in gItems:
+                          let iName = $item.name
+                          let iDesc = $item.description
+                          let iGroup = $item.group
+                          let iKind = item.kind
+                          let story = StoryRef(group: iGroup, name: iName,
+                                                kind: iKind, index: itemIdx)
+                          let selectStory = storySelectHandler(vm, story)
+                          let selected = vm.isSelectedStory(story)
+                          let storyPadding =
+                            if selected: "4px 12px 4px 28px"
+                            else: "4px 12px 4px 30px"
+                          let storyBackground =
+                            if selected: accentSoft else: "transparent"
+                          let storyBorder =
+                            if selected: "2px solid " & accent else: "none"
+                          let storyWeight =
+                            if selected: "500" else: "400"
+                          var storyNode: E
 
-                        tdiv(display = "flex", flex_direction = "column",
-                              ref = storyNode,
-                              `role` = "button", tabindex = "0",
-                              `aria-label` = "Select story " & iGroup &
-                                " / " & iName,
-                              `aria-current` = (
-                                  if selected: "true" else: "false"),
-                              onclick = selectStory,
-                              onkeydown = selectStory,
-                              padding = storyPadding,
-                              border_radius = "4px", cursor = "pointer",
-                              transition = "background-color 0.1s",
-                              background_color = storyBackground,
-                              border_left = storyBorder):
-                          span(font_size = "12px", line_height = "1.4",
-                                color = textPrimary,
-                                font_weight = storyWeight):
-                            text iName
-                          if iDesc.len > 0:
-                            span(font_size = "11px", color = textMuted,
-                                  line_height = "1.3", margin_top = "2px"):
-                              text iDesc
-                        block:
-                          r.bindSidebarStoryState(storyNode, vm, story)
-                          r.bindSidebarItemFilter(storyNode, vm, group, item)
-                        inc itemIdx
+                          tdiv(display = "flex", flex_direction = "column",
+                                ref = storyNode,
+                                `role` = "button", tabindex = "0",
+                                `aria-label` = "Select story " & iGroup &
+                                  " / " & iName,
+                                `aria-current` = (
+                                    if selected: "true" else: "false"),
+                                onclick = selectStory,
+                                onkeydown = selectStory,
+                                padding = storyPadding,
+                                border_radius = "4px", cursor = "pointer",
+                                transition = "background-color 0.1s",
+                                background_color = storyBackground,
+                                border_left = storyBorder):
+                            span(font_size = "12px", line_height = "1.4",
+                                  color = textPrimary,
+                                  font_weight = storyWeight):
+                              text iName
+                            if iDesc.len > 0:
+                              span(font_size = "11px", color = textMuted,
+                                    line_height = "1.3", margin_top = "2px"):
+                                text iDesc
+                          block:
+                            r.bindSidebarStoryState(storyNode, vm, story)
+                            r.bindSidebarItemFilter(storyNode, vm, group, item)
+                          inc itemIdx
+                    else:
+                      tdiv(ref = groupBody, display = "none")
                   block:
                     r.bindSidebarGroupFilter(groupNode, vm, group)
-                    r.bindSidebarGroupState(groupHeader, groupBody,
-                      groupChevron, vm, gName)
+                    if gShowsStories:
+                      r.bindSidebarGroupState(groupHeader, groupBody,
+                        groupChevron, vm, gName)
           block:
             r.bindSidebarSectionState(sectionHeader, sectionDisclosure,
               sectionBody, vm, section)
