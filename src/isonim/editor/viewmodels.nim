@@ -59,6 +59,10 @@ type
     sessionStatus*: Signal[AsyncState]
     accumulatedEdits*: Signal[seq[EditRecord]]
     inputText*: Signal[string]
+    connectionState*: Signal[string]
+    planEntries*: Signal[seq[string]]
+    toolCalls*: Signal[seq[string]]
+    stopReason*: Signal[string]
     messageCount*: Memo[int]
 
   ReviewResultsVM* = ref object of ViewModel
@@ -746,6 +750,10 @@ proc createAgentChatVM*(): AgentChatVM =
   let sessionStatus = createSignal(asIdle)
   let accumulatedEdits = createSignal[seq[EditRecord]](@[])
   let inputText = createSignal("")
+  let connectionState = createSignal("disconnected")
+  let planEntries = createSignal[seq[string]](@[])
+  let toolCalls = createSignal[seq[string]](@[])
+  let stopReason = createSignal("")
 
   let messageCount = createMemo[int](proc(): int = messages.val.len)
 
@@ -754,6 +762,10 @@ proc createAgentChatVM*(): AgentChatVM =
     sessionStatus: sessionStatus,
     accumulatedEdits: accumulatedEdits,
     inputText: inputText,
+    connectionState: connectionState,
+    planEntries: planEntries,
+    toolCalls: toolCalls,
+    stopReason: stopReason,
     messageCount: messageCount)
 
 proc createReviewResultsVM*(): ReviewResultsVM =
