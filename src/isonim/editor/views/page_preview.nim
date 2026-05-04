@@ -50,14 +50,6 @@ proc bindPanelButton[R, E](r: R; node: E; vm: EditorVM;
     r.setStyle(node, "background-color", if active: accent else: "transparent")
     r.setStyle(node, "color", if active: textPrimary else: textMuted)
 
-proc bindActiveViewButton[R, E](r: R; node: E; vm: EditorVM;
-    view: EditorView) =
-  createRenderEffect proc() =
-    let active = vm.activeView.val == view
-    r.setAttribute(node, "aria-pressed", if active: "true" else: "false")
-    r.setStyle(node, "background-color", if active: accent else: "transparent")
-    r.setStyle(node, "color", if active: textPrimary else: textMuted)
-
 proc panelButton[R, E](r: R; vm: EditorVM; panel: EditorPanel;
     label, textValue: string): E =
   result = ui(r):
@@ -82,18 +74,6 @@ proc viewportButton[R, E](r: R; vm: EditorVM; viewport: PreviewViewport): E =
   r.addEventListener(result, "click", proc() = vm.changeViewport(viewport))
   r.addEventListener(result, "keydown", proc() = vm.changeViewport(viewport))
   r.bindViewportButton(result, vm, viewport)
-
-proc viewButton[R, E](r: R; vm: EditorVM; view: EditorView;
-    label: string): E =
-  result = ui(r):
-    tdiv(padding = "4px 10px", border_radius = "4px",
-          font_size = "11px", font_weight = "500",
-          cursor = "pointer", transition = "all 0.15s"):
-      text label
-  r.makeButton(result, "Open " & label & " editor view")
-  r.addEventListener(result, "click", proc() = vm.setActiveView(view))
-  r.addEventListener(result, "keydown", proc() = vm.setActiveView(view))
-  r.bindActiveViewButton(result, vm, view)
 
 proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
   let container = ui(r):
@@ -129,20 +109,6 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
   let controls = ui(r):
     tdiv(display = "flex", align_items = "center", gap = "8px"):
       discard
-
-  let viewToggle = ui(r):
-    tdiv(display = "flex", align_items = "center", gap = "1px",
-          background_color = bgSurface, border_radius = "6px",
-          padding = "3px"):
-      discard
-  for option in [
-    (evStoryboard, "Flow"),
-    (evComponentDetail, "Detail"),
-    (evPagePreview, "Page"),
-    (evVectorEditor, "Vector")]:
-    r.appendChild(viewToggle,
-      viewButton[R, E](r, vm, option[0], option[1]))
-  r.appendChild(controls, viewToggle)
 
   let panelToggle = ui(r):
     tdiv(display = "flex", align_items = "center", gap = "1px",

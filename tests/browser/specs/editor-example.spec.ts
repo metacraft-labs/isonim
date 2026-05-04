@@ -7,7 +7,7 @@ test.describe("IsoNim packaged editor example", () => {
   });
 
   test("e2e_editor_sidebar_story_selection", async ({ page }) => {
-    await expect(page.getByText("User Flows")).toBeVisible();
+    await expect(page.locator('[data-figma-canvas="true"]')).toBeVisible();
 
     const play = page
       .locator('[aria-label="Play flow"], [aria-label="Pause flow"]')

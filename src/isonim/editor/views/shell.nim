@@ -44,6 +44,57 @@ const inspectorSectionNames = [
   "Layout", "Size", "Space", "Pos", "Fill", "Stroke", "Type", "FX", "Trans",
   "Filter", "State"]
 
+const sidebarSections = [
+  ssUserJourneys, ssPages, ssComponents, ssFoundations, ssGuidelines]
+
+func sectionLabel(section: SidebarSection): string =
+  case section
+  of ssUserJourneys:
+    "User Journeys"
+  of ssPages:
+    "Pages"
+  of ssComponents:
+    "Components"
+  of ssFoundations:
+    "Foundations"
+  of ssGuidelines:
+    "Guidelines"
+
+func sectionIcon(section: SidebarSection): string =
+  case section
+  of ssUserJourneys:
+    "\xE2\x96\xB7"
+  of ssPages:
+    "\xE2\x96\xA1"
+  of ssComponents:
+    "\xE2\x97\xBB"
+  of ssFoundations:
+    "\xE2\x97\x87"
+  of ssGuidelines:
+    "\xE2\x97\x8B"
+
+func sectionView(section: SidebarSection): EditorView =
+  case section
+  of ssUserJourneys:
+    evStoryboard
+  of ssPages:
+    evPagePreview
+  of ssComponents, ssFoundations, ssGuidelines:
+    evComponentDetail
+
+func groupInSection(group: StoryGroup; section: SidebarSection): bool =
+  case section
+  of ssUserJourneys:
+    group.kind == skFlow
+  of ssPages:
+    group.kind == skPage
+  of ssComponents:
+    group.kind in {skComponent, skPattern}
+  of ssFoundations:
+    group.kind == skFoundation
+  of ssGuidelines:
+    group.kind == skGuideline
+
 proc makeButton[R, E](r: R; node: E; label: string) =
   r.setAttribute(node, "role", "button")
   r.setAttribute(node, "tabindex", "0")
@@ -52,6 +103,17 @@ proc makeButton[R, E](r: R; node: E; label: string) =
 proc groupToggleHandler(vm: EditorVM; groupName: string): proc() =
   let captured = groupName
   result = proc() = vm.sidebar.toggleGroup(captured)
+
+proc sectionToggleHandler(vm: EditorVM; section: SidebarSection): proc() =
+  let captured = section
+  result = proc() =
+    vm.sidebar.toggleSection(captured)
+
+proc sectionOpenHandler(vm: EditorVM; section: SidebarSection): proc() =
+  let captured = section
+  result = proc() =
+    vm.setActiveView(sectionView(captured))
+    vm.sidebar.setSectionExpanded(captured, true)
 
 proc storySelectHandler(vm: EditorVM; story: StoryRef): proc() =
   let captured = story
@@ -141,6 +203,31 @@ proc bindSidebarGroupFilter[R, E](r: R; node: E; vm: EditorVM;
       if matchesSidebarSearch(vm.sidebar.searchFilter.val, captured): "flex"
       else: "none")
 
+proc bindSidebarSectionState[R, E](r: R; header, disclosure, body: E;
+    vm: EditorVM; section: SidebarSection) =
+  let captured = section
+  createRenderEffect proc() =
+    let expanded = vm.sidebar.sections.val.isExpanded(captured)
+    let active = vm.activeView.val == sectionView(captured)
+    r.setAttribute(disclosure, "aria-expanded",
+        if expanded: "true" else: "false")
+    r.setTextContent(disclosure, if expanded: "\xE2\x96\xBE" else: "\xE2\x96\xB8")
+    r.setStyle(header, "background-color",
+      if active: accentSoft elif expanded: bgSurface else: "transparent")
+    r.setStyle(body, "display", if expanded: "flex" else: "none")
+
+proc bindSidebarGroupState[R, E](r: R; header, body, chevron: E;
+    vm: EditorVM; groupName: string) =
+  let captured = groupName
+  createRenderEffect proc() =
+    var expanded = false
+    for group in vm.sidebar.groups.val:
+      if group.name == captured:
+        expanded = group.expanded
+    r.setAttribute(header, "aria-expanded", if expanded: "true" else: "false")
+    r.setTextContent(chevron, if expanded: "\xE2\x96\xBE" else: "\xE2\x96\xB8")
+    r.setStyle(body, "display", if expanded: "flex" else: "none")
+
 proc bindSidebarItemFilter[R, E](r: R; node: E; vm: EditorVM;
     group: StoryGroup; item: StoryItem) =
   let capturedGroup = group
@@ -221,97 +308,155 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
         r.addEventListener(searchInput, "change", onSearch)
         r.addEventListener(searchInput, "keyup", onSearch)
 
-      # Story groups
+      # Story sections
       tdiv(display = "flex", flex_direction = "column",
             gap = "2px", padding = "0 8px 16px 8px"):
-        for group in vm.sidebar.groups.val:
-          let gName = $group.name
-          let gKind = group.kind
-          let gExpanded = group.expanded
-          let gItems = group.items
-          # Consistent-weight outlined Unicode icons
-          let icon = case gKind
-            of skFoundation: "\xE2\x97\x87" # ◇ diamond outline
-            of skComponent: "\xE2\x97\xBB"  # ◻ square outline
-            of skPattern: "\xE2\x97\xA8"    # ◨ half-filled square
-            of skPage: "\xE2\x96\xA1"       # □ square
-            of skFlow: "\xE2\x96\xB7"       # ▷ triangle outline
-            of skGuideline: "\xE2\x97\x8B"  # ○ circle outline
-          let chevronText = if gExpanded: "\xE2\x96\xBE" else: "\xE2\x96\xB8"
+        for section in sidebarSections:
+          let sLabel = sectionLabel(section)
+          let sIcon = sectionIcon(section)
+          let sExpanded = vm.sidebar.sections.val.isExpanded(section)
+          let sChevron = if sExpanded: "\xE2\x96\xBE" else: "\xE2\x96\xB8"
+          let openSection = sectionOpenHandler(vm, section)
+          let toggleSection = sectionToggleHandler(vm, section)
+          var sectionHeader: E
+          var sectionDisclosure: E
+          var sectionBody: E
 
-          let isFlow = gKind == skFlow
-          var groupNode: E
-          tdiv(display = "flex", flex_direction = "column",
-                ref = groupNode,
-                margin_bottom = (if isFlow: "4px" else: "2px")):
-            # Group header — flows get accent styling for prominence
-            let toggleGroup = groupToggleHandler(vm, gName)
+          tdiv(display = "flex", flex_direction = "column", gap = "2px",
+                margin_bottom = "6px"):
             tdiv(display = "flex", align_items = "center",
-                  `role` = "button", tabindex = "0",
-                  `aria-label` = "Toggle " & gName & " stories",
-                  onclick = toggleGroup,
-                  onkeydown = toggleGroup,
-                  gap = "6px",
-                  padding = (if isFlow: "6px 8px" else: "5px 8px"),
-                  border_radius = "4px", cursor = "pointer",
-                  background_color = (if isFlow and
-                      gExpanded: accentSoft else: "transparent")):
-              span(font_size = (if isFlow: "12px" else: "11px"),
-                    color = (if isFlow: accent else: textSecondary)):
-                text icon
-              span(font_size = (if isFlow: "11px" else: "10px"),
-                    font_weight = (if isFlow: "700" else: "600"),
-                    color = (if isFlow: textPrimary else: textSecondary),
-                    text_transform = "uppercase",
-                    letter_spacing = "0.8px"):
-                text gName
-              span(font_size = "9px", color = textMuted, margin_left = "auto"):
-                text chevronText
+                  gap = "4px"):
+              tdiv(display = "flex", align_items = "center", flex = "1",
+                    ref = sectionHeader,
+                    `role` = "button", tabindex = "0",
+                    `aria-label` = "Open " & sLabel & " section",
+                    onclick = openSection,
+                    onkeydown = openSection,
+                    gap = "8px", padding = "7px 8px",
+                    border_radius = "5px", cursor = "pointer",
+                    background_color = (
+                        if sExpanded: bgSurface else: "transparent")):
+                span(font_size = "12px", color = accent):
+                  text sIcon
+                span(font_size = "11px", font_weight = "800",
+                      color = textPrimary, text_transform = "uppercase",
+                      letter_spacing = "0.8px"):
+                  text sLabel
+              tdiv(ref = sectionDisclosure,
+                    display = "flex", align_items = "center",
+                    justify_content = "center",
+                    width = "24px", min_width = "24px", height = "28px",
+                    border_radius = "4px",
+                    `role` = "button", tabindex = "0",
+                    `aria-label` = "Toggle " & sLabel & " section",
+                    `aria-expanded` = (if sExpanded: "true" else: "false"),
+                    onclick = toggleSection,
+                    onkeydown = toggleSection,
+                    font_size = "9px", color = textMuted, cursor = "pointer"):
+                text sChevron
 
-            # Items (if expanded)
-            if gExpanded:
-              var itemIdx = 0
-              for item in gItems:
-                let iName = $item.name
-                let iDesc = $item.description
-                let iGroup = $item.group
-                let iKind = item.kind
-                let story = StoryRef(group: iGroup, name: iName,
-                                      kind: iKind, index: itemIdx)
-                let selectStory = storySelectHandler(vm, story)
-                var storyNode: E
+            tdiv(ref = sectionBody,
+                  display = (if sExpanded: "flex" else: "none"),
+                  flex_direction = "column", gap = "2px"):
+              for group in vm.sidebar.groups.val:
+                if groupInSection(group, section):
+                  let gName = $group.name
+                  let gItems = group.items
+                  let gIcon = case group.kind
+                    of skFoundation: "\xE2\x97\x87"
+                    of skComponent: "\xE2\x97\xBB"
+                    of skPattern: "\xE2\x97\xA8"
+                    of skPage: "\xE2\x96\xA1"
+                    of skFlow: "\xE2\x96\xB7"
+                    of skGuideline: "\xE2\x97\x8B"
+                  let gExpanded = group.expanded
+                  let gChevron = if gExpanded: "\xE2\x96\xBE" else: "\xE2\x96\xB8"
+                  var groupNode: E
+                  var groupHeader: E
+                  var groupBody: E
+                  var groupChevron: E
 
-                tdiv(display = "flex", flex_direction = "column",
-                      ref = storyNode,
-                      `role` = "button", tabindex = "0",
-                      `aria-label` = "Select story " & iGroup & " / " & iName,
-                      `aria-current` = (if vm.isSelectedStory(
-                          story): "true" else: "false"),
-                      onclick = selectStory,
-                      onkeydown = selectStory,
-                      padding = (if vm.isSelectedStory(
-                          story): "4px 12px 4px 28px" else: "4px 12px 4px 30px"),
-                      border_radius = "4px", cursor = "pointer",
-                      transition = "background-color 0.1s",
-                      background_color = (if vm.isSelectedStory(
-                          story): accentSoft else: "transparent"),
-                      border_left = (if vm.isSelectedStory(story): "2px solid " &
-                          accent else: "none")):
-                  span(font_size = "12px", line_height = "1.4",
-                        color = textPrimary,
-                        font_weight = (if vm.isSelectedStory(
-                            story): "500" else: "400")):
-                    text iName
-                  if iDesc.len > 0:
-                    span(font_size = "11px", color = textMuted,
-                          line_height = "1.3", margin_top = "2px"):
-                      text iDesc
-                block:
-                  r.bindSidebarStoryState(storyNode, vm, story)
-                  r.bindSidebarItemFilter(storyNode, vm, group, item)
-                inc itemIdx
+                  tdiv(display = "flex", flex_direction = "column",
+                        ref = groupNode, margin_bottom = "2px"):
+                    let toggleGroup = groupToggleHandler(vm, gName)
+                    tdiv(display = "flex", align_items = "center",
+                          ref = groupHeader,
+                          `role` = "button", tabindex = "0",
+                          `aria-label` = "Toggle " & gName & " stories",
+                          `aria-expanded` = (
+                              if gExpanded: "true" else: "false"),
+                          onclick = toggleGroup,
+                          onkeydown = toggleGroup,
+                          gap = "6px", padding = "5px 8px 5px 18px",
+                          border_radius = "4px", cursor = "pointer"):
+                      span(font_size = "11px", color = textSecondary):
+                        text gIcon
+                      span(font_size = "10px", font_weight = "700",
+                            color = textSecondary, text_transform = "uppercase",
+                            letter_spacing = "0.7px"):
+                        text gName
+                      span(ref = groupChevron,
+                            font_size = "9px", color = textMuted,
+                            margin_left = "auto"):
+                        text gChevron
+
+                    tdiv(ref = groupBody,
+                          display = (if gExpanded: "flex" else: "none"),
+                          flex_direction = "column", gap = "1px"):
+                      var itemIdx = 0
+                      for item in gItems:
+                        let iName = $item.name
+                        let iDesc = $item.description
+                        let iGroup = $item.group
+                        let iKind = item.kind
+                        let story = StoryRef(group: iGroup, name: iName,
+                                              kind: iKind, index: itemIdx)
+                        let selectStory = storySelectHandler(vm, story)
+                        let selected = vm.isSelectedStory(story)
+                        let storyPadding =
+                          if selected: "4px 12px 4px 28px"
+                          else: "4px 12px 4px 30px"
+                        let storyBackground =
+                          if selected: accentSoft else: "transparent"
+                        let storyBorder =
+                          if selected: "2px solid " & accent else: "none"
+                        let storyWeight =
+                          if selected: "500" else: "400"
+                        var storyNode: E
+
+                        tdiv(display = "flex", flex_direction = "column",
+                              ref = storyNode,
+                              `role` = "button", tabindex = "0",
+                              `aria-label` = "Select story " & iGroup &
+                                " / " & iName,
+                              `aria-current` = (
+                                  if selected: "true" else: "false"),
+                              onclick = selectStory,
+                              onkeydown = selectStory,
+                              padding = storyPadding,
+                              border_radius = "4px", cursor = "pointer",
+                              transition = "background-color 0.1s",
+                              background_color = storyBackground,
+                              border_left = storyBorder):
+                          span(font_size = "12px", line_height = "1.4",
+                                color = textPrimary,
+                                font_weight = storyWeight):
+                            text iName
+                          if iDesc.len > 0:
+                            span(font_size = "11px", color = textMuted,
+                                  line_height = "1.3", margin_top = "2px"):
+                              text iDesc
+                        block:
+                          r.bindSidebarStoryState(storyNode, vm, story)
+                          r.bindSidebarItemFilter(storyNode, vm, group, item)
+                        inc itemIdx
+                  block:
+                    r.bindSidebarGroupFilter(groupNode, vm, group)
+                    r.bindSidebarGroupState(groupHeader, groupBody,
+                      groupChevron, vm, gName)
           block:
-            r.bindSidebarGroupFilter(groupNode, vm, group)
+            r.bindSidebarSectionState(sectionHeader, sectionDisclosure,
+              sectionBody, vm, section)
 
 proc renderPreviewPane*[R, E](r: R; vm: EditorVM): E =
   ## Center panel: component preview with toolbar.

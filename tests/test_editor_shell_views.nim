@@ -59,6 +59,10 @@ suite "Editor Shell Views (M2)":
       # Header should contain "isonim editor"
       let header = sidebar.children[0]
       check header.children.len >= 1
+      check findByAttr(sidebar, "aria-label", "Toggle User Journeys section") != nil
+      check findByAttr(sidebar, "aria-label", "Toggle Pages section") != nil
+      check findByAttr(sidebar, "aria-label", "Toggle Components section") != nil
+      check findByAttr(sidebar, "aria-label", "Toggle Foundations section") != nil
 
       dispose()
 
@@ -151,12 +155,26 @@ suite "Editor Shell Views (M2)":
 
       let sidebarToggle = findByAttr(shell, "aria-label", "Toggle TaskRow stories")
       check sidebarToggle != nil
+      check sidebarToggle.attributes["aria-expanded"] == "true"
       sidebarToggle.fireEvent("keydown")
       var taskRowCollapsed = false
       for group in vm.sidebar.groups.val:
         if group.name == "TaskRow":
           taskRowCollapsed = not group.expanded
       check taskRowCollapsed
+      check sidebarToggle.attributes["aria-expanded"] == "false"
+
+      let journeysToggle = findByAttr(shell, "aria-label",
+        "Toggle User Journeys section")
+      let journeysOpen = findByAttr(shell, "aria-label",
+        "Open User Journeys section")
+      check journeysToggle != nil
+      check journeysOpen != nil
+      check journeysToggle.attributes["aria-expanded"] == "true"
+      journeysOpen.fireEvent("click")
+      check vm.activeView.val == evStoryboard
+      journeysToggle.fireEvent("click")
+      check journeysToggle.attributes["aria-expanded"] == "false"
 
       let inspectorToggle = findByAttr(shell, "aria-label", "Toggle inspector panel")
       check inspectorToggle != nil
@@ -269,22 +287,33 @@ suite "Editor Shell Views (M2)":
 
       dispose()
 
-  test "page preview exposes top level view navigation":
+  test "sidebar sections expose top level editor navigation":
     createRoot proc(dispose: proc()) =
       let r = MockRenderer()
       let vm = createEditorVM()
+      vm.sidebar.groups.val = buildStoryboard()
       vm.activeView.val = evPagePreview
 
-      let preview = renderPagePreview[MockRenderer, MockNode](r, vm)
-      let flowView = findByAttr(preview, "aria-label", "Open Flow editor view")
-      let pageView = findByAttr(preview, "aria-label", "Open Page editor view")
+      let sidebar = renderSidebar[MockRenderer, MockNode](r, vm)
+      let openUserJourneys = findByAttr(sidebar, "aria-label",
+        "Open User Journeys section")
+      let userJourneys = findByAttr(sidebar, "aria-label",
+        "Toggle User Journeys section")
+      let pages = findByAttr(sidebar, "aria-label", "Toggle Pages section")
 
-      check flowView != nil
-      check pageView != nil
-      check pageView.attributes["aria-pressed"] == "true"
-      flowView.fireEvent("click")
+      check openUserJourneys != nil
+      check userJourneys != nil
+      check pages != nil
+      check userJourneys.attributes["aria-expanded"] == "true"
+      pages.fireEvent("click")
+      check vm.activeView.val == evPagePreview
+      openUserJourneys.fireEvent("click")
       check vm.activeView.val == evStoryboard
-      check flowView.attributes["aria-pressed"] == "true"
+      check userJourneys.attributes["aria-expanded"] == "true"
+      userJourneys.fireEvent("click")
+      check userJourneys.attributes["aria-expanded"] == "false"
+      userJourneys.fireEvent("click")
+      check userJourneys.attributes["aria-expanded"] == "true"
 
       dispose()
 

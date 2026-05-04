@@ -18,6 +18,7 @@ export types
 type
   SidebarVM* = ref object of ViewModel
     groups*: Signal[seq[StoryGroup]]
+    sections*: Signal[SidebarSectionExpansion]
     searchFilter*: Signal[string]
     filteredItems*: Memo[seq[StoryGroup]]
 
@@ -389,6 +390,67 @@ proc selectStory*(sidebar: SidebarVM; editor: EditorVM;
     story: StoryRef): bool {.discardable.} =
   editor.selectStory(story)
 
+func defaultSidebarSections*(): SidebarSectionExpansion =
+  SidebarSectionExpansion(
+    userJourneys: true,
+    pages: true,
+    components: true,
+    foundations: true,
+    guidelines: false)
+
+func isExpanded*(state: SidebarSectionExpansion;
+    section: SidebarSection): bool =
+  case section
+  of ssUserJourneys:
+    state.userJourneys
+  of ssPages:
+    state.pages
+  of ssComponents:
+    state.components
+  of ssFoundations:
+    state.foundations
+  of ssGuidelines:
+    state.guidelines
+
+func withToggled(state: SidebarSectionExpansion;
+    section: SidebarSection): SidebarSectionExpansion =
+  result = state
+  case section
+  of ssUserJourneys:
+    result.userJourneys = not result.userJourneys
+  of ssPages:
+    result.pages = not result.pages
+  of ssComponents:
+    result.components = not result.components
+  of ssFoundations:
+    result.foundations = not result.foundations
+  of ssGuidelines:
+    result.guidelines = not result.guidelines
+
+func withExpanded(state: SidebarSectionExpansion; section: SidebarSection;
+    expanded: bool): SidebarSectionExpansion =
+  result = state
+  case section
+  of ssUserJourneys:
+    result.userJourneys = expanded
+  of ssPages:
+    result.pages = expanded
+  of ssComponents:
+    result.components = expanded
+  of ssFoundations:
+    result.foundations = expanded
+  of ssGuidelines:
+    result.guidelines = expanded
+
+proc toggleSection*(sidebar: SidebarVM; section: SidebarSection) =
+  sidebar.sections.update proc(prev: SidebarSectionExpansion): SidebarSectionExpansion =
+    prev.withToggled(section)
+
+proc setSectionExpanded*(sidebar: SidebarVM; section: SidebarSection;
+    expanded: bool) =
+  sidebar.sections.update proc(prev: SidebarSectionExpansion): SidebarSectionExpansion =
+    prev.withExpanded(section, expanded)
+
 proc toggleGroup*(sidebar: SidebarVM; groupName: string) =
   sidebar.groups.update proc(prev: seq[StoryGroup]): seq[StoryGroup] =
     result = prev
@@ -479,7 +541,8 @@ proc editProperty*(inspector: InspectorVM;
 
   let record = prop.editRecord(request)
   let plan = prop.sourcePlan(request)
-  inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[SourceEditPlan] =
+  inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
+      SourceEditPlan] =
     result = prev
     result.add plan
 
@@ -683,7 +746,8 @@ proc reviewIsoNimSources*(review: ReviewResultsVM;
       let classAssignment = "class" & " ="
       if vmFile and (stripped.contains(classAssignment) or
           stripped.contains("setStyle(") or stripped.contains("setStyle =") or
-          stripped.contains("background_color") or stripped.contains("border_radius") or
+          stripped.contains("background_color") or stripped.contains(
+              "border_radius") or
           stripped.contains("font_size")):
         found.add reviewViolation(
           vsError,
@@ -746,6 +810,7 @@ proc stop*(player: FlowPlayerVM) =
 
 proc createSidebarVM*(): SidebarVM =
   let groups = createSignal[seq[StoryGroup]](@[])
+  let sections = createSignal(defaultSidebarSections())
   let searchFilter = createSignal("")
 
   let filteredItems = createMemo[seq[StoryGroup]](proc(): seq[StoryGroup] =
@@ -770,6 +835,7 @@ proc createSidebarVM*(): SidebarVM =
 
   SidebarVM(
     groups: groups,
+    sections: sections,
     searchFilter: searchFilter,
     filteredItems: filteredItems)
 

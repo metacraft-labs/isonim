@@ -11,6 +11,20 @@ type
     skFlow       ## Multi-step user navigation sequence
     skGuideline  ## Usage guideline (do/don't, content, motion, a11y)
 
+  SidebarSection* = enum
+    ssUserJourneys
+    ssPages
+    ssComponents
+    ssFoundations
+    ssGuidelines
+
+  SidebarSectionExpansion* = object
+    userJourneys*: bool
+    pages*: bool
+    components*: bool
+    foundations*: bool
+    guidelines*: bool
+
   StoryRef* = object
     ## Reference to a specific story in the storyboard.
     group*: string ## e.g. "TaskRow", "TaskApp", "First Task"

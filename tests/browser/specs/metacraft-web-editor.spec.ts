@@ -12,13 +12,45 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
         .frameLocator('iframe[title="Project preview"]')
         .getByTestId("back-office-app"),
     ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Open Flow editor view" }),
+    ).toHaveCount(0);
 
-    await page.getByRole("button", { name: "Open Flow editor view" }).click();
-    await expect(page.getByText("User Flows")).toBeVisible();
+    const userJourneysSection = page.getByRole("button", {
+      name: "Open User Journeys section",
+    });
+    const pagesSection = page.getByRole("button", {
+      name: "Open Pages section",
+    });
+    await expect(userJourneysSection).toBeVisible();
+    await expect(pagesSection).toBeVisible();
+    const userJourneysBox = await userJourneysSection.boundingBox();
+    const pagesBox = await pagesSection.boundingBox();
+    if (!userJourneysBox || !pagesBox) {
+      throw new Error("Sidebar sections are not visible");
+    }
+    expect(userJourneysBox.y).toBeLessThan(pagesBox.y);
+
+    await page
+      .getByRole("button", { name: "Toggle User Journeys section" })
+      .click();
+    await expect(
+      page.getByRole("button", {
+        name: "Select story Partner operations / Partner invitation",
+      }),
+    ).toBeHidden();
+    await page
+      .getByRole("button", { name: "Toggle User Journeys section" })
+      .click();
+
+    await page
+      .getByRole("button", { name: "Open User Journeys section" })
+      .click();
+    await expect(page.locator('[data-figma-canvas="true"]')).toBeVisible();
     await expect(
       page.locator('iframe[title="Flow preview Issue CodeTracer license"]'),
     ).toHaveAttribute("srcdoc", /customer-detail/);
-    await page.getByRole("button", { name: "Open Page editor view" }).click();
+    await page.getByRole("button", { name: "Open Pages section" }).click();
     await expect(
       page
         .frameLocator('iframe[title="Project preview"]')
@@ -89,6 +121,7 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(
       page.getByRole("button", { name: "Switch to view mode" }),
     ).toHaveAttribute("aria-pressed", "false");
+    await expect(page.getByText("Project component preview")).toBeVisible();
 
     await expect(
       page.getByRole("button", {
@@ -157,11 +190,13 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
         .getByTestId("back-office-app"),
     ).toBeVisible();
 
-    await page.getByRole("button", { name: "Open Flow editor view" }).click();
+    await page
+      .getByRole("button", { name: "Open User Journeys section" })
+      .click();
     await expect(page).toHaveURL(/view=flow/);
-    await expect(page.getByText("User Flows")).toBeVisible();
+    await expect(page.locator('[data-figma-canvas="true"]')).toBeVisible();
 
-    await page.getByRole("button", { name: "Open Page editor view" }).click();
+    await page.getByRole("button", { name: "Open Pages section" }).click();
     await expect(page).toHaveURL(/view=page/);
     await expect(
       page
@@ -207,7 +242,7 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
 
     await page.goBack();
     await expect(page).toHaveURL(/view=flow/);
-    await expect(page.getByText("User Flows")).toBeVisible();
+    await expect(page.locator('[data-figma-canvas="true"]')).toBeVisible();
 
     await page.goForward();
     await expect(page).toHaveURL(/view=page/);
@@ -226,8 +261,10 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     page,
   }) => {
     await page.goto("/");
-    await page.getByRole("button", { name: "Open Flow editor view" }).click();
-    await expect(page.getByText("User Flows")).toBeVisible();
+    await page
+      .getByRole("button", { name: "Open User Journeys section" })
+      .click();
+    await expect(page.locator('[data-figma-canvas="true"]')).toBeVisible();
 
     const canvas = page.locator('[data-figma-canvas="true"]');
     const content = page.locator('[data-figma-canvas-content="true"]');

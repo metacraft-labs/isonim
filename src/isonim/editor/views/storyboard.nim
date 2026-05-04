@@ -211,19 +211,6 @@ proc toggleFlowPlayback(vm: EditorVM) =
   else:
     vm.flowPlayer.play()
 
-proc activeViewHandler(vm: EditorVM; view: EditorView): proc() =
-  let captured = view
-  result = proc() = vm.setActiveView(captured)
-
-proc bindActiveViewButton[R, E](r: R; node: E; vm: EditorVM;
-    view: EditorView) =
-  let captured = view
-  createRenderEffect proc() =
-    let active = vm.activeView.val == captured
-    r.setAttribute(node, "aria-pressed", if active: "true" else: "false")
-    r.setStyle(node, "background-color", if active: accent else: "transparent")
-    r.setStyle(node, "color", if active: textPrimary else: textMuted)
-
 proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
   let flows = layoutFlows(vm.sidebar.groups.val)
 
@@ -241,39 +228,9 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
             border_bottom = "1px solid " & border):
         tdiv(display = "flex", align_items = "center", gap = "10px"):
           span(font_size = "13px", font_weight = "600", color = textPrimary):
-            text "User Flows"
+            text "User Journeys"
           span(font_size = "11px", color = textDim):
-            text $(flows.len) & " flows"
-        # Top-level editor view navigation.
-        tdiv(display = "flex", align_items = "center", gap = "1px",
-              background_color = bgSurface, border_radius = "6px",
-              padding = "3px"):
-          for option in [
-            (evStoryboard, "Flow"),
-            (evComponentDetail, "Detail"),
-            (evPagePreview, "Page"),
-            (evVectorEditor, "Vector")]:
-            let targetView = option[0]
-            let label = option[1]
-            let chooseView = activeViewHandler(vm, targetView)
-            var viewNode: E
-            tdiv(padding = "4px 10px", border_radius = "4px",
-                  ref = viewNode,
-                  `role` = "button", tabindex = "0",
-                  `aria-label` = "Open " & label & " editor view",
-                  `aria-pressed` = (if vm.activeView.val ==
-                      targetView: "true" else: "false"),
-                  onclick = chooseView,
-                  onkeydown = chooseView,
-                  font_size = "11px", font_weight = "500",
-                  cursor = "pointer", transition = "all 0.15s",
-                  background_color = (if vm.activeView.val ==
-                      targetView: accent else: "transparent"),
-                  color = (if vm.activeView.val ==
-                      targetView: textPrimary else: textMuted)):
-              text label
-            block:
-              r.bindActiveViewButton(viewNode, vm, targetView)
+            text $(flows.len) & " journeys"
         # Flow playback controls
         tdiv(display = "flex", align_items = "center", gap = "4px",
               background_color = bgSurface, border_radius = "6px",
