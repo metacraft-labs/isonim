@@ -79,6 +79,8 @@ proc removeChild*(r: MockRenderer; parent, child: MockNode) =
 
 proc setAttribute*(r: MockRenderer; node: MockNode; name, value: string) =
   node.attributes[name] = value
+  if name == "value":
+    node.text = value
 
 proc removeAttribute*(r: MockRenderer; node: MockNode; name: string) =
   node.attributes.del(name)
@@ -141,6 +143,16 @@ proc textContent*(node: MockNode): string =
     return node.text
   for child in node.children:
     result.add(textContent(child))
+
+proc inputValue*(r: MockRenderer; node: MockNode): string =
+  if "value" in node.attributes:
+    node.attributes["value"]
+  else:
+    node.text
+
+proc setInputValue*(r: MockRenderer; node: MockNode; value: string) =
+  node.attributes["value"] = value
+  node.text = value
 
 proc hash*(node: MockNode): Hash =
   ## Hash MockNode by its unique ID (for use as Table key).

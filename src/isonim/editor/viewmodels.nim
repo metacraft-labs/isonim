@@ -64,6 +64,8 @@ type
     toolCalls*: Signal[seq[string]]
     stopReason*: Signal[string]
     messageCount*: Memo[int]
+    promptAdapter*: AgentPromptAdapter
+    cancelAdapter*: AgentCancelAdapter
 
   ReviewResultsVM* = ref object of ViewModel
     violations*: Signal[seq[Violation]]
@@ -315,6 +317,12 @@ proc selectVectorSymbol*(editor: EditorVM; index: int): bool {.discardable.} =
 proc setAgentState*(editor: EditorVM; state: AsyncState) =
   editor.chat.sessionStatus.val = state
 
+proc setEditMode*(editor: EditorVM; mode: EditMode) =
+  editor.editMode.val = mode
+
+proc setVectorTool*(editor: EditorVM; tool: VectorTool) =
+  editor.vectorEditor.activeTool.val = tool
+
 # ===========================================================================
 # SidebarVM actions
 # ===========================================================================
@@ -501,6 +509,55 @@ proc recordEdit*(chat: AgentChatVM; edit: EditRecord) =
 
 proc clearAccumulatedEdits*(chat: AgentChatVM) =
   chat.accumulatedEdits.val = @[]
+
+proc configureAgentAdapters*(chat: AgentChatVM;
+    promptAdapter: AgentPromptAdapter = nil;
+    cancelAdapter: AgentCancelAdapter = nil) =
+  chat.promptAdapter = promptAdapter
+  chat.cancelAdapter = cancelAdapter
+
+proc sendAgentPrompt*(editor: EditorVM): bool {.discardable.} =
+  let prompt = editor.chat.inputText.val.strip()
+  if prompt.len == 0:
+    return false
+
+  editor.chat.addUserMessage(prompt)
+  editor.chat.sessionStatus.val = asLoading
+  editor.chat.connectionState.val = "streaming"
+
+  if editor.chat.promptAdapter == nil:
+    editor.chat.sessionStatus.val = asError
+    editor.chat.connectionState.val = "adapter-missing"
+    editor.chat.messages.update proc(prev: seq[ChatMessage]): seq[ChatMessage] =
+      result = prev
+      result.add ChatMessage(kind: cmkError,
+        text: "No agent adapter configured.", timestamp: 0.0)
+    return false
+
+  let context = AgentPromptContext(
+    selectedStory: editor.selectedStory.val,
+    selectedElement: editor.inspector.selectedElement.val,
+    accumulatedEdits: editor.chat.accumulatedEdits.val,
+    platform: editor.platform.val)
+  if editor.chat.promptAdapter(prompt, context):
+    if editor.chat.sessionStatus.val == asLoading:
+      editor.chat.sessionStatus.val = asReady
+    if editor.chat.connectionState.val == "streaming":
+      editor.chat.connectionState.val = "ready"
+    return true
+
+  editor.chat.sessionStatus.val = asError
+  editor.chat.connectionState.val = "error"
+  false
+
+proc cancelAgentPrompt*(editor: EditorVM): bool {.discardable.} =
+  if editor.chat.cancelAdapter == nil:
+    return false
+  result = editor.chat.cancelAdapter()
+  if result:
+    editor.chat.sessionStatus.val = asIdle
+    editor.chat.connectionState.val = "cancelled"
+    editor.chat.stopReason.val = "cancelled"
 
 # ===========================================================================
 # ReviewResultsVM actions

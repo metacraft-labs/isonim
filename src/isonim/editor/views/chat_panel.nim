@@ -29,6 +29,7 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
     of asLoading: "Loading"
     of asReady: "Connected"
     of asError: "Error"
+  let connectionLabel = vm.chat.connectionState.val
   let statusColor = case agentState
     of asIdle: textDim
     of asLoading: gold
@@ -73,7 +74,23 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
           border_radius = "3px",
           background_color = statusColor)
         span(font_size = "9px", color = textDim):
-          text statusLabel
+          text statusLabel & " / " & connectionLabel
+        tdiv(
+          `role` = "button",
+          tabindex = "0",
+          `aria-label` = "Toggle inspector panel",
+          onclick = proc() = vm.togglePanel(epInspector),
+          onkeydown = proc() = vm.togglePanel(epInspector),
+          margin_left = "6px",
+          width = "24px",
+          height = "24px",
+          display = "flex",
+          align_items = "center",
+          justify_content = "center",
+          border_radius = "4px",
+          color = textSecondary,
+          cursor = "pointer"):
+          text "\xE2\x9C\x95"
   r.appendChild(panel, header)
 
   # Messages area
@@ -140,33 +157,80 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   let inputArea = ui(r):
     tdiv(
       padding = "8px 12px 12px 12px",
-      border_top = "1px solid " & borderFaint):
-      tdiv(display = "flex", align_items = "center", gap = "8px"):
-        input(
-          class = "editor-input",
-          flex = "1",
-          height = "34px",
-          background_color = bgInput,
-          border = "1px solid " & border,
-          border_radius = "8px",
-          padding = "0 10px",
-          font_size = "12px",
-          color = textPrimary,
-          outline = "none",
-          placeholder = "Ask the AI\xE2\x80\xA6")
-        tdiv(
-          display = "flex",
-          align_items = "center",
-          justify_content = "center",
-          width = "34px",
-          height = "34px",
-          border_radius = "8px",
-          font_size = "16px",
-          font_weight = "700",
-          background_color = accent,
-          color = textPrimary,
-          cursor = "pointer"):
-          text "\xE2\x86\x91"
+      border_top = "1px solid " & borderFaint)
+
+  let inputRow = ui(r):
+    tdiv(display = "flex", align_items = "center", gap = "8px")
+  let promptInput = ui(r):
+    input(
+      class = "editor-input",
+      flex = "1",
+      height = "34px",
+      background_color = bgInput,
+      border = "1px solid " & border,
+      border_radius = "8px",
+      padding = "0 10px",
+      font_size = "12px",
+      color = textPrimary,
+      outline = "none",
+      placeholder = "Ask the AI\xE2\x80\xA6")
+  r.setAttribute(promptInput, "aria-label", "Agent prompt")
+  r.setInputValue(promptInput, vm.chat.inputText.val)
+  r.addEventListener(promptInput, "input", proc() =
+    vm.chat.inputText.val = r.inputValue(promptInput))
+  r.addEventListener(promptInput, "change", proc() =
+    vm.chat.inputText.val = r.inputValue(promptInput))
+
+  let sendBtn = ui(r):
+    tdiv(
+      display = "flex",
+      align_items = "center",
+      justify_content = "center",
+      width = "34px",
+      height = "34px",
+      border_radius = "8px",
+      font_size = "16px",
+      font_weight = "700",
+      background_color = accent,
+      color = textPrimary,
+      cursor = "pointer"):
+      text "\xE2\x86\x91"
+  r.setAttribute(sendBtn, "role", "button")
+  r.setAttribute(sendBtn, "tabindex", "0")
+  r.setAttribute(sendBtn, "aria-label", "Send agent prompt")
+  r.addEventListener(sendBtn, "click", proc() =
+    vm.chat.inputText.val = r.inputValue(promptInput)
+    discard vm.sendAgentPrompt()
+    r.setInputValue(promptInput, vm.chat.inputText.val))
+  r.addEventListener(sendBtn, "keydown", proc() =
+    vm.chat.inputText.val = r.inputValue(promptInput)
+    discard vm.sendAgentPrompt()
+    r.setInputValue(promptInput, vm.chat.inputText.val))
+
+  let cancelBtn = ui(r):
+    tdiv(
+      display = "flex",
+      align_items = "center",
+      justify_content = "center",
+      width = "34px",
+      height = "34px",
+      border_radius = "8px",
+      font_size = "13px",
+      font_weight = "700",
+      background_color = bgSurface,
+      color = textSecondary,
+      cursor = "pointer"):
+      text "\xE2\x8F\xB9"
+  r.setAttribute(cancelBtn, "role", "button")
+  r.setAttribute(cancelBtn, "tabindex", "0")
+  r.setAttribute(cancelBtn, "aria-label", "Cancel agent prompt")
+  r.addEventListener(cancelBtn, "click", proc() = discard vm.cancelAgentPrompt())
+  r.addEventListener(cancelBtn, "keydown", proc() = discard vm.cancelAgentPrompt())
+
+  r.appendChild(inputRow, promptInput)
+  r.appendChild(inputRow, sendBtn)
+  r.appendChild(inputRow, cancelBtn)
+  r.appendChild(inputArea, inputRow)
   r.appendChild(panel, inputArea)
 
   panel

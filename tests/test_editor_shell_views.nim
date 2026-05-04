@@ -3,9 +3,29 @@
 import std/[unittest, strutils, tables]
 import isonim/core/[signals, computation, owner]
 import isonim/testing/mock_dom
+import isonim/viewmodel
 import isonim/editor/viewmodels
 import isonim/editor/stories
+import isonim/editor/types
 import isonim/editor/views/shell
+import isonim/editor/views/chat_panel
+import isonim/editor/views/vector_editor
+
+proc findByAttr(node: MockNode; name, value: string): MockNode =
+  if node.kind == mnkElement and name in node.attributes and
+      node.attributes[name] == value:
+    return node
+  for child in node.children:
+    let found = findByAttr(child, name, value)
+    if found != nil:
+      return found
+
+proc countInteractive(node: MockNode): int =
+  if node.kind == mnkElement and
+      ("click" in node.eventListeners or "keydown" in node.eventListeners):
+    inc result
+  for child in node.children:
+    result += countInteractive(child)
 
 suite "Editor Shell Views (M2)":
 
@@ -96,5 +116,166 @@ suite "Editor Shell Views (M2)":
       # Chat section is the last child
       let chatSection = panel.children[^1]
       check chatSection.children.len >= 2  # header + input row
+
+      dispose()
+
+  test "editor_shell_mock_renderer_exposes_clickable_controls":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = buildStoryboard()
+      vm.vectorEditor.symbols.val = @[
+        VectorSymbol(name: "Circle", category: "Icons", svgContent: "<svg></svg>"),
+        VectorSymbol(name: "Rectangle", category: "Icons", svgContent: "<svg></svg>"),
+        VectorSymbol(name: "Line", category: "Icons", svgContent: "<svg></svg>")
+      ]
+
+      let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
+      check countInteractive(shell) >= 8
+
+      let storyButton = findByAttr(shell, "aria-label", "Select story TaskRow / Active task")
+      check storyButton != nil
+      check storyButton.attributes["role"] == "button"
+      check storyButton.attributes["tabindex"] == "0"
+      check storyButton.attributes["aria-current"] == "false"
+      storyButton.fireEvent("click")
+      check vm.selectedStory.val.group == "TaskRow"
+      check vm.selectedStory.val.name == "Active task"
+      check storyButton.attributes["aria-current"] == "true"
+      check storyButton.styles["background-color"].len > 0
+      check storyButton.styles["border-left"].contains("#3B82F6")
+
+      let sidebarToggle = findByAttr(shell, "aria-label", "Toggle TaskRow stories")
+      check sidebarToggle != nil
+      sidebarToggle.fireEvent("keydown")
+      var taskRowCollapsed = false
+      for group in vm.sidebar.groups.val:
+        if group.name == "TaskRow":
+          taskRowCollapsed = not group.expanded
+      check taskRowCollapsed
+
+      let inspectorToggle = findByAttr(shell, "aria-label", "Toggle inspector panel")
+      check inspectorToggle != nil
+      inspectorToggle.fireEvent("click")
+      check vm.panels.val.inspector == false
+
+      let vector = renderVectorEditor[MockRenderer, MockNode](r, vm)
+      let penTool = findByAttr(vector, "aria-label", "Select Pen vector tool")
+      check penTool != nil
+      check penTool.attributes["aria-pressed"] == "false"
+      penTool.fireEvent("click")
+      check vm.vectorEditor.activeTool.val == vtPen
+      check penTool.attributes["aria-pressed"] == "true"
+
+      let gridToggle = findByAttr(vector, "aria-label", "Toggle vector grid")
+      check gridToggle != nil
+      check gridToggle.attributes["aria-pressed"] == "true"
+      gridToggle.fireEvent("click")
+      check vm.vectorEditor.showGrid.val == false
+      check gridToggle.attributes["aria-pressed"] == "false"
+
+      let layer = findByAttr(vector, "aria-label", "Select vector layer Rectangle")
+      check layer != nil
+      layer.fireEvent("keydown")
+      check vm.vectorEditor.selectedSymbol.val == 1
+      check layer.attributes["aria-selected"] == "true"
+
+      let inspector = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      let fillTab = findByAttr(inspector, "aria-label", "Show Fill inspector section")
+      check fillTab != nil
+      check fillTab.attributes["aria-selected"] == "false"
+      fillTab.fireEvent("click")
+      check vm.inspector.activeSection.val == isFill
+      check fillTab.attributes["aria-selected"] == "true"
+      check fillTab.styles["box-shadow"].contains("#3B82F6")
+
+      let preview = renderPreviewPane[MockRenderer, MockNode](r, vm)
+      let vectorView = findByAttr(preview, "aria-label", "Open Vector editor view")
+      check vectorView != nil
+      vectorView.fireEvent("click")
+      check vm.activeView.val == evVectorEditor
+
+      let iosButton = findByAttr(preview, "aria-label", "Preview iOS platform")
+      check iosButton != nil
+      check iosButton.attributes["aria-pressed"] == "false"
+      iosButton.fireEvent("click")
+      check vm.platform.val == pfIOS
+      check iosButton.attributes["aria-pressed"] == "true"
+      check iosButton.styles["background-color"] == "#3B82F6"
+
+      vm.flowPlayer.steps.val = userFlows()[0].steps
+      let flowShell = renderEditorShell[MockRenderer, MockNode](r, vm)
+      let nextFlow = findByAttr(flowShell, "aria-label", "Next flow step")
+      let prevFlow = findByAttr(flowShell, "aria-label", "Previous flow step")
+      let playFlow = findByAttr(flowShell, "aria-label", "Play flow")
+      let stopFlow = findByAttr(flowShell, "aria-label", "Stop flow")
+      check nextFlow != nil
+      check prevFlow != nil
+      check playFlow != nil
+      check stopFlow != nil
+      check playFlow.attributes["aria-pressed"] == "false"
+
+      nextFlow.fireEvent("click")
+      check vm.flowPlayer.currentStep.val == 1
+      let secondStep = findByAttr(flowShell, "aria-label",
+        "Select story Pages / Empty State")
+      check secondStep != nil
+      check secondStep.attributes["aria-current"] == "true"
+
+      prevFlow.fireEvent("click")
+      check vm.flowPlayer.currentStep.val == 0
+
+      playFlow.fireEvent("click")
+      check vm.flowPlayer.playState.val == psPlaying
+      check playFlow.attributes["aria-pressed"] == "true"
+      check playFlow.attributes["aria-label"] == "Pause flow"
+
+      stopFlow.fireEvent("click")
+      check vm.flowPlayer.playState.val == psStopped
+      check vm.flowPlayer.currentStep.val == 0
+      storyButton.fireEvent("click")
+      check vm.selectedStory.val.name == "Active task"
+
+      var sentPrompt = ""
+      var cancelled = false
+      vm.chat.configureAgentAdapters(
+        proc(prompt: string; context: AgentPromptContext): bool =
+          sentPrompt = prompt
+          check context.selectedStory.name == "Active task"
+          true,
+        proc(): bool =
+          cancelled = true
+          true)
+
+      let chat = renderChatPanel[MockRenderer, MockNode](r, vm)
+      let input = findByAttr(chat, "aria-label", "Agent prompt")
+      let send = findByAttr(chat, "aria-label", "Send agent prompt")
+      let cancel = findByAttr(chat, "aria-label", "Cancel agent prompt")
+      check input != nil
+      check send != nil
+      check cancel != nil
+      r.setInputValue(input, "Make the card clearer")
+      input.fireEvent("input")
+      send.fireEvent("click")
+      check sentPrompt == "Make the card clearer"
+      check vm.chat.messages.val[0].kind == cmkUser
+      cancel.fireEvent("click")
+      check cancelled
+      check vm.chat.connectionState.val == "cancelled"
+
+      dispose()
+
+  test "editor_dom_mount_has_empty_agent_state":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let vm = createEditorVM()
+
+      check vm.chat.messages.val.len == 0
+      check vm.chat.connectionState.val == "disconnected"
+      check vm.chat.sessionStatus.val == asIdle
+
+      let chat = renderChatPanel[MockRenderer, MockNode](r, vm)
+      check chat.textContent.contains("No agent messages")
+      check chat.textContent.contains("Empty / disconnected")
 
       dispose()

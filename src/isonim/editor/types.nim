@@ -4,19 +4,19 @@
 type
   # --- Story types ---
   StoryKind* = enum
-    skFoundation    ## Design token display (colors, typography, spacing)
-    skComponent     ## Individual component in a specific state
-    skPattern       ## Composition pattern (forms, tables, navigation)
-    skPage          ## Full page composition with realistic data
-    skFlow          ## Multi-step user navigation sequence
-    skGuideline     ## Usage guideline (do/don't, content, motion, a11y)
+    skFoundation ## Design token display (colors, typography, spacing)
+    skComponent  ## Individual component in a specific state
+    skPattern    ## Composition pattern (forms, tables, navigation)
+    skPage       ## Full page composition with realistic data
+    skFlow       ## Multi-step user navigation sequence
+    skGuideline  ## Usage guideline (do/don't, content, motion, a11y)
 
   StoryRef* = object
     ## Reference to a specific story in the storyboard.
-    group*: string      ## e.g. "TaskRow", "TaskApp", "First Task"
-    name*: string       ## e.g. "Active task", "Empty State", step name
+    group*: string ## e.g. "TaskRow", "TaskApp", "First Task"
+    name*: string  ## e.g. "Active task", "Empty State", step name
     kind*: StoryKind
-    index*: int         ## Position within its group
+    index*: int    ## Position within its group
 
   StoryGroup* = object
     ## A group of related stories (one component, page, or flow).
@@ -31,7 +31,7 @@ type
     name*: string
     description*: string
     kind*: StoryKind
-    group*: string        ## Parent group name
+    group*: string ## Parent group name
 
   StoryRenderMetadata* = object
     ## Project-owned render metadata for a story, separate from sidebar copy.
@@ -44,16 +44,16 @@ type
 
   # --- Edit mode ---
   EditMode* = enum
-    emView    ## Normal view — component interactions work
-    emEdit    ## Click-to-select — inspector populates on click
+    emView ## Normal view — component interactions work
+    emEdit ## Click-to-select — inspector populates on click
 
   # --- Editor default view ---
   EditorView* = enum
-    evStoryboard       ## Default: canvas showing user flow diagrams
-    evComponentDetail  ## Component page: hero, variants, props, guidelines
-    evComponentEdit    ## Editable state: CSS inspector + live preview
-    evPagePreview      ## Full page preview (Home, Destination Detail, etc.)
-    evVectorEditor     ## SVG vector editor for design system symbols
+    evStoryboard      ## Default: canvas showing user flow diagrams
+    evComponentDetail ## Component page: hero, variants, props, guidelines
+    evComponentEdit   ## Editable state: CSS inspector + live preview
+    evPagePreview     ## Full page preview (Home, Destination Detail, etc.)
+    evVectorEditor    ## SVG vector editor for design system symbols
 
   # --- Storyboard canvas ---
   CanvasItem* = object
@@ -65,41 +65,41 @@ type
 
   FlowConnection* = object
     ## Arrow connecting two screens on the storyboard.
-    fromItem*: int         ## Index into canvasItems
+    fromItem*: int   ## Index into canvasItems
     toItem*: int
-    trigger*: string       ## e.g. "Taps + button", "Swipes left"
-    label*: string         ## Optional annotation
+    trigger*: string ## e.g. "Taps + button", "Swipes left"
+    label*: string   ## Optional annotation
 
   # --- Inspector ---
   InspectorSection* = enum
-    isLayout         ## Display, flex/grid, alignment, gap, overflow
-    isSize           ## Width, height, min/max, flex grow/shrink
-    isSpacing        ## Visual box model: margin + padding
-    isPosition       ## Position mode, top/right/bottom/left, z-index
-    isFill           ## Background color, gradients, opacity
-    isStroke         ## Border width, color, style, radius
-    isTypography     ## Font, weight, size, line-height, alignment, decoration
-    isEffects        ## Shadows, blur, backdrop-blur, blend, transforms
-    isTransitions    ## CSS transitions and animations
-    isFilters        ## CSS filter functions (brightness, contrast, etc.)
-    isState          ## ViewModel signal editor
+    isLayout      ## Display, flex/grid, alignment, gap, overflow
+    isSize        ## Width, height, min/max, flex grow/shrink
+    isSpacing     ## Visual box model: margin + padding
+    isPosition    ## Position mode, top/right/bottom/left, z-index
+    isFill        ## Background color, gradients, opacity
+    isStroke      ## Border width, color, style, radius
+    isTypography  ## Font, weight, size, line-height, alignment, decoration
+    isEffects     ## Shadows, blur, backdrop-blur, blend, transforms
+    isTransitions ## CSS transitions and animations
+    isFilters     ## CSS filter functions (brightness, contrast, etc.)
+    isState       ## ViewModel signal editor
 
   # --- Component detail page ---
   UsageExample* = object
     ## A Do/Don't example pair.
     description*: string
-    isDo*: bool          ## true = Do, false = Don't
+    isDo*: bool ## true = Do, false = Don't
 
   ComponentProp* = object
     ## A configurable property on a component.
     name*: string
-    propType*: string    ## e.g. "string", "bool", "FilterMode"
+    propType*: string ## e.g. "string", "bool", "FilterMode"
     defaultVal*: string
     description*: string
 
   AccessibilityNote* = object
     ## Keyboard/ARIA/screen reader guidance.
-    topic*: string       ## e.g. "Keyboard", "ARIA", "Screen Reader"
+    topic*: string ## e.g. "Keyboard", "ARIA", "Screen Reader"
     description*: string
 
   # --- CSS value input ---
@@ -110,7 +110,7 @@ type
     ## A numeric CSS value with unit, for scrub-able inputs.
     value*: float
     unit*: CSSUnit
-    property*: string  ## CSS property name
+    property*: string ## CSS property name
 
   # --- Layout helpers ---
   DisplayMode* = enum
@@ -120,28 +120,29 @@ type
     fdRow, fdRowReverse, fdColumn, fdColumnReverse
 
   AlignValue* = enum
-    avStart, avCenter, avEnd, avStretch, avBaseline, avSpaceBetween, avSpaceAround, avSpaceEvenly
+    avStart, avCenter, avEnd, avStretch, avBaseline, avSpaceBetween,
+      avSpaceAround, avSpaceEvenly
 
   # --- Vector editor ---
   VectorTool* = enum
-    vtSelect       ## Select / move / resize
-    vtPen          ## Pen tool: click corners, drag curves
-    vtPencil       ## Freehand drawing
-    vtRectangle    ## Rectangle / rounded rect
-    vtEllipse      ## Circle / ellipse
-    vtPolygon      ## Regular polygon (n-gon)
-    vtStar         ## Star shape
-    vtLine         ## Straight line / arrow
-    vtText         ## Text on canvas
-    vtPathEdit     ## Direct node/handle editing
+    vtSelect    ## Select / move / resize
+    vtPen       ## Pen tool: click corners, drag curves
+    vtPencil    ## Freehand drawing
+    vtRectangle ## Rectangle / rounded rect
+    vtEllipse   ## Circle / ellipse
+    vtPolygon   ## Regular polygon (n-gon)
+    vtStar      ## Star shape
+    vtLine      ## Straight line / arrow
+    vtText      ## Text on canvas
+    vtPathEdit  ## Direct node/handle editing
 
   BooleanOp* = enum
     boUnion, boSubtract, boIntersect, boExclude, boFlatten
 
   NodeType* = enum
-    ntSmooth       ## Symmetric handles (curve through)
-    ntCorner       ## Sharp corner (no handles)
-    ntAsymmetric   ## Independent handle lengths
+    ntSmooth     ## Symmetric handles (curve through)
+    ntCorner     ## Sharp corner (no handles)
+    ntAsymmetric ## Independent handle lengths
 
   FillType* = enum
     ftSolid, ftLinearGradient, ftRadialGradient, ftPattern, ftNone
@@ -155,17 +156,17 @@ type
   VectorSymbol* = object
     ## A reusable vector symbol in the design system.
     name*: string
-    category*: string    ## e.g. "Icons", "Illustrations", "Logos"
-    svgContent*: string  ## Raw SVG source
-    tags*: seq[string]   ## Searchable tags
+    category*: string   ## e.g. "Icons", "Illustrations", "Logos"
+    svgContent*: string ## Raw SVG source
+    tags*: seq[string]  ## Searchable tags
     width*, height*: float
 
   PropertyOrigin* = enum
-    poTailwindClass   ## From a Tailwind utility in class="..."
-    poSetStyle        ## From a direct setStyle call
-    poThemeToken      ## From themeColor/themeSpacing
-    poConstant        ## From a Nim const/let
-    poInherited       ## Inherited from parent/theme
+    poTailwindClass ## From a Tailwind utility in class="..."
+    poSetStyle      ## From a direct setStyle call
+    poThemeToken    ## From themeColor/themeSpacing
+    poConstant      ## From a Nim const/let
+    poInherited     ## Inherited from parent/theme
 
   PropertyInfo* = object
     ## A single CSS property with its value and source origin.
@@ -240,25 +241,35 @@ type
 
   ElementRef* = object
     ## Reference to a selected element in the preview.
-    tag*: string          ## e.g. "div", "span", "button"
+    tag*: string           ## e.g. "div", "span", "button"
     sourceFile*: string
     sourceLine*: int
     sourceColumn*: int
     properties*: seq[PropertyInfo]
-    children*: seq[string]  ## Child element summaries for tree view
-    depth*: int             ## Nesting depth
+    children*: seq[string] ## Child element summaries for tree view
+    depth*: int            ## Nesting depth
 
   # --- Agent chat ---
   ChatMessageKind* = enum
-    cmkUser       ## User's prompt
-    cmkAgent      ## Agent's response
-    cmkContext     ## Editor-injected context (accumulated edits)
-    cmkError      ## Error message
+    cmkUser    ## User's prompt
+    cmkAgent   ## Agent's response
+    cmkContext ## Editor-injected context (accumulated edits)
+    cmkError   ## Error message
 
   ChatMessage* = object
     kind*: ChatMessageKind
     text*: string
     timestamp*: float
+
+  AgentPromptContext* = object
+    selectedStory*: StoryRef
+    selectedElement*: ElementRef
+    accumulatedEdits*: seq[EditRecord]
+    platform*: Platform
+
+  AgentPromptAdapter* = proc(prompt: string;
+                              context: AgentPromptContext): bool {.closure.}
+  AgentCancelAdapter* = proc(): bool {.closure.}
 
   EditRecord* = object
     ## Record of a user edit made via the inspector.
@@ -332,9 +343,9 @@ type
 
   FlowStep* = object
     ## A single step in a user flow.
-    screenRef*: StoryRef    ## Which story/page to show
-    action*: string         ## What the user does (e.g. "Taps + button")
-    description*: string    ## Narrative context
+    screenRef*: StoryRef ## Which story/page to show
+    action*: string      ## What the user does (e.g. "Taps + button")
+    description*: string ## Narrative context
 
   # --- Panel visibility ---
   EditorPanel* = enum

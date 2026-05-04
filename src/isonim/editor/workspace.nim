@@ -7,6 +7,7 @@
 import std/options
 
 import isonim/core/signals
+import isonim/viewmodel
 import isonim/editor/types
 import isonim/editor/viewmodels
 
@@ -33,6 +34,8 @@ type
     initialVectorSymbol*: Option[int]
     initialReviewBaseline*: Option[seq[Violation]]
     previewHook*: ProjectPreviewHook
+    agentPromptAdapter*: AgentPromptAdapter
+    agentCancelAdapter*: AgentCancelAdapter
     platform*: Platform
     panels*: PanelVisibility
 
@@ -53,6 +56,8 @@ proc emptyEditorWorkspace*(): EditorWorkspace =
     initialVectorSymbol: none(int),
     initialReviewBaseline: none(seq[Violation]),
     previewHook: defaultPreviewHook,
+    agentPromptAdapter: nil,
+    agentCancelAdapter: nil,
     platform: pfWeb,
     panels: defaultPanelVisibility()
   )
@@ -74,6 +79,8 @@ proc newEditorWorkspace*(title: string;
                           initialVectorSymbol = none(int);
                           initialReviewBaseline = none(seq[Violation]);
                           previewHook: ProjectPreviewHook = defaultPreviewHook;
+                          agentPromptAdapter: AgentPromptAdapter = nil;
+                          agentCancelAdapter: AgentCancelAdapter = nil;
                           platform = pfWeb;
                           panels = defaultPanelVisibility()): EditorWorkspace =
   ## Convenience constructor for project-owned workspace definitions.
@@ -95,6 +102,8 @@ proc newEditorWorkspace*(title: string;
     initialVectorSymbol: initialVectorSymbol,
     initialReviewBaseline: initialReviewBaseline,
     previewHook: previewHook,
+    agentPromptAdapter: agentPromptAdapter,
+    agentCancelAdapter: agentCancelAdapter,
     platform: platform,
     panels: panels
   )
@@ -115,6 +124,15 @@ proc applyWorkspace*(vm: EditorVM; workspace: EditorWorkspace) =
   vm.vectorEditor.selectedSymbol.val = -1
   vm.review.violations.val = @[]
   vm.chat.accumulatedEdits.val = @[]
+  vm.chat.messages.val = @[]
+  vm.chat.sessionStatus.val = asIdle
+  vm.chat.inputText.val = ""
+  vm.chat.connectionState.val = "disconnected"
+  vm.chat.planEntries.val = @[]
+  vm.chat.toolCalls.val = @[]
+  vm.chat.stopReason.val = ""
+  vm.chat.configureAgentAdapters(workspace.agentPromptAdapter,
+                                  workspace.agentCancelAdapter)
   vm.flowPlayer.currentStep.val = 0
   vm.activeView.val = workspace.initialView
   vm.inspector.activeSection.val = workspace.initialInspectorSection

@@ -47,6 +47,15 @@ proc addEventListener*(r: DomRenderer; node: DomElement; event: string;
                         handler: proc()) =
   node.addEventListener(event.cstring, proc(e: Event) = handler())
 
+proc inputValue*(r: DomRenderer; node: DomElement): string =
+  var value: cstring
+  {.emit: [value, " = ", node, ".value || ''"].}
+  $value
+
+proc setInputValue*(r: DomRenderer; node: DomElement; value: string) =
+  let v = value.cstring
+  {.emit: [node, ".value = ", v].}
+
 proc firstChild*(r: DomRenderer; node: DomElement): DomElement =
   cast[Element](node.firstChild)
 

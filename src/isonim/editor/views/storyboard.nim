@@ -34,6 +34,7 @@ type
     x, y, w, h: float
     label: string
     stepNum: int
+    story: StoryRef
 
 proc renderGenericMiniPreview[R, E](r: R; label: string): E =
   ## Project-neutral thumbnail used by the editor framework.
@@ -72,10 +73,23 @@ proc layoutFlows(groups: seq[StoryGroup]): seq[FlowRow] =
       let cardH = 520.0
       let gapX = 56.0
       for i, item in group.items:
+        let story = StoryRef(group: item.group, name: item.name,
+                              kind: item.kind, index: i)
         row.cards.add FlowCard(x: x, y: 0, w: cardW, h: cardH,
-                                label: item.name, stepNum: i + 1)
+                                label: item.name, stepNum: i + 1,
+                                story: story)
         x += cardW + gapX
       result.add row
+
+proc storyClickHandler(vm: EditorVM; story: StoryRef): proc() =
+  let captured = story
+  result = proc() = discard vm.selectStory(captured)
+
+proc toggleFlowPlayback(vm: EditorVM) =
+  if vm.flowPlayer.playState.val == psPlaying:
+    vm.flowPlayer.pause()
+  else:
+    vm.flowPlayer.play()
 
 proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
   let flows = layoutFlows(vm.sidebar.groups.val)
@@ -97,11 +111,68 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
             text "User Flows"
           span(font_size = "11px", color = textDim):
             text $(flows.len) & " flows"
+        # Flow playback controls
+        tdiv(display = "flex", align_items = "center", gap = "4px",
+              background_color = bgSurface, border_radius = "6px",
+              padding = "3px"):
+          tdiv(width = "26px", height = "26px",
+                `role` = "button", tabindex = "0",
+                `aria-label` = "Previous flow step",
+                onclick = proc() = discard vm.prevFlowStep(),
+                onkeydown = proc() = discard vm.prevFlowStep(),
+                display = "flex", align_items = "center",
+                justify_content = "center",
+                border_radius = "4px",
+                color = textSecondary, font_size = "13px", cursor = "pointer"):
+            text "<"
+          tdiv(width = "26px", height = "26px",
+                `role` = "button", tabindex = "0",
+                `aria-label` = (if vm.flowPlayer.playState.val ==
+                    psPlaying: "Pause flow" else: "Play flow"),
+                `aria-pressed` = (if vm.flowPlayer.playState.val ==
+                    psPlaying: "true" else: "false"),
+                onclick = proc() = vm.toggleFlowPlayback(),
+                onkeydown = proc() = vm.toggleFlowPlayback(),
+                display = "flex", align_items = "center",
+                justify_content = "center",
+                border_radius = "4px",
+                background_color = (if vm.flowPlayer.playState.val ==
+                    psPlaying: accent else: "transparent"),
+                color = (if vm.flowPlayer.playState.val ==
+                    psPlaying: textPrimary else: textSecondary),
+                font_size = "12px", cursor = "pointer"):
+            text (if vm.flowPlayer.playState.val == psPlaying: "||" else: ">")
+          tdiv(width = "26px", height = "26px",
+                `role` = "button", tabindex = "0",
+                `aria-label` = "Stop flow",
+                onclick = proc() = discard vm.stopFlow(),
+                onkeydown = proc() = discard vm.stopFlow(),
+                display = "flex", align_items = "center",
+                justify_content = "center",
+                border_radius = "4px",
+                color = textSecondary, font_size = "11px", cursor = "pointer"):
+            text "[]"
+          tdiv(width = "26px", height = "26px",
+                `role` = "button", tabindex = "0",
+                `aria-label` = "Next flow step",
+                onclick = proc() = discard vm.nextFlowStep(),
+                onkeydown = proc() = discard vm.nextFlowStep(),
+                display = "flex", align_items = "center",
+                justify_content = "center",
+                border_radius = "4px",
+                color = textSecondary, font_size = "13px", cursor = "pointer"):
+            text ">"
         # Zoom controls (Figma-style)
         tdiv(display = "flex", align_items = "center", gap = "4px",
               background_color = bgSurface, border_radius = "6px",
               padding = "3px"):
           tdiv(width = "26px", height = "26px",
+                `role` = "button", tabindex = "0",
+                `aria-label` = "Zoom storyboard out",
+                onclick = proc() =
+            vm.storyboard.zoom.val = max(0.25, vm.storyboard.zoom.val - 0.25),
+                onkeydown = proc() =
+            vm.storyboard.zoom.val = max(0.25, vm.storyboard.zoom.val - 0.25),
                 display = "flex", align_items = "center",
                 justify_content = "center",
                 border_radius = "4px",
@@ -117,6 +188,12 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
                   background_color = accent, margin_left = "-6px",
                   cursor = "grab", box_shadow = "0 1px 3px rgba(0,0,0,0.3)")
           tdiv(width = "26px", height = "26px",
+                `role` = "button", tabindex = "0",
+                `aria-label` = "Zoom storyboard in",
+                onclick = proc() =
+            vm.storyboard.zoom.val = min(4.0, vm.storyboard.zoom.val + 0.25),
+                onkeydown = proc() =
+            vm.storyboard.zoom.val = min(4.0, vm.storyboard.zoom.val + 0.25),
                 display = "flex", align_items = "center",
                 justify_content = "center",
                 border_radius = "4px",
@@ -130,6 +207,16 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
         # Fit + Pan hint
         tdiv(display = "flex", align_items = "center", gap = "4px"):
           tdiv(padding = "4px 10px", border_radius = "4px",
+                `role` = "button", tabindex = "0",
+                `aria-label` = "Fit storyboard",
+                onclick = proc() =
+            vm.storyboard.zoom.val = 1.0
+            vm.storyboard.panX.val = 0
+            vm.storyboard.panY.val = 0,
+                onkeydown = proc() =
+            vm.storyboard.zoom.val = 1.0
+            vm.storyboard.panX.val = 0
+            vm.storyboard.panY.val = 0,
                 font_size = "11px", font_weight = "500",
                 background_color = bgSurface, color = textMuted,
                 cursor = "pointer"):
@@ -194,6 +281,8 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
 
       # Card content area: full mini preview (no overlay badge)
       let stepNum = card.stepNum
+      let story = card.story
+      let selectCard = storyClickHandler(vm, story)
       let cardContent = ui(r):
         tdiv(flex = "1", position = "relative",
               margin = "8px 8px 0 8px", border_radius = "8px",
@@ -220,6 +309,11 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
       r.setStyle(cardEl, "top", $cy & "px")
       r.setStyle(cardEl, "width", $cw & "px")
       r.setStyle(cardEl, "height", $ch & "px")
+      r.setAttribute(cardEl, "role", "button")
+      r.setAttribute(cardEl, "tabindex", "0")
+      r.setAttribute(cardEl, "aria-label", "Select flow step " & stepLabel)
+      r.addEventListener(cardEl, "click", selectCard)
+      r.addEventListener(cardEl, "keydown", selectCard)
       r.appendChild(inner, cardEl)
 
       # Arrow to next card (if not last)
