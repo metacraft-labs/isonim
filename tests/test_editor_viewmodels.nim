@@ -243,7 +243,7 @@ suite "Editor ViewModels (M18 headless contracts)":
       let flowStory = refFrom(groups, 0, 0)
       check vm.selectStory(flowStory)
       check vm.selectedStory.val.name == flowStory.name
-      check vm.activeView.val == evStoryboard
+      check vm.activeView.val == evPagePreview
       dispose()
 
   test "editor_vm_canvas_selection_drives_story_and_flow_state":
@@ -509,7 +509,7 @@ suite "Editor ViewModels (M20 story flow preview runtime)":
         "Browses trending destinations on home"
       check vm.selectedStory.val.name == "Home / Discover"
       check vm.storyboard.selectedItem.val == 0
-      check vm.activeView.val == evPagePreview
+      check vm.activeView.val == evStoryboard
 
       check vm.nextFlowStep()
       check vm.flowPlayer.currentStep.val == 1
@@ -518,7 +518,7 @@ suite "Editor ViewModels (M20 story flow preview runtime)":
       check vm.selectedStory.val.name == "Destination Detail"
       check vm.selectedStory.val.kind == skPage
       check vm.storyboard.selectedItem.val == 2
-      check vm.activeView.val == evPagePreview
+      check vm.activeView.val == evStoryboard
 
       check vm.prevFlowStep()
       check vm.flowPlayer.currentStep.val == 0

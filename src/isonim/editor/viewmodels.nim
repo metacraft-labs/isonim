@@ -112,7 +112,7 @@ func sameStory(a, b: StoryRef): bool =
 func viewForStory(story: StoryRef): EditorView =
   case story.kind
   of skFlow:
-    evStoryboard
+    evPagePreview
   of skPage:
     evPagePreview
   of skComponent, skPattern, skFoundation, skGuideline:
@@ -265,7 +265,7 @@ proc selectFlowStep*(editor: EditorVM; index: int): bool {.discardable.} =
 
   editor.flowPlayer.currentStep.val = index
   editor.selectedStory.val = story
-  editor.activeView.val = viewForStory(story)
+  editor.activeView.val = evStoryboard
   editor.storyboard.selectedItem.val = editor.findCanvasItem(story)
   true
 
@@ -296,6 +296,8 @@ proc selectCanvasItem*(editor: EditorVM; index: int): bool {.discardable.} =
   editor.storyboard.selectedItem.val = index
   discard editor.selectStory(items[index].storyRef)
   editor.storyboard.selectedItem.val = index
+  if items[index].storyRef.kind == skFlow:
+    editor.activeView.val = evStoryboard
   true
 
 proc nextFlowStep*(editor: EditorVM): bool {.discardable.} =

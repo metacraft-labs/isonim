@@ -7,16 +7,7 @@ test.describe("IsoNim packaged editor example", () => {
   });
 
   test("e2e_editor_sidebar_story_selection", async ({ page }) => {
-    await page
-      .getByRole("button", {
-        name: "Select flow step Taps Santorini card to see details",
-      })
-      .click();
-    await expect(
-      page.getByRole("button", {
-        name: "Select story Plan a Trip / Taps Santorini card to see details",
-      }),
-    ).toHaveAttribute("aria-current", "true");
+    await expect(page.getByText("User Flows")).toBeVisible();
 
     const play = page
       .locator('[aria-label="Play flow"], [aria-label="Pause flow"]')
@@ -28,7 +19,6 @@ test.describe("IsoNim packaged editor example", () => {
     await page.getByRole("button", { name: "Stop flow" }).click();
     await expect(play).toHaveAttribute("aria-pressed", "false");
 
-    await page.goto("/");
     await page.getByRole("button", { name: "Next flow step" }).click();
     await expect(
       page.getByRole("button", {
@@ -52,6 +42,19 @@ test.describe("IsoNim packaged editor example", () => {
 
     await page.getByLabel("Edit inspector property padding").fill("24");
     await page.getByLabel("Edit inspector property padding").blur();
+
+    await page
+      .getByRole("button", {
+        name: "Select story Plan a Trip / Taps Santorini card to see details",
+      })
+      .click();
+    await expect(
+      page
+        .getByText(
+          "Flow action renders project screen Pages / Destination Detail",
+        )
+        .first(),
+    ).toBeVisible();
 
     await page.goto("/?view=vector#vector-editor");
     await expect(page.getByText("Vector Editor")).toBeVisible();

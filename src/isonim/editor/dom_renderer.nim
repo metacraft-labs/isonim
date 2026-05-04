@@ -56,6 +56,39 @@ proc setInputValue*(r: DomRenderer; node: DomElement; value: string) =
   let v = value.cstring
   {.emit: [node, ".value = ", v].}
 
+proc enableDragScroll*(r: DomRenderer; node: DomElement) =
+  {.emit: [node, """
+    .style.cursor = 'grab';
+    (() => {
+      const el = """, node, """;
+      let dragging = false;
+      let startX = 0;
+      let startY = 0;
+      let startLeft = 0;
+      let startTop = 0;
+      el.addEventListener('mousedown', (event) => {
+        if (event.button !== 0) return;
+        dragging = true;
+        startX = event.clientX;
+        startY = event.clientY;
+        startLeft = el.scrollLeft;
+        startTop = el.scrollTop;
+        el.style.cursor = 'grabbing';
+        event.preventDefault();
+      });
+      window.addEventListener('mousemove', (event) => {
+        if (!dragging) return;
+        el.scrollLeft = startLeft - (event.clientX - startX);
+        el.scrollTop = startTop - (event.clientY - startY);
+      });
+      window.addEventListener('mouseup', () => {
+        if (!dragging) return;
+        dragging = false;
+        el.style.cursor = 'grab';
+      });
+    })()
+  """].}
+
 proc firstChild*(r: DomRenderer; node: DomElement): DomElement =
   cast[Element](node.firstChild)
 

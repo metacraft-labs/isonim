@@ -154,6 +154,9 @@ proc setInputValue*(r: MockRenderer; node: MockNode; value: string) =
   node.attributes["value"] = value
   node.text = value
 
+proc enableDragScroll*(r: MockRenderer; node: MockNode) =
+  node.attributes["data-drag-scroll"] = "enabled"
+
 proc hash*(node: MockNode): Hash =
   ## Hash MockNode by its unique ID (for use as Table key).
   result = hash(node.id)

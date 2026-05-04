@@ -100,6 +100,23 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
         .first(),
     ).toBeVisible();
 
+    await page
+      .getByRole("button", {
+        name: "Select story Customer and license flows / Issue CodeTracer license",
+      })
+      .click();
+    await expect(
+      page.getByText("Customer and license flows / Issue CodeTracer license").first(),
+    ).toBeVisible();
+    await expect(
+      page
+        .frameLocator('iframe[title="Project preview"]')
+        .getByTestId("customer-detail"),
+    ).toBeVisible();
+    await expect(
+      page.getByText("apps/back-office/src/backoffice_server/router.nim").first(),
+    ).toBeVisible();
+
     await page.goto("/?view=vector#vector-editor");
     await expect(page.getByText("Vector Editor")).toBeVisible();
     await page
