@@ -9,9 +9,13 @@ import isonim/editor
 import isonim/editor/browser
 
 proc main() =
+  let groups = wanderlust.buildWanderlustStoryboard()
   let workspace = newEditorWorkspace(
     title = "Wanderlust",
-    storyGroups = wanderlust.buildWanderlustStoryboard(),
+    storyGroups = groups,
+    canvasItems = wanderlust.wanderlustCanvasItems(groups),
+    flowSteps = wanderlust.wanderlustFlowSteps(groups),
+    previewHook = wanderlust.wanderlustPreviewHook,
     id = "wanderlust",
     description = "Travel app workspace for IsoNim Editor development")
   discard mountEditor(workspace)

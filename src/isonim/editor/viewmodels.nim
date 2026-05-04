@@ -67,6 +67,10 @@ type
     warningCount*: Memo[int]
     hasIssues*: Memo[bool]
 
+  ProjectPreviewVM* = ref object of ViewModel
+    hook*: ProjectPreviewHook
+    current*: Memo[ProjectPreview]
+
   FlowPlayerVM* = ref object of ViewModel
     steps*: Signal[seq[FlowStep]]
     currentStep*: Signal[int]
@@ -88,6 +92,7 @@ type
     vectorEditor*: VectorEditorVM
     chat*: AgentChatVM
     review*: ReviewResultsVM
+    preview*: ProjectPreviewVM
     flowPlayer*: FlowPlayerVM
     hasSelection*: Memo[bool]
 
@@ -163,6 +168,15 @@ func withStatus(status: PropertyEditStatus;
     diagnostics: seq[PropertyEditDiagnostic] = @[]): PropertyEditResult =
   PropertyEditResult(status: status, diagnostics: diagnostics)
 
+func emptyPreview(story: StoryRef): ProjectPreview =
+  let status =
+    if story.isEmptyStory: ppsMissingSelection else: ppsUnsupportedStory
+  ProjectPreview(status: status, story: story)
+
+proc defaultPreviewHook*(story: StoryRef;
+                        platform: Platform): ProjectPreview =
+  emptyPreview(story)
+
 proc findCanvasItem(vm: EditorVM; story: StoryRef): int =
   result = -1
   let items = vm.storyboard.canvasItems.val
@@ -186,6 +200,22 @@ proc syncFlowStep(vm: EditorVM; story: StoryRef) =
     if sameStory(step.screenRef, story):
       vm.flowPlayer.currentStep.val = i
       return
+
+proc selectFlowStep*(editor: EditorVM; index: int): bool {.discardable.} =
+  ## Select a flow step and synchronize the story, canvas item, and action.
+  let steps = editor.flowPlayer.steps.val
+  if index < 0 or index >= steps.len:
+    return false
+
+  let story = steps[index].screenRef
+  if not editor.hasStory(story):
+    return false
+
+  editor.flowPlayer.currentStep.val = index
+  editor.selectedStory.val = story
+  editor.activeView.val = viewForStory(story)
+  editor.storyboard.selectedItem.val = editor.findCanvasItem(story)
+  true
 
 # ===========================================================================
 # EditorVM headless actions
@@ -215,6 +245,30 @@ proc selectCanvasItem*(editor: EditorVM; index: int): bool {.discardable.} =
   discard editor.selectStory(items[index].storyRef)
   editor.storyboard.selectedItem.val = index
   true
+
+proc nextFlowStep*(editor: EditorVM): bool {.discardable.} =
+  ## Advance the flow through the editor so selection stays synchronized.
+  let total = editor.flowPlayer.totalSteps.val
+  if total == 0:
+    return false
+  let nextIndex =
+    if editor.flowPlayer.currentStep.val + 1 >= total: 0
+    else: editor.flowPlayer.currentStep.val + 1
+  editor.selectFlowStep(nextIndex)
+
+proc prevFlowStep*(editor: EditorVM): bool {.discardable.} =
+  ## Move backward in the flow through the editor selection contract.
+  let total = editor.flowPlayer.totalSteps.val
+  if total == 0:
+    return false
+  let prevIndex =
+    if editor.flowPlayer.currentStep.val <= 0: total - 1
+    else: editor.flowPlayer.currentStep.val - 1
+  editor.selectFlowStep(prevIndex)
+
+proc stopFlow*(editor: EditorVM): bool {.discardable.} =
+  editor.flowPlayer.playState.val = psStopped
+  editor.selectFlowStep(0)
 
 proc setActiveView*(editor: EditorVM; view: EditorView) =
   editor.activeView.val = view
@@ -727,6 +781,14 @@ proc createReviewResultsVM*(): ReviewResultsVM =
     warningCount: warningCount,
     hasIssues: hasIssues)
 
+proc createProjectPreviewVM*(selectedStory: Signal[StoryRef];
+    platform: Signal[Platform]): ProjectPreviewVM =
+  let preview = ProjectPreviewVM(hook: defaultPreviewHook)
+  preview.current = createMemo[ProjectPreview](proc(): ProjectPreview =
+    preview.hook(selectedStory.val, platform.val)
+  )
+  preview
+
 proc createFlowPlayerVM*(): FlowPlayerVM =
   let steps = createSignal[seq[FlowStep]](@[])
   let currentStep = createSignal(0)
@@ -767,6 +829,7 @@ proc createEditorVM*(): EditorVM =
   let vectorEditor = createVectorEditorVM()
   let chat = createAgentChatVM()
   let review = createReviewResultsVM()
+  let preview = createProjectPreviewVM(selectedStory, platform)
   let flowPlayer = createFlowPlayerVM()
 
   let hasSelection = createMemo[bool](proc(): bool =
@@ -785,5 +848,6 @@ proc createEditorVM*(): EditorVM =
     vectorEditor: vectorEditor,
     chat: chat,
     review: review,
+    preview: preview,
     flowPlayer: flowPlayer,
     hasSelection: hasSelection)

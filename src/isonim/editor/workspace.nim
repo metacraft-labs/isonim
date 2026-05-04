@@ -32,6 +32,7 @@ type
     initialInspectorSection*: InspectorSection
     initialVectorSymbol*: Option[int]
     initialReviewBaseline*: Option[seq[Violation]]
+    previewHook*: ProjectPreviewHook
     platform*: Platform
     panels*: PanelVisibility
 
@@ -51,6 +52,7 @@ proc emptyEditorWorkspace*(): EditorWorkspace =
     initialInspectorSection: isLayout,
     initialVectorSymbol: none(int),
     initialReviewBaseline: none(seq[Violation]),
+    previewHook: defaultPreviewHook,
     platform: pfWeb,
     panels: defaultPanelVisibility()
   )
@@ -71,6 +73,7 @@ proc newEditorWorkspace*(title: string;
                           initialInspectorSection = isLayout;
                           initialVectorSymbol = none(int);
                           initialReviewBaseline = none(seq[Violation]);
+                          previewHook: ProjectPreviewHook = defaultPreviewHook;
                           platform = pfWeb;
                           panels = defaultPanelVisibility()): EditorWorkspace =
   ## Convenience constructor for project-owned workspace definitions.
@@ -91,6 +94,7 @@ proc newEditorWorkspace*(title: string;
     initialInspectorSection: initialInspectorSection,
     initialVectorSymbol: initialVectorSymbol,
     initialReviewBaseline: initialReviewBaseline,
+    previewHook: previewHook,
     platform: platform,
     panels: panels
   )
@@ -102,6 +106,7 @@ proc applyWorkspace*(vm: EditorVM; workspace: EditorWorkspace) =
   vm.storyboard.connections.val = workspace.connections
   vm.flowPlayer.steps.val = workspace.flowSteps
   vm.vectorEditor.symbols.val = workspace.vectorSymbols
+  vm.preview.hook = workspace.previewHook
   vm.selectedStory.val = StoryRef()
   vm.storyboard.selectedItem.val = -1
   vm.inspector.selectedElement.val = ElementRef()

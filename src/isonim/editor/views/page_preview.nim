@@ -6,7 +6,6 @@
 import isonim/core/[computation, signals]
 import isonim/dsl/ui
 import isonim/editor/viewmodels
-import isonim/editor/types
 
 const
   bgBase = "#0B1120"
@@ -84,10 +83,17 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
   r.appendChild(deviceFrame, statusBar)
 
   let pageName =
-    if vm.selectedStory.val.name.len > 0:
+    if vm.preview.current.val.title.len > 0:
+      vm.preview.current.val.title
+    elif vm.selectedStory.val.name.len > 0:
       vm.selectedStory.val.name
     else:
       "Project page"
+  let previewBody =
+    if vm.preview.current.val.bodyText.len > 0:
+      vm.preview.current.val.bodyText
+    else:
+      "Workspace page preview"
   let homePage = ui(r):
     tdiv(flex = "1", overflow_y = "auto",
           padding = "24px", display = "flex",
@@ -99,7 +105,7 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
           span(font_size = "24px", font_weight = "800"):
             text pageName
           span(font_size = "13px", color = "#64748B"):
-            text "Workspace page preview"
+            text previewBody
         tdiv(width = "36px", height = "36px", border_radius = "999px",
               background_color = "#DBEAFE")
       tdiv(height = "140px", border_radius = "14px",

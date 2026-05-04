@@ -3,11 +3,93 @@
 ## Ordered by importance (progressive disclosure):
 ## User Flows → Pages → Components → Patterns → Foundations → Guidelines
 
-import isonim/editor/types
-import examples/wanderlust/components/viewmodels
-import examples/wanderlust/mock_data
+import std/strutils
 
-proc buildWanderlustStoryboard*(): seq[StoryGroup] =
+import isonim/editor/types
+
+const WanderlustSource* = "examples/wanderlust/stories.nim"
+
+func storyRefFromItem*(item: StoryItem; index: int): StoryRef =
+  StoryRef(group: item.group, name: item.name, kind: item.kind, index: index)
+
+func renderKind(kind: StoryKind): string =
+  case kind
+  of skFoundation: "foundation"
+  of skComponent: "component"
+  of skPattern: "pattern"
+  of skPage: "page"
+  of skFlow: "flow"
+  of skGuideline: "guideline"
+
+func flowStepScreen(group, name: string): StoryRef =
+  case group
+  of "Plan a Trip":
+    case name
+    of "Browses trending destinations on home":
+      StoryRef(group: "Pages", name: "Home / Discover", kind: skPage)
+    of "Taps Santorini card to see details":
+      StoryRef(group: "Pages", name: "Destination Detail", kind: skPage)
+    of "Taps 'Plan Trip' to start building":
+      StoryRef(group: "Pages", name: "Trip Planner", kind: skPage)
+    of "Adds activities to Day 1":
+      StoryRef(group: "Pages", name: "Day View", kind: skPage)
+    of "Reviews budget and confirms trip":
+      StoryRef(group: "Pages", name: "Trip Planner", kind: skPage)
+    else:
+      StoryRef()
+  of "Discover & Save":
+    case name
+    of "Types 'beach' in search bar":
+      StoryRef(group: "Pages", name: "Home / Discover", kind: skPage)
+    of "Applies Beach and Budget filters":
+      StoryRef(group: "Pages", name: "Search Results", kind: skPage)
+    of "Taps heart icon to save Lisbon":
+      StoryRef(group: "Pages", name: "Search Results", kind: skPage)
+    else:
+      StoryRef()
+  of "Travel Day":
+    case name
+    of "Opens active trip from home":
+      StoryRef(group: "Pages", name: "Home / Discover", kind: skPage)
+    of "Views Day 3 itinerary":
+      StoryRef(group: "Pages", name: "Day View", kind: skPage)
+    of "Checks off Jardin Majorelle visit":
+      StoryRef(group: "Pages", name: "Day View", kind: skPage)
+    of "Adds spontaneous souk shopping":
+      StoryRef(group: "Pages", name: "Day View", kind: skPage)
+    else:
+      StoryRef()
+  else:
+    StoryRef()
+
+func flowStepsForGroup*(group: StoryGroup): seq[FlowStep] =
+  for item in group.items:
+    result.add FlowStep(
+      screenRef: flowStepScreen(group.name, item.name),
+      action: item.name,
+      description: item.description)
+
+func wanderlustFlowSteps*(groups: seq[StoryGroup]): seq[FlowStep] =
+  for group in groups:
+    if group.kind == skFlow:
+      result.add group.flowStepsForGroup()
+
+func wanderlustCanvasItems*(groups: seq[StoryGroup]): seq[CanvasItem] =
+  var index = 0
+  for group in groups:
+    if group.kind == skPage:
+      for item in group.items:
+        let story = item.storyRefFromItem(index)
+        result.add CanvasItem(
+          storyRef: story,
+          x: float(index mod 3) * 360.0,
+          y: float(index div 3) * 240.0,
+          width: 320.0,
+          height: 200.0,
+          label: item.name)
+        inc index
+
+func buildWanderlustStoryboard*(): seq[StoryGroup] =
   var groups: seq[StoryGroup]
 
   # =======================================================================
@@ -231,3 +313,74 @@ proc buildWanderlustStoryboard*(): seq[StoryGroup] =
     ])
 
   groups
+
+func findStoryItem(groups: seq[StoryGroup]; story: StoryRef;
+    itemOut: var StoryItem; indexOut: var int): bool =
+  for group in groups:
+    if group.name == story.group and group.kind == story.kind:
+      for i, item in group.items:
+        if item.name == story.name and item.kind == story.kind:
+          itemOut = item
+          indexOut = i
+          return true
+
+func storyMetadata*(story: StoryRef): StoryRenderMetadata =
+  let groups = buildWanderlustStoryboard()
+  var item: StoryItem
+  var itemIndex = -1
+  if groups.findStoryItem(story, item, itemIndex):
+    return StoryRenderMetadata(
+      story: StoryRef(group: item.group, name: item.name, kind: item.kind,
+        index: itemIndex),
+      title: item.group & " / " & item.name,
+      sourceFile: WanderlustSource,
+      sourceLine: 1,
+      fixtureName: item.group & "." & item.name,
+      renderKind: story.kind.renderKind)
+
+func pagePreviewBody(story: StoryRef): string =
+  case story.name
+  of "Home / Discover":
+    "Hero destination Santorini, trending destinations, saved Morocco trip"
+  of "Search Results":
+    "Filtered destination grid with Lisbon, Banff, Santorini, and budget chips"
+  of "Destination Detail":
+    "Santorini detail with reviews, weather, photos, and plan trip action"
+  of "Trip Planner":
+    "Morocco trip planner with itinerary builder and budget summary"
+  of "Day View":
+    "Day 3 Marrakech timeline including Jardin Majorelle and souk shopping"
+  of "Profile":
+    "Profile dashboard with trips, countries visited, and saved destinations"
+  else:
+    ""
+
+proc wanderlustPreviewHook*(story: StoryRef;
+                            platform: Platform): ProjectPreview =
+  let metadata = story.storyMetadata()
+  if metadata.title.len == 0:
+    return ProjectPreview(status: ppsUnsupportedStory, story: story)
+
+  let body =
+    case story.kind
+    of skPage:
+      pagePreviewBody(story)
+    of skComponent:
+      "Component fixture using " & story.group & " state " & story.name
+    of skPattern:
+      "Pattern fixture for " & story.name.toLowerAscii()
+    of skFoundation:
+      "Foundation fixture for Wanderlust " & story.name.toLowerAscii()
+    of skGuideline:
+      "Guideline fixture for " & story.name.toLowerAscii()
+    of skFlow:
+      let screen = flowStepScreen(story.group, story.name)
+      "Flow action renders project screen " & screen.group & " / " & screen.name
+
+  ProjectPreview(
+    status: ppsRendered,
+    story: StoryRef(group: story.group, name: story.name, kind: story.kind,
+      index: metadata.story.index),
+    title: metadata.title,
+    bodyText: body,
+    metadata: metadata)

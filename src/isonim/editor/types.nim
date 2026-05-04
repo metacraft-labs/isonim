@@ -33,6 +33,15 @@ type
     kind*: StoryKind
     group*: string        ## Parent group name
 
+  StoryRenderMetadata* = object
+    ## Project-owned render metadata for a story, separate from sidebar copy.
+    story*: StoryRef
+    title*: string
+    sourceFile*: string
+    sourceLine*: int
+    fixtureName*: string
+    renderKind*: string
+
   # --- Edit mode ---
   EditMode* = enum
     emView    ## Normal view — component interactions work
@@ -298,6 +307,22 @@ type
     pfWeb
     pfIOS
     pfAndroid
+
+  ProjectPreviewStatus* = enum
+    ppsMissingSelection
+    ppsUnsupportedStory
+    ppsRendered
+
+  ProjectPreview* = object
+    ## Headless preview payload produced by a project-owned preview hook.
+    status*: ProjectPreviewStatus
+    story*: StoryRef
+    title*: string
+    bodyText*: string
+    metadata*: StoryRenderMetadata
+
+  ProjectPreviewHook* = proc(story: StoryRef;
+                            platform: Platform): ProjectPreview {.closure.}
 
   # --- Flow player ---
   PlayState* = enum

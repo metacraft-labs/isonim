@@ -1,9 +1,12 @@
 ## Tests for IsoNim Editor ViewModels (M0)
 
-import std/[unittest, strutils, sequtils]
+import std/[options, unittest, strutils, sequtils]
 import isonim/core/[signals, computation, owner]
 import isonim/viewmodel
 import isonim/editor/viewmodels
+import isonim/editor/workspace
+import isonim/editor/views/page_preview
+import isonim/testing/mock_dom
 import examples/wanderlust/stories as wanderlust
 
 suite "Editor ViewModels (M0)":
@@ -480,4 +483,133 @@ let leaked = (class = "rounded-xl", background_color = "#ffffff")
       check violations.anyIt(it.category == vcAccessibility)
       check vm.review.errorCount.val >= 2
       check vm.review.warningCount.val >= 4
+      dispose()
+
+suite "Editor ViewModels (M20 story flow preview runtime)":
+
+  func findItem(groups: seq[StoryGroup]; groupName, itemName: string;
+      kind: StoryKind): StoryRef =
+    for group in groups:
+      if group.name == groupName and group.kind == kind:
+        for i, item in group.items:
+          if item.name == itemName and item.kind == kind:
+            return StoryRef(group: item.group, name: item.name,
+              kind: item.kind, index: i)
+
+  test "editor_flow_player_selects_current_story":
+    createRoot proc(dispose: proc()) =
+      let groups = wanderlust.buildWanderlustStoryboard()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = groups
+      vm.storyboard.canvasItems.val = wanderlust.wanderlustCanvasItems(groups)
+      vm.flowPlayer.steps.val = wanderlust.wanderlustFlowSteps(groups)
+
+      check vm.selectFlowStep(0)
+      check vm.flowPlayer.currentAction.val ==
+        "Browses trending destinations on home"
+      check vm.selectedStory.val.name == "Home / Discover"
+      check vm.storyboard.selectedItem.val == 0
+      check vm.activeView.val == evPagePreview
+
+      check vm.nextFlowStep()
+      check vm.flowPlayer.currentStep.val == 1
+      check vm.flowPlayer.currentAction.val ==
+        "Taps Santorini card to see details"
+      check vm.selectedStory.val.name == "Destination Detail"
+      check vm.selectedStory.val.kind == skPage
+      check vm.storyboard.selectedItem.val == 2
+      check vm.activeView.val == evPagePreview
+
+      check vm.prevFlowStep()
+      check vm.flowPlayer.currentStep.val == 0
+      check vm.selectedStory.val.name == "Home / Discover"
+      check vm.storyboard.selectedItem.val == 0
+      dispose()
+
+  test "editor_story_filter_preserves_group_metadata":
+    createRoot proc(dispose: proc()) =
+      let groups = wanderlust.buildWanderlustStoryboard()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = groups
+
+      vm.sidebar.setSearch("playfair")
+      let foundationGroups = vm.sidebar.filteredItems.val.filterIt(
+        it.name == "Foundations")
+      check foundationGroups.len == 1
+      check foundationGroups[0].kind == skFoundation
+      check foundationGroups[0].description ==
+        "Design tokens for the Wanderlust travel app"
+      check foundationGroups[0].expanded == false
+      check foundationGroups[0].items.len == 1
+      check foundationGroups[0].items[0].name == "Typography"
+
+      vm.sidebar.setSearch("jardin")
+      let flowGroups = vm.sidebar.filteredItems.val.filterIt(
+        it.name == "Travel Day")
+      check flowGroups.len == 1
+      check flowGroups[0].kind == skFlow
+      check flowGroups[0].description ==
+        "User follows their itinerary during an active trip"
+      check flowGroups[0].expanded == true
+      check flowGroups[0].items[0].kind == skFlow
+      dispose()
+
+  test "editor_preview_hook_contract_renders_project_story":
+    createRoot proc(dispose: proc()) =
+      var calls: seq[StoryRef] = @[]
+      proc previewHook(story: StoryRef;
+          platform: Platform): ProjectPreview {.closure.} =
+        calls.add story
+        ProjectPreview(
+          status: ppsRendered,
+          story: story,
+          title: "Project render: " & story.name,
+          bodyText: "Exact project preview for " & story.group &
+            " on " & $platform,
+          metadata: StoryRenderMetadata(
+            story: story,
+            title: story.name,
+            sourceFile: "examples/wanderlust/pages/views.nim",
+            sourceLine: 12,
+            fixtureName: "wanderlust.page." & story.name,
+            renderKind: "page"))
+
+      let groups = wanderlust.buildWanderlustStoryboard()
+      let selected = findItem(groups, "Pages", "Destination Detail", skPage)
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "Wanderlust",
+        storyGroups = groups,
+        initialView = evPagePreview,
+        initialStory = some(selected),
+        previewHook = previewHook,
+        platform = pfIOS))
+
+      let preview = vm.preview.current.val
+      check calls.len >= 1
+      check calls[^1].name == "Destination Detail"
+      check preview.status == ppsRendered
+      check preview.title == "Project render: Destination Detail"
+      check preview.bodyText == "Exact project preview for Pages on pfIOS"
+      check preview.metadata.sourceFile ==
+        "examples/wanderlust/pages/views.nim"
+
+      let r = MockRenderer()
+      let node = renderPagePreview[MockRenderer, MockNode](r, vm)
+      check node.textContent.contains("Project render: Destination Detail")
+      check node.textContent.contains("Exact project preview for Pages on pfIOS")
+
+      for story in [
+        findItem(groups, "Pages", "Home / Discover", skPage),
+        findItem(groups, "DestinationCard", "Default", skComponent),
+        findItem(groups, "Patterns", "Destination Grid", skPattern),
+        findItem(groups, "Foundations", "Colors", skFoundation),
+        findItem(groups, "Guidelines", "Accessibility", skGuideline),
+        findItem(groups, "Plan a Trip", "Taps Santorini card to see details",
+          skFlow)
+      ]:
+        let projectPreview = wanderlust.wanderlustPreviewHook(story, pfWeb)
+        check projectPreview.status == ppsRendered
+        check projectPreview.metadata.story.kind == story.kind
+        check projectPreview.metadata.renderKind.len > 0
+        check projectPreview.bodyText.len > 20
       dispose()
