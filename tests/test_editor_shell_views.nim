@@ -200,10 +200,9 @@ suite "Editor Shell Views (M2)":
       check vm.vectorEditor.showGrid.val == false
       check gridToggle.attributes["aria-pressed"] == "false"
 
-      let unsupportedUnion = findByAttr(vector, "aria-label",
-        "Unsupported vector Union")
-      check unsupportedUnion != nil
-      check unsupportedUnion.attributes["aria-disabled"] == "true"
+      let union = findByAttr(vector, "aria-label", "Vector Union")
+      check union != nil
+      check union.attributes["data-vector-action"] == "boolean-unite"
 
       let saveVector = findByAttr(vector, "aria-label",
         "Save vector source edits")

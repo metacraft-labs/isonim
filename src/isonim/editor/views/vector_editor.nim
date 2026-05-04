@@ -122,20 +122,22 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
             text "Vector Editor"
           span(font_size = "11px", color = textDim):
             text "\xE2\x80\x94 check-icon.svg"
-        # Boolean operations remain adapter-gated until backed by a mature path library.
+        # Boolean operations are delegated to Paper.js, a supplemental path backend.
         tdiv(display = "flex", align_items = "center", gap = "2px",
               background_color = bgSurface, border_radius = "6px",
               padding = "3px", border = "1px solid " & border):
-          for op in ["Union", "Sub", "Inter", "Excl"]:
+          for op in [("Union", "boolean-unite"), ("Sub", "boolean-subtract"),
+              ("Inter", "boolean-intersect"), ("Excl", "boolean-exclude")]:
+            let opLabel = op[0]
+            let opAction = op[1]
             tdiv(padding = "4px 8px", border_radius = "4px",
                   font_size = "10px", font_weight = "500",
-                  color = textDim, cursor = "not-allowed",
+                  color = textSecondary, cursor = "pointer",
                   `role` = "button", tabindex = "0",
-                  `aria-label` = "Unsupported vector " & op,
-                  `aria-disabled` = "true",
-                  `data-vector-unsupported-operation` = op,
-                  title = op & " requires a mature path boolean library"):
-              text op
+                  `aria-label` = "Vector " & opLabel,
+                  `data-vector-action` = opAction,
+                  title = opLabel & " via Paper.js path backend"):
+              text opLabel
         # Zoom / export
         tdiv(display = "flex", align_items = "center", gap = "8px"):
           span(font_size = "11px", color = textMuted):
@@ -278,7 +280,7 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
             tdiv(display = "flex", gap = "6px"):
               for action in ["import-sample", "zoom-in", "zoom-out", "pan-right",
                   "set-fill", "set-stroke", "duplicate", "delete", "group",
-                  "ungroup", "transform-selection", "export"]:
+                  "ungroup", "transform-selection", "move-segment", "export"]:
                 let actionName = action
                 var actionBtn: E
                 tdiv(ref = actionBtn,

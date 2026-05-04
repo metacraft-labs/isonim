@@ -2342,8 +2342,19 @@ func vectorLibrarySpike*(): seq[VectorLibraryCandidate] =
       ],
       runtimeNotes: "Canvas-backed browser object model with built-in selection, transforms, grouping, drawing tools, SVG import/export, and serialization.",
       interopNotes: "Loaded as a local UMD browser bundle and isolated behind isonim/editor/browser_vector_adapter.",
+    selected: true,
+    selectionReason: "Best coverage of interaction primitives without hand-rolled pointer geometry."),
+    VectorLibraryCandidate(
+      name: "Paper.js",
+      version: "0.12.18",
+      license: "MIT",
+      backend: vbPaperJs,
+      capabilities: @[vacPathEditing, vacPathBooleanOps, vacPathDataEditing,
+        vacSerialization, vacSvgImport, vacSvgExport],
+      runtimeNotes: "Supplemental path engine with official PathItem boolean operations and segment/pathData APIs.",
+      interopNotes: "Loaded as a local browser bundle and used only through the supplemental path backend boundary; Fabric remains the canvas interaction backend.",
       selected: true,
-      selectionReason: "Best coverage of interaction primitives without hand-rolled pointer geometry."),
+      selectionReason: "Mature boolean/path-data operations without hand-rolled boolean algorithms or path geometry."),
     VectorLibraryCandidate(
       name: "SVGO",
       version: "4.0.1",
@@ -2393,9 +2404,21 @@ func selectedVectorAdapter*(): VectorAdapterContract =
     ],
     usesThirdPartyInteraction: true,
     unsupportedAdvancedOperations: @[
-      "Boolean path union/subtract/intersect/exclude are not exposed until backed by a mature supplemental path library.",
-      "Direct bezier node editing remains adapter-gated and is not hand-rolled in IsoNim."
+      "Freeform bezier node editing UI remains adapter-gated beyond the focused Paper.js segment move operation.",
+      "Boolean/path operations outside unite/subtract/intersect/exclude remain disabled until backed by Paper.js or another mature supplemental path library."
     ])
+
+func selectedVectorPathBackend*(): VectorPathBackendContract =
+  VectorPathBackendContract(
+    backend: vbPaperJs,
+    libraryName: "Paper.js",
+    libraryVersion: "0.12.18",
+    browserGlobal: "paper",
+    license: "MIT",
+    operations: @[vpboUnite, vpboSubtract, vpboIntersect, vpboExclude,
+      vpboMoveSegment],
+    adapterModule: "isonim/editor/browser_vector_adapter",
+    sourceBacked: true)
 
 func symbolSchemaKey(symbol: VectorSymbol): string =
   "symbols." & symbol.name.normalize & ".svg"
@@ -2572,12 +2595,26 @@ func renderVectorObject(obj: VectorObject): string =
     "<path id=\"" & obj.id.escapeSvg & "\" d=\"" & obj.pathData.escapeSvg &
       "\"" & commonPaint & dash & transform & blend & " />"
 
+func renderVectorDefs(doc: VectorDocument): string =
+  var defs = ""
+  for obj in doc.objects:
+    if obj.gradient.len > 0 and defs.find("id=\"" & obj.gradient.escapeSvg & "\"") < 0:
+      defs.add "<linearGradient id=\"" & obj.gradient.escapeSvg &
+        "\" x1=\"0%\" y1=\"0%\" x2=\"100%\" y2=\"100%\">" &
+        "<stop offset=\"0%\" stop-color=\"#60A5FA\" />" &
+        "<stop offset=\"100%\" stop-color=\"#1D4ED8\" />" &
+        "</linearGradient>"
+  if defs.len == 0:
+    return ""
+  "<defs>" & defs & "</defs>"
+
 func exportVectorDocumentSvg*(doc: VectorDocument): string =
   var body = ""
   if doc.a11y.title.len > 0:
     body.add "<title>" & doc.a11y.title.escapeSvg & "</title>"
   if doc.a11y.desc.len > 0:
     body.add "<desc>" & doc.a11y.desc.escapeSvg & "</desc>"
+  body.add doc.renderVectorDefs
   for symbol in doc.symbols:
     if symbol.svgContent.len > 0:
       body.add "<symbol id=\"" & symbol.id.escapeSvg & "\">" &
@@ -2804,6 +2841,27 @@ proc commitVectorSourceSnapshot*(editor: EditorVM; operation: VectorOperationKin
 proc commitBrowserVectorSvg*(editor: EditorVM;
     exportedSvg: string): VectorOperationResult {.discardable.} =
   editor.commitVectorSourceSnapshot(vokExportSvg, exportedSvg,
+    requireExpectedOldValue = false)
+
+proc commitSupplementalVectorPathSvg*(editor: EditorVM; operationName,
+    exportedSvg: string): VectorOperationResult {.discardable.} =
+  let normalized = exportedSvg.optimizeVectorSvg
+  if "<path" notin normalized:
+    return VectorOperationResult(ok: false, operation: vokBooleanPath,
+      diagnostics: @[VectorDiagnostic(kind: vdkInvalidSvg,
+        message: "Supplemental path backend must return SVG path data for " &
+          operationName & ".")])
+  editor.commitVectorSourceSnapshot(vokBooleanPath, normalized,
+    requireExpectedOldValue = false)
+
+proc commitSupplementalPathSegmentMoveSvg*(editor: EditorVM;
+    exportedSvg: string): VectorOperationResult {.discardable.} =
+  let normalized = exportedSvg.optimizeVectorSvg
+  if "<path" notin normalized:
+    return VectorOperationResult(ok: false, operation: vokMovePathSegment,
+      diagnostics: @[VectorDiagnostic(kind: vdkInvalidSvg,
+        message: "Supplemental path backend must return SVG path data for segment moves.")])
+  editor.commitVectorSourceSnapshot(vokMovePathSegment, normalized,
     requireExpectedOldValue = false)
 
 proc unsupportedVectorOperation*(editor: EditorVM;

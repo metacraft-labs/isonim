@@ -1133,6 +1133,7 @@ suite "Editor ViewModels (M27 workspace file writes)":
     let candidates = vectorLibrarySpike()
     let selected = candidates.filterIt(it.selected)
     check selected.anyIt(it.name == "Fabric.js" and it.license == "MIT")
+    check selected.anyIt(it.name == "Paper.js" and it.license == "MIT")
     check selected.anyIt(it.name == "SVGO" and it.license == "MIT")
     let adapter = selectedVectorAdapter()
     check adapter.backend == vbFabric
@@ -1143,6 +1144,15 @@ suite "Editor ViewModels (M27 workspace file writes)":
     check adapter.hasCapability(vacGrouping)
     check adapter.hasCapability(vacSvgImport)
     check adapter.hasCapability(vacSvgExport)
+    let pathBackend = selectedVectorPathBackend()
+    check pathBackend.libraryName == "Paper.js"
+    check pathBackend.browserGlobal == "paper"
+    check vpboUnite in pathBackend.operations
+    check vpboSubtract in pathBackend.operations
+    check vpboIntersect in pathBackend.operations
+    check vpboExclude in pathBackend.operations
+    check vpboMoveSegment in pathBackend.operations
+    check pathBackend.sourceBacked
     check adapter.unsupportedAdvancedOperations.len > 0
 
   test "vector_editor_adapter_contract_is_library_backed":
@@ -1281,6 +1291,10 @@ suite "Editor ViewModels (M27 workspace file writes)":
       check vm.setVectorObjectProperty(VectorPropertyEditRequest(
         objectId: "badge-bg", kind: vpkOpacity, value: "0.5")).ok
       check vm.setVectorObjectProperty(VectorPropertyEditRequest(
+        objectId: "badge-bg", kind: vpkGradient, value: "badge-gradient")).ok
+      check vm.setVectorObjectProperty(VectorPropertyEditRequest(
+        objectId: "badge-bg", kind: vpkBlendMode, value: "multiply")).ok
+      check vm.setVectorObjectProperty(VectorPropertyEditRequest(
         objectId: "badge-bg", kind: vpkTransform, value: "15")).ok
       check vm.setVectorDocumentViewBox("0 0 128 128").ok
       check vm.addVectorPolygon(6).ok
@@ -1288,12 +1302,14 @@ suite "Editor ViewModels (M27 workspace file writes)":
 
       let svg = vm.vectorEditor.document.val.exportVectorDocumentSvg
       check svg.contains("viewBox=\"0 0 128 128\"")
-      check svg.contains("fill=\"#EF4444\"")
       check svg.contains("stroke=\"#22C55E\"")
       check svg.contains("stroke-dasharray=\"8 4\"")
       check svg.contains("stroke-linecap=\"square\"")
       check svg.contains("stroke-linejoin=\"round\"")
       check svg.contains("opacity=\"0.5\"")
+      check svg.contains("<linearGradient id=\"badge-gradient\"")
+      check svg.contains("fill=\"url(#badge-gradient)\"")
+      check svg.contains("mix-blend-mode:multiply")
       check svg.contains("rotate(15")
       check svg.contains("polygon-")
       check svg.contains("star-")
@@ -1310,9 +1326,10 @@ suite "Editor ViewModels (M27 workspace file writes)":
       check saved.ok
       let savedSvg = readFile(svgFile)
       check savedSvg.contains("viewBox=\"0 0 128 128\"")
-      check savedSvg.contains("fill=\"#EF4444\"")
       check savedSvg.contains("stroke=\"#22C55E\"")
       check savedSvg.contains("stroke-linecap=\"square\"")
+      check savedSvg.contains("linearGradient")
+      check savedSvg.contains("mix-blend-mode:multiply")
       check savedSvg.contains("star-3")
       check vm.inspector.pendingSourceEdits.val.len == 0
       check vm.vectorEditor.undoStack.val.len == 0
@@ -1380,16 +1397,84 @@ suite "Editor ViewModels (M27 workspace file writes)":
       check recorder.fullReloadSeen
       dispose()
 
-  test "vector_editor_advanced_path_and_boolean_ops_are_explicitly_unsupported":
+  test "vector_editor_paper_path_operations_are_source_backed":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("vector-paper")
+      defer: removeDir(root)
+
+      let svgFile = root / "symbols.schema"
+      atomicWrite(svgFile,
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 64 64\"><path id=\"left\" d=\"M4 4h32v32H4z\" /></svg>")
+      let recorder = WorkspaceEditRecorder()
+      let schema = @[
+        WorkspaceEditableSchemaEntry(key: "symbols.logo.svg",
+          kind: wskSvgSymbol, file: svgFile, path: "symbols.logo.svg",
+          story: writeStory, property: "svgContent")
+      ]
+      let adapter = adapterFor(root, schema, recorder = recorder)
+      adapter.patchFile = proc(plan: SourceEditPlan; content: string;
+          schema: WorkspaceEditableSchemaEntry): WorkspacePatchResult =
+        WorkspacePatchResult(ok: true, patch: WorkspaceFilePatch(
+          file: schema.file,
+          beforeContent: content,
+          afterContent: plan.newValue,
+          affectedStory: schema.story,
+          fullReload: true))
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "M29 Paper path workspace",
+        storyGroups = @[],
+        vectorSymbols = @[
+          VectorSymbol(name: "Logo", category: "Icons",
+            svgContent: "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 64 64\"><path id=\"left\" d=\"M4 4h32v32H4z\" /></svg>",
+            width: 64, height: 64)
+        ],
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true),
+        editAdapter = adapter))
+
+      check vm.selectVectorSymbol(0)
+      let unionSvg =
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 64 64\"><path id=\"paper-unite\" d=\"M4 4h48v32H4z\" fill=\"#EC4899\" /></svg>"
+      let result = vm.commitSupplementalVectorPathSvg("unite", unionSvg)
+      check result.ok
+      check result.operation == vokBooleanPath
+      check result.sourceEdit.schemaKey == "symbols.logo.svg"
+      check result.sourceEdit.formatterHook == "svgo"
+      check result.sourceEdit.newValue.contains("paper-unite")
+      check vm.inspector.pendingSourceEdits.val.len == 1
+      check vm.commandAvailable(eckSave)
+
+      let movedSvg =
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 64 64\"><path id=\"paper-moved-segment\" d=\"M4 48 L32 12 L60 48\" fill=\"none\" stroke=\"#A78BFA\" /></svg>"
+      let moved = vm.commitSupplementalPathSegmentMoveSvg(movedSvg)
+      check moved.ok
+      check moved.operation == vokMovePathSegment
+      check vm.inspector.pendingSourceEdits.val.len == 2
+      check vm.undoVectorEdit()
+      check vm.vectorEditor.document.val.symbols[0].svgContent.contains(
+        "paper-unite")
+      check vm.redoVectorEdit()
+      check vm.vectorEditor.document.val.symbols[0].svgContent.contains(
+        "paper-moved-segment")
+
+      let saved = vm.runEditorCommand(eckSave)
+      check saved.status == ecsSucceeded
+      check readFile(svgFile).contains("paper-moved-segment")
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check vm.workspaceEditStage.val == wesClean
+      dispose()
+
+  test "vector_editor_unbacked_freeform_path_editing_is_diagnosed":
     createRoot proc(dispose: proc()) =
       let vm = createEditorVM()
       let adapter = vm.vectorEditor.adapter.val
+      let pathBackend = selectedVectorPathBackend()
+      check vpboUnite in pathBackend.operations
+      check vpboMoveSegment in pathBackend.operations
       check not adapter.hasCapability(vacPathEditing)
       check adapter.unsupportedAdvancedOperations.anyIt(
-        it.contains("Boolean path"))
-      check adapter.unsupportedAdvancedOperations.anyIt(
-        it.contains("bezier node editing"))
-      let result = vm.unsupportedVectorOperation("Boolean union")
+        it.contains("Freeform bezier node editing"))
+      let result = vm.unsupportedVectorOperation("Freeform bezier editing")
       check not result.ok
       check result.diagnostics.len == 1
       check result.diagnostics[0].kind == vdkUnsupportedOperation

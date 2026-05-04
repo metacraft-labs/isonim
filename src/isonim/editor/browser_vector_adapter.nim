@@ -34,9 +34,13 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
   const initialSvg = """, svg, """;
   const activeTool = """, tool, """;
   const fabricLib = globalThis.fabric;
+  const paperLib = globalThis.paper;
   host.dataset.vectorAdapter = 'fabric';
   host.dataset.vectorLibraryBacked = fabricLib ? 'true' : 'false';
   host.dataset.vectorBackendVersion = '7.3.1';
+  host.dataset.vectorPathAdapter = paperLib ? 'paper' : 'missing-paper';
+  host.dataset.vectorPathLibraryBacked = paperLib ? 'true' : 'false';
+  host.dataset.vectorPathBackendVersion = '0.12.18';
   host.dataset.vectorSvgoBacked = 'pending';
   if (!fabricLib) {
     host.dataset.vectorAdapterStatus = 'missing-fabric';
@@ -72,6 +76,11 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
       if (action === 'set-fill') editor.setSelectedProperty('fill', '#EF4444');
       if (action === 'set-stroke') editor.setSelectedProperty('stroke', '#22C55E');
       if (action === 'transform-selection') editor.transformSelected();
+      if (action === 'boolean-unite') editor.runPaperBoolean('unite');
+      if (action === 'boolean-subtract') editor.runPaperBoolean('subtract');
+      if (action === 'boolean-intersect') editor.runPaperBoolean('intersect');
+      if (action === 'boolean-exclude') editor.runPaperBoolean('exclude');
+      if (action === 'move-segment') editor.movePaperSegment();
       event.preventDefault();
     };
     document.addEventListener('click', runDelegatedAction);
@@ -128,6 +137,7 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
     canvas,
     svgoOptimize: null,
     sourceChangeSeq: 0,
+    paperLib,
     recordSourceChange(operation) {
       const exported = this.exportSvg();
       this.sourceChangeSeq += 1;
@@ -324,6 +334,95 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
       this.recordSourceChange(`property-${prop}`);
       return true;
     },
+    addPaperPath(name, pathData, fill = 'rgba(236,72,153,0.22)', stroke = '#EC4899') {
+      const obj = new fabricLib.Path(pathData, {
+        fill,
+        stroke,
+        strokeWidth: 3,
+        selectable: true,
+        name
+      });
+      canvas.add(obj);
+      canvas.setActiveObject(obj);
+      canvas.requestRenderAll();
+      this.syncSelection();
+      return obj;
+    },
+    makePaperScope() {
+      if (!this.paperLib || typeof this.paperLib.PaperScope !== 'function') {
+        host.dataset.vectorPathOperationBacked = 'false';
+        host.dataset.vectorPathOperationError = 'missing-paper';
+        return null;
+      }
+      const scope = new this.paperLib.PaperScope();
+      const offscreen = document.createElement('canvas');
+      offscreen.width = 256;
+      offscreen.height = 256;
+      scope.setup(offscreen);
+      return scope;
+    },
+    runPaperBoolean(operation) {
+      const scope = this.makePaperScope();
+      if (!scope) return false;
+      try {
+        const left = new scope.Path.Rectangle({
+          point: [84, 84],
+          size: [128, 96],
+          fillColor: '#60A5FA'
+        });
+        const right = new scope.Path.Rectangle({
+          point: [148, 116],
+          size: [128, 96],
+          fillColor: '#F97316'
+        });
+        let result;
+        if (operation === 'unite') result = left.unite(right, { insert: false });
+        if (operation === 'subtract') result = left.subtract(right, { insert: false });
+        if (operation === 'intersect') result = left.intersect(right, { insert: false });
+        if (operation === 'exclude') result = left.exclude(right, { insert: false });
+        if (!result || !result.pathData) throw new Error(`Paper.js ${operation} produced no pathData`);
+        result.fillColor = '#EC4899';
+        result.strokeColor = '#F9A8D4';
+        const exported = result.exportSVG({ asString: true });
+        this.addPaperPath(`paper-${operation}`, result.pathData);
+        host.dataset.vectorPathOperationBacked = 'paper';
+        host.dataset.vectorPathOperation = operation;
+        host.dataset.vectorPathDataLength = String(result.pathData.length);
+        host.dataset.vectorPathExportHasPath = String(String(exported).includes('<path'));
+        scope.project.clear();
+        this.recordSourceChange(`paper-boolean-${operation}`);
+        return true;
+      } catch (error) {
+        host.dataset.vectorPathOperationBacked = 'error';
+        host.dataset.vectorPathOperationError = String(error && error.message ? error.message : error);
+        return false;
+      }
+    },
+    movePaperSegment() {
+      const scope = this.makePaperScope();
+      if (!scope) return false;
+      try {
+        const path = new scope.Path('M 92 304 L 156 244 L 220 304');
+        path.strokeColor = '#A78BFA';
+        path.strokeWidth = 5;
+        path.fillColor = null;
+        path.segments[1].point.x = 156;
+        path.segments[1].point.y = 216;
+        const exported = path.exportSVG({ asString: true });
+        this.addPaperPath('paper-moved-segment', path.pathData, '', '#A78BFA');
+        host.dataset.vectorPathOperationBacked = 'paper';
+        host.dataset.vectorPathOperation = 'move-segment';
+        host.dataset.vectorPathDataLength = String(path.pathData.length);
+        host.dataset.vectorPathExportHasPath = String(String(exported).includes('<path'));
+        scope.project.clear();
+        this.recordSourceChange('paper-move-segment');
+        return true;
+      } catch (error) {
+        host.dataset.vectorPathOperationBacked = 'error';
+        host.dataset.vectorPathOperationError = String(error && error.message ? error.message : error);
+        return false;
+      }
+    },
     transformSelected() {
       const obj = canvas.getActiveObject();
       if (!obj) return false;
@@ -415,6 +514,11 @@ proc runFabricVectorAction*[E](host: E; action: string) =
   if (action === 'set-fill') editor.setSelectedProperty('fill', '#EF4444');
   if (action === 'set-stroke') editor.setSelectedProperty('stroke', '#22C55E');
   if (action === 'transform-selection') editor.transformSelected();
+  if (action === 'boolean-unite') editor.runPaperBoolean('unite');
+  if (action === 'boolean-subtract') editor.runPaperBoolean('subtract');
+  if (action === 'boolean-intersect') editor.runPaperBoolean('intersect');
+  if (action === 'boolean-exclude') editor.runPaperBoolean('exclude');
+  if (action === 'move-segment') editor.movePaperSegment();
 })()
   """].}
 

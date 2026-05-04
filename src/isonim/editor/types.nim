@@ -213,6 +213,7 @@ type
 
   VectorBackendKind* = enum
     vbFabric
+    vbPaperJs
     vbSvgJsPlugins
     vbMethodDraw
     vbCustom
@@ -231,6 +232,25 @@ type
     vacSvgExport
     vacAccessibilityMetadata
     vacOptimization
+    vacPathBooleanOps
+    vacPathDataEditing
+
+  VectorPathBackendOperation* = enum
+    vpboUnite
+    vpboSubtract
+    vpboIntersect
+    vpboExclude
+    vpboMoveSegment
+
+  VectorPathBackendContract* = object
+    backend*: VectorBackendKind
+    libraryName*: string
+    libraryVersion*: string
+    browserGlobal*: string
+    license*: string
+    operations*: seq[VectorPathBackendOperation]
+    adapterModule*: string
+    sourceBacked*: bool
 
   VectorLibraryCandidate* = object
     name*: string
@@ -346,6 +366,8 @@ type
     vokSetViewBox
     vokAddShape
     vokReuseSymbol
+    vokBooleanPath
+    vokMovePathSegment
 
   VectorPropertyKind* = enum
     vpkFill

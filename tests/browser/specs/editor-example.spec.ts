@@ -128,13 +128,22 @@ test.describe("IsoNim packaged editor example", () => {
     const host = page.locator('[data-vector-adapter="fabric"]').first();
     await expect(host).toHaveAttribute("data-vector-library-backed", "true");
     await expect(host).toHaveAttribute("data-vector-backend-version", "7.3.1");
+    await expect(host).toHaveAttribute("data-vector-path-adapter", "paper");
+    await expect(host).toHaveAttribute(
+      "data-vector-path-library-backed",
+      "true",
+    );
+    await expect(host).toHaveAttribute(
+      "data-vector-path-backend-version",
+      "0.12.18",
+    );
     await expect(host).toHaveAttribute("data-vector-svgo-backed", "true");
     await expect(
       host.locator('canvas[data-vector-canvas="fabric"]'),
     ).toBeVisible();
     await expect(
-      page.getByRole("button", { name: "Unsupported vector Union" }),
-    ).toHaveAttribute("aria-disabled", "true");
+      page.getByRole("button", { name: "Vector Union" }),
+    ).toHaveAttribute("data-vector-action", "boolean-unite");
 
     const rect = page.getByRole("button", {
       name: "Select Rectangle vector tool",
@@ -288,6 +297,62 @@ test.describe("IsoNim packaged editor example", () => {
       )
       .toBeGreaterThan(100);
 
+    const paperBooleanActions = [
+      ["Vector Union", "unite"],
+      ["Vector Sub", "subtract"],
+      ["Vector Inter", "intersect"],
+      ["Vector Excl", "exclude"],
+    ] as const;
+    for (const [buttonName, operation] of paperBooleanActions) {
+      await page.getByRole("button", { name: buttonName }).click();
+      await expect(host).toHaveAttribute(
+        "data-vector-path-operation-backed",
+        "paper",
+      );
+      await expect(host).toHaveAttribute(
+        "data-vector-path-operation",
+        operation,
+      );
+      await expect(host).toHaveAttribute(
+        "data-vector-path-export-has-path",
+        "true",
+      );
+      await expect
+        .poll(async () =>
+          Number(
+            await host.evaluate((node) =>
+              node.getAttribute("data-vector-path-data-length"),
+            ),
+          ),
+        )
+        .toBeGreaterThan(10);
+    }
+
+    await page.getByRole("button", { name: "Vector move-segment" }).click();
+    await expect(host).toHaveAttribute(
+      "data-vector-path-operation",
+      "move-segment",
+    );
+    await expect
+      .poll(async () =>
+        Number(
+          await saveVector.evaluate((node) =>
+            node.getAttribute("data-vector-pending-source-edits"),
+          ),
+        ),
+      )
+      .toBeGreaterThan(0);
+    await saveVector.click();
+    await expect(saveVector).toHaveAttribute(
+      "data-vector-source-stage",
+      "wesClean",
+    );
+
+    const countBeforeDelete = Number(
+      await host.evaluate((node) =>
+        node.getAttribute("data-vector-object-count"),
+      ),
+    );
     await page.getByRole("button", { name: "Vector delete" }).click();
     await expect
       .poll(async () =>
@@ -297,6 +362,6 @@ test.describe("IsoNim packaged editor example", () => {
           ),
         ),
       )
-      .toBe(countBefore);
+      .toBe(countBeforeDelete - 1);
   });
 });
