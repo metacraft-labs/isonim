@@ -171,6 +171,30 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await page.getByRole("button", { name: "Open Components section" }).click();
     await page
       .getByRole("button", {
+        name: "Select story Operational components / Back-office navigation",
+      })
+      .click();
+    await expect(
+      page
+        .frameLocator(
+          'iframe[title="Component preview Operational components / Back-office navigation"]',
+        )
+        .getByTestId("component-sidebar-nav"),
+    ).toBeVisible();
+    await page
+      .getByRole("button", {
+        name: "Select story Operational components / Topbar",
+      })
+      .click();
+    await expect(
+      page
+        .frameLocator(
+          'iframe[title="Component preview Operational components / Topbar"]',
+        )
+        .getByTestId("component-topbar"),
+    ).toBeVisible();
+    await page
+      .getByRole("button", {
         name: "Select story Operational components / Status badge tones",
       })
       .click();
