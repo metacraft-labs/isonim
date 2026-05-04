@@ -12,6 +12,19 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
         .frameLocator('iframe[title="Project preview"]')
         .getByTestId("back-office-app"),
     ).toBeVisible();
+
+    await page.getByRole("button", { name: "Open Flow editor view" }).click();
+    await expect(page.getByText("User Flows")).toBeVisible();
+    await expect(
+      page.locator('iframe[title="Flow preview Issue CodeTracer license"]'),
+    ).toHaveAttribute("srcdoc", /customer-detail/);
+    await page.getByRole("button", { name: "Open Page editor view" }).click();
+    await expect(
+      page
+        .frameLocator('iframe[title="Project preview"]')
+        .getByTestId("back-office-app"),
+    ).toBeVisible();
+
     const frame = page.getByLabel("Preview device frame");
     await expect(frame).toHaveCSS("width", "1280px");
     await expect(frame).toHaveCSS("height", "900px");
@@ -106,7 +119,9 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       })
       .click();
     await expect(
-      page.getByText("Customer and license flows / Issue CodeTracer license").first(),
+      page
+        .getByText("Customer and license flows / Issue CodeTracer license")
+        .first(),
     ).toBeVisible();
     await expect(
       page
@@ -114,7 +129,9 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
         .getByTestId("customer-detail"),
     ).toBeVisible();
     await expect(
-      page.getByText("apps/back-office/src/backoffice_server/router.nim").first(),
+      page
+        .getByText("apps/back-office/src/backoffice_server/router.nim")
+        .first(),
     ).toBeVisible();
 
     await page.goto("/?view=vector#vector-editor");

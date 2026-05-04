@@ -9,6 +9,8 @@ import isonim/editor/stories
 import isonim/editor/types
 import isonim/editor/views/shell
 import isonim/editor/views/chat_panel
+import isonim/editor/views/page_preview
+import isonim/editor/views/storyboard
 import isonim/editor/views/vector_editor
 
 proc findByAttr(node: MockNode; name, value: string): MockNode =
@@ -115,7 +117,7 @@ suite "Editor Shell Views (M2)":
 
       # Chat section is the last child
       let chatSection = panel.children[^1]
-      check chatSection.children.len >= 2  # header + input row
+      check chatSection.children.len >= 2 # header + input row
 
       dispose()
 
@@ -125,8 +127,10 @@ suite "Editor Shell Views (M2)":
       let vm = createEditorVM()
       vm.sidebar.groups.val = buildStoryboard()
       vm.vectorEditor.symbols.val = @[
-        VectorSymbol(name: "Circle", category: "Icons", svgContent: "<svg></svg>"),
-        VectorSymbol(name: "Rectangle", category: "Icons", svgContent: "<svg></svg>"),
+        VectorSymbol(name: "Circle", category: "Icons",
+            svgContent: "<svg></svg>"),
+        VectorSymbol(name: "Rectangle", category: "Icons",
+            svgContent: "<svg></svg>"),
         VectorSymbol(name: "Line", category: "Icons", svgContent: "<svg></svg>")
       ]
 
@@ -240,12 +244,12 @@ suite "Editor Shell Views (M2)":
       var cancelled = false
       vm.chat.configureAgentAdapters(
         proc(prompt: string; context: AgentPromptContext): bool =
-          sentPrompt = prompt
-          check context.selectedStory.name == "Active task"
-          true,
+        sentPrompt = prompt
+        check context.selectedStory.name == "Active task"
+        true,
         proc(): bool =
-          cancelled = true
-          true)
+        cancelled = true
+        true)
 
       let chat = renderChatPanel[MockRenderer, MockNode](r, vm)
       let input = findByAttr(chat, "aria-label", "Agent prompt")
@@ -262,6 +266,57 @@ suite "Editor Shell Views (M2)":
       cancel.fireEvent("click")
       check cancelled
       check vm.chat.connectionState.val == "cancelled"
+
+      dispose()
+
+  test "page preview exposes top level view navigation":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.activeView.val = evPagePreview
+
+      let preview = renderPagePreview[MockRenderer, MockNode](r, vm)
+      let flowView = findByAttr(preview, "aria-label", "Open Flow editor view")
+      let pageView = findByAttr(preview, "aria-label", "Open Page editor view")
+
+      check flowView != nil
+      check pageView != nil
+      check pageView.attributes["aria-pressed"] == "true"
+      flowView.fireEvent("click")
+      check vm.activeView.val == evStoryboard
+      check flowView.attributes["aria-pressed"] == "true"
+
+      dispose()
+
+  test "storyboard renders project previews for flow cards":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = @[
+        StoryGroup(
+          name: "Checkout flow",
+          kind: skFlow,
+          description: "Project-owned user flow",
+          expanded: true,
+          items: @[
+            StoryItem(name: "Cart", description: "Cart screen",
+                      kind: skFlow, group: "Checkout flow")
+        ])
+      ]
+      vm.preview.hook = proc(story: StoryRef;
+          platform: Platform): ProjectPreview =
+        ProjectPreview(
+          status: ppsRendered,
+          story: story,
+          title: story.name,
+          documentHtml: "<main data-testid=\"real-flow-screen\">Cart</main>")
+
+      let storyboard = renderStoryboardCanvas[MockRenderer, MockNode](r, vm)
+      let flowFrame = findByAttr(storyboard, "title", "Flow preview Cart")
+
+      check flowFrame != nil
+      check flowFrame.attributes["srcdoc"].contains("real-flow-screen")
+      check flowFrame.styles["pointer-events"] == "none"
 
       dispose()
 

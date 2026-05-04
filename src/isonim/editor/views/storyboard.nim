@@ -5,9 +5,8 @@
 ## pages are accessed via the sidebar. This follows the Figma/Overflow
 ## pattern: canvas shows spatial relationships, sidebar shows details.
 
-import std/strutils
 import isonim/core/[signals, computation]
-import isonim/dsl/[ui, components]
+import isonim/dsl/ui
 import isonim/editor/viewmodels
 import isonim/editor/types
 
@@ -22,7 +21,6 @@ const
   textMuted = "#64748B"
   textDim = "#475569"
   accent = "#3B82F6"
-  gold = "#F59E0B"
 
 type
   FlowRow = object
@@ -63,6 +61,29 @@ proc renderGenericMiniPreview[R, E](r: R; label: string): E =
               color = "#475569", line_height = "1.25"):
           text label
 
+proc renderProjectMiniPreview[R, E](r: R; vm: EditorVM; story: StoryRef;
+    label: string): E =
+  ## Flow cards render the project-owned preview document when available.
+  let preview = vm.preview.hook(story, vm.platform.val)
+  if preview.documentHtml.len == 0:
+    return renderGenericMiniPreview[R, E](r, label)
+
+  let frame = ui(r):
+    iframe(title = "Flow preview " & label,
+        width = "1280",
+        height = "900",
+        border = "0")
+  r.setAttribute(frame, "srcdoc", preview.documentHtml)
+  r.setStyle(frame, "position", "absolute")
+  r.setStyle(frame, "left", "0")
+  r.setStyle(frame, "top", "0")
+  r.setStyle(frame, "width", "1280px")
+  r.setStyle(frame, "height", "900px")
+  r.setStyle(frame, "transform", "scale(0.295)")
+  r.setStyle(frame, "transform-origin", "top left")
+  r.setStyle(frame, "pointer-events", "none")
+  frame
+
 proc layoutFlows(groups: seq[StoryGroup]): seq[FlowRow] =
   ## Arrange only user flow groups as horizontal card sequences.
   for group in groups:
@@ -91,6 +112,19 @@ proc toggleFlowPlayback(vm: EditorVM) =
   else:
     vm.flowPlayer.play()
 
+proc activeViewHandler(vm: EditorVM; view: EditorView): proc() =
+  let captured = view
+  result = proc() = vm.setActiveView(captured)
+
+proc bindActiveViewButton[R, E](r: R; node: E; vm: EditorVM;
+    view: EditorView) =
+  let captured = view
+  createRenderEffect proc() =
+    let active = vm.activeView.val == captured
+    r.setAttribute(node, "aria-pressed", if active: "true" else: "false")
+    r.setStyle(node, "background-color", if active: accent else: "transparent")
+    r.setStyle(node, "color", if active: textPrimary else: textMuted)
+
 proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
   let flows = layoutFlows(vm.sidebar.groups.val)
 
@@ -111,6 +145,36 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
             text "User Flows"
           span(font_size = "11px", color = textDim):
             text $(flows.len) & " flows"
+        # Top-level editor view navigation.
+        tdiv(display = "flex", align_items = "center", gap = "1px",
+              background_color = bgSurface, border_radius = "6px",
+              padding = "3px"):
+          for option in [
+            (evStoryboard, "Flow"),
+            (evComponentDetail, "Detail"),
+            (evPagePreview, "Page"),
+            (evVectorEditor, "Vector")]:
+            let targetView = option[0]
+            let label = option[1]
+            let chooseView = activeViewHandler(vm, targetView)
+            var viewNode: E
+            tdiv(padding = "4px 10px", border_radius = "4px",
+                  ref = viewNode,
+                  `role` = "button", tabindex = "0",
+                  `aria-label` = "Open " & label & " editor view",
+                  `aria-pressed` = (if vm.activeView.val ==
+                      targetView: "true" else: "false"),
+                  onclick = chooseView,
+                  onkeydown = chooseView,
+                  font_size = "11px", font_weight = "500",
+                  cursor = "pointer", transition = "all 0.15s",
+                  background_color = (if vm.activeView.val ==
+                      targetView: accent else: "transparent"),
+                  color = (if vm.activeView.val ==
+                      targetView: textPrimary else: textMuted)):
+              text label
+            block:
+              r.bindActiveViewButton(viewNode, vm, targetView)
         # Flow playback controls
         tdiv(display = "flex", align_items = "center", gap = "4px",
               background_color = bgSurface, border_radius = "6px",
@@ -290,9 +354,8 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
               box_shadow = "inset 0 0 0 1px rgba(0,0,0,0.06)")
       r.appendChild(cardEl, cardContent)
 
-      let preview = renderGenericMiniPreview[R, E](r, stepLabel)
+      let preview = renderProjectMiniPreview[R, E](r, vm, story, stepLabel)
       r.setStyle(preview, "position", "absolute")
-      r.setStyle(preview, "inset", "0")
       r.appendChild(cardContent, preview)
 
       # Card label: "N. Action description"
