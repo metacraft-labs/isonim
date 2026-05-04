@@ -102,7 +102,13 @@ type
     viewport*: Signal[PreviewViewport]
     workspacePermissions*: Signal[EditorWorkspacePermissions]
     sourceAdapterReady*: Signal[bool]
+    workspaceEditStage*: Signal[WorkspaceEditStage]
+    workspaceEditDiagnostics*: Signal[seq[WorkspaceEditDiagnostic]]
+    workspaceEditPatches*: Signal[seq[WorkspaceFilePatch]]
+    workspaceEditAffectedStories*: Signal[seq[StoryRef]]
+    workspaceEditFullReload*: Signal[bool]
     commandStates*: Signal[seq[EditorCommandState]]
+    workspaceEditAdapter*: WorkspaceEditAdapter
     sidebar*: SidebarVM
     storyboard*: StoryboardVM
     inspector*: InspectorVM
@@ -156,6 +162,18 @@ func allEditorCommandKinds*(): seq[EditorCommandKind] =
 
 func sameStory(a, b: StoryRef): bool =
   a.group == b.group and a.name == b.name and a.kind == b.kind
+
+func isEmptyStoryRef(story: StoryRef): bool =
+  story.group.len == 0 and story.name.len == 0
+
+func workspaceDiagnostic(kind: WorkspaceEditDiagnosticKind; message: string;
+    file = ""; schemaKey = ""; property = ""): WorkspaceEditDiagnostic =
+  WorkspaceEditDiagnostic(
+    kind: kind,
+    message: message,
+    file: file,
+    schemaKey: schemaKey,
+    property: property)
 
 func viewForStory(story: StoryRef): EditorView =
   case story.kind
@@ -888,6 +906,8 @@ proc failCommand(editor: EditorVM; kind: EditorCommandKind;
     sourceLine: source.line)
   editor.setCommandState(result)
 
+proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardable.}
+
 proc setEditMode*(editor: EditorVM; mode: EditMode) =
   editor.editMode.val = mode
   if mode == emEdit and editor.activeView.val in {evComponentDetail,
@@ -929,7 +949,11 @@ proc runEditorCommand*(editor: EditorVM;
     editor.inspector.editDiagnostics.val = @[]
     editor.chat.accumulatedEdits.val = @[]
   of eckSave:
-    discard
+    let saveResult = editor.applyWorkspaceFileEdits()
+    if not saveResult.ok:
+      return editor.failCommand(kind,
+        if saveResult.diagnostics.len > 0: saveResult.diagnostics[0].message
+        else: "Workspace edit transaction failed.")
   of eckDuplicate, eckDelete, eckCreateVariant, eckCreateStory:
     discard
   of eckOpenSource:
@@ -1141,6 +1165,8 @@ proc editInspectorProperty*(editor: EditorVM;
     request: PropertyEditRequest): PropertyEditResult {.discardable.} =
   result = editor.inspector.editProperty(request)
   if result.status == pesAccepted:
+    editor.workspaceEditStage.val = wesDirty
+    editor.workspaceEditDiagnostics.val = @[]
     let acceptedRecord = result.record
     editor.chat.accumulatedEdits.update proc(prev: seq[EditRecord]): seq[EditRecord] =
       result = prev
@@ -1309,6 +1335,323 @@ proc saveCssPropertyEdits*(inspector: InspectorVM;
   result = inspector.applyPendingSourceEdits(adapter) == total
   if result:
     inspector.markCssPropertyEditsSaved()
+
+func workspacePlanKeys(plan: SourceEditPlan): seq[string] =
+  if plan.schemaKey.len > 0:
+    result.add plan.schemaKey
+    result.add "schema:" & plan.schemaKey
+  if plan.tokenName.len > 0:
+    result.add plan.tokenName
+    result.add "token:" & plan.tokenName
+  if plan.variantKey.len > 0:
+    result.add plan.variantKey
+    result.add "variant:" & plan.variantKey
+  if plan.conflictKey.len > 0:
+    result.add plan.conflictKey
+    result.add "source:" & plan.conflictKey
+  if plan.originDetail.len > 0:
+    result.add plan.originDetail
+
+func resolveWorkspaceSchema(adapter: WorkspaceEditAdapter;
+    plan: SourceEditPlan): tuple[ok: bool, entry: WorkspaceEditableSchemaEntry] =
+  if adapter.isNil:
+    return
+  let keys = workspacePlanKeys(plan)
+  for key in keys:
+    for entry in adapter.schema:
+      if entry.key == key:
+        return (true, entry)
+  for entry in adapter.schema:
+    if entry.file == plan.file and
+        (entry.property == plan.property or entry.property.len == 0):
+      return (true, entry)
+
+func workspaceOpFailed(op: WorkspaceOperationResult): bool =
+  not op.ok
+
+proc addUniqueFile(files: var seq[string]; file: string) =
+  if file.len == 0:
+    return
+  if file notin files:
+    files.add file
+
+proc addUniqueStory(stories: var seq[StoryRef]; story: StoryRef) =
+  if story.isEmptyStoryRef:
+    return
+  for existing in stories:
+    if sameStory(existing, story):
+      return
+  stories.add story
+
+type WorkspaceFileDraft = object
+  file: string
+  beforeContent: string
+  currentContent: string
+
+proc draftIndex(drafts: seq[WorkspaceFileDraft]; file: string): int =
+  for i, draft in drafts:
+    if draft.file == file:
+      return i
+  -1
+
+proc patchForFile(patches: seq[WorkspaceFilePatch];
+    file: string): WorkspaceFilePatch =
+  for patch in patches:
+    if patch.file == file:
+      return patch
+
+proc failWorkspaceEdit(editor: EditorVM; diagnostics: seq[WorkspaceEditDiagnostic];
+    patches: seq[WorkspaceFilePatch] = @[];
+    stage = wesFailed): WorkspaceEditResult =
+  editor.workspaceEditStage.val = stage
+  editor.workspaceEditDiagnostics.val = diagnostics
+  WorkspaceEditResult(
+    ok: false,
+    stage: stage,
+    diagnostics: diagnostics,
+    patches: patches)
+
+proc operationDiagnostics(kind: WorkspaceEditDiagnosticKind;
+    op: WorkspaceOperationResult; fallback: string): seq[WorkspaceEditDiagnostic] =
+  if op.diagnostics.len > 0:
+    return op.diagnostics
+  @[workspaceDiagnostic(kind, if op.message.len > 0: op.message else: fallback)]
+
+proc rollbackWorkspaceWrites(editor: EditorVM; adapter: WorkspaceEditAdapter;
+    originals: seq[WorkspaceFilePatch]): seq[WorkspaceEditDiagnostic] =
+  if originals.len == 0:
+    return @[]
+  for patch in countdown(originals.high, 0):
+    let current = originals[patch]
+    let op = adapter.writeFile(current.file, current.beforeContent)
+    if not op.ok:
+      if op.diagnostics.len > 0:
+        result.add op.diagnostics
+      else:
+        result.add workspaceDiagnostic(wedRollbackFailed,
+          "Rollback failed while restoring " & current.file & ".",
+          file = current.file,
+          schemaKey = current.schema.key,
+          property = current.plan.property)
+
+proc requireWorkspaceAdapter(editor: EditorVM): tuple[ok: bool,
+    adapter: WorkspaceEditAdapter, diagnostics: seq[WorkspaceEditDiagnostic]] =
+  result.adapter = editor.workspaceEditAdapter
+  if result.adapter.isNil:
+    result.diagnostics = @[workspaceDiagnostic(wedMissingAdapter,
+      "No workspace edit adapter is configured.")]
+    return
+  if result.adapter.readFile.isNil:
+    result.diagnostics = @[workspaceDiagnostic(wedMissingOperation,
+      "Workspace edit adapter is missing readFile.")]
+    return
+  if result.adapter.writeFile.isNil:
+    result.diagnostics = @[workspaceDiagnostic(wedMissingOperation,
+      "Workspace edit adapter is missing writeFile.")]
+    return
+  if result.adapter.patchFile.isNil:
+    result.diagnostics = @[workspaceDiagnostic(wedMissingOperation,
+      "Workspace edit adapter is missing patchFile.")]
+    return
+  result.ok = true
+
+proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardable.} =
+  ## Apply pending source plans through a project-owned adapter transaction.
+  ## Files are read and patched before writes begin; failed post-write operations
+  ## roll written files back to their original content.
+  let pending = editor.inspector.pendingSourceEdits.val
+  if pending.len == 0:
+    editor.workspaceEditStage.val = wesClean
+    editor.workspaceEditDiagnostics.val = @[]
+    return WorkspaceEditResult(ok: true, stage: wesClean)
+
+  let adapterReq = editor.requireWorkspaceAdapter()
+  if not adapterReq.ok:
+    return editor.failWorkspaceEdit(adapterReq.diagnostics)
+  let adapter = adapterReq.adapter
+
+  editor.workspaceEditStage.val = wesApplying
+  editor.workspaceEditDiagnostics.val = @[]
+  editor.workspaceEditPatches.val = @[]
+  editor.workspaceEditAffectedStories.val = @[]
+  editor.workspaceEditFullReload.val = false
+
+  var patches: seq[WorkspaceFilePatch] = @[]
+  var diagnostics: seq[WorkspaceEditDiagnostic] = @[]
+  var files: seq[string] = @[]
+  var schemaKeys: seq[string] = @[]
+  var affectedStories: seq[StoryRef] = @[]
+  var drafts: seq[WorkspaceFileDraft] = @[]
+  var fullReload = false
+
+  for plan in pending:
+    let resolved = adapter.resolveWorkspaceSchema(plan)
+    if not resolved.ok:
+      diagnostics.add workspaceDiagnostic(wedMissingSchema,
+        "No project schema or source map entry can safely represent this edit.",
+        file = plan.file,
+        schemaKey = if plan.schemaKey.len > 0: plan.schemaKey else: plan.conflictKey,
+        property = plan.property)
+      continue
+
+    if resolved.entry.file.len > 0 and plan.file.len > 0 and
+        resolved.entry.file != plan.file:
+      diagnostics.add workspaceDiagnostic(wedUnsafeSourceMap,
+        "The source plan file does not match the resolved project schema file.",
+        file = plan.file,
+        schemaKey = resolved.entry.key,
+        property = plan.property)
+      continue
+
+    let targetFile =
+      if plan.file.len > 0: plan.file
+      else: resolved.entry.file
+    var draftPos = drafts.draftIndex(targetFile)
+    if draftPos < 0:
+      let read = adapter.readFile(targetFile)
+      if not read.ok:
+        if read.diagnostics.len > 0:
+          diagnostics.add read.diagnostics
+        else:
+          diagnostics.add workspaceDiagnostic(wedReadFailed,
+            "Could not read " & targetFile & ".", file = targetFile,
+            schemaKey = resolved.entry.key, property = plan.property)
+        continue
+      drafts.add WorkspaceFileDraft(file: targetFile,
+        beforeContent: read.content,
+        currentContent: read.content)
+      draftPos = drafts.high
+
+    if plan.expectedOldValue.len > 0 and
+        plan.expectedOldValue notin drafts[draftPos].currentContent:
+      diagnostics.add workspaceDiagnostic(wedSourceConflict,
+        "Source changed before the pending edit could be applied.",
+        file = targetFile,
+        schemaKey = resolved.entry.key,
+        property = plan.property)
+      continue
+
+    let patchResult = adapter.patchFile(plan, drafts[draftPos].currentContent,
+      resolved.entry)
+    if not patchResult.ok:
+      if patchResult.diagnostics.len > 0:
+        diagnostics.add patchResult.diagnostics
+      else:
+        diagnostics.add workspaceDiagnostic(wedPatchFailed,
+          "Could not create a patch for " & plan.property & ".",
+          file = plan.file,
+          schemaKey = resolved.entry.key,
+          property = plan.property)
+      continue
+
+    var patch = patchResult.patch
+    if patch.file.len == 0:
+      patch.file = targetFile
+    patch.plan = plan
+    patch.schema = resolved.entry
+    patch.beforeContent = drafts[draftPos].currentContent
+    if patch.affectedStory.isEmptyStoryRef:
+      patch.affectedStory = resolved.entry.story
+    if patch.afterContent.len == 0 and drafts[draftPos].currentContent.len > 0:
+      diagnostics.add workspaceDiagnostic(wedPatchFailed,
+        "Project adapter returned an empty patched source.",
+        file = targetFile,
+        schemaKey = resolved.entry.key,
+        property = plan.property)
+      continue
+
+    drafts[draftPos].currentContent = patch.afterContent
+    patches.add patch
+    files.addUniqueFile patch.file
+    if resolved.entry.key.len > 0 and resolved.entry.key notin schemaKeys:
+      schemaKeys.add resolved.entry.key
+    affectedStories.addUniqueStory patch.affectedStory
+    fullReload = fullReload or patch.fullReload
+
+  if diagnostics.len > 0:
+    return editor.failWorkspaceEdit(diagnostics, patches)
+
+  if adapter.review != nil:
+    editor.workspaceEditStage.val = wesReviewing
+    let review = adapter.review(patches)
+    editor.review.violations.val = review.violations
+    if not review.ok:
+      diagnostics = review.diagnostics
+      if diagnostics.len == 0:
+        diagnostics.add workspaceDiagnostic(wedReviewFailed,
+          "Workspace review rejected the pending edit transaction.")
+      return editor.failWorkspaceEdit(diagnostics, patches)
+
+  var writePatches: seq[WorkspaceFilePatch] = @[]
+  for draft in drafts:
+    var writePatch = patches.patchForFile(draft.file)
+    writePatch.file = draft.file
+    writePatch.beforeContent = draft.beforeContent
+    writePatch.afterContent = draft.currentContent
+    writePatches.add writePatch
+
+  var written: seq[WorkspaceFilePatch] = @[]
+  for patch in writePatches:
+    let write = adapter.writeFile(patch.file, patch.afterContent)
+    if write.workspaceOpFailed:
+      diagnostics = operationDiagnostics(wedWriteFailed, write,
+        "Could not write " & patch.file & ".")
+      diagnostics.add rollbackWorkspaceWrites(editor, adapter, written)
+      return editor.failWorkspaceEdit(diagnostics, patches)
+    written.add patch
+
+  if adapter.formatFiles != nil:
+    editor.workspaceEditStage.val = wesFormatting
+    let formatted = adapter.formatFiles(files)
+    if formatted.workspaceOpFailed:
+      diagnostics = operationDiagnostics(wedFormatFailed, formatted,
+        "Workspace formatting failed.")
+      diagnostics.add rollbackWorkspaceWrites(editor, adapter, written)
+      return editor.failWorkspaceEdit(diagnostics, patches)
+
+  if adapter.regenerate != nil:
+    editor.workspaceEditStage.val = wesRegenerating
+    let regenerated = adapter.regenerate(schemaKeys)
+    if regenerated.workspaceOpFailed:
+      diagnostics = operationDiagnostics(wedRegenerateFailed, regenerated,
+        "Workspace regeneration failed.")
+      diagnostics.add rollbackWorkspaceWrites(editor, adapter, written)
+      return editor.failWorkspaceEdit(diagnostics, patches)
+    for story in regenerated.affectedStories:
+      affectedStories.addUniqueStory story
+    fullReload = fullReload or regenerated.fullReload
+
+  if adapter.compile != nil:
+    editor.workspaceEditStage.val = wesCompiling
+    let compiled = adapter.compile(affectedStories)
+    if compiled.workspaceOpFailed:
+      diagnostics = operationDiagnostics(wedCompileFailed, compiled,
+        "Workspace compilation failed.")
+      diagnostics.add rollbackWorkspaceWrites(editor, adapter, written)
+      return editor.failWorkspaceEdit(diagnostics, patches)
+
+  if adapter.reloadPreview != nil:
+    editor.workspaceEditStage.val = wesReloading
+    let reloaded = adapter.reloadPreview(affectedStories, fullReload)
+    if reloaded.workspaceOpFailed:
+      diagnostics = operationDiagnostics(wedReloadFailed, reloaded,
+        "Workspace preview reload failed.")
+      diagnostics.add rollbackWorkspaceWrites(editor, adapter, written)
+      return editor.failWorkspaceEdit(diagnostics, patches)
+
+  editor.inspector.markCssPropertyEditsSaved()
+  editor.chat.accumulatedEdits.val = @[]
+  editor.workspaceEditStage.val = wesClean
+  editor.workspaceEditDiagnostics.val = @[]
+  editor.workspaceEditPatches.val = patches
+  editor.workspaceEditAffectedStories.val = affectedStories
+  editor.workspaceEditFullReload.val = fullReload
+  WorkspaceEditResult(
+    ok: true,
+    stage: wesClean,
+    patches: patches,
+    affectedStories: affectedStories,
+    fullReload: fullReload)
 
 # ===========================================================================
 # AgentChatVM actions
@@ -1764,6 +2107,11 @@ proc createEditorVM*(): EditorVM =
   let viewport = createSignal(pvDesktop)
   let workspacePermissions = createSignal(defaultWorkspacePermissions())
   let sourceAdapterReady = createSignal(false)
+  let workspaceEditStage = createSignal(wesClean)
+  let workspaceEditDiagnostics = createSignal[seq[WorkspaceEditDiagnostic]](@[])
+  let workspaceEditPatches = createSignal[seq[WorkspaceFilePatch]](@[])
+  let workspaceEditAffectedStories = createSignal[seq[StoryRef]](@[])
+  let workspaceEditFullReload = createSignal(false)
   let commandStates = createSignal[seq[EditorCommandState]](@[])
 
   let sidebar = createSidebarVM()
@@ -1788,6 +2136,11 @@ proc createEditorVM*(): EditorVM =
     viewport: viewport,
     workspacePermissions: workspacePermissions,
     sourceAdapterReady: sourceAdapterReady,
+    workspaceEditStage: workspaceEditStage,
+    workspaceEditDiagnostics: workspaceEditDiagnostics,
+    workspaceEditPatches: workspaceEditPatches,
+    workspaceEditAffectedStories: workspaceEditAffectedStories,
+    workspaceEditFullReload: workspaceEditFullReload,
     commandStates: commandStates,
     sidebar: sidebar,
     storyboard: storyboard,

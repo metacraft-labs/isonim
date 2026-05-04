@@ -1,6 +1,6 @@
 ## Tests for IsoNim Editor ViewModels (M0)
 
-import std/[options, unittest, strutils, sequtils]
+import std/[options, unittest, strutils, sequtils, os]
 import isonim/core/[signals, computation, owner]
 import isonim/viewmodel
 import isonim/editor/viewmodels
@@ -810,6 +810,323 @@ suite "Editor ViewModels (M26 source-backed CSS property editors)":
       check vm.inspector.selectedElement.val.properties.anyIt(
         it.name == "padding" and it.value == "16px")
       check not vm.inspector.isDirty.val
+      dispose()
+
+suite "Editor ViewModels (M27 workspace file writes)":
+
+  type WorkspaceEditRecorder = ref object
+    reloadedStories: seq[StoryRef]
+    fullReloadSeen: bool
+
+  let writeStory = StoryRef(group: "DestinationCard", name: "Default",
+    kind: skComponent, index: 0)
+
+  proc tempWorkspaceDir(name: string): string =
+    result = getTempDir() / ("isonim_editor_" & name & "_" & $getCurrentProcessId())
+    if dirExists(result):
+      removeDir(result)
+    createDir(result)
+
+  proc okOp(message = ""; affectedStories: seq[StoryRef] = @[];
+      fullReload = false): WorkspaceOperationResult =
+    WorkspaceOperationResult(ok: true, message: message,
+      affectedStories: affectedStories, fullReload: fullReload)
+
+  proc failOp(kind: WorkspaceEditDiagnosticKind; message: string;
+      file = ""): WorkspaceOperationResult =
+    WorkspaceOperationResult(ok: false, message: message,
+      diagnostics: @[WorkspaceEditDiagnostic(kind: kind, message: message,
+        file: file)])
+
+  proc planFor(file, property, oldValue, newValue, schemaKey: string;
+      planKind = cspStructuredSchemaUpdate): SourceEditPlan =
+    SourceEditPlan(
+      file: file,
+      line: 1,
+      property: property,
+      oldValue: oldValue,
+      newValue: newValue,
+      originDetail: "schema:" & schemaKey,
+      scope: pesShared,
+      planKind: planKind,
+      schemaKey: schemaKey,
+      reversible: true,
+      previewBefore: property & ": " & oldValue,
+      previewAfter: property & ": " & newValue,
+      formatterHook: "format-test",
+      regeneratorHook: "regenerate-test",
+      conflictKey: file & ":1:" & property,
+      expectedOldValue: oldValue)
+
+  proc atomicWrite(file, content: string) =
+    let tmp = file & ".tmp"
+    writeFile(tmp, content)
+    moveFile(tmp, file)
+
+  proc basicPatch(plan: SourceEditPlan; content: string;
+      schema: WorkspaceEditableSchemaEntry): WorkspacePatchResult =
+    if plan.expectedOldValue.len > 0 and plan.expectedOldValue notin content:
+      return WorkspacePatchResult(ok: false,
+        diagnostics: @[WorkspaceEditDiagnostic(
+          kind: wedSourceConflict,
+          message: "expected value missing",
+          file: plan.file,
+          schemaKey: schema.key,
+          property: plan.property)])
+    WorkspacePatchResult(ok: true, patch: WorkspaceFilePatch(
+      file: plan.file,
+      afterContent: content.replace(plan.expectedOldValue, plan.newValue),
+      affectedStory: schema.story,
+      fullReload: schema.kind in {wskSvgSymbol, wskJourneyMetadata}))
+
+  proc adapterFor(root: string; schema: seq[WorkspaceEditableSchemaEntry];
+      generatedFile = ""; failRegenerate = false;
+      recorder: WorkspaceEditRecorder): WorkspaceEditAdapter =
+    result = WorkspaceEditAdapter(schema: schema)
+    result.readFile = proc(file: string): WorkspaceReadResult =
+      try:
+        WorkspaceReadResult(ok: true, content: readFile(file))
+      except IOError as e:
+        WorkspaceReadResult(ok: false,
+          diagnostics: @[WorkspaceEditDiagnostic(
+            kind: wedReadFailed, message: e.msg, file: file)])
+    result.writeFile = proc(file, content: string): WorkspaceOperationResult =
+      try:
+        atomicWrite(file, content)
+        okOp()
+      except IOError as e:
+        failOp(wedWriteFailed, e.msg, file)
+    result.patchFile = basicPatch
+    result.formatFiles = proc(files: seq[string]): WorkspaceOperationResult =
+      for file in files:
+        writeFile(file & ".formatted", "formatted")
+      okOp()
+    result.regenerate = proc(keys: seq[string]): WorkspaceOperationResult =
+      if failRegenerate:
+        return failOp(wedRegenerateFailed, "regeneration failed")
+      if generatedFile.len > 0:
+        var generated = ""
+        for entry in schema:
+          if fileExists(entry.file):
+            generated.add entry.key & "=" & readFile(entry.file).strip() & "\n"
+        atomicWrite(generatedFile, generated)
+      okOp(affectedStories = @[writeStory])
+    result.compile = proc(stories: seq[StoryRef]): WorkspaceOperationResult =
+      check stories.len > 0
+      okOp()
+    result.reloadPreview = proc(stories: seq[StoryRef];
+        fullReload: bool): WorkspaceOperationResult =
+      recorder.reloadedStories = stories
+      recorder.fullReloadSeen = fullReload
+      okOp()
+    result.review = proc(patches: seq[WorkspaceFilePatch]): WorkspaceReviewResult =
+      for patch in patches:
+        if patch.afterContent.contains("unsafe"):
+          return WorkspaceReviewResult(ok: false,
+            diagnostics: @[WorkspaceEditDiagnostic(
+              kind: wedReviewFailed,
+              message: "unsafe generated source",
+              file: patch.file)])
+      WorkspaceReviewResult(ok: true)
+
+  test "workspace_edit_adapter_applies_transactional_file_changes":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("transaction")
+      defer: removeDir(root)
+
+      let schemaFile = root / "card.schema"
+      atomicWrite(schemaFile, "padding=16px\nmargin=8px")
+      let recorder = WorkspaceEditRecorder()
+      let schema = @[
+        WorkspaceEditableSchemaEntry(
+          key: "components.card.padding",
+          kind: wskComponentVariant,
+          file: schemaFile,
+          path: "components.card.padding",
+          story: writeStory,
+          property: "padding"),
+        WorkspaceEditableSchemaEntry(
+          key: "components.card.margin",
+          kind: wskComponentVariant,
+          file: schemaFile,
+          path: "components.card.margin",
+          story: writeStory,
+          property: "margin")
+      ]
+      let adapter = adapterFor(root, schema, recorder = recorder)
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "M27 temp workspace",
+        storyGroups = @[StoryGroup(name: "DestinationCard", kind: skComponent,
+          items: @[StoryItem(name: "Default", kind: skComponent,
+            group: "DestinationCard")])],
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true, createStory: false, createVariant: false,
+          duplicate: false, delete: false),
+        editAdapter = adapter,
+        initialStory = some(writeStory)))
+
+      check vm.selectInspectorElement(ElementRef(
+        tag: "article",
+        sourceFile: schemaFile,
+        sourceLine: 1,
+        properties: @[PropertyInfo(
+          name: "padding",
+          value: "16px",
+          origin: poConstant,
+          originDetail: "schema:components.card.padding",
+          sourceFile: schemaFile,
+          sourceLine: 1,
+          schemaKey: "components.card.padding")]))
+
+      let edit = vm.editCssProperty("padding", "24px", pesShared)
+      check edit.status == pesAccepted
+      check vm.workspaceEditStage.val == wesDirty
+      check vm.inspector.isDirty.val
+
+      let saved = vm.applyWorkspaceFileEdits()
+      check saved.ok
+      check readFile(schemaFile) == "padding=24px\nmargin=8px"
+      check fileExists(schemaFile & ".formatted")
+      check vm.workspaceEditStage.val == wesClean
+      check not vm.inspector.isDirty.val
+      check vm.workspaceEditPatches.val.len == 1
+      check recorder.reloadedStories.len == 1
+      check recorder.reloadedStories[0].name == "Default"
+      check not recorder.fullReloadSeen
+
+      atomicWrite(schemaFile, "padding=16px\nmargin=8px")
+      vm.inspector.pendingSourceEdits.val = @[
+        planFor(schemaFile, "padding", "16px", "32px",
+          "components.card.padding"),
+        planFor(schemaFile, "margin", "8px", "12px",
+          "components.card.margin")
+      ]
+      let composed = vm.applyWorkspaceFileEdits()
+      check composed.ok
+      check composed.patches.len == 2
+      check readFile(schemaFile) == "padding=32px\nmargin=12px"
+      check vm.workspaceEditPatches.val.len == 2
+
+      atomicWrite(schemaFile, "padding=20px\nmargin=8px")
+      vm.inspector.pendingSourceEdits.val = @[
+        planFor(schemaFile, "padding", "16px", "28px",
+          "components.card.padding")
+      ]
+      let conflicted = vm.applyWorkspaceFileEdits()
+      check not conflicted.ok
+      check conflicted.diagnostics.anyIt(it.kind == wedSourceConflict)
+      check readFile(schemaFile) == "padding=20px\nmargin=8px"
+      check vm.inspector.pendingSourceEdits.val.len == 1
+
+      atomicWrite(schemaFile, "padding=16px\nmargin=8px")
+      vm.inspector.pendingSourceEdits.val = @[
+        planFor(schemaFile, "padding", "16px", "32px",
+          "components.card.padding")
+      ]
+      let failingAdapter = adapterFor(root, schema, failRegenerate = true,
+        recorder = recorder)
+      vm.workspaceEditAdapter = failingAdapter
+      let rolledBack = vm.applyWorkspaceFileEdits()
+      check not rolledBack.ok
+      check rolledBack.diagnostics.anyIt(it.kind == wedRegenerateFailed)
+      check readFile(schemaFile) == "padding=16px\nmargin=8px"
+      check vm.inspector.pendingSourceEdits.val.len == 1
+      dispose()
+
+  test "workspace_schema_edits_roundtrip_through_generated_views":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("roundtrip")
+      defer: removeDir(root)
+
+      let tokenFile = root / "tokens.schema"
+      let variantFile = root / "variants.schema"
+      let fixtureFile = root / "fixtures.schema"
+      let svgFile = root / "symbols.schema"
+      let pageFile = root / "pages.schema"
+      let journeyFile = root / "journeys.schema"
+      let generatedFile = root / "generated_views.txt"
+      atomicWrite(tokenFile, "surface=#ffffff")
+      atomicWrite(variantFile, "compact=grid")
+      atomicWrite(fixtureFile, "title=Paris")
+      atomicWrite(svgFile, "logo=<path />")
+      atomicWrite(pageFile, "hero=Plan trip")
+      atomicWrite(journeyFile, "step=Search")
+      atomicWrite(generatedFile, "")
+
+      let schema = @[
+        WorkspaceEditableSchemaEntry(key: "tokens.surface", kind: wskToken,
+          file: tokenFile, path: "tokens.surface", story: writeStory,
+          property: "surface"),
+        WorkspaceEditableSchemaEntry(key: "components.card.variants.compact.display",
+          kind: wskComponentVariant, file: variantFile,
+          path: "components.card.variants.compact.display", story: writeStory,
+          property: "display"),
+        WorkspaceEditableSchemaEntry(key: "fixtures.destination.featured.title",
+          kind: wskStoryFixture, file: fixtureFile,
+          path: "fixtures.destination.featured.title", story: writeStory,
+          property: "title"),
+        WorkspaceEditableSchemaEntry(key: "symbols.logo.path", kind: wskSvgSymbol,
+          file: svgFile, path: "symbols.logo.path", story: writeStory,
+          property: "path"),
+        WorkspaceEditableSchemaEntry(key: "pages.home.hero.title",
+          kind: wskPageMetadata, file: pageFile, path: "pages.home.hero.title",
+          story: writeStory, property: "hero"),
+        WorkspaceEditableSchemaEntry(key: "journeys.onboarding.step.search",
+          kind: wskJourneyMetadata, file: journeyFile,
+          path: "journeys.onboarding.step.search", story: writeStory,
+          property: "step")
+      ]
+
+      let recorder = WorkspaceEditRecorder()
+      let adapter = adapterFor(root, schema, generatedFile = generatedFile,
+        recorder = recorder)
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "M27 generated workspace",
+        storyGroups = @[StoryGroup(name: "DestinationCard", kind: skComponent,
+          items: @[StoryItem(name: "Default", kind: skComponent,
+            group: "DestinationCard")])],
+        previewHook = proc(story: StoryRef; platform: Platform): ProjectPreview =
+          ProjectPreview(status: ppsRendered, story: story,
+            title: "Generated",
+            bodyText: readFile(generatedFile)),
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true, createStory: false, createVariant: false,
+          duplicate: false, delete: false),
+        editAdapter = adapter,
+        initialStory = some(writeStory)))
+
+      vm.inspector.pendingSourceEdits.val = @[
+        planFor(tokenFile, "surface", "#ffffff", "#f8fafc", "tokens.surface"),
+        planFor(variantFile, "display", "grid", "flex",
+          "components.card.variants.compact.display"),
+        planFor(fixtureFile, "title", "Paris", "Sofia",
+          "fixtures.destination.featured.title"),
+        planFor(svgFile, "path", "<path />", "<path d=\"M0 0h1\" />",
+          "symbols.logo.path"),
+        planFor(pageFile, "hero", "Plan trip", "Plan better trips",
+          "pages.home.hero.title"),
+        planFor(journeyFile, "step", "Search", "Compare",
+          "journeys.onboarding.step.search")
+      ]
+      vm.workspaceEditStage.val = wesDirty
+
+      let saved = vm.applyWorkspaceFileEdits()
+      check saved.ok
+      let generated = readFile(generatedFile)
+      check generated.contains("tokens.surface=surface=#f8fafc")
+      check generated.contains("components.card.variants.compact.display=compact=flex")
+      check generated.contains("fixtures.destination.featured.title=title=Sofia")
+      check generated.contains("symbols.logo.path=logo=<path d=\"M0 0h1\" />")
+      check generated.contains("pages.home.hero.title=hero=Plan better trips")
+      check generated.contains("journeys.onboarding.step.search=step=Compare")
+      check vm.workspaceEditAffectedStories.val.len == 1
+      check vm.workspaceEditFullReload.val
+
+      vm.changePlatform(pfIOS)
+      check vm.preview.current.val.bodyText.contains("title=Sofia")
+      check vm.preview.current.val.bodyText.contains("step=Compare")
+      check recorder.reloadedStories.len == 1
+      check recorder.fullReloadSeen
       dispose()
 
 suite "Editor ViewModels (M20 story flow preview runtime)":

@@ -38,6 +38,7 @@ type
     agentCancelAdapter*: AgentCancelAdapter
     permissions*: EditorWorkspacePermissions
     sourceAdapterReady*: bool
+    editAdapter*: WorkspaceEditAdapter
     platform*: Platform
     panels*: PanelVisibility
 
@@ -71,6 +72,7 @@ proc emptyEditorWorkspace*(): EditorWorkspace =
     agentCancelAdapter: nil,
     permissions: defaultEditorPermissions(),
     sourceAdapterReady: false,
+    editAdapter: nil,
     platform: pfWeb,
     panels: defaultPanelVisibility()
   )
@@ -96,6 +98,7 @@ proc newEditorWorkspace*(title: string;
                           agentCancelAdapter: AgentCancelAdapter = nil;
                           permissions = defaultEditorPermissions();
                           sourceAdapterReady = false;
+                          editAdapter: WorkspaceEditAdapter = nil;
                           platform = pfWeb;
                           panels = defaultPanelVisibility()): EditorWorkspace =
   ## Convenience constructor for project-owned workspace definitions.
@@ -121,6 +124,7 @@ proc newEditorWorkspace*(title: string;
     agentCancelAdapter: agentCancelAdapter,
     permissions: permissions,
     sourceAdapterReady: sourceAdapterReady,
+    editAdapter: editAdapter,
     platform: platform,
     panels: panels
   )
@@ -142,6 +146,11 @@ proc applyWorkspace*(vm: EditorVM; workspace: EditorWorkspace) =
   vm.inspector.conflicts.val = @[]
   vm.inspector.undoStack.val = @[]
   vm.inspector.redoStack.val = @[]
+  vm.workspaceEditStage.val = wesClean
+  vm.workspaceEditDiagnostics.val = @[]
+  vm.workspaceEditPatches.val = @[]
+  vm.workspaceEditAffectedStories.val = @[]
+  vm.workspaceEditFullReload.val = false
   vm.vectorEditor.selectedSymbol.val = -1
   vm.review.violations.val = @[]
   vm.chat.accumulatedEdits.val = @[]
@@ -155,7 +164,9 @@ proc applyWorkspace*(vm: EditorVM; workspace: EditorWorkspace) =
   vm.chat.configureAgentAdapters(workspace.agentPromptAdapter,
                                   workspace.agentCancelAdapter)
   vm.workspacePermissions.val = workspace.permissions
-  vm.sourceAdapterReady.val = workspace.sourceAdapterReady
+  vm.workspaceEditAdapter = workspace.editAdapter
+  vm.sourceAdapterReady.val = workspace.sourceAdapterReady or
+    not workspace.editAdapter.isNil
   vm.flowPlayer.currentStep.val = 0
   vm.activeView.val = workspace.initialView
   vm.inspector.activeSection.val = workspace.initialInspectorSection

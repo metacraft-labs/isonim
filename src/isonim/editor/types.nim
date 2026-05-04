@@ -488,6 +488,114 @@ type
     file*: string
     content*: string
 
+  # --- Workspace source edits ---
+  WorkspaceSchemaKind* = enum
+    wskToken
+    wskComponentVariant
+    wskStoryFixture
+    wskSvgSymbol
+    wskPageMetadata
+    wskJourneyMetadata
+    wskSourceMap
+
+  WorkspaceEditStage* = enum
+    wesClean
+    wesDirty
+    wesApplying
+    wesFormatting
+    wesRegenerating
+    wesCompiling
+    wesReloading
+    wesReviewing
+    wesFailed
+
+  WorkspaceEditDiagnosticKind* = enum
+    wedMissingAdapter
+    wedMissingOperation
+    wedMissingSchema
+    wedUnsafeSourceMap
+    wedSourceConflict
+    wedReadFailed
+    wedPatchFailed
+    wedWriteFailed
+    wedFormatFailed
+    wedRegenerateFailed
+    wedCompileFailed
+    wedReloadFailed
+    wedReviewFailed
+    wedRollbackFailed
+
+  WorkspaceEditableSchemaEntry* = object
+    ## Project-owned schema/source map entry used to resolve stable edit keys.
+    key*: string
+    kind*: WorkspaceSchemaKind
+    file*: string
+    path*: string
+    generatedModule*: string
+    story*: StoryRef
+    property*: string
+
+  WorkspaceEditDiagnostic* = object
+    kind*: WorkspaceEditDiagnosticKind
+    message*: string
+    file*: string
+    schemaKey*: string
+    property*: string
+
+  WorkspaceReadResult* = object
+    ok*: bool
+    content*: string
+    diagnostics*: seq[WorkspaceEditDiagnostic]
+
+  WorkspaceOperationResult* = object
+    ok*: bool
+    message*: string
+    diagnostics*: seq[WorkspaceEditDiagnostic]
+    affectedStories*: seq[StoryRef]
+    fullReload*: bool
+
+  WorkspaceFilePatch* = object
+    plan*: SourceEditPlan
+    schema*: WorkspaceEditableSchemaEntry
+    file*: string
+    beforeContent*: string
+    afterContent*: string
+    affectedStory*: StoryRef
+    fullReload*: bool
+
+  WorkspacePatchResult* = object
+    ok*: bool
+    patch*: WorkspaceFilePatch
+    diagnostics*: seq[WorkspaceEditDiagnostic]
+
+  WorkspaceReviewResult* = object
+    ok*: bool
+    violations*: seq[Violation]
+    diagnostics*: seq[WorkspaceEditDiagnostic]
+
+  WorkspaceEditResult* = object
+    ok*: bool
+    stage*: WorkspaceEditStage
+    diagnostics*: seq[WorkspaceEditDiagnostic]
+    patches*: seq[WorkspaceFilePatch]
+    affectedStories*: seq[StoryRef]
+    fullReload*: bool
+
+  WorkspaceEditAdapter* = ref object
+    ## Project-owned implementation for source reads, writes, codegen, and review.
+    ## The framework owns transaction ordering and rollback around these callbacks.
+    schema*: seq[WorkspaceEditableSchemaEntry]
+    readFile*: proc(file: string): WorkspaceReadResult {.closure.}
+    writeFile*: proc(file, content: string): WorkspaceOperationResult {.closure.}
+    patchFile*: proc(plan: SourceEditPlan; content: string;
+      schema: WorkspaceEditableSchemaEntry): WorkspacePatchResult {.closure.}
+    formatFiles*: proc(files: seq[string]): WorkspaceOperationResult {.closure.}
+    regenerate*: proc(schemaKeys: seq[string]): WorkspaceOperationResult {.closure.}
+    compile*: proc(stories: seq[StoryRef]): WorkspaceOperationResult {.closure.}
+    reloadPreview*: proc(stories: seq[StoryRef];
+      fullReload: bool): WorkspaceOperationResult {.closure.}
+    review*: proc(patches: seq[WorkspaceFilePatch]): WorkspaceReviewResult {.closure.}
+
   # --- Preview ---
   Platform* = enum
     pfWeb
