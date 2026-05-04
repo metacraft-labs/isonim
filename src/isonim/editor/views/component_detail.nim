@@ -86,6 +86,7 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
 
   # Header bar
   var editButton: E
+  var headerTitle: E
   let header = ui(r):
     tdiv(display = "flex", align_items = "center",
           justify_content = "space-between",
@@ -97,8 +98,9 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
           text "Components"
         span(font_size = "11px", color = textDim):
           text "\xE2\x80\xBA"
-        span(font_size = "13px", font_weight = "600", color = textPrimary):
-          text "DestinationCard"
+        span(ref = headerTitle,
+              font_size = "13px", font_weight = "600", color = textPrimary):
+          text "Component preview"
       tdiv(display = "flex", align_items = "center", gap = "8px"):
         tdiv(ref = editButton,
               padding = "4px 12px", border_radius = "4px",
@@ -127,6 +129,39 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
     tdiv(padding = "24px 32px", display = "flex",
           flex_direction = "column", gap = "24px")
 
+  var projectSection: E
+  var projectName: E
+  var projectDescription: E
+  var projectFrame: E
+  let projectPreviewSection = ui(r):
+    tdiv(ref = projectSection,
+          display = "none", flex_direction = "column",
+          border = "1px solid " & border, border_radius = "8px",
+          overflow = "hidden"):
+      tdiv(display = "flex", align_items = "baseline", gap = "12px",
+            padding = "12px 16px",
+            background_color = bgCard,
+            border_bottom = "1px solid " & border):
+        span(ref = projectName,
+              font_size = "14px", font_weight = "600", color = textPrimary):
+          text ""
+        span(ref = projectDescription,
+              font_size = "12px", color = textMuted):
+          text ""
+      tdiv(padding = "24px", display = "flex",
+            justify_content = "center",
+            background_color = bgPreview,
+            min_height = "120px"):
+        iframe(ref = projectFrame,
+            title = "Component preview",
+            width = "1280",
+            height = "900",
+            border = "0",
+            background_color = "#FFFFFF")
+  r.appendChild(content, projectPreviewSection)
+
+  let genericContent = ui(r):
+    tdiv(display = "flex", flex_direction = "column", gap = "24px")
   var renderedVariants = false
   for group in vm.sidebar.groups.val:
     if group.kind == skComponent and not renderedVariants:
@@ -135,7 +170,7 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
           item.description)
         let section = renderVariantSection[R, E](r, item.name,
           item.description, preview)
-        r.appendChild(content, section)
+        r.appendChild(genericContent, section)
       renderedVariants = true
 
   if not renderedVariants:
@@ -146,7 +181,34 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
       "Component preview",
       "Project-owned component state",
       preview)
-    r.appendChild(content, section)
+    r.appendChild(genericContent, section)
+  r.appendChild(content, genericContent)
+
+  createRenderEffect proc() =
+    let story = vm.selectedStory.val
+    let preview = vm.preview.current.val
+    let title =
+      if preview.title.len > 0:
+        preview.title
+      elif story.group.len > 0 and story.name.len > 0:
+        story.group & " / " & story.name
+      else:
+        "Component preview"
+    let showProject = preview.documentHtml.len > 0 and
+      story.kind in {skComponent, skPattern}
+
+    r.setTextContent(headerTitle, title)
+    r.setTextContent(projectName, story.name)
+    r.setTextContent(projectDescription,
+      if preview.bodyText.len > 0:
+        preview.bodyText
+      else:
+        "Project-owned component state")
+    r.setAttribute(projectFrame, "title", "Component preview " & title)
+    r.setAttribute(projectFrame, "srcdoc",
+      if showProject: preview.documentHtml else: "")
+    r.setStyle(projectSection, "display", if showProject: "flex" else: "none")
+    r.setStyle(genericContent, "display", if showProject: "none" else: "flex")
 
   # === Props / API Table ===
   let propsLabel = sectionLabel[R, E](r, "PROPERTIES")

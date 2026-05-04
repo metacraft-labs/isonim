@@ -153,8 +153,10 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       .click();
 
     await expect(
-      page.getByText("Back-office pages / Customer detail").first(),
-    ).toBeVisible();
+      page.getByRole("button", {
+        name: "Select story Back-office pages / Customer detail",
+      }),
+    ).toHaveAttribute("aria-current", "true");
     await expect(
       page
         .frameLocator('iframe[title="Project preview"]')
@@ -166,6 +168,32 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
         .first(),
     ).toBeVisible();
 
+    await page.getByRole("button", { name: "Open Components section" }).click();
+    await page
+      .getByRole("button", {
+        name: "Select story Operational components / Status badge tones",
+      })
+      .click();
+    await expect(
+      page
+        .frameLocator(
+          'iframe[title="Component preview Operational components / Status badge tones"]',
+        )
+        .getByTestId("component-status-badges"),
+    ).toBeVisible();
+    await page
+      .getByRole("button", {
+        name: "Select story Operational components / Responsive data table",
+      })
+      .click();
+    await expect(
+      page
+        .frameLocator(
+          'iframe[title="Component preview Operational components / Responsive data table"]',
+        )
+        .getByTestId("component-data-table"),
+    ).toBeVisible();
+
     await page
       .getByRole("button", { name: "Open User Journeys section" })
       .click();
@@ -175,8 +203,10 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       })
       .click();
     await expect(
-      page.getByText("Back-office pages / Customer detail").first(),
-    ).toBeVisible();
+      page.getByRole("button", {
+        name: "Select story Back-office pages / Customer detail",
+      }),
+    ).toHaveAttribute("aria-current", "true");
     await expect(
       page
         .frameLocator('iframe[title="Project preview"]')

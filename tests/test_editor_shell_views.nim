@@ -9,6 +9,7 @@ import isonim/editor/stories
 import isonim/editor/types
 import isonim/editor/views/shell
 import isonim/editor/views/chat_panel
+import isonim/editor/views/component_detail
 import isonim/editor/views/page_preview
 import isonim/editor/views/storyboard
 import isonim/editor/views/vector_editor
@@ -471,6 +472,43 @@ suite "Editor Shell Views (M2)":
       editButton.fireEvent("click")
       check vm.editMode.val == emEdit
       check vm.activeView.val == evComponentEdit
+
+      dispose()
+
+  test "component detail renders project preview documents":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let componentStory = StoryRef(group: "Components",
+        name: "Real Button", kind: skComponent, index: 0)
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = @[
+        StoryGroup(
+          name: "Components",
+          kind: skComponent,
+          description: "Project components",
+          expanded: true,
+          items: @[
+            StoryItem(name: "Real Button", description: "Actual project code",
+                      kind: skComponent, group: "Components")
+        ])
+      ]
+      vm.preview.hook = proc(story: StoryRef;
+          platform: Platform): ProjectPreview =
+        ProjectPreview(
+          status: ppsRendered,
+          story: story,
+          title: story.group & " / " & story.name,
+          bodyText: "Rendered by project-owned component code.",
+          documentHtml: "<main data-testid=\"real-component\">Button</main>")
+      discard vm.selectStory(componentStory)
+
+      let detail = renderComponentDetail[MockRenderer, MockNode](r, vm)
+      let frame = findByAttr(detail, "title",
+        "Component preview Components / Real Button")
+
+      check frame != nil
+      check frame.attributes["srcdoc"].contains("real-component")
+      check detail.textContent.contains("Rendered by project-owned component code.")
 
       dispose()
 
