@@ -1,5 +1,6 @@
 .direnv/
 refs/
+references/
 nimcache/
 *.js
 *.js.map
