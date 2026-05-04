@@ -280,6 +280,17 @@ The editor is packaged as framework code under `isonim/editor`. Applications
 own their workspace definitions and import the editor package instead of copying
 the editor shell.
 
+Stable public imports:
+
+- `isonim/editor` exports the workspace, type, and ViewModel contract for
+  native tests, build-time workspace construction, and browser entry points.
+- `isonim/editor/browser` is the JS-only browser mount surface. It should only
+  be imported from `nim js` entry points.
+
+The editor package does not require the in-repo examples. Example projects such
+as Wanderlust may import their own story data and then pass an `EditorWorkspace`
+to the public package.
+
 ```nim
 import isonim/editor
 
@@ -312,6 +323,35 @@ when defined(js):
 
   discard mountEditor(workspace)
 ```
+
+### Editor Consumer Contract
+
+Consumers own the workspace data. A valid `EditorWorkspace` supplies
+`storyGroups` and may also supply `canvasItems`, `connections`, `flowSteps`,
+`vectorSymbols`, `initialStory`, `initialInspectorElement`,
+`initialInspectorSection`, `initialVectorSymbol`, `initialReviewBaseline`,
+`previewHook`, `platform`, and `panels`. The editor reads those values into an
+`EditorVM`; it does not read consumer source files directly.
+
+Agent integration is optional. Projects can pass `agentPromptAdapter` and
+`agentCancelAdapter` when constructing the workspace. The core editor remains
+usable without adapter packages; a missing prompt adapter is reported in chat
+state instead of introducing a hard dependency.
+
+The browser mount contract is:
+
+```nim
+when defined(js):
+  import isonim/editor
+  import isonim/editor/browser
+
+  let vm = mountEditor(workspace, root = document.body)
+```
+
+`mountEditor` injects editor styles by default, renders into the supplied DOM
+root, and returns the live `EditorVM` for host tests or controlled integrations.
+Consumer browser entry points should import only `isonim/editor` and
+`isonim/editor/browser`, plus their own workspace module.
 
 The in-repo Wanderlust editor demo uses the same API:
 

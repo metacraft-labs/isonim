@@ -3,7 +3,9 @@
 ## Ever-present panel on the right side of every screen.
 ## Renders explicit chat state from the editor ViewModel.
 
-import isonim/core/signals
+import std/strutils
+
+import isonim/core/[signals, computation]
 import isonim/viewmodel
 import isonim/dsl/ui
 import isonim/editor/viewmodels
@@ -20,6 +22,37 @@ const
   accent = "#3B82F6"
   gold = "#F59E0B"
   green = "#22C55E"
+
+proc inspectorPropertyEditHandler[R, E](r: R; vm: EditorVM; input: E;
+    property: string): proc() =
+  let capturedProperty = property
+  let capturedInput = input
+  result = proc() =
+    discard vm.editCssProperty(capturedProperty, r.inputValue(capturedInput),
+      pesLocal, peoInspector)
+
+proc chatStatusText(vm: EditorVM): string =
+  let label = case vm.chat.sessionStatus.val
+    of asIdle: "Empty"
+    of asLoading: "Loading"
+    of asReady: "Connected"
+    of asError: "Error"
+  label & " / " & vm.chat.connectionState.val
+
+proc chatTranscriptText(vm: EditorVM): string =
+  var parts: seq[string] = @[]
+  for msg in vm.chat.messages.val:
+    let sender = case msg.kind
+      of cmkUser: "You"
+      of cmkAgent: "AI Designer"
+      of cmkContext: "Context"
+      of cmkError: "Error"
+    parts.add sender & ": " & msg.text
+  if vm.chat.toolCalls.val.len > 0:
+    parts.add "Tools: " & vm.chat.toolCalls.val.join(", ")
+  if vm.chat.stopReason.val.len > 0:
+    parts.add "Stop: " & vm.chat.stopReason.val
+  parts.join(" | ")
 
 proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   let messages = signals.val(vm.chat.messages)
@@ -47,6 +80,7 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
       background_color = bgSidebar,
       border_left = "1px solid " & border)
 
+  var statusTextNode: E
   # Header
   let header = ui(r):
     tdiv(
@@ -73,7 +107,7 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
           height = "6px",
           border_radius = "3px",
           background_color = statusColor)
-        span(font_size = "9px", color = textDim):
+        span(ref = statusTextNode, font_size = "9px", color = textDim):
           text statusLabel & " / " & connectionLabel
         tdiv(
           `role` = "button",
@@ -92,6 +126,68 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
           cursor = "pointer"):
           text "\xE2\x9C\x95"
   r.appendChild(panel, header)
+
+  if vm.inspector.hasElement.val:
+    let inspectorArea = ui(r):
+      tdiv(
+        padding = "10px 12px",
+        border_bottom = "1px solid " & borderFaint,
+        display = "flex",
+        flex_direction = "column",
+        gap = "8px")
+
+    let element = vm.inspector.selectedElement.val
+    let selectionHeader = ui(r):
+      tdiv(display = "flex", flex_direction = "column", gap = "2px"):
+        span(
+          font_size = "10px",
+          font_weight = "600",
+          color = textSecondary,
+          text_transform = "uppercase",
+          letter_spacing = "0.5px"):
+          text "Inspector"
+        span(font_size = "12px", color = textPrimary, font_family = "monospace"):
+          text element.tag
+        span(font_size = "10px", color = textDim):
+          text element.sourceFile & ":" & $element.sourceLine
+    r.appendChild(inspectorArea, selectionHeader)
+
+    for prop in vm.inspector.properties.val:
+      let propName = prop.name
+      let propValue = prop.value
+      let row = ui(r):
+        tdiv(display = "flex", flex_direction = "column", gap = "4px")
+      let label = ui(r):
+        span(
+          font_size = "10px",
+          color = textDim,
+          text_transform = "uppercase",
+          letter_spacing = "0.4px"):
+          text propName
+      r.appendChild(row, label)
+
+      let inputNode = ui(r):
+        input(
+          class = "editor-input",
+          height = "28px",
+          background_color = bgInput,
+          border = "1px solid " & border,
+          border_radius = "6px",
+          padding = "0 8px",
+          font_size = "12px",
+          color = textPrimary,
+          outline = "none")
+      r.setAttribute(inputNode, "aria-label",
+        "Edit inspector property " & propName)
+      r.setInputValue(inputNode, propValue)
+      let editProperty =
+        inspectorPropertyEditHandler[R, E](r, vm, inputNode, propName)
+      r.addEventListener(inputNode, "change", editProperty)
+      r.addEventListener(inputNode, "keydown", editProperty)
+      r.appendChild(row, inputNode)
+      r.appendChild(inspectorArea, row)
+
+    r.appendChild(panel, inspectorArea)
 
   # Messages area
   let messagesArea = ui(r):
@@ -152,6 +248,21 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
     r.appendChild(messagesArea, bubble)
 
   r.appendChild(panel, messagesArea)
+
+  var transcriptTextNode: E
+  let transcript = ui(r):
+    tdiv(
+      ref = transcriptTextNode,
+      padding = "8px 12px",
+      border_top = "1px solid " & borderFaint,
+      font_size = "10px",
+      line_height = "1.45",
+      color = textSecondary)
+  r.setTextContent(transcriptTextNode, chatTranscriptText(vm))
+  createRenderEffect proc() =
+    r.setTextContent(statusTextNode, chatStatusText(vm))
+    r.setTextContent(transcriptTextNode, chatTranscriptText(vm))
+  r.appendChild(panel, transcript)
 
   # Input area
   let inputArea = ui(r):

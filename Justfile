@@ -150,6 +150,8 @@ editor-screenshot-list:
 # Run editor ViewModel tests
 test-editor:
     nim c -r tests/test_editor_workspace.nim
+    nim c -r tests/test_editor_public_api.nim
+    nim js --path:src -o:build/test_editor_public_browser_imports.js tests/test_editor_public_browser_imports.nim
     nim c -r tests/test_editor_viewmodels.nim
     nim c -r --path:../nim-acp/src tests/test_editor_agent_context.nim
     nim c -r tests/test_editor_agent_harbor.nim
@@ -158,6 +160,18 @@ test-editor:
     nim c -r tests/test_editor_task_views.nim
     nim c -r tests/test_editor_interactivity.nim
     nim c -r tests/test_editor_responsive.nim
+
+# Run packaged editor browser tests.
+test-browser-editor-example: editor-build
+    cd tests/browser && npm install && npx playwright test --project=editor-example
+
+# Run live consumer browser contract tests against metacraft-web.
+test-browser-editor-consumer:
+    cd ../metacraft-web && just build-back-office-editor
+    cd tests/browser && npm install && npx playwright test --project=metacraft-web-editor
+
+# Run all editor browser tests.
+test-browser-editor: test-browser-editor-example test-browser-editor-consumer
 
 # --- Benchmarks ---
 

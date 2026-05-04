@@ -63,6 +63,14 @@ proc inspectorSectionHandler(vm: EditorVM; section: InspectorSection): proc() =
   let captured = section
   result = proc() = vm.switchInspectorSection(captured)
 
+proc inspectorPropertyEditHandler[R, E](r: R; vm: EditorVM; input: E;
+    property: string): proc() =
+  let capturedProperty = property
+  let capturedInput = input
+  result = proc() =
+    discard vm.editCssProperty(capturedProperty, r.inputValue(capturedInput),
+      pesLocal, peoInspector)
+
 proc activeViewHandler(vm: EditorVM; view: EditorView): proc() =
   let captured = view
   result = proc() = vm.setActiveView(captured)
@@ -433,16 +441,58 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
           block:
             r.bindInspectorTabState(tabNode, vm, section)
 
-      # Property content area — empty state
-      tdiv(flex = "1", display = "flex", flex_direction = "column",
-            align_items = "center", justify_content = "center",
-            padding = "24px 16px", overflow_y = "auto"):
-        tdiv(font_size = "28px", opacity = "0.25", margin_bottom = "8px"):
-          text "\xF0\x9F\x94\x8D"
-        span(font_size = "12px", color = textMuted):
-          text "Select an element to inspect"
-        span(font_size = "11px", color = textDim, margin_top = "4px"):
-          text "Click any element in the preview"
+      # Property content area
+      if vm.inspector.hasElement.val:
+        tdiv(flex = "1", display = "flex", flex_direction = "column",
+              padding = "12px", overflow_y = "auto", gap = "10px"):
+          tdiv(display = "flex", flex_direction = "column", gap = "3px"):
+            span(font_size = "10px", font_weight = "600",
+                  color = textSecondary, text_transform = "uppercase",
+                  letter_spacing = "0.5px"):
+              text "Selection"
+            span(font_size = "12px", color = textPrimary,
+                  font_family = "monospace"):
+              text vm.inspector.selectedElement.val.tag
+            span(font_size = "11px", color = textDim):
+              text vm.inspector.selectedElement.val.sourceFile & ":" &
+                $vm.inspector.selectedElement.val.sourceLine
+
+          for prop in vm.inspector.properties.val:
+            let propName = prop.name
+            let propValue = prop.value
+            var propertyRow: E
+            tdiv(display = "flex", flex_direction = "column", gap = "4px",
+                  ref = propertyRow):
+              label(font_size = "10px", color = textMuted,
+                    text_transform = "uppercase", letter_spacing = "0.4px"):
+                text propName
+            block:
+              let inputNode = ui(r):
+                input(class = "editor-input",
+                      height = "28px",
+                      background_color = bgSurface,
+                      border = "1px solid " & border,
+                      border_radius = "4px", padding = "0 8px",
+                      font_size = "12px", color = textPrimary,
+                      outline = "none")
+              r.setAttribute(inputNode, "aria-label",
+                "Edit inspector property " & propName)
+              r.setInputValue(inputNode, propValue)
+              let editProperty =
+                inspectorPropertyEditHandler[R, E](r, vm, inputNode, propName)
+              r.addEventListener(inputNode, "change", editProperty)
+              r.addEventListener(inputNode, "keydown", editProperty)
+              r.appendChild(propertyRow, inputNode)
+      else:
+        tdiv(flex = "1", display = "flex", flex_direction = "column",
+              align_items = "center", justify_content = "center",
+              padding = "24px 16px", overflow_y = "auto"):
+          tdiv(font_size = "28px", opacity = "0.25", margin_bottom = "8px"):
+            text "\xF0\x9F\x94\x8D"
+          span(font_size = "12px", color = textMuted):
+            text "Select an element to inspect"
+          span(font_size = "11px", color = textDim, margin_top = "4px"):
+            text "Click any element in the preview"
 
       # Agent chat area
       tdiv(display = "flex", flex_direction = "column",

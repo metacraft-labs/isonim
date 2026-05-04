@@ -1,4 +1,11 @@
+import { existsSync } from "node:fs";
 import { defineConfig } from "@playwright/test";
+
+const chromiumExecutable =
+  process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ??
+  (existsSync("/run/current-system/sw/bin/chromium")
+    ? "/run/current-system/sw/bin/chromium"
+    : undefined);
 
 export default defineConfig({
   testDir: "./specs",
@@ -6,6 +13,10 @@ export default defineConfig({
   use: {
     baseURL: "http://localhost:8080",
     headless: true,
+    browserName: "chromium",
+    launchOptions: chromiumExecutable
+      ? { executablePath: chromiumExecutable }
+      : undefined,
   },
   webServer: [
     {
@@ -16,6 +27,17 @@ export default defineConfig({
     {
       command: "npx serve ./dist -l 8081 -s",
       port: 8081,
+      reuseExistingServer: true,
+    },
+    {
+      command: "npx serve ../../build/editor -l 8090 -s",
+      port: 8090,
+      reuseExistingServer: true,
+    },
+    {
+      command: "node tools/serve_static.mjs dist/back-office-editor 8092",
+      cwd: "../../../metacraft-web",
+      port: 8092,
       reuseExistingServer: true,
     },
   ],
@@ -32,6 +54,20 @@ export default defineConfig({
       testMatch: "ssr-hydration.spec.ts",
       use: {
         baseURL: "http://localhost:8081",
+      },
+    },
+    {
+      name: "editor-example",
+      testMatch: "editor-example.spec.ts",
+      use: {
+        baseURL: "http://localhost:8090",
+      },
+    },
+    {
+      name: "metacraft-web-editor",
+      testMatch: "metacraft-web-editor.spec.ts",
+      use: {
+        baseURL: "http://localhost:8092",
       },
     },
   ],

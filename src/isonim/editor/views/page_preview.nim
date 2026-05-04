@@ -82,18 +82,22 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
           text "\xF0\x9F\x94\x8B"
   r.appendChild(deviceFrame, statusBar)
 
-  let pageName =
+  proc currentPageName(): string =
     if vm.preview.current.val.title.len > 0:
       vm.preview.current.val.title
     elif vm.selectedStory.val.name.len > 0:
       vm.selectedStory.val.name
     else:
       "Project page"
-  let previewBody =
+
+  proc currentPreviewBody(): string =
     if vm.preview.current.val.bodyText.len > 0:
       vm.preview.current.val.bodyText
     else:
       "Workspace page preview"
+
+  var titleNode: E
+  var bodyNode: E
   let homePage = ui(r):
     tdiv(flex = "1", overflow_y = "auto",
           padding = "24px", display = "flex",
@@ -102,10 +106,10 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
       tdiv(display = "flex", align_items = "center",
             justify_content = "space-between"):
         tdiv(display = "flex", flex_direction = "column", gap = "4px"):
-          span(font_size = "24px", font_weight = "800"):
-            text pageName
-          span(font_size = "13px", color = "#64748B"):
-            text previewBody
+          span(ref = titleNode, font_size = "24px", font_weight = "800"):
+            text currentPageName()
+          span(ref = bodyNode, font_size = "13px", color = "#64748B"):
+            text currentPreviewBody()
         tdiv(width = "36px", height = "36px", border_radius = "999px",
               background_color = "#DBEAFE")
       tdiv(height = "140px", border_radius = "14px",
@@ -120,6 +124,9 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
           tdiv(height = "42px", border_radius = "8px",
                 background_color = "#F8FAFC",
                 border = "1px solid #E2E8F0")
+  createRenderEffect proc() =
+    r.setTextContent(titleNode, currentPageName())
+    r.setTextContent(bodyNode, currentPreviewBody())
   r.appendChild(deviceFrame, homePage)
   r.appendChild(frame, deviceFrame)
   r.appendChild(container, frame)
