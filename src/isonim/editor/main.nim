@@ -5,6 +5,7 @@ when not defined(js):
   {.error: "The editor must be compiled with `nim js`".}
 
 import examples/wanderlust/stories as wanderlust
+import std/strutils
 import isonim/core/signals
 import isonim/editor
 import isonim/editor/browser
@@ -47,15 +48,60 @@ proc demoVectorSymbols(): seq[VectorSymbol] =
       tags: @["map", "place"], width: 24, height: 24)
   ]
 
+proc demoVectorEditAdapter(vectorSource: ref string): WorkspaceEditAdapter =
+  let vectorStory = StoryRef(group: "Foundations", name: "Vector Symbols",
+    kind: skFoundation, index: 0)
+  result = WorkspaceEditAdapter(schema: @[
+    WorkspaceEditableSchemaEntry(
+      key: "symbols.compass.svg",
+      kind: wskSvgSymbol,
+      file: "examples/wanderlust/design-system/vector-symbols.svg",
+      path: "symbols.compass.svg",
+      story: vectorStory,
+      property: "svgContent")
+  ])
+  result.readFile = proc(file: string): WorkspaceReadResult =
+    WorkspaceReadResult(ok: true, content: vectorSource[])
+  result.patchFile = proc(plan: SourceEditPlan; content: string;
+      schema: WorkspaceEditableSchemaEntry): WorkspacePatchResult =
+    let next =
+      if plan.expectedOldValue.len > 0 and plan.expectedOldValue in content:
+        content.replace(plan.expectedOldValue, plan.newValue)
+      elif plan.property == "svgContent":
+        plan.newValue
+      else:
+        content
+    WorkspacePatchResult(ok: true, patch: WorkspaceFilePatch(
+      file: schema.file,
+      beforeContent: content,
+      afterContent: next,
+      affectedStory: schema.story,
+      fullReload: true))
+  result.writeFile = proc(file, content: string): WorkspaceOperationResult =
+    vectorSource[] = content
+    WorkspaceOperationResult(ok: true)
+  result.formatFiles = proc(files: seq[string]): WorkspaceOperationResult =
+    WorkspaceOperationResult(ok: true)
+  result.regenerate = proc(keys: seq[string]): WorkspaceOperationResult =
+    WorkspaceOperationResult(ok: true, affectedStories: @[vectorStory],
+      fullReload: true)
+  result.reloadPreview = proc(stories: seq[StoryRef];
+      fullReload: bool): WorkspaceOperationResult =
+    WorkspaceOperationResult(ok: true, affectedStories: stories,
+      fullReload: fullReload)
+
 proc main() =
   let groups = wanderlust.buildWanderlustStoryboard()
   var editor: EditorVM
+  let vectorSource = new(string)
+  vectorSource[] = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path d=\"M12 2l4 14-4-2-4 2 4-14z\" /></svg>"
   let workspace = newEditorWorkspace(
     title = "Wanderlust",
     storyGroups = groups,
     canvasItems = wanderlust.wanderlustCanvasItems(groups),
     flowSteps = wanderlust.wanderlustFlowSteps(groups),
     vectorSymbols = demoVectorSymbols(),
+    initialVectorSymbol = some(0),
     initialInspectorElement = some(demoInspectorElement()),
     previewHook = wanderlust.wanderlustPreviewHook,
     agentPromptAdapter = proc(prompt: string; context: AgentPromptContext): bool =
@@ -68,7 +114,11 @@ proc main() =
       true,
     agentCancelAdapter = proc(): bool = true,
     id = "wanderlust",
-    description = "Travel app workspace for IsoNim Editor development")
+    description = "Travel app workspace for IsoNim Editor development",
+    permissions = EditorWorkspacePermissions(readSource: true,
+      writeSource: true, createStory: false, createVariant: false,
+      duplicate: false, delete: false),
+    editAdapter = demoVectorEditAdapter(vectorSource))
   editor = mountEditor(workspace)
 
 main()

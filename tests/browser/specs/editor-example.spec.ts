@@ -132,6 +132,9 @@ test.describe("IsoNim packaged editor example", () => {
     await expect(
       host.locator('canvas[data-vector-canvas="fabric"]'),
     ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Unsupported vector Union" }),
+    ).toHaveAttribute("aria-disabled", "true");
 
     const rect = page.getByRole("button", {
       name: "Select Rectangle vector tool",
@@ -195,6 +198,30 @@ test.describe("IsoNim packaged editor example", () => {
     await expect(host).toHaveAttribute("data-vector-active-fill", "#EF4444");
     await page.getByRole("button", { name: "Vector set-stroke" }).click();
     await expect(host).toHaveAttribute("data-vector-active-stroke", "#22C55E");
+    await expect(host).toHaveAttribute("data-vector-source-dirty", "true");
+
+    const saveVector = page.getByRole("button", {
+      name: "Save vector source edits",
+    });
+    await expect
+      .poll(async () =>
+        Number(
+          await saveVector.evaluate((node) =>
+            node.getAttribute("data-vector-pending-source-edits"),
+          ),
+        ),
+      )
+      .toBeGreaterThan(0);
+    await saveVector.click();
+    await expect(saveVector).toHaveAttribute(
+      "data-vector-source-stage",
+      "wesClean",
+    );
+    await expect(saveVector).toHaveAttribute(
+      "data-vector-pending-source-edits",
+      "0",
+    );
+    await expect(host).toHaveAttribute("data-vector-source-saved", "true");
 
     await page
       .getByRole("button", { name: "Select Polygon vector tool" })

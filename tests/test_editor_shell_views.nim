@@ -200,6 +200,16 @@ suite "Editor Shell Views (M2)":
       check vm.vectorEditor.showGrid.val == false
       check gridToggle.attributes["aria-pressed"] == "false"
 
+      let unsupportedUnion = findByAttr(vector, "aria-label",
+        "Unsupported vector Union")
+      check unsupportedUnion != nil
+      check unsupportedUnion.attributes["aria-disabled"] == "true"
+
+      let saveVector = findByAttr(vector, "aria-label",
+        "Save vector source edits")
+      check saveVector != nil
+      check saveVector.attributes["data-vector-pending-source-edits"] == "0"
+
       let layer = findByAttr(vector, "aria-label", "Select vector layer Rectangle")
       check layer != nil
       layer.fireEvent("keydown")

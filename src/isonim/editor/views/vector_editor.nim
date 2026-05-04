@@ -90,8 +90,20 @@ proc bindVectorLayerState[R, E](r: R; node: E; vm: EditorVM; index: int) =
     r.setStyle(node, "background-color",
       if isSelected: accent & "22" else: "transparent")
 
+proc bindVectorSaveState[R, E](r: R; node: E; vm: EditorVM) =
+  createRenderEffect proc() =
+    let command = vm.evaluateCommand(eckSave)
+    let disabled = command.status == ecsDisabled
+    r.setAttribute(node, "aria-disabled", if disabled: "true" else: "false")
+    r.setAttribute(node, "data-vector-source-stage",
+      $vm.workspaceEditStage.val)
+    r.setAttribute(node, "data-vector-pending-source-edits",
+      $vm.inspector.pendingSourceEdits.val.len)
+    r.setStyle(node, "opacity", if disabled: "0.5" else: "1")
+
 proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
   let tools = vectorTools()
+  var fabricHost: E
 
   let container = ui(r):
     tdiv(class = "editor-preview",
@@ -110,24 +122,48 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
             text "Vector Editor"
           span(font_size = "11px", color = textDim):
             text "\xE2\x80\x94 check-icon.svg"
-        # Boolean operations (grouped)
+        # Boolean operations remain adapter-gated until backed by a mature path library.
         tdiv(display = "flex", align_items = "center", gap = "2px",
               background_color = bgSurface, border_radius = "6px",
               padding = "3px", border = "1px solid " & border):
           for op in ["Union", "Sub", "Inter", "Excl"]:
             tdiv(padding = "4px 8px", border_radius = "4px",
                   font_size = "10px", font_weight = "500",
-                  color = textMuted, cursor = "pointer"):
+                  color = textDim, cursor = "not-allowed",
+                  `role` = "button", tabindex = "0",
+                  `aria-label` = "Unsupported vector " & op,
+                  `aria-disabled` = "true",
+                  `data-vector-unsupported-operation` = op,
+                  title = op & " requires a mature path boolean library"):
               text op
         # Zoom / export
         tdiv(display = "flex", align_items = "center", gap = "8px"):
           span(font_size = "11px", color = textMuted):
             text "100%"
+          var saveTop: E
+          tdiv(ref = saveTop,
+                padding = "4px 10px", border_radius = "4px",
+                font_size = "11px", font_weight = "500",
+                background_color = bgSurface, color = textPrimary,
+                border = "1px solid " & border,
+                cursor = "pointer",
+                `role` = "button", tabindex = "0",
+                `aria-label` = "Save vector source edits"):
+            text "Save"
           tdiv(padding = "4px 10px", border_radius = "4px",
                 font_size = "11px", font_weight = "500",
                 background_color = accent, color = textPrimary,
                 cursor = "pointer"):
             text "Export SVG"
+          block:
+            let save = proc() =
+              let state = vm.runEditorCommand(eckSave)
+              when defined(js):
+                if state.status == ecsSucceeded:
+                  markFabricVectorSourceSaved(fabricHost)
+            r.addEventListener(saveTop, "click", save)
+            r.addEventListener(saveTop, "keydown", save)
+            r.bindVectorSaveState(saveTop, vm)
 
   # Main area: tool palette + canvas + properties
   let mainArea = ui(r):
@@ -221,7 +257,6 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
   r.appendChild(mainArea, toolPalette)
 
   # Center: Fabric-backed SVG Canvas
-  var fabricHost: E
   let canvas = ui(r):
     tdiv(flex = "1", display = "flex", flex_direction = "column",
           overflow = "hidden"):
@@ -319,6 +354,10 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
 
   r.appendChild(mainArea, canvas)
   when defined(js):
+    r.addEventListener(fabricHost, "isonim-vector-source-change", proc() =
+      let exported = currentFabricVectorSvg(fabricHost)
+      if exported.len > 0:
+        discard vm.commitBrowserVectorSvg(exported))
     createRenderEffect proc() =
       var symbolName = "Vector Symbol"
       var svgContent = ""

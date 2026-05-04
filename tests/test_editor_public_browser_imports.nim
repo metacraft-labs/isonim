@@ -3,6 +3,7 @@ when not defined(js):
 
 import isonim/editor
 import isonim/editor/browser
+import isonim/editor/browser_vector_adapter
 
 let workspace = newEditorWorkspace(
   title = "Browser public API consumer",
@@ -23,3 +24,4 @@ let workspace = newEditorWorkspace(
   ])
 
 discard workspace
+discard selectedVectorAdapter()

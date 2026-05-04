@@ -127,6 +127,20 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
     sampleImportSvg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect id="imported-rect" x="8" y="10" width="30" height="22" fill="#60A5FA" stroke="#1D4ED8" stroke-width="3"/><path id="imported-path" d="M12 48 L28 36 L48 50" fill="none" stroke="#F59E0B" stroke-width="4" stroke-linecap="round"/></svg>',
     canvas,
     svgoOptimize: null,
+    sourceChangeSeq: 0,
+    recordSourceChange(operation) {
+      const exported = this.exportSvg();
+      this.sourceChangeSeq += 1;
+      host.dataset.vectorSourceDirty = 'true';
+      host.dataset.vectorSourcePending = String(this.sourceChangeSeq);
+      host.dataset.vectorSourceOperation = operation;
+      host.dataset.vectorSourceLength = String(exported.length);
+      host.dispatchEvent(new CustomEvent('isonim-vector-source-change', {
+        bubbles: true,
+        detail: { operation, length: exported.length }
+      }));
+      return exported;
+    },
     setTool(nextTool) {
       host.dataset.vectorTool = nextTool;
       canvas.isDrawingMode = nextTool === 'pencil';
@@ -167,6 +181,7 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
         selectable: true, name: 'drawn-rectangle'
       });
       canvas.add(obj); canvas.setActiveObject(obj); this.syncSelection();
+      this.recordSourceChange('add-rectangle');
     },
     addEllipse() {
       const obj = new fabricLib.Circle({
@@ -175,6 +190,7 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
         name: 'drawn-ellipse'
       });
       canvas.add(obj); canvas.setActiveObject(obj); this.syncSelection();
+      this.recordSourceChange('add-ellipse');
     },
     addPolygon() {
       const obj = new fabricLib.Polygon([
@@ -186,6 +202,7 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
         name: 'drawn-polygon'
       });
       canvas.add(obj); canvas.setActiveObject(obj); this.syncSelection();
+      this.recordSourceChange('add-polygon');
     },
     addStar() {
       const points = [];
@@ -200,6 +217,7 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
         name: 'drawn-star'
       });
       canvas.add(obj); canvas.setActiveObject(obj); this.syncSelection();
+      this.recordSourceChange('add-star');
     },
     addLine() {
       const obj = new fabricLib.Line([420, 304, 540, 344], {
@@ -207,6 +225,7 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
         name: 'drawn-line'
       });
       canvas.add(obj); canvas.setActiveObject(obj); this.syncSelection();
+      this.recordSourceChange('add-line');
     },
     addText() {
       const obj = new fabricLib.Textbox('Text', {
@@ -214,6 +233,7 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
         selectable: true, name: 'drawn-text'
       });
       canvas.add(obj); canvas.setActiveObject(obj); this.syncSelection();
+      this.recordSourceChange('add-text');
     },
     duplicateSelected() {
       const obj = canvas.getActiveObject();
@@ -223,6 +243,7 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
           name: (obj.name || obj.type) + '-copy' });
         canvas.add(clone); canvas.setActiveObject(clone);
         canvas.renderAll(); this.syncSelection();
+        this.recordSourceChange('duplicate');
       });
       return true;
     },
@@ -231,6 +252,7 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
       if (!obj) return false;
       canvas.remove(obj); canvas.discardActiveObject();
       canvas.renderAll(); this.syncSelection();
+      this.recordSourceChange('delete');
       return true;
     },
     groupSelected() {
@@ -239,15 +261,17 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
       const group = active.toGroup();
       group.name = 'fabric-group';
       canvas.setActiveObject(group); canvas.renderAll(); this.syncSelection();
+      this.recordSourceChange('group');
       return true;
     },
     ungroupSelected() {
       const active = canvas.getActiveObject();
       if (!active || active.type !== 'group') return false;
       active.toActiveSelection(); canvas.renderAll(); this.syncSelection();
+      this.recordSourceChange('ungroup');
       return true;
     },
-    importSvg(svgText) {
+    importSvg(svgText, options = {}) {
       const wrapped = svgText && svgText.includes('<svg')
         ? svgText
         : `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">${svgText || ''}</svg>`;
@@ -271,6 +295,7 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
         host.dataset.vectorImportBacked = 'fabric';
         host.dataset.vectorImportedCount = String(imported.length);
         this.syncSelection();
+        if (!options.silent) this.recordSourceChange('import');
       }).catch((error) => {
         host.dataset.vectorImportBacked = 'error';
         host.dataset.vectorImportError = String(error && error.message ? error.message : error);
@@ -296,6 +321,7 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
       obj.set(prop, value);
       canvas.requestRenderAll();
       this.syncSelection();
+      this.recordSourceChange(`property-${prop}`);
       return true;
     },
     transformSelected() {
@@ -310,6 +336,7 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
       canvas.fire('object:modified', { target: obj });
       canvas.requestRenderAll();
       this.syncSelection();
+      this.recordSourceChange('transform');
       return true;
     },
     exportSvg() {
@@ -344,7 +371,7 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
       event.preventDefault();
     }
   });
-  state.importSvg(initialSvg);
+  state.importSvg(initialSvg, { silent: true });
   state.setTool(activeTool);
   state.syncSelection();
   import('./svgo.browser.js').then((svgo) => {
@@ -388,5 +415,22 @@ proc runFabricVectorAction*[E](host: E; action: string) =
   if (action === 'set-fill') editor.setSelectedProperty('fill', '#EF4444');
   if (action === 'set-stroke') editor.setSelectedProperty('stroke', '#22C55E');
   if (action === 'transform-selection') editor.transformSelected();
+})()
+  """].}
+
+proc currentFabricVectorSvg*[E](host: E): string =
+  var exported: cstring
+  {.emit: [exported, " = (() => { const editor = ", host,
+    " && ", host, ".__isonimVectorEditor; return editor ? editor.exportSvg() : ''; })();"].}
+  $exported
+
+proc markFabricVectorSourceSaved*[E](host: E) =
+  {.emit: ["""
+(() => {
+  const host = """, host, """;
+  if (!host || !host.__isonimVectorEditor) return;
+  host.dataset.vectorSourceDirty = 'false';
+  host.dataset.vectorSourceSaved = 'true';
+  host.dataset.vectorSourcePending = '0';
 })()
   """].}

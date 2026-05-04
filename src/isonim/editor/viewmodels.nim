@@ -831,6 +831,14 @@ proc commandRequirementFailure(editor: EditorVM;
   let permissions = editor.workspacePermissions.val
   let source = editor.selectedSourceContext()
 
+  if kind in {eckApply, eckSave} and
+      editor.inspector.pendingSourceEdits.val.len > 0:
+    if not permissions.writeSource:
+      return "This workspace is read-only for source changes."
+    if not editor.sourceAdapterReady.val:
+      return "No source edit adapter is ready."
+    return ""
+
   if story.isEmptyStory:
     return "Select a story before using " & commandLabel(kind) & "."
 
@@ -980,13 +988,19 @@ proc runEditorCommand*(editor: EditorVM;
     let stack = editor.inspector.undoStack.val
     if stack.len > 0:
       editor.inspector.selectedElement.val = stack[0].beforeElement
+    let vectorStack = editor.vectorEditor.undoStack.val
+    if vectorStack.len > 0:
+      editor.vectorEditor.document.val = vectorStack[0].beforeDocument
     editor.inspector.pendingSourceEdits.val = @[]
     editor.inspector.sourcePreviews.val = @[]
     editor.inspector.undoStack.val = @[]
     editor.inspector.redoStack.val = @[]
+    editor.vectorEditor.undoStack.val = @[]
+    editor.vectorEditor.redoStack.val = @[]
     editor.inspector.conflicts.val = @[]
     editor.inspector.editDiagnostics.val = @[]
     editor.chat.accumulatedEdits.val = @[]
+    editor.workspaceEditStage.val = wesClean
   of eckSave:
     let saveResult = editor.applyWorkspaceFileEdits()
     if not saveResult.ok:
@@ -2676,7 +2690,8 @@ func importVectorDocumentSvg*(symbol: VectorSymbol; svg: string): VectorDocument
   doc.selectedIds = if doc.objects.len > 0: @[doc.objects[0].id] else: @[]
   doc
 
-func vectorSourcePlan(doc: VectorDocument; beforeSvg, afterSvg: string): SourceEditPlan =
+func vectorSourcePlan(doc: VectorDocument; beforeSvg, afterSvg: string;
+    expectedOldValue = beforeSvg): SourceEditPlan =
   SourceEditPlan(
     file: doc.source.file,
     property: "svgContent",
@@ -2692,7 +2707,7 @@ func vectorSourcePlan(doc: VectorDocument; beforeSvg, afterSvg: string): SourceE
     formatterHook: "svgo",
     regeneratorHook: "vector-symbol",
     conflictKey: doc.source.schemaKey,
-    expectedOldValue: beforeSvg)
+    expectedOldValue: expectedOldValue)
 
 func validateVectorAccessibility*(doc: VectorDocument): seq[VectorDiagnostic] =
   if doc.a11y.role != varDecorative:
@@ -2741,6 +2756,66 @@ proc commitVectorDocument(editor: EditorVM; operation: VectorOperationKind;
   editor.workspaceEditStage.val = wesDirty
   VectorOperationResult(ok: true, operation: operation, document: afterDoc,
     sourceEdit: plan, diagnostics: editor.vectorEditor.diagnostics.val)
+
+proc commitVectorSourceSnapshot*(editor: EditorVM; operation: VectorOperationKind;
+    exportedSvg: string; requireExpectedOldValue = true): VectorOperationResult {.discardable.} =
+  ## Bridge a mature browser vector adapter export back into the headless
+  ## source-edit journal. The browser owns interaction geometry; the ViewModel
+  ## owns the persisted SVG snapshot and M27 save transaction.
+  let normalized = exportedSvg.optimizeVectorSvg
+  if normalized.len == 0 or "<svg" notin normalized:
+    return VectorOperationResult(ok: false, operation: operation,
+      diagnostics: @[VectorDiagnostic(kind: vdkInvalidSvg,
+        message: "Browser vector adapter did not provide an SVG export.")])
+
+  let beforeDoc = editor.vectorEditor.document.val
+  if beforeDoc.source.schemaKey.len == 0:
+    return VectorOperationResult(ok: false, operation: operation,
+      diagnostics: @[VectorDiagnostic(kind: vdkMissingDocument,
+        message: "Select a source-backed vector symbol before editing.")])
+
+  let beforeSvg = beforeDoc.exportVectorDocumentSvg.optimizeVectorSvg
+  var afterDoc = beforeDoc
+  if afterDoc.symbols.len == 0:
+    afterDoc.symbols.add VectorSymbolDefinition(id: afterDoc.id,
+      name: afterDoc.name, source: afterDoc.source, a11y: afterDoc.a11y)
+  afterDoc.symbols[0].svgContent = normalized
+  let expected = if requireExpectedOldValue: beforeSvg else: ""
+  let plan = afterDoc.vectorSourcePlan(beforeSvg, normalized, expected)
+
+  editor.vectorEditor.document.val = afterDoc
+  editor.vectorEditor.diagnostics.val = afterDoc.validateVectorAccessibility()
+  editor.vectorEditor.undoStack.update proc(prev: seq[VectorEditTransaction]): seq[
+      VectorEditTransaction] =
+    result = prev
+    result.add VectorEditTransaction(operation: operation,
+      beforeDocument: beforeDoc,
+      afterDocument: afterDoc,
+      sourceEdit: plan)
+  editor.vectorEditor.redoStack.val = @[]
+  editor.inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
+      SourceEditPlan] =
+    result = prev
+    result.add plan
+  editor.workspaceEditStage.val = wesDirty
+  VectorOperationResult(ok: true, operation: operation, document: afterDoc,
+    sourceEdit: plan, diagnostics: editor.vectorEditor.diagnostics.val)
+
+proc commitBrowserVectorSvg*(editor: EditorVM;
+    exportedSvg: string): VectorOperationResult {.discardable.} =
+  editor.commitVectorSourceSnapshot(vokExportSvg, exportedSvg,
+    requireExpectedOldValue = false)
+
+proc unsupportedVectorOperation*(editor: EditorVM;
+    operationName: string): VectorOperationResult {.discardable.} =
+  let message = operationName &
+    " is not exposed until Fabric or a mature supplemental path library " &
+    "backs the operation."
+  let diagnostics = @[VectorDiagnostic(kind: vdkUnsupportedOperation,
+    message: message)]
+  editor.vectorEditor.diagnostics.val = diagnostics
+  VectorOperationResult(ok: false, operation: vokOptimizeSvg,
+    document: editor.vectorEditor.document.val, diagnostics: diagnostics)
 
 proc duplicateVectorSelection*(editor: EditorVM): VectorOperationResult {.discardable.} =
   let beforeDoc = editor.vectorEditor.document.val

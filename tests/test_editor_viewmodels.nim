@@ -1321,6 +1321,82 @@ suite "Editor ViewModels (M27 workspace file writes)":
       check recorder.fullReloadSeen
       dispose()
 
+  test "vector_editor_browser_bridge_commits_fabric_export_to_workspace_save":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("vector-browser-bridge")
+      defer: removeDir(root)
+
+      let svgFile = root / "symbols.schema"
+      atomicWrite(svgFile,
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path id=\"path-1\" d=\"M0 0h24v24H0z\" /></svg>")
+      let recorder = WorkspaceEditRecorder()
+      let schema = @[
+        WorkspaceEditableSchemaEntry(key: "symbols.logo.svg",
+          kind: wskSvgSymbol, file: svgFile, path: "symbols.logo.svg",
+          story: writeStory, property: "svgContent")
+      ]
+      let adapter = adapterFor(root, schema, recorder = recorder)
+      adapter.patchFile = proc(plan: SourceEditPlan; content: string;
+          schema: WorkspaceEditableSchemaEntry): WorkspacePatchResult =
+        WorkspacePatchResult(ok: true, patch: WorkspaceFilePatch(
+          file: schema.file,
+          beforeContent: content,
+          afterContent: plan.newValue,
+          affectedStory: schema.story,
+          fullReload: true))
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "M29 browser bridge workspace",
+        storyGroups = @[],
+        vectorSymbols = @[
+          VectorSymbol(name: "Logo", category: "Icons",
+            svgContent: "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path id=\"path-1\" d=\"M0 0h24v24H0z\" /></svg>",
+            width: 24, height: 24)
+        ],
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true),
+        editAdapter = adapter))
+
+      check vm.selectVectorSymbol(0)
+      let exported =
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><rect id=\"fabric-rect\" x=\"2\" y=\"3\" width=\"12\" height=\"9\" fill=\"#EF4444\" stroke=\"#22C55E\" /></svg>"
+      let bridged = vm.commitBrowserVectorSvg(exported)
+      check bridged.ok
+      check bridged.sourceEdit.schemaKey == "symbols.logo.svg"
+      check bridged.sourceEdit.property == "svgContent"
+      check bridged.sourceEdit.expectedOldValue == ""
+      check bridged.sourceEdit.newValue.contains("fabric-rect")
+      check vm.inspector.pendingSourceEdits.val.len == 1
+      check vm.vectorEditor.undoStack.val.len == 1
+      check vm.workspaceEditStage.val == wesDirty
+      check vm.commandAvailable(eckSave)
+
+      let saved = vm.runEditorCommand(eckSave)
+      check saved.status == ecsSucceeded
+      check readFile(svgFile).contains("fabric-rect")
+      check readFile(svgFile).contains("#EF4444")
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check vm.vectorEditor.undoStack.val.len == 0
+      check vm.workspaceEditStage.val == wesClean
+      check recorder.fullReloadSeen
+      dispose()
+
+  test "vector_editor_advanced_path_and_boolean_ops_are_explicitly_unsupported":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      let adapter = vm.vectorEditor.adapter.val
+      check not adapter.hasCapability(vacPathEditing)
+      check adapter.unsupportedAdvancedOperations.anyIt(
+        it.contains("Boolean path"))
+      check adapter.unsupportedAdvancedOperations.anyIt(
+        it.contains("bezier node editing"))
+      let result = vm.unsupportedVectorOperation("Boolean union")
+      check not result.ok
+      check result.diagnostics.len == 1
+      check result.diagnostics[0].kind == vdkUnsupportedOperation
+      check result.diagnostics[0].message.contains("mature supplemental path library")
+      check vm.vectorEditor.diagnostics.val[0].kind == vdkUnsupportedOperation
+      dispose()
+
   test "foundation_token_edit_updates_dependent_properties":
     createRoot proc(dispose: proc()) =
       let root = tempWorkspaceDir("foundation")
