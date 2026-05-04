@@ -155,6 +155,7 @@ test-editor:
     nim c -r tests/test_editor_workspace.nim
     nim c -r tests/test_editor_public_api.nim
     nim js --path:src -o:build/test_editor_public_browser_imports.js tests/test_editor_public_browser_imports.nim
+    nim c -r tests/test_editor_release_gate.nim
     nim c -r tests/test_editor_viewmodels.nim
     nim c -r --path:../nim-acp/src tests/test_editor_agent_context.nim
     nim c -r tests/test_editor_agent_harbor.nim

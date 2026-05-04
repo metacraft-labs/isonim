@@ -1,0 +1,347 @@
+{
+  "schemaVersion": 1,
+  "releaseGate": "M31 Full Editor Dogfood Release Gate",
+  "status": "completed",
+  "updated": "2026-05-05",
+  "policy": {
+    "headlessFirst": true,
+    "playwrightOnlyForBrowserBehavior": true,
+    "completedRowsRequireAutomatedTests": true,
+    "mockOnlyCompletedRowsAllowed": false,
+    "publicConsumerImports": ["isonim/editor", "isonim/editor/browser"]
+  },
+  "releaseGateCommands": [
+    "direnv exec /home/zahary/metacraft/isonim just test-editor",
+    "direnv exec /home/zahary/metacraft/isonim just editor-build",
+    "direnv exec /home/zahary/metacraft/isonim just test-browser-editor-example",
+    "direnv exec /home/zahary/metacraft/isonim just test-browser-editor-consumer",
+    "direnv exec /home/zahary/metacraft/metacraft-web just build-back-office-editor",
+    "direnv exec /home/zahary/metacraft/metacraft-web nim c -r apps/back-office/tests/test_backoffice_editor_workspace.nim",
+    "direnv exec /home/zahary/metacraft/nim-agents just test"
+  ],
+  "features": [
+    {
+      "id": "edit_commands",
+      "title": "Edit and View Commands",
+      "status": "completed",
+      "owner": "framework",
+      "mockOnly": false,
+      "implementation": "Typed command availability, dispatch, diagnostics, URL state, keyboard and pointer activation.",
+      "headlessTests": [
+        {
+          "name": "editor_commands_require_valid_selection_and_capability",
+          "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "editor_edit_buttons_dispatch_commands",
+          "file": "tests/test_editor_shell_views.nim"
+        }
+      ],
+      "playwrightRequired": true,
+      "playwrightTests": [
+        {
+          "name": "e2e_editor_edit_buttons_keyboard_and_pointer",
+          "file": "tests/browser/specs/editor-example.spec.ts"
+        }
+      ]
+    },
+    {
+      "id": "css_editors",
+      "title": "CSS Property Editors",
+      "status": "completed",
+      "owner": "framework",
+      "mockOnly": false,
+      "implementation": "Typed CSS value parsing, normalization, source-plan selection, validation, shared-scope handling, undo/redo, dirty state, and save staging.",
+      "headlessTests": [
+        {
+          "name": "css_property_editors_parse_validate_and_normalize_values",
+          "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "css_property_editors_choose_schema_token_or_source_plan",
+          "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "css_property_editors_support_shared_scope_and_undo_redo",
+          "file": "tests/test_editor_viewmodels.nim"
+        }
+      ],
+      "playwrightRequired": false,
+      "playwrightReason": "The implemented contract is headless value/edit-engine behavior; browser form control coverage is included indirectly through the edit-button and consumer browser suites."
+    },
+    {
+      "id": "foundation_editors",
+      "title": "Foundation Token Editors",
+      "status": "completed",
+      "owner": "framework",
+      "mockOnly": false,
+      "implementation": "Token edits, impact analysis, contrast validation, semantic alias cycle validation, and source-plan generation.",
+      "headlessTests": [
+        {
+          "name": "foundation_token_edit_updates_dependent_properties",
+          "file": "tests/test_editor_viewmodels.nim"
+        }
+      ],
+      "playwrightRequired": false,
+      "playwrightReason": "The release gate exposes foundation editing as source-backed ViewModel behavior; no browser-only rendering or pointer behavior is owned by this feature."
+    },
+    {
+      "id": "component_variant_editors",
+      "title": "Component Variant Editors",
+      "status": "completed",
+      "owner": "framework",
+      "mockOnly": false,
+      "implementation": "Variant fixture/story metadata validation, field edits, and source-plan generation.",
+      "headlessTests": [
+        {
+          "name": "component_variant_editor_updates_story_fixtures",
+          "file": "tests/test_editor_viewmodels.nim"
+        }
+      ],
+      "playwrightRequired": false,
+      "playwrightReason": "The variant editor contract is source/schema state; consumer component rendering is covered by the browser consumer suite."
+    },
+    {
+      "id": "svg_editors",
+      "title": "SVG and Vector Editors",
+      "status": "completed",
+      "owner": "framework",
+      "mockOnly": false,
+      "implementation": "Fabric-backed canvas interaction, Paper.js-backed boolean/path-segment operations, SVGO-backed export, source-backed properties, undo/redo, diagnostics for unsupported freeform Bezier editing, and M27 save bridging.",
+      "headlessTests": [
+        {
+          "name": "vector_editor_library_spike_selects_mature_backend",
+          "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "vector_editor_adapter_contract_is_library_backed",
+          "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "vector_editor_model_supports_shapes_paths_layers_and_symbols",
+          "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "vector_editor_operations_are_undoable_and_source_backed",
+          "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "vector_editor_import_properties_shapes_and_viewbox_are_source_backed",
+          "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "vector_editor_browser_bridge_commits_fabric_export_to_workspace_save",
+          "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "vector_editor_paper_path_operations_are_source_backed",
+          "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "vector_editor_unbacked_freeform_path_editing_is_diagnosed",
+          "file": "tests/test_editor_viewmodels.nim"
+        }
+      ],
+      "playwrightRequired": true,
+      "playwrightTests": [
+        {
+          "name": "e2e_vector_editor_pointer_keyboard_and_rendering",
+          "file": "tests/browser/specs/editor-example.spec.ts"
+        }
+      ]
+    },
+    {
+      "id": "source_sync",
+      "title": "Workspace Source Synchronization",
+      "status": "completed",
+      "owner": "framework",
+      "mockOnly": false,
+      "implementation": "Adapter-mediated transactions, same-file composition, conflicts, rollback, targeted reload, full reload fallback, and generated-view roundtrip.",
+      "headlessTests": [
+        {
+          "name": "workspace_edit_adapter_applies_transactional_file_changes",
+          "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "workspace_schema_edits_roundtrip_through_generated_views",
+          "file": "tests/test_editor_viewmodels.nim"
+        }
+      ],
+      "playwrightRequired": false,
+      "playwrightReason": "Source synchronization is intentionally headless and adapter-owned; browser save buttons are covered by vector and agent browser tests."
+    },
+    {
+      "id": "agent_edits",
+      "title": "Agent-Assisted Edits",
+      "status": "completed",
+      "owner": "framework",
+      "mockOnly": false,
+      "implementation": "Structured prompt context, ACP/Agent Harbor event mapping through nim-agents, permission state, proposal review, partial accept, reject, revert, cancel, error, completion, and M27 save path.",
+      "headlessTests": [
+        {
+          "name": "editor_agent_context_includes_source_and_design_system_state",
+          "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "editor_agent_stream_events_update_review_loop_state",
+          "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "editor_agent_edits_require_review_and_user_acceptance",
+          "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "editor_agent_prompt_builds_acp_content_blocks",
+          "file": "tests/test_editor_agent_context.nim"
+        },
+        {
+          "name": "editor_agent_harbor_stream_updates_chat_state",
+          "file": "tests/test_editor_agent_harbor.nim"
+        }
+      ],
+      "playwrightRequired": true,
+      "playwrightTests": [
+        {
+          "name": "e2e_agent_assisted_edit_flow",
+          "file": "tests/browser/specs/editor-example.spec.ts"
+        }
+      ]
+    },
+    {
+      "id": "browser_history",
+      "title": "Browser Back and Forward Navigation",
+      "status": "completed",
+      "owner": "framework",
+      "mockOnly": false,
+      "implementation": "Route serialization, popstate handling, URL-driven view/mode/selection restoration, and consumer browser compatibility.",
+      "headlessTests": [
+        {
+          "name": "editor_vm_select_story_updates_view_and_selection",
+          "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "editor_vm_canvas_selection_drives_story_and_flow_state",
+          "file": "tests/test_editor_viewmodels.nim"
+        }
+      ],
+      "playwrightRequired": true,
+      "playwrightTests": [
+        {
+          "name": "e2e_editor_edit_buttons_keyboard_and_pointer",
+          "file": "tests/browser/specs/editor-example.spec.ts"
+        },
+        {
+          "name": "keeps editor state in browser history",
+          "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
+        }
+      ]
+    },
+    {
+      "id": "pan_zoom",
+      "title": "Journey and Vector Pan/Zoom",
+      "status": "completed",
+      "owner": "framework",
+      "mockOnly": false,
+      "implementation": "Figma-style journey canvas zoom/pan state plus Fabric vector zoom/pan behavior.",
+      "headlessTests": [
+        {
+          "name": "storyboard exposes figma-style zoom and pan state",
+          "file": "tests/test_editor_shell_views.nim"
+        }
+      ],
+      "playwrightRequired": true,
+      "playwrightTests": [
+        {
+          "name": "supports figma-style zooming and panning on flow pages",
+          "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
+        },
+        {
+          "name": "e2e_vector_editor_pointer_keyboard_and_rendering",
+          "file": "tests/browser/specs/editor-example.spec.ts"
+        }
+      ]
+    },
+    {
+      "id": "search",
+      "title": "Sidebar Search",
+      "status": "completed",
+      "owner": "framework",
+      "mockOnly": false,
+      "implementation": "Search filtering preserves group metadata and page/component/journey selection semantics.",
+      "headlessTests": [
+        {
+          "name": "test_sidebar_search_filter",
+          "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "editor_story_filter_preserves_group_metadata",
+          "file": "tests/test_editor_viewmodels.nim"
+        }
+      ],
+      "playwrightRequired": true,
+      "playwrightTests": [
+        {
+          "name": "mounts the live consumer workspace through public editor APIs",
+          "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
+        }
+      ]
+    },
+    {
+      "id": "panels",
+      "title": "Sidebar and Inspector Panels",
+      "status": "completed",
+      "owner": "framework",
+      "mockOnly": false,
+      "implementation": "Top-level navigation sections, collapsible panels, responsive visibility, empty states, and inspector toggles.",
+      "headlessTests": [
+        {
+          "name": "test_sidebar_toggle_group",
+          "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "sidebar sections expose top level editor navigation",
+          "file": "tests/test_editor_shell_views.nim"
+        },
+        {
+          "name": "test_sidebar_toggle",
+          "file": "tests/test_editor_responsive.nim"
+        }
+      ],
+      "playwrightRequired": true,
+      "playwrightTests": [
+        {
+          "name": "e2e_editor_sidebar_story_selection",
+          "file": "tests/browser/specs/editor-example.spec.ts"
+        },
+        {
+          "name": "mounts the live consumer workspace through public editor APIs",
+          "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
+        }
+      ]
+    },
+    {
+      "id": "package_imports",
+      "title": "Package Imports and Consumer Boundary",
+      "status": "completed",
+      "owner": "framework",
+      "mockOnly": false,
+      "implementation": "Public native and browser import surfaces compile for the example, metacraft-web, and CodeTracer-facing workspace patterns without private editor imports.",
+      "headlessTests": [
+        {
+          "name": "editor_public_api_imports_without_demo_dependencies",
+          "file": "tests/test_editor_public_api.nim"
+        },
+        {
+          "name": "editor_public_api_supports_example_metacraft_and_codetracer_consumers",
+          "file": "tests/test_editor_public_api.nim"
+        },
+        {
+          "name": "editor_framework_consumer_boundary_is_preserved",
+          "file": "tests/test_editor_release_gate.nim"
+        }
+      ],
+      "playwrightRequired": false,
+      "playwrightReason": "Browser package import compatibility is compiled by tests/test_editor_public_browser_imports.nim and exercised by the example/consumer browser suites."
+    }
+  ]
+}

@@ -3,7 +3,9 @@ when not defined(js):
 
 import isonim/editor
 import isonim/editor/browser
-import isonim/editor/browser_vector_adapter
+
+when not declared(mountEditor):
+  {.error: "isonim/editor/browser must expose mountEditor".}
 
 let workspace = newEditorWorkspace(
   title = "Browser public API consumer",
@@ -24,4 +26,3 @@ let workspace = newEditorWorkspace(
   ])
 
 discard workspace
-discard selectedVectorAdapter()
