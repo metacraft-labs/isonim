@@ -18,8 +18,8 @@ suite "Editor Shell Views (M2)":
 
       let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
 
-      # Shell should have 3 children: sidebar, preview, inspector
-      check shell.children.len == 3
+      # Shell mounts sidebar, four view panes, vector editor, and chat.
+      check shell.children.len == 7
       dispose()
 
   test "test_sidebar_renders_groups":
@@ -68,9 +68,9 @@ suite "Editor Shell Views (M2)":
       # Should have tabs, content, and chat section
       check panel.children.len >= 3
 
-      # Tabs should have 8 section buttons
+      # Tabs should expose every inspector section.
       let tabs = panel.children[0]
-      check tabs.children.len == 8
+      check tabs.children.len == 11
 
       dispose()
 

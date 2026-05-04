@@ -1,16 +1,12 @@
 ## IsoNim Editor — Component Detail View.
 ##
 ## Storybook-style: each variant gets its own section with title,
-## description, and full-width rendering. Real Wanderlust components.
+## description, and full-width rendering.
 
-import isonim/core/computation
+import isonim/core/[computation, signals]
 import isonim/dsl/ui
 import isonim/editor/viewmodels
 import isonim/editor/types
-import examples/wanderlust/components/views as wViews
-import examples/wanderlust/components/viewmodels as wVMs
-import examples/wanderlust/mock_data as wData
-import examples/wanderlust/foundations/tokens as wTokens
 
 const
   bgBase = "#0B1120"
@@ -27,26 +23,44 @@ const
   green = "#22C55E"
   red = "#EF4444"
 
+proc renderGenericComponentPreview[R, E](r: R; title, description: string): E =
+  ui(r):
+    tdiv(width = "320px", padding = "18px",
+          background_color = "#FFFFFF", color = "#0F172A",
+          border_radius = "12px",
+          display = "flex", flex_direction = "column", gap = "10px"):
+      tdiv(height = "96px", border_radius = "10px",
+            background_color = "#DBEAFE")
+      span(font_size = "17px", font_weight = "700"):
+        text title
+      span(font_size = "13px", color = "#64748B", line_height = "1.4"):
+        text description
+      tdiv(display = "flex", gap = "8px"):
+        tdiv(height = "24px", width = "72px", border_radius = "999px",
+              background_color = "#E0E7FF")
+        tdiv(height = "24px", width = "56px", border_radius = "999px",
+              background_color = "#F1F5F9")
+
 proc sectionLabel[R, E](r: R; title: string): E =
   ui(r):
     span(font_size = "11px", font_weight = "700", color = textSecondary,
-         text_transform = "uppercase", letter_spacing = "1px"):
+          text_transform = "uppercase", letter_spacing = "1px"):
       text title
 
 proc renderVariantSection[R, E](r: R; name, description: string;
-                                 component: E): E =
+                                  component: E): E =
   ## A single variant: header annotation + full-width preview area.
   let section = ui(r):
     tdiv(display = "flex", flex_direction = "column",
-         border = "1px solid " & border, border_radius = "8px",
-         overflow = "hidden")
+          border = "1px solid " & border, border_radius = "8px",
+          overflow = "hidden")
 
   # Annotation header
   let header = ui(r):
     tdiv(display = "flex", align_items = "baseline", gap = "12px",
-         padding = "12px 16px",
-         background_color = bgCard,
-         border_bottom = "1px solid " & border):
+          padding = "12px 16px",
+          background_color = bgCard,
+          border_bottom = "1px solid " & border):
       span(font_size = "14px", font_weight = "600", color = textPrimary):
         text name
       span(font_size = "12px", color = textMuted):
@@ -56,9 +70,9 @@ proc renderVariantSection[R, E](r: R; name, description: string;
   # Preview area (light bg to contrast with the component)
   let preview = ui(r):
     tdiv(padding = "24px", display = "flex",
-         justify_content = "center",
-         background_color = bgPreview,
-         min_height = "120px")
+          justify_content = "center",
+          background_color = bgPreview,
+          min_height = "120px")
   r.appendChild(preview, component)
   r.appendChild(section, preview)
   section
@@ -66,17 +80,17 @@ proc renderVariantSection[R, E](r: R; name, description: string;
 proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
   let page = ui(r):
     tdiv(class = "editor-preview",
-         flex = "1", display = "flex", flex_direction = "column",
-         min_width = "0", height = "100%",
-         background_color = bgBase, overflow_y = "auto")
+          flex = "1", display = "flex", flex_direction = "column",
+          min_width = "0", height = "100%",
+          background_color = bgBase, overflow_y = "auto")
 
   # Header bar
   let header = ui(r):
     tdiv(display = "flex", align_items = "center",
-         justify_content = "space-between",
-         height = "44px", min_height = "44px", padding = "0 20px",
-         background_color = bgCard,
-         border_bottom = "1px solid " & border):
+          justify_content = "space-between",
+          height = "44px", min_height = "44px", padding = "0 20px",
+          background_color = bgCard,
+          border_bottom = "1px solid " & border):
       tdiv(display = "flex", align_items = "center", gap = "8px"):
         span(font_size = "11px", color = textDim):
           text "Components"
@@ -86,69 +100,42 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
           text "DestinationCard"
       tdiv(display = "flex", align_items = "center", gap = "8px"):
         tdiv(padding = "4px 12px", border_radius = "4px",
-             font_size = "11px", font_weight = "500",
-             background_color = accent, color = textPrimary,
-             cursor = "pointer"):
+              font_size = "11px", font_weight = "500",
+              background_color = accent, color = textPrimary,
+              cursor = "pointer"):
           text "Edit"
         tdiv(padding = "4px 12px", border_radius = "4px",
-             font_size = "11px", font_weight = "500",
-             background_color = bgSurface, color = textMuted,
-             cursor = "pointer"):
+              font_size = "11px", font_weight = "500",
+              background_color = bgSurface, color = textMuted,
+              cursor = "pointer"):
           text "Code"
   r.appendChild(page, header)
 
   # Scrollable content
   let content = ui(r):
     tdiv(padding = "24px 32px", display = "flex",
-         flex_direction = "column", gap = "24px")
+          flex_direction = "column", gap = "24px")
 
-  # === Variant 1: Default (Santorini, saved) ===
-  let v1 = wViews.renderDestinationCard[R, E](r, wData.santoriniDest())
-  let s1 = renderVariantSection[R, E](r,
-    "Default — Saved Destination",
-    "Santorini, Greece. Beach/Romance/Photography tags. Heart icon filled. 4.8 rating, $185/night.",
-    v1)
-  r.appendChild(content, s1)
+  var renderedVariants = false
+  for group in vm.sidebar.groups.val:
+    if group.kind == skComponent and not renderedVariants:
+      for item in group.items:
+        let preview = renderGenericComponentPreview[R, E](r, item.name,
+          item.description)
+        let section = renderVariantSection[R, E](r, item.name,
+          item.description, preview)
+        r.appendChild(content, section)
+      renderedVariants = true
 
-  # === Variant 2: Unsaved (Kyoto) ===
-  let v2 = wViews.renderDestinationCard[R, E](r, wData.kyotoDest())
-  let s2 = renderVariantSection[R, E](r,
-    "Unsaved — Culture Destination",
-    "Kyoto, Japan. Culture/Nature/History tags. Heart icon outline (not saved). 4.9 rating, $142/night.",
-    v2)
-  r.appendChild(content, s2)
-
-  # === Variant 3: Budget (Marrakech) ===
-  let v3 = wViews.renderDestinationCard[R, E](r, wData.marrakechDest())
-  let s3 = renderVariantSection[R, E](r,
-    "Budget — Affordable Destination",
-    "Marrakech, Morocco. Adventure/Culture/Food tags. Low price point ($78/night). 4.5 rating.",
-    v3)
-  r.appendChild(content, s3)
-
-  # === Variant 4: Premium (Reykjavik) ===
-  let v4 = wViews.renderDestinationCard[R, E](r, wData.reykjavikDest())
-  let s4 = renderVariantSection[R, E](r,
-    "Premium — High-End Destination",
-    "Reykjavik, Iceland. Adventure/Nature/Photography. Saved. Premium price ($210/night). 4.7 rating.",
-    v4)
-  r.appendChild(content, s4)
-
-  # === Variant 5: Budget-Friendly European (Lisbon) ===
-  let v5 = wViews.renderDestinationCard[R, E](r, wData.lisbonDest())
-  let s5 = renderVariantSection[R, E](r,
-    "Budget-Friendly — European City",
-    "Lisbon, Portugal. Culture/Food/Budget tags. Affordable ($95/night). Not saved. 4.6 rating.",
-    v5)
-  r.appendChild(content, s5)
-
-  # === Variant 6: Nature/Adventure (Banff) ===
-  let v6 = wViews.renderDestinationCard[R, E](r, wData.banffDest())
-  let s6 = renderVariantSection[R, E](r,
-    "Nature — Mountain Destination",
-    "Banff, Canada. Nature/Adventure/Photography. Not saved. $165/night. 4.8 rating.",
-    v6)
-  r.appendChild(content, s6)
+  if not renderedVariants:
+    let preview = renderGenericComponentPreview[R, E](r,
+      "Component preview",
+      "Select a component story from the workspace sidebar.")
+    let section = renderVariantSection[R, E](r,
+      "Component preview",
+      "Project-owned component state",
+      preview)
+    r.appendChild(content, section)
 
   # === Props / API Table ===
   let propsLabel = sectionLabel[R, E](r, "PROPERTIES")
@@ -156,21 +143,21 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
 
   let propsTable = ui(r):
     tdiv(background_color = bgCard, border = "1px solid " & border,
-         border_radius = "8px", overflow = "hidden"):
+          border_radius = "8px", overflow = "hidden"):
       tdiv(display = "flex", padding = "8px 16px",
-           background_color = bgSurface,
-           border_bottom = "1px solid " & border):
+            background_color = bgSurface,
+            border_bottom = "1px solid " & border):
         span(width = "120px", font_size = "10px", font_weight = "600",
-             color = textSecondary):
+              color = textSecondary):
           text "Name"
         span(width = "100px", font_size = "10px", font_weight = "600",
-             color = textSecondary):
+              color = textSecondary):
           text "Type"
         span(width = "80px", font_size = "10px", font_weight = "600",
-             color = textSecondary):
+              color = textSecondary):
           text "Default"
         span(flex = "1", font_size = "10px", font_weight = "600",
-             color = textSecondary):
+              color = textSecondary):
           text "Description"
   r.appendChild(content, propsTable)
 
@@ -188,15 +175,15 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
     let n = prop[0]; let t = prop[1]; let d = prop[2]; let desc = prop[3]
     let row = ui(r):
       tdiv(display = "flex", padding = "8px 16px",
-           border_bottom = "1px solid " & borderFaint):
+            border_bottom = "1px solid " & borderFaint):
         span(width = "120px", font_size = "12px", color = accent,
-             font_family = "'JetBrains Mono', monospace"):
+              font_family = "'JetBrains Mono', monospace"):
           text n
         span(width = "100px", font_size = "11px", color = textMuted,
-             font_family = "monospace"):
+              font_family = "monospace"):
           text t
         span(width = "80px", font_size = "11px", color = textDim,
-             font_family = "monospace"):
+              font_family = "monospace"):
           text d
         span(flex = "1", font_size = "11px", color = textSecondary):
           text desc
@@ -218,11 +205,11 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
     let isDo = guideline[0]; let gdesc = guideline[1]
     let rule = ui(r):
       tdiv(display = "flex", align_items = "center", gap = "10px",
-           padding = "10px 16px", background_color = bgCard,
-           border_radius = "6px",
-           border_left = (if isDo: "3px solid " & green else: "3px solid " & red)):
+            padding = "10px 16px", background_color = bgCard,
+            border_radius = "6px",
+            border_left = (if isDo: "3px solid " & green else: "3px solid " & red)):
         span(font_size = "12px", font_weight = "600",
-             color = (if isDo: green else: red)):
+              color = (if isDo: green else: red)):
           text(if isDo: "\xE2\x9C\x93 Do" else: "\xC3\x97 Don't")
         span(font_size = "12px", color = textSecondary):
           text gdesc
@@ -242,12 +229,12 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
     let atopic = a11yNote[0]; let adesc = a11yNote[1]
     let note = ui(r):
       tdiv(display = "flex", align_items = "flex-start", gap = "10px",
-           padding = "10px 16px", background_color = bgCard,
-           border_radius = "6px"):
+            padding = "10px 16px", background_color = bgCard,
+            border_radius = "6px"):
         tdiv(padding = "2px 8px", border_radius = "4px",
-             background_color = bgSurface, font_size = "10px",
-             font_weight = "600", color = textSecondary,
-             white_space = "nowrap"):
+              background_color = bgSurface, font_size = "10px",
+              font_weight = "600", color = textSecondary,
+              white_space = "nowrap"):
           text atopic
         span(font_size = "12px", color = textSecondary, line_height = "1.4"):
           text adesc
@@ -261,8 +248,8 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
     tdiv(display = "flex", gap = "12px"):
       for rel in ["TripCard", "SearchBar", "FilterChip", "ReviewCard"]:
         tdiv(padding = "10px 16px", background_color = bgCard,
-             border = "1px solid " & border, border_radius = "6px",
-             cursor = "pointer"):
+              border = "1px solid " & border, border_radius = "6px",
+              cursor = "pointer"):
           span(font_size = "12px", color = accent):
             text rel
   r.appendChild(content, relGrid)

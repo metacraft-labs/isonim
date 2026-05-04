@@ -274,6 +274,52 @@ nim c -r tests/test_signals.nim
 nim js -r tests/test_dsl.nim
 ```
 
+## IsoNim Editor
+
+The editor is packaged as framework code under `isonim/editor`. Applications
+own their workspace definitions and import the editor package instead of copying
+the editor shell.
+
+```nim
+import isonim/editor
+
+let workspace = newEditorWorkspace(
+  title = "Metacraft Back Office",
+  id = "metacraft-web",
+  storyGroups = @[
+    StoryGroup(
+      name: "Operations dashboard",
+      kind: skPage,
+      expanded: true,
+      description: "Customers, licenses, partners, and settlements",
+      items: @[
+        StoryItem(
+          name: "Seeded local data",
+          description: "Dashboard with realistic billing and license data",
+          kind: skPage,
+          group: "Operations dashboard")
+      ])
+  ],
+  initialView = evPagePreview)
+```
+
+Browser entry points additionally import `isonim/editor/browser` and mount the
+workspace:
+
+```nim
+when defined(js):
+  import isonim/editor/browser
+
+  discard mountEditor(workspace)
+```
+
+The in-repo Wanderlust editor demo uses the same API:
+
+```sh
+just editor-build
+just editor-serve
+```
+
 ## Development
 
 ### Nix flake

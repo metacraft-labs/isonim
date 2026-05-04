@@ -114,7 +114,7 @@ test-web:
 # Build the editor (Nim → JS)
 editor-build:
     mkdir -p build/editor
-    nim js --path:. -o:build/editor/editor.js src/isonim/editor/main.nim
+    nim js --path:src --path:. -o:build/editor/editor.js src/isonim/editor/main.nim
     cp src/isonim/editor/index.html build/editor/index.html
     @echo "Built: build/editor/ — open build/editor/index.html"
 
@@ -149,6 +149,7 @@ editor-screenshot-list:
 
 # Run editor ViewModel tests
 test-editor:
+    nim c -r tests/test_editor_workspace.nim
     nim c -r tests/test_editor_viewmodels.nim
     nim c -r tests/test_editor_user_project.nim
     nim c -r tests/test_editor_shell_views.nim
