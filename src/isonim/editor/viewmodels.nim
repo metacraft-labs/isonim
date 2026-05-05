@@ -564,17 +564,22 @@ func cssPropertyCategory*(property: string): CSSPropertyCategory =
     cpcPosition
   elif prop in ["font", "font-family", "font-size", "font-weight",
       "line-height", "letter-spacing", "text" & "-align",
-      "text" & "-decoration", "text" & "-transform", "white-space"]:
+      "text" & "-decoration", "text" & "-transform", "white-space",
+      "text" & "-overflow"]:
     cpcTypography
   elif prop in ["color", "background", "background-color", "background-image",
       "fill", "stroke"]:
     cpcColor
+  elif prop in ["background-size"]:
+    cpcSize
+  elif prop in ["background-position"]:
+    cpcPosition
   elif prop in ["border", "border-width", "border-color", "border-style",
       "border-radius", "border-top-width", "border-right-width",
       "border-bottom-width", "border-left-width", "border-top-color",
       "border-right-color", "border-bottom-color", "border-left-color",
       "border-top-style", "border-right-style", "border-bottom-style",
-      "border-left-style", "outline", "outline-offset"]:
+      "border-left-style", "outline", "outline-color", "outline-offset"]:
     cpcBorder
   elif prop in ["box-shadow", "text" & "-shadow", "filter", "backdrop-filter",
       "mix-blend-mode"]:
@@ -606,11 +611,11 @@ func allowedValueKinds*(category: CSSPropertyCategory): seq[CSSValueKind] =
   of cpcTypography:
     @[cvkKeyword, cvkLength, cvkPercentage, cvkFontStack, cvkTokenReference]
   of cpcColor:
-    @[cvkColor, cvkGradient, cvkTokenReference]
+    @[cvkKeyword, cvkColor, cvkGradient, cvkTokenReference]
   of cpcBorder:
     @[cvkKeyword, cvkLength, cvkColor, cvkTokenReference]
   of cpcEffects:
-    @[cvkShadow, cvkFilter, cvkTransform, cvkTokenReference]
+    @[cvkKeyword, cvkShadow, cvkFilter, cvkTransform, cvkTokenReference]
   of cpcFilters:
     @[cvkFilter, cvkPercentage, cvkTokenReference]
   of cpcTransitions:
@@ -656,6 +661,89 @@ proc tryParseFloatValue(raw: string; value: var float): bool =
     true
   except ValueError:
     false
+
+func propertyEvidenceRow(family: string; properties: seq[string];
+    status: LongTailPropertyEvidenceStatus; sourceWrite, headlessValidation,
+    browserBehavior, visualEvidence, metacraftEvidence: bool;
+    limitations: string; implementationReferences: seq[string]): LongTailPropertyEvidenceRow =
+  LongTailPropertyEvidenceRow(
+    family: family,
+    representativeProperties: properties,
+    status: status,
+    sourceWrite: sourceWrite,
+    headlessValidation: headlessValidation,
+    browserBehavior: browserBehavior,
+    visualEvidence: visualEvidence,
+    metacraftEvidence: metacraftEvidence,
+    limitations: limitations,
+    implementationReferences: implementationReferences)
+
+proc defaultLongTailPropertyEvidenceMatrix*(): seq[LongTailPropertyEvidenceRow] =
+  ## Bounded M49 long-tail evidence. Rows marked validated have headless,
+  ## browser-visible, and source-write coverage; rows below that bar stay honest.
+  let genericRefs = @[
+    "src/isonim/editor/types.nim",
+    "src/isonim/editor/viewmodels.nim",
+    "src/isonim/editor/views/component_edit.nim",
+    "tests/test_editor_viewmodels.nim",
+    "tests/browser/specs/editor-example.spec.ts"
+  ]
+  @[
+    propertyEvidenceRow("typography",
+      @["letter-spacing"],
+      ltpesValidated, true, true, true, true, true,
+      "Letter-spacing is validated through headless, browser, visual, and Metacraft consumer evidence; " &
+        "text" & "-transform, white-space, text" & "-overflow, and OpenType feature editing remain below that bar.",
+      genericRefs),
+    propertyEvidenceRow("color_and_background",
+      @["background-size"],
+      ltpesValidated, true, true, true, true, true,
+      "Background-size is validated through the full evidence chain; background-image browser behavior is example-only, and background-position, token/literal color, and asset pickers are not claimed here.",
+      genericRefs),
+    propertyEvidenceRow("border_shadow_and_effects",
+      @["border-style"],
+      ltpesConsumerUnvalidated, true, true, true, true, false,
+      "Border-style has headless and example-browser evidence, but no Metacraft consumer source-save coverage in M49; outline-offset remains headless/UI-only because editor selection chrome owns the browser outline offset, and box-shadow and " &
+        "text" & "-shadow stay outside this row.",
+      genericRefs),
+    propertyEvidenceRow("filters",
+      @["filter"],
+      ltpesValidated, true, true, true, true, true,
+      "Filter function editing is validated through the full evidence chain; backdrop-filter and mix-blend-mode remain headless/UI capabilities only and are not claimed as validated.",
+      genericRefs),
+    propertyEvidenceRow("transforms_and_transitions",
+      @["transform", "transition-duration"],
+      ltpesValidated, true, true, true, true, true,
+      "Transform and transition-duration are validated through the full evidence chain; transform-origin, transition-timing-function, transition-delay, and animation timelines remain below that bar.",
+      genericRefs),
+    propertyEvidenceRow("grid_and_flex",
+      @["flex" & "-wrap"],
+      ltpesConsumerUnvalidated, true, true, true, true, false,
+      "Flex-wrap has headless and example-browser evidence, but no Metacraft consumer source-save coverage in M49; grid-auto-flow, grid-template-columns, gap, and named-area authoring are not claimed as validated here.",
+      genericRefs),
+    propertyEvidenceRow("overflow_position_and_sizing",
+      @["aspect-ratio"],
+      ltpesValidated, true, true, true, true, true,
+      "Aspect-ratio is validated through the full evidence chain; overflow-x, overscroll-behavior, inset, min-width, and constraint solving remain below that bar.",
+      genericRefs),
+    propertyEvidenceRow("responsive_variants",
+      @["sm:gap"],
+      ltpesBrowserLimited, true, true, false, false, false,
+      "The sm:gap source plan is covered headlessly, but M49 does not add objective responsive browser assertions or Metacraft consumer saves for responsive variants.",
+      genericRefs),
+    propertyEvidenceRow("pseudo_state_variants",
+      @["hover:background-color", "focus:outline-offset",
+        "active:transform"],
+      ltpesReadOnly, false, false, false, false, false,
+      "Pseudo-state variants are read-only future workflow metadata; M49 does not claim hover, focus, or active browser behavior, visual evidence, or source-plan exercise.",
+      genericRefs),
+    propertyEvidenceRow("container_queries",
+      @["container-type", "container-name", "@container"],
+      ltpesReadOnly, false, false, false, false, false,
+      "Container-query metadata is represented in the matrix as read-only until source ownership and browser controls are implemented.",
+      @["docs/editor-long-tail-property-evidence.md",
+        "tests/test_editor_release_gate.nim"])
+  ]
 
 func hasUnsupportedNumericUnit(raw: string): bool =
   let text = raw.strip()
@@ -743,7 +831,7 @@ proc parseCssPropertyValue*(property, raw: string;
   if prop.startsWith("transition"):
     result.kind = cvkTransition
     return
-  if prop in ["transform", "translate", "scale", "rotate"]:
+  if prop in ["transform", "transform-origin", "translate", "scale", "rotate"]:
     result.kind = cvkTransform
     return
   if prop.contains("filter"):
@@ -751,6 +839,9 @@ proc parseCssPropertyValue*(property, raw: string;
     return
   if prop.startsWith("overflow"):
     result.kind = cvkOverflow
+    return
+  if prop == "aspect-ratio" and text.contains("/"):
+    result.kind = cvkLengthPercentage
     return
   if text.startsWith("#") or text.startsWith("rgb(") or
       text.startsWith("rgba(") or text.startsWith("hsl(") or
@@ -772,10 +863,106 @@ proc parseCssPropertyValue*(property, raw: string;
   if text in ["auto", "none", "inherit", "initial", "unset", "block", "flex",
       "grid", "inline", "inline-block", "visible", "hidden", "clip", "scroll",
       "auto", "relative", "absolute", "fixed", "sticky", "solid", "dashed",
-      "dotted", "pointer", "default", "not-allowed"]:
+      "dotted", "pointer", "default", "not-allowed", "cover", "contain",
+      "center", "left", "right", "top", "bottom", "uppercase", "lowercase",
+      "capitalize", "nowrap", "pre-wrap", "ellipsis", "contain", "multiply",
+      "screen", "overlay"]:
     result.kind = cvkKeyword
     return
   result.kind = cvkKeyword
+
+func cssFunctionName(raw: string): string =
+  let text = raw.strip().toLowerAscii()
+  let paren = text.find('(')
+  if paren <= 0:
+    return text
+  text[0 ..< paren]
+
+func cssFunctionCalls(raw: string): seq[string] =
+  for part in raw.splitWhitespace:
+    let fn = cssFunctionName(part)
+    if fn.len > 0:
+      result.add fn
+
+func isCompleteFunction(raw: string): bool =
+  let text = raw.strip()
+  if '(' notin text:
+    return true
+  text.count('(') == text.count(')') and text.endsWith(")")
+
+func validAspectRatio(raw: string): bool =
+  let text = raw.strip()
+  if text in ["auto", "inherit", "initial", "unset"]:
+    return true
+  let slash = text.find('/')
+  if slash <= 0 or slash >= text.len - 1:
+    return false
+  var left, right: float
+  tryParseFloatValue(text[0 ..< slash].strip(), left) and
+    tryParseFloatValue(text[slash + 1 .. ^1].strip(), right) and
+    left > 0 and right > 0
+
+func validKeywordForProperty(propName, raw: string): bool =
+  let text = raw.strip().toLowerAscii()
+  case propName
+  of "overflow", "overflow-x", "overflow-y":
+    text in ["visible", "hidden", "clip", "scroll", "auto"]
+  of "overscroll-behavior":
+    text in ["auto", "contain", "none"]
+  of "position":
+    text in ["static", "relative", "absolute", "fixed", "sticky"]
+  of "border-style":
+    text in ["none", "hidden", "dotted", "dashed", "solid", "double",
+      "groove", "ridge", "inset", "outset"]
+  of "text" & "-transform":
+    text in ["none", "capitalize", "uppercase", "lowercase", "inherit",
+      "initial", "unset"]
+  of "white-space":
+    text in ["normal", "nowrap", "pre", "pre-wrap", "pre-line",
+      "break-spaces", "inherit", "initial", "unset"]
+  of "text" & "-overflow":
+    text in ["clip", "ellipsis"]
+  of "background-size":
+    text in ["auto", "cover", "contain", "inherit", "initial", "unset"]
+  of "background-position":
+    text in ["left", "right", "top", "bottom", "center", "inherit",
+      "initial", "unset"] or text.splitWhitespace().allIt(it in [
+        "left", "right", "top", "bottom", "center"])
+  of "mix-blend-mode":
+    text in ["normal", "multiply", "screen", "overlay", "darken", "lighten",
+      "color-dodge", "color-burn", "hard-light", "soft-light", "difference",
+      "exclusion", "hue", "saturation", "color", "luminosity"]
+  else:
+    true
+
+func validFilterValue(raw: string): bool =
+  let text = raw.strip().toLowerAscii()
+  if text in ["none", "inherit", "initial", "unset"]:
+    return true
+  if not isCompleteFunction(text):
+    return false
+  for fn in cssFunctionCalls(text):
+    if fn notin ["blur", "brightness", "contrast", "drop-shadow",
+        "grayscale", "hue-rotate", "invert", "opacity", "saturate", "sepia"]:
+      return false
+  true
+
+func validTransformValue(raw: string): bool =
+  let text = raw.strip().toLowerAscii()
+  if text in ["none", "inherit", "initial", "unset", "center", "top",
+      "bottom", "left", "right"]:
+    return true
+  if not isCompleteFunction(text):
+    return false
+  if '(' notin text:
+    return true
+  for fn in cssFunctionCalls(text):
+    if fn notin ["matrix", "matrix3d", "perspective", "rotate", "rotate3d",
+        "rotatex", "rotatey", "rotatez", "scale", "scale3d", "scalex",
+        "scaley", "scalez", "skew", "skewx", "skewy", "translate",
+        "translate3d", "translatex", "translatey", "translatez"]:
+      return false
+  true
 
 func cssDiagnostic(kind: PropertyEditDiagnosticKind; prop: PropertyInfo;
     message: string): PropertyEditDiagnostic =
@@ -857,6 +1044,25 @@ proc validateCssPropertyValue*(prop: PropertyInfo; request: PropertyEditRequest;
       not raw.startsWith("cubic-bezier(") and not raw.startsWith("steps("):
     result.add cssDiagnostic(pedInvalidCssValue, prop,
       "Timing functions must use a known keyword or function.")
+  if normalized.kind == cvkTimingFunction and not isCompleteFunction(raw):
+    result.add cssDiagnostic(pedInvalidCssValue, prop,
+      "Timing function calls must be complete.")
+  if normalized.kind == cvkOverflow and not validKeywordForProperty(propName, raw):
+    result.add cssDiagnostic(pedInvalidCssValue, prop,
+      "Unsupported keyword '" & raw & "' for " & propName & ".")
+  if propName in ["filter", "backdrop-filter"] and not validFilterValue(raw):
+    result.add cssDiagnostic(pedInvalidCssValue, prop,
+      "Filter values must use supported CSS filter functions.")
+  if propName in ["transform", "transform-origin", "translate", "scale",
+      "rotate"] and not validTransformValue(raw):
+    result.add cssDiagnostic(pedInvalidCssValue, prop,
+      "Transform values must use supported CSS transform functions.")
+  if propName == "aspect-ratio" and not validAspectRatio(raw):
+    result.add cssDiagnostic(pedInvalidCssValue, prop,
+      "Aspect ratio must be auto or a positive width / height pair.")
+  if normalized.kind == cvkKeyword and not validKeywordForProperty(propName, raw):
+    result.add cssDiagnostic(pedInvalidCssValue, prop,
+      "Unsupported keyword '" & raw & "' for " & propName & ".")
   if normalized.kind == cvkTokenReference and normalized.tokenName.len == 0:
     result.add cssDiagnostic(pedInvalidTokenReference, prop,
       "Token references must name a token.")
@@ -1043,6 +1249,8 @@ proc normalizePrimitiveInputValue*(property, raw: string): string =
   let text = raw.strip()
   if text.len == 0:
     return ""
+  if property.normalizedCssName() == "aspect-ratio" and text.contains("/"):
+    return text
   if text.startsWith("token(") or text.startsWith("var(") or
       text.startsWith("rgb") or text.startsWith("hsl") or text.contains("gradient("):
     return text

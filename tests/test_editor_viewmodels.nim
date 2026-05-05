@@ -974,6 +974,155 @@ suite "Editor ViewModels (M26 source-backed CSS property editors)":
       check not vm.inspector.isDirty.val
       dispose()
 
+  test "long_tail_property_schema_and_source_plans":
+    createRoot proc(dispose: proc()) =
+      let matrix = defaultLongTailPropertyEvidenceMatrix()
+      for family in [
+        "typography",
+        "color_and_background",
+        "border_shadow_and_effects",
+        "filters",
+        "transforms_and_transitions",
+        "grid_and_flex",
+        "overflow_position_and_sizing",
+        "responsive_variants",
+        "pseudo_state_variants",
+        "container_queries"
+      ]:
+        check matrix.anyIt(it.family == family and
+          it.representativeProperties.len > 0 and
+          it.implementationReferences.len > 0)
+
+      for row in matrix:
+        if row.status == ltpesValidated:
+          for property in row.representativeProperties:
+            check property in ["letter-spacing", "background-size", "filter",
+              "transform", "transition-duration", "aspect-ratio"]
+          check row.sourceWrite
+          check row.headlessValidation
+          check row.browserBehavior
+          check row.visualEvidence
+          check row.metacraftEvidence
+        if row.status == ltpesReadOnly:
+          check not row.sourceWrite
+          check row.limitations.contains("read-only")
+        if row.family == "pseudo_state_variants":
+          check row.status == ltpesReadOnly
+          check not row.sourceWrite
+          check not row.headlessValidation
+          check not row.browserBehavior
+          check not row.visualEvidence
+          check not row.metacraftEvidence
+
+      let vm = createEditorVM()
+      check vm.selectInspectorElement(cssElement(@[
+        cssProp("letter-spacing", "0px", poConstant,
+          "schema:type.card.letterSpacing",
+          schemaKey = "type.card.letterSpacing"),
+        cssProp("text-transform", "none", poConstant,
+          "schema:type.card.transform", schemaKey = "type.card.transform"),
+        cssProp("background-image",
+          "linear-gradient(90deg, #3B82F6 0%, #22C55E 100%)", poConstant,
+          "schema:surface.hero.gradient", schemaKey = "surface.hero.gradient"),
+        cssProp("background-size", "cover", poConstant,
+          "schema:surface.hero.backgroundSize",
+          schemaKey = "surface.hero.backgroundSize"),
+        cssProp("outline-offset", "2px", poConstant,
+          "schema:a11y.focus.offset", schemaKey = "a11y.focus.offset"),
+        cssProp("border-style", "solid", poConstant,
+          "schema:a11y.focus.borderStyle",
+          schemaKey = "a11y.focus.borderStyle"),
+        cssProp("box-shadow", "0 1px 2px rgba(15, 23, 42, 0.18)",
+          poConstant, "schema:elevation.panel", schemaKey = "elevation.panel"),
+        cssProp("filter", "blur(0px)", poConstant,
+          "schema:effects.filter", schemaKey = "effects.filter"),
+        cssProp("backdrop-filter", "blur(2px)", poConstant,
+          "schema:effects.backdrop", schemaKey = "effects.backdrop"),
+        cssProp("transform", "translateX(0px)", poConstant,
+          "schema:motion.transform", schemaKey = "motion.transform"),
+        cssProp("transition-duration", "120ms", poConstant,
+          "schema:motion.fast", schemaKey = "motion.fast"),
+        cssProp("flex-wrap", "nowrap", poConstant,
+          "schema:layout.wrap", schemaKey = "layout.wrap"),
+        cssProp("grid-auto-flow", "row", poConstant,
+          "schema:layout.grid.flow", schemaKey = "layout.grid.flow"),
+        cssProp("overflow-x", "hidden", poConstant,
+          "schema:layout.overflowX", schemaKey = "layout.overflowX"),
+        cssProp("overscroll-behavior", "auto", poConstant,
+          "schema:layout.overscroll", schemaKey = "layout.overscroll"),
+        cssProp("aspect-ratio", "16 / 9", poConstant,
+          "schema:size.aspect", schemaKey = "size.aspect"),
+        cssProp("gap", "16px", poThemeToken,
+          "schema:layout.responsive.sm.gap", sharedCount = 4,
+          schemaKey = "layout.responsive.sm.gap",
+          tokenName = "space.cardGap", variantKey = "sm")
+      ]))
+
+      let editors = vm.inspector.propertyEditors.val
+      check editors.anyIt(it.property == "letter-spacing" and
+        it.category == cpcTypography and it.value.kind == cvkLength)
+      check editors.anyIt(it.property == "background-size" and
+        it.category == cpcSize and cvkKeyword in it.allowedValueKinds)
+      check editors.anyIt(it.property == "box-shadow" and
+        it.category == cpcEffects and it.value.kind == cvkShadow)
+      check editors.anyIt(it.property == "filter" and
+        it.category == cpcEffects and it.value.kind == cvkFilter)
+      check editors.anyIt(it.property == "transform" and
+        it.category == cpcTransforms and it.value.kind == cvkTransform)
+      check editors.anyIt(it.property == "overflow-x" and
+        it.category == cpcOverflow and it.value.kind == cvkOverflow)
+      check editors.anyIt(it.property == "aspect-ratio" and
+        it.category == cpcSize)
+      check editors.anyIt(it.property == "gap" and
+        it.supportsSharedScope and it.sourcePlanKind == cspTokenUpdate)
+
+      for (property, value) in [
+        ("letter-spacing", "0.03em"),
+        ("text-transform", "uppercase"),
+        ("background-size", "contain"),
+        ("outline-offset", "4px"),
+        ("border-style", "dashed"),
+        ("box-shadow", "0 8px 24px rgba(15, 23, 42, 0.20)"),
+        ("filter", "brightness(1.08) contrast(1.1)"),
+        ("backdrop-filter", "blur(6px)"),
+        ("transform", "translateX(8px) scale(1.02)"),
+        ("transition-duration", "180ms"),
+        ("flex-wrap", "wrap"),
+        ("grid-auto-flow", "row dense"),
+        ("overflow-x", "auto"),
+        ("overscroll-behavior", "contain"),
+        ("aspect-ratio", "4 / 3")
+      ]:
+        let edit = vm.editCssProperty(property, value, pesLocal)
+        check edit.status == pesAccepted
+        check edit.sourceEdit.property == property
+        check edit.sourceEdit.reversible
+
+      let shared = vm.editCssProperty("gap", "token(space.cardGapCompact)",
+        pesShared)
+      check shared.status == pesAccepted
+      check shared.sourceEdit.planKind == cspTokenUpdate
+      check shared.sourceEdit.variantKey == "sm"
+      check shared.sourceEdit.conflictKey.contains(":sm")
+
+      let reset = vm.editCssProperty("filter", "", pesLocal)
+      check reset.status == pesAccepted
+      check reset.sourceEdit.planKind == cspPropertyRemoval
+
+      for (property, value) in [
+        ("text-transform", "shout"),
+        ("background-size", "gigantic"),
+        ("filter", "glow(4px)"),
+        ("transform", "spin(20deg)"),
+        ("transition-duration", "-10ms"),
+        ("overflow-x", "sideways"),
+        ("aspect-ratio", "wide")
+      ]:
+        let rejected = vm.editCssProperty(property, value, pesLocal)
+        check rejected.status == pesRejected
+        check rejected.diagnostics.anyIt(it.kind == pedInvalidCssValue)
+      dispose()
+
   test "primitive_controls_parse_normalize_validate_and_source_plan":
     createRoot proc(dispose: proc()) =
       let vm = createEditorVM()

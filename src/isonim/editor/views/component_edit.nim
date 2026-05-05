@@ -1223,7 +1223,8 @@ func sectionProperties(section: InspectorSection): seq[(string, string)] =
       ("border-color", "currentColor"),
       ("border-style", "solid"),
       ("border-radius", "0px"),
-      ("outline-color", "transparent")
+      ("outline-color", "transparent"),
+      ("outline-offset", "0px")
     ]
   of isTypography:
     @[
@@ -1232,7 +1233,10 @@ func sectionProperties(section: InspectorSection): seq[(string, string)] =
       ("line-height", "normal"),
       ("letter-spacing", "0px"),
       ("text-align", "left"),
-      ("text-decoration", "none")
+      ("text-decoration", "none"),
+      ("text-transform", "none"),
+      ("white-space", "normal"),
+      ("text-overflow", "clip")
     ]
   of isEffects:
     @[
@@ -3377,6 +3381,18 @@ proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;
     r.setAttribute(heading, "aria-expanded", if expanded: "true" else: "false")
     r.setStyle(heading, "pointer-events", "none")
     r.appendChild(content, heading)
+
+    if vm.inspector.editDiagnostics.val.len > 0:
+      let diagnosticsBox = ui(r):
+        tdiv(display = "flex", flex_direction = "column", gap = "4px",
+              padding = "8px", border = "1px solid #F97316",
+              border_radius = "5px", background_color = "#2D1606"):
+          for i in 0 ..< vm.inspector.editDiagnostics.val.len:
+            let diagnostic = vm.inspector.editDiagnostics.val[i]
+            span(font_size = "10px", color = "#FDBA74"):
+              text diagnostic.property & ": " & diagnostic.message
+      r.setAttribute(diagnosticsBox, "data-isonim-edit-diagnostics", "true")
+      r.appendChild(content, diagnosticsBox)
 
     if not expanded:
       let collapsed = ui(r):

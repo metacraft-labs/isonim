@@ -617,6 +617,26 @@ type
     supportsSharedScope*: bool
     diagnostics*: seq[PropertyEditDiagnostic]
 
+  LongTailPropertyEvidenceStatus* = enum
+    ltpesValidated
+    ltpesReadOnly
+    ltpesBrowserLimited
+    ltpesConsumerUnvalidated
+    ltpesUnsupported
+
+  LongTailPropertyEvidenceRow* = object
+    ## M49 evidence ledger for non-core CSS/property editor families.
+    family*: string
+    representativeProperties*: seq[string]
+    status*: LongTailPropertyEvidenceStatus
+    sourceWrite*: bool
+    headlessValidation*: bool
+    browserBehavior*: bool
+    visualEvidence*: bool
+    metacraftEvidence*: bool
+    limitations*: string
+    implementationReferences*: seq[string]
+
   PrimitiveControlFamily* = enum
     pcfNumeric
     pcfColor

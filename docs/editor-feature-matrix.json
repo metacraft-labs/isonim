@@ -2,7 +2,7 @@
   "schemaVersion": 3,
   "maturityGate": "M45 Mature Dogfood Release Gate",
   "status": "mature_dogfood_release_gate",
-  "updated": "2026-05-05",
+  "updated": "2026-05-06",
   "statusValues": [
     "not_started",
     "prototype",
@@ -213,7 +213,7 @@
       "placeholderUi": false,
       "browserBehavior": ["pointer", "focus"],
       "implementation": "Typed CSS value parsing, primitive-control normalization, math-expression/unit handling, source-plan selection, validation, shared-scope handling, undo/redo, dirty state, save staging, raw CSS section editing, cascade origin indicators, copy/paste/reset property actions, numeric select-all/arrow/scrub/unit controls, color swatches/formats/variable/token/contrast affordances, gradient stop/angle/type controls, shadow layer/crosshair/inset/elevation controls, typography style/responsive/truncate/wrap controls, border-radius linked-corner controls, and Bezier/reduced-motion motion controls with live iframe preview and source commits.",
-      "knownLimitations": "M45 validates representative primitive numeric, color, gradient, radius, motion, shadow, typography, raw CSS, preview, save, and revert workflows in metacraft-web. Remaining gaps are exhaustive browser eyedropper, freeform color-plane drag serialization, and every long-tail CSS property.",
+      "knownLimitations": "M49 validates a bounded long-tail matrix only for property rows with headless, browser, visual, and Metacraft consumer evidence. Other long-tail rows stay marked consumer-unvalidated, browser-limited, or read-only until their browser and consumer coverage exists. Exhaustive browser eyedropper behavior, freeform color-plane drag serialization, container-query editing, and pseudo-state workflow editing remain future work.",
       "headlessTests": [
         {
           "name": "css_property_editors_parse_validate_and_normalize_values",
@@ -234,6 +234,10 @@
         {
           "name": "primitive_controls_undo_redo_and_live_preview",
           "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "long_tail_property_schema_and_source_plans",
+          "file": "tests/test_editor_viewmodels.nim"
         }
       ],
       "playwrightRequired": true,
@@ -249,6 +253,14 @@
         {
           "name": "e2e_property_controls_no_layout_overlap",
           "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
+        },
+        {
+          "name": "e2e_long_tail_css_property_visual_evidence",
+          "file": "tests/browser/specs/editor-example.spec.ts"
+        },
+        {
+          "name": "metacraft_long_tail_properties_validate_real_components",
+          "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
         }
       ],
       "screenshotVisualAssertions": {
@@ -260,7 +272,8 @@
         ],
         "evidence": [
           "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes",
-          "tests/browser/specs/editor-example.spec.ts:e2e_editor_ui_quality_no_overlap_or_unexpected_scrollbars"
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_ui_quality_no_overlap_or_unexpected_scrollbars",
+          "tests/browser/specs/editor-example.spec.ts:e2e_long_tail_css_property_visual_evidence"
         ],
         "snapshotFiles": [
           "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-desktop-editor-example-linux.png",
@@ -288,7 +301,8 @@
         "metacraftWeb": {
           "status": "covered",
           "evidence": [
-            "tests/browser/specs/metacraft-web-editor.spec.ts:edits real metacraft component DOM through the inspector"
+            "tests/browser/specs/metacraft-web-editor.spec.ts:edits real metacraft component DOM through the inspector",
+            "tests/browser/specs/metacraft-web-editor.spec.ts:metacraft_long_tail_properties_validate_real_components"
           ]
         }
       },
@@ -296,6 +310,7 @@
         "src/isonim/editor/types.nim",
         "src/isonim/editor/viewmodels.nim",
         "src/isonim/editor/views/component_edit.nim",
+        "docs/editor-long-tail-property-evidence.md",
         "tests/test_editor_viewmodels.nim",
         "tests/browser/specs/metacraft-web-editor.spec.ts"
       ]
@@ -1606,6 +1621,218 @@
         "tests/test_editor_public_browser_imports.nim",
         "../metacraft-web/apps/back-office/src/backoffice_editor/main.nim",
         "../metacraft-web/apps/back-office/tests/test_backoffice_editor_workspace.nim"
+      ]
+    }
+  ],
+  "longTailPropertyEvidence": [
+    {
+      "family": "typography",
+      "representativeProperties": ["letter-spacing"],
+      "status": "validated",
+      "sourceWrite": "token_or_schema",
+      "headlessValidation": true,
+      "browserBehavior": true,
+      "visualEvidence": true,
+      "metacraftEvidence": "covered",
+      "limitations": "Letter-spacing is validated through headless, browser, visual, and Metacraft consumer evidence; text-transform, white-space, text-overflow, and OpenType feature editing remain below that bar.",
+      "implementationReferences": [
+        "src/isonim/editor/types.nim",
+        "src/isonim/editor/viewmodels.nim",
+        "src/isonim/editor/views/component_edit.nim",
+        "tests/test_editor_viewmodels.nim",
+        "tests/browser/specs/editor-example.spec.ts",
+        "../metacraft-web/apps/back-office/src/backoffice_editor/workspace.nim",
+        "../metacraft-web/apps/back-office/tests/test_backoffice_editor_workspace.nim",
+        "tests/browser/specs/metacraft-web-editor.spec.ts"
+      ]
+    },
+    {
+      "family": "color_and_background",
+      "representativeProperties": ["background-size"],
+      "status": "validated",
+      "sourceWrite": "token_or_schema",
+      "headlessValidation": true,
+      "browserBehavior": true,
+      "visualEvidence": true,
+      "metacraftEvidence": "covered",
+      "limitations": "Background-size is validated through the full evidence chain; background-image browser behavior is example-only, and background-position, token/literal color, and asset pickers are not claimed here.",
+      "implementationReferences": [
+        "src/isonim/editor/types.nim",
+        "src/isonim/editor/viewmodels.nim",
+        "src/isonim/editor/views/component_edit.nim",
+        "docs/editor-long-tail-property-evidence.md",
+        "tests/test_editor_viewmodels.nim",
+        "tests/browser/specs/editor-example.spec.ts",
+        "../metacraft-web/apps/back-office/src/backoffice_editor/workspace.nim",
+        "../metacraft-web/apps/back-office/tests/test_backoffice_editor_workspace.nim",
+        "tests/browser/specs/metacraft-web-editor.spec.ts"
+      ]
+    },
+    {
+      "family": "border_shadow_and_effects",
+      "representativeProperties": ["border-style"],
+      "status": "consumer_unvalidated",
+      "sourceWrite": "token_or_schema",
+      "headlessValidation": true,
+      "browserBehavior": true,
+      "visualEvidence": true,
+      "metacraftEvidence": "not_covered",
+      "limitations": "Border-style has headless and example-browser evidence, but no Metacraft consumer source-save coverage in M49; outline-offset remains headless/UI-only because editor selection chrome owns the browser outline offset, and box-shadow and text-shadow stay outside this row.",
+      "implementationReferences": [
+        "src/isonim/editor/types.nim",
+        "src/isonim/editor/viewmodels.nim",
+        "src/isonim/editor/views/component_edit.nim",
+        "tests/test_editor_viewmodels.nim",
+        "tests/browser/specs/editor-example.spec.ts",
+        "../metacraft-web/apps/back-office/src/backoffice_editor/workspace.nim",
+        "../metacraft-web/apps/back-office/tests/test_backoffice_editor_workspace.nim",
+        "tests/browser/specs/metacraft-web-editor.spec.ts"
+      ]
+    },
+    {
+      "family": "filters",
+      "representativeProperties": ["filter"],
+      "status": "validated",
+      "sourceWrite": "token_or_schema",
+      "headlessValidation": true,
+      "browserBehavior": true,
+      "visualEvidence": true,
+      "metacraftEvidence": "covered",
+      "limitations": "Filter function editing is validated through the full evidence chain; backdrop-filter and mix-blend-mode remain headless/UI capabilities only and are not claimed as validated.",
+      "implementationReferences": [
+        "src/isonim/editor/types.nim",
+        "src/isonim/editor/viewmodels.nim",
+        "src/isonim/editor/views/component_edit.nim",
+        "tests/test_editor_viewmodels.nim",
+        "tests/browser/specs/editor-example.spec.ts",
+        "../metacraft-web/apps/back-office/src/backoffice_editor/workspace.nim",
+        "../metacraft-web/apps/back-office/tests/test_backoffice_editor_workspace.nim",
+        "tests/browser/specs/metacraft-web-editor.spec.ts"
+      ]
+    },
+    {
+      "family": "transforms_and_transitions",
+      "representativeProperties": ["transform", "transition-duration"],
+      "status": "validated",
+      "sourceWrite": "token_or_schema",
+      "headlessValidation": true,
+      "browserBehavior": true,
+      "visualEvidence": true,
+      "metacraftEvidence": "covered",
+      "limitations": "Transform and transition-duration are validated through the full evidence chain; transform-origin, transition-timing-function, transition-delay, and animation timelines remain below that bar.",
+      "implementationReferences": [
+        "src/isonim/editor/types.nim",
+        "src/isonim/editor/viewmodels.nim",
+        "src/isonim/editor/views/component_edit.nim",
+        "tests/test_editor_viewmodels.nim",
+        "tests/browser/specs/editor-example.spec.ts",
+        "../metacraft-web/apps/back-office/src/backoffice_editor/workspace.nim",
+        "../metacraft-web/apps/back-office/tests/test_backoffice_editor_workspace.nim",
+        "tests/browser/specs/metacraft-web-editor.spec.ts"
+      ]
+    },
+    {
+      "family": "grid_and_flex",
+      "representativeProperties": ["flex-wrap"],
+      "status": "consumer_unvalidated",
+      "sourceWrite": "token_or_schema",
+      "headlessValidation": true,
+      "browserBehavior": true,
+      "visualEvidence": true,
+      "metacraftEvidence": "not_covered",
+      "limitations": "Flex-wrap has headless and example-browser evidence, but no Metacraft consumer source-save coverage in M49; grid-auto-flow, grid-template-columns, gap, and named-area authoring are not claimed as validated here.",
+      "implementationReferences": [
+        "src/isonim/editor/types.nim",
+        "src/isonim/editor/viewmodels.nim",
+        "src/isonim/editor/views/component_edit.nim",
+        "tests/test_editor_viewmodels.nim",
+        "tests/browser/specs/editor-example.spec.ts",
+        "../metacraft-web/apps/back-office/src/backoffice_editor/workspace.nim",
+        "../metacraft-web/apps/back-office/tests/test_backoffice_editor_workspace.nim",
+        "tests/browser/specs/metacraft-web-editor.spec.ts"
+      ]
+    },
+    {
+      "family": "overflow_position_and_sizing",
+      "representativeProperties": ["aspect-ratio"],
+      "status": "validated",
+      "sourceWrite": "token_or_schema",
+      "headlessValidation": true,
+      "browserBehavior": true,
+      "visualEvidence": true,
+      "metacraftEvidence": "covered",
+      "limitations": "Aspect-ratio is validated through the full evidence chain; overflow-x, overscroll-behavior, inset, min-width, and constraint solving remain below that bar.",
+      "implementationReferences": [
+        "src/isonim/editor/types.nim",
+        "src/isonim/editor/viewmodels.nim",
+        "src/isonim/editor/views/component_edit.nim",
+        "tests/test_editor_viewmodels.nim",
+        "tests/browser/specs/editor-example.spec.ts",
+        "../metacraft-web/apps/back-office/src/backoffice_editor/workspace.nim",
+        "../metacraft-web/apps/back-office/tests/test_backoffice_editor_workspace.nim",
+        "tests/browser/specs/metacraft-web-editor.spec.ts"
+      ]
+    },
+    {
+      "family": "responsive_variants",
+      "representativeProperties": ["sm:gap"],
+      "status": "browser_limited",
+      "sourceWrite": "token_or_schema",
+      "headlessValidation": true,
+      "browserBehavior": false,
+      "visualEvidence": false,
+      "metacraftEvidence": "not_covered",
+      "limitations": "The sm:gap source plan is covered headlessly, but M49 does not add objective responsive browser assertions or Metacraft consumer saves for responsive variants.",
+      "implementationReferences": [
+        "src/isonim/editor/types.nim",
+        "src/isonim/editor/viewmodels.nim",
+        "src/isonim/editor/views/component_edit.nim",
+        "tests/test_editor_viewmodels.nim",
+        "tests/browser/specs/editor-example.spec.ts",
+        "../metacraft-web/apps/back-office/src/backoffice_editor/workspace.nim",
+        "../metacraft-web/apps/back-office/tests/test_backoffice_editor_workspace.nim",
+        "tests/browser/specs/metacraft-web-editor.spec.ts"
+      ]
+    },
+    {
+      "family": "pseudo_state_variants",
+      "representativeProperties": [
+        "hover:background-color",
+        "focus:outline-offset",
+        "active:transform"
+      ],
+      "status": "read_only",
+      "sourceWrite": "none",
+      "headlessValidation": false,
+      "browserBehavior": false,
+      "visualEvidence": false,
+      "metacraftEvidence": "not_covered",
+      "limitations": "Pseudo-state variants are read-only future workflow metadata; M49 does not claim hover, focus, or active browser behavior, visual evidence, or source-plan exercise.",
+      "implementationReferences": [
+        "src/isonim/editor/types.nim",
+        "src/isonim/editor/viewmodels.nim",
+        "src/isonim/editor/views/component_edit.nim",
+        "tests/test_editor_viewmodels.nim",
+        "tests/browser/specs/editor-example.spec.ts"
+      ]
+    },
+    {
+      "family": "container_queries",
+      "representativeProperties": [
+        "container-type",
+        "container-name",
+        "@container"
+      ],
+      "status": "read_only",
+      "sourceWrite": "none",
+      "headlessValidation": false,
+      "browserBehavior": false,
+      "visualEvidence": false,
+      "metacraftEvidence": "not_covered",
+      "limitations": "Container-query metadata is represented as read-only until source ownership and browser controls are implemented.",
+      "implementationReferences": [
+        "docs/editor-long-tail-property-evidence.md",
+        "tests/test_editor_release_gate.nim"
       ]
     }
   ],

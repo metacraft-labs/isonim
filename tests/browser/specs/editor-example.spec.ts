@@ -210,6 +210,61 @@ async function openDestinationComponentEdit(page: Page) {
   await expect(page.locator(".editor-manual-inspector")).toBeVisible();
 }
 
+async function setInspectorProperty(
+  page: Page,
+  tab: string,
+  property: string,
+  value: string,
+  expectAccepted = true,
+) {
+  await page.getByRole("tab", { name: `Show ${tab} edit controls` }).click();
+  const input = page
+    .getByRole("textbox", { name: `Edit inspector property ${property}` })
+    .first();
+  await expect(input).toBeVisible();
+  await input.evaluate((node: HTMLInputElement, nextValue) => {
+    node.value = String(nextValue);
+    node.dispatchEvent(new Event("input", { bubbles: true }));
+    node.dispatchEvent(new Event("change", { bubbles: true }));
+    node.dispatchEvent(new Event("blur", { bubbles: true }));
+  }, value);
+  if (expectAccepted) {
+    await expect(input).toHaveValue(value);
+    await expect(page.getByText("Unsaved source edit")).toBeVisible();
+  }
+}
+
+async function applyRawInspectorCss(page: Page, tab: string, cssText: string) {
+  await page.getByRole("tab", { name: `Show ${tab} edit controls` }).click();
+  const input = page
+    .getByRole("textbox", { name: `Edit raw CSS for ${tab} section` })
+    .first();
+  await expect(input).toBeVisible();
+  await input.evaluate((node: HTMLTextAreaElement, nextValue) => {
+    node.value = String(nextValue);
+  }, cssText);
+  await page
+    .getByRole("button", { name: `Apply raw CSS for ${tab} section` })
+    .click();
+  await expect(page.getByText("Unsaved source edit")).toBeVisible();
+}
+
+async function forceSelectedStyle(page: Page, property: string, value: string) {
+  await page.evaluate(
+    ({ property, value }) => {
+      const frame = document.querySelector<HTMLIFrameElement>(
+        'iframe[title="Editable component preview"]',
+      );
+      const selected =
+        frame?.contentDocument?.querySelector<HTMLElement>(
+          '[data-isonim-selected="true"]',
+        ) ?? null;
+      selected?.style.setProperty(property, value);
+    },
+    { property, value },
+  );
+}
+
 test.describe("IsoNim packaged editor example", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/");
@@ -743,6 +798,146 @@ test.describe("IsoNim packaged editor example", () => {
       ).toBeVisible();
     }
     await page.evaluate(() => localStorage.removeItem("isonim-editor-debug"));
+  });
+
+  test("e2e_long_tail_css_property_visual_evidence", async ({ page }) => {
+    await openDestinationComponentEdit(page);
+    const editFrame = page.frameLocator(
+      'iframe[title="Editable component preview"]',
+    );
+    const target = editFrame
+      .locator('[data-testid="component-edit-preview"]')
+      .first();
+    await target.click({ force: true });
+    const selected = editFrame.locator('[data-isonim-selected="true"]').first();
+    await expect(selected).toBeVisible();
+
+    const beforeShot = await page.screenshot({ fullPage: true });
+    const beforeBox = await selected.boundingBox();
+    expect(beforeBox, "selected target has visual box").not.toBeNull();
+
+    await setInspectorProperty(page, "Type", "letter-spacing", "2px");
+    await expect
+      .poll(() =>
+        selected.evaluate((node) => getComputedStyle(node).letterSpacing),
+      )
+      .toBe("2px");
+
+    const letterSpacingInput = page
+      .getByRole("textbox", { name: "Edit inspector property letter-spacing" })
+      .first();
+    await letterSpacingInput.focus();
+    await expect(letterSpacingInput).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(() =>
+        selected.evaluate((node) => getComputedStyle(node).letterSpacing),
+      )
+      .toBe("2px");
+
+    await setInspectorProperty(page, "Type", "text-transform", "uppercase");
+    await expect
+      .poll(() =>
+        selected.evaluate((node) => getComputedStyle(node).textTransform),
+      )
+      .toBe("uppercase");
+
+    await setInspectorProperty(
+      page,
+      "Fill",
+      "background-image",
+      "linear-gradient(90deg, rgb(59, 130, 246), rgb(34, 197, 94))",
+    );
+    await expect
+      .poll(() =>
+        selected.evaluate((node) => getComputedStyle(node).backgroundImage),
+      )
+      .toContain("linear-gradient");
+    await setInspectorProperty(page, "Fill", "background-size", "contain");
+    await expect
+      .poll(() =>
+        selected.evaluate((node) => getComputedStyle(node).backgroundSize),
+      )
+      .toBe("contain");
+
+    await setInspectorProperty(page, "Stroke", "border-style", "dashed");
+    await expect
+      .poll(() =>
+        selected.evaluate((node) => getComputedStyle(node).borderStyle),
+      )
+      .toContain("dashed");
+    await setInspectorProperty(page, "Stroke", "outline-offset", "4px");
+    await expect(
+      page.getByRole("textbox", {
+        name: "Edit inspector property outline-offset",
+      }),
+    ).toHaveValue("4px");
+
+    await setInspectorProperty(
+      page,
+      "Effects",
+      "filter",
+      "brightness(1.08) contrast(1.1)",
+    );
+    await expect
+      .poll(() => selected.evaluate((node) => getComputedStyle(node).filter))
+      .toContain("brightness");
+    await setInspectorProperty(
+      page,
+      "Effects",
+      "transform",
+      "translateX(8px) scale(1.02)",
+    );
+    await expect
+      .poll(() => selected.evaluate((node) => getComputedStyle(node).transform))
+      .not.toBe("none");
+
+    await setInspectorProperty(
+      page,
+      "Transitions",
+      "transition-duration",
+      "180ms",
+    );
+    await expect
+      .poll(() =>
+        selected.evaluate((node) => getComputedStyle(node).transitionDuration),
+      )
+      .toBe("0.18s");
+
+    await setInspectorProperty(page, "Layout", "flex-wrap", "wrap");
+    await expect
+      .poll(() => selected.evaluate((node) => getComputedStyle(node).flexWrap))
+      .toBe("wrap");
+    await setInspectorProperty(page, "Layout", "overflow", "auto");
+    await expect
+      .poll(() => selected.evaluate((node) => getComputedStyle(node).overflowX))
+      .toBe("auto");
+    await setInspectorProperty(page, "Size", "aspect-ratio", "4 / 3");
+    await expect
+      .poll(() =>
+        selected.evaluate((node) => getComputedStyle(node).aspectRatio),
+      )
+      .toBe("4 / 3");
+
+    await setInspectorProperty(page, "Effects", "filter", "glow(4px)", false);
+    await page.getByRole("tab", { name: "Show Fill edit controls" }).click();
+    await page.getByRole("tab", { name: "Show Effects edit controls" }).click();
+    await expect(
+      page.locator('[data-isonim-edit-diagnostics="true"]'),
+    ).toContainText("Filter values must use supported CSS filter functions");
+
+    const afterShot = await page.screenshot({ fullPage: true });
+    expect(
+      afterShot.length,
+      "long-tail evidence screenshot has bytes",
+    ).toBeGreaterThan(20000);
+    expect(
+      Buffer.compare(beforeShot, afterShot),
+      "long-tail edits produce a changed screenshot",
+    ).not.toBe(0);
+    await expect(page.getByText("Unsaved source edit")).toBeVisible();
+    await assertNoClippedEssentialText(page);
+    await assertNoBodyScrollbar(page);
   });
 
   test("e2e_vector_editor_pointer_keyboard_and_rendering", async ({ page }) => {

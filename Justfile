@@ -173,7 +173,7 @@ test-browser-editor-example: editor-build
 # Run the M43 visual screenshot, pixel, layout, and review brief gates.
 test-editor-visual-gates: editor-build
     node --test tests/test_editor_visual_review_brief.mjs
-    cd tests/browser && npm install && npx playwright test --project=editor-example --grep "e2e_editor_visual_baselines_cover_all_primary_modes|e2e_editor_ui_quality_no_overlap_or_unexpected_scrollbars"
+    cd tests/browser && npm install && npx playwright test --project=editor-example --grep "e2e_editor_visual_baselines_cover_all_primary_modes|e2e_editor_ui_quality_no_overlap_or_unexpected_scrollbars|e2e_long_tail_css_property_visual_evidence"
 
 # Run live consumer browser contract tests against metacraft-web.
 test-browser-editor-consumer:

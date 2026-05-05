@@ -100,10 +100,55 @@ const
     "expect(true)" & ".toBe(true)",
     "expect(true)" & ".toEqual(true)"
   ]
+  M49HeadlessProperties = [
+    "letter-spacing",
+    "text-transform",
+    "background-image",
+    "background-size",
+    "outline-offset",
+    "border-style",
+    "box-shadow",
+    "filter",
+    "backdrop-filter",
+    "transform",
+    "transition-duration",
+    "flex-wrap",
+    "grid-auto-flow",
+    "overflow-x",
+    "overscroll-behavior",
+    "aspect-ratio",
+    "sm:gap"
+  ]
+  M49BrowserVisualProperties = [
+    "letter-spacing",
+    "text-transform",
+    "background-image",
+    "background-size",
+    "border-style",
+    "filter",
+    "transform",
+    "transition-duration",
+    "flex-wrap",
+    "aspect-ratio"
+  ]
+  M49MetacraftCoveredProperties = [
+    "letter-spacing",
+    "background-size",
+    "filter",
+    "transform",
+    "transition-duration",
+    "aspect-ratio"
+  ]
 
 proc stringItems(node: JsonNode): seq[string] =
   for item in node.getElems:
     result.add item.getStr
+
+proc propertiesCovered(properties: seq[string]; coverage: openArray[string]): bool =
+  for property in properties:
+    if property notin coverage:
+      return false
+  true
 
 proc matrix(): JsonNode =
   parseFile(MatrixPath)
@@ -390,6 +435,88 @@ suite "IsoNim editor maturity gate":
       "Remote multi-user collaboration")
     check stringItems(sourceSync["implementationReferences"]).contains(
       "docs/editor-write-bridge-protocol.md")
+
+  test "m49_long_tail_property_matrix_is_honest_and_evidenced":
+    let doc = matrix()
+    let guide = checkedText("docs/editor-long-tail-property-evidence.md")
+    check doc.hasKey("longTailPropertyEvidence")
+    check guide.contains("M49 Long-Tail CSS and Property Evidence")
+
+    let validStatuses = [
+      "validated",
+      "read_only",
+      "browser_limited",
+      "consumer_unvalidated",
+      "unsupported"
+    ]
+    let requiredFamilies = [
+      "typography",
+      "color_and_background",
+      "border_shadow_and_effects",
+      "filters",
+      "transforms_and_transitions",
+      "grid_and_flex",
+      "overflow_position_and_sizing",
+      "responsive_variants",
+      "pseudo_state_variants",
+      "container_queries"
+    ]
+    for family in requiredFamilies:
+      check guide.contains(family)
+
+    for row in doc["longTailPropertyEvidence"].getElems:
+      let status = row["status"].getStr
+      let properties = stringItems(row["representativeProperties"])
+      check status in validStatuses
+      check row["family"].getStr in requiredFamilies
+      check properties.len > 0
+      check row["limitations"].getStr.len > 30
+      check row["implementationReferences"].getElems.len > 0
+      for item in row["implementationReferences"].getElems:
+        check fileExists(item.getStr)
+
+      if row["headlessValidation"].getBool:
+        check properties.propertiesCovered(M49HeadlessProperties)
+      if row["browserBehavior"].getBool:
+        check properties.propertiesCovered(M49BrowserVisualProperties)
+      if row["visualEvidence"].getBool:
+        check properties.propertiesCovered(M49BrowserVisualProperties)
+      if row["metacraftEvidence"].getStr == "covered":
+        check properties.propertiesCovered(M49MetacraftCoveredProperties)
+
+      if status == "validated":
+        check row["headlessValidation"].getBool
+        check row["browserBehavior"].getBool
+        check row["visualEvidence"].getBool
+        check row["sourceWrite"].getStr in ["writable", "token_or_schema"]
+        check row["metacraftEvidence"].getStr == "covered"
+        check properties.propertiesCovered(M49MetacraftCoveredProperties)
+      else:
+        check row["metacraftEvidence"].getStr != "covered" or
+          row["sourceWrite"].getStr != "none"
+      if row["family"].getStr == "pseudo_state_variants":
+        check status in ["browser_limited", "read_only"]
+        check row["sourceWrite"].getStr == "none"
+        check not row["headlessValidation"].getBool
+        check not row["browserBehavior"].getBool
+        check not row["visualEvidence"].getBool
+        check row["metacraftEvidence"].getStr == "not_covered"
+
+    checkNamedTestsExist(%*{
+      "headlessTests": [{
+        "name": "long_tail_property_schema_and_source_plans",
+        "file": "tests/test_editor_viewmodels.nim"
+      }]
+    }, "headlessTests")
+    checkNamedTestsExist(%*{
+      "playwrightTests": [{
+        "name": "e2e_long_tail_css_property_visual_evidence",
+        "file": "tests/browser/specs/editor-example.spec.ts"
+      }, {
+        "name": "metacraft_long_tail_properties_validate_real_components",
+        "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
+      }]
+    }, "playwrightTests")
 
   test "mature_editor_full_matrix_passes_in_example_and_metacraft":
     let doc = matrix()
