@@ -360,12 +360,14 @@ just editor-build
 just editor-serve
 ```
 
-The dogfood release gate is documented in
+The editor maturity gate is documented in
 `docs/editor-dogfood-release.md`. The machine-checkable feature matrix lives in
 `docs/editor-feature-matrix.json` and is verified by
-`tests/test_editor_release_gate.nim`. Every completed editor feature must list
-its headless ViewModel tests and any Playwright tests required for browser-only
-behavior.
+`tests/test_editor_release_gate.nim`. Every editor feature must list its target
+workflow, maturity status, headless ViewModel tests, Playwright tests required
+for pointer/focus/iframe/canvas behavior, visual assertion plan, and IsoNim
+example plus metacraft-web consumer coverage. `functional` is not a Figma-grade
+claim.
 
 ## Development
 

@@ -2,6 +2,13 @@ import std/[json, os, strutils, tables, unittest]
 
 const
   MatrixPath = "docs/editor-feature-matrix.json"
+  MaturityStatuses = [
+    "not_started",
+    "prototype",
+    "functional",
+    "figma_grade",
+    "validated_in_metacraft"
+  ]
   RequiredFeatureIds = [
     "edit_commands",
     "css_editors",
@@ -18,6 +25,7 @@ const
     "package_imports"
   ]
   RequiredCommands = [
+    "direnv exec /home/zahary/metacraft/isonim nim c -r tests/test_editor_release_gate.nim",
     "direnv exec /home/zahary/metacraft/isonim just test-editor",
     "direnv exec /home/zahary/metacraft/isonim just editor-build",
     "direnv exec /home/zahary/metacraft/isonim just test-browser-editor-example",
@@ -26,16 +34,45 @@ const
     "direnv exec /home/zahary/metacraft/metacraft-web nim c -r apps/back-office/tests/test_backoffice_editor_workspace.nim",
     "direnv exec /home/zahary/metacraft/nim-agents just test"
   ]
+  RequiredHeuristics = [
+    "density",
+    "discoverability",
+    "keyboardOperation",
+    "panelResizing",
+    "selectionLatency",
+    "layoutJumping"
+  ]
+  BrowserBehaviorsRequiringPlaywright = [
+    "pointer",
+    "focus",
+    "iframe",
+    "canvas"
+  ]
   WeakTestMarkers = [
-      "." & "skip(",
-      "." & "only(",
-      "test" & ".skip",
-      "test" & ".only",
-      "suite" & ".skip",
-      "suite" & ".only",
-      "xit" & "(",
-      "it" & ".only(",
-      "it" & ".skip("
+    "." & "sk" & "ip(",
+    "." & "on" & "ly(",
+    "test" & ".sk" & "ip",
+    "test" & ".on" & "ly",
+    "suite" & ".sk" & "ip",
+    "suite" & ".on" & "ly",
+    "describe" & ".sk" & "ip",
+    "describe" & ".on" & "ly",
+    "it" & ".sk" & "ip(",
+    "it" & ".on" & "ly(",
+    "xit" & "(",
+    "test" & ".to" & "do",
+    "to" & "do(",
+    "pending" & "(",
+    "{." & "skip.",
+    "{." & "disabled.",
+    "{." & "ignore."
+  ]
+  PlaceholderAssertions = [
+    "check" & " true",
+    "doAssert" & " true",
+    "assert" & " true",
+    "expect(true)" & ".toBe(true)",
+    "expect(true)" & ".toEqual(true)"
   ]
 
 proc stringItems(node: JsonNode): seq[string] =
@@ -88,16 +125,82 @@ proc sourceFiles(root: string): seq[string] =
         path.endsWith(".md") or path.endsWith(".json"):
       result.add path
 
-suite "IsoNim editor release gate":
+proc evidenceFile(evidence: string): string =
+  let separator = evidence.find(":")
+  if separator >= 0:
+    evidence[0 ..< separator]
+  else:
+    evidence
 
-  test "editor_feature_matrix_has_no_mock_or_missing_feature_rows":
+proc hasBrowserBehavior(row: JsonNode): bool =
+  if not row.hasKey("browserBehavior"):
+    return false
+  for behavior in row["browserBehavior"].getElems:
+    if behavior.getStr in BrowserBehaviorsRequiringPlaywright:
+      return true
+  false
+
+proc checkConsumerCoverage(row: JsonNode) =
+  check row.hasKey("consumerCoverage")
+  for consumer in ["isonimExample", "metacraftWeb"]:
+    check row["consumerCoverage"].hasKey(consumer)
+    let coverage = row["consumerCoverage"][consumer]
+    check coverage["status"].getStr.len > 0
+    check coverage.hasKey("evidence")
+    check coverage["evidence"].getElems.len > 0
+    for item in coverage["evidence"].getElems:
+      let file = evidenceFile(item.getStr)
+      check file.len > 0
+      check fileExists(file)
+
+proc checkScreenshotRecord(row: JsonNode) =
+  check row.hasKey("screenshotVisualAssertions")
+  let screenshots = row["screenshotVisualAssertions"]
+  check screenshots.hasKey("requiredForFigmaGrade")
+  check screenshots.hasKey("status")
+  check screenshots.hasKey("assertions")
+  check screenshots.hasKey("notes")
+  check screenshots["notes"].getStr.len > 20
+
+proc checkFigmaGradeRequirements(row: JsonNode) =
+  let status = row["status"].getStr
+  if status notin ["figma_grade", "validated_in_metacraft"]:
+    return
+  check not row["mockOnly"].getBool
+  check not row["placeholderUi"].getBool
+  check row["screenshotVisualAssertions"]["assertions"].getElems.len > 0
+  if hasBrowserBehavior(row):
+    check row["playwrightTests"].getElems.len > 0
+    checkNamedTestsExist(row, "playwrightTests")
+
+proc checkNoWeakMarkers(path: string) =
+  let text = readFile(path)
+  for marker in WeakTestMarkers:
+    check not text.contains(marker)
+  for marker in PlaceholderAssertions:
+    check not text.contains(marker)
+
+suite "IsoNim editor maturity gate":
+
+  test "editor_quality_matrix_blocks_overclaimed_features":
     let doc = matrix()
-    check doc["releaseGate"].getStr == "M31 Full Editor Dogfood Release Gate"
-    check doc["status"].getStr == "completed"
+    check doc["maturityGate"].getStr == "M32 Editor Maturity Gate"
+    check not doc.hasKey("releaseGate")
+    check doc["status"].getStr == "functional_rebaseline"
     check doc["policy"]["headlessFirst"].getBool
-    check doc["policy"]["playwrightOnlyForBrowserBehavior"].getBool
-    check doc["policy"]["completedRowsRequireAutomatedTests"].getBool
-    check not doc["policy"]["mockOnlyCompletedRowsAllowed"].getBool
+    check doc["policy"]["playwrightRequiredForBrowserBehavior"].getBool
+    check doc["policy"]["functionalRowsRequireAutomatedTests"].getBool
+    check not doc["policy"]["mockOnlyFigmaGradeAllowed"].getBool
+    check not doc["policy"]["placeholderFigmaGradeAllowed"].getBool
+    check not doc["policy"]["weakTestsAllowedForFigmaGrade"].getBool
+    check doc["policy"]["figmaGradeRequiresVisualAssertions"].getBool
+
+    for status in MaturityStatuses:
+      check status in stringItems(doc["statusValues"])
+
+    for heuristic in RequiredHeuristics:
+      check doc["acceptanceHeuristics"].hasKey(heuristic)
+      check doc["acceptanceHeuristics"][heuristic]["criteria"].getElems.len > 0
 
     var byId: Table[string, JsonNode]
     for row in doc["features"].getElems:
@@ -107,43 +210,68 @@ suite "IsoNim editor release gate":
       check byId.hasKey(featureId)
 
     for row in doc["features"].getElems:
-      check row["status"].getStr == "completed"
-      check not row["mockOnly"].getBool
+      check row["status"].getStr in MaturityStatuses
+      check row["status"].getStr != "completed"
+      check row["targetWorkflow"].getStr.len > 40
       check row["implementation"].getStr.len > 24
-      check not row["implementation"].getStr.toLowerAscii.contains("mock-up")
+      check row.hasKey("knownLimitations")
+      check row.hasKey("mockOnly")
+      check row.hasKey("placeholderUi")
+      check row.hasKey("browserBehavior")
       check row.hasKey("headlessTests")
-      check row["headlessTests"].getElems.len > 0
+      check row.hasKey("playwrightTests")
+      check row.hasKey("playwrightRequired")
 
-      checkNamedTestsExist(row, "headlessTests")
-      if row["playwrightRequired"].getBool:
-        check row.hasKey("playwrightTests")
+      if row["status"].getStr in ["functional", "figma_grade", "validated_in_metacraft"]:
+        check row["headlessTests"].getElems.len > 0
+        checkNamedTestsExist(row, "headlessTests")
+
+      if row["playwrightRequired"].getBool or hasBrowserBehavior(row):
         check row["playwrightTests"].getElems.len > 0
         checkNamedTestsExist(row, "playwrightTests")
       else:
         check row.hasKey("playwrightReason")
         check row["playwrightReason"].getStr.len > 24
 
-  test "editor_full_headless_and_browser_matrix_passes":
+      checkScreenshotRecord(row)
+      checkConsumerCoverage(row)
+      checkFigmaGradeRequirements(row)
+
+  test "editor_quality_matrix_distinguishes_functional_from_figma_grade":
     let doc = matrix()
-    let commands = stringItems(doc["releaseGateCommands"])
-    for command in RequiredCommands:
-      check command in commands
+    var statusCounts = initTable[string, int]()
 
-    var browserCovered = initTable[string, bool]()
     for row in doc["features"].getElems:
-      if row["playwrightRequired"].getBool:
-        browserCovered[rowId(row)] = row["playwrightTests"].getElems.len > 0
+      let status = row["status"].getStr
+      statusCounts[status] = statusCounts.getOrDefault(status) + 1
 
-    for featureId, covered in browserCovered:
-      check covered
+      if row["placeholderUi"].getBool or
+          row["screenshotVisualAssertions"]["assertions"].getElems.len == 0:
+        check status notin ["figma_grade", "validated_in_metacraft"]
 
-    let editorTestFiles = sourceFiles("tests")
-    for path in editorTestFiles:
-      if path.endsWith("tests/test_editor_release_gate.nim"):
-        continue
-      let text = readFile(path)
-      for marker in WeakTestMarkers:
-        check not text.contains(marker)
+      if status == "functional":
+        check row["headlessTests"].getElems.len > 0
+        check row["implementation"].getStr.len > 24
+        check row["knownLimitations"].getStr.len > 24
+
+    check statusCounts.getOrDefault("functional") > 0
+    check statusCounts.getOrDefault("prototype") > 0
+    check statusCounts.getOrDefault("figma_grade") == 0
+    check statusCounts.getOrDefault("validated_in_metacraft") == 0
+
+  test "no_weak_editor_quality_tests":
+    let doc = matrix()
+    var scanned: Table[string, bool]
+
+    for row in doc["features"].getElems:
+      for key in ["headlessTests", "playwrightTests"]:
+        for entry in row[key].getElems:
+          scanned[testFile(entry)] = true
+
+    for path in scanned.keys:
+      checkNoWeakMarkers(path)
+
+    checkNoWeakMarkers("tests/test_editor_release_gate.nim")
 
   test "editor_framework_consumer_boundary_is_preserved":
     let publicApi = checkedText("src/isonim/editor.nim")
@@ -187,5 +315,8 @@ suite "IsoNim editor release gate":
       check not text.contains("isonim/editor/browser_vector_adapter")
 
     let doc = matrix()
+    let commands = stringItems(doc["maturityGateCommands"])
+    for command in RequiredCommands:
+      check command in commands
     check "isonim/editor" in stringItems(doc["policy"]["publicConsumerImports"])
     check "isonim/editor/browser" in stringItems(doc["policy"]["publicConsumerImports"])

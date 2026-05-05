@@ -1,9 +1,18 @@
-# IsoNim Editor Dogfood Release Guide
+# IsoNim Editor Maturity Gate Guide
 
-This document is the release gate companion for
+This document is the maturity gate companion for
 `docs/editor-feature-matrix.json`. The matrix is machine checked by
 `tests/test_editor_release_gate.nim`; update both when editor functionality or
 required coverage changes.
+
+M32 reclassifies the editor from the older M31 "completed release" wording to a
+stricter maturity model. A row marked `functional` means the behavior is real
+and tested; it does not mean the workflow is Figma-grade. A row may only be
+marked `figma_grade` after it has dense and discoverable UI, keyboard coverage,
+browser tests for pointer/focus/iframe/canvas behavior, visual assertions, no
+placeholder UI, no mock-only completion, and no weak skipped/only tests.
+`validated_in_metacraft` is reserved for Figma-grade workflows that also pass
+the metacraft-web consumer matrix for the same behavior.
 
 ## Launch
 
@@ -85,11 +94,20 @@ The assistant panel starts empty. Example fake responses are produced only by
 an explicit prompt in the example workspace; production consumers should provide
 their own `agentPromptAdapter` and `agentCancelAdapter`.
 
+## Quality Bar
+
+The matrix records the acceptance heuristics that future milestones must turn
+into automated checks: sidebar and inspector density, control discoverability,
+keyboard operation, panel resizing, selection latency, and no layout jumping.
+Screenshot assertions are intentionally tracked per feature because DOM checks
+alone are not enough to claim visual-editor maturity.
+
 ## Tests
 
-Run the release gate through `direnv` from the owning repository:
+Run the maturity gate through `direnv` from the owning repository:
 
 ```sh
+direnv exec /home/zahary/metacraft/isonim nim c -r tests/test_editor_release_gate.nim
 direnv exec /home/zahary/metacraft/isonim just test-editor
 direnv exec /home/zahary/metacraft/isonim just editor-build
 direnv exec /home/zahary/metacraft/isonim just test-browser-editor-example
@@ -100,7 +118,7 @@ direnv exec /home/zahary/metacraft/nim-agents just test
 ```
 
 Headless ViewModel tests are required for editor state, source plans,
-validation, adapters, and package boundaries. Playwright tests are required for
-browser-only behavior: pointer and keyboard interaction, browser history,
-iframe/rendered previews, vector canvas behavior, panel visibility, and visual
-integration with consumer workspaces.
+validation, adapters, and package boundaries. Playwright tests are required
+when the feature owns pointer, focus, iframe, or canvas behavior. Screenshot and
+visual assertions are required before any UI workflow can be promoted to
+`figma_grade`.

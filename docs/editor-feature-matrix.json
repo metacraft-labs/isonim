@@ -1,16 +1,47 @@
 {
-  "schemaVersion": 1,
-  "releaseGate": "M31 Full Editor Dogfood Release Gate",
-  "status": "completed",
+  "schemaVersion": 2,
+  "maturityGate": "M32 Editor Maturity Gate",
+  "status": "functional_rebaseline",
   "updated": "2026-05-05",
+  "statusValues": [
+    "not_started",
+    "prototype",
+    "functional",
+    "figma_grade",
+    "validated_in_metacraft"
+  ],
+  "statusDefinitions": {
+    "not_started": "No usable editor workflow exists yet.",
+    "prototype": "A visible or headless slice exists, but major workflow pieces, coverage, or consumer proof are missing.",
+    "functional": "The workflow has real ViewModel behavior, source-backed or consumer-backed state where applicable, and required automated tests for current behavior.",
+    "figma_grade": "The workflow meets the M32 quality bar for dense, discoverable, keyboardable, visually asserted, low-latency editor UX.",
+    "validated_in_metacraft": "The workflow is figma_grade and has passed the live metacraft-web consumer matrix for the same behavior."
+  },
   "policy": {
     "headlessFirst": true,
-    "playwrightOnlyForBrowserBehavior": true,
-    "completedRowsRequireAutomatedTests": true,
-    "mockOnlyCompletedRowsAllowed": false,
-    "publicConsumerImports": ["isonim/editor", "isonim/editor/browser"]
+    "playwrightRequiredForBrowserBehavior": true,
+    "functionalRowsRequireAutomatedTests": true,
+    "mockOnlyFigmaGradeAllowed": false,
+    "placeholderFigmaGradeAllowed": false,
+    "weakTestsAllowedForFigmaGrade": false,
+    "figmaGradeRequiresVisualAssertions": true,
+    "publicConsumerImports": ["isonim/editor", "isonim/editor/browser"],
+    "browserBehaviorsRequiringPlaywright": [
+      "pointer",
+      "focus",
+      "iframe",
+      "canvas"
+    ],
+    "placeholderUiTerms": [
+      "placeholder",
+      "mock-up",
+      "lorem ipsum",
+      "coming soon",
+      "stub"
+    ]
   },
-  "releaseGateCommands": [
+  "maturityGateCommands": [
+    "direnv exec /home/zahary/metacraft/isonim nim c -r tests/test_editor_release_gate.nim",
     "direnv exec /home/zahary/metacraft/isonim just test-editor",
     "direnv exec /home/zahary/metacraft/isonim just editor-build",
     "direnv exec /home/zahary/metacraft/isonim just test-browser-editor-example",
@@ -19,14 +50,68 @@
     "direnv exec /home/zahary/metacraft/metacraft-web nim c -r apps/back-office/tests/test_backoffice_editor_workspace.nim",
     "direnv exec /home/zahary/metacraft/nim-agents just test"
   ],
+  "acceptanceHeuristics": {
+    "density": {
+      "status": "defined",
+      "criteria": [
+        "Sidebar shows at least 10 meaningful rows on a 900px-tall viewport without marketing copy.",
+        "Inspector shows at least 14 editable or diagnostic rows on a 768px-tall viewport before scrolling.",
+        "Primary canvas remains the dominant surface after opening one side panel."
+      ]
+    },
+    "discoverability": {
+      "status": "defined",
+      "criteria": [
+        "Every icon-only control has an accessible name and hover/focus tooltip.",
+        "Disabled controls expose an inline diagnostic or command-state reason.",
+        "Current mode, selected element, write status, and source scope are visible without opening a modal."
+      ]
+    },
+    "keyboardOperation": {
+      "status": "defined",
+      "criteria": [
+        "Core workflows are reachable by Tab, arrow-key roving focus where appropriate, Enter/Space activation, and Escape dismissal.",
+        "Keyboard selection and command execution produce the same ViewModel state as pointer execution.",
+        "Focus returns to the invoking control after closing popovers, dialogs, and transient editors."
+      ]
+    },
+    "panelResizing": {
+      "status": "defined",
+      "criteria": [
+        "Sidebar and inspector support pointer resize, keyboard resize, collapse, and restore.",
+        "Panel widths persist within a session and clamp to documented min/max values.",
+        "Canvas and iframe content reflow without overlapping chrome during resize."
+      ]
+    },
+    "selectionLatency": {
+      "status": "defined",
+      "criteria": [
+        "Hover feedback is visible within 50ms on representative metacraft-web pages.",
+        "Selection-to-inspector update completes within 100ms for representative nested component DOM.",
+        "Vector canvas selection feedback completes within one animation frame for common symbol documents."
+      ]
+    },
+    "layoutJumping": {
+      "status": "defined",
+      "criteria": [
+        "Mode changes, selection changes, validation messages, and save state changes do not shift persistent toolbar or panel anchors.",
+        "Loading and empty states reserve stable dimensions.",
+        "No unexpected body scrollbars appear at supported desktop and tablet breakpoints."
+      ]
+    }
+  },
   "features": [
     {
       "id": "edit_commands",
       "title": "Edit and View Commands",
-      "status": "completed",
+      "status": "functional",
+      "targetWorkflow": "Users can activate Edit, Inspect, Comment, Save, Revert, and related commands by pointer and keyboard, with clear enablement diagnostics tied to the current selection and workspace capability.",
       "owner": "framework",
       "mockOnly": false,
+      "placeholderUi": false,
+      "browserBehavior": ["pointer", "focus"],
       "implementation": "Typed command availability, dispatch, diagnostics, URL state, keyboard and pointer activation.",
+      "knownLimitations": "Command palette coverage, tooltip consistency, and full focus-return behavior remain M42 work.",
       "headlessTests": [
         {
           "name": "editor_commands_require_valid_selection_and_capability",
@@ -43,15 +128,40 @@
           "name": "e2e_editor_edit_buttons_keyboard_and_pointer",
           "file": "tests/browser/specs/editor-example.spec.ts"
         }
-      ]
+      ],
+      "screenshotVisualAssertions": {
+        "requiredForFigmaGrade": true,
+        "status": "not_started",
+        "assertions": [],
+        "futureMilestone": "M43",
+        "notes": "Needs stable visual baselines for hover, focus, disabled, running, and failed command states."
+      },
+      "consumerCoverage": {
+        "isonimExample": {
+          "status": "covered",
+          "evidence": [
+            "tests/browser/specs/editor-example.spec.ts:e2e_editor_edit_buttons_keyboard_and_pointer"
+          ]
+        },
+        "metacraftWeb": {
+          "status": "covered_indirectly",
+          "evidence": [
+            "tests/browser/specs/metacraft-web-editor.spec.ts:mounts the live consumer workspace through public editor APIs"
+          ]
+        }
+      }
     },
     {
       "id": "css_editors",
       "title": "CSS Property Editors",
-      "status": "completed",
+      "status": "functional",
+      "targetWorkflow": "Users can inspect, validate, stage, undo, redo, and save representative CSS properties through typed editor state and source plans.",
       "owner": "framework",
       "mockOnly": false,
-      "implementation": "Typed CSS value parsing, normalization, source-plan selection, validation, shared-scope handling, undo/redo, dirty state, save staging, raw CSS section editing, cascade origin indicators, copy/paste/reset property actions, Figma-style numeric scrub/step controls with pointer drag, coordinate-driven color-picker affordances, unit chips, and visual border-radius, shadow, and Bezier timing controls.",
+      "placeholderUi": true,
+      "browserBehavior": ["pointer", "focus"],
+      "implementation": "Typed CSS value parsing, normalization, source-plan selection, validation, shared-scope handling, undo/redo, dirty state, save staging, raw CSS section editing, cascade origin indicators, copy/paste/reset property actions, numeric scrub state, color-picker coordinate state, unit chips, and visual border-radius, shadow, and Bezier timing controls.",
+      "knownLimitations": "Primitive browser controls are functional but not yet dense, discoverable, visually baselined, or comparable to Figma/Webflow property panels.",
       "headlessTests": [
         {
           "name": "css_property_editors_parse_validate_and_normalize_values",
@@ -66,16 +176,46 @@
           "file": "tests/test_editor_viewmodels.nim"
         }
       ],
-      "playwrightRequired": false,
-      "playwrightReason": "The implemented contract is headless value/edit-engine behavior; browser form control coverage is included indirectly through the edit-button and consumer browser suites."
+      "playwrightRequired": true,
+      "playwrightTests": [
+        {
+          "name": "edits real metacraft component DOM through the inspector",
+          "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
+        }
+      ],
+      "screenshotVisualAssertions": {
+        "requiredForFigmaGrade": true,
+        "status": "not_started",
+        "assertions": [],
+        "futureMilestone": "M35",
+        "notes": "Needs visual baselines for color, gradient, shadow, typography, border, motion, raw CSS, and cascade states."
+      },
+      "consumerCoverage": {
+        "isonimExample": {
+          "status": "covered_indirectly",
+          "evidence": [
+            "tests/browser/specs/editor-example.spec.ts:e2e_editor_edit_buttons_keyboard_and_pointer"
+          ]
+        },
+        "metacraftWeb": {
+          "status": "covered",
+          "evidence": [
+            "tests/browser/specs/metacraft-web-editor.spec.ts:edits real metacraft component DOM through the inspector"
+          ]
+        }
+      }
     },
     {
       "id": "component_dom_editing",
       "title": "Real Component DOM Editing",
-      "status": "completed",
+      "status": "functional",
+      "targetWorkflow": "Users can select real rendered component DOM in a preview iframe, map the selection to source metadata, edit representative properties, and save through the consumer workspace adapter.",
       "owner": "framework-and-consumer",
       "mockOnly": false,
-      "implementation": "Component edit mode renders the project-owned preview iframe, installs a generic DOM selection and hover-inspection bridge with selection handles, supports deep element selection, repeat-click parent cycling, Shift-click component wrapper selection, breadcrumb/source-path context, maps clicked real DOM to InspectorVM source-backed properties, applies inspector edits live in the iframe, and routes representative color, spacing, raw CSS, style copy/paste, and Figma-grade inspector affordance edits through the workspace source adapter with dirty/save/revert state.",
+      "placeholderUi": false,
+      "browserBehavior": ["pointer", "focus", "iframe"],
+      "implementation": "Component edit mode renders the project-owned preview iframe, installs a generic DOM selection and hover-inspection bridge with selection handles, supports deep element selection, repeat-click parent cycling, Shift-click component wrapper selection, breadcrumb/source-path context, maps clicked real DOM to InspectorVM source-backed properties, applies inspector edits live in the iframe, and routes representative edits through the workspace source adapter with dirty/save/revert state.",
+      "knownLimitations": "Selection layers, breadcrumbs, latency budgets, and robust keyboard selection are M33 work.",
       "headlessTests": [
         {
           "name": "component_dom_selection_bridge_populates_source_backed_inspector",
@@ -88,15 +228,40 @@
           "name": "edits real metacraft component DOM through the inspector",
           "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
         }
-      ]
+      ],
+      "screenshotVisualAssertions": {
+        "requiredForFigmaGrade": true,
+        "status": "not_started",
+        "assertions": [],
+        "futureMilestone": "M33",
+        "notes": "Needs visual assertions for hover rings, selected handles, breadcrumbs, iframe reflow, and no layout jumping."
+      },
+      "consumerCoverage": {
+        "isonimExample": {
+          "status": "covered_indirectly",
+          "evidence": [
+            "tests/browser/specs/editor-example.spec.ts:e2e_editor_edit_buttons_keyboard_and_pointer"
+          ]
+        },
+        "metacraftWeb": {
+          "status": "covered",
+          "evidence": [
+            "tests/browser/specs/metacraft-web-editor.spec.ts:edits real metacraft component DOM through the inspector"
+          ]
+        }
+      }
     },
     {
       "id": "foundation_editors",
       "title": "Foundation Token Editors",
-      "status": "completed",
+      "status": "functional",
+      "targetWorkflow": "Users can edit design-system tokens, inspect impact, validate contrast and alias cycles, and stage source-backed changes.",
       "owner": "framework",
       "mockOnly": false,
+      "placeholderUi": true,
+      "browserBehavior": [],
       "implementation": "Token edits, impact analysis, contrast validation, semantic alias cycle validation, and source-plan generation.",
+      "knownLimitations": "Token manager UI, searchable swatches, variable binding, usage previews, and visual baselines remain M36/M43 work.",
       "headlessTests": [
         {
           "name": "foundation_token_edit_updates_dependent_properties",
@@ -104,15 +269,41 @@
         }
       ],
       "playwrightRequired": false,
-      "playwrightReason": "The release gate exposes foundation editing as source-backed ViewModel behavior; no browser-only rendering or pointer behavior is owned by this feature."
+      "playwrightReason": "Current coverage is a headless source/schema contract; Figma-grade token manager UX requires new browser workflows in M36.",
+      "playwrightTests": [],
+      "screenshotVisualAssertions": {
+        "requiredForFigmaGrade": true,
+        "status": "not_started",
+        "assertions": [],
+        "futureMilestone": "M36",
+        "notes": "Needs token manager, contrast, alias, impact, and dependency visual baselines."
+      },
+      "consumerCoverage": {
+        "isonimExample": {
+          "status": "covered_headless",
+          "evidence": [
+            "tests/test_editor_viewmodels.nim:foundation_token_edit_updates_dependent_properties"
+          ]
+        },
+        "metacraftWeb": {
+          "status": "workspace_api_compatible",
+          "evidence": [
+            "../metacraft-web/apps/back-office/tests/test_backoffice_editor_workspace.nim"
+          ]
+        }
+      }
     },
     {
       "id": "component_variant_editors",
       "title": "Component Variant Editors",
-      "status": "completed",
+      "status": "functional",
+      "targetWorkflow": "Users can edit component variant metadata, fixtures, states, responsive samples, and generated source plans.",
       "owner": "framework",
       "mockOnly": false,
+      "placeholderUi": true,
+      "browserBehavior": [],
       "implementation": "Variant fixture/story metadata validation, field edits, and source-plan generation.",
+      "knownLimitations": "Variant matrix UI, prop/state comparison, sample-data editing, and component API discoverability remain M39/M43 work.",
       "headlessTests": [
         {
           "name": "component_variant_editor_updates_story_fixtures",
@@ -120,15 +311,41 @@
         }
       ],
       "playwrightRequired": false,
-      "playwrightReason": "The variant editor contract is source/schema state; consumer component rendering is covered by the browser consumer suite."
+      "playwrightReason": "Current coverage is source/schema state; browser variant matrix workflows are scheduled for M39.",
+      "playwrightTests": [],
+      "screenshotVisualAssertions": {
+        "requiredForFigmaGrade": true,
+        "status": "not_started",
+        "assertions": [],
+        "futureMilestone": "M39",
+        "notes": "Needs variant matrix, state, sample data, and comparison visual baselines."
+      },
+      "consumerCoverage": {
+        "isonimExample": {
+          "status": "covered_headless",
+          "evidence": [
+            "tests/test_editor_viewmodels.nim:component_variant_editor_updates_story_fixtures"
+          ]
+        },
+        "metacraftWeb": {
+          "status": "workspace_api_compatible",
+          "evidence": [
+            "../metacraft-web/apps/back-office/tests/test_backoffice_editor_workspace.nim"
+          ]
+        }
+      }
     },
     {
       "id": "svg_editors",
       "title": "SVG and Vector Editors",
-      "status": "completed",
+      "status": "functional",
+      "targetWorkflow": "Users can select, transform, edit, import, optimize, and save vector symbols through a library-backed canvas and source-backed ViewModel bridge.",
       "owner": "framework",
       "mockOnly": false,
+      "placeholderUi": false,
+      "browserBehavior": ["pointer", "focus", "canvas"],
       "implementation": "Fabric-backed canvas interaction, Paper.js-backed boolean/path-segment operations, SVGO-backed export, source-backed properties, undo/redo, diagnostics for unsupported freeform Bezier editing, and M27 save bridging.",
+      "knownLimitations": "Full Penpot-grade layer panel, snapping, keyboard editing polish, and complete Bezier path workflows remain future quality work.",
       "headlessTests": [
         {
           "name": "vector_editor_library_spike_selects_mature_backend",
@@ -169,15 +386,40 @@
           "name": "e2e_vector_editor_pointer_keyboard_and_rendering",
           "file": "tests/browser/specs/editor-example.spec.ts"
         }
-      ]
+      ],
+      "screenshotVisualAssertions": {
+        "requiredForFigmaGrade": true,
+        "status": "not_started",
+        "assertions": [],
+        "futureMilestone": "M43",
+        "notes": "Needs baselines for canvas selection, layers, handles, transforms, boolean ops, import state, and no blank canvas."
+      },
+      "consumerCoverage": {
+        "isonimExample": {
+          "status": "covered",
+          "evidence": [
+            "tests/browser/specs/editor-example.spec.ts:e2e_vector_editor_pointer_keyboard_and_rendering"
+          ]
+        },
+        "metacraftWeb": {
+          "status": "covered_indirectly",
+          "evidence": [
+            "tests/browser/specs/metacraft-web-editor.spec.ts:mounts the live consumer workspace through public editor APIs"
+          ]
+        }
+      }
     },
     {
       "id": "source_sync",
       "title": "Workspace Source Synchronization",
-      "status": "completed",
+      "status": "functional",
+      "targetWorkflow": "Users can stage source edits, save them transactionally through a consumer adapter, recover from conflicts, and refresh targeted preview state.",
       "owner": "framework",
       "mockOnly": false,
+      "placeholderUi": false,
+      "browserBehavior": [],
       "implementation": "Adapter-mediated transactions, same-file composition, conflicts, rollback, targeted reload, full reload fallback, and generated-view roundtrip.",
+      "knownLimitations": "Live host-file writes in static metacraft browser builds still require a consumer dev-server/API adapter.",
       "headlessTests": [
         {
           "name": "workspace_edit_adapter_applies_transactional_file_changes",
@@ -189,15 +431,41 @@
         }
       ],
       "playwrightRequired": false,
-      "playwrightReason": "Source synchronization is intentionally headless and adapter-owned; browser save buttons are covered by vector and agent browser tests."
+      "playwrightReason": "Source synchronization is intentionally adapter-owned and headless; browser save entry points are covered by component, vector, and agent workflows.",
+      "playwrightTests": [],
+      "screenshotVisualAssertions": {
+        "requiredForFigmaGrade": true,
+        "status": "not_started",
+        "assertions": [],
+        "futureMilestone": "M40",
+        "notes": "Needs visual assertions for dirty, saving, conflict, rollback, reload, and clean states."
+      },
+      "consumerCoverage": {
+        "isonimExample": {
+          "status": "covered_headless",
+          "evidence": [
+            "tests/test_editor_viewmodels.nim:workspace_edit_adapter_applies_transactional_file_changes"
+          ]
+        },
+        "metacraftWeb": {
+          "status": "covered",
+          "evidence": [
+            "tests/browser/specs/metacraft-web-editor.spec.ts:edits real metacraft component DOM through the inspector"
+          ]
+        }
+      }
     },
     {
       "id": "agent_edits",
       "title": "Agent-Assisted Edits",
-      "status": "completed",
+      "status": "functional",
+      "targetWorkflow": "Users can send editor context to an agent, review proposed edits, accept or reject changes, and save accepted patches through the same source adapter path.",
       "owner": "framework",
       "mockOnly": false,
+      "placeholderUi": false,
+      "browserBehavior": ["pointer", "focus"],
       "implementation": "Structured prompt context, ACP/Agent Harbor event mapping through nim-agents, permission state, proposal review, partial accept, reject, revert, cancel, error, completion, and M27 save path.",
+      "knownLimitations": "Production agent setup, richer diff review UI, comment mode parity, and visual baselines remain future work.",
       "headlessTests": [
         {
           "name": "editor_agent_context_includes_source_and_design_system_state",
@@ -226,15 +494,40 @@
           "name": "e2e_agent_assisted_edit_flow",
           "file": "tests/browser/specs/editor-example.spec.ts"
         }
-      ]
+      ],
+      "screenshotVisualAssertions": {
+        "requiredForFigmaGrade": true,
+        "status": "not_started",
+        "assertions": [],
+        "futureMilestone": "M43",
+        "notes": "Needs baselines for empty, streaming, permission, diff review, accepted, rejected, and error states."
+      },
+      "consumerCoverage": {
+        "isonimExample": {
+          "status": "covered",
+          "evidence": [
+            "tests/browser/specs/editor-example.spec.ts:e2e_agent_assisted_edit_flow"
+          ]
+        },
+        "metacraftWeb": {
+          "status": "workspace_api_compatible",
+          "evidence": [
+            "../metacraft-web/apps/back-office/tests/test_backoffice_editor_workspace.nim"
+          ]
+        }
+      }
     },
     {
       "id": "browser_history",
       "title": "Browser Back and Forward Navigation",
-      "status": "completed",
+      "status": "functional",
+      "targetWorkflow": "Users can navigate editor modes and selections through browser history without losing story, canvas, or panel state.",
       "owner": "framework",
       "mockOnly": false,
+      "placeholderUi": false,
+      "browserBehavior": ["focus"],
       "implementation": "Route serialization, popstate handling, URL-driven view/mode/selection restoration, and consumer browser compatibility.",
+      "knownLimitations": "History coverage is functional; no visual assertions yet prove layout stability across route changes.",
       "headlessTests": [
         {
           "name": "editor_vm_select_story_updates_view_and_selection",
@@ -255,15 +548,40 @@
           "name": "keeps editor state in browser history",
           "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
         }
-      ]
+      ],
+      "screenshotVisualAssertions": {
+        "requiredForFigmaGrade": true,
+        "status": "not_started",
+        "assertions": [],
+        "futureMilestone": "M43",
+        "notes": "Needs route-change visual stability assertions."
+      },
+      "consumerCoverage": {
+        "isonimExample": {
+          "status": "covered",
+          "evidence": [
+            "tests/browser/specs/editor-example.spec.ts:e2e_editor_edit_buttons_keyboard_and_pointer"
+          ]
+        },
+        "metacraftWeb": {
+          "status": "covered",
+          "evidence": [
+            "tests/browser/specs/metacraft-web-editor.spec.ts:keeps editor state in browser history"
+          ]
+        }
+      }
     },
     {
       "id": "pan_zoom",
       "title": "Journey and Vector Pan/Zoom",
-      "status": "completed",
+      "status": "functional",
+      "targetWorkflow": "Users can pan and zoom journey canvases and vector canvases without losing selection or workspace context.",
       "owner": "framework",
       "mockOnly": false,
-      "implementation": "Figma-style journey canvas zoom/pan state plus Fabric vector zoom/pan behavior.",
+      "placeholderUi": false,
+      "browserBehavior": ["pointer", "focus", "canvas"],
+      "implementation": "Journey canvas zoom/pan state plus Fabric vector zoom/pan behavior.",
+      "knownLimitations": "No latency, frame budget, minimap, fit-to-selection, or visual-jump assertions yet.",
       "headlessTests": [
         {
           "name": "storyboard exposes figma-style zoom and pan state",
@@ -280,15 +598,40 @@
           "name": "e2e_vector_editor_pointer_keyboard_and_rendering",
           "file": "tests/browser/specs/editor-example.spec.ts"
         }
-      ]
+      ],
+      "screenshotVisualAssertions": {
+        "requiredForFigmaGrade": true,
+        "status": "not_started",
+        "assertions": [],
+        "futureMilestone": "M43",
+        "notes": "Needs visual assertions for zoom levels, pan offsets, fit states, and stable overlays."
+      },
+      "consumerCoverage": {
+        "isonimExample": {
+          "status": "covered",
+          "evidence": [
+            "tests/browser/specs/editor-example.spec.ts:e2e_vector_editor_pointer_keyboard_and_rendering"
+          ]
+        },
+        "metacraftWeb": {
+          "status": "covered",
+          "evidence": [
+            "tests/browser/specs/metacraft-web-editor.spec.ts:supports figma-style zooming and panning on flow pages"
+          ]
+        }
+      }
     },
     {
       "id": "search",
       "title": "Sidebar Search",
-      "status": "completed",
+      "status": "functional",
+      "targetWorkflow": "Users can filter sidebar stories, pages, journeys, and components while preserving grouping and selection semantics.",
       "owner": "framework",
       "mockOnly": false,
+      "placeholderUi": false,
+      "browserBehavior": ["focus"],
       "implementation": "Search filtering preserves group metadata and page/component/journey selection semantics.",
+      "knownLimitations": "No command palette integration, keyboard result navigation quality gate, or density visual baseline yet.",
       "headlessTests": [
         {
           "name": "test_sidebar_search_filter",
@@ -305,15 +648,40 @@
           "name": "mounts the live consumer workspace through public editor APIs",
           "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
         }
-      ]
+      ],
+      "screenshotVisualAssertions": {
+        "requiredForFigmaGrade": true,
+        "status": "not_started",
+        "assertions": [],
+        "futureMilestone": "M42",
+        "notes": "Needs baselines for empty, filtered, highlighted, and no-result states."
+      },
+      "consumerCoverage": {
+        "isonimExample": {
+          "status": "covered_headless",
+          "evidence": [
+            "tests/test_editor_viewmodels.nim:test_sidebar_search_filter"
+          ]
+        },
+        "metacraftWeb": {
+          "status": "covered",
+          "evidence": [
+            "tests/browser/specs/metacraft-web-editor.spec.ts:mounts the live consumer workspace through public editor APIs"
+          ]
+        }
+      }
     },
     {
       "id": "panels",
       "title": "Sidebar and Inspector Panels",
-      "status": "completed",
+      "status": "prototype",
+      "targetWorkflow": "Users can navigate dense sidebar sections, inspect right-panel properties, collapse panels, resize panels, and keep canvas context stable.",
       "owner": "framework",
       "mockOnly": false,
+      "placeholderUi": true,
+      "browserBehavior": ["pointer", "focus"],
       "implementation": "Top-level navigation sections, collapsible panels, responsive visibility, empty states, and inspector toggles.",
+      "knownLimitations": "Pointer/keyboard resizing, stable density budgets, focus restoration, and no-layout-jump visual assertions are M34/M43 work.",
       "headlessTests": [
         {
           "name": "test_sidebar_toggle_group",
@@ -338,15 +706,40 @@
           "name": "mounts the live consumer workspace through public editor APIs",
           "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
         }
-      ]
+      ],
+      "screenshotVisualAssertions": {
+        "requiredForFigmaGrade": true,
+        "status": "not_started",
+        "assertions": [],
+        "futureMilestone": "M34",
+        "notes": "Needs sidebar density, inspector density, panel resizing, collapsed state, and no-overlap baselines."
+      },
+      "consumerCoverage": {
+        "isonimExample": {
+          "status": "covered",
+          "evidence": [
+            "tests/browser/specs/editor-example.spec.ts:e2e_editor_sidebar_story_selection"
+          ]
+        },
+        "metacraftWeb": {
+          "status": "covered",
+          "evidence": [
+            "tests/browser/specs/metacraft-web-editor.spec.ts:mounts the live consumer workspace through public editor APIs"
+          ]
+        }
+      }
     },
     {
       "id": "package_imports",
       "title": "Package Imports and Consumer Boundary",
-      "status": "completed",
+      "status": "functional",
+      "targetWorkflow": "Consumers can import public native and browser editor APIs without reaching into private framework modules.",
       "owner": "framework",
       "mockOnly": false,
+      "placeholderUi": false,
+      "browserBehavior": [],
       "implementation": "Public native and browser import surfaces compile for the example, metacraft-web, and CodeTracer-facing workspace patterns without private editor imports.",
+      "knownLimitations": "This is a package boundary feature, not a UI-quality claim.",
       "headlessTests": [
         {
           "name": "editor_public_api_imports_without_demo_dependencies",
@@ -362,7 +755,29 @@
         }
       ],
       "playwrightRequired": false,
-      "playwrightReason": "Browser package import compatibility is compiled by tests/test_editor_public_browser_imports.nim and exercised by the example/consumer browser suites."
+      "playwrightReason": "Browser package import compatibility is compiled by tests/test_editor_public_browser_imports.nim and exercised by the example/consumer browser suites.",
+      "playwrightTests": [],
+      "screenshotVisualAssertions": {
+        "requiredForFigmaGrade": false,
+        "status": "not_applicable",
+        "assertions": [],
+        "futureMilestone": "",
+        "notes": "No visual assertions required for package import boundaries."
+      },
+      "consumerCoverage": {
+        "isonimExample": {
+          "status": "covered",
+          "evidence": [
+            "tests/test_editor_public_api.nim:editor_public_api_supports_example_metacraft_and_codetracer_consumers"
+          ]
+        },
+        "metacraftWeb": {
+          "status": "covered",
+          "evidence": [
+            "../metacraft-web/apps/back-office/tests/test_backoffice_editor_workspace.nim"
+          ]
+        }
+      }
     }
   ]
 }
