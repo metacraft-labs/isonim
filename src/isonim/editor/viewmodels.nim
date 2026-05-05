@@ -154,6 +154,10 @@ type
     workspaceEditReviewDiagnostics*: Signal[seq[WorkspaceEditDiagnostic]]
     livePreviewReloadGeneration*: Signal[int]
     commandStates*: Signal[seq[EditorCommandState]]
+    commandPaletteOpen*: Signal[bool]
+    performanceBudgets*: Signal[seq[EditorPerformanceBudget]]
+    telemetryEvents*: Signal[seq[EditorTelemetryEvent]]
+    telemetryOverlayVisible*: Signal[bool]
     designSystemSchema*: Signal[DesignSystemSchema]
     workspaceEditAdapter*: WorkspaceEditAdapter
     sidebar*: SidebarVM
@@ -185,6 +189,8 @@ func validateVectorAccessibility*(doc: VectorDocument): seq[VectorDiagnostic]
 proc ensureComponentPropertySchemaForSelectedStory*(editor: EditorVM): bool
 proc setSectionExpanded*(inspector: InspectorVM; section: InspectorSection;
     expanded: bool)
+proc recordEditorTiming*(editor: EditorVM; kind: EditorPerformanceBudgetKind;
+    durationMs: int; detail: string)
 
 func commandLabel*(kind: EditorCommandKind): string =
   case kind
@@ -200,6 +206,20 @@ func commandLabel*(kind: EditorCommandKind): string =
   of eckCreateVariant: "Create variant"
   of eckCreateStory: "Create story"
   of eckOpenSource: "Open source"
+  of eckSelectPrevious: "Select previous element"
+  of eckSelectNext: "Select next element"
+  of eckSelectParent: "Select parent element"
+  of eckSelectChild: "Select child element"
+  of eckFocusInspector: "Focus inspector"
+  of eckIncrementProperty: "Increment property"
+  of eckDecrementProperty: "Decrement property"
+  of eckUndo: "Undo"
+  of eckRedo: "Redo"
+  of eckToggleSidebar: "Toggle sidebar"
+  of eckToggleInspector: "Toggle inspector"
+  of eckOpenCommandPalette: "Open command palette"
+  of eckNavigateLayersUp: "Navigate layers up"
+  of eckNavigateLayersDown: "Navigate layers down"
 
 func allEditorCommandKinds*(): seq[EditorCommandKind] =
   @[
@@ -214,7 +234,135 @@ func allEditorCommandKinds*(): seq[EditorCommandKind] =
     eckDelete,
     eckCreateVariant,
     eckCreateStory,
-    eckOpenSource
+    eckOpenSource,
+    eckSelectPrevious,
+    eckSelectNext,
+    eckSelectParent,
+    eckSelectChild,
+    eckFocusInspector,
+    eckIncrementProperty,
+    eckDecrementProperty,
+    eckUndo,
+    eckRedo,
+    eckToggleSidebar,
+    eckToggleInspector,
+    eckOpenCommandPalette,
+    eckNavigateLayersUp,
+    eckNavigateLayersDown
+  ]
+
+func commandShortcut*(kind: EditorCommandKind): string =
+  case kind
+  of eckEdit: "E"
+  of eckComment: "C"
+  of eckInspect: "V"
+  of eckApply: "Mod+Enter"
+  of eckRevert: "Shift+R"
+  of eckSave: "Mod+S"
+  of eckDiscard: "Shift+Escape"
+  of eckDuplicate: "Mod+D"
+  of eckDelete: "Backspace"
+  of eckCreateVariant: "Shift+V"
+  of eckCreateStory: "Shift+S"
+  of eckOpenSource: "O"
+  of eckSelectPrevious: "Alt+ArrowUp"
+  of eckSelectNext: "Alt+ArrowDown"
+  of eckSelectParent: "Alt+ArrowLeft"
+  of eckSelectChild: "Alt+ArrowRight"
+  of eckFocusInspector: "I"
+  of eckIncrementProperty: "Shift+ArrowUp"
+  of eckDecrementProperty: "Shift+ArrowDown"
+  of eckUndo: "Mod+Z"
+  of eckRedo: "Mod+Shift+Z"
+  of eckToggleSidebar: "Mod+\\"
+  of eckToggleInspector: "Mod+/"
+  of eckOpenCommandPalette: "Mod+K"
+  of eckNavigateLayersUp: "ArrowUp"
+  of eckNavigateLayersDown: "ArrowDown"
+
+func commandScope*(kind: EditorCommandKind): string =
+  case kind
+  of eckNavigateLayersUp, eckNavigateLayersDown:
+    "layers"
+  of eckIncrementProperty, eckDecrementProperty:
+    "inspector"
+  of eckSelectPrevious, eckSelectNext, eckSelectParent, eckSelectChild:
+    "selection"
+  of eckToggleSidebar, eckToggleInspector, eckOpenCommandPalette,
+      eckFocusInspector:
+    "chrome"
+  else:
+    "editor"
+
+func commandDescription*(kind: EditorCommandKind): string =
+  case kind
+  of eckEdit: "Switch the selected story into edit mode."
+  of eckComment: "Switch the selected story into comment mode."
+  of eckInspect: "Return the selected story to view mode."
+  of eckApply: "Apply staged inspector edits to the live preview."
+  of eckRevert: "Revert staged source edits."
+  of eckSave: "Save staged source edits through the workspace adapter."
+  of eckDiscard: "Discard staged source and agent edits."
+  of eckDuplicate: "Duplicate the selected source-backed element."
+  of eckDelete: "Delete the selected source-backed element."
+  of eckCreateVariant: "Create a variant from the selected element."
+  of eckCreateStory: "Create a story from the selected element."
+  of eckOpenSource: "Open the source location for the current selection."
+  of eckSelectPrevious: "Move selection to the previous visible element."
+  of eckSelectNext: "Move selection to the next visible element."
+  of eckSelectParent: "Move selection to the parent element."
+  of eckSelectChild: "Move selection to the first child element."
+  of eckFocusInspector: "Move focus to the inspector section search."
+  of eckIncrementProperty: "Increase the first numeric selected property."
+  of eckDecrementProperty: "Decrease the first numeric selected property."
+  of eckUndo: "Undo the last inspector or vector edit."
+  of eckRedo: "Redo the last inspector or vector edit."
+  of eckToggleSidebar: "Show or hide the left sidebar."
+  of eckToggleInspector: "Show or hide the right inspector or chat panel."
+  of eckOpenCommandPalette: "Open the command palette."
+  of eckNavigateLayersUp: "Move upward in the visible layer tree."
+  of eckNavigateLayersDown: "Move downward in the visible layer tree."
+
+func allEditorShortcutBindings*(): seq[EditorShortcutBinding] =
+  for kind in allEditorCommandKinds():
+    result.add EditorShortcutBinding(
+      kind: kind,
+      shortcut: commandShortcut(kind),
+      scope: commandScope(kind),
+      description: commandDescription(kind))
+
+func duplicateEditorShortcuts*(bindings: seq[EditorShortcutBinding]): seq[string] =
+  var seen: seq[string] = @[]
+  for binding in bindings:
+    let key = binding.scope & ":" & binding.shortcut
+    if key in seen and key notin result:
+      result.add key
+    else:
+      seen.add key
+
+func performanceBudgetLabel*(kind: EditorPerformanceBudgetKind): string =
+  case kind
+  of epbkStorySelection: "story selection"
+  of epbkElementSelection: "element selection"
+  of epbkModeSwitch: "mode switch"
+  of epbkPropertyEditPreview: "property edit preview"
+  of epbkSaveReload: "save and reload"
+  of epbkLargeSidebarSearch: "large sidebar search"
+
+func defaultEditorPerformanceBudgets*(): seq[EditorPerformanceBudget] =
+  @[
+    EditorPerformanceBudget(kind: epbkStorySelection,
+      label: performanceBudgetLabel(epbkStorySelection), maxMs: 120),
+    EditorPerformanceBudget(kind: epbkElementSelection,
+      label: performanceBudgetLabel(epbkElementSelection), maxMs: 100),
+    EditorPerformanceBudget(kind: epbkModeSwitch,
+      label: performanceBudgetLabel(epbkModeSwitch), maxMs: 120),
+    EditorPerformanceBudget(kind: epbkPropertyEditPreview,
+      label: performanceBudgetLabel(epbkPropertyEditPreview), maxMs: 120),
+    EditorPerformanceBudget(kind: epbkSaveReload,
+      label: performanceBudgetLabel(epbkSaveReload), maxMs: 1000),
+    EditorPerformanceBudget(kind: epbkLargeSidebarSearch,
+      label: performanceBudgetLabel(epbkLargeSidebarSearch), maxMs: 160)
   ]
 
 func sameStory(a, b: StoryRef): bool =
@@ -985,6 +1133,8 @@ proc selectStory*(editor: EditorVM; story: StoryRef): bool {.discardable.} =
   discard editor.ensureComponentPropertySchemaForSelectedStory()
   editor.storyboard.selectedItem.val = editor.findCanvasItem(story)
   editor.syncFlowStep(story)
+  editor.recordEditorTiming(epbkStorySelection, 1,
+    "story-selection:" & story.group & "/" & story.name)
   true
 
 proc selectCanvasItem*(editor: EditorVM; index: int): bool {.discardable.} =
@@ -1182,6 +1332,8 @@ proc selectInspectorElement*(editor: EditorVM;
     editor.inspector.layers.val = @[next.rowFromElement()]
   else:
     editor.inspector.refreshLayerFlags()
+  editor.recordEditorTiming(epbkElementSelection, 1,
+    "element-selection:" & next.id)
   true
 
 func previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
@@ -1422,12 +1574,128 @@ func sourceChangingCommand(kind: EditorCommandKind): bool =
   kind in {eckApply, eckSave, eckDuplicate, eckDelete, eckCreateVariant,
     eckCreateStory}
 
+func selectionCommand(kind: EditorCommandKind): bool =
+  kind in {eckSelectPrevious, eckSelectNext, eckSelectParent, eckSelectChild,
+    eckNavigateLayersUp, eckNavigateLayersDown}
+
+func numericProperty(value: string): tuple[ok: bool, number: int, suffix: string] =
+  var digits = ""
+  var suffixStart = 0
+  for i, ch in value:
+    if (ch >= '0' and ch <= '9') or (i == 0 and ch == '-'):
+      digits.add ch
+      suffixStart = i + 1
+    else:
+      break
+  if digits.len == 0 or digits == "-":
+    return (false, 0, "")
+  try:
+    (true, parseInt(digits),
+      if suffixStart < value.len: value[suffixStart .. ^1] else: "")
+  except ValueError:
+    (false, 0, "")
+
+proc undoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.}
+proc redoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.}
+proc undoVectorEdit*(editor: EditorVM): bool {.discardable.}
+proc redoVectorEdit*(editor: EditorVM): bool {.discardable.}
+proc evaluateCommand*(editor: EditorVM;
+    kind: EditorCommandKind): EditorCommandState
+
+proc nudgeFirstNumericProperty(editor: EditorVM; delta: int): bool =
+  var element = editor.inspector.selectedElement.val
+  for i, prop in element.properties:
+    let parsed = numericProperty(prop.value)
+    if parsed.ok:
+      element.properties[i].value = $(parsed.number + delta) & parsed.suffix
+      editor.inspector.selectedElement.val = element
+      return true
+  false
+
+proc toggleCommandPalette*(editor: EditorVM) =
+  editor.commandPaletteOpen.val = not editor.commandPaletteOpen.val
+
+proc closeCommandPalette*(editor: EditorVM) =
+  editor.commandPaletteOpen.val = false
+
+proc openCommandPalette*(editor: EditorVM) =
+  editor.commandPaletteOpen.val = true
+
+proc setTelemetryOverlayVisible*(editor: EditorVM; visible: bool) =
+  editor.telemetryOverlayVisible.val = visible
+
+func budgetFor(budgets: seq[EditorPerformanceBudget];
+    kind: EditorPerformanceBudgetKind): EditorPerformanceBudget =
+  for budget in budgets:
+    if budget.kind == kind:
+      return budget
+  EditorPerformanceBudget(kind: kind, label: performanceBudgetLabel(kind),
+    maxMs: 0)
+
+proc recordEditorTiming*(editor: EditorVM; kind: EditorPerformanceBudgetKind;
+    durationMs: int; detail: string) =
+  let budget = editor.performanceBudgets.val.budgetFor(kind)
+  let event = EditorTelemetryEvent(
+    name: budget.label,
+    durationMs: durationMs,
+    budgetKind: kind,
+    withinBudget: budget.maxMs == 0 or durationMs <= budget.maxMs,
+    detail: detail)
+  editor.telemetryEvents.update proc(prev: seq[EditorTelemetryEvent]): seq[
+      EditorTelemetryEvent] =
+    result = prev
+    result.add event
+    if result.len > 12:
+      result = result[result.len - 12 .. ^1]
+
+func performanceBudgetsPass*(events: seq[EditorTelemetryEvent]): bool =
+  events.allIt(it.withinBudget)
+
+proc commandPaletteEntries*(editor: EditorVM): seq[EditorCommandPaletteEntry] =
+  for kind in allEditorCommandKinds():
+    let state = editor.evaluateCommand(kind)
+    result.add EditorCommandPaletteEntry(
+      kind: kind,
+      label: state.label,
+      shortcut: commandShortcut(kind),
+      section: commandScope(kind),
+      status: state.status,
+      diagnostic: state.diagnostic)
+
 proc commandRequirementFailure(editor: EditorVM;
     kind: EditorCommandKind): string =
   let story = editor.selectedStory.val
   let element = editor.inspector.selectedElement.val
   let permissions = editor.workspacePermissions.val
   let source = editor.selectedSourceContext()
+
+  if kind in {eckOpenCommandPalette, eckToggleSidebar, eckToggleInspector,
+      eckFocusInspector}:
+    return ""
+
+  if kind.selectionCommand:
+    if editor.inspector.filteredLayers.val.len == 0:
+      return "No layer tree is available for keyboard selection."
+    return ""
+
+  if kind in {eckIncrementProperty, eckDecrementProperty}:
+    if element.tag.len == 0:
+      return "Select an element before nudging a property."
+    if not element.properties.anyIt(numericProperty(it.value).ok):
+      return "The selected element has no numeric property to nudge."
+    return ""
+
+  if kind == eckUndo:
+    if editor.inspector.undoStack.val.len == 0 and
+        editor.vectorEditor.undoStack.val.len == 0:
+      return "There is no edit to undo."
+    return ""
+
+  if kind == eckRedo:
+    if editor.inspector.redoStack.val.len == 0 and
+        editor.vectorEditor.redoStack.val.len == 0:
+      return "There is no edit to redo."
+    return ""
 
   if kind in {eckApply, eckSave} and
       editor.inspector.pendingSourceEdits.val.len > 0:
@@ -1495,6 +1763,11 @@ proc commandRequirementFailure(editor: EditorVM;
       "This workspace does not allow story creation."
     else:
       ""
+  of eckSelectPrevious, eckSelectNext, eckSelectParent, eckSelectChild,
+      eckFocusInspector, eckIncrementProperty, eckDecrementProperty, eckUndo,
+      eckRedo, eckToggleSidebar, eckToggleInspector, eckOpenCommandPalette,
+      eckNavigateLayersUp, eckNavigateLayersDown:
+    ""
 
 proc evaluateCommand*(editor: EditorVM;
     kind: EditorCommandKind): EditorCommandState =
@@ -1579,10 +1852,13 @@ proc runEditorCommand*(editor: EditorVM;
   case kind
   of eckEdit:
     editor.setEditMode(emEdit)
+    editor.recordEditorTiming(epbkModeSwitch, 1, "command:edit")
   of eckComment:
     editor.setEditMode(emComment)
+    editor.recordEditorTiming(epbkModeSwitch, 1, "command:comment")
   of eckInspect:
     editor.setEditMode(emView)
+    editor.recordEditorTiming(epbkModeSwitch, 1, "command:view")
   of eckApply:
     discard
   of eckRevert, eckDiscard:
@@ -1616,6 +1892,35 @@ proc runEditorCommand*(editor: EditorVM;
     discard
   of eckOpenSource:
     discard
+  of eckSelectPrevious, eckNavigateLayersUp:
+    discard editor.selectPreviousInspectorElement()
+  of eckSelectNext, eckNavigateLayersDown:
+    discard editor.selectNextInspectorElement()
+  of eckSelectParent:
+    discard editor.selectParentInspectorElement()
+  of eckSelectChild:
+    discard editor.selectChildInspectorElement()
+  of eckFocusInspector:
+    let current = editor.panels.val
+    editor.panels.val = PanelVisibility(sidebar: current.sidebar,
+      inspector: true)
+    editor.inspector.focusedControlId.val = "section-search"
+  of eckIncrementProperty:
+    discard editor.nudgeFirstNumericProperty(1)
+  of eckDecrementProperty:
+    discard editor.nudgeFirstNumericProperty(-1)
+  of eckUndo:
+    if not editor.inspector.undoCssPropertyEdit():
+      discard editor.undoVectorEdit()
+  of eckRedo:
+    if not editor.inspector.redoCssPropertyEdit():
+      discard editor.redoVectorEdit()
+  of eckToggleSidebar:
+    editor.togglePanel(epSidebar)
+  of eckToggleInspector:
+    editor.togglePanel(epInspector)
+  of eckOpenCommandPalette:
+    editor.openCommandPalette()
 
   result = editor.evaluateCommand(kind)
   result.status = ecsSucceeded
@@ -1982,6 +2287,8 @@ proc editInspectorProperty*(editor: EditorVM;
   if result.status == pesAccepted:
     editor.workspaceEditStage.val = wesDirty
     editor.workspaceEditDiagnostics.val = @[]
+    editor.recordEditorTiming(epbkPropertyEditPreview, 1,
+      "source-plan:" & result.sourceEdit.property)
     let acceptedRecord = result.record
     editor.chat.accumulatedEdits.update proc(prev: seq[EditRecord]): seq[EditRecord] =
       result = prev
@@ -4504,6 +4811,10 @@ proc patchForFile(patches: seq[WorkspaceFilePatch];
 proc failWorkspaceEdit(editor: EditorVM; diagnostics: seq[WorkspaceEditDiagnostic];
     patches: seq[WorkspaceFilePatch] = @[];
     stage = wesFailed): WorkspaceEditResult =
+  let detail =
+    if diagnostics.len > 0: "bridge-error:" & diagnostics[0].message
+    else: "bridge-error:workspace edit failed"
+  editor.recordEditorTiming(epbkSaveReload, 1, detail)
   editor.workspaceEditStage.val = stage
   editor.workspaceEditDiagnostics.val = diagnostics
   WorkspaceEditResult(
@@ -4783,6 +5094,8 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
   editor.workspaceEditReviewDiagnostics.val = reviewDiagnostics
   if not adapter.stagingOnly:
     editor.livePreviewReloadGeneration.val = editor.livePreviewReloadGeneration.val + 1
+  editor.recordEditorTiming(epbkSaveReload, 1,
+    if fullReload: "preview-reload:full" else: "preview-reload:affected")
   WorkspaceEditResult(
     ok: true,
     stage: wesClean,
@@ -6792,6 +7105,10 @@ proc createEditorVM*(): EditorVM =
   let workspaceEditReviewDiagnostics = createSignal[seq[WorkspaceEditDiagnostic]](@[])
   let livePreviewReloadGeneration = createSignal(0)
   let commandStates = createSignal[seq[EditorCommandState]](@[])
+  let commandPaletteOpen = createSignal(false)
+  let performanceBudgets = createSignal(defaultEditorPerformanceBudgets())
+  let telemetryEvents = createSignal[seq[EditorTelemetryEvent]](@[])
+  let telemetryOverlayVisible = createSignal(false)
   let designSystemSchema = createSignal(DesignSystemSchema())
 
   let sidebar = createSidebarVM()
@@ -6829,6 +7146,10 @@ proc createEditorVM*(): EditorVM =
     workspaceEditReviewDiagnostics: workspaceEditReviewDiagnostics,
     livePreviewReloadGeneration: livePreviewReloadGeneration,
     commandStates: commandStates,
+    commandPaletteOpen: commandPaletteOpen,
+    performanceBudgets: performanceBudgets,
+    telemetryEvents: telemetryEvents,
+    telemetryOverlayVisible: telemetryOverlayVisible,
     designSystemSchema: designSystemSchema,
     sidebar: sidebar,
     storyboard: storyboard,

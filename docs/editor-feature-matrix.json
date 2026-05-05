@@ -110,12 +110,24 @@
       "owner": "framework",
       "mockOnly": false,
       "placeholderUi": false,
-      "browserBehavior": ["pointer", "focus"],
-      "implementation": "Typed command availability, dispatch, diagnostics, URL state, keyboard and pointer activation.",
-      "knownLimitations": "Command palette coverage, tooltip consistency, and full focus-return behavior remain M42 work.",
+      "browserBehavior": ["pointer", "focus", "keyboard"],
+      "implementation": "Typed command availability, dispatch, diagnostics, URL state, complete shortcut metadata, command palette entries, dialog focus trapping, roving palette options, Enter/Space-only command activation, Escape dismissal with focus restoration, unavailable-command diagnostics, keyboard and pointer activation, panel toggles, and development telemetry hooks for selection, property preview, save/reload, and bridge-error paths.",
+      "knownLimitations": "The M44 slice is functional for keyboard/palette/panel/focus workflows. Figma-grade promotion remains blocked on M45 full-matrix validation and broader consumer visual evidence.",
       "headlessTests": [
         {
           "name": "editor_commands_require_valid_selection_and_capability",
+          "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "editor_shortcut_map_and_command_palette_cover_all_commands",
+          "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "editor_interaction_performance_budgets",
+          "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "m44_telemetry_exercises_selection_preview_save_and_bridge_error_paths",
           "file": "tests/test_editor_viewmodels.nim"
         },
         {
@@ -127,6 +139,14 @@
       "playwrightTests": [
         {
           "name": "e2e_editor_edit_buttons_keyboard_and_pointer",
+          "file": "tests/browser/specs/editor-example.spec.ts"
+        },
+        {
+          "name": "e2e_editor_keyboard_and_accessibility_workflows",
+          "file": "tests/browser/specs/editor-example.spec.ts"
+        },
+        {
+          "name": "editor_interaction_performance_budgets",
           "file": "tests/browser/specs/editor-example.spec.ts"
         }
       ],

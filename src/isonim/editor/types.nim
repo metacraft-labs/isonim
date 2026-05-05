@@ -75,6 +75,20 @@ type
     eckCreateVariant
     eckCreateStory
     eckOpenSource
+    eckSelectPrevious
+    eckSelectNext
+    eckSelectParent
+    eckSelectChild
+    eckFocusInspector
+    eckIncrementProperty
+    eckDecrementProperty
+    eckUndo
+    eckRedo
+    eckToggleSidebar
+    eckToggleInspector
+    eckOpenCommandPalette
+    eckNavigateLayersUp
+    eckNavigateLayersDown
 
   EditorCommandStatus* = enum
     ecsAvailable
@@ -106,6 +120,40 @@ type
     diagnostic*: string
     sourceFile*: string
     sourceLine*: int
+
+  EditorShortcutBinding* = object
+    kind*: EditorCommandKind
+    shortcut*: string
+    scope*: string
+    description*: string
+
+  EditorCommandPaletteEntry* = object
+    kind*: EditorCommandKind
+    label*: string
+    shortcut*: string
+    section*: string
+    status*: EditorCommandStatus
+    diagnostic*: string
+
+  EditorPerformanceBudgetKind* = enum
+    epbkStorySelection
+    epbkElementSelection
+    epbkModeSwitch
+    epbkPropertyEditPreview
+    epbkSaveReload
+    epbkLargeSidebarSearch
+
+  EditorPerformanceBudget* = object
+    kind*: EditorPerformanceBudgetKind
+    label*: string
+    maxMs*: int
+
+  EditorTelemetryEvent* = object
+    name*: string
+    durationMs*: int
+    budgetKind*: EditorPerformanceBudgetKind
+    withinBudget*: bool
+    detail*: string
 
   # --- Editor default view ---
   EditorView* = enum

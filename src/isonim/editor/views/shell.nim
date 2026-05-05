@@ -972,6 +972,349 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
             text "\xE2\x86\x91"
   r.bindRightPanelWidth(result, vm)
 
+proc renderCommandPalette[R, E](r: R; vm: EditorVM): E =
+  var listNode: E
+  var searchInput: E
+  var diagnosticNode: E
+  result = ui(r):
+    tdiv(`data-editor-command-palette` = "true",
+          role = "dialog",
+          `aria-modal` = "true",
+          `aria-label` = "Editor command palette",
+          position = "fixed", inset = "0", z_index = "50",
+          display = "none", align_items = "flex-start",
+          justify_content = "center",
+          padding_top = "80px",
+          background_color = "rgba(2, 6, 23, 0.66)"):
+      tdiv(width = "520px", max_width = "calc(100vw - 32px)",
+            border = "1px solid " & borderStrong,
+            border_radius = "8px",
+            background_color = bgSidebar,
+            box_shadow = "0 24px 80px rgba(0, 0, 0, 0.42)",
+            overflow = "hidden"):
+        input(ref = searchInput,
+              class = "editor-input",
+              height = "42px", width = "100%",
+              background_color = bgSurface,
+              border = "0",
+              border_bottom = "1px solid " & border,
+              padding = "0 14px",
+              font_size = "13px",
+              color = textPrimary,
+              outline = "none",
+              `aria-label` = "Search editor commands",
+              `aria-controls` = "isonim-command-palette-list",
+              placeholder = "Search commands")
+        tdiv(ref = diagnosticNode,
+              id = "isonim-command-palette-diagnostic",
+              role = "status",
+              `aria-live` = "polite",
+              min_height = "18px",
+              padding = "6px 10px 0 10px",
+              font_size = "10px",
+              color = textDim):
+          text "Use arrow keys to choose a command."
+        tdiv(ref = listNode,
+              id = "isonim-command-palette-list",
+              role = "listbox",
+              `aria-label` = "Editor commands",
+              display = "flex", flex_direction = "column",
+              max_height = "420px", overflow_y = "auto",
+              padding = "6px"):
+          discard
+
+  let paletteRoot = result
+  when defined(js):
+    {.emit: ["""
+      (function () {
+        const root = """, paletteRoot, """;
+        const input = """, searchInput, """;
+        const list = """, listNode, """;
+        const diagnostic = """, diagnosticNode, """;
+        if (!root || root.__isonimPaletteReady) return;
+        root.__isonimPaletteReady = true;
+        root.__isonimActiveIndex = 0;
+
+        const options = () => Array.from(
+          root.querySelectorAll('[data-editor-command-option="true"]')
+        );
+        const writeDiagnostic = (message) => {
+          if (diagnostic) diagnostic.textContent = message || '';
+        };
+        const setActive = (index, focusOption) => {
+          const items = options();
+          if (!items.length) {
+            root.__isonimActiveIndex = 0;
+            if (input) input.removeAttribute('aria-activedescendant');
+            return;
+          }
+          const next = Math.max(0, Math.min(items.length - 1, index));
+          root.__isonimActiveIndex = next;
+          items.forEach((item, i) => {
+            const active = i === next;
+            item.setAttribute('tabindex', active ? '0' : '-1');
+            item.setAttribute('aria-selected', active ? 'true' : 'false');
+          });
+          const active = items[next];
+          if (input && active.id) {
+            input.setAttribute('aria-activedescendant', active.id);
+          }
+          writeDiagnostic(active.getAttribute('data-command-diagnostic') || 'Ready');
+          if (focusOption && active.focus) active.focus({ preventScroll: true });
+          if (active.scrollIntoView) active.scrollIntoView({ block: 'nearest' });
+        };
+        const move = (delta, focusOption) => {
+          const items = options();
+          if (!items.length) return;
+          setActive((root.__isonimActiveIndex || 0) + delta, focusOption);
+        };
+        const activate = () => {
+          const items = options();
+          const active = items[root.__isonimActiveIndex || 0];
+          if (!active) return;
+          if (active.getAttribute('aria-disabled') === 'true') {
+            writeDiagnostic(active.getAttribute('data-command-diagnostic') || 'Command unavailable.');
+            return;
+          }
+          active.click();
+        };
+        const firstFocusable = () => input;
+        const lastFocusable = () => options()[root.__isonimActiveIndex || 0] || input;
+        const restoreReturnFocus = () => {
+          const target = root.__isonimReturnFocus;
+          if (target && target.focus) {
+            setTimeout(() => target.focus({ preventScroll: true }), 0);
+            setTimeout(() => target.focus({ preventScroll: true }), 25);
+          }
+        };
+        root.__isonimPaletteReset = () => setActive(0, false);
+        root.addEventListener('focusin', (event) => {
+          const item = event.target && event.target.closest
+            ? event.target.closest('[data-editor-command-option="true"]')
+            : null;
+          if (!item) return;
+          const index = options().indexOf(item);
+          if (index >= 0) setActive(index, false);
+        });
+        root.addEventListener('keydown', (event) => {
+          if (root.getAttribute('aria-hidden') === 'true') return;
+          const key = event.key;
+          if (key === 'ArrowDown') {
+            event.preventDefault();
+            move(1, event.target !== input);
+          } else if (key === 'ArrowUp') {
+            event.preventDefault();
+            move(-1, event.target !== input);
+          } else if (key === 'Home') {
+            event.preventDefault();
+            setActive(0, event.target !== input);
+          } else if (key === 'End') {
+            event.preventDefault();
+            setActive(options().length - 1, event.target !== input);
+          } else if (key === 'Enter' ||
+              ((key === ' ' || key === 'Space' || key === 'Spacebar') && event.target !== input)) {
+            event.preventDefault();
+            activate();
+          } else if (key === 'Escape') {
+            event.preventDefault();
+            const close = new CustomEvent('isonim-command-palette-close', { bubbles: true });
+            root.dispatchEvent(close);
+            restoreReturnFocus();
+          } else if (key === 'Tab') {
+            const first = firstFocusable();
+            const last = lastFocusable();
+            if (!first || !last) return;
+            if (event.shiftKey && document.activeElement === first) {
+              event.preventDefault();
+              last.focus({ preventScroll: true });
+            } else if (!event.shiftKey && document.activeElement === last) {
+              event.preventDefault();
+              first.focus({ preventScroll: true });
+            }
+          }
+        });
+      })();
+    """].}
+  r.addEventListener(paletteRoot, "isonim-command-palette-close", proc() =
+    vm.closeCommandPalette())
+
+  proc bindPaletteItem(item: E; commandKind: EditorCommandKind) =
+    let activate = proc() =
+      let state = vm.evaluateCommand(commandKind)
+      if state.status == ecsDisabled:
+        let failed = vm.runEditorCommand(commandKind)
+        if failed.diagnostic.len > 0:
+          r.setTextContent(diagnosticNode, failed.diagnostic)
+      else:
+        discard vm.runEditorCommand(commandKind)
+        vm.closeCommandPalette()
+    r.addEventListener(item, "click", activate)
+
+  createRenderEffect proc() =
+    let open = vm.commandPaletteOpen.val
+    r.setStyle(paletteRoot, "display", if open: "flex" else: "none")
+    r.setAttribute(paletteRoot, "aria-hidden", if open: "false" else: "true")
+    r.clearChildren(listNode)
+    if not open:
+      when defined(js):
+        {.emit: ["""
+          (function () {
+            const root = """, paletteRoot, """;
+            if (!root || !root.__isonimWasOpen) return;
+            root.__isonimWasOpen = false;
+            const target = root.__isonimReturnFocus;
+            root.__isonimReturnFocus = null;
+            if (target && target.focus) {
+              setTimeout(() => target.focus({ preventScroll: true }), 0);
+              setTimeout(() => target.focus({ preventScroll: true }), 25);
+            }
+          })();
+        """].}
+      return
+    r.setTextContent(diagnosticNode, "Use arrow keys to choose a command.")
+    var index = 0
+    for entry in vm.commandPaletteEntries():
+      let disabled = entry.status == ecsDisabled
+      let label = entry.label
+      let command = entry.kind
+      let section = entry.section
+      let shortcut = entry.shortcut
+      let status = $entry.status
+      let diagnostic =
+        if entry.diagnostic.len > 0: entry.diagnostic else: "Ready"
+      let itemId = "isonim-command-palette-option-" & $index
+      let diagnosticId = itemId & "-diagnostic"
+      let item = ui(r):
+        tdiv(id = itemId,
+              `data-editor-command-option` = "true",
+              `data-command-kind` = $command,
+              `data-command-status` = status,
+              `data-command-diagnostic` = diagnostic,
+              role = "option", tabindex = (if index == 0: "0" else: "-1"),
+              `aria-label` = label & " command, " & diagnostic,
+              `aria-describedby` = diagnosticId,
+              `aria-disabled` = (if disabled: "true" else: "false"),
+              `aria-selected` = (if index == 0: "true" else: "false"),
+              display = "grid",
+              `grid-template-columns` = "minmax(0, 1fr) auto",
+              gap = "10px", align_items = "center",
+              padding = "8px 10px",
+              border_radius = "6px",
+              cursor = (if disabled: "not-allowed" else: "pointer"),
+              opacity = (if disabled: "0.56" else: "1"),
+              color = textPrimary,
+              outline = "none"):
+          tdiv(display = "flex", flex_direction = "column",
+                min_width = "0", gap = "2px"):
+            span(font_size = "12px", font_weight = "700",
+                  overflow = "hidden", text_overflow = "ellipsis",
+                  white_space = "nowrap"):
+              text label
+            span(font_size = "10px", color = textDim,
+                  overflow = "hidden", text_overflow = "ellipsis",
+                  white_space = "nowrap",
+                  id = diagnosticId):
+              text section & " - " & diagnostic
+          span(font_size = "10px", color = textMuted,
+                font_family = "monospace", white_space = "nowrap"):
+            text shortcut
+      bindPaletteItem(item, command)
+      r.appendChild(listNode, item)
+      inc index
+    when defined(js):
+      if open:
+        {.emit: ["""
+          (function () {
+            const root = """, paletteRoot, """;
+            const input = """, searchInput, """;
+            if (root && !root.__isonimWasOpen) {
+              const active = document.activeElement;
+              root.__isonimReturnFocus = active && !root.contains(active) ? active : root.__isonimReturnFocus;
+              root.__isonimWasOpen = true;
+            }
+            if (root && root.__isonimPaletteReset) root.__isonimPaletteReset();
+            if (input && document.activeElement !== input) {
+              setTimeout(() => input.focus({ preventScroll: true }), 0);
+            }
+          })();
+        """].}
+
+proc renderTelemetryOverlay[R, E](r: R; vm: EditorVM): E =
+  var budgetsNode: E
+  var eventsNode: E
+  result = ui(r):
+    tdiv(`data-editor-telemetry-overlay` = "true",
+          role = "status",
+          `aria-label` = "Editor performance telemetry",
+          position = "fixed", right = "10px", bottom = "34px",
+          z_index = "40", width = "320px",
+          display = "none", flex_direction = "column", gap = "6px",
+          padding = "10px",
+          border = "1px solid " & borderStrong,
+          border_radius = "8px",
+          background_color = "rgba(15, 23, 42, 0.96)",
+          color = textSecondary,
+          font_size = "10px",
+          box_shadow = "0 16px 48px rgba(0, 0, 0, 0.32)"):
+      tdiv(display = "flex", align_items = "center",
+            justify_content = "space-between", gap = "8px"):
+        span(font_weight = "800", color = textPrimary,
+              text_transform = "uppercase"):
+          text "Telemetry"
+        span(color = textDim):
+          text "dev"
+      tdiv(ref = budgetsNode,
+            display = "grid",
+            `grid-template-columns` = "1fr auto",
+            gap = "3px 8px"):
+        discard
+      tdiv(ref = eventsNode,
+            display = "flex", flex_direction = "column", gap = "2px",
+            max_height = "120px", overflow_y = "auto"):
+        discard
+
+  let overlayRoot = result
+  r.setStyle(overlayRoot, "pointer-events", "none")
+  createRenderEffect proc() =
+    let visible = vm.telemetryOverlayVisible.val
+    r.setStyle(overlayRoot, "display", if visible: "flex" else: "none")
+    r.setAttribute(overlayRoot, "aria-hidden", if visible: "false" else: "true")
+    r.clearChildren(budgetsNode)
+    for budget in vm.performanceBudgets.val:
+      let budgetKind = $budget.kind
+      let budgetMax = $budget.maxMs
+      let budgetLabel = budget.label
+      let label = ui(r):
+        span(`data-performance-budget-kind` = budgetKind,
+              `data-performance-budget-ms` = budgetMax,
+              color = textMuted):
+          text budgetLabel
+      let value = ui(r):
+        span(color = textSecondary, font_family = "monospace"):
+          text budgetMax & "ms"
+      r.appendChild(budgetsNode, label)
+      r.appendChild(budgetsNode, value)
+
+    r.clearChildren(eventsNode)
+    for event in vm.telemetryEvents.val:
+      let eventName = event.name
+      let eventDuration = $event.durationMs
+      let eventWithinBudget = event.withinBudget
+      let eventDetail = event.detail
+      let item = ui(r):
+        tdiv(`data-editor-telemetry-event` = eventName,
+              `data-editor-telemetry-detail` = eventDetail,
+              display = "grid",
+              `grid-template-columns` = "minmax(0, 1fr) auto",
+              gap = "8px",
+              color = (if eventWithinBudget: textMuted else: "#FCA5A5")):
+          span(overflow = "hidden", text_overflow = "ellipsis",
+                white_space = "nowrap"):
+            text eventName
+          span(font_family = "monospace"):
+            text eventDuration & "ms"
+      r.appendChild(eventsNode, item)
+
 proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
   ## Top-level editor layout: sidebar + storyboard/preview + inspector.
   let shellRoot = ui(r):
@@ -1026,5 +1369,7 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
   r.appendChild(shell, vectorEditorEl)
   r.appendChild(shell, chatEl) # always last (right side)
   r.appendChild(shellRoot, shell)
+  r.appendChild(shellRoot, renderCommandPalette[R, E](r, vm))
+  r.appendChild(shellRoot, renderTelemetryOverlay[R, E](r, vm))
   r.appendChild(shellRoot, renderStatusBar[R, E](r, vm))
   shellRoot

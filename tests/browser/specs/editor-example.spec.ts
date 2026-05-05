@@ -423,6 +423,300 @@ test.describe("IsoNim packaged editor example", () => {
     await expect(page).toHaveURL(/mode=view/);
   });
 
+  test("e2e_editor_keyboard_and_accessibility_workflows", async ({ page }) => {
+    await page.evaluate(() => localStorage.setItem("isonim-editor-debug", "1"));
+    await page.reload();
+    await openDestinationComponentEdit(page);
+
+    const mod = process.platform === "darwin" ? "Meta" : "Control";
+    const sidebarToggle = page.getByRole("button", {
+      name: "Toggle left sidebar",
+    });
+    await sidebarToggle.focus();
+    await page.keyboard.press(`${mod}+K`);
+    const palette = page.locator('[data-editor-command-palette="true"]');
+    await expect(palette).toHaveAttribute("aria-hidden", "false");
+    await expect(
+      page.getByRole("textbox", { name: "Search editor commands" }),
+    ).toBeFocused();
+    await expect(palette).toHaveAttribute("role", "dialog");
+    await expect(palette).toHaveAttribute("aria-modal", "true");
+    const search = page.getByRole("textbox", {
+      name: "Search editor commands",
+    });
+    const editOption = page.getByRole("option", { name: /Edit command/ });
+    const commentOption = page.getByRole("option", {
+      name: /Comment command/,
+    });
+    const saveOption = page.locator('[data-command-kind="eckSave"]');
+    await expect(editOption).toHaveAttribute("tabindex", "0");
+    await expect(editOption).toHaveAttribute("aria-selected", "true");
+    await expect(commentOption).toHaveAttribute("tabindex", "-1");
+    await expect(saveOption).toHaveAttribute("aria-disabled", "true");
+    await expect(saveOption).toHaveAttribute(
+      "data-command-diagnostic",
+      "There are no pending source edits.",
+    );
+    await page.keyboard.press("ArrowDown");
+    await expect(commentOption).toHaveAttribute("tabindex", "0");
+    await expect(commentOption).toHaveAttribute("aria-selected", "true");
+    await expect(editOption).toHaveAttribute("tabindex", "-1");
+    await page.keyboard.press("End");
+    await expect(
+      page.getByRole("option", { name: /Navigate layers down command/ }),
+    ).toHaveAttribute("aria-selected", "true");
+    await page.keyboard.press("Home");
+    await expect(editOption).toHaveAttribute("aria-selected", "true");
+    await page.keyboard.press("Tab");
+    await expect(editOption).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(search).toBeFocused();
+    await page.keyboard.press("Home");
+    for (let i = 0; i < 5; i++) {
+      await page.keyboard.press("ArrowDown");
+    }
+    await expect(saveOption).toHaveAttribute("aria-selected", "true");
+    await page.keyboard.press("Enter");
+    await expect(palette).toHaveAttribute("aria-hidden", "false");
+    await expect(
+      page.locator("#isonim-command-palette-diagnostic"),
+    ).toContainText("There are no pending source edits.");
+
+    await page.keyboard.press("Escape");
+    await expect(palette).toHaveAttribute("aria-hidden", "true");
+    await expect(sidebarToggle).toBeFocused();
+
+    await page.keyboard.press(`${mod}+K`);
+    await expect(palette).toHaveAttribute("aria-hidden", "false");
+    await search.evaluate((node: HTMLInputElement) =>
+      node.focus({ preventScroll: true }),
+    );
+    await expect(search).toBeFocused();
+    await page.keyboard.press("Home");
+    await page.keyboard.press("ArrowDown");
+    await page.keyboard.press("Tab");
+    await expect(commentOption).toBeFocused();
+    await page.keyboard.press("Space");
+    await expect(palette).toHaveAttribute("aria-hidden", "true");
+    await expect(
+      page.getByRole("button", { name: "Switch to comment mode" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    await page.keyboard.press("E");
+    await expect(
+      page.getByRole("button", { name: "Switch to edit mode" }),
+    ).toHaveAttribute("aria-pressed", "true");
+
+    await sidebarToggle.evaluate((node: HTMLElement) =>
+      node.focus({ preventScroll: true }),
+    );
+    await expect(sidebarToggle).toBeFocused();
+    await page.keyboard.press(`${mod}+Backslash`);
+    await expect(page.locator(".editor-sidebar")).toBeHidden();
+    await page.keyboard.press(`${mod}+Backslash`);
+    await expect(page.locator(".editor-sidebar")).toBeVisible();
+
+    await sidebarToggle.evaluate((node: HTMLElement) =>
+      node.focus({ preventScroll: true }),
+    );
+    await page.keyboard.press(`${mod}+K`);
+    await expect(palette).toHaveAttribute("aria-hidden", "false");
+    await page
+      .getByRole("option", { name: /Toggle inspector command/ })
+      .click();
+    await expect(page.locator(".editor-manual-inspector")).toBeHidden();
+    await sidebarToggle.evaluate((node: HTMLElement) =>
+      node.focus({ preventScroll: true }),
+    );
+    await page.keyboard.press("I");
+    await expect(page.locator(".editor-manual-inspector")).toBeVisible();
+    await expect(
+      page.getByRole("textbox", { name: "Search inspector sections" }),
+    ).toBeFocused();
+    const editModeButton = page.getByRole("button", {
+      name: "Switch to edit mode",
+    });
+    await editModeButton.click();
+    await editModeButton.evaluate((node: HTMLElement) =>
+      node.focus({ preventScroll: true }),
+    );
+    await expect(editModeButton).toBeFocused();
+
+    const editFrame = page.frameLocator(
+      'iframe[title="Editable component preview"]',
+    );
+    await editFrame
+      .getByRole("heading", { name: /DestinationCard \/ Default/ })
+      .click();
+    const selectedLayer = page
+      .locator('[data-isonim-layer-selected="true"]')
+      .first();
+    const selectedBefore = await selectedLayer.getAttribute(
+      "data-isonim-layer-id",
+    );
+    await editModeButton.evaluate((node: HTMLElement) =>
+      node.focus({ preventScroll: true }),
+    );
+    await page.keyboard.press(`${mod}+K`);
+    await expect(palette).toHaveAttribute("aria-hidden", "false");
+    await page
+      .getByRole("option", { name: /Select next element command/ })
+      .click();
+    await expect
+      .poll(() =>
+        page
+          .locator('[data-isonim-layer-selected="true"]')
+          .first()
+          .getAttribute("data-isonim-layer-id"),
+      )
+      .not.toBe(selectedBefore);
+    await editModeButton.evaluate((node: HTMLElement) =>
+      node.focus({ preventScroll: true }),
+    );
+    await page.keyboard.press(`${mod}+K`);
+    await expect(palette).toHaveAttribute("aria-hidden", "false");
+    await page
+      .getByRole("option", { name: /Select previous element command/ })
+      .click();
+    await expect
+      .poll(() =>
+        page
+          .locator('[data-isonim-layer-selected="true"]')
+          .first()
+          .getAttribute("data-isonim-layer-id"),
+      )
+      .toBe(selectedBefore);
+
+    await editModeButton.evaluate((node: HTMLElement) =>
+      node.focus({ preventScroll: true }),
+    );
+    await expect(editModeButton).toBeFocused();
+    await page.keyboard.press("V");
+    await expect(
+      page.getByRole("button", { name: "Switch to view mode" }),
+    ).toHaveAttribute("aria-pressed", "true");
+
+    await expect(
+      page.locator('[data-editor-telemetry-overlay="true"]'),
+    ).toHaveAttribute("aria-hidden", "false");
+    await page.evaluate(() => localStorage.removeItem("isonim-editor-debug"));
+  });
+
+  test("editor_interaction_performance_budgets", async ({ page }) => {
+    await page.goto("/?debug=1");
+    await expect(page.getByText("IsoNim Editor")).toBeVisible();
+    const budgetCount = await page
+      .locator("[data-performance-budget-kind]")
+      .count();
+    expect(budgetCount).toBe(6);
+
+    const budgetMs = async (kind: string) =>
+      Number(
+        await page
+          .locator(`[data-performance-budget-kind="${kind}"]`)
+          .getAttribute("data-performance-budget-ms"),
+      );
+
+    await page.getByRole("button", { name: "Open Components section" }).click();
+    await page
+      .getByRole("button", { name: "Toggle DestinationCard stories" })
+      .click();
+
+    const storyDuration = await page.evaluate(async () => {
+      const target = document.querySelector<HTMLElement>(
+        '[aria-label="Select story DestinationCard / Default"]',
+      );
+      const started = performance.now();
+      target?.click();
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      return performance.now() - started;
+    });
+    expect(storyDuration).toBeLessThan(await budgetMs("epbkStorySelection"));
+
+    const modeDuration = await page.evaluate(async () => {
+      const target = document.querySelector<HTMLElement>(
+        '[aria-label="Open selected component in edit mode"]',
+      );
+      const started = performance.now();
+      target?.click();
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      return performance.now() - started;
+    });
+    expect(modeDuration).toBeLessThan(await budgetMs("epbkModeSwitch"));
+    await expect(page.locator(".editor-manual-inspector")).toBeVisible();
+
+    const editFrame = page.frameLocator(
+      'iframe[title="Editable component preview"]',
+    );
+    await page.evaluate(async () => {
+      const frame = document.querySelector<HTMLIFrameElement>(
+        'iframe[title="Editable component preview"]',
+      );
+      const target =
+        frame?.contentDocument?.querySelector<HTMLElement>(
+          '[data-testid="component-edit-preview"]',
+        ) ?? null;
+      target?.click();
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    });
+    await expect(
+      editFrame.locator('[data-isonim-selected="true"]'),
+    ).toBeVisible();
+
+    await page.getByRole("tab", { name: "Show Space edit controls" }).click();
+    await page.evaluate(async () => {
+      const input = document.querySelector<HTMLInputElement>(
+        'input[aria-label="Edit inspector property padding"]',
+      );
+      if (input) {
+        input.value = "28px";
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    });
+    await expect(page.getByText("Unsaved source edit")).toBeVisible();
+    await page
+      .getByRole("button", { name: "Save inspector source edits" })
+      .click();
+    await expect(
+      page.locator('[data-editor-telemetry-event="save and reload"]'),
+    ).toBeVisible();
+    await expect(
+      page.locator('[data-editor-telemetry-event="save and reload"]').last(),
+    ).toHaveAttribute("data-editor-telemetry-detail", /bridge-error:/);
+
+    const searchDuration = await page.evaluate(async () => {
+      const input = document.querySelector<HTMLInputElement>(
+        'input[aria-label="Search stories"]',
+      );
+      const started = performance.now();
+      if (input) {
+        input.value = "destination";
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      return performance.now() - started;
+    });
+    expect(searchDuration).toBeLessThan(
+      await budgetMs("epbkLargeSidebarSearch"),
+    );
+
+    await expect(
+      page.locator('[data-editor-telemetry-overlay="true"]'),
+    ).toBeVisible();
+    for (const eventName of [
+      "story selection",
+      "mode switch",
+      "element selection",
+      "property edit preview",
+      "save and reload",
+    ]) {
+      await expect(
+        page.locator(`[data-editor-telemetry-event="${eventName}"]`).last(),
+      ).toBeVisible();
+    }
+    await page.evaluate(() => localStorage.removeItem("isonim-editor-debug"));
+  });
+
   test("e2e_vector_editor_pointer_keyboard_and_rendering", async ({ page }) => {
     await page.goto("/?view=vector#vector-editor");
     await expect(page.getByText("Vector Editor")).toBeVisible();

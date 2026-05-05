@@ -43,6 +43,11 @@ suite "Effects":
       check innerRuns == 2
 
 suite "Memos":
+  type
+    Row = object
+      name: string
+      value: int
+
   test "createMemo caches and updates":
     createRoot proc(dispose: proc()) =
       let a = createSignal(1)
@@ -76,6 +81,23 @@ suite "Memos":
       check sum.val == 5  # 2 + 3
       s.val = 2
       check sum.val == 10  # 4 + 6
+
+  test "memo preserves seqs of value objects on JS target":
+    createRoot proc(dispose: proc()) =
+      let rows = createSignal(newSeq[Row]())
+      let visible = createMemo[seq[Row]] proc(): seq[Row] =
+        for row in rows.val:
+          result.add(row)
+
+      check visible.val.len == 0
+      rows.val = @[Row(name: "main", value: 1), Row(name: "helper", value: 2)]
+
+      let snapshot = visible.val
+      check snapshot.len == 2
+      check snapshot[0].name == "main"
+      check snapshot[0].value == 1
+      check snapshot[1].name == "helper"
+      check snapshot[1].value == 2
 
 suite "Owners":
   test "createRoot disposal cleans up effects":

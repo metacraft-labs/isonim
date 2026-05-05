@@ -7,6 +7,15 @@
 
 import types, graph, batch
 
+proc storeReactiveValue[T](dest: var T; value: T) {.inline.} =
+  ## Keep reactive storage as the exact value produced by the caller on JS.
+  ## The JS backend's generated deep-copy path can corrupt seqs of value
+  ## objects by materialising empty array placeholders for object entries.
+  when defined(js):
+    shallowCopy(dest, value)
+  else:
+    dest = value
+
 type
   SignalState*[T] = ref object of SignalStateBase
     value*: T
@@ -36,17 +45,17 @@ proc writeSignal[T](state: SignalState[T]; value: T) =
       return
   elif state.value == value:
     return
-  state.value = value
+  storeReactiveValue(state.value, value)
   notifySignalWrite(state)
 
 proc createSignal*[T](value: T; equals: EqualityFn[T] = nil): Signal[T] =
   ## Creates a new signal with the given initial value.
   result = SignalState[T](
-    value: value,
     comparator: equals,
     observers: @[],
     observerSlots: @[]
   )
+  storeReactiveValue(result.value, value)
 
 proc val*[T](s: Signal[T]): T {.inline.} =
   ## Reads the signal value. Tracked if inside a computation.

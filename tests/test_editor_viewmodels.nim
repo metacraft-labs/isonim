@@ -586,8 +586,12 @@ suite "Editor ViewModels (M25 edit commands)":
       for kind in allEditorCommandKinds():
         let state = vm.evaluateCommand(kind)
         check state.label.len > 0
-        check state.status == ecsDisabled
-        check state.diagnostic.contains("Select a story")
+        if kind in {eckOpenCommandPalette, eckToggleSidebar,
+            eckToggleInspector, eckFocusInspector}:
+          check state.status == ecsAvailable
+        else:
+          check state.status == ecsDisabled
+          check state.diagnostic.len > 0
 
       vm.installCommandStory()
       check vm.evaluateCommand(eckEdit).status == ecsAvailable
@@ -645,6 +649,96 @@ suite "Editor ViewModels (M25 edit commands)":
       check vm.inspector.pendingSourceEdits.val.len == 0
       check vm.chat.accumulatedEdits.val.len == 0
 
+      dispose()
+
+suite "Editor ViewModels (M44 keyboard accessibility performance)":
+
+  func keyboardStory(): StoryRef =
+    StoryRef(group: "DestinationCard", name: "Default",
+      kind: skComponent, index: 0)
+
+  proc installKeyboardStory(vm: EditorVM) =
+    vm.sidebar.groups.val = @[
+      StoryGroup(name: "DestinationCard", kind: skComponent,
+        description: "Card component", expanded: true, items: @[
+          StoryItem(name: "Default", description: "Default state",
+            kind: skComponent, group: "DestinationCard")
+      ])
+    ]
+    check vm.selectStory(keyboardStory())
+
+  proc installLayerTree(vm: EditorVM) =
+    vm.inspector.setSelectionTree(@[
+      ElementLayerRow(id: "root", label: "main", tag: "main",
+        sourceKey: "page:main", schemaKey: "dom.main",
+        sourceFile: "page.nim", sourceLine: 10, depth: 0,
+        childCount: 2, expanded: true),
+      ElementLayerRow(id: "header", parentId: "root", label: "header",
+        tag: "header", sourceKey: "page:header", schemaKey: "dom.header",
+        sourceFile: "page.nim", sourceLine: 12, depth: 1,
+        childCount: 1, expanded: true),
+      ElementLayerRow(id: "title", parentId: "header", label: "h1",
+        tag: "h1", sourceKey: "page:title", schemaKey: "dom.h1",
+        sourceFile: "page.nim", sourceLine: 13, depth: 2),
+      ElementLayerRow(id: "content", parentId: "root", label: "section",
+        tag: "section", sourceKey: "page:content", schemaKey: "dom.section",
+        sourceFile: "page.nim", sourceLine: 20, depth: 1)
+    ])
+    check vm.selectInspectorElementById("header")
+
+  test "editor_shortcut_map_and_command_palette_cover_all_commands":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      let bindings = allEditorShortcutBindings()
+      check bindings.len == allEditorCommandKinds().len
+      check duplicateEditorShortcuts(bindings).len == 0
+      for kind in allEditorCommandKinds():
+        check bindings.anyIt(it.kind == kind and it.shortcut.len > 0 and
+          it.description.len > 0 and it.scope.len > 0)
+
+      let emptyEntries = vm.commandPaletteEntries()
+      check emptyEntries.len == allEditorCommandKinds().len
+      check emptyEntries.anyIt(it.kind == eckOpenCommandPalette and
+        it.status == ecsAvailable and it.shortcut == "Mod+K")
+      check emptyEntries.anyIt(it.kind == eckSave and
+        it.status == ecsDisabled and it.diagnostic.len > 0)
+
+      vm.installKeyboardStory()
+      vm.installLayerTree()
+      check vm.runEditorCommand(eckOpenCommandPalette).status == ecsSucceeded
+      check vm.commandPaletteOpen.val
+      vm.closeCommandPalette()
+      check not vm.commandPaletteOpen.val
+
+      check vm.runEditorCommand(eckSelectNext).status == ecsSucceeded
+      check vm.inspector.selectedElement.val.id == "title"
+      check vm.runEditorCommand(eckSelectParent).status == ecsSucceeded
+      check vm.inspector.selectedElement.val.id == "header"
+      check vm.runEditorCommand(eckToggleSidebar).status == ecsSucceeded
+      check vm.panels.val.sidebar == false
+      check vm.runEditorCommand(eckFocusInspector).status == ecsSucceeded
+      check vm.panels.val.inspector
+      check vm.inspector.focusedControlId.val == "section-search"
+      dispose()
+
+  test "editor_interaction_performance_budgets":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      let budgets = defaultEditorPerformanceBudgets()
+      check budgets.len == 6
+      for kind in [epbkStorySelection, epbkElementSelection, epbkModeSwitch,
+          epbkPropertyEditPreview, epbkSaveReload, epbkLargeSidebarSearch]:
+        check budgets.anyIt(it.kind == kind and it.label.len > 0 and
+          it.maxMs > 0)
+
+      for budget in budgets:
+        vm.recordEditorTiming(budget.kind, max(0, budget.maxMs - 1),
+          "within " & budget.label)
+      check performanceBudgetsPass(vm.telemetryEvents.val)
+
+      vm.recordEditorTiming(epbkModeSwitch, budgets.filterIt(
+        it.kind == epbkModeSwitch)[0].maxMs + 1, "forced regression")
+      check not performanceBudgetsPass(vm.telemetryEvents.val)
       dispose()
 
 suite "Editor ViewModels (M26 source-backed CSS property editors)":
@@ -1590,6 +1684,95 @@ suite "Editor ViewModels (M27 workspace file writes)":
               message: "unsafe generated source",
               file: patch.file)])
       WorkspaceReviewResult(ok: true)
+
+  test "m44_telemetry_exercises_selection_preview_save_and_bridge_error_paths":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("m44-telemetry")
+      defer: removeDir(root)
+      let schemaFile = root / "component.schema"
+      atomicWrite(schemaFile, "padding=16px")
+      let story = writeStory
+      let schema = @[
+        WorkspaceEditableSchemaEntry(key: "components.card.padding",
+          kind: wskSourceMap, file: schemaFile, path: "card.padding",
+          story: story, property: "padding")
+      ]
+      let recorder = WorkspaceEditRecorder()
+      let workspace = newEditorWorkspace(
+        title = "M44 telemetry workspace",
+        storyGroups = @[StoryGroup(name: story.group, kind: story.kind,
+          expanded: true, items: @[StoryItem(name: story.name,
+            kind: story.kind, group: story.group)])],
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true, createStory: false, createVariant: false,
+          duplicate: false, delete: false),
+        editAdapter = adapterFor(root, schema, recorder = recorder))
+      let vm = createEditorVM(workspace)
+      check vm.selectStory(story)
+      vm.inspector.setSelectionTree(@[
+        ElementLayerRow(id: "card", label: "article", tag: "article",
+          sourceKey: "components.card", schemaKey: "components.card.padding",
+          sourceFile: schemaFile, sourceLine: 1, depth: 0,
+          childCount: 1, expanded: true),
+        ElementLayerRow(id: "title", parentId: "card", label: "h2", tag: "h2",
+          sourceKey: "components.card.title", schemaKey: "components.card.title",
+          sourceFile: schemaFile, sourceLine: 2, depth: 1)
+      ])
+      check vm.selectInspectorElement(ElementRef(id: "card",
+        sourceKey: "components.card",
+        schemaKey: "components.card.padding",
+        tag: "article",
+        sourceFile: schemaFile,
+        sourceLine: 1,
+        properties: @[PropertyInfo(name: "padding", value: "16px",
+          origin: poTailwindClass, originDetail: "schema:components.card.padding",
+          sourceFile: schemaFile, sourceLine: 1,
+          schemaKey: "components.card.padding")]))
+
+      check vm.runEditorCommand(eckSelectNext).status == ecsSucceeded
+      check vm.runEditorCommand(eckSelectPrevious).status == ecsSucceeded
+      let edit = vm.editInspectorProperty(PropertyEditRequest(
+        property: "padding", newValue: "24px", kind: pekCss,
+        scope: pesShared, origin: peoInspector))
+      check edit.status == pesAccepted
+      check vm.inspector.pendingSourceEdits.val.len == 1
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check vm.runEditorCommand(eckRedo).status == ecsSucceeded
+      check vm.inspector.pendingSourceEdits.val.len == 1
+
+      let saved = vm.runEditorCommand(eckSave)
+      check saved.status == ecsSucceeded
+      check vm.workspaceEditStage.val == wesClean
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check recorder.reloadedStories.anyIt(it == story)
+
+      vm.inspector.pendingSourceEdits.val = @[planFor(schemaFile, "padding",
+        "24px", "32px", "components.card.padding")]
+      vm.workspaceEditStage.val = wesDirty
+      vm.workspaceEditAdapter = WorkspaceEditAdapter(schema: schema)
+      vm.sourceAdapterReady.val = true
+      let failed = vm.runEditorCommand(eckSave)
+      check failed.status == ecsFailed
+      check vm.workspaceEditDiagnostics.val.anyIt(
+        it.kind == wedMissingOperation)
+
+      check vm.telemetryEvents.val.anyIt(
+        it.budgetKind == epbkStorySelection and
+        it.detail.contains("story-selection:"))
+      check vm.telemetryEvents.val.anyIt(
+        it.budgetKind == epbkElementSelection and
+        it.detail.contains("element-selection:"))
+      check vm.telemetryEvents.val.anyIt(
+        it.budgetKind == epbkPropertyEditPreview and
+        it.detail == "source-plan:padding")
+      check vm.telemetryEvents.val.anyIt(
+        it.budgetKind == epbkSaveReload and
+        it.detail.contains("preview-reload:"))
+      check vm.telemetryEvents.val.anyIt(
+        it.budgetKind == epbkSaveReload and
+        it.detail.contains("bridge-error:"))
+      dispose()
 
   test "workspace_dev_server_applies_transactional_source_writes":
     createRoot proc(dispose: proc()) =

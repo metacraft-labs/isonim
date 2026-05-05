@@ -7,6 +7,14 @@
 
 import types, graph, batch
 
+proc storeReactiveValue[T](dest: var T; value: T) {.inline.} =
+  ## Avoid JS backend deep-copy corruption for seqs of value objects stored
+  ## in memos. Reactive callers treat memo values as immutable snapshots.
+  when defined(js):
+    shallowCopy(dest, value)
+  else:
+    dest = value
+
 type
   MemoSignalState*[T] = ref object of SignalStateBase
     ## A signal that is backed by a computation. When read, it ensures
@@ -94,7 +102,7 @@ proc createMemo*[T](fn: proc(): T; equals: EqualityFn[T] = nil): Memo[T] =
         return
     elif memoSig.value == newVal:
       return
-    memoSig.value = newVal
+    storeReactiveValue(memoSig.value, newVal)
     # Notify downstream observers of the memo signal
     notifyObservers(memoSig)
     # Queue downstream observers for execution.
@@ -135,7 +143,7 @@ proc createMemo*[T](fn: proc(): T; equals: EqualityFn[T] = nil): Memo[T] =
   # Initial execution — capture the first value
   # We need to set fn to the wrapper that stores the initial value
   let initialFn = proc() =
-    memoSig.value = fn()
+    storeReactiveValue(memoSig.value, fn())
 
   let prevListener = Listener
   let prevOwner = Owner

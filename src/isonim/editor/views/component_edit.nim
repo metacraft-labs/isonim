@@ -3847,6 +3847,7 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
       if vm.editMode.val == emView: accent else: bgSurface)
     r.setStyle(viewModeButton, "color",
       if vm.editMode.val == emView: textPrimary else: textMuted)
-    r.setStyle(inspectorPanel, "display", if editing: "flex" else: "none")
+    r.setStyle(inspectorPanel, "display",
+      if editing and vm.panels.val.inspector: "flex" else: "none")
 
   container

@@ -259,6 +259,152 @@ func parseRouteIndex(value: string; fallback: int): int =
   except ValueError:
     fallback
 
+proc editorDebugEnabled(): bool =
+  var value: cstring
+  {.emit: [value, " = (new URLSearchParams(window.location.search)).get('debug') || window.localStorage.getItem('isonim-editor-debug') || ''"].}
+  ($value).normalize in ["1", "true", "yes", "on"]
+
+proc installEditorKeyboardShortcuts(vm: EditorVM) =
+  let openPalette = proc() =
+    discard vm.runEditorCommand(eckOpenCommandPalette)
+  let closePalette = proc() =
+    vm.closeCommandPalette()
+  let editMode = proc() =
+    discard vm.runEditorCommand(eckEdit)
+    vm.recordEditorTiming(epbkModeSwitch, 1, "keyboard:edit")
+  let commentMode = proc() =
+    discard vm.runEditorCommand(eckComment)
+    vm.recordEditorTiming(epbkModeSwitch, 1, "keyboard:comment")
+  let viewMode = proc() =
+    discard vm.runEditorCommand(eckInspect)
+    vm.recordEditorTiming(epbkModeSwitch, 1, "keyboard:view")
+  let toggleSidebar = proc() =
+    discard vm.runEditorCommand(eckToggleSidebar)
+  let toggleInspector = proc() =
+    discard vm.runEditorCommand(eckToggleInspector)
+  let focusInspector = proc() =
+    discard vm.runEditorCommand(eckFocusInspector)
+  let previousElement = proc() =
+    discard vm.runEditorCommand(eckSelectPrevious)
+    vm.recordEditorTiming(epbkElementSelection, 1, "keyboard:previous")
+  let nextElement = proc() =
+    discard vm.runEditorCommand(eckSelectNext)
+    vm.recordEditorTiming(epbkElementSelection, 1, "keyboard:next")
+  let parentElement = proc() =
+    discard vm.runEditorCommand(eckSelectParent)
+    vm.recordEditorTiming(epbkElementSelection, 1, "keyboard:parent")
+  let childElement = proc() =
+    discard vm.runEditorCommand(eckSelectChild)
+    vm.recordEditorTiming(epbkElementSelection, 1, "keyboard:child")
+  let save = proc() =
+    discard vm.runEditorCommand(eckSave)
+    vm.recordEditorTiming(epbkSaveReload, 1, "keyboard:save")
+  let undo = proc() =
+    discard vm.runEditorCommand(eckUndo)
+  let redo = proc() =
+    discard vm.runEditorCommand(eckRedo)
+  {.emit: ["""
+    (function () {
+      const openPalette = """, openPalette, """;
+      const closePalette = """, closePalette, """;
+      const editMode = """, editMode, """;
+      const commentMode = """, commentMode, """;
+      const viewMode = """, viewMode, """;
+      const toggleSidebar = """, toggleSidebar, """;
+      const toggleInspector = """, toggleInspector, """;
+      const focusInspector = """, focusInspector, """;
+      const previousElement = """, previousElement, """;
+      const nextElement = """, nextElement, """;
+      const parentElement = """, parentElement, """;
+      const childElement = """, childElement, """;
+      const save = """, save, """;
+      const undo = """, undo, """;
+      const redo = """, redo, """;
+      let returnFocus = null;
+      const isEditable = (target) => {
+        if (!target) return false;
+        const tag = String(target.tagName || '').toLowerCase();
+        return tag === 'input' || tag === 'textarea' || target.isContentEditable;
+      };
+      const paletteOpen = () => {
+        const palette = document.querySelector('[data-editor-command-palette="true"]');
+        return palette && palette.getAttribute('aria-hidden') === 'false';
+      };
+      window.addEventListener('keydown', function (event) {
+        const key = event.key;
+        const code = event.code;
+        const lower = String(key || '').toLowerCase();
+        const mod = event.metaKey || event.ctrlKey;
+        const editable = isEditable(event.target);
+        if (mod && lower === 'k') {
+          returnFocus = document.activeElement;
+          event.preventDefault();
+          openPalette();
+          const palette = document.querySelector('[data-editor-command-palette="true"]');
+          if (palette) palette.__isonimReturnFocus = returnFocus;
+          setTimeout(() => {
+            const input = document.querySelector('[aria-label="Search editor commands"]');
+            if (input && input.focus) input.focus({ preventScroll: true });
+          }, 0);
+          return;
+        }
+        if (key === 'Escape' && paletteOpen()) {
+          event.preventDefault();
+          closePalette();
+          if (returnFocus && returnFocus.focus) {
+            setTimeout(() => returnFocus.focus({ preventScroll: true }), 0);
+          }
+          return;
+        }
+        if (editable) return;
+        if (mod && (key === '\\' || key === 'Backslash' || code === 'Backslash')) {
+          event.preventDefault();
+          toggleSidebar();
+        } else if (mod && (key === '/' || key === 'Slash' || code === 'Slash')) {
+          event.preventDefault();
+          toggleInspector();
+        } else if (mod && lower === 's') {
+          event.preventDefault();
+          save();
+        } else if (mod && event.shiftKey && lower === 'z') {
+          event.preventDefault();
+          redo();
+        } else if (mod && lower === 'z') {
+          event.preventDefault();
+          undo();
+        } else if (event.altKey && key === 'ArrowUp') {
+          event.preventDefault();
+          previousElement();
+        } else if (event.altKey && key === 'ArrowDown') {
+          event.preventDefault();
+          nextElement();
+        } else if (event.altKey && key === 'ArrowLeft') {
+          event.preventDefault();
+          parentElement();
+        } else if (event.altKey && key === 'ArrowRight') {
+          event.preventDefault();
+          childElement();
+        } else if (lower === 'e') {
+          event.preventDefault();
+          editMode();
+        } else if (lower === 'c') {
+          event.preventDefault();
+          commentMode();
+        } else if (lower === 'v') {
+          event.preventDefault();
+          viewMode();
+        } else if (lower === 'i') {
+          event.preventDefault();
+          focusInspector();
+          setTimeout(() => {
+            const input = document.querySelector('[data-isonim-focus-id="section-search"]');
+            if (input && input.focus) input.focus({ preventScroll: true });
+          }, 0);
+        }
+      });
+    })();
+  """].}
+
 proc editorRouteUrl(vm: EditorVM): string =
   var parts = @[
     "view=" & encodeParam(viewSlug(vm.activeView.val)),
@@ -387,8 +533,10 @@ proc mountEditor*(workspace: EditorWorkspace;
   createRoot proc(dispose: proc()) =
     let vm = createEditorVM(workspace)
     mounted = vm
+    vm.setTelemetryOverlayVisible(editorDebugEnabled())
     if useHashRoute:
       installEditorHistorySync(vm)
+    installEditorKeyboardShortcuts(vm)
 
     let r = DomRenderer()
     let shell = renderEditorShell[DomRenderer, DomElement](r, vm)

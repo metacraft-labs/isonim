@@ -41,9 +41,12 @@ suite "Editor Shell Views (M2)":
 
       let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
 
-      # Shell mounts the main editor row plus the status bar.
-      check shell.children.len == 2
+      # Shell mounts the main editor row, command palette, telemetry overlay,
+      # and status bar.
+      check shell.children.len == 4
       check shell.children[0].children.len == 7
+      check findByAttr(shell, "data-editor-command-palette", "true") != nil
+      check findByAttr(shell, "data-editor-telemetry-overlay", "true") != nil
       dispose()
 
   test "test_sidebar_renders_groups":
