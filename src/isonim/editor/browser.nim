@@ -201,11 +201,13 @@ func viewportFromSlug(slug: string; fallback: PreviewViewport): PreviewViewport 
 func editModeSlug(mode: EditMode): string =
   case mode
   of emView: "view"
+  of emComment: "comment"
   of emEdit: "edit"
 
 func editModeFromSlug(slug: string; fallback: EditMode): EditMode =
   case slug.normalize
   of "view": emView
+  of "comment", "comments", "review": emComment
   of "edit": emEdit
   else: fallback
 

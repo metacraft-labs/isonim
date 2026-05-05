@@ -149,6 +149,17 @@ proc activeViewHandler(vm: EditorVM; view: EditorView): proc() =
   let captured = view
   result = proc() = vm.setActiveView(captured)
 
+proc editModeHandler(vm: EditorVM; mode: EditMode): proc() =
+  let captured = mode
+  result = proc() =
+    case captured
+    of emView:
+      discard vm.runEditorCommand(eckInspect)
+    of emComment:
+      discard vm.runEditorCommand(eckComment)
+    of emEdit:
+      discard vm.runEditorCommand(eckEdit)
+
 proc searchInputHandler[R, E](r: R; vm: EditorVM; input: E): proc() =
   let capturedInput = input
   result = proc() = vm.sidebar.setSearch(r.inputValue(capturedInput))
@@ -293,19 +304,31 @@ proc statusPanelButton[R, E](r: R; vm: EditorVM; panel: EditorPanel;
   r.addEventListener(result, "keydown", proc() = vm.togglePanel(panel))
   r.bindStatusPanelButton(result, vm, panel)
 
-proc statusBreadcrumbText(vm: EditorVM): string =
+proc statusBreadcrumbParts(vm: EditorVM): seq[string] =
   let story = vm.selectedStory.val
-  var parts: seq[string] = @[]
   if story.group.len > 0:
-    parts.add story.group
+    result.add story.group
   if story.name.len > 0:
-    parts.add story.name
-  if vm.inspector.selectedElement.val.tag.len > 0:
-    parts.add vm.inspector.selectedElement.val.tag
-  if parts.len == 0:
-    "No selection"
+    result.add story.name
+  let element = vm.inspector.selectedElement.val
+  if element.ancestors.len > 0:
+    result.add element.ancestors
+  elif element.tag.len > 0:
+    result.add element.tag
+
+proc dispatchPreviewAncestorSelection(index: int) =
+  when defined(js):
+    {.emit: ["""
+      window.dispatchEvent(new CustomEvent('isonim-select-preview-ancestor', {
+        detail: { index: """, index, """ }
+      }));
+    """].}
   else:
-    parts.join(" / ")
+    discard index
+
+proc previewAncestorSelectionHandler(index: int): proc() =
+  let captured = index
+  result = proc() = dispatchPreviewAncestorSelection(captured)
 
 proc renderStatusBar[R, E](r: R; vm: EditorVM): E =
   var breadcrumbNode: E
@@ -327,10 +350,10 @@ proc renderStatusBar[R, E](r: R; vm: EditorVM): E =
             min_width = "0", flex = "1"):
         span(font_size = "10px", color = textDim):
           text "\xE2\x80\xA2"
-        span(ref = breadcrumbNode,
-              white_space = "nowrap", overflow = "hidden",
-              text_overflow = "ellipsis"):
-          text "No selection"
+        tdiv(ref = breadcrumbNode,
+              display = "flex", align_items = "center", gap = "4px",
+              min_width = "0", overflow = "hidden"):
+          discard
       tdiv(ref = rightControls,
             display = "flex", align_items = "center", gap = "6px"):
         span(color = textDim):
@@ -342,7 +365,40 @@ proc renderStatusBar[R, E](r: R; vm: EditorVM): E =
     statusPanelButton[R, E](r, vm, epInspector, "Toggle right sidebar",
       "\xE2\x87\xA5"))
   createRenderEffect proc() =
-    r.setTextContent(breadcrumbNode, statusBreadcrumbText(vm))
+    r.clearChildren(breadcrumbNode)
+    let parts = statusBreadcrumbParts(vm)
+    if parts.len == 0:
+      let empty = ui(r):
+        span(white_space = "nowrap", overflow = "hidden",
+              text_overflow = "ellipsis"):
+          text "No selection"
+      r.appendChild(breadcrumbNode, empty)
+    else:
+      let storyDepth = (if vm.selectedStory.val.group.len > 0: 1 else: 0) +
+        (if vm.selectedStory.val.name.len > 0: 1 else: 0)
+      for i, part in parts:
+        let label = part
+        let chip = ui(r):
+          tdiv(`role` = "button", tabindex = "0",
+                `aria-label` = "Select breadcrumb " & label,
+                padding = "2px 5px", border_radius = "4px",
+                white_space = "nowrap", overflow = "hidden",
+                text_overflow = "ellipsis", max_width = "180px",
+                cursor = "pointer",
+                background_color = (if i >= storyDepth: bgSurface else: "transparent"),
+                color = (if i == parts.high: textPrimary else: textMuted)):
+            text label
+        let ancestorIndex = i - storyDepth
+        if ancestorIndex >= 0:
+          let selectAncestor = previewAncestorSelectionHandler(ancestorIndex)
+          r.addEventListener(chip, "click", selectAncestor)
+          r.addEventListener(chip, "keydown", selectAncestor)
+        r.appendChild(breadcrumbNode, chip)
+        if i < parts.high:
+          let sep = ui(r):
+            span(color = textDim):
+              text "/"
+          r.appendChild(breadcrumbNode, sep)
 
 proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
   ## Left panel: storyboard navigation tree.
@@ -564,53 +620,41 @@ proc renderPreviewPane*[R, E](r: R; vm: EditorVM): E =
           background_color = bgSurface, border_radius = "6px",
           padding = "3px")
 
-  let viewBtn = ui(r):
-    tdiv(padding = "4px 14px", border_radius = "4px",
-          font_size = "12px", font_weight = "500",
-          cursor = "pointer", transition = "all 0.15s"):
-      text "View"
-
-  let editBtn = ui(r):
-    tdiv(padding = "4px 14px", border_radius = "4px",
-          font_size = "12px", font_weight = "500",
-          cursor = "pointer", transition = "all 0.15s"):
-      text "Edit"
-  r.makeButton(viewBtn, "Switch to view mode")
-  r.makeButton(editBtn, "Switch to edit mode")
-  r.addEventListener(viewBtn, "click", proc() =
-    discard vm.runEditorCommand(eckInspect))
-  r.addEventListener(editBtn, "click", proc() =
-    discard vm.runEditorCommand(eckEdit))
-  r.addEventListener(viewBtn, "keydown", proc() =
-    discard vm.runEditorCommand(eckInspect))
-  r.addEventListener(editBtn, "keydown", proc() =
-    discard vm.runEditorCommand(eckEdit))
+  var modeButtons: seq[(EditMode, E)] = @[]
+  for option in [(emView, "View"), (emComment, "Comment"), (emEdit, "Edit")]:
+    let capturedMode = option[0]
+    let label = option[1]
+    let modeBtn = ui(r):
+      tdiv(padding = "4px 12px", border_radius = "4px",
+            font_size = "12px", font_weight = "500",
+            cursor = "pointer", transition = "all 0.15s"):
+        text label
+    r.makeButton(modeBtn, "Switch to " & label.toLowerAscii() & " mode")
+    let chooseMode = editModeHandler(vm, capturedMode)
+    r.addEventListener(modeBtn, "click", chooseMode)
+    r.addEventListener(modeBtn, "keydown", chooseMode)
+    r.appendChild(modeToggle, modeBtn)
+    modeButtons.add (capturedMode, modeBtn)
 
   # Reactive effect — only place we need manual setStyle
   createRenderEffect proc() =
-    if vm.editMode.val == emView:
-      r.setStyle(viewBtn, "background-color", accent)
-      r.setStyle(viewBtn, "color", textPrimary)
-      r.setStyle(editBtn, "background-color", "transparent")
-      r.setStyle(editBtn, "color", textMuted)
-    else:
-      r.setStyle(editBtn, "background-color", accent)
-      r.setStyle(editBtn, "color", textPrimary)
-      r.setStyle(viewBtn, "background-color", "transparent")
-      r.setStyle(viewBtn, "color", textMuted)
-    let inspectState = vm.evaluateCommand(eckInspect)
-    let editState = vm.evaluateCommand(eckEdit)
-    r.setAttribute(viewBtn, "aria-disabled",
-      if inspectState.status == ecsDisabled: "true" else: "false")
-    r.setAttribute(editBtn, "aria-disabled",
-      if editState.status == ecsDisabled: "true" else: "false")
-    if editState.diagnostic.len > 0:
-      r.setAttribute(editBtn, "title", editState.diagnostic)
-    else:
-      r.removeAttribute(editBtn, "title")
+    for (mode, node) in modeButtons:
+      let active = vm.editMode.val == mode
+      let command = case mode
+        of emView: eckInspect
+        of emComment: eckComment
+        of emEdit: eckEdit
+      let state = vm.evaluateCommand(command)
+      r.setStyle(node, "background-color", if active: accent else: "transparent")
+      r.setStyle(node, "color", if active: textPrimary else: textMuted)
+      r.setAttribute(node, "aria-pressed", if active: "true" else: "false")
+      r.setAttribute(node, "aria-disabled",
+        if state.status == ecsDisabled: "true" else: "false")
+      if state.diagnostic.len > 0:
+        r.setAttribute(node, "title", state.diagnostic)
+      else:
+        r.removeAttribute(node, "title")
 
-  r.appendChild(modeToggle, viewBtn)
-  r.appendChild(modeToggle, editBtn)
   r.appendChild(toolbar, modeToggle)
 
   let viewSwitcher = ui(r):

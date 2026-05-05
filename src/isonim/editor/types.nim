@@ -59,10 +59,12 @@ type
   # --- Edit mode ---
   EditMode* = enum
     emView ## Normal view — component interactions work
+    emComment ## Click-to-select — comments are gathered for the AI assistant
     emEdit ## Click-to-select — inspector populates on click
 
   EditorCommandKind* = enum
     eckEdit
+    eckComment
     eckInspect
     eckApply
     eckRevert
@@ -621,6 +623,7 @@ type
     sourceColumn*: int
     properties*: seq[PropertyInfo]
     children*: seq[string] ## Child element summaries for tree view
+    ancestors*: seq[string] ## Breadcrumb labels from root to selected element
     depth*: int            ## Nesting depth
 
   # --- Agent chat ---

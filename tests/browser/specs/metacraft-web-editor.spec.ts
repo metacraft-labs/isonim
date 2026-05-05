@@ -347,6 +347,13 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await title.click({ force: true });
     await expect(title).toHaveAttribute("data-isonim-selected", "true");
     await expect(page.getByText("h1", { exact: true })).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Select breadcrumb header" }),
+    ).toBeVisible();
+    await page
+      .getByRole("button", { name: "Select breadcrumb header" })
+      .click();
+    await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
 
     await title.click({ force: true, modifiers: ["Shift"] });
     await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
@@ -489,6 +496,42 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       .getByRole("button", { name: "Save inspector source edits" })
       .click();
     await expect(page.getByText("Unsaved source edit")).toHaveCount(0);
+  });
+
+  test("comment mode routes selected element notes into the AI prompt", async ({
+    page,
+  }) => {
+    await page.goto("/");
+
+    await page.getByRole("button", { name: "Open Components section" }).click();
+    await page
+      .getByRole("button", {
+        name: "Select story Operational components / Topbar",
+      })
+      .click();
+    await page
+      .getByRole("button", { name: "Open selected component in edit mode" })
+      .click();
+
+    await page.getByRole("button", { name: "Switch to comment mode" }).click();
+    await expect(
+      page.getByRole("button", { name: "Switch to comment mode" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    await expect(page.locator(".editor-chat")).toBeVisible();
+    await expect(page.locator(".editor-manual-inspector")).toBeHidden();
+
+    const editFrame = page.frameLocator(
+      'iframe[title="Editable component preview"]',
+    );
+    await editFrame.locator("h1.bo-title").first().click({ force: true });
+    const comment = editFrame.getByLabel("Comment on selected element");
+    await expect(comment).toBeVisible();
+    await comment.fill("Make the title hierarchy feel calmer.");
+    await editFrame.getByRole("button", { name: "Add" }).click();
+
+    const prompt = page.getByRole("textbox", { name: "Agent prompt" });
+    await expect(prompt).toHaveValue(/Design review comments:/);
+    await expect(prompt).toHaveValue(/Make the title hierarchy feel calmer/);
   });
 
   test("keeps editor state in browser history", async ({ page }) => {

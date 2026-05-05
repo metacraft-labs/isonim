@@ -2,6 +2,8 @@
 ##
 ## Renders project-owned preview documents in an editor-owned responsive frame.
 
+import std/strutils
+
 import isonim/core/[computation, signals]
 import isonim/dsl/ui
 import isonim/editor/types
@@ -22,10 +24,24 @@ proc makeButton[R, E](r: R; node: E; label: string) =
   r.setAttribute(node, "tabindex", "0")
   r.setAttribute(node, "aria-label", label)
 
+proc modeHandler(vm: EditorVM; mode: EditMode): proc() =
+  let captured = mode
+  result = proc() =
+    case captured
+    of emView:
+      discard vm.runEditorCommand(eckInspect)
+    of emComment:
+      discard vm.runEditorCommand(eckComment)
+    of emEdit:
+      discard vm.runEditorCommand(eckEdit)
+
 proc bindModeButton[R, E](r: R; node: E; vm: EditorVM; mode: EditMode) =
   createRenderEffect proc() =
     let active = vm.editMode.val == mode
-    let command = if mode == emEdit: eckEdit else: eckInspect
+    let command = case mode
+      of emView: eckInspect
+      of emComment: eckComment
+      of emEdit: eckEdit
     let state = vm.evaluateCommand(command)
     r.setAttribute(node, "aria-pressed", if active: "true" else: "false")
     r.setAttribute(node, "aria-disabled",
@@ -98,30 +114,20 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
           padding = "3px"):
       discard
 
-  let viewBtn = ui(r):
-    tdiv(padding = "4px 12px", border_radius = "4px",
-          font_size = "11px", font_weight = "500",
-          cursor = "pointer", transition = "all 0.15s"):
-      text "View"
-  let editBtn = ui(r):
-    tdiv(padding = "4px 12px", border_radius = "4px",
-          font_size = "11px", font_weight = "500",
-          cursor = "pointer", transition = "all 0.15s"):
-      text "Edit"
-  r.makeButton(viewBtn, "Switch to view mode")
-  r.makeButton(editBtn, "Switch to edit mode")
-  r.addEventListener(viewBtn, "click", proc() =
-    discard vm.runEditorCommand(eckInspect))
-  r.addEventListener(editBtn, "click", proc() =
-    discard vm.runEditorCommand(eckEdit))
-  r.addEventListener(viewBtn, "keydown", proc() =
-    discard vm.runEditorCommand(eckInspect))
-  r.addEventListener(editBtn, "keydown", proc() =
-    discard vm.runEditorCommand(eckEdit))
-  r.bindModeButton(viewBtn, vm, emView)
-  r.bindModeButton(editBtn, vm, emEdit)
-  r.appendChild(modeToggle, viewBtn)
-  r.appendChild(modeToggle, editBtn)
+  for option in [(emView, "View"), (emComment, "Comment"), (emEdit, "Edit")]:
+    let capturedMode = option[0]
+    let label = option[1]
+    let modeBtn = ui(r):
+      tdiv(padding = "4px 12px", border_radius = "4px",
+            font_size = "11px", font_weight = "500",
+            cursor = "pointer", transition = "all 0.15s"):
+        text label
+    r.makeButton(modeBtn, "Switch to " & label.toLowerAscii() & " mode")
+    let chooseMode = modeHandler(vm, capturedMode)
+    r.addEventListener(modeBtn, "click", chooseMode)
+    r.addEventListener(modeBtn, "keydown", chooseMode)
+    r.bindModeButton(modeBtn, vm, capturedMode)
+    r.appendChild(modeToggle, modeBtn)
   r.appendChild(controls, modeToggle)
 
   let viewportToggle = ui(r):

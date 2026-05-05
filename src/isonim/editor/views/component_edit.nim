@@ -30,7 +30,7 @@ type
     value: string
 
 proc editablePreviewDocument(documentHtml: string;
-    metadata: StoryRenderMetadata): string =
+    metadata: StoryRenderMetadata; mode: EditMode): string =
   ## Injects editor-only click selection metadata into the project-owned
   ## document. The project document remains the rendered component source.
   func jsString(value: string): string =
@@ -107,6 +107,7 @@ proc editablePreviewDocument(documentHtml: string;
 (function () {
   const fallbackSource = "__ISONIM_SOURCE__";
   const fallbackLine = "__ISONIM_LINE__";
+  const editorMode = "__ISONIM_MODE__";
   const editorIds = new Set([
     'isonim-editor-hover-label',
     'isonim-editor-selection-handles',
@@ -294,12 +295,76 @@ proc editablePreviewDocument(documentHtml: string;
       }
     }));
   }
+  function showCommentPopup(el) {
+    const existing = document.getElementById('isonim-editor-comment-popup');
+    if (existing) existing.remove();
+    const rect = el.getBoundingClientRect();
+    const popup = document.createElement('div');
+    popup.id = 'isonim-editor-comment-popup';
+    popup.style.cssText =
+      'position:fixed;z-index:2147483647;left:' + Math.max(8, Math.min(rect.left, window.innerWidth - 300)) +
+      'px;top:' + Math.min(window.innerHeight - 150, rect.bottom + 10) +
+      'px;width:280px;padding:8px;border:1px solid #334155;border-radius:6px;background:#111827;box-shadow:0 16px 40px rgba(15,23,42,.35);font:12px/1.4 system-ui,sans-serif;color:#E2E8F0';
+    const label = document.createElement('div');
+    label.textContent = 'Comment on ' + stableSelector(el);
+    label.style.cssText = 'font-weight:700;margin-bottom:6px;color:#CBD5E1';
+    const input = document.createElement('textarea');
+    input.setAttribute('aria-label', 'Comment on selected element');
+    input.placeholder = 'Leave a note for the AI assistant...';
+    input.style.cssText = 'box-sizing:border-box;width:100%;height:68px;resize:vertical;border:1px solid #334155;border-radius:5px;background:#0F172A;color:#F8FAFC;padding:6px;outline:none';
+    const actions = document.createElement('div');
+    actions.style.cssText = 'display:flex;justify-content:flex-end;gap:6px;margin-top:7px';
+    const dismiss = document.createElement('button');
+    dismiss.type = 'button';
+    dismiss.textContent = 'Dismiss';
+    dismiss.style.cssText = 'border:1px solid #334155;border-radius:4px;background:#1E293B;color:#CBD5E1;padding:4px 7px';
+    const add = document.createElement('button');
+    add.type = 'button';
+    add.textContent = 'Add';
+    add.style.cssText = 'border:1px solid #3B82F6;border-radius:4px;background:#3B82F6;color:white;padding:4px 9px;font-weight:700';
+    dismiss.addEventListener('click', function () { popup.remove(); });
+    add.addEventListener('click', function () {
+      const text = input.value.trim();
+      if (!text) return;
+      try {
+        const prompt = parent.document && parent.document.querySelector('[aria-label="Agent prompt"]');
+        if (prompt) {
+          const target = ancestorStack(el).reverse().map(stableSelector).join(' > ') || stableSelector(el);
+          const prefix = String(prompt.value || '').trim()
+            ? String(prompt.value).trim() + '\n'
+            : 'Design review comments:\n';
+          prompt.value = prefix + '- ' + target + ': ' + text;
+          prompt.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      } catch (err) {}
+      parent.dispatchEvent(new CustomEvent('isonim-preview-comment-added', {
+        detail: {
+          selector: stableSelector(el),
+          ancestry: ancestorStack(el).reverse().map(stableSelector).join(' > '),
+          text: text
+        }
+      }));
+      popup.remove();
+    });
+    actions.appendChild(dismiss);
+    actions.appendChild(add);
+    popup.appendChild(label);
+    popup.appendChild(input);
+    popup.appendChild(actions);
+    document.body.appendChild(popup);
+    input.focus();
+  }
   document.addEventListener('click', function (event) {
+    if (editorMode === 'view') return;
+    if (event.target && event.target.closest && event.target.closest('#isonim-editor-comment-popup')) return;
     event.preventDefault();
     event.stopPropagation();
-    selectElement(preferredElement(event));
+    const selected = preferredElement(event);
+    selectElement(selected);
+    if (editorMode === 'comment' && selected) showCommentPopup(selected);
   }, true);
   document.addEventListener('mousemove', function (event) {
+    if (editorMode === 'view') return;
     const el = ancestorStack(event.target)[0];
     document.querySelectorAll('[data-isonim-hovered="true"]').forEach((node) => {
       if (node !== el) node.removeAttribute('data-isonim-hovered');
@@ -326,12 +391,25 @@ proc editablePreviewDocument(documentHtml: string;
   window.addEventListener('resize', function () {
     if (window.__isonimSelectedElement) placeHandles(window.__isonimSelectedElement);
   });
+  parent.addEventListener('isonim-select-preview-ancestor', function (event) {
+    if (editorMode === 'view') return;
+    const selected = window.__isonimSelectedElement;
+    const index = Number(event.detail && event.detail.index);
+    if (!selected || Number.isNaN(index)) return;
+    const stack = ancestorStack(selected).reverse();
+    const target = stack[Math.max(0, Math.min(index, stack.length - 1))];
+    if (target) selectElement(target);
+  });
 })();
 </script>
 """
   let injected = bridge
     .replace("__ISONIM_SOURCE__", metadata.sourceFile.jsString)
     .replace("__ISONIM_LINE__", $max(metadata.sourceLine, 1))
+    .replace("__ISONIM_MODE__", (case mode
+      of emView: "view"
+      of emComment: "comment"
+      of emEdit: "edit"))
   if "</body>" in documentHtml:
     documentHtml.replace("</body>", injected & "</body>")
   else:
@@ -399,6 +477,27 @@ proc installPreviewSelectionBridge[R, E](r: R; frame: E; vm: EditorVM) =
             d.lineHeight || '', d.boxShadow || '', d.opacity || '',
             d.rectWidth || '', d.rectHeight || ''
           );
+        });
+      }
+    """].}
+
+    let addCommentToPrompt = proc(selector, ancestry, text: cstring) =
+      let prefix =
+        if vm.chat.inputText.val.strip.len == 0:
+          "Design review comments:\n"
+        else:
+          vm.chat.inputText.val.strip & "\n"
+      let target =
+        if ($ancestry).len > 0: $ancestry
+        else: $selector
+      vm.chat.inputText.val = prefix & "- " & target & ": " & $text
+    {.emit: ["""
+      if (!window.__isonimPreviewCommentBridgeInstalled) {
+        window.__isonimPreviewCommentBridgeInstalled = true;
+        window.addEventListener('isonim-preview-comment-added', function (event) {
+          const d = event.detail || {};
+          """, addCommentToPrompt,
+        """(d.selector || '', d.ancestry || '', d.text || '');
         });
       }
     """].}
@@ -1602,6 +1701,7 @@ proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
 
 proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
   var editModeButton: E
+  var commentModeButton: E
   var viewModeButton: E
   var titleNode: E
   var sourceNode: E
@@ -1639,6 +1739,12 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
                 cursor = "pointer",
                 background_color = accent, color = textPrimary):
             text "Edit"
+          tdiv(ref = commentModeButton,
+                padding = "4px 12px", border_radius = "4px",
+                font_size = "11px", font_weight = "500",
+                cursor = "pointer",
+                background_color = bgSurface, color = textMuted):
+            text "Comment"
           tdiv(ref = viewModeButton,
                 padding = "4px 12px", border_radius = "4px",
                 font_size = "11px", font_weight = "500",
@@ -1669,6 +1775,9 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
   r.setAttribute(editModeButton, "role", "button")
   r.setAttribute(editModeButton, "tabindex", "0")
   r.setAttribute(editModeButton, "aria-label", "Switch to edit mode")
+  r.setAttribute(commentModeButton, "role", "button")
+  r.setAttribute(commentModeButton, "tabindex", "0")
+  r.setAttribute(commentModeButton, "aria-label", "Switch to comment mode")
   r.setAttribute(viewModeButton, "role", "button")
   r.setAttribute(viewModeButton, "tabindex", "0")
   r.setAttribute(viewModeButton, "aria-label", "Switch to view mode")
@@ -1676,6 +1785,10 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
     discard vm.runEditorCommand(eckEdit))
   r.addEventListener(editModeButton, "keydown", proc() =
     discard vm.runEditorCommand(eckEdit))
+  r.addEventListener(commentModeButton, "click", proc() =
+    discard vm.runEditorCommand(eckComment))
+  r.addEventListener(commentModeButton, "keydown", proc() =
+    discard vm.runEditorCommand(eckComment))
   r.addEventListener(viewModeButton, "click", proc() =
     discard vm.runEditorCommand(eckInspect))
   r.addEventListener(viewModeButton, "keydown", proc() =
@@ -1697,7 +1810,12 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
         metadata.sourceFile & ":" & $max(metadata.sourceLine, 1)
       else:
         "No source metadata")
-    let nextSrcdoc = editablePreviewDocument(previewState.documentHtml, metadata)
+    let nextSrcdoc =
+      if vm.editMode.val == emView:
+        previewState.documentHtml
+      else:
+        editablePreviewDocument(previewState.documentHtml, metadata,
+          vm.editMode.val)
     if nextSrcdoc != lastSrcdoc:
       lastSrcdoc = nextSrcdoc
       r.setAttribute(projectFrame, "srcdoc", nextSrcdoc)
@@ -1706,23 +1824,32 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
 
     let editing = vm.editMode.val == emEdit
     let editState = vm.evaluateCommand(eckEdit)
+    let commentState = vm.evaluateCommand(eckComment)
     let inspectState = vm.evaluateCommand(eckInspect)
     r.setAttribute(editModeButton, "aria-pressed",
       if editing: "true" else: "false")
     r.setAttribute(viewModeButton, "aria-pressed",
-      if editing: "false" else: "true")
+      if vm.editMode.val == emView: "true" else: "false")
+    r.setAttribute(commentModeButton, "aria-pressed",
+      if vm.editMode.val == emComment: "true" else: "false")
     r.setAttribute(editModeButton, "aria-disabled",
       if editState.status == ecsDisabled: "true" else: "false")
     r.setAttribute(viewModeButton, "aria-disabled",
       if inspectState.status == ecsDisabled: "true" else: "false")
+    r.setAttribute(commentModeButton, "aria-disabled",
+      if commentState.status == ecsDisabled: "true" else: "false")
     r.setStyle(editModeButton, "background-color",
       if editing: accent else: bgSurface)
     r.setStyle(editModeButton, "color",
       if editing: textPrimary else: textMuted)
+    r.setStyle(commentModeButton, "background-color",
+      if vm.editMode.val == emComment: accent else: bgSurface)
+    r.setStyle(commentModeButton, "color",
+      if vm.editMode.val == emComment: textPrimary else: textMuted)
     r.setStyle(viewModeButton, "background-color",
-      if editing: bgSurface else: accent)
+      if vm.editMode.val == emView: accent else: bgSurface)
     r.setStyle(viewModeButton, "color",
-      if editing: textMuted else: textPrimary)
+      if vm.editMode.val == emView: textPrimary else: textMuted)
     r.setStyle(inspectorPanel, "display", if editing: "flex" else: "none")
 
   container

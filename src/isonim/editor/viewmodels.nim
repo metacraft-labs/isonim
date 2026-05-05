@@ -162,7 +162,8 @@ func validateVectorAccessibility*(doc: VectorDocument): seq[VectorDiagnostic]
 func commandLabel*(kind: EditorCommandKind): string =
   case kind
   of eckEdit: "Edit"
-  of eckInspect: "Inspect"
+  of eckComment: "Comment"
+  of eckInspect: "View"
   of eckApply: "Apply"
   of eckRevert: "Revert"
   of eckSave: "Save"
@@ -176,6 +177,7 @@ func commandLabel*(kind: EditorCommandKind): string =
 func allEditorCommandKinds*(): seq[EditorCommandKind] =
   @[
     eckEdit,
+    eckComment,
     eckInspect,
     eckApply,
     eckRevert,
@@ -862,15 +864,19 @@ func previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
     else:
       ""
   ].filterIt(it.len > 0)
+  let ancestors =
+    if ancestry.len > 0: ancestry.split(" > ")
+    else: @[if tag.len > 0: tag else: "element"]
 
   ElementRef(
     tag: (if tag.len > 0: tag else: "element"),
     sourceFile: file,
     sourceLine: line,
     sourceColumn: 1,
-    depth: 0,
+    depth: max(0, ancestors.len - 1),
     properties: props,
-    children: children)
+    children: children,
+    ancestors: ancestors)
 
 func previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
     className, sourceFile: string; sourceLine: int; backgroundColor, color,
@@ -958,6 +964,8 @@ proc commandRequirementFailure(editor: EditorVM;
 
   case kind
   of eckEdit:
+    ""
+  of eckComment:
     ""
   of eckInspect:
     ""
@@ -1055,11 +1063,9 @@ proc sendAgentPrompt*(editor: EditorVM): bool {.discardable.}
 
 proc setEditMode*(editor: EditorVM; mode: EditMode) =
   editor.editMode.val = mode
-  if mode == emEdit and editor.activeView.val in {evComponentDetail,
+  if mode in {emComment, emEdit} and editor.activeView.val in {evComponentDetail,
       evPagePreview}:
     editor.activeView.val = evComponentEdit
-  elif mode == emView and editor.activeView.val == evComponentEdit:
-    editor.activeView.val = evPagePreview
 
 proc setVectorTool*(editor: EditorVM; tool: VectorTool) =
   editor.vectorEditor.activeTool.val = tool
@@ -1085,6 +1091,8 @@ proc runEditorCommand*(editor: EditorVM;
   case kind
   of eckEdit:
     editor.setEditMode(emEdit)
+  of eckComment:
+    editor.setEditMode(emComment)
   of eckInspect:
     editor.setEditMode(emView)
   of eckApply:

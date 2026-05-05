@@ -36,15 +36,7 @@ test.describe("IsoNim packaged editor example", () => {
       page.getByText("Pages / Destination Detail").last(),
     ).toBeVisible();
     await expect(page.getByText("Santorini detail with reviews")).toBeVisible();
-    await expect(
-      page.getByText("examples/wanderlust/components/views.nim:42").nth(1),
-    ).toBeVisible();
-
-    const padding = page.getByRole("textbox", {
-      name: "Edit inspector property padding",
-    });
-    await padding.fill("24");
-    await padding.blur();
+    await expect(page.getByText("Ask for design-system changes")).toBeVisible();
 
     await page
       .getByRole("button", { name: "Open User Journeys section" })
@@ -77,7 +69,7 @@ test.describe("IsoNim packaged editor example", () => {
   });
 
   test("e2e_agent_assisted_edit_flow", async ({ page }) => {
-    await expect(page.getByText("No agent messages")).toBeVisible();
+    await expect(page.getByText("Ask for design-system changes")).toBeVisible();
     await expect(page.getByText("AI Designer: Fake adapter")).toHaveCount(0);
     await expect(
       page.getByRole("button", {

@@ -23,14 +23,6 @@ const
   gold = "#F59E0B"
   green = "#22C55E"
 
-proc inspectorPropertyEditHandler[R, E](r: R; vm: EditorVM; input: E;
-    property: string): proc() =
-  let capturedProperty = property
-  let capturedInput = input
-  result = proc() =
-    discard vm.editCssProperty(capturedProperty, r.inputValue(capturedInput),
-      pesLocal, peoInspector)
-
 proc chatStatusText(vm: EditorVM): string =
   let label = case vm.chat.sessionStatus.val
     of asIdle: "Empty"
@@ -101,7 +93,7 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   let panel = ui(r):
     tdiv(
       class = "editor-chat",
-      width = "280px",
+      width = "300px",
       min_width = "220px",
       max_width = "520px",
       resize = "horizontal",
@@ -158,68 +150,6 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
           text "\xE2\x9C\x95"
   r.appendChild(panel, header)
 
-  if vm.inspector.hasElement.val:
-    let inspectorArea = ui(r):
-      tdiv(
-        padding = "10px 12px",
-        border_bottom = "1px solid " & borderFaint,
-        display = "flex",
-        flex_direction = "column",
-        gap = "8px")
-
-    let element = vm.inspector.selectedElement.val
-    let selectionHeader = ui(r):
-      tdiv(display = "flex", flex_direction = "column", gap = "2px"):
-        span(
-          font_size = "10px",
-          font_weight = "600",
-          color = textSecondary,
-          text_transform = "uppercase",
-          letter_spacing = "0.5px"):
-          text "Inspector"
-        span(font_size = "12px", color = textPrimary, font_family = "monospace"):
-          text element.tag
-        span(font_size = "10px", color = textDim):
-          text element.sourceFile & ":" & $element.sourceLine
-    r.appendChild(inspectorArea, selectionHeader)
-
-    for prop in vm.inspector.properties.val:
-      let propName = prop.name
-      let propValue = prop.value
-      let row = ui(r):
-        tdiv(display = "flex", flex_direction = "column", gap = "4px")
-      let label = ui(r):
-        span(
-          font_size = "10px",
-          color = textDim,
-          text_transform = "uppercase",
-          letter_spacing = "0.4px"):
-          text propName
-      r.appendChild(row, label)
-
-      let inputNode = ui(r):
-        input(
-          class = "editor-input",
-          height = "28px",
-          background_color = bgInput,
-          border = "1px solid " & border,
-          border_radius = "6px",
-          padding = "0 8px",
-          font_size = "12px",
-          color = textPrimary,
-          outline = "none")
-      r.setAttribute(inputNode, "aria-label",
-        "Edit inspector property " & propName)
-      r.setInputValue(inputNode, propValue)
-      let editProperty =
-        inspectorPropertyEditHandler[R, E](r, vm, inputNode, propName)
-      r.addEventListener(inputNode, "change", editProperty)
-      r.addEventListener(inputNode, "keydown", editProperty)
-      r.appendChild(row, inputNode)
-      r.appendChild(inspectorArea, row)
-
-    r.appendChild(panel, inspectorArea)
-
   # Messages area
   let messagesArea = ui(r):
     tdiv(
@@ -234,11 +164,17 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
     let empty = ui(r):
       tdiv(
         display = "flex",
-        align_items = "center",
+        flex_direction = "column",
         justify_content = "center",
-        height = "100%"):
-        span(font_size = "12px", color = textDim, font_style = "italic"):
-          text "No agent messages"
+        gap = "10px",
+        min_height = "100%",
+        color = textSecondary):
+        span(font_size = "12px", font_weight = "700", color = textPrimary):
+          text "Ask for design-system changes"
+        span(font_size = "11px", line_height = "1.5", color = textSecondary):
+          text "Use Comment mode to collect review notes, or describe token, variant, typography, spacing, radius, shadow, and state changes here."
+        span(font_size = "11px", line_height = "1.5", color = textDim):
+          text "Manual Edit mode opens the source-backed inspector in this same sidebar space."
     r.appendChild(messagesArea, empty)
 
   for msg in messages:
@@ -462,6 +398,9 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
       placeholder = "Ask the AI\xE2\x80\xA6")
   r.setAttribute(promptInput, "aria-label", "Agent prompt")
   r.setInputValue(promptInput, vm.chat.inputText.val)
+  createRenderEffect proc() =
+    if r.inputValue(promptInput) != vm.chat.inputText.val:
+      r.setInputValue(promptInput, vm.chat.inputText.val)
   r.addEventListener(promptInput, "input", proc() =
     vm.chat.inputText.val = r.inputValue(promptInput))
   r.addEventListener(promptInput, "change", proc() =

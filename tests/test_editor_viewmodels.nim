@@ -531,6 +531,9 @@ suite "Editor ViewModels (M25 edit commands)":
       check vm.runEditorCommand(eckEdit).status == ecsSucceeded
       check vm.editMode.val == emEdit
       check vm.activeView.val == evComponentEdit
+      check vm.runEditorCommand(eckComment).status == ecsSucceeded
+      check vm.editMode.val == emComment
+      check vm.activeView.val == evComponentEdit
       check vm.runEditorCommand(eckInspect).status == ecsSucceeded
       check vm.editMode.val == emView
 
@@ -843,6 +846,7 @@ suite "Editor ViewModels (M26 source-backed CSS property editors)":
         "64px")
       check vm.selectInspectorElement(element)
       check vm.inspector.selectedElement.val.tag == "header"
+      check vm.inspector.selectedElement.val.ancestors == @["header"]
       check vm.inspector.selectedElement.val.sourceFile ==
         "apps/back-office/src/backoffice_ui/components.nim"
       check vm.inspector.selectedElement.val.properties.anyIt(

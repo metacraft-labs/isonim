@@ -578,7 +578,29 @@ suite "Editor Shell Views (M2)":
       check vm.chat.sessionStatus.val == asIdle
 
       let chat = renderChatPanel[MockRenderer, MockNode](r, vm)
-      check chat.textContent.contains("No agent messages")
+      check chat.textContent.contains("Ask for design-system changes")
       check chat.textContent.contains("Empty / disconnected")
+
+      dispose()
+
+  test "status bar renders element breadcrumb stack":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.selectedStory.val = StoryRef(group: "Components",
+        name: "Button", kind: skComponent, index: 0)
+      check vm.selectInspectorElement(ElementRef(
+        tag: "span",
+        sourceFile: "button.nim",
+        sourceLine: 12,
+        ancestors: @["main", "button", "span"]))
+
+      let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
+      check shell.textContent.contains("Components")
+      check shell.textContent.contains("Button")
+      check shell.textContent.contains("main")
+      check shell.textContent.contains("span")
+      let ancestor = findByAttr(shell, "aria-label", "Select breadcrumb button")
+      check ancestor != nil
 
       dispose()
