@@ -49,6 +49,7 @@
     "direnv exec /home/zahary/metacraft/isonim just test-editor-visual-gates",
     "direnv exec /home/zahary/metacraft/metacraft-web just build-back-office-editor",
     "direnv exec /home/zahary/metacraft/metacraft-web nim c -r apps/back-office/tests/test_backoffice_editor_workspace.nim",
+    "direnv exec /home/zahary/metacraft/metacraft-web nim c -r apps/back-office/tests/test_backoffice_editor_bridge_client.nim",
     "direnv exec /home/zahary/metacraft/nim-agents just test",
     "direnv exec /home/zahary/metacraft/metacraft-web just run-back-office-editor-test-matrix"
   ],
@@ -881,8 +882,8 @@
       "mockOnly": false,
       "placeholderUi": false,
       "browserBehavior": ["iframe"],
-      "implementation": "Adapter-mediated transactions, same-file composition, conflicts, rollback, targeted reload, full reload fallback, generated-view roundtrip, M42 dev-server bridge endpoints for dry-run/apply/save/revert with external-change detection and rollback-on-failure coverage, and reload-generation selection restoration after real source writes.",
-      "knownLimitations": "M45 validates static staging, dev bridge write transactions, conflict/rollback tests, and a real metacraft source-backed browser write. Remaining production work is a hardened authenticated local bridge and broader project-file adapters.",
+      "implementation": "Adapter-mediated transactions, same-file composition, conflicts, rollback, targeted reload, full reload fallback, generated-view roundtrip, reload-generation selection restoration after real source writes, and an M48 versioned local write-bridge protocol for status, health, read, dry-run, apply, save, revert, capability negotiation, stale revisions, structured diagnostics, atomic writes, rollback, allowlists, symlink denial, large-file rejection, concurrent transaction rejection, and production-like structured logs.",
+      "knownLimitations": "M48 hardens the local metacraft-web dogfood bridge and generic IsoNim client state model. Remote multi-user collaboration, cloud synchronization, network authentication, and exhaustive project-file adapters remain explicit non-goals or follow-up work.",
       "headlessTests": [
         {
           "name": "workspace_edit_adapter_applies_transactional_file_changes",
@@ -897,6 +898,14 @@
           "file": "tests/test_editor_viewmodels.nim"
         },
         {
+          "name": "bridge_client_state_machine_and_protocol_contract",
+          "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "bridge_client_recovers_after_failed_save_retry",
+          "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
           "name": "live_preview_restores_selection_after_real_file_write",
           "file": "tests/test_editor_viewmodels.nim"
         },
@@ -907,6 +916,18 @@
         {
           "name": "editor dev bridge rolls back earlier writes when a later write fails",
           "file": "../metacraft-web/apps/back-office/tests/test_editor_dev_bridge.mjs"
+        },
+        {
+          "name": "editor dev bridge rejects malformed, denied, traversal, symlink, stale, large, and concurrent writes",
+          "file": "../metacraft-web/apps/back-office/tests/test_editor_dev_bridge.mjs"
+        },
+        {
+          "name": "editor dev bridge production mode emits structured startup and shutdown logs",
+          "file": "../metacraft-web/apps/back-office/tests/test_editor_dev_bridge.mjs"
+        },
+        {
+          "name": "back-office bridge client batches multi-file editor saves",
+          "file": "../metacraft-web/apps/back-office/tests/test_backoffice_editor_bridge_client.nim"
         }
       ],
       "playwrightRequired": true,
@@ -949,6 +970,8 @@
           "evidence": [
             "tests/test_editor_viewmodels.nim:workspace_edit_adapter_applies_transactional_file_changes",
             "tests/test_editor_viewmodels.nim:workspace_dev_server_applies_transactional_source_writes",
+            "tests/test_editor_viewmodels.nim:bridge_client_state_machine_and_protocol_contract",
+            "tests/test_editor_viewmodels.nim:bridge_client_recovers_after_failed_save_retry",
             "tests/test_editor_viewmodels.nim:live_preview_restores_selection_after_real_file_write",
             "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes",
             "tests/browser/specs/editor-example.spec.ts:editor_interaction_performance_budgets"
@@ -960,6 +983,9 @@
             "../metacraft-web/apps/back-office/tests/test_backoffice_editor_workspace.nim:workspace_dev_server_applies_transactional_source_writes",
             "../metacraft-web/apps/back-office/tests/test_editor_dev_bridge.mjs:editor dev bridge handles dry-run, apply, save, revert, conflicts, and revision watching",
             "../metacraft-web/apps/back-office/tests/test_editor_dev_bridge.mjs:editor dev bridge rolls back earlier writes when a later write fails",
+            "../metacraft-web/apps/back-office/tests/test_editor_dev_bridge.mjs:editor dev bridge rejects malformed, denied, traversal, symlink, stale, large, and concurrent writes",
+            "../metacraft-web/apps/back-office/tests/test_editor_dev_bridge.mjs:editor dev bridge production mode emits structured startup and shutdown logs",
+            "../metacraft-web/apps/back-office/tests/test_backoffice_editor_bridge_client.nim:back-office bridge client batches multi-file editor saves",
             "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_metacraft_editor_writes_real_design_schema_files"
           ]
         }
@@ -967,9 +993,11 @@
       "implementationReferences": [
         "src/isonim/editor/workspace.nim",
         "src/isonim/editor/viewmodels.nim",
+        "docs/editor-write-bridge-protocol.md",
         "../metacraft-web/apps/back-office/src/backoffice_editor/workspace.nim",
         "tests/test_editor_viewmodels.nim",
         "../metacraft-web/apps/back-office/tests/test_editor_dev_bridge.mjs",
+        "../metacraft-web/apps/back-office/tests/test_backoffice_editor_bridge_client.nim",
         "tests/browser/specs/metacraft-web-editor.spec.ts"
       ]
     },

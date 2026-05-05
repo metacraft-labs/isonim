@@ -31,6 +31,13 @@ direnv exec /home/zahary/metacraft/metacraft-web just build-back-office-editor
 direnv exec /home/zahary/metacraft/metacraft-web just run-back-office-editor-dev
 ```
 
+M48 adds a production-like local bridge launch with structured JSON logs and
+the same explicit metacraft-web allowlist:
+
+```sh
+direnv exec /home/zahary/metacraft/metacraft-web just run-back-office-editor-bridge-prod
+```
+
 The metacraft-web editor test matrix is project-owned and can be run directly:
 
 ```sh
@@ -55,6 +62,23 @@ Consumer projects should not import `isonim/editor/viewmodels`,
 `isonim/editor/types`, `isonim/editor/workspace`, editor view modules, or
 browser adapter modules directly. Those remain framework internals or public
 exports of `isonim/editor`.
+
+## Write Bridge Protocol
+
+The versioned local write bridge contract is documented in
+`docs/editor-write-bridge-protocol.md`. IsoNim owns the generic protocol,
+client states, source-edit transaction ordering, and diagnostics model. The
+consumer owns concrete workspace roots, file allowlists, symlink/path policy,
+local trust boundary, process launch, and log destination.
+
+The current protocol is `isonim.write-bridge.v1`. The required local endpoints
+are status, health, read, and transaction modes for dry-run, apply, save, and
+revert. Production-like bridges must reject malformed requests, stale
+revisions, concurrent transactions, traversal attempts, symlink-owned files,
+oversized writes, and unowned paths with structured diagnostics.
+
+Remote multi-user collaboration and cloud synchronization are non-goals for
+M48.
 
 ## Workspace Schema
 
@@ -179,6 +203,7 @@ direnv exec /home/zahary/metacraft/isonim just test-browser-editor-consumer
 direnv exec /home/zahary/metacraft/isonim just test-editor-visual-gates
 direnv exec /home/zahary/metacraft/metacraft-web just build-back-office-editor
 direnv exec /home/zahary/metacraft/metacraft-web nim c -r apps/back-office/tests/test_backoffice_editor_workspace.nim
+direnv exec /home/zahary/metacraft/metacraft-web nim c -r apps/back-office/tests/test_backoffice_editor_bridge_client.nim
 direnv exec /home/zahary/metacraft/metacraft-web just run-back-office-editor-test-matrix
 direnv exec /home/zahary/metacraft/nim-agents just test
 ```

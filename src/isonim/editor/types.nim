@@ -1106,6 +1106,28 @@ type
     wesReviewing
     wesFailed
 
+  WriteBridgeClientState* = enum
+    wbcsOffline
+    wbcsConnecting
+    wbcsDegraded
+    wbcsReadOnly
+    wbcsStaged
+    wbcsWritable
+    wbcsSaving
+    wbcsConflict
+    wbcsFailed
+    wbcsRecovered
+
+  WriteBridgeProtocolContract* = object
+    version*: string
+    capabilities*: seq[string]
+    requiredCapabilities*: seq[string]
+    missingCapabilities*: seq[string]
+    maxFileBytes*: int
+    canRead*: bool
+    canWrite*: bool
+    supportsStructuredDiagnostics*: bool
+
   WorkspaceEditDiagnosticKind* = enum
     wedMissingAdapter
     wedMissingOperation
@@ -1195,6 +1217,9 @@ type
     schema*: seq[WorkspaceEditableSchemaEntry]
     readFile*: proc(file: string): WorkspaceReadResult {.closure.}
     writeFile*: proc(file, content: string): WorkspaceOperationResult {.closure.}
+    writeFiles*: proc(patches: seq[WorkspaceFilePatch]): WorkspaceOperationResult {.closure.}
+      ## Optional transactional batch write. Adapters that set this callback must
+      ## either write every patch or leave the workspace unchanged.
     patchFile*: proc(plan: SourceEditPlan; content: string;
       schema: WorkspaceEditableSchemaEntry): WorkspacePatchResult {.closure.}
     formatFiles*: proc(files: seq[string]): WorkspaceOperationResult {.closure.}

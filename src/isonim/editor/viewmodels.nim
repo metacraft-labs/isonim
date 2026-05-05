@@ -155,6 +155,7 @@ type
     sourceAdapterReady*: Signal[bool]
     workspaceEditStage*: Signal[WorkspaceEditStage]
     workspaceEditDiagnostics*: Signal[seq[WorkspaceEditDiagnostic]]
+    workspaceBridgeRecovered*: Signal[bool]
     workspaceEditPatches*: Signal[seq[WorkspaceFilePatch]]
     workspaceEditAffectedStories*: Signal[seq[StoryRef]]
     workspaceEditFullReload*: Signal[bool]
@@ -388,6 +389,82 @@ func workspaceDiagnostic(kind: WorkspaceEditDiagnosticKind; message: string;
     file: file,
     schemaKey: schemaKey,
     property: property)
+
+func writeBridgeStateFromSignals*(writeSource, adapterConfigured, stagingOnly,
+    sourceReady, recovered: bool; stage: WorkspaceEditStage;
+    diagnostics: seq[WorkspaceEditDiagnostic]): WriteBridgeClientState =
+  ## Generic bridge lifecycle model owned by IsoNim. Consumer projects decide
+  ## how their concrete bridge maps protocol status into these inputs.
+  if not writeSource:
+    return wbcsReadOnly
+  if diagnostics.anyIt(it.kind in {wedSourceConflict, wedExternalChange}):
+    return wbcsConflict
+  if stage == wesFailed:
+    return wbcsFailed
+  if stage in {wesApplying, wesFormatting, wesRegenerating, wesCompiling,
+      wesReloading, wesReviewing}:
+    return wbcsSaving
+  if recovered:
+    return wbcsRecovered
+  if not adapterConfigured:
+    return wbcsOffline
+  if stagingOnly:
+    return wbcsStaged
+  if diagnostics.anyIt(it.kind in {wedBridgeUnavailable, wedMissingOperation}):
+    return wbcsDegraded
+  if not sourceReady:
+    return wbcsConnecting
+  wbcsWritable
+
+func writeBridgeStateLabel*(state: WriteBridgeClientState): string =
+  case state
+  of wbcsOffline: "offline"
+  of wbcsConnecting: "connecting"
+  of wbcsDegraded: "degraded"
+  of wbcsReadOnly: "read-only"
+  of wbcsStaged: "staged"
+  of wbcsWritable: "writable"
+  of wbcsSaving: "saving"
+  of wbcsConflict: "conflict"
+  of wbcsFailed: "failed"
+  of wbcsRecovered: "recovered"
+
+func requiredWriteBridgeCapabilities*(): seq[string] =
+  @["status", "read", "dry-run", "apply", "save", "revert",
+    "conflict-detection", "atomic-write", "rollback", "path-allowlist",
+    "symlink-denial", "structured-logs"]
+
+func missingWriteBridgeCapabilities*(capabilities,
+    required: seq[string]): seq[string] =
+  for capability in required:
+    if capability notin capabilities:
+      result.add capability
+
+func negotiatedWriteBridgeContract*(version: string;
+    capabilities: seq[string]; maxFileBytes = 0): WriteBridgeProtocolContract =
+  let required = requiredWriteBridgeCapabilities()
+  let missing = missingWriteBridgeCapabilities(capabilities, required)
+  let protocolOk = version == "isonim.write-bridge.v1"
+  WriteBridgeProtocolContract(
+    version: version,
+    capabilities: capabilities,
+    requiredCapabilities: required,
+    missingCapabilities: missing,
+    maxFileBytes: maxFileBytes,
+    canRead: protocolOk and missing.len == 0,
+    canWrite: protocolOk and missing.len == 0,
+    supportsStructuredDiagnostics:
+      protocolOk and "structured-logs" in capabilities)
+
+func writeBridgeContractDiagnostics*(
+    contract: WriteBridgeProtocolContract): seq[WorkspaceEditDiagnostic] =
+  if contract.version != "isonim.write-bridge.v1":
+    result.add workspaceDiagnostic(wedBridgeUnavailable,
+      "Unsupported write bridge protocol version '" & contract.version & "'.")
+  if contract.missingCapabilities.len > 0:
+    result.add workspaceDiagnostic(wedBridgeUnavailable,
+      "Write bridge is missing required capabilities: " &
+        contract.missingCapabilities.join(", ") & ".")
 
 func viewForStory(story: StoryRef): EditorView =
   case story.kind
@@ -5055,6 +5132,7 @@ proc failWorkspaceEdit(editor: EditorVM; diagnostics: seq[WorkspaceEditDiagnosti
   editor.recordEditorTiming(epbkSaveReload, 1, detail)
   editor.workspaceEditStage.val = stage
   editor.workspaceEditDiagnostics.val = diagnostics
+  editor.workspaceBridgeRecovered.val = false
   WorkspaceEditResult(
     ok: false,
     stage: stage,
@@ -5063,6 +5141,17 @@ proc failWorkspaceEdit(editor: EditorVM; diagnostics: seq[WorkspaceEditDiagnosti
     generatedArtifacts: editor.workspaceEditGeneratedArtifacts.val,
     requiredTestCommands: editor.workspaceEditRequiredTestCommands.val,
     reviewDiagnostics: editor.workspaceEditReviewDiagnostics.val)
+
+proc writeBridgeClientState*(editor: EditorVM): WriteBridgeClientState =
+  let adapter = editor.workspaceEditAdapter
+  writeBridgeStateFromSignals(
+    editor.workspacePermissions.val.writeSource,
+    adapter != nil,
+    adapter != nil and adapter.stagingOnly,
+    editor.sourceAdapterReady.val,
+    editor.workspaceBridgeRecovered.val,
+    editor.workspaceEditStage.val,
+    editor.workspaceEditDiagnostics.val)
 
 proc operationDiagnostics(kind: WorkspaceEditDiagnosticKind;
     op: WorkspaceOperationResult; fallback: string): seq[WorkspaceEditDiagnostic] =
@@ -5123,6 +5212,9 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
     return editor.failWorkspaceEdit(adapterReq.diagnostics)
   let adapter = adapterReq.adapter
 
+  let hadRecoverableFailure =
+    editor.workspaceEditStage.val == wesFailed or
+    editor.workspaceEditDiagnostics.val.len > 0
   editor.workspaceEditStage.val = wesApplying
   editor.workspaceEditDiagnostics.val = @[]
   editor.workspaceEditPatches.val = @[]
@@ -5252,12 +5344,11 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
     writePatches.add writePatch
 
   var written: seq[WorkspaceFilePatch] = @[]
-  for patch in writePatches:
-    let write = adapter.writeFile(patch.file, patch.afterContent)
+  if adapter.writeFiles != nil and writePatches.len > 0:
+    let write = adapter.writeFiles(writePatches)
     if write.workspaceOpFailed:
       diagnostics = operationDiagnostics(wedWriteFailed, write,
-        "Could not write " & patch.file & ".")
-      diagnostics.add rollbackWorkspaceWrites(editor, adapter, written)
+        "Could not write workspace files.")
       return editor.failWorkspaceEdit(diagnostics, patches)
     generatedArtifacts.add write.generatedArtifacts
     requiredTestCommands.add write.requiredTestCommands
@@ -5265,7 +5356,22 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
     for story in write.affectedStories:
       affectedStories.addUniqueStory story
     fullReload = fullReload or write.fullReload
-    written.add patch
+    written = writePatches
+  else:
+    for patch in writePatches:
+      let write = adapter.writeFile(patch.file, patch.afterContent)
+      if write.workspaceOpFailed:
+        diagnostics = operationDiagnostics(wedWriteFailed, write,
+          "Could not write " & patch.file & ".")
+        diagnostics.add rollbackWorkspaceWrites(editor, adapter, written)
+        return editor.failWorkspaceEdit(diagnostics, patches)
+      generatedArtifacts.add write.generatedArtifacts
+      requiredTestCommands.add write.requiredTestCommands
+      reviewDiagnostics.add write.reviewDiagnostics
+      for story in write.affectedStories:
+        affectedStories.addUniqueStory story
+      fullReload = fullReload or write.fullReload
+      written.add patch
 
   if adapter.formatFiles != nil:
     editor.workspaceEditStage.val = wesFormatting
@@ -5326,6 +5432,7 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
   editor.chat.accumulatedEdits.val = @[]
   editor.workspaceEditStage.val = wesClean
   editor.workspaceEditDiagnostics.val = @[]
+  editor.workspaceBridgeRecovered.val = hadRecoverableFailure
   editor.workspaceEditPatches.val = patches
   editor.workspaceEditAffectedStories.val = affectedStories
   editor.workspaceEditFullReload.val = fullReload
@@ -7987,6 +8094,7 @@ proc createEditorVM*(): EditorVM =
   let sourceAdapterReady = createSignal(false)
   let workspaceEditStage = createSignal(wesClean)
   let workspaceEditDiagnostics = createSignal[seq[WorkspaceEditDiagnostic]](@[])
+  let workspaceBridgeRecovered = createSignal(false)
   let workspaceEditPatches = createSignal[seq[WorkspaceFilePatch]](@[])
   let workspaceEditAffectedStories = createSignal[seq[StoryRef]](@[])
   let workspaceEditFullReload = createSignal(false)
@@ -8028,6 +8136,7 @@ proc createEditorVM*(): EditorVM =
     sourceAdapterReady: sourceAdapterReady,
     workspaceEditStage: workspaceEditStage,
     workspaceEditDiagnostics: workspaceEditDiagnostics,
+    workspaceBridgeRecovered: workspaceBridgeRecovered,
     workspaceEditPatches: workspaceEditPatches,
     workspaceEditAffectedStories: workspaceEditAffectedStories,
     workspaceEditFullReload: workspaceEditFullReload,

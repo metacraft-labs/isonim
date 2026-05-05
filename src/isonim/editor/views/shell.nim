@@ -422,15 +422,7 @@ proc renderStatusBar[R, E](r: R; vm: EditorVM): E =
     r.clearChildren(statusBadges)
     let selected = vm.inspector.selectedElement.val
     let dirty = if vm.inspector.isDirty.val: "dirty" else: "clean"
-    let write =
-      if not vm.workspacePermissions.val.writeSource:
-        "read-only"
-      elif vm.workspaceEditAdapter != nil and vm.workspaceEditAdapter.stagingOnly:
-        "staging-only"
-      elif vm.sourceAdapterReady.val:
-        "writable"
-      else:
-        "bridge missing"
+    let write = writeBridgeStateLabel(vm.writeBridgeClientState())
     let mode = case vm.editMode.val
       of emView: "View"
       of emComment: "Comment"

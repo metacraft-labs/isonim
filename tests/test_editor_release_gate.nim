@@ -50,6 +50,7 @@ const
     "direnv exec /home/zahary/metacraft/isonim just test-editor-visual-gates",
     "direnv exec /home/zahary/metacraft/metacraft-web just build-back-office-editor",
     "direnv exec /home/zahary/metacraft/metacraft-web nim c -r apps/back-office/tests/test_backoffice_editor_workspace.nim",
+    "direnv exec /home/zahary/metacraft/metacraft-web nim c -r apps/back-office/tests/test_backoffice_editor_bridge_client.nim",
     "direnv exec /home/zahary/metacraft/metacraft-web just run-back-office-editor-test-matrix",
     "direnv exec /home/zahary/metacraft/nim-agents just test"
   ]
@@ -371,6 +372,25 @@ suite "IsoNim editor maturity gate":
         for item in row["screenshotVisualAssertions"]["evidence"].getElems:
           checkEvidenceReference(item.getStr)
 
+  test "m48_write_bridge_hardening_evidence_is_versioned_and_bounded":
+    let doc = matrix()
+    let protocol = readFile("docs/editor-write-bridge-protocol.md")
+    check protocol.contains("isonim.write-bridge.v1")
+    check protocol.contains("symlink-owned files")
+    check protocol.contains("remote multi-user collaboration")
+
+    var sourceSync: JsonNode
+    for row in doc["features"].getElems:
+      if row["id"].getStr == "source_sync":
+        sourceSync = row
+        break
+    check not sourceSync.isNil
+    check sourceSync["implementation"].getStr.contains("M48 versioned")
+    check sourceSync["knownLimitations"].getStr.contains(
+      "Remote multi-user collaboration")
+    check stringItems(sourceSync["implementationReferences"]).contains(
+      "docs/editor-write-bridge-protocol.md")
+
   test "mature_editor_full_matrix_passes_in_example_and_metacraft":
     let doc = matrix()
     let commands = stringItems(doc["maturityGateCommands"])
@@ -380,6 +400,7 @@ suite "IsoNim editor maturity gate":
     let metacraftJust = checkedText("../metacraft-web/Justfile")
     check metacraftJust.contains("run-back-office-editor ")
     check metacraftJust.contains("run-back-office-editor-dev ")
+    check metacraftJust.contains("run-back-office-editor-bridge-prod ")
     check metacraftJust.contains("run-back-office-editor-test-matrix:")
 
   test "no_weak_editor_quality_tests":

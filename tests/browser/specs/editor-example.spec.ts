@@ -708,6 +708,9 @@ test.describe("IsoNim packaged editor example", () => {
     await expect(
       page.locator('[data-editor-telemetry-event="save and reload"]').last(),
     ).toHaveAttribute("data-editor-telemetry-detail", /bridge-error:/);
+    await expect(page.locator(".editor-statusbar")).toContainText(
+      "write failed",
+    );
 
     const searchDuration = await page.evaluate(async () => {
       const input = document.querySelector<HTMLInputElement>(

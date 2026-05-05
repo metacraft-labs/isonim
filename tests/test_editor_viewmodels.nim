@@ -1878,6 +1878,108 @@ suite "Editor ViewModels (M27 workspace file writes)":
       check readFile(schemaFile).contains("padding=28px")
       dispose()
 
+  test "bridge_client_state_machine_and_protocol_contract":
+    let contract = negotiatedWriteBridgeContract(
+      "isonim.write-bridge.v1",
+      @["status", "read", "dry-run", "apply", "save", "revert",
+        "conflict-detection", "atomic-write", "rollback", "path-allowlist",
+        "symlink-denial", "structured-logs"],
+      maxFileBytes = 1024 * 1024)
+    check contract.supportsStructuredDiagnostics
+    check contract.maxFileBytes == 1024 * 1024
+    check "rollback" in contract.capabilities
+    check contract.missingCapabilities.len == 0
+    check contract.canRead
+    check contract.canWrite
+
+    let degraded = negotiatedWriteBridgeContract(
+      "isonim.write-bridge.v1",
+      @["status", "read", "apply", "structured-logs"])
+    check not degraded.canRead
+    check not degraded.canWrite
+    check "atomic-write" in degraded.missingCapabilities
+    let degradedDiagnostics = writeBridgeContractDiagnostics(degraded)
+    check degradedDiagnostics.len == 1
+    check writeBridgeStateFromSignals(true, true, false, true, false,
+      wesClean, degradedDiagnostics) == wbcsDegraded
+
+    let unsupported = negotiatedWriteBridgeContract(
+      "isonim.write-bridge.v0", requiredWriteBridgeCapabilities())
+    check not unsupported.canRead
+    check not unsupported.canWrite
+    check writeBridgeContractDiagnostics(unsupported)[0].kind ==
+      wedBridgeUnavailable
+
+    check writeBridgeStateFromSignals(false, false, false, false, false,
+      wesClean, @[]) == wbcsReadOnly
+    check writeBridgeStateFromSignals(true, false, false, false, false,
+      wesClean, @[]) == wbcsOffline
+    check writeBridgeStateFromSignals(true, true, false, false, false,
+      wesClean, @[]) == wbcsConnecting
+    check writeBridgeStateFromSignals(true, true, false, false, false,
+      wesClean, @[WorkspaceEditDiagnostic(kind: wedBridgeUnavailable,
+        message: "health check failed")]) == wbcsDegraded
+    check writeBridgeStateFromSignals(true, true, true, false, false,
+      wesClean, @[]) == wbcsStaged
+    check writeBridgeStateFromSignals(true, true, false, true, false,
+      wesClean, @[]) == wbcsWritable
+    check writeBridgeStateFromSignals(true, true, false, true, false,
+      wesApplying, @[]) == wbcsSaving
+    check writeBridgeStateFromSignals(true, true, false, true, false,
+      wesClean, @[WorkspaceEditDiagnostic(kind: wedExternalChange,
+        message: "stale revision")]) == wbcsConflict
+    check writeBridgeStateFromSignals(true, true, false, true, false,
+      wesFailed, @[]) == wbcsFailed
+    check writeBridgeStateFromSignals(true, true, false, true, true,
+      wesClean, @[]) == wbcsRecovered
+
+  test "bridge_client_recovers_after_failed_save_retry":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("bridge-recovered")
+      defer: removeDir(root)
+      let schemaFile = root / "component.schema"
+      atomicWrite(schemaFile, "padding=16px")
+      let schema = @[
+        WorkspaceEditableSchemaEntry(key: "components.card.padding",
+          kind: wskSourceMap, file: schemaFile, path: "card.padding",
+          story: writeStory, property: "padding")
+      ]
+      let recorder = WorkspaceEditRecorder()
+      var failWrite = true
+      let adapter = adapterFor(root, schema, recorder = recorder)
+      adapter.writeFile = proc(file, content: string): WorkspaceOperationResult =
+        if failWrite:
+          return failOp(wedWriteFailed, "simulated bridge failure", file)
+        atomicWrite(file, content)
+        okOp()
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "M48 bridge recovery",
+        storyGroups = @[StoryGroup(name: "DestinationCard", kind: skComponent,
+          items: @[StoryItem(name: "Default", kind: skComponent,
+            group: "DestinationCard")])],
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true),
+        editAdapter = adapter,
+        initialStory = some(writeStory)))
+      check vm.writeBridgeClientState() == wbcsWritable
+
+      vm.inspector.pendingSourceEdits.val = @[
+        planFor(schemaFile, "padding", "16px", "24px",
+          "components.card.padding")
+      ]
+      vm.workspaceEditStage.val = wesDirty
+      let failed = vm.applyWorkspaceFileEdits()
+      check not failed.ok
+      check vm.writeBridgeClientState() == wbcsFailed
+      check readFile(schemaFile) == "padding=16px"
+
+      failWrite = false
+      let saved = vm.applyWorkspaceFileEdits()
+      check saved.ok
+      check readFile(schemaFile) == "padding=24px"
+      check vm.writeBridgeClientState() == wbcsRecovered
+      dispose()
+
   test "live_preview_restores_selection_after_real_file_write":
     createRoot proc(dispose: proc()) =
       let root = tempWorkspaceDir("selection-reload")
