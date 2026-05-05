@@ -371,7 +371,13 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
 
     const colorInput = page.getByLabel("Edit inspector property color").first();
     await expect(colorInput).toBeVisible();
+    const originalColor = await topbar.evaluate(
+      (node) => getComputedStyle(node).color,
+    );
     await colorInput.fill("#F8FAFC");
+    await expect
+      .poll(() => topbar.evaluate((node) => getComputedStyle(node).color))
+      .toBe("rgb(248, 250, 252)");
     await colorInput.blur();
     await expect(page.getByText("Unsaved source edit")).toBeVisible();
     await expect(page.getByText("1 source plan(s) staged")).toBeVisible();
@@ -379,24 +385,39 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await page
       .getByRole("button", { name: "Revert inspector source edits" })
       .click();
+    await expect
+      .poll(() => topbar.evaluate((node) => getComputedStyle(node).color))
+      .toBe(originalColor);
     await expect(page.getByText("Unsaved source edit")).toHaveCount(0);
 
     await topbar.click();
     await page.getByRole("tab", { name: "Show Space edit controls" }).click();
     await expect(page.getByText("Box Model", { exact: true })).toBeVisible();
+    const originalPadding = await topbar.evaluate(
+      (node) => getComputedStyle(node).paddingTop,
+    );
     const paddingInput = page.getByRole("textbox", {
       name: "Edit inspector property padding",
       exact: true,
     });
     await paddingInput.fill("20px");
+    await expect
+      .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
+      .toBe("20px");
     await paddingInput.blur();
     await expect(page.getByText("Unsaved source edit")).toBeVisible();
 
     await page
       .getByRole("button", { name: "Revert inspector source edits" })
       .click();
+    await expect
+      .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
+      .toBe(originalPadding);
     await page.getByRole("tab", { name: "Show Layout edit controls" }).click();
     await page.getByRole("button", { name: "Set display to flex" }).click();
+    await expect
+      .poll(() => topbar.evaluate((node) => getComputedStyle(node).display))
+      .toBe("flex");
     await expect(page.getByText("Unsaved source edit")).toBeVisible();
 
     await page

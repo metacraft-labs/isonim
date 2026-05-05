@@ -63,6 +63,7 @@ proc editablePreviewDocument(documentHtml: string;
       node.removeAttribute('data-isonim-selected');
     });
     el.setAttribute('data-isonim-selected', 'true');
+    window.__isonimSelectedElement = el;
     const source = parseSource(el.getAttribute('data-isonim-src'));
     const style = window.getComputedStyle(el);
     parent.dispatchEvent(new CustomEvent('isonim-preview-element-selected', {
@@ -294,13 +295,87 @@ func swatchesFor(propertyName: string): seq[string] =
 proc applyInspectorValue(vm: EditorVM; propName, value: string) =
   discard vm.editCssProperty(propName, value, pesLocal, peoInspector)
 
-proc inspectorValueHandler(vm: EditorVM; propName, value: string): proc() =
+proc applyLivePreviewStyle[R, E](r: R; frame: E; propName, value: string) =
+  when defined(js):
+    {.emit: ["""
+      (function () {
+        const frame = """, frame,
+        """;
+        if (!frame || !frame.contentDocument) return;
+        const el =
+          frame.contentDocument.querySelector('[data-isonim-selected="true"]') ||
+          (frame.contentWindow && frame.contentWindow.__isonimSelectedElement);
+        if (!el || !el.style) return;
+        const toJsString = (raw) => Array.isArray(raw)
+          ? String.fromCharCode.apply(null, raw)
+          : String(raw || '');
+        const prop = toJsString(""", propName,
+        """);
+        const value = toJsString(""", value,
+        """);
+        if (!el.__isonimOriginalInlineStyles) el.__isonimOriginalInlineStyles = {};
+        if (!Object.prototype.hasOwnProperty.call(el.__isonimOriginalInlineStyles, prop)) {
+          el.__isonimOriginalInlineStyles[prop] = {
+            value: el.style.getPropertyValue(prop),
+            priority: el.style.getPropertyPriority(prop)
+          };
+        }
+        el.setAttribute('data-isonim-live-edited', 'true');
+        if (value.length === 0) {
+          el.style.removeProperty(prop);
+        } else {
+          el.style.setProperty(prop, value);
+        }
+      })();
+    """].}
+
+proc inspectorLiveValueHandler[R, E](r: R; vm: EditorVM; frame: E; propName,
+    value: string): proc() =
   let capturedProp = propName
   let capturedValue = value
   result = proc() =
     vm.applyInspectorValue(capturedProp, capturedValue)
+    r.applyLivePreviewStyle(frame, capturedProp, capturedValue)
 
-proc renderPropertyInput[R, E](r: R; vm: EditorVM; propName, value: string): E =
+proc revertLivePreviewStyles[R, E](r: R; frame: E) =
+  when defined(js):
+    {.emit: ["""
+      (function () {
+        const frame = """, frame,
+        """;
+        if (!frame || !frame.contentDocument) return;
+        frame.contentDocument.querySelectorAll('[data-isonim-live-edited="true"]').forEach((el) => {
+          const originals = el.__isonimOriginalInlineStyles || {};
+          Object.keys(originals).forEach((prop) => {
+            const original = originals[prop] || {};
+            if ((original.value || '').length === 0) {
+              el.style.removeProperty(prop);
+            } else {
+              el.style.setProperty(prop, original.value, original.priority || '');
+            }
+          });
+          el.__isonimOriginalInlineStyles = {};
+          el.removeAttribute('data-isonim-live-edited');
+        });
+      })();
+    """].}
+
+proc commitLivePreviewStyles[R, E](r: R; frame: E) =
+  when defined(js):
+    {.emit: ["""
+      (function () {
+        const frame = """, frame,
+        """;
+        if (!frame || !frame.contentDocument) return;
+        frame.contentDocument.querySelectorAll('[data-isonim-live-edited="true"]').forEach((el) => {
+          el.__isonimOriginalInlineStyles = {};
+          el.removeAttribute('data-isonim-live-edited');
+        });
+      })();
+    """].}
+
+proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; propName,
+    value: string): E =
   var inputNode: E
   result = ui(r):
     tdiv(display = "flex", flex_direction = "column", gap = "4px"):
@@ -320,11 +395,16 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; propName, value: string): E =
   r.setAttribute(inputNode, "aria-label", "Edit inspector property " & propName)
   r.setInputValue(inputNode, value)
   let commit = proc() =
-    vm.applyInspectorValue(propName, r.inputValue(inputNode))
+    let nextValue = r.inputValue(inputNode)
+    vm.applyInspectorValue(propName, nextValue)
+    r.applyLivePreviewStyle(frame, propName, nextValue)
+  let preview = proc() =
+    r.applyLivePreviewStyle(frame, propName, r.inputValue(inputNode))
   r.addEventListener(inputNode, "change", commit)
-  r.addEventListener(inputNode, "keydown", commit)
+  r.addEventListener(inputNode, "blur", commit)
+  r.addEventListener(inputNode, "input", preview)
 
-proc renderQuickValues[R, E](r: R; vm: EditorVM; propName,
+proc renderQuickValues[R, E](r: R; vm: EditorVM; frame: E; propName,
     current: string): E =
   let values = quickValues(propName)
   result = ui(r):
@@ -344,12 +424,12 @@ proc renderQuickValues[R, E](r: R; vm: EditorVM; propName,
         text nextValue
     r.setAttribute(chip, "aria-label",
       "Set " & propName & " to " & nextValue)
-    let activate = inspectorValueHandler(vm, propName, nextValue)
+    let activate = r.inspectorLiveValueHandler(vm, frame, propName, nextValue)
     r.addEventListener(chip, "click", activate)
     r.addEventListener(chip, "keydown", activate)
     r.appendChild(result, chip)
 
-proc renderSwatches[R, E](r: R; vm: EditorVM; propName,
+proc renderSwatches[R, E](r: R; vm: EditorVM; frame: E; propName,
     current: string): E =
   let values = swatchesFor(propName)
   result = ui(r):
@@ -366,22 +446,22 @@ proc renderSwatches[R, E](r: R; vm: EditorVM; propName,
                 nextValue: accent else: border))
     r.setAttribute(swatch, "aria-label",
       "Set " & propName & " to " & nextValue)
-    let activate = inspectorValueHandler(vm, propName, nextValue)
+    let activate = r.inspectorLiveValueHandler(vm, frame, propName, nextValue)
     r.addEventListener(swatch, "click", activate)
     r.addEventListener(swatch, "keydown", activate)
     r.appendChild(result, swatch)
 
-proc renderRichPropertyControl[R, E](r: R; vm: EditorVM; propName,
+proc renderRichPropertyControl[R, E](r: R; vm: EditorVM; frame: E; propName,
     value: string): E =
   result = ui(r):
     tdiv(display = "flex", flex_direction = "column", gap = "6px",
           padding = "8px", border = "1px solid " & border,
           border_radius = "6px", background_color = "#0F172A")
-  r.appendChild(result, renderPropertyInput[R, E](r, vm, propName, value))
+  r.appendChild(result, renderPropertyInput[R, E](r, vm, frame, propName, value))
   if quickValues(propName).len > 0:
-    r.appendChild(result, renderQuickValues[R, E](r, vm, propName, value))
+    r.appendChild(result, renderQuickValues[R, E](r, vm, frame, propName, value))
   if swatchesFor(propName).len > 0:
-    r.appendChild(result, renderSwatches[R, E](r, vm, propName, value))
+    r.appendChild(result, renderSwatches[R, E](r, vm, frame, propName, value))
 
 proc sectionTitle(section: InspectorSection): string =
   for i, candidate in richSections:
@@ -411,7 +491,7 @@ proc renderBoxModelSummary[R, E](r: R; selected: ElementRef): E =
               text_align = "center", color = accent, font_size = "10px"):
           text "padding " & padding
 
-proc populateInspectorContent[R, E](r: R; vm: EditorVM; content: E) =
+proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E) =
   r.clearChildren(content)
   if vm.inspector.hasElement.val:
     let selected = vm.inspector.selectedElement.val
@@ -446,7 +526,7 @@ proc populateInspectorContent[R, E](r: R; vm: EditorVM; content: E) =
     for (propName, fallback) in sectionProperties(active):
       let value = fallbackPropertyValue(selected, propName, fallback)
       r.appendChild(content,
-        renderRichPropertyControl[R, E](r, vm, propName, value))
+        renderRichPropertyControl[R, E](r, vm, frame, propName, value))
 
     if vm.inspector.pendingSourceEdits.val.len > 0:
       let dirty = ui(r):
@@ -470,17 +550,17 @@ proc populateInspectorContent[R, E](r: R; vm: EditorVM; content: E) =
           text "Click real rendered DOM in the iframe"
     r.appendChild(content, empty)
 
-proc populateSectionTabs[R, E](r: R; vm: EditorVM; tabs, content: E)
+proc populateSectionTabs[R, E](r: R; vm: EditorVM; frame, tabs, content: E)
 
-proc inspectorSectionHandler[R, E](r: R; vm: EditorVM; tabs, content: E;
+proc inspectorSectionHandler[R, E](r: R; vm: EditorVM; frame, tabs, content: E;
     section: InspectorSection): proc() =
   let capturedSection = section
   result = proc() =
     vm.switchInspectorSection(capturedSection)
-    r.populateSectionTabs(vm, tabs, content)
-    r.populateInspectorContent(vm, content)
+    r.populateSectionTabs(vm, frame, tabs, content)
+    r.populateInspectorContent(vm, frame, content)
 
-proc populateSectionTabs[R, E](r: R; vm: EditorVM; tabs, content: E) =
+proc populateSectionTabs[R, E](r: R; vm: EditorVM; frame, tabs, content: E) =
   r.clearChildren(tabs)
   for i, section in richSections:
     let label = richSectionLabels[i]
@@ -494,12 +574,12 @@ proc populateSectionTabs[R, E](r: R; vm: EditorVM; tabs, content: E) =
             box_shadow = (if active: "inset 0 -2px 0 " & accent else: "none")):
         text label
     r.setAttribute(tab, "aria-label", "Show " & label & " edit controls")
-    let activate = r.inspectorSectionHandler(vm, tabs, content, section)
+    let activate = r.inspectorSectionHandler(vm, frame, tabs, content, section)
     r.addEventListener(tab, "click", activate)
     r.addEventListener(tab, "keydown", activate)
     r.appendChild(tabs, tab)
 
-proc renderInspector[R, E](r: R; vm: EditorVM): E =
+proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
   var saveButton: E
   var revertButton: E
   result = ui(r):
@@ -538,23 +618,25 @@ proc renderInspector[R, E](r: R; vm: EditorVM): E =
 
   r.setAttribute(saveButton, "aria-label", "Save inspector source edits")
   r.setAttribute(revertButton, "aria-label", "Revert inspector source edits")
-  r.addEventListener(saveButton, "click", proc() =
-    discard vm.runEditorCommand(eckSave))
-  r.addEventListener(saveButton, "keydown", proc() =
-    discard vm.runEditorCommand(eckSave))
-  r.addEventListener(revertButton, "click", proc() =
-    discard vm.runEditorCommand(eckRevert))
-  r.addEventListener(revertButton, "keydown", proc() =
-    discard vm.runEditorCommand(eckRevert))
+  let save = proc() =
+    discard vm.runEditorCommand(eckSave)
+    r.commitLivePreviewStyles(frame)
+  let revert = proc() =
+    r.revertLivePreviewStyles(frame)
+    discard vm.runEditorCommand(eckRevert)
+  r.addEventListener(saveButton, "click", save)
+  r.addEventListener(saveButton, "keydown", save)
+  r.addEventListener(revertButton, "click", revert)
+  r.addEventListener(revertButton, "keydown", revert)
 
   let content = ui(r):
     tdiv(flex = "1", display = "flex", flex_direction = "column",
           padding = "12px", overflow_y = "auto", gap = "12px")
   r.appendChild(result, content)
-  r.populateSectionTabs(vm, tabs, content)
+  r.populateSectionTabs(vm, frame, tabs, content)
 
   createRenderEffect proc() =
-    r.populateInspectorContent(vm, content)
+    r.populateInspectorContent(vm, frame, content)
     let save = vm.evaluateCommand(eckSave)
     let revert = vm.evaluateCommand(eckRevert)
     r.setAttribute(saveButton, "aria-disabled",
@@ -629,7 +711,7 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
         span: text "Edit color or spacing in the inspector"
 
   r.appendChild(container, preview)
-  r.appendChild(container, renderInspector[R, E](r, vm))
+  r.appendChild(container, renderInspector[R, E](r, vm, projectFrame))
 
   r.setAttribute(editModeButton, "role", "button")
   r.setAttribute(editModeButton, "tabindex", "0")

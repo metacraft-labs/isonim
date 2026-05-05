@@ -1254,11 +1254,17 @@ proc editProperty*(inspector: InspectorVM;
   let plan = prop.sourcePlan(request)
   inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
       SourceEditPlan] =
-    result = prev
+    result = @[]
+    for existing in prev:
+      if existing.conflictKey != plan.conflictKey:
+        result.add existing
     result.add plan
   inspector.sourcePreviews.update proc(prev: seq[CSSSourcePreview]): seq[
       CSSSourcePreview] =
-    result = prev
+    result = @[]
+    for existing in prev:
+      if existing.plan.conflictKey != plan.conflictKey:
+        result.add existing
     result.add CSSSourcePreview(plan: plan, beforeText: plan.previewBefore,
       afterText: plan.previewAfter)
   inspector.undoStack.update proc(prev: seq[CSSPropertyEditTransaction]): seq[
