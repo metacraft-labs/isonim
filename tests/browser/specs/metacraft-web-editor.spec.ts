@@ -375,6 +375,13 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(
       page.getByLabel("Edit raw CSS for Fill section"),
     ).toBeVisible();
+    await expect(
+      page.getByLabel("Set color from saturation brightness field"),
+    ).toBeVisible();
+    await expect(page.getByLabel("Set color hue")).toBeVisible();
+    await expect(
+      page.getByLabel("Choose design token for color"),
+    ).toBeVisible();
     await expect(page.getByLabel("Element tree selected header")).toBeVisible();
     const originalColor = await topbar.evaluate(
       (node) => getComputedStyle(node).color,
@@ -398,6 +405,10 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
         topbar.evaluate((node) => getComputedStyle(node).backgroundColor),
       )
       .toBe("rgb(248, 250, 252)");
+    await page.getByRole("button", { name: "Set color hue" }).click();
+    await expect
+      .poll(() => topbar.evaluate((node) => getComputedStyle(node).color))
+      .toBe("rgb(34, 197, 94)");
 
     await page
       .getByRole("button", { name: "Revert inspector source edits" })
@@ -417,9 +428,24 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(page.getByText("Box Model", { exact: true })).toBeVisible();
     const rawSpace = page.getByLabel("Edit raw CSS for Space section");
     await expect(rawSpace).toBeVisible();
+    await expect(page.getByLabel("Scrub padding-top value")).toBeVisible();
     const originalPadding = await topbar.evaluate(
       (node) => getComputedStyle(node).paddingTop,
     );
+    await page
+      .getByRole("button", { name: "Increase padding-top by one" })
+      .click();
+    await expect
+      .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
+      .toBe("1px");
+    await page
+      .getByRole("button", { name: "Revert inspector source edits" })
+      .click();
+    await expect
+      .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
+      .toBe(originalPadding);
+    await topbar.click();
+    await page.getByRole("tab", { name: "Show Space edit controls" }).click();
     const paddingInput = page.getByRole("textbox", {
       name: "Edit inspector property padding",
       exact: true,
