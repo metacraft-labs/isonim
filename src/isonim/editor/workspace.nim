@@ -28,6 +28,7 @@ type
     vectorSymbols*: seq[VectorSymbol]
     foundationTokens*: seq[FoundationTokenEntry]
     componentVariants*: seq[ComponentVariantDefinition]
+    designSystemSchema*: DesignSystemSchema
     initialView*: EditorView
     initialStory*: Option[StoryRef]
     initialCanvasItem*: Option[int]
@@ -78,7 +79,8 @@ proc emptyEditorWorkspace*(): EditorWorkspace =
     sourceAdapterReady: false,
     editAdapter: nil,
     platform: pfWeb,
-    panels: defaultPanelVisibility()
+    panels: defaultPanelVisibility(),
+    designSystemSchema: DesignSystemSchema()
   )
 
 proc newEditorWorkspace*(title: string;
@@ -92,6 +94,7 @@ proc newEditorWorkspace*(title: string;
                           vectorSymbols: seq[VectorSymbol] = @[];
                           foundationTokens: seq[FoundationTokenEntry] = @[];
                           componentVariants: seq[ComponentVariantDefinition] = @[];
+                          designSystemSchema = DesignSystemSchema();
                           initialView = evStoryboard;
                           initialStory = none(StoryRef);
                           initialCanvasItem = none(int);
@@ -121,6 +124,7 @@ proc newEditorWorkspace*(title: string;
     vectorSymbols: vectorSymbols,
     foundationTokens: foundationTokens,
     componentVariants: componentVariants,
+    designSystemSchema: designSystemSchema,
     initialView: initialView,
     initialStory: initialStory,
     initialCanvasItem: initialCanvasItem,
@@ -157,6 +161,7 @@ proc applyWorkspace*(vm: EditorVM; workspace: EditorWorkspace) =
   vm.variants.variants.val = workspace.componentVariants
   vm.variants.selectedVariant.val = -1
   vm.variants.diagnostics.val = @[]
+  vm.designSystemSchema.val = workspace.designSystemSchema
   vm.preview.hook = workspace.previewHook
   vm.selectedStory.val = StoryRef()
   vm.storyboard.selectedItem.val = -1

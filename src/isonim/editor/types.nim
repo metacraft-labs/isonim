@@ -903,6 +903,142 @@ type
       fullReload: bool): WorkspaceOperationResult {.closure.}
     review*: proc(patches: seq[WorkspaceFilePatch]): WorkspaceReviewResult {.closure.}
 
+  # --- Design-system schema and source ownership ---
+  SourceSpan* = object
+    file*: string
+    line*: int
+    column*: int
+    endLine*: int
+    endColumn*: int
+
+  DesignSchemaNodeKind* = enum
+    dsnFoundation
+    dsnSemanticToken
+    dsnComponentToken
+    dsnComponentVariant
+    dsnComponentState
+    dsnDensityMode
+    dsnResponsiveMode
+    dsnClassDefinition
+    dsnStyleDefinition
+    dsnStoryFixture
+
+  DesignTokenModeKind* = enum
+    dtmkLight
+    dtmkDark
+    dtmkDensity
+    dtmkPlatform
+    dtmkBrand
+    dtmkBreakpoint
+
+  DesignSchemaReviewLevel* = enum
+    dsrlNone
+    dsrlLocal
+    dsrlShared
+    dsrlAccessibility
+    dsrlDesignSystem
+
+  DesignSchemaAccessibilityImpactKind* = enum
+    dsaiNone
+    dsaiContrast
+    dsaiTouchTarget
+    dsaiMotion
+    dsaiKeyboardFocus
+
+  DesignTokenModeValue* = object
+    kind*: DesignTokenModeKind
+    name*: string
+    value*: string
+    sourceSpan*: SourceSpan
+    schemaKey*: string
+
+  DesignSchemaNode* = object
+    ## Project-owned schema node. IsoNim treats this as data, not as a
+    ## framework-owned token file format.
+    key*: string
+    kind*: DesignSchemaNodeKind
+    name*: string
+    component*: string
+    property*: string
+    value*: string
+    sourceSpan*: SourceSpan
+    modeValues*: seq[DesignTokenModeValue]
+    stories*: seq[StoryRef]
+    components*: seq[string]
+    pages*: seq[string]
+    usageCount*: int
+    foreground*: string
+    background*: string
+    minContrast*: float
+    accessibilityImpact*: DesignSchemaAccessibilityImpactKind
+    reviewLevel*: DesignSchemaReviewLevel
+
+  DesignSourceOwnership* = object
+    ## Graph edge from a selected DOM property to project-owned source.
+    elementSourceKey*: string
+    domPath*: string
+    property*: string
+    schemaKey*: string
+    nodeKey*: string
+    sourceSpan*: SourceSpan
+    generatedViewFile*: string
+    generatedViewLine*: int
+    cssModuleFile*: string
+    cssModuleClass*: string
+    tailwindUtilities*: seq[string]
+    fallbackInlineFile*: string
+    fallbackInlineLine*: int
+    fallbackAllowed*: bool
+    unstructuredViewCode*: bool
+
+  DesignSchemaDiagnosticKind* = enum
+    dsdUnsupportedSchemaVersion
+    dsdMissingProjectOwner
+    dsdMissingSourceOwnership
+    dsdMissingSourceSpan
+    dsdMissingModeSource
+    dsdUnstructuredViewCode
+    dsdContrastImpact
+
+  DesignSchemaDiagnostic* = object
+    kind*: DesignSchemaDiagnosticKind
+    message*: string
+    file*: string
+    line*: int
+    property*: string
+    schemaKey*: string
+
+  DesignSystemSchema* = object
+    ## Versioned framework contract. Concrete schema files remain consumer-owned.
+    schemaVersion*: int
+    projectId*: string
+    ownerPackage*: string
+    frameworkContract*: string
+    nodes*: seq[DesignSchemaNode]
+    sourceOwnership*: seq[DesignSourceOwnership]
+
+  DesignSourceOwnershipReport* = object
+    ok*: bool
+    property*: string
+    nodeKey*: string
+    schemaNode*: DesignSchemaNode
+    ownership*: DesignSourceOwnership
+    planKind*: CSSSourcePlanKind
+    diagnostics*: seq[DesignSchemaDiagnostic]
+
+  DesignSchemaImpact* = object
+    schemaKey*: string
+    usageCount*: int
+    affectedStories*: seq[StoryRef]
+    affectedComponents*: seq[string]
+    affectedPages*: seq[string]
+    modes*: seq[DesignTokenModeValue]
+    contrastRatio*: float
+    minContrast*: float
+    accessibilityImpact*: DesignSchemaAccessibilityImpactKind
+    reviewLevel*: DesignSchemaReviewLevel
+    diagnostics*: seq[DesignSchemaDiagnostic]
+
   # --- Foundations and component variant editors ---
   FoundationTokenKind* = enum
     ftkColorPalette

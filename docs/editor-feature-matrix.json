@@ -764,6 +764,57 @@
       }
     },
     {
+      "id": "design_schema",
+      "title": "Design-System Schema and Source Ownership",
+      "status": "functional",
+      "targetWorkflow": "Users and agents can resolve selected DOM properties to project-owned design schema nodes, source spans, generated views, classes, Tailwind utilities, and fallback edit paths before staging shared changes.",
+      "owner": "framework-and-consumer",
+      "mockOnly": false,
+      "placeholderUi": false,
+      "browserBehavior": [],
+      "implementation": "Versioned schema contracts, token modes, source ownership graph resolution, usage/affected-surface impact calculation, review-level escalation, contrast diagnostics, and unstructured-source migration diagnostics.",
+      "knownLimitations": "M35 is a headless framework contract and fixture-backed boundary proof. Concrete metacraft-web schema files, preview/story wiring, visual controls, and browser editing UX remain M36-M41 work.",
+      "headlessTests": [
+        {
+          "name": "design_schema_maps_dom_properties_to_source_ownership",
+          "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "design_schema_reports_usage_and_impact",
+          "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "design_schema_preserves_framework_consumer_boundary",
+          "file": "tests/test_editor_viewmodels.nim"
+        }
+      ],
+      "playwrightRequired": false,
+      "playwrightReason": "M35 is a headless schema/source ownership contract; browser controls and consumer story wiring are planned for M36-M41.",
+      "playwrightTests": [],
+      "screenshotVisualAssertions": {
+        "requiredForFigmaGrade": true,
+        "status": "not_started",
+        "assertions": [],
+        "futureMilestone": "M43",
+        "notes": "Needs visual baselines for token pickers, source ownership badges, usage previews, impact warnings, and migration diagnostics before Figma-grade status."
+      },
+      "consumerCoverage": {
+        "isonimExample": {
+          "status": "covered_headless",
+          "evidence": [
+            "tests/test_editor_viewmodels.nim:design_schema_maps_dom_properties_to_source_ownership",
+            "tests/test_editor_viewmodels.nim:design_schema_reports_usage_and_impact"
+          ]
+        },
+        "metacraftWeb": {
+          "status": "workspace_api_compatible",
+          "evidence": [
+            "tests/test_editor_viewmodels.nim:design_schema_preserves_framework_consumer_boundary"
+          ]
+        }
+      }
+    },
+    {
       "id": "package_imports",
       "title": "Package Imports and Consumer Boundary",
       "status": "functional",

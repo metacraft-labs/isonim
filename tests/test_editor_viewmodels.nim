@@ -1901,6 +1901,311 @@ suite "Editor ViewModels (M27 workspace file writes)":
         it.kind == cvdInconsistentStoryMetadata)
       dispose()
 
+  test "design_schema_maps_dom_properties_to_source_ownership":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("design-schema-map")
+      defer: removeDir(root)
+
+      func span(file: string; line: int; column = 1): SourceSpan =
+        SourceSpan(file: file, line: line, column: column,
+          endLine: line, endColumn: column + 12)
+
+      let tokenFile = root / "design/tokens.schema"
+      let componentFile = root / "design/components.schema"
+      let cssFile = root / "components/Card.module.css"
+      let fixtureFile = root / "stories/card.fixtures.schema"
+      let viewFile = root / "generated/card_view.nim"
+      createDir(root / "design")
+      createDir(root / "components")
+      createDir(root / "stories")
+      createDir(root / "generated")
+      atomicWrite(tokenFile, "surface.card=#ffffff")
+      atomicWrite(componentFile, "card.padding=16px")
+      atomicWrite(cssFile, ".card { border-radius: 8px; }")
+      atomicWrite(fixtureFile, "title=Sofia")
+      atomicWrite(viewFile, "ui.div(style = \"box-shadow: 0 1px 2px #000\")")
+
+      let story = writeStory
+      let schema = DesignSystemSchema(
+        schemaVersion: 1,
+        projectId: "metacraft-web-backoffice",
+        ownerPackage: "metacraft-web",
+        frameworkContract: "isonim-editor-design-schema-v1",
+        nodes: @[
+          DesignSchemaNode(key: "foundation.color.blue.600",
+            kind: dsnFoundation, name: "Blue 600", property: "color",
+            value: "#2563eb", sourceSpan: span(tokenFile, 1)),
+          DesignSchemaNode(key: "semantic.surface.card",
+            kind: dsnSemanticToken, name: "Card surface",
+            property: "background", value: "#ffffff",
+            sourceSpan: span(tokenFile, 2), stories: @[story],
+            components: @["DestinationCard"], usageCount: 1),
+          DesignSchemaNode(key: "components.card.padding",
+            kind: dsnComponentToken, name: "Card padding",
+            component: "DestinationCard", property: "padding",
+            value: "16px", sourceSpan: span(componentFile, 4)),
+          DesignSchemaNode(key: "components.card.variant.compact",
+            kind: dsnComponentVariant, component: "DestinationCard",
+            property: "variant", value: "compact",
+            sourceSpan: span(componentFile, 8), stories: @[story]),
+          DesignSchemaNode(key: "components.card.state.hover",
+            kind: dsnComponentState, component: "DestinationCard",
+            property: "state", value: "hover",
+            sourceSpan: span(componentFile, 12)),
+          DesignSchemaNode(key: "modes.density.compact",
+            kind: dsnDensityMode, name: "Compact density",
+            property: "density", value: "compact",
+            sourceSpan: span(tokenFile, 20)),
+          DesignSchemaNode(key: "modes.breakpoint.md",
+            kind: dsnResponsiveMode, name: "Medium breakpoint",
+            property: "breakpoint", value: "768px",
+            sourceSpan: span(tokenFile, 24)),
+          DesignSchemaNode(key: "classes.card",
+            kind: dsnClassDefinition, name: "Card class",
+            property: "border-radius", value: "8px",
+            sourceSpan: span(cssFile, 1)),
+          DesignSchemaNode(key: "styles.card.shadow",
+            kind: dsnStyleDefinition, name: "Card shadow",
+            property: "box-shadow", value: "0 1px 2px #000",
+            sourceSpan: span(viewFile, 1)),
+          DesignSchemaNode(key: "fixtures.card.title",
+            kind: dsnStoryFixture, name: "Card title",
+            property: "title", value: "Sofia",
+            sourceSpan: span(fixtureFile, 1), stories: @[story])
+        ],
+        sourceOwnership: @[
+          DesignSourceOwnership(elementSourceKey: "card.root",
+            property: "background", schemaKey: "semantic.surface.card",
+            nodeKey: "semantic.surface.card", sourceSpan: span(tokenFile, 2),
+            generatedViewFile: viewFile, generatedViewLine: 3),
+          DesignSourceOwnership(elementSourceKey: "card.root",
+            property: "padding", schemaKey: "components.card.padding",
+            nodeKey: "components.card.padding",
+            sourceSpan: span(componentFile, 4),
+            generatedViewFile: viewFile, generatedViewLine: 4,
+            tailwindUtilities: @["p-4", "md:p-6"]),
+          DesignSourceOwnership(elementSourceKey: "card.root",
+            property: "border-radius", schemaKey: "classes.card",
+            nodeKey: "classes.card", sourceSpan: span(cssFile, 1),
+            cssModuleFile: cssFile, cssModuleClass: "card"),
+          DesignSourceOwnership(elementSourceKey: "card.root",
+            property: "data-variant",
+            schemaKey: "components.card.variant.compact",
+            nodeKey: "components.card.variant.compact",
+            sourceSpan: span(componentFile, 8)),
+          DesignSourceOwnership(elementSourceKey: "card.root",
+            property: "data-title", schemaKey: "fixtures.card.title",
+            nodeKey: "fixtures.card.title", sourceSpan: span(fixtureFile, 1)),
+          DesignSourceOwnership(elementSourceKey: "card.root",
+            property: "outline-offset", schemaKey: "styles.card.focus",
+            nodeKey: "styles.card.shadow", sourceSpan: span(viewFile, 1),
+            fallbackInlineFile: viewFile, fallbackInlineLine: 1,
+            fallbackAllowed: true),
+          DesignSourceOwnership(elementSourceKey: "card.root",
+            property: "box-shadow", schemaKey: "styles.card.shadow",
+            nodeKey: "styles.card.shadow", sourceSpan: span(viewFile, 1),
+            generatedViewFile: viewFile, generatedViewLine: 1,
+            unstructuredViewCode: true)
+        ])
+
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "M35 project-owned design schema",
+        storyGroups = @[StoryGroup(name: "DestinationCard",
+          kind: skComponent, items: @[StoryItem(name: "Default",
+            kind: skComponent, group: "DestinationCard")])],
+        designSystemSchema = schema,
+        initialStory = some(story)))
+      check vm.designSystemSchema.val.schemaVersion == 1
+      for kind in [
+        dsnFoundation, dsnSemanticToken, dsnComponentToken,
+        dsnComponentVariant, dsnComponentState, dsnDensityMode,
+        dsnResponsiveMode, dsnClassDefinition, dsnStyleDefinition,
+        dsnStoryFixture
+      ]:
+        check vm.designSystemSchema.val.nodes.anyIt(it.kind == kind)
+
+      check vm.selectInspectorElement(ElementRef(
+        id: "card-root",
+        sourceKey: "card.root",
+        domPath: "article[data-source-key='card.root']",
+        schemaKey: "components.card.variant.compact",
+        tag: "article",
+        sourceFile: viewFile,
+        sourceLine: 1,
+        properties: @[
+          PropertyInfo(name: "background", value: "#ffffff",
+            origin: poThemeToken, schemaKey: "semantic.surface.card",
+            tokenName: "semantic.surface.card", sourceFile: viewFile,
+            sourceLine: 3),
+          PropertyInfo(name: "padding", value: "16px",
+            origin: poTailwindClass, schemaKey: "components.card.padding",
+            originDetail: "class:p-4", sourceFile: viewFile, sourceLine: 4),
+          PropertyInfo(name: "border-radius", value: "8px",
+            origin: poConstant, schemaKey: "classes.card",
+            sourceFile: cssFile, sourceLine: 1),
+          PropertyInfo(name: "data-variant", value: "compact",
+            origin: poConstant,
+            schemaKey: "components.card.variant.compact",
+            sourceFile: componentFile, sourceLine: 8),
+          PropertyInfo(name: "data-title", value: "Sofia",
+            origin: poConstant, schemaKey: "fixtures.card.title",
+            sourceFile: fixtureFile, sourceLine: 1),
+          PropertyInfo(name: "outline-offset", value: "2px",
+            origin: poSetStyle, schemaKey: "styles.card.focus",
+            sourceFile: viewFile, sourceLine: 1,
+            directStyleAllowed: true),
+          PropertyInfo(name: "box-shadow", value: "0 1px 2px #000",
+            origin: poSetStyle, schemaKey: "styles.card.shadow",
+            sourceFile: viewFile, sourceLine: 1)
+        ]))
+
+      let background = vm.resolveDesignSourceOwnership("background")
+      check background.ok
+      check background.nodeKey == "semantic.surface.card"
+      check background.planKind == cspTokenUpdate
+      check background.ownership.generatedViewFile == viewFile
+
+      let padding = vm.resolveDesignSourceOwnership("padding")
+      check padding.ok
+      check padding.ownership.tailwindUtilities == @["p-4", "md:p-6"]
+      check padding.planKind == cspTailwindClassReplacement
+
+      let classOwned = vm.resolveDesignSourceOwnership("border-radius")
+      check classOwned.ok
+      check classOwned.ownership.cssModuleFile == cssFile
+      check classOwned.ownership.cssModuleClass == "card"
+
+      let variant = vm.resolveDesignSourceOwnership("data-variant")
+      check variant.ok
+      check variant.schemaNode.kind == dsnComponentVariant
+      let fixture = vm.resolveDesignSourceOwnership("data-title")
+      check fixture.ok
+      check fixture.schemaNode.kind == dsnStoryFixture
+
+      let fallback = vm.resolveDesignSourceOwnership("outline-offset")
+      check fallback.ok
+      check fallback.planKind == cspInlineStyleUpdate
+      check fallback.ownership.fallbackInlineFile == viewFile
+
+      let buried = vm.resolveDesignSourceOwnership("box-shadow")
+      check not buried.ok
+      check buried.diagnostics.anyIt(it.kind == dsdUnstructuredViewCode)
+      check validateDesignSystemSchema(schema).anyIt(
+        it.kind == dsdUnstructuredViewCode)
+      dispose()
+
+  test "design_schema_reports_usage_and_impact":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("design-schema-impact")
+      defer: removeDir(root)
+
+      func span(file: string; line: int): SourceSpan =
+        SourceSpan(file: file, line: line, column: 1,
+          endLine: line, endColumn: 16)
+
+      let tokenFile = root / "design/tokens.schema"
+      createDir(root / "design")
+      atomicWrite(tokenFile, "semantic.text.muted=#9ca3af")
+      let storyA = StoryRef(group: "DestinationCard", name: "Default",
+        kind: skComponent, index: 0)
+      let storyB = StoryRef(group: "SearchPage", name: "Results",
+        kind: skPage, index: 1)
+      let schema = DesignSystemSchema(
+        schemaVersion: 1,
+        projectId: "metacraft-web-backoffice",
+        ownerPackage: "metacraft-web",
+        frameworkContract: "isonim-editor-design-schema-v1",
+        nodes: @[
+          DesignSchemaNode(key: "semantic.text.muted",
+            kind: dsnSemanticToken, name: "Muted text", property: "color",
+            value: "#9ca3af", sourceSpan: span(tokenFile, 1),
+            stories: @[storyA, storyB],
+            components: @["DestinationCard", "SearchResultRow"],
+            pages: @["Search", "Dashboard"],
+            usageCount: 2,
+            foreground: "#9ca3af",
+            background: "#ffffff",
+            minContrast: 4.5,
+            accessibilityImpact: dsaiContrast,
+            reviewLevel: dsrlShared,
+            modeValues: @[
+              DesignTokenModeValue(kind: dtmkLight, name: "light",
+                value: "#4b5563", sourceSpan: span(tokenFile, 4),
+                schemaKey: "semantic.text.muted.light"),
+              DesignTokenModeValue(kind: dtmkDark, name: "dark",
+                value: "#d1d5db", sourceSpan: span(tokenFile, 5),
+                schemaKey: "semantic.text.muted.dark"),
+              DesignTokenModeValue(kind: dtmkDensity, name: "compact",
+                value: "#6b7280", sourceSpan: span(tokenFile, 6),
+                schemaKey: "semantic.text.muted.compact"),
+              DesignTokenModeValue(kind: dtmkPlatform, name: "ios",
+                value: "#6b7280", sourceSpan: span(tokenFile, 7),
+                schemaKey: "semantic.text.muted.ios"),
+              DesignTokenModeValue(kind: dtmkBrand, name: "metacraft",
+                value: "#475569", sourceSpan: span(tokenFile, 8),
+                schemaKey: "semantic.text.muted.brand"),
+              DesignTokenModeValue(kind: dtmkBreakpoint, name: "md",
+                value: "#64748b", sourceSpan: span(tokenFile, 9),
+                schemaKey: "semantic.text.muted.md")
+            ])
+        ],
+        sourceOwnership: @[
+          DesignSourceOwnership(elementSourceKey: "card.title",
+            property: "color", schemaKey: "semantic.text.muted",
+            nodeKey: "semantic.text.muted", sourceSpan: span(tokenFile, 1)),
+          DesignSourceOwnership(elementSourceKey: "search.row",
+            property: "color", schemaKey: "semantic.text.muted",
+            nodeKey: "semantic.text.muted", sourceSpan: span(tokenFile, 1))
+        ])
+
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "M35 impact workspace",
+        storyGroups = @[],
+        designSystemSchema = schema))
+      let impact = vm.designSchemaImpact("semantic.text.muted")
+      check impact.usageCount == 2
+      check impact.affectedStories.len == 2
+      check impact.affectedComponents == @["DestinationCard", "SearchResultRow"]
+      check impact.affectedPages == @["Search", "Dashboard"]
+      check impact.modes.len == 6
+      for kind in [
+        dtmkLight, dtmkDark, dtmkDensity, dtmkPlatform, dtmkBrand, dtmkBreakpoint
+      ]:
+        check impact.modes.anyIt(it.kind == kind)
+      check impact.contrastRatio > 0
+      check impact.contrastRatio < impact.minContrast
+      check impact.accessibilityImpact == dsaiContrast
+      check impact.reviewLevel == dsrlDesignSystem
+      check impact.diagnostics.anyIt(it.kind == dsdContrastImpact)
+      dispose()
+
+  test "design_schema_preserves_framework_consumer_boundary":
+    createRoot proc(dispose: proc()) =
+      let schema = DesignSystemSchema(
+        schemaVersion: 1,
+        projectId: "metacraft-web-backoffice",
+        ownerPackage: "metacraft-web",
+        frameworkContract: "isonim-editor-design-schema-v1",
+        nodes: @[DesignSchemaNode(key: "semantic.surface.card",
+          kind: dsnSemanticToken, name: "Card surface",
+          property: "background", value: "#ffffff",
+          sourceSpan: SourceSpan(file: "apps/back-office/design/tokens.schema",
+            line: 1, column: 1, endLine: 1, endColumn: 24))])
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "Consumer-owned schema fixture",
+        storyGroups = @[],
+        designSystemSchema = schema))
+      check vm.designSystemSchema.val.ownerPackage == "metacraft-web"
+      check validateDesignSystemSchema(vm.designSystemSchema.val).len == 0
+
+      for path in walkDirRec("src/isonim/editor"):
+        if not path.endsWith(".nim") or path.endsWith("src/isonim/editor/main.nim"):
+          continue
+        let text = readFile(path).toLowerAscii()
+        check not text.contains("metacraft-web")
+        check not text.contains("backoffice_editor")
+      dispose()
+
   test "editor_agent_context_includes_source_and_design_system_state":
     createRoot proc(dispose: proc()) =
       let root = tempWorkspaceDir("agent-context")

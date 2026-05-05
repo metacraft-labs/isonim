@@ -144,6 +144,7 @@ type
     workspaceEditAffectedStories*: Signal[seq[StoryRef]]
     workspaceEditFullReload*: Signal[bool]
     commandStates*: Signal[seq[EditorCommandState]]
+    designSystemSchema*: Signal[DesignSystemSchema]
     workspaceEditAdapter*: WorkspaceEditAdapter
     sidebar*: SidebarVM
     storyboard*: StoryboardVM
@@ -1936,6 +1937,208 @@ proc contrastRatio(foreground, background: string): float =
   let lighter = max(fg.value, bg.value)
   let darker = min(fg.value, bg.value)
   (lighter + 0.05) / (darker + 0.05)
+
+func hasSource(span: SourceSpan): bool =
+  span.file.len > 0 and span.line > 0
+
+func designDiagnostic(kind: DesignSchemaDiagnosticKind; message: string;
+    file = ""; line = 0; property = ""; schemaKey = ""): DesignSchemaDiagnostic =
+  DesignSchemaDiagnostic(
+    kind: kind,
+    message: message,
+    file: file,
+    line: line,
+    property: property,
+    schemaKey: schemaKey)
+
+func findDesignNode(schema: DesignSystemSchema;
+    key: string): tuple[ok: bool, node: DesignSchemaNode] =
+  for node in schema.nodes:
+    if node.key == key:
+      return (true, node)
+
+func sourceOwnershipPlanKind(ownership: DesignSourceOwnership;
+    node: DesignSchemaNode): CSSSourcePlanKind =
+  if ownership.fallbackAllowed:
+    return cspInlineStyleUpdate
+  if ownership.tailwindUtilities.len > 0:
+    return cspTailwindClassReplacement
+  case node.kind
+  of dsnFoundation, dsnSemanticToken, dsnComponentToken:
+    cspTokenUpdate
+  of dsnClassDefinition, dsnStyleDefinition, dsnStoryFixture,
+      dsnComponentVariant, dsnComponentState, dsnDensityMode,
+      dsnResponsiveMode:
+    cspStructuredSchemaUpdate
+
+func ownershipMatches(ownership: DesignSourceOwnership; element: ElementRef;
+    prop: PropertyInfo): bool =
+  if ownership.property != prop.name:
+    return false
+  if ownership.elementSourceKey.len > 0 and
+      ownership.elementSourceKey notin [element.sourceKey, element.id]:
+    return false
+  if ownership.domPath.len > 0 and element.domPath.len > 0 and
+      ownership.domPath != element.domPath:
+    return false
+  if ownership.schemaKey.len > 0 and ownership.schemaKey in [
+      prop.schemaKey, prop.tokenName, prop.variantKey, element.schemaKey]:
+    return true
+  if ownership.nodeKey.len > 0 and ownership.nodeKey in [
+      prop.schemaKey, prop.tokenName, prop.variantKey, element.schemaKey]:
+    return true
+  ownership.elementSourceKey.len > 0 or ownership.domPath.len > 0
+
+func validateDesignSystemSchema*(schema: DesignSystemSchema): seq[
+    DesignSchemaDiagnostic] =
+  if schema.schemaVersion <= 0 or schema.schemaVersion > 1:
+    result.add designDiagnostic(dsdUnsupportedSchemaVersion,
+      "Design-system schema version must be 1 for this framework contract.")
+  if schema.projectId.len == 0 or schema.ownerPackage.len == 0:
+    result.add designDiagnostic(dsdMissingProjectOwner,
+      "Design-system schema must identify the project-owned package.")
+
+  for node in schema.nodes:
+    if node.key.len == 0:
+      result.add designDiagnostic(dsdMissingSourceOwnership,
+        "Design-system schema nodes require stable keys.",
+        node.sourceSpan.file, node.sourceSpan.line, node.property, node.key)
+    if not node.sourceSpan.hasSource:
+      result.add designDiagnostic(dsdMissingSourceSpan,
+        "Design-system schema node needs a project-owned source span.",
+        node.sourceSpan.file, node.sourceSpan.line, node.property, node.key)
+    for mode in node.modeValues:
+      if not mode.sourceSpan.hasSource:
+        result.add designDiagnostic(dsdMissingModeSource,
+          "Token mode '" & mode.name & "' needs a project-owned source span.",
+          mode.sourceSpan.file, mode.sourceSpan.line, node.property, node.key)
+
+  for ownership in schema.sourceOwnership:
+    if ownership.property.len == 0 or
+        (ownership.schemaKey.len == 0 and ownership.nodeKey.len == 0):
+      result.add designDiagnostic(dsdMissingSourceOwnership,
+        "Source ownership entries require a property and schema node.",
+        ownership.sourceSpan.file, ownership.sourceSpan.line,
+        ownership.property, ownership.schemaKey)
+    if ownership.unstructuredViewCode:
+      result.add designDiagnostic(dsdUnstructuredViewCode,
+        "Property is buried in unstructured view code and needs migration before precise editing.",
+        if ownership.generatedViewFile.len > 0: ownership.generatedViewFile
+        else: ownership.sourceSpan.file,
+        if ownership.generatedViewLine > 0: ownership.generatedViewLine
+        else: ownership.sourceSpan.line,
+        ownership.property,
+        if ownership.nodeKey.len > 0: ownership.nodeKey else: ownership.schemaKey)
+
+func resolveDesignSourceOwnership*(schema: DesignSystemSchema;
+    element: ElementRef; property: string): DesignSourceOwnershipReport =
+  result.property = property
+  var prop = PropertyInfo()
+  var foundProperty = false
+  for candidate in element.properties:
+    if candidate.name == property:
+      prop = candidate
+      foundProperty = true
+      break
+
+  if not foundProperty:
+    result.diagnostics.add designDiagnostic(dsdMissingSourceOwnership,
+      "Selected element does not expose property '" & property & "'.",
+      element.sourceFile, element.sourceLine, property, element.schemaKey)
+    return
+
+  for ownership in schema.sourceOwnership:
+    if not ownership.ownershipMatches(element, prop):
+      continue
+    let key = if ownership.nodeKey.len > 0: ownership.nodeKey
+      else: ownership.schemaKey
+    let found = schema.findDesignNode(key)
+    if not found.ok:
+      result.diagnostics.add designDiagnostic(dsdMissingSourceOwnership,
+        "Source ownership points at an unknown design schema node.",
+        ownership.sourceSpan.file, ownership.sourceSpan.line,
+        ownership.property, key)
+      return
+    result.ok = not ownership.unstructuredViewCode
+    result.nodeKey = found.node.key
+    result.schemaNode = found.node
+    result.ownership = ownership
+    result.planKind = ownership.sourceOwnershipPlanKind(found.node)
+    if ownership.unstructuredViewCode:
+      result.diagnostics.add designDiagnostic(dsdUnstructuredViewCode,
+        "Property is buried in unstructured view code and needs migration before precise editing.",
+        if ownership.generatedViewFile.len > 0: ownership.generatedViewFile
+        else: ownership.sourceSpan.file,
+        if ownership.generatedViewLine > 0: ownership.generatedViewLine
+        else: ownership.sourceSpan.line,
+        property, found.node.key)
+    return
+
+  result.diagnostics.add designDiagnostic(dsdMissingSourceOwnership,
+    "No source ownership edge maps property '" & property & "' to the project schema.",
+    prop.sourceFile, prop.sourceLine, property, prop.schemaKey)
+
+proc resolveDesignSourceOwnership*(editor: EditorVM;
+    property: string): DesignSourceOwnershipReport =
+  resolveDesignSourceOwnership(editor.designSystemSchema.val,
+    editor.inspector.selectedElement.val, property)
+
+func designReviewRank(level: DesignSchemaReviewLevel): int =
+  case level
+  of dsrlNone: 0
+  of dsrlLocal: 1
+  of dsrlShared: 2
+  of dsrlAccessibility: 3
+  of dsrlDesignSystem: 4
+
+func strongestReviewLevel(a, b: DesignSchemaReviewLevel): DesignSchemaReviewLevel =
+  if b.designReviewRank > a.designReviewRank: b else: a
+
+proc designSchemaImpact*(schema: DesignSystemSchema;
+    schemaKey: string): DesignSchemaImpact =
+  let found = schema.findDesignNode(schemaKey)
+  result.schemaKey = schemaKey
+  if not found.ok:
+    result.diagnostics.add designDiagnostic(dsdMissingSourceOwnership,
+      "Unknown design schema node '" & schemaKey & "'.", schemaKey = schemaKey)
+    return
+
+  let node = found.node
+  result.affectedStories = node.stories
+  result.affectedComponents = node.components
+  result.affectedPages = node.pages
+  result.modes = node.modeValues
+  result.minContrast = node.minContrast
+  result.accessibilityImpact = node.accessibilityImpact
+  result.reviewLevel = node.reviewLevel
+
+  for ownership in schema.sourceOwnership:
+    if ownership.nodeKey == schemaKey or ownership.schemaKey == schemaKey:
+      inc result.usageCount
+
+  result.usageCount = max(result.usageCount, node.usageCount)
+
+  if result.usageCount > 1:
+    result.reviewLevel = result.reviewLevel.strongestReviewLevel(dsrlShared)
+
+  if node.foreground.len > 0 and node.background.len > 0:
+    result.contrastRatio = contrastRatio(node.foreground, node.background)
+    if node.minContrast > 0 and result.contrastRatio > 0 and
+        result.contrastRatio < node.minContrast:
+      result.accessibilityImpact = dsaiContrast
+      result.reviewLevel =
+        result.reviewLevel.strongestReviewLevel(dsrlAccessibility)
+      result.diagnostics.add designDiagnostic(dsdContrastImpact,
+        "Shared edit may reduce contrast below the required threshold.",
+        node.sourceSpan.file, node.sourceSpan.line, node.property, node.key)
+
+  if result.modes.len > 0:
+    result.reviewLevel =
+      result.reviewLevel.strongestReviewLevel(dsrlDesignSystem)
+
+proc designSchemaImpact*(editor: EditorVM;
+    schemaKey: string): DesignSchemaImpact =
+  designSchemaImpact(editor.designSystemSchema.val, schemaKey)
 
 proc foundationDiagnostic(kind: FoundationEditDiagnosticKind;
     token: FoundationTokenEntry; message: string): FoundationEditDiagnostic =
@@ -4190,6 +4393,7 @@ proc createEditorVM*(): EditorVM =
   let workspaceEditAffectedStories = createSignal[seq[StoryRef]](@[])
   let workspaceEditFullReload = createSignal(false)
   let commandStates = createSignal[seq[EditorCommandState]](@[])
+  let designSystemSchema = createSignal(DesignSystemSchema())
 
   let sidebar = createSidebarVM()
   let storyboard = createStoryboardVM()
@@ -4222,6 +4426,7 @@ proc createEditorVM*(): EditorVM =
     workspaceEditAffectedStories: workspaceEditAffectedStories,
     workspaceEditFullReload: workspaceEditFullReload,
     commandStates: commandStates,
+    designSystemSchema: designSystemSchema,
     sidebar: sidebar,
     storyboard: storyboard,
     inspector: inspector,
