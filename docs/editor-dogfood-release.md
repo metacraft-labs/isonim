@@ -112,6 +112,7 @@ direnv exec /home/zahary/metacraft/isonim just test-editor
 direnv exec /home/zahary/metacraft/isonim just editor-build
 direnv exec /home/zahary/metacraft/isonim just test-browser-editor-example
 direnv exec /home/zahary/metacraft/isonim just test-browser-editor-consumer
+direnv exec /home/zahary/metacraft/isonim just test-editor-visual-gates
 direnv exec /home/zahary/metacraft/metacraft-web just build-back-office-editor
 direnv exec /home/zahary/metacraft/metacraft-web nim c -r apps/back-office/tests/test_backoffice_editor_workspace.nim
 direnv exec /home/zahary/metacraft/nim-agents just test

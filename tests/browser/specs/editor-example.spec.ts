@@ -1,4 +1,189 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
+
+const desktop = { width: 1440, height: 900 };
+const laptop = { width: 1280, height: 800 };
+const tablet = { width: 1024, height: 768 };
+const mobileWidth = { width: 390, height: 844 };
+
+async function expectStableVisualSnapshot(page, name: string) {
+  await page.addStyleTag({
+    content: `
+      *, *::before, *::after {
+        animation-duration: 0s !important;
+        animation-delay: 0s !important;
+        transition-duration: 0s !important;
+        caret-color: transparent !important;
+      }
+    `,
+  });
+  await expect(page).toHaveScreenshot(name, {
+    fullPage: true,
+    maxDiffPixelRatio: 0.03,
+  });
+}
+
+async function assertVisibleBox(locator, label: string) {
+  await expect(locator).toBeVisible();
+  const box = await locator.boundingBox();
+  expect(box, `${label} has a layout box`).not.toBeNull();
+  expect(box!.width, `${label} width`).toBeGreaterThan(24);
+  expect(box!.height, `${label} height`).toBeGreaterThan(10);
+}
+
+async function assertNoBodyScrollbar(page) {
+  const overflow = await page.evaluate(() => ({
+    x:
+      document.documentElement.scrollWidth -
+      document.documentElement.clientWidth,
+    y:
+      document.documentElement.scrollHeight -
+      document.documentElement.clientHeight,
+  }));
+  expect(overflow.x, "body must not expose horizontal scroll").toBeLessThan(2);
+  expect(overflow.y, "body must not expose vertical scroll").toBeLessThan(2);
+}
+
+async function assertNoEssentialOverlaps(page, selectors: string[]) {
+  const overlaps = await page.evaluate((items) => {
+    const visibleRect = (selector: string) => {
+      const element = document.querySelector(selector);
+      if (!element) return null;
+      const style = window.getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      if (
+        style.visibility === "hidden" ||
+        style.display === "none" ||
+        rect.width < 1 ||
+        rect.height < 1
+      ) {
+        return null;
+      }
+      return {
+        selector,
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+      };
+    };
+    const rects = items.map(visibleRect).filter(Boolean) as Array<{
+      selector: string;
+      left: number;
+      top: number;
+      right: number;
+      bottom: number;
+    }>;
+    const failures: string[] = [];
+    for (let i = 0; i < rects.length; i++) {
+      for (let j = i + 1; j < rects.length; j++) {
+        const a = rects[i];
+        const b = rects[j];
+        const x = Math.max(
+          0,
+          Math.min(a.right, b.right) - Math.max(a.left, b.left),
+        );
+        const y = Math.max(
+          0,
+          Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top),
+        );
+        if (x * y > 24) failures.push(`${a.selector} overlaps ${b.selector}`);
+      }
+    }
+    return failures;
+  }, selectors);
+  expect(overlaps).toEqual([]);
+}
+
+async function assertNoClippedEssentialText(page) {
+  const clipped = await page.evaluate(() => {
+    const selectors = [
+      ".editor-sidebar button",
+      ".editor-statusbar [role=button]",
+      ".editor-tabbar [role=tab]",
+      ".editor-manual-inspector [role=button]",
+      ".editor-chat [role=button]",
+      ".editor-manual-inspector input",
+      ".editor-chat textarea",
+    ];
+    const failures: string[] = [];
+    for (const selector of selectors) {
+      for (const element of Array.from(
+        document.querySelectorAll<HTMLElement>(selector),
+      )) {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        if (style.display === "none" || style.visibility === "hidden") continue;
+        if (rect.width < 1 || rect.height < 1) continue;
+        const text = (element.innerText || "").trim();
+        if (!text) continue;
+        if (text.length > 32) continue;
+        const clippedX = element.scrollWidth - element.clientWidth > 2;
+        const clippedY = element.scrollHeight - element.clientHeight > 2;
+        if (clippedX || clippedY) {
+          failures.push(`${selector}: ${text}`);
+        }
+      }
+    }
+    return failures;
+  });
+  expect(clipped).toEqual([]);
+}
+
+async function assertVectorCanvasHasPixels(page) {
+  const stats = await page
+    .locator('canvas[data-vector-canvas="fabric"]')
+    .first()
+    .evaluate((canvas: HTMLCanvasElement) => {
+      const context = canvas.getContext("2d");
+      if (!context) return { nonBlank: 0, distinct: 0 };
+      const width = canvas.width;
+      const height = canvas.height;
+      const data = context.getImageData(0, 0, width, height).data;
+      const colors = new Set<string>();
+      let nonBlank = 0;
+      const stride = Math.max(4, Math.floor(data.length / 8000) * 4);
+      for (let i = 0; i < data.length; i += stride) {
+        const r = data[i];
+        const g = data[i + 1];
+        const b = data[i + 2];
+        const a = data[i + 3];
+        if (a > 0 && (r < 245 || g < 245 || b < 245)) {
+          nonBlank++;
+          colors.add(`${r >> 4}:${g >> 4}:${b >> 4}:${a >> 4}`);
+        }
+      }
+      return { nonBlank, distinct: colors.size };
+    });
+  expect(stats.nonBlank, "vector canvas has visible pixels").toBeGreaterThan(
+    20,
+  );
+  expect(
+    stats.distinct,
+    "vector canvas has more than a blank fill",
+  ).toBeGreaterThan(1);
+}
+
+async function openDestinationComponentDetail(page: Page) {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Open Components section" }).click();
+  await page
+    .getByRole("button", { name: "Toggle DestinationCard stories" })
+    .click();
+  await page
+    .getByRole("button", { name: "Select story DestinationCard / Default" })
+    .click();
+  await expect(
+    page.locator('[data-component-variant-matrix="true"]'),
+  ).toBeVisible();
+}
+
+async function openDestinationComponentEdit(page: Page) {
+  await openDestinationComponentDetail(page);
+  await page
+    .getByRole("button", { name: "Open selected component in edit mode" })
+    .click();
+  await expect(page.locator(".editor-manual-inspector")).toBeVisible();
+}
 
 test.describe("IsoNim packaged editor example", () => {
   test.beforeEach(async ({ page }) => {
@@ -480,5 +665,182 @@ test.describe("IsoNim packaged editor example", () => {
         ),
       )
       .toBe(countBeforeDelete - 1);
+  });
+
+  test("e2e_editor_visual_baselines_cover_all_primary_modes", async ({
+    page,
+  }) => {
+    await page.setViewportSize(desktop);
+    await page.goto("/");
+    await expect(page.locator('[data-figma-canvas="true"]')).toBeVisible();
+    await expectStableVisualSnapshot(page, "m43-shell-desktop.png");
+
+    await page.setViewportSize(laptop);
+    await page.goto("/");
+    await expect(page.locator(".editor-sidebar")).toBeVisible();
+    await expectStableVisualSnapshot(page, "m43-shell-laptop.png");
+
+    await page.setViewportSize(tablet);
+    await page.goto("/");
+    await expect(page.locator(".editor-sidebar")).toBeVisible();
+    await expectStableVisualSnapshot(page, "m43-shell-tablet.png");
+
+    await page.setViewportSize(mobileWidth);
+    await page.goto("/");
+    await expect(page.locator(".editor-sidebar")).toBeVisible();
+    await expect(page.locator(".editor-preview:visible")).toHaveCount(0);
+    await expectStableVisualSnapshot(page, "m43-shell-mobile-width.png");
+
+    await page.setViewportSize(desktop);
+    await openDestinationComponentEdit(page);
+    await expect(
+      page.getByLabel("Token manager", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByLabel(/Style class cascade token manager/),
+    ).toBeVisible();
+    await expect(page.getByLabel(/Element tree selected/)).toBeVisible();
+    await expectStableVisualSnapshot(
+      page,
+      "m43-edit-inspector-token-style-layers.png",
+    );
+
+    await page.getByRole("button", { name: "Narrow right panel" }).click();
+    await expect(page.locator(".editor-manual-inspector")).toHaveAttribute(
+      "data-right-panel-width",
+      "280",
+    );
+    await expectStableVisualSnapshot(page, "m43-narrow-right-panel.png");
+
+    await openDestinationComponentEdit(page);
+    await page.getByRole("button", { name: "Switch to comment mode" }).click();
+    const editFrame = page.frameLocator(
+      'iframe[title="Editable component preview"]',
+    );
+    await editFrame
+      .getByTestId("component-edit-preview")
+      .click({ force: true });
+    await expect(
+      editFrame.getByLabel("Comment on selected element"),
+    ).toBeVisible();
+    await expectStableVisualSnapshot(page, "m43-comment-mode-popover.png");
+
+    await page.goto("/");
+    await page
+      .getByRole("textbox", { name: "Agent prompt" })
+      .fill("Review the selected editor state visually");
+    await page.getByRole("button", { name: "Send agent prompt" }).click();
+    await expect(page.getByText("Agent Proposed Edits")).toBeVisible();
+    await expectStableVisualSnapshot(page, "m43-ai-mode-proposals.png");
+
+    await openDestinationComponentDetail(page);
+    await expectStableVisualSnapshot(page, "m43-component-variant-matrix.png");
+
+    await page.goto("/?view=vector#vector-editor");
+    await expect(page.locator('[data-vector-adapter="fabric"]')).toBeVisible();
+    await assertVectorCanvasHasPixels(page);
+    await expectStableVisualSnapshot(page, "m43-vector-editor.png");
+  });
+
+  test("e2e_editor_ui_quality_no_overlap_or_unexpected_scrollbars", async ({
+    page,
+  }) => {
+    await page.setViewportSize(desktop);
+    await openDestinationComponentEdit(page);
+    await assertVisibleBox(
+      page.locator('iframe[title="Editable component preview"]'),
+      "component edit preview iframe",
+    );
+    await assertVisibleBox(
+      page.locator(".editor-manual-inspector"),
+      "manual inspector",
+    );
+    await assertVisibleBox(
+      page.getByLabel("Token manager", { exact: true }),
+      "token manager",
+    );
+    await assertVisibleBox(
+      page.getByLabel(/Style class cascade token manager/),
+      "style manager",
+    );
+    await assertVisibleBox(
+      page.getByLabel(/Element tree selected/),
+      "layers panel",
+    );
+    await assertNoBodyScrollbar(page);
+    await assertNoEssentialOverlaps(page, [
+      ".editor-manual-inspector",
+      ".editor-preview",
+      ".editor-preview iframe",
+    ]);
+    await assertNoClippedEssentialText(page);
+
+    const frame = page.frameLocator(
+      'iframe[title="Editable component preview"]',
+    );
+    await frame.getByTestId("component-edit-preview").click({ force: true });
+    await expect(frame.locator('[data-isonim-selected="true"]')).toBeVisible();
+    await expect(
+      frame.locator("#isonim-editor-selection-handles"),
+    ).toBeVisible();
+    await expect(
+      frame.locator('[data-layout-guide="gap-overlay"]'),
+    ).toBeVisible();
+    await expect(
+      frame.locator('[data-layout-guide="snap-lines"]'),
+    ).toBeVisible();
+    await expect(
+      frame.locator('[data-layout-guide="spacing-measurement"]'),
+    ).toBeVisible();
+
+    const before = await page.locator(".editor-manual-inspector").boundingBox();
+    await page.getByRole("button", { name: "Switch to comment mode" }).click();
+    await expect(page.locator(".editor-chat")).toBeVisible();
+    await page.getByRole("button", { name: "Switch to edit mode" }).click();
+    await expect(page.locator(".editor-manual-inspector")).toBeVisible();
+    const after = await page.locator(".editor-manual-inspector").boundingBox();
+    expect(after!.width, "mode switch keeps right panel width stable").toBe(
+      before!.width,
+    );
+
+    await page.getByRole("button", { name: "Narrow right panel" }).click();
+    await expect(page.locator(".editor-manual-inspector")).toHaveAttribute(
+      "data-right-panel-width",
+      "280",
+    );
+    await assertNoBodyScrollbar(page);
+    await assertNoClippedEssentialText(page);
+
+    await openDestinationComponentDetail(page);
+    await assertVisibleBox(
+      page.locator('[data-component-variant-matrix="true"]'),
+      "variant matrix",
+    );
+    await assertNoBodyScrollbar(page);
+
+    await page.goto("/?view=vector#vector-editor");
+    await assertVisibleBox(
+      page.locator('[data-vector-adapter="fabric"]'),
+      "vector host",
+    );
+    await assertVectorCanvasHasPixels(page);
+    await page
+      .getByRole("button", { name: "Select Rectangle vector tool" })
+      .click();
+    const host = page.locator('[data-vector-adapter="fabric"]').first();
+    const box = await host.locator("canvas").first().boundingBox();
+    expect(box).not.toBeNull();
+    await page.mouse.move(box!.x + 125, box!.y + 150);
+    await page.mouse.down();
+    await page.mouse.move(box!.x + 178, box!.y + 180);
+    await page.mouse.up();
+    await expect(host).toHaveAttribute("data-vector-controls-visible", "true");
+    await assertNoBodyScrollbar(page);
+
+    await page.setViewportSize(mobileWidth);
+    await page.goto("/");
+    await expect(page.locator(".editor-sidebar")).toBeVisible();
+    await expect(page.locator(".editor-preview:visible")).toHaveCount(0);
+    await assertNoBodyScrollbar(page);
   });
 });

@@ -46,6 +46,7 @@
     "direnv exec /home/zahary/metacraft/isonim just editor-build",
     "direnv exec /home/zahary/metacraft/isonim just test-browser-editor-example",
     "direnv exec /home/zahary/metacraft/isonim just test-browser-editor-consumer",
+    "direnv exec /home/zahary/metacraft/isonim just test-editor-visual-gates",
     "direnv exec /home/zahary/metacraft/metacraft-web just build-back-office-editor",
     "direnv exec /home/zahary/metacraft/metacraft-web nim c -r apps/back-office/tests/test_backoffice_editor_workspace.nim",
     "direnv exec /home/zahary/metacraft/nim-agents just test"
@@ -1038,6 +1039,66 @@
           "status": "workspace_api_compatible",
           "evidence": [
             "tests/test_editor_viewmodels.nim:design_schema_preserves_framework_consumer_boundary"
+          ]
+        }
+      }
+    },
+    {
+      "id": "visual_review_gates",
+      "title": "Visual Regression, Screenshot, and UX Review Gates",
+      "status": "functional",
+      "targetWorkflow": "Maintainers can run an automated visual gate that captures representative editor modes, checks nonblank canvas/iframe surfaces, rejects obvious clipping, overlap, unreachable controls, and body scroll regressions, then emits a reviewer brief for changed screenshots and failed UX-density checks.",
+      "owner": "framework",
+      "mockOnly": false,
+      "placeholderUi": false,
+      "browserBehavior": ["pointer", "focus", "iframe", "canvas"],
+      "implementation": "M43 adds Playwright screenshot baselines for shell, AI proposal mode, Comment popover mode, Edit inspector, token/style/layers panels, component variant matrix, narrow right panel, and vector editor across desktop, laptop, tablet, and mobile-width viewports. It also adds canvas-pixel checks, selected-element/handle/popover assertions, no-body-scroll/no-clipping/no-overlap checks, mode-switch panel stability checks, and a Node visual-review brief generator.",
+      "knownLimitations": "The gate is a meaningful automated visual regression baseline for the current editor surfaces, but rows remain functional rather than Figma-grade until M44 keyboard/accessibility/performance coverage and M45 mature release evidence are complete. Metacraft-web keeps its own project-specific browser coverage through the consumer suite.",
+      "headlessTests": [
+        {
+          "name": "editor_visual_review_brief_lists_changed_surfaces",
+          "file": "tests/test_editor_visual_review_brief.mjs"
+        }
+      ],
+      "playwrightRequired": true,
+      "playwrightTests": [
+        {
+          "name": "e2e_editor_visual_baselines_cover_all_primary_modes",
+          "file": "tests/browser/specs/editor-example.spec.ts"
+        },
+        {
+          "name": "e2e_editor_ui_quality_no_overlap_or_unexpected_scrollbars",
+          "file": "tests/browser/specs/editor-example.spec.ts"
+        }
+      ],
+      "screenshotVisualAssertions": {
+        "requiredForFigmaGrade": true,
+        "status": "passing",
+        "assertions": [
+          "Screenshot baselines cover shell desktop/laptop/tablet/mobile-width, AI proposal mode, comment popover mode, edit inspector token/style/layers panels, component variant matrix, narrow right panel, and vector editor.",
+          "Canvas and iframe checks prove vector previews are nonblank and selected component previews expose visible selection, handles, layout guides, and comment popovers.",
+          "UX quality checks reject body scroll regressions, essential overlap, clipped controls, and right-panel layout shifts after mode switches."
+        ],
+        "evidence": [
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes",
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_ui_quality_no_overlap_or_unexpected_scrollbars",
+          "tests/test_editor_visual_review_brief.mjs:editor_visual_review_brief_lists_changed_surfaces"
+        ],
+        "futureMilestone": "M45",
+        "notes": "M43 establishes automated screenshot and UX-review gates for the current primary editor surfaces; later milestones decide whether individual workflows can be promoted to Figma-grade."
+      },
+      "consumerCoverage": {
+        "isonimExample": {
+          "status": "covered",
+          "evidence": [
+            "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes",
+            "tests/browser/specs/editor-example.spec.ts:e2e_editor_ui_quality_no_overlap_or_unexpected_scrollbars"
+          ]
+        },
+        "metacraftWeb": {
+          "status": "covered_indirectly",
+          "evidence": [
+            "tests/browser/specs/metacraft-web-editor.spec.ts:mounts the live consumer workspace through public editor APIs"
           ]
         }
       }

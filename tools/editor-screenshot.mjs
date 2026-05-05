@@ -79,51 +79,101 @@ const views = {
   },
   "component-detail": {
     description: "Component detail page — hero, variants, props, guidelines",
-    initialUrl: "http://127.0.0.1:8091/#component-detail",
+    initialUrl: "http://127.0.0.1:8091/?view=detail#component-detail",
     setup: async (page) => {},
+  },
+  "component-variant-matrix": {
+    description: "Component detail variant matrix",
+    initialUrl: "http://127.0.0.1:8091/?view=detail#component-detail",
+    setup: async (page) => {
+      await page.waitForSelector('[data-component-variant-matrix="true"]');
+    },
   },
   "component-edit": {
     description: "Component edit mode — live preview + CSS inspector",
-    initialUrl: "http://127.0.0.1:8091/#component-edit",
+    initialUrl: "http://127.0.0.1:8091/?view=edit#component-edit",
     setup: async (page) => {},
+  },
+  "component-edit-token-style-layers": {
+    description: "Edit inspector with token manager, style manager, and layers",
+    initialUrl: "http://127.0.0.1:8091/?view=edit#component-edit",
+    setup: async (page) => {
+      await page.waitForSelector('[aria-label="Token manager"]');
+      await page.waitForSelector(
+        '[aria-label^="Style class cascade token manager"]',
+      );
+      await page.waitForSelector('[aria-label^="Element tree selected"]');
+    },
+  },
+  "component-comment-popover": {
+    description: "Comment mode with selected component popover",
+    initialUrl: "http://127.0.0.1:8091/?view=edit#component-edit",
+    setup: async (page) => {
+      await page
+        .getByRole("button", { name: "Switch to comment mode" })
+        .click();
+      const frame = page.frameLocator(
+        'iframe[title="Editable component preview"]',
+      );
+      await frame.getByTestId("component-edit-preview").click({ force: true });
+      await frame.getByLabel("Comment on selected element").waitFor();
+    },
+  },
+  "ai-mode-proposals": {
+    description: "AI mode with permission request and proposed edit",
+    setup: async (page) => {
+      await page
+        .getByRole("textbox", { name: "Agent prompt" })
+        .fill("Review the selected editor state visually");
+      await page.getByRole("button", { name: "Send agent prompt" }).click();
+      await page.getByText("Agent Proposed Edits").waitFor();
+    },
+  },
+  "narrow-right-panel": {
+    description: "Edit inspector after narrowing the right panel",
+    initialUrl: "http://127.0.0.1:8091/?view=edit#component-edit",
+    setup: async (page) => {
+      await page.getByRole("button", { name: "Narrow right panel" }).click();
+      await page.waitForSelector('[data-right-panel-width="280"]');
+    },
   },
   "page-preview": {
     description: "Page preview — Wanderlust Home page in device frame",
-    initialUrl: "http://127.0.0.1:8091/#page-preview",
+    initialUrl: "http://127.0.0.1:8091/?view=page#page-preview",
     setup: async (page) => {},
   },
   "vector-editor": {
     description:
       "Vector graphics editor — tool palette, SVG canvas, properties",
-    initialUrl: "http://127.0.0.1:8091/#vector-editor",
+    initialUrl: "http://127.0.0.1:8091/?view=vector#vector-editor",
     setup: async (page) => {},
   },
   "inspector-layout": {
     description: "Inspector Layout section — display, flex, alignment controls",
-    initialUrl: "http://127.0.0.1:8091/#component-edit-layout",
+    initialUrl: "http://127.0.0.1:8091/?view=edit#component-edit-layout",
     setup: async (page) => {},
   },
   "inspector-fill": {
     description:
       "Inspector Fill section — color picker with 2D field, hue, swatches",
-    initialUrl: "http://127.0.0.1:8091/#component-edit-fill",
+    initialUrl: "http://127.0.0.1:8091/?view=edit#component-edit-fill",
     setup: async (page) => {},
   },
   "inspector-effects": {
     description:
       "Inspector Effects section — shadow editor, rotation dial, scale",
-    initialUrl: "http://127.0.0.1:8091/#component-edit-effects",
+    initialUrl: "http://127.0.0.1:8091/?view=edit#component-edit-effects",
     setup: async (page) => {},
   },
   "inspector-stroke": {
     description: "Inspector Stroke section — border, border-radius editor",
-    initialUrl: "http://127.0.0.1:8091/#component-edit-stroke",
+    initialUrl: "http://127.0.0.1:8091/?view=edit#component-edit-stroke",
     setup: async (page) => {},
   },
   "inspector-transitions": {
     description:
       "Inspector Transitions section — bezier curve editor, duration",
-    initialUrl: "http://127.0.0.1:8091/#component-edit-transitions",
+    initialUrl: "http://127.0.0.1:8091/?view=edit#component-edit-transitions",
     setup: async (page) => {},
   },
 };
@@ -206,6 +256,24 @@ async function main() {
     execSync(`cp src/isonim/editor/index.html build/editor/index.html`, {
       cwd: projectRoot,
     });
+    execSync(
+      `cp node_modules/fabric/dist/index.min.js build/editor/fabric.min.js`,
+      {
+        cwd: projectRoot,
+      },
+    );
+    execSync(
+      `cp node_modules/paper/dist/paper-core.min.js build/editor/paper-core.min.js`,
+      {
+        cwd: projectRoot,
+      },
+    );
+    execSync(
+      `cp node_modules/svgo/dist/svgo.browser.js build/editor/svgo.browser.js`,
+      {
+        cwd: projectRoot,
+      },
+    );
     console.log("    Built.");
   }
 

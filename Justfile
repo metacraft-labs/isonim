@@ -156,6 +156,7 @@ test-editor:
     nim c -r tests/test_editor_public_api.nim
     nim js --path:src -o:build/test_editor_public_browser_imports.js tests/test_editor_public_browser_imports.nim
     nim c -r tests/test_editor_release_gate.nim
+    node --test tests/test_editor_visual_review_brief.mjs
     nim c -r tests/test_editor_viewmodels.nim
     nim c -r --path:../nim-acp/src tests/test_editor_agent_context.nim
     nim c -r tests/test_editor_agent_harbor.nim
@@ -168,6 +169,11 @@ test-editor:
 # Run packaged editor browser tests.
 test-browser-editor-example: editor-build
     cd tests/browser && npm install && npx playwright test --project=editor-example
+
+# Run the M43 visual screenshot, pixel, layout, and review brief gates.
+test-editor-visual-gates: editor-build
+    node --test tests/test_editor_visual_review_brief.mjs
+    cd tests/browser && npm install && npx playwright test --project=editor-example --grep "e2e_editor_visual_baselines_cover_all_primary_modes|e2e_editor_ui_quality_no_overlap_or_unexpected_scrollbars"
 
 # Run live consumer browser contract tests against metacraft-web.
 test-browser-editor-consumer:
