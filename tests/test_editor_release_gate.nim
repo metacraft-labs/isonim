@@ -107,10 +107,14 @@ proc checkedText(path: string): string =
 proc hasTestDeclaration(path, text, name: string): bool =
   if path.endsWith(".nim"):
     return text.contains("test \"" & name & "\":")
-  if path.endsWith(".ts"):
+  if path.endsWith(".ts") or path.endsWith(".mjs"):
     return text.contains("test(\"" & name & "\"") or
       text.contains("test('" & name & "'")
   false
+
+proc isKnownTestPath(path: string): bool =
+  path.startsWith("tests/") or
+    path.startsWith("../metacraft-web/apps/back-office/tests/")
 
 proc checkNamedTestsExist(row: JsonNode; key: string) =
   if not row.hasKey(key):
@@ -118,8 +122,9 @@ proc checkNamedTestsExist(row: JsonNode; key: string) =
   for entry in row[key].getElems:
     let file = testFile(entry)
     let name = testName(entry)
-    check file.startsWith("tests/")
-    check file.endsWith(".nim") or file.endsWith(".ts")
+    check isKnownTestPath(file)
+    check file.endsWith(".nim") or file.endsWith(".ts") or
+      file.endsWith(".mjs")
     let text = checkedText(file)
     check hasTestDeclaration(file, text, name)
 
@@ -151,7 +156,8 @@ proc checkEvidenceReference(evidence: string) =
   check fileExists(file)
 
   let detail = evidenceDetail(evidence)
-  if detail.len > 0 and (file.endsWith(".nim") or file.endsWith(".ts")):
+  if detail.len > 0 and (file.endsWith(".nim") or file.endsWith(".ts") or
+      file.endsWith(".mjs")):
     let text = checkedText(file)
     check hasTestDeclaration(file, text, detail)
 

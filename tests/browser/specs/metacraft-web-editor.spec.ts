@@ -1,6 +1,82 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { test, expect } from "@playwright/test";
 
+const devBridgeSourceFile = resolve(
+  "../../../metacraft-web/dist/editor-dev-workspace/apps/back-office/src/backoffice_ui/components.nim",
+);
+
 test.describe("metacraft-web IsoNim editor consumer", () => {
+  test("e2e_metacraft_editor_writes_real_design_schema_files", async ({
+    page,
+  }) => {
+    await page.goto("/?writeBridge=1");
+    await expect
+      .poll(() => readFileSync(devBridgeSourceFile, "utf8"))
+      .toContain("component-topbar");
+    const beforeText = readFileSync(devBridgeSourceFile, "utf8");
+    await expect(page.locator(".editor-statusbar")).toContainText(
+      "write writable",
+    );
+
+    await page.getByRole("button", { name: "Open Components section" }).click();
+    await page
+      .getByRole("button", {
+        name: "Select story Operational components / Topbar",
+      })
+      .click();
+    await page
+      .getByRole("button", { name: "Open selected component in edit mode" })
+      .click();
+
+    const editFrame = page.frameLocator(
+      'iframe[title="Editable component preview"]',
+    );
+    const topbar = editFrame.getByTestId("component-topbar");
+    const title = topbar.locator("h1.bo-title");
+    await title.click({ force: true, modifiers: ["Shift"] });
+    await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
+
+    await page.getByRole("tab", { name: "Show Layout edit controls" }).click();
+    await page.getByRole("button", { name: "Set display to flex" }).click();
+    await page
+      .getByRole("button", { name: "Save inspector source edits" })
+      .click();
+
+    await expect(page.getByText("Unsaved source edit")).toHaveCount(0);
+    await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
+    await expect
+      .poll(() => readFileSync(devBridgeSourceFile, "utf8"))
+      .toContain("display=flex");
+
+    const afterText = readFileSync(devBridgeSourceFile, "utf8");
+    expect(afterText).not.toBe(beforeText);
+    const reverted = await page.evaluate(
+      async ({ beforeText, afterText }) => {
+        const response = await fetch("/__isonim-dev-bridge/transaction", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            mode: "revert",
+            files: [
+              {
+                file: "apps/back-office/src/backoffice_ui/components.nim",
+                beforeText,
+                afterText,
+              },
+            ],
+          }),
+        });
+        return await response.json();
+      },
+      { beforeText, afterText },
+    );
+    expect(reverted.ok).toBe(true);
+    await expect
+      .poll(() => readFileSync(devBridgeSourceFile, "utf8"))
+      .toBe(beforeText);
+  });
+
   test("mounts the live consumer workspace through public editor APIs", async ({
     page,
   }) => {

@@ -616,12 +616,12 @@
       "title": "Workspace Source Synchronization",
       "status": "functional",
       "targetWorkflow": "Users can stage source edits, save them transactionally through a consumer adapter, recover from conflicts, and refresh targeted preview state.",
-      "owner": "framework",
+      "owner": "framework-and-consumer",
       "mockOnly": false,
       "placeholderUi": false,
-      "browserBehavior": [],
-      "implementation": "Adapter-mediated transactions, same-file composition, conflicts, rollback, targeted reload, full reload fallback, and generated-view roundtrip.",
-      "knownLimitations": "Live host-file writes in static metacraft browser builds still require a consumer dev-server/API adapter.",
+      "browserBehavior": ["iframe"],
+      "implementation": "Adapter-mediated transactions, same-file composition, conflicts, rollback, targeted reload, full reload fallback, generated-view roundtrip, M42 dev-server bridge endpoints for dry-run/apply/save/revert with external-change detection and rollback-on-failure coverage, and reload-generation selection restoration after real source writes.",
+      "knownLimitations": "M42 is functional development-workspace fidelity, not production/Figma-grade collaboration. Static/browser-only builds remain staging-only unless a project write bridge is configured; visual screenshots for saving/conflict states and multi-user collaborative rebasing remain future work.",
       "headlessTests": [
         {
           "name": "workspace_edit_adapter_applies_transactional_file_changes",
@@ -630,29 +630,55 @@
         {
           "name": "workspace_schema_edits_roundtrip_through_generated_views",
           "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "workspace_dev_server_applies_transactional_source_writes",
+          "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "live_preview_restores_selection_after_real_file_write",
+          "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "editor dev bridge handles dry-run, apply, save, revert, conflicts, and revision watching",
+          "file": "../metacraft-web/apps/back-office/tests/test_editor_dev_bridge.mjs"
+        },
+        {
+          "name": "editor dev bridge rolls back earlier writes when a later write fails",
+          "file": "../metacraft-web/apps/back-office/tests/test_editor_dev_bridge.mjs"
         }
       ],
-      "playwrightRequired": false,
-      "playwrightReason": "Source synchronization is intentionally adapter-owned and headless; browser save entry points are covered by component, vector, and agent workflows.",
-      "playwrightTests": [],
+      "playwrightRequired": true,
+      "playwrightReason": "M42 source writes cross a browser iframe and a project dev bridge, so consumer browser coverage is required.",
+      "playwrightTests": [
+        {
+          "name": "e2e_metacraft_editor_writes_real_design_schema_files",
+          "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
+        }
+      ],
       "screenshotVisualAssertions": {
         "requiredForFigmaGrade": true,
         "status": "not_started",
         "assertions": [],
-        "futureMilestone": "M40",
-        "notes": "Needs visual assertions for dirty, saving, conflict, rollback, reload, and clean states."
+        "futureMilestone": "M43",
+        "notes": "Needs visual assertions for dirty, saving, conflict, rollback, reload, staging-only, and clean states before Figma-grade claims."
       },
       "consumerCoverage": {
         "isonimExample": {
           "status": "covered_headless",
           "evidence": [
-            "tests/test_editor_viewmodels.nim:workspace_edit_adapter_applies_transactional_file_changes"
+            "tests/test_editor_viewmodels.nim:workspace_edit_adapter_applies_transactional_file_changes",
+            "tests/test_editor_viewmodels.nim:workspace_dev_server_applies_transactional_source_writes",
+            "tests/test_editor_viewmodels.nim:live_preview_restores_selection_after_real_file_write"
           ]
         },
         "metacraftWeb": {
           "status": "covered",
           "evidence": [
-            "tests/browser/specs/metacraft-web-editor.spec.ts:edits real metacraft component DOM through the inspector"
+            "../metacraft-web/apps/back-office/tests/test_backoffice_editor_workspace.nim:workspace_dev_server_applies_transactional_source_writes",
+            "../metacraft-web/apps/back-office/tests/test_editor_dev_bridge.mjs:editor dev bridge handles dry-run, apply, save, revert, conflicts, and revision watching",
+            "../metacraft-web/apps/back-office/tests/test_editor_dev_bridge.mjs:editor dev bridge rolls back earlier writes when a later write fails",
+            "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_metacraft_editor_writes_real_design_schema_files"
           ]
         }
       }

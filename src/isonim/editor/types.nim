@@ -1030,6 +1030,8 @@ type
     wedReloadFailed
     wedReviewFailed
     wedRollbackFailed
+    wedBridgeUnavailable
+    wedExternalChange
 
   WorkspaceEditableSchemaEntry* = object
     ## Project-owned schema/source map entry used to resolve stable edit keys.
@@ -1059,6 +1061,9 @@ type
     diagnostics*: seq[WorkspaceEditDiagnostic]
     affectedStories*: seq[StoryRef]
     fullReload*: bool
+    generatedArtifacts*: seq[string]
+    requiredTestCommands*: seq[string]
+    reviewDiagnostics*: seq[WorkspaceEditDiagnostic]
 
   WorkspaceFilePatch* = object
     plan*: SourceEditPlan
@@ -1086,10 +1091,16 @@ type
     patches*: seq[WorkspaceFilePatch]
     affectedStories*: seq[StoryRef]
     fullReload*: bool
+    generatedArtifacts*: seq[string]
+    requiredTestCommands*: seq[string]
+    reviewDiagnostics*: seq[WorkspaceEditDiagnostic]
 
   WorkspaceEditAdapter* = ref object
     ## Project-owned implementation for source reads, writes, codegen, and review.
     ## The framework owns transaction ordering and rollback around these callbacks.
+    stagingOnly*: bool
+    bridgeLabel*: string
+    allowMissingExpectedOldValue*: bool
     schema*: seq[WorkspaceEditableSchemaEntry]
     readFile*: proc(file: string): WorkspaceReadResult {.closure.}
     writeFile*: proc(file, content: string): WorkspaceOperationResult {.closure.}

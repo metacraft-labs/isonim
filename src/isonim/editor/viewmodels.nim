@@ -149,6 +149,10 @@ type
     workspaceEditPatches*: Signal[seq[WorkspaceFilePatch]]
     workspaceEditAffectedStories*: Signal[seq[StoryRef]]
     workspaceEditFullReload*: Signal[bool]
+    workspaceEditGeneratedArtifacts*: Signal[seq[string]]
+    workspaceEditRequiredTestCommands*: Signal[seq[string]]
+    workspaceEditReviewDiagnostics*: Signal[seq[WorkspaceEditDiagnostic]]
+    livePreviewReloadGeneration*: Signal[int]
     commandStates*: Signal[seq[EditorCommandState]]
     designSystemSchema*: Signal[DesignSystemSchema]
     workspaceEditAdapter*: WorkspaceEditAdapter
@@ -1598,6 +1602,10 @@ proc runEditorCommand*(editor: EditorVM;
     editor.inspector.editDiagnostics.val = @[]
     editor.chat.accumulatedEdits.val = @[]
     editor.workspaceEditStage.val = wesClean
+    editor.workspaceEditDiagnostics.val = @[]
+    editor.workspaceEditGeneratedArtifacts.val = @[]
+    editor.workspaceEditRequiredTestCommands.val = @[]
+    editor.workspaceEditReviewDiagnostics.val = @[]
   of eckSave:
     let saveResult = editor.applyWorkspaceFileEdits()
     if not saveResult.ok:
@@ -4502,7 +4510,10 @@ proc failWorkspaceEdit(editor: EditorVM; diagnostics: seq[WorkspaceEditDiagnosti
     ok: false,
     stage: stage,
     diagnostics: diagnostics,
-    patches: patches)
+    patches: patches,
+    generatedArtifacts: editor.workspaceEditGeneratedArtifacts.val,
+    requiredTestCommands: editor.workspaceEditRequiredTestCommands.val,
+    reviewDiagnostics: editor.workspaceEditReviewDiagnostics.val)
 
 proc operationDiagnostics(kind: WorkspaceEditDiagnosticKind;
     op: WorkspaceOperationResult; fallback: string): seq[WorkspaceEditDiagnostic] =
@@ -4568,12 +4579,18 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
   editor.workspaceEditPatches.val = @[]
   editor.workspaceEditAffectedStories.val = @[]
   editor.workspaceEditFullReload.val = false
+  editor.workspaceEditGeneratedArtifacts.val = @[]
+  editor.workspaceEditRequiredTestCommands.val = @[]
+  editor.workspaceEditReviewDiagnostics.val = @[]
 
   var patches: seq[WorkspaceFilePatch] = @[]
   var diagnostics: seq[WorkspaceEditDiagnostic] = @[]
   var files: seq[string] = @[]
   var schemaKeys: seq[string] = @[]
   var affectedStories: seq[StoryRef] = @[]
+  var generatedArtifacts: seq[string] = @[]
+  var requiredTestCommands: seq[string] = @[]
+  var reviewDiagnostics: seq[WorkspaceEditDiagnostic] = @[]
   var drafts: seq[WorkspaceFileDraft] = @[]
   var fullReload = false
 
@@ -4616,6 +4633,7 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
       draftPos = drafts.high
 
     if plan.expectedOldValue.len > 0 and
+        not adapter.allowMissingExpectedOldValue and
         plan.expectedOldValue notin drafts[draftPos].currentContent:
       diagnostics.add workspaceDiagnostic(wedSourceConflict,
         "Source changed before the pending edit could be applied.",
@@ -4668,6 +4686,7 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
     editor.workspaceEditStage.val = wesReviewing
     let review = adapter.review(patches)
     editor.review.violations.val = review.violations
+    reviewDiagnostics = review.diagnostics
     if not review.ok:
       diagnostics = review.diagnostics
       if diagnostics.len == 0:
@@ -4691,6 +4710,12 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
         "Could not write " & patch.file & ".")
       diagnostics.add rollbackWorkspaceWrites(editor, adapter, written)
       return editor.failWorkspaceEdit(diagnostics, patches)
+    generatedArtifacts.add write.generatedArtifacts
+    requiredTestCommands.add write.requiredTestCommands
+    reviewDiagnostics.add write.reviewDiagnostics
+    for story in write.affectedStories:
+      affectedStories.addUniqueStory story
+    fullReload = fullReload or write.fullReload
     written.add patch
 
   if adapter.formatFiles != nil:
@@ -4701,6 +4726,9 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
         "Workspace formatting failed.")
       diagnostics.add rollbackWorkspaceWrites(editor, adapter, written)
       return editor.failWorkspaceEdit(diagnostics, patches)
+    generatedArtifacts.add formatted.generatedArtifacts
+    requiredTestCommands.add formatted.requiredTestCommands
+    reviewDiagnostics.add formatted.reviewDiagnostics
 
   if adapter.regenerate != nil:
     editor.workspaceEditStage.val = wesRegenerating
@@ -4710,6 +4738,9 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
         "Workspace regeneration failed.")
       diagnostics.add rollbackWorkspaceWrites(editor, adapter, written)
       return editor.failWorkspaceEdit(diagnostics, patches)
+    generatedArtifacts.add regenerated.generatedArtifacts
+    requiredTestCommands.add regenerated.requiredTestCommands
+    reviewDiagnostics.add regenerated.reviewDiagnostics
     for story in regenerated.affectedStories:
       affectedStories.addUniqueStory story
     fullReload = fullReload or regenerated.fullReload
@@ -4722,6 +4753,9 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
         "Workspace compilation failed.")
       diagnostics.add rollbackWorkspaceWrites(editor, adapter, written)
       return editor.failWorkspaceEdit(diagnostics, patches)
+    generatedArtifacts.add compiled.generatedArtifacts
+    requiredTestCommands.add compiled.requiredTestCommands
+    reviewDiagnostics.add compiled.reviewDiagnostics
 
   if adapter.reloadPreview != nil:
     editor.workspaceEditStage.val = wesReloading
@@ -4731,6 +4765,9 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
         "Workspace preview reload failed.")
       diagnostics.add rollbackWorkspaceWrites(editor, adapter, written)
       return editor.failWorkspaceEdit(diagnostics, patches)
+    generatedArtifacts.add reloaded.generatedArtifacts
+    requiredTestCommands.add reloaded.requiredTestCommands
+    reviewDiagnostics.add reloaded.reviewDiagnostics
 
   editor.inspector.markCssPropertyEditsSaved()
   editor.vectorEditor.undoStack.val = @[]
@@ -4741,12 +4778,20 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
   editor.workspaceEditPatches.val = patches
   editor.workspaceEditAffectedStories.val = affectedStories
   editor.workspaceEditFullReload.val = fullReload
+  editor.workspaceEditGeneratedArtifacts.val = generatedArtifacts
+  editor.workspaceEditRequiredTestCommands.val = requiredTestCommands
+  editor.workspaceEditReviewDiagnostics.val = reviewDiagnostics
+  if not adapter.stagingOnly:
+    editor.livePreviewReloadGeneration.val = editor.livePreviewReloadGeneration.val + 1
   WorkspaceEditResult(
     ok: true,
     stage: wesClean,
     patches: patches,
     affectedStories: affectedStories,
-    fullReload: fullReload)
+    fullReload: fullReload,
+    generatedArtifacts: generatedArtifacts,
+    requiredTestCommands: requiredTestCommands,
+    reviewDiagnostics: reviewDiagnostics)
 
 # ===========================================================================
 # AgentChatVM actions
@@ -6742,6 +6787,10 @@ proc createEditorVM*(): EditorVM =
   let workspaceEditPatches = createSignal[seq[WorkspaceFilePatch]](@[])
   let workspaceEditAffectedStories = createSignal[seq[StoryRef]](@[])
   let workspaceEditFullReload = createSignal(false)
+  let workspaceEditGeneratedArtifacts = createSignal[seq[string]](@[])
+  let workspaceEditRequiredTestCommands = createSignal[seq[string]](@[])
+  let workspaceEditReviewDiagnostics = createSignal[seq[WorkspaceEditDiagnostic]](@[])
+  let livePreviewReloadGeneration = createSignal(0)
   let commandStates = createSignal[seq[EditorCommandState]](@[])
   let designSystemSchema = createSignal(DesignSystemSchema())
 
@@ -6775,6 +6824,10 @@ proc createEditorVM*(): EditorVM =
     workspaceEditPatches: workspaceEditPatches,
     workspaceEditAffectedStories: workspaceEditAffectedStories,
     workspaceEditFullReload: workspaceEditFullReload,
+    workspaceEditGeneratedArtifacts: workspaceEditGeneratedArtifacts,
+    workspaceEditRequiredTestCommands: workspaceEditRequiredTestCommands,
+    workspaceEditReviewDiagnostics: workspaceEditReviewDiagnostics,
+    livePreviewReloadGeneration: livePreviewReloadGeneration,
     commandStates: commandStates,
     designSystemSchema: designSystemSchema,
     sidebar: sidebar,

@@ -1484,9 +1484,14 @@ suite "Editor ViewModels (M27 workspace file writes)":
     createDir(result)
 
   proc okOp(message = ""; affectedStories: seq[StoryRef] = @[];
-      fullReload = false): WorkspaceOperationResult =
+      fullReload = false; generatedArtifacts: seq[string] = @[];
+      requiredTestCommands: seq[string] = @[];
+      reviewDiagnostics: seq[WorkspaceEditDiagnostic] = @[]): WorkspaceOperationResult =
     WorkspaceOperationResult(ok: true, message: message,
-      affectedStories: affectedStories, fullReload: fullReload)
+      affectedStories: affectedStories, fullReload: fullReload,
+      generatedArtifacts: generatedArtifacts,
+      requiredTestCommands: requiredTestCommands,
+      reviewDiagnostics: reviewDiagnostics)
 
   proc failOp(kind: WorkspaceEditDiagnosticKind; message: string;
       file = ""): WorkspaceOperationResult =
@@ -1585,6 +1590,155 @@ suite "Editor ViewModels (M27 workspace file writes)":
               message: "unsafe generated source",
               file: patch.file)])
       WorkspaceReviewResult(ok: true)
+
+  test "workspace_dev_server_applies_transactional_source_writes":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("dev-server")
+      defer: removeDir(root)
+      let schemaFile = root / "component.schema"
+      let generatedFile = root / "generated/component_view.nim"
+      atomicWrite(schemaFile, "padding=16px\ncolor=#111827")
+      createDir(root / "generated")
+
+      let schema = @[
+        WorkspaceEditableSchemaEntry(key: "components.card.padding",
+          kind: wskSourceMap, file: schemaFile, path: "card.padding",
+          story: writeStory, property: "padding"),
+        WorkspaceEditableSchemaEntry(key: "components.card.color",
+          kind: wskSourceMap, file: schemaFile, path: "card.color",
+          story: writeStory, property: "color")
+      ]
+      let recorder = WorkspaceEditRecorder()
+      var adapter = adapterFor(root, schema, recorder = recorder)
+      let bridgeArtifact = root / "dist/back-office-editor/editor.js"
+      adapter.writeFile = proc(file, content: string): WorkspaceOperationResult =
+        atomicWrite(file, content)
+        okOp(
+          affectedStories = @[StoryRef(group: "Operational components",
+            name: "Topbar", kind: skComponent)],
+          fullReload = true,
+          generatedArtifacts = @[bridgeArtifact],
+          requiredTestCommands = @[
+            "node tools/serve_editor_dev_bridge.mjs"
+          ],
+          reviewDiagnostics = @[WorkspaceEditDiagnostic(
+            kind: wedReviewFailed,
+            message: "bridge write review evidence preserved",
+            file: file)])
+      adapter.regenerate = proc(keys: seq[string]): WorkspaceOperationResult =
+        atomicWrite(generatedFile, keys.join("\n"))
+        okOp(affectedStories = @[writeStory],
+          generatedArtifacts = @[generatedFile],
+          reviewDiagnostics = @[WorkspaceEditDiagnostic(
+            kind: wedReviewFailed,
+            message: "review info: generated schema artifact inspected",
+            file: generatedFile)])
+      adapter.compile = proc(stories: seq[StoryRef]): WorkspaceOperationResult =
+        okOp(requiredTestCommands = @[
+          "direnv exec /home/zahary/metacraft/isonim nim c -r tests/test_editor_viewmodels.nim",
+          "direnv exec /home/zahary/metacraft/isonim just test-browser-editor-consumer"
+        ])
+
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "M42 dev server transaction",
+        storyGroups = @[StoryGroup(name: "DestinationCard", kind: skComponent,
+          items: @[StoryItem(name: "Default", kind: skComponent,
+            group: "DestinationCard")])],
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true),
+        editAdapter = adapter,
+        initialStory = some(writeStory)))
+      vm.inspector.pendingSourceEdits.val = @[
+        planFor(schemaFile, "padding", "16px", "24px",
+          "components.card.padding"),
+        planFor(schemaFile, "color", "#111827", "#F8FAFC",
+          "components.card.color")
+      ]
+      vm.workspaceEditStage.val = wesDirty
+
+      let saved = vm.applyWorkspaceFileEdits()
+      check saved.ok
+      check readFile(schemaFile) == "padding=24px\ncolor=#F8FAFC"
+      check readFile(generatedFile).contains("components.card.padding")
+      check saved.patches.len == 2
+      check saved.patches[0].beforeContent.contains("padding=16px")
+      check saved.patches[0].afterContent.contains("padding=24px")
+      check bridgeArtifact in saved.generatedArtifacts
+      check generatedFile in saved.generatedArtifacts
+      check saved.requiredTestCommands.anyIt(it.contains(
+        "serve_editor_dev_bridge.mjs"))
+      check saved.requiredTestCommands.anyIt(it.contains("test_editor_viewmodels.nim"))
+      check saved.reviewDiagnostics.anyIt(
+        it.message == "bridge write review evidence preserved")
+      check saved.reviewDiagnostics.anyIt(it.file == generatedFile)
+      check saved.affectedStories.anyIt(it.group == "Operational components" and
+        it.name == "Topbar")
+      check saved.fullReload
+      check vm.workspaceEditAffectedStories.val.len == 2
+      check vm.workspaceEditAffectedStories.val.anyIt(
+        it.group == "Operational components" and it.name == "Topbar")
+      check vm.workspaceEditFullReload.val
+      check recorder.reloadedStories.len == 2
+      check recorder.reloadedStories.anyIt(
+        it.group == "Operational components" and it.name == "Topbar")
+      check recorder.fullReloadSeen
+      check vm.livePreviewReloadGeneration.val == 1
+
+      vm.inspector.pendingSourceEdits.val = @[
+        planFor(schemaFile, "padding", "24px", "32px",
+          "components.card.padding")
+      ]
+      atomicWrite(schemaFile, "padding=28px\ncolor=#F8FAFC")
+      let conflicted = vm.applyWorkspaceFileEdits()
+      check not conflicted.ok
+      check conflicted.diagnostics.anyIt(it.kind == wedSourceConflict)
+      check readFile(schemaFile).contains("padding=28px")
+      dispose()
+
+  test "live_preview_restores_selection_after_real_file_write":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("selection-reload")
+      defer: removeDir(root)
+      let schemaFile = root / "component.schema"
+      atomicWrite(schemaFile, "display=grid")
+      let recorder = WorkspaceEditRecorder()
+      let adapter = adapterFor(root, @[
+        WorkspaceEditableSchemaEntry(key: "components.topbar.display",
+          kind: wskSourceMap, file: schemaFile, path: "topbar.display",
+          story: writeStory, property: "display")
+      ], recorder = recorder)
+      let selected = ElementRef(id: "component-topbar",
+        sourceKey: "component-topbar", schemaKey: "components.topbar",
+        tag: "header", sourceFile: schemaFile, sourceLine: 1,
+        ancestorIds: @["component-topbar"], ancestors: @["header"],
+        properties: @[PropertyInfo(name: "display", value: "grid",
+          origin: poConstant, originDetail: "schema:components.topbar.display",
+          sourceFile: schemaFile, sourceLine: 1,
+          schemaKey: "components.topbar.display")])
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "M42 selection restore",
+        storyGroups = @[StoryGroup(name: "DestinationCard", kind: skComponent,
+          items: @[StoryItem(name: "Default", kind: skComponent,
+            group: "DestinationCard")])],
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true),
+        editAdapter = adapter,
+        initialStory = some(writeStory),
+        initialInspectorElement = some(selected)))
+
+      check vm.inspector.selectedElement.val.id == "component-topbar"
+      vm.inspector.pendingSourceEdits.val = @[
+        planFor(schemaFile, "display", "grid", "flex",
+          "components.topbar.display")
+      ]
+      let saved = vm.applyWorkspaceFileEdits()
+      check saved.ok
+      check readFile(schemaFile) == "display=flex"
+      check vm.inspector.selectedElement.val.id == "component-topbar"
+      check vm.inspector.selectedElement.val.sourceKey == "component-topbar"
+      check vm.livePreviewReloadGeneration.val == 1
+      check recorder.reloadedStories.len == 1
+      dispose()
 
   test "canvas_direct_manipulation_routes_to_owned_source_edits":
     createRoot proc(dispose: proc()) =

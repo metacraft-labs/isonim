@@ -3786,6 +3786,7 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
 
   createRenderEffect proc() =
     let previewState = vm.preview.current.val
+    let reloadGeneration = vm.livePreviewReloadGeneration.val
     let metadata = previewState.metadata
     let title =
       if previewState.title.len > 0: previewState.title
@@ -3802,9 +3803,10 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
     let previewDocument = componentEditPreviewDocument(previewState)
     let nextSrcdoc =
       if vm.editMode.val == emView:
-        previewDocument
+        previewDocument & "\n<!-- isonim-reload:" & $reloadGeneration & " -->"
       else:
-        editablePreviewDocument(previewDocument, metadata, vm.editMode.val)
+        editablePreviewDocument(previewDocument, metadata, vm.editMode.val) &
+          "\n<!-- isonim-reload:" & $reloadGeneration & " -->"
     var srcdocChanged = false
     if nextSrcdoc != lastSrcdoc:
       lastSrcdoc = nextSrcdoc
