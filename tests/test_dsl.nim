@@ -278,6 +278,25 @@ suite "DSL":
       check root.children[0].attributes["class"] == "add"
       check root.children[0].textContent == "Add"
 
+  test "test_dsl_appends_helper_proc_result_in_if_else_branch":
+    ## Helper procs returning nodes also append from natural if/else branches.
+    createRoot proc(dispose: proc()) =
+      let renderer = MockRenderer()
+      let showFallback = true
+
+      let root = ui(renderer):
+        tdiv:
+          if not showFallback:
+            span: text "primary"
+          else:
+            renderAddButton(renderer)
+
+      check root.tag == "div"
+      check root.children.len == 1
+      check root.children[0].tag == "button"
+      check root.children[0].attributes["class"] == "add"
+      check root.children[0].textContent == "Add"
+
   test "test_showIf_basic":
     ## showIf renders body when condition is true
     createRoot proc(dispose: proc()) =
