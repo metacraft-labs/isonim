@@ -526,6 +526,71 @@ type
     supportsSharedScope*: bool
     diagnostics*: seq[PropertyEditDiagnostic]
 
+  PrimitiveControlFamily* = enum
+    pcfNumeric
+    pcfColor
+    pcfGradient
+    pcfShadow
+    pcfTypography
+    pcfBorderRadiusStroke
+    pcfMotion
+
+  PrimitiveControlCapability* = enum
+    pccSelectAllFocus
+    pccLabelScrub
+    pccPrecisionModifiers
+    pccArrowIncrement
+    pccUnitCycle
+    pccMathExpression
+    pccMinMaxValidation
+    pccReset
+    pccTokenBinding
+    pccUndoJournal
+    pccSwatches
+    pccVariableMode
+    pccColorFormats
+    pccOpacity
+    pccEyedropper
+    pccCopyPaste
+    pccContrastPreview
+    pccGradientStops
+    pccGradientAngle
+    pccGradientType
+    pccShadowLayers
+    pccShadowCrosshair
+    pccInsetShadow
+    pccElevationToken
+    pccTypographyStyle
+    pccResponsiveText
+    pccTruncateWrap
+    pccLinkedCorners
+    pccSideSpecificStroke
+    pccCanvasHandle
+    pccBezierCurve
+    pccMotionPreset
+    pccReducedMotionDiagnostic
+    pccLivePreview
+    pccSourceCommit
+
+  PrimitiveControlModel* = object
+    ## Normalized, source-aware model for a primitive property control.
+    family*: PrimitiveControlFamily
+    property*: string
+    raw*: string
+    canonical*: string
+    unit*: string
+    numeric*: float
+    tokenName*: string
+    sourcePlanKind*: CSSSourcePlanKind
+    sourceSerialized*: string
+    livePreviewValue*: string
+    minValue*: float
+    maxValue*: float
+    valid*: bool
+    reducedMotionDiagnostic*: string
+    capabilities*: seq[PrimitiveControlCapability]
+    diagnostics*: seq[PropertyEditDiagnostic]
+
   CSSSourcePreview* = object
     plan*: SourceEditPlan
     beforeText*: string

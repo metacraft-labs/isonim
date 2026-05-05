@@ -830,6 +830,8 @@ func quickValues(propertyName: string): seq[string] =
   of "font-weight": @["400", "500", "600", "700"]
   of "text-align": @["left", "center", "right", "justify"]
   of "text-decoration": @["none", "underline", "line-through"]
+  of "white-space": @["normal", "nowrap", "pre-wrap"]
+  of "text-overflow": @["clip", "ellipsis"]
   of "transition-timing-function": @["linear", "ease", "ease-in", "ease-out"]
   of "mix-blend-mode": @["normal", "multiply", "screen", "overlay"]
   else: @[]
@@ -946,7 +948,8 @@ func numericStepValue(value: string; delta: int): string =
     value
 
 proc applyInspectorValue(vm: EditorVM; propName, value: string) =
-  discard vm.editCssProperty(propName, value, pesLocal, peoInspector)
+  discard vm.editCssProperty(propName, normalizePrimitiveInputValue(propName, value),
+    pesLocal, peoInspector)
 
 proc applyLivePreviewStyle[R, E](r: R; frame: E; propName, value: string) =
   when defined(js):
@@ -1136,6 +1139,47 @@ proc attachLiveInputPreview[R, E](r: R; inputNode, frame: E; propName: string) =
     discard frame
     discard propName
 
+proc attachPrimitiveInputKeys[R, E](r: R; inputNode, frame: E; propName: string) =
+  when defined(js):
+    {.emit: ["""
+      (function () {
+        const input = """, inputNode, """;
+        if (!input || input.__isonimPrimitiveKeysInstalled) return;
+        input.__isonimPrimitiveKeysInstalled = true;
+        function split(raw) {
+          const text = String(raw || '').trim();
+          const match = text.match(/^([+-]?(?:\d+\.?\d*|\.\d+))(.*)$/);
+          if (!match) return null;
+          return { number: Number(match[1]), unit: match[2] || 'px' };
+        }
+        function format(number, unit) {
+          const rounded = Math.abs(number - Math.round(number)) < 0.0001
+            ? String(Math.round(number))
+            : String(Math.round(number * 100) / 100);
+          return rounded + unit;
+        }
+        input.addEventListener('focus', () => {
+          try { input.select(); } catch (error) {}
+        });
+        input.addEventListener('keydown', (event) => {
+          if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+          const parsed = split(input.value);
+          if (!parsed) return;
+          const base = event.shiftKey ? 10 : (event.altKey ? 0.1 : 1);
+          const delta = event.key === 'ArrowUp' ? base : -base;
+          input.value = format(parsed.number + delta, parsed.unit);
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+          event.preventDefault();
+        });
+      })();
+    """].}
+  else:
+    discard r
+    discard inputNode
+    discard frame
+    discard propName
+
 proc inspectorLiveValueHandler[R, E](r: R; vm: EditorVM; frame: E; propName,
     value: string): proc() =
   let capturedProp = propName
@@ -1147,6 +1191,7 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
     fallback: string): E =
   var inputNode: E
   var resetNode: E
+  var unitNode: E
   var moreNode: E
   let propName = prop.name
   let value = prop.value
@@ -1154,7 +1199,8 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
   let scope = if prop.sharedCount > 0: "shared" else: "local"
   let binding = originLabel(prop.origin)
   let commit = proc() =
-    let nextValue = r.inputValue(inputNode)
+    let nextValue = normalizePrimitiveInputValue(propName, r.inputValue(inputNode))
+    r.setInputValue(inputNode, nextValue)
     r.applyCssValue(vm, frame, propName, nextValue)
   let preview = proc() =
     r.applyCssValue(vm, frame, propName, r.inputValue(inputNode),
@@ -1183,13 +1229,16 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
             oninput = preview,
             onchange = commit,
             onblur = commit)
-      tdiv(height = "22px",
+      tdiv(ref = unitNode, role = "button", tabindex = "0",
+            `aria-label` = "Cycle unit for " & propName,
+            height = "22px",
             display = "flex", align_items = "center",
             justify_content = "center",
             border = "1px solid " & border,
             border_radius = "4px",
             background_color = bgSurface,
-            color = textMuted, font_size = "9px"):
+            color = textMuted, font_size = "9px",
+            cursor = "pointer"):
         text (if unit.len > 0: unit else: "-")
       tdiv(height = "22px",
             display = "flex", align_items = "center",
@@ -1241,8 +1290,15 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
   r.addEventListener(inputNode, "input", preview)
   r.addEventListener(inputNode, "keyup", preview)
   r.attachLiveInputPreview(inputNode, frame, propName)
+  r.attachPrimitiveInputKeys(inputNode, frame, propName)
   r.addEventListener(inputNode, "focus", rememberPanelFocus(vm,
     "property-" & propName))
+  let cycleUnit = proc() =
+    let nextValue = cyclePrimitiveUnit(propName, r.inputValue(inputNode))
+    r.setInputValue(inputNode, nextValue)
+    r.applyCssValue(vm, frame, propName, nextValue)
+  r.addEventListener(unitNode, "click", cycleUnit)
+  r.addEventListener(unitNode, "keydown", cycleUnit)
   let reset = proc() = r.applyCssValue(vm, frame, propName, fallback)
   r.addEventListener(resetNode, "click", reset)
   r.addEventListener(resetNode, "keydown", reset)
@@ -1532,6 +1588,11 @@ proc renderFigmaColorAffordances[R, E](r: R; vm: EditorVM; frame: E; propName,
   var hue: E
   var opacity: E
   var tokenButton: E
+  var modeButton: E
+  var rgbButton: E
+  var hslButton: E
+  var contrastButton: E
+  var eyedropperButton: E
   let base =
     if value.startsWith("#"): value
     else: "#3B82F6"
@@ -1558,6 +1619,27 @@ proc renderFigmaColorAffordances[R, E](r: R; vm: EditorVM; frame: E; propName,
             cursor = "pointer",
             background = "linear-gradient(to right, transparent, " & base &
               "), repeating-conic-gradient(#64748B 0% 25%, transparent 0% 50%) 50% / 8px 8px")
+      tdiv(display = "grid",
+            `grid-template-columns` = "repeat(3, minmax(0, 1fr))",
+            gap = "4px"):
+        tdiv(ref = rgbButton, role = "button", tabindex = "0",
+              padding = "4px 5px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center",
+              cursor = "pointer"):
+          text "RGB"
+        tdiv(ref = hslButton, role = "button", tabindex = "0",
+              padding = "4px 5px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center",
+              cursor = "pointer"):
+          text "HSL"
+        tdiv(ref = contrastButton, role = "button", tabindex = "0",
+              padding = "4px 5px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center",
+              cursor = "pointer"):
+          text "AA"
       tdiv(display = "flex", gap = "5px", align_items = "center"):
         tdiv(width = "24px", height = "24px", border_radius = "4px",
               background_color = base, border = "1px solid " & border)
@@ -1566,7 +1648,13 @@ proc renderFigmaColorAffordances[R, E](r: R; vm: EditorVM; frame: E; propName,
               border_radius = "4px", background_color = bgSurface,
               color = textMuted, font_size = "10px", cursor = "pointer"):
           text "Use token"
-        tdiv(role = "button", tabindex = "0",
+        tdiv(ref = modeButton, role = "button", tabindex = "0",
+              padding = "5px 7px",
+              border_radius = "4px", background_color = bgSurface,
+              color = textMuted, font_size = "10px",
+              cursor = "pointer"):
+          text "Mode"
+        tdiv(ref = eyedropperButton, role = "button", tabindex = "0",
               width = "24px", height = "24px",
               border_radius = "4px", background_color = bgSurface,
               color = textMuted, font_size = "11px",
@@ -1578,14 +1666,108 @@ proc renderFigmaColorAffordances[R, E](r: R; vm: EditorVM; frame: E; propName,
   r.setAttribute(hue, "aria-label", "Set " & propName & " hue")
   r.setAttribute(opacity, "aria-label", "Set " & propName & " opacity")
   r.setAttribute(tokenButton, "aria-label", "Choose design token for " & propName)
+  r.setAttribute(modeButton, "aria-label", "Choose variable mode for " & propName)
+  r.setAttribute(rgbButton, "aria-label", "Use RGB format for " & propName)
+  r.setAttribute(hslButton, "aria-label", "Use HSL format for " & propName)
+  r.setAttribute(contrastButton, "aria-label", "Preview contrast for " & propName)
+  r.setAttribute(eyedropperButton, "aria-label", "Use browser eyedropper for " & propName)
   let setBlue = r.propertyActionHandler(vm, frame, propName, "#3B82F6")
   let setGreen = r.propertyActionHandler(vm, frame, propName, "#22C55E")
+  let setRgb = r.propertyActionHandler(vm, frame, propName, "rgb(59, 130, 246)")
+  let setHsl = r.propertyActionHandler(vm, frame, propName, "hsl(217, 91%, 60%)")
+  let setOpacity = r.propertyActionHandler(vm, frame, propName, "rgba(59, 130, 246, 0.72)")
+  let setToken = r.propertyActionHandler(vm, frame, propName, "token(semantic.text.primary)")
   r.addEventListener(saturation, "click", setBlue)
   r.addEventListener(saturation, "keydown", setBlue)
   r.addEventListener(hue, "click", setGreen)
   r.addEventListener(hue, "keydown", setGreen)
+  r.addEventListener(opacity, "click", setOpacity)
+  r.addEventListener(opacity, "keydown", setOpacity)
+  r.addEventListener(rgbButton, "click", setRgb)
+  r.addEventListener(rgbButton, "keydown", setRgb)
+  r.addEventListener(hslButton, "click", setHsl)
+  r.addEventListener(hslButton, "keydown", setHsl)
+  r.addEventListener(tokenButton, "click", setToken)
+  r.addEventListener(tokenButton, "keydown", setToken)
   r.attachColorPlane(saturation, vm, frame, propName)
   r.attachHueStrip(hue, vm, frame, saturation, propName)
+
+proc renderGradientAffordances[R, E](r: R; vm: EditorVM; frame: E; propName,
+    value: string): E =
+  var linearButton: E
+  var radialButton: E
+  var angleButton: E
+  var addStopButton: E
+  var removeStopButton: E
+  result = ui(r):
+    tdiv(display = "flex", flex_direction = "column", gap = "7px",
+          padding = "8px", border_radius = "5px",
+          background_color = bgBase):
+      tdiv(height = "28px", border_radius = "5px",
+            border = "1px solid " & border,
+            background = (if value.contains("gradient("): value else:
+              "linear-gradient(90deg, #3B82F6 0%, #22C55E 100%)"))
+      tdiv(display = "grid",
+            `grid-template-columns` = "repeat(5, minmax(0, 1fr))",
+            gap = "4px"):
+        tdiv(ref = linearButton, role = "button", tabindex = "0",
+              padding = "4px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center", cursor = "pointer"):
+          text "linear"
+        tdiv(ref = radialButton, role = "button", tabindex = "0",
+              padding = "4px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center", cursor = "pointer"):
+          text "radial"
+        tdiv(ref = angleButton, role = "button", tabindex = "0",
+              padding = "4px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center", cursor = "ew-resize"):
+          text "90deg"
+        tdiv(ref = addStopButton, role = "button", tabindex = "0",
+              padding = "4px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center", cursor = "pointer"):
+          text "+stop"
+        tdiv(ref = removeStopButton, role = "button", tabindex = "0",
+              padding = "4px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center", cursor = "pointer"):
+          text "-stop"
+      tdiv(display = "grid",
+            `grid-template-columns` = "repeat(3, minmax(0, 1fr))",
+            gap = "4px"):
+        for stop in ["#3B82F6 0%", "token(semantic.accent) 48%", "#22C55E 100%"]:
+          tdiv(role = "button", tabindex = "0",
+                padding = "4px 5px", border_radius = "4px",
+                background_color = bgSurface, color = textMuted,
+                font_size = "9px", text_align = "center",
+                white_space = "nowrap", overflow = "hidden",
+                text_overflow = "ellipsis"):
+            text stop
+  r.setAttribute(result, "aria-label", "Edit gradient stops")
+  r.setAttribute(linearButton, "aria-label", "Set " & propName & " to linear gradient")
+  r.setAttribute(radialButton, "aria-label", "Set " & propName & " to radial gradient")
+  r.setAttribute(angleButton, "aria-label", "Scrub " & propName & " gradient angle")
+  r.setAttribute(addStopButton, "aria-label", "Add " & propName & " gradient stop")
+  r.setAttribute(removeStopButton, "aria-label", "Remove " & propName & " gradient stop")
+  let linear = r.propertyActionHandler(vm, frame, propName,
+    "linear-gradient(90deg, #3B82F6 0%, token(semantic.accent) 48%, #22C55E 100%)")
+  let radial = r.propertyActionHandler(vm, frame, propName,
+    "radial-gradient(circle, #3B82F6 0%, #22C55E 100%)")
+  let angled = r.propertyActionHandler(vm, frame, propName,
+    "linear-gradient(135deg, #3B82F6 0%, #22C55E 100%)")
+  r.addEventListener(linearButton, "click", linear)
+  r.addEventListener(linearButton, "keydown", linear)
+  r.addEventListener(radialButton, "click", radial)
+  r.addEventListener(radialButton, "keydown", radial)
+  r.addEventListener(angleButton, "click", angled)
+  r.addEventListener(angleButton, "keydown", angled)
+  r.addEventListener(addStopButton, "click", linear)
+  r.addEventListener(addStopButton, "keydown", linear)
+  r.addEventListener(removeStopButton, "click", radial)
+  r.addEventListener(removeStopButton, "keydown", radial)
 
 proc renderBorderRadiusAffordances[R, E](r: R; vm: EditorVM; frame: E;
     value: string): E =
@@ -1622,29 +1804,38 @@ proc renderBorderRadiusAffordances[R, E](r: R; vm: EditorVM; frame: E;
 proc renderShadowAffordances[R, E](r: R; vm: EditorVM; frame: E;
     propName, value: string): E =
   var presetButton: E
+  var insetButton: E
+  var elevationButton: E
+  var multiButton: E
   result = ui(r):
-    tdiv(display = "flex", gap = "8px", padding = "8px",
-          border_radius = "5px", background_color = bgBase):
-      tdiv(width = "76px", height = "76px", position = "relative",
-            border = "1px solid " & border,
-            border_radius = "4px", background_color = bgSurface):
-        tdiv(position = "absolute", left = "50%", top = "0",
-              width = "1px", height = "100%",
-              background_color = border)
-        tdiv(position = "absolute", left = "0", top = "50%",
-              width = "100%", height = "1px",
-              background_color = border)
-        tdiv(position = "absolute", left = "52px", top = "40px",
-              width = "8px", height = "8px", border_radius = "5px",
-              background_color = accent)
-      tdiv(display = "flex", flex_direction = "column", gap = "4px",
-            flex = "1"):
-        for label in ["X 0px", "Y 8px", "Blur 24px", "Spread 0px"]:
-          tdiv(height = "22px", display = "flex",
-                align_items = "center", padding = "0 6px",
-                border_radius = "4px", background_color = bgSurface,
-                color = textMuted, font_size = "10px"):
-            text label
+    tdiv(display = "flex", flex_direction = "column", gap = "7px",
+          padding = "8px", border_radius = "5px",
+          background_color = bgBase):
+      tdiv(display = "flex", gap = "8px"):
+        tdiv(width = "76px", height = "76px", position = "relative",
+              border = "1px solid " & border,
+              border_radius = "4px", background_color = bgSurface,
+              box_shadow = value):
+          tdiv(position = "absolute", left = "50%", top = "0",
+                width = "1px", height = "100%",
+                background_color = border)
+          tdiv(position = "absolute", left = "0", top = "50%",
+                width = "100%", height = "1px",
+                background_color = border)
+          tdiv(position = "absolute", left = "52px", top = "40px",
+                width = "8px", height = "8px", border_radius = "5px",
+                background_color = accent)
+        tdiv(display = "flex", flex_direction = "column", gap = "4px",
+              flex = "1"):
+          for label in ["X 0px", "Y 8px", "Blur 24px", "Spread 0px"]:
+            tdiv(height = "22px", display = "flex",
+                  align_items = "center", padding = "0 6px",
+                  border_radius = "4px", background_color = bgSurface,
+                  color = textMuted, font_size = "10px"):
+              text label
+      tdiv(display = "grid",
+            `grid-template-columns` = "repeat(4, minmax(0, 1fr))",
+            gap = "4px"):
         tdiv(ref = presetButton, role = "button", tabindex = "0",
               height = "24px", display = "flex",
               align_items = "center", justify_content = "center",
@@ -1652,15 +1843,144 @@ proc renderShadowAffordances[R, E](r: R; vm: EditorVM; frame: E;
               color = textPrimary, font_size = "10px",
               cursor = "pointer"):
           text "soft"
+        tdiv(ref = insetButton, role = "button", tabindex = "0",
+              height = "24px", display = "flex",
+              align_items = "center", justify_content = "center",
+              border_radius = "4px", background_color = bgSurface,
+              color = textMuted, font_size = "10px",
+              cursor = "pointer"):
+          text "inset"
+        tdiv(ref = elevationButton, role = "button", tabindex = "0",
+              height = "24px", display = "flex",
+              align_items = "center", justify_content = "center",
+              border_radius = "4px", background_color = bgSurface,
+              color = textMuted, font_size = "10px",
+              cursor = "pointer"):
+          text "token"
+        tdiv(ref = multiButton, role = "button", tabindex = "0",
+              height = "24px", display = "flex",
+              align_items = "center", justify_content = "center",
+              border_radius = "4px", background_color = bgSurface,
+              color = textMuted, font_size = "10px",
+              cursor = "pointer"):
+          text "+layer"
   r.setAttribute(result, "aria-label", "Edit shadow with crosshair")
   r.setAttribute(presetButton, "aria-label", "Apply soft shadow preset")
+  r.setAttribute(insetButton, "aria-label", "Toggle inset shadow")
+  r.setAttribute(elevationButton, "aria-label", "Bind elevation token")
+  r.setAttribute(multiButton, "aria-label", "Add shadow layer")
   let preset = r.propertyActionHandler(vm, frame, propName,
     "0 8px 24px rgba(15, 23, 42, 0.18)")
+  let inset = r.propertyActionHandler(vm, frame, propName,
+    "inset 0 1px 3px rgba(15, 23, 42, 0.24)")
+  let elevation = r.propertyActionHandler(vm, frame, propName,
+    "token(elevation.raised)")
+  let multi = r.propertyActionHandler(vm, frame, propName,
+    "0 1px 2px rgba(15, 23, 42, 0.18), 0 12px 32px rgba(15, 23, 42, 0.16)")
   r.addEventListener(presetButton, "click", preset)
   r.addEventListener(presetButton, "keydown", preset)
+  r.addEventListener(insetButton, "click", inset)
+  r.addEventListener(insetButton, "keydown", inset)
+  r.addEventListener(elevationButton, "click", elevation)
+  r.addEventListener(elevationButton, "keydown", elevation)
+  r.addEventListener(multiButton, "click", multi)
+  r.addEventListener(multiButton, "keydown", multi)
+
+proc renderTypographyAffordances[R, E](r: R; vm: EditorVM; frame: E;
+    propName, value: string): E =
+  var styleButton: E
+  var familyButton: E
+  var weightButton: E
+  var lineButton: E
+  var responsiveButton: E
+  var truncateButton: E
+  var wrapButton: E
+  result = ui(r):
+    tdiv(display = "flex", flex_direction = "column", gap = "7px",
+          padding = "8px", border_radius = "5px",
+          background_color = bgBase):
+      tdiv(border = "1px solid " & border, border_radius = "5px",
+            background_color = bgSurface, color = textPrimary,
+            padding = "8px", font_size = (if propName == "font-size": value else: "14px"),
+            font_weight = (if propName == "font-weight": value else: "600"),
+            line_height = (if propName == "line-height": value else: "1.35"),
+            white_space = "nowrap", overflow = "hidden",
+            text_overflow = "ellipsis"):
+        text "Typography preview"
+      tdiv(display = "grid",
+            `grid-template-columns` = "repeat(3, minmax(0, 1fr))",
+            gap = "4px"):
+        tdiv(ref = styleButton, role = "button", tabindex = "0",
+              padding = "4px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center", cursor = "pointer"):
+          text "body"
+        tdiv(ref = familyButton, role = "button", tabindex = "0",
+              padding = "4px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center", cursor = "pointer"):
+          text "font"
+        tdiv(ref = weightButton, role = "button", tabindex = "0",
+              padding = "4px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center", cursor = "pointer"):
+          text "700"
+        tdiv(ref = lineButton, role = "button", tabindex = "0",
+              padding = "4px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center", cursor = "pointer"):
+          text "1.4"
+        tdiv(ref = responsiveButton, role = "button", tabindex = "0",
+              padding = "4px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center", cursor = "pointer"):
+          text "fluid"
+        tdiv(ref = truncateButton, role = "button", tabindex = "0",
+              padding = "4px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center", cursor = "pointer"):
+          text "truncate"
+      tdiv(ref = wrapButton, role = "button", tabindex = "0",
+            padding = "4px", border_radius = "4px",
+            background_color = bgSurface, color = textMuted,
+            font_size = "9px", text_align = "center", cursor = "pointer"):
+        text "wrap"
+  r.setAttribute(result, "aria-label", "Edit typography details")
+  r.setAttribute(styleButton, "aria-label", "Bind body text style")
+  r.setAttribute(familyButton, "aria-label", "Set font family to system")
+  r.setAttribute(weightButton, "aria-label", "Set font weight to 700")
+  r.setAttribute(lineButton, "aria-label", "Set line height to 1.4")
+  r.setAttribute(responsiveButton, "aria-label", "Set responsive text mode fluid")
+  r.setAttribute(truncateButton, "aria-label", "Set text truncation")
+  r.setAttribute(wrapButton, "aria-label", "Set text wrapping")
+  let bindStyle = r.propertyActionHandler(vm, frame, propName,
+    if propName == "font-size": "token(type.body.size)" else: value)
+  let family = r.propertyActionHandler(vm, frame, "font-family",
+    "Inter, ui-sans-serif, system-ui")
+  let weight = r.propertyActionHandler(vm, frame, "font-weight", "700")
+  let line = r.propertyActionHandler(vm, frame, "line-height", "1.4")
+  let responsive = r.propertyActionHandler(vm, frame, "font-size",
+    "clamp(14px, 2vw, 20px)")
+  let truncate = r.propertyActionHandler(vm, frame, "text-overflow", "ellipsis")
+  let wrap = r.propertyActionHandler(vm, frame, "white-space", "normal")
+  r.addEventListener(styleButton, "click", bindStyle)
+  r.addEventListener(styleButton, "keydown", bindStyle)
+  r.addEventListener(familyButton, "click", family)
+  r.addEventListener(familyButton, "keydown", family)
+  r.addEventListener(weightButton, "click", weight)
+  r.addEventListener(weightButton, "keydown", weight)
+  r.addEventListener(lineButton, "click", line)
+  r.addEventListener(lineButton, "keydown", line)
+  r.addEventListener(responsiveButton, "click", responsive)
+  r.addEventListener(responsiveButton, "keydown", responsive)
+  r.addEventListener(truncateButton, "click", truncate)
+  r.addEventListener(truncateButton, "keydown", truncate)
+  r.addEventListener(wrapButton, "click", wrap)
+  r.addEventListener(wrapButton, "keydown", wrap)
 
 proc renderBezierAffordances[R, E](r: R; vm: EditorVM; frame: E;
     propName, value: string): E =
+  var reducedMotionButton: E
   result = ui(r):
     tdiv(display = "flex", flex_direction = "column", gap = "7px",
           padding = "8px", border_radius = "5px",
@@ -1680,7 +2000,17 @@ proc renderBezierAffordances[R, E](r: R; vm: EditorVM; frame: E;
         tdiv(position = "absolute", right = "42px", top = "26px",
               width = "10px", height = "10px", border_radius = "6px",
               background_color = accent, border = "2px solid white")
+      tdiv(ref = reducedMotionButton, role = "button", tabindex = "0",
+            padding = "4px 6px", border_radius = "4px",
+            background_color = bgSurface, color = textMuted,
+            font_size = "9px", cursor = "pointer"):
+        text "reduced-motion check"
   r.setAttribute(result, "aria-label", "Edit transition timing curve")
+  r.setAttribute(reducedMotionButton, "aria-label",
+    "Run reduced-motion diagnostics")
+  let reducedMotion = r.propertyActionHandler(vm, frame, propName, value)
+  r.addEventListener(reducedMotionButton, "click", reducedMotion)
+  r.addEventListener(reducedMotionButton, "keydown", reducedMotion)
   let presets = ui(r):
     tdiv(display = "flex", gap = "4px", flex_wrap = "wrap")
   for preset in ["linear", "ease", "ease-in", "ease-out", "ease-in-out"]:
@@ -1772,11 +2102,18 @@ proc renderRichPropertyControl[R, E](r: R; vm: EditorVM; frame: E;
   if swatchesFor(prop.name).len > 0:
     r.appendChild(advanced, renderFigmaColorAffordances[R, E](r, vm, frame,
       prop.name, prop.value))
+  if prop.name == "background-image" or prop.value.contains("gradient("):
+    r.appendChild(advanced, renderGradientAffordances[R, E](r, vm, frame,
+      prop.name, prop.value))
   if prop.name == "border-radius":
     r.appendChild(advanced, renderBorderRadiusAffordances[R, E](r, vm, frame,
       prop.value))
   if prop.name == "box-shadow":
     r.appendChild(advanced, renderShadowAffordances[R, E](r, vm, frame,
+      prop.name, prop.value))
+  if prop.name in ["font-family", "font-size", "font-weight", "line-height",
+      "letter-spacing", "white-space", "text-overflow"]:
+    r.appendChild(advanced, renderTypographyAffordances[R, E](r, vm, frame,
       prop.name, prop.value))
   if prop.name == "transition-timing-function":
     r.appendChild(advanced, renderBezierAffordances[R, E](r, vm, frame,

@@ -803,6 +803,189 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(title).toHaveAttribute("data-isonim-selected", "true");
   });
 
+  test("e2e_figma_grade_numeric_color_shadow_typography_controls", async ({
+    page,
+  }) => {
+    await page.goto("/");
+
+    await page.getByRole("button", { name: "Open Components section" }).click();
+    await page
+      .getByRole("button", {
+        name: "Select story Operational components / Topbar",
+      })
+      .click();
+    await page
+      .getByRole("button", { name: "Open selected component in edit mode" })
+      .click();
+
+    const editFrame = page.frameLocator(
+      'iframe[title="Editable component preview"]',
+    );
+    const topbar = editFrame.getByTestId("component-topbar");
+    const title = topbar.locator("h1.bo-title");
+
+    await title.click({ force: true, modifiers: ["Shift"] });
+    await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
+
+    await page.getByRole("tab", { name: "Show Space edit controls" }).click();
+    const paddingInput = page.getByLabel("Edit inspector property padding-top");
+    await paddingInput.focus();
+    await expect(paddingInput).toBeFocused();
+    await paddingInput.press("ArrowUp");
+    await expect
+      .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
+      .toBe("1px");
+    await page
+      .getByRole("button", { name: "Cycle unit for padding-top" })
+      .click();
+    await expect(paddingInput).toHaveValue(/rem$/);
+    await paddingInput.fill("6*4px");
+    await paddingInput.blur();
+    await expect
+      .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
+      .toBe("24px");
+
+    await page.getByRole("tab", { name: "Show Fill edit controls" }).click();
+    await page.getByLabel("Show advanced color controls").click();
+    await expect(page.getByLabel("Use RGB format for color")).toBeVisible();
+    await expect(page.getByLabel("Use HSL format for color")).toBeVisible();
+    await expect(page.getByLabel("Preview contrast for color")).toBeVisible();
+    await expect(
+      page.getByLabel("Choose variable mode for color"),
+    ).toBeVisible();
+    await page.getByLabel("Use RGB format for color").click();
+    await expect
+      .poll(() => topbar.evaluate((node) => getComputedStyle(node).color))
+      .toBe("rgb(59, 130, 246)");
+
+    await page.getByRole("tab", { name: "Show Effects edit controls" }).click();
+    await page.getByLabel("Show advanced box-shadow controls").click();
+    await expect(page.getByLabel("Edit shadow with crosshair")).toBeVisible();
+    await expect(page.getByLabel("Bind elevation token")).toBeVisible();
+    await expect(page.getByLabel("Add shadow layer")).toBeVisible();
+    await page.getByLabel("Apply soft shadow preset").click();
+    await expect
+      .poll(() => topbar.evaluate((node) => getComputedStyle(node).boxShadow))
+      .toContain("rgba(15, 23, 42");
+
+    await title.click({ force: true });
+    await page.getByRole("tab", { name: "Show Type edit controls" }).click();
+    await page.getByLabel("Show advanced font-weight controls").click();
+    await expect(page.getByLabel("Edit typography details")).toBeVisible();
+    await expect(page.getByLabel("Bind body text style")).toBeVisible();
+    await expect(
+      page.getByLabel("Set responsive text mode fluid"),
+    ).toBeVisible();
+    await expect(page.getByLabel("Set text truncation")).toBeVisible();
+    await page.getByLabel("Set font weight to 700").click();
+    await expect
+      .poll(() => title.evaluate((node) => getComputedStyle(node).fontWeight))
+      .toBe("700");
+
+    await expect(page.getByText("Unsaved source edit")).toBeVisible();
+    await page
+      .getByRole("button", { name: "Revert inspector source edits" })
+      .click();
+    await expect(page.getByText("Unsaved source edit")).toHaveCount(0);
+  });
+
+  test("e2e_property_controls_no_layout_overlap", async ({ page }) => {
+    await page.goto("/");
+
+    await page.getByRole("button", { name: "Open Components section" }).click();
+    await page
+      .getByRole("button", {
+        name: "Select story Operational components / Topbar",
+      })
+      .click();
+    await page
+      .getByRole("button", { name: "Open selected component in edit mode" })
+      .click();
+
+    const editFrame = page.frameLocator(
+      'iframe[title="Editable component preview"]',
+    );
+    const title = editFrame
+      .getByTestId("component-topbar")
+      .locator("h1.bo-title");
+    await title.click({ force: true });
+
+    for (const viewport of [
+      { width: 1280, height: 900 },
+      { width: 900, height: 900 },
+      { width: 430, height: 900 },
+    ]) {
+      await page.setViewportSize(viewport);
+      await page.getByRole("tab", { name: "Show Type edit controls" }).click();
+      await page.getByLabel("Show advanced font-size controls").click();
+      await expect(page.locator(".editor-manual-inspector")).toBeVisible();
+      await expect(page.getByLabel("Edit typography details")).toBeVisible();
+
+      const rows = await page
+        .locator('[data-inspector-dense-row="true"]')
+        .evaluateAll((nodes) =>
+          nodes.map((node) => {
+            const rect = node.getBoundingClientRect();
+            const children = Array.from(node.children).map((child) => {
+              const childRect = child.getBoundingClientRect();
+              return {
+                left: childRect.left,
+                top: childRect.top,
+                right: childRect.right,
+                bottom: childRect.bottom,
+                width: childRect.width,
+                height: childRect.height,
+              };
+            });
+            let overlaps = 0;
+            for (let i = 0; i < children.length; i += 1) {
+              for (let j = i + 1; j < children.length; j += 1) {
+                const a = children[i];
+                const b = children[j];
+                if (
+                  a.width > 0 &&
+                  b.width > 0 &&
+                  a.left < b.right &&
+                  a.right > b.left &&
+                  a.top < b.bottom &&
+                  a.bottom > b.top
+                ) {
+                  overlaps += 1;
+                }
+              }
+            }
+            return {
+              left: rect.left,
+              right: rect.right,
+              width: rect.width,
+              overlaps,
+            };
+          }),
+        );
+      expect(rows.length).toBeGreaterThan(0);
+      for (const row of rows) {
+        expect(row.width).toBeGreaterThan(180);
+        expect(row.left).toBeGreaterThanOrEqual(0);
+        expect(row.right).toBeLessThanOrEqual(viewport.width + 1);
+        expect(row.overlaps).toBe(0);
+      }
+
+      const inspectorBox = await page
+        .locator(".editor-manual-inspector")
+        .boundingBox();
+      const advancedBox = await page
+        .getByLabel("Edit typography details")
+        .boundingBox();
+      if (!inspectorBox || !advancedBox) {
+        throw new Error("Inspector primitive control boxes are not visible");
+      }
+      expect(advancedBox.x).toBeGreaterThanOrEqual(inspectorBox.x);
+      expect(advancedBox.x + advancedBox.width).toBeLessThanOrEqual(
+        inspectorBox.x + inspectorBox.width + 1,
+      );
+    }
+  });
+
   test("keeps editor state in browser history", async ({ page }) => {
     await page.goto("/");
 

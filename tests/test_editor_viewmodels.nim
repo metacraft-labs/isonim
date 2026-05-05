@@ -880,6 +880,139 @@ suite "Editor ViewModels (M26 source-backed CSS property editors)":
       check not vm.inspector.isDirty.val
       dispose()
 
+  test "primitive_controls_parse_normalize_validate_and_source_plan":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      check vm.selectInspectorElement(cssElement(@[
+        cssProp("padding", "12px", poTailwindClass, "class:p-3"),
+        cssProp("color", "#334155", poThemeToken,
+          "schema:semantic.text.primary", tokenName = "semantic.text.primary"),
+        cssProp("background-image",
+          "linear-gradient(90deg, #3B82F6 0%, #22C55E 100%)", poConstant,
+          "schema:gradient.hero", schemaKey = "gradient.hero"),
+        cssProp("box-shadow", "0 2px 8px rgba(0,0,0,.2)", poConstant,
+          "schema:elevation.card", schemaKey = "elevation.card"),
+        cssProp("font-size", "16px", poConstant,
+          "schema:type.body.size", schemaKey = "type.body.size"),
+        cssProp("border-radius", "8px", poConstant,
+          "schema:radius.card", schemaKey = "radius.card"),
+        cssProp("transition-duration", "150ms", poConstant,
+          "schema:motion.fast", schemaKey = "motion.fast")
+      ]))
+
+      let numeric = primitiveControlModel(
+        vm.inspector.selectedElement.val.properties[0], "8+4px")
+      check numeric.family == pcfNumeric
+      check numeric.canonical == "12px"
+      check pccMathExpression in numeric.capabilities
+      check pccUnitCycle in numeric.capabilities
+      check numeric.sourcePlanKind == cspTailwindClassReplacement
+      check numeric.valid
+
+      let color = primitiveControlModel(
+        vm.inspector.selectedElement.val.properties[1],
+        "token(semantic.text.secondary)")
+      check color.family == pcfColor
+      check color.tokenName == "semantic.text.secondary"
+      check pccSwatches in color.capabilities
+      check pccContrastPreview in color.capabilities
+      check color.sourcePlanKind == cspTokenUpdate
+
+      let gradient = primitiveControlModel(
+        vm.inspector.selectedElement.val.properties[2],
+        "linear-gradient(135deg, #3B82F6 0%, token(semantic.accent) 48%, #22C55E 100%)")
+      check gradient.family == pcfGradient
+      check pccGradientStops in gradient.capabilities
+      check pccGradientAngle in gradient.capabilities
+      check gradient.sourceSerialized.contains("linear-gradient")
+      check gradient.sourcePlanKind == cspStructuredSchemaUpdate
+
+      let shadow = primitiveControlModel(
+        vm.inspector.selectedElement.val.properties[3],
+        "0 1px 2px rgba(15, 23, 42, 0.18), 0 12px 32px rgba(15, 23, 42, 0.16)")
+      check shadow.family == pcfShadow
+      check pccShadowLayers in shadow.capabilities
+      check pccElevationToken in shadow.capabilities
+
+      let typography = primitiveControlModel(
+        vm.inspector.selectedElement.val.properties[4], "18px")
+      check typography.family == pcfTypography
+      check pccTypographyStyle in typography.capabilities
+      check pccResponsiveText in typography.capabilities
+
+      let radius = primitiveControlModel(
+        vm.inspector.selectedElement.val.properties[5], "10px")
+      check radius.family == pcfBorderRadiusStroke
+      check pccLinkedCorners in radius.capabilities
+      check pccCanvasHandle in radius.capabilities
+
+      let motion = primitiveControlModel(
+        vm.inspector.selectedElement.val.properties[6], "200ms")
+      check motion.family == pcfMotion
+      check motion.unit == "ms"
+      check pccBezierCurve in motion.capabilities
+      check pccReducedMotionDiagnostic in motion.capabilities
+
+      let invalidMotion = vm.editCssProperty("transition-duration", "-20ms",
+        pesLocal)
+      check invalidMotion.status == pesRejected
+      check invalidMotion.diagnostics.anyIt(it.kind == pedInvalidCssValue)
+
+      let edit = vm.editCssProperty("padding", "6*4px", pesLocal)
+      check edit.status == pesAccepted
+      check edit.sourceEdit.newValue == "24px"
+      check edit.sourceEdit.previewAfter.contains("padding: 24px")
+      dispose()
+
+  test "primitive_controls_undo_redo_and_live_preview":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      check vm.selectInspectorElement(cssElement(@[
+        cssProp("padding", "12px", poTailwindClass, "class:p-3"),
+        cssProp("color", "#334155", poConstant,
+          "schema:semantic.text.primary", schemaKey = "semantic.text.primary"),
+        cssProp("box-shadow", "none", poConstant,
+          "schema:elevation.card", schemaKey = "elevation.card"),
+        cssProp("font-weight", "600", poConstant,
+          "schema:type.heading.weight", schemaKey = "type.heading.weight")
+      ]))
+
+      let preview = primitiveControlModel(
+        vm.inspector.selectedElement.val.properties[0], "10+6px")
+      check preview.livePreviewValue == "16px"
+      check preview.valid
+
+      check vm.editCssProperty("padding", "10+6px", pesLocal).status ==
+        pesAccepted
+      check vm.editCssProperty("color", "#F8FAFC", pesLocal).status ==
+        pesAccepted
+      check vm.editCssProperty("box-shadow",
+        "0 8px 24px rgba(15, 23, 42, 0.18)", pesLocal).status ==
+        pesAccepted
+      check vm.editCssProperty("font-weight", "700", pesLocal).status ==
+        pesAccepted
+      check vm.inspector.undoStack.val.len == 4
+      check vm.inspector.pendingSourceEdits.val.len == 4
+      check vm.inspector.sourcePreviews.val.anyIt(
+        it.plan.property == "padding" and it.afterText.contains("16px"))
+
+      check vm.inspector.undoCssPropertyEdit()
+      check vm.inspector.selectedElement.val.properties.anyIt(
+        it.name == "font-weight" and it.value == "600")
+      check vm.inspector.redoStack.val.len == 1
+      check vm.inspector.redoCssPropertyEdit()
+      check vm.inspector.selectedElement.val.properties.anyIt(
+        it.name == "font-weight" and it.value == "700")
+      check vm.inspector.pendingSourceEdits.val.anyIt(
+        it.property == "font-weight" and it.newValue == "700")
+
+      vm.inspector.discardCssPropertyEdits()
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check vm.inspector.undoStack.val.len == 0
+      check vm.inspector.selectedElement.val.properties.anyIt(
+        it.name == "padding" and it.value == "12px")
+      dispose()
+
   test "component_dom_selection_bridge_populates_source_backed_inspector":
     createRoot proc(dispose: proc()) =
       let vm = createEditorVM()

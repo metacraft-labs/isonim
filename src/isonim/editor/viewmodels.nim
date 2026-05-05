@@ -314,10 +314,15 @@ func cssPropertyCategory*(property: string): CSSPropertyCategory =
       "line-height", "letter-spacing", "text" & "-align",
       "text" & "-decoration", "text" & "-transform", "white-space"]:
     cpcTypography
-  elif prop in ["color", "background", "background-color", "fill", "stroke"]:
+  elif prop in ["color", "background", "background-color", "background-image",
+      "fill", "stroke"]:
     cpcColor
   elif prop in ["border", "border-width", "border-color", "border-style",
-      "border-radius", "outline", "outline-offset"]:
+      "border-radius", "border-top-width", "border-right-width",
+      "border-bottom-width", "border-left-width", "border-top-color",
+      "border-right-color", "border-bottom-color", "border-left-color",
+      "border-top-style", "border-right-style", "border-bottom-style",
+      "border-left-style", "outline", "outline-offset"]:
     cpcBorder
   elif prop in ["box-shadow", "text" & "-shadow", "filter", "backdrop-filter",
       "mix-blend-mode"]:
@@ -417,7 +422,7 @@ func hasUnsupportedNumericUnit(raw: string): bool =
     return false
 
   let suffix = text[index .. ^1].toLowerAscii()
-  if suffix in ["px", "rem", "em", "vw", "vh", "ch", "%"]:
+  if suffix in ["px", "rem", "em", "vw", "vh", "ch", "%", "ms", "s"]:
     return false
   suffix.allIt(it.isAlphaAscii)
 
@@ -497,7 +502,7 @@ proc parseCssPropertyValue*(property, raw: string;
     result.unit = "%"
     discard tryParseFloatValue(text[0 ..< text.len - 1], result.numeric)
     return
-  for unit in ["px", "rem", "em", "vw", "vh", "ch"]:
+  for unit in ["px", "rem", "em", "vw", "vh", "ch", "ms", "s"]:
     if text.endsWith(unit):
       result.kind = cvkLength
       result.unit = unit
@@ -538,7 +543,7 @@ proc validateCssPropertyValue*(prop: PropertyInfo; request: PropertyEditRequest;
     result.add cssDiagnostic(pedInvalidCssValue, prop,
       "Unsupported CSS unit in '" & raw & "'.")
   if normalized.kind == cvkLength and normalized.unit notin ["px", "rem", "em",
-      "vw", "vh", "ch"]:
+      "vw", "vh", "ch", "ms", "s"]:
     result.add cssDiagnostic(pedInvalidCssValue, prop,
       "Unsupported CSS length unit '" & normalized.unit & "'.")
   if normalized.kind == cvkLength:
@@ -556,6 +561,11 @@ proc validateCssPropertyValue*(prop: PropertyInfo; request: PropertyEditRequest;
       normalized.numeric < 0 and propName.startsWith("padding"):
     result.add cssDiagnostic(pedInvalidCssValue, prop,
       "Padding values cannot be negative.")
+  if propName in ["transition-duration", "transition-delay", "animation-duration",
+      "animation-delay"] and normalized.kind == cvkLength and
+      normalized.numeric < 0:
+    result.add cssDiagnostic(pedInvalidCssValue, prop,
+      "Motion timing values cannot be negative.")
   if normalized.kind == cvkOpacity and (normalized.numeric < 0 or
       normalized.numeric > 1):
     result.add cssDiagnostic(pedInvalidCssValue, prop,
@@ -664,6 +674,221 @@ proc sourcePlan(prop: PropertyInfo; request: PropertyEditRequest): SourceEditPla
         "",
     conflictKey: prop.sourceFile & ":" & $prop.sourceLine & ":" & prop.name,
     expectedOldValue: expectedOld)
+
+func primitiveUnitFromText(raw: string): string =
+  let text = raw.strip()
+  if text.len == 0:
+    return ""
+  var i = text.len - 1
+  while i >= 0 and (text[i].isAlphaAscii or text[i] == '%'):
+    dec i
+  if i < text.len - 1:
+    text[i + 1 .. ^1]
+  else:
+    ""
+
+proc evalNumericExpression(raw: string; value: var float): bool =
+  let text = raw.strip()
+  if text.len == 0:
+    return false
+  var i = 0
+
+  proc skipSpaces() =
+    while i < text.len and text[i].isSpaceAscii:
+      inc i
+
+  proc parseFactor(v: var float): bool =
+    skipSpaces()
+    if i >= text.len:
+      return false
+    var sign = 1.0
+    if text[i] == '+':
+      inc i
+    elif text[i] == '-':
+      sign = -1.0
+      inc i
+    skipSpaces()
+    let start = i
+    var sawDigit = false
+    while i < text.len and (text[i].isDigit or text[i] == '.'):
+      if text[i].isDigit:
+        sawDigit = true
+      inc i
+    if not sawDigit:
+      return false
+    try:
+      v = sign * text[start ..< i].parseFloat()
+      true
+    except ValueError:
+      false
+
+  proc parseTerm(v: var float): bool =
+    if not parseFactor(v):
+      return false
+    while true:
+      skipSpaces()
+      if i >= text.len or text[i] notin {'*', '/'}:
+        return true
+      let op = text[i]
+      inc i
+      var rhs = 0.0
+      if not parseFactor(rhs):
+        return false
+      if op == '*':
+        v *= rhs
+      else:
+        if abs(rhs) < 0.000001:
+          return false
+        v /= rhs
+
+  proc parseExpr(v: var float): bool =
+    if not parseTerm(v):
+      return false
+    while true:
+      skipSpaces()
+      if i >= text.len or text[i] notin {'+', '-'}:
+        return true
+      let op = text[i]
+      inc i
+      var rhs = 0.0
+      if not parseTerm(rhs):
+        return false
+      if op == '+':
+        v += rhs
+      else:
+        v -= rhs
+
+  if not parseExpr(value):
+    return false
+  skipSpaces()
+  i == text.len
+
+func renderPrimitiveNumber(value: float): string =
+  if abs(value - round(value)) < 0.000001:
+    $int(round(value))
+  else:
+    var rendered = formatFloat(value, ffDecimal, 4)
+    while rendered.endsWith("0"):
+      rendered = rendered[0 ..< rendered.len - 1]
+    if rendered.endsWith("."):
+      rendered = rendered[0 ..< rendered.len - 1]
+    rendered
+
+proc normalizePrimitiveInputValue*(property, raw: string): string =
+  ## Normalize direct primitive input before it becomes a source plan.
+  let text = raw.strip()
+  if text.len == 0:
+    return ""
+  if text.startsWith("token(") or text.startsWith("var(") or
+      text.startsWith("rgb") or text.startsWith("hsl") or text.contains("gradient("):
+    return text
+  let unit = primitiveUnitFromText(text)
+  let expr =
+    if unit.len > 0: text[0 ..< text.len - unit.len].strip()
+    else: text
+  if not expr.anyIt(it in {'+', '-', '*', '/'}):
+    return text
+  var computed = 0.0
+  if evalNumericExpression(expr, computed):
+    return renderPrimitiveNumber(computed) & unit
+  text
+
+proc cyclePrimitiveUnit*(property, raw: string): string =
+  let text = normalizePrimitiveInputValue(property, raw)
+  let parsed = parseCssPropertyValue(property, text)
+  if parsed.kind notin {cvkLength, cvkPercentage}:
+    return text
+  let units = @["px", "rem", "em", "%", "vw", "vh"]
+  var index = units.find(if parsed.unit.len > 0: parsed.unit else: "px")
+  if index < 0:
+    index = 0
+  let nextUnit = units[(index + 1) mod units.len]
+  renderPrimitiveNumber(parsed.numeric) & nextUnit
+
+func primitiveFamilyFor(property: string; normalized: CSSPropertyValue): PrimitiveControlFamily =
+  let prop = property.normalizedCssName()
+  if normalized.kind == cvkGradient or prop in ["background-image", "background"]:
+    pcfGradient
+  elif normalized.kind == cvkColor or prop in ["color", "background-color",
+      "border-color", "outline-color", "fill", "stroke"]:
+    pcfColor
+  elif prop.contains("shadow"):
+    pcfShadow
+  elif prop.startsWith("font") or prop in ["line-height", "letter-spacing",
+      "text" & "-align", "text" & "-decoration", "text" & "-transform",
+      "white-space", "text" & "-overflow"]:
+    pcfTypography
+  elif prop.startsWith("border") or prop.startsWith("outline"):
+    pcfBorderRadiusStroke
+  elif prop.startsWith("transition") or prop.startsWith("animation"):
+    pcfMotion
+  else:
+    pcfNumeric
+
+func primitiveCapabilities(family: PrimitiveControlFamily): seq[
+    PrimitiveControlCapability] =
+  result = @[pccReset, pccTokenBinding, pccUndoJournal, pccLivePreview,
+    pccSourceCommit]
+  case family
+  of pcfNumeric:
+    result.add @[pccSelectAllFocus, pccLabelScrub, pccPrecisionModifiers,
+      pccArrowIncrement, pccUnitCycle, pccMathExpression, pccMinMaxValidation]
+  of pcfColor:
+    result.add @[pccSwatches, pccVariableMode, pccColorFormats, pccOpacity,
+      pccEyedropper, pccCopyPaste, pccContrastPreview]
+  of pcfGradient:
+    result.add @[pccGradientStops, pccGradientAngle, pccGradientType,
+      pccColorFormats]
+  of pcfShadow:
+    result.add @[pccShadowLayers, pccShadowCrosshair, pccLabelScrub,
+      pccInsetShadow, pccElevationToken]
+  of pcfTypography:
+    result.add @[pccTypographyStyle, pccResponsiveText, pccTruncateWrap,
+      pccArrowIncrement, pccUnitCycle]
+  of pcfBorderRadiusStroke:
+    result.add @[pccLinkedCorners, pccSideSpecificStroke, pccCanvasHandle,
+      pccArrowIncrement, pccUnitCycle]
+  of pcfMotion:
+    result.add @[pccBezierCurve, pccMotionPreset, pccReducedMotionDiagnostic,
+      pccArrowIncrement, pccUnitCycle, pccMinMaxValidation]
+
+proc primitiveControlModel*(prop: PropertyInfo; raw = ""): PrimitiveControlModel =
+  let proposed =
+    if raw.len > 0: normalizePrimitiveInputValue(prop.name, raw)
+    else: normalizePrimitiveInputValue(prop.name, prop.value)
+  let normalized = parseCssPropertyValue(prop.name, proposed)
+  let request = PropertyEditRequest(property: prop.name, newValue: proposed,
+    kind: if cssPropertyCategory(prop.name) in {cpcLayout, cpcFlexGrid}: pekLayout else: pekCss,
+    scope: if prop.sharedCount > 0: pesShared else: pesLocal,
+    origin: peoInspector)
+  let diagnostics = prop.validateCssPropertyValue(request, normalized)
+  let family = primitiveFamilyFor(prop.name, normalized)
+  result = PrimitiveControlModel(
+    family: family,
+    property: prop.name,
+    raw: if raw.len > 0: raw else: prop.value,
+    canonical: normalized.canonical,
+    unit: normalized.unit,
+    numeric: normalized.numeric,
+    tokenName: if normalized.tokenName.len > 0: normalized.tokenName else: prop.tokenName,
+    sourcePlanKind: prop.cssSourcePlanKind(request, normalized),
+    sourceSerialized: normalized.canonical,
+    livePreviewValue: normalized.canonical,
+    minValue: -1000000000.0,
+    maxValue: 1000000000.0,
+    valid: diagnostics.len == 0,
+    capabilities: primitiveCapabilities(family),
+    diagnostics: diagnostics)
+  let propName = prop.name.normalizedCssName()
+  if propName == "opacity":
+    result.minValue = 0
+    result.maxValue = 1
+  elif propName.startsWith("padding") or propName in ["transition-duration",
+      "transition-delay", "animation-duration", "animation-delay"]:
+    result.minValue = 0
+  if family == pcfMotion and proposed.contains("prefers-reduced-motion: none"):
+    result.reducedMotionDiagnostic =
+      "Reduced-motion diagnostics expect a fallback for motion-sensitive users."
 
 func withStatus(status: PropertyEditStatus;
     diagnostics: seq[PropertyEditDiagnostic] = @[]): PropertyEditResult =
@@ -1599,10 +1824,13 @@ proc selectPreviousElement*(inspector: InspectorVM): bool {.discardable.} =
 proc editProperty*(inspector: InspectorVM;
     request: PropertyEditRequest): PropertyEditResult {.discardable.} =
   ## Update the selected element and produce source-aware edit data.
+  var normalizedRequest = request
+  normalizedRequest.newValue = normalizePrimitiveInputValue(
+    request.property, request.newValue)
   let element = inspector.selectedElement.val
   if element.tag.len == 0:
     result = withStatus(pesRejected, @[
-      diagnostic(pedMissingSelection, element, request.property,
+      diagnostic(pedMissingSelection, element, normalizedRequest.property,
         "Select an element before editing inspector properties.")
     ])
     inspector.editDiagnostics.val = result.diagnostics
@@ -1611,21 +1839,21 @@ proc editProperty*(inspector: InspectorVM;
   var propIndex = -1
   var prop = PropertyInfo()
   for i, candidate in element.properties:
-    if candidate.name == request.property:
+    if candidate.name == normalizedRequest.property:
       propIndex = i
       prop = candidate
       break
 
   if propIndex < 0:
-    if request.newValue.strip.len == 0 or element.sourceFile.len == 0:
+    if normalizedRequest.newValue.strip.len == 0 or element.sourceFile.len == 0:
       result = withStatus(pesRejected, @[
-        diagnostic(pedUnknownProperty, element, request.property,
+        diagnostic(pedUnknownProperty, element, normalizedRequest.property,
           "The selected element does not expose this property.")
       ])
       inspector.editDiagnostics.val = result.diagnostics
       return
     prop = PropertyInfo(
-      name: request.property,
+      name: normalizedRequest.property,
       value: "",
       origin: poInherited,
       originDetail: "property-addition",
@@ -1634,7 +1862,7 @@ proc editProperty*(inspector: InspectorVM;
       directStyleAllowed: true)
 
   var diagnostics: seq[PropertyEditDiagnostic] = @[]
-  if prop.isShared and request.scope == pesUnspecified:
+  if prop.isShared and normalizedRequest.scope == pesUnspecified:
     diagnostics.add diagnostic(pedSharedScopeRequired, prop,
       "Shared properties require an explicit local or shared scope.")
     result = withStatus(pesNeedsScope, diagnostics)
@@ -1650,16 +1878,16 @@ proc editProperty*(inspector: InspectorVM;
     diagnostics.add diagnostic(pedViewModelBoundary, prop,
       "CSS and layout edits cannot be applied from ViewModel-owned source.")
 
-  if prop.isTokenDrift(request.newValue):
+  if prop.isTokenDrift(normalizedRequest.newValue):
     diagnostics.add diagnostic(pedTokenDrift, prop,
       "Theme-token properties must stay on token values instead of literal colors.")
 
-  if prop.isEmptyA11yEdit(request.newValue):
+  if prop.isEmptyA11yEdit(normalizedRequest.newValue):
     diagnostics.add diagnostic(pedAccessibility, prop,
       "Accessibility text properties cannot be blank.")
 
-  let normalized = parseCssPropertyValue(prop.name, request.newValue)
-  diagnostics.add prop.validateCssPropertyValue(request, normalized)
+  let normalized = parseCssPropertyValue(prop.name, normalizedRequest.newValue)
+  diagnostics.add prop.validateCssPropertyValue(normalizedRequest, normalized)
 
   if diagnostics.len > 0:
     result = withStatus(pesRejected, diagnostics)
@@ -1676,8 +1904,8 @@ proc editProperty*(inspector: InspectorVM;
   inspector.selectedElement.val = updated
   inspector.editDiagnostics.val = @[]
 
-  let record = prop.editRecord(request)
-  let plan = prop.sourcePlan(request)
+  let record = prop.editRecord(normalizedRequest)
+  let plan = prop.sourcePlan(normalizedRequest)
   inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
       SourceEditPlan] =
     result = @[]
