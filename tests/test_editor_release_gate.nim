@@ -48,6 +48,12 @@ const
     "iframe",
     "canvas"
   ]
+  ConsumerCoverageStatuses = [
+    "covered",
+    "covered_headless",
+    "covered_indirectly",
+    "workspace_api_compatible"
+  ]
   WeakTestMarkers = [
     "." & "sk" & "ip(",
     "." & "on" & "ly(",
@@ -132,6 +138,23 @@ proc evidenceFile(evidence: string): string =
   else:
     evidence
 
+proc evidenceDetail(evidence: string): string =
+  let separator = evidence.find(":")
+  if separator >= 0:
+    evidence[separator + 1 .. ^1]
+  else:
+    ""
+
+proc checkEvidenceReference(evidence: string) =
+  let file = evidenceFile(evidence)
+  check file.len > 0
+  check fileExists(file)
+
+  let detail = evidenceDetail(evidence)
+  if detail.len > 0 and (file.endsWith(".nim") or file.endsWith(".ts")):
+    let text = checkedText(file)
+    check hasTestDeclaration(file, text, detail)
+
 proc hasBrowserBehavior(row: JsonNode): bool =
   if not row.hasKey("browserBehavior"):
     return false
@@ -145,13 +168,11 @@ proc checkConsumerCoverage(row: JsonNode) =
   for consumer in ["isonimExample", "metacraftWeb"]:
     check row["consumerCoverage"].hasKey(consumer)
     let coverage = row["consumerCoverage"][consumer]
-    check coverage["status"].getStr.len > 0
+    check coverage["status"].getStr in ConsumerCoverageStatuses
     check coverage.hasKey("evidence")
     check coverage["evidence"].getElems.len > 0
     for item in coverage["evidence"].getElems:
-      let file = evidenceFile(item.getStr)
-      check file.len > 0
-      check fileExists(file)
+      checkEvidenceReference(item.getStr)
 
 proc checkScreenshotRecord(row: JsonNode) =
   check row.hasKey("screenshotVisualAssertions")
@@ -166,9 +187,20 @@ proc checkFigmaGradeRequirements(row: JsonNode) =
   let status = row["status"].getStr
   if status notin ["figma_grade", "validated_in_metacraft"]:
     return
+  check row["headlessTests"].getElems.len > 0
+  checkNamedTestsExist(row, "headlessTests")
   check not row["mockOnly"].getBool
   check not row["placeholderUi"].getBool
+  check row["screenshotVisualAssertions"]["status"].getStr == "passing"
   check row["screenshotVisualAssertions"]["assertions"].getElems.len > 0
+  check row["screenshotVisualAssertions"].hasKey("evidence")
+  if row["screenshotVisualAssertions"].hasKey("evidence"):
+    check row["screenshotVisualAssertions"]["evidence"].getElems.len > 0
+    for item in row["screenshotVisualAssertions"]["evidence"].getElems:
+      checkEvidenceReference(item.getStr)
+  check row["consumerCoverage"]["isonimExample"]["status"].getStr == "covered"
+  if status == "validated_in_metacraft":
+    check row["consumerCoverage"]["metacraftWeb"]["status"].getStr == "covered"
   if hasBrowserBehavior(row):
     check row["playwrightTests"].getElems.len > 0
     checkNamedTestsExist(row, "playwrightTests")
@@ -197,6 +229,9 @@ suite "IsoNim editor maturity gate":
 
     for status in MaturityStatuses:
       check status in stringItems(doc["statusValues"])
+    check doc["statusValues"].getElems.len == MaturityStatuses.len
+    for status in stringItems(doc["statusValues"]):
+      check status in MaturityStatuses
 
     for heuristic in RequiredHeuristics:
       check doc["acceptanceHeuristics"].hasKey(heuristic)
@@ -223,6 +258,7 @@ suite "IsoNim editor maturity gate":
       check row.hasKey("playwrightRequired")
 
       if row["status"].getStr in ["functional", "figma_grade", "validated_in_metacraft"]:
+        check not row["mockOnly"].getBool
         check row["headlessTests"].getElems.len > 0
         checkNamedTestsExist(row, "headlessTests")
 
