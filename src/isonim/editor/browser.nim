@@ -26,6 +26,28 @@ proc injectEditorStyles*() =
   let style = document.createElement("style")
   style.textContent = cstring"""
     .editor-tabbar::-webkit-scrollbar { display: none; }
+    .editor-sidebar,
+    .editor-chat,
+    .editor-manual-inspector {
+      scrollbar-width: thin;
+      resize: horizontal;
+    }
+    .editor-sidebar::-webkit-resizer,
+    .editor-chat::-webkit-resizer,
+    .editor-manual-inspector::-webkit-resizer {
+      background: #334155;
+    }
+    .editor-statusbar [role="button"]:hover,
+    .editor-tabbar [role="tab"]:hover {
+      background: #1E293B !important;
+    }
+    .editor-manual-inspector details {
+      border-top: 1px solid #1E293B;
+      padding-top: 2px;
+    }
+    .editor-manual-inspector details:not([open]) > *:not(summary) {
+      display: none !important;
+    }
     @media (max-width: 768px) {
       .editor-sidebar { width: 100% !important; min-width: 100% !important; }
       .editor-preview { display: none !important; }

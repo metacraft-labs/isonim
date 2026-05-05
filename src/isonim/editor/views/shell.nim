@@ -6,7 +6,7 @@
 import std/strutils
 
 import isonim/core/[signals, computation]
-import isonim/dsl/[ui, components]
+import isonim/dsl/ui
 import isonim/editor/viewmodels
 import isonim/editor/types
 import isonim/editor/views/storyboard
@@ -20,11 +20,12 @@ import isonim/editor/views/chat_panel
 # Theme tokens
 # ---------------------------------------------------------------------------
 const
+  editorProductName = "IsoNim Editor"
+  editorVersion = "0.1.0"
   bgBase = "#0B1120"
   bgSurface = "#1E293B"
   bgSidebar = "#111827"
   bgToolbar = "#151D2E"
-  bgCard = "#151D2E"
   border = "#334155"
   borderStrong = "#475569"
   borderFaint = "#1E293B"
@@ -34,7 +35,6 @@ const
   textDim = "#475569"
   accent = "#3B82F6"
   accentSoft = "#1E3A5F"
-  gold = "#F59E0B"
 
 const inspectorSections = [
   isLayout, isSize, isSpacing, isPosition, isFill, isStroke, isTypography,
@@ -267,42 +267,103 @@ proc bindInspectorTabState[R, E](r: R; node: E; vm: EditorVM;
     r.setStyle(node, "box-shadow",
       if isActive: "inset 0 -2px 0 " & accent else: "none")
 
+proc bindStatusPanelButton[R, E](r: R; node: E; vm: EditorVM;
+    panel: EditorPanel) =
+  let captured = panel
+  createRenderEffect proc() =
+    let panels = vm.panels.val
+    let active =
+      case captured
+      of epSidebar: panels.sidebar
+      of epInspector: panels.inspector
+    r.setAttribute(node, "aria-pressed", if active: "true" else: "false")
+    r.setStyle(node, "background-color", if active: bgSurface else: "transparent")
+    r.setStyle(node, "color", if active: textSecondary else: textDim)
+
+proc statusPanelButton[R, E](r: R; vm: EditorVM; panel: EditorPanel;
+    label, glyph: string): E =
+  result = ui(r):
+    tdiv(width = "24px", height = "22px", border_radius = "4px",
+          display = "flex", align_items = "center", justify_content = "center",
+          font_size = "12px", font_weight = "700",
+          cursor = "pointer", transition = "all 0.12s"):
+      text glyph
+  r.makeButton(result, label)
+  r.addEventListener(result, "click", proc() = vm.togglePanel(panel))
+  r.addEventListener(result, "keydown", proc() = vm.togglePanel(panel))
+  r.bindStatusPanelButton(result, vm, panel)
+
+proc statusBreadcrumbText(vm: EditorVM): string =
+  let story = vm.selectedStory.val
+  var parts: seq[string] = @[]
+  if story.group.len > 0:
+    parts.add story.group
+  if story.name.len > 0:
+    parts.add story.name
+  if vm.inspector.selectedElement.val.tag.len > 0:
+    parts.add vm.inspector.selectedElement.val.tag
+  if parts.len == 0:
+    "No selection"
+  else:
+    parts.join(" / ")
+
+proc renderStatusBar[R, E](r: R; vm: EditorVM): E =
+  var breadcrumbNode: E
+  var leftControls: E
+  var rightControls: E
+  result = ui(r):
+    tdiv(class = "editor-statusbar",
+          height = "26px", min_height = "26px",
+          display = "flex", align_items = "center",
+          justify_content = "space-between",
+          gap = "10px", padding = "0 8px",
+          background_color = bgToolbar,
+          border_top = "1px solid " & border,
+          color = textMuted, font_size = "11px"):
+      tdiv(ref = leftControls,
+            display = "flex", align_items = "center", gap = "6px"):
+        discard
+      tdiv(display = "flex", align_items = "center", gap = "6px",
+            min_width = "0", flex = "1"):
+        span(font_size = "10px", color = textDim):
+          text "\xE2\x80\xA2"
+        span(ref = breadcrumbNode,
+              white_space = "nowrap", overflow = "hidden",
+              text_overflow = "ellipsis"):
+          text "No selection"
+      tdiv(ref = rightControls,
+            display = "flex", align_items = "center", gap = "6px"):
+        span(color = textDim):
+          text editorProductName & " v" & editorVersion
+  r.appendChild(leftControls,
+    statusPanelButton[R, E](r, vm, epSidebar, "Toggle left sidebar",
+      "\xE2\x87\xA4"))
+  r.appendChild(rightControls,
+    statusPanelButton[R, E](r, vm, epInspector, "Toggle right sidebar",
+      "\xE2\x87\xA5"))
+  createRenderEffect proc() =
+    r.setTextContent(breadcrumbNode, statusBreadcrumbText(vm))
+
 proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
   ## Left panel: storyboard navigation tree.
   ## Built entirely with the ui DSL — if/for inside the body.
   ui(r):
     tdiv(class = "editor-sidebar",
           display = "flex", flex_direction = "column",
-          width = "260px", min_width = "260px", height = "100%",
+          width = "260px", min_width = "180px", max_width = "420px",
+          resize = "horizontal", height = "100%",
           background_color = bgSidebar,
           border_right = "1px solid " & borderStrong,
           overflow_y = "auto", overflow_x = "hidden"):
 
-      # Header
-      tdiv(display = "flex", align_items = "center",
-            justify_content = "space-between",
-            padding = "14px 16px 10px 16px",
-            border_bottom = "1px solid " & borderFaint):
-        span(font_size = "13px", font_weight = "700",
-              color = gold, letter_spacing = "0.3px"):
-          text "IsoNim Editor"
-        tdiv(display = "flex", align_items = "center", gap = "8px"):
-          span(font_size = "10px", color = textDim):
-            text "v0.1"
-          tdiv(class = "editor-mobile-toggle",
-                width = "28px", height = "28px",
-                align_items = "center", justify_content = "center",
-                border_radius = "4px", background_color = bgSurface,
-                color = textSecondary, font_size = "14px", cursor = "pointer"):
-            text "\xE2\x98\xB0"
-
       # Search input
       var searchInput: E
-      tdiv(padding = "10px 12px"):
+      tdiv(padding = "8px 10px",
+            border_bottom = "1px solid " & borderFaint):
         tdiv(display = "flex", align_items = "center",
               background_color = bgSurface,
               border = "1px solid " & border,
-              border_radius = "6px", padding = "0 10px", height = "32px"):
+              border_radius = "5px", padding = "0 8px", height = "28px"):
           span(font_size = "11px", opacity = "0.5", margin_right = "6px"):
             text "\xF0\x9F\x94\x8D"
           input(class = "editor-input",
@@ -320,7 +381,7 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
 
       # Story sections
       tdiv(display = "flex", flex_direction = "column",
-            gap = "2px", padding = "0 8px 16px 8px"):
+            gap = "2px", padding = "8px 8px 16px 8px"):
         for section in sidebarSections:
           let sLabel = sectionLabel(section)
           let sIcon = sectionIcon(section)
@@ -780,11 +841,15 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
 
 proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
   ## Top-level editor layout: sidebar + storyboard/preview + inspector.
-  let shell = ui(r):
-    tdiv(display = "flex", width = "100%", height = "100%",
+  let shellRoot = ui(r):
+    tdiv(display = "flex", flex_direction = "column",
+          width = "100%", height = "100%",
           font_family = "-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif",
           font_size = "14px", background_color = bgBase,
           color = textPrimary, overflow = "hidden")
+  let shell = ui(r):
+    tdiv(display = "flex", flex = "1", min_height = "0",
+          width = "100%", overflow = "hidden")
 
   let sidebarEl = renderSidebar[R, E](r, vm)
   let storyboardEl = renderStoryboardCanvas[R, E](r, vm)
@@ -816,8 +881,9 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
         evVectorEditor: "flex" else: "none")
     r.setStyle(sidebarEl, "display", if panels.sidebar and view !=
         evVectorEditor: "flex" else: "none")
-    # Chat always visible
-    r.setStyle(chatEl, "display", if panels.inspector: "flex" else: "none")
+    let manualEditMode = view == evComponentEdit and vm.editMode.val == emEdit
+    r.setStyle(chatEl, "display",
+      if panels.inspector and not manualEditMode: "flex" else: "none")
 
   r.appendChild(shell, sidebarEl)
   r.appendChild(shell, storyboardEl)
@@ -826,4 +892,6 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
   r.appendChild(shell, pagePreviewEl)
   r.appendChild(shell, vectorEditorEl)
   r.appendChild(shell, chatEl) # always last (right side)
-  shell
+  r.appendChild(shellRoot, shell)
+  r.appendChild(shellRoot, renderStatusBar[R, E](r, vm))
+  shellRoot

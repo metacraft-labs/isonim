@@ -121,6 +121,9 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
 
     await expect(page).toHaveURL(/view=page/);
     await expect(page).toHaveURL(/viewport=desktop/);
+    await expect(page.locator(".editor-statusbar")).toContainText(
+      "IsoNim Editor v0.1.0",
+    );
 
     await page.getByRole("button", { name: "Toggle left sidebar" }).click();
     await expect(page.locator(".editor-sidebar")).toBeHidden();
@@ -330,6 +333,8 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       page.getByRole("button", { name: "Switch to edit mode" }),
     ).toHaveAttribute("aria-pressed", "true");
     await expect(page.getByText("Project component preview")).toHaveCount(0);
+    await expect(page.locator(".editor-chat")).toBeHidden();
+    await expect(page.locator(".editor-manual-inspector")).toBeVisible();
 
     const editFrame = page.frameLocator(
       'iframe[title="Editable component preview"]',
@@ -381,6 +386,7 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(
       page.getByLabel("Edit raw CSS for Fill section"),
     ).toBeVisible();
+    await page.getByLabel("Show advanced color controls").click();
     await expect(
       page.getByLabel("Set color from saturation brightness field"),
     ).toBeVisible();
@@ -411,6 +417,7 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
         topbar.evaluate((node) => getComputedStyle(node).backgroundColor),
       )
       .toBe("rgb(248, 250, 252)");
+    await page.getByLabel("Show advanced color controls").click();
     await page.getByRole("button", { name: "Set color hue" }).click();
     await expect
       .poll(() => topbar.evaluate((node) => getComputedStyle(node).color))
@@ -435,6 +442,7 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(page.getByText("Box Model", { exact: true })).toBeVisible();
     const rawSpace = page.getByLabel("Edit raw CSS for Space section");
     await expect(rawSpace).toBeVisible();
+    await page.getByLabel("Show advanced padding-top controls").click();
     await expect(page.getByLabel("Scrub padding-top value")).toBeVisible();
     const originalPadding = await topbar.evaluate(
       (node) => getComputedStyle(node).paddingTop,

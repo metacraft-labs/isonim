@@ -757,34 +757,32 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; propName,
     value: string): E =
   var inputNode: E
   result = ui(r):
-    tdiv(display = "flex", flex_direction = "column", gap = "4px"):
-      tdiv(display = "flex", align_items = "center", gap = "6px"):
-        label(font_size = "10px", color = textMuted,
-              text_transform = "uppercase", letter_spacing = "0.4px",
-              cursor = "ew-resize", flex = "1"):
-          text propName
-        span(font_size = "9px", color = textDim):
-          text "drag"
-      tdiv(display = "flex", align_items = "center", gap = "6px"):
-        input(ref = inputNode,
-              class = "editor-input",
-              height = "30px",
-              background_color = bgSurface,
-              border = "1px solid " & border,
-              border_radius = "4px",
-              padding = "0 8px",
-              font_size = "12px",
-              color = textPrimary,
-              outline = "none",
-              flex = "1")
-        tdiv(min_width = "32px", height = "28px",
-              display = "flex", align_items = "center",
-              justify_content = "center",
-              border = "1px solid " & border,
-              border_radius = "4px",
-              background_color = bgSurface,
-              color = textMuted, font_size = "10px"):
-          text "unit"
+    tdiv(display = "grid",
+          `grid-template-columns` = "92px minmax(0, 1fr) 28px",
+          align_items = "center", gap = "5px"):
+      label(font_size = "10px", color = textMuted,
+            white_space = "nowrap", overflow = "hidden",
+            text_overflow = "ellipsis", cursor = "ew-resize"):
+        text propName
+      input(ref = inputNode,
+            class = "editor-input",
+            height = "24px",
+            background_color = bgSurface,
+            border = "1px solid " & border,
+            border_radius = "4px",
+            padding = "0 6px",
+            font_size = "11px",
+            color = textPrimary,
+            outline = "none",
+            min_width = "0")
+      tdiv(height = "22px",
+            display = "flex", align_items = "center",
+            justify_content = "center",
+            border = "1px solid " & border,
+            border_radius = "4px",
+            background_color = bgSurface,
+            color = textMuted, font_size = "9px"):
+        text "u"
   r.setAttribute(inputNode, "aria-label", "Edit inspector property " & propName)
   r.setInputValue(inputNode, value)
   let commit = proc() =
@@ -810,15 +808,15 @@ proc renderCascadeIndicator[R, E](r: R; prop: PropertyInfo): E =
     elif prop.schemaKey.len > 0: prop.schemaKey
     else: prop.sourceFile & ":" & $prop.sourceLine
   result = ui(r):
-    tdiv(display = "flex", flex_direction = "column", gap = "4px",
-          padding = "6px 8px", border_radius = "4px",
+    tdiv(display = "flex", align_items = "center", gap = "5px",
+          padding = "4px 6px", border_radius = "4px",
           background_color = bgBase):
-      tdiv(display = "flex", align_items = "center", gap = "6px"):
-        span(font_size = "10px", font_weight = "700", color = color):
-          text tone
-        span(font_size = "10px", color = textMuted):
-          text label
+      span(font_size = "9px", font_weight = "700", color = color):
+        text tone
+      span(font_size = "9px", color = textMuted):
+        text label
       span(font_size = "10px", color = textDim, font_family = "monospace",
+            flex = "1", min_width = "0",
             white_space = "nowrap", overflow = "hidden",
             text_overflow = "ellipsis"):
         text detail
@@ -985,19 +983,19 @@ proc renderPropertyActions[R, E](r: R; vm: EditorVM; frame: E;
   result = ui(r):
     tdiv(display = "flex", gap = "4px", align_items = "center"):
       tdiv(ref = copyButton, role = "button", tabindex = "0",
-            padding = "3px 7px", border_radius = "4px",
+            padding = "2px 6px", border_radius = "4px",
             background_color = bgSurface, color = textMuted,
-            font_size = "10px", cursor = "pointer"):
+            font_size = "9px", cursor = "pointer"):
         text "Copy"
       tdiv(ref = pasteButton, role = "button", tabindex = "0",
-            padding = "3px 7px", border_radius = "4px",
+            padding = "2px 6px", border_radius = "4px",
             background_color = bgSurface, color = textMuted,
-            font_size = "10px", cursor = "pointer"):
+            font_size = "9px", cursor = "pointer"):
         text "Paste"
       tdiv(ref = resetButton, role = "button", tabindex = "0",
-            padding = "3px 7px", border_radius = "4px",
+            padding = "2px 6px", border_radius = "4px",
             background_color = bgSurface, color = textMuted,
-            font_size = "10px", cursor = "pointer"):
+            font_size = "9px", cursor = "pointer"):
         text "Reset"
   r.setAttribute(copyButton, "aria-label", "Copy " & propName & " property")
   r.setAttribute(pasteButton, "aria-label", "Paste into " & propName & " property")
@@ -1296,28 +1294,36 @@ proc renderSwatches[R, E](r: R; vm: EditorVM; frame: E; propName,
 proc renderRichPropertyControl[R, E](r: R; vm: EditorVM; frame: E;
     clipboard: StyleClipboard; prop: PropertyInfo; fallback: string): E =
   result = ui(r):
-    tdiv(display = "flex", flex_direction = "column", gap = "6px",
-          padding = "8px", border = "1px solid " & border,
-          border_radius = "6px", background_color = "#0F172A")
+    tdiv(display = "flex", flex_direction = "column", gap = "4px",
+          padding = "6px", border = "1px solid " & border,
+          border_radius = "5px", background_color = "#0F172A")
   r.appendChild(result, renderPropertyInput[R, E](r, vm, frame, prop.name,
     prop.value))
-  r.appendChild(result, renderCascadeIndicator[R, E](r, prop))
-  r.appendChild(result, renderPropertyActions[R, E](r, vm, frame, clipboard,
+  let metaRow = ui(r):
+    tdiv(display = "flex", align_items = "center", gap = "5px")
+  r.appendChild(metaRow, renderCascadeIndicator[R, E](r, prop))
+  r.appendChild(metaRow, renderPropertyActions[R, E](r, vm, frame, clipboard,
     prop.name, prop.value, fallback))
+  r.appendChild(result, metaRow)
+  let advanced = ui(r):
+    details(`aria-label` = "Show advanced " & prop.name & " controls"):
+      summary(cursor = "pointer", color = textMuted, font_size = "10px",
+              padding = "2px 0"):
+        text "Advanced"
   if isNumericProperty(prop.name):
-    r.appendChild(result, renderNumericAffordances[R, E](r, vm, frame,
+    r.appendChild(advanced, renderNumericAffordances[R, E](r, vm, frame,
       prop.name, prop.value))
   if swatchesFor(prop.name).len > 0:
-    r.appendChild(result, renderFigmaColorAffordances[R, E](r, vm, frame,
+    r.appendChild(advanced, renderFigmaColorAffordances[R, E](r, vm, frame,
       prop.name, prop.value))
   if prop.name == "border-radius":
-    r.appendChild(result, renderBorderRadiusAffordances[R, E](r, vm, frame,
+    r.appendChild(advanced, renderBorderRadiusAffordances[R, E](r, vm, frame,
       prop.value))
   if prop.name == "box-shadow":
-    r.appendChild(result, renderShadowAffordances[R, E](r, vm, frame,
+    r.appendChild(advanced, renderShadowAffordances[R, E](r, vm, frame,
       prop.name, prop.value))
   if prop.name == "transition-timing-function":
-    r.appendChild(result, renderBezierAffordances[R, E](r, vm, frame,
+    r.appendChild(advanced, renderBezierAffordances[R, E](r, vm, frame,
       prop.name, prop.value))
   if quickValues(prop.name).len > 0:
     r.appendChild(result, renderQuickValues[R, E](r, vm, frame, prop.name,
@@ -1325,6 +1331,7 @@ proc renderRichPropertyControl[R, E](r: R; vm: EditorVM; frame: E;
   if swatchesFor(prop.name).len > 0:
     r.appendChild(result, renderSwatches[R, E](r, vm, frame, prop.name,
       prop.value))
+  r.appendChild(result, advanced)
 
 proc sectionTitle(section: InspectorSection): string =
   for i, candidate in richSections:
@@ -1509,7 +1516,7 @@ proc populateSectionTabs[R, E](r: R; vm: EditorVM; frame, tabs, content: E;
     let tab = ui(r):
       tdiv(role = "tab", tabindex = "0",
             display = "flex", align_items = "center",
-            padding = "0 10px", font_size = "11px", font_weight = "600",
+            padding = "0 7px", font_size = "10px", font_weight = "600",
             cursor = "pointer", white_space = "nowrap",
             color = (if active: accent else: textMuted),
             box_shadow = (if active: "inset 0 -2px 0 " & accent else: "none")):
@@ -1526,35 +1533,37 @@ proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
   var revertButton: E
   let clipboard = StyleClipboard()
   result = ui(r):
-    tdiv(width = "340px", min_width = "340px",
+    tdiv(class = "editor-manual-inspector",
+          width = "300px", min_width = "220px", max_width = "520px",
+          resize = "horizontal",
           display = "flex", flex_direction = "column",
           background_color = bgSidebar, overflow_y = "auto",
           border_left = "1px solid " & border):
       tdiv(display = "flex", align_items = "center",
             justify_content = "space-between",
-            height = "44px", min_height = "44px",
-            padding = "0 12px",
+            height = "34px", min_height = "34px",
+            padding = "0 8px",
             background_color = bgCard,
             border_bottom = "1px solid " & border):
         span(font_size = "12px", font_weight = "700", color = textSecondary,
               text_transform = "uppercase", letter_spacing = "0.5px"):
           text "Inspector"
-        tdiv(display = "flex", gap = "6px"):
+      tdiv(display = "flex", gap = "4px"):
           tdiv(ref = revertButton, role = "button", tabindex = "0",
-                padding = "4px 9px", border_radius = "4px",
-                font_size = "11px", cursor = "pointer",
+                padding = "3px 7px", border_radius = "4px",
+                font_size = "10px", cursor = "pointer",
                 background_color = bgSurface, color = textMuted):
             text "Revert"
           tdiv(ref = saveButton, role = "button", tabindex = "0",
-                padding = "4px 9px", border_radius = "4px",
-                font_size = "11px", font_weight = "600", cursor = "pointer",
+                padding = "3px 7px", border_radius = "4px",
+                font_size = "10px", font_weight = "600", cursor = "pointer",
                 background_color = accent, color = textPrimary):
             text "Save"
 
   let tabs = ui(r):
     tdiv(class = "editor-tabbar",
           display = "flex", align_items = "stretch",
-          height = "40px", min_height = "40px",
+          height = "30px", min_height = "30px",
           border_bottom = "1px solid " & border,
           overflow_x = "auto", scrollbar_width = "none")
   r.appendChild(result, tabs)
@@ -1574,7 +1583,7 @@ proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
 
   let content = ui(r):
     tdiv(flex = "1", display = "flex", flex_direction = "column",
-          padding = "12px", overflow_y = "auto", gap = "12px")
+          padding = "8px", overflow_y = "auto", gap = "8px")
   r.appendChild(result, content)
   r.populateSectionTabs(vm, frame, tabs, content, clipboard)
 
@@ -1653,8 +1662,9 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
         span(color = textDim): text "•"
         span: text "Edit color or spacing in the inspector"
 
+  let inspectorPanel = renderInspector[R, E](r, vm, projectFrame)
   r.appendChild(container, preview)
-  r.appendChild(container, renderInspector[R, E](r, vm, projectFrame))
+  r.appendChild(container, inspectorPanel)
 
   r.setAttribute(editModeButton, "role", "button")
   r.setAttribute(editModeButton, "tabindex", "0")
@@ -1713,5 +1723,6 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
       if editing: bgSurface else: accent)
     r.setStyle(viewModeButton, "color",
       if editing: textMuted else: textPrimary)
+    r.setStyle(inspectorPanel, "display", if editing: "flex" else: "none")
 
   container

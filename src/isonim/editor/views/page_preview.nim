@@ -45,32 +45,6 @@ proc bindViewportButton[R, E](r: R; node: E; vm: EditorVM;
     r.setStyle(node, "background-color", if active: accent else: "transparent")
     r.setStyle(node, "color", if active: textPrimary else: textMuted)
 
-proc bindPanelButton[R, E](r: R; node: E; vm: EditorVM;
-    panel: EditorPanel) =
-  let captured = panel
-  createRenderEffect proc() =
-    let panels = vm.panels.val
-    let active =
-      case captured
-      of epSidebar: panels.sidebar
-      of epInspector: panels.inspector
-    r.setAttribute(node, "aria-pressed", if active: "true" else: "false")
-    r.setStyle(node, "background-color", if active: accent else: "transparent")
-    r.setStyle(node, "color", if active: textPrimary else: textMuted)
-
-proc panelButton[R, E](r: R; vm: EditorVM; panel: EditorPanel;
-    label, textValue: string): E =
-  result = ui(r):
-    tdiv(width = "28px", height = "24px", border_radius = "4px",
-          display = "flex", align_items = "center", justify_content = "center",
-          font_size = "13px", font_weight = "700",
-          cursor = "pointer", transition = "all 0.15s"):
-      text textValue
-  r.makeButton(result, label)
-  r.addEventListener(result, "click", proc() = vm.togglePanel(panel))
-  r.addEventListener(result, "keydown", proc() = vm.togglePanel(panel))
-  r.bindPanelButton(result, vm, panel)
-
 proc viewportButton[R, E](r: R; vm: EditorVM; viewport: PreviewViewport): E =
   let label = previewViewportLabel(viewport)
   result = ui(r):
@@ -117,18 +91,6 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
   let controls = ui(r):
     tdiv(display = "flex", align_items = "center", gap = "8px"):
       discard
-
-  let panelToggle = ui(r):
-    tdiv(display = "flex", align_items = "center", gap = "1px",
-          background_color = bgSurface, border_radius = "6px",
-          padding = "3px"):
-      discard
-  r.appendChild(panelToggle,
-    panelButton[R, E](r, vm, epSidebar, "Toggle left sidebar", "\xE2\x87\xA4"))
-  r.appendChild(panelToggle,
-    panelButton[R, E](r, vm, epInspector, "Toggle right sidebar",
-        "\xE2\x87\xA5"))
-  r.appendChild(controls, panelToggle)
 
   let modeToggle = ui(r):
     tdiv(display = "flex", align_items = "center", gap = "1px",

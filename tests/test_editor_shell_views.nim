@@ -41,8 +41,9 @@ suite "Editor Shell Views (M2)":
 
       let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
 
-      # Shell mounts sidebar, four view panes, vector editor, and chat.
-      check shell.children.len == 7
+      # Shell mounts the main editor row plus the status bar.
+      check shell.children.len == 2
+      check shell.children[0].children.len == 7
       dispose()
 
   test "test_sidebar_renders_groups":
@@ -54,12 +55,8 @@ suite "Editor Shell Views (M2)":
 
       let sidebar = renderSidebar[MockRenderer, MockNode](r, vm)
 
-      # Should have header, search, and group list
-      check sidebar.children.len >= 3
-
-      # Header should contain "isonim editor"
-      let header = sidebar.children[0]
-      check header.children.len >= 1
+      # Should have search and group list; product/version live in status bar.
+      check sidebar.children.len >= 2
       check findByAttr(sidebar, "aria-label", "Toggle User Journeys section") != nil
       check findByAttr(sidebar, "aria-label", "Toggle Pages section") != nil
       check findByAttr(sidebar, "aria-label", "Toggle Components section") != nil

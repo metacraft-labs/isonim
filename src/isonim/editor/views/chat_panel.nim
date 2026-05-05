@@ -102,7 +102,9 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
     tdiv(
       class = "editor-chat",
       width = "280px",
-      min_width = "280px",
+      min_width = "220px",
+      max_width = "520px",
+      resize = "horizontal",
       display = "flex",
       flex_direction = "column",
       height = "100%",
