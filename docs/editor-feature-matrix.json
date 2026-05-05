@@ -104,7 +104,7 @@
     {
       "id": "edit_commands",
       "title": "Edit and View Commands",
-      "status": "functional",
+      "status": "prototype",
       "targetWorkflow": "Users can activate Edit, Inspect, Comment, Save, Revert, and related commands by pointer and keyboard, with clear enablement diagnostics tied to the current selection and workspace capability.",
       "owner": "framework",
       "mockOnly": false,
@@ -692,15 +692,23 @@
     {
       "id": "panels",
       "title": "Sidebar and Inspector Panels",
-      "status": "prototype",
+      "status": "functional",
       "targetWorkflow": "Users can navigate dense sidebar sections, inspect right-panel properties, collapse panels, resize panels, and keep canvas context stable.",
       "owner": "framework",
       "mockOnly": false,
-      "placeholderUi": true,
+      "placeholderUi": false,
       "browserBehavior": ["pointer", "focus"],
-      "implementation": "Top-level navigation sections, collapsible panels, responsive visibility, empty states, and inspector toggles.",
-      "knownLimitations": "Pointer/keyboard resizing, stable density budgets, focus restoration, and no-layout-jump visual assertions are M34/M43 work.",
+      "implementation": "Persistent shared right-panel width state across AI, Comment, and Manual Edit modes; explicit width controls; inspector section search; persisted section disclosures; collapse-all and expand-relevant commands; dense one-line property row contract; large inspector controls hosted behind accordions/popovers; status-bar feedback for selection, dirty state, scope, binding, mode, write status, and editor version.",
+      "knownLimitations": "M34 uses explicit width controls rather than a drag handle. Screenshot visual assertions, full tooltip polish, and Figma-grade overlap baselines remain future quality gates.",
       "headlessTests": [
+        {
+          "name": "inspector_panel_vm_persists_section_and_width_state",
+          "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "inspector_density_contract_rejects_debug_form_layouts",
+          "file": "tests/test_editor_viewmodels.nim"
+        },
         {
           "name": "test_sidebar_toggle_group",
           "file": "tests/test_editor_viewmodels.nim"
@@ -717,6 +725,14 @@
       "playwrightRequired": true,
       "playwrightTests": [
         {
+          "name": "e2e_right_panel_width_does_not_jump_between_ai_comment_edit",
+          "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
+        },
+        {
+          "name": "e2e_inspector_sections_are_keyboard_and_pointer_operable",
+          "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
+        },
+        {
           "name": "e2e_editor_sidebar_story_selection",
           "file": "tests/browser/specs/editor-example.spec.ts"
         },
@@ -729,8 +745,8 @@
         "requiredForFigmaGrade": true,
         "status": "not_started",
         "assertions": [],
-        "futureMilestone": "M34",
-        "notes": "Needs sidebar density, inspector density, panel resizing, collapsed state, and no-overlap baselines."
+        "futureMilestone": "M43",
+        "notes": "M34 adds functional density and no-horizontal-overflow assertions, but screenshot visual baselines are still required before Figma-grade status."
       },
       "consumerCoverage": {
         "isonimExample": {

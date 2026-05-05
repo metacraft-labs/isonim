@@ -1107,6 +1107,12 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
   let unit = numericUnit(value, "")
   let scope = if prop.sharedCount > 0: "shared" else: "local"
   let binding = originLabel(prop.origin)
+  let commit = proc() =
+    let nextValue = r.inputValue(inputNode)
+    r.applyCssValue(vm, frame, propName, nextValue)
+  let preview = proc() =
+    r.applyCssValue(vm, frame, propName, r.inputValue(inputNode),
+      commitSource = false)
   result = ui(r):
     tdiv(display = "grid",
           `grid-template-columns` = "72px minmax(58px, 1fr) 36px 42px 42px 24px 24px",
@@ -1127,7 +1133,10 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
             font_size = "11px",
             color = textPrimary,
             outline = "none",
-            min_width = "0")
+            min_width = "0",
+            oninput = preview,
+            onchange = commit,
+            onblur = commit)
       tdiv(height = "22px",
             display = "flex", align_items = "center",
             justify_content = "center",
@@ -1181,15 +1190,10 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
   r.setAttribute(result, "data-inspector-row-slots",
     "label scrub-value unit binding scope reset more")
   r.setInputValue(inputNode, value)
-  let commit = proc() =
-    let nextValue = r.inputValue(inputNode)
-    r.applyCssValue(vm, frame, propName, nextValue)
-  let preview = proc() =
-    r.applyCssValue(vm, frame, propName, r.inputValue(inputNode),
-      commitSource = false)
   r.addEventListener(inputNode, "change", commit)
   r.addEventListener(inputNode, "blur", commit)
   r.addEventListener(inputNode, "input", preview)
+  r.addEventListener(inputNode, "keyup", preview)
   r.addEventListener(inputNode, "focus", rememberPanelFocus(vm,
     "property-" & propName))
   let reset = proc() = r.applyCssValue(vm, frame, propName, fallback)
@@ -2026,25 +2030,19 @@ proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;
     let active = vm.inspector.activeSection.val
     let expanded = active in vm.inspector.expandedSections.val
     let heading = ui(r):
-      tdiv(role = "button", tabindex = "0",
-            `aria-label` = "Toggle " & sectionTitle(active) &
-              " inspector section",
-            display = "flex", align_items = "center",
+      tdiv(display = "flex", align_items = "center",
             justify_content = "space-between",
             position = "sticky", top = "0",
             z_index = "1",
             padding = "5px 0",
             background_color = bgSidebar,
-            cursor = "pointer"):
+            pointer_events = "none"):
         span(font_size = "11px", font_weight = "700", color = textSecondary,
               text_transform = "uppercase", letter_spacing = "0.5px"):
           text (if expanded: "v " else: "> ") & sectionTitle(active)
         span(font_size = "10px", color = accent, font_family = "monospace"):
           text "source-backed"
     r.setAttribute(heading, "aria-expanded", if expanded: "true" else: "false")
-    let toggleActive = sectionAccordionHandler(vm, active)
-    r.addEventListener(heading, "click", toggleActive)
-    r.addEventListener(heading, "keydown", toggleActive)
     r.appendChild(content, heading)
 
     if not expanded:

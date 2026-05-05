@@ -612,6 +612,14 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await page
       .getByRole("button", { name: "Toggle Fill inspector section" })
       .click();
+    await expect(
+      page
+        .getByRole("textbox", { name: "Edit inspector property color" })
+        .first(),
+    ).toBeVisible();
+    await page
+      .getByRole("button", { name: "Toggle Fill inspector section" })
+      .click();
     await expect(page.getByText("Section collapsed")).toBeVisible();
     await page
       .getByRole("button", { name: "Toggle Fill inspector section" })
