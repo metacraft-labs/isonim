@@ -5,6 +5,9 @@ import { test, expect } from "@playwright/test";
 const devBridgeSourceFile = resolve(
   "../../../metacraft-web/dist/editor-dev-workspace/apps/back-office/src/backoffice_ui/components.nim",
 );
+const devBridgeTokenFile = resolve(
+  "../../../metacraft-web/dist/editor-dev-workspace/packages/metacraft-design/src/metacraft_design/tokens.nim",
+);
 
 test.describe("metacraft-web IsoNim editor consumer", () => {
   test("e2e_metacraft_editor_writes_real_design_schema_files", async ({
@@ -75,6 +78,59 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect
       .poll(() => readFileSync(devBridgeSourceFile, "utf8"))
       .toBe(beforeText);
+  });
+
+  test("e2e_metacraft_foundations_page_file_backed_edit_revert", async ({
+    page,
+  }) => {
+    await page.goto("/?writeBridge=1&view=foundations");
+    await expect
+      .poll(() => readFileSync(devBridgeTokenFile, "utf8"))
+      .toContain("--mcl-space-3");
+    await expect(page.locator('[data-foundations-page="true"]')).toBeVisible();
+    await expect(page.locator(".editor-statusbar")).toContainText(
+      "write writable",
+    );
+
+    const beforeText = readFileSync(devBridgeTokenFile, "utf8");
+    await page
+      .getByRole("button", { name: "Select foundation category Spacing" })
+      .click();
+    await page
+      .getByRole("button", { name: "Select foundation token space.table.cell" })
+      .click();
+    await page
+      .getByRole("textbox", { name: "Foundation token value" })
+      .fill("1rem");
+    await page
+      .getByRole("button", { name: "Apply foundation token value" })
+      .click();
+    await expect(page.locator("[data-foundation-impact]")).toContainText(
+      "space.table.cell",
+    );
+    await page
+      .getByRole("button", { name: "Save foundation source edits" })
+      .click();
+    await expect(page.getByText("Clean - source ready")).toBeVisible();
+    await expect
+      .poll(() => readFileSync(devBridgeTokenFile, "utf8"))
+      .toContain("--mcl-space-3: 1rem");
+
+    await page
+      .getByRole("textbox", { name: "Foundation token value" })
+      .fill("0.75rem");
+    await page
+      .getByRole("button", { name: "Apply foundation token value" })
+      .click();
+    await page
+      .getByRole("button", { name: "Save foundation source edits" })
+      .click();
+    await expect
+      .poll(() => readFileSync(devBridgeTokenFile, "utf8"))
+      .toContain("--mcl-space-3: 0.75rem");
+
+    const revertedText = readFileSync(devBridgeTokenFile, "utf8");
+    expect(revertedText.trimEnd()).toBe(beforeText.trimEnd());
   });
 
   test("mounts the live consumer workspace through public editor APIs", async ({

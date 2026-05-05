@@ -10,6 +10,7 @@ import isonim/editor/types
 import isonim/editor/views/shell
 import isonim/editor/views/chat_panel
 import isonim/editor/views/component_detail
+import isonim/editor/views/foundations_page
 import isonim/editor/views/page_preview
 import isonim/editor/views/storyboard
 import isonim/editor/views/vector_editor
@@ -44,7 +45,8 @@ suite "Editor Shell Views (M2)":
       # Shell mounts the main editor row, command palette, telemetry overlay,
       # and status bar.
       check shell.children.len == 4
-      check shell.children[0].children.len == 7
+      check shell.children[0].children.len == 8
+      check findByAttr(shell, "data-foundations-page", "true") != nil
       check findByAttr(shell, "data-editor-command-palette", "true") != nil
       check findByAttr(shell, "data-editor-telemetry-overlay", "true") != nil
       dispose()

@@ -82,8 +82,17 @@ type
 
   FoundationEditorVM* = ref object of ViewModel
     tokens*: Signal[seq[FoundationTokenEntry]]
+    selectedCategory*: Signal[FoundationTokenKind]
+    selectedTokenKey*: Signal[string]
+    searchFilter*: Signal[string]
     impacts*: Signal[seq[FoundationTokenImpact]]
     diagnostics*: Signal[seq[FoundationEditDiagnostic]]
+    undoStack*: Signal[seq[FoundationEditHistoryEntry]]
+    redoStack*: Signal[seq[FoundationEditHistoryEntry]]
+    availableCategories*: Memo[seq[FoundationTokenKind]]
+    filteredTokens*: Memo[seq[FoundationTokenEntry]]
+    selectedToken*: Memo[FoundationTokenEntry]
+    isDirty*: Memo[bool]
     hasDiagnostics*: Memo[bool]
 
   ComponentVariantEditorVM* = ref object of ViewModel
@@ -386,7 +395,9 @@ func viewForStory(story: StoryRef): EditorView =
     evPagePreview
   of skPage:
     evPagePreview
-  of skComponent, skPattern, skFoundation, skGuideline:
+  of skFoundation:
+    evFoundationsPage
+  of skComponent, skPattern, skGuideline:
     evComponentDetail
 
 func platformForViewport*(viewport: PreviewViewport): Platform =
@@ -1599,6 +1610,8 @@ proc undoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.}
 proc redoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.}
 proc undoVectorEdit*(editor: EditorVM): bool {.discardable.}
 proc redoVectorEdit*(editor: EditorVM): bool {.discardable.}
+proc undoFoundationTokenEdit*(editor: EditorVM): bool {.discardable.}
+proc redoFoundationTokenEdit*(editor: EditorVM): bool {.discardable.}
 proc evaluateCommand*(editor: EditorVM;
     kind: EditorCommandKind): EditorCommandState
 
@@ -1687,13 +1700,15 @@ proc commandRequirementFailure(editor: EditorVM;
 
   if kind == eckUndo:
     if editor.inspector.undoStack.val.len == 0 and
-        editor.vectorEditor.undoStack.val.len == 0:
+        editor.vectorEditor.undoStack.val.len == 0 and
+        editor.foundations.undoStack.val.len == 0:
       return "There is no edit to undo."
     return ""
 
   if kind == eckRedo:
     if editor.inspector.redoStack.val.len == 0 and
-        editor.vectorEditor.redoStack.val.len == 0:
+        editor.vectorEditor.redoStack.val.len == 0 and
+        editor.foundations.redoStack.val.len == 0:
       return "There is no edit to redo."
     return ""
 
@@ -1703,6 +1718,12 @@ proc commandRequirementFailure(editor: EditorVM;
       return "This workspace is read-only for source changes."
     if not editor.sourceAdapterReady.val:
       return "No source edit adapter is ready."
+    return ""
+
+  if kind in {eckRevert, eckDiscard} and
+      (editor.inspector.pendingSourceEdits.val.len > 0 or
+        editor.chat.accumulatedEdits.val.len > 0 or
+        editor.foundations.undoStack.val.len > 0):
     return ""
 
   if story.isEmptyStory:
@@ -1739,7 +1760,8 @@ proc commandRequirementFailure(editor: EditorVM;
       ""
   of eckRevert, eckDiscard:
     if editor.inspector.pendingSourceEdits.val.len == 0 and
-        editor.chat.accumulatedEdits.val.len == 0:
+        editor.chat.accumulatedEdits.val.len == 0 and
+        editor.foundations.undoStack.val.len == 0:
       "There are no edits to discard."
     else:
       ""
@@ -1865,6 +1887,17 @@ proc runEditorCommand*(editor: EditorVM;
     let stack = editor.inspector.undoStack.val
     if stack.len > 0:
       editor.inspector.selectedElement.val = stack[0].beforeElement
+    let foundationStack = editor.foundations.undoStack.val
+    if foundationStack.len > 0:
+      var updatedTokens = editor.foundations.tokens.val
+      for historyIndex in countdown(foundationStack.len - 1, 0):
+        let history = foundationStack[historyIndex]
+        for i, token in updatedTokens:
+          if token.key.toLowerAscii() == history.key.toLowerAscii():
+            updatedTokens[i] = history.beforeToken
+            break
+      editor.foundations.tokens.val = updatedTokens
+      editor.foundations.selectedTokenKey.val = foundationStack[0].key
     let vectorStack = editor.vectorEditor.undoStack.val
     if vectorStack.len > 0:
       editor.vectorEditor.document.val = vectorStack[0].beforeDocument
@@ -1872,6 +1905,10 @@ proc runEditorCommand*(editor: EditorVM;
     editor.inspector.sourcePreviews.val = @[]
     editor.inspector.undoStack.val = @[]
     editor.inspector.redoStack.val = @[]
+    editor.foundations.undoStack.val = @[]
+    editor.foundations.redoStack.val = @[]
+    editor.foundations.impacts.val = @[]
+    editor.foundations.diagnostics.val = @[]
     editor.vectorEditor.undoStack.val = @[]
     editor.vectorEditor.redoStack.val = @[]
     editor.inspector.conflicts.val = @[]
@@ -1911,10 +1948,12 @@ proc runEditorCommand*(editor: EditorVM;
     discard editor.nudgeFirstNumericProperty(-1)
   of eckUndo:
     if not editor.inspector.undoCssPropertyEdit():
-      discard editor.undoVectorEdit()
+      if not editor.undoVectorEdit():
+        discard editor.undoFoundationTokenEdit()
   of eckRedo:
     if not editor.inspector.redoCssPropertyEdit():
-      discard editor.redoVectorEdit()
+      if not editor.redoVectorEdit():
+        discard editor.redoFoundationTokenEdit()
   of eckToggleSidebar:
     editor.togglePanel(epSidebar)
   of eckToggleInspector:
@@ -3959,6 +3998,71 @@ func sourcePlan(token: FoundationTokenEntry; newValue: string): SourceEditPlan =
     conflictKey: token.sourceFile & ":" & $token.sourceLine & ":" & token.property,
     expectedOldValue: token.value)
 
+func foundationTokenKindLabel*(kind: FoundationTokenKind): string =
+  case kind
+  of ftkColorPalette: "Color"
+  of ftkSemanticColor: "Semantic aliases"
+  of ftkTypographyScale: "Typography"
+  of ftkSpacingScale: "Spacing"
+  of ftkRadiusScale: "Radius"
+  of ftkShadow: "Shadow"
+  of ftkMotion: "Motion"
+  of ftkBreakpoint: "Breakpoints"
+  of ftkDensity: "Density"
+  of ftkAccessibilityConstraint: "Accessibility"
+
+func foundationTokenKindSlug*(kind: FoundationTokenKind): string =
+  case kind
+  of ftkColorPalette: "color"
+  of ftkSemanticColor: "semantic"
+  of ftkTypographyScale: "typography"
+  of ftkSpacingScale: "spacing"
+  of ftkRadiusScale: "radius"
+  of ftkShadow: "shadow"
+  of ftkMotion: "motion"
+  of ftkBreakpoint: "breakpoint"
+  of ftkDensity: "density"
+  of ftkAccessibilityConstraint: "accessibility"
+
+func allFoundationTokenKinds*(): seq[FoundationTokenKind] =
+  @[
+    ftkColorPalette,
+    ftkSemanticColor,
+    ftkTypographyScale,
+    ftkSpacingScale,
+    ftkRadiusScale,
+    ftkShadow,
+    ftkMotion,
+    ftkBreakpoint,
+    ftkDensity,
+    ftkAccessibilityConstraint
+  ]
+
+func isTokenAliasValue(value: string): bool =
+  value.startsWith("token(") or value.startsWith("$")
+
+func validCssLength(value: string): bool =
+  let normalized = value.strip().toLowerAscii()
+  if normalized == "0":
+    return true
+  for suffix in ["px", "rem", "em", "%", "vh", "vw"]:
+    if normalized.endsWith(suffix):
+      let number = normalized[0 ..< normalized.len - suffix.len]
+      try:
+        discard parseFloat(number)
+        return true
+      except ValueError:
+        return false
+  false
+
+func tokenMatchesSearch(token: FoundationTokenEntry; query: string): bool =
+  if query.len == 0:
+    return true
+  let q = query.toLowerAscii()
+  q in token.key.toLowerAscii() or q in token.value.toLowerAscii() or
+    q in token.aliasOf.toLowerAscii() or q in token.property.toLowerAscii() or
+    q in token.schemaKey.toLowerAscii()
+
 proc aliasTarget(tokens: seq[FoundationTokenEntry]; key: string): string =
   for token in tokens:
     if token.key.sameTokenKey(key):
@@ -4002,16 +4106,35 @@ proc validateFoundationTokenEdit(editor: EditorVM; token: FoundationTokenEntry;
       "Foundation token values cannot be blank.")
   if token.kind in {ftkColorPalette, ftkSemanticColor}:
     let parsed = hexColorChannels(value)
-    let aliasLike = value.startsWith("token(") or value.startsWith("$")
+    let aliasLike = value.isTokenAliasValue
     if not parsed.ok and not aliasLike:
       result.add foundationDiagnostic(fedInvalidTokenValue, token,
         "Color tokens must use a hex color or token alias.")
   if token.kind == ftkSemanticColor and
-      (value.startsWith("token(") or value.startsWith("$")):
+      value.isTokenAliasValue:
     let target = tokenNameFromRaw(value)
     if editor.foundations.tokens.val.hasAliasCycle(token.key, target):
       result.add foundationDiagnostic(fedAliasCycle, token,
         "Semantic token aliases cannot form a cycle.")
+  if token.kind in {ftkSpacingScale, ftkRadiusScale, ftkBreakpoint} and
+      not value.validCssLength and not value.isTokenAliasValue:
+    result.add foundationDiagnostic(fedInvalidTokenValue, token,
+      foundationTokenKindLabel(token.kind) &
+      " tokens must use a CSS length or token alias.")
+  if token.kind == ftkTypographyScale and not value.validCssLength and
+      not value.isTokenAliasValue and "font" notin token.property.toLowerAscii():
+    result.add foundationDiagnostic(fedInvalidTokenValue, token,
+      "Typography size tokens must use a CSS length or token alias.")
+  if token.kind == ftkShadow and not value.isTokenAliasValue and
+      (not value.contains(" ") or not value.contains("#")):
+    result.add foundationDiagnostic(fedInvalidTokenValue, token,
+      "Shadow tokens must include offsets and a color or use a token alias.")
+  if token.kind == ftkMotion and not value.isTokenAliasValue:
+    let lowered = value.toLowerAscii()
+    if not (lowered.endsWith("ms") or lowered.endsWith("s") or
+        "ease" in lowered or "cubic-bezier" in lowered):
+      result.add foundationDiagnostic(fedInvalidTokenValue, token,
+        "Motion tokens must use a duration or timing-function value.")
   if token.minContrast > 0:
     let foreground =
       if token.kind == ftkAccessibilityConstraint: value
@@ -4021,6 +4144,101 @@ proc validateFoundationTokenEdit(editor: EditorVM; token: FoundationTokenEntry;
     if ratio > 0 and ratio < token.minContrast:
       result.add foundationDiagnostic(fedContrastViolation, token,
         "Token contrast ratio " & $ratio & " is below " & $token.minContrast & ".")
+
+proc setFoundationCategory*(editor: EditorVM;
+    kind: FoundationTokenKind): bool {.discardable.} =
+  editor.foundations.selectedCategory.val = kind
+  for token in editor.foundations.tokens.val:
+    if token.kind == kind and token.tokenMatchesSearch(
+        editor.foundations.searchFilter.val):
+      editor.foundations.selectedTokenKey.val = token.key
+      return true
+  editor.foundations.selectedTokenKey.val = ""
+  false
+
+proc setFoundationSearch*(editor: EditorVM; query: string) =
+  editor.foundations.searchFilter.val = query
+  let current = editor.foundations.selectedTokenKey.val
+  for token in editor.foundations.tokens.val:
+    if token.kind == editor.foundations.selectedCategory.val and
+        token.tokenMatchesSearch(query):
+      if token.key.sameTokenKey(current):
+        return
+  discard editor.setFoundationCategory(editor.foundations.selectedCategory.val)
+
+proc selectFoundationToken*(editor: EditorVM; key: string): bool {.discardable.} =
+  for token in editor.foundations.tokens.val:
+    if token.key.sameTokenKey(key):
+      editor.foundations.selectedCategory.val = token.kind
+      editor.foundations.selectedTokenKey.val = token.key
+      return true
+  false
+
+proc removePendingFoundationEdit(editor: EditorVM; edit: SourceEditPlan) =
+  editor.inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
+      SourceEditPlan] =
+    result = @[]
+    for plan in prev:
+      if plan.conflictKey != edit.conflictKey:
+        result.add plan
+  editor.inspector.sourcePreviews.update proc(prev: seq[CSSSourcePreview]): seq[
+      CSSSourcePreview] =
+    result = @[]
+    for preview in prev:
+      if preview.plan.conflictKey != edit.conflictKey:
+        result.add preview
+  editor.workspaceEditStage.val =
+    if editor.inspector.pendingSourceEdits.val.len == 0: wesClean else: wesDirty
+
+proc undoFoundationTokenEdit*(editor: EditorVM): bool {.discardable.} =
+  let stack = editor.foundations.undoStack.val
+  if stack.len == 0:
+    return false
+  let entry = stack[^1]
+  var updated = editor.foundations.tokens.val
+  for i, token in updated:
+    if token.key.sameTokenKey(entry.key):
+      updated[i] = entry.beforeToken
+      break
+  editor.foundations.tokens.val = updated
+  editor.foundations.selectedTokenKey.val = entry.key
+  editor.foundations.undoStack.val = stack[0 ..< stack.len - 1]
+  editor.foundations.redoStack.update proc(prev: seq[FoundationEditHistoryEntry]): seq[
+      FoundationEditHistoryEntry] =
+    result = prev
+    result.add entry
+  editor.removePendingFoundationEdit(entry.sourceEdit)
+  true
+
+proc redoFoundationTokenEdit*(editor: EditorVM): bool {.discardable.} =
+  let stack = editor.foundations.redoStack.val
+  if stack.len == 0:
+    return false
+  let entry = stack[^1]
+  var updated = editor.foundations.tokens.val
+  for i, token in updated:
+    if token.key.sameTokenKey(entry.key):
+      updated[i] = entry.afterToken
+      break
+  editor.foundations.tokens.val = updated
+  editor.foundations.selectedTokenKey.val = entry.key
+  editor.foundations.redoStack.val = stack[0 ..< stack.len - 1]
+  editor.foundations.undoStack.update proc(prev: seq[FoundationEditHistoryEntry]): seq[
+      FoundationEditHistoryEntry] =
+    result = prev
+    result.add entry
+  editor.inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
+      SourceEditPlan] =
+    result = prev
+    result.add entry.sourceEdit
+  editor.inspector.sourcePreviews.update proc(prev: seq[CSSSourcePreview]): seq[
+      CSSSourcePreview] =
+    result = prev
+    result.add CSSSourcePreview(plan: entry.sourceEdit,
+      beforeText: entry.sourceEdit.previewBefore,
+      afterText: entry.sourceEdit.previewAfter)
+  editor.workspaceEditStage.val = wesDirty
+  true
 
 proc editFoundationToken*(editor: EditorVM; key, newValue: string): FoundationEditResult {.discardable.} =
   var tokenIndex = -1
@@ -4047,13 +4265,27 @@ proc editFoundationToken*(editor: EditorVM; key, newValue: string): FoundationEd
   let plan = token.sourcePlan(newValue)
   var updatedTokens = editor.foundations.tokens.val
   updatedTokens[tokenIndex].value = newValue.strip()
-  if newValue.strip().startsWith("token(") or newValue.strip().startsWith("$"):
+  if newValue.strip().isTokenAliasValue:
     updatedTokens[tokenIndex].aliasOf = tokenNameFromRaw(newValue)
+  else:
+    updatedTokens[tokenIndex].aliasOf = ""
+  let afterToken = updatedTokens[tokenIndex]
   editor.foundations.tokens.val = updatedTokens
 
   let impact = editor.foundationImpact(key)
   editor.foundations.impacts.val = @[impact]
   editor.foundations.diagnostics.val = @[]
+  editor.foundations.selectedCategory.val = afterToken.kind
+  editor.foundations.selectedTokenKey.val = afterToken.key
+  editor.foundations.undoStack.update proc(prev: seq[FoundationEditHistoryEntry]): seq[
+      FoundationEditHistoryEntry] =
+    result = prev
+    result.add FoundationEditHistoryEntry(
+      key: token.key,
+      beforeToken: token,
+      afterToken: afterToken,
+      sourceEdit: plan)
+  editor.foundations.redoStack.val = @[]
   editor.inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
       SourceEditPlan] =
     result = prev
@@ -5083,6 +5315,8 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
   editor.inspector.markCssPropertyEditsSaved()
   editor.vectorEditor.undoStack.val = @[]
   editor.vectorEditor.redoStack.val = @[]
+  editor.foundations.undoStack.val = @[]
+  editor.foundations.redoStack.val = @[]
   editor.chat.accumulatedEdits.val = @[]
   editor.workspaceEditStage.val = wesClean
   editor.workspaceEditDiagnostics.val = @[]
@@ -6943,13 +7177,50 @@ proc createVectorEditorVM*(): VectorEditorVM =
 
 proc createFoundationEditorVM*(): FoundationEditorVM =
   let tokens = createSignal[seq[FoundationTokenEntry]](@[])
+  let selectedCategory = createSignal(ftkColorPalette)
+  let selectedTokenKey = createSignal("")
+  let searchFilter = createSignal("")
   let impacts = createSignal[seq[FoundationTokenImpact]](@[])
   let diagnostics = createSignal[seq[FoundationEditDiagnostic]](@[])
+  let undoStack = createSignal[seq[FoundationEditHistoryEntry]](@[])
+  let redoStack = createSignal[seq[FoundationEditHistoryEntry]](@[])
+  let availableCategories = createMemo[seq[FoundationTokenKind]](proc(): seq[
+      FoundationTokenKind] =
+    for kind in allFoundationTokenKinds():
+      if tokens.val.anyIt(it.kind == kind):
+        result.add kind)
+  let filteredTokens = createMemo[seq[FoundationTokenEntry]](proc(): seq[
+      FoundationTokenEntry] =
+    let kind = selectedCategory.val
+    let query = searchFilter.val
+    for token in tokens.val:
+      if token.kind == kind and token.tokenMatchesSearch(query):
+        result.add token)
+  let selectedToken = createMemo[FoundationTokenEntry](proc(): FoundationTokenEntry =
+    let key = selectedTokenKey.val
+    for token in tokens.val:
+      if token.key.sameTokenKey(key):
+        return token
+    let filtered = filteredTokens.val
+    if filtered.len > 0:
+      filtered[0]
+    else:
+      FoundationTokenEntry())
+  let isDirty = createMemo[bool](proc(): bool = undoStack.val.len > 0)
   let hasDiagnostics = createMemo[bool](proc(): bool = diagnostics.val.len > 0)
   FoundationEditorVM(
     tokens: tokens,
+    selectedCategory: selectedCategory,
+    selectedTokenKey: selectedTokenKey,
+    searchFilter: searchFilter,
     impacts: impacts,
     diagnostics: diagnostics,
+    undoStack: undoStack,
+    redoStack: redoStack,
+    availableCategories: availableCategories,
+    filteredTokens: filteredTokens,
+    selectedToken: selectedToken,
+    isDirty: isDirty,
     hasDiagnostics: hasDiagnostics)
 
 proc createComponentVariantEditorVM*(): ComponentVariantEditorVM =

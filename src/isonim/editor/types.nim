@@ -161,6 +161,7 @@ type
     evComponentDetail ## Component page: hero, variants, props, guidelines
     evComponentEdit   ## Editable state: CSS inspector + live preview
     evPagePreview     ## Full page preview (Home, Destination Detail, etc.)
+    evFoundationsPage ## Dedicated design-token foundations editing workflow
     evVectorEditor    ## SVG vector editor for design system symbols
 
   # --- Storyboard canvas ---
@@ -1472,6 +1473,7 @@ type
     ftkRadiusScale
     ftkShadow
     ftkMotion
+    ftkBreakpoint
     ftkDensity
     ftkAccessibilityConstraint
 
@@ -1500,6 +1502,12 @@ type
     affectedProperties*: seq[PropertyInfo]
     affectedStories*: seq[StoryRef]
     message*: string
+
+  FoundationEditHistoryEntry* = object
+    key*: string
+    beforeToken*: FoundationTokenEntry
+    afterToken*: FoundationTokenEntry
+    sourceEdit*: SourceEditPlan
 
   FoundationEditDiagnostic* = object
     kind*: FoundationEditDiagnosticKind

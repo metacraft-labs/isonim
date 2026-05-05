@@ -472,17 +472,25 @@
       "id": "foundation_editors",
       "title": "Foundation Token Editors",
       "status": "functional",
-      "targetWorkflow": "Users can edit design-system tokens, inspect impact, validate contrast and alias cycles, and stage source-backed changes.",
+      "targetWorkflow": "Users can open a dedicated foundations page, select token categories, edit representative design-system tokens, inspect impact and diagnostics, and save or revert source-backed changes.",
       "owner": "framework",
       "mockOnly": false,
       "placeholderUi": false,
       "browserBehavior": ["pointer", "focus"],
-      "implementation": "Token edits, impact analysis, contrast validation, semantic alias cycle validation, and source-plan generation.",
-      "knownLimitations": "M45 keeps foundation editing functional rather than promoted: token edit plans, impact analysis, and token-manager surfaces are covered through the shared inspector and style manager, but a dedicated foundations-page browser workflow remains future work.",
+      "implementation": "Dedicated foundations-page ViewModel state and browser controls for color, semantic aliases, typography, spacing, radius, shadow, motion, and breakpoint tokens; token filtering, selection, preview, validation, dirty state, undo/revert, source-plan generation, and adapter save are covered.",
+      "knownLimitations": "M46 promotes the covered foundations-page workflows to a real browser path, but it still does not claim full Figma parity: drag/drop token organization, rich dependency graph visuals, multi-mode token matrices, and exhaustive visual baselines remain future work.",
       "headlessTests": [
         {
           "name": "foundation_token_edit_updates_dependent_properties",
           "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "foundations_page_viewmodel_state_and_source_plans",
+          "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "metacraft_foundations_workspace_consumes_generic_contracts",
+          "file": "../metacraft-web/apps/back-office/tests/test_backoffice_editor_workspace.nim"
         }
       ],
       "playwrightRequired": true,
@@ -495,36 +503,50 @@
         {
           "name": "e2e_editor_visual_baselines_cover_all_primary_modes",
           "file": "tests/browser/specs/editor-example.spec.ts"
+        },
+        {
+          "name": "e2e_foundations_page_browser_editing",
+          "file": "tests/browser/specs/editor-example.spec.ts"
+        },
+        {
+          "name": "e2e_metacraft_foundations_page_file_backed_edit_revert",
+          "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
         }
       ],
       "screenshotVisualAssertions": {
         "requiredForFigmaGrade": true,
-        "status": "not_started",
-        "assertions": [],
-        "futureMilestone": "M36",
-        "notes": "Needs token manager, contrast, alias, impact, and dependency visual baselines."
+        "status": "passing",
+        "assertions": [
+          "Dedicated foundations page captures desktop and narrow screenshots during color-token browser editing.",
+          "Browser test verifies visible preview, invalid-value diagnostics, keyboard focus, save, and revert states for the foundations page."
+        ],
+        "futureMilestone": "M49",
+        "notes": "M46 screenshots are workflow evidence, not exhaustive visual-regression baselines for every token category and state."
       },
       "consumerCoverage": {
         "isonimExample": {
           "status": "covered",
           "evidence": [
             "tests/test_editor_viewmodels.nim:foundation_token_edit_updates_dependent_properties",
-            "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes"
+            "tests/test_editor_viewmodels.nim:foundations_page_viewmodel_state_and_source_plans",
+            "tests/browser/specs/editor-example.spec.ts:e2e_foundations_page_browser_editing"
           ]
         },
         "metacraftWeb": {
           "status": "covered",
           "evidence": [
             "../metacraft-web/apps/back-office/tests/test_backoffice_editor_workspace.nim:workspace includes every editor story kind",
-            "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_style_manager_scope_choices_update_real_preview"
+            "../metacraft-web/apps/back-office/tests/test_backoffice_editor_workspace.nim:metacraft_foundations_workspace_consumes_generic_contracts",
+            "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_metacraft_foundations_page_file_backed_edit_revert"
           ]
         }
       },
       "implementationReferences": [
         "src/isonim/editor/types.nim",
         "src/isonim/editor/viewmodels.nim",
-        "src/isonim/editor/views/component_edit.nim",
-        "tests/test_editor_viewmodels.nim"
+        "src/isonim/editor/views/foundations_page.nim",
+        "tests/test_editor_viewmodels.nim",
+        "../metacraft-web/apps/back-office/src/backoffice_editor/workspace.nim"
       ]
     },
     {

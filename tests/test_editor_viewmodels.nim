@@ -2769,6 +2769,151 @@ suite "Editor ViewModels (M27 workspace file writes)":
       check cycle.diagnostics.anyIt(it.kind == fedAliasCycle)
       dispose()
 
+  test "foundations_page_viewmodel_state_and_source_plans":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("foundations_page")
+      defer: removeDir(root)
+
+      let tokenFile = root / "foundations.tokens"
+      atomicWrite(tokenFile,
+        "color.primary=#2563EB\n" &
+        "semantic.action=token(color.primary)\n" &
+        "type.body=16px\n" &
+        "space.card=16px\n" &
+        "radius.card=12px\n" &
+        "shadow.card=0 8px 24px #0F172A\n" &
+        "motion.fast=120ms\n" &
+        "breakpoint.compact=640px\n")
+      let story = StoryRef(group: "Foundations", name: "Colors",
+        kind: skFoundation, index: 0)
+      let schema = @[
+        WorkspaceEditableSchemaEntry(key: "tokens.color.primary",
+          kind: wskToken, file: tokenFile, path: "color.primary",
+          story: story, property: "color.primary"),
+        WorkspaceEditableSchemaEntry(key: "tokens.semantic.action",
+          kind: wskToken, file: tokenFile, path: "semantic.action",
+          story: story, property: "semantic.action"),
+        WorkspaceEditableSchemaEntry(key: "tokens.type.body",
+          kind: wskToken, file: tokenFile, path: "type.body",
+          story: story, property: "type.body"),
+        WorkspaceEditableSchemaEntry(key: "tokens.space.card",
+          kind: wskToken, file: tokenFile, path: "space.card",
+          story: story, property: "space.card"),
+        WorkspaceEditableSchemaEntry(key: "tokens.radius.card",
+          kind: wskToken, file: tokenFile, path: "radius.card",
+          story: story, property: "radius.card"),
+        WorkspaceEditableSchemaEntry(key: "tokens.shadow.card",
+          kind: wskToken, file: tokenFile, path: "shadow.card",
+          story: story, property: "shadow.card"),
+        WorkspaceEditableSchemaEntry(key: "tokens.motion.fast",
+          kind: wskToken, file: tokenFile, path: "motion.fast",
+          story: story, property: "motion.fast"),
+        WorkspaceEditableSchemaEntry(key: "tokens.breakpoint.compact",
+          kind: wskToken, file: tokenFile, path: "breakpoint.compact",
+          story: story, property: "breakpoint.compact")
+      ]
+      let recorder = WorkspaceEditRecorder()
+      let adapter = adapterFor(root, schema, recorder = recorder)
+      let tokens = @[
+        FoundationTokenEntry(key: "color.primary", kind: ftkColorPalette,
+          value: "#2563EB", sourceFile: tokenFile, sourceLine: 1,
+          schemaKey: "tokens.color.primary", property: "color.primary",
+          affectedStories: @[story]),
+        FoundationTokenEntry(key: "semantic.action", kind: ftkSemanticColor,
+          value: "token(color.primary)", aliasOf: "color.primary",
+          foreground: "#FFFFFF", background: "#2563EB", minContrast: 4.5,
+          sourceFile: tokenFile, sourceLine: 2,
+          schemaKey: "tokens.semantic.action", property: "semantic.action",
+          affectedStories: @[story]),
+        FoundationTokenEntry(key: "type.body", kind: ftkTypographyScale,
+          value: "16px", sourceFile: tokenFile, sourceLine: 3,
+          schemaKey: "tokens.type.body", property: "type.body",
+          affectedStories: @[story]),
+        FoundationTokenEntry(key: "space.card", kind: ftkSpacingScale,
+          value: "16px", sourceFile: tokenFile, sourceLine: 4,
+          schemaKey: "tokens.space.card", property: "space.card",
+          affectedStories: @[story]),
+        FoundationTokenEntry(key: "radius.card", kind: ftkRadiusScale,
+          value: "12px", sourceFile: tokenFile, sourceLine: 5,
+          schemaKey: "tokens.radius.card", property: "radius.card",
+          affectedStories: @[story]),
+        FoundationTokenEntry(key: "shadow.card", kind: ftkShadow,
+          value: "0 8px 24px #0F172A", sourceFile: tokenFile,
+          sourceLine: 6, schemaKey: "tokens.shadow.card",
+          property: "shadow.card", affectedStories: @[story]),
+        FoundationTokenEntry(key: "motion.fast", kind: ftkMotion,
+          value: "120ms", sourceFile: tokenFile, sourceLine: 7,
+          schemaKey: "tokens.motion.fast", property: "motion.fast",
+          affectedStories: @[story]),
+        FoundationTokenEntry(key: "breakpoint.compact", kind: ftkBreakpoint,
+          value: "640px", sourceFile: tokenFile, sourceLine: 8,
+          schemaKey: "tokens.breakpoint.compact",
+          property: "breakpoint.compact", affectedStories: @[story])
+      ]
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "M46 foundations page workspace",
+        storyGroups = @[StoryGroup(name: "Foundations", kind: skFoundation,
+          items: @[StoryItem(name: "Colors", kind: skFoundation,
+            group: "Foundations")])],
+        foundationTokens = tokens,
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true, createStory: false, createVariant: false,
+          duplicate: false, delete: false),
+        editAdapter = adapter,
+        initialView = evFoundationsPage,
+        initialStory = some(story)))
+
+      check vm.activeView.val == evFoundationsPage
+      for kind in [ftkColorPalette, ftkSemanticColor, ftkTypographyScale,
+          ftkSpacingScale, ftkRadiusScale, ftkShadow, ftkMotion,
+          ftkBreakpoint]:
+        check vm.setFoundationCategory(kind)
+        check vm.foundations.filteredTokens.val.len == 1
+        check vm.foundations.selectedToken.val.kind == kind
+
+      vm.setFoundationSearch("radius")
+      check vm.foundations.filteredTokens.val.len == 0
+      check vm.foundations.selectedTokenKey.val == ""
+      check vm.setFoundationCategory(ftkRadiusScale)
+      check vm.foundations.filteredTokens.val[0].key == "radius.card"
+      vm.setFoundationSearch("")
+
+      check vm.selectFoundationToken("space.card")
+      let edit = vm.editFoundationToken("space.card", "24px")
+      check edit.status == pesAccepted
+      check edit.sourceEdit.planKind == cspTokenUpdate
+      check edit.sourceEdit.schemaKey == "tokens.space.card"
+      check edit.sourceEdit.expectedOldValue == "16px"
+      check vm.foundations.isDirty.val
+      check vm.foundations.undoStack.val.len == 1
+      check vm.inspector.pendingSourceEdits.val.len == 1
+      check vm.workspaceEditStage.val == wesDirty
+      check vm.undoFoundationTokenEdit()
+      check vm.foundations.selectedToken.val.value == "16px"
+      check not vm.foundations.isDirty.val
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check vm.redoFoundationTokenEdit()
+      check vm.foundations.selectedToken.val.value == "24px"
+
+      let invalidColor = vm.editFoundationToken("color.primary", "blue")
+      check invalidColor.status == pesRejected
+      check invalidColor.diagnostics.anyIt(it.kind == fedInvalidTokenValue)
+      let invalidSpacing = vm.editFoundationToken("space.card", "large")
+      check invalidSpacing.status == pesRejected
+      check invalidSpacing.diagnostics.anyIt(it.kind == fedInvalidTokenValue)
+
+      let saved = vm.applyWorkspaceFileEdits()
+      check saved.ok
+      check readFile(tokenFile).contains("space.card=24px")
+      check vm.workspaceEditStage.val == wesClean
+      check not vm.foundations.isDirty.val
+
+      discard vm.editFoundationToken("space.card", "16px")
+      discard vm.runEditorCommand(eckRevert)
+      check vm.foundations.selectedToken.val.value == "24px"
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      dispose()
+
   test "component_variant_editor_updates_story_fixtures":
     createRoot proc(dispose: proc()) =
       let root = tempWorkspaceDir("variant")

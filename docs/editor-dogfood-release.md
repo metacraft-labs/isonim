@@ -93,6 +93,16 @@ Token categories need contrast or validation diagnostics, a save/revert path,
 and either a dedicated browser workflow or evidence through the style/token
 manager before promotion.
 
+M46 adds the dedicated foundations page for the framework-owned token browser.
+Consumer workspaces provide `FoundationTokenEntry` values and matching
+`WorkspaceEditableSchemaEntry` mappings for their own files. The generic page
+handles category navigation, token search, selection, swatches/specimens,
+invalid-value diagnostics, dirty state, undo/revert, and adapter saves for the
+covered color, semantic alias, typography, spacing, radius, shadow, motion, and
+breakpoint workflows. The metacraft-web Back Office workspace maps its tokens
+from `packages/metacraft-design/src/metacraft_design/tokens.nim`; IsoNim does
+not import that project.
+
 ### Add a component variant
 
 Declare the variant property, allowed values, state coverage, and fixture/story

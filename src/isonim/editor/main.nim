@@ -48,20 +48,75 @@ proc demoVectorSymbols(): seq[VectorSymbol] =
       tags: @["map", "place"], width: 24, height: 24)
   ]
 
-proc demoVectorEditAdapter(vectorSource: ref string): WorkspaceEditAdapter =
+const DemoFoundationSource = "examples/wanderlust/design-system/foundations.css"
+
+proc demoFoundationTokens(): seq[FoundationTokenEntry] =
+  let foundationStory = StoryRef(group: "Foundations", name: "Colors",
+    kind: skFoundation, index: 0)
+  @[
+    FoundationTokenEntry(key: "color.blue.600", kind: ftkColorPalette,
+      value: "#2563EB", sourceFile: DemoFoundationSource, sourceLine: 1,
+      schemaKey: "wanderlust.foundation.color.blue.600",
+      property: "--wl-color-blue-600", affectedStories: @[foundationStory]),
+    FoundationTokenEntry(key: "semantic.action.primary", kind: ftkSemanticColor,
+      value: "token(color.blue.600)", aliasOf: "color.blue.600",
+      foreground: "#FFFFFF", background: "#2563EB", minContrast: 4.5,
+      sourceFile: DemoFoundationSource, sourceLine: 2,
+      schemaKey: "wanderlust.foundation.semantic.action.primary",
+      property: "--wl-action-primary", affectedStories: @[foundationStory]),
+    FoundationTokenEntry(key: "type.body.size", kind: ftkTypographyScale,
+      value: "16px", sourceFile: DemoFoundationSource, sourceLine: 3,
+      schemaKey: "wanderlust.foundation.type.body.size",
+      property: "--wl-type-body-size", affectedStories: @[foundationStory]),
+    FoundationTokenEntry(key: "space.card", kind: ftkSpacingScale,
+      value: "16px", sourceFile: DemoFoundationSource, sourceLine: 4,
+      schemaKey: "wanderlust.foundation.space.card",
+      property: "--wl-space-card", affectedStories: @[foundationStory]),
+    FoundationTokenEntry(key: "radius.card", kind: ftkRadiusScale,
+      value: "14px", sourceFile: DemoFoundationSource, sourceLine: 5,
+      schemaKey: "wanderlust.foundation.radius.card",
+      property: "--wl-radius-card", affectedStories: @[foundationStory]),
+    FoundationTokenEntry(key: "shadow.card", kind: ftkShadow,
+      value: "0 12px 28px #0F172A", sourceFile: DemoFoundationSource,
+      sourceLine: 6, schemaKey: "wanderlust.foundation.shadow.card",
+      property: "--wl-shadow-card", affectedStories: @[foundationStory]),
+    FoundationTokenEntry(key: "motion.fast", kind: ftkMotion,
+      value: "120ms", sourceFile: DemoFoundationSource, sourceLine: 7,
+      schemaKey: "wanderlust.foundation.motion.fast",
+      property: "--wl-motion-fast", affectedStories: @[foundationStory]),
+    FoundationTokenEntry(key: "breakpoint.compact", kind: ftkBreakpoint,
+      value: "640px", sourceFile: DemoFoundationSource, sourceLine: 8,
+      schemaKey: "wanderlust.foundation.breakpoint.compact",
+      property: "--wl-breakpoint-compact", affectedStories: @[foundationStory])
+  ]
+
+proc demoVectorEditAdapter(vectorSource, foundationSource: ref string): WorkspaceEditAdapter =
   let vectorStory = StoryRef(group: "Foundations", name: "Vector Symbols",
     kind: skFoundation, index: 0)
-  result = WorkspaceEditAdapter(schema: @[
+  let foundationStory = StoryRef(group: "Foundations", name: "Colors",
+    kind: skFoundation, index: 0)
+  var schema = @[
     WorkspaceEditableSchemaEntry(
       key: "symbols.compass.svg",
       kind: wskSvgSymbol,
       file: "examples/wanderlust/design-system/vector-symbols.svg",
       path: "symbols.compass.svg",
       story: vectorStory,
-      property: "svgContent")
-  ])
+      property: "svgContent")]
+  for token in demoFoundationTokens():
+    schema.add WorkspaceEditableSchemaEntry(
+      key: token.schemaKey,
+      kind: wskToken,
+      file: DemoFoundationSource,
+      path: token.key,
+      story: foundationStory,
+      property: token.property)
+  result = WorkspaceEditAdapter(schema: schema)
   result.readFile = proc(file: string): WorkspaceReadResult =
-    WorkspaceReadResult(ok: true, content: vectorSource[])
+    if file == DemoFoundationSource:
+      WorkspaceReadResult(ok: true, content: foundationSource[])
+    else:
+      WorkspaceReadResult(ok: true, content: vectorSource[])
   result.patchFile = proc(plan: SourceEditPlan; content: string;
       schema: WorkspaceEditableSchemaEntry): WorkspacePatchResult =
     let next =
@@ -70,7 +125,8 @@ proc demoVectorEditAdapter(vectorSource: ref string): WorkspaceEditAdapter =
       elif plan.property == "svgContent":
         plan.newValue
       else:
-        content
+        content.strip(leading = false, trailing = true) & "\n" &
+          plan.property & ": " & plan.newValue & ";\n"
     WorkspacePatchResult(ok: true, patch: WorkspaceFilePatch(
       file: schema.file,
       beforeContent: content,
@@ -78,7 +134,10 @@ proc demoVectorEditAdapter(vectorSource: ref string): WorkspaceEditAdapter =
       affectedStory: schema.story,
       fullReload: true))
   result.writeFile = proc(file, content: string): WorkspaceOperationResult =
-    vectorSource[] = content
+    if file == DemoFoundationSource:
+      foundationSource[] = content
+    else:
+      vectorSource[] = content
     WorkspaceOperationResult(ok: true)
   result.formatFiles = proc(files: seq[string]): WorkspaceOperationResult =
     WorkspaceOperationResult(ok: true)
@@ -102,13 +161,24 @@ proc main() =
   let groups = wanderlust.buildWanderlustStoryboard()
   var editor: EditorVM
   let vectorSource = new(string)
+  let foundationSource = new(string)
   vectorSource[] = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path d=\"M12 2l4 14-4-2-4 2 4-14z\" /></svg>"
+  foundationSource[] =
+    "--wl-color-blue-600: #2563EB;\n" &
+    "--wl-action-primary: token(color.blue.600);\n" &
+    "--wl-type-body-size: 16px;\n" &
+    "--wl-space-card: 16px;\n" &
+    "--wl-radius-card: 14px;\n" &
+    "--wl-shadow-card: 0 12px 28px #0F172A;\n" &
+    "--wl-motion-fast: 120ms;\n" &
+    "--wl-breakpoint-compact: 640px;\n"
   let workspace = newEditorWorkspace(
     title = "Wanderlust",
     storyGroups = groups,
     canvasItems = wanderlust.wanderlustCanvasItems(groups),
     flowSteps = wanderlust.wanderlustFlowSteps(groups),
     vectorSymbols = demoVectorSymbols(),
+    foundationTokens = demoFoundationTokens(),
     initialVectorSymbol = some(0),
     initialInspectorElement = some(demoInspectorElement()),
     previewHook = wanderlust.wanderlustPreviewHook,
@@ -167,7 +237,7 @@ proc main() =
     permissions = EditorWorkspacePermissions(readSource: true,
       writeSource: true, createStory: false, createVariant: false,
       duplicate: false, delete: false),
-    editAdapter = demoVectorEditAdapter(vectorSource))
+    editAdapter = demoVectorEditAdapter(vectorSource, foundationSource))
   editor = mountEditor(workspace)
 
 main()

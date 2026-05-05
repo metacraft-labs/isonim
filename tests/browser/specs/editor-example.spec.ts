@@ -1137,4 +1137,92 @@ test.describe("IsoNim packaged editor example", () => {
     await expect(page.locator(".editor-preview:visible")).toHaveCount(0);
     await assertNoBodyScrollbar(page);
   });
+
+  test("e2e_foundations_page_browser_editing", async ({ page }) => {
+    await page.setViewportSize(desktop);
+    await page.goto("/?view=foundations#foundations");
+    await expect(page.locator('[data-foundations-page="true"]')).toBeVisible();
+
+    for (const label of [
+      "Color",
+      "Semantic aliases",
+      "Typography",
+      "Spacing",
+      "Radius",
+      "Shadow",
+      "Motion",
+      "Breakpoints",
+    ]) {
+      const category = page.getByRole("button", {
+        name: `Select foundation category ${label}`,
+      });
+      await expect(category).toBeVisible();
+      await category.focus();
+      await expect(category).toBeFocused();
+      await category.click();
+      await expect(category).toHaveAttribute("aria-pressed", "true");
+      await expect(
+        page.locator("[data-foundation-token]").first(),
+      ).toBeVisible();
+    }
+
+    await page
+      .getByRole("button", { name: "Select foundation category Color" })
+      .click();
+    await page
+      .getByRole("button", { name: "Select foundation token color.blue.600" })
+      .click();
+    await expect(
+      page.getByRole("textbox", { name: "Foundation token value" }),
+    ).toHaveValue("#2563EB");
+
+    await page
+      .getByRole("textbox", { name: "Foundation token value" })
+      .fill("not-a-color");
+    await page
+      .getByRole("button", { name: "Apply foundation token value" })
+      .click();
+    await expect(page.locator("[data-foundation-diagnostics]")).toContainText(
+      "Color tokens must use a hex color or token alias",
+    );
+
+    await page
+      .getByRole("textbox", { name: "Foundation token value" })
+      .fill("#1D4ED8");
+    await page
+      .getByRole("button", { name: "Apply foundation token value" })
+      .click();
+    await expect(page.locator("[data-foundation-diagnostics]")).toContainText(
+      "No diagnostics",
+    );
+    await expect(page.locator("[data-foundation-preview]")).toHaveAttribute(
+      "style",
+      /#1D4ED8/,
+    );
+    await expect(page.getByText("Unsaved token edit")).toBeVisible();
+
+    await page
+      .getByRole("button", { name: "Revert foundation source edits" })
+      .click();
+    await expect(
+      page.getByRole("textbox", { name: "Foundation token value" }),
+    ).toHaveValue("#2563EB");
+
+    await page
+      .getByRole("textbox", { name: "Foundation token value" })
+      .fill("#1D4ED8");
+    await page
+      .getByRole("button", { name: "Apply foundation token value" })
+      .click();
+    await page
+      .getByRole("button", { name: "Save foundation source edits" })
+      .click();
+    await expect(page.getByText("Clean - source ready")).toBeVisible();
+
+    const desktopShot = await page.screenshot({ fullPage: true });
+    expect(desktopShot.length).toBeGreaterThan(10000);
+    await page.setViewportSize(mobileWidth);
+    const narrowShot = await page.screenshot({ fullPage: true });
+    expect(narrowShot.length).toBeGreaterThan(5000);
+  });
 });

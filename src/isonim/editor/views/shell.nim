@@ -12,6 +12,7 @@ import isonim/editor/types
 import isonim/editor/views/storyboard
 import isonim/editor/views/component_detail
 import isonim/editor/views/component_edit
+import isonim/editor/views/foundations_page
 import isonim/editor/views/page_preview
 import isonim/editor/views/vector_editor
 import isonim/editor/views/chat_panel
@@ -79,8 +80,10 @@ func sectionView(section: SidebarSection): EditorView =
     evStoryboard
   of ssPages:
     evPagePreview
-  of ssComponents, ssFoundations, ssGuidelines:
+  of ssComponents, ssGuidelines:
     evComponentDetail
+  of ssFoundations:
+    evFoundationsPage
 
 func groupInSection(group: StoryGroup; section: SidebarSection): bool =
   case section
@@ -752,6 +755,7 @@ proc renderPreviewPane*[R, E](r: R; vm: EditorVM): E =
     (evStoryboard, "Flow"),
     (evComponentDetail, "Detail"),
     (evPagePreview, "Page"),
+    (evFoundationsPage, "Foundations"),
     (evVectorEditor, "Vector")]:
     let targetView = option[0]
     let label = option[1]
@@ -1332,6 +1336,7 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
   let componentDetailEl = renderComponentDetail[R, E](r, vm)
   let componentEditEl = renderComponentEditView[R, E](r, vm)
   let pagePreviewEl = renderPagePreview[R, E](r, vm)
+  let foundationsEl = renderFoundationsPage[R, E](r, vm)
   let vectorEditorEl = renderVectorEditor[R, E](r, vm)
   let chatEl = renderChatPanel[R, E](r, vm) # ever-present on all views
 
@@ -1339,6 +1344,7 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
   r.setStyle(componentDetailEl, "display", "none")
   r.setStyle(componentEditEl, "display", "none")
   r.setStyle(pagePreviewEl, "display", "none")
+  r.setStyle(foundationsEl, "display", "none")
   r.setStyle(vectorEditorEl, "display", "none")
 
   # Reactive view switching
@@ -1353,6 +1359,8 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
         evComponentEdit: "flex" else: "none")
     r.setStyle(pagePreviewEl, "display", if view ==
         evPagePreview: "flex" else: "none")
+    r.setStyle(foundationsEl, "display", if view ==
+        evFoundationsPage: "flex" else: "none")
     r.setStyle(vectorEditorEl, "display", if view ==
         evVectorEditor: "flex" else: "none")
     r.setStyle(sidebarEl, "display", if panels.sidebar and view !=
@@ -1366,6 +1374,7 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
   r.appendChild(shell, componentDetailEl)
   r.appendChild(shell, componentEditEl)
   r.appendChild(shell, pagePreviewEl)
+  r.appendChild(shell, foundationsEl)
   r.appendChild(shell, vectorEditorEl)
   r.appendChild(shell, chatEl) # always last (right side)
   r.appendChild(shellRoot, shell)

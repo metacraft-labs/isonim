@@ -36,7 +36,7 @@ export default defineConfig({
     },
     {
       command:
-        "bash -lc 'rm -rf dist/editor-dev-workspace && mkdir -p dist/editor-dev-workspace/apps/back-office/src/backoffice_ui && cp apps/back-office/src/backoffice_ui/components.nim dist/editor-dev-workspace/apps/back-office/src/backoffice_ui/components.nim && METACRAFT_EDITOR_SOURCE_ROOT=\"$PWD/dist/editor-dev-workspace\" node tools/serve_editor_dev_bridge.mjs dist/back-office-editor 8092'",
+        "bash -lc 'rm -rf dist/editor-dev-workspace && mkdir -p dist/editor-dev-workspace/apps/back-office/src/backoffice_ui dist/editor-dev-workspace/packages/metacraft-design/src/metacraft_design && cp apps/back-office/src/backoffice_ui/components.nim dist/editor-dev-workspace/apps/back-office/src/backoffice_ui/components.nim && cp packages/metacraft-design/src/metacraft_design/tokens.nim dist/editor-dev-workspace/packages/metacraft-design/src/metacraft_design/tokens.nim && METACRAFT_EDITOR_SOURCE_ROOT=\"$PWD/dist/editor-dev-workspace\" node tools/serve_editor_dev_bridge.mjs dist/back-office-editor 8092'",
       cwd: "../../../metacraft-web",
       port: 8092,
       reuseExistingServer: false,

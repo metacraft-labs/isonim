@@ -139,16 +139,18 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
     sourceChangeSeq: 0,
     paperLib,
     recordSourceChange(operation) {
-      const exported = this.exportSvg();
+      const exported = this.sourceSvg();
       this.sourceChangeSeq += 1;
       host.dataset.vectorSourceDirty = 'true';
       host.dataset.vectorSourcePending = String(this.sourceChangeSeq);
       host.dataset.vectorSourceOperation = operation;
       host.dataset.vectorSourceLength = String(exported.length);
-      host.dispatchEvent(new CustomEvent('isonim-vector-source-change', {
-        bubbles: true,
-        detail: { operation, length: exported.length }
-      }));
+      setTimeout(() => {
+        host.dispatchEvent(new CustomEvent('isonim-vector-source-change', {
+          bubbles: true,
+          detail: { operation, length: exported.length }
+        }));
+      }, 0);
       return exported;
     },
     setTool(nextTool) {
@@ -447,6 +449,12 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
       host.dataset.vectorExportHasSvg = optimized.includes('<svg') ? 'true' : 'false';
       host.dataset.vectorExportOptimized = this.svgoOptimize ? 'true' : 'false';
       return optimized;
+    },
+    sourceSvg() {
+      const exported = canvas.toSVG();
+      host.dataset.vectorSvgLength = String(exported.length);
+      host.dataset.vectorExportHasSvg = exported.includes('<svg') ? 'true' : 'false';
+      return exported;
     }
   };
   host.__isonimVectorEditor = state;
@@ -525,7 +533,7 @@ proc runFabricVectorAction*[E](host: E; action: string) =
 proc currentFabricVectorSvg*[E](host: E): string =
   var exported: cstring
   {.emit: [exported, " = (() => { const editor = ", host,
-    " && ", host, ".__isonimVectorEditor; return editor ? editor.exportSvg() : ''; })();"].}
+    " && ", host, ".__isonimVectorEditor; return editor ? editor.sourceSvg() : ''; })();"].}
   $exported
 
 proc markFabricVectorSourceSaved*[E](host: E) =

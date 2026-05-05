@@ -156,8 +156,15 @@ proc applyWorkspace*(vm: EditorVM; workspace: EditorWorkspace) =
   vm.vectorEditor.redoStack.val = @[]
   vm.vectorEditor.adapter.val = selectedVectorAdapter()
   vm.foundations.tokens.val = workspace.foundationTokens
+  vm.foundations.selectedCategory.val = ftkColorPalette
+  vm.foundations.selectedTokenKey.val =
+    if workspace.foundationTokens.len > 0: workspace.foundationTokens[0].key
+    else: ""
+  vm.foundations.searchFilter.val = ""
   vm.foundations.impacts.val = @[]
   vm.foundations.diagnostics.val = @[]
+  vm.foundations.undoStack.val = @[]
+  vm.foundations.redoStack.val = @[]
   vm.variants.variants.val = workspace.componentVariants
   vm.variants.selectedVariant.val = -1
   vm.variants.diagnostics.val = @[]

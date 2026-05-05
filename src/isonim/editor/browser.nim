@@ -78,6 +78,8 @@ proc hashEditorView*(): EditorView =
     evComponentEdit
   elif "page-preview" in h:
     evPagePreview
+  elif "foundations" in h:
+    evFoundationsPage
   elif "vector-editor" in h:
     evVectorEditor
   else:
@@ -156,6 +158,7 @@ func viewSlug(view: EditorView): string =
   of evComponentDetail: "detail"
   of evComponentEdit: "edit"
   of evPagePreview: "page"
+  of evFoundationsPage: "foundations"
   of evVectorEditor: "vector"
 
 func viewFromSlug(slug: string; fallback: EditorView): EditorView =
@@ -164,6 +167,7 @@ func viewFromSlug(slug: string; fallback: EditorView): EditorView =
   of "detail", "component-detail": evComponentDetail
   of "edit", "component-edit": evComponentEdit
   of "page", "page-preview": evPagePreview
+  of "foundations", "foundations-page", "foundation": evFoundationsPage
   of "vector", "vector-editor": evVectorEditor
   else: fallback
 
