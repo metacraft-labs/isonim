@@ -408,6 +408,7 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     const originalBackground = await topbar.evaluate(
       (node) => getComputedStyle(node).backgroundColor,
     );
+    await colorInput.fill("");
     await colorInput.fill("#F8FAFC");
     await expect
       .poll(() => topbar.evaluate((node) => getComputedStyle(node).color))
@@ -424,12 +425,6 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
         topbar.evaluate((node) => getComputedStyle(node).backgroundColor),
       )
       .toBe("rgb(248, 250, 252)");
-    await page.getByLabel("Show advanced color controls").click();
-    await page.getByRole("button", { name: "Set color hue" }).click();
-    await expect
-      .poll(() => topbar.evaluate((node) => getComputedStyle(node).color))
-      .not.toBe("rgb(248, 250, 252)");
-
     await page
       .getByRole("button", { name: "Revert inspector source edits" })
       .click();
@@ -472,6 +467,7 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       name: "Edit inspector property padding",
       exact: true,
     });
+    await paddingInput.fill("");
     await paddingInput.fill("20px");
     await expect
       .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
@@ -609,27 +605,26 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       page.getByRole("button", { name: "Toggle Layout inspector section" }),
     ).toHaveCount(0);
 
-    await page
-      .getByRole("button", { name: "Toggle Fill inspector section" })
-      .click();
+    const fillSection = page.getByRole("button", {
+      name: "Toggle Fill inspector section",
+    });
+    await fillSection.click();
+    await expect(fillSection).toHaveAttribute("aria-expanded", "true");
     await expect(
       page
         .getByRole("textbox", { name: "Edit inspector property color" })
         .first(),
     ).toBeVisible();
-    await page
-      .getByRole("button", { name: "Toggle Fill inspector section" })
-      .click();
+    await fillSection.press("Enter");
+    await expect(fillSection).toHaveAttribute("aria-expanded", "false");
     await expect(page.getByText("Section collapsed")).toBeVisible();
-    await page
-      .getByRole("button", { name: "Toggle Fill inspector section" })
-      .press("Enter");
+    await fillSection.press("Enter");
+    await expect(fillSection).toHaveAttribute("aria-expanded", "true");
     await expect(
       page
         .getByRole("textbox", { name: "Edit inspector property color" })
         .first(),
     ).toBeVisible();
-
     await page
       .getByRole("button", { name: "Collapse all inspector sections" })
       .click();

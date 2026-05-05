@@ -955,10 +955,10 @@ proc applyLivePreviewStyle[R, E](r: R; frame: E; propName, value: string) =
         const frame = """, frame,
         """;
         if (!frame || !frame.contentDocument) return;
-        const el =
-          frame.contentDocument.querySelector('[data-isonim-selected="true"]') ||
-          (frame.contentWindow && frame.contentWindow.__isonimSelectedElement);
-        if (!el || !el.style) return;
+        const selected = Array.from(frame.contentDocument.querySelectorAll('[data-isonim-selected="true"]'));
+        if (frame.contentWindow && frame.contentWindow.__isonimSelectedElement) {
+          selected.push(frame.contentWindow.__isonimSelectedElement);
+        }
         const toJsString = (raw) => Array.isArray(raw)
           ? String.fromCharCode.apply(null, raw)
           : String(raw || '');
@@ -966,19 +966,22 @@ proc applyLivePreviewStyle[R, E](r: R; frame: E; propName, value: string) =
         """);
         const value = toJsString(""", value,
         """);
-        if (!el.__isonimOriginalInlineStyles) el.__isonimOriginalInlineStyles = {};
-        if (!Object.prototype.hasOwnProperty.call(el.__isonimOriginalInlineStyles, prop)) {
-          el.__isonimOriginalInlineStyles[prop] = {
-            value: el.style.getPropertyValue(prop),
-            priority: el.style.getPropertyPriority(prop)
-          };
-        }
-        el.setAttribute('data-isonim-live-edited', 'true');
-        if (value.length === 0) {
-          el.style.removeProperty(prop);
-        } else {
-          el.style.setProperty(prop, value);
-        }
+        selected.forEach((el) => {
+          if (!el || !el.style) return;
+          if (!el.__isonimOriginalInlineStyles) el.__isonimOriginalInlineStyles = {};
+          if (!Object.prototype.hasOwnProperty.call(el.__isonimOriginalInlineStyles, prop)) {
+            el.__isonimOriginalInlineStyles[prop] = {
+              value: el.style.getPropertyValue(prop),
+              priority: el.style.getPropertyPriority(prop)
+            };
+          }
+          el.setAttribute('data-isonim-live-edited', 'true');
+          if (value.length === 0) {
+            el.style.removeProperty(prop);
+          } else {
+            el.style.setProperty(prop, value);
+          }
+        });
       })();
     """].}
 
@@ -1090,6 +1093,49 @@ proc applyRawCss[R, E](r: R; vm: EditorVM; frame: E; raw: string) =
   for (propName, value) in parseRawCssLines(raw):
     r.applyCssValue(vm, frame, propName, value)
 
+proc attachLiveInputPreview[R, E](r: R; inputNode, frame: E; propName: string) =
+  when defined(js):
+    {.emit: ["""
+      (function () {
+        const input = """, inputNode, """;
+        const frame = """, frame, """;
+        const toJsString = (raw) => Array.isArray(raw)
+          ? String.fromCharCode.apply(null, raw)
+          : String(raw || '');
+        const prop = toJsString(""", propName, """);
+        if (!input || input.__isonimLivePreviewInstalled) return;
+        input.__isonimLivePreviewInstalled = true;
+        input.addEventListener('input', () => {
+          try {
+            if (!frame || !frame.contentDocument) return;
+            const selected = Array.from(frame.contentDocument.querySelectorAll('[data-isonim-selected="true"]'));
+            if (frame.contentWindow && frame.contentWindow.__isonimSelectedElement) {
+              selected.push(frame.contentWindow.__isonimSelectedElement);
+            }
+            const value = input.value || '';
+            selected.forEach((el) => {
+              if (!el || !el.style) return;
+              if (!el.__isonimOriginalInlineStyles) el.__isonimOriginalInlineStyles = {};
+              if (!Object.prototype.hasOwnProperty.call(el.__isonimOriginalInlineStyles, prop)) {
+                el.__isonimOriginalInlineStyles[prop] = {
+                  value: el.style.getPropertyValue(prop),
+                  priority: el.style.getPropertyPriority(prop)
+                };
+              }
+              el.setAttribute('data-isonim-live-edited', 'true');
+              if (value.length === 0) el.style.removeProperty(prop);
+              else el.style.setProperty(prop, value);
+            });
+          } catch (error) {}
+        });
+      })();
+    """].}
+  else:
+    discard r
+    discard inputNode
+    discard frame
+    discard propName
+
 proc inspectorLiveValueHandler[R, E](r: R; vm: EditorVM; frame: E; propName,
     value: string): proc() =
   let capturedProp = propName
@@ -1121,7 +1167,7 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
       label(font_size = "10px", color = textMuted,
             white_space = "nowrap", overflow = "hidden",
             text_overflow = "ellipsis", cursor = "ew-resize",
-            `aria-label` = "Scrub " & propName & " value"):
+            title = "Scrub " & propName & " value"):
         text propName
       input(ref = inputNode,
             class = "editor-input",
@@ -1194,6 +1240,7 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
   r.addEventListener(inputNode, "blur", commit)
   r.addEventListener(inputNode, "input", preview)
   r.addEventListener(inputNode, "keyup", preview)
+  r.attachLiveInputPreview(inputNode, frame, propName)
   r.addEventListener(inputNode, "focus", rememberPanelFocus(vm,
     "property-" & propName))
   let reset = proc() = r.applyCssValue(vm, frame, propName, fallback)
@@ -1820,15 +1867,28 @@ proc sectionSearchHandler[R, E](r: R; vm: EditorVM; input: E): proc() =
   result = proc() =
     vm.inspector.setSectionSearch(r.inputValue(input))
 
-proc sectionAccordionHandler(vm: EditorVM; section: InspectorSection): proc() =
-  let captured = section
+proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;
+    clipboard: StyleClipboard)
+proc populateSectionTabs[R, E](r: R; vm: EditorVM; frame, tabs, content: E;
+    clipboard: StyleClipboard)
+proc populateSectionAccordions[R, E](r: R; vm: EditorVM; frame, tabs, content,
+    sectionsNode: E; clipboard: StyleClipboard)
+
+proc inspectorSectionAccordionHandler[R, E](r: R; vm: EditorVM; frame, tabs,
+    content, sectionsNode: E; clipboard: StyleClipboard;
+    section: InspectorSection): proc() =
+  let capturedSection = section
   result = proc() =
-    if vm.inspector.activeSection.val == captured and
-        captured in vm.inspector.expandedSections.val:
-      vm.inspector.setSectionExpanded(captured, false)
+    if vm.inspector.activeSection.val == capturedSection and
+        capturedSection in vm.inspector.expandedSections.val:
+      vm.inspector.setSectionExpanded(capturedSection, false)
     else:
-      vm.switchInspectorSection(captured)
-      vm.inspector.setSectionExpanded(captured, true)
+      vm.switchInspectorSection(capturedSection)
+      vm.inspector.setSectionExpanded(capturedSection, true)
+    r.populateSectionTabs(vm, frame, tabs, content, clipboard)
+    r.populateSectionAccordions(vm, frame, tabs, content, sectionsNode,
+      clipboard)
+    r.populateInspectorContent(vm, frame, content, clipboard)
 
 proc layerSelectHandler[R, E](r: R; vm: EditorVM; frame: E; id: string): proc() =
   let captured = id
@@ -2043,6 +2103,7 @@ proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;
         span(font_size = "10px", color = accent, font_family = "monospace"):
           text "source-backed"
     r.setAttribute(heading, "aria-expanded", if expanded: "true" else: "false")
+    r.setStyle(heading, "pointer-events", "none")
     r.appendChild(content, heading)
 
     if not expanded:
@@ -2106,9 +2167,6 @@ proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;
           text "Click real rendered DOM in the iframe"
     r.appendChild(content, empty)
 
-proc populateSectionTabs[R, E](r: R; vm: EditorVM; frame, tabs, content: E;
-    clipboard: StyleClipboard)
-
 proc inspectorSectionHandler[R, E](r: R; vm: EditorVM; frame, tabs, content: E;
     clipboard: StyleClipboard; section: InspectorSection): proc() =
   let capturedSection = section
@@ -2138,7 +2196,8 @@ proc populateSectionTabs[R, E](r: R; vm: EditorVM; frame, tabs, content: E;
     r.addEventListener(tab, "keydown", activate)
     r.appendChild(tabs, tab)
 
-proc populateSectionAccordions[R, E](r: R; vm: EditorVM; sectionsNode: E) =
+proc populateSectionAccordions[R, E](r: R; vm: EditorVM; frame, tabs, content,
+    sectionsNode: E; clipboard: StyleClipboard) =
   r.clearChildren(sectionsNode)
   for section in vm.inspector.visibleSections.val:
     let active = vm.inspector.activeSection.val == section
@@ -2169,11 +2228,10 @@ proc populateSectionAccordions[R, E](r: R; vm: EditorVM; sectionsNode: E) =
       " inspector section")
     r.setAttribute(node, "aria-expanded", if expanded: "true" else: "false")
     r.setAttribute(node, "data-inspector-section", title.toLowerAscii())
-    let toggle = sectionAccordionHandler(vm, section)
+    let toggle = r.inspectorSectionAccordionHandler(vm, frame, tabs, content,
+      sectionsNode, clipboard, section)
     r.addEventListener(node, "click", toggle)
     r.addEventListener(node, "keydown", toggle)
-    r.addEventListener(node, "focus", rememberPanelFocus(vm,
-      "section-" & title.toLowerAscii()))
     r.appendChild(sectionsNode, node)
 
 proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
@@ -2325,11 +2383,13 @@ proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
           padding = "8px", overflow_y = "auto", gap = "8px")
   r.appendChild(result, content)
   r.populateSectionTabs(vm, frame, tabs, content, clipboard)
-  r.populateSectionAccordions(vm, sectionsNode)
+  r.populateSectionAccordions(vm, frame, tabs, content, sectionsNode,
+    clipboard)
 
   let inspectorRoot = result
   createRenderEffect proc() =
-    r.populateSectionAccordions(vm, sectionsNode)
+    r.populateSectionAccordions(vm, frame, tabs, content, sectionsNode,
+      clipboard)
     r.populateInspectorContent(vm, frame, content, clipboard)
     r.restoreInspectorFocus(inspectorRoot, vm)
     let save = vm.evaluateCommand(eckSave)
