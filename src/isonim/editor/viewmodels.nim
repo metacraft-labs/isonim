@@ -105,6 +105,9 @@ type
     proposedEdits*: Signal[seq[AgentEditProposal]]
     permissionRequests*: Signal[seq[AgentPermissionRequest]]
     lastPromptContext*: Signal[AgentPromptContext]
+    promptIncludesScreenshots*: Signal[bool]
+    promptIncludesDomSnapshots*: Signal[bool]
+    designSystemConstraints*: Signal[seq[string]]
     backend*: Signal[AgentBackendSelection]
     stopReason*: Signal[string]
     messageCount*: Memo[int]
@@ -113,6 +116,7 @@ type
 
   ReviewResultsVM* = ref object of ViewModel
     violations*: Signal[seq[Violation]]
+    annotations*: Signal[seq[ReviewAnnotation]]
     errorCount*: Memo[int]
     warningCount*: Memo[int]
     hasIssues*: Memo[bool]
@@ -1974,6 +1978,27 @@ proc editInspectorProperty*(editor: EditorVM;
     editor.chat.accumulatedEdits.update proc(prev: seq[EditRecord]): seq[EditRecord] =
       result = prev
       result.add acceptedRecord
+    let changedPlan = result.sourceEdit
+    editor.chat.proposedEdits.update proc(prev: seq[AgentEditProposal]): seq[
+        AgentEditProposal] =
+      result = prev
+      for proposal in result.mitems:
+        if proposal.status == aepsProposed:
+          for plan in proposal.sourceEdits:
+            if (plan.conflictKey.len > 0 and plan.conflictKey ==
+                changedPlan.conflictKey) or
+                (plan.file.len > 0 and plan.file == changedPlan.file and
+                plan.schemaKey == changedPlan.schemaKey):
+              proposal.validity = aepvNeedsRebase
+              proposal.validityDiagnostics.add AgentDiagnosticSnapshot(
+                source: "manual-edit",
+                severity: "warning",
+                category: "proposal-rebase",
+                message: "Manual edits changed the same source ownership scope after this AI proposal was created.",
+                file: changedPlan.file,
+                line: changedPlan.line,
+                property: changedPlan.property)
+              break
   elif result.diagnostics.len > 0:
     let editDiagnostics = result.diagnostics
     editor.review.violations.update proc(prev: seq[Violation]): seq[Violation] =
@@ -4764,6 +4789,16 @@ func schemaSnapshot(adapter: WorkspaceEditAdapter): seq[AgentDesignSystemSchemaE
       path: entry.path,
       property: entry.property)
 
+func designSystemSchemaSnapshot(
+    schema: DesignSystemSchema): seq[AgentDesignSystemSchemaEntry] =
+  for node in schema.nodes:
+    result.add AgentDesignSystemSchemaEntry(
+      key: node.key,
+      kind: $node.kind,
+      file: node.sourceSpan.file,
+      path: node.component & "." & node.property,
+      property: node.property)
+
 func componentVariantSchemaSnapshot(
     variants: seq[ComponentVariantDefinition]): seq[AgentDesignSystemSchemaEntry] =
   for variant in variants:
@@ -4886,15 +4921,113 @@ func workspacePatchDiffs(patches: seq[WorkspaceFilePatch]): seq[AgentFileDiff] =
       summary: patch.plan.property & ": " & patch.plan.oldValue &
         " -> " & patch.plan.newValue)
 
+func reviewAnnotationId(count: int): string =
+  "review-annotation-" & $(count + 1)
+
+func ownershipContext(schema: DesignSystemSchema;
+    element: ElementRef): ReviewSourceOwnershipContext =
+  result = ReviewSourceOwnershipContext(
+    ownerPackage: schema.ownerPackage,
+    sourceFile: element.sourceFile,
+    sourceLine: element.sourceLine,
+    schemaKey: if element.schemaKey.len > 0: element.schemaKey else: element.sourceKey)
+  for owner in schema.sourceOwnership:
+    let matchesElement =
+      (element.sourceKey.len > 0 and owner.elementSourceKey == element.sourceKey) or
+      (element.domPath.len > 0 and owner.domPath == element.domPath) or
+      (element.schemaKey.len > 0 and owner.schemaKey == element.schemaKey)
+    if matchesElement:
+      result.sourceFile =
+        if owner.sourceSpan.file.len > 0: owner.sourceSpan.file
+        else: result.sourceFile
+      result.sourceLine =
+        if owner.sourceSpan.line > 0: owner.sourceSpan.line
+        else: result.sourceLine
+      result.schemaKey = owner.schemaKey
+      result.nodeKey = owner.nodeKey
+      result.generatedViewFile = owner.generatedViewFile
+      result.generatedViewLine = owner.generatedViewLine
+      result.cssModuleFile = owner.cssModuleFile
+      result.cssModuleClass = owner.cssModuleClass
+      result.tailwindUtilities = owner.tailwindUtilities
+      result.fallbackAllowed = owner.fallbackAllowed
+      result.unstructuredViewCode = owner.unstructuredViewCode
+      return
+
+func openPromptAnnotations(annotations: seq[ReviewAnnotation]): seq[ReviewAnnotation] =
+  for annotation in annotations:
+    if annotation.state == ransOpen and annotation.includedInPrompt:
+      result.add annotation
+
+func selectedSchemaSnapshot(context: AgentPromptContext): seq[
+    AgentDesignSystemSchemaEntry] =
+  let selected = context.selectedElement
+  for entry in context.designSystemSchema:
+    if entry.key.len == 0:
+      continue
+    if entry.key == selected.schemaKey or entry.key == selected.sourceKey:
+      result.add entry
+      continue
+    for prop in selected.properties:
+      if entry.key == prop.schemaKey or entry.key == prop.tokenName or
+          entry.key == prop.variantKey:
+        result.add entry
+        break
+
+func tokenContext(element: ElementRef;
+    schema: seq[AgentDesignSystemSchemaEntry]): seq[string] =
+  for prop in element.properties:
+    if prop.tokenName.len > 0:
+      let line = prop.name & "=" & prop.value & " token=" & prop.tokenName
+      if line notin result:
+        result.add line
+  for entry in schema:
+    if entry.kind.contains("Token") and entry.key.len > 0:
+      let line = entry.key & " property=" & entry.property & " file=" & entry.file
+      if line notin result:
+        result.add line
+
+func componentVariantContext(variants: seq[ComponentVariantDefinition];
+    story: StoryRef; element: ElementRef): seq[string] =
+  for variant in variants:
+    if (story.group.len > 0 and variant.component.normalize ==
+        story.group.normalize) or (element.schemaKey.len > 0 and
+        variant.properties.anyIt(it.schemaKey == element.schemaKey)):
+      result.add variant.component & "/" & variant.variantKey &
+        " fixture=" & variant.fixtureName & " story=" & variant.story.name
+      for prop in variant.properties:
+        if prop.schemaKey.len > 0:
+          result.add "property " & prop.name & "=" & prop.value &
+            " schema=" & prop.schemaKey
+      for state in variant.stateControls:
+        if state.schemaKey.len > 0:
+          result.add "state " & state.key & "=" & state.value &
+            " schema=" & state.schemaKey
+
 proc buildAgentPromptContext*(editor: EditorVM): AgentPromptContext =
+  let schemaEntries = designSystemSchemaSnapshot(editor.designSystemSchema.val) &
+    schemaSnapshot(editor.workspaceEditAdapter) &
+    componentVariantSchemaSnapshot(editor.variants.variants.val)
+  var annotations = editor.review.annotations.val.openPromptAnnotations()
+  var screenshotRefs: seq[string] = @[]
+  var domSnapshots: seq[string] = @[]
+  for annotation in annotations:
+    if editor.chat.promptIncludesScreenshots.val and annotation.screenshotRef.len > 0:
+      screenshotRefs.add annotation.screenshotRef
+    if editor.chat.promptIncludesDomSnapshots.val and annotation.domSnapshot.len > 0:
+      domSnapshots.add annotation.domSnapshot
   result = AgentPromptContext(
     selectedStory: editor.selectedStory.val,
     selectedElement: editor.inspector.selectedElement.val,
     accumulatedEdits: editor.chat.accumulatedEdits.val,
+    pendingSourceEdits: editor.inspector.pendingSourceEdits.val,
     sourceMap: sourceMapEntries(editor.inspector.selectedElement.val,
       editor.inspector.pendingSourceEdits.val),
-    designSystemSchema: schemaSnapshot(editor.workspaceEditAdapter) &
-      componentVariantSchemaSnapshot(editor.variants.variants.val),
+    designSystemSchema: schemaEntries,
+    reviewAnnotations: annotations,
+    screenshotRefs: screenshotRefs,
+    domSnapshots: domSnapshots,
+    designSystemConstraints: editor.chat.designSystemConstraints.val,
     diagnostics:
       propertyDiagnosticSnapshot(editor.inspector.editDiagnostics.val) &
       workspaceDiagnosticSnapshot(editor.workspaceEditDiagnostics.val) &
@@ -4908,6 +5041,10 @@ proc buildAgentPromptContext*(editor: EditorVM): AgentPromptContext =
       workspacePatchDiffs(editor.workspaceEditPatches.val),
     platform: editor.platform.val,
     backend: editor.chat.backend.val)
+  result.selectedSchemaNodes = result.selectedSchemaSnapshot()
+  result.tokenContext = tokenContext(result.selectedElement, schemaEntries)
+  result.componentVariantContext = componentVariantContext(
+    editor.variants.variants.val, result.selectedStory, result.selectedElement)
 
 proc addUserMessage*(chat: AgentChatVM; text: string) =
   chat.messages.update proc(prev: seq[ChatMessage]): seq[ChatMessage] =
@@ -4928,6 +5065,13 @@ proc recordEdit*(chat: AgentChatVM; edit: EditRecord) =
 proc clearAccumulatedEdits*(chat: AgentChatVM) =
   chat.accumulatedEdits.val = @[]
 
+proc configureAgentPromptContext*(chat: AgentChatVM; includeScreenshots = false;
+    includeDomSnapshots = false; constraints: seq[string] = @[]) =
+  chat.promptIncludesScreenshots.val = includeScreenshots
+  chat.promptIncludesDomSnapshots.val = includeDomSnapshots
+  if constraints.len > 0:
+    chat.designSystemConstraints.val = constraints
+
 proc configureAgentAdapters*(chat: AgentChatVM;
     promptAdapter: AgentPromptAdapter = nil;
     cancelAdapter: AgentCancelAdapter = nil;
@@ -4936,6 +5080,79 @@ proc configureAgentAdapters*(chat: AgentChatVM;
   chat.cancelAdapter = cancelAdapter
   chat.backend.val = backend
 
+proc addReviewAnnotation*(editor: EditorVM; text: string;
+    selector = ""; ancestry = ""; domSnapshot = ""; screenshotRef = "";
+    severity = rasInfo; suggestedScope = pesLocal; source = "user"): string {.
+    discardable.} =
+  let trimmed = text.strip()
+  if trimmed.len == 0:
+    return ""
+  let element = editor.inspector.selectedElement.val
+  var annotation = ReviewAnnotation(
+    id: reviewAnnotationId(editor.review.annotations.val.len),
+    text: trimmed,
+    selectedElement: element,
+    elementId: element.fallbackElementId(),
+    elementSourceKey: element.sourceKey,
+    domPath: element.domPath,
+    selector: selector,
+    ancestry: ancestry,
+    screenshotRef: screenshotRef,
+    domSnapshot: domSnapshot,
+    viewport: ReviewViewportContext(
+      platform: editor.platform.val,
+      viewport: editor.viewport.val,
+      width: previewViewportWidth(editor.viewport.val),
+      height: previewViewportHeight(editor.viewport.val),
+      zoom: 1.0),
+    ownership: ownershipContext(editor.designSystemSchema.val, element),
+    source: source,
+    severity: severity,
+    suggestedScope: suggestedScope,
+    includedInPrompt: true,
+    state: ransOpen)
+  if annotation.elementId.len == 0:
+    annotation.elementId = selector
+  if annotation.elementSourceKey.len == 0:
+    annotation.elementSourceKey = annotation.ownership.schemaKey
+  editor.review.annotations.update proc(prev: seq[ReviewAnnotation]): seq[
+      ReviewAnnotation] =
+    result = prev
+    result.add annotation
+  annotation.id
+
+proc setReviewAnnotationPromptIncluded*(review: ReviewResultsVM; id: string;
+    included: bool): bool {.discardable.} =
+  var found = false
+  review.annotations.update proc(prev: seq[ReviewAnnotation]): seq[
+      ReviewAnnotation] =
+    result = prev
+    for annotation in result.mitems:
+      if annotation.id == id:
+        annotation.includedInPrompt = included
+        found = true
+  found
+
+proc setReviewAnnotationState*(review: ReviewResultsVM; id: string;
+    state: ReviewAnnotationState): bool {.discardable.} =
+  var found = false
+  review.annotations.update proc(prev: seq[ReviewAnnotation]): seq[
+      ReviewAnnotation] =
+    result = prev
+    for annotation in result.mitems:
+      if annotation.id == id:
+        annotation.state = state
+        found = true
+  found
+
+proc resolveReviewAnnotation*(review: ReviewResultsVM; id: string): bool {.
+    discardable.} =
+  review.setReviewAnnotationState(id, ransResolved)
+
+proc dismissReviewAnnotation*(review: ReviewResultsVM; id: string): bool {.
+    discardable.} =
+  review.setReviewAnnotationState(id, ransDismissed)
+
 proc addAgentEditProposal*(chat: AgentChatVM; proposal: AgentEditProposal): string =
   var next = proposal
   if next.id.len == 0:
@@ -4943,6 +5160,31 @@ proc addAgentEditProposal*(chat: AgentChatVM; proposal: AgentEditProposal): stri
   if next.status notin {aepsAccepted, aepsPartiallyAccepted, aepsRejected,
       aepsReverted, aepsFailed}:
     next.status = aepsProposed
+  if next.validity notin {aepvNeedsRebase, aepvStale}:
+    next.validity = aepvCurrent
+  if next.basePendingEditCount == 0:
+    next.basePendingEditCount = chat.accumulatedEdits.val.len
+  if next.targetScopes.len == 0:
+    for plan in next.sourceEdits:
+      if plan.scope notin next.targetScopes:
+        next.targetScopes.add plan.scope
+  if next.affectedStories.len == 0 and next.impact.affectedStories.len > 0:
+    next.affectedStories = next.impact.affectedStories
+  if next.impact.summary.len == 0:
+    next.impact.summary = next.summary
+  if next.tests.len == 0:
+    next.tests = @["source adapter review", "affected story compile/reload"]
+  for plan in next.sourceEdits:
+    if plan.scope == pesUnspecified:
+      next.validity = aepvNeedsRebase
+      next.validityDiagnostics.add AgentDiagnosticSnapshot(
+        source: "proposal",
+        severity: "warning",
+        category: "missing-source-scope",
+        message: "Agent proposal must target an explicit manual-edit source ownership scope.",
+        file: plan.file,
+        line: plan.line,
+        property: plan.property)
   if next.selectedEditIndexes.len == 0:
     for i in 0 ..< next.sourceEdits.len:
       next.selectedEditIndexes.add i
@@ -5007,6 +5249,10 @@ proc acceptAgentProposedEdit*(editor: EditorVM; id: string;
     return WorkspaceEditResult(ok: false, stage: wesFailed,
       diagnostics: @[workspaceDiagnostic(wedMissingSchema,
         "Agent edit proposal was not found.")])
+  if proposal.validity in {aepvNeedsRebase, aepvStale}:
+    return WorkspaceEditResult(ok: false, stage: wesFailed,
+      diagnostics: @[workspaceDiagnostic(wedSourceConflict,
+        "Agent edit proposal must be rebased or re-run before acceptance.")])
 
   var selected: seq[int] =
     if editIndexes.len > 0: editIndexes else: proposal.selectedEditIndexes
@@ -5085,6 +5331,14 @@ proc rerunAgentProposedEdit*(editor: EditorVM; id: string): bool {.discardable.}
   for proposal in editor.chat.proposedEdits.val:
     if proposal.id == id:
       editor.chat.inputText.val = "Re-run proposed edit: " & proposal.summary
+      return editor.sendAgentPrompt()
+  false
+
+proc rebaseAgentProposedEdit*(editor: EditorVM; id: string): bool {.discardable.} =
+  for proposal in editor.chat.proposedEdits.val:
+    if proposal.id == id:
+      editor.chat.inputText.val = "Rebase proposed edit against current pending manual edits: " &
+        proposal.summary
       return editor.sendAgentPrompt()
   false
 
@@ -6380,6 +6634,13 @@ proc createAgentChatVM*(): AgentChatVM =
   let proposedEdits = createSignal[seq[AgentEditProposal]](@[])
   let permissionRequests = createSignal[seq[AgentPermissionRequest]](@[])
   let lastPromptContext = createSignal(AgentPromptContext())
+  let promptIncludesScreenshots = createSignal(false)
+  let promptIncludesDomSnapshots = createSignal(false)
+  let designSystemConstraints = createSignal[seq[string]](@[
+    "Respect project-owned source schema and source-map ownership.",
+    "Do not bypass component, token, variant, or story fixture ownership scopes.",
+    "Preserve accessibility diagnostics and design-token constraints."
+  ])
   let backend = createSignal(absUnconfigured)
   let stopReason = createSignal("")
 
@@ -6396,12 +6657,16 @@ proc createAgentChatVM*(): AgentChatVM =
     proposedEdits: proposedEdits,
     permissionRequests: permissionRequests,
     lastPromptContext: lastPromptContext,
+    promptIncludesScreenshots: promptIncludesScreenshots,
+    promptIncludesDomSnapshots: promptIncludesDomSnapshots,
+    designSystemConstraints: designSystemConstraints,
     backend: backend,
     stopReason: stopReason,
     messageCount: messageCount)
 
 proc createReviewResultsVM*(): ReviewResultsVM =
   let violations = createSignal[seq[Violation]](@[])
+  let annotations = createSignal[seq[ReviewAnnotation]](@[])
 
   let errorCount = createMemo[int](proc(): int =
     var count = 0
@@ -6417,10 +6682,12 @@ proc createReviewResultsVM*(): ReviewResultsVM =
     count
   )
 
-  let hasIssues = createMemo[bool](proc(): bool = violations.val.len > 0)
+  let hasIssues = createMemo[bool](proc(): bool =
+    violations.val.len > 0 or annotations.val.anyIt(it.state == ransOpen))
 
   ReviewResultsVM(
     violations: violations,
+    annotations: annotations,
     errorCount: errorCount,
     warningCount: warningCount,
     hasIssues: hasIssues)

@@ -661,13 +661,13 @@
       "id": "agent_edits",
       "title": "Agent-Assisted Edits",
       "status": "functional",
-      "targetWorkflow": "Users can send editor context to an agent, review proposed edits, accept or reject changes, and save accepted patches through the same source adapter path.",
+      "targetWorkflow": "Users can collect design-review comments on selected canvas elements, choose which comments to send to AI, review scoped agent proposals, accept or reject changes, and save accepted patches through the same source adapter path.",
       "owner": "framework",
       "mockOnly": false,
       "placeholderUi": false,
       "browserBehavior": ["pointer", "focus"],
-      "implementation": "Structured prompt context, ACP/Agent Harbor event mapping through nim-agents, permission state, proposal review, partial accept, reject, revert, cancel, error, completion, and M27 save path.",
-      "knownLimitations": "Production agent setup, richer diff review UI, comment mode parity, and visual baselines remain future work.",
+      "implementation": "Structured prompt context, ACP/Agent Harbor event mapping through nim-agents, permission state, proposal review, partial accept, reject, revert, cancel, error, completion, M27 save path, M41 structured review annotations with selected element identity, viewport/screenshot/DOM snapshot metadata, source ownership, include/exclude prompt selection, open/resolved/dismissed state, design-system constraints, selected schema/token/component/variant context, proposal scope/impact/tests metadata, and proposal rebase diagnostics after overlapping manual edits.",
+      "knownLimitations": "Functional M41 coverage is not full Figma-grade design review. Comment markers are DOM overlays without screenshot baseline assertions, screenshot context is a reference captured by the iframe bridge rather than an attached bitmap, metacraft-web currently proves structured comment selection on its live preview but not a production agent acceptance path, and the proposal diff/impact/tests UI is compact rather than a rich side-by-side diff reviewer. Visual baselines, production agent setup, richer diff review UI, collaborative comment presence, and mobile visual assertions remain below the M32/M43 gates.",
       "headlessTests": [
         {
           "name": "editor_agent_context_includes_source_and_design_system_state",
@@ -679,6 +679,14 @@
         },
         {
           "name": "editor_agent_edits_require_review_and_user_acceptance",
+          "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "comment_annotations_are_structured_and_prompt_selectable",
+          "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "agent_proposals_target_design_schema_scopes",
           "file": "tests/test_editor_viewmodels.nim"
         },
         {
@@ -695,6 +703,14 @@
         {
           "name": "e2e_agent_assisted_edit_flow",
           "file": "tests/browser/specs/editor-example.spec.ts"
+        },
+        {
+          "name": "e2e_comment_review_ai_prompt_and_acceptance_flow",
+          "file": "tests/browser/specs/editor-example.spec.ts"
+        },
+        {
+          "name": "comment mode stores structured review annotations for AI prompt selection",
+          "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
         }
       ],
       "screenshotVisualAssertions": {
@@ -702,19 +718,21 @@
         "status": "not_started",
         "assertions": [],
         "futureMilestone": "M43",
-        "notes": "Needs baselines for empty, streaming, permission, diff review, accepted, rejected, and error states."
+        "notes": "Needs baselines for empty, streaming, permission, comment pins, include/exclude states, resolved/dismissed states, diff review, accepted, rejected, stale/rebase, and error states."
       },
       "consumerCoverage": {
         "isonimExample": {
           "status": "covered",
           "evidence": [
-            "tests/browser/specs/editor-example.spec.ts:e2e_agent_assisted_edit_flow"
+            "tests/browser/specs/editor-example.spec.ts:e2e_agent_assisted_edit_flow",
+            "tests/browser/specs/editor-example.spec.ts:e2e_comment_review_ai_prompt_and_acceptance_flow"
           ]
         },
         "metacraftWeb": {
-          "status": "workspace_api_compatible",
+          "status": "covered",
           "evidence": [
-            "../metacraft-web/apps/back-office/tests/test_backoffice_editor_workspace.nim"
+            "../metacraft-web/apps/back-office/tests/test_backoffice_editor_workspace.nim",
+            "tests/browser/specs/metacraft-web-editor.spec.ts:comment mode stores structured review annotations for AI prompt selection"
           ]
         }
       }

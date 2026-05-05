@@ -3642,6 +3642,196 @@ suite "Editor ViewModels (M27 workspace file writes)":
         it.id == proposalId and it.status == aepsReverted)
       dispose()
 
+  test "comment_annotations_are_structured_and_prompt_selectable":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("review-annotations")
+      defer: removeDir(root)
+
+      let schemaFile = root / "card.schema"
+      atomicWrite(schemaFile, "padding=16px\ncolor=#111827\n")
+      let schema = DesignSystemSchema(
+        schemaVersion: 1,
+        projectId: "review-annotation-fixture",
+        ownerPackage: "isonim-tests",
+        frameworkContract: "isonim-editor-design-schema-v1",
+        nodes: @[DesignSchemaNode(key: "components.card.padding",
+          kind: dsnComponentVariant, component: "Card", property: "padding",
+          sourceSpan: SourceSpan(file: schemaFile, line: 1, column: 1,
+            endLine: 1, endColumn: 12))],
+        sourceOwnership: @[DesignSourceOwnership(
+          elementSourceKey: "card-title",
+          domPath: "article > h1",
+          property: "padding",
+          schemaKey: "components.card.padding",
+          nodeKey: "components.card.padding",
+          sourceSpan: SourceSpan(file: schemaFile, line: 1, column: 1,
+            endLine: 1, endColumn: 12),
+          generatedViewFile: root / "generated_card.nim",
+          generatedViewLine: 12,
+          cssModuleFile: root / "card.css",
+          cssModuleClass: "card",
+          tailwindUtilities: @["p-4"],
+          fallbackAllowed: false)])
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "M41 review annotation workspace",
+        storyGroups = @[],
+        initialStory = some(writeStory),
+        designSystemSchema = schema,
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true)))
+      vm.changeViewport(pvMobile)
+      check vm.selectInspectorElement(ElementRef(
+        id: "title",
+        sourceKey: "card-title",
+        domPath: "article > h1",
+        schemaKey: "components.card.padding",
+        tag: "h1",
+        sourceFile: schemaFile,
+        sourceLine: 1,
+        properties: @[PropertyInfo(name: "padding", value: "16px",
+          origin: poConstant, originDetail: "schema:components.card.padding",
+          sourceFile: schemaFile, sourceLine: 1,
+          schemaKey: "components.card.padding")]))
+
+      let first = vm.addReviewAnnotation(
+        "Reduce the visual weight of this heading.",
+        selector = "h1.bo-title",
+        ancestry = "article > h1",
+        domSnapshot = "<h1 class=\"bo-title\">Operations</h1>",
+        screenshotRef = "viewport:390x844:h1.bo-title",
+        severity = rasWarning,
+        suggestedScope = pesShared)
+      let second = vm.addReviewAnnotation(
+        "Keep this local to the fixture.",
+        selector = "article",
+        ancestry = "article",
+        domSnapshot = "<article></article>",
+        severity = rasInfo,
+        suggestedScope = pesLocal)
+      check first.len > 0
+      check second.len > 0
+      check vm.review.annotations.val.len == 2
+      check vm.review.annotations.val[0].selectedElement.id == "title"
+      check vm.review.annotations.val[0].viewport.viewport == pvMobile
+      check vm.review.annotations.val[0].ownership.ownerPackage == "isonim-tests"
+      check vm.review.annotations.val[0].ownership.schemaKey ==
+        "components.card.padding"
+      check vm.review.annotations.val[0].includedInPrompt
+
+      check vm.review.setReviewAnnotationPromptIncluded(second, false)
+      vm.chat.configureAgentPromptContext(includeScreenshots = true,
+        includeDomSnapshots = true)
+      let context = vm.buildAgentPromptContext()
+      check context.reviewAnnotations.len == 1
+      check context.reviewAnnotations[0].id == first
+      check context.screenshotRefs == @["viewport:390x844:h1.bo-title"]
+      check context.domSnapshots.len == 1
+      check context.selectedSchemaNodes.anyIt(
+        it.key == "components.card.padding")
+      check context.designSystemConstraints.anyIt(it.contains("source schema"))
+
+      check vm.review.resolveReviewAnnotation(first)
+      check vm.buildAgentPromptContext().reviewAnnotations.len == 0
+      check vm.review.annotations.val.anyIt(
+        it.id == first and it.state == ransResolved)
+      dispose()
+
+  test "agent_proposals_target_design_schema_scopes":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("agent-proposal-scopes")
+      defer: removeDir(root)
+
+      let schemaFile = root / "card.schema"
+      atomicWrite(schemaFile, "padding=16px\nmargin=8px\n")
+      let recorder = WorkspaceEditRecorder()
+      let schema = @[
+        WorkspaceEditableSchemaEntry(
+          key: "components.card.padding",
+          kind: wskComponentVariant,
+          file: schemaFile,
+          path: "components.card.padding",
+          story: writeStory,
+          property: "padding"),
+        WorkspaceEditableSchemaEntry(
+          key: "components.card.margin",
+          kind: wskComponentVariant,
+          file: schemaFile,
+          path: "components.card.margin",
+          story: writeStory,
+          property: "margin")
+      ]
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "M41 agent proposal workspace",
+        storyGroups = @[],
+        initialStory = some(writeStory),
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true),
+        editAdapter = adapterFor(root, schema, recorder = recorder),
+        agentBackend = absAgentHarbor))
+      check vm.selectInspectorElement(ElementRef(
+        id: "card",
+        sourceKey: "components.card.padding",
+        schemaKey: "components.card.padding",
+        tag: "article",
+        sourceFile: schemaFile,
+        sourceLine: 1,
+        properties: @[PropertyInfo(name: "padding", value: "16px",
+          origin: poConstant, originDetail: "schema:components.card.padding",
+          sourceFile: schemaFile, sourceLine: 1,
+          schemaKey: "components.card.padding")]))
+
+      let proposalId = vm.chat.addAgentEditProposal(AgentEditProposal(
+        title: "Scoped spacing proposal",
+        summary: "padding shared schema scope",
+        sourceEdits: @[planFor(schemaFile, "padding", "16px", "24px",
+          "components.card.padding")],
+        diffs: @[AgentFileDiff(file: schemaFile, beforeText: "padding=16px",
+          afterText: "padding=24px", summary: "padding 16px -> 24px")],
+        impact: AgentProposalImpact(summary: "Updates Card default padding.",
+          affectedStories: @[writeStory],
+          affectedComponents: @["Card"]),
+        affectedStories: @[writeStory],
+        tests: @["compile DestinationCard/Default",
+          "reload affected story preview"]))
+      let proposal = vm.chat.proposedEdits.val[^1]
+      check proposal.id == proposalId
+      check proposal.targetScopes == @[pesShared]
+      check proposal.validity == aepvCurrent
+      check proposal.impact.summary.contains("Card")
+      check proposal.affectedStories == @[writeStory]
+      check proposal.tests.len == 2
+      check proposal.diffs[0].summary.contains("24px")
+
+      let accepted = vm.acceptAgentProposedEdit(proposalId)
+      check accepted.ok
+      check readFile(schemaFile).contains("padding=24px")
+      check recorder.reviewCount > 0
+
+      let staleId = vm.chat.addAgentEditProposal(AgentEditProposal(
+        title: "Stale padding proposal",
+        summary: "padding against current schema scope",
+        sourceEdits: @[planFor(schemaFile, "padding", "24px", "32px",
+          "components.card.padding")],
+        diffs: @[AgentFileDiff(file: schemaFile, beforeText: "padding=24px",
+          afterText: "padding=32px", summary: "padding 24px -> 32px")],
+        tests: @["compile DestinationCard/Default"]))
+      let manual = vm.editCssProperty("padding", "28px", pesShared)
+      check manual.status == pesAccepted
+      check vm.chat.proposedEdits.val.anyIt(
+        it.id == staleId and it.validity == aepvNeedsRebase)
+      let rejected = vm.acceptAgentProposedEdit(staleId)
+      check not rejected.ok
+      var rerunPrompt = ""
+      vm.chat.configureAgentAdapters(
+        proc(prompt: string; context: AgentPromptContext): bool =
+          rerunPrompt = prompt
+          true,
+        nil,
+        absAgentHarbor)
+      check vm.rebaseAgentProposedEdit(staleId)
+      check rerunPrompt.contains("Rebase proposed edit")
+      dispose()
+
 suite "Editor ViewModels (M20 story flow preview runtime)":
 
   func findItem(groups: seq[StoryGroup]; groupName, itemName: string;

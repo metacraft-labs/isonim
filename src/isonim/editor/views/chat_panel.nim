@@ -3,7 +3,7 @@
 ## Ever-present panel on the right side of every screen.
 ## Renders explicit chat state from the editor ViewModel.
 
-import std/strutils
+import std/[sequtils, strutils]
 
 import isonim/core/[signals, computation]
 import isonim/viewmodel
@@ -46,6 +46,8 @@ proc chatStatusText(vm: EditorVM): string =
 
 proc proposalStatusText(status: AgentEditProposalStatus): string
 proc permissionStatusText(status: AgentPermissionStatus): string
+proc annotationStateText(state: ReviewAnnotationState): string
+proc proposalValidityText(validity: AgentEditProposalValidity): string
 
 proc chatTranscriptText(vm: EditorVM): string =
   var parts: seq[string] = @[]
@@ -63,6 +65,12 @@ proc chatTranscriptText(vm: EditorVM): string =
     for proposal in vm.chat.proposedEdits.val:
       proposalParts.add proposal.id & "=" & proposalStatusText(proposal.status)
     parts.add "Proposals: " & proposalParts.join(", ")
+  if vm.review.annotations.val.len > 0:
+    var annotationParts: seq[string] = @[]
+    for annotation in vm.review.annotations.val:
+      annotationParts.add annotation.id & "=" & annotationStateText(annotation.state) &
+        (if annotation.includedInPrompt: ":included" else: ":excluded")
+    parts.add "Review annotations: " & annotationParts.join(", ")
   if vm.chat.permissionRequests.val.len > 0:
     var permissionParts: seq[string] = @[]
     for request in vm.chat.permissionRequests.val:
@@ -87,6 +95,18 @@ proc permissionStatusText(status: AgentPermissionStatus): string =
   of apsGranted: "granted"
   of apsDenied: "denied"
   of apsCancelled: "cancelled"
+
+proc annotationStateText(state: ReviewAnnotationState): string =
+  case state
+  of ransOpen: "open"
+  of ransResolved: "resolved"
+  of ransDismissed: "dismissed"
+
+proc proposalValidityText(validity: AgentEditProposalValidity): string =
+  case validity
+  of aepvCurrent: "current"
+  of aepvNeedsRebase: "needs rebase"
+  of aepvStale: "stale"
 
 proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   let messages = signals.val(vm.chat.messages)
@@ -298,6 +318,89 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
 
   proc syncReviewLoop() =
     r.clearChildren(reviewLoopArea)
+    appendReviewHeading("Design Review Comments")
+    if vm.review.annotations.val.len == 0:
+      appendReviewSummary("No review comments")
+    else:
+      for annotation in vm.review.annotations.val:
+        let annotationId = annotation.id
+        let included = annotation.includedInPrompt
+        let state = annotation.state
+        let annotationText = annotation.text
+        let summaryText = annotation.id & " - " & annotationStateText(state) &
+          " - " & (if included: "included" else: "excluded")
+        let detailText =
+          if annotation.ancestry.len > 0: annotation.ancestry
+          elif annotation.selector.len > 0: annotation.selector
+          else: annotation.elementId
+        let card = ui(r):
+          tdiv(display = "flex", flex_direction = "column", gap = "6px",
+              padding = "7px", border = "1px solid " & borderFaint,
+              border_radius = "6px")
+        let summary = ui(r):
+          tdiv(display = "flex", flex_direction = "column", gap = "3px"):
+            span(font_size = "11px", color = textPrimary):
+              text summaryText
+            span(font_size = "10px", color = textSecondary):
+              text detailText
+            span(font_size = "11px", color = textSecondary):
+              text annotationText
+        r.appendChild(card, summary)
+        let actions = ui(r):
+          tdiv(display = "flex", gap = "6px", flex_wrap = "wrap")
+        let includeBtn = ui(r):
+          tdiv(
+            `role` = "button",
+            tabindex = "0",
+            `aria-label` = (if included:
+              "Exclude review comment " & annotationId
+            else:
+              "Include review comment " & annotationId),
+            padding = "5px 7px",
+            border = "1px solid " & border,
+            border_radius = "5px",
+            font_size = "10px",
+            color = textPrimary,
+            cursor = "pointer"):
+            text (if included: "Exclude" else: "Include")
+        r.addEventListener(includeBtn, "click", proc() =
+          discard vm.review.setReviewAnnotationPromptIncluded(annotationId,
+            not included))
+        let resolveBtn = ui(r):
+          tdiv(
+            `role` = "button",
+            tabindex = "0",
+            `aria-label` = "Resolve review comment " & annotationId,
+            padding = "5px 7px",
+            border = "1px solid " & border,
+            border_radius = "5px",
+            font_size = "10px",
+            color = textSecondary,
+            cursor = "pointer"):
+            text "Resolve"
+        r.addEventListener(resolveBtn, "click", proc() =
+          discard vm.review.resolveReviewAnnotation(annotationId))
+        let dismissBtn = ui(r):
+          tdiv(
+            `role` = "button",
+            tabindex = "0",
+            `aria-label` = "Dismiss review comment " & annotationId,
+            padding = "5px 7px",
+            border = "1px solid " & border,
+            border_radius = "5px",
+            font_size = "10px",
+            color = textSecondary,
+            cursor = "pointer"):
+            text "Dismiss"
+        r.addEventListener(dismissBtn, "click", proc() =
+          discard vm.review.dismissReviewAnnotation(annotationId))
+        r.appendChild(actions, includeBtn)
+        if state == ransOpen:
+          r.appendChild(actions, resolveBtn)
+          r.appendChild(actions, dismissBtn)
+        r.appendChild(card, actions)
+        r.appendChild(reviewLoopArea, card)
+
     appendReviewHeading("Permission Requests")
     if vm.chat.permissionRequests.val.len == 0:
       appendReviewSummary("No pending agent permissions")
@@ -354,12 +457,38 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
       for proposal in vm.chat.proposedEdits.val:
         let proposalId = proposal.id
         let proposalSummary = proposal.summary & " - " &
-          proposalStatusText(proposal.status)
+          proposalStatusText(proposal.status) & " - " &
+          proposalValidityText(proposal.validity)
+        let diffSummary =
+          if proposal.diffs.len > 0:
+            "Diff: " & proposal.diffs.mapIt(it.summary).join("; ")
+          else:
+            "Diff: " & proposal.sourceEdits.mapIt(it.property & " " &
+              it.oldValue & " -> " & it.newValue).join("; ")
+        let impactSummary =
+          if proposal.impact.summary.len > 0: "Impact: " & proposal.impact.summary
+          else: "Impact: " & $proposal.affectedStories.len & " affected story/stories"
+        let storySummary =
+          if proposal.affectedStories.len > 0:
+            "Affected stories: " & proposal.affectedStories.mapIt(
+              it.group & "/" & it.name).join(", ")
+          else:
+            "Affected stories: adapter-resolved"
+        let testSummary = "Tests: " & proposal.tests.join(", ")
         let card = ui(r):
           tdiv(display = "flex", flex_direction = "column", gap = "6px")
         let summary = ui(r):
-          span(font_size = "11px", color = textSecondary):
-            text proposalSummary
+          tdiv(display = "flex", flex_direction = "column", gap = "3px"):
+            span(font_size = "11px", color = textPrimary):
+              text proposalSummary
+            span(font_size = "10px", color = textSecondary):
+              text diffSummary
+            span(font_size = "10px", color = textSecondary):
+              text impactSummary
+            span(font_size = "10px", color = textSecondary):
+              text storySummary
+            span(font_size = "10px", color = textSecondary):
+              text testSummary
         r.appendChild(card, summary)
         let actions = ui(r):
           tdiv(display = "flex", gap = "6px", flex_wrap = "wrap")
@@ -405,9 +534,40 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
             text "Revert"
         r.addEventListener(revertBtn, "click", proc() =
           discard vm.revertAgentProposedEdit(proposalId))
+        let rerunBtn = ui(r):
+          tdiv(
+            `role` = "button",
+            tabindex = "0",
+            `aria-label` = "Re-run agent edit " & proposalId,
+            padding = "5px 7px",
+            border = "1px solid " & border,
+            border_radius = "5px",
+            font_size = "10px",
+            color = textSecondary,
+            cursor = "pointer"):
+            text "Re-run"
+        r.addEventListener(rerunBtn, "click", proc() =
+          discard vm.rerunAgentProposedEdit(proposalId))
+        let rebaseBtn = ui(r):
+          tdiv(
+            `role` = "button",
+            tabindex = "0",
+            `aria-label` = "Rebase agent edit " & proposalId,
+            padding = "5px 7px",
+            border = "1px solid " & border,
+            border_radius = "5px",
+            font_size = "10px",
+            color = textSecondary,
+            cursor = "pointer"):
+            text "Rebase"
+        r.addEventListener(rebaseBtn, "click", proc() =
+          discard vm.rebaseAgentProposedEdit(proposalId))
         r.appendChild(actions, acceptBtn)
         r.appendChild(actions, rejectBtn)
         r.appendChild(actions, revertBtn)
+        r.appendChild(actions, rerunBtn)
+        if proposal.validity != aepvCurrent:
+          r.appendChild(actions, rebaseBtn)
         r.appendChild(card, actions)
         r.appendChild(reviewLoopArea, card)
 

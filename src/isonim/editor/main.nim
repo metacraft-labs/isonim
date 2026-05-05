@@ -116,7 +116,9 @@ proc main() =
       editor.chat.addAgentResponse(
         "Fake adapter streamed response for '" & prompt &
         "' with tool state complete and " &
-        $context.accumulatedEdits.len & " inspector edit(s).")
+        $context.accumulatedEdits.len & " inspector edit(s), " &
+        $context.reviewAnnotations.len & " included review comment(s), " &
+        $context.selectedSchemaNodes.len & " selected schema node(s).")
       editor.chat.toolCalls.val = @["fake.applyDesignEdit"]
       discard editor.chat.addAgentPermissionRequest(AgentPermissionRequest(
         title: "Write workspace source",
@@ -146,7 +148,16 @@ proc main() =
           file: "examples/wanderlust/design-system/vector-symbols.svg",
           beforeText: "compass before",
           afterText: "compass after",
-          summary: "svgContent updated")]))
+          summary: "svgContent updated")],
+        impact: AgentProposalImpact(
+          summary: "Updates the shared Compass vector symbol through the workspace adapter.",
+          affectedStories: @[StoryRef(group: "Foundations",
+            name: "Vector Symbols", kind: skFoundation, index: 0)],
+          affectedComponents: @["Compass"]),
+        affectedStories: @[StoryRef(group: "Foundations",
+          name: "Vector Symbols", kind: skFoundation, index: 0)],
+        tests: @["compile Foundations / Vector Symbols",
+          "reload affected vector symbol preview"]))
       editor.chat.stopReason.val = "complete"
       true,
     agentCancelAdapter = proc(): bool = true,

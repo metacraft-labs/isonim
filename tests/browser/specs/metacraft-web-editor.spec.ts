@@ -639,7 +639,7 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(page.getByText("dirty")).toHaveCount(0);
   });
 
-  test("comment mode routes selected element notes into the AI prompt", async ({
+  test("comment mode stores structured review annotations for AI prompt selection", async ({
     page,
   }) => {
     await page.goto("/");
@@ -676,9 +676,32 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(comment).toHaveValue("Make the title hierarchy feel calmer.");
     await editFrame.getByRole("button", { name: "Add" }).click();
 
-    const prompt = page.getByRole("textbox", { name: "Agent prompt" });
-    await expect(prompt).toHaveValue(/Design review comments:/);
-    await expect(prompt).toHaveValue(/Make the title hierarchy feel calmer/);
+    await expect(
+      editFrame.getByRole("button", { name: "Design review comment marker" }),
+    ).toBeVisible();
+    await expect(page.getByText("Design Review Comments")).toBeVisible();
+    await expect(
+      page.getByText("Make the title hierarchy feel calmer."),
+    ).toBeVisible();
+    await expect(
+      page.getByText("review-annotation-1=open:included"),
+    ).toBeVisible();
+    await page
+      .getByRole("button", {
+        name: "Exclude review comment review-annotation-1",
+      })
+      .click();
+    await expect(
+      page.getByText("review-annotation-1=open:excluded"),
+    ).toBeVisible();
+    await page
+      .getByRole("button", {
+        name: "Include review comment review-annotation-1",
+      })
+      .click();
+    await expect(
+      page.getByText("review-annotation-1=open:included"),
+    ).toBeVisible();
   });
 
   test("e2e_right_panel_width_does_not_jump_between_ai_comment_edit", async ({

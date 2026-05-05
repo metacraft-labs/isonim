@@ -121,6 +121,96 @@ test.describe("IsoNim packaged editor example", () => {
     await expect(page.getByText("Connected / ready")).toBeVisible();
   });
 
+  test("e2e_comment_review_ai_prompt_and_acceptance_flow", async ({ page }) => {
+    await page.getByRole("button", { name: "Open Components section" }).click();
+    await page
+      .getByRole("button", { name: "Toggle DestinationCard stories" })
+      .click();
+    await page
+      .getByRole("button", { name: "Select story DestinationCard / Default" })
+      .click();
+    await page
+      .getByRole("button", { name: "Open selected component in edit mode" })
+      .click();
+    await expect(page.locator(".editor-manual-inspector")).toBeVisible();
+
+    await page.getByRole("button", { name: "Switch to comment mode" }).click();
+    await expect(page.locator(".editor-chat")).toBeVisible();
+
+    const editFrame = page.frameLocator(
+      'iframe[title="Editable component preview"]',
+    );
+    await expect(editFrame.getByTestId("component-edit-preview")).toBeVisible();
+    await editFrame
+      .getByTestId("component-edit-preview")
+      .click({ force: true });
+    const comment = editFrame.getByLabel("Comment on selected element");
+    await expect(comment).toBeVisible();
+    await comment.fill("Make the hero headline quieter.");
+    await editFrame.getByRole("button", { name: "Add" }).click();
+
+    await expect(
+      editFrame.getByRole("button", { name: "Design review comment marker" }),
+    ).toBeVisible();
+    await expect(page.getByText("Design Review Comments")).toBeVisible();
+    await expect(
+      page.getByText("Make the hero headline quieter."),
+    ).toBeVisible();
+    await expect(
+      page.getByText("review-annotation-1=open:included"),
+    ).toBeVisible();
+
+    await page
+      .getByRole("button", {
+        name: "Exclude review comment review-annotation-1",
+      })
+      .click();
+    await expect(
+      page.getByText("review-annotation-1=open:excluded"),
+    ).toBeVisible();
+    await page
+      .getByRole("button", {
+        name: "Include review comment review-annotation-1",
+      })
+      .click();
+    await expect(
+      page.getByText("review-annotation-1=open:included"),
+    ).toBeVisible();
+
+    await page
+      .getByRole("textbox", { name: "Agent prompt" })
+      .fill("Apply the selected review comment");
+    await page.getByRole("button", { name: "Send agent prompt" }).click();
+    await expect(page.getByText("1 included review comment(s)")).toBeVisible();
+    await expect(page.getByText("Diff: svgContent updated")).toBeVisible();
+    await expect(
+      page.getByText(
+        "Impact: Updates the shared Compass vector symbol through the workspace adapter.",
+      ),
+    ).toBeVisible();
+    await expect(
+      page.getByText("Affected stories: Foundations/Vector Symbols"),
+    ).toBeVisible();
+    await expect(
+      page.getByText(
+        "Tests: compile Foundations / Vector Symbols, reload affected vector symbol preview",
+      ),
+    ).toBeVisible();
+
+    await page
+      .getByRole("button", { name: "Accept agent edit agent-proposal-1" })
+      .click();
+    await expect(page.getByText("agent-proposal-1=accepted")).toBeVisible();
+    await page
+      .getByRole("button", {
+        name: "Resolve review comment review-annotation-1",
+      })
+      .click();
+    await expect(
+      page.getByText("review-annotation-1=resolved:included"),
+    ).toBeVisible();
+  });
+
   test("e2e_editor_edit_buttons_keyboard_and_pointer", async ({ page }) => {
     await page
       .getByRole("button", { name: "Select story Pages / Destination Detail" })

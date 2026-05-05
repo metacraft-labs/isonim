@@ -812,6 +812,56 @@ type
     afterText*: string
     summary*: string
 
+  ReviewAnnotationSeverity* = enum
+    rasInfo
+    rasWarning
+    rasError
+
+  ReviewAnnotationState* = enum
+    ransOpen
+    ransResolved
+    ransDismissed
+
+  ReviewViewportContext* = object
+    platform*: Platform
+    viewport*: PreviewViewport
+    width*: int
+    height*: int
+    zoom*: float
+
+  ReviewSourceOwnershipContext* = object
+    ownerPackage*: string
+    sourceFile*: string
+    sourceLine*: int
+    schemaKey*: string
+    nodeKey*: string
+    generatedViewFile*: string
+    generatedViewLine*: int
+    cssModuleFile*: string
+    cssModuleClass*: string
+    tailwindUtilities*: seq[string]
+    fallbackAllowed*: bool
+    unstructuredViewCode*: bool
+
+  ReviewAnnotation* = object
+    id*: string
+    text*: string
+    selectedElement*: ElementRef
+    elementId*: string
+    elementSourceKey*: string
+    domPath*: string
+    selector*: string
+    ancestry*: string
+    screenshotRef*: string
+    domSnapshot*: string
+    viewport*: ReviewViewportContext
+    ownership*: ReviewSourceOwnershipContext
+    source*: string
+    severity*: ReviewAnnotationSeverity
+    suggestedScope*: PropertyEditScope
+    includedInPrompt*: bool
+    state*: ReviewAnnotationState
+
   AgentDiagnosticSnapshot* = object
     source*: string
     severity*: string
@@ -825,8 +875,16 @@ type
     selectedStory*: StoryRef
     selectedElement*: ElementRef
     accumulatedEdits*: seq[EditRecord]
+    pendingSourceEdits*: seq[SourceEditPlan]
     sourceMap*: seq[AgentSourceMapEntry]
     designSystemSchema*: seq[AgentDesignSystemSchemaEntry]
+    selectedSchemaNodes*: seq[AgentDesignSystemSchemaEntry]
+    tokenContext*: seq[string]
+    componentVariantContext*: seq[string]
+    reviewAnnotations*: seq[ReviewAnnotation]
+    screenshotRefs*: seq[string]
+    domSnapshots*: seq[string]
+    designSystemConstraints*: seq[string]
     diagnostics*: seq[AgentDiagnosticSnapshot]
     currentFileDiffs*: seq[AgentFileDiff]
     platform*: Platform
@@ -864,6 +922,18 @@ type
     aepsReverted
     aepsFailed
 
+  AgentEditProposalValidity* = enum
+    aepvCurrent
+    aepvNeedsRebase
+    aepvStale
+
+  AgentProposalImpact* = object
+    summary*: string
+    affectedStories*: seq[StoryRef]
+    affectedComponents*: seq[string]
+    affectedPages*: seq[string]
+    diagnostics*: seq[AgentDiagnosticSnapshot]
+
   AgentPermissionStatus* = enum
     apsPending
     apsGranted
@@ -887,6 +957,13 @@ type
     status*: AgentEditProposalStatus
     selectedEditIndexes*: seq[int]
     appliedPatches*: seq[WorkspaceFilePatch]
+    targetScopes*: seq[PropertyEditScope]
+    impact*: AgentProposalImpact
+    affectedStories*: seq[StoryRef]
+    tests*: seq[string]
+    validity*: AgentEditProposalValidity
+    validityDiagnostics*: seq[AgentDiagnosticSnapshot]
+    basePendingEditCount*: int
 
   # --- Review ---
   ViolationSeverity* = enum

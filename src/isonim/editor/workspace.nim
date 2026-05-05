@@ -180,6 +180,7 @@ proc applyWorkspace*(vm: EditorVM; workspace: EditorWorkspace) =
   vm.workspaceEditFullReload.val = false
   vm.vectorEditor.selectedSymbol.val = -1
   vm.review.violations.val = @[]
+  vm.review.annotations.val = @[]
   vm.chat.accumulatedEdits.val = @[]
   vm.chat.messages.val = @[]
   vm.chat.sessionStatus.val = asIdle
@@ -188,6 +189,7 @@ proc applyWorkspace*(vm: EditorVM; workspace: EditorWorkspace) =
   vm.chat.planEntries.val = @[]
   vm.chat.toolCalls.val = @[]
   vm.chat.stopReason.val = ""
+  vm.chat.lastPromptContext.val = AgentPromptContext()
   vm.chat.configureAgentAdapters(workspace.agentPromptAdapter,
                                   workspace.agentCancelAdapter,
                                   workspace.agentBackend)

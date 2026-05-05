@@ -24,6 +24,38 @@ const
   accent = "#3B82F6"
   green = "#22C55E"
 
+func htmlEscape(value: string): string =
+  value.replace("&", "&amp;")
+    .replace("<", "&lt;")
+    .replace(">", "&gt;")
+    .replace("\"", "&quot;")
+
+func componentEditPreviewDocument(preview: ProjectPreview): string =
+  if preview.documentHtml.len > 0:
+    return preview.documentHtml
+  if preview.bodyText.len == 0:
+    return ""
+  let metadata = preview.metadata
+  let title =
+    if preview.title.len > 0: preview.title
+    else: preview.story.group & " / " & preview.story.name
+  let source =
+    if metadata.sourceFile.len > 0:
+      metadata.sourceFile & ":" & $max(metadata.sourceLine, 1)
+    else:
+      "preview:" & preview.story.group & ":" & preview.story.name
+  """
+<!doctype html>
+<html>
+  <body style="margin:0;padding:24px;background:#F8FAFC;color:#111827;font:14px/1.5 system-ui,sans-serif">
+    <article data-testid="component-edit-preview" data-isonim-src="$1" style="max-width:420px;border:1px solid #CBD5E1;border-radius:8px;background:white;padding:18px;box-shadow:0 8px 24px rgba(15,23,42,.12)">
+      <h1 style="margin:0 0 8px;font-size:20px;line-height:1.2">$2</h1>
+      <p style="margin:0;color:#475569">$3</p>
+    </article>
+  </body>
+</html>
+""" % [source.htmlEscape, title.htmlEscape, preview.bodyText.htmlEscape]
+
 type
   StyleClipboard = ref object
     property: string
@@ -674,22 +706,25 @@ proc editablePreviewDocument(documentHtml: string;
     add.addEventListener('click', function () {
       const text = input.value.trim();
       if (!text) return;
-      try {
-        const prompt = parent.document && parent.document.querySelector('[aria-label="Agent prompt"]');
-        if (prompt) {
-          const target = ancestorStack(el).reverse().map(stableSelector).join(' > ') || stableSelector(el);
-          const prefix = String(prompt.value || '').trim()
-            ? String(prompt.value).trim() + '\n'
-            : 'Design review comments:\n';
-          prompt.value = prefix + '- ' + target + ': ' + text;
-          prompt.dispatchEvent(new Event('input', { bubbles: true }));
-        }
-      } catch (err) {}
+      const target = ancestorStack(el).reverse().map(stableSelector).join(' > ') || stableSelector(el);
+      const marker = document.createElement('button');
+      marker.type = 'button';
+      marker.setAttribute('aria-label', 'Design review comment marker');
+      marker.setAttribute('data-isonim-review-comment', 'open');
+      marker.textContent = String(document.querySelectorAll('[data-isonim-review-comment]').length + 1);
+      marker.style.cssText =
+        'position:fixed;z-index:2147483646;left:' + Math.max(8, rect.left - 8) +
+        'px;top:' + Math.max(8, rect.top - 8) +
+        'px;width:20px;height:20px;border-radius:10px;border:1px solid #F59E0B;background:#111827;color:#FDE68A;font:700 11px/18px system-ui,sans-serif;box-shadow:0 8px 22px rgba(15,23,42,.35)';
+      marker.title = text;
+      document.body.appendChild(marker);
       parent.dispatchEvent(new CustomEvent('isonim-preview-comment-added', {
         detail: {
           selector: stableSelector(el),
-          ancestry: ancestorStack(el).reverse().map(stableSelector).join(' > '),
-          text: text
+          ancestry: target,
+          text: text,
+          domSnapshot: el.outerHTML ? String(el.outerHTML).slice(0, 2000) : '',
+          screenshotRef: 'viewport:' + window.innerWidth + 'x' + window.innerHeight + ':' + stableSelector(el)
         }
       }));
       popup.remove();
@@ -1061,23 +1096,18 @@ proc installPreviewSelectionBridge[R, E](r: R; frame: E; vm: EditorVM) =
       }
     """].}
 
-    let addCommentToPrompt = proc(selector, ancestry, text: cstring) =
-      let prefix =
-        if vm.chat.inputText.val.strip.len == 0:
-          "Design review comments:\n"
-        else:
-          vm.chat.inputText.val.strip & "\n"
-      let target =
-        if ($ancestry).len > 0: $ancestry
-        else: $selector
-      vm.chat.inputText.val = prefix & "- " & target & ": " & $text
+    let addCommentToPrompt = proc(selector, ancestry, text, domSnapshot,
+        screenshotRef: cstring) =
+      discard vm.addReviewAnnotation($text, selector = $selector,
+        ancestry = $ancestry, domSnapshot = $domSnapshot,
+        screenshotRef = $screenshotRef)
     {.emit: ["""
       if (!window.__isonimPreviewCommentBridgeInstalled) {
         window.__isonimPreviewCommentBridgeInstalled = true;
         window.addEventListener('isonim-preview-comment-added', function (event) {
           const d = event.detail || {};
           """, addCommentToPrompt,
-        """(d.selector || '', d.ancestry || '', d.text || '');
+        """(d.selector || '', d.ancestry || '', d.text || '', d.domSnapshot || '', d.screenshotRef || '');
         });
       }
     """].}
@@ -3769,12 +3799,12 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
         metadata.sourceFile & ":" & $max(metadata.sourceLine, 1)
       else:
         "No source metadata")
+    let previewDocument = componentEditPreviewDocument(previewState)
     let nextSrcdoc =
       if vm.editMode.val == emView:
-        previewState.documentHtml
+        previewDocument
       else:
-        editablePreviewDocument(previewState.documentHtml, metadata,
-          vm.editMode.val)
+        editablePreviewDocument(previewDocument, metadata, vm.editMode.val)
     var srcdocChanged = false
     if nextSrcdoc != lastSrcdoc:
       lastSrcdoc = nextSrcdoc

@@ -42,11 +42,11 @@ proc sourceMapToAcpContentBlocks*(entries: seq[AgentSourceMapEntry]): seq[
       " schema=" & entry.schemaKey
   @[textBlock(lines.join("\n"))]
 
-proc designSystemSchemaToAcpContentBlocks*(
-    entries: seq[AgentDesignSystemSchemaEntry]): seq[ContentBlock] =
+proc designSystemSchemaToAcpContentBlocks*(entries: seq[
+    AgentDesignSystemSchemaEntry]; label = "designSystemSchema"): seq[ContentBlock] =
   if entries.len == 0:
     return @[]
-  var lines: seq[string] = @["designSystemSchema:"]
+  var lines: seq[string] = @[label & ":"]
   for entry in entries:
     lines.add "- " & entry.key & " kind=" & entry.kind & " file=" &
       entry.file & " path=" & entry.path & " property=" & entry.property
@@ -75,6 +75,38 @@ proc fileDiffsToAcpContentBlocks*(diffs: seq[AgentFileDiff]): seq[ContentBlock] 
       result.add resourceBlock("file://" & diff.file & "#pending-diff",
         "text/plain")
 
+proc pendingSourceEditsToAcpContentBlocks*(
+    edits: seq[SourceEditPlan]): seq[ContentBlock] =
+  if edits.len == 0:
+    return @[]
+  var lines: seq[string] = @["pendingSourceEdits:"]
+  for edit in edits:
+    lines.add "- " & edit.file & ":" & $edit.line & " " & edit.property &
+      " " & edit.oldValue & " -> " & edit.newValue & " scope=" &
+      $edit.scope & " schema=" & edit.schemaKey
+  @[textBlock(lines.join("\n"))]
+
+proc reviewAnnotationsToAcpContentBlocks*(
+    annotations: seq[ReviewAnnotation]): seq[ContentBlock] =
+  if annotations.len == 0:
+    return @[]
+  var lines: seq[string] = @["reviewAnnotations:"]
+  for annotation in annotations:
+    lines.add "- " & annotation.id & " " & $annotation.severity &
+      " scope=" & $annotation.suggestedScope & " element=" &
+      annotation.elementId & " schema=" & annotation.ownership.schemaKey &
+      " viewport=" & $annotation.viewport.viewport & " " & annotation.text
+  @[textBlock(lines.join("\n"))]
+
+proc stringListToAcpContentBlock(label: string; values: seq[string]): seq[
+    ContentBlock] =
+  if values.len == 0:
+    return @[]
+  var lines = @[label & ":"]
+  for value in values:
+    lines.add "- " & value
+  @[textBlock(lines.join("\n"))]
+
 proc editorPromptContextToAcpContentBlocks*(context: AgentPromptContext;
     userPrompt: string): seq[ContentBlock] =
   if userPrompt.strip.len > 0:
@@ -83,7 +115,18 @@ proc editorPromptContextToAcpContentBlocks*(context: AgentPromptContext;
   result.add elementToAcpContentBlocks(context.selectedElement)
   result.add sourceMapToAcpContentBlocks(context.sourceMap)
   result.add editJournalToAcpContentBlocks(context.accumulatedEdits)
+  result.add pendingSourceEditsToAcpContentBlocks(context.pendingSourceEdits)
   result.add designSystemSchemaToAcpContentBlocks(context.designSystemSchema)
+  result.add designSystemSchemaToAcpContentBlocks(context.selectedSchemaNodes,
+    "selectedSchemaNodes")
+  result.add stringListToAcpContentBlock("tokenContext", context.tokenContext)
+  result.add stringListToAcpContentBlock("componentVariantContext",
+    context.componentVariantContext)
+  result.add reviewAnnotationsToAcpContentBlocks(context.reviewAnnotations)
+  result.add stringListToAcpContentBlock("designSystemConstraints",
+    context.designSystemConstraints)
+  result.add stringListToAcpContentBlock("screenshotRefs", context.screenshotRefs)
+  result.add stringListToAcpContentBlock("domSnapshots", context.domSnapshots)
   result.add diagnosticsToAcpContentBlocks(context.diagnostics)
   result.add fileDiffsToAcpContentBlocks(context.currentFileDiffs)
 
