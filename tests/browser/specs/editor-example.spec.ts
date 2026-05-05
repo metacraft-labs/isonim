@@ -33,15 +33,18 @@ test.describe("IsoNim packaged editor example", () => {
     await story.click();
     await expect(story).toHaveAttribute("aria-current", "true");
     await expect(
-      page.getByText("Pages / Destination Detail").first(),
+      page.getByText("Pages / Destination Detail").last(),
     ).toBeVisible();
     await expect(page.getByText("Santorini detail with reviews")).toBeVisible();
     await expect(
-      page.getByText("examples/wanderlust/components/views.nim:42"),
+      page.getByText("examples/wanderlust/components/views.nim:42").nth(1),
     ).toBeVisible();
 
-    await page.getByLabel("Edit inspector property padding").fill("24");
-    await page.getByLabel("Edit inspector property padding").blur();
+    const padding = page.getByRole("textbox", {
+      name: "Edit inspector property padding",
+    });
+    await padding.fill("24");
+    await padding.blur();
 
     await page
       .getByRole("button", { name: "Open User Journeys section" })
@@ -52,7 +55,7 @@ test.describe("IsoNim packaged editor example", () => {
       })
       .click();
     await expect(
-      page.getByText("Pages / Destination Detail").first(),
+      page.getByText("Pages / Destination Detail").last(),
     ).toBeVisible();
 
     await page.goto("/?view=vector#vector-editor");

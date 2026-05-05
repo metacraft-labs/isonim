@@ -779,6 +779,60 @@ proc selectInspectorElement*(editor: EditorVM;
   editor.inspector.editDiagnostics.val = @[]
   true
 
+func previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
+    className, sourceFile: string; sourceLine: int; backgroundColor, color,
+    padding, width, height: string): ElementRef =
+  ## Build the generic inspector selection produced by the browser iframe DOM
+  ## bridge. Projects own the preview HTML/source metadata; the editor owns the
+  ## normalized ElementRef and editable property model.
+  let file =
+    if sourceFile.len > 0: sourceFile
+    else: metadata.sourceFile
+  let line =
+    if sourceLine > 0: sourceLine
+    elif metadata.sourceLine > 0: metadata.sourceLine
+    else: 1
+  let schemaPrefix =
+    if testId.len > 0: "dom." & testId
+    elif className.len > 0: "dom." & className.splitWhitespace().join(".")
+    else: "dom." & tag
+
+  func domProp(name, value: string): PropertyInfo =
+    PropertyInfo(
+      name: name,
+      value: value,
+      origin: poInherited,
+      originDetail: "iframe-dom:" & schemaPrefix & ":" & name,
+      sourceFile: file,
+      sourceLine: line,
+      schemaKey: schemaPrefix & "." & name,
+      directStyleAllowed: true)
+
+  var props: seq[PropertyInfo] = @[]
+  if backgroundColor.len > 0 and backgroundColor != "rgba(0, 0, 0, 0)" and
+      backgroundColor != "transparent":
+    props.add domProp("background-color", backgroundColor)
+  if color.len > 0:
+    props.add domProp("color", color)
+  if padding.len > 0:
+    props.add domProp("padding", padding)
+  if width.len > 0:
+    props.add domProp("width", width)
+  if height.len > 0:
+    props.add domProp("height", height)
+
+  ElementRef(
+    tag: (if tag.len > 0: tag else: "element"),
+    sourceFile: file,
+    sourceLine: line,
+    sourceColumn: 1,
+    depth: 0,
+    properties: props,
+    children: @[
+      if testId.len > 0: "data-testid=" & testId else: "",
+      if className.len > 0: "class=" & className else: ""
+    ].filterIt(it.len > 0))
+
 proc changePlatform*(editor: EditorVM; platform: Platform) =
   editor.platform.val = platform
   editor.viewport.val = viewportForPlatform(platform)

@@ -138,7 +138,8 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(
       page.getByRole("button", { name: "Switch to view mode" }),
     ).toHaveAttribute("aria-pressed", "false");
-    await expect(page.getByText("Project component preview")).toBeVisible();
+    await expect(page.getByText("Click an element to select it")).toBeVisible();
+    await expect(page.getByText("Project component preview")).toHaveCount(0);
 
     await expect(
       page.getByRole("button", {
@@ -165,7 +166,7 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(
       page
         .getByText("apps/back-office/src/backoffice_ui/components.nim")
-        .first(),
+        .last(),
     ).toBeVisible();
 
     await page.getByRole("button", { name: "Open Components section" }).click();
@@ -283,7 +284,7 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(
       page
         .getByText("apps/back-office/src/backoffice_ui/components.nim")
-        .first(),
+        .last(),
     ).toBeVisible();
 
     await page.goto("/?view=vector#vector-editor");
@@ -300,6 +301,73 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(
       page.getByRole("button", { name: "Select Rectangle vector tool" }),
     ).toHaveAttribute("aria-pressed", "true");
+  });
+
+  test("edits real metacraft component DOM through the inspector", async ({
+    page,
+  }) => {
+    await page.goto("/");
+
+    await page.getByRole("button", { name: "Open Components section" }).click();
+    await page
+      .getByRole("button", {
+        name: "Select story Operational components / Topbar",
+      })
+      .click();
+    await expect(
+      page
+        .frameLocator(
+          'iframe[title="Component preview Operational components / Topbar"]',
+        )
+        .getByTestId("component-topbar"),
+    ).toBeVisible();
+
+    await page
+      .getByRole("button", { name: "Open selected component in edit mode" })
+      .click();
+    await expect(page).toHaveURL(/view=edit/);
+    await expect(
+      page.getByRole("button", { name: "Switch to edit mode" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByText("Project component preview")).toHaveCount(0);
+
+    const editFrame = page.frameLocator(
+      'iframe[title="Editable component preview"]',
+    );
+    const topbar = editFrame.getByTestId("component-topbar");
+    await expect(topbar).toBeVisible();
+    await expect(topbar.getByText("Operations")).toBeVisible();
+
+    await topbar.click();
+    await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
+    await expect(page.getByText("Selection", { exact: true })).toBeVisible();
+    await expect(page.getByText("header", { exact: true })).toBeVisible();
+    await expect(
+      page
+        .getByText("apps/back-office/src/backoffice_ui/components.nim:51")
+        .nth(1),
+    ).toBeVisible();
+
+    const colorInput = page.getByLabel("Edit inspector property color").first();
+    await expect(colorInput).toBeVisible();
+    await colorInput.fill("#F8FAFC");
+    await colorInput.blur();
+    await expect(page.getByText("Unsaved source edit")).toBeVisible();
+    await expect(page.getByText("1 source plan(s) staged")).toBeVisible();
+
+    await page
+      .getByRole("button", { name: "Revert inspector source edits" })
+      .click();
+    await expect(page.getByText("Unsaved source edit")).toHaveCount(0);
+
+    await topbar.click();
+    await page.getByLabel("Edit inspector property padding").fill("20px");
+    await page.getByLabel("Edit inspector property padding").blur();
+    await expect(page.getByText("Unsaved source edit")).toBeVisible();
+    await page
+      .getByRole("button", { name: "Save inspector source edits" })
+      .click();
+    await expect(page.getByText("Unsaved source edit")).toHaveCount(0);
   });
 
   test("keeps editor state in browser history", async ({ page }) => {

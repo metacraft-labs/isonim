@@ -814,6 +814,54 @@ suite "Editor ViewModels (M26 source-backed CSS property editors)":
       check not vm.inspector.isDirty.val
       dispose()
 
+  test "component_dom_selection_bridge_populates_source_backed_inspector":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      let metadata = StoryRenderMetadata(
+        story: StoryRef(group: "Operational components", name: "Topbar",
+          kind: skComponent, index: 1),
+        title: "Operational components / Topbar",
+        sourceFile: "apps/back-office/src/backoffice_ui/components.nim",
+        sourceLine: 51,
+        renderKind: "component")
+      vm.selectedStory.val = StoryRef(
+        group: "Operational components",
+        name: "Topbar",
+        kind: skComponent,
+        index: 1)
+
+      let element = previewDomElementRef(metadata,
+        "header",
+        "component-topbar",
+        "bo-topbar",
+        "",
+        0,
+        "rgb(255, 255, 255)",
+        "rgb(15, 23, 42)",
+        "16px",
+        "720px",
+        "64px")
+      check vm.selectInspectorElement(element)
+      check vm.inspector.selectedElement.val.tag == "header"
+      check vm.inspector.selectedElement.val.sourceFile ==
+        "apps/back-office/src/backoffice_ui/components.nim"
+      check vm.inspector.selectedElement.val.properties.anyIt(
+        it.name == "background-color" and it.directStyleAllowed and
+          it.schemaKey == "dom.component-topbar.background-color")
+      check vm.inspector.selectedElement.val.properties.anyIt(
+        it.name == "padding" and it.value == "16px")
+
+      let edit = vm.editCssProperty("background-color", "#F8FAFC", pesLocal)
+      check edit.status == pesAccepted
+      check edit.sourceEdit.file ==
+        "apps/back-office/src/backoffice_ui/components.nim"
+      check edit.sourceEdit.schemaKey == "dom.component-topbar.background-color"
+      check edit.sourceEdit.planKind in {cspStructuredSchemaUpdate,
+        cspInlineStyleUpdate, cspPropertyAddition}
+      check vm.workspaceEditStage.val == wesDirty
+      check vm.inspector.pendingSourceEdits.val.len == 1
+      dispose()
+
 suite "Editor ViewModels (M27 workspace file writes)":
 
   type WorkspaceEditRecorder = ref object

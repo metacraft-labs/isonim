@@ -5,6 +5,7 @@ const
   RequiredFeatureIds = [
     "edit_commands",
     "css_editors",
+    "component_dom_editing",
     "foundation_editors",
     "component_variant_editors",
     "svg_editors",

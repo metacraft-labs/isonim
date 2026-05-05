@@ -54,6 +54,11 @@ identify:
 - validation rules and allowed units;
 - preview reload behavior after a successful write.
 
+Component edit mode must use the same project-owned preview document shown in
+the component detail view. The editor may inject generic selection metadata and
+event handlers into that iframe, but project-specific source files, line
+numbers, schema keys, and patch behavior belong to the consumer workspace.
+
 ## Source Edits
 
 All source writes flow through the workspace edit adapter introduced by M27.
@@ -64,6 +69,11 @@ reports success.
 CSS, foundation token, component variant, SVG/vector, and accepted agent edits
 all use this path. Direct browser DOM mutation is not a completed edit until the
 ViewModel has received the source change and the adapter has saved it.
+
+The metacraft-web browser dogfood workspace currently persists edits to its
+project-owned adapter state so the end-to-end editor flow can be tested in a
+static browser build. Writing those edits to host files requires a local dev
+server/API adapter owned by the consumer workspace.
 
 ## Agent Adapters
 
