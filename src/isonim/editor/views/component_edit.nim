@@ -123,7 +123,8 @@ proc installPreviewSelectionBridge[R, E](r: R; frame: E; vm: EditorVM) =
         window.__isonimPreviewSelectionBridgeInstalled = true;
         window.addEventListener('isonim-preview-element-selected', function (event) {
           const d = event.detail || {};
-          """, selectFromBrowser, """(
+          """, selectFromBrowser,
+        """(
             d.tag || '', d.testId || '', d.className || '', d.sourceFile || '',
             String(d.sourceLine || ''), d.backgroundColor || '', d.color || '',
             d.padding || '', d.width || '', d.height || ''
@@ -133,7 +134,8 @@ proc installPreviewSelectionBridge[R, E](r: R; frame: E; vm: EditorVM) =
     """].}
 
     {.emit: ["""
-      const frame = """, frame, """;
+      const frame = """, frame,
+        """;
       if (frame && !frame.__isonimEditFrameAutoHeightInstalled) {
         frame.__isonimEditFrameAutoHeightInstalled = true;
         const resizeFrame = () => {
@@ -155,8 +157,150 @@ proc installPreviewSelectionBridge[R, E](r: R; frame: E; vm: EditorVM) =
       }
     """].}
 
-proc renderPropertyInput[R, E](r: R; vm: EditorVM; prop: PropertyInfo): E =
-  let propName = prop.name
+const richSections = [
+  isLayout, isSize, isSpacing, isPosition, isFill, isStroke, isTypography,
+  isEffects, isTransitions, isFilters
+]
+
+const richSectionLabels = [
+  "Layout", "Size", "Space", "Position", "Fill", "Stroke", "Type",
+  "Effects", "Transitions", "Filters"
+]
+
+func fallbackPropertyValue(element: ElementRef; name,
+    fallback: string): string =
+  for prop in element.properties:
+    if prop.name == name:
+      return prop.value
+  fallback
+
+func sectionProperties(section: InspectorSection): seq[(string, string)] =
+  case section
+  of isLayout:
+    @[
+      ("display", "block"),
+      ("flex-direction", "row"),
+      ("justify-content", "flex-start"),
+      ("align-items", "stretch"),
+      ("gap", "0px"),
+      ("overflow", "visible")
+    ]
+  of isSize:
+    @[
+      ("width", "auto"),
+      ("height", "auto"),
+      ("min-width", "0px"),
+      ("min-height", "0px"),
+      ("max-width", "none"),
+      ("flex-grow", "0")
+    ]
+  of isSpacing:
+    @[
+      ("padding", "0px"),
+      ("padding-top", "0px"),
+      ("padding-right", "0px"),
+      ("padding-bottom", "0px"),
+      ("padding-left", "0px"),
+      ("margin", "0px"),
+      ("margin-top", "0px"),
+      ("margin-bottom", "0px")
+    ]
+  of isPosition:
+    @[
+      ("position", "static"),
+      ("top", "auto"),
+      ("right", "auto"),
+      ("bottom", "auto"),
+      ("left", "auto"),
+      ("z-index", "auto")
+    ]
+  of isFill:
+    @[
+      ("background-color", "transparent"),
+      ("color", "inherit"),
+      ("opacity", "1"),
+      ("background-image", "none"),
+      ("background-size", "auto")
+    ]
+  of isStroke:
+    @[
+      ("border-width", "0px"),
+      ("border-color", "currentColor"),
+      ("border-style", "solid"),
+      ("border-radius", "0px"),
+      ("outline-color", "transparent")
+    ]
+  of isTypography:
+    @[
+      ("font-size", "16px"),
+      ("font-weight", "400"),
+      ("line-height", "normal"),
+      ("letter-spacing", "0px"),
+      ("text-align", "left"),
+      ("text-decoration", "none")
+    ]
+  of isEffects:
+    @[
+      ("box-shadow", "none"),
+      ("filter", "none"),
+      ("backdrop-filter", "none"),
+      ("transform", "none"),
+      ("mix-blend-mode", "normal")
+    ]
+  of isTransitions:
+    @[
+      ("transition-property", "all"),
+      ("transition-duration", "150ms"),
+      ("transition-timing-function", "ease"),
+      ("transition-delay", "0ms")
+    ]
+  of isFilters:
+    @[
+      ("filter", "none"),
+      ("brightness", "1"),
+      ("contrast", "1"),
+      ("saturate", "1"),
+      ("blur", "0px")
+    ]
+  of isState:
+    @[]
+
+func quickValues(propertyName: string): seq[string] =
+  case propertyName
+  of "display": @["block", "flex", "grid", "none"]
+  of "flex-direction": @["row", "column", "row-reverse", "column-reverse"]
+  of "justify-content": @["flex-start", "center", "space-between", "flex-end"]
+  of "align-items": @["stretch", "center", "flex-start", "flex-end"]
+  of "overflow": @["visible", "hidden", "auto", "scroll"]
+  of "position": @["static", "relative", "absolute", "sticky"]
+  of "border-style": @["solid", "dashed", "dotted", "none"]
+  of "font-weight": @["400", "500", "600", "700"]
+  of "text-align": @["left", "center", "right", "justify"]
+  of "text-decoration": @["none", "underline", "line-through"]
+  of "transition-timing-function": @["linear", "ease", "ease-in", "ease-out"]
+  of "mix-blend-mode": @["normal", "multiply", "screen", "overlay"]
+  else: @[]
+
+func swatchesFor(propertyName: string): seq[string] =
+  if propertyName in ["background-color", "color", "border-color",
+      "outline-color"]:
+    @[
+      "#0F172A", "#1E293B", "#3B82F6", "#22C55E", "#F59E0B", "#EF4444",
+      "#FFFFFF", "transparent"
+    ]
+  else:
+    @[]
+
+proc applyInspectorValue(vm: EditorVM; propName, value: string) =
+  discard vm.editCssProperty(propName, value, pesLocal, peoInspector)
+
+proc inspectorValueHandler(vm: EditorVM; propName, value: string): proc() =
+  let capturedProp = propName
+  let capturedValue = value
+  result = proc() =
+    vm.applyInspectorValue(capturedProp, capturedValue)
+
+proc renderPropertyInput[R, E](r: R; vm: EditorVM; propName, value: string): E =
   var inputNode: E
   result = ui(r):
     tdiv(display = "flex", flex_direction = "column", gap = "4px"):
@@ -174,12 +318,98 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; prop: PropertyInfo): E =
             color = textPrimary,
             outline = "none")
   r.setAttribute(inputNode, "aria-label", "Edit inspector property " & propName)
-  r.setInputValue(inputNode, prop.value)
+  r.setInputValue(inputNode, value)
   let commit = proc() =
-    discard vm.editCssProperty(propName, r.inputValue(inputNode), pesLocal,
-      peoInspector)
+    vm.applyInspectorValue(propName, r.inputValue(inputNode))
   r.addEventListener(inputNode, "change", commit)
   r.addEventListener(inputNode, "keydown", commit)
+
+proc renderQuickValues[R, E](r: R; vm: EditorVM; propName,
+    current: string): E =
+  let values = quickValues(propName)
+  result = ui(r):
+    tdiv(display = "flex", flex_wrap = "wrap", gap = "4px")
+  for value in values:
+    let nextValue = $value
+    let chip = ui(r):
+      tdiv(role = "button", tabindex = "0",
+            padding = "4px 7px", border_radius = "4px",
+            font_size = "10px", font_weight = "500",
+            cursor = "pointer",
+            background_color = (if current ==
+                nextValue: accent else: bgSurface),
+            color = (if current == nextValue: textPrimary else: textMuted),
+            border = "1px solid " & (if current ==
+                nextValue: accent else: border)):
+        text nextValue
+    r.setAttribute(chip, "aria-label",
+      "Set " & propName & " to " & nextValue)
+    let activate = inspectorValueHandler(vm, propName, nextValue)
+    r.addEventListener(chip, "click", activate)
+    r.addEventListener(chip, "keydown", activate)
+    r.appendChild(result, chip)
+
+proc renderSwatches[R, E](r: R; vm: EditorVM; propName,
+    current: string): E =
+  let values = swatchesFor(propName)
+  result = ui(r):
+    tdiv(display = "flex", flex_wrap = "wrap", gap = "6px",
+          align_items = "center")
+  for value in values:
+    let nextValue = $value
+    let swatch = ui(r):
+      tdiv(role = "button", tabindex = "0",
+            width = "22px", height = "22px", border_radius = "4px",
+            cursor = "pointer",
+            background_color = nextValue,
+            border = "2px solid " & (if current ==
+                nextValue: accent else: border))
+    r.setAttribute(swatch, "aria-label",
+      "Set " & propName & " to " & nextValue)
+    let activate = inspectorValueHandler(vm, propName, nextValue)
+    r.addEventListener(swatch, "click", activate)
+    r.addEventListener(swatch, "keydown", activate)
+    r.appendChild(result, swatch)
+
+proc renderRichPropertyControl[R, E](r: R; vm: EditorVM; propName,
+    value: string): E =
+  result = ui(r):
+    tdiv(display = "flex", flex_direction = "column", gap = "6px",
+          padding = "8px", border = "1px solid " & border,
+          border_radius = "6px", background_color = "#0F172A")
+  r.appendChild(result, renderPropertyInput[R, E](r, vm, propName, value))
+  if quickValues(propName).len > 0:
+    r.appendChild(result, renderQuickValues[R, E](r, vm, propName, value))
+  if swatchesFor(propName).len > 0:
+    r.appendChild(result, renderSwatches[R, E](r, vm, propName, value))
+
+proc sectionTitle(section: InspectorSection): string =
+  for i, candidate in richSections:
+    if candidate == section:
+      return richSectionLabels[i]
+  "Inspector"
+
+proc renderBoxModelSummary[R, E](r: R; selected: ElementRef): E =
+  let padding = fallbackPropertyValue(selected, "padding", "0px")
+  let margin = fallbackPropertyValue(selected, "margin", "0px")
+  result = ui(r):
+    tdiv(display = "flex", flex_direction = "column",
+          align_items = "center", gap = "4px",
+          padding = "10px", border = "1px dashed " & border,
+          border_radius = "6px", background_color = bgBase):
+      span(font_size = "9px", color = textDim,
+            text_transform = "uppercase"):
+        text "Box Model"
+      tdiv(width = "180px", border = "1px dashed " & textDim,
+            border_radius = "4px", padding = "8px",
+            display = "flex", flex_direction = "column",
+            align_items = "center", gap = "4px"):
+        span(font_size = "10px", color = textMuted):
+          text "margin " & margin
+        tdiv(width = "130px", border = "1px solid " & accent,
+              border_radius = "3px", padding = "8px",
+              text_align = "center", color = accent, font_size = "10px"):
+          text "padding " & padding
 
 proc populateInspectorContent[R, E](r: R; vm: EditorVM; content: E) =
   r.clearChildren(content)
@@ -199,10 +429,24 @@ proc populateInspectorContent[R, E](r: R; vm: EditorVM; content: E) =
           text selected.sourceFile & ":" & $selected.sourceLine
     r.appendChild(content, summary)
 
-    for prop in vm.inspector.properties.val:
-      if prop.name in ["background-color", "color", "padding", "width",
-          "height"]:
-        r.appendChild(content, renderPropertyInput[R, E](r, vm, prop))
+    let active = vm.inspector.activeSection.val
+    let heading = ui(r):
+      tdiv(display = "flex", align_items = "center",
+            justify_content = "space-between"):
+        span(font_size = "11px", font_weight = "700", color = textSecondary,
+              text_transform = "uppercase", letter_spacing = "0.5px"):
+          text sectionTitle(active)
+        span(font_size = "10px", color = accent, font_family = "monospace"):
+          text "source-backed"
+    r.appendChild(content, heading)
+
+    if active == isSpacing:
+      r.appendChild(content, renderBoxModelSummary[R, E](r, selected))
+
+    for (propName, fallback) in sectionProperties(active):
+      let value = fallbackPropertyValue(selected, propName, fallback)
+      r.appendChild(content,
+        renderRichPropertyControl[R, E](r, vm, propName, value))
 
     if vm.inspector.pendingSourceEdits.val.len > 0:
       let dirty = ui(r):
@@ -225,6 +469,35 @@ proc populateInspectorContent[R, E](r: R; vm: EditorVM; content: E) =
         span(font_size = "11px", color = textDim, margin_top = "4px"):
           text "Click real rendered DOM in the iframe"
     r.appendChild(content, empty)
+
+proc populateSectionTabs[R, E](r: R; vm: EditorVM; tabs, content: E)
+
+proc inspectorSectionHandler[R, E](r: R; vm: EditorVM; tabs, content: E;
+    section: InspectorSection): proc() =
+  let capturedSection = section
+  result = proc() =
+    vm.switchInspectorSection(capturedSection)
+    r.populateSectionTabs(vm, tabs, content)
+    r.populateInspectorContent(vm, content)
+
+proc populateSectionTabs[R, E](r: R; vm: EditorVM; tabs, content: E) =
+  r.clearChildren(tabs)
+  for i, section in richSections:
+    let label = richSectionLabels[i]
+    let active = vm.inspector.activeSection.val == section
+    let tab = ui(r):
+      tdiv(role = "tab", tabindex = "0",
+            display = "flex", align_items = "center",
+            padding = "0 10px", font_size = "11px", font_weight = "600",
+            cursor = "pointer", white_space = "nowrap",
+            color = (if active: accent else: textMuted),
+            box_shadow = (if active: "inset 0 -2px 0 " & accent else: "none")):
+        text label
+    r.setAttribute(tab, "aria-label", "Show " & label & " edit controls")
+    let activate = r.inspectorSectionHandler(vm, tabs, content, section)
+    r.addEventListener(tab, "click", activate)
+    r.addEventListener(tab, "keydown", activate)
+    r.appendChild(tabs, tab)
 
 proc renderInspector[R, E](r: R; vm: EditorVM): E =
   var saveButton: E
@@ -255,6 +528,14 @@ proc renderInspector[R, E](r: R; vm: EditorVM): E =
                 background_color = accent, color = textPrimary):
             text "Save"
 
+  let tabs = ui(r):
+    tdiv(class = "editor-tabbar",
+          display = "flex", align_items = "stretch",
+          height = "40px", min_height = "40px",
+          border_bottom = "1px solid " & border,
+          overflow_x = "auto", scrollbar_width = "none")
+  r.appendChild(result, tabs)
+
   r.setAttribute(saveButton, "aria-label", "Save inspector source edits")
   r.setAttribute(revertButton, "aria-label", "Revert inspector source edits")
   r.addEventListener(saveButton, "click", proc() =
@@ -270,6 +551,7 @@ proc renderInspector[R, E](r: R; vm: EditorVM): E =
     tdiv(flex = "1", display = "flex", flex_direction = "column",
           padding = "12px", overflow_y = "auto", gap = "12px")
   r.appendChild(result, content)
+  r.populateSectionTabs(vm, tabs, content)
 
   createRenderEffect proc() =
     r.populateInspectorContent(vm, content)

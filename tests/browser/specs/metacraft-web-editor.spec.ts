@@ -343,6 +343,27 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(page.getByText("Selection", { exact: true })).toBeVisible();
     await expect(page.getByText("header", { exact: true })).toBeVisible();
     await expect(
+      page.getByRole("tab", { name: "Show Layout edit controls" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("tab", { name: "Show Size edit controls" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("tab", { name: "Show Space edit controls" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("tab", { name: "Show Fill edit controls" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("tab", { name: "Show Stroke edit controls" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("tab", { name: "Show Type edit controls" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("tab", { name: "Show Effects edit controls" }),
+    ).toBeVisible();
+    await expect(
       page
         .getByText("apps/back-office/src/backoffice_ui/components.nim:51")
         .nth(1),
@@ -361,9 +382,23 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(page.getByText("Unsaved source edit")).toHaveCount(0);
 
     await topbar.click();
-    await page.getByLabel("Edit inspector property padding").fill("20px");
-    await page.getByLabel("Edit inspector property padding").blur();
+    await page.getByRole("tab", { name: "Show Space edit controls" }).click();
+    await expect(page.getByText("Box Model", { exact: true })).toBeVisible();
+    const paddingInput = page.getByRole("textbox", {
+      name: "Edit inspector property padding",
+      exact: true,
+    });
+    await paddingInput.fill("20px");
+    await paddingInput.blur();
     await expect(page.getByText("Unsaved source edit")).toBeVisible();
+
+    await page
+      .getByRole("button", { name: "Revert inspector source edits" })
+      .click();
+    await page.getByRole("tab", { name: "Show Layout edit controls" }).click();
+    await page.getByRole("button", { name: "Set display to flex" }).click();
+    await expect(page.getByText("Unsaved source edit")).toBeVisible();
+
     await page
       .getByRole("button", { name: "Save inspector source edits" })
       .click();
