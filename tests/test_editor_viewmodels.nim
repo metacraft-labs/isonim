@@ -1057,6 +1057,250 @@ suite "Editor ViewModels (M26 source-backed CSS property editors)":
         it.name == "padding" and it.value == "16px")
       dispose()
 
+  test "layout_controls_plan_structured_flex_grid_constraint_edits":
+    createRoot proc(dispose: proc()) =
+      func span(file: string; line: int): SourceSpan =
+        SourceSpan(file: file, line: line, column: 1,
+          endLine: line, endColumn: 24)
+
+      let tokenFile = "design/layout-tokens.schema"
+      let cssFile = "components/card.css"
+      let styleFile = "components/card.layout.schema"
+      let fixtureFile = "stories/card.fixture"
+      let schema = DesignSystemSchema(
+        schemaVersion: 1,
+        projectId: "layout-fixture",
+        ownerPackage: "isonim-tests",
+        frameworkContract: "isonim-editor-design-schema-v1",
+        nodes: @[
+          DesignSchemaNode(key: "tokens.card.gap",
+            kind: dsnComponentToken, component: "Card", property: "gap",
+            value: "12px", sourceSpan: span(tokenFile, 4)),
+          DesignSchemaNode(key: "classes.card.grid",
+            kind: dsnClassDefinition, component: "Card",
+            property: "grid-template-columns",
+            value: "1fr", sourceSpan: span(cssFile, 8)),
+          DesignSchemaNode(key: "styles.card.aspect",
+            kind: dsnStyleDefinition, component: "Card",
+            property: "aspect-ratio",
+            value: "auto", sourceSpan: span(styleFile, 12)),
+          DesignSchemaNode(key: "fixtures.card.child-order",
+            kind: dsnStoryFixture, component: "Card", property: "order",
+            value: "0", sourceSpan: span(fixtureFile, 2))
+        ],
+        sourceOwnership: @[
+          DesignSourceOwnership(elementSourceKey: "card.root",
+            property: "gap", schemaKey: "tokens.card.gap",
+            nodeKey: "tokens.card.gap", sourceSpan: span(tokenFile, 4)),
+          DesignSourceOwnership(elementSourceKey: "card.root",
+            property: "grid-template-columns",
+            schemaKey: "classes.card.grid",
+            nodeKey: "classes.card.grid",
+            sourceSpan: span(cssFile, 8),
+            cssModuleFile: cssFile, cssModuleClass: "card",
+            tailwindUtilities: @["grid-cols-1"]),
+          DesignSourceOwnership(elementSourceKey: "card.root",
+            property: "aspect-ratio", schemaKey: "styles.card.aspect",
+            nodeKey: "styles.card.aspect",
+            sourceSpan: span(styleFile, 12)),
+          DesignSourceOwnership(elementSourceKey: "card.child",
+            property: "order", schemaKey: "fixtures.card.child-order",
+            nodeKey: "fixtures.card.child-order",
+            sourceSpan: span(fixtureFile, 2))
+        ])
+
+      let vm = createEditorVM()
+      vm.designSystemSchema.val = schema
+      check vm.selectInspectorElement(ElementRef(
+        id: "card-root",
+        sourceKey: "card.root",
+        schemaKey: "components.card",
+        tag: "article",
+        sourceFile: "components/card.nim",
+        sourceLine: 30,
+        properties: @[
+          cssProp("display", "flex", poConstant, "schema:layout.display",
+            file = styleFile, line = 3, schemaKey = "styles.card.display"),
+          cssProp("gap", "12px", poConstant, "schema:tokens.card.gap",
+            file = tokenFile, line = 4, schemaKey = "tokens.card.gap"),
+          cssProp("grid-template-columns", "1fr", poTailwindClass,
+            "class:grid-cols-1", file = cssFile, line = 8,
+            schemaKey = "classes.card.grid"),
+          cssProp("aspect-ratio", "auto", poConstant,
+            "schema:styles.card.aspect", file = styleFile, line = 12,
+            schemaKey = "styles.card.aspect")
+        ]))
+
+      let flexCapabilities = layoutControlCapabilities(lcfFlexAutoLayout)
+      for capability in [
+        lccFlexDirection, lccFlexWrap, lccGap, lccPadding, lccAlign,
+        lccJustify, lccDistribution, lccHugFillFixedSizing, lccChildOrder,
+        lccPerChildAlignment
+      ]:
+        check capability in flexCapabilities
+      let gridCapabilities = layoutControlCapabilities(lcfGrid)
+      for capability in [
+        lccGridTemplateTracks, lccGridGap, lccGridPlacement,
+        lccGridAutoFlow, lccGridNamedAreas
+      ]:
+        check capability in gridCapabilities
+      let constraintCapabilities = layoutControlCapabilities(lcfConstraints)
+      for capability in [
+        lccConstraints, lccMinMax, lccIntrinsicContentSizing,
+        lccAspectRatio, lccOverflowStrategy
+      ]:
+        check capability in constraintCapabilities
+      let guideCapabilities = layoutControlCapabilities(lcfCanvasGuide)
+      for capability in [
+        lccSpacingMeasurement, lccGapOverlay, lccAlignHandle,
+        lccResizeHandle, lccSnapLine, lccLayoutDiagnostic
+      ]:
+        check capability in guideCapabilities
+
+      let gapPlan = vm.planLayoutControlEdit(layoutCommand(
+        lcfFlexAutoLayout, "gap", "24px"))
+      check gapPlan.ok
+      check gapPlan.sourceEdit.planKind == cspTokenUpdate
+      check gapPlan.sourceEdit.file == tokenFile
+      check gapPlan.sourceEdit.originDetail.startsWith("layout-token:")
+
+      let gridPlan = vm.planLayoutControlEdit(layoutCommand(
+        lcfGrid, "grid-template-columns",
+        "repeat(2, minmax(0, 1fr))"))
+      check gridPlan.ok
+      check gridPlan.sourceEdit.planKind == cspTailwindClassReplacement
+      check gridPlan.sourceEdit.originDetail.startsWith("layout-class:")
+
+      let aspectPlan = vm.planLayoutControlEdit(layoutCommand(
+        lcfConstraints, "aspect-ratio", "16 / 9"))
+      check aspectPlan.ok
+      check aspectPlan.sourceEdit.planKind == cspStructuredSchemaUpdate
+      check aspectPlan.sourceEdit.originDetail.startsWith("layout-style:")
+
+      check vm.selectInspectorElement(ElementRef(
+        id: "card-child",
+        sourceKey: "card.child",
+        schemaKey: "components.card.child",
+        tag: "section",
+        sourceFile: "components/card.nim",
+        sourceLine: 42,
+        properties: @[
+          cssProp("order", "0", poConstant,
+            "schema:fixtures.card.child-order", file = fixtureFile, line = 2,
+            schemaKey = "fixtures.card.child-order")
+        ]))
+      let orderPlan = vm.planLayoutControlEdit(layoutCommand(
+        lcfFlexAutoLayout, "order", "1", childSourceKey = "card.child"))
+      check orderPlan.ok
+      check orderPlan.sourceEdit.originDetail.startsWith("layout-fixture:")
+
+      let unsupported = vm.planLayoutControlEdit(layoutCommand(
+        lcfConstraints, "translate", "12px"))
+      check not unsupported.ok
+      check unsupported.diagnostics.anyIt(it.kind == pedSchemaViolation)
+      dispose()
+
+  test "responsive_overrides_are_scoped_to_selected_viewport_mode":
+    createRoot proc(dispose: proc()) =
+      func span(file: string; line: int): SourceSpan =
+        SourceSpan(file: file, line: line, column: 1,
+          endLine: line, endColumn: 20)
+
+      let sourceFile = "components/responsive-card.layout.schema"
+      let schema = DesignSystemSchema(
+        schemaVersion: 1,
+        projectId: "responsive-layout-fixture",
+        ownerPackage: "isonim-tests",
+        frameworkContract: "isonim-editor-design-schema-v1",
+        nodes: @[
+          DesignSchemaNode(key: "modes.desktop.gap",
+            kind: dsnResponsiveMode, name: "Desktop", property: "gap",
+            value: "12px", sourceSpan: span(sourceFile, 4)),
+          DesignSchemaNode(key: "modes.tablet.gap",
+            kind: dsnResponsiveMode, name: "Tablet", property: "gap",
+            value: "16px", sourceSpan: span(sourceFile, 8)),
+          DesignSchemaNode(key: "modes.mobile.gap",
+            kind: dsnResponsiveMode, name: "Mobile", property: "gap",
+            value: "20px", sourceSpan: span(sourceFile, 12)),
+          DesignSchemaNode(key: "modes.compact-dashboard.gap",
+            kind: dsnResponsiveMode, name: "Compact dashboard",
+            property: "gap", value: "10px", sourceSpan: span(sourceFile, 16))
+        ],
+        sourceOwnership: @[
+          DesignSourceOwnership(elementSourceKey: "card.root",
+            property: "gap", schemaKey: "modes.desktop.gap",
+            nodeKey: "modes.desktop.gap", sourceSpan: span(sourceFile, 4)),
+          DesignSourceOwnership(elementSourceKey: "card.root",
+            property: "gap", schemaKey: "modes.tablet.gap",
+            nodeKey: "modes.tablet.gap", sourceSpan: span(sourceFile, 8)),
+          DesignSourceOwnership(elementSourceKey: "card.root",
+            property: "gap", schemaKey: "modes.mobile.gap",
+            nodeKey: "modes.mobile.gap", sourceSpan: span(sourceFile, 12)),
+          DesignSourceOwnership(elementSourceKey: "card.root",
+            property: "gap", schemaKey: "modes.compact-dashboard.gap",
+            nodeKey: "modes.compact-dashboard.gap",
+            sourceSpan: span(sourceFile, 16))
+        ])
+
+      let vm = createEditorVM()
+      vm.designSystemSchema.val = schema
+      check responsiveEditModes(schema).anyIt(it.key == "desktop")
+      check responsiveEditModes(schema).anyIt(
+        it.key == "modes.compact-dashboard.gap" and
+          it.kind == rmkProjectDefined)
+      check layoutModeKey(pvMobile) == "mobile"
+      check vm.selectInspectorElement(ElementRef(
+        id: "card-root",
+        sourceKey: "card.root",
+        schemaKey: "components.card",
+        tag: "article",
+        sourceFile: "components/responsive-card.nim",
+        sourceLine: 21,
+        properties: @[
+          cssProp("gap", "8px", poConstant, "schema:modes.desktop.gap",
+            file = sourceFile, line = 3, schemaKey = "modes.desktop.gap"),
+          cssProp("gap", "12px", poConstant, "schema:modes.desktop.gap",
+            file = sourceFile, line = 4, schemaKey = "modes.desktop.gap",
+            variantKey = "desktop"),
+          cssProp("gap", "16px", poConstant, "schema:modes.tablet.gap",
+            file = sourceFile, line = 8, schemaKey = "modes.tablet.gap",
+            variantKey = "tablet"),
+          cssProp("gap", "20px", poConstant, "schema:modes.mobile.gap",
+            file = sourceFile, line = 12, schemaKey = "modes.mobile.gap",
+            variantKey = "mobile"),
+          cssProp("gap", "10px", poConstant,
+            "schema:modes.compact-dashboard.gap",
+            file = sourceFile, line = 16,
+            schemaKey = "modes.compact-dashboard.gap",
+            variantKey = "modes.compact-dashboard.gap")
+        ]))
+
+      let mobile = vm.applyResponsiveLayoutOverride("mobile", "gap", "28px")
+      check mobile.ok
+      check mobile.sourceEdit.variantKey == "mobile"
+      check mobile.sourceEdit.conflictKey.endsWith(":mobile")
+      check mobile.sourceEdit.expectedOldValue == "20px"
+      check vm.inspector.selectedElement.val.properties.anyIt(
+        it.name == "gap" and it.variantKey == "mobile" and it.value == "28px")
+      check vm.inspector.selectedElement.val.properties.anyIt(
+        it.name == "gap" and it.variantKey == "tablet" and it.value == "16px")
+      check vm.inspector.selectedElement.val.properties.anyIt(
+        it.name == "gap" and it.variantKey == "desktop" and it.value == "12px")
+      check vm.inspector.selectedElement.val.properties.anyIt(
+        it.name == "gap" and it.variantKey.len == 0 and it.value == "8px")
+
+      let custom = vm.applyResponsiveLayoutOverride(
+        "modes.compact-dashboard.gap", "gap", "14px")
+      check custom.ok
+      check custom.sourceEdit.variantKey == "modes.compact-dashboard.gap"
+      check vm.inspector.pendingSourceEdits.val.len == 2
+      check vm.inspector.pendingSourceEdits.val.anyIt(
+        it.variantKey == "mobile" and it.newValue == "28px")
+      check vm.inspector.pendingSourceEdits.val.anyIt(
+        it.variantKey == "modes.compact-dashboard.gap" and
+          it.newValue == "14px")
+      dispose()
+
   test "component_dom_selection_bridge_populates_source_backed_inspector":
     createRoot proc(dispose: proc()) =
       let vm = createEditorVM()

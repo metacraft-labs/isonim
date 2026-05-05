@@ -535,6 +535,63 @@ type
     pcfBorderRadiusStroke
     pcfMotion
 
+  SourceSpan* = object
+    file*: string
+    line*: int
+    column*: int
+    endLine*: int
+    endColumn*: int
+
+  LayoutControlFamily* = enum
+    lcfFlexAutoLayout
+    lcfGrid
+    lcfConstraints
+    lcfResponsiveOverride
+    lcfCanvasGuide
+
+  LayoutControlCapability* = enum
+    lccFlexDirection
+    lccFlexWrap
+    lccGap
+    lccPadding
+    lccAlign
+    lccJustify
+    lccDistribution
+    lccHugFillFixedSizing
+    lccChildOrder
+    lccPerChildAlignment
+    lccGridTemplateTracks
+    lccGridGap
+    lccGridPlacement
+    lccGridAutoFlow
+    lccGridNamedAreas
+    lccConstraints
+    lccMinMax
+    lccIntrinsicContentSizing
+    lccAspectRatio
+    lccOverflowStrategy
+    lccBreakpointScopedOverride
+    lccProjectDefinedMode
+    lccSpacingMeasurement
+    lccGapOverlay
+    lccAlignHandle
+    lccResizeHandle
+    lccSnapLine
+    lccLayoutDiagnostic
+    lccSourceRoutedPlan
+
+  ResponsiveModeKind* = enum
+    rmkDesktop
+    rmkTablet
+    rmkMobile
+    rmkProjectDefined
+
+  ResponsiveEditMode* = object
+    key*: string
+    label*: string
+    kind*: ResponsiveModeKind
+    sourceSpan*: SourceSpan
+
   PrimitiveControlCapability* = enum
     pccSelectAllFocus
     pccLabelScrub
@@ -969,13 +1026,6 @@ type
     review*: proc(patches: seq[WorkspaceFilePatch]): WorkspaceReviewResult {.closure.}
 
   # --- Design-system schema and source ownership ---
-  SourceSpan* = object
-    file*: string
-    line*: int
-    column*: int
-    endLine*: int
-    endColumn*: int
-
   DesignSchemaNodeKind* = enum
     dsnFoundation
     dsnSemanticToken
@@ -1090,6 +1140,23 @@ type
     ownership*: DesignSourceOwnership
     planKind*: CSSSourcePlanKind
     diagnostics*: seq[DesignSchemaDiagnostic]
+
+  LayoutControlCommand* = object
+    family*: LayoutControlFamily
+    property*: string
+    value*: string
+    scope*: PropertyEditScope
+    modeKey*: string
+    childSourceKey*: string
+    sourceBackedOnly*: bool
+
+  LayoutControlPlan* = object
+    ok*: bool
+    command*: LayoutControlCommand
+    sourceEdit*: SourceEditPlan
+    ownership*: DesignSourceOwnershipReport
+    capabilities*: seq[LayoutControlCapability]
+    diagnostics*: seq[PropertyEditDiagnostic]
 
   DesignSchemaImpact* = object
     schemaKey*: string

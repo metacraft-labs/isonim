@@ -222,6 +222,57 @@
       }
     },
     {
+      "id": "layout_auto_grid_constraints_responsive",
+      "title": "Layout, Auto Layout, Constraints, and Responsive Editing",
+      "status": "functional",
+      "targetWorkflow": "Users can plan and apply representative flex, grid, constraint, canvas-guide, and viewport-scoped layout edits through source-aware editor contracts and live component preview controls.",
+      "owner": "framework-and-consumer",
+      "mockOnly": false,
+      "placeholderUi": false,
+      "browserBehavior": ["pointer", "focus", "drag"],
+      "implementation": "M37 adds framework layout-control capabilities for flex/auto layout, grid, constraints, responsive modes, and canvas guides; source-aware planning routes edits to token, class, style/schema, story fixture, responsive mode, Tailwind, or fallback inline paths according to the M35 ownership graph. Browser coverage exposes functional layout controls, live iframe style updates, spacing measurement, gap overlays, snap lines, resize handles, and viewport-mode override staging.",
+      "knownLimitations": "Functional M37 evidence is not full Figma-grade layout editing. Browser controls are representative and source-plan backed where the selected source map/schema owns the property; fallback DOM selections may stage local plans until the consumer schema owns every layout property. Canvas guides are DOM overlays, not screenshot-baselined visual assertions. Drag coverage proves resize-handle behavior, but not complete multi-axis constraint solving, advanced named-area editing, or full responsive visual baselines. Status remains functional until M32/M43 visual gates are satisfied.",
+      "headlessTests": [
+        {
+          "name": "layout_controls_plan_structured_flex_grid_constraint_edits",
+          "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "responsive_overrides_are_scoped_to_selected_viewport_mode",
+          "file": "tests/test_editor_viewmodels.nim"
+        }
+      ],
+      "playwrightRequired": true,
+      "playwrightTests": [
+        {
+          "name": "e2e_canvas_layout_handles_measurement_and_responsive_overrides",
+          "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
+        }
+      ],
+      "screenshotVisualAssertions": {
+        "requiredForFigmaGrade": true,
+        "status": "not_started",
+        "assertions": [],
+        "futureMilestone": "M43",
+        "notes": "Needs visual baselines for layout controls, canvas guides, resize handles, snap lines, responsive mode switching, and no-overlap behavior before claiming Figma-grade."
+      },
+      "consumerCoverage": {
+        "isonimExample": {
+          "status": "covered_headless",
+          "evidence": [
+            "tests/test_editor_viewmodels.nim:layout_controls_plan_structured_flex_grid_constraint_edits",
+            "tests/test_editor_viewmodels.nim:responsive_overrides_are_scoped_to_selected_viewport_mode"
+          ]
+        },
+        "metacraftWeb": {
+          "status": "covered",
+          "evidence": [
+            "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_canvas_layout_handles_measurement_and_responsive_overrides"
+          ]
+        }
+      }
+    },
+    {
       "id": "component_dom_editing",
       "title": "Real Component DOM Editing",
       "status": "functional",

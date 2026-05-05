@@ -803,6 +803,132 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(title).toHaveAttribute("data-isonim-selected", "true");
   });
 
+  test("e2e_canvas_layout_handles_measurement_and_responsive_overrides", async ({
+    page,
+  }) => {
+    await page.goto("/");
+
+    await page.getByRole("button", { name: "Open Components section" }).click();
+    await page
+      .getByRole("button", {
+        name: "Select story Operational components / Topbar",
+      })
+      .click();
+    await page
+      .getByRole("button", { name: "Open selected component in edit mode" })
+      .click();
+
+    const editFrame = page.frameLocator(
+      'iframe[title="Editable component preview"]',
+    );
+    const topbar = editFrame.getByTestId("component-topbar");
+    await topbar
+      .locator("h1.bo-title")
+      .click({ force: true, modifiers: ["Shift"] });
+    await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
+    await expect(
+      editFrame.getByLabel("Canvas spacing measurement"),
+    ).toBeVisible();
+    await expect(editFrame.getByLabel("Canvas gap overlay")).toBeVisible();
+    await expect(editFrame.getByLabel("Canvas snap lines")).toBeVisible();
+    await expect(editFrame.getByLabel("Resize selected element")).toBeVisible();
+
+    await page.getByRole("tab", { name: "Show Layout edit controls" }).click();
+    await expect(
+      page.getByLabel("Show layout auto grid constraint controls"),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Enable flex wrap" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Set grid template tracks" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", {
+        name: "Set left right top bottom constraints",
+      }),
+    ).toBeVisible();
+
+    await page
+      .getByRole("button", { name: "Set auto layout gap to 24px" })
+      .click();
+    await expect
+      .poll(() => topbar.evaluate((node) => getComputedStyle(node).gap))
+      .toBe("24px");
+    await expect(page.getByText("Unsaved source edit")).toBeVisible();
+
+    const beforeWidth = await topbar.evaluate((node) =>
+      Math.round(node.getBoundingClientRect().width),
+    );
+    const resizeHandle = editFrame.getByLabel("Resize selected element");
+    const box = await resizeHandle.boundingBox();
+    if (!box) throw new Error("resize handle is not visible");
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 + 36, box.y + box.height / 2);
+    await page.mouse.up();
+    await expect
+      .poll(() =>
+        topbar.evaluate((node) =>
+          Math.round(node.getBoundingClientRect().width),
+        ),
+      )
+      .toBeGreaterThan(beforeWidth);
+
+    const gapBeforeMobileOverride = await topbar.evaluate(
+      (node) => getComputedStyle(node).gap,
+    );
+    await page
+      .getByRole("button", { name: "Set responsive override for Mobile mode" })
+      .click();
+    await expect
+      .poll(() => topbar.evaluate((node) => getComputedStyle(node).gap))
+      .toBe(gapBeforeMobileOverride);
+    await expect(page.getByText(/source plan\(s\) staged/)).toBeVisible();
+
+    await page
+      .getByRole("button", { name: "Revert inspector source edits" })
+      .click();
+    await expect(page.getByText("Unsaved source edit")).toHaveCount(0);
+
+    await page.goto("/");
+    await page.getByRole("button", { name: "Preview Mobile viewport" }).click();
+    await expect(
+      page.getByRole("button", { name: "Preview Mobile viewport" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    await page.getByRole("button", { name: "Open Components section" }).click();
+    await page
+      .getByRole("button", {
+        name: "Select story Operational components / Topbar",
+      })
+      .click();
+    await page
+      .getByRole("button", { name: "Open selected component in edit mode" })
+      .click();
+    const mobileTopbar = editFrame.getByTestId("component-topbar");
+    await mobileTopbar
+      .locator("h1.bo-title")
+      .click({ force: true, modifiers: ["Shift"] });
+    await page.getByRole("tab", { name: "Show Layout edit controls" }).click();
+    await expect(page.getByText("mobile").first()).toBeVisible();
+    await page
+      .getByRole("button", { name: "Set responsive override for Mobile mode" })
+      .click();
+    await expect
+      .poll(() => mobileTopbar.evaluate((node) => getComputedStyle(node).gap))
+      .toBe("28px");
+
+    const mobileGap = await mobileTopbar.evaluate(
+      (node) => getComputedStyle(node).gap,
+    );
+    await page
+      .getByRole("button", { name: "Set responsive override for Tablet mode" })
+      .click();
+    await expect
+      .poll(() => mobileTopbar.evaluate((node) => getComputedStyle(node).gap))
+      .toBe(mobileGap);
+  });
+
   test("e2e_figma_grade_numeric_color_shadow_typography_controls", async ({
     page,
   }) => {

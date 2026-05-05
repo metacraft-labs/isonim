@@ -296,9 +296,14 @@ func cssPropertyCategory*(property: string): CSSPropertyCategory =
     cpcLayout
   elif prop in ["flex", "flex" & "-direction", "flex" & "-wrap",
       "flex" & "-grow", "flex" & "-shrink",
+      "flex" & "-basis", "order", "align" & "-self",
       "align-items", "align-content", "justify-content",
-      "justify-items", "gap", "row-gap", "column-gap", "grid-template-columns",
-      "grid-template-rows", "grid-column", "grid-row"]:
+      "justify-items", "place-items", "place-content", "place-self",
+      "gap", "row-gap", "column-gap", "grid-template-columns",
+      "grid-template-rows", "grid-template-areas", "grid-auto-flow",
+      "grid-auto-columns", "grid-auto-rows", "grid-column", "grid-row",
+      "grid-column-start", "grid-column-end", "grid-row-start",
+      "grid-row-end", "grid-area"]:
     cpcFlexGrid
   elif prop in ["width", "height", "min-width", "min-height", "max-width",
       "max-height", "aspect-ratio"]:
@@ -660,6 +665,8 @@ proc sourcePlan(prop: PropertyInfo; request: PropertyEditRequest): SourceEditPla
   let expectedOld =
     if prop.originDetail.startsWith("iframe-dom:"): ""
     else: prop.value
+  let variantSuffix =
+    if prop.variantKey.len > 0: ":" & prop.variantKey else: ""
   SourceEditPlan(
     file: prop.sourceFile,
     line: prop.sourceLine,
@@ -681,7 +688,8 @@ proc sourcePlan(prop: PropertyInfo; request: PropertyEditRequest): SourceEditPla
         "regenerate-design-system"
       else:
         "",
-    conflictKey: prop.sourceFile & ":" & $prop.sourceLine & ":" & prop.name,
+    conflictKey: prop.sourceFile & ":" & $prop.sourceLine & ":" & prop.name &
+      variantSuffix,
     expectedOldValue: expectedOld)
 
 func primitiveUnitFromText(raw: string): string =
@@ -2319,6 +2327,267 @@ proc resolveDesignSourceOwnership*(editor: EditorVM;
     property: string): DesignSourceOwnershipReport =
   resolveDesignSourceOwnership(editor.designSystemSchema.val,
     editor.inspector.selectedElement.val, property)
+
+func layoutControlCapabilities*(family: LayoutControlFamily): seq[
+    LayoutControlCapability] =
+  result = @[lccSourceRoutedPlan]
+  case family
+  of lcfFlexAutoLayout:
+    result.add @[
+      lccFlexDirection, lccFlexWrap, lccGap, lccPadding, lccAlign,
+      lccJustify, lccDistribution, lccHugFillFixedSizing, lccChildOrder,
+      lccPerChildAlignment]
+  of lcfGrid:
+    result.add @[
+      lccGridTemplateTracks, lccGridGap, lccGridPlacement,
+      lccGridAutoFlow, lccGridNamedAreas]
+  of lcfConstraints:
+    result.add @[
+      lccConstraints, lccMinMax, lccIntrinsicContentSizing, lccAspectRatio,
+      lccOverflowStrategy]
+  of lcfResponsiveOverride:
+    result.add @[lccBreakpointScopedOverride, lccProjectDefinedMode]
+  of lcfCanvasGuide:
+    result.add @[
+      lccSpacingMeasurement, lccGapOverlay, lccAlignHandle, lccResizeHandle,
+      lccSnapLine, lccLayoutDiagnostic]
+
+func responsiveEditModes*(schema: DesignSystemSchema): seq[ResponsiveEditMode] =
+  result = @[
+    ResponsiveEditMode(key: "desktop", label: "Desktop", kind: rmkDesktop),
+    ResponsiveEditMode(key: "tablet", label: "Tablet", kind: rmkTablet),
+    ResponsiveEditMode(key: "mobile", label: "Mobile", kind: rmkMobile)
+  ]
+  for node in schema.nodes:
+    if node.kind == dsnResponsiveMode:
+      let key =
+        if node.key.len > 0: node.key
+        elif node.value.len > 0: node.value
+        else: node.name
+      if key.len > 0 and not result.anyIt(it.key == key):
+        result.add ResponsiveEditMode(key: key, label: node.name,
+          kind: rmkProjectDefined, sourceSpan: node.sourceSpan)
+
+func layoutModeKey*(viewport: PreviewViewport): string =
+  case viewport
+  of pvDesktop: "desktop"
+  of pvTablet: "tablet"
+  of pvMobile: "mobile"
+
+func layoutCommand*(family: LayoutControlFamily; property, value: string;
+    scope = pesLocal; modeKey = ""; childSourceKey = "";
+    sourceBackedOnly = true): LayoutControlCommand =
+  LayoutControlCommand(
+    family: family,
+    property: property,
+    value: value,
+    scope: scope,
+    modeKey: modeKey,
+    childSourceKey: childSourceKey,
+    sourceBackedOnly: sourceBackedOnly)
+
+func propertyDiagnosticFromDesign(kind: PropertyEditDiagnosticKind;
+    message: string; design: DesignSchemaDiagnostic): PropertyEditDiagnostic =
+  PropertyEditDiagnostic(
+    kind: kind,
+    message: message,
+    file: design.file,
+    line: design.line,
+    property: design.property)
+
+proc planLayoutControlEdit*(schema: DesignSystemSchema; element: ElementRef;
+    command: LayoutControlCommand): LayoutControlPlan =
+  result.command = command
+  result.capabilities = layoutControlCapabilities(command.family)
+  if command.family == lcfResponsiveOverride:
+    result.capabilities.add layoutControlCapabilities(lcfFlexAutoLayout)
+  var ownership = resolveDesignSourceOwnership(schema, element,
+    command.property)
+  if command.modeKey.len > 0:
+    for candidate in schema.sourceOwnership:
+      if candidate.property != command.property:
+        continue
+      if candidate.elementSourceKey.len > 0 and
+          candidate.elementSourceKey notin [element.sourceKey, element.id]:
+        continue
+      let key = if candidate.nodeKey.len > 0: candidate.nodeKey
+        else: candidate.schemaKey
+      if command.modeKey notin key:
+        continue
+      let found = schema.findDesignNode(key)
+      if found.ok:
+        ownership = DesignSourceOwnershipReport(ok: not candidate.unstructuredViewCode,
+          property: command.property,
+          nodeKey: found.node.key,
+          schemaNode: found.node,
+          ownership: candidate,
+          planKind: candidate.sourceOwnershipPlanKind(found.node))
+      break
+  result.ownership = ownership
+  if command.sourceBackedOnly and not ownership.ok:
+    for d in ownership.diagnostics:
+      result.diagnostics.add propertyDiagnosticFromDesign(
+        pedSchemaViolation,
+        if d.message.len > 0: d.message
+        else: "Layout control requires a source-backed schema owner.",
+        d)
+    if result.diagnostics.len == 0:
+      result.diagnostics.add PropertyEditDiagnostic(
+        kind: pedSchemaViolation,
+        message: "Layout control requires a source-backed schema owner.",
+        file: element.sourceFile,
+        line: element.sourceLine,
+        property: command.property)
+    return
+
+  var prop = PropertyInfo()
+  var foundProperty = false
+  if command.modeKey.len > 0:
+    for candidate in element.properties:
+      if candidate.name == command.property and
+          candidate.variantKey == command.modeKey:
+        prop = candidate
+        foundProperty = true
+        break
+    if not foundProperty:
+      for candidate in element.properties:
+        if candidate.name == command.property and candidate.variantKey.len == 0:
+          prop = candidate
+          foundProperty = true
+          break
+  else:
+    for candidate in element.properties:
+      if candidate.name == command.property:
+        prop = candidate
+        foundProperty = true
+        break
+  if not foundProperty:
+    prop = PropertyInfo(
+      name: command.property,
+      value: "",
+      origin: poInherited,
+      originDetail: "layout-control-addition",
+      sourceFile: element.sourceFile,
+      sourceLine: element.sourceLine,
+      schemaKey: if ownership.nodeKey.len > 0: ownership.nodeKey else: element.schemaKey,
+      variantKey: command.modeKey,
+      directStyleAllowed: not command.sourceBackedOnly)
+
+  var routedProp = prop
+  if ownership.ok:
+    routedProp.sourceFile =
+      if ownership.ownership.sourceSpan.file.len > 0:
+        ownership.ownership.sourceSpan.file
+      else:
+        prop.sourceFile
+    routedProp.sourceLine =
+      if ownership.ownership.sourceSpan.line > 0:
+        ownership.ownership.sourceSpan.line
+      else:
+        prop.sourceLine
+    routedProp.schemaKey = ownership.nodeKey
+    routedProp.originDetail =
+      case ownership.schemaNode.kind
+      of dsnFoundation, dsnSemanticToken, dsnComponentToken:
+        "layout-token:" & ownership.nodeKey
+      of dsnClassDefinition:
+        "layout-class:" & ownership.ownership.cssModuleClass
+      of dsnStyleDefinition:
+        "layout-style:" & ownership.nodeKey
+      of dsnStoryFixture:
+        "layout-fixture:" & ownership.nodeKey
+      of dsnResponsiveMode:
+        "layout-responsive:" & ownership.nodeKey
+      else:
+        "layout-schema:" & ownership.nodeKey
+    if command.modeKey.len > 0:
+      routedProp.variantKey = command.modeKey
+
+  let request = PropertyEditRequest(property: command.property,
+    newValue: command.value, kind: pekLayout, scope: command.scope,
+    origin: peoInspector)
+  let normalized = parseCssPropertyValue(command.property, command.value)
+  let diagnostics = routedProp.validateCssPropertyValue(request, normalized)
+  if diagnostics.len > 0:
+    result.diagnostics = diagnostics
+    return
+
+  var plan = routedProp.sourcePlan(request)
+  if ownership.ok:
+    plan.planKind = ownership.planKind
+    plan.schemaKey = ownership.nodeKey
+    plan.tokenName =
+      if ownership.schemaNode.kind in {dsnFoundation, dsnSemanticToken,
+          dsnComponentToken}: ownership.nodeKey
+      else:
+        routedProp.tokenName
+    plan.file = routedProp.sourceFile
+    plan.line = routedProp.sourceLine
+    plan.originDetail = routedProp.originDetail
+    plan.regeneratorHook =
+      if plan.planKind in {cspStructuredSchemaUpdate, cspTokenUpdate}:
+        "regenerate-layout-source"
+      else:
+        ""
+  if command.modeKey.len > 0:
+    plan.variantKey = command.modeKey
+    plan.conflictKey = plan.file & ":" & $plan.line & ":" & plan.property &
+      ":" & command.modeKey
+  result.ok = true
+  result.sourceEdit = plan
+
+proc planLayoutControlEdit*(editor: EditorVM;
+    command: LayoutControlCommand): LayoutControlPlan =
+  planLayoutControlEdit(editor.designSystemSchema.val,
+    editor.inspector.selectedElement.val, command)
+
+proc planResponsiveLayoutOverride*(editor: EditorVM; modeKey, property,
+    value: string; family = lcfResponsiveOverride): LayoutControlPlan =
+  editor.planLayoutControlEdit(layoutCommand(family, property, value,
+    pesLocal, modeKey = modeKey, sourceBackedOnly = true))
+
+proc applyResponsiveLayoutOverride*(editor: EditorVM; modeKey, property,
+    value: string; family = lcfResponsiveOverride): LayoutControlPlan {.discardable.} =
+  result = editor.planResponsiveLayoutOverride(modeKey, property, value, family)
+  if not result.ok:
+    editor.inspector.editDiagnostics.val = result.diagnostics
+    return
+
+  var element = editor.inspector.selectedElement.val
+  var index = -1
+  for i, prop in element.properties:
+    if prop.name == property and prop.variantKey == modeKey:
+      index = i
+      break
+  if index >= 0:
+    element.properties[index].value = result.sourceEdit.newValue
+  else:
+    element.properties.add PropertyInfo(
+      name: property,
+      value: result.sourceEdit.newValue,
+      origin: poConstant,
+      originDetail: result.sourceEdit.originDetail,
+      sourceFile: result.sourceEdit.file,
+      sourceLine: result.sourceEdit.line,
+      schemaKey: result.sourceEdit.schemaKey,
+      variantKey: modeKey)
+  editor.inspector.selectedElement.val = element
+  let sourceEdit = result.sourceEdit
+  editor.inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
+      SourceEditPlan] =
+    result = @[]
+    for existing in prev:
+      if existing.conflictKey != sourceEdit.conflictKey:
+        result.add existing
+    result.add sourceEdit
+  editor.inspector.sourcePreviews.update proc(prev: seq[CSSSourcePreview]): seq[
+      CSSSourcePreview] =
+    result = prev
+    result.add CSSSourcePreview(plan: sourceEdit,
+      beforeText: sourceEdit.previewBefore,
+      afterText: sourceEdit.previewAfter)
+  editor.workspaceEditStage.val = wesDirty
+  editor.inspector.editDiagnostics.val = @[]
 
 func designReviewRank(level: DesignSchemaReviewLevel): int =
   case level

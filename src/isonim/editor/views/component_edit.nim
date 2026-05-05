@@ -112,6 +112,28 @@ proc editablePreviewDocument(documentHtml: string;
     border-radius: 2px;
     background: #3B82F6;
     border: 1px solid white;
+    pointer-events: auto;
+    cursor: nwse-resize;
+  }
+  .isonim-editor-layout-guide {
+    position: fixed;
+    z-index: 2147483645;
+    pointer-events: none;
+    font: 10px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: #DBEAFE;
+  }
+  #isonim-editor-gap-overlay {
+    border: 1px dashed rgba(34,197,94,.85);
+    background: rgba(34,197,94,.14);
+  }
+  #isonim-editor-snap-lines {
+    border-top: 1px solid rgba(245,158,11,.9);
+    border-left: 1px solid rgba(245,158,11,.9);
+  }
+  #isonim-editor-spacing-measure {
+    padding: 2px 5px;
+    border-radius: 3px;
+    background: rgba(15,23,42,.92);
   }
   #isonim-editor-selection-breadcrumb {
     position: fixed;
@@ -148,6 +170,9 @@ proc editablePreviewDocument(documentHtml: string;
     'isonim-editor-hover-label',
     'isonim-editor-selection-handles',
     'isonim-editor-selection-breadcrumb',
+    'isonim-editor-gap-overlay',
+    'isonim-editor-snap-lines',
+    'isonim-editor-spacing-measure',
     'isonim-editor-comment-popup'
   ]);
   let lastClick = { x: -10000, y: -10000, index: 0, at: 0 };
@@ -291,6 +316,38 @@ proc editablePreviewDocument(documentHtml: string;
         box.appendChild(handle);
       });
       document.body.appendChild(box);
+      box.addEventListener('pointerdown', function (event) {
+        const handle = event.target && event.target.dataset ? event.target.dataset.handle : '';
+        const selected = window.__isonimSelectedElement;
+        if (!handle || !selected || handle !== 'se') return;
+        const rect = selected.getBoundingClientRect();
+        const startX = event.clientX;
+        const startWidth = rect.width;
+        const source = parseSource(selected.getAttribute('data-isonim-src'));
+        function move(moveEvent) {
+          const next = Math.max(24, Math.round(startWidth + moveEvent.clientX - startX));
+          selected.style.width = next + 'px';
+          selected.setAttribute('data-isonim-layout-resized', 'true');
+          placeHandles(selected);
+          parent.dispatchEvent(new CustomEvent('isonim-preview-layout-handle', {
+            detail: {
+              property: 'width',
+              value: next + 'px',
+              sourceFile: source.file,
+              sourceLine: source.line,
+              handle: handle
+            }
+          }));
+          moveEvent.preventDefault();
+        }
+        function stop() {
+          window.removeEventListener('pointermove', move, true);
+          window.removeEventListener('pointerup', stop, true);
+        }
+        window.addEventListener('pointermove', move, true);
+        window.addEventListener('pointerup', stop, true);
+        event.preventDefault();
+      });
     }
     return box;
   }
@@ -304,6 +361,42 @@ proc editablePreviewDocument(documentHtml: string;
     }
     return crumb;
   }
+  function ensureLayoutGuide(id) {
+    let guide = document.getElementById(id);
+    if (!guide) {
+      guide = document.createElement('div');
+      guide.id = id;
+      guide.className = 'isonim-editor-layout-guide';
+      document.body.appendChild(guide);
+    }
+    return guide;
+  }
+  function placeLayoutGuides(el, rect) {
+    const style = window.getComputedStyle(el);
+    const gapOverlay = ensureLayoutGuide('isonim-editor-gap-overlay');
+    gapOverlay.setAttribute('aria-label', 'Canvas gap overlay');
+    gapOverlay.dataset.layoutGuide = 'gap-overlay';
+    gapOverlay.style.left = (rect.right + 8) + 'px';
+    gapOverlay.style.top = rect.top + 'px';
+    gapOverlay.style.width = Math.max(12, parseFloat(style.columnGap || style.gap || '0') || 12) + 'px';
+    gapOverlay.style.height = Math.max(18, Math.min(rect.height, 64)) + 'px';
+    gapOverlay.textContent = (style.gap && style.gap !== 'normal' ? style.gap : 'gap');
+
+    const snap = ensureLayoutGuide('isonim-editor-snap-lines');
+    snap.setAttribute('aria-label', 'Canvas snap lines');
+    snap.dataset.layoutGuide = 'snap-lines';
+    snap.style.left = rect.left + 'px';
+    snap.style.top = rect.top + 'px';
+    snap.style.width = Math.max(1, rect.width) + 'px';
+    snap.style.height = Math.max(1, rect.height) + 'px';
+
+    const measure = ensureLayoutGuide('isonim-editor-spacing-measure');
+    measure.setAttribute('aria-label', 'Canvas spacing measurement');
+    measure.dataset.layoutGuide = 'spacing-measurement';
+    measure.style.left = Math.max(6, rect.left) + 'px';
+    measure.style.top = Math.max(6, rect.top - 22) + 'px';
+    measure.textContent = Math.round(rect.width) + ' x ' + Math.round(rect.height);
+  }
   function placeHandles(el) {
     const box = ensureHandles();
     const rect = el.getBoundingClientRect();
@@ -315,6 +408,9 @@ proc editablePreviewDocument(documentHtml: string;
     box.querySelector('[data-handle="ne"]').style.cssText = 'right:-4px;top:-4px';
     box.querySelector('[data-handle="se"]').style.cssText = 'right:-4px;bottom:-4px';
     box.querySelector('[data-handle="sw"]').style.cssText = 'left:-4px;bottom:-4px';
+    box.querySelector('[data-handle="se"]').setAttribute('aria-label', 'Resize selected element');
+    box.querySelector('[data-handle="se"]').dataset.layoutHandle = 'resize';
+    placeLayoutGuides(el, rect);
     const crumb = ensureBreadcrumb();
     const stack = ancestorStack(el).reverse();
     crumb.innerHTML = '';
@@ -392,8 +488,14 @@ proc editablePreviewDocument(documentHtml: string;
     });
     const handles = document.getElementById('isonim-editor-selection-handles');
     const crumb = document.getElementById('isonim-editor-selection-breadcrumb');
+    const gap = document.getElementById('isonim-editor-gap-overlay');
+    const snap = document.getElementById('isonim-editor-snap-lines');
+    const measure = document.getElementById('isonim-editor-spacing-measure');
     if (handles) handles.remove();
     if (crumb) crumb.hidden = true;
+    if (gap) gap.remove();
+    if (snap) snap.remove();
+    if (measure) measure.remove();
     window.__isonimSelectedElement = null;
     parent.dispatchEvent(new CustomEvent('isonim-preview-selection-cleared'));
   }
@@ -576,6 +678,8 @@ proc editablePreviewDocument(documentHtml: string;
   else:
     documentHtml & injected
 
+proc applyInspectorValue(vm: EditorVM; propName, value: string)
+
 proc installPreviewSelectionBridge[R, E](r: R; frame: E; vm: EditorVM) =
   when defined(js):
     let selectFromBrowser = proc(elementId, sourceKey, schemaKey, tag, testId,
@@ -665,6 +769,18 @@ proc installPreviewSelectionBridge[R, E](r: R; frame: E; vm: EditorVM) =
       }
     """].}
 
+    let layoutHandleFromBrowser = proc(propName, value: cstring) =
+      vm.applyInspectorValue($propName, $value)
+    {.emit: ["""
+      if (!window.__isonimPreviewLayoutHandleBridgeInstalled) {
+        window.__isonimPreviewLayoutHandleBridgeInstalled = true;
+        window.addEventListener('isonim-preview-layout-handle', function (event) {
+          const d = event.detail || {};
+          """, layoutHandleFromBrowser, """(d.property || '', d.value || '');
+        });
+      }
+    """].}
+
     let addCommentToPrompt = proc(selector, ancestry, text: cstring) =
       let prefix =
         if vm.chat.inputText.val.strip.len == 0:
@@ -733,9 +849,19 @@ func sectionProperties(section: InspectorSection): seq[(string, string)] =
     @[
       ("display", "block"),
       ("flex-direction", "row"),
+      ("flex-wrap", "nowrap"),
       ("justify-content", "flex-start"),
       ("align-items", "stretch"),
+      ("align-content", "stretch"),
+      ("align-self", "auto"),
       ("gap", "0px"),
+      ("order", "0"),
+      ("grid-template-columns", "none"),
+      ("grid-template-rows", "none"),
+      ("grid-template-areas", "none"),
+      ("grid-auto-flow", "row"),
+      ("grid-column", "auto"),
+      ("grid-row", "auto"),
       ("overflow", "visible")
     ]
   of isSize:
@@ -745,7 +871,11 @@ func sectionProperties(section: InspectorSection): seq[(string, string)] =
       ("min-width", "0px"),
       ("min-height", "0px"),
       ("max-width", "none"),
-      ("flex-grow", "0")
+      ("max-height", "none"),
+      ("flex-grow", "0"),
+      ("flex-shrink", "1"),
+      ("flex-basis", "auto"),
+      ("aspect-ratio", "auto")
     ]
   of isSpacing:
     @[
@@ -765,7 +895,9 @@ func sectionProperties(section: InspectorSection): seq[(string, string)] =
       ("right", "auto"),
       ("bottom", "auto"),
       ("left", "auto"),
-      ("z-index", "auto")
+      ("z-index", "auto"),
+      ("transform", "none"),
+      ("transform-origin", "center")
     ]
   of isFill:
     @[
@@ -822,8 +954,16 @@ func quickValues(propertyName: string): seq[string] =
   case propertyName
   of "display": @["block", "flex", "grid", "none"]
   of "flex-direction": @["row", "column", "row-reverse", "column-reverse"]
-  of "justify-content": @["flex-start", "center", "space-between", "flex-end"]
+  of "flex-wrap": @["nowrap", "wrap", "wrap-reverse"]
+  of "justify-content": @["flex-start", "center", "space-between", "space-around", "space-evenly", "flex-end"]
   of "align-items": @["stretch", "center", "flex-start", "flex-end"]
+  of "align-content": @["stretch", "center", "space-between", "flex-start"]
+  of "align-self": @["auto", "stretch", "center", "flex-start", "flex-end"]
+  of "grid-template-columns": @["none", "repeat(2, minmax(0, 1fr))", "240px 1fr"]
+  of "grid-template-rows": @["none", "auto", "auto 1fr"]
+  of "grid-auto-flow": @["row", "column", "dense", "row dense"]
+  of "grid-column": @["auto", "1 / -1", "span 2"]
+  of "grid-row": @["auto", "span 2"]
   of "overflow": @["visible", "hidden", "auto", "scroll"]
   of "position": @["static", "relative", "absolute", "sticky"]
   of "border-style": @["solid", "dashed", "dotted", "none"]
@@ -899,10 +1039,12 @@ func isNumericProperty(propName: string): bool =
     "width", "height", "min-width", "min-height", "max-width", "max-height",
     "padding", "padding-top", "padding-right", "padding-bottom", "padding-left",
     "margin", "margin-top", "margin-right", "margin-bottom", "margin-left",
-    "gap", "top", "right", "bottom", "left", "z-index", "border-width",
+    "gap", "row-gap", "column-gap", "top", "right", "bottom", "left",
+    "z-index", "order", "border-width",
     "border-radius", "font-size", "font-weight", "line-height",
     "letter-spacing", "opacity", "transition-duration", "transition-delay",
-    "brightness", "contrast", "saturate", "blur", "flex-grow"
+    "brightness", "contrast", "saturate", "blur", "flex-grow",
+    "flex-shrink", "flex-basis"
   ]
 
 func numericUnit(value: string; fallback = "px"): string =
@@ -1091,6 +1233,14 @@ proc applyCssValue[R, E](r: R; vm: EditorVM; frame: E; propName,
   if commitSource:
     vm.applyInspectorValue(propName, value)
   r.applyLivePreviewStyle(frame, propName, value)
+
+proc applyResponsiveCssValue[R, E](r: R; vm: EditorVM; frame: E; modeKey,
+    propName, value: string) =
+  let planned = vm.applyResponsiveLayoutOverride(modeKey, propName, value)
+  if not planned.ok:
+    vm.applyInspectorValue(propName, value)
+  if modeKey == layoutModeKey(vm.viewport.val):
+    r.applyLivePreviewStyle(frame, propName, value)
 
 proc applyRawCss[R, E](r: R; vm: EditorVM; frame: E; raw: string) =
   for (propName, value) in parseRawCssLines(raw):
@@ -2156,6 +2306,237 @@ proc renderBoxModelSummary[R, E](r: R; selected: ElementRef): E =
         span(font_size = "9px", color = textDim):
           text "click fields below for uniform or per-side values"
 
+proc renderLayoutControlSummary[R, E](r: R; vm: EditorVM; frame: E;
+    selected: ElementRef): E =
+  var rowButton: E
+  var columnButton: E
+  var wrapButton: E
+  var gapButton: E
+  var paddingButton: E
+  var alignButton: E
+  var justifyButton: E
+  var distributionButton: E
+  var hugButton: E
+  var fillButton: E
+  var fixedButton: E
+  var orderButton: E
+  var childAlignButton: E
+  var gridTracksButton: E
+  var gridGapButton: E
+  var gridPlacementButton: E
+  var gridFlowButton: E
+  var gridAreasButton: E
+  var constraintsButton: E
+  var minMaxButton: E
+  var intrinsicButton: E
+  var aspectButton: E
+  var overflowButton: E
+  var mobileButton: E
+  var tabletButton: E
+  var customButton: E
+  let mode = layoutModeKey(vm.viewport.val)
+  result = ui(r):
+    tdiv(display = "flex", flex_direction = "column", gap = "7px",
+          padding = "10px", border = "1px solid " & border,
+          border_radius = "6px", background_color = bgBase):
+      tdiv(display = "flex", align_items = "center",
+            justify_content = "space-between", gap = "8px"):
+        span(font_size = "10px", font_weight = "700", color = textSecondary,
+              text_transform = "uppercase", letter_spacing = "0.5px"):
+          text "Auto Layout"
+        span(font_size = "10px", color = accent, font_family = "monospace"):
+          text mode
+      tdiv(display = "grid",
+            `grid-template-columns` = "repeat(4, minmax(0, 1fr))",
+            gap = "4px"):
+        tdiv(ref = rowButton, role = "button", tabindex = "0",
+              padding = "4px 5px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center", cursor = "pointer"):
+          text "row"
+        tdiv(ref = columnButton, role = "button", tabindex = "0",
+              padding = "4px 5px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center", cursor = "pointer"):
+          text "col"
+        tdiv(ref = wrapButton, role = "button", tabindex = "0",
+              padding = "4px 5px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center", cursor = "pointer"):
+          text "wrap"
+        tdiv(ref = gapButton, role = "button", tabindex = "0",
+              padding = "4px 5px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center", cursor = "pointer"):
+          text "gap"
+        tdiv(ref = paddingButton, role = "button", tabindex = "0",
+              padding = "4px 5px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center", cursor = "pointer"):
+          text "pad"
+        tdiv(ref = alignButton, role = "button", tabindex = "0",
+              padding = "4px 5px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center", cursor = "pointer"):
+          text "align"
+        tdiv(ref = justifyButton, role = "button", tabindex = "0",
+              padding = "4px 5px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center", cursor = "pointer"):
+          text "justify"
+        tdiv(ref = distributionButton, role = "button", tabindex = "0",
+              padding = "4px 5px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center", cursor = "pointer"):
+          text "dist"
+        tdiv(ref = hugButton, role = "button", tabindex = "0",
+              padding = "4px 5px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center", cursor = "pointer"):
+          text "hug"
+        tdiv(ref = fillButton, role = "button", tabindex = "0",
+              padding = "4px 5px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center", cursor = "pointer"):
+          text "fill"
+        tdiv(ref = fixedButton, role = "button", tabindex = "0",
+              padding = "4px 5px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center", cursor = "pointer"):
+          text "fixed"
+        tdiv(ref = orderButton, role = "button", tabindex = "0",
+              padding = "4px 5px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center", cursor = "pointer"):
+          text "order"
+      tdiv(ref = childAlignButton, role = "button", tabindex = "0",
+            padding = "4px 5px", border_radius = "4px",
+            background_color = bgSurface, color = textMuted,
+            font_size = "9px", text_align = "center", cursor = "pointer"):
+        text "per-child alignment"
+      tdiv(display = "grid",
+            `grid-template-columns` = "repeat(5, minmax(0, 1fr))",
+            gap = "4px"):
+        tdiv(ref = gridTracksButton, role = "button", tabindex = "0",
+              padding = "4px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center", cursor = "pointer"):
+          text "tracks"
+        tdiv(ref = gridGapButton, role = "button", tabindex = "0",
+              padding = "4px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center", cursor = "pointer"):
+          text "g-gap"
+        tdiv(ref = gridPlacementButton, role = "button", tabindex = "0",
+              padding = "4px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center", cursor = "pointer"):
+          text "place"
+        tdiv(ref = gridFlowButton, role = "button", tabindex = "0",
+              padding = "4px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center", cursor = "pointer"):
+          text "flow"
+        tdiv(ref = gridAreasButton, role = "button", tabindex = "0",
+              padding = "4px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center", cursor = "pointer"):
+          text "areas"
+      tdiv(display = "grid",
+            `grid-template-columns` = "repeat(5, minmax(0, 1fr))",
+            gap = "4px"):
+        tdiv(ref = constraintsButton, role = "button", tabindex = "0",
+              padding = "4px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center", cursor = "pointer"):
+          text "L/R/T/B"
+        tdiv(ref = minMaxButton, role = "button", tabindex = "0",
+              padding = "4px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center", cursor = "pointer"):
+          text "minmax"
+        tdiv(ref = intrinsicButton, role = "button", tabindex = "0",
+              padding = "4px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center", cursor = "pointer"):
+          text "content"
+        tdiv(ref = aspectButton, role = "button", tabindex = "0",
+              padding = "4px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center", cursor = "pointer"):
+          text "ratio"
+        tdiv(ref = overflowButton, role = "button", tabindex = "0",
+              padding = "4px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center", cursor = "pointer"):
+          text "overflow"
+      tdiv(display = "grid",
+            `grid-template-columns` = "repeat(3, minmax(0, 1fr))",
+            gap = "4px"):
+        tdiv(ref = mobileButton, role = "button", tabindex = "0",
+              padding = "4px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center", cursor = "pointer"):
+          text "mobile gap"
+        tdiv(ref = tabletButton, role = "button", tabindex = "0",
+              padding = "4px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center", cursor = "pointer"):
+          text "tablet gap"
+        tdiv(ref = customButton, role = "button", tabindex = "0",
+              padding = "4px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "9px", text_align = "center", cursor = "pointer"):
+          text "custom"
+      span(font_size = "9px", color = textDim):
+        text "canvas shows spacing measurement, gap overlay, align handles, resize handles, snap lines, and diagnostics"
+  let actions = [
+    (rowButton, "Set flex direction to row", "flex-direction", "row"),
+    (columnButton, "Set flex direction to column", "flex-direction", "column"),
+    (wrapButton, "Enable flex wrap", "flex-wrap", "wrap"),
+    (gapButton, "Set auto layout gap to 24px", "gap", "24px"),
+    (paddingButton, "Set auto layout padding to 20px", "padding", "20px"),
+    (alignButton, "Set align items to center", "align-items", "center"),
+    (justifyButton, "Set justify content to space between", "justify-content", "space-between"),
+    (distributionButton, "Set distribution to space evenly", "justify-content", "space-evenly"),
+    (hugButton, "Set sizing to hug content", "width", "fit-content"),
+    (fillButton, "Set sizing to fill container", "flex-grow", "1"),
+    (fixedButton, "Set sizing to fixed width", "width", fallbackPropertyValue(selected, "width", "320px")),
+    (orderButton, "Set child order to one", "order", "1"),
+    (childAlignButton, "Set per-child alignment to center", "align-self", "center"),
+    (gridTracksButton, "Set grid template tracks", "grid-template-columns", "repeat(2, minmax(0, 1fr))"),
+    (gridGapButton, "Set grid gap to 24px", "gap", "24px"),
+    (gridPlacementButton, "Set grid placement to span two", "grid-column", "span 2"),
+    (gridFlowButton, "Set grid auto flow dense", "grid-auto-flow", "row dense"),
+    (gridAreasButton, "Set grid named areas", "grid-template-areas", "\"main side\""),
+    (constraintsButton, "Set left right top bottom constraints", "position", "relative"),
+    (minMaxButton, "Set min max width constraints", "min-width", "240px"),
+    (intrinsicButton, "Set intrinsic content sizing", "width", "max-content"),
+    (aspectButton, "Set aspect ratio to sixteen nine", "aspect-ratio", "16 / 9"),
+    (overflowButton, "Set overflow strategy to auto", "overflow", "auto")
+  ]
+  for (node, label, propName, value) in actions:
+    r.setAttribute(node, "aria-label", label)
+    let handler = r.inspectorLiveValueHandler(vm, frame, propName, value)
+    r.addEventListener(node, "click", handler)
+    r.addEventListener(node, "keydown", handler)
+  r.setAttribute(mobileButton, "aria-label",
+    "Set responsive override for Mobile mode")
+  r.setAttribute(tabletButton, "aria-label",
+    "Set responsive override for Tablet mode")
+  r.setAttribute(customButton, "aria-label",
+    "Set responsive override for project-defined mode")
+  let mobile = proc() = r.applyResponsiveCssValue(vm, frame, "mobile", "gap", "28px")
+  let tablet = proc() = r.applyResponsiveCssValue(vm, frame, "tablet", "gap", "18px")
+  let custom = proc() = r.applyResponsiveCssValue(vm, frame,
+    "modes.breakpoint.compact", "gap", "12px")
+  r.addEventListener(mobileButton, "click", mobile)
+  r.addEventListener(mobileButton, "keydown", mobile)
+  r.addEventListener(tabletButton, "click", tablet)
+  r.addEventListener(tabletButton, "keydown", tablet)
+  r.addEventListener(customButton, "click", custom)
+  r.addEventListener(customButton, "keydown", custom)
+
 proc renderRawCssEditor[R, E](r: R; vm: EditorVM; frame: E;
     selected: ElementRef; section: InspectorSection): E =
   var rawInput: E
@@ -2451,6 +2832,16 @@ proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;
           text "Section collapsed"
       r.appendChild(content, collapsed)
       return
+
+    if active in {isLayout, isSize, isPosition}:
+      let layoutAccordion = ui(r):
+        details(open = "open", `aria-label` = "Show layout auto grid constraint controls"):
+          summary(cursor = "pointer", color = textMuted, font_size = "10px",
+                  padding = "2px 0"):
+            text "Layout / Auto / Grid / Constraints"
+      r.appendChild(layoutAccordion, renderLayoutControlSummary[R, E](r, vm,
+        frame, selected))
+      r.appendChild(content, layoutAccordion)
 
     if active == isSpacing:
       let boxAccordion = ui(r):
