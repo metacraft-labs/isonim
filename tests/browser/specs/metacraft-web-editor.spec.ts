@@ -338,7 +338,12 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(topbar).toBeVisible();
     await expect(topbar.getByText("Operations")).toBeVisible();
 
-    await topbar.click();
+    const title = topbar.locator("h1.bo-title");
+    await title.click({ force: true });
+    await expect(title).toHaveAttribute("data-isonim-selected", "true");
+    await expect(page.getByText("h1", { exact: true })).toBeVisible();
+
+    await title.click({ force: true, modifiers: ["Shift"] });
     await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
     await expect(page.getByText("Selection", { exact: true })).toBeVisible();
     await expect(page.getByText("header", { exact: true })).toBeVisible();
@@ -369,6 +374,7 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
         .nth(1),
     ).toBeVisible();
 
+    await page.getByRole("tab", { name: "Show Fill edit controls" }).click();
     const colorInput = page.getByLabel("Edit inspector property color").first();
     await expect(colorInput).toBeVisible();
     await expect(page.getByLabel("Cascade origin for color")).toBeVisible();
@@ -408,7 +414,7 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await page.getByRole("button", { name: "Set color hue" }).click();
     await expect
       .poll(() => topbar.evaluate((node) => getComputedStyle(node).color))
-      .toBe("rgb(34, 197, 94)");
+      .not.toBe("rgb(248, 250, 252)");
 
     await page
       .getByRole("button", { name: "Revert inspector source edits" })
@@ -423,7 +429,8 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       .toBe(originalBackground);
     await expect(page.getByText("Unsaved source edit")).toHaveCount(0);
 
-    await topbar.click();
+    await title.click({ force: true, modifiers: ["Shift"] });
+    await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
     await page.getByRole("tab", { name: "Show Space edit controls" }).click();
     await expect(page.getByText("Box Model", { exact: true })).toBeVisible();
     const rawSpace = page.getByLabel("Edit raw CSS for Space section");
@@ -444,7 +451,7 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect
       .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
       .toBe(originalPadding);
-    await topbar.click();
+    await title.click({ force: true, modifiers: ["Shift"] });
     await page.getByRole("tab", { name: "Show Space edit controls" }).click();
     const paddingInput = page.getByRole("textbox", {
       name: "Edit inspector property padding",

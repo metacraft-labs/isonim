@@ -51,7 +51,7 @@
       "status": "completed",
       "owner": "framework",
       "mockOnly": false,
-      "implementation": "Typed CSS value parsing, normalization, source-plan selection, validation, shared-scope handling, undo/redo, dirty state, save staging, raw CSS section editing, cascade origin indicators, copy/paste/reset property actions, Figma-style numeric scrub/step controls, color-picker affordances, unit chips, and visual border-radius, shadow, and Bezier timing controls.",
+      "implementation": "Typed CSS value parsing, normalization, source-plan selection, validation, shared-scope handling, undo/redo, dirty state, save staging, raw CSS section editing, cascade origin indicators, copy/paste/reset property actions, Figma-style numeric scrub/step controls with pointer drag, coordinate-driven color-picker affordances, unit chips, and visual border-radius, shadow, and Bezier timing controls.",
       "headlessTests": [
         {
           "name": "css_property_editors_parse_validate_and_normalize_values",
@@ -75,7 +75,7 @@
       "status": "completed",
       "owner": "framework-and-consumer",
       "mockOnly": false,
-      "implementation": "Component edit mode renders the project-owned preview iframe, installs a generic DOM selection and hover-inspection bridge with selection handles, maps clicked real DOM to InspectorVM source-backed properties, applies inspector edits live in the iframe, and routes representative color, spacing, raw CSS, style copy/paste, and Figma-grade inspector affordance edits through the workspace source adapter with dirty/save/revert state.",
+      "implementation": "Component edit mode renders the project-owned preview iframe, installs a generic DOM selection and hover-inspection bridge with selection handles, supports deep element selection, repeat-click parent cycling, Shift-click component wrapper selection, breadcrumb/source-path context, maps clicked real DOM to InspectorVM source-backed properties, applies inspector edits live in the iframe, and routes representative color, spacing, raw CSS, style copy/paste, and Figma-grade inspector affordance edits through the workspace source adapter with dirty/save/revert state.",
       "headlessTests": [
         {
           "name": "component_dom_selection_bridge_populates_source_backed_inspector",

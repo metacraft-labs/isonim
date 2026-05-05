@@ -77,11 +77,115 @@ proc editablePreviewDocument(documentHtml: string;
     background: #3B82F6;
     border: 1px solid white;
   }
+  #isonim-editor-selection-breadcrumb {
+    position: fixed;
+    z-index: 2147483647;
+    pointer-events: none;
+    display: flex;
+    gap: 4px;
+    max-width: min(92vw, 760px);
+    overflow: hidden;
+    padding: 4px;
+    border-radius: 5px;
+    background: rgba(15,23,42,.94);
+    box-shadow: 0 6px 18px rgba(15,23,42,.28);
+  }
+  #isonim-editor-selection-breadcrumb > span {
+    padding: 2px 5px;
+    border-radius: 4px;
+    background: rgba(30,41,59,.9);
+    color: #CBD5E1;
+    font: 10px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
+    white-space: nowrap;
+  }
+  #isonim-editor-selection-breadcrumb > span:last-child {
+    background: rgba(59,130,246,.9);
+    color: white;
+  }
 </style>
 <script>
 (function () {
   const fallbackSource = "__ISONIM_SOURCE__";
   const fallbackLine = "__ISONIM_LINE__";
+  const editorIds = new Set([
+    'isonim-editor-hover-label',
+    'isonim-editor-selection-handles',
+    'isonim-editor-selection-breadcrumb'
+  ]);
+  let lastClick = { x: -10000, y: -10000, index: 0, at: 0 };
+  function isElement(node) {
+    return node && node.nodeType === 1;
+  }
+  function isSelectable(el) {
+    if (!isElement(el)) return false;
+    if (el === document.documentElement || el === document.body) return false;
+    if (editorIds.has(el.id)) return false;
+    if (el.closest && el.closest('#isonim-editor-hover-label, #isonim-editor-selection-handles, #isonim-editor-selection-breadcrumb')) return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+  function stableSelector(el) {
+    if (!isElement(el)) return '';
+    const tag = el.tagName.toLowerCase();
+    const testId = el.getAttribute('data-testid');
+    if (testId) return tag + '[data-testid=' + testId + ']';
+    const role = el.getAttribute('role');
+    const cls = String(el.getAttribute('class') || '').trim().split(/\s+/).filter(Boolean).slice(0, 2);
+    let text = tag;
+    if (cls.length) text += '.' + cls.join('.');
+    if (role) text += '[role=' + role + ']';
+    return text;
+  }
+  function cssPath(el) {
+    const parts = [];
+    let node = el;
+    while (isSelectable(node)) {
+      let part = stableSelector(node);
+      let index = 1;
+      let sibling = node;
+      while ((sibling = sibling.previousElementSibling)) {
+        if (sibling.tagName === node.tagName) index += 1;
+      }
+      part += ':nth-of-type(' + index + ')';
+      parts.unshift(part);
+      node = node.parentElement;
+    }
+    return parts.join(' > ');
+  }
+  function ancestorStack(target) {
+    const stack = [];
+    let el = isElement(target) ? target : target && target.parentElement;
+    while (isSelectable(el)) {
+      stack.push(el);
+      el = el.parentElement;
+    }
+    return stack;
+  }
+  function preferredElement(event) {
+    const stack = ancestorStack(event.target);
+    if (!stack.length) return null;
+    if (event.shiftKey) {
+      return stack.find((node) => node.hasAttribute('data-isonim-src') || node.hasAttribute('data-testid')) ||
+        stack[Math.min(1, stack.length - 1)];
+    }
+    if (event.metaKey || event.ctrlKey || event.altKey) {
+      return stack[Math.min(1, stack.length - 1)];
+    }
+    const now = Date.now();
+    const close =
+      Math.abs(event.clientX - lastClick.x) <= 3 &&
+      Math.abs(event.clientY - lastClick.y) <= 3 &&
+      now - lastClick.at < 900;
+    if (close) {
+      lastClick.index = Math.min(lastClick.index + 1, stack.length - 1);
+    } else {
+      lastClick.index = 0;
+    }
+    lastClick.x = event.clientX;
+    lastClick.y = event.clientY;
+    lastClick.at = now;
+    return stack[Math.min(lastClick.index, stack.length - 1)];
+  }
   function ensureHoverLabel() {
     let label = document.getElementById('isonim-editor-hover-label');
     if (!label) {
@@ -106,6 +210,16 @@ proc editablePreviewDocument(documentHtml: string;
     }
     return box;
   }
+  function ensureBreadcrumb() {
+    let crumb = document.getElementById('isonim-editor-selection-breadcrumb');
+    if (!crumb) {
+      crumb = document.createElement('div');
+      crumb.id = 'isonim-editor-selection-breadcrumb';
+      crumb.hidden = true;
+      document.body.appendChild(crumb);
+    }
+    return crumb;
+  }
   function placeHandles(el) {
     const box = ensureHandles();
     const rect = el.getBoundingClientRect();
@@ -117,6 +231,17 @@ proc editablePreviewDocument(documentHtml: string;
     box.querySelector('[data-handle="ne"]').style.cssText = 'right:-4px;top:-4px';
     box.querySelector('[data-handle="se"]').style.cssText = 'right:-4px;bottom:-4px';
     box.querySelector('[data-handle="sw"]').style.cssText = 'left:-4px;bottom:-4px';
+    const crumb = ensureBreadcrumb();
+    const stack = ancestorStack(el).reverse();
+    crumb.innerHTML = '';
+    stack.forEach((node) => {
+      const chip = document.createElement('span');
+      chip.textContent = stableSelector(node);
+      crumb.appendChild(chip);
+    });
+    crumb.style.left = Math.max(6, Math.min(rect.left, window.innerWidth - 280)) + 'px';
+    crumb.style.top = Math.min(window.innerHeight - 30, rect.bottom + 8) + 'px';
+    crumb.hidden = false;
   }
   function parseSource(value) {
     if (!value) return { file: fallbackSource, line: fallbackLine };
@@ -125,10 +250,7 @@ proc editablePreviewDocument(documentHtml: string;
     return { file: match[1], line: match[2] };
   }
   function selectElement(target) {
-    const el = target && target.closest && (
-      target.closest('[data-isonim-src], [data-testid]') ||
-      target.closest('[class]')
-    );
+    const el = target;
     if (!el || el === document.documentElement || el === document.body) return;
     document.querySelectorAll('[data-isonim-selected="true"]').forEach((node) => {
       node.removeAttribute('data-isonim-selected');
@@ -138,31 +260,47 @@ proc editablePreviewDocument(documentHtml: string;
     placeHandles(el);
     const source = parseSource(el.getAttribute('data-isonim-src'));
     const style = window.getComputedStyle(el);
+    const rect = el.getBoundingClientRect();
+    const stack = ancestorStack(el).reverse().map(stableSelector);
     parent.dispatchEvent(new CustomEvent('isonim-preview-element-selected', {
       detail: {
         tag: el.tagName.toLowerCase(),
         testId: el.getAttribute('data-testid') || '',
         className: el.getAttribute('class') || '',
+        role: el.getAttribute('role') || '',
+        elementPath: cssPath(el),
+        ancestry: stack.join(' > '),
         sourceFile: source.file,
         sourceLine: source.line,
+        display: style.display || '',
+        position: style.position || '',
         backgroundColor: style.backgroundColor || '',
         color: style.color || '',
         padding: style.padding || '',
+        margin: style.margin || '',
         width: style.width || '',
-        height: style.height || ''
+        height: style.height || '',
+        borderRadius: style.borderRadius || '',
+        borderWidth: style.borderWidth || '',
+        borderStyle: style.borderStyle || '',
+        borderColor: style.borderColor || '',
+        fontSize: style.fontSize || '',
+        fontWeight: style.fontWeight || '',
+        lineHeight: style.lineHeight || '',
+        boxShadow: style.boxShadow || '',
+        opacity: style.opacity || '',
+        rectWidth: String(Math.round(rect.width)),
+        rectHeight: String(Math.round(rect.height))
       }
     }));
   }
   document.addEventListener('click', function (event) {
     event.preventDefault();
     event.stopPropagation();
-    selectElement(event.target);
+    selectElement(preferredElement(event));
   }, true);
   document.addEventListener('mousemove', function (event) {
-    const el = event.target && event.target.closest && (
-      event.target.closest('[data-isonim-src], [data-testid]') ||
-      event.target.closest('[class]')
-    );
+    const el = ancestorStack(event.target)[0];
     document.querySelectorAll('[data-isonim-hovered="true"]').forEach((node) => {
       if (node !== el) node.removeAttribute('data-isonim-hovered');
     });
@@ -176,7 +314,7 @@ proc editablePreviewDocument(documentHtml: string;
     el.setAttribute('data-isonim-hovered', 'true');
     label.textContent = el.tagName.toLowerCase() + ' ' +
       Math.round(rect.width) + 'x' + Math.round(rect.height) +
-      ' p:' + style.padding;
+      ' p:' + style.padding + ' • click selects, repeat-click climbs';
     label.style.left = Math.max(6, rect.left) + 'px';
     label.style.top = Math.max(18, rect.top - 6) + 'px';
     label.hidden = false;
@@ -185,6 +323,9 @@ proc editablePreviewDocument(documentHtml: string;
   window.addEventListener('scroll', function () {
     if (window.__isonimSelectedElement) placeHandles(window.__isonimSelectedElement);
   }, true);
+  window.addEventListener('resize', function () {
+    if (window.__isonimSelectedElement) placeHandles(window.__isonimSelectedElement);
+  });
 })();
 </script>
 """
@@ -198,9 +339,11 @@ proc editablePreviewDocument(documentHtml: string;
 
 proc installPreviewSelectionBridge[R, E](r: R; frame: E; vm: EditorVM) =
   when defined(js):
-    let selectFromBrowser = proc(tag, testId, className, sourceFile,
-        sourceLine, backgroundColor, color, padding, width,
-        height: cstring) =
+    let selectFromBrowser = proc(tag, testId, className, role, elementPath,
+        ancestry, sourceFile, sourceLine, display, position, backgroundColor,
+        color, padding, margin, width, height, borderRadius, borderWidth,
+        borderStyle, borderColor, fontSize, fontWeight, lineHeight, boxShadow,
+        opacity, rectWidth, rectHeight: cstring) =
       let line =
         try: parseInt($sourceLine)
         except ValueError: 0
@@ -209,15 +352,36 @@ proc installPreviewSelectionBridge[R, E](r: R; frame: E; vm: EditorVM) =
         $tag,
         $testId,
         $className,
+        $role,
+        $elementPath,
+        $ancestry,
         $sourceFile,
         line,
+        $display,
+        $position,
         $backgroundColor,
         $color,
         $padding,
+        $margin,
         $width,
-        $height))
-      vm.inspector.activeSection.val =
-        if ($backgroundColor).len > 0: isFill else: isSpacing
+        $height,
+        $borderRadius,
+        $borderWidth,
+        $borderStyle,
+        $borderColor,
+        $fontSize,
+        $fontWeight,
+        $lineHeight,
+        $boxShadow,
+        $opacity,
+        $rectWidth,
+        $rectHeight))
+      if ($backgroundColor).len > 0 and ($backgroundColor) != "rgba(0, 0, 0, 0)":
+        vm.inspector.activeSection.val = isFill
+      elif ($padding).len > 0 or ($margin).len > 0:
+        vm.inspector.activeSection.val = isSpacing
+      else:
+        vm.inspector.activeSection.val = isLayout
     {.emit: ["""
       if (!window.__isonimPreviewSelectionBridgeInstalled) {
         window.__isonimPreviewSelectionBridgeInstalled = true;
@@ -225,9 +389,15 @@ proc installPreviewSelectionBridge[R, E](r: R; frame: E; vm: EditorVM) =
           const d = event.detail || {};
           """, selectFromBrowser,
         """(
-            d.tag || '', d.testId || '', d.className || '', d.sourceFile || '',
-            String(d.sourceLine || ''), d.backgroundColor || '', d.color || '',
-            d.padding || '', d.width || '', d.height || ''
+            d.tag || '', d.testId || '', d.className || '', d.role || '',
+            d.elementPath || '', d.ancestry || '', d.sourceFile || '',
+            String(d.sourceLine || ''), d.display || '', d.position || '',
+            d.backgroundColor || '', d.color || '', d.padding || '',
+            d.margin || '', d.width || '', d.height || '',
+            d.borderRadius || '', d.borderWidth || '', d.borderStyle || '',
+            d.borderColor || '', d.fontSize || '', d.fontWeight || '',
+            d.lineHeight || '', d.boxShadow || '', d.opacity || '',
+            d.rectWidth || '', d.rectHeight || ''
           );
         });
       }
@@ -661,6 +831,152 @@ proc propertyActionHandler[R, E](r: R; vm: EditorVM; frame: E;
   result = proc() =
     r.applyCssValue(vm, frame, capturedProp, capturedValue)
 
+proc attachNumericScrubber[R, E](r: R; node: E; vm: EditorVM; frame: E;
+    propName, value: string) =
+  when defined(js):
+    let scrub = proc(nextValue: cstring) =
+      r.applyCssValue(vm, frame, propName, $nextValue)
+    {.emit: ["""
+      (function () {
+        const node = """, node, """;
+        if (!node || node.__isonimScrubberInstalled) return;
+        node.__isonimScrubberInstalled = true;
+        const initial = """, value, """;
+        const toString = (raw) => Array.isArray(raw)
+          ? String.fromCharCode.apply(null, raw)
+          : String(raw || '');
+        function split(raw) {
+          const text = toString(raw).trim();
+          const match = text.match(/^([+-]?(?:\d+\.?\d*|\.\d+))(.*)$/);
+          if (!match) return { number: 0, unit: 'px' };
+          return { number: Number(match[1]), unit: match[2] || 'px' };
+        }
+        const parsed = split(initial);
+        let dragging = false;
+        let startX = 0;
+        let start = parsed.number;
+        function format(next, unit) {
+          const rounded = Math.abs(next - Math.round(next)) < 0.001
+            ? String(Math.round(next))
+            : String(Math.round(next * 10) / 10);
+          return rounded + unit;
+        }
+        function move(event) {
+          if (!dragging) return;
+          const speed = event.shiftKey ? 10 : (event.altKey ? 0.1 : 1);
+          const next = start + (event.clientX - startX) * speed;
+          """, scrub, """(format(next, parsed.unit));
+          event.preventDefault();
+        }
+        function stop() {
+          if (!dragging) return;
+          dragging = false;
+          document.body.style.cursor = '';
+          window.removeEventListener('pointermove', move, true);
+          window.removeEventListener('pointerup', stop, true);
+        }
+        node.addEventListener('pointerdown', (event) => {
+          if (event.button !== 0) return;
+          dragging = true;
+          startX = event.clientX;
+          start = split(initial).number;
+          document.body.style.cursor = 'ew-resize';
+          window.addEventListener('pointermove', move, true);
+          window.addEventListener('pointerup', stop, true);
+          event.preventDefault();
+        });
+      })();
+    """].}
+
+proc attachColorPlane[R, E](r: R; node: E; vm: EditorVM; frame: E;
+    propName: string) =
+  when defined(js):
+    let choose = proc(nextValue: cstring) =
+      r.applyCssValue(vm, frame, propName, $nextValue)
+    {.emit: ["""
+      (function () {
+        const node = """, node, """;
+        if (!node || node.__isonimColorPlaneInstalled) return;
+        node.__isonimColorPlaneInstalled = true;
+        function hslToHex(h, s, l) {
+          s /= 100; l /= 100;
+          const k = n => (n + h / 30) % 12;
+          const a = s * Math.min(l, 1 - l);
+          const f = n => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+          return '#' + [f(0), f(8), f(4)]
+            .map(x => Math.round(255 * x).toString(16).padStart(2, '0'))
+            .join('').toUpperCase();
+        }
+        function pick(event) {
+          const rect = node.getBoundingClientRect();
+          const x = Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(rect.width, 1)));
+          const y = Math.max(0, Math.min(1, (event.clientY - rect.top) / Math.max(rect.height, 1)));
+          const hue = Number(node.dataset.hue || 215);
+          """, choose, """(hslToHex(hue, x * 100, (1 - y) * 68 + 16));
+          event.preventDefault();
+        }
+        let dragging = false;
+        node.addEventListener('pointerdown', (event) => {
+          if (event.button !== 0) return;
+          dragging = true;
+          pick(event);
+          window.addEventListener('pointermove', move, true);
+          window.addEventListener('pointerup', stop, true);
+        });
+        function move(event) { if (dragging) pick(event); }
+        function stop() {
+          dragging = false;
+          window.removeEventListener('pointermove', move, true);
+          window.removeEventListener('pointerup', stop, true);
+        }
+      })();
+    """].}
+
+proc attachHueStrip[R, E](r: R; node: E; vm: EditorVM; frame: E;
+    plane: E; propName: string) =
+  when defined(js):
+    let choose = proc(nextValue: cstring) =
+      r.applyCssValue(vm, frame, propName, $nextValue)
+    {.emit: ["""
+      (function () {
+        const node = """, node, """;
+        const plane = """, plane, """;
+        if (!node || node.__isonimHueStripInstalled) return;
+        node.__isonimHueStripInstalled = true;
+        function hslToHex(h, s, l) {
+          s /= 100; l /= 100;
+          const k = n => (n + h / 30) % 12;
+          const a = s * Math.min(l, 1 - l);
+          const f = n => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+          return '#' + [f(0), f(8), f(4)]
+            .map(x => Math.round(255 * x).toString(16).padStart(2, '0'))
+            .join('').toUpperCase();
+        }
+        function pick(event) {
+          const rect = node.getBoundingClientRect();
+          const x = Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(rect.width, 1)));
+          const hue = Math.round(x * 360);
+          if (plane) plane.dataset.hue = String(hue);
+          """, choose, """(hslToHex(hue, 72, 56));
+          event.preventDefault();
+        }
+        let dragging = false;
+        node.addEventListener('pointerdown', (event) => {
+          if (event.button !== 0) return;
+          dragging = true;
+          pick(event);
+          window.addEventListener('pointermove', move, true);
+          window.addEventListener('pointerup', stop, true);
+        });
+        function move(event) { if (dragging) pick(event); }
+        function stop() {
+          dragging = false;
+          window.removeEventListener('pointermove', move, true);
+          window.removeEventListener('pointerup', stop, true);
+        }
+      })();
+    """].}
+
 proc renderPropertyActions[R, E](r: R; vm: EditorVM; frame: E;
     clipboard: StyleClipboard; propName, value, fallback: string): E =
   var copyButton: E
@@ -754,6 +1070,7 @@ proc renderNumericAffordances[R, E](r: R; vm: EditorVM; frame: E; propName,
   r.addEventListener(minusButton, "keydown", decrease)
   r.addEventListener(plusButton, "click", increase)
   r.addEventListener(plusButton, "keydown", increase)
+  r.attachNumericScrubber(scrubLabel, vm, frame, propName, value)
 
 proc renderFigmaColorAffordances[R, E](r: R; vm: EditorVM; frame: E; propName,
     value: string): E =
@@ -813,6 +1130,8 @@ proc renderFigmaColorAffordances[R, E](r: R; vm: EditorVM; frame: E; propName,
   r.addEventListener(saturation, "keydown", setBlue)
   r.addEventListener(hue, "click", setGreen)
   r.addEventListener(hue, "keydown", setGreen)
+  r.attachColorPlane(saturation, vm, frame, propName)
+  r.attachHueStrip(hue, vm, frame, saturation, propName)
 
 proc renderBorderRadiusAffordances[R, E](r: R; vm: EditorVM; frame: E;
     value: string): E =
@@ -1099,6 +1418,12 @@ proc renderElementTree[R, E](r: R; selected: ElementRef): E =
         span(color = accent, padding_left = "20px",
               font_weight = "700"):
           text name & " selected"
+        for detail in selected.children:
+          let detailText = detail
+          span(color = textDim, padding_left = "30px",
+                white_space = "nowrap", overflow = "hidden",
+                text_overflow = "ellipsis"):
+            text detailText
   r.setAttribute(result, "aria-label", "Element tree selected " & selected.tag)
 
 proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;

@@ -620,6 +620,9 @@ proc sourcePlan(prop: PropertyInfo; request: PropertyEditRequest): SourceEditPla
   let planKind = prop.cssSourcePlanKind(request, normalized)
   let before = prop.originDetail & " " & prop.name & ": " & prop.value
   let after = prop.originDetail & " " & prop.name & ": " & normalized.canonical
+  let expectedOld =
+    if prop.originDetail.startsWith("iframe-dom:"): ""
+    else: prop.value
   SourceEditPlan(
     file: prop.sourceFile,
     line: prop.sourceLine,
@@ -642,7 +645,7 @@ proc sourcePlan(prop: PropertyInfo; request: PropertyEditRequest): SourceEditPla
       else:
         "",
     conflictKey: prop.sourceFile & ":" & $prop.sourceLine & ":" & prop.name,
-    expectedOldValue: prop.value)
+    expectedOldValue: expectedOld)
 
 func withStatus(status: PropertyEditStatus;
     diagnostics: seq[PropertyEditDiagnostic] = @[]): PropertyEditResult =
@@ -780,8 +783,11 @@ proc selectInspectorElement*(editor: EditorVM;
   true
 
 func previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
-    className, sourceFile: string; sourceLine: int; backgroundColor, color,
-    padding, width, height: string): ElementRef =
+    className, role, elementPath, ancestry, sourceFile: string;
+    sourceLine: int; display, position, backgroundColor, color, padding,
+    margin, width, height, borderRadius, borderWidth, borderStyle, borderColor,
+    fontSize, fontWeight, lineHeight, boxShadow, opacity, rectWidth,
+    rectHeight: string): ElementRef =
   ## Build the generic inspector selection produced by the browser iframe DOM
   ## bridge. Projects own the preview HTML/source metadata; the editor owns the
   ## normalized ElementRef and editable property model.
@@ -809,6 +815,10 @@ func previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
       directStyleAllowed: true)
 
   var props: seq[PropertyInfo] = @[]
+  if display.len > 0:
+    props.add domProp("display", display)
+  if position.len > 0:
+    props.add domProp("position", position)
   if backgroundColor.len > 0 and backgroundColor != "rgba(0, 0, 0, 0)" and
       backgroundColor != "transparent":
     props.add domProp("background-color", backgroundColor)
@@ -816,10 +826,42 @@ func previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
     props.add domProp("color", color)
   if padding.len > 0:
     props.add domProp("padding", padding)
+  if margin.len > 0:
+    props.add domProp("margin", margin)
   if width.len > 0:
     props.add domProp("width", width)
   if height.len > 0:
     props.add domProp("height", height)
+  if borderRadius.len > 0:
+    props.add domProp("border-radius", borderRadius)
+  if borderWidth.len > 0:
+    props.add domProp("border-width", borderWidth)
+  if borderStyle.len > 0:
+    props.add domProp("border-style", borderStyle)
+  if borderColor.len > 0:
+    props.add domProp("border-color", borderColor)
+  if fontSize.len > 0:
+    props.add domProp("font-size", fontSize)
+  if fontWeight.len > 0:
+    props.add domProp("font-weight", fontWeight)
+  if lineHeight.len > 0:
+    props.add domProp("line-height", lineHeight)
+  if boxShadow.len > 0 and boxShadow != "none":
+    props.add domProp("box-shadow", boxShadow)
+  if opacity.len > 0:
+    props.add domProp("opacity", opacity)
+
+  let children = @[
+    if testId.len > 0: "data-testid=" & testId else: "",
+    if className.len > 0: "class=" & className else: "",
+    if role.len > 0: "role=" & role else: "",
+    if elementPath.len > 0: "path=" & elementPath else: "",
+    if ancestry.len > 0: "ancestry=" & ancestry else: "",
+    if rectWidth.len > 0 and rectHeight.len > 0:
+      "box=" & rectWidth & "x" & rectHeight
+    else:
+      ""
+  ].filterIt(it.len > 0)
 
   ElementRef(
     tag: (if tag.len > 0: tag else: "element"),
@@ -828,10 +870,14 @@ func previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
     sourceColumn: 1,
     depth: 0,
     properties: props,
-    children: @[
-      if testId.len > 0: "data-testid=" & testId else: "",
-      if className.len > 0: "class=" & className else: ""
-    ].filterIt(it.len > 0))
+    children: children)
+
+func previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
+    className, sourceFile: string; sourceLine: int; backgroundColor, color,
+    padding, width, height: string): ElementRef =
+  previewDomElementRef(metadata, tag, testId, className, "", "", "",
+    sourceFile, sourceLine, "", "", backgroundColor, color, padding, "",
+    width, height, "", "", "", "", "", "", "", "", "", "", "")
 
 proc changePlatform*(editor: EditorVM; platform: Platform) =
   editor.platform.val = platform
