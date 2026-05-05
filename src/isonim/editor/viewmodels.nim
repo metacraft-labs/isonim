@@ -476,6 +476,15 @@ proc parseCssPropertyValue*(property, raw: string;
     else:
       discard tryParseFloatValue(text, result.numeric)
     return
+  if prop in ["transition-duration", "transition-delay", "animation-duration",
+      "animation-delay"]:
+    for unit in ["ms", "s"]:
+      if text.endsWith(unit):
+        result.kind = cvkLength
+        result.unit = unit
+        discard tryParseFloatValue(text[0 ..< text.len - unit.len],
+          result.numeric)
+        return
   if prop.contains("timing-function") or text.startsWith("cubic-bezier("):
     result.kind = cvkTimingFunction
     return
