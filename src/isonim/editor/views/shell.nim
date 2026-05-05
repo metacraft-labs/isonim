@@ -291,6 +291,14 @@ proc bindStatusPanelButton[R, E](r: R; node: E; vm: EditorVM;
     r.setStyle(node, "background-color", if active: bgSurface else: "transparent")
     r.setStyle(node, "color", if active: textSecondary else: textDim)
 
+proc bindRightPanelWidth[R, E](r: R; node: E; vm: EditorVM) =
+  createRenderEffect proc() =
+    let width = $vm.rightPanelWidth.val & "px"
+    r.setStyle(node, "width", width)
+    r.setStyle(node, "min-width", width)
+    r.setStyle(node, "max-width", width)
+    r.setAttribute(node, "data-right-panel-width", $vm.rightPanelWidth.val)
+
 proc statusPanelButton[R, E](r: R; vm: EditorVM; panel: EditorPanel;
     label, glyph: string): E =
   result = ui(r):
@@ -352,10 +360,27 @@ proc previewAncestorSelectionHandler(vm: EditorVM; index: int; id: string): proc
       dispatchPreviewAncestorSelection(captured)
       dispatchPreviewElementSelection(capturedId)
 
+func selectedOriginLabel(element: ElementRef): string =
+  if element.properties.len == 0:
+    return "none"
+  case element.properties[0].origin
+  of poTailwindClass: "class"
+  of poSetStyle: "style"
+  of poThemeToken: "token"
+  of poConstant: "const"
+  of poInherited: "inherited"
+
+func selectedScopeLabel(element: ElementRef): string =
+  for prop in element.properties:
+    if prop.sharedCount > 0:
+      return "shared"
+  if element.tag.len > 0: "local" else: "none"
+
 proc renderStatusBar[R, E](r: R; vm: EditorVM): E =
   var breadcrumbNode: E
   var leftControls: E
   var rightControls: E
+  var statusBadges: E
   result = ui(r):
     tdiv(class = "editor-statusbar",
           height = "26px", min_height = "26px",
@@ -378,6 +403,10 @@ proc renderStatusBar[R, E](r: R; vm: EditorVM): E =
           discard
       tdiv(ref = rightControls,
             display = "flex", align_items = "center", gap = "6px"):
+        tdiv(ref = statusBadges,
+              display = "flex", align_items = "center", gap = "5px",
+              min_width = "0", overflow = "hidden"):
+          discard
         span(color = textDim):
           text editorProductName & " v" & editorVersion
   r.appendChild(leftControls,
@@ -387,6 +416,28 @@ proc renderStatusBar[R, E](r: R; vm: EditorVM): E =
     statusPanelButton[R, E](r, vm, epInspector, "Toggle right sidebar",
       "\xE2\x87\xA5"))
   createRenderEffect proc() =
+    r.clearChildren(statusBadges)
+    let selected = vm.inspector.selectedElement.val
+    let dirty = if vm.inspector.isDirty.val: "dirty" else: "clean"
+    let write = if vm.workspacePermissions.val.writeSource: "writable" else: "read-only"
+    let mode = case vm.editMode.val
+      of emView: "View"
+      of emComment: "Comment"
+      of emEdit: "Edit"
+    for badge in [
+      "mode " & mode,
+      "element " & (if selected.tag.len > 0: selected.tag else: "none"),
+      dirty,
+      "scope " & selectedScopeLabel(selected),
+      "binding " & selectedOriginLabel(selected),
+      "write " & write
+    ]:
+      let node = ui(r):
+        span(white_space = "nowrap", color = textDim,
+              font_size = "10px"):
+          text badge
+      r.appendChild(statusBadges, node)
+
     r.clearChildren(breadcrumbNode)
     let parts = statusBreadcrumbParts(vm)
     if parts.len == 0:
@@ -774,12 +825,14 @@ proc renderPreviewPane*[R, E](r: R; vm: EditorVM): E =
 proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
   ## Right panel: property inspector + agent chat.
   ## Fully inline except for tab active-state styling.
-  ui(r):
+  result = ui(r):
     tdiv(class = "editor-inspector",
           display = "flex", flex_direction = "column",
-          width = "300px", min_width = "300px", height = "100%",
+          width = "320px", min_width = "320px", max_width = "320px",
+          height = "100%",
           background_color = bgSidebar,
-          border_left = "1px solid " & borderStrong):
+          border_left = "1px solid " & borderStrong,
+          overflow_x = "hidden"):
 
       # Section tabs
       tdiv(class = "editor-tabbar",
@@ -909,6 +962,7 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
                 background_color = accent, color = textPrimary,
                 cursor = "pointer", transition = "background-color 0.15s"):
             text "\xE2\x86\x91"
+  r.bindRightPanelWidth(result, vm)
 
 proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
   ## Top-level editor layout: sidebar + storyboard/preview + inspector.

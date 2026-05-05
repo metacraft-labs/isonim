@@ -35,6 +35,10 @@ type
     selectedElement*: Signal[ElementRef]
     layers*: Signal[seq[ElementLayerRow]]
     layerSearch*: Signal[string]
+    sectionSearch*: Signal[string]
+    expandedSections*: Signal[seq[InspectorSection]]
+    focusedControlId*: Signal[string]
+    commandPaletteHooksReady*: Signal[bool]
     expandedLayerIds*: Signal[seq[string]]
     hoveredElementId*: Signal[string]
     activeSection*: Signal[InspectorSection]
@@ -47,7 +51,10 @@ type
     hasElement*: Memo[bool]
     properties*: Memo[seq[PropertyInfo]]
     filteredLayers*: Memo[seq[ElementLayerRow]]
+    visibleSections*: Memo[seq[InspectorSection]]
     propertyEditors*: Memo[seq[CSSPropertyEditorVM]]
+    denseRowContract*: Memo[InspectorDenseRowContract]
+    largeControlContracts*: Memo[seq[InspectorLargeControlContract]]
     isDirty*: Memo[bool]
     ## CSS-specific state
     displayMode*: Signal[DisplayMode]
@@ -126,6 +133,7 @@ type
     selectedStory*: Signal[StoryRef]
     editMode*: Signal[EditMode]
     panels*: Signal[PanelVisibility]
+    rightPanelWidth*: Signal[int]
     platform*: Signal[Platform]
     viewport*: Signal[PreviewViewport]
     workspacePermissions*: Signal[EditorWorkspacePermissions]
@@ -163,6 +171,8 @@ func defaultWorkspacePermissions*(): EditorWorkspacePermissions =
 
 func vectorDocumentFromSymbol*(symbol: VectorSymbol): VectorDocument
 func validateVectorAccessibility*(doc: VectorDocument): seq[VectorDiagnostic]
+proc setSectionExpanded*(inspector: InspectorVM; section: InspectorSection;
+    expanded: bool)
 
 func commandLabel*(kind: EditorCommandKind): string =
   case kind
@@ -775,8 +785,18 @@ proc togglePanel*(editor: EditorVM; panel: EditorPanel) =
     editor.panels.val = PanelVisibility(sidebar: current.sidebar,
                                         inspector: not current.inspector)
 
+func clampRightPanelWidth*(width: int): int =
+  max(260, min(520, width))
+
+proc setRightPanelWidth*(editor: EditorVM; width: int) =
+  editor.rightPanelWidth.val = clampRightPanelWidth(width)
+
+proc adjustRightPanelWidth*(editor: EditorVM; delta: int) =
+  editor.setRightPanelWidth(editor.rightPanelWidth.val + delta)
+
 proc switchInspectorSection*(editor: EditorVM; section: InspectorSection) =
   editor.inspector.activeSection.val = section
+  editor.inspector.setSectionExpanded(section, true)
 
 func fallbackElementId(element: ElementRef): string =
   if element.id.len > 0:
@@ -1430,6 +1450,36 @@ proc selectElement*(inspector: InspectorVM; element: ElementRef) =
 
 proc setSection*(inspector: InspectorVM; section: InspectorSection) =
   inspector.activeSection.val = section
+
+proc setSectionSearch*(inspector: InspectorVM; query: string) =
+  inspector.sectionSearch.val = query
+
+proc setSectionExpanded*(inspector: InspectorVM; section: InspectorSection;
+    expanded: bool) =
+  var next = inspector.expandedSections.val
+  if expanded:
+    if section notin next:
+      next.add section
+  else:
+    next = next.filterIt(it != section)
+  inspector.expandedSections.val = next
+
+proc toggleSectionExpanded*(inspector: InspectorVM; section: InspectorSection) =
+  inspector.setSectionExpanded(section, section notin inspector.expandedSections.val)
+
+proc collapseAllSections*(inspector: InspectorVM) =
+  inspector.expandedSections.val = @[]
+
+proc expandRelevantSections*(inspector: InspectorVM) =
+  var next: seq[InspectorSection] = @[]
+  for section in inspector.visibleSections.val:
+    next.add section
+  if next.len == 0:
+    next.add inspector.activeSection.val
+  inspector.expandedSections.val = next
+
+proc rememberInspectorFocus*(inspector: InspectorVM; id: string) =
+  inspector.focusedControlId.val = id
 
 proc clearSelection*(inspector: InspectorVM) =
   inspector.selectedElement.val = ElementRef()
@@ -2991,6 +3041,12 @@ proc createInspectorVM*(): InspectorVM =
   let selectedElement = createSignal(ElementRef())
   let layers = createSignal[seq[ElementLayerRow]](@[])
   let layerSearch = createSignal("")
+  let sectionSearch = createSignal("")
+  let expandedSections = createSignal[seq[InspectorSection]](@[
+    isLayout, isSpacing, isFill
+  ])
+  let focusedControlId = createSignal("")
+  let commandPaletteHooksReady = createSignal(true)
   let expandedLayerIds = createSignal[seq[string]](@[])
   let hoveredElementId = createSignal("")
   let activeSection = createSignal(isLayout)
@@ -3044,6 +3100,29 @@ proc createInspectorVM*(): InspectorVM =
         result.add row
   )
 
+  let visibleSections = createMemo[seq[InspectorSection]](proc(): seq[
+      InspectorSection] =
+    let query = sectionSearch.val.strip.toLowerAscii()
+    for section in [
+      isLayout, isSize, isSpacing, isPosition, isFill, isStroke, isTypography,
+      isEffects, isTransitions, isFilters, isState
+    ]:
+      let label = case section
+        of isLayout: "layout display flex grid overflow"
+        of isSize: "size width height min max flex"
+        of isSpacing: "spacing space padding margin box model"
+        of isPosition: "position top right bottom left z-index"
+        of isFill: "fill background color gradient opacity"
+        of isStroke: "stroke border radius outline"
+        of isTypography: "typography type font line text"
+        of isEffects: "effects shadow blur transform blend"
+        of isTransitions: "transitions animation duration curve"
+        of isFilters: "filters brightness contrast saturate blur"
+        of isState: "state viewmodel signals"
+      if query.len == 0 or label.contains(query):
+        result.add section
+  )
+
   let propertyEditors = createMemo[seq[CSSPropertyEditorVM]](proc(): seq[
       CSSPropertyEditorVM] =
     result = @[]
@@ -3078,6 +3157,34 @@ proc createInspectorVM*(): InspectorVM =
     pendingSourceEdits.val.len > 0 or undoStack.val.len > 0
   )
 
+  let denseRowContract = createMemo[InspectorDenseRowContract](
+    proc(): InspectorDenseRowContract =
+      InspectorDenseRowContract(
+        maxHeightPx: 30,
+        slots: @[
+          icsLabel,
+          icsScrubValue,
+          icsUnitSelector,
+          icsBindingIndicator,
+          icsScopeIndicator,
+          icsReset,
+          icsMoreMenu
+        ],
+        rejectsDebugFormLayout: true)
+  )
+
+  let largeControlContracts = createMemo[seq[InspectorLargeControlContract]](
+    proc(): seq[InspectorLargeControlContract] =
+      for kind in [
+        ilcColorPlane, ilcBoxModel, ilcShadow, ilcGradient,
+        ilcTypographyDetail, ilcTransitionCurve, ilcRawCss, ilcSourceCascade
+      ]:
+        result.add InspectorLargeControlContract(
+          kind: kind,
+          container: if kind == ilcSourceCascade: "popover" else: "accordion",
+          inlineInDenseRow: false)
+  )
+
   let displayMode = createSignal(dmFlex)
   let flexDirection = createSignal(fdRow)
 
@@ -3085,6 +3192,10 @@ proc createInspectorVM*(): InspectorVM =
     selectedElement: selectedElement,
     layers: layers,
     layerSearch: layerSearch,
+    sectionSearch: sectionSearch,
+    expandedSections: expandedSections,
+    focusedControlId: focusedControlId,
+    commandPaletteHooksReady: commandPaletteHooksReady,
     expandedLayerIds: expandedLayerIds,
     hoveredElementId: hoveredElementId,
     activeSection: activeSection,
@@ -3097,7 +3208,10 @@ proc createInspectorVM*(): InspectorVM =
     hasElement: hasElement,
     properties: properties,
     filteredLayers: filteredLayers,
+    visibleSections: visibleSections,
     propertyEditors: propertyEditors,
+    denseRowContract: denseRowContract,
+    largeControlContracts: largeControlContracts,
     isDirty: isDirty,
     displayMode: displayMode,
     flexDirection: flexDirection)
@@ -4065,6 +4179,7 @@ proc createEditorVM*(): EditorVM =
   let selectedStory = createSignal(StoryRef())
   let editMode = createSignal(emView)
   let panels = createSignal(PanelVisibility(sidebar: true, inspector: true))
+  let rightPanelWidth = createSignal(320)
   let platform = createSignal(pfWeb)
   let viewport = createSignal(pvDesktop)
   let workspacePermissions = createSignal(defaultWorkspacePermissions())
@@ -4096,6 +4211,7 @@ proc createEditorVM*(): EditorVM =
     selectedStory: selectedStory,
     editMode: editMode,
     panels: panels,
+    rightPanelWidth: rightPanelWidth,
     platform: platform,
     viewport: viewport,
     workspacePermissions: workspacePermissions,

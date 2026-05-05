@@ -22,7 +22,70 @@ suite "Editor ViewModels (M0)":
       check vm.hasSelection.val == false
       check vm.panels.val.sidebar == true
       check vm.panels.val.inspector == true
+      check vm.rightPanelWidth.val == 320
       check vm.platform.val == pfWeb
+      dispose()
+
+  test "inspector_panel_vm_persists_section_and_width_state":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+
+      vm.setRightPanelWidth(420)
+      vm.switchInspectorSection(isFill)
+      vm.inspector.setSectionSearch("fill")
+      vm.inspector.setSectionExpanded(isFill, true)
+      vm.inspector.setSectionExpanded(isLayout, false)
+      vm.inspector.rememberInspectorFocus("property-background-color")
+
+      vm.setEditMode(emEdit)
+      check vm.editMode.val == emEdit
+      check vm.rightPanelWidth.val == 420
+      check vm.inspector.activeSection.val == isFill
+      check isFill in vm.inspector.expandedSections.val
+      check isLayout notin vm.inspector.expandedSections.val
+      check vm.inspector.sectionSearch.val == "fill"
+      check vm.inspector.focusedControlId.val == "property-background-color"
+
+      vm.setEditMode(emComment)
+      check vm.editMode.val == emComment
+      check vm.rightPanelWidth.val == 420
+      vm.adjustRightPanelWidth(-200)
+      check vm.rightPanelWidth.val == 260
+      vm.adjustRightPanelWidth(600)
+      check vm.rightPanelWidth.val == 520
+
+      vm.inspector.collapseAllSections()
+      check vm.inspector.expandedSections.val.len == 0
+      vm.inspector.expandRelevantSections()
+      check isFill in vm.inspector.expandedSections.val
+      check vm.inspector.visibleSections.val == @[isFill]
+
+      vm.setEditMode(emView)
+      check vm.editMode.val == emView
+      check vm.rightPanelWidth.val == 520
+      check vm.inspector.activeSection.val == isFill
+      dispose()
+
+  test "inspector_density_contract_rejects_debug_form_layouts":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      let row = vm.inspector.denseRowContract.val
+      check row.rejectsDebugFormLayout
+      check row.maxHeightPx <= 30
+      for slot in [
+        icsLabel, icsScrubValue, icsUnitSelector, icsBindingIndicator,
+        icsScopeIndicator, icsReset, icsMoreMenu
+      ]:
+        check slot in row.slots
+
+      let large = vm.inspector.largeControlContracts.val
+      check large.len == 8
+      for item in large:
+        check item.inlineInDenseRow == false
+        check item.container in ["accordion", "popover"]
+      check large.anyIt(it.kind == ilcColorPlane and it.container == "accordion")
+      check large.anyIt(it.kind == ilcRawCss and it.container == "accordion")
+      check large.anyIt(it.kind == ilcSourceCascade and it.container == "popover")
       dispose()
 
   test "test_sidebar_vm_story_selection":

@@ -30,7 +30,6 @@ proc injectEditorStyles*() =
     .editor-chat,
     .editor-manual-inspector {
       scrollbar-width: thin;
-      resize: horizontal;
     }
     .editor-sidebar::-webkit-resizer,
     .editor-chat::-webkit-resizer,
@@ -58,7 +57,9 @@ proc injectEditorStyles*() =
     .editor-mobile-toggle { display: none; }
     @media (max-width: 1024px) and (min-width: 769px) {
       .editor-sidebar { width: 220px !important; min-width: 220px !important; }
-      .editor-inspector { width: 260px !important; min-width: 260px !important; }
+      .editor-inspector,
+      .editor-chat,
+      .editor-manual-inspector { width: min(320px, 38vw) !important; min-width: min(320px, 38vw) !important; max-width: min(320px, 38vw) !important; }
       .editor-tabbar > div { padding: 0 6px !important; font-size: 10px !important; }
     }
     .editor-input::placeholder { color: #475569; }

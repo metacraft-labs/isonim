@@ -23,6 +23,19 @@ const
   gold = "#F59E0B"
   green = "#22C55E"
 
+proc bindRightPanelWidth[R, E](r: R; node: E; vm: EditorVM) =
+  createRenderEffect proc() =
+    let width = $vm.rightPanelWidth.val & "px"
+    r.setStyle(node, "width", width)
+    r.setStyle(node, "min-width", width)
+    r.setStyle(node, "max-width", width)
+    r.setAttribute(node, "data-right-panel-width", $vm.rightPanelWidth.val)
+
+proc rememberPanelFocus(vm: EditorVM; id: string): proc() =
+  let captured = id
+  result = proc() =
+    vm.inspector.rememberInspectorFocus(captured)
+
 proc chatStatusText(vm: EditorVM): string =
   let label = case vm.chat.sessionStatus.val
     of asIdle: "Empty"
@@ -93,17 +106,21 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   let panel = ui(r):
     tdiv(
       class = "editor-chat",
-      width = "300px",
-      min_width = "220px",
-      max_width = "520px",
-      resize = "horizontal",
+      width = "320px",
+      min_width = "320px",
+      max_width = "320px",
       display = "flex",
       flex_direction = "column",
       height = "100%",
       background_color = bgSidebar,
-      border_left = "1px solid " & border)
+      border_left = "1px solid " & border,
+      overflow_x = "hidden")
+  r.bindRightPanelWidth(panel, vm)
 
   var statusTextNode: E
+  var narrowButton: E
+  var resetButton: E
+  var widenButton: E
   # Header
   let header = ui(r):
     tdiv(
@@ -125,6 +142,30 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
           text "AI Assistant"
       # Status dot
       tdiv(display = "flex", align_items = "center", gap = "4px"):
+        tdiv(ref = narrowButton, `role` = "button", tabindex = "0",
+              `aria-label` = "Narrow right panel",
+              width = "22px", height = "22px",
+              display = "flex", align_items = "center",
+              justify_content = "center",
+              border_radius = "4px", color = textSecondary,
+              cursor = "pointer"):
+          text "-"
+        tdiv(ref = resetButton, `role` = "button", tabindex = "0",
+              `aria-label` = "Reset right panel width",
+              width = "22px", height = "22px",
+              display = "flex", align_items = "center",
+              justify_content = "center",
+              border_radius = "4px", color = textSecondary,
+              cursor = "pointer"):
+          text "w"
+        tdiv(ref = widenButton, `role` = "button", tabindex = "0",
+              `aria-label` = "Widen right panel",
+              width = "22px", height = "22px",
+              display = "flex", align_items = "center",
+              justify_content = "center",
+              border_radius = "4px", color = textSecondary,
+              cursor = "pointer"):
+          text "+"
         tdiv(
           width = "6px",
           height = "6px",
@@ -149,6 +190,21 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
           cursor = "pointer"):
           text "\xE2\x9C\x95"
   r.appendChild(panel, header)
+  r.setAttribute(narrowButton, "data-isonim-focus-id", "right-panel-narrow")
+  r.setAttribute(resetButton, "data-isonim-focus-id", "right-panel-reset")
+  r.setAttribute(widenButton, "data-isonim-focus-id", "right-panel-widen")
+  r.addEventListener(narrowButton, "click", proc() = vm.adjustRightPanelWidth(-40))
+  r.addEventListener(narrowButton, "keydown", proc() = vm.adjustRightPanelWidth(-40))
+  r.addEventListener(narrowButton, "focus", rememberPanelFocus(vm,
+    "right-panel-narrow"))
+  r.addEventListener(resetButton, "click", proc() = vm.setRightPanelWidth(320))
+  r.addEventListener(resetButton, "keydown", proc() = vm.setRightPanelWidth(320))
+  r.addEventListener(resetButton, "focus", rememberPanelFocus(vm,
+    "right-panel-reset"))
+  r.addEventListener(widenButton, "click", proc() = vm.adjustRightPanelWidth(40))
+  r.addEventListener(widenButton, "keydown", proc() = vm.adjustRightPanelWidth(40))
+  r.addEventListener(widenButton, "focus", rememberPanelFocus(vm,
+    "right-panel-widen"))
 
   # Messages area
   let messagesArea = ui(r):

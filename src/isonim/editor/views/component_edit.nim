@@ -29,6 +29,42 @@ type
     property: string
     value: string
 
+proc bindRightPanelWidth[R, E](r: R; node: E; vm: EditorVM) =
+  createRenderEffect proc() =
+    let width = $vm.rightPanelWidth.val & "px"
+    r.setStyle(node, "width", width)
+    r.setStyle(node, "min-width", width)
+    r.setStyle(node, "max-width", width)
+    r.setAttribute(node, "data-right-panel-width", $vm.rightPanelWidth.val)
+
+proc rememberPanelFocus(vm: EditorVM; id: string): proc() =
+  let captured = id
+  result = proc() =
+    vm.inspector.rememberInspectorFocus(captured)
+
+proc restoreInspectorFocus[R, E](r: R; root: E; vm: EditorVM) =
+  when defined(js):
+    {.emit: ["""
+      (function () {
+        const root = """, root, """;
+        const id = """, vm.inspector.focusedControlId.val, """;
+        const toString = (raw) => Array.isArray(raw)
+          ? String.fromCharCode.apply(null, raw)
+          : String(raw || '');
+        const focusId = toString(id);
+        if (!root || !focusId) return;
+        const target = root.querySelector('[data-isonim-focus-id="' +
+          CSS.escape(focusId) + '"]');
+        if (target && document.activeElement !== target) {
+          setTimeout(() => target.focus({ preventScroll: true }), 0);
+        }
+      })();
+    """].}
+  else:
+    discard r
+    discard root
+    discard vm
+
 proc editablePreviewDocument(documentHtml: string;
     metadata: StoryRenderMetadata; mode: EditMode): string =
   ## Injects editor-only click selection metadata into the project-owned
@@ -1061,16 +1097,25 @@ proc inspectorLiveValueHandler[R, E](r: R; vm: EditorVM; frame: E; propName,
   result = proc() =
     r.applyCssValue(vm, frame, capturedProp, capturedValue)
 
-proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; propName,
-    value: string): E =
+proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
+    fallback: string): E =
   var inputNode: E
+  var resetNode: E
+  var moreNode: E
+  let propName = prop.name
+  let value = prop.value
+  let unit = numericUnit(value, "")
+  let scope = if prop.sharedCount > 0: "shared" else: "local"
+  let binding = originLabel(prop.origin)
   result = ui(r):
     tdiv(display = "grid",
-          `grid-template-columns` = "92px minmax(0, 1fr) 28px",
-          align_items = "center", gap = "5px"):
+          `grid-template-columns` = "72px minmax(58px, 1fr) 36px 42px 42px 24px 24px",
+          align_items = "center", gap = "4px",
+          min_height = "28px", max_width = "100%", overflow = "hidden"):
       label(font_size = "10px", color = textMuted,
             white_space = "nowrap", overflow = "hidden",
-            text_overflow = "ellipsis", cursor = "ew-resize"):
+            text_overflow = "ellipsis", cursor = "ew-resize",
+            `aria-label` = "Scrub " & propName & " value"):
         text propName
       input(ref = inputNode,
             class = "editor-input",
@@ -1090,8 +1135,51 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; propName,
             border_radius = "4px",
             background_color = bgSurface,
             color = textMuted, font_size = "9px"):
-        text "u"
+        text (if unit.len > 0: unit else: "-")
+      tdiv(height = "22px",
+            display = "flex", align_items = "center",
+            justify_content = "center",
+            border = "1px solid " & border,
+            border_radius = "4px",
+            background_color = bgSurface,
+            color = textMuted, font_size = "9px",
+            white_space = "nowrap", overflow = "hidden"):
+        text binding
+      tdiv(height = "22px",
+            display = "flex", align_items = "center",
+            justify_content = "center",
+            border = "1px solid " & border,
+            border_radius = "4px",
+            background_color = bgSurface,
+            color = textMuted, font_size = "9px"):
+        text scope
+      tdiv(ref = resetNode, role = "button", tabindex = "0",
+            `aria-label` = "Reset " & propName & " property",
+            height = "22px",
+            display = "flex", align_items = "center",
+            justify_content = "center",
+            border = "1px solid " & border,
+            border_radius = "4px",
+            background_color = bgSurface,
+            color = textMuted, font_size = "11px",
+            cursor = "pointer"):
+        text "r"
+      tdiv(ref = moreNode, role = "button", tabindex = "0",
+            `aria-label` = "More " & propName & " property actions",
+            height = "22px",
+            display = "flex", align_items = "center",
+            justify_content = "center",
+            border = "1px solid " & border,
+            border_radius = "4px",
+            background_color = bgSurface,
+            color = textMuted, font_size = "13px",
+            cursor = "pointer"):
+        text "..."
   r.setAttribute(inputNode, "aria-label", "Edit inspector property " & propName)
+  r.setAttribute(inputNode, "data-isonim-focus-id", "property-" & propName)
+  r.setAttribute(result, "data-inspector-dense-row", "true")
+  r.setAttribute(result, "data-inspector-row-slots",
+    "label scrub-value unit binding scope reset more")
   r.setInputValue(inputNode, value)
   let commit = proc() =
     let nextValue = r.inputValue(inputNode)
@@ -1102,6 +1190,15 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; propName,
   r.addEventListener(inputNode, "change", commit)
   r.addEventListener(inputNode, "blur", commit)
   r.addEventListener(inputNode, "input", preview)
+  r.addEventListener(inputNode, "focus", rememberPanelFocus(vm,
+    "property-" & propName))
+  let reset = proc() = r.applyCssValue(vm, frame, propName, fallback)
+  r.addEventListener(resetNode, "click", reset)
+  r.addEventListener(resetNode, "keydown", reset)
+  r.addEventListener(moreNode, "click", rememberPanelFocus(vm,
+    "property-" & propName))
+  r.addEventListener(moreNode, "keydown", rememberPanelFocus(vm,
+    "property-" & propName))
 
 proc renderCascadeIndicator[R, E](r: R; prop: PropertyInfo): E =
   let tone = originTone(prop.origin)
@@ -1605,8 +1702,8 @@ proc renderRichPropertyControl[R, E](r: R; vm: EditorVM; frame: E;
     tdiv(display = "flex", flex_direction = "column", gap = "4px",
           padding = "6px", border = "1px solid " & border,
           border_radius = "5px", background_color = "#0F172A")
-  r.appendChild(result, renderPropertyInput[R, E](r, vm, frame, prop.name,
-    prop.value))
+  r.setAttribute(result, "data-inspector-control", prop.name)
+  r.appendChild(result, renderPropertyInput[R, E](r, vm, frame, prop, fallback))
   let metaRow = ui(r):
     tdiv(display = "flex", align_items = "center", gap = "5px")
   r.appendChild(metaRow, renderCascadeIndicator[R, E](r, prop))
@@ -1714,6 +1811,20 @@ proc renderRawCssEditor[R, E](r: R; vm: EditorVM; frame: E;
 proc layerSearchHandler[R, E](r: R; vm: EditorVM; input: E): proc() =
   result = proc() =
     vm.inspector.setLayerSearch(r.inputValue(input))
+
+proc sectionSearchHandler[R, E](r: R; vm: EditorVM; input: E): proc() =
+  result = proc() =
+    vm.inspector.setSectionSearch(r.inputValue(input))
+
+proc sectionAccordionHandler(vm: EditorVM; section: InspectorSection): proc() =
+  let captured = section
+  result = proc() =
+    if vm.inspector.activeSection.val == captured and
+        captured in vm.inspector.expandedSections.val:
+      vm.inspector.setSectionExpanded(captured, false)
+    else:
+      vm.switchInspectorSection(captured)
+      vm.inspector.setSectionExpanded(captured, true)
 
 proc layerSelectHandler[R, E](r: R; vm: EditorVM; frame: E; id: string): proc() =
   let captured = id
@@ -1913,26 +2024,67 @@ proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;
     r.appendChild(content, summary)
 
     let active = vm.inspector.activeSection.val
+    let expanded = active in vm.inspector.expandedSections.val
     let heading = ui(r):
-      tdiv(display = "flex", align_items = "center",
-            justify_content = "space-between"):
+      tdiv(role = "button", tabindex = "0",
+            `aria-label` = "Toggle " & sectionTitle(active) &
+              " inspector section",
+            display = "flex", align_items = "center",
+            justify_content = "space-between",
+            position = "sticky", top = "0",
+            z_index = "1",
+            padding = "5px 0",
+            background_color = bgSidebar,
+            cursor = "pointer"):
         span(font_size = "11px", font_weight = "700", color = textSecondary,
               text_transform = "uppercase", letter_spacing = "0.5px"):
-          text sectionTitle(active)
+          text (if expanded: "v " else: "> ") & sectionTitle(active)
         span(font_size = "10px", color = accent, font_family = "monospace"):
           text "source-backed"
+    r.setAttribute(heading, "aria-expanded", if expanded: "true" else: "false")
+    let toggleActive = sectionAccordionHandler(vm, active)
+    r.addEventListener(heading, "click", toggleActive)
+    r.addEventListener(heading, "keydown", toggleActive)
     r.appendChild(content, heading)
 
+    if not expanded:
+      let collapsed = ui(r):
+        tdiv(padding = "10px", border = "1px solid " & border,
+              border_radius = "6px", background_color = bgBase,
+              color = textDim, font_size = "11px"):
+          text "Section collapsed"
+      r.appendChild(content, collapsed)
+      return
+
     if active == isSpacing:
-      r.appendChild(content, renderBoxModelSummary[R, E](r, selected))
+      let boxAccordion = ui(r):
+        details(open = "open", `aria-label` = "Show box model controls"):
+          summary(cursor = "pointer", color = textMuted, font_size = "10px",
+                  padding = "2px 0"):
+            text "Box model"
+      r.appendChild(boxAccordion, renderBoxModelSummary[R, E](r, selected))
+      r.appendChild(content, boxAccordion)
 
     for (propName, fallback) in sectionProperties(active):
       let prop = propertyInfo(selected, propName, fallback)
       r.appendChild(content,
         renderRichPropertyControl[R, E](r, vm, frame, clipboard, prop, fallback))
 
-    r.appendChild(content, renderRawCssEditor[R, E](r, vm, frame, selected, active))
-    r.appendChild(content, renderElementTree[R, E](r, vm, frame, selected))
+    let rawAccordion = ui(r):
+      details(open = "open", `aria-label` = "Show raw CSS controls"):
+        summary(cursor = "pointer", color = textMuted, font_size = "10px",
+                padding = "2px 0"):
+          text "Raw CSS"
+    r.appendChild(rawAccordion,
+      renderRawCssEditor[R, E](r, vm, frame, selected, active))
+    r.appendChild(content, rawAccordion)
+    let sourceAccordion = ui(r):
+      details(open = "open", `aria-label` = "Show source and cascade controls"):
+        summary(cursor = "pointer", color = textMuted, font_size = "10px",
+                padding = "2px 0"):
+          text "Source / Cascade"
+    r.appendChild(sourceAccordion, renderElementTree[R, E](r, vm, frame, selected))
+    r.appendChild(content, sourceAccordion)
 
     if vm.inspector.pendingSourceEdits.val.len > 0:
       let dirty = ui(r):
@@ -1988,16 +2140,61 @@ proc populateSectionTabs[R, E](r: R; vm: EditorVM; frame, tabs, content: E;
     r.addEventListener(tab, "keydown", activate)
     r.appendChild(tabs, tab)
 
+proc populateSectionAccordions[R, E](r: R; vm: EditorVM; sectionsNode: E) =
+  r.clearChildren(sectionsNode)
+  for section in vm.inspector.visibleSections.val:
+    let active = vm.inspector.activeSection.val == section
+    let expanded = section in vm.inspector.expandedSections.val
+    let title = sectionTitle(section)
+    let node = ui(r):
+      tdiv(role = "button", tabindex = "0",
+            display = "grid",
+            `grid-template-columns` = "14px minmax(0, 1fr) auto",
+            align_items = "center", gap = "5px",
+            min_height = "24px",
+            padding = "3px 5px",
+            border_radius = "4px",
+            cursor = "pointer",
+            background_color = (if active: bgSurface else: "transparent"),
+            color = (if active: textPrimary else: textMuted),
+            overflow = "hidden"):
+        span(font_size = "10px", color = textDim):
+          text (if expanded: "v" else: ">")
+        span(font_size = "10px", font_weight = "700",
+              text_transform = "uppercase",
+              white_space = "nowrap", overflow = "hidden",
+              text_overflow = "ellipsis"):
+          text title
+        span(font_size = "9px", color = (if active: accent else: textDim)):
+          text (if active: "active" else: "ready")
+    r.setAttribute(node, "aria-label", "Toggle " & title &
+      " inspector section")
+    r.setAttribute(node, "aria-expanded", if expanded: "true" else: "false")
+    r.setAttribute(node, "data-inspector-section", title.toLowerAscii())
+    let toggle = sectionAccordionHandler(vm, section)
+    r.addEventListener(node, "click", toggle)
+    r.addEventListener(node, "keydown", toggle)
+    r.addEventListener(node, "focus", rememberPanelFocus(vm,
+      "section-" & title.toLowerAscii()))
+    r.appendChild(sectionsNode, node)
+
 proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
   var saveButton: E
   var revertButton: E
+  var narrowButton: E
+  var resetWidthButton: E
+  var widenButton: E
+  var searchInput: E
+  var collapseButton: E
+  var expandButton: E
+  var sectionsNode: E
   let clipboard = StyleClipboard()
   result = ui(r):
     tdiv(class = "editor-manual-inspector",
-          width = "300px", min_width = "220px", max_width = "520px",
-          resize = "horizontal",
+          width = "320px", min_width = "320px", max_width = "320px",
           display = "flex", flex_direction = "column",
           background_color = bgSidebar, overflow_y = "auto",
+          overflow_x = "hidden",
           border_left = "1px solid " & border):
       tdiv(display = "flex", align_items = "center",
             justify_content = "space-between",
@@ -2009,6 +2206,24 @@ proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
               text_transform = "uppercase", letter_spacing = "0.5px"):
           text "Inspector"
       tdiv(display = "flex", gap = "4px"):
+          tdiv(ref = narrowButton, role = "button", tabindex = "0",
+                `aria-label` = "Narrow right panel",
+                padding = "3px 7px", border_radius = "4px",
+                font_size = "10px", cursor = "pointer",
+                background_color = bgSurface, color = textMuted):
+            text "-"
+          tdiv(ref = resetWidthButton, role = "button", tabindex = "0",
+                `aria-label` = "Reset right panel width",
+                padding = "3px 7px", border_radius = "4px",
+                font_size = "10px", cursor = "pointer",
+                background_color = bgSurface, color = textMuted):
+            text "w"
+          tdiv(ref = widenButton, role = "button", tabindex = "0",
+                `aria-label` = "Widen right panel",
+                padding = "3px 7px", border_radius = "4px",
+                font_size = "10px", cursor = "pointer",
+                background_color = bgSurface, color = textMuted):
+            text "+"
           tdiv(ref = revertButton, role = "button", tabindex = "0",
                 padding = "3px 7px", border_radius = "4px",
                 font_size = "10px", cursor = "pointer",
@@ -2019,6 +2234,42 @@ proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
                 font_size = "10px", font_weight = "600", cursor = "pointer",
                 background_color = accent, color = textPrimary):
             text "Save"
+      tdiv(display = "flex", flex_direction = "column", gap = "6px",
+            padding = "8px", border_bottom = "1px solid " & border):
+        input(ref = searchInput,
+              class = "editor-input",
+              height = "26px",
+              background_color = bgSurface,
+              border = "1px solid " & border,
+              border_radius = "4px",
+              padding = "0 7px",
+              font_size = "11px",
+              color = textPrimary,
+              outline = "none",
+              min_width = "0",
+              `aria-label` = "Search inspector sections",
+              placeholder = "Search sections")
+        tdiv(display = "grid",
+              `grid-template-columns` = "1fr 1fr",
+              gap = "4px"):
+          tdiv(ref = collapseButton, role = "button", tabindex = "0",
+                `aria-label` = "Collapse all inspector sections",
+                padding = "4px 6px", border_radius = "4px",
+                background_color = bgSurface, color = textMuted,
+                font_size = "10px", text_align = "center",
+                cursor = "pointer"):
+            text "Collapse"
+          tdiv(ref = expandButton, role = "button", tabindex = "0",
+                `aria-label` = "Expand relevant inspector sections",
+                padding = "4px 6px", border_radius = "4px",
+                background_color = bgSurface, color = textMuted,
+                font_size = "10px", text_align = "center",
+                cursor = "pointer"):
+            text "Expand"
+        tdiv(ref = sectionsNode,
+              display = "flex", flex_direction = "column", gap = "3px"):
+          discard
+  r.bindRightPanelWidth(result, vm)
 
   let tabs = ui(r):
     tdiv(class = "editor-tabbar",
@@ -2030,12 +2281,42 @@ proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
 
   r.setAttribute(saveButton, "aria-label", "Save inspector source edits")
   r.setAttribute(revertButton, "aria-label", "Revert inspector source edits")
+  r.setAttribute(narrowButton, "data-isonim-focus-id", "right-panel-narrow")
+  r.setAttribute(resetWidthButton, "data-isonim-focus-id", "right-panel-reset")
+  r.setAttribute(widenButton, "data-isonim-focus-id", "right-panel-widen")
   let save = proc() =
     discard vm.runEditorCommand(eckSave)
     r.commitLivePreviewStyles(frame)
   let revert = proc() =
     r.revertLivePreviewStyles(frame)
     discard vm.runEditorCommand(eckRevert)
+  let search = r.sectionSearchHandler(vm, searchInput)
+  r.setInputValue(searchInput, vm.inspector.sectionSearch.val)
+  r.addEventListener(searchInput, "input", search)
+  r.addEventListener(searchInput, "change", search)
+  r.addEventListener(searchInput, "focus", rememberPanelFocus(vm,
+    "section-search"))
+  r.setAttribute(searchInput, "data-isonim-focus-id", "section-search")
+  r.addEventListener(collapseButton, "click", proc() =
+    vm.inspector.collapseAllSections())
+  r.addEventListener(collapseButton, "keydown", proc() =
+    vm.inspector.collapseAllSections())
+  r.addEventListener(expandButton, "click", proc() =
+    vm.inspector.expandRelevantSections())
+  r.addEventListener(expandButton, "keydown", proc() =
+    vm.inspector.expandRelevantSections())
+  r.addEventListener(narrowButton, "click", proc() = vm.adjustRightPanelWidth(-40))
+  r.addEventListener(narrowButton, "keydown", proc() = vm.adjustRightPanelWidth(-40))
+  r.addEventListener(narrowButton, "focus", rememberPanelFocus(vm,
+    "right-panel-narrow"))
+  r.addEventListener(resetWidthButton, "click", proc() = vm.setRightPanelWidth(320))
+  r.addEventListener(resetWidthButton, "keydown", proc() = vm.setRightPanelWidth(320))
+  r.addEventListener(resetWidthButton, "focus", rememberPanelFocus(vm,
+    "right-panel-reset"))
+  r.addEventListener(widenButton, "click", proc() = vm.adjustRightPanelWidth(40))
+  r.addEventListener(widenButton, "keydown", proc() = vm.adjustRightPanelWidth(40))
+  r.addEventListener(widenButton, "focus", rememberPanelFocus(vm,
+    "right-panel-widen"))
   r.addEventListener(saveButton, "click", save)
   r.addEventListener(saveButton, "keydown", save)
   r.addEventListener(revertButton, "click", revert)
@@ -2046,9 +2327,13 @@ proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
           padding = "8px", overflow_y = "auto", gap = "8px")
   r.appendChild(result, content)
   r.populateSectionTabs(vm, frame, tabs, content, clipboard)
+  r.populateSectionAccordions(vm, sectionsNode)
 
+  let inspectorRoot = result
   createRenderEffect proc() =
+    r.populateSectionAccordions(vm, sectionsNode)
     r.populateInspectorContent(vm, frame, content, clipboard)
+    r.restoreInspectorFocus(inspectorRoot, vm)
     let save = vm.evaluateCommand(eckSave)
     let revert = vm.evaluateCommand(eckRevert)
     r.setAttribute(saveButton, "aria-disabled",

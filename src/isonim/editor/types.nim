@@ -1048,3 +1048,32 @@ type
   PanelVisibility* = object
     sidebar*: bool
     inspector*: bool
+
+  InspectorControlSlot* = enum
+    icsLabel
+    icsScrubValue
+    icsUnitSelector
+    icsBindingIndicator
+    icsScopeIndicator
+    icsReset
+    icsMoreMenu
+
+  InspectorDenseRowContract* = object
+    maxHeightPx*: int
+    slots*: seq[InspectorControlSlot]
+    rejectsDebugFormLayout*: bool
+
+  InspectorLargeControlKind* = enum
+    ilcColorPlane
+    ilcBoxModel
+    ilcShadow
+    ilcGradient
+    ilcTypographyDetail
+    ilcTransitionCurve
+    ilcRawCss
+    ilcSourceCascade
+
+  InspectorLargeControlContract* = object
+    kind*: InspectorLargeControlKind
+    container*: string
+    inlineInDenseRow*: bool

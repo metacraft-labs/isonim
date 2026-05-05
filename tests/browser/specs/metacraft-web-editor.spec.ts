@@ -540,6 +540,124 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(prompt).toHaveValue(/Make the title hierarchy feel calmer/);
   });
 
+  test("e2e_right_panel_width_does_not_jump_between_ai_comment_edit", async ({
+    page,
+  }) => {
+    await page.goto("/");
+
+    const visibleRightPanel = () =>
+      page.locator(".editor-chat:visible, .editor-manual-inspector:visible");
+    const width = async () => {
+      const box = await visibleRightPanel().boundingBox();
+      if (!box) throw new Error("right panel is not visible");
+      return Math.round(box.width);
+    };
+
+    await expect(page.locator(".editor-chat")).toBeVisible();
+    const initial = await width();
+    await page.getByRole("button", { name: "Widen right panel" }).click();
+    await page.getByRole("button", { name: "Widen right panel" }).click();
+    const widened = await width();
+    expect(widened).toBeGreaterThan(initial);
+
+    await page.getByRole("button", { name: "Switch to edit mode" }).click();
+    await expect(page.locator(".editor-manual-inspector")).toBeVisible();
+    expect(await width()).toBe(widened);
+
+    await page.getByRole("button", { name: "Widen right panel" }).click();
+    const editWidth = await width();
+    expect(editWidth).toBeGreaterThan(widened);
+
+    await page.getByRole("button", { name: "Switch to comment mode" }).click();
+    await expect(page.locator(".editor-chat")).toBeVisible();
+    expect(await width()).toBe(editWidth);
+
+    await page.getByRole("button", { name: "Switch to edit mode" }).click();
+    await expect(page.locator(".editor-manual-inspector")).toBeVisible();
+    expect(await width()).toBe(editWidth);
+  });
+
+  test("e2e_inspector_sections_are_keyboard_and_pointer_operable", async ({
+    page,
+  }) => {
+    await page.goto("/");
+
+    await page.getByRole("button", { name: "Open Components section" }).click();
+    await page
+      .getByRole("button", {
+        name: "Select story Operational components / Topbar",
+      })
+      .click();
+    await page
+      .getByRole("button", { name: "Open selected component in edit mode" })
+      .click();
+
+    const editFrame = page.frameLocator(
+      'iframe[title="Editable component preview"]',
+    );
+    await editFrame.locator("h1.bo-title").first().click({ force: true });
+
+    const sectionSearch = page.getByRole("textbox", {
+      name: "Search inspector sections",
+    });
+    await expect(sectionSearch).toBeVisible();
+    await sectionSearch.fill("fill");
+    await expect(
+      page.getByRole("button", { name: "Toggle Fill inspector section" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Toggle Layout inspector section" }),
+    ).toHaveCount(0);
+
+    await page
+      .getByRole("button", { name: "Toggle Fill inspector section" })
+      .click();
+    await expect(page.getByText("Section collapsed")).toBeVisible();
+    await page
+      .getByRole("button", { name: "Toggle Fill inspector section" })
+      .press("Enter");
+    await expect(
+      page
+        .getByRole("textbox", { name: "Edit inspector property color" })
+        .first(),
+    ).toBeVisible();
+
+    await page
+      .getByRole("button", { name: "Collapse all inspector sections" })
+      .click();
+    await expect(page.getByText("Section collapsed")).toBeVisible();
+    await page
+      .getByRole("button", { name: "Expand relevant inspector sections" })
+      .press("Enter");
+    await expect(
+      page
+        .getByRole("textbox", { name: "Edit inspector property color" })
+        .first(),
+    ).toBeVisible();
+
+    await page.getByRole("tab", { name: "Show Space edit controls" }).click();
+    await sectionSearch.fill("space");
+    await expect(
+      page.getByRole("button", { name: "Toggle Space inspector section" }),
+    ).toBeVisible();
+    await expect(page.getByLabel("Show box model controls")).toBeVisible();
+    await expect(page.getByLabel("Show raw CSS controls")).toBeVisible();
+    await expect(
+      page.getByLabel("Show source and cascade controls"),
+    ).toBeVisible();
+
+    const inspectorOverflow = await page
+      .locator(".editor-manual-inspector")
+      .evaluate((node) => node.scrollWidth <= node.clientWidth + 1);
+    expect(inspectorOverflow).toBe(true);
+
+    await page.setViewportSize({ width: 900, height: 800 });
+    const tabletOverflow = await page
+      .locator(".editor-manual-inspector")
+      .evaluate((node) => node.scrollWidth <= node.clientWidth + 1);
+    expect(tabletOverflow).toBe(true);
+  });
+
   test("e2e_canvas_selection_matches_layer_tree_and_breadcrumbs", async ({
     page,
   }) => {
