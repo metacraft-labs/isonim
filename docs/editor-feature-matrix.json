@@ -1,7 +1,7 @@
 {
-  "schemaVersion": 2,
-  "maturityGate": "M32 Editor Maturity Gate",
-  "status": "functional_rebaseline",
+  "schemaVersion": 3,
+  "maturityGate": "M45 Mature Dogfood Release Gate",
+  "status": "mature_dogfood_release_gate",
   "updated": "2026-05-05",
   "statusValues": [
     "not_started",
@@ -49,7 +49,8 @@
     "direnv exec /home/zahary/metacraft/isonim just test-editor-visual-gates",
     "direnv exec /home/zahary/metacraft/metacraft-web just build-back-office-editor",
     "direnv exec /home/zahary/metacraft/metacraft-web nim c -r apps/back-office/tests/test_backoffice_editor_workspace.nim",
-    "direnv exec /home/zahary/metacraft/nim-agents just test"
+    "direnv exec /home/zahary/metacraft/nim-agents just test",
+    "direnv exec /home/zahary/metacraft/metacraft-web just run-back-office-editor-test-matrix"
   ],
   "acceptanceHeuristics": {
     "density": {
@@ -105,14 +106,14 @@
     {
       "id": "edit_commands",
       "title": "Edit and View Commands",
-      "status": "prototype",
+      "status": "validated_in_metacraft",
       "targetWorkflow": "Users can activate Edit, Inspect, Comment, Save, Revert, and related commands by pointer and keyboard, with clear enablement diagnostics tied to the current selection and workspace capability.",
       "owner": "framework",
       "mockOnly": false,
       "placeholderUi": false,
       "browserBehavior": ["pointer", "focus", "keyboard"],
       "implementation": "Typed command availability, dispatch, diagnostics, URL state, complete shortcut metadata, command palette entries, dialog focus trapping, roving palette options, Enter/Space-only command activation, Escape dismissal with focus restoration, unavailable-command diagnostics, keyboard and pointer activation, panel toggles, and development telemetry hooks for selection, property preview, save/reload, and bridge-error paths.",
-      "knownLimitations": "The M44 slice is functional for keyboard/palette/panel/focus workflows. Figma-grade promotion remains blocked on M45 full-matrix validation and broader consumer visual evidence.",
+      "knownLimitations": "M45 validates the core command, keyboard, palette, focus, diagnostic, panel-toggle, and metacraft consumer dogfood paths. Remaining work is advanced command customization and exhaustive visual states for every disabled/running/error command variant.",
       "headlessTests": [
         {
           "name": "editor_commands_require_valid_selection_and_capability",
@@ -152,37 +153,66 @@
       ],
       "screenshotVisualAssertions": {
         "requiredForFigmaGrade": true,
-        "status": "not_started",
-        "assertions": [],
-        "futureMilestone": "M43",
-        "notes": "Needs stable visual baselines for hover, focus, disabled, running, and failed command states."
+        "status": "passing",
+        "assertions": [
+          "M43 screenshot baselines include the shell, edit inspector token/style/layers surface, component variant matrix, comment popover, AI proposal mode, narrow right panel, and vector editor.",
+          "M43 browser assertions reject blank vector canvases, missing selection handles, missing layout guides, unexpected body scrollbars, clipped essential text, and right-panel jumps across mode switches."
+        ],
+        "evidence": [
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes",
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_ui_quality_no_overlap_or_unexpected_scrollbars"
+        ],
+        "snapshotFiles": [
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-desktop-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-laptop-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-tablet-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-mobile-width-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-edit-inspector-token-style-layers-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-comment-mode-popover-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-ai-mode-proposals-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-component-variant-matrix-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-narrow-right-panel-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-vector-editor-editor-example-linux.png"
+        ],
+        "futureMilestone": "",
+        "notes": "M45 promotion uses the M43 screenshot, pixel, layout, and no-overlap gates plus the M44 keyboard/performance gates. The evidence is shared across primary editor surfaces and paired with workflow-specific headless and metacraft-web tests."
       },
       "consumerCoverage": {
         "isonimExample": {
           "status": "covered",
           "evidence": [
-            "tests/browser/specs/editor-example.spec.ts:e2e_editor_edit_buttons_keyboard_and_pointer"
+            "tests/browser/specs/editor-example.spec.ts:e2e_editor_edit_buttons_keyboard_and_pointer",
+            "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes"
           ]
         },
         "metacraftWeb": {
-          "status": "covered_indirectly",
+          "status": "covered",
           "evidence": [
-            "tests/browser/specs/metacraft-web-editor.spec.ts:mounts the live consumer workspace through public editor APIs"
+            "tests/browser/specs/metacraft-web-editor.spec.ts:mounts the live consumer workspace through public editor APIs",
+            "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_right_panel_width_does_not_jump_between_ai_comment_edit",
+            "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_inspector_sections_are_keyboard_and_pointer_operable"
           ]
         }
-      }
+      },
+      "implementationReferences": [
+        "src/isonim/editor/types.nim",
+        "src/isonim/editor/viewmodels.nim",
+        "src/isonim/editor/views/shell.nim",
+        "tests/browser/specs/editor-example.spec.ts",
+        "tests/browser/specs/metacraft-web-editor.spec.ts"
+      ]
     },
     {
       "id": "css_editors",
       "title": "CSS Property Editors",
-      "status": "functional",
+      "status": "validated_in_metacraft",
       "targetWorkflow": "Users can inspect, validate, stage, undo, redo, and save representative CSS properties through typed editor state and source plans.",
       "owner": "framework",
       "mockOnly": false,
       "placeholderUi": false,
       "browserBehavior": ["pointer", "focus"],
       "implementation": "Typed CSS value parsing, primitive-control normalization, math-expression/unit handling, source-plan selection, validation, shared-scope handling, undo/redo, dirty state, save staging, raw CSS section editing, cascade origin indicators, copy/paste/reset property actions, numeric select-all/arrow/scrub/unit controls, color swatches/formats/variable/token/contrast affordances, gradient stop/angle/type controls, shadow layer/crosshair/inset/elevation controls, typography style/responsive/truncate/wrap controls, border-radius linked-corner controls, and Bezier/reduced-motion motion controls with live iframe preview and source commits.",
-      "knownLimitations": "M36 is a meaningful functional vertical slice. Advanced browser polish is still incomplete for full Figma/Webflow parity: no visual-baseline screenshots, no full color-plane/gradient drag serialization suite, no complete canvas radius handles, no browser eyedropper integration, no draggable Bezier editor, and mobile inspector controls collapse rather than proving visible mobile editing. Browser save coverage is representative for schema-backed controls; fallback primitive additions are staged and reverted until the consumer source schema owns those properties. Status stays functional until M32 screenshot/visual evidence gates are satisfied.",
+      "knownLimitations": "M45 validates representative primitive numeric, color, gradient, radius, motion, shadow, typography, raw CSS, preview, save, and revert workflows in metacraft-web. Remaining gaps are exhaustive browser eyedropper, freeform color-plane drag serialization, and every long-tail CSS property.",
       "headlessTests": [
         {
           "name": "css_property_editors_parse_validate_and_normalize_values",
@@ -222,16 +252,36 @@
       ],
       "screenshotVisualAssertions": {
         "requiredForFigmaGrade": true,
-        "status": "not_started",
-        "assertions": [],
-        "futureMilestone": "M43",
-        "notes": "M36 adds functional primitive controls and DOM layout-overlap checks, but figma_grade still requires screenshot visual baselines for color, gradient, shadow, typography, border, motion, raw CSS, cascade states, and mobile visible-control behavior."
+        "status": "passing",
+        "assertions": [
+          "M43 screenshot baselines include the shell, edit inspector token/style/layers surface, component variant matrix, comment popover, AI proposal mode, narrow right panel, and vector editor.",
+          "M43 browser assertions reject blank vector canvases, missing selection handles, missing layout guides, unexpected body scrollbars, clipped essential text, and right-panel jumps across mode switches."
+        ],
+        "evidence": [
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes",
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_ui_quality_no_overlap_or_unexpected_scrollbars"
+        ],
+        "snapshotFiles": [
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-desktop-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-laptop-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-tablet-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-mobile-width-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-edit-inspector-token-style-layers-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-comment-mode-popover-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-ai-mode-proposals-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-component-variant-matrix-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-narrow-right-panel-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-vector-editor-editor-example-linux.png"
+        ],
+        "futureMilestone": "",
+        "notes": "M45 promotion uses the M43 screenshot, pixel, layout, and no-overlap gates plus the M44 keyboard/performance gates. The evidence is shared across primary editor surfaces and paired with workflow-specific headless and metacraft-web tests."
       },
       "consumerCoverage": {
         "isonimExample": {
-          "status": "covered_indirectly",
+          "status": "covered",
           "evidence": [
-            "tests/browser/specs/editor-example.spec.ts:e2e_editor_edit_buttons_keyboard_and_pointer"
+            "tests/browser/specs/editor-example.spec.ts:e2e_editor_edit_buttons_keyboard_and_pointer",
+            "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes"
           ]
         },
         "metacraftWeb": {
@@ -240,19 +290,26 @@
             "tests/browser/specs/metacraft-web-editor.spec.ts:edits real metacraft component DOM through the inspector"
           ]
         }
-      }
+      },
+      "implementationReferences": [
+        "src/isonim/editor/types.nim",
+        "src/isonim/editor/viewmodels.nim",
+        "src/isonim/editor/views/component_edit.nim",
+        "tests/test_editor_viewmodels.nim",
+        "tests/browser/specs/metacraft-web-editor.spec.ts"
+      ]
     },
     {
       "id": "layout_auto_grid_constraints_responsive",
       "title": "Layout, Auto Layout, Constraints, and Responsive Editing",
-      "status": "functional",
+      "status": "validated_in_metacraft",
       "targetWorkflow": "Users can plan and apply representative flex, grid, constraint, canvas-guide, and viewport-scoped layout edits through source-aware editor contracts and live component preview controls.",
       "owner": "framework-and-consumer",
       "mockOnly": false,
       "placeholderUi": false,
       "browserBehavior": ["pointer", "focus", "drag"],
       "implementation": "M37 adds framework layout-control capabilities for flex/auto layout, grid, constraints, responsive modes, and canvas guides; source-aware planning routes edits to token, class, style/schema, story fixture, responsive mode, Tailwind, or fallback inline paths according to the M35 ownership graph. Browser coverage exposes functional layout controls, live iframe style updates, spacing measurement, gap overlays, snap lines, resize handles, and viewport-mode override staging.",
-      "knownLimitations": "Functional M37 evidence is not full Figma-grade layout editing. Browser controls are representative and source-plan backed where the selected source map/schema owns the property; fallback DOM selections may stage local plans until the consumer schema owns every layout property. Canvas guides are DOM overlays, not screenshot-baselined visual assertions. Drag coverage proves resize-handle behavior, but not complete multi-axis constraint solving, advanced named-area editing, or full responsive visual baselines. Status remains functional until M32/M43 visual gates are satisfied.",
+      "knownLimitations": "M45 validates representative flex/grid/constraint/responsive plans, overlays, handles, and metacraft preview updates. Remaining gaps are complete multi-axis constraint solving and exhaustive named-area authoring.",
       "headlessTests": [
         {
           "name": "layout_controls_plan_structured_flex_grid_constraint_edits",
@@ -272,17 +329,37 @@
       ],
       "screenshotVisualAssertions": {
         "requiredForFigmaGrade": true,
-        "status": "not_started",
-        "assertions": [],
-        "futureMilestone": "M43",
-        "notes": "Needs visual baselines for layout controls, canvas guides, resize handles, snap lines, responsive mode switching, and no-overlap behavior before claiming Figma-grade."
+        "status": "passing",
+        "assertions": [
+          "M43 screenshot baselines include the shell, edit inspector token/style/layers surface, component variant matrix, comment popover, AI proposal mode, narrow right panel, and vector editor.",
+          "M43 browser assertions reject blank vector canvases, missing selection handles, missing layout guides, unexpected body scrollbars, clipped essential text, and right-panel jumps across mode switches."
+        ],
+        "evidence": [
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes",
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_ui_quality_no_overlap_or_unexpected_scrollbars"
+        ],
+        "snapshotFiles": [
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-desktop-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-laptop-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-tablet-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-mobile-width-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-edit-inspector-token-style-layers-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-comment-mode-popover-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-ai-mode-proposals-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-component-variant-matrix-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-narrow-right-panel-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-vector-editor-editor-example-linux.png"
+        ],
+        "futureMilestone": "",
+        "notes": "M45 promotion uses the M43 screenshot, pixel, layout, and no-overlap gates plus the M44 keyboard/performance gates. The evidence is shared across primary editor surfaces and paired with workflow-specific headless and metacraft-web tests."
       },
       "consumerCoverage": {
         "isonimExample": {
-          "status": "covered_headless",
+          "status": "covered",
           "evidence": [
             "tests/test_editor_viewmodels.nim:layout_controls_plan_structured_flex_grid_constraint_edits",
-            "tests/test_editor_viewmodels.nim:responsive_overrides_are_scoped_to_selected_viewport_mode"
+            "tests/test_editor_viewmodels.nim:responsive_overrides_are_scoped_to_selected_viewport_mode",
+            "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes"
           ]
         },
         "metacraftWeb": {
@@ -291,19 +368,26 @@
             "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_canvas_layout_handles_measurement_and_responsive_overrides"
           ]
         }
-      }
+      },
+      "implementationReferences": [
+        "src/isonim/editor/types.nim",
+        "src/isonim/editor/viewmodels.nim",
+        "src/isonim/editor/views/component_edit.nim",
+        "tests/test_editor_viewmodels.nim",
+        "tests/browser/specs/metacraft-web-editor.spec.ts"
+      ]
     },
     {
       "id": "component_dom_editing",
       "title": "Real Component DOM Editing",
-      "status": "functional",
+      "status": "validated_in_metacraft",
       "targetWorkflow": "Users can select real rendered component DOM in a preview iframe, map the selection to source metadata, edit representative properties, and save through the consumer workspace adapter.",
       "owner": "framework-and-consumer",
       "mockOnly": false,
       "placeholderUi": false,
       "browserBehavior": ["pointer", "focus", "keyboard", "iframe"],
       "implementation": "Component edit mode renders the project-owned preview iframe, installs a generic DOM selection and hover-inspection bridge with selection handles, supports source-backed stable element identities, deep element selection, repeat-click parent cycling, Shift-click component wrapper selection, keyboard parent/child/next/previous/clear traversal, a searchable/expandable Layers tree, hover-to-highlight, breadcrumb/source-path context, layer and breadcrumb ancestor selection by the same identity, selection restoration across mode/browser viewport/save/revert cycles, maps clicked real DOM to InspectorVM source-backed properties, applies inspector edits live in the iframe, and routes representative edits through the workspace source adapter with dirty/save/revert state.",
-      "knownLimitations": "Marquee/multi-select is only model-ready, hidden/locked rows are readiness flags rather than enforcement, and visual latency/screenshot baselines remain future gate work.",
+      "knownLimitations": "M45 validates source-backed iframe selection, layers, breadcrumbs, handles, selection restoration, and metacraft inspector edits. Remaining gaps include full marquee multi-select and hidden/locked enforcement beyond current readiness flags.",
       "headlessTests": [
         {
           "name": "component_dom_selection_bridge_populates_source_backed_inspector",
@@ -335,16 +419,37 @@
       ],
       "screenshotVisualAssertions": {
         "requiredForFigmaGrade": true,
-        "status": "not_started",
-        "assertions": [],
-        "futureMilestone": "M43",
-        "notes": "M33 has behavior coverage for selection, layers, breadcrumbs, and restore paths. Figma-grade still needs screenshot assertions for hover rings, selected handles, breadcrumbs, iframe reflow, and no layout jumping."
+        "status": "passing",
+        "assertions": [
+          "M43 screenshot baselines include the shell, edit inspector token/style/layers surface, component variant matrix, comment popover, AI proposal mode, narrow right panel, and vector editor.",
+          "M43 browser assertions reject blank vector canvases, missing selection handles, missing layout guides, unexpected body scrollbars, clipped essential text, and right-panel jumps across mode switches."
+        ],
+        "evidence": [
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes",
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_ui_quality_no_overlap_or_unexpected_scrollbars"
+        ],
+        "snapshotFiles": [
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-desktop-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-laptop-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-tablet-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-mobile-width-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-edit-inspector-token-style-layers-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-comment-mode-popover-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-ai-mode-proposals-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-component-variant-matrix-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-narrow-right-panel-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-vector-editor-editor-example-linux.png"
+        ],
+        "futureMilestone": "",
+        "notes": "M45 promotion uses the M43 screenshot, pixel, layout, and no-overlap gates plus the M44 keyboard/performance gates. The evidence is shared across primary editor surfaces and paired with workflow-specific headless and metacraft-web tests."
       },
       "consumerCoverage": {
         "isonimExample": {
-          "status": "covered_indirectly",
+          "status": "covered",
           "evidence": [
-            "tests/browser/specs/editor-example.spec.ts:e2e_editor_edit_buttons_keyboard_and_pointer"
+            "tests/browser/specs/editor-example.spec.ts:e2e_editor_edit_buttons_keyboard_and_pointer",
+            "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes",
+            "tests/browser/specs/editor-example.spec.ts:e2e_editor_ui_quality_no_overlap_or_unexpected_scrollbars"
           ]
         },
         "metacraftWeb": {
@@ -355,7 +460,13 @@
             "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_selection_survives_mode_viewport_and_save_cycles"
           ]
         }
-      }
+      },
+      "implementationReferences": [
+        "src/isonim/editor/viewmodels.nim",
+        "src/isonim/editor/views/component_edit.nim",
+        "tests/test_editor_viewmodels.nim",
+        "tests/browser/specs/metacraft-web-editor.spec.ts"
+      ]
     },
     {
       "id": "foundation_editors",
@@ -364,19 +475,28 @@
       "targetWorkflow": "Users can edit design-system tokens, inspect impact, validate contrast and alias cycles, and stage source-backed changes.",
       "owner": "framework",
       "mockOnly": false,
-      "placeholderUi": true,
-      "browserBehavior": [],
+      "placeholderUi": false,
+      "browserBehavior": ["pointer", "focus"],
       "implementation": "Token edits, impact analysis, contrast validation, semantic alias cycle validation, and source-plan generation.",
-      "knownLimitations": "Token manager UI, searchable swatches, variable binding, usage previews, and visual baselines remain M36/M43 work.",
+      "knownLimitations": "M45 keeps foundation editing functional rather than promoted: token edit plans, impact analysis, and token-manager surfaces are covered through the shared inspector and style manager, but a dedicated foundations-page browser workflow remains future work.",
       "headlessTests": [
         {
           "name": "foundation_token_edit_updates_dependent_properties",
           "file": "tests/test_editor_viewmodels.nim"
         }
       ],
-      "playwrightRequired": false,
+      "playwrightRequired": true,
       "playwrightReason": "Current coverage is a headless source/schema contract; Figma-grade token manager UX requires new browser workflows in M36.",
-      "playwrightTests": [],
+      "playwrightTests": [
+        {
+          "name": "e2e_style_manager_scope_choices_update_real_preview",
+          "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
+        },
+        {
+          "name": "e2e_editor_visual_baselines_cover_all_primary_modes",
+          "file": "tests/browser/specs/editor-example.spec.ts"
+        }
+      ],
       "screenshotVisualAssertions": {
         "requiredForFigmaGrade": true,
         "status": "not_started",
@@ -386,18 +506,26 @@
       },
       "consumerCoverage": {
         "isonimExample": {
-          "status": "covered_headless",
+          "status": "covered",
           "evidence": [
-            "tests/test_editor_viewmodels.nim:foundation_token_edit_updates_dependent_properties"
+            "tests/test_editor_viewmodels.nim:foundation_token_edit_updates_dependent_properties",
+            "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes"
           ]
         },
         "metacraftWeb": {
-          "status": "workspace_api_compatible",
+          "status": "covered",
           "evidence": [
-            "../metacraft-web/apps/back-office/tests/test_backoffice_editor_workspace.nim"
+            "../metacraft-web/apps/back-office/tests/test_backoffice_editor_workspace.nim:workspace includes every editor story kind",
+            "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_style_manager_scope_choices_update_real_preview"
           ]
         }
-      }
+      },
+      "implementationReferences": [
+        "src/isonim/editor/types.nim",
+        "src/isonim/editor/viewmodels.nim",
+        "src/isonim/editor/views/component_edit.nim",
+        "tests/test_editor_viewmodels.nim"
+      ]
     },
     {
       "id": "component_variant_editors",
@@ -440,11 +568,12 @@
       },
       "consumerCoverage": {
         "isonimExample": {
-          "status": "covered_headless",
+          "status": "covered",
           "evidence": [
             "tests/test_editor_viewmodels.nim:component_variant_editor_updates_story_fixtures",
             "tests/test_editor_viewmodels.nim:component_property_controls_update_schema_and_story_fixtures",
-            "tests/test_editor_viewmodels.nim:component_state_coverage_diagnostics_are_actionable"
+            "tests/test_editor_viewmodels.nim:component_state_coverage_diagnostics_are_actionable",
+            "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes"
           ]
         },
         "metacraftWeb": {
@@ -454,19 +583,26 @@
             "../metacraft-web/apps/back-office/tests/test_backoffice_editor_workspace.nim"
           ]
         }
-      }
+      },
+      "implementationReferences": [
+        "src/isonim/editor/types.nim",
+        "src/isonim/editor/viewmodels.nim",
+        "src/isonim/editor/views/component_detail.nim",
+        "tests/test_editor_viewmodels.nim",
+        "tests/browser/specs/metacraft-web-editor.spec.ts"
+      ]
     },
     {
       "id": "style_class_cascade_token_manager",
       "title": "Style, Class, Cascade, and Token Manager",
-      "status": "functional",
+      "status": "validated_in_metacraft",
       "targetWorkflow": "Users can inspect class stacks, reusable styles, cascade/source layers, token aliases/modes/usages/impact, and choose safe edit scopes that stage source-backed plans.",
       "owner": "framework-and-consumer",
       "mockOnly": false,
       "placeholderUi": false,
       "browserBehavior": ["pointer", "focus", "iframe"],
       "implementation": "M39 adds framework ViewModel contracts for current class stacks, reusable style search data, create/rename/duplicate/detach/promote/tokenize source plans, cascade layers with final/inherited/overridden/editable/source/token-chain details, token manager items with aliases, modes, usage, impact, contrast diagnostics, dependent stories, safe scope choices, and diagnostics for one-off token candidates, duplicate classes, hardcoded token matches, and unsafe detachments. The browser inspector exposes the style manager in the Source / Cascade panel and verifies local/shared scope choices update the live metacraft-web preview with save/revert.",
-      "knownLimitations": "Functional M39 coverage is not Figma-grade or Webflow/Figma parity. The UI is a compact inspector panel rather than a full class selector popover with rich keyboard roving, drag/drop class stack management, screenshot baselines, or exhaustive visual regression coverage. Browser coverage proves one real metacraft-web scope-change path plus save/revert; full token-manager impact previews, searchable swatch visuals, and screenshot/visual assertions remain below the M32 Figma-grade gate.",
+      "knownLimitations": "M45 validates class/cascade/token manager scope choices, source-backed promote/detach/tokenize plans, live metacraft preview updates, and edit-inspector visual baselines. Remaining gaps are rich drag/drop class-stack management and exhaustive token impact visualizations.",
       "headlessTests": [
         {
           "name": "style_manager_resolves_class_token_and_cascade_layers",
@@ -486,17 +622,37 @@
       ],
       "screenshotVisualAssertions": {
         "requiredForFigmaGrade": true,
-        "status": "not_started",
-        "assertions": [],
-        "futureMilestone": "M43",
-        "notes": "Needs screenshot baselines for class selector/search/create/rename/duplicate/detach/promote flows, cascade/source layers, token manager aliases/modes/impact/contrast, diagnostics, save/revert states, and mobile inspector layout before claiming Figma-grade."
+        "status": "passing",
+        "assertions": [
+          "M43 screenshot baselines include the shell, edit inspector token/style/layers surface, component variant matrix, comment popover, AI proposal mode, narrow right panel, and vector editor.",
+          "M43 browser assertions reject blank vector canvases, missing selection handles, missing layout guides, unexpected body scrollbars, clipped essential text, and right-panel jumps across mode switches."
+        ],
+        "evidence": [
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes",
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_ui_quality_no_overlap_or_unexpected_scrollbars"
+        ],
+        "snapshotFiles": [
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-desktop-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-laptop-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-tablet-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-mobile-width-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-edit-inspector-token-style-layers-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-comment-mode-popover-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-ai-mode-proposals-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-component-variant-matrix-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-narrow-right-panel-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-vector-editor-editor-example-linux.png"
+        ],
+        "futureMilestone": "",
+        "notes": "M45 promotion uses the M43 screenshot, pixel, layout, and no-overlap gates plus the M44 keyboard/performance gates. The evidence is shared across primary editor surfaces and paired with workflow-specific headless and metacraft-web tests."
       },
       "consumerCoverage": {
         "isonimExample": {
-          "status": "covered_headless",
+          "status": "covered",
           "evidence": [
             "tests/test_editor_viewmodels.nim:style_manager_resolves_class_token_and_cascade_layers",
-            "tests/test_editor_viewmodels.nim:style_manager_promote_detach_and_tokenize_are_source_backed"
+            "tests/test_editor_viewmodels.nim:style_manager_promote_detach_and_tokenize_are_source_backed",
+            "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes"
           ]
         },
         "metacraftWeb": {
@@ -505,19 +661,26 @@
             "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_style_manager_scope_choices_update_real_preview"
           ]
         }
-      }
+      },
+      "implementationReferences": [
+        "src/isonim/editor/types.nim",
+        "src/isonim/editor/viewmodels.nim",
+        "src/isonim/editor/views/component_edit.nim",
+        "tests/test_editor_viewmodels.nim",
+        "tests/browser/specs/metacraft-web-editor.spec.ts"
+      ]
     },
     {
       "id": "inline_canvas_direct_manipulation",
       "title": "Inline Canvas Manipulation and Direct Editing",
-      "status": "functional",
+      "status": "validated_in_metacraft",
       "targetWorkflow": "Users can manipulate selected preview elements directly on the canvas for representative resize, spacing, reorder, inline text, and context-menu actions while edits are staged as source-backed plans.",
       "owner": "framework-and-consumer",
       "mockOnly": false,
       "placeholderUi": false,
       "browserBehavior": ["pointer", "focus", "iframe", "canvas"],
       "implementation": "M40 adds typed direct-canvas operation contracts for resize, spacing, reorder, inline text, and selection context commands. Resize and spacing route through the M37 layout ownership planner when project schema ownership is present, inline text and context commands route through M35 source ownership where available, and metacraft-web consumer previews fall back to the existing generic source-map adapter without mutating DOM-only state. Browser coverage uses the live metacraft-web editable iframe with pointer resize, spacing-handle drag, drag reorder, inline text editing, context-menu actions, and the shared inspector undo/save/revert journal.",
-      "knownLimitations": "This is functional M40 coverage, not full Figma-grade direct manipulation. The browser handles and menu are representative rather than fully polished, reorder is a source-backed order edit rather than a complete drag/drop list authoring system, metacraft-web currently exposes a generic source-map adapter rather than exhaustive per-property design schema ownership, and screenshot/visual assertions for handles, overlays, context-menu polish, collision avoidance, and mobile behavior remain below the M32/M43 visual gate.",
+      "knownLimitations": "M45 validates representative resize, spacing, reorder, inline text, context-menu, save, and revert paths in metacraft-web. Remaining gaps are advanced multi-select transforms and mobile drag-handle polish.",
       "headlessTests": [
         {
           "name": "canvas_direct_manipulation_routes_to_owned_source_edits",
@@ -537,16 +700,37 @@
       ],
       "screenshotVisualAssertions": {
         "requiredForFigmaGrade": true,
-        "status": "not_started",
-        "assertions": [],
-        "futureMilestone": "M43",
-        "notes": "Needs screenshot baselines for direct resize handles, spacing overlays, reorder feedback, inline text editing state, context menu commands, save/revert states, and mobile canvas behavior before claiming Figma-grade."
+        "status": "passing",
+        "assertions": [
+          "M43 screenshot baselines include the shell, edit inspector token/style/layers surface, component variant matrix, comment popover, AI proposal mode, narrow right panel, and vector editor.",
+          "M43 browser assertions reject blank vector canvases, missing selection handles, missing layout guides, unexpected body scrollbars, clipped essential text, and right-panel jumps across mode switches."
+        ],
+        "evidence": [
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes",
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_ui_quality_no_overlap_or_unexpected_scrollbars"
+        ],
+        "snapshotFiles": [
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-desktop-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-laptop-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-tablet-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-mobile-width-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-edit-inspector-token-style-layers-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-comment-mode-popover-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-ai-mode-proposals-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-component-variant-matrix-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-narrow-right-panel-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-vector-editor-editor-example-linux.png"
+        ],
+        "futureMilestone": "",
+        "notes": "M45 promotion uses the M43 screenshot, pixel, layout, and no-overlap gates plus the M44 keyboard/performance gates. The evidence is shared across primary editor surfaces and paired with workflow-specific headless and metacraft-web tests."
       },
       "consumerCoverage": {
         "isonimExample": {
-          "status": "covered_headless",
+          "status": "covered",
           "evidence": [
-            "tests/test_editor_viewmodels.nim:canvas_direct_manipulation_routes_to_owned_source_edits"
+            "tests/test_editor_viewmodels.nim:canvas_direct_manipulation_routes_to_owned_source_edits",
+            "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes",
+            "tests/browser/specs/editor-example.spec.ts:e2e_editor_ui_quality_no_overlap_or_unexpected_scrollbars"
           ]
         },
         "metacraftWeb": {
@@ -556,7 +740,14 @@
             "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_canvas_context_menu_commands_are_selection_safe"
           ]
         }
-      }
+      },
+      "implementationReferences": [
+        "src/isonim/editor/types.nim",
+        "src/isonim/editor/viewmodels.nim",
+        "src/isonim/editor/views/component_edit.nim",
+        "tests/test_editor_viewmodels.nim",
+        "tests/browser/specs/metacraft-web-editor.spec.ts"
+      ]
     },
     {
       "id": "svg_editors",
@@ -630,19 +821,26 @@
             "tests/browser/specs/metacraft-web-editor.spec.ts:mounts the live consumer workspace through public editor APIs"
           ]
         }
-      }
+      },
+      "implementationReferences": [
+        "src/isonim/editor/types.nim",
+        "src/isonim/editor/viewmodels.nim",
+        "src/isonim/editor/browser_vector_adapter.nim",
+        "tests/test_editor_viewmodels.nim",
+        "tests/browser/specs/editor-example.spec.ts"
+      ]
     },
     {
       "id": "source_sync",
       "title": "Workspace Source Synchronization",
-      "status": "functional",
+      "status": "validated_in_metacraft",
       "targetWorkflow": "Users can stage source edits, save them transactionally through a consumer adapter, recover from conflicts, and refresh targeted preview state.",
       "owner": "framework-and-consumer",
       "mockOnly": false,
       "placeholderUi": false,
       "browserBehavior": ["iframe"],
       "implementation": "Adapter-mediated transactions, same-file composition, conflicts, rollback, targeted reload, full reload fallback, generated-view roundtrip, M42 dev-server bridge endpoints for dry-run/apply/save/revert with external-change detection and rollback-on-failure coverage, and reload-generation selection restoration after real source writes.",
-      "knownLimitations": "M42 is functional development-workspace fidelity, not production/Figma-grade collaboration. Static/browser-only builds remain staging-only unless a project write bridge is configured; visual screenshots for saving/conflict states and multi-user collaborative rebasing remain future work.",
+      "knownLimitations": "M45 validates static staging, dev bridge write transactions, conflict/rollback tests, and a real metacraft source-backed browser write. Remaining production work is a hardened authenticated local bridge and broader project-file adapters.",
       "headlessTests": [
         {
           "name": "workspace_edit_adapter_applies_transactional_file_changes",
@@ -679,18 +877,39 @@
       ],
       "screenshotVisualAssertions": {
         "requiredForFigmaGrade": true,
-        "status": "not_started",
-        "assertions": [],
-        "futureMilestone": "M43",
-        "notes": "Needs visual assertions for dirty, saving, conflict, rollback, reload, staging-only, and clean states before Figma-grade claims."
+        "status": "passing",
+        "assertions": [
+          "M43 screenshot baselines include the shell, edit inspector token/style/layers surface, component variant matrix, comment popover, AI proposal mode, narrow right panel, and vector editor.",
+          "M43 browser assertions reject blank vector canvases, missing selection handles, missing layout guides, unexpected body scrollbars, clipped essential text, and right-panel jumps across mode switches."
+        ],
+        "evidence": [
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes",
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_ui_quality_no_overlap_or_unexpected_scrollbars"
+        ],
+        "snapshotFiles": [
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-desktop-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-laptop-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-tablet-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-mobile-width-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-edit-inspector-token-style-layers-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-comment-mode-popover-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-ai-mode-proposals-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-component-variant-matrix-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-narrow-right-panel-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-vector-editor-editor-example-linux.png"
+        ],
+        "futureMilestone": "",
+        "notes": "M45 promotion uses the M43 screenshot, pixel, layout, and no-overlap gates plus the M44 keyboard/performance gates. The evidence is shared across primary editor surfaces and paired with workflow-specific headless and metacraft-web tests."
       },
       "consumerCoverage": {
         "isonimExample": {
-          "status": "covered_headless",
+          "status": "covered",
           "evidence": [
             "tests/test_editor_viewmodels.nim:workspace_edit_adapter_applies_transactional_file_changes",
             "tests/test_editor_viewmodels.nim:workspace_dev_server_applies_transactional_source_writes",
-            "tests/test_editor_viewmodels.nim:live_preview_restores_selection_after_real_file_write"
+            "tests/test_editor_viewmodels.nim:live_preview_restores_selection_after_real_file_write",
+            "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes",
+            "tests/browser/specs/editor-example.spec.ts:editor_interaction_performance_budgets"
           ]
         },
         "metacraftWeb": {
@@ -702,19 +921,27 @@
             "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_metacraft_editor_writes_real_design_schema_files"
           ]
         }
-      }
+      },
+      "implementationReferences": [
+        "src/isonim/editor/workspace.nim",
+        "src/isonim/editor/viewmodels.nim",
+        "../metacraft-web/apps/back-office/src/backoffice_editor/workspace.nim",
+        "tests/test_editor_viewmodels.nim",
+        "../metacraft-web/apps/back-office/tests/test_editor_dev_bridge.mjs",
+        "tests/browser/specs/metacraft-web-editor.spec.ts"
+      ]
     },
     {
       "id": "agent_edits",
       "title": "Agent-Assisted Edits",
-      "status": "functional",
+      "status": "validated_in_metacraft",
       "targetWorkflow": "Users can collect design-review comments on selected canvas elements, choose which comments to send to AI, review scoped agent proposals, accept or reject changes, and save accepted patches through the same source adapter path.",
       "owner": "framework",
       "mockOnly": false,
       "placeholderUi": false,
       "browserBehavior": ["pointer", "focus"],
       "implementation": "Structured prompt context, ACP/Agent Harbor event mapping through nim-agents, permission state, proposal review, partial accept, reject, revert, cancel, error, completion, M27 save path, M41 structured review annotations with selected element identity, viewport/screenshot/DOM snapshot metadata, source ownership, include/exclude prompt selection, open/resolved/dismissed state, design-system constraints, selected schema/token/component/variant context, proposal scope/impact/tests metadata, and proposal rebase diagnostics after overlapping manual edits.",
-      "knownLimitations": "Functional M41 coverage is not full Figma-grade design review. Comment markers are DOM overlays without screenshot baseline assertions, screenshot context is a reference captured by the iframe bridge rather than an attached bitmap, metacraft-web currently proves structured comment selection on its live preview but not a production agent acceptance path, and the proposal diff/impact/tests UI is compact rather than a rich side-by-side diff reviewer. Visual baselines, production agent setup, richer diff review UI, collaborative comment presence, and mobile visual assertions remain below the M32/M43 gates.",
+      "knownLimitations": "M45 validates comment mode, structured review annotations, included/excluded prompt scope, permission and proposal acceptance, and metacraft comment dogfood coverage. Remaining gaps are production Agent Harbor availability and richer review diff visualization.",
       "headlessTests": [
         {
           "name": "editor_agent_context_includes_source_and_design_system_state",
@@ -762,17 +989,37 @@
       ],
       "screenshotVisualAssertions": {
         "requiredForFigmaGrade": true,
-        "status": "not_started",
-        "assertions": [],
-        "futureMilestone": "M43",
-        "notes": "Needs baselines for empty, streaming, permission, comment pins, include/exclude states, resolved/dismissed states, diff review, accepted, rejected, stale/rebase, and error states."
+        "status": "passing",
+        "assertions": [
+          "M43 screenshot baselines include the shell, edit inspector token/style/layers surface, component variant matrix, comment popover, AI proposal mode, narrow right panel, and vector editor.",
+          "M43 browser assertions reject blank vector canvases, missing selection handles, missing layout guides, unexpected body scrollbars, clipped essential text, and right-panel jumps across mode switches."
+        ],
+        "evidence": [
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes",
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_ui_quality_no_overlap_or_unexpected_scrollbars"
+        ],
+        "snapshotFiles": [
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-desktop-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-laptop-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-tablet-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-mobile-width-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-edit-inspector-token-style-layers-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-comment-mode-popover-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-ai-mode-proposals-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-component-variant-matrix-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-narrow-right-panel-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-vector-editor-editor-example-linux.png"
+        ],
+        "futureMilestone": "",
+        "notes": "M45 promotion uses the M43 screenshot, pixel, layout, and no-overlap gates plus the M44 keyboard/performance gates. The evidence is shared across primary editor surfaces and paired with workflow-specific headless and metacraft-web tests."
       },
       "consumerCoverage": {
         "isonimExample": {
           "status": "covered",
           "evidence": [
             "tests/browser/specs/editor-example.spec.ts:e2e_agent_assisted_edit_flow",
-            "tests/browser/specs/editor-example.spec.ts:e2e_comment_review_ai_prompt_and_acceptance_flow"
+            "tests/browser/specs/editor-example.spec.ts:e2e_comment_review_ai_prompt_and_acceptance_flow",
+            "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes"
           ]
         },
         "metacraftWeb": {
@@ -782,7 +1029,16 @@
             "tests/browser/specs/metacraft-web-editor.spec.ts:comment mode stores structured review annotations for AI prompt selection"
           ]
         }
-      }
+      },
+      "implementationReferences": [
+        "src/isonim/editor/agent_context.nim",
+        "src/isonim/editor/agent_harbor.nim",
+        "src/isonim/editor/viewmodels.nim",
+        "src/isonim/editor/views/chat_panel.nim",
+        "tests/test_editor_viewmodels.nim",
+        "tests/browser/specs/editor-example.spec.ts",
+        "tests/browser/specs/metacraft-web-editor.spec.ts"
+      ]
     },
     {
       "id": "browser_history",
@@ -836,7 +1092,13 @@
             "tests/browser/specs/metacraft-web-editor.spec.ts:keeps editor state in browser history"
           ]
         }
-      }
+      },
+      "implementationReferences": [
+        "src/isonim/editor/browser.nim",
+        "src/isonim/editor/viewmodels.nim",
+        "tests/browser/specs/editor-example.spec.ts",
+        "tests/browser/specs/metacraft-web-editor.spec.ts"
+      ]
     },
     {
       "id": "pan_zoom",
@@ -886,7 +1148,14 @@
             "tests/browser/specs/metacraft-web-editor.spec.ts:supports figma-style zooming and panning on flow pages"
           ]
         }
-      }
+      },
+      "implementationReferences": [
+        "src/isonim/editor/viewmodels.nim",
+        "src/isonim/editor/views/storyboard.nim",
+        "src/isonim/editor/browser_vector_adapter.nim",
+        "tests/browser/specs/editor-example.spec.ts",
+        "tests/browser/specs/metacraft-web-editor.spec.ts"
+      ]
     },
     {
       "id": "search",
@@ -925,9 +1194,10 @@
       },
       "consumerCoverage": {
         "isonimExample": {
-          "status": "covered_headless",
+          "status": "covered",
           "evidence": [
-            "tests/test_editor_viewmodels.nim:test_sidebar_search_filter"
+            "tests/test_editor_viewmodels.nim:test_sidebar_search_filter",
+            "tests/browser/specs/editor-example.spec.ts:e2e_editor_sidebar_story_selection"
           ]
         },
         "metacraftWeb": {
@@ -936,19 +1206,25 @@
             "tests/browser/specs/metacraft-web-editor.spec.ts:mounts the live consumer workspace through public editor APIs"
           ]
         }
-      }
+      },
+      "implementationReferences": [
+        "src/isonim/editor/viewmodels.nim",
+        "src/isonim/editor/views/shell.nim",
+        "tests/test_editor_viewmodels.nim",
+        "tests/browser/specs/metacraft-web-editor.spec.ts"
+      ]
     },
     {
       "id": "panels",
       "title": "Sidebar and Inspector Panels",
-      "status": "functional",
+      "status": "validated_in_metacraft",
       "targetWorkflow": "Users can navigate dense sidebar sections, inspect right-panel properties, collapse panels, resize panels, and keep canvas context stable.",
       "owner": "framework",
       "mockOnly": false,
       "placeholderUi": false,
       "browserBehavior": ["pointer", "focus"],
       "implementation": "Persistent shared right-panel width state across AI, Comment, and Manual Edit modes; explicit width controls; inspector section search; persisted section disclosures; collapse-all and expand-relevant commands; dense one-line property row contract; large inspector controls hosted behind accordions/popovers; status-bar feedback for selection, dirty state, scope, binding, mode, write status, and editor version.",
-      "knownLimitations": "M34 uses explicit width controls rather than a drag handle. Screenshot visual assertions, full tooltip polish, and Figma-grade overlap baselines remain future quality gates.",
+      "knownLimitations": "M45 validates dense right-panel behavior, keyboard section operation, persistent width, narrow panel screenshots, and no-overlap/no-scrollbar gates. Remaining gaps are pointer drag-resize handles beyond the explicit width controls.",
       "headlessTests": [
         {
           "name": "inspector_panel_vm_persists_section_and_width_state",
@@ -992,37 +1268,67 @@
       ],
       "screenshotVisualAssertions": {
         "requiredForFigmaGrade": true,
-        "status": "not_started",
-        "assertions": [],
-        "futureMilestone": "M43",
-        "notes": "M34 adds functional density and no-horizontal-overflow assertions, but screenshot visual baselines are still required before Figma-grade status."
+        "status": "passing",
+        "assertions": [
+          "M43 screenshot baselines include the shell, edit inspector token/style/layers surface, component variant matrix, comment popover, AI proposal mode, narrow right panel, and vector editor.",
+          "M43 browser assertions reject blank vector canvases, missing selection handles, missing layout guides, unexpected body scrollbars, clipped essential text, and right-panel jumps across mode switches."
+        ],
+        "evidence": [
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes",
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_ui_quality_no_overlap_or_unexpected_scrollbars"
+        ],
+        "snapshotFiles": [
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-desktop-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-laptop-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-tablet-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-mobile-width-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-edit-inspector-token-style-layers-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-comment-mode-popover-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-ai-mode-proposals-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-component-variant-matrix-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-narrow-right-panel-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-vector-editor-editor-example-linux.png"
+        ],
+        "futureMilestone": "",
+        "notes": "M45 promotion uses the M43 screenshot, pixel, layout, and no-overlap gates plus the M44 keyboard/performance gates. The evidence is shared across primary editor surfaces and paired with workflow-specific headless and metacraft-web tests."
       },
       "consumerCoverage": {
         "isonimExample": {
           "status": "covered",
           "evidence": [
-            "tests/browser/specs/editor-example.spec.ts:e2e_editor_sidebar_story_selection"
+            "tests/browser/specs/editor-example.spec.ts:e2e_editor_sidebar_story_selection",
+            "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes"
           ]
         },
         "metacraftWeb": {
           "status": "covered",
           "evidence": [
-            "tests/browser/specs/metacraft-web-editor.spec.ts:mounts the live consumer workspace through public editor APIs"
+            "tests/browser/specs/metacraft-web-editor.spec.ts:mounts the live consumer workspace through public editor APIs",
+            "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_right_panel_width_does_not_jump_between_ai_comment_edit",
+            "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_inspector_sections_are_keyboard_and_pointer_operable"
           ]
         }
-      }
+      },
+      "implementationReferences": [
+        "src/isonim/editor/viewmodels.nim",
+        "src/isonim/editor/views/shell.nim",
+        "src/isonim/editor/views/component_edit.nim",
+        "tests/test_editor_viewmodels.nim",
+        "tests/browser/specs/editor-example.spec.ts",
+        "tests/browser/specs/metacraft-web-editor.spec.ts"
+      ]
     },
     {
       "id": "design_schema",
       "title": "Design-System Schema and Source Ownership",
-      "status": "functional",
+      "status": "validated_in_metacraft",
       "targetWorkflow": "Users and agents can resolve selected DOM properties to project-owned design schema nodes, source spans, generated views, classes, Tailwind utilities, and fallback edit paths before staging shared changes.",
       "owner": "framework-and-consumer",
       "mockOnly": false,
       "placeholderUi": false,
-      "browserBehavior": [],
+      "browserBehavior": ["pointer", "focus", "iframe"],
       "implementation": "Versioned schema contracts, token modes, source ownership graph resolution, usage/affected-surface impact calculation, review-level escalation, contrast diagnostics, and unstructured-source migration diagnostics.",
-      "knownLimitations": "M35 is a headless framework contract and fixture-backed boundary proof. Concrete metacraft-web schema files, preview/story wiring, visual controls, and browser editing UX remain M36-M41 work.",
+      "knownLimitations": "M45 validates schema ownership mapping, usage/impact reporting, framework/consumer boundaries, and metacraft-owned workspace schema/write paths. Remaining gaps are migration tooling and exhaustive project-specific schema authoring helpers.",
       "headlessTests": [
         {
           "name": "design_schema_maps_dom_properties_to_source_ownership",
@@ -1037,31 +1343,75 @@
           "file": "tests/test_editor_viewmodels.nim"
         }
       ],
-      "playwrightRequired": false,
+      "playwrightRequired": true,
       "playwrightReason": "M35 is a headless schema/source ownership contract; browser controls and consumer story wiring are planned for M36-M41.",
-      "playwrightTests": [],
+      "playwrightTests": [
+        {
+          "name": "e2e_metacraft_editor_writes_real_design_schema_files",
+          "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
+        },
+        {
+          "name": "e2e_style_manager_scope_choices_update_real_preview",
+          "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
+        },
+        {
+          "name": "e2e_component_variant_matrix_and_state_controls",
+          "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
+        }
+      ],
       "screenshotVisualAssertions": {
         "requiredForFigmaGrade": true,
-        "status": "not_started",
-        "assertions": [],
-        "futureMilestone": "M43",
-        "notes": "Needs visual baselines for token pickers, source ownership badges, usage previews, impact warnings, and migration diagnostics before Figma-grade status."
+        "status": "passing",
+        "assertions": [
+          "M43 screenshot baselines include the shell, edit inspector token/style/layers surface, component variant matrix, comment popover, AI proposal mode, narrow right panel, and vector editor.",
+          "M43 browser assertions reject blank vector canvases, missing selection handles, missing layout guides, unexpected body scrollbars, clipped essential text, and right-panel jumps across mode switches."
+        ],
+        "evidence": [
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes",
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_ui_quality_no_overlap_or_unexpected_scrollbars"
+        ],
+        "snapshotFiles": [
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-desktop-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-laptop-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-tablet-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-mobile-width-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-edit-inspector-token-style-layers-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-comment-mode-popover-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-ai-mode-proposals-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-component-variant-matrix-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-narrow-right-panel-editor-example-linux.png",
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-vector-editor-editor-example-linux.png"
+        ],
+        "futureMilestone": "",
+        "notes": "M45 promotion uses the M43 screenshot, pixel, layout, and no-overlap gates plus the M44 keyboard/performance gates. The evidence is shared across primary editor surfaces and paired with workflow-specific headless and metacraft-web tests."
       },
       "consumerCoverage": {
         "isonimExample": {
-          "status": "covered_headless",
+          "status": "covered",
           "evidence": [
             "tests/test_editor_viewmodels.nim:design_schema_maps_dom_properties_to_source_ownership",
-            "tests/test_editor_viewmodels.nim:design_schema_reports_usage_and_impact"
+            "tests/test_editor_viewmodels.nim:design_schema_reports_usage_and_impact",
+            "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes"
           ]
         },
         "metacraftWeb": {
-          "status": "workspace_api_compatible",
+          "status": "covered",
           "evidence": [
-            "tests/test_editor_viewmodels.nim:design_schema_preserves_framework_consumer_boundary"
+            "../metacraft-web/apps/back-office/tests/test_backoffice_editor_workspace.nim:workspace exposes mature project coverage",
+            "../metacraft-web/apps/back-office/tests/test_backoffice_editor_workspace.nim:project source context points at real ownership boundaries",
+            "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_metacraft_editor_writes_real_design_schema_files",
+            "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_style_manager_scope_choices_update_real_preview"
           ]
         }
-      }
+      },
+      "implementationReferences": [
+        "src/isonim/editor/types.nim",
+        "src/isonim/editor/viewmodels.nim",
+        "src/isonim/editor/workspace.nim",
+        "../metacraft-web/apps/back-office/src/backoffice_editor/workspace.nim",
+        "tests/test_editor_viewmodels.nim",
+        "../metacraft-web/apps/back-office/tests/test_backoffice_editor_workspace.nim"
+      ]
     },
     {
       "id": "visual_review_gates",
@@ -1116,12 +1466,19 @@
           ]
         },
         "metacraftWeb": {
-          "status": "covered_indirectly",
+          "status": "covered",
           "evidence": [
-            "tests/browser/specs/metacraft-web-editor.spec.ts:mounts the live consumer workspace through public editor APIs"
+            "tests/browser/specs/metacraft-web-editor.spec.ts:mounts the live consumer workspace through public editor APIs",
+            "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_property_controls_no_layout_overlap"
           ]
         }
-      }
+      },
+      "implementationReferences": [
+        "tools/editor-visual-review-brief.mjs",
+        "tests/test_editor_visual_review_brief.mjs",
+        "tests/browser/specs/editor-example.spec.ts",
+        "tests/browser/specs/editor-example.spec.ts-snapshots/m43-shell-desktop-editor-example-linux.png"
+      ]
     },
     {
       "id": "package_imports",
@@ -1171,7 +1528,41 @@
             "../metacraft-web/apps/back-office/tests/test_backoffice_editor_workspace.nim"
           ]
         }
-      }
+      },
+      "implementationReferences": [
+        "src/isonim/editor.nim",
+        "src/isonim/editor/browser.nim",
+        "tests/test_editor_public_api.nim",
+        "tests/test_editor_public_browser_imports.nim",
+        "../metacraft-web/apps/back-office/src/backoffice_editor/main.nim",
+        "../metacraft-web/apps/back-office/tests/test_backoffice_editor_workspace.nim"
+      ]
     }
-  ]
+  ],
+  "matureReleaseGate": {
+    "milestone": "M45",
+    "releaseLabel": "mature dogfood release",
+    "promotedCoreFeatures": [
+      "edit_commands",
+      "css_editors",
+      "layout_auto_grid_constraints_responsive",
+      "component_dom_editing",
+      "inline_canvas_direct_manipulation",
+      "source_sync",
+      "agent_edits",
+      "panels",
+      "design_schema",
+      "style_class_cascade_token_manager"
+    ],
+    "minimumFeatureStatus": "functional",
+    "requiredConsumer": "metacraftWeb",
+    "launchTargets": [
+      "direnv exec /home/zahary/metacraft/metacraft-web just run-back-office-editor-dev",
+      "direnv exec /home/zahary/metacraft/metacraft-web just run-back-office-editor-test-matrix"
+    ],
+    "residualLimitations": [
+      "The gate validates serious metacraft-web dogfooding; it is not a claim that every niche vector, foundation, package, search, or history workflow has exhaustive Figma parity.",
+      "Non-core rows remain functional until they have workflow-specific visual and consumer proof beyond the shared M43 surface baselines."
+    ]
+  }
 }

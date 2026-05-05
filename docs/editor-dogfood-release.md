@@ -5,14 +5,15 @@ This document is the maturity gate companion for
 `tests/test_editor_release_gate.nim`; update both when editor functionality or
 required coverage changes.
 
-M32 reclassifies the editor from the older M31 "completed release" wording to a
-stricter maturity model. A row marked `functional` means the behavior is real
-and tested; it does not mean the workflow is Figma-grade. A row may only be
-marked `figma_grade` after it has dense and discoverable UI, keyboard coverage,
-browser tests for pointer/focus/iframe/canvas behavior, visual assertions, no
-placeholder UI, no mock-only completion, and no weak skipped/only tests.
-`validated_in_metacraft` is reserved for Figma-grade workflows that also pass
-the metacraft-web consumer matrix for the same behavior.
+M45 promotes the core editor workflows to a mature dogfood release gate for the
+IsoNim example project and the metacraft-web consumer workspace. A row marked
+`functional` means the behavior is real and tested; it does not mean the
+workflow is Figma-grade. A row may only be marked `figma_grade` after it has
+dense and discoverable UI, keyboard coverage, browser tests for
+pointer/focus/iframe/canvas behavior, visual assertions, no placeholder UI, no
+mock-only completion, and no weak skipped/only tests. `validated_in_metacraft`
+is reserved for Figma-grade workflows that also pass the metacraft-web consumer
+matrix for the same behavior.
 
 ## Launch
 
@@ -27,6 +28,13 @@ Metacraft runs the same editor package with a consumer-owned workspace:
 
 ```sh
 direnv exec /home/zahary/metacraft/metacraft-web just build-back-office-editor
+direnv exec /home/zahary/metacraft/metacraft-web just run-back-office-editor-dev
+```
+
+The metacraft-web editor test matrix is project-owned and can be run directly:
+
+```sh
+direnv exec /home/zahary/metacraft/metacraft-web just run-back-office-editor-test-matrix
 ```
 
 ## Public Imports
@@ -67,6 +75,52 @@ Component edit mode must use the same project-owned preview document shown in
 the component detail view. The editor may inject generic selection metadata and
 event handlers into that iframe, but project-specific source files, line
 numbers, schema keys, and patch behavior belong to the consumer workspace.
+
+### Add a design-system schema
+
+Define `WorkspaceEditableSchemaEntry` values in the consumer workspace adapter,
+using stable schema keys, owned files, paths, and source-map metadata. Then add
+headless coverage that maps DOM properties to schema ownership and consumer
+coverage that proves the public `isonim/editor` API can load the workspace.
+Metacraft keeps this in
+`apps/back-office/src/backoffice_editor/workspace.nim`.
+
+### Add a token category
+
+Add typed token metadata to the workspace schema, expose usage and impact data
+through the source map, and route token edits through reversible source plans.
+Token categories need contrast or validation diagnostics, a save/revert path,
+and either a dedicated browser workflow or evidence through the style/token
+manager before promotion.
+
+### Add a component variant
+
+Declare the variant property, allowed values, state coverage, and fixture/story
+ownership in the consumer schema. Add ViewModel tests for source-plan
+generation and missing-story diagnostics, then add browser coverage that edits
+the real component preview and saves or reverts the generated plan.
+
+### Add a property editor
+
+Extend the typed property/value model first, including parsing, normalization,
+validation, source-plan selection, undo/redo, and dirty/save state. Browser
+controls are required when the editor depends on pointer, focus, iframe,
+canvas, keyboard, or layout measurement behavior.
+
+### Add a direct manipulation command
+
+Model the command as a source-backed editor action with deterministic
+availability diagnostics. The browser handler may update the live preview
+optimistically, but completion requires a reversible source plan and adapter
+save/revert coverage. Add Playwright coverage for drag, keyboard, context-menu,
+or focus behavior as appropriate.
+
+### Add an AI proposal scope
+
+Add the selectable scope to the shared prompt context, include source and
+design-system metadata, and represent proposed edits as reviewable source
+plans. Browser coverage must prove the user can include/exclude the scope,
+accept or reject the proposal, and keep comment/review state synchronized.
 
 ## Source Edits
 
@@ -115,6 +169,7 @@ direnv exec /home/zahary/metacraft/isonim just test-browser-editor-consumer
 direnv exec /home/zahary/metacraft/isonim just test-editor-visual-gates
 direnv exec /home/zahary/metacraft/metacraft-web just build-back-office-editor
 direnv exec /home/zahary/metacraft/metacraft-web nim c -r apps/back-office/tests/test_backoffice_editor_workspace.nim
+direnv exec /home/zahary/metacraft/metacraft-web just run-back-office-editor-test-matrix
 direnv exec /home/zahary/metacraft/nim-agents just test
 ```
 

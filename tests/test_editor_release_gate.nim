@@ -12,9 +12,12 @@ const
   RequiredFeatureIds = [
     "edit_commands",
     "css_editors",
+    "layout_auto_grid_constraints_responsive",
     "component_dom_editing",
     "foundation_editors",
     "component_variant_editors",
+    "style_class_cascade_token_manager",
+    "inline_canvas_direct_manipulation",
     "svg_editors",
     "source_sync",
     "agent_edits",
@@ -22,8 +25,21 @@ const
     "pan_zoom",
     "search",
     "panels",
+    "design_schema",
     "visual_review_gates",
     "package_imports"
+  ]
+  RequiredMatureCoreFeatureIds = [
+    "edit_commands",
+    "css_editors",
+    "layout_auto_grid_constraints_responsive",
+    "component_dom_editing",
+    "inline_canvas_direct_manipulation",
+    "source_sync",
+    "agent_edits",
+    "panels",
+    "design_schema",
+    "style_class_cascade_token_manager"
   ]
   RequiredCommands = [
     "direnv exec /home/zahary/metacraft/isonim nim c -r tests/test_editor_release_gate.nim",
@@ -34,6 +50,7 @@ const
     "direnv exec /home/zahary/metacraft/isonim just test-editor-visual-gates",
     "direnv exec /home/zahary/metacraft/metacraft-web just build-back-office-editor",
     "direnv exec /home/zahary/metacraft/metacraft-web nim c -r apps/back-office/tests/test_backoffice_editor_workspace.nim",
+    "direnv exec /home/zahary/metacraft/metacraft-web just run-back-office-editor-test-matrix",
     "direnv exec /home/zahary/metacraft/nim-agents just test"
   ]
   RequiredHeuristics = [
@@ -190,6 +207,15 @@ proc checkScreenshotRecord(row: JsonNode) =
   check screenshots.hasKey("assertions")
   check screenshots.hasKey("notes")
   check screenshots["notes"].getStr.len > 20
+  if screenshots.hasKey("snapshotFiles"):
+    for item in screenshots["snapshotFiles"].getElems:
+      check fileExists(item.getStr)
+
+proc checkImplementationReferences(row: JsonNode) =
+  check row.hasKey("implementationReferences")
+  check row["implementationReferences"].getElems.len > 0
+  for item in row["implementationReferences"].getElems:
+    check fileExists(item.getStr)
 
 proc checkFigmaGradeRequirements(row: JsonNode) =
   let status = row["status"].getStr
@@ -224,9 +250,11 @@ suite "IsoNim editor maturity gate":
 
   test "editor_quality_matrix_blocks_overclaimed_features":
     let doc = matrix()
-    check doc["maturityGate"].getStr == "M32 Editor Maturity Gate"
+    check doc["maturityGate"].getStr == "M45 Mature Dogfood Release Gate"
     check not doc.hasKey("releaseGate")
-    check doc["status"].getStr == "functional_rebaseline"
+    check doc["status"].getStr == "mature_dogfood_release_gate"
+    check doc.hasKey("matureReleaseGate")
+    check doc["matureReleaseGate"]["milestone"].getStr == "M45"
     check doc["policy"]["headlessFirst"].getBool
     check doc["policy"]["playwrightRequiredForBrowserBehavior"].getBool
     check doc["policy"]["functionalRowsRequireAutomatedTests"].getBool
@@ -264,6 +292,7 @@ suite "IsoNim editor maturity gate":
       check row.hasKey("headlessTests")
       check row.hasKey("playwrightTests")
       check row.hasKey("playwrightRequired")
+      checkImplementationReferences(row)
 
       if row["status"].getStr in ["functional", "figma_grade", "validated_in_metacraft"]:
         check not row["mockOnly"].getBool
@@ -299,9 +328,59 @@ suite "IsoNim editor maturity gate":
         check row["knownLimitations"].getStr.len > 24
 
     check statusCounts.getOrDefault("functional") > 0
-    check statusCounts.getOrDefault("prototype") > 0
+    check statusCounts.getOrDefault("prototype") == 0
+    check statusCounts.getOrDefault("not_started") == 0
     check statusCounts.getOrDefault("figma_grade") == 0
-    check statusCounts.getOrDefault("validated_in_metacraft") == 0
+    check statusCounts.getOrDefault("validated_in_metacraft") > 0
+
+  test "mature_editor_release_gate_requires_figma_grade_core_features":
+    let doc = matrix()
+    let promoted = stringItems(doc["matureReleaseGate"][
+      "promotedCoreFeatures"])
+    var byId: Table[string, JsonNode]
+
+    for row in doc["features"].getElems:
+      byId[rowId(row)] = row
+      check row["status"].getStr in [
+        "functional",
+        "figma_grade",
+        "validated_in_metacraft"
+      ]
+      check not row["mockOnly"].getBool
+      check not row["placeholderUi"].getBool
+      check row["knownLimitations"].getStr.len > 40
+      checkImplementationReferences(row)
+
+    for featureId in RequiredMatureCoreFeatureIds:
+      check featureId in promoted
+      check byId.hasKey(featureId)
+      if byId.hasKey(featureId):
+        let row = byId[featureId]
+        check row["status"].getStr == "validated_in_metacraft"
+        check row["screenshotVisualAssertions"]["status"].getStr == "passing"
+        check row["screenshotVisualAssertions"]["assertions"].getElems.len >= 2
+        check row["screenshotVisualAssertions"].hasKey("evidence")
+        check row["screenshotVisualAssertions"]["evidence"].getElems.len >= 2
+        check row["consumerCoverage"]["isonimExample"]["status"].getStr ==
+          "covered"
+        check row["consumerCoverage"]["metacraftWeb"]["status"].getStr ==
+          "covered"
+        checkNamedTestsExist(row, "headlessTests")
+        if row["playwrightRequired"].getBool or hasBrowserBehavior(row):
+          checkNamedTestsExist(row, "playwrightTests")
+        for item in row["screenshotVisualAssertions"]["evidence"].getElems:
+          checkEvidenceReference(item.getStr)
+
+  test "mature_editor_full_matrix_passes_in_example_and_metacraft":
+    let doc = matrix()
+    let commands = stringItems(doc["maturityGateCommands"])
+    for command in RequiredCommands:
+      check command in commands
+
+    let metacraftJust = checkedText("../metacraft-web/Justfile")
+    check metacraftJust.contains("run-back-office-editor ")
+    check metacraftJust.contains("run-back-office-editor-dev ")
+    check metacraftJust.contains("run-back-office-editor-test-matrix:")
 
   test "no_weak_editor_quality_tests":
     let doc = matrix()
@@ -316,6 +395,27 @@ suite "IsoNim editor maturity gate":
       checkNoWeakMarkers(path)
 
     checkNoWeakMarkers("tests/test_editor_release_gate.nim")
+
+  test "mature_editor_docs_are_actionable_for_new_consumers":
+    let guide = checkedText("docs/editor-dogfood-release.md")
+    let readme = checkedText("README.md")
+    let metacraftJust = checkedText("../metacraft-web/Justfile")
+
+    for required in [
+      "Add a design-system schema",
+      "Add a token category",
+      "Add a component variant",
+      "Add a property editor",
+      "Add a direct manipulation command",
+      "Add an AI proposal scope",
+      "run-back-office-editor-dev",
+      "run-back-office-editor-test-matrix"
+    ]:
+      check guide.contains(required)
+
+    check readme.contains("IsoNim Editor")
+    check readme.contains("docs/editor-dogfood-release.md")
+    check metacraftJust.contains("run-back-office-editor-test-matrix:")
 
   test "editor_framework_consumer_boundary_is_preserved":
     let publicApi = checkedText("src/isonim/editor.nim")

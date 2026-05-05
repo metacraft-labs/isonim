@@ -27,6 +27,13 @@ IsoNim is **cross-platform**: the same component code compiles to browser DOM (J
 - **faststreams integration** -- optional high-performance streaming via `-d:useFaststreams`
 - **js-framework-benchmark** participation -- keyed benchmark entry included
 
+## IsoNim Editor
+
+The IsoNim Editor is the framework dogfood design-system editor. Its maturity
+gate, public consumer contract, metacraft-web launch target, schema extension
+checklist, and required test matrix are documented in
+[`docs/editor-dogfood-release.md`](docs/editor-dogfood-release.md).
+
 ## Quick Start
 
 ```sh
