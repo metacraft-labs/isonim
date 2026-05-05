@@ -4,7 +4,7 @@
 ## No CSS, no colors, no rendering — only signals, memos, and enums.
 ## Created via withViewModel inside createRoot.
 
-import std/[math, sequtils, strutils]
+import std/[json, math, sequtils, strutils]
 import isonim/core/[signals, computation]
 import isonim/viewmodel
 import isonim/editor/types
@@ -33,6 +33,10 @@ type
 
   InspectorVM* = ref object of ViewModel
     selectedElement*: Signal[ElementRef]
+    layers*: Signal[seq[ElementLayerRow]]
+    layerSearch*: Signal[string]
+    expandedLayerIds*: Signal[seq[string]]
+    hoveredElementId*: Signal[string]
     activeSection*: Signal[InspectorSection]
     editDiagnostics*: Signal[seq[PropertyEditDiagnostic]]
     pendingSourceEdits*: Signal[seq[SourceEditPlan]]
@@ -42,6 +46,7 @@ type
     redoStack*: Signal[seq[CSSPropertyEditTransaction]]
     hasElement*: Memo[bool]
     properties*: Memo[seq[PropertyInfo]]
+    filteredLayers*: Memo[seq[ElementLayerRow]]
     propertyEditors*: Memo[seq[CSSPropertyEditorVM]]
     isDirty*: Memo[bool]
     ## CSS-specific state
@@ -773,15 +778,135 @@ proc togglePanel*(editor: EditorVM; panel: EditorPanel) =
 proc switchInspectorSection*(editor: EditorVM; section: InspectorSection) =
   editor.inspector.activeSection.val = section
 
+func fallbackElementId(element: ElementRef): string =
+  if element.id.len > 0:
+    return element.id
+  if element.sourceKey.len > 0:
+    return element.sourceKey
+  if element.schemaKey.len > 0:
+    return element.schemaKey
+  if element.domPath.len > 0:
+    return element.sourceFile & ":" & $element.sourceLine & ":" & element.domPath
+  if element.sourceFile.len > 0 and element.sourceLine > 0:
+    return element.sourceFile & ":" & $element.sourceLine & ":" & element.tag
+  element.tag
+
+func rowFromElement(element: ElementRef): ElementLayerRow =
+  let id = element.fallbackElementId()
+  ElementLayerRow(
+    id: id,
+    label: if element.tag.len > 0: element.tag else: "element",
+    tag: if element.tag.len > 0: element.tag else: "element",
+    sourceKey: if element.sourceKey.len > 0: element.sourceKey else: id,
+    schemaKey: element.schemaKey,
+    domPath: element.domPath,
+    sourceFile: element.sourceFile,
+    sourceLine: element.sourceLine,
+    depth: max(0, element.depth),
+    childCount: element.children.len,
+    expanded: true,
+    selected: true)
+
+func rowToElement(row: ElementLayerRow; previous: ElementRef): ElementRef =
+  var props: seq[PropertyInfo] = @[]
+  if previous.fallbackElementId() == row.id:
+    props = previous.properties
+  ElementRef(
+    id: row.id,
+    sourceKey: if row.sourceKey.len > 0: row.sourceKey else: row.id,
+    domPath: row.domPath,
+    schemaKey: row.schemaKey,
+    tag: if row.tag.len > 0: row.tag else: row.label,
+    sourceFile: row.sourceFile,
+    sourceLine: row.sourceLine,
+    sourceColumn: 1,
+    properties: props,
+    ancestors: @[row.label],
+    ancestorIds: @[row.id],
+    depth: row.depth)
+
+proc parseLayerTreeRows(raw: string; selectedId, hoveredId: string;
+    expandedIds: seq[string]): seq[ElementLayerRow] =
+  if raw.strip.len == 0:
+    return @[]
+  let parsed =
+    try:
+      parseJson(raw)
+    except JsonParsingError:
+      return @[]
+  if parsed.kind != JArray:
+    return @[]
+  for item in parsed.elems:
+    if item.kind != JObject:
+      continue
+    let id = item{"id"}.getStr()
+    if id.len == 0:
+      continue
+    let childCount = item{"childCount"}.getInt(0)
+    result.add ElementLayerRow(
+      id: id,
+      parentId: item{"parentId"}.getStr(),
+      label: item{"label"}.getStr(item{"tag"}.getStr("element")),
+      tag: item{"tag"}.getStr("element"),
+      sourceKey: item{"sourceKey"}.getStr(id),
+      schemaKey: item{"schemaKey"}.getStr(),
+      domPath: item{"domPath"}.getStr(),
+      sourceFile: item{"sourceFile"}.getStr(),
+      sourceLine: item{"sourceLine"}.getInt(0),
+      depth: item{"depth"}.getInt(0),
+      childCount: childCount,
+      expanded: childCount > 0 and (id in expandedIds or item{"expanded"}.getBool(true)),
+      selected: id == selectedId,
+      hovered: id == hoveredId,
+      hidden: item{"hidden"}.getBool(false),
+      locked: item{"locked"}.getBool(false))
+
+func withLayerSelection(rows: seq[ElementLayerRow]; selectedId,
+    hoveredId: string; expandedIds: seq[string]): seq[ElementLayerRow] =
+  for row in rows:
+    var copy = row
+    copy.selected = copy.id == selectedId
+    copy.hovered = copy.id == hoveredId
+    if copy.childCount > 0:
+      copy.expanded = copy.id in expandedIds or row.expanded
+    result.add copy
+
+proc setSelectionTree*(inspector: InspectorVM; rows: seq[ElementLayerRow]) =
+  let selectedId = inspector.selectedElement.val.fallbackElementId()
+  inspector.layers.val = rows.withLayerSelection(selectedId,
+    inspector.hoveredElementId.val, inspector.expandedLayerIds.val)
+
+proc refreshLayerFlags(inspector: InspectorVM) =
+  inspector.layers.val = inspector.layers.val.withLayerSelection(
+    inspector.selectedElement.val.fallbackElementId(),
+    inspector.hoveredElementId.val,
+    inspector.expandedLayerIds.val)
+
 proc selectInspectorElement*(editor: EditorVM;
     element: ElementRef): bool {.discardable.} =
   if element.tag.len == 0:
     editor.inspector.selectedElement.val = ElementRef()
     editor.inspector.editDiagnostics.val = @[]
+    editor.inspector.refreshLayerFlags()
     return false
 
-  editor.inspector.selectedElement.val = element
+  var next = element
+  if next.id.len == 0:
+    next.id = next.fallbackElementId()
+  if next.sourceKey.len == 0:
+    next.sourceKey = next.id
+  if next.schemaKey.len == 0:
+    next.schemaKey =
+      if next.properties.len > 0: next.properties[0].schemaKey
+      else: next.sourceKey
+  if next.ancestorIds.len == 0:
+    next.ancestorIds = @[next.id]
+  editor.inspector.selectedElement.val = next
   editor.inspector.editDiagnostics.val = @[]
+  if editor.inspector.layers.val.len == 0:
+    editor.inspector.layers.val = @[next.rowFromElement()]
+  else:
+    editor.inspector.refreshLayerFlags()
   true
 
 func previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
@@ -789,7 +914,8 @@ func previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
     sourceLine: int; display, position, backgroundColor, color, padding,
     margin, width, height, borderRadius, borderWidth, borderStyle, borderColor,
     fontSize, fontWeight, lineHeight, boxShadow, opacity, rectWidth,
-    rectHeight: string): ElementRef =
+    rectHeight, elementId, sourceKey, schemaKey, ancestorIds,
+    layerTreeJson: string): ElementRef =
   ## Build the generic inspector selection produced by the browser iframe DOM
   ## bridge. Projects own the preview HTML/source metadata; the editor owns the
   ## normalized ElementRef and editable property model.
@@ -801,9 +927,16 @@ func previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
     elif metadata.sourceLine > 0: metadata.sourceLine
     else: 1
   let schemaPrefix =
-    if testId.len > 0: "dom." & testId
+    if schemaKey.len > 0: schemaKey
+    elif testId.len > 0: "dom." & testId
     elif className.len > 0: "dom." & className.splitWhitespace().join(".")
     else: "dom." & tag
+  let identity =
+    if elementId.len > 0: elementId
+    elif sourceKey.len > 0: sourceKey
+    elif testId.len > 0: file & ":" & $line & ":testid:" & testId
+    elif elementPath.len > 0: file & ":" & $line & ":" & elementPath
+    else: file & ":" & $line & ":" & tag
 
   func domProp(name, value: string): PropertyInfo =
     PropertyInfo(
@@ -867,8 +1000,15 @@ func previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
   let ancestors =
     if ancestry.len > 0: ancestry.split(" > ")
     else: @[if tag.len > 0: tag else: "element"]
+  let parsedAncestorIds =
+    if ancestorIds.len > 0: ancestorIds.split(" > ").filterIt(it.len > 0)
+    else: @[identity]
 
   ElementRef(
+    id: identity,
+    sourceKey: if sourceKey.len > 0: sourceKey else: identity,
+    domPath: elementPath,
+    schemaKey: schemaPrefix,
     tag: (if tag.len > 0: tag else: "element"),
     sourceFile: file,
     sourceLine: line,
@@ -876,14 +1016,77 @@ func previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
     depth: max(0, ancestors.len - 1),
     properties: props,
     children: children,
-    ancestors: ancestors)
+    ancestors: ancestors,
+    ancestorIds: parsedAncestorIds)
 
 func previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
     className, sourceFile: string; sourceLine: int; backgroundColor, color,
     padding, width, height: string): ElementRef =
   previewDomElementRef(metadata, tag, testId, className, "", "", "",
     sourceFile, sourceLine, "", "", backgroundColor, color, padding, "",
-    width, height, "", "", "", "", "", "", "", "", "", "", "")
+    width, height, "", "", "", "", "", "", "", "", "", "", "", "", "", "",
+    "", "")
+
+proc previewDomLayerRows*(raw: string; selectedId = ""; hoveredId = "";
+    expandedIds: seq[string] = @[]): seq[ElementLayerRow] =
+  parseLayerTreeRows(raw, selectedId, hoveredId, expandedIds)
+
+proc selectInspectorElementById*(editor: EditorVM; id: string): bool {.discardable.} =
+  for row in editor.inspector.layers.val:
+    if row.id == id:
+      editor.inspector.selectedElement.val = row.rowToElement(
+        editor.inspector.selectedElement.val)
+      editor.inspector.editDiagnostics.val = @[]
+      editor.inspector.refreshLayerFlags()
+      return true
+  false
+
+proc selectParentInspectorElement*(editor: EditorVM): bool {.discardable.} =
+  let id = editor.inspector.selectedElement.val.fallbackElementId()
+  for row in editor.inspector.layers.val:
+    if row.id == id and row.parentId.len > 0:
+      return editor.selectInspectorElementById(row.parentId)
+  false
+
+proc selectChildInspectorElement*(editor: EditorVM): bool {.discardable.} =
+  let id = editor.inspector.selectedElement.val.fallbackElementId()
+  for row in editor.inspector.layers.val:
+    if row.parentId == id:
+      return editor.selectInspectorElementById(row.id)
+  false
+
+proc selectNextInspectorElement*(editor: EditorVM): bool {.discardable.} =
+  let rows = editor.inspector.filteredLayers.val
+  if rows.len == 0:
+    return false
+  var index = -1
+  let id = editor.inspector.selectedElement.val.fallbackElementId()
+  for i, row in rows:
+    if row.id == id:
+      index = i
+      break
+  if index < 0:
+    return editor.selectInspectorElementById(rows[0].id)
+  editor.selectInspectorElementById(rows[min(rows.high, index + 1)].id)
+
+proc selectPreviousInspectorElement*(editor: EditorVM): bool {.discardable.} =
+  let rows = editor.inspector.filteredLayers.val
+  if rows.len == 0:
+    return false
+  var index = -1
+  let id = editor.inspector.selectedElement.val.fallbackElementId()
+  for i, row in rows:
+    if row.id == id:
+      index = i
+      break
+  if index < 0:
+    return editor.selectInspectorElementById(rows[rows.high].id)
+  editor.selectInspectorElementById(rows[max(0, index - 1)].id)
+
+proc clearInspectorSelection*(editor: EditorVM) =
+  editor.inspector.selectedElement.val = ElementRef()
+  editor.inspector.editDiagnostics.val = @[]
+  editor.inspector.refreshLayerFlags()
 
 proc changePlatform*(editor: EditorVM; platform: Platform) =
   editor.platform.val = platform
@@ -1214,8 +1417,16 @@ proc setSearch*(sidebar: SidebarVM; query: string) =
 # ===========================================================================
 
 proc selectElement*(inspector: InspectorVM; element: ElementRef) =
-  inspector.selectedElement.val = element
+  var next = element
+  if next.id.len == 0:
+    next.id = next.fallbackElementId()
+  if next.sourceKey.len == 0:
+    next.sourceKey = next.id
+  if next.ancestorIds.len == 0:
+    next.ancestorIds = @[next.id]
+  inspector.selectedElement.val = next
   inspector.editDiagnostics.val = @[]
+  inspector.refreshLayerFlags()
 
 proc setSection*(inspector: InspectorVM; section: InspectorSection) =
   inspector.activeSection.val = section
@@ -1223,6 +1434,116 @@ proc setSection*(inspector: InspectorVM; section: InspectorSection) =
 proc clearSelection*(inspector: InspectorVM) =
   inspector.selectedElement.val = ElementRef()
   inspector.editDiagnostics.val = @[]
+  inspector.refreshLayerFlags()
+
+func rowIndex(rows: seq[ElementLayerRow]; id: string): int =
+  for i, row in rows:
+    if row.id == id:
+      return i
+  -1
+
+func parentRow(rows: seq[ElementLayerRow]; row: ElementLayerRow): ElementLayerRow =
+  for candidate in rows:
+    if candidate.id == row.parentId:
+      return candidate
+  ElementLayerRow()
+
+func rowAncestry(rows: seq[ElementLayerRow]; row: ElementLayerRow): tuple[
+    labels: seq[string], ids: seq[string]] =
+  var stack = @[row]
+  var current = row
+  while current.parentId.len > 0:
+    let parent = rows.parentRow(current)
+    if parent.id.len == 0:
+      break
+    stack.add parent
+    current = parent
+  for i in countdown(stack.high, 0):
+    result.labels.add stack[i].label
+    result.ids.add stack[i].id
+
+proc elementFromRow(inspector: InspectorVM; row: ElementLayerRow): ElementRef =
+  let previous = inspector.selectedElement.val
+  result = row.rowToElement(previous)
+  let ancestry = inspector.layers.val.rowAncestry(row)
+  result.ancestors = ancestry.labels
+  result.ancestorIds = ancestry.ids
+  result.depth = max(0, ancestry.ids.len - 1)
+
+proc selectElementById*(inspector: InspectorVM; id: string): bool {.discardable.} =
+  if id.len == 0:
+    return false
+  for row in inspector.layers.val:
+    if row.id == id:
+      inspector.selectedElement.val = inspector.elementFromRow(row)
+      inspector.editDiagnostics.val = @[]
+      inspector.refreshLayerFlags()
+      return true
+  false
+
+proc setLayerSearch*(inspector: InspectorVM; query: string) =
+  inspector.layerSearch.val = query
+
+proc toggleLayerExpanded*(inspector: InspectorVM; id: string) =
+  if id.len == 0:
+    return
+  var shouldExpand = true
+  var rows = inspector.layers.val
+  for i in 0 ..< rows.len:
+    if rows[i].id == id:
+      shouldExpand = not rows[i].expanded
+      rows[i].expanded = shouldExpand
+      break
+  var next = inspector.expandedLayerIds.val
+  if not shouldExpand:
+    next = next.filterIt(it != id)
+  elif id notin next:
+    next.add id
+  inspector.expandedLayerIds.val = next
+  inspector.layers.val = rows.withLayerSelection(
+    inspector.selectedElement.val.fallbackElementId(),
+    inspector.hoveredElementId.val, inspector.expandedLayerIds.val)
+
+proc setLayerHover*(inspector: InspectorVM; id: string) =
+  inspector.hoveredElementId.val = id
+  inspector.refreshLayerFlags()
+
+proc selectParentElement*(inspector: InspectorVM): bool {.discardable.} =
+  let id = inspector.selectedElement.val.fallbackElementId()
+  let index = inspector.layers.val.rowIndex(id)
+  if index < 0:
+    return false
+  let parent = inspector.layers.val.parentRow(inspector.layers.val[index])
+  if parent.id.len == 0:
+    return false
+  inspector.selectElementById(parent.id)
+
+proc selectFirstChildElement*(inspector: InspectorVM): bool {.discardable.} =
+  let id = inspector.selectedElement.val.fallbackElementId()
+  for row in inspector.layers.val:
+    if row.parentId == id:
+      return inspector.selectElementById(row.id)
+  false
+
+proc selectNextElement*(inspector: InspectorVM): bool {.discardable.} =
+  let rows = inspector.filteredLayers.val
+  if rows.len == 0:
+    return false
+  let id = inspector.selectedElement.val.fallbackElementId()
+  let index = rows.rowIndex(id)
+  if index < 0:
+    return inspector.selectElementById(rows[0].id)
+  inspector.selectElementById(rows[min(rows.high, index + 1)].id)
+
+proc selectPreviousElement*(inspector: InspectorVM): bool {.discardable.} =
+  let rows = inspector.filteredLayers.val
+  if rows.len == 0:
+    return false
+  let id = inspector.selectedElement.val.fallbackElementId()
+  let index = rows.rowIndex(id)
+  if index < 0:
+    return inspector.selectElementById(rows[rows.high].id)
+  inspector.selectElementById(rows[max(0, index - 1)].id)
 
 proc editProperty*(inspector: InspectorVM;
     request: PropertyEditRequest): PropertyEditResult {.discardable.} =
@@ -2668,6 +2989,10 @@ proc createStoryboardVM*(): StoryboardVM =
 
 proc createInspectorVM*(): InspectorVM =
   let selectedElement = createSignal(ElementRef())
+  let layers = createSignal[seq[ElementLayerRow]](@[])
+  let layerSearch = createSignal("")
+  let expandedLayerIds = createSignal[seq[string]](@[])
+  let hoveredElementId = createSignal("")
   let activeSection = createSignal(isLayout)
   let editDiagnostics = createSignal[seq[PropertyEditDiagnostic]](@[])
   let pendingSourceEdits = createSignal[seq[SourceEditPlan]](@[])
@@ -2682,6 +3007,41 @@ proc createInspectorVM*(): InspectorVM =
 
   let properties = createMemo[seq[PropertyInfo]](proc(): seq[PropertyInfo] =
     selectedElement.val.properties
+  )
+
+  let filteredLayers = createMemo[seq[ElementLayerRow]](proc(): seq[
+      ElementLayerRow] =
+    let query = layerSearch.val.strip.toLowerAscii()
+    let allRows = layers.val
+
+    func matches(row: ElementLayerRow): bool =
+      if query.len == 0:
+        return true
+      row.label.toLowerAscii().contains(query) or
+        row.tag.toLowerAscii().contains(query) or
+        row.sourceFile.toLowerAscii().contains(query) or
+        row.schemaKey.toLowerAscii().contains(query)
+
+    func parentExpanded(row: ElementLayerRow): bool =
+      if query.len > 0:
+        return true
+      var parentId = row.parentId
+      while parentId.len > 0:
+        var found = false
+        for parent in allRows:
+          if parent.id == parentId:
+            if not parent.expanded:
+              return false
+            parentId = parent.parentId
+            found = true
+            break
+        if not found:
+          return true
+      true
+
+    for row in allRows:
+      if row.matches() and row.parentExpanded():
+        result.add row
   )
 
   let propertyEditors = createMemo[seq[CSSPropertyEditorVM]](proc(): seq[
@@ -2723,6 +3083,10 @@ proc createInspectorVM*(): InspectorVM =
 
   InspectorVM(
     selectedElement: selectedElement,
+    layers: layers,
+    layerSearch: layerSearch,
+    expandedLayerIds: expandedLayerIds,
+    hoveredElementId: hoveredElementId,
     activeSection: activeSection,
     editDiagnostics: editDiagnostics,
     pendingSourceEdits: pendingSourceEdits,
@@ -2732,6 +3096,7 @@ proc createInspectorVM*(): InspectorVM =
     redoStack: redoStack,
     hasElement: hasElement,
     properties: properties,
+    filteredLayers: filteredLayers,
     propertyEditors: propertyEditors,
     isDirty: isDirty,
     displayMode: displayMode,

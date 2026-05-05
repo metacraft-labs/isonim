@@ -326,9 +326,31 @@ proc dispatchPreviewAncestorSelection(index: int) =
   else:
     discard index
 
-proc previewAncestorSelectionHandler(index: int): proc() =
+proc dispatchPreviewElementSelection(id: string) =
+  when defined(js):
+    {.emit: ["""
+      (function () {
+      const toJsString = (raw) => Array.isArray(raw)
+        ? String.fromCharCode.apply(null, raw)
+        : String(raw || '');
+      window.dispatchEvent(new CustomEvent('isonim-select-preview-element-id', {
+        detail: { id: toJsString(""", id, """) }
+      }));
+      })();
+    """].}
+  else:
+    discard id
+
+proc previewAncestorSelectionHandler(vm: EditorVM; index: int; id: string): proc() =
   let captured = index
-  result = proc() = dispatchPreviewAncestorSelection(captured)
+  let capturedId = id
+  result = proc() =
+    dispatchPreviewAncestorSelection(captured)
+  if capturedId.len > 0:
+    result = proc() =
+      discard vm.selectInspectorElementById(capturedId)
+      dispatchPreviewAncestorSelection(captured)
+      dispatchPreviewElementSelection(capturedId)
 
 proc renderStatusBar[R, E](r: R; vm: EditorVM): E =
   var breadcrumbNode: E
@@ -390,7 +412,12 @@ proc renderStatusBar[R, E](r: R; vm: EditorVM): E =
             text label
         let ancestorIndex = i - storyDepth
         if ancestorIndex >= 0:
-          let selectAncestor = previewAncestorSelectionHandler(ancestorIndex)
+          let ids = vm.inspector.selectedElement.val.ancestorIds
+          let id =
+            if ancestorIndex >= 0 and ancestorIndex < ids.len: ids[ancestorIndex]
+            else: ""
+          let selectAncestor = previewAncestorSelectionHandler(vm,
+            ancestorIndex, id)
           r.addEventListener(chip, "click", selectAncestor)
           r.addEventListener(chip, "keydown", selectAncestor)
         r.appendChild(breadcrumbNode, chip)

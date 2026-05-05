@@ -213,12 +213,20 @@
       "owner": "framework-and-consumer",
       "mockOnly": false,
       "placeholderUi": false,
-      "browserBehavior": ["pointer", "focus", "iframe"],
-      "implementation": "Component edit mode renders the project-owned preview iframe, installs a generic DOM selection and hover-inspection bridge with selection handles, supports deep element selection, repeat-click parent cycling, Shift-click component wrapper selection, breadcrumb/source-path context, maps clicked real DOM to InspectorVM source-backed properties, applies inspector edits live in the iframe, and routes representative edits through the workspace source adapter with dirty/save/revert state.",
-      "knownLimitations": "Selection layers, breadcrumbs, latency budgets, and robust keyboard selection are M33 work.",
+      "browserBehavior": ["pointer", "focus", "keyboard", "iframe"],
+      "implementation": "Component edit mode renders the project-owned preview iframe, installs a generic DOM selection and hover-inspection bridge with selection handles, supports source-backed stable element identities, deep element selection, repeat-click parent cycling, Shift-click component wrapper selection, keyboard parent/child/next/previous/clear traversal, a searchable/expandable Layers tree, hover-to-highlight, breadcrumb/source-path context, layer and breadcrumb ancestor selection by the same identity, selection restoration across mode/browser viewport/save/revert cycles, maps clicked real DOM to InspectorVM source-backed properties, applies inspector edits live in the iframe, and routes representative edits through the workspace source adapter with dirty/save/revert state.",
+      "knownLimitations": "Marquee/multi-select is only model-ready, hidden/locked rows are readiness flags rather than enforcement, and visual latency/screenshot baselines remain future gate work.",
       "headlessTests": [
         {
           "name": "component_dom_selection_bridge_populates_source_backed_inspector",
+          "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "selection_vm_tracks_stable_element_identity",
+          "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "selection_vm_supports_tree_navigation",
           "file": "tests/test_editor_viewmodels.nim"
         }
       ],
@@ -227,14 +235,22 @@
         {
           "name": "edits real metacraft component DOM through the inspector",
           "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
+        },
+        {
+          "name": "e2e_canvas_selection_matches_layer_tree_and_breadcrumbs",
+          "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
+        },
+        {
+          "name": "e2e_selection_survives_mode_viewport_and_save_cycles",
+          "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
         }
       ],
       "screenshotVisualAssertions": {
         "requiredForFigmaGrade": true,
         "status": "not_started",
         "assertions": [],
-        "futureMilestone": "M33",
-        "notes": "Needs visual assertions for hover rings, selected handles, breadcrumbs, iframe reflow, and no layout jumping."
+        "futureMilestone": "M43",
+        "notes": "M33 has behavior coverage for selection, layers, breadcrumbs, and restore paths. Figma-grade still needs screenshot assertions for hover rings, selected handles, breadcrumbs, iframe reflow, and no layout jumping."
       },
       "consumerCoverage": {
         "isonimExample": {
@@ -246,7 +262,9 @@
         "metacraftWeb": {
           "status": "covered",
           "evidence": [
-            "tests/browser/specs/metacraft-web-editor.spec.ts:edits real metacraft component DOM through the inspector"
+            "tests/browser/specs/metacraft-web-editor.spec.ts:edits real metacraft component DOM through the inspector",
+            "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_canvas_selection_matches_layer_tree_and_breadcrumbs",
+            "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_selection_survives_mode_viewport_and_save_cycles"
           ]
         }
       }

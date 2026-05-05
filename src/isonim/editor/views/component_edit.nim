@@ -111,7 +111,8 @@ proc editablePreviewDocument(documentHtml: string;
   const editorIds = new Set([
     'isonim-editor-hover-label',
     'isonim-editor-selection-handles',
-    'isonim-editor-selection-breadcrumb'
+    'isonim-editor-selection-breadcrumb',
+    'isonim-editor-comment-popup'
   ]);
   let lastClick = { x: -10000, y: -10000, index: 0, at: 0 };
   function isElement(node) {
@@ -121,7 +122,7 @@ proc editablePreviewDocument(documentHtml: string;
     if (!isElement(el)) return false;
     if (el === document.documentElement || el === document.body) return false;
     if (editorIds.has(el.id)) return false;
-    if (el.closest && el.closest('#isonim-editor-hover-label, #isonim-editor-selection-handles, #isonim-editor-selection-breadcrumb')) return false;
+    if (el.closest && el.closest('#isonim-editor-hover-label, #isonim-editor-selection-handles, #isonim-editor-selection-breadcrumb, #isonim-editor-comment-popup')) return false;
     const rect = el.getBoundingClientRect();
     return rect.width > 0 && rect.height > 0;
   }
@@ -136,6 +137,22 @@ proc editablePreviewDocument(documentHtml: string;
     if (cls.length) text += '.' + cls.join('.');
     if (role) text += '[role=' + role + ']';
     return text;
+  }
+  function sourceKeyFor(el) {
+    const source = parseSource(el.getAttribute('data-isonim-src'));
+    const tag = el.tagName.toLowerCase();
+    const testId = el.getAttribute('data-testid') || '';
+    const cls = String(el.getAttribute('class') || '').trim().split(/\s+/).filter(Boolean).slice(0, 2).join('.');
+    const owned = testId ? 'testid:' + testId : (cls ? 'class:' + cls : 'tag:' + tag);
+    return source.file + ':' + source.line + ':' + owned;
+  }
+  function identityFor(el) {
+    if (!isElement(el)) return '';
+    const existing = el.getAttribute('data-isonim-element-id');
+    if (existing) return existing;
+    const id = sourceKeyFor(el) + ':' + cssPath(el);
+    el.setAttribute('data-isonim-element-id', id);
+    return id;
   }
   function cssPath(el) {
     const parts = [];
@@ -161,6 +178,36 @@ proc editablePreviewDocument(documentHtml: string;
       el = el.parentElement;
     }
     return stack;
+  }
+  function layerTree(selected) {
+    const nodes = Array.from(document.querySelectorAll('body *')).filter(isSelectable);
+    const nodeSet = new Set(nodes);
+    return nodes.map((node) => {
+      const id = identityFor(node);
+      let parent = node.parentElement;
+      while (parent && !nodeSet.has(parent)) parent = parent.parentElement;
+      const directChildren = Array.from(node.children || []).filter((child) => isSelectable(child));
+      const source = parseSource(node.getAttribute('data-isonim-src'));
+      const label = stableSelector(node);
+      return {
+        id: id,
+        parentId: parent ? identityFor(parent) : '',
+        label: label,
+        tag: node.tagName.toLowerCase(),
+        sourceKey: sourceKeyFor(node),
+        schemaKey: 'dom.' + (node.getAttribute('data-testid') || node.tagName.toLowerCase()),
+        domPath: cssPath(node),
+        sourceFile: source.file,
+        sourceLine: Number(source.line) || 0,
+        depth: ancestorStack(node).length - 1,
+        childCount: directChildren.length,
+        expanded: true,
+        selected: selected === node,
+        hovered: node.hasAttribute('data-isonim-hovered'),
+        hidden: false,
+        locked: false
+      };
+    });
   }
   function preferredElement(event) {
     const stack = ancestorStack(event.target);
@@ -263,14 +310,21 @@ proc editablePreviewDocument(documentHtml: string;
     const style = window.getComputedStyle(el);
     const rect = el.getBoundingClientRect();
     const stack = ancestorStack(el).reverse().map(stableSelector);
+    const stackIds = ancestorStack(el).reverse().map(identityFor);
+    const elementId = identityFor(el);
+    const schemaKey = 'dom.' + (el.getAttribute('data-testid') || el.tagName.toLowerCase());
     parent.dispatchEvent(new CustomEvent('isonim-preview-element-selected', {
       detail: {
+        elementId: elementId,
+        sourceKey: sourceKeyFor(el),
+        schemaKey: schemaKey,
         tag: el.tagName.toLowerCase(),
         testId: el.getAttribute('data-testid') || '',
         className: el.getAttribute('class') || '',
         role: el.getAttribute('role') || '',
         elementPath: cssPath(el),
         ancestry: stack.join(' > '),
+        ancestorIds: stackIds.join(' > '),
         sourceFile: source.file,
         sourceLine: source.line,
         display: style.display || '',
@@ -291,9 +345,21 @@ proc editablePreviewDocument(documentHtml: string;
         boxShadow: style.boxShadow || '',
         opacity: style.opacity || '',
         rectWidth: String(Math.round(rect.width)),
-        rectHeight: String(Math.round(rect.height))
+        rectHeight: String(Math.round(rect.height)),
+        layerTree: JSON.stringify(layerTree(el))
       }
     }));
+  }
+  function clearSelection() {
+    document.querySelectorAll('[data-isonim-selected="true"]').forEach((node) => {
+      node.removeAttribute('data-isonim-selected');
+    });
+    const handles = document.getElementById('isonim-editor-selection-handles');
+    const crumb = document.getElementById('isonim-editor-selection-breadcrumb');
+    if (handles) handles.remove();
+    if (crumb) crumb.hidden = true;
+    window.__isonimSelectedElement = null;
+    parent.dispatchEvent(new CustomEvent('isonim-preview-selection-cleared'));
   }
   function showCommentPopup(el) {
     const existing = document.getElementById('isonim-editor-comment-popup');
@@ -363,6 +429,34 @@ proc editablePreviewDocument(documentHtml: string;
     selectElement(selected);
     if (editorMode === 'comment' && selected) showCommentPopup(selected);
   }, true);
+  document.addEventListener('keydown', function (event) {
+    if (editorMode === 'view') return;
+    if (event.target && event.target.closest && event.target.closest('#isonim-editor-comment-popup')) return;
+    const selected = window.__isonimSelectedElement;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      clearSelection();
+      return;
+    }
+    if (!selected || !['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+    const rows = layerTree(selected);
+    const selectedId = identityFor(selected);
+    const index = rows.findIndex((row) => row.id === selectedId);
+    let targetId = '';
+    if (event.key === 'ArrowUp' && index > 0) targetId = rows[index - 1].id;
+    if (event.key === 'ArrowDown' && index >= 0 && index + 1 < rows.length) targetId = rows[index + 1].id;
+    if (event.key === 'ArrowLeft' && index >= 0) targetId = rows[index].parentId;
+    if (event.key === 'ArrowRight' && index >= 0) {
+      const child = rows.find((row) => row.parentId === selectedId);
+      if (child) targetId = child.id;
+    }
+    if (!targetId) return;
+    const target = document.querySelector('[data-isonim-element-id="' + CSS.escape(targetId) + '"]');
+    if (target) {
+      event.preventDefault();
+      selectElement(target);
+    }
+  }, true);
   document.addEventListener('mousemove', function (event) {
     if (editorMode === 'view') return;
     const el = ancestorStack(event.target)[0];
@@ -400,6 +494,37 @@ proc editablePreviewDocument(documentHtml: string;
     const target = stack[Math.max(0, Math.min(index, stack.length - 1))];
     if (target) selectElement(target);
   });
+  parent.addEventListener('isonim-select-preview-element-id', function (event) {
+    if (editorMode === 'view') return;
+    const id = String(event.detail && event.detail.id || '');
+    if (!id) return;
+    layerTree(window.__isonimSelectedElement || document.body);
+    const target = document.querySelector('[data-isonim-element-id="' + CSS.escape(id) + '"]');
+    if (target) selectElement(target);
+  });
+  parent.addEventListener('isonim-hover-preview-element-id', function (event) {
+    if (editorMode === 'view') return;
+    const id = String(event.detail && event.detail.id || '');
+    document.querySelectorAll('[data-isonim-hovered="true"]').forEach((node) => {
+      node.removeAttribute('data-isonim-hovered');
+    });
+    if (!id) return;
+    layerTree(window.__isonimSelectedElement || document.body);
+    const target = document.querySelector('[data-isonim-element-id="' + CSS.escape(id) + '"]');
+    if (target) target.setAttribute('data-isonim-hovered', 'true');
+  });
+  window.__isonimRestoreSelection = function (id) {
+    const selectedId = String(id || '');
+    if (!selectedId) return;
+    layerTree(window.__isonimSelectedElement || document.body);
+    const target = document.querySelector('[data-isonim-element-id="' + CSS.escape(selectedId) + '"]');
+    if (target) selectElement(target);
+  };
+  setTimeout(function () {
+    try {
+      window.__isonimRestoreSelection(parent.__isonimPendingPreviewSelectionId || '');
+    } catch (error) {}
+  }, 0);
 })();
 </script>
 """
@@ -417,15 +542,16 @@ proc editablePreviewDocument(documentHtml: string;
 
 proc installPreviewSelectionBridge[R, E](r: R; frame: E; vm: EditorVM) =
   when defined(js):
-    let selectFromBrowser = proc(tag, testId, className, role, elementPath,
-        ancestry, sourceFile, sourceLine, display, position, backgroundColor,
+    let selectFromBrowser = proc(elementId, sourceKey, schemaKey, tag, testId,
+        className, role, elementPath, ancestry, ancestorIds, sourceFile,
+        sourceLine, display, position, backgroundColor,
         color, padding, margin, width, height, borderRadius, borderWidth,
         borderStyle, borderColor, fontSize, fontWeight, lineHeight, boxShadow,
-        opacity, rectWidth, rectHeight: cstring) =
+        opacity, rectWidth, rectHeight, layerTreeJson: cstring) =
       let line =
         try: parseInt($sourceLine)
         except ValueError: 0
-      discard vm.selectInspectorElement(previewDomElementRef(
+      let element = previewDomElementRef(
         vm.preview.current.val.metadata,
         $tag,
         $testId,
@@ -453,7 +579,16 @@ proc installPreviewSelectionBridge[R, E](r: R; frame: E; vm: EditorVM) =
         $boxShadow,
         $opacity,
         $rectWidth,
-        $rectHeight))
+        $rectHeight,
+        $elementId,
+        $sourceKey,
+        $schemaKey,
+        $ancestorIds,
+        $layerTreeJson)
+      discard vm.selectInspectorElement(element)
+      vm.inspector.setSelectionTree(previewDomLayerRows($layerTreeJson,
+        element.id, vm.inspector.hoveredElementId.val,
+        vm.inspector.expandedLayerIds.val))
       if ($backgroundColor).len > 0 and ($backgroundColor) != "rgba(0, 0, 0, 0)":
         vm.inspector.activeSection.val = isFill
       elif ($padding).len > 0 or ($margin).len > 0:
@@ -467,16 +602,29 @@ proc installPreviewSelectionBridge[R, E](r: R; frame: E; vm: EditorVM) =
           const d = event.detail || {};
           """, selectFromBrowser,
         """(
+            d.elementId || '', d.sourceKey || '', d.schemaKey || '',
             d.tag || '', d.testId || '', d.className || '', d.role || '',
-            d.elementPath || '', d.ancestry || '', d.sourceFile || '',
+            d.elementPath || '', d.ancestry || '', d.ancestorIds || '',
+            d.sourceFile || '',
             String(d.sourceLine || ''), d.display || '', d.position || '',
             d.backgroundColor || '', d.color || '', d.padding || '',
             d.margin || '', d.width || '', d.height || '',
             d.borderRadius || '', d.borderWidth || '', d.borderStyle || '',
             d.borderColor || '', d.fontSize || '', d.fontWeight || '',
             d.lineHeight || '', d.boxShadow || '', d.opacity || '',
-            d.rectWidth || '', d.rectHeight || ''
+            d.rectWidth || '', d.rectHeight || '', d.layerTree || ''
           );
+        });
+      }
+    """].}
+
+    let clearFromBrowser = proc() =
+      vm.clearInspectorSelection()
+    {.emit: ["""
+      if (!window.__isonimPreviewSelectionClearBridgeInstalled) {
+        window.__isonimPreviewSelectionClearBridgeInstalled = true;
+        window.addEventListener('isonim-preview-selection-cleared', function () {
+          """, clearFromBrowser, """();
         });
       }
     """].}
@@ -834,6 +982,67 @@ proc commitLivePreviewStyles[R, E](r: R; frame: E) =
         });
       })();
     """].}
+
+proc selectPreviewElementById[R, E](r: R; frame: E; id: string) =
+  when defined(js):
+    {.emit: ["""
+      (function () {
+      const toJsString = (raw) => Array.isArray(raw)
+        ? String.fromCharCode.apply(null, raw)
+        : String(raw || '');
+      window.dispatchEvent(new CustomEvent('isonim-select-preview-element-id', {
+        detail: { id: toJsString(""", id, """) }
+      }));
+      })();
+    """].}
+  else:
+    discard r
+    discard frame
+    discard id
+
+proc hoverPreviewElementById[R, E](r: R; frame: E; id: string) =
+  when defined(js):
+    {.emit: ["""
+      (function () {
+      const toJsString = (raw) => Array.isArray(raw)
+        ? String.fromCharCode.apply(null, raw)
+        : String(raw || '');
+      window.dispatchEvent(new CustomEvent('isonim-hover-preview-element-id', {
+        detail: { id: toJsString(""", id, """) }
+      }));
+      })();
+    """].}
+  else:
+    discard r
+    discard frame
+    discard id
+
+proc restorePreviewSelection[R, E](r: R; frame: E; id: string) =
+  when defined(js):
+    {.emit: ["""
+      (function () {
+        const frame = """, frame, """;
+        const toJsString = (raw) => Array.isArray(raw)
+          ? String.fromCharCode.apply(null, raw)
+          : String(raw || '');
+        const selectedId = toJsString(""", id, """);
+        if (!frame || !selectedId) return;
+        window.__isonimPendingPreviewSelectionId = selectedId;
+        const restore = () => {
+          try {
+            if (frame.contentWindow && frame.contentWindow.__isonimRestoreSelection) {
+              frame.contentWindow.__isonimRestoreSelection(selectedId);
+            }
+          } catch (error) {}
+        };
+        frame.addEventListener('load', () => setTimeout(restore, 0), { once: true });
+        setTimeout(restore, 0);
+      })();
+    """].}
+  else:
+    discard r
+    discard frame
+    discard id
 
 proc applyCssValue[R, E](r: R; vm: EditorVM; frame: E; propName,
     value: string; commitSource = true) =
@@ -1502,35 +1711,187 @@ proc renderRawCssEditor[R, E](r: R; vm: EditorVM; frame: E;
   r.addEventListener(applyButton, "keydown", apply)
   r.addEventListener(rawInput, "blur", apply)
 
-proc renderElementTree[R, E](r: R; selected: ElementRef): E =
-  let name =
-    if selected.children.len > 0:
-      selected.tag & " (" & $selected.children.len & " child nodes)"
-    else:
-      selected.tag
+proc layerSearchHandler[R, E](r: R; vm: EditorVM; input: E): proc() =
+  result = proc() =
+    vm.inspector.setLayerSearch(r.inputValue(input))
+
+proc layerSelectHandler[R, E](r: R; vm: EditorVM; frame: E; id: string): proc() =
+  let captured = id
+  result = proc() =
+    discard vm.selectInspectorElementById(captured)
+    r.selectPreviewElementById(frame, captured)
+
+proc layerHoverHandler[R, E](r: R; vm: EditorVM; frame: E; id: string): proc() =
+  let captured = id
+  result = proc() =
+    vm.inspector.setLayerHover(captured)
+    r.hoverPreviewElementById(frame, captured)
+
+proc layerToggleHandler(vm: EditorVM; id: string): proc() =
+  let captured = id
+  result = proc() =
+    vm.inspector.toggleLayerExpanded(captured)
+
+proc layerCommandHandler[R, E](r: R; vm: EditorVM; frame: E;
+    command: string): proc() =
+  let captured = command
+  result = proc() =
+    let changed =
+      case captured
+      of "parent": vm.selectParentInspectorElement()
+      of "child": vm.selectChildInspectorElement()
+      of "next": vm.selectNextInspectorElement()
+      of "previous": vm.selectPreviousInspectorElement()
+      of "clear":
+        vm.clearInspectorSelection()
+        true
+      else:
+        false
+    if changed:
+      let id = vm.inspector.selectedElement.val.id
+      if id.len > 0:
+        r.selectPreviewElementById(frame, id)
+
+proc renderElementTree[R, E](r: R; vm: EditorVM; frame: E;
+    selected: ElementRef): E =
+  var searchInput: E
+  var rowsNode: E
+  var prevButton: E
+  var parentButton: E
+  var childButton: E
+  var nextButton: E
+  var clearButton: E
   result = ui(r):
-    tdiv(display = "flex", flex_direction = "column", gap = "6px",
+    tdiv(display = "flex", flex_direction = "column", gap = "7px",
           padding = "10px", border = "1px solid " & border,
           border_radius = "6px", background_color = bgBase):
-      span(font_size = "10px", font_weight = "700", color = textSecondary,
-            text_transform = "uppercase", letter_spacing = "0.5px"):
-        text "Element Tree"
-      tdiv(display = "flex", flex_direction = "column", gap = "4px",
+      tdiv(display = "flex", align_items = "center",
+            justify_content = "space-between", gap = "8px"):
+        span(font_size = "10px", font_weight = "700", color = textSecondary,
+              text_transform = "uppercase", letter_spacing = "0.5px"):
+          text "Layers"
+        span(font_size = "10px", color = textDim):
+          text $vm.inspector.filteredLayers.val.len & " rows"
+      input(ref = searchInput,
+            class = "editor-input",
+            height = "26px",
+            background_color = bgSurface,
+            border = "1px solid " & border,
+            border_radius = "4px",
+            padding = "0 7px",
+            font_size = "11px",
+            color = textPrimary,
+            outline = "none",
+            min_width = "0",
+            `aria-label` = "Search element layers",
+            placeholder = "Search layers")
+      tdiv(display = "grid",
+            `grid-template-columns` = "repeat(5, 1fr)",
+            gap = "4px"):
+        tdiv(ref = prevButton, role = "button", tabindex = "0",
+              `aria-label` = "Select previous element",
+              padding = "3px", text_align = "center",
+              border = "1px solid " & border,
+              border_radius = "4px", color = textMuted,
+              cursor = "pointer"):
+          text "Prev"
+        tdiv(ref = parentButton, role = "button", tabindex = "0",
+              `aria-label` = "Select parent element",
+              padding = "3px", text_align = "center",
+              border = "1px solid " & border,
+              border_radius = "4px", color = textMuted,
+              cursor = "pointer"):
+          text "Up"
+        tdiv(ref = childButton, role = "button", tabindex = "0",
+              `aria-label` = "Select child element",
+              padding = "3px", text_align = "center",
+              border = "1px solid " & border,
+              border_radius = "4px", color = textMuted,
+              cursor = "pointer"):
+          text "Down"
+        tdiv(ref = nextButton, role = "button", tabindex = "0",
+              `aria-label` = "Select next element",
+              padding = "3px", text_align = "center",
+              border = "1px solid " & border,
+              border_radius = "4px", color = textMuted,
+              cursor = "pointer"):
+          text "Next"
+        tdiv(ref = clearButton, role = "button", tabindex = "0",
+              `aria-label` = "Clear element selection",
+              padding = "3px", text_align = "center",
+              border = "1px solid " & border,
+              border_radius = "4px", color = textMuted,
+              cursor = "pointer"):
+          text "Clear"
+      tdiv(ref = rowsNode,
+            display = "flex", flex_direction = "column", gap = "3px",
             font_family = "monospace", font_size = "11px"):
-        span(color = textDim):
-          text "document"
-        span(color = textDim, padding_left = "10px"):
-          text "main"
-        span(color = accent, padding_left = "20px",
-              font_weight = "700"):
-          text name & " selected"
-        for detail in selected.children:
-          let detailText = detail
-          span(color = textDim, padding_left = "30px",
-                white_space = "nowrap", overflow = "hidden",
-                text_overflow = "ellipsis"):
-            text detailText
+        discard
   r.setAttribute(result, "aria-label", "Element tree selected " & selected.tag)
+  r.setInputValue(searchInput, vm.inspector.layerSearch.val)
+  let search = r.layerSearchHandler(vm, searchInput)
+  r.addEventListener(searchInput, "input", search)
+  r.addEventListener(searchInput, "change", search)
+
+  let commandButtons = [prevButton, parentButton, childButton, nextButton,
+    clearButton]
+  let commands = ["previous", "parent", "child", "next", "clear"]
+  for i, button in commandButtons:
+    let handler = r.layerCommandHandler(vm, frame, commands[i])
+    r.addEventListener(button, "click", handler)
+    r.addEventListener(button, "keydown", handler)
+
+  for row in vm.inspector.filteredLayers.val:
+    let rowId = row.id
+    let label = row.label
+    let selectedRow = row.selected
+    let depth = row.depth
+    let childCount = row.childCount
+    let expanded = row.expanded
+    let sourceLabel = row.sourceFile.split("/")[^1] & ":" & $row.sourceLine
+    let hidden = row.hidden
+    let locked = row.locked
+    var toggleNode: E
+    var selectNode: E
+    let rowNode = ui(r):
+      tdiv(display = "grid",
+            `grid-template-columns` = "18px minmax(0, 1fr) auto",
+            align_items = "center", gap = "4px",
+            min_height = "26px",
+            padding = "3px 4px",
+            padding_left = $(4 + depth * 12) & "px",
+            border_radius = "4px",
+            background_color = (if selectedRow: "rgba(59,130,246,.22)" else: "transparent"),
+            color = (if selectedRow: textPrimary else: textMuted)):
+        tdiv(ref = toggleNode, role = "button", tabindex = "0",
+              `aria-label` = "Toggle layer " & label,
+              color = textDim, cursor = "pointer"):
+          text (if childCount > 0: (if expanded: "v" else: ">") else: "")
+        tdiv(ref = selectNode, role = "button", tabindex = "0",
+              `aria-label` = "Select layer " & label,
+              white_space = "nowrap", overflow = "hidden",
+              text_overflow = "ellipsis", cursor = "pointer"):
+          text label
+        span(font_size = "10px", color = textDim,
+              white_space = "nowrap"):
+          text sourceLabel
+    r.setAttribute(rowNode, "data-isonim-layer-id", rowId)
+    r.setAttribute(rowNode, "data-isonim-layer-selected",
+      if selectedRow: "true" else: "false")
+    r.setAttribute(rowNode, "data-isonim-layer-hidden",
+      if hidden: "true" else: "false")
+    r.setAttribute(rowNode, "data-isonim-layer-locked",
+      if locked: "true" else: "false")
+    let toggle = layerToggleHandler(vm, rowId)
+    r.addEventListener(toggleNode, "click", toggle)
+    r.addEventListener(toggleNode, "keydown", toggle)
+    let select = r.layerSelectHandler(vm, frame, rowId)
+    r.addEventListener(selectNode, "click", select)
+    r.addEventListener(selectNode, "keydown", select)
+    let hover = r.layerHoverHandler(vm, frame, rowId)
+    r.addEventListener(rowNode, "mouseenter", hover)
+    r.addEventListener(rowNode, "mouseover", hover)
+    r.appendChild(rowsNode, rowNode)
 
 proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;
     clipboard: StyleClipboard) =
@@ -1571,7 +1932,7 @@ proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;
         renderRichPropertyControl[R, E](r, vm, frame, clipboard, prop, fallback))
 
     r.appendChild(content, renderRawCssEditor[R, E](r, vm, frame, selected, active))
-    r.appendChild(content, renderElementTree[R, E](r, selected))
+    r.appendChild(content, renderElementTree[R, E](r, vm, frame, selected))
 
     if vm.inspector.pendingSourceEdits.val.len > 0:
       let dirty = ui(r):
@@ -1707,6 +2068,7 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
   var sourceNode: E
   var projectFrame: E
   var lastSrcdoc = ""
+  var lastRestoredSelection = ""
 
   let container = ui(r):
     tdiv(class = "editor-preview",
@@ -1816,11 +2178,17 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
       else:
         editablePreviewDocument(previewState.documentHtml, metadata,
           vm.editMode.val)
+    var srcdocChanged = false
     if nextSrcdoc != lastSrcdoc:
       lastSrcdoc = nextSrcdoc
+      srcdocChanged = true
       r.setAttribute(projectFrame, "srcdoc", nextSrcdoc)
     r.setStyle(projectFrame, "min-height", "320px")
     r.setStyle(projectFrame, "overflow", "hidden")
+    let selectedId = vm.inspector.selectedElement.val.id
+    if selectedId.len > 0 and (srcdocChanged or selectedId != lastRestoredSelection):
+      lastRestoredSelection = selectedId
+      r.restorePreviewSelection(projectFrame, selectedId)
 
     let editing = vm.editMode.val == emEdit
     let editState = vm.evaluateCommand(eckEdit)

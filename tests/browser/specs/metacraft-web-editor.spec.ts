@@ -527,11 +527,159 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     const comment = editFrame.getByLabel("Comment on selected element");
     await expect(comment).toBeVisible();
     await comment.fill("Make the title hierarchy feel calmer.");
+    await comment.press("ArrowLeft");
+    await expect(editFrame.locator("h1.bo-title").first()).toHaveAttribute(
+      "data-isonim-selected",
+      "true",
+    );
+    await expect(comment).toHaveValue("Make the title hierarchy feel calmer.");
     await editFrame.getByRole("button", { name: "Add" }).click();
 
     const prompt = page.getByRole("textbox", { name: "Agent prompt" });
     await expect(prompt).toHaveValue(/Design review comments:/);
     await expect(prompt).toHaveValue(/Make the title hierarchy feel calmer/);
+  });
+
+  test("e2e_canvas_selection_matches_layer_tree_and_breadcrumbs", async ({
+    page,
+  }) => {
+    await page.goto("/");
+
+    await page.getByRole("button", { name: "Open Components section" }).click();
+    await page
+      .getByRole("button", {
+        name: "Select story Operational components / Topbar",
+      })
+      .click();
+    await page
+      .getByRole("button", { name: "Open selected component in edit mode" })
+      .click();
+
+    const editFrame = page.frameLocator(
+      'iframe[title="Editable component preview"]',
+    );
+    const topbar = editFrame.getByTestId("component-topbar");
+    const title = topbar.locator("h1.bo-title");
+    await title.click({ force: true });
+
+    await expect(title).toHaveAttribute("data-isonim-selected", "true");
+    const titleId = await title.getAttribute("data-isonim-element-id");
+    if (!titleId) {
+      throw new Error("Selected title did not receive a stable element id");
+    }
+    const headerId = await topbar.getAttribute("data-isonim-element-id");
+    if (!headerId) {
+      throw new Error("Topbar ancestor did not receive a stable element id");
+    }
+    const headerLayerRow = page.locator(`[data-isonim-layer-id="${headerId}"]`);
+    await expect(headerLayerRow).toContainText(/components\.nim:\d+/);
+    const titleLayerRow = page.locator(`[data-isonim-layer-id="${titleId}"]`);
+    const titleLayer = titleLayerRow.getByRole("button", {
+      name: "Select layer h1.bo-title",
+    });
+    await expect(titleLayer).toBeVisible();
+    await expect(titleLayerRow).toContainText(/components\.nim:\d+/);
+    await expect(
+      page.locator('[data-isonim-layer-selected="true"]'),
+    ).toContainText("h1.bo-title");
+    await expect(
+      page.getByRole("button", { name: /Select breadcrumb h1\.bo-title/ }),
+    ).toBeVisible();
+
+    const headerToggle = headerLayerRow.getByRole("button", {
+      name: /Toggle layer header/,
+    });
+    await headerToggle.click();
+    await expect(titleLayer).toHaveCount(0);
+    await headerToggle.click();
+    await expect(titleLayer).toBeVisible();
+
+    await title.click({ force: true });
+    await title.click({ force: true });
+    await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
+    await expect(topbar).toHaveAttribute("data-isonim-element-id", headerId);
+    await expect(
+      page.locator('[data-isonim-layer-selected="true"]'),
+    ).toContainText(/header/);
+
+    await page
+      .getByRole("textbox", { name: "Search element layers" })
+      .fill("h1");
+    await titleLayer.click();
+    await expect(title).toHaveAttribute("data-isonim-selected", "true");
+    await expect(title).toHaveAttribute("data-isonim-element-id", titleId);
+    await expect(titleLayerRow).toHaveAttribute(
+      "data-isonim-layer-selected",
+      "true",
+    );
+
+    await page.getByRole("textbox", { name: "Search element layers" }).fill("");
+    await page
+      .getByRole("button", { name: /Select breadcrumb header/ })
+      .click();
+    await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
+    await expect(topbar).toHaveAttribute("data-isonim-element-id", headerId);
+    await expect(headerLayerRow).toHaveAttribute(
+      "data-isonim-layer-selected",
+      "true",
+    );
+  });
+
+  test("e2e_selection_survives_mode_viewport_and_save_cycles", async ({
+    page,
+  }) => {
+    await page.goto("/");
+
+    await page.getByRole("button", { name: "Open Components section" }).click();
+    await page
+      .getByRole("button", {
+        name: "Select story Operational components / Topbar",
+      })
+      .click();
+    await page
+      .getByRole("button", { name: "Open selected component in edit mode" })
+      .click();
+
+    const editFrame = page.frameLocator(
+      'iframe[title="Editable component preview"]',
+    );
+    const topbar = editFrame.getByTestId("component-topbar");
+    const title = topbar.locator("h1.bo-title");
+    await title.click({ force: true });
+    await expect(title).toHaveAttribute("data-isonim-selected", "true");
+
+    await page.getByRole("button", { name: "Switch to comment mode" }).click();
+    await expect(title).toHaveAttribute("data-isonim-selected", "true");
+    await page.getByRole("button", { name: "Switch to edit mode" }).click();
+    await expect(title).toHaveAttribute("data-isonim-selected", "true");
+
+    await page.setViewportSize({ width: 900, height: 900 });
+    await expect(title).toHaveAttribute("data-isonim-selected", "true");
+    await page.setViewportSize({ width: 430, height: 900 });
+    await expect(title).toHaveAttribute("data-isonim-selected", "true");
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await expect(title).toHaveAttribute("data-isonim-selected", "true");
+
+    await page.getByRole("tab", { name: "Show Fill edit controls" }).click();
+    const colorInput = page.getByLabel("Edit inspector property color").first();
+    await colorInput.fill("#F8FAFC");
+    await colorInput.blur();
+    await expect(page.getByText("Unsaved source edit")).toBeVisible();
+    await expect(title).toHaveAttribute("data-isonim-selected", "true");
+
+    await page
+      .getByRole("button", { name: "Revert inspector source edits" })
+      .click();
+    await expect(page.getByText("Unsaved source edit")).toHaveCount(0);
+    await expect(title).toHaveAttribute("data-isonim-selected", "true");
+
+    await page.getByRole("tab", { name: "Show Layout edit controls" }).click();
+    await page.getByRole("button", { name: "Set display to flex" }).click();
+    await page
+      .getByRole("button", { name: "Save inspector source edits" })
+      .click();
+    await expect(page.getByText("Unsaved source edit")).toHaveCount(0);
+    await expect(title).toHaveAttribute("data-isonim-selected", "true");
   });
 
   test("keeps editor state in browser history", async ({ page }) => {

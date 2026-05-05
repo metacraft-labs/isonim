@@ -866,6 +866,122 @@ suite "Editor ViewModels (M26 source-backed CSS property editors)":
       check vm.inspector.pendingSourceEdits.val.len == 1
       dispose()
 
+  test "selection_vm_tracks_stable_element_identity":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      let metadata = StoryRenderMetadata(
+        story: StoryRef(group: "Operational components", name: "Topbar",
+          kind: skComponent, index: 1),
+        title: "Operational components / Topbar",
+        sourceFile: "apps/back-office/src/backoffice_ui/components.nim",
+        sourceLine: 51,
+        renderKind: "component")
+      let treeJson = """
+[
+  {"id":"src:header","parentId":"","label":"header[data-testid=component-topbar]","tag":"header","sourceKey":"components.nim:51:testid:component-topbar","schemaKey":"dom.component-topbar","domPath":"header:nth-of-type(1)","sourceFile":"apps/back-office/src/backoffice_ui/components.nim","sourceLine":51,"depth":0,"childCount":1,"expanded":true},
+  {"id":"src:title","parentId":"src:header","label":"h1.bo-title","tag":"h1","sourceKey":"components.nim:52:class:bo-title","schemaKey":"dom.h1","domPath":"header:nth-of-type(1) > h1:nth-of-type(1)","sourceFile":"apps/back-office/src/backoffice_ui/components.nim","sourceLine":52,"depth":1,"childCount":0,"expanded":true}
+]
+"""
+      let element = previewDomElementRef(metadata,
+        "h1",
+        "",
+        "bo-title",
+        "",
+        "header:nth-of-type(1) > h1:nth-of-type(1)",
+        "header[data-testid=component-topbar] > h1.bo-title",
+        "apps/back-office/src/backoffice_ui/components.nim",
+        52,
+        "block",
+        "static",
+        "",
+        "rgb(15, 23, 42)",
+        "0px",
+        "0px",
+        "320px",
+        "32px",
+        "",
+        "",
+        "",
+        "",
+        "20px",
+        "700",
+        "24px",
+        "",
+        "1",
+        "320",
+        "32",
+        "src:title",
+        "components.nim:52:class:bo-title",
+        "dom.h1",
+        "src:header > src:title",
+        treeJson)
+
+      check vm.selectInspectorElement(element)
+      vm.inspector.setSelectionTree(previewDomLayerRows(treeJson, element.id))
+      check vm.inspector.selectedElement.val.id == "src:title"
+      check vm.inspector.selectedElement.val.sourceKey ==
+        "components.nim:52:class:bo-title"
+      check vm.inspector.selectedElement.val.ancestorIds ==
+        @["src:header", "src:title"]
+      check vm.inspector.layers.val.anyIt(it.id == "src:title" and
+        it.selected and it.schemaKey == "dom.h1")
+
+      let edit = vm.editCssProperty("color", "#F8FAFC", pesLocal)
+      check edit.status == pesAccepted
+      check vm.inspector.selectedElement.val.id == "src:title"
+      check vm.inspector.selectedElement.val.properties.anyIt(
+        it.schemaKey == "dom.h1.color")
+      vm.inspector.discardCssPropertyEdits()
+      check vm.inspector.selectedElement.val.id == "src:title"
+      check vm.selectParentInspectorElement()
+      check vm.inspector.selectedElement.val.id == "src:header"
+      check vm.inspector.selectedElement.val.ancestors ==
+        @["header[data-testid=component-topbar]"]
+      dispose()
+
+  test "selection_vm_supports_tree_navigation":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      vm.inspector.setSelectionTree(@[
+        ElementLayerRow(id: "root", label: "main", tag: "main",
+          sourceKey: "page:main", schemaKey: "dom.main",
+          sourceFile: "page.nim", sourceLine: 10, depth: 0,
+          childCount: 2, expanded: true),
+        ElementLayerRow(id: "header", parentId: "root", label: "header",
+          tag: "header", sourceKey: "page:header", schemaKey: "dom.header",
+          sourceFile: "page.nim", sourceLine: 12, depth: 1,
+          childCount: 1, expanded: true),
+        ElementLayerRow(id: "title", parentId: "header", label: "h1",
+          tag: "h1", sourceKey: "page:title", schemaKey: "dom.h1",
+          sourceFile: "page.nim", sourceLine: 13, depth: 2),
+        ElementLayerRow(id: "content", parentId: "root", label: "section",
+          tag: "section", sourceKey: "page:content", schemaKey: "dom.section",
+          sourceFile: "page.nim", sourceLine: 20, depth: 1)
+      ])
+
+      check vm.selectInspectorElementById("header")
+      check vm.inspector.selectedElement.val.id == "header"
+      check vm.selectChildInspectorElement()
+      check vm.inspector.selectedElement.val.id == "title"
+      check vm.selectParentInspectorElement()
+      check vm.inspector.selectedElement.val.id == "header"
+      check vm.selectNextInspectorElement()
+      check vm.inspector.selectedElement.val.id == "title"
+      check vm.selectPreviousInspectorElement()
+      check vm.inspector.selectedElement.val.id == "header"
+
+      vm.inspector.setLayerSearch("section")
+      check vm.inspector.filteredLayers.val.len == 1
+      check vm.selectNextInspectorElement()
+      check vm.inspector.selectedElement.val.id == "content"
+      vm.inspector.setLayerSearch("")
+      vm.inspector.toggleLayerExpanded("root")
+      check vm.inspector.filteredLayers.val.len == 1
+      vm.clearInspectorSelection()
+      check not vm.inspector.hasElement.val
+      check vm.inspector.layers.val.allIt(not it.selected)
+      dispose()
+
 suite "Editor ViewModels (M27 workspace file writes)":
 
   type WorkspaceEditRecorder = ref object

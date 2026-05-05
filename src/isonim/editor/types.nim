@@ -617,6 +617,10 @@ type
 
   ElementRef* = object
     ## Reference to a selected element in the preview.
+    id*: string            ## Stable source-backed element identity
+    sourceKey*: string     ## Source/schema key shared by DOM, tree rows, breadcrumbs
+    domPath*: string       ## DOM path used as a fallback browser selector
+    schemaKey*: string     ## Primary editable source schema entry
     tag*: string           ## e.g. "div", "span", "button"
     sourceFile*: string
     sourceLine*: int
@@ -624,7 +628,27 @@ type
     properties*: seq[PropertyInfo]
     children*: seq[string] ## Child element summaries for tree view
     ancestors*: seq[string] ## Breadcrumb labels from root to selected element
+    ancestorIds*: seq[string] ## Breadcrumb identities from root to selected element
     depth*: int            ## Nesting depth
+
+  ElementLayerRow* = object
+    ## Source-backed row in the editor-owned element/layers tree.
+    id*: string
+    parentId*: string
+    label*: string
+    tag*: string
+    sourceKey*: string
+    schemaKey*: string
+    domPath*: string
+    sourceFile*: string
+    sourceLine*: int
+    depth*: int
+    childCount*: int
+    expanded*: bool
+    selected*: bool
+    hovered*: bool
+    hidden*: bool
+    locked*: bool
 
   # --- Agent chat ---
   ChatMessageKind* = enum
