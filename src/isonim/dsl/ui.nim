@@ -97,9 +97,49 @@ const voidElements* = [
   "source", "track", "wbr",
 ]
 
+const htmlElements = [
+  "a", "abbr", "address", "area", "article", "aside", "audio", "b",
+  "base", "bdi", "bdo", "blockquote", "body", "br", "button",
+  "canvas", "caption", "cite", "code", "col", "colgroup", "data",
+  "datalist", "dd", "del", "details", "dfn", "dialog", "div", "dl",
+  "dt", "em", "embed", "fieldset", "figcaption", "figure", "footer",
+  "form", "h1", "h2", "h3", "h4", "h5", "h6", "head", "header",
+  "hgroup", "hr", "html", "i", "iframe", "img", "input", "ins",
+  "kbd", "label", "legend", "li", "link", "main", "map", "mark",
+  "menu", "meta", "meter", "nav", "noscript", "object", "ol",
+  "optgroup", "option", "output", "p", "picture", "pre", "progress",
+  "q", "rp", "rt", "ruby", "s", "samp", "script", "search", "section",
+  "select", "slot", "small", "source", "span", "strong", "style",
+  "sub", "summary", "sup", "table", "tbody", "td", "template",
+  "textarea", "tfoot", "th", "thead", "time", "title", "tr", "track",
+  "u", "ul", "var", "video", "wbr",
+]
+
 proc isVoidElement*(tag: string): bool {.compileTime.} =
   for v in voidElements:
     if tag == v: return true
+  return false
+
+proc isHtmlElement(tag: string): bool {.compileTime.} =
+  for el in htmlElements:
+    if tag == el: return true
+  return false
+
+proc isElementCall(name: string; node: NimNode): bool {.compileTime.} =
+  ## Distinguish DSL element calls from plain Nim helper/component calls.
+  ##
+  ## Element syntax is explicit when the call uses attributes or a child block.
+  ## Known HTML tags are also elements, including inline-child forms like
+  ## `button(span: text "x")`. Unknown plain calls such as
+  ## `renderAddButton(renderer)` are treated as node-returning Nim expressions.
+  let htmlTag = resolveTagName(name)
+  if isHtmlElement(htmlTag):
+    return true
+
+  for i in 1 ..< node.len:
+    if node[i].kind in {nnkExprEqExpr, nnkStmtList}:
+      return true
+
   return false
 
 # ---------------------------------------------------------------------------
@@ -401,6 +441,9 @@ proc processNode(rendererSym: NimNode; node: NimNode;
         )
         stmts.add(newCall(ident"createRenderEffect", effectBody))
         return txtSym
+
+    if name.len > 0 and not isElementCall(name, node):
+      return node
 
   # Handle element nodes: tagName(...): body or tagName: body
   if node.kind in {nnkCall, nnkCommand}:

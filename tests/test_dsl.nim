@@ -5,6 +5,11 @@ import isonim/testing/mock_dom
 import isonim/dsl/ui
 import isonim/dsl/components
 
+proc renderAddButton(r: MockRenderer): MockNode =
+  ui(r):
+    button(class = "add"):
+      text "Add"
+
 suite "DSL":
   test "test_dsl_static_html":
     ## ui with static content produces correct MockNode tree
@@ -257,6 +262,21 @@ suite "DSL":
 
       # Verify owner hierarchy
       check innerOwner.owner == outerOwner
+
+  test "test_dsl_appends_helper_proc_result":
+    ## Component/helper procs returning nodes compose naturally inside ui blocks.
+    createRoot proc(dispose: proc()) =
+      let renderer = MockRenderer()
+
+      let root = ui(renderer):
+        tdiv:
+          renderAddButton(renderer)
+
+      check root.tag == "div"
+      check root.children.len == 1
+      check root.children[0].tag == "button"
+      check root.children[0].attributes["class"] == "add"
+      check root.children[0].textContent == "Add"
 
   test "test_showIf_basic":
     ## showIf renders body when condition is true
