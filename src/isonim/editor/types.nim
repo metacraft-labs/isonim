@@ -253,6 +253,36 @@ type
     ntCorner     ## Sharp corner (no handles)
     ntAsymmetric ## Independent handle lengths
 
+  VectorHandleKind* = enum
+    vhkIn
+    vhkOut
+
+  VectorPathNode* = object
+    id*: string
+    x*, y*: float
+    inX*, inY*: float
+    outX*, outY*: float
+    nodeType*: NodeType
+    selected*: bool
+
+  VectorAlignment* = enum
+    vaLeft
+    vaCenter
+    vaRight
+    vaTop
+    vaMiddle
+    vaBottom
+
+  VectorDistributeAxis* = enum
+    vdaHorizontal
+    vdaVertical
+
+  VectorZOrder* = enum
+    vzoBringForward
+    vzoSendBackward
+    vzoBringToFront
+    vzoSendToBack
+
   FillType* = enum
     ftSolid, ftLinearGradient, ftRadialGradient, ftPattern, ftNone
 
@@ -362,6 +392,7 @@ type
     x*, y*, width*, height*: float
     rotation*: float
     pathData*: string
+    pathNodes*: seq[VectorPathNode]
     text*: string
     fill*: string
     stroke*: string
@@ -419,6 +450,17 @@ type
     vokReuseSymbol
     vokBooleanPath
     vokMovePathSegment
+    vokSelectPathNode
+    vokMovePathNode
+    vokInsertPathNode
+    vokDeletePathNode
+    vokConvertPathNode
+    vokDragPathHandle
+    vokAlignSelection
+    vokDistributeSelection
+    vokReorderSelection
+    vokNudgeSelection
+    vokSnapSelection
 
   VectorPropertyKind* = enum
     vpkFill

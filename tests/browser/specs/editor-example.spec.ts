@@ -163,6 +163,31 @@ async function assertVectorCanvasHasPixels(page) {
   ).toBeGreaterThan(1);
 }
 
+async function assertVectorPathHandlesVisible(page: Page) {
+  const host = page.locator('[data-vector-adapter="fabric"]').first();
+  await expect(host).toHaveAttribute(
+    "data-vector-path-overlay-visible",
+    "true",
+  );
+  await expect(host).toHaveAttribute("data-vector-path-source-backed", "paper");
+  await expect
+    .poll(async () =>
+      Number(await host.getAttribute("data-vector-path-anchor-count")),
+    )
+    .toBeGreaterThanOrEqual(3);
+  await expect
+    .poll(async () =>
+      Number(await host.getAttribute("data-vector-path-paper-segment-count")),
+    )
+    .toBeGreaterThanOrEqual(3);
+  await expect
+    .poll(async () =>
+      Number(await host.getAttribute("data-vector-path-hit-target-min")),
+    )
+    .toBeGreaterThanOrEqual(14);
+  await expect(host.locator('[data-vector-anchor="node-0"]')).toBeVisible();
+}
+
 async function openDestinationComponentDetail(page: Page) {
   await page.goto("/");
   await page.getByRole("button", { name: "Open Components section" }).click();
@@ -961,6 +986,169 @@ test.describe("IsoNim packaged editor example", () => {
       .toBe(countBeforeDelete - 1);
   });
 
+  test("e2e_vector_path_browser_handle_polish", async ({ page }) => {
+    await page.setViewportSize(desktop);
+    await page.goto("/?view=vector#vector-editor");
+    const host = page.locator('[data-vector-adapter="fabric"]').first();
+    await expect(host).toHaveAttribute(
+      "data-vector-path-library-backed",
+      "true",
+    );
+    await assertVectorPathHandlesVisible(page);
+    const beforePaperPath = await host.evaluate((node) => {
+      const editor = (node as any).__isonimVectorEditor;
+      return {
+        pathData: editor.paperPath.pathData,
+        segmentCount: editor.paperPath.segments.length,
+        backedByPaper:
+          editor.paperPath &&
+          editor.paperEditScope &&
+          typeof editor.paperPath.insert === "function" &&
+          typeof editor.paperPath.exportSVG === "function" &&
+          typeof editor.paperEditScope.Path === "function",
+        firstX: editor.paperPath.segments[0].point.x,
+        firstY: editor.paperPath.segments[0].point.y,
+      };
+    });
+    expect(beforePaperPath.backedByPaper).toBe(true);
+    expect(beforePaperPath.segmentCount).toBeGreaterThanOrEqual(3);
+    expect(beforePaperPath.pathData).toContain("M");
+
+    const beforeBox = await host.boundingBox();
+    expect(beforeBox).not.toBeNull();
+    const firstAnchor = host.locator('[data-vector-anchor="node-0"]');
+    const anchorBox = await firstAnchor.boundingBox();
+    expect(anchorBox).not.toBeNull();
+    await page.mouse.move(
+      anchorBox!.x + anchorBox!.width / 2,
+      anchorBox!.y + anchorBox!.height / 2,
+    );
+    await page.mouse.down();
+    await page.mouse.move(anchorBox!.x + 32, anchorBox!.y + 18);
+    await page.mouse.up();
+    await expect(host).toHaveAttribute("data-vector-path-pointer-drag", "true");
+    const draggedPaperPath = await host.evaluate((node) => {
+      const editor = (node as any).__isonimVectorEditor;
+      return {
+        pathData: editor.paperPath.pathData,
+        firstX: editor.paperPath.segments[0].point.x,
+        firstY: editor.paperPath.segments[0].point.y,
+      };
+    });
+    expect(draggedPaperPath.pathData).not.toBe(beforePaperPath.pathData);
+    expect(draggedPaperPath.firstX).toBeGreaterThan(beforePaperPath.firstX);
+    expect(draggedPaperPath.firstY).toBeGreaterThan(beforePaperPath.firstY);
+    await expect
+      .poll(async () =>
+        Number(await host.getAttribute("data-vector-path-data-length")),
+      )
+      .toBeGreaterThan(10);
+
+    await page.getByRole("button", { name: "Vector path-insert" }).click();
+    await expect(host).toHaveAttribute(
+      "data-vector-path-operation",
+      "insert-node",
+    );
+    await expect
+      .poll(async () =>
+        Number(await host.getAttribute("data-vector-path-anchor-count")),
+      )
+      .toBeGreaterThanOrEqual(4);
+    await page
+      .getByRole("button", { name: "Vector path-convert-smooth" })
+      .click();
+    await expect(host).toHaveAttribute(
+      "data-vector-path-operation",
+      "convert-smooth",
+    );
+    await expect
+      .poll(async () =>
+        Number(await host.getAttribute("data-vector-path-handle-count")),
+      )
+      .toBeGreaterThanOrEqual(2);
+    await page.getByRole("button", { name: "Vector path-handle-drag" }).click();
+    await expect(host).toHaveAttribute(
+      "data-vector-path-operation",
+      "drag-handle",
+    );
+    const handleEdit = await host.evaluate((node) => {
+      const editor = (node as any).__isonimVectorEditor;
+      const selected = Array.from(editor.selectedSegmentIndices)[0] as number;
+      const segment = editor.paperPath.segments[selected];
+      return {
+        backedByPaper:
+          editor.paperPath &&
+          editor.paperEditScope &&
+          typeof editor.paperPath.insert === "function" &&
+          typeof editor.paperPath.exportSVG === "function" &&
+          typeof editor.paperEditScope.Path === "function",
+        handleOutX: segment.handleOut.x,
+        handleOutY: segment.handleOut.y,
+        pathData: editor.paperPath.pathData,
+      };
+    });
+    expect(handleEdit.backedByPaper).toBe(true);
+    expect(Math.abs(handleEdit.handleOutX)).toBeGreaterThan(0);
+    expect(Math.abs(handleEdit.handleOutY)).toBeGreaterThan(0);
+
+    await host.focus();
+    await page.keyboard.press("ArrowRight");
+    await expect(host).toHaveAttribute(
+      "data-vector-path-keyboard-operation",
+      "nudge-node",
+    );
+    const nudgedPaperPath = await host.evaluate((node) => {
+      const editor = (node as any).__isonimVectorEditor;
+      return editor.paperPath.pathData;
+    });
+    expect(nudgedPaperPath).not.toBe(handleEdit.pathData);
+    const undoDepth = Number(
+      await host.getAttribute("data-vector-path-undo-depth"),
+    );
+    expect(undoDepth).toBeGreaterThan(0);
+    await page.keyboard.press(
+      process.platform === "darwin" ? "Meta+Z" : "Control+Z",
+    );
+    await expect(host).toHaveAttribute(
+      "data-vector-path-keyboard-operation",
+      "path-undo",
+    );
+    const undoPaperPath = await host.evaluate((node) => {
+      const editor = (node as any).__isonimVectorEditor;
+      return editor.paperPath.pathData;
+    });
+    expect(undoPaperPath).toBe(handleEdit.pathData);
+    await page.getByRole("button", { name: "Vector path-redo" }).click();
+    await expect(host).toHaveAttribute(
+      "data-vector-path-keyboard-operation",
+      "path-redo",
+    );
+    const redoPaperPath = await host.evaluate((node) => {
+      const editor = (node as any).__isonimVectorEditor;
+      return editor.paperPath.pathData;
+    });
+    expect(redoPaperPath).toBe(nudgedPaperPath);
+
+    await page.getByRole("button", { name: "Vector zoom-in" }).click();
+    await page.getByRole("button", { name: "Vector zoom-in" }).click();
+    await assertVectorPathHandlesVisible(page);
+    const afterBox = await host.boundingBox();
+    expect(
+      afterBox!.width,
+      "path operations keep vector host width stable",
+    ).toBe(beforeBox!.width);
+    expect(
+      afterBox!.height,
+      "path operations keep vector host height stable",
+    ).toBe(beforeBox!.height);
+    await assertVectorCanvasHasPixels(page);
+    const screenshot = await page.screenshot({ fullPage: true });
+    expect(
+      screenshot.length,
+      "vector path screenshot has content",
+    ).toBeGreaterThan(20_000);
+  });
+
   test("e2e_editor_visual_baselines_cover_all_primary_modes", async ({
     page,
   }) => {
@@ -1129,6 +1317,15 @@ test.describe("IsoNim packaged editor example", () => {
     await page.mouse.move(box!.x + 178, box!.y + 180);
     await page.mouse.up();
     await expect(host).toHaveAttribute("data-vector-controls-visible", "true");
+    await assertVectorPathHandlesVisible(page);
+    await page
+      .getByRole("button", { name: "Vector path-convert-smooth" })
+      .click();
+    await expect(host).toHaveAttribute(
+      "data-vector-path-operation",
+      "convert-smooth",
+    );
+    await assertVectorPathHandlesVisible(page);
     await assertNoBodyScrollbar(page);
 
     await page.setViewportSize(mobileWidth);

@@ -2668,15 +2668,303 @@ suite "Editor ViewModels (M27 workspace file writes)":
       let pathBackend = selectedVectorPathBackend()
       check vpboUnite in pathBackend.operations
       check vpboMoveSegment in pathBackend.operations
-      check not adapter.hasCapability(vacPathEditing)
+      check adapter.hasCapability(vacPathEditing)
+      check adapter.hasCapability(vacPathDataEditing)
       check adapter.unsupportedAdvancedOperations.anyIt(
-        it.contains("Freeform bezier node editing"))
-      let result = vm.unsupportedVectorOperation("Freeform bezier editing")
+        it.contains("clipping"))
+      let result = vm.unsupportedVectorOperation("SVG filter and mask editing")
       check not result.ok
       check result.diagnostics.len == 1
       check result.diagnostics[0].kind == vdkUnsupportedOperation
       check result.diagnostics[0].message.contains("mature supplemental path library")
       check vm.vectorEditor.diagnostics.val[0].kind == vdkUnsupportedOperation
+      dispose()
+
+  test "vector_path_viewmodel_commands_and_export_fidelity":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("vector-m47")
+      defer: removeDir(root)
+
+      let svgFile = root / "symbols.schema"
+      atomicWrite(svgFile,
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 48 48\"><path id=\"path-1\" d=\"M6 10 L18 22 L35 7\" /></svg>")
+      let recorder = WorkspaceEditRecorder()
+      let schema = @[
+        WorkspaceEditableSchemaEntry(key: "symbols.polished.svg",
+          kind: wskSvgSymbol, file: svgFile, path: "symbols.polished.svg",
+          story: writeStory, property: "svgContent")
+      ]
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "M47 vector path workspace",
+        storyGroups = @[],
+        vectorSymbols = @[
+          VectorSymbol(name: "Polished", category: "Icons",
+            svgContent: "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 48 48\"><path id=\"path-1\" d=\"M6 10 L18 22 L35 7\" /></svg>",
+            width: 48, height: 48)
+        ],
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true),
+        editAdapter = adapterFor(root, schema, recorder = recorder)))
+
+      check vm.selectVectorSymbol(0)
+      let importedPath = vm.vectorEditor.document.val.objects[0]
+      check importedPath.pathData == "M6 10 L18 22 L35 7"
+      check importedPath.pathNodes.len == 3
+      check importedPath.pathNodes[0].x == 6
+      check importedPath.pathNodes[0].y == 10
+      check importedPath.pathNodes[1].x == 18
+      check importedPath.pathNodes[1].y == 22
+      check importedPath.pathNodes[2].x == 35
+      check importedPath.pathNodes[2].y == 7
+      check importedPath.pathNodes != defaultCheckPathNodes()
+      check vm.vectorEditor.document.val.exportVectorDocumentSvg.contains(
+        "M6 10 L18 22 L35 7")
+      check vm.selectVectorPathNodes("path-1", @["node-0"]).ok
+      check vm.selectVectorPathNodes("path-1", @["node-1"], append = true).ok
+      check vm.vectorEditor.document.val.objects[0].pathNodes.countIt(it.selected) == 2
+      check vm.moveVectorPathNodes("path-1", @["node-0"], 2, 3).ok
+      check vm.insertVectorPathNode("path-1", "node-1", 14, 15).ok
+      check vm.convertVectorPathNodes("path-1", @["node-1"], ntSmooth).ok
+      check vm.dragVectorPathHandle("path-1", "node-1", vhkOut, 19, 12).ok
+      check vm.deleteVectorPathNodes("path-1", @["node-3"]).ok
+      let editedPath = vm.vectorEditor.document.val.objects[0]
+      check editedPath.pathNodes.len == 3
+      check editedPath.pathNodes.anyIt(it.id == "node-1" and it.nodeType == ntSmooth)
+      check editedPath.pathData.contains("C")
+      check vm.undoVectorEdit()
+      check vm.vectorEditor.document.val.objects[0].pathNodes.len == 4
+      check vm.redoVectorEdit()
+      check vm.vectorEditor.document.val.objects[0].pathNodes.len == 3
+
+      var doc = vm.vectorEditor.document.val
+      for item in [
+        VectorObject(id: "rect-a", name: "A", kind: vskRect, layerId: "base",
+          x: 3, y: 9, width: 10, height: 8, fill: "none",
+          stroke: "currentColor", strokeWidth: 1, source: doc.source,
+          a11y: doc.a11y),
+        VectorObject(id: "rect-b", name: "B", kind: vskRect, layerId: "base",
+          x: 30, y: 14, width: 10, height: 8, fill: "none",
+          stroke: "currentColor", strokeWidth: 1, source: doc.source,
+          a11y: doc.a11y),
+        VectorObject(id: "rect-c", name: "C", kind: vskRect, layerId: "base",
+          x: 60, y: 21, width: 10, height: 8, fill: "none",
+          stroke: "currentColor", strokeWidth: 1, source: doc.source,
+          a11y: doc.a11y)
+      ]:
+        doc.objects.add item
+        doc.layers[0].objectIds.add item.id
+      doc.selectedIds = @["rect-a", "rect-b", "rect-c"]
+      vm.vectorEditor.document.val = doc
+
+      check vm.alignVectorSelection(vaTop).ok
+      check vm.vectorEditor.document.val.objects.filterIt(it.id in
+        @["rect-a", "rect-b", "rect-c"]).allIt(it.y == 9)
+      check vm.distributeVectorSelection(vdaHorizontal).ok
+      check vm.reorderVectorSelection(vzoBringToFront).ok
+      check vm.vectorEditor.document.val.layers[0].objectIds[^1] == "rect-c"
+      check vm.nudgeVectorSelection(1.5, 2.5).ok
+      check vm.snapVectorSelection(4).ok
+      check vm.vectorEditor.document.val.objects.anyIt(it.id == "rect-a" and
+        it.x == 4 and it.y == 12)
+      check vm.groupVectorSelection().ok
+      let groupId = vm.vectorEditor.document.val.selectedIds[0]
+      check vm.vectorEditor.document.val.objects.anyIt(it.id == groupId and
+        it.kind == vskGroup)
+      check vm.ungroupVectorSelection().ok
+      check vm.vectorEditor.document.val.selectedIds.len == 3
+
+      let curvedSvg =
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 80 40\"><path id=\"curve\" d=\"M5 10 C15 2 30 2 40 10 L60 20\" fill=\"none\" stroke=\"#123456\" /></svg>"
+      let curved = importVectorDocumentSvg(VectorSymbol(name: "Curve",
+        category: "Icons", svgContent: curvedSvg, width: 80, height: 40),
+        curvedSvg)
+      let curve = curved.objects.filterIt(it.id == "curve")[0]
+      check curve.pathData == "M5 10 C15 2 30 2 40 10 L60 20"
+      check curve.pathNodes.len == 3
+      check curve.pathNodes[0].x == 5
+      check curve.pathNodes[0].y == 10
+      check curve.pathNodes[0].outX == 15
+      check curve.pathNodes[0].outY == 2
+      check curve.pathNodes[1].inX == 30
+      check curve.pathNodes[1].inY == 2
+      check curve.pathNodes[1].x == 40
+      check curve.pathNodes[1].y == 10
+      check curve.pathNodes[2].x == 60
+      check curve.pathNodes[2].y == 20
+      check curve.pathNodes != defaultCheckPathNodes()
+
+      let representative =
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 100 80\" width=\"100\" height=\"80\"><defs><linearGradient id=\"paint\"><stop offset=\"0%\" stop-color=\"#60A5FA\"/></linearGradient><clipPath id=\"clip\"><rect x=\"0\" y=\"0\" width=\"80\" height=\"60\"/></clipPath></defs><path id=\"compound\" d=\"M1.25 2.5C10 20 30 20 42.75 4Z M50 10L70 30\" fill=\"url(#paint)\" stroke=\"#123456\" stroke-width=\"1.5\" stroke-dasharray=\"2 3\" stroke-linecap=\"round\" stroke-linejoin=\"bevel\" transform=\"rotate(12 20 20)\" clip-path=\"url(#clip)\"/></svg>"
+      let imported = importVectorDocumentSvg(VectorSymbol(name: "Fidelity",
+        category: "Icons", svgContent: representative, width: 100, height: 80),
+        representative)
+      check imported.viewBox == "0 0 100 80"
+      var compoundIndex = -1
+      for i, obj in imported.objects:
+        if obj.id == "compound":
+          compoundIndex = i
+      check compoundIndex >= 0
+      let compound = imported.objects[compoundIndex]
+      check compound.pathData.contains("42.75")
+      check compound.pathNodes.len == 0
+      check compound.strokeWidth == 1.5
+      check compound.dashArray == "2 3"
+      check compound.strokeCap == scRound
+      check compound.strokeJoin == sjBevel
+      check compound.rotation == 12
+      let compoundSvg = imported.exportVectorDocumentSvg
+      check compoundSvg.contains("M1.25 2.5C10 20 30 20 42.75 4Z M50 10L70 30")
+      check not compoundSvg.contains("M4.0 12.0L9.0 17.0L20.0 6.0")
+      let pathDiagnostics = imported.diagnoseUnsupportedVectorPathEditing()
+      check pathDiagnostics.anyIt(it.kind == vdkUnsupportedOperation and
+        it.objectId == "compound" and it.message.contains("pathData is preserved"))
+      vm.vectorEditor.document.val = imported
+      let rejectedPathEdit = vm.moveVectorPathNodes("compound", @["node-0"], 1, 1)
+      check not rejectedPathEdit.ok
+      check rejectedPathEdit.diagnostics.anyIt(it.kind == vdkUnsupportedOperation)
+      check vm.vectorEditor.document.val.objects[compoundIndex].pathData ==
+        compound.pathData
+      check imported.symbols[0].svgContent.contains("linearGradient")
+      let unsupported = representative.diagnoseUnsupportedVectorSvgFeatures(
+        "symbols.fidelity.svg")
+      check unsupported.anyIt(it.kind == vdkUnsupportedOperation and
+        it.message.contains("clip"))
+      let rejected = vm.commitBrowserVectorSvg(representative)
+      check not rejected.ok
+      check rejected.diagnostics.anyIt(it.kind == vdkUnsupportedOperation)
+      check vm.vectorEditor.undoStack.val.len > 0
+      check vm.inspector.pendingSourceEdits.val.len > 0
+      dispose()
+
+  test "vector_editor_rejects_headless_commits_for_unsupported_svg_sources":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("vector-unsupported-source")
+      defer: removeDir(root)
+
+      let svgFile = root / "symbols.schema"
+      let unsupportedSvg =
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 64 64\"><defs><clipPath id=\"clip\"><rect id=\"clip-rect\" x=\"0\" y=\"0\" width=\"48\" height=\"48\" /></clipPath><mask id=\"fade\"><rect id=\"mask-rect\" width=\"64\" height=\"64\" fill=\"white\" /></mask><filter id=\"blur\"><feGaussianBlur stdDeviation=\"2\" /></filter><pattern id=\"dots\" width=\"4\" height=\"4\"><circle id=\"dot\" cx=\"1\" cy=\"1\" r=\"1\" /></pattern></defs><foreignObject id=\"html\" width=\"10\" height=\"10\"></foreignObject><rect id=\"painted\" x=\"4\" y=\"4\" width=\"20\" height=\"20\" fill=\"url(#dots)\" clip-path=\"url(#clip)\" mask=\"url(#fade)\" filter=\"url(#blur)\" /></svg>"
+      atomicWrite(svgFile, unsupportedSvg)
+      let recorder = WorkspaceEditRecorder()
+      let schema = @[
+        WorkspaceEditableSchemaEntry(key: "symbols.unsafe.svg",
+          kind: wskSvgSymbol, file: svgFile, path: "symbols.unsafe.svg",
+          story: writeStory, property: "svgContent")
+      ]
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "M47 unsupported vector workspace",
+        storyGroups = @[],
+        vectorSymbols = @[
+          VectorSymbol(name: "Unsafe", category: "Icons",
+            svgContent: unsupportedSvg, width: 64, height: 64)
+        ],
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true),
+        editAdapter = adapterFor(root, schema, recorder = recorder)))
+
+      check vm.selectVectorSymbol(0)
+      check vm.vectorEditor.diagnostics.val.anyIt(
+        it.kind == vdkUnsupportedOperation and it.message.contains("clip"))
+      check vm.vectorEditor.diagnostics.val.anyIt(
+        it.kind == vdkUnsupportedOperation and it.message.contains("mask"))
+      check vm.vectorEditor.diagnostics.val.anyIt(
+        it.kind == vdkUnsupportedOperation and it.message.contains("filter"))
+      check vm.vectorEditor.diagnostics.val.anyIt(
+        it.kind == vdkUnsupportedOperation and it.message.contains("pattern"))
+      check vm.vectorEditor.diagnostics.val.anyIt(
+        it.kind == vdkUnsupportedOperation and
+        it.message.contains("foreignobject"))
+
+      let beforeSvg = vm.vectorEditor.document.val.exportVectorDocumentSvg
+      let rejectedFill = vm.setVectorObjectProperty(VectorPropertyEditRequest(
+        objectId: "painted", kind: vpkFill, value: "#EF4444"))
+      check not rejectedFill.ok
+      check rejectedFill.diagnostics.anyIt(
+        it.kind == vdkUnsupportedOperation and it.message.contains("clip"))
+      check vm.vectorEditor.document.val.exportVectorDocumentSvg == beforeSvg
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check vm.vectorEditor.undoStack.val.len == 0
+      check vm.workspaceEditStage.val == wesClean
+      check not vm.commandAvailable(eckSave)
+
+      let rejectedViewBox = vm.setVectorDocumentViewBox("0 0 128 128")
+      check not rejectedViewBox.ok
+      check vm.vectorEditor.document.val.viewBox == "0 0 64 64"
+      check vm.inspector.pendingSourceEdits.val.len == 0
+
+      check vm.selectVectorObjects(@["painted"])
+      let rejectedNudge = vm.nudgeVectorSelection(4, 5)
+      check not rejectedNudge.ok
+      check rejectedNudge.diagnostics.anyIt(
+        it.kind == vdkUnsupportedOperation and it.message.contains("mask"))
+      check vm.inspector.pendingSourceEdits.val.len == 0
+
+      let beforeBrowserDoc = vm.vectorEditor.document.val
+      let beforeBrowserUndo = vm.vectorEditor.undoStack.val.len
+      let beforeBrowserPending = vm.inspector.pendingSourceEdits.val.len
+      let beforeBrowserStage = vm.workspaceEditStage.val
+      let fabricDroppedUnsupported =
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 64 64\"><rect id=\"fabric-clean\" x=\"4\" y=\"4\" width=\"20\" height=\"20\" fill=\"#EF4444\" /></svg>"
+      let rejectedBrowser = vm.commitBrowserVectorSvg(fabricDroppedUnsupported)
+      check not rejectedBrowser.ok
+      check rejectedBrowser.diagnostics.anyIt(
+        it.kind == vdkUnsupportedOperation and it.message.contains("clip"))
+      check rejectedBrowser.diagnostics.anyIt(
+        it.kind == vdkUnsupportedOperation and it.message.contains("mask"))
+      check vm.vectorEditor.document.val == beforeBrowserDoc
+      check vm.vectorEditor.undoStack.val.len == beforeBrowserUndo
+      check vm.inspector.pendingSourceEdits.val.len == beforeBrowserPending
+      check vm.workspaceEditStage.val == beforeBrowserStage
+      check not vm.commandAvailable(eckSave)
+      check readFile(svgFile) == unsupportedSvg
+      dispose()
+
+  test "vector_editor_allows_headless_commits_for_supported_svg_sources":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("vector-supported-source")
+      defer: removeDir(root)
+
+      let svgFile = root / "symbols.schema"
+      let supportedSvg =
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 32 32\"><rect id=\"box\" x=\"4\" y=\"4\" width=\"12\" height=\"12\" fill=\"#111827\" /></svg>"
+      atomicWrite(svgFile, supportedSvg)
+      let recorder = WorkspaceEditRecorder()
+      let schema = @[
+        WorkspaceEditableSchemaEntry(key: "symbols.safe.svg",
+          kind: wskSvgSymbol, file: svgFile, path: "symbols.safe.svg",
+          story: writeStory, property: "svgContent")
+      ]
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "M47 supported vector workspace",
+        storyGroups = @[],
+        vectorSymbols = @[
+          VectorSymbol(name: "Safe", category: "Icons",
+            svgContent: supportedSvg, width: 32, height: 32)
+        ],
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true),
+        editAdapter = adapterFor(root, schema, recorder = recorder)))
+
+      check vm.selectVectorSymbol(0)
+      atomicWrite(svgFile,
+        vm.vectorEditor.document.val.exportVectorDocumentSvg.optimizeVectorSvg)
+      check not vm.vectorEditor.diagnostics.val.anyIt(
+        it.kind == vdkUnsupportedOperation)
+      let edited = vm.setVectorObjectProperty(VectorPropertyEditRequest(
+        objectId: "box", kind: vpkFill, value: "#22C55E"))
+      check edited.ok
+      check vm.setVectorDocumentViewBox("0 0 64 64").ok
+      check vm.inspector.pendingSourceEdits.val.len == 2
+      check vm.commandAvailable(eckSave)
+
+      let saved = vm.runEditorCommand(eckSave)
+      check saved.status == ecsSucceeded
+      let savedSvg = readFile(svgFile)
+      check savedSvg.contains("#22C55E")
+      check savedSvg.contains("viewBox=\"0 0 64 64\"")
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check vm.workspaceEditStage.val == wesClean
+      check recorder.fullReloadSeen
       dispose()
 
   test "foundation_token_edit_updates_dependent_properties":

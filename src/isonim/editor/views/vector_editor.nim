@@ -280,7 +280,10 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
             tdiv(display = "flex", gap = "6px"):
               for action in ["import-sample", "zoom-in", "zoom-out", "pan-right",
                   "set-fill", "set-stroke", "duplicate", "delete", "group",
-                  "ungroup", "transform-selection", "move-segment", "export"]:
+                  "ungroup", "transform-selection", "move-segment",
+                  "path-insert", "path-delete-node", "path-convert-smooth",
+                  "path-handle-drag", "path-nudge-right", "path-undo",
+                  "path-redo", "export"]:
                 let actionName = action
                 var actionBtn: E
                 tdiv(ref = actionBtn,

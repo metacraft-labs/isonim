@@ -426,16 +426,40 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(page.getByText("Vector Editor")).toBeVisible();
     const vectorHost = page.locator('[data-vector-adapter="fabric"]').first();
     await expect(vectorHost).toHaveAttribute(
+      "data-vector-symbol-name",
+      "Status badge",
+    );
+    await expect(vectorHost).toHaveAttribute(
       "data-vector-library-backed",
       "true",
     );
     await expect(vectorHost).toHaveAttribute("data-vector-svgo-backed", "true");
+    await expect(vectorHost).toHaveAttribute(
+      "data-vector-path-library-backed",
+      "true",
+    );
     await page
       .getByRole("button", { name: "Select Rectangle vector tool" })
       .click();
     await expect(
       page.getByRole("button", { name: "Select Rectangle vector tool" }),
     ).toHaveAttribute("aria-pressed", "true");
+    await expect(vectorHost).toHaveAttribute(
+      "data-vector-path-overlay-visible",
+      "true",
+    );
+    await page
+      .getByRole("button", { name: "Vector path-convert-smooth" })
+      .click();
+    await expect(vectorHost).toHaveAttribute(
+      "data-vector-path-operation",
+      "convert-smooth",
+    );
+    await page.getByRole("button", { name: "Vector export" }).click();
+    await expect(vectorHost).toHaveAttribute(
+      "data-vector-export-has-svg",
+      "true",
+    );
   });
 
   test("edits real metacraft component DOM through the inspector", async ({

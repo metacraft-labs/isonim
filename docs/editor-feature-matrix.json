@@ -775,13 +775,13 @@
       "id": "svg_editors",
       "title": "SVG and Vector Editors",
       "status": "functional",
-      "targetWorkflow": "Users can select, transform, edit, import, optimize, and save vector symbols through a library-backed canvas and source-backed ViewModel bridge.",
+      "targetWorkflow": "Users can select, transform, edit, import, optimize, and save vector symbols and representative path nodes through a library-backed canvas and source-backed ViewModel bridge.",
       "owner": "framework",
       "mockOnly": false,
       "placeholderUi": false,
-      "browserBehavior": ["pointer", "focus", "canvas"],
-      "implementation": "Fabric-backed canvas interaction, Paper.js-backed boolean/path-segment operations, SVGO-backed export, source-backed properties, undo/redo, diagnostics for unsupported freeform Bezier editing, and M27 save bridging.",
-      "knownLimitations": "Full Penpot-grade layer panel, snapping, keyboard editing polish, and complete Bezier path workflows remain future quality work.",
+      "browserBehavior": ["pointer", "focus", "keyboard", "canvas"],
+      "implementation": "Fabric-backed canvas interaction, Paper.js-backed boolean/path-segment and browser path-node editing, SVGO-backed export, source-backed properties, undo/redo, path node select/multi-select/move/insert/delete/convert/handle-drag commands, grouping/ungrouping, alignment/distribute/z-order/snap/nudge commands, import/export fidelity checks, explicit unsupported SVG diagnostics, and M27 save bridging.",
+      "knownLimitations": "M47 covers representative path-node and browser-handle workflows through Paper.js path/segment APIs, not full Penpot/Figma parity. Arbitrary SVG clipping, masks, filters, patterns, foreignObject content, unsupported headless path syntax, and boolean/path operations outside the backed Paper.js surface remain diagnosed instead of silently saved.",
       "headlessTests": [
         {
           "name": "vector_editor_library_spike_selects_mature_backend",
@@ -814,6 +814,10 @@
         {
           "name": "vector_editor_unbacked_freeform_path_editing_is_diagnosed",
           "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "vector_path_viewmodel_commands_and_export_fidelity",
+          "file": "tests/test_editor_viewmodels.nim"
         }
       ],
       "playwrightRequired": true,
@@ -821,14 +825,29 @@
         {
           "name": "e2e_vector_editor_pointer_keyboard_and_rendering",
           "file": "tests/browser/specs/editor-example.spec.ts"
+        },
+        {
+          "name": "e2e_vector_path_browser_handle_polish",
+          "file": "tests/browser/specs/editor-example.spec.ts"
         }
       ],
       "screenshotVisualAssertions": {
         "requiredForFigmaGrade": true,
-        "status": "not_started",
-        "assertions": [],
-        "futureMilestone": "M43",
-        "notes": "Needs baselines for canvas selection, layers, handles, transforms, boolean ops, import state, and no blank canvas."
+        "status": "passing",
+        "assertions": [
+          "M43 vector-editor baseline proves the Fabric canvas, layers, controls, and chrome render nonblank and unclipped.",
+          "M47 browser gates assert Paper.js-backed path anchors/handles, stable hit targets at zoom, pointer drag, keyboard nudge, undo/redo, nonblank canvas pixels, and screenshot content."
+        ],
+        "evidence": [
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes",
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_ui_quality_no_overlap_or_unexpected_scrollbars",
+          "tests/browser/specs/editor-example.spec.ts:e2e_vector_path_browser_handle_polish"
+        ],
+        "snapshotFiles": [
+          "tests/browser/specs/editor-example.spec.ts-snapshots/m43-vector-editor-editor-example-linux.png"
+        ],
+        "futureMilestone": "",
+        "notes": "M47 adds path-specific browser handle and screenshot-content gates while retaining explicit diagnostics for unsupported SVG features that are not preserved by the selected adapters."
       },
       "consumerCoverage": {
         "isonimExample": {
@@ -838,9 +857,10 @@
           ]
         },
         "metacraftWeb": {
-          "status": "covered_indirectly",
+          "status": "covered",
           "evidence": [
-            "tests/browser/specs/metacraft-web-editor.spec.ts:mounts the live consumer workspace through public editor APIs"
+            "tests/browser/specs/metacraft-web-editor.spec.ts:mounts the live consumer workspace through public editor APIs",
+            "../metacraft-web/apps/back-office/tests/test_backoffice_editor_workspace.nim:workspace exposes mature project coverage"
           ]
         }
       },

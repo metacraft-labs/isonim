@@ -38,6 +38,7 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
   host.dataset.vectorAdapter = 'fabric';
   host.dataset.vectorLibraryBacked = fabricLib ? 'true' : 'false';
   host.dataset.vectorBackendVersion = '7.3.1';
+  host.dataset.vectorSymbolName = symbolName;
   host.dataset.vectorPathAdapter = paperLib ? 'paper' : 'missing-paper';
   host.dataset.vectorPathLibraryBacked = paperLib ? 'true' : 'false';
   host.dataset.vectorPathBackendVersion = '0.12.18';
@@ -81,6 +82,13 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
       if (action === 'boolean-intersect') editor.runPaperBoolean('intersect');
       if (action === 'boolean-exclude') editor.runPaperBoolean('exclude');
       if (action === 'move-segment') editor.movePaperSegment();
+      if (action === 'path-insert') editor.insertPathNode();
+      if (action === 'path-delete-node') editor.deleteSelectedPathNode();
+      if (action === 'path-convert-smooth') editor.convertSelectedPathNode('smooth');
+      if (action === 'path-handle-drag') editor.dragSelectedPathHandle(24, -18);
+      if (action === 'path-nudge-right') editor.nudgeSelectedPathNodes(4, 0);
+      if (action === 'path-undo') editor.undoPathOperation();
+      if (action === 'path-redo') editor.redoPathOperation();
       event.preventDefault();
     };
     document.addEventListener('click', runDelegatedAction);
@@ -89,6 +97,7 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
 
   host.innerHTML = '';
   host.tabIndex = 0;
+  host.style.position = 'relative';
   host.setAttribute('role', 'application');
   host.setAttribute('aria-label', 'Fabric vector editor canvas');
 
@@ -100,6 +109,16 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
   canvasEl.style.height = '420px';
   canvasEl.style.display = 'block';
   host.appendChild(canvasEl);
+  const overlay = document.createElement('div');
+  overlay.setAttribute('data-vector-path-overlay', 'true');
+  overlay.style.position = 'absolute';
+  overlay.style.left = '0';
+  overlay.style.top = '0';
+  overlay.style.width = '720px';
+  overlay.style.height = '420px';
+  overlay.style.pointerEvents = 'none';
+  overlay.style.zIndex = '3';
+  host.appendChild(overlay);
 
   const canvas = new fabricLib.Canvas(canvasEl, {
     selection: true,
@@ -138,6 +157,363 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
     svgoOptimize: null,
     sourceChangeSeq: 0,
     paperLib,
+    paperEditScope: null,
+    paperPath: null,
+    selectedSegmentIndices: new Set([0]),
+    pathHistory: [],
+    pathRedo: [],
+    editablePathObject: null,
+    fallbackPathData: 'M 100 160 L 148 205 L 232 108',
+    nodeId(index) {
+      return `node-${index}`;
+    },
+    indexFromNodeId(id) {
+      const match = String(id || '').match(/^node-(\d+)$/);
+      return match ? Number(match[1]) : -1;
+    },
+    makePaperEditScope() {
+      if (this.paperEditScope) return this.paperEditScope;
+      if (!this.paperLib || typeof this.paperLib.PaperScope !== 'function') {
+        host.dataset.vectorPathEditBacked = 'false';
+        host.dataset.vectorPathEditError = 'missing-paper';
+        return null;
+      }
+      const scope = new this.paperLib.PaperScope();
+      const offscreen = document.createElement('canvas');
+      offscreen.width = 720;
+      offscreen.height = 420;
+      scope.setup(offscreen);
+      this.paperEditScope = scope;
+      host.dataset.vectorPathEditBacked = 'paper';
+      host.dataset.vectorPathSourceBacked = 'paper';
+      return scope;
+    },
+    extractEditablePathData(svgText) {
+      const wrapped = svgText && svgText.includes('<svg')
+        ? svgText
+        : `<svg xmlns="http://www.w3.org/2000/svg">${svgText || ''}</svg>`;
+      try {
+        const doc = new DOMParser().parseFromString(wrapped, 'image/svg+xml');
+        const parserError = doc.querySelector('parsererror');
+        if (parserError) throw new Error(parserError.textContent || 'invalid SVG');
+        const pathEl = doc.querySelector('path[d]');
+        return pathEl ? pathEl.getAttribute('d') || '' : '';
+      } catch (error) {
+        host.dataset.vectorPathEditError = String(error && error.message ? error.message : error);
+        return '';
+      }
+    },
+    setPaperPathData(pathData, operation = 'path-load') {
+      const scope = this.makePaperEditScope();
+      if (!scope) return false;
+      const nextData = pathData || this.fallbackPathData;
+      try {
+        if (this.paperPath) this.paperPath.remove();
+        this.paperPath = new scope.Path(nextData);
+        this.paperPath.strokeColor = '#FBBF24';
+        this.paperPath.strokeWidth = 5;
+        this.paperPath.fillColor = null;
+        if (!this.paperPath.segments || this.paperPath.segments.length === 0) {
+          throw new Error('Paper.js created no editable path segments');
+        }
+        const clamped = new Set();
+        for (const index of this.selectedSegmentIndices) {
+          if (index >= 0 && index < this.paperPath.segments.length) clamped.add(index);
+        }
+        this.selectedSegmentIndices = clamped.size > 0 ? clamped : new Set([0]);
+        host.dataset.vectorPathEditBacked = 'paper';
+        host.dataset.vectorPathSourceBacked = 'paper';
+        host.dataset.vectorPathOperation = operation;
+        return true;
+      } catch (error) {
+        this.paperPath = null;
+        host.dataset.vectorPathEditBacked = 'error';
+        host.dataset.vectorPathEditError = String(error && error.message ? error.message : error);
+        return false;
+      }
+    },
+    initEditablePath() {
+      const initialPathData = this.extractEditablePathData(initialSvg) || this.fallbackPathData;
+      if (this.setPaperPathData(initialPathData, 'path-load')) {
+        this.renderEditablePath();
+        this.syncPathOverlay();
+      }
+    },
+    pathDataFromPaper() {
+      return this.paperPath && this.paperPath.pathData ? this.paperPath.pathData : '';
+    },
+    pathSegments() {
+      if (!this.paperPath || !this.paperPath.segments) return [];
+      return this.paperPath.segments.map((segment, index) => {
+        const inPoint = segment.point.add(segment.handleIn);
+        const outPoint = segment.point.add(segment.handleOut);
+        const hasIn = Math.abs(segment.handleIn.x) > 0.001 || Math.abs(segment.handleIn.y) > 0.001;
+        const hasOut = Math.abs(segment.handleOut.x) > 0.001 || Math.abs(segment.handleOut.y) > 0.001;
+        return {
+          id: this.nodeId(index),
+          index,
+          x: segment.point.x,
+          y: segment.point.y,
+          inX: inPoint.x,
+          inY: inPoint.y,
+          outX: outPoint.x,
+          outY: outPoint.y,
+          type: hasIn || hasOut ? 'smooth' : 'corner',
+          selected: this.selectedSegmentIndices.has(index)
+        };
+      });
+    },
+    selectedPathNodes() {
+      return this.pathSegments().filter((node) => node.selected);
+    },
+    pushPathHistory() {
+      this.pathHistory.push(JSON.stringify({
+        pathData: this.pathDataFromPaper(),
+        selected: Array.from(this.selectedSegmentIndices)
+      }));
+      if (this.pathHistory.length > 20) this.pathHistory.shift();
+      this.pathRedo = [];
+      host.dataset.vectorPathUndoDepth = String(this.pathHistory.length);
+      host.dataset.vectorPathRedoDepth = String(this.pathRedo.length);
+    },
+    restorePathSnapshot(snapshot, operation) {
+      if (!snapshot) return false;
+      const parsed = JSON.parse(snapshot);
+      this.selectedSegmentIndices = new Set(parsed.selected || [0]);
+      if (!this.setPaperPathData(parsed.pathData, operation)) return false;
+      this.renderEditablePath();
+      this.syncPathOverlay();
+      host.dataset.vectorPathKeyboardOperation = operation;
+      this.recordSourceChange(operation);
+      return true;
+    },
+    undoPathOperation() {
+      if (!this.pathHistory.length) return false;
+      this.pathRedo.push(JSON.stringify({
+        pathData: this.pathDataFromPaper(),
+        selected: Array.from(this.selectedSegmentIndices)
+      }));
+      const snapshot = this.pathHistory.pop();
+      host.dataset.vectorPathUndoDepth = String(this.pathHistory.length);
+      host.dataset.vectorPathRedoDepth = String(this.pathRedo.length);
+      return this.restorePathSnapshot(snapshot, 'path-undo');
+    },
+    redoPathOperation() {
+      if (!this.pathRedo.length) return false;
+      this.pathHistory.push(JSON.stringify({
+        pathData: this.pathDataFromPaper(),
+        selected: Array.from(this.selectedSegmentIndices)
+      }));
+      const snapshot = this.pathRedo.pop();
+      host.dataset.vectorPathUndoDepth = String(this.pathHistory.length);
+      host.dataset.vectorPathRedoDepth = String(this.pathRedo.length);
+      return this.restorePathSnapshot(snapshot, 'path-redo');
+    },
+    renderEditablePath() {
+      if (!this.paperPath) return false;
+      if (this.editablePathObject) {
+        canvas.remove(this.editablePathObject);
+      }
+      this.editablePathObject = new fabricLib.Path(this.pathDataFromPaper(), {
+        fill: '',
+        stroke: '#FBBF24',
+        strokeWidth: 5,
+        strokeLineCap: 'round',
+        strokeLineJoin: 'round',
+        selectable: true,
+        name: 'editable-path'
+      });
+      canvas.add(this.editablePathObject);
+      canvas.setActiveObject(this.editablePathObject);
+      canvas.requestRenderAll();
+      this.syncSelection();
+      return true;
+    },
+    screenPoint(node) {
+      const vt = canvas.viewportTransform || [1, 0, 0, 1, 0, 0];
+      return {
+        x: node.x * vt[0] + vt[4],
+        y: node.y * vt[3] + vt[5]
+      };
+    },
+    syncPathOverlay() {
+      overlay.innerHTML = '';
+      const nodes = this.pathSegments();
+      const zoom = canvas.getZoom();
+      const minHitTarget = Math.max(14, Math.round(14 / Math.max(0.5, zoom)));
+      nodes.forEach((node, index) => {
+        const point = this.screenPoint(node);
+        const anchor = document.createElement('button');
+        anchor.type = 'button';
+        anchor.setAttribute('data-vector-anchor', node.id);
+        anchor.setAttribute('aria-label', `Path anchor ${index + 1}`);
+        anchor.style.position = 'absolute';
+        anchor.style.left = `${point.x - minHitTarget / 2}px`;
+        anchor.style.top = `${point.y - minHitTarget / 2}px`;
+        anchor.style.width = `${minHitTarget}px`;
+        anchor.style.height = `${minHitTarget}px`;
+        anchor.style.borderRadius = '999px';
+        anchor.style.border = node.selected ? '2px solid #F97316' : '2px solid #FBBF24';
+        anchor.style.background = node.selected ? '#FED7AA' : '#111827';
+        anchor.style.boxShadow = '0 0 0 2px rgba(15,23,42,0.85)';
+        anchor.style.pointerEvents = 'auto';
+        anchor.style.padding = '0';
+        anchor.addEventListener('click', (event) => {
+          this.selectPathNode(node.id, event.shiftKey);
+          event.preventDefault();
+        });
+        anchor.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            this.selectPathNode(node.id, event.shiftKey);
+            event.preventDefault();
+          }
+        });
+        anchor.addEventListener('pointerdown', (event) => {
+          anchor.setPointerCapture(event.pointerId);
+          const startX = event.clientX;
+          const startY = event.clientY;
+          const startNodeX = node.x;
+          const startNodeY = node.y;
+          const move = (moveEvent) => {
+            const dx = (moveEvent.clientX - startX) / canvas.getZoom();
+            const dy = (moveEvent.clientY - startY) / canvas.getZoom();
+            this.movePathNodeTo(node.id, startNodeX + dx, startNodeY + dy, false);
+          };
+          const up = () => {
+            document.removeEventListener('pointermove', move);
+            document.removeEventListener('pointerup', up);
+            this.recordSourceChange('path-pointer-drag');
+            host.dataset.vectorPathPointerDrag = 'true';
+          };
+          document.addEventListener('pointermove', move);
+          document.addEventListener('pointerup', up);
+        });
+        overlay.appendChild(anchor);
+        if (node.type !== 'corner') {
+          for (const [kind, hx, hy] of [['in', node.inX, node.inY], ['out', node.outX, node.outY]]) {
+            const handle = document.createElement('span');
+            handle.setAttribute('data-vector-handle', `${node.id}-${kind}`);
+            handle.style.position = 'absolute';
+            handle.style.left = `${hx * (canvas.viewportTransform ? canvas.viewportTransform[0] : 1) + (canvas.viewportTransform ? canvas.viewportTransform[4] : 0) - 4}px`;
+            handle.style.top = `${hy * (canvas.viewportTransform ? canvas.viewportTransform[3] : 1) + (canvas.viewportTransform ? canvas.viewportTransform[5] : 0) - 4}px`;
+            handle.style.width = '8px';
+            handle.style.height = '8px';
+            handle.style.border = '1px solid #93C5FD';
+            handle.style.background = '#DBEAFE';
+            handle.style.pointerEvents = 'none';
+            overlay.appendChild(handle);
+          }
+        }
+      });
+      host.dataset.vectorPathOverlayVisible = nodes.length > 0 ? 'true' : 'false';
+      host.dataset.vectorPathAnchorCount = String(nodes.length);
+      host.dataset.vectorPathPaperSegmentCount = String(this.paperPath && this.paperPath.segments ? this.paperPath.segments.length : 0);
+      host.dataset.vectorPathHandleCount = String(overlay.querySelectorAll('[data-vector-handle]').length);
+      host.dataset.vectorPathHitTargetMin = String(minHitTarget);
+      host.dataset.vectorPathDataLength = String(this.pathDataFromPaper().length);
+    },
+    selectPathNode(id, append = false) {
+      const index = this.indexFromNodeId(id);
+      if (!this.paperPath || index < 0 || index >= this.paperPath.segments.length) return false;
+      if (!append) this.selectedSegmentIndices.clear();
+      this.selectedSegmentIndices.add(index);
+      host.dataset.vectorPathSelectedNodes = this.selectedPathNodes().map((item) => item.id).join(',');
+      this.syncPathOverlay();
+      return true;
+    },
+    movePathNodeTo(id, x, y, pushHistory = true) {
+      const index = this.indexFromNodeId(id);
+      if (!this.paperPath || index < 0 || index >= this.paperPath.segments.length) return false;
+      if (pushHistory) this.pushPathHistory();
+      const segment = this.paperPath.segments[index];
+      segment.point.x = x;
+      segment.point.y = y;
+      this.selectedSegmentIndices.add(index);
+      this.renderEditablePath();
+      this.syncPathOverlay();
+      host.dataset.vectorPathOperation = 'move-node';
+      host.dataset.vectorPathKeyboardOperation = 'move-node';
+      return true;
+    },
+    nudgeSelectedPathNodes(dx, dy) {
+      if (!this.paperPath || this.selectedSegmentIndices.size === 0) return false;
+      this.pushPathHistory();
+      this.selectedSegmentIndices.forEach((index) => {
+        const segment = this.paperPath.segments[index];
+        if (!segment) return;
+        segment.point.x += dx;
+        segment.point.y += dy;
+      });
+      this.renderEditablePath();
+      this.syncPathOverlay();
+      host.dataset.vectorPathOperation = 'nudge-node';
+      host.dataset.vectorPathKeyboardOperation = 'nudge-node';
+      this.recordSourceChange('path-nudge');
+      return true;
+    },
+    insertPathNode() {
+      if (!this.paperPath) return false;
+      const selected = this.selectedPathNodes()[0] || this.pathSegments()[0];
+      const index = selected ? selected.index : 0;
+      this.pushPathHistory();
+      const base = selected || { x: 100, y: 160 };
+      const next = new this.paperEditScope.Point(base.x + 32, base.y - 18);
+      this.paperPath.insert(index + 1, next);
+      this.selectedSegmentIndices = new Set([index + 1]);
+      this.renderEditablePath();
+      this.syncPathOverlay();
+      host.dataset.vectorPathOperation = 'insert-node';
+      this.recordSourceChange('path-insert-node');
+      return true;
+    },
+    deleteSelectedPathNode() {
+      if (!this.paperPath || this.paperPath.segments.length <= 2) return false;
+      if (this.selectedSegmentIndices.size === 0) return false;
+      this.pushPathHistory();
+      Array.from(this.selectedSegmentIndices).sort((a, b) => b - a).forEach((index) => {
+        if (this.paperPath.segments[index]) this.paperPath.removeSegment(index);
+      });
+      this.selectedSegmentIndices = new Set([0]);
+      this.renderEditablePath();
+      this.syncPathOverlay();
+      host.dataset.vectorPathOperation = 'delete-node';
+      this.recordSourceChange('path-delete-node');
+      return true;
+    },
+    convertSelectedPathNode(type) {
+      if (!this.paperPath || this.selectedSegmentIndices.size === 0) return false;
+      this.pushPathHistory();
+      this.selectedSegmentIndices.forEach((index) => {
+        const segment = this.paperPath.segments[index];
+        if (!segment) return;
+        if (type === 'smooth') {
+          segment.handleIn = new this.paperEditScope.Point(-18, 0);
+          segment.handleOut = new this.paperEditScope.Point(18, 0);
+        } else {
+          segment.handleIn = new this.paperEditScope.Point(0, 0);
+          segment.handleOut = new this.paperEditScope.Point(0, 0);
+        }
+      });
+      this.renderEditablePath();
+      this.syncPathOverlay();
+      host.dataset.vectorPathOperation = `convert-${type}`;
+      this.recordSourceChange(`path-convert-${type}`);
+      return true;
+    },
+    dragSelectedPathHandle(dx, dy) {
+      const selected = this.selectedPathNodes()[0];
+      if (!selected || !this.paperPath) return false;
+      this.pushPathHistory();
+      const segment = this.paperPath.segments[selected.index];
+      if (!segment) return false;
+      segment.handleOut.x += dx;
+      segment.handleOut.y += dy;
+      this.renderEditablePath();
+      this.syncPathOverlay();
+      host.dataset.vectorPathOperation = 'drag-handle';
+      this.recordSourceChange('path-handle-drag');
+      return true;
+    },
     recordSourceChange(operation) {
       const exported = this.sourceSvg();
       this.sourceChangeSeq += 1;
@@ -185,6 +561,7 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
       host.dataset.vectorActiveTop = obj && obj.top != null ? String(Math.round(obj.top)) : '';
       host.dataset.vectorActiveAngle = obj && obj.angle != null ? String(Math.round(obj.angle)) : '';
       host.dataset.vectorActiveScaleX = obj && obj.scaleX != null ? String(Number(obj.scaleX).toFixed(2)) : '';
+      if (typeof this.syncPathOverlay === 'function') this.syncPathOverlay();
     },
     addRect() {
       const obj = new fabricLib.Rect({
@@ -468,16 +845,36 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
   canvas.on('object:removed', () => state.syncSelection());
   host.addEventListener('keydown', (event) => {
     if (event.key === 'Delete' || event.key === 'Backspace') {
-      state.deleteSelected();
+      if (state.selectedPathNodes().length > 0) state.deleteSelectedPathNode();
+      else state.deleteSelected();
       event.preventDefault();
     } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'd') {
       state.duplicateSelected();
       event.preventDefault();
+    } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') {
+      state.undoPathOperation();
+      event.preventDefault();
+    } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'y') {
+      state.redoPathOperation();
+      event.preventDefault();
     } else if (event.key.toLowerCase() === 'g') {
       state.groupSelected();
       event.preventDefault();
+    } else if (event.key === 'ArrowRight') {
+      state.nudgeSelectedPathNodes(event.shiftKey ? 8 : 1, 0);
+      event.preventDefault();
+    } else if (event.key === 'ArrowLeft') {
+      state.nudgeSelectedPathNodes(event.shiftKey ? -8 : -1, 0);
+      event.preventDefault();
+    } else if (event.key === 'ArrowDown') {
+      state.nudgeSelectedPathNodes(0, event.shiftKey ? 8 : 1);
+      event.preventDefault();
+    } else if (event.key === 'ArrowUp') {
+      state.nudgeSelectedPathNodes(0, event.shiftKey ? -8 : -1);
+      event.preventDefault();
     }
   });
+  state.initEditablePath();
   state.importSvg(initialSvg, { silent: true });
   state.setTool(activeTool);
   state.syncSelection();
@@ -527,6 +924,13 @@ proc runFabricVectorAction*[E](host: E; action: string) =
   if (action === 'boolean-intersect') editor.runPaperBoolean('intersect');
   if (action === 'boolean-exclude') editor.runPaperBoolean('exclude');
   if (action === 'move-segment') editor.movePaperSegment();
+  if (action === 'path-insert') editor.insertPathNode();
+  if (action === 'path-delete-node') editor.deleteSelectedPathNode();
+  if (action === 'path-convert-smooth') editor.convertSelectedPathNode('smooth');
+  if (action === 'path-handle-drag') editor.dragSelectedPathHandle(24, -18);
+  if (action === 'path-nudge-right') editor.nudgeSelectedPathNodes(4, 0);
+  if (action === 'path-undo') editor.undoPathOperation();
+  if (action === 'path-redo') editor.redoPathOperation();
 })()
   """].}
 

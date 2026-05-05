@@ -4,7 +4,7 @@
 ## No CSS, no colors, no rendering — only signals, memos, and enums.
 ## Created via withViewModel inside createRoot.
 
-import std/[json, math, sequtils, strutils]
+import std/[algorithm, json, math, sequtils, strutils]
 import isonim/core/[signals, computation]
 import isonim/viewmodel
 import isonim/editor/types
@@ -1545,6 +1545,9 @@ proc changeViewport*(editor: EditorVM; viewport: PreviewViewport) =
   editor.platform.val = platformForViewport(viewport)
 
 func importVectorDocumentSvg*(symbol: VectorSymbol; svg: string): VectorDocument
+func diagnoseUnsupportedVectorSvgFeatures*(svg: string;
+    schemaKey = ""): seq[VectorDiagnostic]
+func diagnoseUnsupportedVectorPathEditing*(doc: VectorDocument): seq[VectorDiagnostic]
 
 proc selectVectorSymbol*(editor: EditorVM; index: int): bool {.discardable.} =
   let symbols = editor.vectorEditor.symbols.val
@@ -1552,10 +1555,13 @@ proc selectVectorSymbol*(editor: EditorVM; index: int): bool {.discardable.} =
     return false
 
   editor.vectorEditor.selectedSymbol.val = index
-  editor.vectorEditor.document.val =
-    importVectorDocumentSvg(symbols[index], symbols[index].svgContent)
+  let doc = importVectorDocumentSvg(symbols[index], symbols[index].svgContent)
+  editor.vectorEditor.document.val = doc
   editor.vectorEditor.diagnostics.val =
-    editor.vectorEditor.document.val.validateVectorAccessibility()
+    doc.validateVectorAccessibility() &
+    symbols[index].svgContent.diagnoseUnsupportedVectorSvgFeatures(
+      doc.source.schemaKey) &
+    doc.diagnoseUnsupportedVectorPathEditing()
   editor.vectorEditor.undoStack.val = @[]
   editor.vectorEditor.redoStack.val = @[]
   true
@@ -6408,11 +6414,12 @@ func selectedVectorAdapter*(): VectorAdapterContract =
     capabilities: @[
       vacSelection, vacHitTesting, vacTransformControls, vacDrawingTools,
       vacTextEditing, vacGrouping, vacLayerOrdering, vacSerialization,
-      vacSvgImport, vacSvgExport, vacAccessibilityMetadata, vacOptimization
+      vacSvgImport, vacSvgExport, vacAccessibilityMetadata, vacOptimization,
+      vacPathEditing, vacPathDataEditing
     ],
     usesThirdPartyInteraction: true,
     unsupportedAdvancedOperations: @[
-      "Freeform bezier node editing UI remains adapter-gated beyond the focused Paper.js segment move operation.",
+      "Arbitrary SVG clipping, masks, filters, and patterns are diagnosed before source commits until a mature adapter path preserves them.",
       "Boolean/path operations outside unite/subtract/intersect/exclude remain disabled until backed by Paper.js or another mature supplemental path library."
     ])
 
@@ -6447,14 +6454,20 @@ func defaultVectorA11y(symbol: VectorSymbol): VectorAccessibilityMeta =
 
 func vectorAttr(source, name: string): string =
   let key = name & "=\""
-  let start = source.find(key)
-  if start < 0:
-    return ""
-  let valueStart = start + key.len
-  let valueEnd = source.find("\"", valueStart)
-  if valueEnd < 0:
-    return ""
-  source[valueStart ..< valueEnd]
+  var cursor = 0
+  while true:
+    let start = source.find(key, cursor)
+    if start < 0:
+      return ""
+    let boundaryOk = start == 0 or source[start - 1] in {' ', '<', '\t', '\n',
+        '\r'}
+    if boundaryOk:
+      let valueStart = start + key.len
+      let valueEnd = source.find("\"", valueStart)
+      if valueEnd < 0:
+        return ""
+      return source[valueStart ..< valueEnd]
+    cursor = start + key.len
 
 func vectorFloatAttr(source, name: string; fallback: float): float =
   let raw = source.vectorAttr(name)
@@ -6477,6 +6490,22 @@ func strokeJoinFromString(value: string): StrokeJoinStyle =
   of "bevel": sjBevel
   else: sjMiter
 
+func rotationFromTransform(value: string): float =
+  let lower = value.toLowerAscii.strip
+  if not lower.startsWith("rotate("):
+    return 0
+  let start = lower.find("(")
+  let stop = lower.find(")", start + 1)
+  if start < 0 or stop < 0:
+    return 0
+  let parts = lower[start + 1 ..< stop].splitWhitespace
+  if parts.len == 0:
+    return 0
+  try:
+    parts[0].parseFloat
+  except ValueError:
+    0
+
 func strokeCapName(value: StrokeCapStyle): string =
   case value
   of scRound: "round"
@@ -6494,6 +6523,175 @@ func vectorObjectBase(id, name: string; kind: VectorShapeKind;
   VectorObject(id: id, name: name, kind: kind, layerId: "base",
     fill: "none", stroke: "currentColor", strokeWidth: 1, opacity: 1,
     strokeCap: scButt, strokeJoin: sjMiter, source: source, a11y: a11y)
+
+func vectorNodeId(index: int): string =
+  "node-" & $index
+
+func defaultCheckPathNodes*(): seq[VectorPathNode] =
+  @[
+    VectorPathNode(id: "node-0", x: 4, y: 12, nodeType: ntCorner),
+    VectorPathNode(id: "node-1", x: 9, y: 17, nodeType: ntCorner),
+    VectorPathNode(id: "node-2", x: 20, y: 6, nodeType: ntCorner)
+  ]
+
+func pathTokens(pathData: string): seq[string] =
+  var i = 0
+  while i < pathData.len:
+    let ch = pathData[i]
+    if ch.isAlphaAscii:
+      result.add $ch
+      inc i
+    elif ch in {' ', '\t', '\n', '\r', ','}:
+      inc i
+    elif ch in {'+', '-', '.', '0' .. '9'}:
+      let start = i
+      inc i
+      while i < pathData.len:
+        let next = pathData[i]
+        if next in {'0' .. '9', '.'}:
+          inc i
+        elif next in {'e', 'E'}:
+          inc i
+          if i < pathData.len and pathData[i] in {'+', '-'}:
+            inc i
+        else:
+          break
+      result.add pathData[start ..< i]
+    else:
+      return @[]
+
+func isPathCommand(token: string): bool =
+  token.len == 1 and token[0].isAlphaAscii
+
+func parsePathNumber(token: string; value: var float): bool =
+  try:
+    value = token.parseFloat
+    true
+  except ValueError:
+    false
+
+func pathNodesFromPathData*(pathData: string): seq[VectorPathNode] =
+  ## Parse the subset the headless ViewModel can edit without losing fidelity.
+  ## Unsupported SVG path syntax leaves pathNodes empty, preserving pathData.
+  let tokens = pathData.pathTokens
+  if tokens.len == 0:
+    return @[]
+
+  var pos = 0
+  var command = '\0'
+  var currentX = 0.0
+  var currentY = 0.0
+  var started = false
+  var seenMove = false
+  var nodes: seq[VectorPathNode] = @[]
+
+  func atCommand(): bool =
+    pos < tokens.len and tokens[pos].isPathCommand
+
+  proc readNumber(value: var float): bool =
+    if pos >= tokens.len or tokens[pos].isPathCommand:
+      return false
+    result = tokens[pos].parsePathNumber(value)
+    inc pos
+
+  proc addCorner(x, y: float) =
+    nodes.add VectorPathNode(id: vectorNodeId(nodes.len), x: x, y: y,
+      inX: x, inY: y, outX: x, outY: y, nodeType: ntCorner)
+    currentX = x
+    currentY = y
+    started = true
+
+  while pos < tokens.len:
+    if tokens[pos].isPathCommand:
+      command = tokens[pos][0]
+      inc pos
+    if command == '\0':
+      return @[]
+
+    case command
+    of 'M', 'm':
+      if seenMove:
+        return @[]
+      var x, y: float
+      if not readNumber(x) or not readNumber(y):
+        return @[]
+      if command == 'm' and started:
+        x += currentX
+        y += currentY
+      addCorner(x, y)
+      seenMove = true
+      command = if command == 'm': 'l' else: 'L'
+    of 'L', 'l':
+      while pos < tokens.len and not atCommand():
+        var x, y: float
+        if not readNumber(x) or not readNumber(y):
+          return @[]
+        if command == 'l':
+          x += currentX
+          y += currentY
+        addCorner(x, y)
+    of 'H', 'h':
+      while pos < tokens.len and not atCommand():
+        var x: float
+        if not readNumber(x):
+          return @[]
+        if command == 'h':
+          x += currentX
+        addCorner(x, currentY)
+    of 'V', 'v':
+      while pos < tokens.len and not atCommand():
+        var y: float
+        if not readNumber(y):
+          return @[]
+        if command == 'v':
+          y += currentY
+        addCorner(currentX, y)
+    of 'C', 'c':
+      if not started or nodes.len == 0:
+        return @[]
+      while pos < tokens.len and not atCommand():
+        var x1, y1, x2, y2, x, y: float
+        if not readNumber(x1) or not readNumber(y1) or
+            not readNumber(x2) or not readNumber(y2) or
+            not readNumber(x) or not readNumber(y):
+          return @[]
+        if command == 'c':
+          x1 += currentX
+          y1 += currentY
+          x2 += currentX
+          y2 += currentY
+          x += currentX
+          y += currentY
+        nodes[^1].outX = x1
+        nodes[^1].outY = y1
+        nodes[^1].nodeType = ntAsymmetric
+        nodes.add VectorPathNode(id: vectorNodeId(nodes.len), x: x, y: y,
+          inX: x2, inY: y2, outX: x, outY: y, nodeType: ntAsymmetric)
+        currentX = x
+        currentY = y
+    else:
+      return @[]
+
+  if nodes.len < 2:
+    return @[]
+  nodes
+
+func pathDataFromNodes*(nodes: seq[VectorPathNode]): string =
+  if nodes.len == 0:
+    return ""
+  result = "M" & $nodes[0].x & " " & $nodes[0].y
+  for i in 1 ..< nodes.len:
+    let prev = nodes[i - 1]
+    let node = nodes[i]
+    if node.nodeType in {ntSmooth, ntAsymmetric} or
+        prev.nodeType in {ntSmooth, ntAsymmetric}:
+      result.add "C" & $prev.outX & " " & $prev.outY & " " &
+        $node.inX & " " & $node.inY & " " & $node.x & " " & $node.y
+    else:
+      result.add "L" & $node.x & " " & $node.y
+
+func pathDataForObject(obj: VectorObject): string =
+  obj.pathData
 
 func vectorDocumentFromSymbol*(symbol: VectorSymbol): VectorDocument =
   let source = sourceFor(symbol)
@@ -6517,6 +6715,7 @@ func vectorDocumentFromSymbol*(symbol: VectorSymbol): VectorDocument =
       width: width,
       height: height,
       pathData: "M4 12l5 5L20 6",
+      pathNodes: defaultCheckPathNodes(),
       fill: "none",
       stroke: "currentColor",
       strokeWidth: 2,
@@ -6588,7 +6787,7 @@ func renderVectorObject(obj: VectorObject): string =
       obj.strokeCap.strokeCapName & "\" stroke-linejoin=\"" &
       obj.strokeJoin.strokeJoinName & "\"" & dash & transform & blend & " />"
   of vskPolygon, vskStar:
-    "<path id=\"" & obj.id.escapeSvg & "\" d=\"" & obj.pathData.escapeSvg &
+    "<path id=\"" & obj.id.escapeSvg & "\" d=\"" & obj.pathDataForObject.escapeSvg &
       "\"" & commonPaint & dash & transform & blend & " />"
   of vskText:
     "<text id=\"" & obj.id.escapeSvg & "\" x=\"" & $obj.x & "\" y=\"" & $obj.y &
@@ -6600,7 +6799,7 @@ func renderVectorObject(obj: VectorObject): string =
     "<use id=\"" & obj.id.escapeSvg & "\" href=\"#" & obj.symbolRef.escapeSvg &
       "\" x=\"" & $obj.x & "\" y=\"" & $obj.y & "\"" & transform & " />"
   of vskPath:
-    "<path id=\"" & obj.id.escapeSvg & "\" d=\"" & obj.pathData.escapeSvg &
+    "<path id=\"" & obj.id.escapeSvg & "\" d=\"" & obj.pathDataForObject.escapeSvg &
       "\"" & commonPaint & dash & transform & blend & " />"
 
 func renderVectorDefs(doc: VectorDocument): string =
@@ -6661,6 +6860,7 @@ func importedObjectFromTag(tag: string; index: int; source: VectorSourceOrigin;
   obj.strokeCap = tag.vectorAttr("stroke-linecap").strokeCapFromString
   obj.strokeJoin = tag.vectorAttr("stroke-linejoin").strokeJoinFromString
   obj.blendMode = tag.vectorAttr("mix-blend-mode")
+  obj.rotation = tag.vectorAttr("transform").rotationFromTransform
   if tag.startsWith("<rect"):
     obj.kind = vskRect
     obj.x = tag.vectorFloatAttr("x", 0)
@@ -6693,21 +6893,30 @@ func importedObjectFromTag(tag: string; index: int; source: VectorSourceOrigin;
   else:
     obj.kind = vskPath
     obj.pathData = tag.vectorAttr("d")
+    if obj.pathData.len > 0:
+      obj.pathNodes = obj.pathData.pathNodesFromPathData
   obj
 
 func importVectorDocumentSvg*(symbol: VectorSymbol; svg: string): VectorDocument =
   let base = symbol.vectorDocumentFromSymbol
-  if "<svg" notin svg:
+  if "<svg" notin svg and "<path" notin svg and "<rect" notin svg and
+      "<circle" notin svg and "<ellipse" notin svg and "<line" notin svg:
     return base
+  let sourceSvg =
+    if "<svg" in svg:
+      svg
+    else:
+      "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 " &
+        $base.width & " " & $base.height & "\">" & svg & "</svg>"
   var doc = base
   doc.objects = @[]
   doc.layers = @[VectorLayer(id: "base", name: "Base", visible: true,
     locked: false, objectIds: @[])]
   doc.symbols = @[VectorSymbolDefinition(id: symbol.name.normalize,
     name: symbol.name, svgContent: svg, source: doc.source, a11y: doc.a11y)]
-  let svgOpenEnd = svg.find(">")
+  let svgOpenEnd = sourceSvg.find(">")
   if svgOpenEnd >= 0:
-    let openTag = svg[0 .. svgOpenEnd]
+    let openTag = sourceSvg[0 .. svgOpenEnd]
     let importedViewBox = openTag.vectorAttr("viewBox")
     if importedViewBox.len > 0:
       doc.viewBox = importedViewBox
@@ -6717,14 +6926,14 @@ func importVectorDocumentSvg*(symbol: VectorSymbol; svg: string): VectorDocument
   for tagName in ["rect", "circle", "ellipse", "line", "path"]:
     var cursor = 0
     while true:
-      let start = svg.find("<" & tagName, cursor)
+      let start = sourceSvg.find("<" & tagName, cursor)
       if start < 0:
         break
-      let stop = svg.find(">", start)
+      let stop = sourceSvg.find(">", start)
       if stop < 0:
         break
       inc index
-      let tag = svg[start .. stop]
+      let tag = sourceSvg[start .. stop]
       let obj = importedObjectFromTag(tag, index, doc.source, doc.a11y)
       doc.objects.add obj
       doc.layers[0].objectIds.add obj.id
@@ -6779,8 +6988,55 @@ func validateVectorAccessibility*(doc: VectorDocument): seq[VectorDiagnostic] =
         objectId: obj.id,
         schemaKey: obj.source.schemaKey)
 
+func diagnoseUnsupportedVectorSvgFeatures*(svg: string;
+    schemaKey = ""): seq[VectorDiagnostic] =
+  let lower = svg.toLowerAscii
+  for feature in ["<clippath", "<mask", "<filter", "<pattern", "<foreignobject"]:
+    if feature in lower:
+      let label = feature.replace("<", "").replace("path", "Path")
+      result.add VectorDiagnostic(kind: vdkUnsupportedOperation,
+        message: "Unsupported SVG feature '" & label &
+          "' requires a preserving third-party vector adapter before saving.",
+        schemaKey: schemaKey)
+  if "clip-path=" in lower or "clip-path:" in lower:
+    result.add VectorDiagnostic(kind: vdkUnsupportedOperation,
+      message: "Unsupported SVG clip-path reference requires a preserving third-party vector adapter before saving.",
+      schemaKey: schemaKey)
+  if "mask=" in lower or "mask:" in lower:
+    result.add VectorDiagnostic(kind: vdkUnsupportedOperation,
+      message: "Unsupported SVG mask reference requires a preserving third-party vector adapter before saving.",
+      schemaKey: schemaKey)
+  if "filter=" in lower or "filter:" in lower:
+    result.add VectorDiagnostic(kind: vdkUnsupportedOperation,
+      message: "Unsupported SVG filter reference requires a preserving third-party vector adapter before saving.",
+      schemaKey: schemaKey)
+
+func sourceSvgForDiagnostics(doc: VectorDocument): string =
+  if doc.symbols.len > 0 and doc.symbols[0].svgContent.len > 0:
+    return doc.symbols[0].svgContent
+  doc.exportVectorDocumentSvg
+
+func diagnoseUnsupportedVectorPathEditing*(doc: VectorDocument): seq[VectorDiagnostic] =
+  for obj in doc.objects:
+    if obj.kind == vskPath and obj.pathData.len > 0 and obj.pathNodes.len == 0:
+      result.add VectorDiagnostic(kind: vdkUnsupportedOperation,
+        message: "Path node editing is disabled for '" & obj.id &
+          "' because its SVG path data uses syntax outside the supported " &
+          "source-preserving path-node subset; original pathData is preserved.",
+        objectId: obj.id,
+        schemaKey: obj.source.schemaKey)
+
 proc commitVectorDocument(editor: EditorVM; operation: VectorOperationKind;
     beforeDoc, afterDoc: VectorDocument): VectorOperationResult =
+  let unsupportedSource =
+    beforeDoc.sourceSvgForDiagnostics & "\n" & afterDoc.sourceSvgForDiagnostics
+  let unsupported = unsupportedSource.diagnoseUnsupportedVectorSvgFeatures(
+    afterDoc.source.schemaKey)
+  if unsupported.len > 0:
+    editor.vectorEditor.diagnostics.val = unsupported
+    return VectorOperationResult(ok: false, operation: operation,
+      document: beforeDoc, diagnostics: unsupported)
+
   let beforeSvg = beforeDoc.exportVectorDocumentSvg.optimizeVectorSvg
   let afterSvg = afterDoc.exportVectorDocumentSvg.optimizeVectorSvg
   let plan = afterDoc.vectorSourcePlan(beforeSvg, afterSvg)
@@ -6818,6 +7074,14 @@ proc commitVectorSourceSnapshot*(editor: EditorVM; operation: VectorOperationKin
     return VectorOperationResult(ok: false, operation: operation,
       diagnostics: @[VectorDiagnostic(kind: vdkMissingDocument,
         message: "Select a source-backed vector symbol before editing.")])
+
+  let unsupportedSource = beforeDoc.sourceSvgForDiagnostics & "\n" & normalized
+  let unsupported = unsupportedSource.diagnoseUnsupportedVectorSvgFeatures(
+    beforeDoc.source.schemaKey)
+  if unsupported.len > 0:
+    editor.vectorEditor.diagnostics.val = unsupported
+    return VectorOperationResult(ok: false, operation: operation,
+      document: beforeDoc, diagnostics: unsupported)
 
   let beforeSvg = beforeDoc.exportVectorDocumentSvg.optimizeVectorSvg
   var afterDoc = beforeDoc
@@ -7068,6 +7332,361 @@ proc selectVectorObjects*(editor: EditorVM; ids: seq[string]): bool {.discardabl
   editor.vectorEditor.document.val = doc
   editor.vectorEditor.diagnostics.val = @[]
   true
+
+func selectedPathNodeIds(obj: VectorObject): seq[string] =
+  for node in obj.pathNodes:
+    if node.selected:
+      result.add node.id
+
+proc rejectUnsupportedPathNodeEdit(editor: EditorVM; operation: VectorOperationKind;
+    objectId: string): VectorOperationResult =
+  let diagnostics = @[VectorDiagnostic(kind: vdkUnsupportedOperation,
+    message: "Path node editing requires parsed source-backed path nodes for '" &
+      objectId & "'; original pathData is preserved.",
+    objectId: objectId)]
+  editor.vectorEditor.diagnostics.val = diagnostics
+  VectorOperationResult(ok: false, operation: operation,
+    document: editor.vectorEditor.document.val, diagnostics: diagnostics)
+
+proc selectVectorPathNodes*(editor: EditorVM; objectId: string;
+    nodeIds: seq[string]; append = false): VectorOperationResult {.discardable.} =
+  var doc = editor.vectorEditor.document.val
+  let idx = doc.objectIndex(objectId)
+  if idx < 0:
+    let diagnostics = @[VectorDiagnostic(kind: vdkMissingObject,
+      message: "Unknown vector path object '" & objectId & "'.",
+      objectId: objectId)]
+    editor.vectorEditor.diagnostics.val = diagnostics
+    return VectorOperationResult(ok: false, operation: vokSelectPathNode,
+      diagnostics: diagnostics)
+  if doc.objects[idx].pathNodes.len == 0:
+    let diagnostics = @[VectorDiagnostic(kind: vdkUnsupportedOperation,
+      message: "Path node selection requires parsed source-backed path nodes for '" &
+        objectId & "'; original pathData is preserved.", objectId: objectId)]
+    editor.vectorEditor.diagnostics.val = diagnostics
+    return VectorOperationResult(ok: false, operation: vokSelectPathNode,
+      diagnostics: diagnostics)
+  for id in nodeIds:
+    if not doc.objects[idx].pathNodes.anyIt(it.id == id):
+      let diagnostics = @[VectorDiagnostic(kind: vdkMissingObject,
+        message: "Unknown path node '" & id & "'.", objectId: objectId)]
+      editor.vectorEditor.diagnostics.val = diagnostics
+      return VectorOperationResult(ok: false, operation: vokSelectPathNode,
+        diagnostics: diagnostics)
+  if not append:
+    for node in doc.objects[idx].pathNodes.mitems:
+      node.selected = false
+  for node in doc.objects[idx].pathNodes.mitems:
+    if node.id in nodeIds:
+      node.selected = true
+  doc.selectedIds = @[objectId]
+  editor.vectorEditor.document.val = doc
+  editor.vectorEditor.diagnostics.val = @[]
+  VectorOperationResult(ok: true, operation: vokSelectPathNode, document: doc)
+
+proc moveVectorPathNodes*(editor: EditorVM; objectId: string;
+    nodeIds: seq[string]; dx, dy: float): VectorOperationResult {.discardable.} =
+  let beforeDoc = editor.vectorEditor.document.val
+  let idx = beforeDoc.objectIndex(objectId)
+  if idx < 0:
+    return VectorOperationResult(ok: false, operation: vokMovePathNode,
+      diagnostics: @[VectorDiagnostic(kind: vdkMissingObject,
+        message: "Unknown vector path object '" & objectId & "'.",
+        objectId: objectId)])
+  if beforeDoc.objects[idx].pathNodes.len == 0:
+    return editor.rejectUnsupportedPathNodeEdit(vokMovePathNode, objectId)
+  var afterDoc = beforeDoc
+  let targets =
+    if nodeIds.len > 0: nodeIds else: afterDoc.objects[idx].selectedPathNodeIds
+  if targets.len == 0:
+    return VectorOperationResult(ok: false, operation: vokMovePathNode,
+      diagnostics: @[VectorDiagnostic(kind: vdkMissingSelection,
+        message: "Select at least one path node before moving.",
+        objectId: objectId)])
+  for node in afterDoc.objects[idx].pathNodes.mitems:
+    if node.id in targets:
+      node.x += dx
+      node.y += dy
+      node.inX += dx
+      node.inY += dy
+      node.outX += dx
+      node.outY += dy
+      node.selected = true
+  afterDoc.objects[idx].pathData = afterDoc.objects[idx].pathNodes.pathDataFromNodes
+  editor.commitVectorDocument(vokMovePathNode, beforeDoc, afterDoc)
+
+proc insertVectorPathNode*(editor: EditorVM; objectId: string; afterNodeId: string;
+    x, y: float; nodeType = ntCorner): VectorOperationResult {.discardable.} =
+  let beforeDoc = editor.vectorEditor.document.val
+  let idx = beforeDoc.objectIndex(objectId)
+  if idx < 0:
+    return VectorOperationResult(ok: false, operation: vokInsertPathNode,
+      diagnostics: @[VectorDiagnostic(kind: vdkMissingObject,
+        message: "Unknown vector path object '" & objectId & "'.",
+        objectId: objectId)])
+  if beforeDoc.objects[idx].pathNodes.len == 0:
+    return editor.rejectUnsupportedPathNodeEdit(vokInsertPathNode, objectId)
+  var afterDoc = beforeDoc
+  var insertAt = afterDoc.objects[idx].pathNodes.len
+  for i, node in afterDoc.objects[idx].pathNodes:
+    if node.id == afterNodeId:
+      insertAt = i + 1
+      break
+  if afterNodeId.len > 0 and insertAt == afterDoc.objects[idx].pathNodes.len and
+      not afterDoc.objects[idx].pathNodes.anyIt(it.id == afterNodeId):
+    return VectorOperationResult(ok: false, operation: vokInsertPathNode,
+      diagnostics: @[VectorDiagnostic(kind: vdkMissingObject,
+        message: "Unknown insertion node '" & afterNodeId & "'.",
+        objectId: objectId)])
+  for node in afterDoc.objects[idx].pathNodes.mitems:
+    node.selected = false
+  let id = vectorNodeId(afterDoc.objects[idx].pathNodes.len)
+  afterDoc.objects[idx].pathNodes.insert(VectorPathNode(id: id, x: x, y: y,
+    inX: x, inY: y, outX: x, outY: y, nodeType: nodeType, selected: true),
+    insertAt)
+  afterDoc.objects[idx].pathData = afterDoc.objects[idx].pathNodes.pathDataFromNodes
+  editor.commitVectorDocument(vokInsertPathNode, beforeDoc, afterDoc)
+
+proc deleteVectorPathNodes*(editor: EditorVM; objectId: string;
+    nodeIds: seq[string]): VectorOperationResult {.discardable.} =
+  let beforeDoc = editor.vectorEditor.document.val
+  let idx = beforeDoc.objectIndex(objectId)
+  if idx < 0:
+    return VectorOperationResult(ok: false, operation: vokDeletePathNode,
+      diagnostics: @[VectorDiagnostic(kind: vdkMissingObject,
+        message: "Unknown vector path object '" & objectId & "'.",
+        objectId: objectId)])
+  if beforeDoc.objects[idx].pathNodes.len == 0:
+    return editor.rejectUnsupportedPathNodeEdit(vokDeletePathNode, objectId)
+  var afterDoc = beforeDoc
+  let targets =
+    if nodeIds.len > 0: nodeIds else: afterDoc.objects[idx].selectedPathNodeIds
+  if targets.len == 0:
+    return VectorOperationResult(ok: false, operation: vokDeletePathNode,
+      diagnostics: @[VectorDiagnostic(kind: vdkMissingSelection,
+        message: "Select at least one path node before deleting.",
+        objectId: objectId)])
+  afterDoc.objects[idx].pathNodes =
+    afterDoc.objects[idx].pathNodes.filterIt(it.id notin targets)
+  if afterDoc.objects[idx].pathNodes.len < 2:
+    return VectorOperationResult(ok: false, operation: vokDeletePathNode,
+      diagnostics: @[VectorDiagnostic(kind: vdkUnsupportedOperation,
+        message: "A path must keep at least two nodes.", objectId: objectId)])
+  afterDoc.objects[idx].pathData = afterDoc.objects[idx].pathNodes.pathDataFromNodes
+  editor.commitVectorDocument(vokDeletePathNode, beforeDoc, afterDoc)
+
+proc convertVectorPathNodes*(editor: EditorVM; objectId: string;
+    nodeIds: seq[string]; nodeType: NodeType): VectorOperationResult {.discardable.} =
+  let beforeDoc = editor.vectorEditor.document.val
+  let idx = beforeDoc.objectIndex(objectId)
+  if idx < 0:
+    return VectorOperationResult(ok: false, operation: vokConvertPathNode,
+      diagnostics: @[VectorDiagnostic(kind: vdkMissingObject,
+        message: "Unknown vector path object '" & objectId & "'.",
+        objectId: objectId)])
+  if beforeDoc.objects[idx].pathNodes.len == 0:
+    return editor.rejectUnsupportedPathNodeEdit(vokConvertPathNode, objectId)
+  var afterDoc = beforeDoc
+  let targets =
+    if nodeIds.len > 0: nodeIds else: afterDoc.objects[idx].selectedPathNodeIds
+  if targets.len == 0:
+    return VectorOperationResult(ok: false, operation: vokConvertPathNode,
+      diagnostics: @[VectorDiagnostic(kind: vdkMissingSelection,
+        message: "Select at least one path node before conversion.",
+        objectId: objectId)])
+  for node in afterDoc.objects[idx].pathNodes.mitems:
+    if node.id in targets:
+      node.nodeType = nodeType
+      if nodeType == ntCorner:
+        node.inX = node.x
+        node.inY = node.y
+        node.outX = node.x
+        node.outY = node.y
+      elif node.inX == 0 and node.inY == 0 and node.outX == 0 and node.outY == 0:
+        node.inX = node.x - 8
+        node.inY = node.y
+        node.outX = node.x + 8
+        node.outY = node.y
+      node.selected = true
+  afterDoc.objects[idx].pathData = afterDoc.objects[idx].pathNodes.pathDataFromNodes
+  editor.commitVectorDocument(vokConvertPathNode, beforeDoc, afterDoc)
+
+proc dragVectorPathHandle*(editor: EditorVM; objectId, nodeId: string;
+    handle: VectorHandleKind; x, y: float): VectorOperationResult {.discardable.} =
+  let beforeDoc = editor.vectorEditor.document.val
+  let idx = beforeDoc.objectIndex(objectId)
+  if idx < 0:
+    return VectorOperationResult(ok: false, operation: vokDragPathHandle,
+      diagnostics: @[VectorDiagnostic(kind: vdkMissingObject,
+        message: "Unknown vector path object '" & objectId & "'.",
+        objectId: objectId)])
+  if beforeDoc.objects[idx].pathNodes.len == 0:
+    return editor.rejectUnsupportedPathNodeEdit(vokDragPathHandle, objectId)
+  var afterDoc = beforeDoc
+  var found = false
+  for node in afterDoc.objects[idx].pathNodes.mitems:
+    if node.id == nodeId:
+      found = true
+      node.nodeType = if node.nodeType == ntCorner: ntAsymmetric else: node.nodeType
+      if handle == vhkIn:
+        node.inX = x
+        node.inY = y
+      else:
+        node.outX = x
+        node.outY = y
+      node.selected = true
+  if not found:
+    return VectorOperationResult(ok: false, operation: vokDragPathHandle,
+      diagnostics: @[VectorDiagnostic(kind: vdkMissingObject,
+        message: "Unknown path node '" & nodeId & "'.", objectId: objectId)])
+  afterDoc.objects[idx].pathData = afterDoc.objects[idx].pathNodes.pathDataFromNodes
+  editor.commitVectorDocument(vokDragPathHandle, beforeDoc, afterDoc)
+
+proc ungroupVectorSelection*(editor: EditorVM): VectorOperationResult {.discardable.} =
+  let beforeDoc = editor.vectorEditor.document.val
+  if beforeDoc.selectedIds.len != 1:
+    return VectorOperationResult(ok: false, operation: vokUngroup,
+      diagnostics: @[VectorDiagnostic(kind: vdkMissingSelection,
+        message: "Select one vector group before ungrouping.")])
+  let idx = beforeDoc.objectIndex(beforeDoc.selectedIds[0])
+  if idx < 0 or beforeDoc.objects[idx].kind != vskGroup:
+    return VectorOperationResult(ok: false, operation: vokUngroup,
+      diagnostics: @[VectorDiagnostic(kind: vdkMissingSelection,
+        message: "Selected vector object is not a group.")])
+  var afterDoc = beforeDoc
+  let group = beforeDoc.objects[idx]
+  afterDoc.objects.delete(idx)
+  for i in 0 ..< afterDoc.layers.len:
+    afterDoc.layers[i].objectIds = afterDoc.layers[i].objectIds.filterIt(it != group.id)
+  afterDoc.selectedIds = group.children
+  editor.commitVectorDocument(vokUngroup, beforeDoc, afterDoc)
+
+proc nudgeVectorSelection*(editor: EditorVM; dx, dy: float): VectorOperationResult {.discardable.} =
+  let beforeDoc = editor.vectorEditor.document.val
+  if beforeDoc.selectedIds.len == 0:
+    return VectorOperationResult(ok: false, operation: vokNudgeSelection,
+      diagnostics: @[VectorDiagnostic(kind: vdkMissingSelection,
+        message: "Select vector objects before nudging.")])
+  var afterDoc = beforeDoc
+  for obj in afterDoc.objects.mitems:
+    if obj.id in beforeDoc.selectedIds:
+      obj.x += dx
+      obj.y += dy
+      for node in obj.pathNodes.mitems:
+        node.x += dx
+        node.y += dy
+        node.inX += dx
+        node.inY += dy
+        node.outX += dx
+        node.outY += dy
+      if obj.pathNodes.len > 0:
+        obj.pathData = obj.pathNodes.pathDataFromNodes
+  editor.commitVectorDocument(vokNudgeSelection, beforeDoc, afterDoc)
+
+proc snapVectorSelection*(editor: EditorVM; gridSize: float): VectorOperationResult {.discardable.} =
+  let beforeDoc = editor.vectorEditor.document.val
+  if beforeDoc.selectedIds.len == 0 or gridSize <= 0:
+    return VectorOperationResult(ok: false, operation: vokSnapSelection,
+      diagnostics: @[VectorDiagnostic(kind: vdkMissingSelection,
+        message: "Select vector objects and provide a positive grid before snapping.")])
+  var afterDoc = beforeDoc
+  for obj in afterDoc.objects.mitems:
+    if obj.id in beforeDoc.selectedIds:
+      obj.x = round(obj.x / gridSize) * gridSize
+      obj.y = round(obj.y / gridSize) * gridSize
+      for node in obj.pathNodes.mitems:
+        node.x = round(node.x / gridSize) * gridSize
+        node.y = round(node.y / gridSize) * gridSize
+        node.inX = round(node.inX / gridSize) * gridSize
+        node.inY = round(node.inY / gridSize) * gridSize
+        node.outX = round(node.outX / gridSize) * gridSize
+        node.outY = round(node.outY / gridSize) * gridSize
+      if obj.pathNodes.len > 0:
+        obj.pathData = obj.pathNodes.pathDataFromNodes
+  editor.commitVectorDocument(vokSnapSelection, beforeDoc, afterDoc)
+
+proc alignVectorSelection*(editor: EditorVM;
+    alignment: VectorAlignment): VectorOperationResult {.discardable.} =
+  let beforeDoc = editor.vectorEditor.document.val
+  if beforeDoc.selectedIds.len < 2:
+    return VectorOperationResult(ok: false, operation: vokAlignSelection,
+      diagnostics: @[VectorDiagnostic(kind: vdkMissingSelection,
+        message: "Select at least two vector objects before aligning.")])
+  let selected = beforeDoc.objects.filterIt(it.id in beforeDoc.selectedIds)
+  let left = selected.mapIt(it.x).min
+  let right = selected.mapIt(it.x + it.width).max
+  let top = selected.mapIt(it.y).min
+  let bottom = selected.mapIt(it.y + it.height).max
+  var afterDoc = beforeDoc
+  for obj in afterDoc.objects.mitems:
+    if obj.id in beforeDoc.selectedIds:
+      case alignment
+      of vaLeft: obj.x = left
+      of vaCenter: obj.x = (left + right - obj.width) / 2
+      of vaRight: obj.x = right - obj.width
+      of vaTop: obj.y = top
+      of vaMiddle: obj.y = (top + bottom - obj.height) / 2
+      of vaBottom: obj.y = bottom - obj.height
+  editor.commitVectorDocument(vokAlignSelection, beforeDoc, afterDoc)
+
+proc distributeVectorSelection*(editor: EditorVM;
+    axis: VectorDistributeAxis): VectorOperationResult {.discardable.} =
+  let beforeDoc = editor.vectorEditor.document.val
+  if beforeDoc.selectedIds.len < 3:
+    return VectorOperationResult(ok: false, operation: vokDistributeSelection,
+      diagnostics: @[VectorDiagnostic(kind: vdkMissingSelection,
+        message: "Select at least three vector objects before distributing.")])
+  var selected = beforeDoc.objects.filterIt(it.id in beforeDoc.selectedIds)
+  if axis == vdaHorizontal:
+    selected.sort(proc(a, b: VectorObject): int = cmp(a.x, b.x))
+  else:
+    selected.sort(proc(a, b: VectorObject): int = cmp(a.y, b.y))
+  let first = selected[0]
+  let last = selected[^1]
+  let span =
+    if axis == vdaHorizontal: (last.x + last.width / 2) - (first.x + first.width / 2)
+    else: (last.y + last.height / 2) - (first.y + first.height / 2)
+  let step = span / float(selected.len - 1)
+  var afterDoc = beforeDoc
+  for i, item in selected:
+    let idx = afterDoc.objectIndex(item.id)
+    if idx < 0:
+      continue
+    if axis == vdaHorizontal:
+      afterDoc.objects[idx].x = first.x + first.width / 2 + step * float(i) -
+        afterDoc.objects[idx].width / 2
+    else:
+      afterDoc.objects[idx].y = first.y + first.height / 2 + step * float(i) -
+        afterDoc.objects[idx].height / 2
+  editor.commitVectorDocument(vokDistributeSelection, beforeDoc, afterDoc)
+
+proc reorderVectorSelection*(editor: EditorVM;
+    order: VectorZOrder): VectorOperationResult {.discardable.} =
+  let beforeDoc = editor.vectorEditor.document.val
+  if beforeDoc.selectedIds.len == 0:
+    return VectorOperationResult(ok: false, operation: vokReorderSelection,
+      diagnostics: @[VectorDiagnostic(kind: vdkMissingSelection,
+        message: "Select vector objects before changing z-order.")])
+  var afterDoc = beforeDoc
+  for layer in afterDoc.layers.mitems:
+    for id in beforeDoc.selectedIds:
+      let pos = layer.objectIds.find(id)
+      if pos < 0:
+        continue
+      case order
+      of vzoBringForward:
+        if pos < layer.objectIds.high:
+          swap layer.objectIds[pos], layer.objectIds[pos + 1]
+      of vzoSendBackward:
+        if pos > 0:
+          swap layer.objectIds[pos], layer.objectIds[pos - 1]
+      of vzoBringToFront:
+        layer.objectIds.delete(pos)
+        layer.objectIds.add id
+      of vzoSendToBack:
+        layer.objectIds.delete(pos)
+        layer.objectIds.insert(id, 0)
+  editor.commitVectorDocument(vokReorderSelection, beforeDoc, afterDoc)
 
 proc undoVectorEdit*(editor: EditorVM): bool {.discardable.} =
   let stack = editor.vectorEditor.undoStack.val
