@@ -2786,6 +2786,250 @@ proc renderElementTree[R, E](r: R; vm: EditorVM; frame: E;
     r.addEventListener(rowNode, "mouseover", hover)
     r.appendChild(rowsNode, rowNode)
 
+func stylePanelProperty(selected: ElementRef; section: InspectorSection): string =
+  for (name, fallback) in sectionProperties(section):
+    discard fallback
+    for prop in selected.properties:
+      if prop.name == name:
+        return name
+  if selected.properties.len > 0:
+    selected.properties[0].name
+  else:
+    "color"
+
+func demoScopeValue(propName, current: string; scope: StyleScopeChoiceKind): string =
+  case propName
+  of "padding", "padding-top", "padding-right", "padding-bottom",
+      "padding-left", "gap":
+    if scope == sscSharedClass: "24px" else: "20px"
+  of "color":
+    if scope == sscSemanticToken: "#3B82F6" else: "#F8FAFC"
+  of "background-color", "background":
+    if scope == sscSemanticToken: "#EFF6FF" else: "#F8FAFC"
+  of "border-radius":
+    if scope == sscSharedClass: "12px" else: "10px"
+  else:
+    if current.len > 0: current else: "1px"
+
+proc renderStyleManagerPanel[R, E](r: R; vm: EditorVM; frame: E;
+    selected: ElementRef): E =
+  let propName = stylePanelProperty(selected, vm.inspector.activeSection.val)
+  let snapshot = vm.styleManagerSnapshot(propName)
+  var localScopeButton: E
+  var sharedScopeButton: E
+  var promoteButton: E
+  var detachButton: E
+  var createClassButton: E
+  var renameClassButton: E
+  var duplicateClassButton: E
+  result = ui(r):
+    tdiv(display = "flex", flex_direction = "column", gap = "8px",
+          padding = "10px", border = "1px solid " & border,
+          border_radius = "6px", background_color = bgBase):
+      tdiv(display = "flex", align_items = "center",
+            justify_content = "space-between", gap = "8px"):
+        span(font_size = "10px", font_weight = "700", color = textSecondary,
+              text_transform = "uppercase", letter_spacing = "0.5px"):
+          text "Style manager"
+        span(font_size = "10px", color = accent, font_family = "monospace"):
+          text snapshot.property & " = " & snapshot.finalValue
+      input(class = "editor-input",
+            height = "26px",
+            background_color = bgSurface,
+            border = "1px solid " & border,
+            border_radius = "4px",
+            padding = "0 7px",
+            font_size = "11px",
+            color = textPrimary,
+            outline = "none",
+            min_width = "0",
+            `aria-label` = "Search reusable styles",
+            placeholder = "Search reusable styles")
+      tdiv(display = "flex", flex_direction = "column", gap = "4px",
+            `aria-label` = "Current class stack"):
+        span(font_size = "10px", color = textMuted):
+          text "Current class stack"
+        if snapshot.currentClassStack.len == 0:
+          span(font_size = "11px", color = textDim):
+            text "No reusable class on this property"
+        else:
+          for i in 0 ..< snapshot.currentClassStack.len:
+            let className = snapshot.currentClassStack[i].className
+            let editable = snapshot.currentClassStack[i].editable
+            tdiv(display = "grid",
+                  `grid-template-columns` = "minmax(0, 1fr) auto",
+                  gap = "6px", align_items = "center",
+                  min_height = "24px",
+                  padding = "3px 5px", border = "1px solid " & border,
+                  border_radius = "4px"):
+              span(font_size = "11px", color = textPrimary,
+                    white_space = "nowrap", overflow = "hidden",
+                    text_overflow = "ellipsis"):
+                text className
+              span(font_size = "10px", color = textDim):
+                text if editable: "editable" else: "read-only"
+      tdiv(display = "grid", `grid-template-columns` = "1fr 1fr",
+            gap = "4px"):
+        tdiv(ref = createClassButton, role = "button", tabindex = "0",
+              `aria-label` = "Create reusable class for " & snapshot.property,
+              padding = "5px 6px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "10px", text_align = "center", cursor = "pointer"):
+          text "Create"
+        tdiv(ref = renameClassButton, role = "button", tabindex = "0",
+              `aria-label` = "Rename reusable class for " & snapshot.property,
+              padding = "5px 6px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "10px", text_align = "center", cursor = "pointer"):
+          text "Rename"
+        tdiv(ref = duplicateClassButton, role = "button", tabindex = "0",
+              `aria-label` = "Duplicate reusable class for " & snapshot.property,
+              padding = "5px 6px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "10px", text_align = "center", cursor = "pointer"):
+          text "Duplicate"
+        tdiv(ref = detachButton, role = "button", tabindex = "0",
+              `aria-label` = "Detach reusable class for " & snapshot.property,
+              padding = "5px 6px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "10px", text_align = "center", cursor = "pointer"):
+          text "Detach"
+      tdiv(display = "flex", flex_direction = "column", gap = "4px",
+            `aria-label` = "Safe style scope choices"):
+        span(font_size = "10px", color = textMuted):
+          text "Safe scopes"
+        tdiv(display = "grid", `grid-template-columns` = "1fr 1fr",
+              gap = "4px"):
+          tdiv(ref = localScopeButton, role = "button", tabindex = "0",
+                `aria-label` = "Apply local instance scope for " & snapshot.property,
+                padding = "5px 6px", border_radius = "4px",
+                background_color = accent, color = textPrimary,
+                font_size = "10px", text_align = "center", cursor = "pointer"):
+            text "Local"
+          tdiv(ref = sharedScopeButton, role = "button", tabindex = "0",
+                `aria-label` = "Apply shared class scope for " & snapshot.property,
+                padding = "5px 6px", border_radius = "4px",
+                background_color = bgSurface, color = textMuted,
+                font_size = "10px", text_align = "center", cursor = "pointer"):
+            text "Class"
+          for i in 0 ..< snapshot.scopeChoices.len:
+            let choiceLabel = snapshot.scopeChoices[i].label
+            let editable = snapshot.scopeChoices[i].editable
+            span(font_size = "10px",
+                  color = (if editable: textMuted else: textDim),
+                  white_space = "nowrap", overflow = "hidden",
+                  text_overflow = "ellipsis"):
+              text choiceLabel & (if editable: " editable" else: " read-only")
+      tdiv(display = "flex", flex_direction = "column", gap = "4px",
+            `aria-label` = "Cascade source layers"):
+        span(font_size = "10px", color = textMuted):
+          text "Cascade / source"
+        for i in 0 ..< snapshot.cascadeLayers.len:
+          let layerKind = snapshot.cascadeLayers[i].kind
+          let layerValue = snapshot.cascadeLayers[i].value
+          let editable = snapshot.cascadeLayers[i].editable
+          tdiv(display = "grid",
+                `grid-template-columns` = "82px minmax(0, 1fr) auto",
+                gap = "5px", align_items = "center",
+                min_height = "24px",
+                padding = "3px 5px", border = "1px solid " & border,
+                border_radius = "4px"):
+            span(font_size = "10px", color = textDim):
+              text styleCascadeLayerLabel(layerKind)
+            span(font_size = "10px", color = textPrimary,
+                  white_space = "nowrap", overflow = "hidden",
+                  text_overflow = "ellipsis"):
+              text layerValue
+            span(font_size = "9px", color = textDim):
+              text if editable: "edit" else: "view"
+      tdiv(display = "flex", flex_direction = "column", gap = "4px",
+            `aria-label` = "Token manager"):
+        span(font_size = "10px", color = textMuted):
+          text "Token manager"
+        for i in 0 ..< snapshot.tokenItems.len:
+          let itemKey = snapshot.tokenItems[i].key
+          let aliasOf = snapshot.tokenItems[i].aliasOf
+          let usageCount = snapshot.tokenItems[i].impact.usageCount
+          tdiv(display = "grid",
+                `grid-template-columns` = "minmax(0, 1fr) auto",
+                gap = "5px", align_items = "center",
+                min_height = "24px",
+                padding = "3px 5px", border = "1px solid " & border,
+                border_radius = "4px"):
+            span(font_size = "10px", color = textPrimary,
+                  white_space = "nowrap", overflow = "hidden",
+                  text_overflow = "ellipsis"):
+              text itemKey & (if aliasOf.len > 0: " -> " & aliasOf else: "")
+            span(font_size = "9px", color = textDim):
+              text $usageCount & " uses"
+      tdiv(display = "flex", flex_direction = "column", gap = "4px",
+            `aria-label` = "Style diagnostics"):
+        span(font_size = "10px", color = textMuted):
+          text "Diagnostics"
+        if snapshot.diagnostics.len == 0:
+          span(font_size = "10px", color = textDim):
+            text "No style diagnostics"
+        else:
+          for i in 0 ..< snapshot.diagnostics.len:
+            let message = snapshot.diagnostics[i].message
+            span(font_size = "10px", color = "#FCA5A5"):
+              text message
+      tdiv(ref = promoteButton, role = "button", tabindex = "0",
+            `aria-label` = "Promote local override for " & snapshot.property,
+            padding = "5px 6px", border_radius = "4px",
+            background_color = bgSurface, color = textMuted,
+            font_size = "10px", text_align = "center", cursor = "pointer"):
+        text "Promote local override"
+  r.setAttribute(result, "aria-label", "Style class cascade token manager for " &
+    snapshot.property)
+
+  let localValue = demoScopeValue(snapshot.property, snapshot.finalValue,
+    sscLocalInstance)
+  let sharedValue = demoScopeValue(snapshot.property, snapshot.finalValue,
+    sscSharedClass)
+  let applyLocal = proc() = r.applyCssValue(vm, frame, snapshot.property,
+    localValue)
+  let applyShared = proc() = r.applyCssValue(vm, frame, snapshot.property,
+    sharedValue)
+  let createClass = proc() =
+    discard vm.createStyleClass("preview-" & snapshot.property.replace("-", "-"),
+      snapshot.property, snapshot.finalValue)
+  let renameClass = proc() =
+    let className =
+      if snapshot.currentClassStack.len > 0: snapshot.currentClassStack[0].className
+      else: "preview-" & snapshot.property
+    discard vm.renameStyleClass(className, className & "-renamed")
+  let duplicateClass = proc() =
+    let className =
+      if snapshot.currentClassStack.len > 0: snapshot.currentClassStack[0].className
+      else: "preview-" & snapshot.property
+    discard vm.duplicateStyleClass(className, className & "-copy")
+  let detach = proc() = discard vm.detachStyleClass(snapshot.property)
+  let promote = proc() =
+    discard vm.promoteLocalOverride(snapshot.property, sscSharedClass)
+
+  for button in [localScopeButton]:
+    r.addEventListener(button, "click", applyLocal)
+    r.addEventListener(button, "keydown", applyLocal)
+  for button in [sharedScopeButton]:
+    r.addEventListener(button, "click", applyShared)
+    r.addEventListener(button, "keydown", applyShared)
+  for button in [createClassButton]:
+    r.addEventListener(button, "click", createClass)
+    r.addEventListener(button, "keydown", createClass)
+  for button in [renameClassButton]:
+    r.addEventListener(button, "click", renameClass)
+    r.addEventListener(button, "keydown", renameClass)
+  for button in [duplicateClassButton]:
+    r.addEventListener(button, "click", duplicateClass)
+    r.addEventListener(button, "keydown", duplicateClass)
+  for button in [detachButton]:
+    r.addEventListener(button, "click", detach)
+    r.addEventListener(button, "keydown", detach)
+  for button in [promoteButton]:
+    r.addEventListener(button, "click", promote)
+    r.addEventListener(button, "keydown", promote)
+
 proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;
     clipboard: StyleClipboard) =
   r.clearChildren(content)
@@ -2870,6 +3114,8 @@ proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;
         summary(cursor = "pointer", color = textMuted, font_size = "10px",
                 padding = "2px 0"):
           text "Source / Cascade"
+    r.appendChild(sourceAccordion, renderStyleManagerPanel[R, E](r, vm,
+      frame, selected))
     r.appendChild(sourceAccordion, renderElementTree[R, E](r, vm, frame, selected))
     r.appendChild(content, sourceAccordion)
 

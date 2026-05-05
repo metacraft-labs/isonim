@@ -2867,6 +2867,308 @@ suite "Editor ViewModels (M27 workspace file writes)":
       check impact.diagnostics.anyIt(it.kind == dsdContrastImpact)
       dispose()
 
+  test "style_manager_resolves_class_token_and_cascade_layers":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("style-manager-resolve")
+      defer: removeDir(root)
+
+      func span(file: string; line: int): SourceSpan =
+        SourceSpan(file: file, line: line, column: 1,
+          endLine: line, endColumn: 24)
+
+      let tokenFile = root / "design/tokens.schema"
+      let cssFile = root / "components/card.css"
+      let viewFile = root / "components/card_view.nim"
+      createDir(root / "design")
+      createDir(root / "components")
+      createDir(root / "stories")
+      atomicWrite(tokenFile,
+        "primitive.surface.base=#ffffff\nsemantic.surface.card=token(primitive.surface.base)\nprimitive.spacing.base=16px\nsemantic.spacing.card=token(primitive.spacing.base)\nsemantic.surface.card.light=#ffffff\nsemantic.surface.card.dark=#0f172a\ncomponents.card.padding=16px")
+      atomicWrite(cssFile, ".card { padding: 16px; }\n.card { margin: 8px; }")
+      atomicWrite(viewFile, "background-color=#ffffff")
+      atomicWrite(root / "stories/card.fixture", "padding=16px")
+
+      let story = writeStory
+      let schema = DesignSystemSchema(
+        schemaVersion: 1,
+        projectId: "metacraft-web-backoffice",
+        ownerPackage: "metacraft-web",
+        frameworkContract: "isonim-editor-design-schema-v1",
+        nodes: @[
+          DesignSchemaNode(key: "primitive.surface.base",
+            kind: dsnFoundation, name: "Base surface",
+            property: "background-color", value: "#ffffff",
+            sourceSpan: span(tokenFile, 1), usageCount: 2),
+          DesignSchemaNode(key: "semantic.surface.card",
+            kind: dsnSemanticToken, name: "Card surface",
+            property: "background-color",
+            value: "token(primitive.surface.base)",
+            sourceSpan: span(tokenFile, 2), stories: @[story],
+            components: @["Card"], usageCount: 2,
+            foreground: "#cbd5e1", background: "#ffffff",
+            minContrast: 4.5, modeValues: @[
+              DesignTokenModeValue(kind: dtmkLight, name: "light",
+                value: "#ffffff", sourceSpan: span(tokenFile, 5),
+                schemaKey: "semantic.surface.card.light"),
+              DesignTokenModeValue(kind: dtmkDark, name: "dark",
+                value: "#0f172a", sourceSpan: span(tokenFile, 6),
+                schemaKey: "semantic.surface.card.dark")
+            ]),
+          DesignSchemaNode(key: "primitive.spacing.base",
+            kind: dsnFoundation, name: "Base spacing",
+            property: "padding", value: "16px",
+            sourceSpan: span(tokenFile, 3), usageCount: 4),
+          DesignSchemaNode(key: "semantic.spacing.card",
+            kind: dsnSemanticToken, name: "Card spacing",
+            property: "padding", value: "token(primitive.spacing.base)",
+            sourceSpan: span(tokenFile, 4), stories: @[story],
+            components: @["Card"], usageCount: 4),
+          DesignSchemaNode(key: "components.card.padding",
+            kind: dsnComponentToken, name: "Card padding",
+            component: "Card", property: "padding", value: "16px",
+            sourceSpan: span(tokenFile, 7), usageCount: 3),
+          DesignSchemaNode(key: "classes.card.primary",
+            kind: dsnClassDefinition, name: "card",
+            property: "padding", value: "16px",
+            sourceSpan: span(cssFile, 1), usageCount: 3),
+          DesignSchemaNode(key: "classes.card.duplicate",
+            kind: dsnClassDefinition, name: "card",
+            property: "margin", value: "8px",
+            sourceSpan: span(cssFile, 2), usageCount: 1),
+          DesignSchemaNode(key: "fixtures.card.title",
+            kind: dsnStoryFixture, name: "Card fixture",
+            property: "padding", value: "16px",
+            sourceSpan: span(root / "stories/card.fixture", 1),
+            stories: @[story]),
+          DesignSchemaNode(key: "components.card.schema",
+            kind: dsnComponentVariant, name: "Card schema",
+            property: "padding", value: "16px",
+            sourceSpan: span(root / "components/card.schema", 1),
+            stories: @[story])
+        ],
+        sourceOwnership: @[
+          DesignSourceOwnership(elementSourceKey: "card.root",
+            property: "background-color",
+            schemaKey: "semantic.surface.card",
+            nodeKey: "semantic.surface.card",
+            sourceSpan: span(tokenFile, 2),
+            generatedViewFile: viewFile, generatedViewLine: 1),
+          DesignSourceOwnership(elementSourceKey: "card.root",
+            property: "padding", schemaKey: "classes.card.primary",
+            nodeKey: "classes.card.primary",
+            sourceSpan: span(cssFile, 1),
+            cssModuleFile: cssFile, cssModuleClass: "card",
+            tailwindUtilities: @["card"])
+        ])
+
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "M39 style manager resolve workspace",
+        storyGroups = @[StoryGroup(name: "Card", kind: skComponent,
+          items: @[StoryItem(name: "Default", kind: skComponent,
+            group: "Card")])],
+        foundationTokens = @[
+          FoundationTokenEntry(key: "semantic.surface.card",
+            kind: ftkSemanticColor,
+            value: "token(primitive.surface.base)",
+            aliasOf: "primitive.surface.base",
+            sourceFile: tokenFile, sourceLine: 2,
+            schemaKey: "semantic.surface.card",
+            property: "background-color",
+            affectedStories: @[story])
+        ],
+        designSystemSchema = schema,
+        initialStory = some(story)))
+      check vm.selectInspectorElement(ElementRef(
+        id: "card-root",
+        sourceKey: "card.root",
+        schemaKey: "components.card.schema",
+        tag: "article",
+        sourceFile: viewFile,
+        sourceLine: 1,
+        properties: @[
+          PropertyInfo(name: "background-color", value: "#ffffff",
+            origin: poSetStyle,
+            originDetail: "style.background-color",
+            sourceFile: viewFile,
+            sourceLine: 1,
+            schemaKey: "semantic.surface.card",
+            tokenName: "semantic.surface.card",
+            directStyleAllowed: true),
+          PropertyInfo(name: "padding", value: "16px",
+            origin: poTailwindClass,
+            originDetail: "class:card",
+            sourceFile: cssFile,
+            sourceLine: 1,
+            schemaKey: "classes.card.primary",
+            sharedCount: 3),
+          PropertyInfo(name: "padding", value: "12px",
+            origin: poInherited,
+            originDetail: "inherited:.card-shell",
+            sourceFile: cssFile,
+            sourceLine: 3,
+            schemaKey: "classes.card.inherited")
+        ]))
+
+      let padding = vm.styleManagerSnapshot("padding", "card")
+      check padding.currentClassStack.anyIt(it.className == "card" and it.editable)
+      check padding.reusableStyles.len >= 2
+      check padding.cascadeLayers.anyIt(it.kind == sclSharedClass and
+        it.className == "card" and it.editable and
+        it.sourceFile == cssFile and it.sourceLine == 1)
+      check padding.cascadeLayers.anyIt(it.kind == sclFinalValue and
+        it.finalValue == "16px" and it.sourceFile == cssFile)
+      check padding.cascadeLayers.anyIt(it.kind == sclInheritedValue and
+        it.inheritedValue == "12px" and it.overridden)
+      for kind in [
+        sscLocalInstance, sscStoryFixture, sscComponentSchema, sscComponentToken,
+        sscSharedClass, sscSemanticToken, sscGlobalPrimitiveToken
+      ]:
+        check padding.scopeChoices.anyIt(it.kind == kind and it.editable and
+          it.sourceFile.len > 0 and it.sourceLine > 0 and
+          (kind == sscLocalInstance or it.schemaKey.len > 0))
+      check padding.diagnostics.anyIt(it.kind == sdkDuplicateClass)
+      check padding.diagnostics.anyIt(it.kind == sdkUnsafeDetachment)
+
+      let color = vm.styleManagerSnapshot("background-color")
+      check color.finalValue == "#ffffff"
+      check color.cascadeLayers.anyIt(it.kind == sclSemanticToken and
+        it.tokenChain == @["semantic.surface.card", "primitive.surface.base"])
+      check color.tokenItems.anyIt(it.key == "semantic.surface.card" and
+        it.aliasOf == "primitive.surface.base" and it.dependentStories.len == 1)
+      check color.tokenItems.anyIt(it.key == "semantic.surface.card" and
+        it.modes.len == 2 and it.usages.anyIt(it.name == "background-color") and
+        it.contrastRatio > 0 and it.contrastRatio < it.minContrast and
+        it.diagnostics.anyIt(it.kind == fedContrastViolation) and
+        it.impact.diagnostics.anyIt(it.kind == dsdContrastImpact))
+      check color.tokenItems.anyIt(it.key == "semantic.surface.card" and
+        it.impact.usageCount >= 1)
+      check vm.tokenManagerItems("surface").anyIt(it.key == "semantic.surface.card")
+      check color.diagnostics.anyIt(
+        it.kind == sdkHardcodedColorMatchingToken and
+        it.tokenKey == "primitive.surface.base")
+      check color.diagnostics.anyIt(it.kind == sdkOneOffValueShouldBeToken)
+      dispose()
+
+  test "style_manager_promote_detach_and_tokenize_are_source_backed":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("style-manager-source-backed")
+      defer: removeDir(root)
+
+      let viewFile = root / "components/card_view.nim"
+      let cssFile = root / "components/card.css"
+      let tokenFile = root / "design/tokens.schema"
+      createDir(root / "components")
+      createDir(root / "design")
+      atomicWrite(viewFile, "background-color=#ffffff\nborder-radius=8px")
+      atomicWrite(cssFile, ".card { padding: 16px; }")
+      atomicWrite(tokenFile, "semantic.surface.raised=#f8fafc")
+
+      let recorder = WorkspaceEditRecorder()
+      let schema = @[
+        WorkspaceEditableSchemaEntry(key: "semantic.surface.raised",
+          kind: wskToken, file: viewFile, path: "semantic.surface.raised",
+          story: writeStory, property: "background-color"),
+        WorkspaceEditableSchemaEntry(key: "classes.card.padding",
+          kind: wskSourceMap, file: cssFile, path: "classes.card.padding",
+          story: writeStory, property: "padding"),
+        WorkspaceEditableSchemaEntry(key: "classes.card.radius",
+          kind: wskSourceMap, file: viewFile, path: "classes.card.radius",
+          story: writeStory, property: "border-radius")
+      ]
+      let adapter = adapterFor(root, schema, recorder = recorder)
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "M39 style manager source-backed workspace",
+        storyGroups = @[StoryGroup(name: "Card", kind: skComponent,
+          items: @[StoryItem(name: "Default", kind: skComponent,
+            group: "Card")])],
+        initialStory = some(writeStory),
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true),
+        editAdapter = adapter))
+      check vm.selectInspectorElement(ElementRef(
+        id: "card-root",
+        sourceKey: "card.root",
+        tag: "article",
+        sourceFile: viewFile,
+        sourceLine: 1,
+        properties: @[
+          PropertyInfo(name: "background-color", value: "#ffffff",
+            origin: poSetStyle, originDetail: "style.background-color",
+            sourceFile: viewFile, sourceLine: 1,
+            schemaKey: "semantic.surface.raised",
+            directStyleAllowed: true),
+          PropertyInfo(name: "padding", value: "16px",
+            origin: poTailwindClass, originDetail: "class:card",
+            sourceFile: cssFile, sourceLine: 1,
+            schemaKey: "classes.card.padding",
+            sharedCount: 4),
+          PropertyInfo(name: "border-radius", value: "8px",
+            origin: poSetStyle, originDetail: "style.border-radius",
+            sourceFile: viewFile, sourceLine: 2,
+            schemaKey: "classes.card.radius",
+            directStyleAllowed: true)
+        ]))
+
+      let promote = vm.promoteLocalOverride("border-radius", sscSharedClass,
+        "classes.card.radius")
+      check promote.status == pesAccepted
+      check promote.sourceEdit.reversible
+      check promote.sourceEdit.schemaKey == "classes.card.radius"
+      check promote.sourceEdit.originDetail.startsWith("style-promote:")
+
+      let detach = vm.detachStyleClass("padding")
+      check detach.status == pesAccepted
+      check detach.sourceEdit.planKind == cspInlineStyleUpdate
+      check detach.sourceEdit.originDetail.startsWith("style-class:detach")
+
+      let tokenize = vm.tokenizeStyleValue("background-color",
+        "semantic.surface.raised")
+      check tokenize.status == pesAccepted
+      check tokenize.sourceEdit.planKind == cspTokenUpdate
+      check tokenize.sourceEdit.tokenName == "semantic.surface.raised"
+      check vm.inspector.pendingSourceEdits.val.len == 3
+
+      let saved = vm.applyWorkspaceFileEdits()
+      check saved.ok
+      check recorder.reviewCount == 1
+      check readFile(viewFile).contains("token(semantic.surface.raised)")
+      check readFile(cssFile).contains("padding: 16px")
+      check vm.inspector.pendingSourceEdits.val.len == 0
+
+      let classVm = createEditorVM(newEditorWorkspace(
+        title = "M39 style class operations workspace",
+        storyGroups = @[],
+        designSystemSchema = DesignSystemSchema(
+          schemaVersion: 1,
+          projectId: "metacraft-web-backoffice",
+          ownerPackage: "metacraft-web",
+          frameworkContract: "isonim-editor-design-schema-v1",
+          nodes: @[DesignSchemaNode(key: "classes.card.padding",
+            kind: dsnClassDefinition, name: "card",
+            property: "padding", value: "16px",
+            sourceSpan: SourceSpan(file: cssFile, line: 1,
+              column: 1, endLine: 1, endColumn: 24))])))
+      check classVm.selectInspectorElement(ElementRef(
+        tag: "article",
+        sourceFile: cssFile,
+        sourceLine: 1,
+        properties: @[PropertyInfo(name: "padding", value: "16px",
+          origin: poTailwindClass, originDetail: "class:card",
+          sourceFile: cssFile, sourceLine: 1,
+          schemaKey: "classes.card.padding", sharedCount: 4)]))
+      let created = classVm.createStyleClass("cardCompact", "margin", "8px")
+      check created.status == pesAccepted
+      check created.sourceEdit.reversible
+      check created.sourceEdit.originDetail.startsWith("style-class:create")
+      let renamed = classVm.renameStyleClass("card", "card-shell")
+      check renamed.status == pesAccepted
+      check renamed.sourceEdit.originDetail == "style-class:rename"
+      let duplicated = classVm.duplicateStyleClass("card", "card-copy")
+      check duplicated.status == pesAccepted
+      check duplicated.sourceEdit.originDetail == "style-class:duplicate"
+      check classVm.inspector.pendingSourceEdits.val.len == 3
+      dispose()
+
   test "design_schema_preserves_framework_consumer_boundary":
     createRoot proc(dispose: proc()) =
       let schema = DesignSystemSchema(

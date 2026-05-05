@@ -436,6 +436,57 @@
       }
     },
     {
+      "id": "style_class_cascade_token_manager",
+      "title": "Style, Class, Cascade, and Token Manager",
+      "status": "functional",
+      "targetWorkflow": "Users can inspect class stacks, reusable styles, cascade/source layers, token aliases/modes/usages/impact, and choose safe edit scopes that stage source-backed plans.",
+      "owner": "framework-and-consumer",
+      "mockOnly": false,
+      "placeholderUi": false,
+      "browserBehavior": ["pointer", "focus", "iframe"],
+      "implementation": "M39 adds framework ViewModel contracts for current class stacks, reusable style search data, create/rename/duplicate/detach/promote/tokenize source plans, cascade layers with final/inherited/overridden/editable/source/token-chain details, token manager items with aliases, modes, usage, impact, contrast diagnostics, dependent stories, safe scope choices, and diagnostics for one-off token candidates, duplicate classes, hardcoded token matches, and unsafe detachments. The browser inspector exposes the style manager in the Source / Cascade panel and verifies local/shared scope choices update the live metacraft-web preview with save/revert.",
+      "knownLimitations": "Functional M39 coverage is not Figma-grade or Webflow/Figma parity. The UI is a compact inspector panel rather than a full class selector popover with rich keyboard roving, drag/drop class stack management, screenshot baselines, or exhaustive visual regression coverage. Browser coverage proves one real metacraft-web scope-change path plus save/revert; full token-manager impact previews, searchable swatch visuals, and screenshot/visual assertions remain below the M32 Figma-grade gate.",
+      "headlessTests": [
+        {
+          "name": "style_manager_resolves_class_token_and_cascade_layers",
+          "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "style_manager_promote_detach_and_tokenize_are_source_backed",
+          "file": "tests/test_editor_viewmodels.nim"
+        }
+      ],
+      "playwrightRequired": true,
+      "playwrightTests": [
+        {
+          "name": "e2e_style_manager_scope_choices_update_real_preview",
+          "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
+        }
+      ],
+      "screenshotVisualAssertions": {
+        "requiredForFigmaGrade": true,
+        "status": "not_started",
+        "assertions": [],
+        "futureMilestone": "M43",
+        "notes": "Needs screenshot baselines for class selector/search/create/rename/duplicate/detach/promote flows, cascade/source layers, token manager aliases/modes/impact/contrast, diagnostics, save/revert states, and mobile inspector layout before claiming Figma-grade."
+      },
+      "consumerCoverage": {
+        "isonimExample": {
+          "status": "covered_headless",
+          "evidence": [
+            "tests/test_editor_viewmodels.nim:style_manager_resolves_class_token_and_cascade_layers",
+            "tests/test_editor_viewmodels.nim:style_manager_promote_detach_and_tokenize_are_source_backed"
+          ]
+        },
+        "metacraftWeb": {
+          "status": "covered",
+          "evidence": [
+            "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_style_manager_scope_choices_update_real_preview"
+          ]
+        }
+      }
+    },
+    {
       "id": "svg_editors",
       "title": "SVG and Vector Editors",
       "status": "functional",

@@ -2650,6 +2650,578 @@ proc designSchemaImpact*(editor: EditorVM;
     schemaKey: string): DesignSchemaImpact =
   designSchemaImpact(editor.designSystemSchema.val, schemaKey)
 
+proc validateFoundationTokenEdit(editor: EditorVM; token: FoundationTokenEntry;
+    newValue: string): seq[FoundationEditDiagnostic]
+
+func styleScopeChoiceLabel*(kind: StyleScopeChoiceKind): string =
+  case kind
+  of sscLocalInstance: "Local instance"
+  of sscStoryFixture: "Story fixture"
+  of sscComponentSchema: "Component schema"
+  of sscComponentToken: "Component token"
+  of sscSharedClass: "Shared class"
+  of sscSemanticToken: "Semantic token"
+  of sscGlobalPrimitiveToken: "Global primitive token"
+
+func styleCascadeLayerLabel*(kind: StyleCascadeLayerKind): string =
+  case kind
+  of sclFinalValue: "Final value"
+  of sclLocalOverride: "Local override"
+  of sclStoryFixture: "Story fixture"
+  of sclComponentSchema: "Component schema"
+  of sclComponentToken: "Component token"
+  of sclSharedClass: "Shared class"
+  of sclSemanticToken: "Semantic token"
+  of sclGlobalPrimitiveToken: "Global primitive token"
+  of sclInheritedValue: "Inherited value"
+  of sclGeneratedFallback: "Generated fallback"
+
+func tokenKindForNode(node: DesignSchemaNode): FoundationTokenKind =
+  case node.kind
+  of dsnFoundation:
+    ftkColorPalette
+  of dsnSemanticToken:
+    if cssPropertyCategory(node.property) == cpcColor:
+      ftkSemanticColor
+    else:
+      ftkSpacingScale
+  of dsnComponentToken:
+    if cssPropertyCategory(node.property) == cpcColor:
+      ftkSemanticColor
+    else:
+      ftkSpacingScale
+  else:
+    ftkAccessibilityConstraint
+
+func classNameFromOriginDetail(detail: string): string =
+  let text = detail.strip()
+  if text.startsWith("class:"):
+    result = text[6 .. ^1].strip()
+  elif text.startsWith("layout-class:"):
+    result = text["layout-class:".len .. ^1].strip()
+  if result.startsWith("."):
+    result = result[1 .. ^1]
+  if result.contains(" "):
+    result = result.splitWhitespace()[0]
+
+func classNameFromNode(node: DesignSchemaNode): string =
+  if node.name.len > 0:
+    result = node.name
+  elif node.key.startsWith("classes."):
+    result = node.key["classes.".len .. ^1]
+  else:
+    result = node.key
+  result = result.strip()
+  if result.startsWith("."):
+    result = result[1 .. ^1]
+
+func schemaScopeForNode(kind: DesignSchemaNodeKind): StyleScopeChoiceKind =
+  case kind
+  of dsnStoryFixture:
+    sscStoryFixture
+  of dsnComponentVariant, dsnComponentState, dsnDensityMode, dsnResponsiveMode,
+      dsnStyleDefinition:
+    sscComponentSchema
+  of dsnComponentToken:
+    sscComponentToken
+  of dsnClassDefinition:
+    sscSharedClass
+  of dsnSemanticToken:
+    sscSemanticToken
+  of dsnFoundation:
+    sscGlobalPrimitiveToken
+
+func layerKindForProperty(prop: PropertyInfo;
+    node: DesignSchemaNode = DesignSchemaNode()): StyleCascadeLayerKind =
+  if node.key.len > 0:
+    case node.kind
+    of dsnStoryFixture:
+      return sclStoryFixture
+    of dsnComponentVariant, dsnComponentState, dsnDensityMode,
+        dsnResponsiveMode, dsnStyleDefinition:
+      return sclComponentSchema
+    of dsnComponentToken:
+      return sclComponentToken
+    of dsnClassDefinition:
+      return sclSharedClass
+    of dsnSemanticToken:
+      return sclSemanticToken
+    of dsnFoundation:
+      return sclGlobalPrimitiveToken
+  case prop.origin
+  of poTailwindClass:
+    sclSharedClass
+  of poSetStyle:
+    sclLocalOverride
+  of poThemeToken:
+    sclSemanticToken
+  of poConstant:
+    if prop.sharedCount > 0: sclComponentSchema else: sclLocalOverride
+  of poInherited:
+    sclInheritedValue
+
+func colorEquals(a, b: string): bool =
+  a.strip().toLowerAscii() == b.strip().toLowerAscii()
+
+func literalTokenCandidate(prop: PropertyInfo): bool =
+  let value = prop.value.strip()
+  if value.startsWith("token(") or value.startsWith("var("):
+    return false
+  let category = cssPropertyCategory(prop.name)
+  if category == cpcColor:
+    return value.startsWith("#") or value.startsWith("rgb(") or
+      value.startsWith("hsl(")
+  category in {cpcSpacing, cpcSize, cpcBorder, cpcTypography} and
+    parseCssPropertyValue(prop.name, value).kind in {cvkLength, cvkPercentage}
+
+func matchesTokenValue(prop: PropertyInfo; node: DesignSchemaNode): bool =
+  node.value.len > 0 and prop.value.colorEquals(node.value) and
+    cssPropertyCategory(prop.name) == cssPropertyCategory(node.property)
+
+proc tokenChain*(editor: EditorVM; tokenOrValue: string): seq[string] =
+  var current = tokenNameFromRaw(tokenOrValue)
+  if current.len == 0:
+    current = tokenOrValue
+  if current.len == 0:
+    return @[]
+  var seen: seq[string] = @[]
+  while current.len > 0 and current.toLowerAscii() notin seen:
+    result.add current
+    seen.add current.toLowerAscii()
+    var next = ""
+    for token in editor.foundations.tokens.val:
+      if token.key.sameTokenKey(current):
+        if token.aliasOf.len > 0:
+          next = token.aliasOf
+        else:
+          next = tokenNameFromRaw(token.value)
+        break
+    if next.len == 0:
+      for node in editor.designSystemSchema.val.nodes:
+        if node.key.sameTokenKey(current):
+          next = tokenNameFromRaw(node.value)
+          break
+    current = next
+
+func classEntryFromNode(node: DesignSchemaNode): StyleClassEntry =
+  StyleClassEntry(
+    className: node.classNameFromNode(),
+    properties: @[PropertyInfo(name: node.property, value: node.value,
+      origin: poConstant, originDetail: "class:" & node.classNameFromNode(),
+      sourceFile: node.sourceSpan.file, sourceLine: node.sourceSpan.line,
+      sharedCount: node.usageCount, schemaKey: node.key)],
+    sourceFile: node.sourceSpan.file,
+    sourceLine: node.sourceSpan.line,
+    schemaKey: node.key,
+    sharedCount: node.usageCount,
+    editable: node.sourceSpan.hasSource)
+
+proc reusableStyleClasses*(editor: EditorVM; query = ""): seq[StyleClassEntry] =
+  let needle = query.toLowerAscii().strip()
+  for node in editor.designSystemSchema.val.nodes:
+    if node.kind != dsnClassDefinition:
+      continue
+    let entry = node.classEntryFromNode()
+    if needle.len == 0 or needle in entry.className.toLowerAscii() or
+        needle in node.property.toLowerAscii() or needle in node.value.toLowerAscii():
+      result.add entry
+
+proc selectedStyleProperty(editor: EditorVM; property: string): PropertyInfo =
+  let element = editor.inspector.selectedElement.val
+  for prop in element.properties:
+    if prop.name == property:
+      return prop
+  if property.len == 0 and element.properties.len > 0:
+    return element.properties[0]
+  PropertyInfo(name: property, value: "", origin: poInherited,
+    originDetail: "generated-fallback", sourceFile: element.sourceFile,
+    sourceLine: element.sourceLine, schemaKey: element.schemaKey,
+    directStyleAllowed: true)
+
+proc styleScopeChoices*(editor: EditorVM; prop: PropertyInfo): seq[
+    StyleScopeChoice] =
+  let schema = editor.designSystemSchema.val
+  proc makeChoice(kind: StyleScopeChoiceKind; file = ""; line = 0;
+      schemaKey = ""; editable = false; reason = ""): StyleScopeChoice =
+    StyleScopeChoice(kind: kind, label: kind.styleScopeChoiceLabel(),
+      sourceFile: file, sourceLine: line, schemaKey: schemaKey,
+      editable: editable, impact: editor.designSchemaImpact(schemaKey),
+      reason: reason)
+
+  let element = editor.inspector.selectedElement.val
+  result.add makeChoice(sscLocalInstance, element.sourceFile,
+    element.sourceLine, element.schemaKey,
+    element.sourceFile.len > 0 or prop.directStyleAllowed,
+    "Edits only the selected rendered element.")
+
+  for kind in [sscStoryFixture, sscComponentSchema, sscComponentToken,
+      sscSharedClass, sscSemanticToken, sscGlobalPrimitiveToken]:
+    var best = DesignSchemaNode()
+    for node in schema.nodes:
+      if node.property != prop.name:
+        continue
+      if node.kind.schemaScopeForNode() == kind:
+        best = node
+        break
+    if best.key.len > 0:
+      result.add makeChoice(kind, best.sourceSpan.file, best.sourceSpan.line, best.key,
+        best.sourceSpan.hasSource, "Source-backed " & kind.styleScopeChoiceLabel().toLowerAscii())
+    else:
+      result.add makeChoice(kind, "", 0, "", false,
+        "No project schema owner is currently mapped for this scope.")
+
+proc styleCascadeLayers*(editor: EditorVM; prop: PropertyInfo): seq[
+    StyleCascadeLayer] =
+  let element = editor.inspector.selectedElement.val
+  let tokenChain =
+    if prop.tokenName.len > 0: editor.tokenChain(prop.tokenName)
+    else: editor.tokenChain(prop.value)
+  let inherited =
+    if prop.origin == poInherited: prop.value else: ""
+  result.add StyleCascadeLayer(kind: sclFinalValue, property: prop.name,
+    value: prop.value, finalValue: prop.value, inheritedValue: inherited,
+    tokenChain: tokenChain, sourceFile: prop.sourceFile,
+    sourceLine: prop.sourceLine, schemaKey: prop.schemaKey,
+    editable: false, editScope: sscLocalInstance)
+
+  let ownership = editor.resolveDesignSourceOwnership(prop.name)
+  if ownership.ok:
+    result.add StyleCascadeLayer(
+      kind: prop.layerKindForProperty(ownership.schemaNode),
+      property: prop.name,
+      value: if ownership.schemaNode.value.len > 0: ownership.schemaNode.value else: prop.value,
+      finalValue: prop.value,
+      inheritedValue: inherited,
+      overridden: ownership.schemaNode.value.len > 0 and
+        ownership.schemaNode.value != prop.value,
+      tokenChain: tokenChain,
+      className: ownership.ownership.cssModuleClass,
+      sourceFile: ownership.ownership.sourceSpan.file,
+      sourceLine: ownership.ownership.sourceSpan.line,
+      schemaKey: ownership.nodeKey,
+      editable: ownership.ownership.sourceSpan.hasSource,
+      editScope: ownership.schemaNode.kind.schemaScopeForNode())
+  else:
+    result.add StyleCascadeLayer(kind: prop.layerKindForProperty(),
+      property: prop.name, value: prop.value, finalValue: prop.value,
+      inheritedValue: inherited, tokenChain: tokenChain,
+      className: prop.originDetail.classNameFromOriginDetail(),
+      sourceFile: prop.sourceFile, sourceLine: prop.sourceLine,
+      schemaKey: prop.schemaKey, editable: prop.hasSource or prop.directStyleAllowed,
+      editScope: if prop.sharedCount > 0: sscSharedClass else: sscLocalInstance)
+
+  for candidate in element.properties:
+    if candidate.name == prop.name and candidate.origin == poInherited and
+        candidate.value != prop.value:
+      result.add StyleCascadeLayer(kind: sclInheritedValue,
+        property: prop.name, value: candidate.value, finalValue: prop.value,
+        inheritedValue: candidate.value, overridden: true,
+        sourceFile: candidate.sourceFile, sourceLine: candidate.sourceLine,
+        schemaKey: candidate.schemaKey, editable: false,
+        editScope: sscLocalInstance)
+
+  if result.len == 1:
+    result.add StyleCascadeLayer(kind: sclGeneratedFallback,
+      property: prop.name, value: prop.value, finalValue: prop.value,
+      inheritedValue: inherited, overridden: false,
+      sourceFile: prop.sourceFile, sourceLine: prop.sourceLine,
+      schemaKey: prop.schemaKey, editable: prop.directStyleAllowed,
+      editScope: sscLocalInstance)
+
+proc tokenManagerItems*(editor: EditorVM; query = ""): seq[TokenManagerItem] =
+  let needle = query.toLowerAscii().strip()
+  for token in editor.foundations.tokens.val:
+    if needle.len > 0 and needle notin token.key.toLowerAscii() and
+        needle notin token.value.toLowerAscii():
+      continue
+    var schemaNode = DesignSchemaNode()
+    for node in editor.designSystemSchema.val.nodes:
+      if node.key.sameTokenKey(token.key):
+        schemaNode = node
+        break
+    let schemaKey =
+      if token.schemaKey.len > 0: token.schemaKey
+      elif schemaNode.key.len > 0: schemaNode.key
+      else: token.key
+    let sourceFile =
+      if token.sourceFile.len > 0: token.sourceFile else: schemaNode.sourceSpan.file
+    let sourceLine =
+      if token.sourceLine > 0: token.sourceLine else: schemaNode.sourceSpan.line
+    var mergedToken = token
+    if mergedToken.foreground.len == 0:
+      mergedToken.foreground = schemaNode.foreground
+    if mergedToken.background.len == 0:
+      mergedToken.background = schemaNode.background
+    if mergedToken.minContrast <= 0:
+      mergedToken.minContrast = schemaNode.minContrast
+    var item = TokenManagerItem(key: token.key, value: token.value,
+      aliasOf: token.aliasOf, kind: token.kind, modes: schemaNode.modeValues,
+      sourceFile: sourceFile, sourceLine: sourceLine, schemaKey: schemaKey,
+      editable: sourceFile.len > 0 and schemaKey.len > 0,
+      dependentStories: token.affectedStories,
+      impact: editor.designSchemaImpact(schemaKey))
+    for story in schemaNode.stories:
+      item.dependentStories.addStoryOnce story
+    item.contrastRatio = contrastRatio(
+      if mergedToken.foreground.len > 0: mergedToken.foreground else: token.value,
+      mergedToken.background)
+    item.minContrast = mergedToken.minContrast
+    for prop in editor.inspector.selectedElement.val.properties:
+      if prop.tokenName.sameTokenKey(token.key) or
+          prop.value.tokenNameFromRaw.sameTokenKey(token.key):
+        item.usages.add prop
+    item.diagnostics = editor.validateFoundationTokenEdit(mergedToken, token.value)
+    result.add item
+
+  for node in editor.designSystemSchema.val.nodes:
+    if node.kind notin {dsnFoundation, dsnSemanticToken, dsnComponentToken}:
+      continue
+    if editor.foundations.tokens.val.anyIt(it.key.sameTokenKey(node.key)):
+      continue
+    if needle.len > 0 and needle notin node.key.toLowerAscii() and
+        needle notin node.value.toLowerAscii():
+      continue
+    var item = TokenManagerItem(key: node.key, value: node.value,
+      aliasOf: tokenNameFromRaw(node.value), kind: node.tokenKindForNode(),
+      modes: node.modeValues, impact: editor.designSchemaImpact(node.key),
+      contrastRatio: contrastRatio(node.foreground, node.background),
+      minContrast: node.minContrast, dependentStories: node.stories,
+      sourceFile: node.sourceSpan.file, sourceLine: node.sourceSpan.line,
+      schemaKey: node.key, editable: node.sourceSpan.hasSource)
+    if item.impact.diagnostics.anyIt(it.kind == dsdContrastImpact):
+      item.diagnostics.add FoundationEditDiagnostic(
+        kind: fedContrastViolation,
+        message: "Token contrast ratio is below the required threshold.",
+        key: node.key,
+        file: node.sourceSpan.file,
+        line: node.sourceSpan.line)
+    result.add item
+
+func stylePlan(operation: StyleClassOperationKind; file: string; line: int;
+    property = ""; oldValue = ""; newValue = ""; originDetail = "";
+    schemaKey = ""; tokenName = "";
+    planKind = cspStructuredSchemaUpdate): SourceEditPlan =
+  SourceEditPlan(
+    file: file,
+    line: line,
+    property: property,
+    oldValue: oldValue,
+    newValue: newValue,
+    originDetail: originDetail,
+    scope: if operation in {scokPromoteLocalOverride, scokTokenizeValue}: pesShared else: pesLocal,
+    planKind: planKind,
+    schemaKey: schemaKey,
+    tokenName: tokenName,
+    reversible: true,
+    previewBefore: originDetail & " " & property & ": " & oldValue,
+    previewAfter: originDetail & " " & property & ": " & newValue,
+    formatterHook: "format-style-manager",
+    regeneratorHook:
+      if planKind in {cspStructuredSchemaUpdate, cspTokenUpdate}:
+        "regenerate-design-system"
+      else:
+        "",
+    conflictKey: file & ":" & $line & ":" & property & ":" & $operation,
+    expectedOldValue: oldValue)
+
+proc styleDiagnostics*(editor: EditorVM; prop: PropertyInfo): seq[
+    StyleDiagnostic] =
+  let schema = editor.designSystemSchema.val
+  for node in schema.nodes:
+    if node.kind in {dsnFoundation, dsnSemanticToken, dsnComponentToken} and
+        prop.literalTokenCandidate() and prop.matchesTokenValue(node):
+      let plan = stylePlan(scokTokenizeValue, prop.sourceFile, prop.sourceLine,
+        prop.name, prop.value, "token(" & node.key & ")",
+        "style-tokenize:" & node.key, node.key, node.key, cspTokenUpdate)
+      result.add StyleDiagnostic(kind: sdkHardcodedColorMatchingToken,
+        message: "Hardcoded value matches token " & node.key & ".",
+        property: prop.name, value: prop.value, tokenKey: node.key,
+        file: prop.sourceFile, line: prop.sourceLine, sourceBackedFix: plan)
+      if prop.sharedCount == 0:
+        result.add StyleDiagnostic(kind: sdkOneOffValueShouldBeToken,
+          message: "One-off value should be promoted to a reusable token.",
+          property: prop.name, value: prop.value, tokenKey: node.key,
+          file: prop.sourceFile, line: prop.sourceLine, sourceBackedFix: plan)
+
+  var classNames: seq[string] = @[]
+  for node in schema.nodes:
+    if node.kind == dsnClassDefinition:
+      let className = node.classNameFromNode().toLowerAscii()
+      if className in classNames:
+        result.add StyleDiagnostic(kind: sdkDuplicateClass,
+          message: "Duplicate class definition for " & node.classNameFromNode() & ".",
+          property: node.property, value: node.value,
+          className: node.classNameFromNode(), file: node.sourceSpan.file,
+          line: node.sourceSpan.line,
+          sourceBackedFix: stylePlan(scokRenameClass, node.sourceSpan.file,
+            node.sourceSpan.line, "class", node.classNameFromNode(),
+            node.classNameFromNode() & "-copy", "style-class:rename",
+            node.key))
+      else:
+        classNames.add className
+
+  if prop.sharedCount > 1 or prop.origin == poTailwindClass:
+    result.add StyleDiagnostic(kind: sdkUnsafeDetachment,
+      message: "Detaching this class affects shared style ownership; use a source-backed local override.",
+      property: prop.name, value: prop.value,
+      className: prop.originDetail.classNameFromOriginDetail(),
+      file: prop.sourceFile, line: prop.sourceLine,
+      sourceBackedFix: stylePlan(scokDetachClass, prop.sourceFile,
+        prop.sourceLine, prop.name, prop.value, prop.value,
+        "style-class:detach", prop.schemaKey, planKind = cspInlineStyleUpdate))
+
+proc styleManagerSnapshot*(editor: EditorVM; property: string;
+    search = ""): StyleManagerSnapshot =
+  let prop = editor.selectedStyleProperty(property)
+  result.property = prop.name
+  result.finalValue = prop.value
+  result.inheritedValue = if prop.origin == poInherited: prop.value else: ""
+  result.reusableStyles = editor.reusableStyleClasses(search)
+  result.cascadeLayers = editor.styleCascadeLayers(prop)
+  result.scopeChoices = editor.styleScopeChoices(prop)
+  result.tokenItems = editor.tokenManagerItems(search)
+  result.diagnostics = editor.styleDiagnostics(prop)
+
+  let currentClass = prop.originDetail.classNameFromOriginDetail()
+  if currentClass.len > 0:
+    result.currentClassStack.add StyleClassEntry(className: currentClass,
+      properties: @[prop], sourceFile: prop.sourceFile,
+      sourceLine: prop.sourceLine, schemaKey: prop.schemaKey,
+      sharedCount: prop.sharedCount, editable: prop.hasSource)
+  for layer in result.cascadeLayers:
+    if layer.className.len > 0 and
+        not result.currentClassStack.anyIt(it.className == layer.className):
+      result.currentClassStack.add StyleClassEntry(className: layer.className,
+        sourceFile: layer.sourceFile, sourceLine: layer.sourceLine,
+        schemaKey: layer.schemaKey, sharedCount: prop.sharedCount,
+        editable: layer.editable)
+
+proc stageStyleOperation(editor: EditorVM; operation: StyleClassOperationKind;
+    classEntry: StyleClassEntry; plan: SourceEditPlan): StyleOperationResult =
+  editor.inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
+      SourceEditPlan] =
+    result = prev
+    result.add plan
+  editor.inspector.sourcePreviews.update proc(prev: seq[CSSSourcePreview]): seq[
+      CSSSourcePreview] =
+    result = prev
+    result.add CSSSourcePreview(plan: plan, beforeText: plan.previewBefore,
+      afterText: plan.previewAfter)
+  editor.workspaceEditStage.val = wesDirty
+  StyleOperationResult(status: pesAccepted, operation: operation,
+    classEntry: classEntry, sourceEdit: plan)
+
+proc createStyleClass*(editor: EditorVM; className, property,
+    value: string): StyleOperationResult {.discardable.} =
+  let element = editor.inspector.selectedElement.val
+  let file = if element.sourceFile.len > 0: element.sourceFile else: "style-manager.css"
+  let line = if element.sourceLine > 0: element.sourceLine else: 1
+  let schemaKey = "classes." & className
+  let entry = StyleClassEntry(className: className,
+    properties: @[PropertyInfo(name: property, value: value,
+      origin: poConstant, originDetail: "class:" & className,
+      sourceFile: file, sourceLine: line, schemaKey: schemaKey)],
+    sourceFile: file, sourceLine: line, schemaKey: schemaKey,
+    sharedCount: 1, editable: true)
+  let plan = stylePlan(scokCreateClass, file, line, property,
+    "/* style-manager:" & className & " */",
+    "." & className & " { " & property & ": " & value & "; }",
+    "style-class:create:" & className, schemaKey)
+  editor.stageStyleOperation(scokCreateClass, entry, plan)
+
+proc renameStyleClass*(editor: EditorVM; oldClassName,
+    newClassName: string): StyleOperationResult {.discardable.} =
+  var entry = StyleClassEntry(className: oldClassName)
+  for candidate in editor.reusableStyleClasses():
+    if candidate.className == oldClassName:
+      entry = candidate
+      break
+  if entry.sourceFile.len == 0:
+    entry.sourceFile = editor.inspector.selectedElement.val.sourceFile
+    entry.sourceLine = editor.inspector.selectedElement.val.sourceLine
+    entry.schemaKey = "classes." & oldClassName
+  let plan = stylePlan(scokRenameClass, entry.sourceFile, max(1, entry.sourceLine),
+    "class", oldClassName, newClassName, "style-class:rename",
+    entry.schemaKey)
+  entry.className = newClassName
+  editor.stageStyleOperation(scokRenameClass, entry, plan)
+
+proc duplicateStyleClass*(editor: EditorVM; className,
+    newClassName: string): StyleOperationResult {.discardable.} =
+  var entry = StyleClassEntry(className: className)
+  for candidate in editor.reusableStyleClasses():
+    if candidate.className == className:
+      entry = candidate
+      break
+  if entry.sourceFile.len == 0:
+    entry.sourceFile = editor.inspector.selectedElement.val.sourceFile
+    entry.sourceLine = editor.inspector.selectedElement.val.sourceLine
+    entry.schemaKey = "classes." & className
+  let oldText = "." & className
+  let newText = "." & className & "\n." & newClassName
+  let plan = stylePlan(scokDuplicateClass, entry.sourceFile,
+    max(1, entry.sourceLine), "class", oldText, newText,
+    "style-class:duplicate", "classes." & newClassName)
+  entry.className = newClassName
+  entry.schemaKey = "classes." & newClassName
+  editor.stageStyleOperation(scokDuplicateClass, entry, plan)
+
+proc detachStyleClass*(editor: EditorVM; property: string): StyleOperationResult {.discardable.} =
+  let prop = editor.selectedStyleProperty(property)
+  let className = prop.originDetail.classNameFromOriginDetail()
+  let entry = StyleClassEntry(className: className, properties: @[prop],
+    sourceFile: prop.sourceFile, sourceLine: prop.sourceLine,
+    schemaKey: prop.schemaKey, sharedCount: prop.sharedCount,
+    editable: prop.hasSource or prop.directStyleAllowed)
+  let plan = stylePlan(scokDetachClass, prop.sourceFile, prop.sourceLine,
+    prop.name, prop.value, prop.value, "style-class:detach:" & className,
+    prop.schemaKey, planKind = cspInlineStyleUpdate)
+  editor.stageStyleOperation(scokDetachClass, entry, plan)
+
+proc promoteLocalOverride*(editor: EditorVM; property: string;
+    scope: StyleScopeChoiceKind; targetKey = ""): StyleOperationResult {.discardable.} =
+  let prop = editor.selectedStyleProperty(property)
+  let key =
+    if targetKey.len > 0: targetKey
+    elif prop.schemaKey.len > 0: prop.schemaKey
+    else:
+      case scope
+      of sscSharedClass: "classes." & prop.name
+      of sscSemanticToken: "semantic." & prop.name
+      of sscGlobalPrimitiveToken: "primitive." & prop.name
+      of sscComponentToken: "component." & prop.name
+      of sscStoryFixture: "fixture." & prop.name
+      of sscComponentSchema: "schema." & prop.name
+      of sscLocalInstance: "local." & prop.name
+  let planKind =
+    if scope in {sscComponentToken, sscSemanticToken, sscGlobalPrimitiveToken}:
+      cspTokenUpdate
+    elif scope == sscSharedClass:
+      cspStructuredSchemaUpdate
+    else:
+      cspStructuredSchemaUpdate
+  let plan = stylePlan(scokPromoteLocalOverride, prop.sourceFile,
+    prop.sourceLine, prop.name, prop.value, prop.value,
+    "style-promote:" & scope.styleScopeChoiceLabel(), key,
+    if planKind == cspTokenUpdate: key else: "", planKind)
+  editor.stageStyleOperation(scokPromoteLocalOverride,
+    StyleClassEntry(className: prop.originDetail.classNameFromOriginDetail(),
+      properties: @[prop], sourceFile: prop.sourceFile,
+      sourceLine: prop.sourceLine, schemaKey: key, editable: true),
+    plan)
+
+proc tokenizeStyleValue*(editor: EditorVM; property,
+    tokenKey: string): StyleOperationResult {.discardable.} =
+  let prop = editor.selectedStyleProperty(property)
+  let newValue = "token(" & tokenKey & ")"
+  let plan = stylePlan(scokTokenizeValue, prop.sourceFile, prop.sourceLine,
+    prop.name, prop.value, newValue, "style-tokenize:" & tokenKey,
+    tokenKey, tokenKey, cspTokenUpdate)
+  editor.stageStyleOperation(scokTokenizeValue,
+    StyleClassEntry(properties: @[prop], sourceFile: prop.sourceFile,
+      sourceLine: prop.sourceLine, schemaKey: tokenKey, editable: true),
+    plan)
+
 proc foundationDiagnostic(kind: FoundationEditDiagnosticKind;
     token: FoundationTokenEntry; message: string): FoundationEditDiagnostic =
   FoundationEditDiagnostic(
@@ -2732,8 +3304,11 @@ proc validateFoundationTokenEdit(editor: EditorVM; token: FoundationTokenEntry;
     if editor.foundations.tokens.val.hasAliasCycle(token.key, target):
       result.add foundationDiagnostic(fedAliasCycle, token,
         "Semantic token aliases cannot form a cycle.")
-  if token.kind == ftkAccessibilityConstraint and token.minContrast > 0:
-    let foreground = if value.len > 0: value else: token.foreground
+  if token.minContrast > 0:
+    let foreground =
+      if token.kind == ftkAccessibilityConstraint: value
+      elif token.foreground.len > 0: token.foreground
+      else: value
     let ratio = contrastRatio(foreground, token.background)
     if ratio > 0 and ratio < token.minContrast:
       result.add foundationDiagnostic(fedContrastViolation, token,

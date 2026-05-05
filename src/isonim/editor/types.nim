@@ -1171,6 +1171,122 @@ type
     reviewLevel*: DesignSchemaReviewLevel
     diagnostics*: seq[DesignSchemaDiagnostic]
 
+  # --- Style, class, cascade, and token manager ---
+  StyleScopeChoiceKind* = enum
+    sscLocalInstance
+    sscStoryFixture
+    sscComponentSchema
+    sscComponentToken
+    sscSharedClass
+    sscSemanticToken
+    sscGlobalPrimitiveToken
+
+  StyleCascadeLayerKind* = enum
+    sclFinalValue
+    sclLocalOverride
+    sclStoryFixture
+    sclComponentSchema
+    sclComponentToken
+    sclSharedClass
+    sclSemanticToken
+    sclGlobalPrimitiveToken
+    sclInheritedValue
+    sclGeneratedFallback
+
+  StyleClassOperationKind* = enum
+    scokCreateClass
+    scokRenameClass
+    scokDuplicateClass
+    scokDetachClass
+    scokPromoteLocalOverride
+    scokTokenizeValue
+
+  StyleDiagnosticKind* = enum
+    sdkOneOffValueShouldBeToken
+    sdkDuplicateClass
+    sdkHardcodedColorMatchingToken
+    sdkUnsafeDetachment
+
+  StyleScopeChoice* = object
+    kind*: StyleScopeChoiceKind
+    label*: string
+    sourceFile*: string
+    sourceLine*: int
+    schemaKey*: string
+    editable*: bool
+    impact*: DesignSchemaImpact
+    reason*: string
+
+  StyleClassEntry* = object
+    className*: string
+    properties*: seq[PropertyInfo]
+    sourceFile*: string
+    sourceLine*: int
+    schemaKey*: string
+    sharedCount*: int
+    editable*: bool
+
+  StyleCascadeLayer* = object
+    kind*: StyleCascadeLayerKind
+    property*: string
+    value*: string
+    finalValue*: string
+    inheritedValue*: string
+    overridden*: bool
+    tokenChain*: seq[string]
+    className*: string
+    sourceFile*: string
+    sourceLine*: int
+    schemaKey*: string
+    editable*: bool
+    editScope*: StyleScopeChoiceKind
+
+  TokenManagerItem* = object
+    key*: string
+    value*: string
+    aliasOf*: string
+    kind*: FoundationTokenKind
+    modes*: seq[DesignTokenModeValue]
+    usages*: seq[PropertyInfo]
+    impact*: DesignSchemaImpact
+    contrastRatio*: float
+    minContrast*: float
+    diagnostics*: seq[FoundationEditDiagnostic]
+    dependentStories*: seq[StoryRef]
+    sourceFile*: string
+    sourceLine*: int
+    schemaKey*: string
+    editable*: bool
+
+  StyleDiagnostic* = object
+    kind*: StyleDiagnosticKind
+    message*: string
+    property*: string
+    value*: string
+    tokenKey*: string
+    className*: string
+    file*: string
+    line*: int
+    sourceBackedFix*: SourceEditPlan
+
+  StyleManagerSnapshot* = object
+    property*: string
+    finalValue*: string
+    inheritedValue*: string
+    currentClassStack*: seq[StyleClassEntry]
+    reusableStyles*: seq[StyleClassEntry]
+    cascadeLayers*: seq[StyleCascadeLayer]
+    scopeChoices*: seq[StyleScopeChoice]
+    tokenItems*: seq[TokenManagerItem]
+    diagnostics*: seq[StyleDiagnostic]
+
+  StyleOperationResult* = object
+    status*: PropertyEditStatus
+    operation*: StyleClassOperationKind
+    classEntry*: StyleClassEntry
+    sourceEdit*: SourceEditPlan
+    diagnostics*: seq[StyleDiagnostic]
+
   # --- Foundations and component variant editors ---
   FoundationTokenKind* = enum
     ftkColorPalette

@@ -494,6 +494,80 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(page.getByText("Unsaved source edit")).toHaveCount(0);
   });
 
+  test("e2e_style_manager_scope_choices_update_real_preview", async ({
+    page,
+  }) => {
+    await page.goto("/");
+
+    await page.getByRole("button", { name: "Open Components section" }).click();
+    await page
+      .getByRole("button", {
+        name: "Select story Operational components / Topbar",
+      })
+      .click();
+    await page
+      .getByRole("button", { name: "Open selected component in edit mode" })
+      .click();
+
+    const editFrame = page.frameLocator(
+      'iframe[title="Editable component preview"]',
+    );
+    const topbar = editFrame.getByTestId("component-topbar");
+    await topbar
+      .locator("h1.bo-title")
+      .click({ force: true, modifiers: ["Shift"] });
+    await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
+
+    await page.getByRole("tab", { name: "Show Space edit controls" }).click();
+    await expect(
+      page.getByLabel("Style class cascade token manager for padding"),
+    ).toBeVisible();
+    await expect(page.getByLabel("Current class stack")).toBeVisible();
+    await expect(page.getByLabel("Safe style scope choices")).toBeVisible();
+    await expect(page.getByLabel("Cascade source layers")).toBeVisible();
+    await expect(
+      page.getByLabel("Token manager", { exact: true }),
+    ).toBeVisible();
+    await expect(page.getByLabel("Style diagnostics")).toBeVisible();
+    await expect(page.getByLabel("Search reusable styles")).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Create reusable class for padding" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Detach reusable class for padding" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Promote local override for padding" }),
+    ).toBeVisible();
+
+    await page
+      .getByRole("button", { name: "Apply local instance scope for padding" })
+      .click();
+    await expect
+      .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
+      .toBe("20px");
+    await expect(page.getByText("Unsaved source edit")).toBeVisible();
+    await page
+      .getByRole("button", { name: "Save inspector source edits" })
+      .click();
+    await expect(page.getByText("Unsaved source edit")).toHaveCount(0);
+
+    await page
+      .getByRole("button", { name: "Apply shared class scope for padding" })
+      .click();
+    await expect
+      .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
+      .toBe("24px");
+    await expect(page.getByText("Unsaved source edit")).toBeVisible();
+    await page
+      .getByRole("button", { name: "Revert inspector source edits" })
+      .click();
+    await expect
+      .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
+      .toBe("20px");
+    await expect(page.getByText("Unsaved source edit")).toHaveCount(0);
+  });
+
   test("e2e_component_variant_matrix_and_state_controls", async ({ page }) => {
     await page.goto("/");
 
