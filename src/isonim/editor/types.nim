@@ -1158,6 +1158,46 @@ type
     capabilities*: seq[LayoutControlCapability]
     diagnostics*: seq[PropertyEditDiagnostic]
 
+  DirectCanvasOperationKind* = enum
+    dcokResize
+    dcokSpacing
+    dcokReorder
+    dcokInlineText
+    dcokContextCommand
+
+  DirectCanvasContextCommand* = enum
+    dcccCopyStyles
+    dcccPasteStyles
+    dcccReset
+    dcccDetach
+    dcccPromote
+    dcccCreateVariant
+    dcccWrap
+    dcccDuplicate
+    dcccDelete
+    dcccOpenSource
+    dcccAskAi
+
+  DirectCanvasOperation* = object
+    kind*: DirectCanvasOperationKind
+    property*: string
+    value*: string
+    oldValue*: string
+    handle*: string
+    fromIndex*: int
+    toIndex*: int
+    command*: DirectCanvasContextCommand
+    sourceKey*: string
+    measurement*: string
+
+  DirectCanvasOperationResult* = object
+    ok*: bool
+    operation*: DirectCanvasOperation
+    sourceEdit*: SourceEditPlan
+    diagnostics*: seq[PropertyEditDiagnostic]
+    commandState*: EditorCommandState
+    measurement*: string
+
   DesignSchemaImpact* = object
     schemaKey*: string
     usageCount*: int

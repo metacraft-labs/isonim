@@ -1074,6 +1074,151 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       .toBe(mobileGap);
   });
 
+  test("e2e_canvas_resize_spacing_reorder_and_inline_text", async ({
+    page,
+  }) => {
+    await page.goto("/");
+
+    await page.getByRole("button", { name: "Open Components section" }).click();
+    await page
+      .getByRole("button", {
+        name: "Select story Operational components / Topbar",
+      })
+      .click();
+    await page
+      .getByRole("button", { name: "Open selected component in edit mode" })
+      .click();
+
+    const editFrame = page.frameLocator(
+      'iframe[title="Editable component preview"]',
+    );
+    const topbar = editFrame.getByTestId("component-topbar");
+    const title = topbar.locator("h1.bo-title");
+
+    await title.click({ force: true, modifiers: ["Shift"] });
+    await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
+
+    const beforeWidth = await topbar.evaluate((node) =>
+      Math.round(node.getBoundingClientRect().width),
+    );
+    const resizeHandle = editFrame.getByLabel("Resize selected element");
+    const resizeBox = await resizeHandle.boundingBox();
+    if (!resizeBox) throw new Error("resize handle is not visible");
+    await page.mouse.move(
+      resizeBox.x + resizeBox.width / 2,
+      resizeBox.y + resizeBox.height / 2,
+    );
+    await page.mouse.down();
+    await page.mouse.move(
+      resizeBox.x + resizeBox.width / 2 + 42,
+      resizeBox.y + resizeBox.height / 2,
+    );
+    await page.mouse.up();
+    await expect
+      .poll(() =>
+        topbar.evaluate((node) =>
+          Math.round(node.getBoundingClientRect().width),
+        ),
+      )
+      .toBeGreaterThan(beforeWidth);
+
+    const spacingHandle = editFrame.getByLabel("Adjust selected spacing");
+    const spacingBox = await spacingHandle.boundingBox();
+    if (!spacingBox) throw new Error("spacing handle is not visible");
+    await page.mouse.move(
+      spacingBox.x + spacingBox.width / 2,
+      spacingBox.y + spacingBox.height / 2,
+    );
+    await page.mouse.down();
+    await page.mouse.move(
+      spacingBox.x + spacingBox.width / 2,
+      spacingBox.y + spacingBox.height / 2 + 18,
+    );
+    await page.mouse.up();
+    await expect
+      .poll(() => topbar.evaluate((node) => getComputedStyle(node).gap))
+      .not.toBe("normal");
+
+    await title.click({ force: true });
+    await expect(title).toHaveAttribute("data-isonim-selected", "true");
+    const titleBox = await title.boundingBox();
+    if (!titleBox) throw new Error("title is not visible");
+    await page.mouse.move(titleBox.x + 8, titleBox.y + titleBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(titleBox.x + 8, titleBox.y + titleBox.height + 24);
+    await page.mouse.up();
+    await expect
+      .poll(() => title.evaluate((node) => getComputedStyle(node).order))
+      .not.toBe("0");
+
+    await title.dblclick({ force: true });
+    await page.keyboard.type("Operations Center");
+    await page.keyboard.press("Enter");
+    await expect(title).toContainText("Operations Center");
+    await expect(page.getByText(/source plan\(s\) staged/)).toBeVisible();
+
+    await page
+      .getByRole("button", { name: "Revert inspector source edits" })
+      .click();
+    await expect(page.getByText("Unsaved source edit")).toHaveCount(0);
+  });
+
+  test("e2e_canvas_context_menu_commands_are_selection_safe", async ({
+    page,
+  }) => {
+    await page.goto("/");
+
+    await page.getByRole("button", { name: "Open Components section" }).click();
+    await page
+      .getByRole("button", {
+        name: "Select story Operational components / Topbar",
+      })
+      .click();
+    await page
+      .getByRole("button", { name: "Open selected component in edit mode" })
+      .click();
+
+    const editFrame = page.frameLocator(
+      'iframe[title="Editable component preview"]',
+    );
+    const title = editFrame.locator("h1.bo-title").first();
+    await title.click({ force: true });
+    await expect(title).toHaveAttribute("data-isonim-selected", "true");
+
+    const choose = async (name: string) => {
+      await title.click({ button: "right", force: true });
+      await expect(
+        editFrame.getByRole("menu", { name: "Canvas selection context menu" }),
+      ).toBeVisible();
+      await editFrame.getByRole("menuitem", { name }).click();
+      await expect(title).toHaveAttribute("data-isonim-selected", "true");
+    };
+
+    await choose("Copy styles");
+    await choose("Paste styles");
+    await choose("Reset");
+    await expect(page.getByText("Unsaved source edit")).toBeVisible();
+    await choose("Detach style");
+    await choose("Promote style");
+    await choose("Create variant");
+    await choose("Wrap selection");
+    await choose("Duplicate");
+    await choose("Delete");
+    await choose("Open source");
+    await choose("Ask AI about selection");
+
+    await expect(
+      page.getByRole("textbox", { name: "Agent prompt" }),
+    ).toHaveValue(/Ask AI about selection:/);
+    await page.getByRole("button", { name: "Switch to edit mode" }).click();
+    await expect(title).toHaveAttribute("data-isonim-selected", "true");
+
+    await page
+      .getByRole("button", { name: "Revert inspector source edits" })
+      .click();
+    await expect(page.getByText("Unsaved source edit")).toHaveCount(0);
+  });
+
   test("e2e_figma_grade_numeric_color_shadow_typography_controls", async ({
     page,
   }) => {

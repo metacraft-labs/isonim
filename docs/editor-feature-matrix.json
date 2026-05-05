@@ -487,6 +487,57 @@
       }
     },
     {
+      "id": "inline_canvas_direct_manipulation",
+      "title": "Inline Canvas Manipulation and Direct Editing",
+      "status": "functional",
+      "targetWorkflow": "Users can manipulate selected preview elements directly on the canvas for representative resize, spacing, reorder, inline text, and context-menu actions while edits are staged as source-backed plans.",
+      "owner": "framework-and-consumer",
+      "mockOnly": false,
+      "placeholderUi": false,
+      "browserBehavior": ["pointer", "focus", "iframe", "canvas"],
+      "implementation": "M40 adds typed direct-canvas operation contracts for resize, spacing, reorder, inline text, and selection context commands. Resize and spacing route through the M37 layout ownership planner when project schema ownership is present, inline text and context commands route through M35 source ownership where available, and metacraft-web consumer previews fall back to the existing generic source-map adapter without mutating DOM-only state. Browser coverage uses the live metacraft-web editable iframe with pointer resize, spacing-handle drag, drag reorder, inline text editing, context-menu actions, and the shared inspector undo/save/revert journal.",
+      "knownLimitations": "This is functional M40 coverage, not full Figma-grade direct manipulation. The browser handles and menu are representative rather than fully polished, reorder is a source-backed order edit rather than a complete drag/drop list authoring system, metacraft-web currently exposes a generic source-map adapter rather than exhaustive per-property design schema ownership, and screenshot/visual assertions for handles, overlays, context-menu polish, collision avoidance, and mobile behavior remain below the M32/M43 visual gate.",
+      "headlessTests": [
+        {
+          "name": "canvas_direct_manipulation_routes_to_owned_source_edits",
+          "file": "tests/test_editor_viewmodels.nim"
+        }
+      ],
+      "playwrightRequired": true,
+      "playwrightTests": [
+        {
+          "name": "e2e_canvas_resize_spacing_reorder_and_inline_text",
+          "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
+        },
+        {
+          "name": "e2e_canvas_context_menu_commands_are_selection_safe",
+          "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
+        }
+      ],
+      "screenshotVisualAssertions": {
+        "requiredForFigmaGrade": true,
+        "status": "not_started",
+        "assertions": [],
+        "futureMilestone": "M43",
+        "notes": "Needs screenshot baselines for direct resize handles, spacing overlays, reorder feedback, inline text editing state, context menu commands, save/revert states, and mobile canvas behavior before claiming Figma-grade."
+      },
+      "consumerCoverage": {
+        "isonimExample": {
+          "status": "covered_headless",
+          "evidence": [
+            "tests/test_editor_viewmodels.nim:canvas_direct_manipulation_routes_to_owned_source_edits"
+          ]
+        },
+        "metacraftWeb": {
+          "status": "covered",
+          "evidence": [
+            "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_canvas_resize_spacing_reorder_and_inline_text",
+            "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_canvas_context_menu_commands_are_selection_safe"
+          ]
+        }
+      }
+    },
+    {
       "id": "svg_editors",
       "title": "SVG and Vector Editors",
       "status": "functional",

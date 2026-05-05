@@ -1181,7 +1181,7 @@ func previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
     sourceLine: int; display, position, backgroundColor, color, padding,
     margin, width, height, borderRadius, borderWidth, borderStyle, borderColor,
     fontSize, fontWeight, lineHeight, boxShadow, opacity, rectWidth,
-    rectHeight, elementId, sourceKey, schemaKey, ancestorIds,
+    rectHeight, textContent, elementId, sourceKey, schemaKey, ancestorIds,
     layerTreeJson: string): ElementRef =
   ## Build the generic inspector selection produced by the browser iframe DOM
   ## bridge. Projects own the preview HTML/source metadata; the editor owns the
@@ -1252,6 +1252,16 @@ func previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
     props.add domProp("box-shadow", boxShadow)
   if opacity.len > 0:
     props.add domProp("opacity", opacity)
+  if textContent.len > 0:
+    props.add PropertyInfo(
+      name: "text",
+      value: textContent,
+      origin: poConstant,
+      originDetail: "iframe-dom:" & schemaPrefix & ":text",
+      sourceFile: file,
+      sourceLine: line,
+      schemaKey: schemaPrefix & ".text",
+      directStyleAllowed: true)
 
   let children = @[
     if testId.len > 0: "data-testid=" & testId else: "",
@@ -1292,7 +1302,7 @@ func previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
   previewDomElementRef(metadata, tag, testId, className, "", "", "",
     sourceFile, sourceLine, "", "", backgroundColor, color, padding, "",
     width, height, "", "", "", "", "", "", "", "", "", "", "", "", "", "",
-    "", "")
+    "", "", "")
 
 proc previewDomLayerRows*(raw: string; selectedId = ""; hoveredId = "";
     expandedIds: seq[string] = @[]): seq[ElementLayerRow] =
@@ -2592,6 +2602,364 @@ proc applyResponsiveLayoutOverride*(editor: EditorVM; modeKey, property,
       afterText: sourceEdit.previewAfter)
   editor.workspaceEditStage.val = wesDirty
   editor.inspector.editDiagnostics.val = @[]
+
+func directCanvasFamily(kind: DirectCanvasOperationKind;
+    property: string): LayoutControlFamily =
+  let prop = property.normalizedCssName()
+  case kind
+  of dcokResize:
+    if prop in ["width", "height", "min-width", "min-height", "max-width",
+        "max-height", "aspect-ratio", "flex" & "-basis"]:
+      lcfConstraints
+    else:
+      lcfCanvasGuide
+  of dcokSpacing, dcokReorder:
+    lcfFlexAutoLayout
+  of dcokInlineText, dcokContextCommand:
+    lcfCanvasGuide
+
+func directCanvasPropertyFor(command: DirectCanvasContextCommand): string =
+  case command
+  of dcccCopyStyles, dcccPasteStyles:
+    "style"
+  of dcccReset:
+    "reset"
+  of dcccDetach:
+    "class"
+  of dcccPromote:
+    "style"
+  of dcccCreateVariant:
+    "variant"
+  of dcccWrap:
+    "wrapper"
+  of dcccDuplicate:
+    "duplicate"
+  of dcccDelete:
+    "delete"
+  of dcccOpenSource:
+    "source"
+  of dcccAskAi:
+    "ai-selection"
+
+func firstProperty(element: ElementRef): PropertyInfo =
+  if element.properties.len > 0:
+    element.properties[0]
+  else:
+    PropertyInfo(name: "selection", value: "", origin: poInherited,
+      originDetail: "direct-canvas-selection", sourceFile: element.sourceFile,
+      sourceLine: element.sourceLine, schemaKey: element.schemaKey,
+      directStyleAllowed: true)
+
+func propertyOrDefault(element: ElementRef; property, fallback: string): PropertyInfo =
+  for prop in element.properties:
+    if prop.name == property:
+      return prop
+  PropertyInfo(name: property, value: fallback, origin: poInherited,
+    originDetail: "direct-canvas:" & property, sourceFile: element.sourceFile,
+    sourceLine: element.sourceLine, schemaKey: element.schemaKey & "." & property,
+    directStyleAllowed: true)
+
+proc stageDirectCanvasPlan(editor: EditorVM; operation: DirectCanvasOperation;
+    beforeElement, afterElement: ElementRef; prop: PropertyInfo;
+    plan: SourceEditPlan): DirectCanvasOperationResult =
+  let record = EditRecord(
+    file: plan.file,
+    line: plan.line,
+    property: plan.property,
+    oldValue: plan.oldValue,
+    newValue: plan.newValue,
+    origin: prop.origin,
+    originDetail: plan.originDetail,
+    scope: plan.scope,
+    isShared: plan.scope == pesShared,
+    editOrigin: peoInspector,
+    sourcePlanKind: plan.planKind)
+  editor.inspector.selectedElement.val = afterElement
+  editor.inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
+      SourceEditPlan] =
+    result = @[]
+    for existing in prev:
+      if existing.conflictKey != plan.conflictKey:
+        result.add existing
+    result.add plan
+  editor.inspector.sourcePreviews.update proc(prev: seq[CSSSourcePreview]): seq[
+      CSSSourcePreview] =
+    result = @[]
+    for existing in prev:
+      if existing.plan.conflictKey != plan.conflictKey:
+        result.add existing
+    result.add CSSSourcePreview(plan: plan, beforeText: plan.previewBefore,
+      afterText: plan.previewAfter)
+  editor.inspector.undoStack.update proc(prev: seq[CSSPropertyEditTransaction]): seq[
+      CSSPropertyEditTransaction] =
+    result = prev
+    result.add CSSPropertyEditTransaction(record: record,
+      sourceEdit: plan, beforeElement: beforeElement,
+      afterElement: afterElement)
+  editor.inspector.redoStack.val = @[]
+  editor.inspector.editDiagnostics.val = @[]
+  editor.workspaceEditStage.val = wesDirty
+  editor.workspaceEditDiagnostics.val = @[]
+  editor.chat.accumulatedEdits.update proc(prev: seq[EditRecord]): seq[EditRecord] =
+    result = prev
+    result.add record
+  DirectCanvasOperationResult(ok: true, operation: operation,
+    sourceEdit: plan, measurement: operation.measurement)
+
+proc planOwnedDirectSourceEdit(editor: EditorVM; operation: DirectCanvasOperation;
+    prop: PropertyInfo): tuple[ok: bool, plan: SourceEditPlan,
+      diagnostics: seq[PropertyEditDiagnostic]] =
+  let ownership = editor.resolveDesignSourceOwnership(operation.property)
+  if not ownership.ok:
+    for d in ownership.diagnostics:
+      result.diagnostics.add propertyDiagnosticFromDesign(pedSchemaViolation,
+        if d.message.len > 0: d.message
+        else: "Direct canvas operation requires source ownership.", d)
+    return
+  let file =
+    if ownership.ownership.sourceSpan.file.len > 0:
+      ownership.ownership.sourceSpan.file
+    else:
+      prop.sourceFile
+  let line =
+    if ownership.ownership.sourceSpan.line > 0:
+      ownership.ownership.sourceSpan.line
+    else:
+      prop.sourceLine
+  let oldValue =
+    if operation.oldValue.len > 0: operation.oldValue
+    elif prop.value.len > 0: prop.value
+    else: ownership.schemaNode.value
+  let prefix =
+    case operation.kind
+    of dcokInlineText:
+      "direct-inline-text:"
+    of dcokReorder:
+      "direct-reorder:"
+    of dcokContextCommand:
+      "direct-context:"
+    of dcokResize:
+      "direct-resize:"
+    of dcokSpacing:
+      "direct-spacing:"
+  let planKind =
+    if ownership.schemaNode.kind in {dsnFoundation, dsnSemanticToken,
+        dsnComponentToken}: cspTokenUpdate
+    else:
+      ownership.planKind
+  result.plan = SourceEditPlan(
+    file: file,
+    line: line,
+    property: operation.property,
+    oldValue: oldValue,
+    newValue: operation.value.strip(),
+    originDetail: prefix & ownership.nodeKey,
+    scope: pesShared,
+    planKind: planKind,
+    schemaKey: ownership.nodeKey,
+    tokenName: if planKind == cspTokenUpdate: ownership.nodeKey else: prop.tokenName,
+    variantKey: prop.variantKey,
+    reversible: true,
+    previewBefore: operation.property & ": " & oldValue,
+    previewAfter: operation.property & ": " & operation.value.strip(),
+    formatterHook: "format-direct-canvas-edit",
+    regeneratorHook:
+      if planKind in {cspStructuredSchemaUpdate, cspTokenUpdate}:
+        "regenerate-direct-canvas-source"
+      else:
+        "",
+    conflictKey: file & ":" & $line & ":" & operation.property & ":" &
+      $operation.kind,
+    expectedOldValue:
+      if prop.originDetail.startsWith("iframe-dom:"): "" else: oldValue)
+  result.ok = true
+
+proc applyDirectCanvasOperation*(editor: EditorVM;
+    operation: DirectCanvasOperation): DirectCanvasOperationResult {.discardable.} =
+  ## Route iframe direct manipulation into the same source-backed journal used
+  ## by inspector edits. Schema ownership wins; DOM-style fallback is used only
+  ## for consumer previews that expose a generic source-map adapter.
+  let beforeElement = editor.inspector.selectedElement.val
+  if beforeElement.tag.len == 0:
+    result = DirectCanvasOperationResult(ok: false, operation: operation,
+      diagnostics: @[PropertyEditDiagnostic(kind: pedMissingSelection,
+        message: "Select an element before using direct canvas editing.",
+        file: beforeElement.sourceFile, line: beforeElement.sourceLine,
+        property: operation.property)])
+    editor.inspector.editDiagnostics.val = result.diagnostics
+    return
+
+  var op = operation
+  if op.property.len == 0 and op.kind == dcokContextCommand:
+    op.property = op.command.directCanvasPropertyFor()
+  if op.property.len == 0:
+    op.property = "style"
+
+  case op.kind
+  of dcokResize, dcokSpacing, dcokReorder:
+    let family = directCanvasFamily(op.kind, op.property)
+    let planned = editor.planLayoutControlEdit(layoutCommand(family,
+      op.property, op.value, pesLocal,
+      childSourceKey = op.sourceKey, sourceBackedOnly = true))
+    if planned.ok:
+      var afterElement = beforeElement
+      var index = -1
+      for i, candidate in afterElement.properties:
+        if candidate.name == op.property:
+          index = i
+          break
+      var prop = beforeElement.propertyOrDefault(op.property,
+        planned.sourceEdit.oldValue)
+      prop.sourceFile = planned.sourceEdit.file
+      prop.sourceLine = planned.sourceEdit.line
+      prop.schemaKey = planned.sourceEdit.schemaKey
+      prop.originDetail = planned.sourceEdit.originDetail
+      prop.value = planned.sourceEdit.newValue
+      if index >= 0:
+        afterElement.properties[index] = prop
+      else:
+        afterElement.properties.add prop
+      return editor.stageDirectCanvasPlan(op, beforeElement, afterElement, prop,
+        planned.sourceEdit)
+
+    if editor.designSystemSchema.val.sourceOwnership.len > 0:
+      result = DirectCanvasOperationResult(ok: false, operation: op,
+        diagnostics: planned.diagnostics)
+      editor.inspector.editDiagnostics.val = planned.diagnostics
+      return
+
+    let fallback = editor.editInspectorProperty(PropertyEditRequest(
+      property: op.property, newValue: op.value, kind: pekLayout,
+      scope: pesLocal, origin: peoInspector))
+    return DirectCanvasOperationResult(
+      ok: fallback.status == pesAccepted,
+      operation: op,
+      sourceEdit: fallback.sourceEdit,
+      diagnostics: fallback.diagnostics,
+      measurement: op.measurement)
+
+  of dcokInlineText:
+    let prop = beforeElement.propertyOrDefault(op.property, op.oldValue)
+    let owned = editor.planOwnedDirectSourceEdit(op, prop)
+    if not owned.ok:
+      if editor.designSystemSchema.val.sourceOwnership.len > 0:
+        result = DirectCanvasOperationResult(ok: false, operation: op,
+          diagnostics: owned.diagnostics)
+        editor.inspector.editDiagnostics.val = owned.diagnostics
+        return
+      let fallback = editor.editInspectorProperty(PropertyEditRequest(
+        property: op.property, newValue: op.value, kind: pekState,
+        scope: pesLocal, origin: peoInspector))
+      return DirectCanvasOperationResult(
+        ok: fallback.status == pesAccepted,
+        operation: op,
+        sourceEdit: fallback.sourceEdit,
+        diagnostics: fallback.diagnostics,
+        measurement: op.measurement)
+    var afterElement = beforeElement
+    var index = -1
+    for i, candidate in afterElement.properties:
+      if candidate.name == op.property:
+        index = i
+        break
+    var routedProp = prop
+    routedProp.value = owned.plan.newValue
+    routedProp.sourceFile = owned.plan.file
+    routedProp.sourceLine = owned.plan.line
+    routedProp.schemaKey = owned.plan.schemaKey
+    routedProp.originDetail = owned.plan.originDetail
+    if index >= 0:
+      afterElement.properties[index] = routedProp
+    else:
+      afterElement.properties.add routedProp
+    result = editor.stageDirectCanvasPlan(op, beforeElement, afterElement, routedProp,
+      owned.plan)
+
+  of dcokContextCommand:
+    case op.command
+    of dcccOpenSource:
+      let state = editor.runEditorCommand(eckOpenSource)
+      result = DirectCanvasOperationResult(ok: state.status == ecsSucceeded,
+        operation: op, commandState: state)
+    of dcccCreateVariant:
+      let state = editor.runEditorCommand(eckCreateVariant)
+      result = DirectCanvasOperationResult(ok: state.status == ecsSucceeded,
+        operation: op, commandState: state)
+    of dcccDuplicate:
+      let state = editor.runEditorCommand(eckDuplicate)
+      result = DirectCanvasOperationResult(ok: state.status == ecsSucceeded,
+        operation: op, commandState: state)
+    of dcccDelete:
+      let state = editor.runEditorCommand(eckDelete)
+      result = DirectCanvasOperationResult(ok: state.status == ecsSucceeded,
+        operation: op, commandState: state)
+    of dcccAskAi:
+      let target =
+        if beforeElement.ancestors.len > 0: beforeElement.ancestors.join(" > ")
+        else: beforeElement.tag
+      editor.chat.inputText.val =
+        (if editor.chat.inputText.val.strip.len > 0:
+          editor.chat.inputText.val.strip & "\n"
+        else:
+          "") & "Ask AI about selection: " & target
+      editor.editMode.val = emComment
+      result = DirectCanvasOperationResult(ok: true, operation: op)
+    of dcccCopyStyles:
+      let prop = beforeElement.firstProperty()
+      result = DirectCanvasOperationResult(ok: true, operation: DirectCanvasOperation(
+        kind: dcokContextCommand, command: dcccCopyStyles,
+        property: prop.name, value: prop.value,
+        sourceKey: beforeElement.sourceKey))
+    of dcccPasteStyles, dcccReset, dcccDetach, dcccPromote, dcccWrap:
+      var property = op.property
+      if property in ["", "style", "reset", "class", "wrapper"]:
+        property = beforeElement.firstProperty().name
+      var value = op.value
+      if op.command == dcccReset and value.len == 0:
+        value = op.oldValue
+      if value.len == 0:
+        value = beforeElement.firstProperty().value
+      let prop = beforeElement.propertyOrDefault(property, op.oldValue)
+      let owned = editor.planOwnedDirectSourceEdit(DirectCanvasOperation(
+        kind: dcokContextCommand, command: op.command, property: property,
+        value: value, oldValue: prop.value, sourceKey: op.sourceKey,
+        measurement: op.measurement), prop)
+      if owned.ok:
+        var afterElement = beforeElement
+        for i, candidate in afterElement.properties:
+          if candidate.name == property:
+            afterElement.properties[i].value = owned.plan.newValue
+            afterElement.properties[i].originDetail = owned.plan.originDetail
+            afterElement.properties[i].schemaKey = owned.plan.schemaKey
+        return editor.stageDirectCanvasPlan(op, beforeElement, afterElement,
+          prop, owned.plan)
+      if editor.designSystemSchema.val.sourceOwnership.len > 0:
+        result = DirectCanvasOperationResult(ok: false, operation: op,
+          diagnostics: owned.diagnostics)
+        editor.inspector.editDiagnostics.val = owned.diagnostics
+        return
+      let fallback = editor.editInspectorProperty(PropertyEditRequest(
+        property: property, newValue: value,
+        kind: if cssPropertyCategory(property) in {cpcLayout, cpcFlexGrid}: pekLayout else: pekCss,
+        scope: pesLocal, origin: peoInspector))
+      result = DirectCanvasOperationResult(ok: fallback.status == pesAccepted,
+        operation: op, sourceEdit: fallback.sourceEdit,
+        diagnostics: fallback.diagnostics)
+
+proc applyDirectCanvasResize*(editor: EditorVM; property,
+    value: string): DirectCanvasOperationResult {.discardable.} =
+  editor.applyDirectCanvasOperation(DirectCanvasOperation(kind: dcokResize,
+    property: property, value: value))
+
+proc applyDirectCanvasSpacing*(editor: EditorVM; property,
+    value: string): DirectCanvasOperationResult {.discardable.} =
+  editor.applyDirectCanvasOperation(DirectCanvasOperation(kind: dcokSpacing,
+    property: property, value: value))
+
+proc applyDirectCanvasInlineText*(editor: EditorVM;
+    value: string): DirectCanvasOperationResult {.discardable.} =
+  editor.applyDirectCanvasOperation(DirectCanvasOperation(kind: dcokInlineText,
+    property: "text", value: value))
 
 func designReviewRank(level: DesignSchemaReviewLevel): int =
   case level

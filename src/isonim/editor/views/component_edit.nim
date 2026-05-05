@@ -115,6 +115,13 @@ proc editablePreviewDocument(documentHtml: string;
     pointer-events: auto;
     cursor: nwse-resize;
   }
+  #isonim-editor-selection-handles > span[data-handle="spacing"] {
+    width: 10px;
+    height: 10px;
+    border-radius: 5px;
+    background: #22C55E;
+    cursor: ns-resize;
+  }
   .isonim-editor-layout-guide {
     position: fixed;
     z-index: 2147483645;
@@ -160,6 +167,35 @@ proc editablePreviewDocument(documentHtml: string;
     background: rgba(59,130,246,.9);
     color: white;
   }
+  #isonim-editor-context-menu {
+    position: fixed;
+    z-index: 2147483647;
+    min-width: 186px;
+    padding: 5px;
+    border: 1px solid #334155;
+    border-radius: 6px;
+    background: rgba(15,23,42,.98);
+    box-shadow: 0 16px 40px rgba(15,23,42,.35);
+    color: #E2E8F0;
+    font: 12px/1.35 system-ui, sans-serif;
+  }
+  #isonim-editor-context-menu button {
+    display: block;
+    width: 100%;
+    padding: 5px 7px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: inherit;
+    text-align: left;
+    font: inherit;
+    cursor: pointer;
+  }
+  #isonim-editor-context-menu button:hover,
+  #isonim-editor-context-menu button:focus {
+    background: rgba(59,130,246,.24);
+    outline: none;
+  }
 </style>
 <script>
 (function () {
@@ -173,9 +209,11 @@ proc editablePreviewDocument(documentHtml: string;
     'isonim-editor-gap-overlay',
     'isonim-editor-snap-lines',
     'isonim-editor-spacing-measure',
+    'isonim-editor-context-menu',
     'isonim-editor-comment-popup'
   ]);
   let lastClick = { x: -10000, y: -10000, index: 0, at: 0 };
+  let styleClipboard = null;
   function isElement(node) {
     return node && node.nodeType === 1;
   }
@@ -310,7 +348,7 @@ proc editablePreviewDocument(documentHtml: string;
     if (!box) {
       box = document.createElement('div');
       box.id = 'isonim-editor-selection-handles';
-      ['nw','ne','se','sw'].forEach((name) => {
+      ['nw','ne','se','sw','spacing'].forEach((name) => {
         const handle = document.createElement('span');
         handle.dataset.handle = name;
         box.appendChild(handle);
@@ -319,23 +357,44 @@ proc editablePreviewDocument(documentHtml: string;
       box.addEventListener('pointerdown', function (event) {
         const handle = event.target && event.target.dataset ? event.target.dataset.handle : '';
         const selected = window.__isonimSelectedElement;
-        if (!handle || !selected || handle !== 'se') return;
+        if (!handle || !selected) return;
         const rect = selected.getBoundingClientRect();
         const startX = event.clientX;
+        const startY = event.clientY;
         const startWidth = rect.width;
+        const style = window.getComputedStyle(selected);
+        const spacingProperty =
+          (style.display === 'flex' || style.display === 'grid' || style.gap !== 'normal')
+            ? 'gap'
+            : 'padding';
+        const startSpacing = parseFloat(
+          spacingProperty === 'gap'
+            ? (style.gap === 'normal' ? '0' : style.gap)
+            : style.paddingTop
+        ) || 0;
         const source = parseSource(selected.getAttribute('data-isonim-src'));
         function move(moveEvent) {
-          const next = Math.max(24, Math.round(startWidth + moveEvent.clientX - startX));
-          selected.style.width = next + 'px';
-          selected.setAttribute('data-isonim-layout-resized', 'true');
+          let property = 'width';
+          let next = Math.max(24, Math.round(startWidth + moveEvent.clientX - startX)) + 'px';
+          if (handle === 'spacing') {
+            property = spacingProperty;
+            next = Math.max(0, Math.round(startSpacing + moveEvent.clientY - startY)) + 'px';
+          }
+          selected.style.setProperty(property, next);
+          selected.setAttribute(handle === 'spacing'
+            ? 'data-isonim-spacing-adjusted'
+            : 'data-isonim-layout-resized', 'true');
           placeHandles(selected);
-          parent.dispatchEvent(new CustomEvent('isonim-preview-layout-handle', {
+          parent.dispatchEvent(new CustomEvent('isonim-preview-direct-manipulation', {
             detail: {
-              property: 'width',
-              value: next + 'px',
+              kind: handle === 'spacing' ? 'spacing' : 'resize',
+              property: property,
+              value: next,
               sourceFile: source.file,
               sourceLine: source.line,
-              handle: handle
+              handle: handle,
+              sourceKey: sourceKeyFor(selected),
+              measurement: property + '=' + next
             }
           }));
           moveEvent.preventDefault();
@@ -408,8 +467,11 @@ proc editablePreviewDocument(documentHtml: string;
     box.querySelector('[data-handle="ne"]').style.cssText = 'right:-4px;top:-4px';
     box.querySelector('[data-handle="se"]').style.cssText = 'right:-4px;bottom:-4px';
     box.querySelector('[data-handle="sw"]').style.cssText = 'left:-4px;bottom:-4px';
+    box.querySelector('[data-handle="spacing"]').style.cssText = 'left:calc(50% - 5px);bottom:-18px';
     box.querySelector('[data-handle="se"]').setAttribute('aria-label', 'Resize selected element');
     box.querySelector('[data-handle="se"]').dataset.layoutHandle = 'resize';
+    box.querySelector('[data-handle="spacing"]').setAttribute('aria-label', 'Adjust selected spacing');
+    box.querySelector('[data-handle="spacing"]').dataset.layoutHandle = 'spacing';
     placeLayoutGuides(el, rect);
     const crumb = ensureBreadcrumb();
     const stack = ancestorStack(el).reverse();
@@ -478,9 +540,91 @@ proc editablePreviewDocument(documentHtml: string;
         opacity: style.opacity || '',
         rectWidth: String(Math.round(rect.width)),
         rectHeight: String(Math.round(rect.height)),
+        textContent: String(el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 240),
         layerTree: JSON.stringify(layerTree(el))
       }
     }));
+  }
+  function firstEditableStyle(el) {
+    const style = window.getComputedStyle(el);
+    const candidates = ['padding', 'gap', 'width', 'height', 'color', 'background-color'];
+    for (const property of candidates) {
+      const value = style.getPropertyValue(property);
+      if (value && value !== 'normal' && value !== 'auto' && value !== 'rgba(0, 0, 0, 0)') {
+        return { property, value };
+      }
+    }
+    return { property: 'padding', value: '0px' };
+  }
+  function dispatchContextCommand(command, extra) {
+    const selected = window.__isonimSelectedElement;
+    if (!selected) return;
+    const style = firstEditableStyle(selected);
+    const detail = Object.assign({
+      kind: 'context',
+      command: command,
+      property: style.property,
+      value: style.value,
+      oldValue: style.value,
+      sourceKey: sourceKeyFor(selected),
+      measurement: stableSelector(selected)
+    }, extra || {});
+    parent.dispatchEvent(new CustomEvent('isonim-preview-direct-manipulation', {
+      detail: detail
+    }));
+  }
+  function showContextMenu(event, el) {
+    const existing = document.getElementById('isonim-editor-context-menu');
+    if (existing) existing.remove();
+    const menu = document.createElement('div');
+    menu.id = 'isonim-editor-context-menu';
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-label', 'Canvas selection context menu');
+    const commands = [
+      ['copy-styles', 'Copy styles'],
+      ['paste-styles', 'Paste styles'],
+      ['reset', 'Reset'],
+      ['detach', 'Detach style'],
+      ['promote', 'Promote style'],
+      ['create-variant', 'Create variant'],
+      ['wrap', 'Wrap selection'],
+      ['duplicate', 'Duplicate'],
+      ['delete', 'Delete'],
+      ['open-source', 'Open source'],
+      ['ask-ai', 'Ask AI about selection']
+    ];
+    commands.forEach(([command, label]) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.setAttribute('role', 'menuitem');
+      button.textContent = label;
+      button.addEventListener('click', () => {
+        if (command === 'copy-styles') {
+          styleClipboard = firstEditableStyle(el);
+          dispatchContextCommand(command, styleClipboard);
+        } else if (command === 'paste-styles') {
+          const copied = styleClipboard || firstEditableStyle(el);
+          if (copied) {
+            el.style.setProperty(copied.property, copied.value);
+            dispatchContextCommand(command, copied);
+          }
+        } else if (command === 'reset') {
+          const reset = firstEditableStyle(el);
+          const value = reset.property === 'color' ? 'inherit' : '0px';
+          el.style.setProperty(reset.property, value);
+          dispatchContextCommand(command, { property: reset.property, value: value, oldValue: reset.value });
+        } else {
+          dispatchContextCommand(command);
+        }
+        menu.remove();
+      });
+      menu.appendChild(button);
+    });
+    menu.style.left = Math.min(event.clientX, window.innerWidth - 206) + 'px';
+    menu.style.top = Math.min(event.clientY, window.innerHeight - 316) + 'px';
+    document.body.appendChild(menu);
+    const first = menu.querySelector('button');
+    if (first) first.focus();
   }
   function clearSelection() {
     document.querySelectorAll('[data-isonim-selected="true"]').forEach((node) => {
@@ -560,12 +704,108 @@ proc editablePreviewDocument(documentHtml: string;
   }
   document.addEventListener('click', function (event) {
     if (editorMode === 'view') return;
-    if (event.target && event.target.closest && event.target.closest('#isonim-editor-comment-popup')) return;
+    if (event.target && event.target.closest && event.target.closest('#isonim-editor-comment-popup, #isonim-editor-context-menu')) return;
     event.preventDefault();
     event.stopPropagation();
     const selected = preferredElement(event);
     selectElement(selected);
     if (editorMode === 'comment' && selected) showCommentPopup(selected);
+  }, true);
+  document.addEventListener('contextmenu', function (event) {
+    if (editorMode === 'view') return;
+    const selected = ancestorStack(event.target)[0];
+    if (!selected) return;
+    event.preventDefault();
+    event.stopPropagation();
+    selectElement(selected);
+    showContextMenu(event, selected);
+  }, true);
+  document.addEventListener('dblclick', function (event) {
+    if (editorMode === 'view') return;
+    const selected = ancestorStack(event.target)[0];
+    if (!selected) return;
+    event.preventDefault();
+    event.stopPropagation();
+    selectElement(selected);
+    const before = String(selected.textContent || '').trim().replace(/\s+/g, ' ');
+    selected.setAttribute('contenteditable', 'true');
+    selected.setAttribute('data-isonim-inline-editing', 'true');
+    selected.focus();
+    try {
+      const range = document.createRange();
+      range.selectNodeContents(selected);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+    } catch (error) {}
+    function commit() {
+      selected.removeEventListener('blur', commit, true);
+      selected.removeEventListener('keydown', keyCommit, true);
+      selected.removeAttribute('contenteditable');
+      selected.removeAttribute('data-isonim-inline-editing');
+      const next = String(selected.textContent || '').trim().replace(/\s+/g, ' ');
+      parent.dispatchEvent(new CustomEvent('isonim-preview-direct-manipulation', {
+        detail: {
+          kind: 'inline-text',
+          property: 'text',
+          value: next,
+          oldValue: before,
+          sourceKey: sourceKeyFor(selected),
+          measurement: 'text=' + next.length
+        }
+      }));
+    }
+    function keyCommit(keyEvent) {
+      if (keyEvent.key === 'Enter') {
+        keyEvent.preventDefault();
+        selected.blur();
+      }
+      if (keyEvent.key === 'Escape') {
+        selected.textContent = before;
+        selected.blur();
+      }
+    }
+    selected.addEventListener('blur', commit, true);
+    selected.addEventListener('keydown', keyCommit, true);
+  }, true);
+  document.addEventListener('pointerdown', function (event) {
+    if (editorMode === 'view' || event.button !== 0) return;
+    const selected = window.__isonimSelectedElement;
+    if (!selected || !selected.contains(event.target)) return;
+    const parentEl = selected.parentElement;
+    if (!parentEl || parentEl.children.length < 2) return;
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const source = sourceKeyFor(selected);
+    let dragging = false;
+    function move(moveEvent) {
+      if (Math.abs(moveEvent.clientX - startX) + Math.abs(moveEvent.clientY - startY) < 10) return;
+      dragging = true;
+      const siblings = Array.from(parentEl.children).filter(isSelectable);
+      const index = siblings.indexOf(selected);
+      const toIndex = moveEvent.clientY > startY ? Math.min(siblings.length - 1, index + 1) : Math.max(0, index - 1);
+      selected.style.order = String(toIndex);
+      parent.dispatchEvent(new CustomEvent('isonim-preview-direct-manipulation', {
+        detail: {
+          kind: 'reorder',
+          property: 'order',
+          value: String(toIndex),
+          oldValue: String(index),
+          fromIndex: index,
+          toIndex: toIndex,
+          sourceKey: source,
+          measurement: 'order=' + toIndex
+        }
+      }));
+      stop();
+      moveEvent.preventDefault();
+    }
+    function stop() {
+      window.removeEventListener('pointermove', move, true);
+      window.removeEventListener('pointerup', stop, true);
+    }
+    window.addEventListener('pointermove', move, true);
+    window.addEventListener('pointerup', stop, true);
   }, true);
   document.addEventListener('keydown', function (event) {
     if (editorMode === 'view') return;
@@ -687,7 +927,7 @@ proc installPreviewSelectionBridge[R, E](r: R; frame: E; vm: EditorVM) =
         sourceLine, display, position, backgroundColor,
         color, padding, margin, width, height, borderRadius, borderWidth,
         borderStyle, borderColor, fontSize, fontWeight, lineHeight, boxShadow,
-        opacity, rectWidth, rectHeight, layerTreeJson: cstring) =
+        opacity, rectWidth, rectHeight, textContent, layerTreeJson: cstring) =
       let line =
         try: parseInt($sourceLine)
         except ValueError: 0
@@ -720,6 +960,7 @@ proc installPreviewSelectionBridge[R, E](r: R; frame: E; vm: EditorVM) =
         $opacity,
         $rectWidth,
         $rectHeight,
+        $textContent,
         $elementId,
         $sourceKey,
         $schemaKey,
@@ -752,7 +993,8 @@ proc installPreviewSelectionBridge[R, E](r: R; frame: E; vm: EditorVM) =
             d.borderRadius || '', d.borderWidth || '', d.borderStyle || '',
             d.borderColor || '', d.fontSize || '', d.fontWeight || '',
             d.lineHeight || '', d.boxShadow || '', d.opacity || '',
-            d.rectWidth || '', d.rectHeight || '', d.layerTree || ''
+            d.rectWidth || '', d.rectHeight || '', d.textContent || '',
+            d.layerTree || ''
           );
         });
       }
@@ -769,14 +1011,52 @@ proc installPreviewSelectionBridge[R, E](r: R; frame: E; vm: EditorVM) =
       }
     """].}
 
-    let layoutHandleFromBrowser = proc(propName, value: cstring) =
-      vm.applyInspectorValue($propName, $value)
+    let directManipulationFromBrowser = proc(kind, propName, value, oldValue,
+        handle, command, sourceKey, measurement: cstring; fromIndex,
+        toIndex: int) =
+      let opKind =
+        case ($kind)
+        of "resize": dcokResize
+        of "spacing": dcokSpacing
+        of "reorder": dcokReorder
+        of "inline-text": dcokInlineText
+        else: dcokContextCommand
+      let contextCommand =
+        case ($command)
+        of "copy-styles": dcccCopyStyles
+        of "paste-styles": dcccPasteStyles
+        of "reset": dcccReset
+        of "detach": dcccDetach
+        of "promote": dcccPromote
+        of "create-variant": dcccCreateVariant
+        of "wrap": dcccWrap
+        of "duplicate": dcccDuplicate
+        of "delete": dcccDelete
+        of "open-source": dcccOpenSource
+        of "ask-ai": dcccAskAi
+        else: dcccCopyStyles
+      discard vm.applyDirectCanvasOperation(DirectCanvasOperation(
+        kind: opKind,
+        property: $propName,
+        value: $value,
+        oldValue: $oldValue,
+        handle: $handle,
+        command: contextCommand,
+        sourceKey: $sourceKey,
+        fromIndex: fromIndex,
+        toIndex: toIndex,
+        measurement: $measurement))
     {.emit: ["""
-      if (!window.__isonimPreviewLayoutHandleBridgeInstalled) {
-        window.__isonimPreviewLayoutHandleBridgeInstalled = true;
-        window.addEventListener('isonim-preview-layout-handle', function (event) {
+      if (!window.__isonimPreviewDirectManipulationBridgeInstalled) {
+        window.__isonimPreviewDirectManipulationBridgeInstalled = true;
+        window.addEventListener('isonim-preview-direct-manipulation', function (event) {
           const d = event.detail || {};
-          """, layoutHandleFromBrowser, """(d.property || '', d.value || '');
+          """, directManipulationFromBrowser, """(
+            d.kind || '', d.property || '', d.value || '', d.oldValue || '',
+            d.handle || '', d.command || '', d.sourceKey || '',
+            d.measurement || '', Number(d.fromIndex || 0),
+            Number(d.toIndex || 0)
+          );
         });
       }
     """].}

@@ -1394,6 +1394,7 @@ suite "Editor ViewModels (M26 source-backed CSS property editors)":
         "1",
         "320",
         "32",
+        "",
         "src:title",
         "components.nim:52:class:bo-title",
         "dom.h1",
@@ -1584,6 +1585,209 @@ suite "Editor ViewModels (M27 workspace file writes)":
               message: "unsafe generated source",
               file: patch.file)])
       WorkspaceReviewResult(ok: true)
+
+  test "canvas_direct_manipulation_routes_to_owned_source_edits":
+    createRoot proc(dispose: proc()) =
+      func span(file: string; line: int): SourceSpan =
+        SourceSpan(file: file, line: line, column: 1,
+          endLine: line, endColumn: 30)
+      func prop(name, value, file, key: string; line: int): PropertyInfo =
+        PropertyInfo(name: name, value: value, origin: poConstant,
+          originDetail: "schema:" & key, sourceFile: file, sourceLine: line,
+          schemaKey: key)
+
+      let root = tempWorkspaceDir("direct-canvas")
+      defer: removeDir(root)
+      let layoutFile = root / "card.layout.schema"
+      let tokenFile = root / "tokens.schema"
+      let fixtureFile = root / "card.fixture"
+      let copyFile = root / "card.copy"
+      atomicWrite(layoutFile, "width=320px")
+      atomicWrite(tokenFile, "gap=12px")
+      atomicWrite(fixtureFile, "order=0")
+      atomicWrite(copyFile, "title=Old title")
+
+      let schema = DesignSystemSchema(
+        schemaVersion: 1,
+        projectId: "direct-canvas-fixture",
+        ownerPackage: "isonim-tests",
+        frameworkContract: "isonim-editor-design-schema-v1",
+        nodes: @[
+          DesignSchemaNode(key: "components.card.width",
+            kind: dsnStyleDefinition, component: "Card", property: "width",
+            value: "320px", sourceSpan: span(layoutFile, 1)),
+          DesignSchemaNode(key: "tokens.card.gap",
+            kind: dsnComponentToken, component: "Card", property: "gap",
+            value: "12px", sourceSpan: span(tokenFile, 1)),
+          DesignSchemaNode(key: "fixtures.card.order",
+            kind: dsnStoryFixture, component: "Card", property: "order",
+            value: "0", sourceSpan: span(fixtureFile, 1)),
+          DesignSchemaNode(key: "fixtures.card.title",
+            kind: dsnStoryFixture, component: "Card", property: "text",
+            value: "Old title", sourceSpan: span(copyFile, 1))
+        ],
+        sourceOwnership: @[
+          DesignSourceOwnership(elementSourceKey: "card.root",
+            property: "width", schemaKey: "components.card.width",
+            nodeKey: "components.card.width", sourceSpan: span(layoutFile, 1)),
+          DesignSourceOwnership(elementSourceKey: "card.root",
+            property: "gap", schemaKey: "tokens.card.gap",
+            nodeKey: "tokens.card.gap", sourceSpan: span(tokenFile, 1)),
+          DesignSourceOwnership(elementSourceKey: "card.item",
+            property: "order", schemaKey: "fixtures.card.order",
+            nodeKey: "fixtures.card.order", sourceSpan: span(fixtureFile, 1)),
+          DesignSourceOwnership(elementSourceKey: "card.title",
+            property: "text", schemaKey: "fixtures.card.title",
+            nodeKey: "fixtures.card.title", sourceSpan: span(copyFile, 1))
+        ])
+      let recorder = WorkspaceEditRecorder()
+      let adapter = adapterFor(root, @[
+        WorkspaceEditableSchemaEntry(key: "components.card.width",
+          kind: wskSourceMap, file: layoutFile, path: "card.width",
+          story: writeStory, property: "width"),
+        WorkspaceEditableSchemaEntry(key: "tokens.card.gap",
+          kind: wskToken, file: tokenFile, path: "card.gap",
+          story: writeStory, property: "gap"),
+        WorkspaceEditableSchemaEntry(key: "fixtures.card.order",
+          kind: wskStoryFixture, file: fixtureFile, path: "card.items.order",
+          story: writeStory, property: "order"),
+        WorkspaceEditableSchemaEntry(key: "fixtures.card.title",
+          kind: wskStoryFixture, file: copyFile, path: "card.title",
+          story: writeStory, property: "text")
+      ], recorder = recorder)
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "M40 direct canvas workspace",
+        storyGroups = @[StoryGroup(name: "DestinationCard", kind: skComponent,
+          items: @[StoryItem(name: "Default", kind: skComponent,
+            group: "DestinationCard")])],
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true, createVariant: true, duplicate: true,
+          delete: true),
+        sourceAdapterReady = true,
+        initialStory = some(writeStory),
+        editAdapter = adapter,
+        designSystemSchema = schema))
+
+      check vm.selectInspectorElement(ElementRef(id: "root",
+        sourceKey: "card.root", schemaKey: "components.card", tag: "article",
+        sourceFile: layoutFile, sourceLine: 1,
+        properties: @[
+          prop("width", "320px", layoutFile, "components.card.width", 1),
+          prop("gap", "12px", tokenFile, "tokens.card.gap", 1)
+        ]))
+      let resized = vm.applyDirectCanvasOperation(DirectCanvasOperation(
+        kind: dcokResize, property: "width", value: "360px",
+        handle: "se", measurement: "width=360px"))
+      check resized.ok
+      check resized.sourceEdit.schemaKey == "components.card.width"
+      check resized.sourceEdit.originDetail.startsWith("layout-style:")
+      check resized.sourceEdit.planKind == cspStructuredSchemaUpdate
+
+      let spaced = vm.applyDirectCanvasOperation(DirectCanvasOperation(
+        kind: dcokSpacing, property: "gap", value: "24px",
+        handle: "spacing", measurement: "gap=24px"))
+      check spaced.ok
+      check spaced.sourceEdit.schemaKey == "tokens.card.gap"
+      check spaced.sourceEdit.planKind == cspTokenUpdate
+
+      check vm.selectInspectorElement(ElementRef(id: "item",
+        sourceKey: "card.item", schemaKey: "components.card.item",
+        tag: "li", sourceFile: fixtureFile, sourceLine: 1,
+        properties: @[prop("order", "0", fixtureFile,
+          "fixtures.card.order", 1)]))
+      let reordered = vm.applyDirectCanvasOperation(DirectCanvasOperation(
+        kind: dcokReorder, property: "order", oldValue: "0",
+        value: "2", fromIndex: 0, toIndex: 2,
+        sourceKey: "card.item", measurement: "order=2"))
+      check reordered.ok
+      check reordered.sourceEdit.schemaKey == "fixtures.card.order"
+      check reordered.sourceEdit.originDetail.startsWith("layout-fixture:")
+
+      check vm.selectInspectorElement(ElementRef(id: "title",
+        sourceKey: "card.title", schemaKey: "components.card.title",
+        tag: "h2", sourceFile: copyFile, sourceLine: 1,
+        properties: @[prop("text", "Old title", copyFile,
+          "fixtures.card.title", 1)]))
+      let editedText = vm.applyDirectCanvasInlineText("New title")
+      check editedText.ok
+      check editedText.sourceEdit.schemaKey == "fixtures.card.title"
+      check editedText.sourceEdit.originDetail.startsWith("direct-inline-text:")
+      check vm.inspector.pendingSourceEdits.val.len == 4
+      check vm.inspector.undoStack.val.len == 4
+      check vm.workspaceEditStage.val == wesDirty
+
+      check vm.inspector.undoCssPropertyEdit()
+      check vm.inspector.pendingSourceEdits.val.len == 3
+      check vm.inspector.redoCssPropertyEdit()
+      check vm.inspector.pendingSourceEdits.val.len == 4
+
+      let saved = vm.runEditorCommand(eckSave)
+      check saved.status == ecsSucceeded
+      check readFile(layoutFile).contains("360px")
+      check readFile(tokenFile).contains("24px")
+      check readFile(fixtureFile).contains("2")
+      check readFile(copyFile).contains("New title")
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check vm.workspaceEditStage.val == wesClean
+      check recorder.reviewCount == 1
+
+      check vm.selectInspectorElement(ElementRef(id: "root",
+        sourceKey: "card.root", schemaKey: "components.card", tag: "article",
+        sourceFile: layoutFile, sourceLine: 1,
+        properties: @[
+          prop("width", "360px", layoutFile, "components.card.width", 1),
+          prop("gap", "24px", tokenFile, "tokens.card.gap", 1)
+        ]))
+
+      let copied = vm.applyDirectCanvasOperation(DirectCanvasOperation(
+        kind: dcokContextCommand, command: dcccCopyStyles))
+      check copied.ok
+      check copied.operation.property == "width"
+      check copied.operation.value == "360px"
+      check vm.inspector.pendingSourceEdits.val.len == 0
+
+      proc checkContextPlan(command: DirectCanvasContextCommand;
+          value: string) =
+        let planned = vm.applyDirectCanvasOperation(DirectCanvasOperation(
+          kind: dcokContextCommand, command: command, property: "width",
+          value: value, oldValue: "360px", sourceKey: "card.root"))
+        check planned.ok
+        check planned.sourceEdit.schemaKey == "components.card.width"
+        check planned.sourceEdit.originDetail.startsWith("direct-context:")
+        check planned.sourceEdit.reversible
+        check vm.inspector.pendingSourceEdits.val.len == 1
+        check vm.inspector.undoStack.val.len >= 1
+
+      checkContextPlan(dcccPasteStyles, "380px")
+      check vm.inspector.undoCssPropertyEdit()
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check vm.inspector.redoCssPropertyEdit()
+      check vm.inspector.pendingSourceEdits.val.len == 1
+      checkContextPlan(dcccReset, "320px")
+      checkContextPlan(dcccDetach, "360px")
+      checkContextPlan(dcccPromote, "360px")
+      checkContextPlan(dcccWrap, "360px")
+
+      for command in [dcccCreateVariant, dcccDuplicate, dcccDelete,
+          dcccOpenSource]:
+        let ran = vm.applyDirectCanvasOperation(DirectCanvasOperation(
+          kind: dcokContextCommand, command: command, sourceKey: "card.root"))
+        check ran.ok
+        check ran.commandState.status == ecsSucceeded
+
+      let asked = vm.applyDirectCanvasOperation(DirectCanvasOperation(
+        kind: dcokContextCommand, command: dcccAskAi,
+        sourceKey: "card.root"))
+      check asked.ok
+      check vm.editMode.val == emComment
+      check vm.chat.inputText.val.contains("Ask AI about selection:")
+
+      let reverted = vm.runEditorCommand(eckRevert)
+      check reverted.status == ecsSucceeded
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check vm.inspector.undoStack.val.len == 0
+      check vm.workspaceEditStage.val == wesClean
+      dispose()
 
   test "workspace_edit_adapter_applies_transactional_file_changes":
     createRoot proc(dispose: proc()) =
