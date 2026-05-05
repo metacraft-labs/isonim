@@ -371,8 +371,16 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
 
     const colorInput = page.getByLabel("Edit inspector property color").first();
     await expect(colorInput).toBeVisible();
+    await expect(page.getByLabel("Cascade origin for color")).toBeVisible();
+    await expect(
+      page.getByLabel("Edit raw CSS for Fill section"),
+    ).toBeVisible();
+    await expect(page.getByLabel("Element tree selected header")).toBeVisible();
     const originalColor = await topbar.evaluate(
       (node) => getComputedStyle(node).color,
+    );
+    const originalBackground = await topbar.evaluate(
+      (node) => getComputedStyle(node).backgroundColor,
     );
     await colorInput.fill("#F8FAFC");
     await expect
@@ -381,6 +389,15 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await colorInput.blur();
     await expect(page.getByText("Unsaved source edit")).toBeVisible();
     await expect(page.getByText("1 source plan(s) staged")).toBeVisible();
+    await page.getByRole("button", { name: "Copy color property" }).click();
+    await page
+      .getByRole("button", { name: "Paste into background-color property" })
+      .click();
+    await expect
+      .poll(() =>
+        topbar.evaluate((node) => getComputedStyle(node).backgroundColor),
+      )
+      .toBe("rgb(248, 250, 252)");
 
     await page
       .getByRole("button", { name: "Revert inspector source edits" })
@@ -388,11 +405,18 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect
       .poll(() => topbar.evaluate((node) => getComputedStyle(node).color))
       .toBe(originalColor);
+    await expect
+      .poll(() =>
+        topbar.evaluate((node) => getComputedStyle(node).backgroundColor),
+      )
+      .toBe(originalBackground);
     await expect(page.getByText("Unsaved source edit")).toHaveCount(0);
 
     await topbar.click();
     await page.getByRole("tab", { name: "Show Space edit controls" }).click();
     await expect(page.getByText("Box Model", { exact: true })).toBeVisible();
+    const rawSpace = page.getByLabel("Edit raw CSS for Space section");
+    await expect(rawSpace).toBeVisible();
     const originalPadding = await topbar.evaluate(
       (node) => getComputedStyle(node).paddingTop,
     );

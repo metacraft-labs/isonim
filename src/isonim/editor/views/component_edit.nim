@@ -24,6 +24,11 @@ const
   accent = "#3B82F6"
   green = "#22C55E"
 
+type
+  StyleClipboard = ref object
+    property: string
+    value: string
+
 proc editablePreviewDocument(documentHtml: string;
     metadata: StoryRenderMetadata): string =
   ## Injects editor-only click selection metadata into the project-owned
@@ -42,11 +47,77 @@ proc editablePreviewDocument(documentHtml: string;
     outline-offset: 2px !important;
     box-shadow: 0 0 0 4px rgba(59,130,246,.22) !important;
   }
+  [data-isonim-hovered="true"] {
+    outline: 1px dashed rgba(59,130,246,.75) !important;
+    outline-offset: 3px !important;
+  }
+  #isonim-editor-hover-label {
+    position: fixed;
+    z-index: 2147483647;
+    pointer-events: none;
+    padding: 3px 6px;
+    border-radius: 4px;
+    background: rgba(15,23,42,.94);
+    color: #E2E8F0;
+    font: 11px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
+    box-shadow: 0 4px 14px rgba(15,23,42,.28);
+    transform: translateY(-100%);
+  }
+  #isonim-editor-selection-handles {
+    position: fixed;
+    z-index: 2147483646;
+    pointer-events: none;
+    border: 1px solid rgba(59,130,246,.9);
+  }
+  #isonim-editor-selection-handles > span {
+    position: absolute;
+    width: 7px;
+    height: 7px;
+    border-radius: 2px;
+    background: #3B82F6;
+    border: 1px solid white;
+  }
 </style>
 <script>
 (function () {
   const fallbackSource = "__ISONIM_SOURCE__";
   const fallbackLine = "__ISONIM_LINE__";
+  function ensureHoverLabel() {
+    let label = document.getElementById('isonim-editor-hover-label');
+    if (!label) {
+      label = document.createElement('div');
+      label.id = 'isonim-editor-hover-label';
+      label.hidden = true;
+      document.body.appendChild(label);
+    }
+    return label;
+  }
+  function ensureHandles() {
+    let box = document.getElementById('isonim-editor-selection-handles');
+    if (!box) {
+      box = document.createElement('div');
+      box.id = 'isonim-editor-selection-handles';
+      ['nw','ne','se','sw'].forEach((name) => {
+        const handle = document.createElement('span');
+        handle.dataset.handle = name;
+        box.appendChild(handle);
+      });
+      document.body.appendChild(box);
+    }
+    return box;
+  }
+  function placeHandles(el) {
+    const box = ensureHandles();
+    const rect = el.getBoundingClientRect();
+    box.style.left = rect.left + 'px';
+    box.style.top = rect.top + 'px';
+    box.style.width = rect.width + 'px';
+    box.style.height = rect.height + 'px';
+    box.querySelector('[data-handle="nw"]').style.cssText = 'left:-4px;top:-4px';
+    box.querySelector('[data-handle="ne"]').style.cssText = 'right:-4px;top:-4px';
+    box.querySelector('[data-handle="se"]').style.cssText = 'right:-4px;bottom:-4px';
+    box.querySelector('[data-handle="sw"]').style.cssText = 'left:-4px;bottom:-4px';
+  }
   function parseSource(value) {
     if (!value) return { file: fallbackSource, line: fallbackLine };
     const match = String(value).match(/^(.*?):(\d+)(?::\d+)?$/);
@@ -64,6 +135,7 @@ proc editablePreviewDocument(documentHtml: string;
     });
     el.setAttribute('data-isonim-selected', 'true');
     window.__isonimSelectedElement = el;
+    placeHandles(el);
     const source = parseSource(el.getAttribute('data-isonim-src'));
     const style = window.getComputedStyle(el);
     parent.dispatchEvent(new CustomEvent('isonim-preview-element-selected', {
@@ -85,6 +157,33 @@ proc editablePreviewDocument(documentHtml: string;
     event.preventDefault();
     event.stopPropagation();
     selectElement(event.target);
+  }, true);
+  document.addEventListener('mousemove', function (event) {
+    const el = event.target && event.target.closest && (
+      event.target.closest('[data-isonim-src], [data-testid]') ||
+      event.target.closest('[class]')
+    );
+    document.querySelectorAll('[data-isonim-hovered="true"]').forEach((node) => {
+      if (node !== el) node.removeAttribute('data-isonim-hovered');
+    });
+    const label = ensureHoverLabel();
+    if (!el || el === document.documentElement || el === document.body) {
+      label.hidden = true;
+      return;
+    }
+    const rect = el.getBoundingClientRect();
+    const style = window.getComputedStyle(el);
+    el.setAttribute('data-isonim-hovered', 'true');
+    label.textContent = el.tagName.toLowerCase() + ' ' +
+      Math.round(rect.width) + 'x' + Math.round(rect.height) +
+      ' p:' + style.padding;
+    label.style.left = Math.max(6, rect.left) + 'px';
+    label.style.top = Math.max(18, rect.top - 6) + 'px';
+    label.hidden = false;
+    if (window.__isonimSelectedElement) placeHandles(window.__isonimSelectedElement);
+  }, true);
+  window.addEventListener('scroll', function () {
+    if (window.__isonimSelectedElement) placeHandles(window.__isonimSelectedElement);
   }, true);
 })();
 </script>
@@ -292,6 +391,54 @@ func swatchesFor(propertyName: string): seq[string] =
   else:
     @[]
 
+func propertyInfo(element: ElementRef; name, fallback: string): PropertyInfo =
+  for prop in element.properties:
+    if prop.name == name:
+      return prop
+  PropertyInfo(
+    name: name,
+    value: fallback,
+    origin: poInherited,
+    originDetail: "inherited:" & name,
+    sourceFile: element.sourceFile,
+    sourceLine: element.sourceLine,
+    schemaKey: "dom." & element.tag & "." & name,
+    directStyleAllowed: true)
+
+func originLabel(origin: PropertyOrigin): string =
+  case origin
+  of poTailwindClass: "class"
+  of poSetStyle: "style"
+  of poThemeToken: "token"
+  of poConstant: "const"
+  of poInherited: "inherited"
+
+func originTone(origin: PropertyOrigin): string =
+  case origin
+  of poThemeToken, poConstant: "Shared"
+  of poInherited: "Inherited"
+  else: "Local"
+
+func sectionCssText(element: ElementRef; section: InspectorSection): string =
+  for (propName, fallback) in sectionProperties(section):
+    let prop = propertyInfo(element, propName, fallback)
+    result.add prop.name & ": " & prop.value & ";\n"
+
+func parseRawCssLines(raw: string): seq[(string, string)] =
+  for line in raw.splitLines:
+    let text = line.strip()
+    if text.len == 0 or text.startsWith("#") or text.startsWith("/*"):
+      continue
+    let colon = text.find(':')
+    if colon <= 0:
+      continue
+    let propName = text[0 ..< colon].strip()
+    var value = text[colon + 1 .. ^1].strip()
+    if value.endsWith(";"):
+      value = value[0 ..< value.len - 1].strip()
+    if propName.len > 0:
+      result.add (propName, value)
+
 proc applyInspectorValue(vm: EditorVM; propName, value: string) =
   discard vm.editCssProperty(propName, value, pesLocal, peoInspector)
 
@@ -328,14 +475,6 @@ proc applyLivePreviewStyle[R, E](r: R; frame: E; propName, value: string) =
         }
       })();
     """].}
-
-proc inspectorLiveValueHandler[R, E](r: R; vm: EditorVM; frame: E; propName,
-    value: string): proc() =
-  let capturedProp = propName
-  let capturedValue = value
-  result = proc() =
-    vm.applyInspectorValue(capturedProp, capturedValue)
-    r.applyLivePreviewStyle(frame, capturedProp, capturedValue)
 
 proc revertLivePreviewStyles[R, E](r: R; frame: E) =
   when defined(js):
@@ -374,35 +513,139 @@ proc commitLivePreviewStyles[R, E](r: R; frame: E) =
       })();
     """].}
 
+proc applyCssValue[R, E](r: R; vm: EditorVM; frame: E; propName,
+    value: string; commitSource = true) =
+  if commitSource:
+    vm.applyInspectorValue(propName, value)
+  r.applyLivePreviewStyle(frame, propName, value)
+
+proc applyRawCss[R, E](r: R; vm: EditorVM; frame: E; raw: string) =
+  for (propName, value) in parseRawCssLines(raw):
+    r.applyCssValue(vm, frame, propName, value)
+
+proc inspectorLiveValueHandler[R, E](r: R; vm: EditorVM; frame: E; propName,
+    value: string): proc() =
+  let capturedProp = propName
+  let capturedValue = value
+  result = proc() =
+    r.applyCssValue(vm, frame, capturedProp, capturedValue)
+
 proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; propName,
     value: string): E =
   var inputNode: E
   result = ui(r):
     tdiv(display = "flex", flex_direction = "column", gap = "4px"):
-      label(font_size = "10px", color = textMuted,
-            text_transform = "uppercase", letter_spacing = "0.4px"):
-        text propName
-      input(ref = inputNode,
-            class = "editor-input",
-            height = "30px",
-            background_color = bgSurface,
-            border = "1px solid " & border,
-            border_radius = "4px",
-            padding = "0 8px",
-            font_size = "12px",
-            color = textPrimary,
-            outline = "none")
+      tdiv(display = "flex", align_items = "center", gap = "6px"):
+        label(font_size = "10px", color = textMuted,
+              text_transform = "uppercase", letter_spacing = "0.4px",
+              cursor = "ew-resize", flex = "1"):
+          text propName
+        span(font_size = "9px", color = textDim):
+          text "drag"
+      tdiv(display = "flex", align_items = "center", gap = "6px"):
+        input(ref = inputNode,
+              class = "editor-input",
+              height = "30px",
+              background_color = bgSurface,
+              border = "1px solid " & border,
+              border_radius = "4px",
+              padding = "0 8px",
+              font_size = "12px",
+              color = textPrimary,
+              outline = "none",
+              flex = "1")
+        tdiv(min_width = "32px", height = "28px",
+              display = "flex", align_items = "center",
+              justify_content = "center",
+              border = "1px solid " & border,
+              border_radius = "4px",
+              background_color = bgSurface,
+              color = textMuted, font_size = "10px"):
+          text "unit"
   r.setAttribute(inputNode, "aria-label", "Edit inspector property " & propName)
   r.setInputValue(inputNode, value)
   let commit = proc() =
     let nextValue = r.inputValue(inputNode)
-    vm.applyInspectorValue(propName, nextValue)
-    r.applyLivePreviewStyle(frame, propName, nextValue)
+    r.applyCssValue(vm, frame, propName, nextValue)
   let preview = proc() =
-    r.applyLivePreviewStyle(frame, propName, r.inputValue(inputNode))
+    r.applyCssValue(vm, frame, propName, r.inputValue(inputNode),
+      commitSource = false)
   r.addEventListener(inputNode, "change", commit)
   r.addEventListener(inputNode, "blur", commit)
   r.addEventListener(inputNode, "input", preview)
+
+proc renderCascadeIndicator[R, E](r: R; prop: PropertyInfo): E =
+  let tone = originTone(prop.origin)
+  let label = originLabel(prop.origin)
+  let color =
+    case prop.origin
+    of poThemeToken, poConstant: "#FBBF24"
+    of poInherited: textDim
+    else: accent
+  let detail =
+    if prop.originDetail.len > 0: prop.originDetail
+    elif prop.schemaKey.len > 0: prop.schemaKey
+    else: prop.sourceFile & ":" & $prop.sourceLine
+  result = ui(r):
+    tdiv(display = "flex", flex_direction = "column", gap = "4px",
+          padding = "6px 8px", border_radius = "4px",
+          background_color = bgBase):
+      tdiv(display = "flex", align_items = "center", gap = "6px"):
+        span(font_size = "10px", font_weight = "700", color = color):
+          text tone
+        span(font_size = "10px", color = textMuted):
+          text label
+      span(font_size = "10px", color = textDim, font_family = "monospace",
+            white_space = "nowrap", overflow = "hidden",
+            text_overflow = "ellipsis"):
+        text detail
+  r.setAttribute(result, "aria-label", "Cascade origin for " & prop.name)
+
+proc propertyActionHandler[R, E](r: R; vm: EditorVM; frame: E;
+    propName, value: string): proc() =
+  let capturedProp = propName
+  let capturedValue = value
+  result = proc() =
+    r.applyCssValue(vm, frame, capturedProp, capturedValue)
+
+proc renderPropertyActions[R, E](r: R; vm: EditorVM; frame: E;
+    clipboard: StyleClipboard; propName, value, fallback: string): E =
+  var copyButton: E
+  var pasteButton: E
+  var resetButton: E
+  result = ui(r):
+    tdiv(display = "flex", gap = "4px", align_items = "center"):
+      tdiv(ref = copyButton, role = "button", tabindex = "0",
+            padding = "3px 7px", border_radius = "4px",
+            background_color = bgSurface, color = textMuted,
+            font_size = "10px", cursor = "pointer"):
+        text "Copy"
+      tdiv(ref = pasteButton, role = "button", tabindex = "0",
+            padding = "3px 7px", border_radius = "4px",
+            background_color = bgSurface, color = textMuted,
+            font_size = "10px", cursor = "pointer"):
+        text "Paste"
+      tdiv(ref = resetButton, role = "button", tabindex = "0",
+            padding = "3px 7px", border_radius = "4px",
+            background_color = bgSurface, color = textMuted,
+            font_size = "10px", cursor = "pointer"):
+        text "Reset"
+  r.setAttribute(copyButton, "aria-label", "Copy " & propName & " property")
+  r.setAttribute(pasteButton, "aria-label", "Paste into " & propName & " property")
+  r.setAttribute(resetButton, "aria-label", "Reset " & propName & " property")
+  let copy = proc() =
+    clipboard.property = propName
+    clipboard.value = value
+  let paste = proc() =
+    if clipboard.value.len > 0:
+      r.applyCssValue(vm, frame, propName, clipboard.value)
+  let reset = r.propertyActionHandler(vm, frame, propName, fallback)
+  r.addEventListener(copyButton, "click", copy)
+  r.addEventListener(copyButton, "keydown", copy)
+  r.addEventListener(pasteButton, "click", paste)
+  r.addEventListener(pasteButton, "keydown", paste)
+  r.addEventListener(resetButton, "click", reset)
+  r.addEventListener(resetButton, "keydown", reset)
 
 proc renderQuickValues[R, E](r: R; vm: EditorVM; frame: E; propName,
     current: string): E =
@@ -451,17 +694,23 @@ proc renderSwatches[R, E](r: R; vm: EditorVM; frame: E; propName,
     r.addEventListener(swatch, "keydown", activate)
     r.appendChild(result, swatch)
 
-proc renderRichPropertyControl[R, E](r: R; vm: EditorVM; frame: E; propName,
-    value: string): E =
+proc renderRichPropertyControl[R, E](r: R; vm: EditorVM; frame: E;
+    clipboard: StyleClipboard; prop: PropertyInfo; fallback: string): E =
   result = ui(r):
     tdiv(display = "flex", flex_direction = "column", gap = "6px",
           padding = "8px", border = "1px solid " & border,
           border_radius = "6px", background_color = "#0F172A")
-  r.appendChild(result, renderPropertyInput[R, E](r, vm, frame, propName, value))
-  if quickValues(propName).len > 0:
-    r.appendChild(result, renderQuickValues[R, E](r, vm, frame, propName, value))
-  if swatchesFor(propName).len > 0:
-    r.appendChild(result, renderSwatches[R, E](r, vm, frame, propName, value))
+  r.appendChild(result, renderPropertyInput[R, E](r, vm, frame, prop.name,
+    prop.value))
+  r.appendChild(result, renderCascadeIndicator[R, E](r, prop))
+  r.appendChild(result, renderPropertyActions[R, E](r, vm, frame, clipboard,
+    prop.name, prop.value, fallback))
+  if quickValues(prop.name).len > 0:
+    r.appendChild(result, renderQuickValues[R, E](r, vm, frame, prop.name,
+      prop.value))
+  if swatchesFor(prop.name).len > 0:
+    r.appendChild(result, renderSwatches[R, E](r, vm, frame, prop.name,
+      prop.value))
 
 proc sectionTitle(section: InspectorSection): string =
   for i, candidate in richSections:
@@ -490,8 +739,75 @@ proc renderBoxModelSummary[R, E](r: R; selected: ElementRef): E =
               border_radius = "3px", padding = "8px",
               text_align = "center", color = accent, font_size = "10px"):
           text "padding " & padding
+        span(font_size = "9px", color = textDim):
+          text "click fields below for uniform or per-side values"
 
-proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E) =
+proc renderRawCssEditor[R, E](r: R; vm: EditorVM; frame: E;
+    selected: ElementRef; section: InspectorSection): E =
+  var rawInput: E
+  var applyButton: E
+  let title = sectionTitle(section)
+  result = ui(r):
+    tdiv(display = "flex", flex_direction = "column", gap = "6px",
+          padding = "10px", border = "1px solid " & border,
+          border_radius = "6px", background_color = bgBase):
+      tdiv(display = "flex", align_items = "center",
+            justify_content = "space-between"):
+        span(font_size = "10px", font_weight = "700", color = textSecondary,
+              text_transform = "uppercase", letter_spacing = "0.5px"):
+          text "Raw CSS"
+        tdiv(ref = applyButton, role = "button", tabindex = "0",
+              padding = "3px 7px", border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "10px", cursor = "pointer"):
+          text "Apply"
+      textarea(ref = rawInput,
+            class = "editor-input",
+            min_height = "92px",
+            background_color = bgSurface,
+            border = "1px solid " & border,
+            border_radius = "4px",
+            padding = "8px",
+            font_size = "11px",
+            color = textPrimary,
+            outline = "none",
+            font_family = "monospace",
+            resize = "vertical")
+  r.setAttribute(rawInput, "aria-label", "Edit raw CSS for " & title & " section")
+  r.setAttribute(applyButton, "aria-label", "Apply raw CSS for " & title & " section")
+  r.setInputValue(rawInput, sectionCssText(selected, section))
+  let apply = proc() =
+    r.applyRawCss(vm, frame, r.inputValue(rawInput))
+  r.addEventListener(applyButton, "click", apply)
+  r.addEventListener(applyButton, "keydown", apply)
+  r.addEventListener(rawInput, "blur", apply)
+
+proc renderElementTree[R, E](r: R; selected: ElementRef): E =
+  let name =
+    if selected.children.len > 0:
+      selected.tag & " (" & $selected.children.len & " child nodes)"
+    else:
+      selected.tag
+  result = ui(r):
+    tdiv(display = "flex", flex_direction = "column", gap = "6px",
+          padding = "10px", border = "1px solid " & border,
+          border_radius = "6px", background_color = bgBase):
+      span(font_size = "10px", font_weight = "700", color = textSecondary,
+            text_transform = "uppercase", letter_spacing = "0.5px"):
+        text "Element Tree"
+      tdiv(display = "flex", flex_direction = "column", gap = "4px",
+            font_family = "monospace", font_size = "11px"):
+        span(color = textDim):
+          text "document"
+        span(color = textDim, padding_left = "10px"):
+          text "main"
+        span(color = accent, padding_left = "20px",
+              font_weight = "700"):
+          text name & " selected"
+  r.setAttribute(result, "aria-label", "Element tree selected " & selected.tag)
+
+proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;
+    clipboard: StyleClipboard) =
   r.clearChildren(content)
   if vm.inspector.hasElement.val:
     let selected = vm.inspector.selectedElement.val
@@ -524,9 +840,12 @@ proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E) =
       r.appendChild(content, renderBoxModelSummary[R, E](r, selected))
 
     for (propName, fallback) in sectionProperties(active):
-      let value = fallbackPropertyValue(selected, propName, fallback)
+      let prop = propertyInfo(selected, propName, fallback)
       r.appendChild(content,
-        renderRichPropertyControl[R, E](r, vm, frame, propName, value))
+        renderRichPropertyControl[R, E](r, vm, frame, clipboard, prop, fallback))
+
+    r.appendChild(content, renderRawCssEditor[R, E](r, vm, frame, selected, active))
+    r.appendChild(content, renderElementTree[R, E](r, selected))
 
     if vm.inspector.pendingSourceEdits.val.len > 0:
       let dirty = ui(r):
@@ -550,17 +869,19 @@ proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E) =
           text "Click real rendered DOM in the iframe"
     r.appendChild(content, empty)
 
-proc populateSectionTabs[R, E](r: R; vm: EditorVM; frame, tabs, content: E)
+proc populateSectionTabs[R, E](r: R; vm: EditorVM; frame, tabs, content: E;
+    clipboard: StyleClipboard)
 
 proc inspectorSectionHandler[R, E](r: R; vm: EditorVM; frame, tabs, content: E;
-    section: InspectorSection): proc() =
+    clipboard: StyleClipboard; section: InspectorSection): proc() =
   let capturedSection = section
   result = proc() =
     vm.switchInspectorSection(capturedSection)
-    r.populateSectionTabs(vm, frame, tabs, content)
-    r.populateInspectorContent(vm, frame, content)
+    r.populateSectionTabs(vm, frame, tabs, content, clipboard)
+    r.populateInspectorContent(vm, frame, content, clipboard)
 
-proc populateSectionTabs[R, E](r: R; vm: EditorVM; frame, tabs, content: E) =
+proc populateSectionTabs[R, E](r: R; vm: EditorVM; frame, tabs, content: E;
+    clipboard: StyleClipboard) =
   r.clearChildren(tabs)
   for i, section in richSections:
     let label = richSectionLabels[i]
@@ -574,7 +895,8 @@ proc populateSectionTabs[R, E](r: R; vm: EditorVM; frame, tabs, content: E) =
             box_shadow = (if active: "inset 0 -2px 0 " & accent else: "none")):
         text label
     r.setAttribute(tab, "aria-label", "Show " & label & " edit controls")
-    let activate = r.inspectorSectionHandler(vm, frame, tabs, content, section)
+    let activate = r.inspectorSectionHandler(vm, frame, tabs, content,
+      clipboard, section)
     r.addEventListener(tab, "click", activate)
     r.addEventListener(tab, "keydown", activate)
     r.appendChild(tabs, tab)
@@ -582,6 +904,7 @@ proc populateSectionTabs[R, E](r: R; vm: EditorVM; frame, tabs, content: E) =
 proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
   var saveButton: E
   var revertButton: E
+  let clipboard = StyleClipboard()
   result = ui(r):
     tdiv(width = "340px", min_width = "340px",
           display = "flex", flex_direction = "column",
@@ -633,10 +956,10 @@ proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
     tdiv(flex = "1", display = "flex", flex_direction = "column",
           padding = "12px", overflow_y = "auto", gap = "12px")
   r.appendChild(result, content)
-  r.populateSectionTabs(vm, frame, tabs, content)
+  r.populateSectionTabs(vm, frame, tabs, content, clipboard)
 
   createRenderEffect proc() =
-    r.populateInspectorContent(vm, frame, content)
+    r.populateInspectorContent(vm, frame, content, clipboard)
     let save = vm.evaluateCommand(eckSave)
     let revert = vm.evaluateCommand(eckRevert)
     r.setAttribute(saveButton, "aria-disabled",
