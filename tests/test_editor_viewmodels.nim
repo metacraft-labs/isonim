@@ -897,7 +897,9 @@ suite "Editor ViewModels (M26 source-backed CSS property editors)":
         cssProp("border-radius", "8px", poConstant,
           "schema:radius.card", schemaKey = "radius.card"),
         cssProp("transition-duration", "150ms", poConstant,
-          "schema:motion.fast", schemaKey = "motion.fast")
+          "schema:motion.fast", schemaKey = "motion.fast"),
+        cssProp("transition-timing-function", "ease", poConstant,
+          "schema:motion.easing", schemaKey = "motion.easing")
       ]))
 
       let numeric = primitiveControlModel(
@@ -953,6 +955,13 @@ suite "Editor ViewModels (M26 source-backed CSS property editors)":
       check pccBezierCurve in motion.capabilities
       check pccReducedMotionDiagnostic in motion.capabilities
 
+      let easing = primitiveControlModel(
+        vm.inspector.selectedElement.val.properties[7], "ease-in-out")
+      check easing.family == pcfMotion
+      check easing.canonical == "ease-in-out"
+      check pccBezierCurve in easing.capabilities
+      check easing.sourcePlanKind == cspStructuredSchemaUpdate
+
       let invalidMotion = vm.editCssProperty("transition-duration", "-20ms",
         pesLocal)
       check invalidMotion.status == pesRejected
@@ -971,10 +980,16 @@ suite "Editor ViewModels (M26 source-backed CSS property editors)":
         cssProp("padding", "12px", poTailwindClass, "class:p-3"),
         cssProp("color", "#334155", poConstant,
           "schema:semantic.text.primary", schemaKey = "semantic.text.primary"),
+        cssProp("background-image", "linear-gradient(90deg, #3B82F6 0%, #22C55E 100%)",
+          poConstant, "schema:gradient.hero", schemaKey = "gradient.hero"),
         cssProp("box-shadow", "none", poConstant,
           "schema:elevation.card", schemaKey = "elevation.card"),
         cssProp("font-weight", "600", poConstant,
-          "schema:type.heading.weight", schemaKey = "type.heading.weight")
+          "schema:type.heading.weight", schemaKey = "type.heading.weight"),
+        cssProp("border-radius", "8px", poConstant,
+          "schema:radius.card", schemaKey = "radius.card"),
+        cssProp("transition-timing-function", "ease", poConstant,
+          "schema:motion.easing", schemaKey = "motion.easing")
       ]))
 
       let preview = primitiveControlModel(
@@ -986,31 +1001,60 @@ suite "Editor ViewModels (M26 source-backed CSS property editors)":
         pesAccepted
       check vm.editCssProperty("color", "#F8FAFC", pesLocal).status ==
         pesAccepted
+      check vm.editCssProperty("background-image",
+        "linear-gradient(135deg, #3B82F6 0%, #22C55E 100%)", pesLocal).status ==
+        pesAccepted
       check vm.editCssProperty("box-shadow",
         "0 8px 24px rgba(15, 23, 42, 0.18)", pesLocal).status ==
         pesAccepted
       check vm.editCssProperty("font-weight", "700", pesLocal).status ==
         pesAccepted
-      check vm.inspector.undoStack.val.len == 4
-      check vm.inspector.pendingSourceEdits.val.len == 4
+      check vm.editCssProperty("border-radius", "12px", pesLocal).status ==
+        pesAccepted
+      check vm.editCssProperty("transition-timing-function", "ease-in-out",
+        pesLocal).status == pesAccepted
+      check vm.inspector.undoStack.val.len == 7
+      check vm.inspector.pendingSourceEdits.val.len == 7
       check vm.inspector.sourcePreviews.val.anyIt(
         it.plan.property == "padding" and it.afterText.contains("16px"))
+      check vm.inspector.sourcePreviews.val.anyIt(
+        it.plan.property == "background-image" and
+          it.afterText.contains("135deg"))
+      check vm.inspector.sourcePreviews.val.anyIt(
+        it.plan.property == "border-radius" and it.afterText.contains("12px"))
+      check vm.inspector.sourcePreviews.val.anyIt(
+        it.plan.property == "transition-timing-function" and
+          it.afterText.contains("ease-in-out"))
 
       check vm.inspector.undoCssPropertyEdit()
       check vm.inspector.selectedElement.val.properties.anyIt(
-        it.name == "font-weight" and it.value == "600")
+        it.name == "transition-timing-function" and it.value == "ease")
       check vm.inspector.redoStack.val.len == 1
       check vm.inspector.redoCssPropertyEdit()
       check vm.inspector.selectedElement.val.properties.anyIt(
-        it.name == "font-weight" and it.value == "700")
+        it.name == "transition-timing-function" and it.value == "ease-in-out")
       check vm.inspector.pendingSourceEdits.val.anyIt(
-        it.property == "font-weight" and it.newValue == "700")
+        it.property == "transition-timing-function" and
+          it.newValue == "ease-in-out")
+
+      var savedPlans: seq[SourceEditPlan] = @[]
+      check vm.inspector.saveCssPropertyEdits(proc(plan: SourceEditPlan): bool =
+        savedPlans.add plan
+        true)
+      check savedPlans.len == 7
+      check savedPlans.anyIt(it.property == "background-image")
+      check savedPlans.anyIt(it.property == "border-radius")
+      check savedPlans.anyIt(it.property == "transition-timing-function")
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check vm.inspector.undoStack.val.len == 0
+
+      discard vm.editCssProperty("padding", "18px", pesLocal)
 
       vm.inspector.discardCssPropertyEdits()
       check vm.inspector.pendingSourceEdits.val.len == 0
       check vm.inspector.undoStack.val.len == 0
       check vm.inspector.selectedElement.val.properties.anyIt(
-        it.name == "padding" and it.value == "12px")
+        it.name == "padding" and it.value == "16px")
       dispose()
 
   test "component_dom_selection_bridge_populates_source_backed_inspector":

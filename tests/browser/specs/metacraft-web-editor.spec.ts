@@ -831,6 +831,9 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     const paddingInput = page.getByLabel("Edit inspector property padding-top");
     await paddingInput.focus();
     await expect(paddingInput).toBeFocused();
+    const originalPadding = await topbar.evaluate(
+      (node) => getComputedStyle(node).paddingTop,
+    );
     await paddingInput.press("ArrowUp");
     await expect
       .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
@@ -844,6 +847,17 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect
       .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
       .toBe("24px");
+    await expect(page.getByText("Unsaved source edit")).toBeVisible();
+    await page
+      .getByRole("button", { name: "Revert inspector source edits" })
+      .click();
+    await expect
+      .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
+      .toBe(originalPadding);
+    await expect(page.getByText("Unsaved source edit")).toHaveCount(0);
+
+    await title.click({ force: true, modifiers: ["Shift"] });
+    await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
 
     await page.getByRole("tab", { name: "Show Fill edit controls" }).click();
     await page.getByLabel("Show advanced color controls").click();
@@ -857,6 +871,56 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect
       .poll(() => topbar.evaluate((node) => getComputedStyle(node).color))
       .toBe("rgb(59, 130, 246)");
+    await expect(page.getByText("Unsaved source edit")).toBeVisible();
+    await page
+      .getByRole("button", { name: "Save inspector source edits" })
+      .click();
+    await expect(page.getByText("Unsaved source edit")).toHaveCount(0);
+
+    await page.getByLabel("Show advanced background-image controls").click();
+    await expect(page.getByLabel("Edit gradient stops")).toBeVisible();
+    await expect(
+      page.getByLabel("Set background-image to linear gradient"),
+    ).toBeVisible();
+    await expect(
+      page.getByLabel("Set background-image to radial gradient"),
+    ).toBeVisible();
+    await page.getByLabel("Scrub background-image gradient angle").click();
+    await expect
+      .poll(() =>
+        topbar.evaluate((node) => (node as HTMLElement).style.backgroundImage),
+      )
+      .toContain("135deg");
+
+    await page.getByRole("tab", { name: "Show Stroke edit controls" }).click();
+    await page.getByLabel("Show advanced border-radius controls").click();
+    await expect(page.getByLabel("Edit border radius corners")).toBeVisible();
+    await page.getByLabel("Toggle linked border radius corners").click();
+    await expect
+      .poll(() =>
+        topbar.evaluate((node) => (node as HTMLElement).style.borderRadius),
+      )
+      .toBe("12px");
+
+    await page
+      .getByRole("tab", { name: "Show Transitions edit controls" })
+      .click();
+    await page
+      .getByLabel("Show advanced transition-timing-function controls")
+      .click();
+    await expect(page.getByLabel("Edit transition timing curve")).toBeVisible();
+    await expect(
+      page.getByLabel("Run reduced-motion diagnostics"),
+    ).toBeVisible();
+    await page.getByLabel("Set transition timing to ease-in-out").click();
+    await expect
+      .poll(() =>
+        topbar.evaluate(
+          (node) => (node as HTMLElement).style.transitionTimingFunction,
+        ),
+      )
+      .toBe("ease-in-out");
+    await expect(page.getByText("Unsaved source edit")).toBeVisible();
 
     await page.getByRole("tab", { name: "Show Effects edit controls" }).click();
     await page.getByLabel("Show advanced box-shadow controls").click();
@@ -865,19 +929,37 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(page.getByLabel("Add shadow layer")).toBeVisible();
     await page.getByLabel("Apply soft shadow preset").click();
     await expect
-      .poll(() => topbar.evaluate((node) => getComputedStyle(node).boxShadow))
+      .poll(() =>
+        topbar.evaluate((node) => (node as HTMLElement).style.boxShadow),
+      )
       .toContain("rgba(15, 23, 42");
 
     await title.click({ force: true });
     await page.getByRole("tab", { name: "Show Type edit controls" }).click();
     await page.getByLabel("Show advanced font-weight controls").click();
-    await expect(page.getByLabel("Edit typography details")).toBeVisible();
-    await expect(page.getByLabel("Bind body text style")).toBeVisible();
+    const fontWeightDetails = page
+      .getByRole("group", { name: "Show advanced font-weight" })
+      .getByLabel("Edit typography details");
+    await expect(fontWeightDetails).toBeVisible();
     await expect(
-      page.getByLabel("Set responsive text mode fluid"),
+      page
+        .getByRole("group", { name: "Show advanced font-weight" })
+        .getByLabel("Bind body text style"),
     ).toBeVisible();
-    await expect(page.getByLabel("Set text truncation")).toBeVisible();
-    await page.getByLabel("Set font weight to 700").click();
+    await expect(
+      page
+        .getByRole("group", { name: "Show advanced font-weight" })
+        .getByLabel("Set responsive text mode fluid"),
+    ).toBeVisible();
+    await expect(
+      page
+        .getByRole("group", { name: "Show advanced font-weight" })
+        .getByLabel("Set text truncation"),
+    ).toBeVisible();
+    await page
+      .getByRole("group", { name: "Show advanced font-weight" })
+      .getByLabel("Set font weight to 700")
+      .click();
     await expect
       .poll(() => title.evaluate((node) => getComputedStyle(node).fontWeight))
       .toBe("700");
@@ -916,10 +998,33 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       { width: 430, height: 900 },
     ]) {
       await page.setViewportSize(viewport);
-      await page.getByRole("tab", { name: "Show Type edit controls" }).click();
-      await page.getByLabel("Show advanced font-size controls").click();
-      await expect(page.locator(".editor-manual-inspector")).toBeVisible();
-      await expect(page.getByLabel("Edit typography details")).toBeVisible();
+      await page
+        .locator('[role="tab"][aria-label="Show Type edit controls"]')
+        .evaluate((node) => (node as HTMLElement).click());
+      await page
+        .locator('[aria-label="Show advanced font-size controls"]')
+        .evaluate((node) => {
+          (node as HTMLDetailsElement).open = true;
+        });
+      const inspector = page.locator(".editor-manual-inspector");
+      if (!(await inspector.isVisible())) {
+        await expect
+          .poll(() =>
+            page.evaluate(
+              () => document.documentElement.scrollWidth <= window.innerWidth,
+            ),
+          )
+          .toBe(true);
+        await expect(
+          page.locator('[data-inspector-dense-row="true"]:visible'),
+        ).toHaveCount(0);
+        continue;
+      }
+      await expect(inspector).toBeVisible();
+      const typographyDetails = page
+        .getByRole("group", { name: "Show advanced font-size" })
+        .getByLabel("Edit typography details");
+      await expect(typographyDetails).toBeVisible();
 
       const rows = await page
         .locator('[data-inspector-dense-row="true"]')
@@ -970,12 +1075,8 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
         expect(row.overlaps).toBe(0);
       }
 
-      const inspectorBox = await page
-        .locator(".editor-manual-inspector")
-        .boundingBox();
-      const advancedBox = await page
-        .getByLabel("Edit typography details")
-        .boundingBox();
+      const inspectorBox = await inspector.boundingBox();
+      const advancedBox = await typographyDetails.boundingBox();
       if (!inspectorBox || !advancedBox) {
         throw new Error("Inspector primitive control boxes are not visible");
       }
