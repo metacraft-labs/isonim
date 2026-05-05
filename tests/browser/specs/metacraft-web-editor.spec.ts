@@ -494,6 +494,77 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(page.getByText("Unsaved source edit")).toHaveCount(0);
   });
 
+  test("e2e_component_variant_matrix_and_state_controls", async ({ page }) => {
+    await page.goto("/");
+
+    await page.getByRole("button", { name: "Open Components section" }).click();
+    await page
+      .getByRole("button", {
+        name: "Select story Operational components / Topbar",
+      })
+      .click();
+
+    const propertyPanel = page
+      .getByLabel("Component property schema and variant matrix")
+      .first();
+    await expect(propertyPanel).toBeVisible();
+    await expect(
+      propertyPanel.locator('[data-component-variant-matrix="true"]').first(),
+    ).toBeVisible();
+    await expect(
+      propertyPanel.locator("[data-component-variant-matrix-cell]"),
+    ).toHaveCount(13);
+    await expect(
+      propertyPanel.getByLabel("Edit component property size"),
+    ).toHaveValue("md");
+    await expect(
+      propertyPanel.getByLabel("Cycle component property density"),
+    ).toHaveAttribute("title", /density/);
+
+    await propertyPanel.getByLabel("Cycle component property size").click();
+    await expect(page.getByText("dirty")).toBeVisible();
+    await expect(
+      propertyPanel.getByText("1 component plan(s) staged"),
+    ).toBeVisible();
+
+    await propertyPanel
+      .getByRole("button", { name: "Set component state loading" })
+      .click();
+    await expect(
+      propertyPanel.getByText("2 component plan(s) staged"),
+    ).toBeVisible();
+    await expect(
+      propertyPanel
+        .locator('[data-component-variant-matrix-cell*="loading"]')
+        .first(),
+    ).toContainText("missing story");
+
+    await page
+      .getByRole("button", {
+        name: "Create story for Operational components loading state",
+      })
+      .click();
+    await expect(
+      propertyPanel.getByText("3 component plan(s) staged"),
+    ).toBeVisible();
+    await expect(
+      propertyPanel
+        .locator('[data-component-variant-matrix-cell*="loading"]')
+        .first(),
+    ).toContainText("covered");
+
+    await page
+      .getByRole("button", { name: "Revert component property source edits" })
+      .click();
+    await expect(page.getByText("dirty")).toHaveCount(0);
+
+    await propertyPanel.getByLabel("Cycle component property size").click();
+    await page
+      .getByRole("button", { name: "Save component property source edits" })
+      .click();
+    await expect(page.getByText("dirty")).toHaveCount(0);
+  });
+
   test("comment mode routes selected element notes into the AI prompt", async ({
     page,
   }) => {

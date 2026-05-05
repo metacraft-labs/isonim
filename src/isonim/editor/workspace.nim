@@ -161,6 +161,7 @@ proc applyWorkspace*(vm: EditorVM; workspace: EditorWorkspace) =
   vm.variants.variants.val = workspace.componentVariants
   vm.variants.selectedVariant.val = -1
   vm.variants.diagnostics.val = @[]
+  vm.variants.stateDiagnostics.val = @[]
   vm.designSystemSchema.val = workspace.designSystemSchema
   vm.preview.hook = workspace.previewHook
   vm.selectedStory.val = StoryRef()

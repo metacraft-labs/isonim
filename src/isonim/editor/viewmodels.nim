@@ -89,7 +89,9 @@ type
   ComponentVariantEditorVM* = ref object of ViewModel
     variants*: Signal[seq[ComponentVariantDefinition]]
     diagnostics*: Signal[seq[ComponentVariantDiagnostic]]
+    stateDiagnostics*: Signal[seq[ComponentStateCoverageDiagnostic]]
     selectedVariant*: Signal[int]
+    variantMatrix*: Memo[seq[ComponentVariantMatrixCell]]
     hasDiagnostics*: Memo[bool]
 
   AgentChatVM* = ref object of ViewModel
@@ -172,6 +174,7 @@ func defaultWorkspacePermissions*(): EditorWorkspacePermissions =
 
 func vectorDocumentFromSymbol*(symbol: VectorSymbol): VectorDocument
 func validateVectorAccessibility*(doc: VectorDocument): seq[VectorDiagnostic]
+proc ensureComponentPropertySchemaForSelectedStory*(editor: EditorVM): bool
 proc setSectionExpanded*(inspector: InspectorVM; section: InspectorSection;
     expanded: bool)
 
@@ -971,6 +974,7 @@ proc selectStory*(editor: EditorVM; story: StoryRef): bool {.discardable.} =
 
   editor.selectedStory.val = story
   editor.activeView.val = viewForStory(story)
+  discard editor.ensureComponentPropertySchemaForSelectedStory()
   editor.storyboard.selectedItem.val = editor.findCanvasItem(story)
   editor.syncFlowStep(story)
   true
@@ -2791,6 +2795,413 @@ proc variantDiagnostic(kind: ComponentVariantDiagnosticKind;
     file: field.sourceFile,
     line: field.sourceLine)
 
+func componentPropertyKindLabel*(kind: ComponentPropertyKind): string =
+  case kind
+  of cpkEnum: "enum"
+  of cpkBoolean: "boolean"
+  of cpkText: "text"
+  of cpkIcon: "icon"
+  of cpkSlotContent: "slot/content"
+  of cpkDataFixture: "data fixture"
+  of cpkDensity: "density"
+  of cpkPlatform: "platform"
+  of cpkAccessibilityLabel: "accessibility label"
+
+func componentStateKindLabel*(kind: ComponentStateKind): string =
+  case kind
+  of cskSize: "size"
+  of cskEmphasis: "emphasis"
+  of cskTone: "tone"
+  of cskSelected: "selected"
+  of cskDisabled: "disabled"
+  of cskHover: "hover"
+  of cskFocus: "focus"
+  of cskPressed: "pressed"
+  of cskLoading: "loading"
+  of cskEmpty: "empty"
+  of cskError: "error"
+  of cskSuccess: "success"
+  of cskProjectSpecific: "project-specific"
+
+func requiredComponentStateKinds*(): seq[ComponentStateKind] =
+  @[
+    cskSize,
+    cskEmphasis,
+    cskTone,
+    cskSelected,
+    cskDisabled,
+    cskHover,
+    cskFocus,
+    cskPressed,
+    cskLoading,
+    cskEmpty,
+    cskError,
+    cskSuccess
+  ]
+
+func requiredComponentStateKeys*(): seq[string] =
+  for kind in requiredComponentStateKinds():
+    result.add componentStateKindLabel(kind)
+
+proc componentVariantsForComponent*(editor: EditorVM;
+    component: string): seq[ComponentVariantDefinition] =
+  for variant in editor.variants.variants.val:
+    if variant.component == component:
+      result.add variant
+
+func stateCommand(component, variantKey, stateKey: string): string =
+  "create-story:" & component & ":" & variantKey & ":" & stateKey
+
+func stateCoverageDiagnostics*(variants: seq[ComponentVariantDefinition];
+    component: string): seq[ComponentStateCoverageDiagnostic] =
+  var coveredKeys: seq[string] = @[]
+  var seen: seq[string] = @[]
+  for variant in variants:
+    if variant.component != component:
+      continue
+    for state in variant.stateControls:
+      let identity = variant.variantKey & ":" & state.key
+      if identity in seen:
+        result.add ComponentStateCoverageDiagnostic(
+          kind: cscdDuplicateState,
+          message: "State '" & state.key & "' is declared more than once for " &
+            variant.variantKey & ".",
+          component: component,
+          variantKey: variant.variantKey,
+          stateKey: state.key,
+          suggestion: "Keep one canonical state control and move examples into stories.",
+          command: stateCommand(component, variant.variantKey, state.key),
+          file: state.sourceFile,
+          line: state.sourceLine)
+      else:
+        seen.add identity
+      if state.key notin coveredKeys:
+        coveredKeys.add state.key
+      if state.value.strip.len == 0:
+        result.add ComponentStateCoverageDiagnostic(
+          kind: cscdInvalidStateValue,
+          message: "State '" & state.key & "' has no value.",
+          component: component,
+          variantKey: variant.variantKey,
+          stateKey: state.key,
+          suggestion: "Set an explicit schema value before generating a preview.",
+          command: stateCommand(component, variant.variantKey, state.key),
+          file: state.sourceFile,
+          line: state.sourceLine)
+      if state.fixtureName.len == 0:
+        result.add ComponentStateCoverageDiagnostic(
+          kind: cscdMissingFixture,
+          message: "State '" & state.key & "' is missing a story fixture.",
+          component: component,
+          variantKey: variant.variantKey,
+          stateKey: state.key,
+          suggestion: "Attach or generate a fixture for this state.",
+          command: stateCommand(component, variant.variantKey, state.key),
+          file: state.sourceFile,
+          line: state.sourceLine)
+      if state.story.isEmptyStory:
+        result.add ComponentStateCoverageDiagnostic(
+          kind: cscdMissingStory,
+          message: "State '" & state.key & "' is missing a story.",
+          component: component,
+          variantKey: variant.variantKey,
+          stateKey: state.key,
+          suggestion: "Create a story fixture for the " & state.key & " state.",
+          command: stateCommand(component, variant.variantKey, state.key),
+          file: state.sourceFile,
+          line: state.sourceLine)
+  for key in requiredComponentStateKeys():
+    if key notin coveredKeys:
+      result.add ComponentStateCoverageDiagnostic(
+        kind: cscdMissingStory,
+        message: "Required component state '" & key & "' has no preview story.",
+        component: component,
+        variantKey: "default",
+        stateKey: key,
+        suggestion: "Add a state control and story fixture for '" & key & "'.",
+        command: stateCommand(component, "default", key))
+
+proc stateCoverageDiagnostics*(editor: EditorVM;
+    component: string): seq[ComponentStateCoverageDiagnostic] =
+  stateCoverageDiagnostics(editor.variants.variants.val, component)
+
+func variantMatrixPreviews*(variants: seq[ComponentVariantDefinition];
+    component: string): seq[ComponentVariantMatrixCell] =
+  for variant in variants:
+    if variant.component != component:
+      continue
+    for state in variant.stateControls:
+      let covered = state.fixtureName.len > 0 and not state.story.isEmptyStory
+      result.add ComponentVariantMatrixCell(
+        component: component,
+        variantKey: variant.variantKey,
+        stateKey: state.key,
+        label: variant.variantKey & " / " & state.label,
+        story: state.story,
+        fixtureName: state.fixtureName,
+        covered: covered,
+        missingStorySuggestion:
+          if covered: ""
+          else: "Create story for " & variant.variantKey & " " & state.key,
+        createStoryCommand: stateCommand(component, variant.variantKey, state.key))
+
+proc variantMatrixPreviews*(editor: EditorVM;
+    component: string): seq[ComponentVariantMatrixCell] =
+  variantMatrixPreviews(editor.variants.variants.val, component)
+
+proc ensureComponentPropertySchemaForSelectedStory*(editor: EditorVM): bool {.
+    discardable.} =
+  ## Browser consumers may initially expose only real story metadata. Build a
+  ## source-backed runtime schema for the selected story so property/state
+  ## controls still route through structured source plans and the pending
+  ## journal instead of mutating preview DOM.
+  let story = editor.selectedStory.val
+  if story.kind notin {skComponent, skPattern} or story.group.len == 0:
+    return false
+  if editor.componentVariantsForComponent(story.group).len > 0:
+    return false
+  let preview = editor.preview.current.val
+  let metadata = preview.metadata
+  if preview.documentHtml.len == 0 and metadata.sourceFile.len == 0:
+    return false
+  let file =
+    if metadata.sourceFile.len > 0: metadata.sourceFile
+    elif preview.metadata.sourceFile.len > 0: preview.metadata.sourceFile
+    else: "components/" & story.group.toLowerAscii() & ".schema"
+  let line =
+    if metadata.sourceLine > 0: metadata.sourceLine else: 1
+  let componentKey = story.group.toLowerAscii().replace(" ", "-")
+  let variantKey = story.name.toLowerAscii().replace(" ", "-")
+  proc prop(name: string; kind: ComponentPropertyKind; value: string;
+      options: seq[string] = @[]; offset = 0): ComponentPropertyDefinition =
+    ComponentPropertyDefinition(
+      name: name,
+      kind: kind,
+      value: value,
+      options: options,
+      sourceFile: file,
+      sourceLine: line + offset,
+      schemaKey: "components." & componentKey & ".properties." & name,
+      fixtureKey:
+        if kind == cpkDataFixture:
+          "fixtures." & componentKey & "." & name
+        else:
+          "",
+      constructor:
+        if kind == cpkDataFixture: "story-fixture-constructor"
+        else: "component-source-constructor",
+      documentation: componentPropertyKindLabel(kind) & " property for " &
+        story.group & ".",
+      usageGuidance: "Use schema-owned " & name &
+        " changes so stories and constructors stay in sync.")
+  proc state(key: string; kind: ComponentStateKind; value: string;
+      options: seq[string] = @["false", "true"]; offset = 0): ComponentStateControl =
+    ComponentStateControl(
+      key: key,
+      kind: kind,
+      label: componentStateKindLabel(kind),
+      value: value,
+      options: options,
+      story:
+        if key in ["size", "tone", "success"]:
+          story
+        else:
+          StoryRef(),
+      fixtureName:
+        if key in ["size", "tone", "success"]:
+          metadata.fixtureName
+        else:
+          "",
+      sourceFile: file,
+      sourceLine: line + offset,
+      schemaKey: "components." & componentKey & ".states." & key,
+      projectSpecific: kind == cskProjectSpecific)
+  var controls: seq[ComponentStateControl] = @[]
+  controls.add state("size", cskSize, "md", @["sm", "md", "lg"], 20)
+  controls.add state("emphasis", cskEmphasis, "regular",
+    @["subtle", "regular", "strong"], 21)
+  controls.add state("tone", cskTone, "neutral",
+    @["neutral", "success", "warning", "error"], 22)
+  controls.add state("selected", cskSelected, "false", @["false", "true"], 23)
+  controls.add state("disabled", cskDisabled, "false", @["false", "true"], 24)
+  controls.add state("hover", cskHover, "false", @["false", "true"], 25)
+  controls.add state("focus", cskFocus, "false", @["false", "true"], 26)
+  controls.add state("pressed", cskPressed, "false", @["false", "true"], 27)
+  controls.add state("loading", cskLoading, "false", @["false", "true"], 28)
+  controls.add state("empty", cskEmpty, "false", @["false", "true"], 29)
+  controls.add state("error", cskError, "false", @["false", "true"], 30)
+  controls.add state("success", cskSuccess, "false", @["false", "true"], 31)
+  controls.add state("settlement-ready", cskProjectSpecific, "false",
+    @["false", "true"], 32)
+  var all = editor.variants.variants.val
+  all.add ComponentVariantDefinition(
+    component: story.group,
+    variantKey: variantKey,
+    story: story,
+    fixtureName: metadata.fixtureName,
+    metadataName: story.name,
+    fields: @[
+      ComponentVariantField(name: "story", kind: cvfkStoryMetadata,
+        value: story.name, sourceFile: file, sourceLine: line,
+        schemaKey: "stories." & componentKey & "." & variantKey)
+    ],
+    properties: @[
+      prop("size", cpkEnum, "md", @["sm", "md", "lg"], 1),
+      prop("selected", cpkBoolean, "false", @["false", "true"], 2),
+      prop("label", cpkText, story.name, @[], 3),
+      prop("leadingIcon", cpkIcon, "none", @["none", "search", "status"], 4),
+      prop("content", cpkSlotContent, story.name, @[], 5),
+      prop("fixture", cpkDataFixture, metadata.fixtureName, @[], 6),
+      prop("density", cpkDensity, "comfortable",
+        @["compact", "comfortable"], 7),
+      prop("platform", cpkPlatform, $editor.platform.val,
+        @["pfWeb", "pfIOS", "pfAndroid"], 8),
+      prop("ariaLabel", cpkAccessibilityLabel,
+        story.group & " " & story.name, @[], 9)
+    ],
+    stateControls: controls,
+    usageExamples: @[
+      UsageExample(
+        description: "Prefer schema properties and fixtures over detached DOM edits.",
+        isDo: true)
+    ])
+  editor.variants.variants.val = all
+  editor.variants.selectedVariant.val = all.high
+  editor.variants.stateDiagnostics.val =
+    stateCoverageDiagnostics(all, story.group)
+  true
+
+func propertySourceKey(prop: ComponentPropertyDefinition): string =
+  if prop.fixtureKey.len > 0 and prop.kind == cpkDataFixture: prop.fixtureKey
+  else: prop.schemaKey
+
+func sourcePlan(variant: ComponentVariantDefinition;
+    prop: ComponentPropertyDefinition; newValue: string;
+    mode: ComponentPropertyEditMode): SourceEditPlan =
+  let key = prop.propertySourceKey
+  let modeLabel = if mode == cpemAi: "ai" else: "manual"
+  let constructor =
+    if prop.constructor.len > 0: prop.constructor
+    elif prop.kind == cpkDataFixture: "story-fixture-constructor"
+    else: "component-schema-constructor"
+  SourceEditPlan(
+    file: prop.sourceFile,
+    line: prop.sourceLine,
+    property: prop.name,
+    oldValue: prop.value,
+    newValue: newValue.strip(),
+    originDetail: "component-property:" & modeLabel & ":" & constructor,
+    scope: pesShared,
+    planKind: cspStructuredSchemaUpdate,
+    schemaKey: key,
+    variantKey: variant.variantKey,
+    reversible: true,
+    previewBefore: prop.name & ": " & prop.value,
+    previewAfter: prop.name & ": " & newValue.strip(),
+    formatterHook: "format-component-property",
+    regeneratorHook: constructor,
+    conflictKey: prop.sourceFile & ":" & $prop.sourceLine & ":" &
+      variant.component & ":" & variant.variantKey & ":" & prop.name,
+    expectedOldValue:
+      if constructor in ["component-source-constructor",
+          "story-fixture-constructor"]:
+        ""
+      else:
+        prop.value)
+
+func sourcePlan(variant: ComponentVariantDefinition;
+    state: ComponentStateControl; newValue: string;
+    mode: ComponentPropertyEditMode): SourceEditPlan =
+  let modeLabel = if mode == cpemAi: "ai" else: "manual"
+  SourceEditPlan(
+    file: state.sourceFile,
+    line: state.sourceLine,
+    property: "state." & state.key,
+    oldValue: state.value,
+    newValue: newValue.strip(),
+    originDetail: "component-state:" & modeLabel & ":state-constructor",
+    scope: pesShared,
+    planKind: cspStructuredSchemaUpdate,
+    schemaKey: state.schemaKey,
+    variantKey: variant.variantKey,
+    reversible: true,
+    previewBefore: state.key & ": " & state.value,
+    previewAfter: state.key & ": " & newValue.strip(),
+    formatterHook: "format-component-state",
+    regeneratorHook: "component-state-constructor",
+    conflictKey: state.sourceFile & ":" & $state.sourceLine & ":" &
+      variant.component & ":" & variant.variantKey & ":" & state.key,
+    expectedOldValue: state.value)
+
+func validateComponentPropertyEdit(variant: ComponentVariantDefinition;
+    prop: ComponentPropertyDefinition; newValue: string): seq[
+        ComponentVariantDiagnostic] =
+  let key = prop.propertySourceKey
+  let field = ComponentVariantField(name: prop.name, kind: cvfkProp,
+    value: prop.value, sourceFile: prop.sourceFile,
+    sourceLine: prop.sourceLine, schemaKey: key)
+  if key.len == 0 or prop.sourceFile.len == 0:
+    result.add variantDiagnostic(cvdMissingVariantSchema, variant, field,
+      "Component property edits require a project schema or fixture entry.")
+  if newValue.strip.len == 0:
+    result.add variantDiagnostic(cvdInvalidVariantValue, variant, field,
+      "Component property values cannot be blank.")
+  if prop.kind == cpkEnum and prop.options.len > 0 and
+      newValue.strip notin prop.options:
+    result.add variantDiagnostic(cvdInvalidVariantValue, variant, field,
+      "Component enum property must use one of: " & prop.options.join(", ") & ".")
+  if prop.kind == cpkBoolean and newValue.strip notin ["true", "false"]:
+    result.add variantDiagnostic(cvdInvalidVariantValue, variant, field,
+      "Component boolean properties must be true or false.")
+  if prop.kind == cpkDataFixture and prop.fixtureKey.len == 0:
+    result.add variantDiagnostic(cvdMissingVariantFixture, variant, field,
+      "Data fixture properties require a fixture schema key.")
+
+func validateComponentStateEdit(variant: ComponentVariantDefinition;
+    state: ComponentStateControl; newValue: string): seq[
+        ComponentVariantDiagnostic] =
+  let field = ComponentVariantField(name: "state." & state.key, kind: cvfkState,
+    value: state.value, sourceFile: state.sourceFile,
+    sourceLine: state.sourceLine, schemaKey: state.schemaKey)
+  if state.schemaKey.len == 0 or state.sourceFile.len == 0:
+    result.add variantDiagnostic(cvdMissingVariantSchema, variant, field,
+      "Component state edits require a project schema entry.")
+  if newValue.strip.len == 0:
+    result.add variantDiagnostic(cvdInvalidVariantValue, variant, field,
+      "Component state values cannot be blank.")
+  if state.options.len > 0 and newValue.strip notin state.options:
+    result.add variantDiagnostic(cvdInvalidVariantValue, variant, field,
+      "Component state must use one of: " & state.options.join(", ") & ".")
+
+proc addPendingComponentPlan(editor: EditorVM; plan: SourceEditPlan) =
+  editor.inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
+      SourceEditPlan] =
+    result = prev
+    result.add plan
+  editor.inspector.sourcePreviews.update proc(prev: seq[CSSSourcePreview]): seq[
+      CSSSourcePreview] =
+    result = prev
+    result.add CSSSourcePreview(plan: plan, beforeText: plan.previewBefore,
+      afterText: plan.previewAfter)
+  editor.workspaceEditStage.val = wesDirty
+  editor.workspaceEditDiagnostics.val = @[]
+  editor.chat.accumulatedEdits.update proc(prev: seq[EditRecord]): seq[
+      EditRecord] =
+    result = prev
+    result.add EditRecord(
+      file: plan.file,
+      line: plan.line,
+      property: plan.property,
+      oldValue: plan.oldValue,
+      newValue: plan.newValue,
+      origin: poConstant,
+      originDetail: plan.originDetail,
+      scope: pesShared,
+      isShared: true,
+      editOrigin:
+        if plan.originDetail.contains(":ai:"): peoAgent else: peoInspector,
+      sourcePlanKind: plan.planKind)
+
 func sourcePlan(variant: ComponentVariantDefinition;
     field: ComponentVariantField; newValue: string): SourceEditPlan =
   SourceEditPlan(
@@ -2881,6 +3292,174 @@ proc editComponentVariantField*(editor: EditorVM; component, variantKey, fieldNa
   editor.workspaceEditStage.val = wesDirty
   ComponentVariantEditResult(status: pesAccepted, sourceEdit: plan,
     affectedStory: variant.story)
+
+proc editComponentProperty*(editor: EditorVM; component, variantKey,
+    propertyName, newValue: string; mode = cpemManual): ComponentVariantEditResult {.
+        discardable.} =
+  var variantIndex = -1
+  var propIndex = -1
+  var variant = ComponentVariantDefinition()
+  var prop = ComponentPropertyDefinition()
+  for i, candidate in editor.variants.variants.val:
+    if candidate.component == component and candidate.variantKey == variantKey:
+      variantIndex = i
+      variant = candidate
+      for j, p in candidate.properties:
+        if p.name == propertyName:
+          propIndex = j
+          prop = p
+          break
+      break
+  if variantIndex < 0 or propIndex < 0:
+    let diagnostic = ComponentVariantDiagnostic(
+      kind: cvdMissingVariantSchema,
+      message: "Unknown component property.",
+      component: component,
+      variantKey: variantKey,
+      field: propertyName)
+    editor.variants.diagnostics.val = @[diagnostic]
+    return ComponentVariantEditResult(status: pesRejected,
+      diagnostics: @[diagnostic])
+
+  let diagnostics = validateComponentPropertyEdit(variant, prop, newValue)
+  if diagnostics.len > 0:
+    editor.variants.diagnostics.val = diagnostics
+    return ComponentVariantEditResult(status: pesRejected,
+      diagnostics: diagnostics, affectedStory: variant.story)
+
+  let plan = variant.sourcePlan(prop, newValue, mode)
+  var updated = editor.variants.variants.val
+  updated[variantIndex].properties[propIndex].value = newValue.strip()
+  editor.variants.variants.val = updated
+  editor.variants.selectedVariant.val = variantIndex
+  editor.variants.diagnostics.val = @[]
+  editor.addPendingComponentPlan(plan)
+  ComponentVariantEditResult(status: pesAccepted, sourceEdit: plan,
+    affectedStory: variant.story)
+
+proc editComponentStateControl*(editor: EditorVM; component, variantKey,
+    stateKey, newValue: string; mode = cpemManual): ComponentVariantEditResult {.
+        discardable.} =
+  var variantIndex = -1
+  var stateIndex = -1
+  var variant = ComponentVariantDefinition()
+  var state = ComponentStateControl()
+  for i, candidate in editor.variants.variants.val:
+    if candidate.component == component and candidate.variantKey == variantKey:
+      variantIndex = i
+      variant = candidate
+      for j, s in candidate.stateControls:
+        if s.key == stateKey:
+          stateIndex = j
+          state = s
+          break
+      break
+  if variantIndex < 0 or stateIndex < 0:
+    let diagnostic = ComponentVariantDiagnostic(
+      kind: cvdMissingVariantSchema,
+      message: "Unknown component state control.",
+      component: component,
+      variantKey: variantKey,
+      field: stateKey)
+    editor.variants.diagnostics.val = @[diagnostic]
+    return ComponentVariantEditResult(status: pesRejected,
+      diagnostics: @[diagnostic])
+
+  let diagnostics = validateComponentStateEdit(variant, state, newValue)
+  if diagnostics.len > 0:
+    editor.variants.diagnostics.val = diagnostics
+    return ComponentVariantEditResult(status: pesRejected,
+      diagnostics: diagnostics, affectedStory: variant.story)
+
+  let plan = variant.sourcePlan(state, newValue, mode)
+  var updated = editor.variants.variants.val
+  updated[variantIndex].stateControls[stateIndex].value = newValue.strip()
+  editor.variants.variants.val = updated
+  editor.variants.selectedVariant.val = variantIndex
+  editor.variants.diagnostics.val = @[]
+  editor.variants.stateDiagnostics.val =
+    stateCoverageDiagnostics(updated, component)
+  editor.addPendingComponentPlan(plan)
+  ComponentVariantEditResult(status: pesAccepted, sourceEdit: plan,
+    affectedStory: variant.story)
+
+proc createStoryForComponentState*(editor: EditorVM; component, variantKey,
+    stateKey: string): ComponentVariantEditResult {.discardable.} =
+  var variantIndex = -1
+  var stateIndex = -1
+  var variant = ComponentVariantDefinition()
+  var state = ComponentStateControl()
+  for i, candidate in editor.variants.variants.val:
+    if candidate.component == component and candidate.variantKey == variantKey:
+      variantIndex = i
+      variant = candidate
+      for j, s in candidate.stateControls:
+        if s.key == stateKey:
+          stateIndex = j
+          state = s
+          break
+      break
+  if variantIndex < 0 or stateIndex < 0:
+    let diagnostic = ComponentVariantDiagnostic(
+      kind: cvdMissingVariantSchema,
+      message: "Unknown state for create-story command.",
+      component: component,
+      variantKey: variantKey,
+      field: stateKey)
+    editor.variants.diagnostics.val = @[diagnostic]
+    return ComponentVariantEditResult(status: pesRejected,
+      diagnostics: @[diagnostic])
+  let story = StoryRef(
+    group: component,
+    name: variantKey & " " & stateKey,
+    kind: skComponent,
+    index: 0)
+  let sourceFile =
+    if state.sourceFile.len > 0: state.sourceFile
+    elif variant.fields.len > 0: variant.fields[0].sourceFile
+    else: ""
+  let sourceLine =
+    if state.sourceLine > 0: state.sourceLine
+    elif variant.fields.len > 0: variant.fields[0].sourceLine
+    else: 1
+  let schemaKey =
+    if state.schemaKey.len > 0: state.schemaKey & ".story"
+    else: "stories." & component.toLowerAscii() & "." &
+      variantKey.toLowerAscii() & "." & stateKey.toLowerAscii()
+  let plan = SourceEditPlan(
+    file: sourceFile,
+    line: sourceLine,
+    property: "story." & stateKey,
+    oldValue: "",
+    newValue: story.name,
+    originDetail: "component-state:manual:create-story",
+    scope: pesShared,
+    planKind: cspStructuredSchemaUpdate,
+    schemaKey: schemaKey,
+    variantKey: variantKey,
+    reversible: true,
+    previewBefore: "missing story for " & stateKey,
+    previewAfter: "create story " & story.name,
+    formatterHook: "format-component-story",
+    regeneratorHook: "component-story-constructor",
+    conflictKey: sourceFile & ":" & $sourceLine & ":" & component & ":" &
+      variantKey & ":" & stateKey & ":story")
+  var updated = editor.variants.variants.val
+  for i, control in updated[variantIndex].stateControls:
+    if control.key == stateKey:
+      updated[variantIndex].stateControls[i].story = story
+      if updated[variantIndex].stateControls[i].fixtureName.len == 0:
+        updated[variantIndex].stateControls[i].fixtureName =
+          component.toLowerAscii() & "." & variantKey.toLowerAscii() & "." &
+          stateKey.toLowerAscii()
+  editor.variants.variants.val = updated
+  editor.variants.selectedVariant.val = variantIndex
+  editor.variants.diagnostics.val = @[]
+  editor.variants.stateDiagnostics.val =
+    stateCoverageDiagnostics(updated, component)
+  editor.addPendingComponentPlan(plan)
+  ComponentVariantEditResult(status: pesAccepted, sourceEdit: plan,
+    affectedStory: story)
 
 func workspacePlanKeys(plan: SourceEditPlan): seq[string] =
   if plan.schemaKey.len > 0:
@@ -3242,6 +3821,28 @@ func schemaSnapshot(adapter: WorkspaceEditAdapter): seq[AgentDesignSystemSchemaE
       path: entry.path,
       property: entry.property)
 
+func componentVariantSchemaSnapshot(
+    variants: seq[ComponentVariantDefinition]): seq[AgentDesignSystemSchemaEntry] =
+  for variant in variants:
+    for prop in variant.properties:
+      let key = prop.propertySourceKey
+      if key.len > 0:
+        result.add AgentDesignSystemSchemaEntry(
+          key: key,
+          kind: $prop.kind,
+          file: prop.sourceFile,
+          path: variant.component & "." & variant.variantKey & "." & prop.name,
+          property: prop.name)
+    for state in variant.stateControls:
+      if state.schemaKey.len > 0:
+        result.add AgentDesignSystemSchemaEntry(
+          key: state.schemaKey,
+          kind: $state.kind,
+          file: state.sourceFile,
+          path: variant.component & "." & variant.variantKey & ".state." &
+            state.key,
+          property: "state." & state.key)
+
 func propertyDiagnosticSnapshot(
     diagnostics: seq[PropertyEditDiagnostic]): seq[AgentDiagnosticSnapshot] =
   for diagnostic in diagnostics:
@@ -3311,6 +3912,19 @@ func variantDiagnosticSnapshot(
       line: diagnostic.line,
       property: diagnostic.variantKey & "." & diagnostic.field)
 
+func stateCoverageDiagnosticSnapshot(
+    diagnostics: seq[ComponentStateCoverageDiagnostic]): seq[
+        AgentDiagnosticSnapshot] =
+  for diagnostic in diagnostics:
+    result.add AgentDiagnosticSnapshot(
+      source: "component-state",
+      severity: "warning",
+      category: $diagnostic.kind,
+      message: diagnostic.message & " " & diagnostic.suggestion,
+      file: diagnostic.file,
+      line: diagnostic.line,
+      property: diagnostic.variantKey & "." & diagnostic.stateKey)
+
 func sourcePreviewDiffs(previews: seq[CSSSourcePreview]): seq[AgentFileDiff] =
   for preview in previews:
     result.add AgentFileDiff(
@@ -3336,14 +3950,16 @@ proc buildAgentPromptContext*(editor: EditorVM): AgentPromptContext =
     accumulatedEdits: editor.chat.accumulatedEdits.val,
     sourceMap: sourceMapEntries(editor.inspector.selectedElement.val,
       editor.inspector.pendingSourceEdits.val),
-    designSystemSchema: schemaSnapshot(editor.workspaceEditAdapter),
+    designSystemSchema: schemaSnapshot(editor.workspaceEditAdapter) &
+      componentVariantSchemaSnapshot(editor.variants.variants.val),
     diagnostics:
       propertyDiagnosticSnapshot(editor.inspector.editDiagnostics.val) &
       workspaceDiagnosticSnapshot(editor.workspaceEditDiagnostics.val) &
       reviewDiagnosticSnapshot(editor.review.violations.val) &
       vectorDiagnosticSnapshot(editor.vectorEditor.diagnostics.val) &
       foundationDiagnosticSnapshot(editor.foundations.diagnostics.val) &
-      variantDiagnosticSnapshot(editor.variants.diagnostics.val),
+      variantDiagnosticSnapshot(editor.variants.diagnostics.val) &
+      stateCoverageDiagnosticSnapshot(editor.variants.stateDiagnostics.val),
     currentFileDiffs:
       sourcePreviewDiffs(editor.inspector.sourcePreviews.val) &
       workspacePatchDiffs(editor.workspaceEditPatches.val),
@@ -4784,12 +5400,30 @@ proc createFoundationEditorVM*(): FoundationEditorVM =
 proc createComponentVariantEditorVM*(): ComponentVariantEditorVM =
   let variants = createSignal[seq[ComponentVariantDefinition]](@[])
   let diagnostics = createSignal[seq[ComponentVariantDiagnostic]](@[])
+  let stateDiagnostics = createSignal[seq[ComponentStateCoverageDiagnostic]](@[])
   let selectedVariant = createSignal(-1)
-  let hasDiagnostics = createMemo[bool](proc(): bool = diagnostics.val.len > 0)
+  let variantMatrix = createMemo[seq[ComponentVariantMatrixCell]](proc(): seq[
+      ComponentVariantMatrixCell] =
+    var component = ""
+    let idx = selectedVariant.val
+    let all = variants.val
+    if idx >= 0 and idx < all.len:
+      component = all[idx].component
+    elif all.len > 0:
+      component = all[0].component
+    if component.len == 0:
+      @[]
+    else:
+      variantMatrixPreviews(all, component)
+  )
+  let hasDiagnostics = createMemo[bool](proc(): bool =
+    diagnostics.val.len > 0 or stateDiagnostics.val.len > 0)
   ComponentVariantEditorVM(
     variants: variants,
     diagnostics: diagnostics,
+    stateDiagnostics: stateDiagnostics,
     selectedVariant: selectedVariant,
+    variantMatrix: variantMatrix,
     hasDiagnostics: hasDiagnostics)
 
 proc createAgentChatVM*(): AgentChatVM =

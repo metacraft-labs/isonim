@@ -3,6 +3,8 @@
 ## Storybook-style: each variant gets its own section with title,
 ## description, and full-width rendering.
 
+import std/strutils
+
 import isonim/core/[computation, signals]
 import isonim/dsl/ui
 import isonim/editor/viewmodels
@@ -76,6 +78,293 @@ proc renderVariantSection[R, E](r: R; name, description: string;
   r.appendChild(preview, component)
   r.appendChild(section, preview)
   section
+
+func nextOption(options: seq[string]; current: string): string =
+  if options.len == 0:
+    return current
+  let index = options.find(current)
+  if index < 0 or index == options.high:
+    options[0]
+  else:
+    options[index + 1]
+
+proc selectedComponentVariant(vm: EditorVM;
+    variants: seq[ComponentVariantDefinition]): ComponentVariantDefinition =
+  let selected = vm.variants.selectedVariant.val
+  if selected >= 0 and selected < vm.variants.variants.val.len:
+    let candidate = vm.variants.variants.val[selected]
+    for variant in variants:
+      if variant.component == candidate.component and
+          variant.variantKey == candidate.variantKey:
+        return candidate
+  if variants.len > 0:
+    variants[0]
+  else:
+    ComponentVariantDefinition()
+
+proc renderComponentPropertyInput[R, E](r: R; vm: EditorVM;
+    variant: ComponentVariantDefinition;
+    prop: ComponentPropertyDefinition): E =
+  var inputNode: E
+  var cycleNode: E
+  let component = variant.component
+  let variantKey = variant.variantKey
+  let propName = prop.name
+  let propOptions = prop.options
+  let commit = proc() =
+    discard vm.editComponentProperty(component, variantKey, propName,
+      r.inputValue(inputNode), cpemManual)
+  let cycle = proc() =
+    let next = nextOption(propOptions, r.inputValue(inputNode))
+    r.setInputValue(inputNode, next)
+    discard vm.editComponentProperty(component, variantKey, propName, next,
+      cpemManual)
+  result = ui(r):
+    tdiv(display = "grid",
+          `grid-template-columns` = "82px minmax(0, 1fr) 30px",
+          align_items = "center", gap = "6px",
+          min_height = "30px", max_width = "100%",
+          overflow = "hidden"):
+      label(font_size = "10px", color = textMuted,
+            white_space = "nowrap", overflow = "hidden",
+            text_overflow = "ellipsis"):
+        text prop.name
+      input(ref = inputNode,
+            class = "editor-input",
+            height = "24px",
+            background_color = bgSurface,
+            border = "1px solid " & border,
+            border_radius = "4px",
+            padding = "0 6px",
+            font_size = "11px",
+            color = textPrimary,
+            outline = "none",
+            min_width = "0",
+            onchange = commit,
+            onblur = commit)
+      tdiv(ref = cycleNode, role = "button", tabindex = "0",
+            height = "23px",
+            display = "flex", align_items = "center",
+            justify_content = "center",
+            border = "1px solid " & border,
+            border_radius = "4px",
+            background_color = bgSurface,
+            color = textMuted, font_size = "10px",
+            cursor = "pointer"):
+        text ">"
+  r.setInputValue(inputNode, prop.value)
+  r.setAttribute(inputNode, "aria-label", "Edit component property " & prop.name)
+  r.setAttribute(inputNode, "data-component-property-control", prop.name)
+  r.setAttribute(cycleNode, "aria-label", "Cycle component property " & prop.name)
+  r.setAttribute(cycleNode, "title",
+    componentPropertyKindLabel(prop.kind) & ". " & prop.documentation & " " &
+      prop.usageGuidance)
+  r.addEventListener(cycleNode, "click", cycle)
+  r.addEventListener(cycleNode, "keydown", cycle)
+
+proc renderComponentStateButton[R, E](r: R; vm: EditorVM;
+    variant: ComponentVariantDefinition;
+    state: ComponentStateControl): E =
+  let component = variant.component
+  let variantKey = variant.variantKey
+  let stateKey = state.key
+  let stateOptions = state.options
+  let currentValue = state.value
+  let activate = proc() =
+    let next = nextOption(stateOptions, currentValue)
+    discard vm.editComponentStateControl(component, variantKey, stateKey, next,
+      cpemManual)
+  result = ui(r):
+    tdiv(role = "button", tabindex = "0",
+          min_height = "24px",
+          padding = "4px 7px",
+          border = "1px solid " & border,
+          border_radius = "4px",
+          background_color = (if currentValue in ["true", "success", "error"]:
+            bgSurface else: bgCard),
+          color = textSecondary,
+          font_size = "10px",
+          cursor = "pointer",
+          overflow = "hidden",
+          white_space = "nowrap",
+          text_overflow = "ellipsis"):
+      text (state.label & ": " & state.value)
+  r.setAttribute(result, "aria-label", "Set component state " & state.key)
+  r.setAttribute(result, "data-component-state-control", state.key)
+  r.setAttribute(result, "title",
+    componentStateKindLabel(state.kind) & " state routed through schema " &
+      state.schemaKey)
+  r.addEventListener(result, "click", activate)
+  r.addEventListener(result, "keydown", activate)
+
+proc renderCreateStateStoryButton[R, E](r: R; vm: EditorVM;
+    cell: ComponentVariantMatrixCell): E =
+  let component = cell.component
+  let variantKey = cell.variantKey
+  let stateKey = cell.stateKey
+  let create = proc() =
+    discard vm.createStoryForComponentState(component, variantKey, stateKey)
+  result = ui(r):
+    tdiv(role = "button", tabindex = "0",
+          margin_top = "5px",
+          padding = "3px 6px",
+          border_radius = "4px",
+          background_color = accent,
+          color = textPrimary,
+          font_size = "10px",
+          cursor = "pointer"):
+      text "Create story"
+  r.setAttribute(result, "aria-label", "Create story for " & component & " " &
+    stateKey & " state")
+  r.setAttribute(result, "data-create-state-story", cell.createStoryCommand)
+  r.addEventListener(result, "click", create)
+  r.addEventListener(result, "keydown", create)
+
+proc populateComponentPropertyPanel[R, E](r: R; vm: EditorVM; panel: E) =
+  r.clearChildren(panel)
+  let story = vm.selectedStory.val
+  if story.kind notin {skComponent, skPattern}:
+    r.setStyle(panel, "display", "none")
+    return
+  let variants = vm.componentVariantsForComponent(story.group)
+  if variants.len == 0:
+    r.setStyle(panel, "display", "none")
+    return
+  let variant = vm.selectedComponentVariant(variants)
+  let coverage = vm.stateCoverageDiagnostics(story.group)
+  let pendingCount = vm.inspector.pendingSourceEdits.val.len
+  vm.variants.stateDiagnostics.val = coverage
+  r.setStyle(panel, "display", "flex")
+
+  var saveButton: E
+  var revertButton: E
+  let header = ui(r):
+    tdiv(display = "flex", justify_content = "space-between",
+          align_items = "baseline", gap = "12px"):
+      tdiv(display = "flex", flex_direction = "column", gap = "3px"):
+        span(font_size = "13px", font_weight = "700", color = textPrimary):
+          text "Component properties"
+        span(font_size = "11px", color = textMuted):
+          text ("Schema-backed controls for " & variant.component & " / " &
+            variant.variantKey)
+      tdiv(display = "flex", align_items = "center", gap = "6px"):
+        span(font_size = "10px", color = textDim):
+          text ($coverage.len & " diagnostics")
+        span(font_size = "10px", color = textDim):
+          text ($pendingCount & " component plan(s) staged")
+        tdiv(ref = revertButton, role = "button", tabindex = "0",
+              padding = "4px 7px", border_radius = "4px",
+              background_color = bgCard, color = textMuted,
+              font_size = "10px", cursor = "pointer"):
+          text "Revert"
+        tdiv(ref = saveButton, role = "button", tabindex = "0",
+              padding = "4px 7px", border_radius = "4px",
+              background_color = accent, color = textPrimary,
+              font_size = "10px", font_weight = "600", cursor = "pointer"):
+          text "Save"
+  r.appendChild(panel, header)
+  r.setAttribute(saveButton, "aria-label", "Save component property source edits")
+  r.setAttribute(revertButton, "aria-label",
+    "Revert component property source edits")
+  r.addEventListener(saveButton, "click", proc() =
+    discard vm.runEditorCommand(eckSave))
+  r.addEventListener(saveButton, "keydown", proc() =
+    discard vm.runEditorCommand(eckSave))
+  r.addEventListener(revertButton, "click", proc() =
+    discard vm.runEditorCommand(eckRevert))
+  r.addEventListener(revertButton, "keydown", proc() =
+    discard vm.runEditorCommand(eckRevert))
+
+  let props = ui(r):
+    tdiv(display = "grid",
+          `grid-template-columns` = "repeat(auto-fit, minmax(230px, 1fr))",
+          gap = "8px")
+  for property in variant.properties:
+    let prop = property
+    let row = ui(r):
+      tdiv(display = "flex", flex_direction = "column", gap = "4px",
+            padding = "8px",
+            border = "1px solid " & borderFaint,
+            border_radius = "6px",
+            background_color = bgCard,
+            min_width = "0"):
+        discard
+    r.appendChild(row, renderComponentPropertyInput[R, E](r, vm, variant, prop))
+    let guidance = ui(r):
+      span(font_size = "10px", color = textDim, line_height = "1.35"):
+        text (componentPropertyKindLabel(prop.kind) & " - " &
+          prop.usageGuidance)
+    r.appendChild(row, guidance)
+    r.appendChild(props, row)
+  r.appendChild(panel, props)
+
+  let states = ui(r):
+    tdiv(display = "flex", flex_direction = "column", gap = "7px"):
+      span(font_size = "11px", font_weight = "700", color = textSecondary,
+            text_transform = "uppercase"):
+        text "States"
+      tdiv(display = "grid",
+            `grid-template-columns` = "repeat(auto-fit, minmax(112px, 1fr))",
+            gap = "6px"):
+        discard
+  let stateGrid = states
+  for stateControl in variant.stateControls:
+    let state = stateControl
+    r.appendChild(stateGrid, renderComponentStateButton[R, E](r, vm, variant,
+      state))
+  r.appendChild(panel, states)
+
+  let matrix = ui(r):
+    tdiv(display = "flex", flex_direction = "column", gap = "7px"):
+      span(font_size = "11px", font_weight = "700", color = textSecondary,
+            text_transform = "uppercase"):
+        text "Variant matrix"
+      tdiv(display = "grid",
+            `grid-template-columns` = "repeat(auto-fit, minmax(132px, 1fr))",
+            gap = "6px"):
+        discard
+  r.setAttribute(matrix, "data-component-variant-matrix", "true")
+  let matrixCells = variantMatrixPreviews(vm, story.group)
+  for matrixCell in matrixCells:
+    let cell = matrixCell
+    let cellNode = ui(r):
+      tdiv(padding = "7px",
+            border = "1px solid " & (if cell.covered: borderFaint else: red),
+            border_radius = "6px",
+            background_color = bgCard,
+            min_height = "58px",
+            display = "flex", flex_direction = "column",
+            justify_content = "space-between",
+            gap = "4px"):
+        span(font_size = "10px", color = textSecondary,
+              white_space = "nowrap", overflow = "hidden",
+              text_overflow = "ellipsis"):
+          text cell.label
+        span(font_size = "10px", color = (if cell.covered: green else: red)):
+          text (if cell.covered: "covered" else: "missing story")
+    r.setAttribute(cellNode, "data-component-variant-matrix-cell",
+      cell.variantKey & ":" & cell.stateKey)
+    if not cell.covered:
+      r.appendChild(cellNode, renderCreateStateStoryButton[R, E](r, vm, cell))
+    r.appendChild(matrix, cellNode)
+  r.appendChild(panel, matrix)
+
+  if coverage.len > 0:
+    let diagnostics = ui(r):
+      tdiv(display = "flex", flex_direction = "column", gap = "5px",
+            padding = "8px",
+            border = "1px solid " & borderFaint,
+            border_radius = "6px",
+            background_color = bgCard):
+        span(font_size = "11px", font_weight = "700", color = textSecondary):
+          text "State coverage diagnostics"
+    for coverageDiagnostic in coverage[0 .. min(coverage.high, 3)]:
+      let diagnostic = coverageDiagnostic
+      let item = ui(r):
+        span(font_size = "10px", color = textMuted, line_height = "1.35"):
+          text (diagnostic.message & " " & diagnostic.suggestion)
+      r.appendChild(diagnostics, item)
+    r.appendChild(panel, diagnostics)
 
 proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
   let page = ui(r):
@@ -167,6 +456,21 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
             background_color = "#FFFFFF")
   r.appendChild(content, projectPreviewSection)
 
+  var propertyPanel: E
+  let componentProperties = ui(r):
+    tdiv(ref = propertyPanel,
+          class = "component-property-schema-panel",
+          display = "none",
+          flex_direction = "column",
+          gap = "12px",
+          padding = "12px",
+          border = "1px solid " & border,
+          border_radius = "8px",
+          background_color = bgSurface)
+  r.setAttribute(componentProperties, "aria-label",
+    "Component property schema and variant matrix")
+  r.appendChild(content, componentProperties)
+
   let genericContent = ui(r):
     tdiv(display = "flex", flex_direction = "column", gap = "24px")
   var renderedVariants = false
@@ -223,6 +527,7 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
     r.setStyle(projectFrame, "overflow", "hidden")
     r.setStyle(projectSection, "display", if showProject: "flex" else: "none")
     r.setStyle(genericContent, "display", if showProject: "none" else: "flex")
+    r.populateComponentPropertyPanel(vm, propertyPanel)
 
     when defined(js):
       let frame = projectFrame

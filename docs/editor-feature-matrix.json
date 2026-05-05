@@ -385,36 +385,51 @@
       "targetWorkflow": "Users can edit component variant metadata, fixtures, states, responsive samples, and generated source plans.",
       "owner": "framework",
       "mockOnly": false,
-      "placeholderUi": true,
-      "browserBehavior": [],
-      "implementation": "Variant fixture/story metadata validation, field edits, and source-plan generation.",
-      "knownLimitations": "Variant matrix UI, prop/state comparison, sample-data editing, and component API discoverability remain M39/M43 work.",
+      "placeholderUi": false,
+      "browserBehavior": ["focus", "iframe"],
+      "implementation": "M38 extends the component variant editor with schema-backed component properties for enum, boolean, text, icon, slot/content, data fixture, density, platform, and accessibility labels; state controls for size, emphasis, tone, selected, disabled, hover, focus, pressed, loading, empty, error, success, and project-specific states; structured source plans for schema/fixture/source constructors; variant matrix previews; actionable coverage diagnostics; create-story-for-state commands; per-property documentation and usage guidance; and shared AI/manual pending edit journal context.",
+      "knownLimitations": "Functional M38 coverage is not Figma-grade. Browser coverage uses the live metacraft-web component preview path with runtime schema inference when the consumer has not supplied a full component-property schema, so it proves source-plan routing, matrix/state controls, save/revert, and diagnostics without claiming complete Figma-grade component API extraction, screenshot baselines, or exhaustive visual comparison across every component/state.",
       "headlessTests": [
         {
           "name": "component_variant_editor_updates_story_fixtures",
           "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "component_property_controls_update_schema_and_story_fixtures",
+          "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "component_state_coverage_diagnostics_are_actionable",
+          "file": "tests/test_editor_viewmodels.nim"
         }
       ],
-      "playwrightRequired": false,
-      "playwrightReason": "Current coverage is source/schema state; browser variant matrix workflows are scheduled for M39.",
-      "playwrightTests": [],
+      "playwrightRequired": true,
+      "playwrightTests": [
+        {
+          "name": "e2e_component_variant_matrix_and_state_controls",
+          "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
+        }
+      ],
       "screenshotVisualAssertions": {
         "requiredForFigmaGrade": true,
         "status": "not_started",
         "assertions": [],
-        "futureMilestone": "M39",
-        "notes": "Needs variant matrix, state, sample data, and comparison visual baselines."
+        "futureMilestone": "M43",
+        "notes": "M38 has functional browser interaction coverage, but Figma-grade still needs screenshot baselines for the property panel, matrix cells, state controls, missing-story commands, diagnostics, save/revert states, and mobile layout."
       },
       "consumerCoverage": {
         "isonimExample": {
           "status": "covered_headless",
           "evidence": [
-            "tests/test_editor_viewmodels.nim:component_variant_editor_updates_story_fixtures"
+            "tests/test_editor_viewmodels.nim:component_variant_editor_updates_story_fixtures",
+            "tests/test_editor_viewmodels.nim:component_property_controls_update_schema_and_story_fixtures",
+            "tests/test_editor_viewmodels.nim:component_state_coverage_diagnostics_are_actionable"
           ]
         },
         "metacraftWeb": {
-          "status": "workspace_api_compatible",
+          "status": "covered",
           "evidence": [
+            "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_component_variant_matrix_and_state_controls",
             "../metacraft-web/apps/back-office/tests/test_backoffice_editor_workspace.nim"
           ]
         }

@@ -1230,6 +1230,42 @@ type
     cvfkUsageExample
     cvfkStoryMetadata
 
+  ComponentPropertyKind* = enum
+    cpkEnum
+    cpkBoolean
+    cpkText
+    cpkIcon
+    cpkSlotContent
+    cpkDataFixture
+    cpkDensity
+    cpkPlatform
+    cpkAccessibilityLabel
+
+  ComponentStateKind* = enum
+    cskSize
+    cskEmphasis
+    cskTone
+    cskSelected
+    cskDisabled
+    cskHover
+    cskFocus
+    cskPressed
+    cskLoading
+    cskEmpty
+    cskError
+    cskSuccess
+    cskProjectSpecific
+
+  ComponentPropertyEditMode* = enum
+    cpemManual
+    cpemAi
+
+  ComponentStateCoverageDiagnosticKind* = enum
+    cscdMissingStory
+    cscdMissingFixture
+    cscdDuplicateState
+    cscdInvalidStateValue
+
   ComponentVariantDiagnosticKind* = enum
     cvdMissingVariantFixture
     cvdInconsistentStoryMetadata
@@ -1244,6 +1280,54 @@ type
     sourceLine*: int
     schemaKey*: string
 
+  ComponentPropertyDefinition* = object
+    name*: string
+    kind*: ComponentPropertyKind
+    value*: string
+    options*: seq[string]
+    sourceFile*: string
+    sourceLine*: int
+    schemaKey*: string
+    fixtureKey*: string
+    constructor*: string
+    documentation*: string
+    usageGuidance*: string
+
+  ComponentStateControl* = object
+    key*: string
+    kind*: ComponentStateKind
+    label*: string
+    value*: string
+    options*: seq[string]
+    story*: StoryRef
+    fixtureName*: string
+    sourceFile*: string
+    sourceLine*: int
+    schemaKey*: string
+    projectSpecific*: bool
+
+  ComponentVariantMatrixCell* = object
+    component*: string
+    variantKey*: string
+    stateKey*: string
+    label*: string
+    story*: StoryRef
+    fixtureName*: string
+    covered*: bool
+    missingStorySuggestion*: string
+    createStoryCommand*: string
+
+  ComponentStateCoverageDiagnostic* = object
+    kind*: ComponentStateCoverageDiagnosticKind
+    message*: string
+    component*: string
+    variantKey*: string
+    stateKey*: string
+    suggestion*: string
+    command*: string
+    file*: string
+    line*: int
+
   ComponentVariantDefinition* = object
     component*: string
     variantKey*: string
@@ -1251,6 +1335,8 @@ type
     fixtureName*: string
     metadataName*: string
     fields*: seq[ComponentVariantField]
+    properties*: seq[ComponentPropertyDefinition]
+    stateControls*: seq[ComponentStateControl]
     usageExamples*: seq[UsageExample]
 
   ComponentVariantDiagnostic* = object

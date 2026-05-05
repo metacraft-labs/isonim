@@ -2322,6 +2322,273 @@ suite "Editor ViewModels (M27 workspace file writes)":
         it.kind == cvdInconsistentStoryMetadata)
       dispose()
 
+  test "component_property_controls_update_schema_and_story_fixtures":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("component-properties")
+      defer: removeDir(root)
+
+      let schemaFile = root / "button.schema"
+      let fixtureFile = root / "button.fixtures"
+      atomicWrite(schemaFile,
+        "size=md\nselected=false\nlabel=Run report\nicon=play\n" &
+        "content=Run report\nfixture=ops-ready\ndensity=comfortable\n" &
+        "platform=pfWeb\nariaLabel=Run report\n")
+      atomicWrite(fixtureFile, "title=Paris\n")
+      let story = StoryRef(group: "Button", name: "Default",
+        kind: skComponent, index: 0)
+      let schema = @[
+        WorkspaceEditableSchemaEntry(key: "components.button.properties.size",
+          kind: wskComponentVariant, file: schemaFile,
+          path: "Button.default.size", story: story, property: "size"),
+        WorkspaceEditableSchemaEntry(key: "components.button.properties.selected",
+          kind: wskComponentVariant, file: schemaFile,
+          path: "Button.default.selected", story: story, property: "selected"),
+        WorkspaceEditableSchemaEntry(key: "components.button.properties.label",
+          kind: wskComponentVariant, file: schemaFile,
+          path: "Button.default.label", story: story, property: "label"),
+        WorkspaceEditableSchemaEntry(key: "components.button.properties.icon",
+          kind: wskComponentVariant, file: schemaFile,
+          path: "Button.default.icon", story: story, property: "icon"),
+        WorkspaceEditableSchemaEntry(key: "components.button.properties.content",
+          kind: wskComponentVariant, file: schemaFile,
+          path: "Button.default.content", story: story, property: "content"),
+        WorkspaceEditableSchemaEntry(key: "fixtures.button.title",
+          kind: wskStoryFixture, file: fixtureFile,
+          path: "fixtures.button.title", story: story, property: "titleFixture"),
+        WorkspaceEditableSchemaEntry(key: "components.button.properties.density",
+          kind: wskComponentVariant, file: schemaFile,
+          path: "Button.default.density", story: story, property: "density"),
+        WorkspaceEditableSchemaEntry(key: "components.button.properties.platform",
+          kind: wskComponentVariant, file: schemaFile,
+          path: "Button.default.platform", story: story, property: "platform"),
+        WorkspaceEditableSchemaEntry(key: "components.button.properties.ariaLabel",
+          kind: wskComponentVariant, file: schemaFile,
+          path: "Button.default.ariaLabel", story: story, property: "ariaLabel")
+      ]
+      let recorder = WorkspaceEditRecorder()
+      let adapter = adapterFor(root, schema, recorder = recorder)
+
+      proc prop(name: string; kind: ComponentPropertyKind; value: string;
+          options: seq[string] = @[]; line = 1;
+          fixtureKey = ""): ComponentPropertyDefinition =
+        ComponentPropertyDefinition(
+          name: name,
+          kind: kind,
+          value: value,
+          options: options,
+          sourceFile: if fixtureKey.len > 0: fixtureFile else: schemaFile,
+          sourceLine: line,
+          schemaKey: "components.button.properties." & name,
+          fixtureKey: fixtureKey,
+          constructor:
+            if fixtureKey.len > 0: "buttonFixture"
+            else: "buttonSchema",
+          documentation: "Button " & name & " documentation.",
+          usageGuidance: "Route " & name & " through the component schema.")
+
+      var states: seq[ComponentStateControl] = @[]
+      for key in requiredComponentStateKeys():
+        states.add ComponentStateControl(
+          key: key,
+          kind:
+            if key == "size": cskSize
+            elif key == "emphasis": cskEmphasis
+            elif key == "tone": cskTone
+            elif key == "selected": cskSelected
+            elif key == "disabled": cskDisabled
+            elif key == "hover": cskHover
+            elif key == "focus": cskFocus
+            elif key == "pressed": cskPressed
+            elif key == "loading": cskLoading
+            elif key == "empty": cskEmpty
+            elif key == "error": cskError
+            else: cskSuccess,
+          label: key,
+          value: if key == "size": "md" else: "false",
+          options: if key == "size": @["sm", "md", "lg"] else: @["false", "true"],
+          story: story,
+          fixtureName: "button." & key,
+          sourceFile: schemaFile,
+          sourceLine: 20,
+          schemaKey: "components.button.states." & key)
+      states.add ComponentStateControl(
+        key: "billing-paused",
+        kind: cskProjectSpecific,
+        label: "billing paused",
+        value: "false",
+        options: @["false", "true"],
+        story: story,
+        fixtureName: "button.billing-paused",
+        sourceFile: schemaFile,
+        sourceLine: 40,
+        schemaKey: "components.button.states.billing-paused",
+        projectSpecific: true)
+
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "M38 property workspace",
+        storyGroups = @[StoryGroup(name: "Button", kind: skComponent,
+          items: @[StoryItem(name: "Default", kind: skComponent,
+            group: "Button")])],
+        componentVariants = @[ComponentVariantDefinition(
+          component: "Button",
+          variantKey: "default",
+          story: story,
+          fixtureName: "button.default",
+          metadataName: "Default",
+          properties: @[
+            prop("size", cpkEnum, "md", @["sm", "md", "lg"], 1),
+            prop("selected", cpkBoolean, "false", @["false", "true"], 2),
+            prop("label", cpkText, "Run report", @[], 3),
+            prop("icon", cpkIcon, "play", @["play", "pause"], 4),
+            prop("content", cpkSlotContent, "Run report", @[], 5),
+            prop("titleFixture", cpkDataFixture, "Paris", @[], 1,
+              "fixtures.button.title"),
+            prop("density", cpkDensity, "comfortable",
+              @["compact", "comfortable"], 7),
+            prop("platform", cpkPlatform, "pfWeb",
+              @["pfWeb", "pfIOS", "pfAndroid"], 8),
+            prop("ariaLabel", cpkAccessibilityLabel, "Run report", @[], 9)
+          ],
+          stateControls: states,
+          usageExamples: @[UsageExample(
+            description: "Use schema-backed Button properties.",
+            isDo: true)])],
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true, createStory: true, createVariant: true,
+          duplicate: false, delete: false),
+        editAdapter = adapter,
+        initialStory = some(story)))
+
+      check vm.componentVariantsForComponent("Button")[0].properties.mapIt(
+        it.kind).contains(cpkEnum)
+      check vm.componentVariantsForComponent("Button")[0].properties.mapIt(
+        it.kind).contains(cpkAccessibilityLabel)
+
+      let sizeEdit = vm.editComponentProperty("Button", "default", "size", "lg")
+      check sizeEdit.status == pesAccepted
+      check sizeEdit.sourceEdit.planKind == cspStructuredSchemaUpdate
+      check sizeEdit.sourceEdit.schemaKey ==
+        "components.button.properties.size"
+      check sizeEdit.sourceEdit.originDetail.contains("component-property:manual")
+      check sizeEdit.sourceEdit.regeneratorHook == "buttonSchema"
+
+      let fixtureEdit = vm.editComponentProperty("Button", "default",
+        "titleFixture", "Sofia")
+      check fixtureEdit.status == pesAccepted
+      check fixtureEdit.sourceEdit.schemaKey == "fixtures.button.title"
+      check fixtureEdit.sourceEdit.regeneratorHook == "buttonFixture"
+      check vm.inspector.pendingSourceEdits.val.len == 2
+
+      let saved = vm.applyWorkspaceFileEdits()
+      check saved.ok
+      check readFile(schemaFile).contains("size=lg")
+      check readFile(fixtureFile).contains("title=Sofia")
+
+      let aiEdit = vm.editComponentProperty("Button", "default", "ariaLabel",
+        "Run operations report", cpemAi)
+      check aiEdit.status == pesAccepted
+      check aiEdit.sourceEdit.originDetail.contains("component-property:ai")
+      let context = vm.buildAgentPromptContext()
+      check context.designSystemSchema.anyIt(
+        it.key == "components.button.properties.ariaLabel")
+      check context.sourceMap.anyIt(
+        it.schemaKey == "components.button.properties.ariaLabel" and
+          it.originDetail.contains("component-property:ai"))
+      check context.accumulatedEdits.anyIt(
+        it.property == "ariaLabel" and it.editOrigin == peoAgent)
+      dispose()
+
+  test "component_state_coverage_diagnostics_are_actionable":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("component-state-coverage")
+      defer: removeDir(root)
+
+      let schemaFile = root / "badge.schema"
+      atomicWrite(schemaFile, "tone=neutral\nhover=false\n")
+      let defaultStory = StoryRef(group: "StatusBadge", name: "Neutral",
+        kind: skComponent, index: 0)
+      let variants = @[
+        ComponentVariantDefinition(
+          component: "StatusBadge",
+          variantKey: "neutral",
+          story: defaultStory,
+          fixtureName: "badge.neutral",
+          metadataName: "Neutral",
+          stateControls: @[
+            ComponentStateControl(key: "tone", kind: cskTone,
+              label: "tone", value: "neutral",
+              options: @["neutral", "success", "error"],
+              story: defaultStory,
+              fixtureName: "badge.neutral",
+              sourceFile: schemaFile,
+              sourceLine: 1,
+              schemaKey: "components.badge.states.tone"),
+            ComponentStateControl(key: "hover", kind: cskHover,
+              label: "hover", value: "false",
+              options: @["false", "true"],
+              story: StoryRef(),
+              fixtureName: "",
+              sourceFile: schemaFile,
+              sourceLine: 2,
+              schemaKey: "components.badge.states.hover"),
+            ComponentStateControl(key: "hover", kind: cskHover,
+              label: "hover duplicate", value: "false",
+              options: @["false", "true"],
+              story: StoryRef(),
+              fixtureName: "",
+              sourceFile: schemaFile,
+              sourceLine: 3,
+              schemaKey: "components.badge.states.hover.duplicate"),
+            ComponentStateControl(key: "billing-paused",
+              kind: cskProjectSpecific,
+              label: "billing paused", value: "false",
+              options: @["false", "true"],
+              story: StoryRef(),
+              fixtureName: "",
+              sourceFile: schemaFile,
+              sourceLine: 4,
+              schemaKey: "components.badge.states.billing-paused",
+              projectSpecific: true)
+          ])
+      ]
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "M38 state coverage workspace",
+        storyGroups = @[StoryGroup(name: "StatusBadge", kind: skComponent,
+          items: @[StoryItem(name: "Neutral", kind: skComponent,
+            group: "StatusBadge")])],
+        componentVariants = variants,
+        initialStory = some(defaultStory)))
+
+      let diagnostics = vm.stateCoverageDiagnostics("StatusBadge")
+      check diagnostics.anyIt(it.kind == cscdMissingStory and
+        it.stateKey == "hover" and it.command.startsWith("create-story:"))
+      check diagnostics.anyIt(it.kind == cscdMissingFixture and
+        it.stateKey == "billing-paused" and it.suggestion.contains("fixture"))
+      check diagnostics.anyIt(it.kind == cscdDuplicateState and
+        it.stateKey == "hover")
+      check diagnostics.anyIt(it.kind == cscdMissingStory and
+        it.stateKey == "size")
+
+      let matrix = vm.variantMatrixPreviews("StatusBadge")
+      check matrix.anyIt(it.stateKey == "tone" and it.covered)
+      check matrix.anyIt(it.stateKey == "hover" and not it.covered and
+        it.missingStorySuggestion.contains("Create story"))
+      check matrix.anyIt(it.stateKey == "billing-paused" and
+        it.createStoryCommand.contains("billing-paused"))
+
+      let created = vm.createStoryForComponentState("StatusBadge", "neutral",
+        "hover")
+      check created.status == pesAccepted
+      check created.sourceEdit.property == "story.hover"
+      check created.sourceEdit.regeneratorHook == "component-story-constructor"
+      check vm.variants.stateDiagnostics.val.anyIt(
+        it.kind == cscdMissingStory and it.stateKey == "size")
+      check not vm.variants.stateDiagnostics.val.anyIt(
+        it.kind == cscdMissingStory and it.stateKey == "hover")
+      check vm.inspector.pendingSourceEdits.val.anyIt(
+        it.originDetail == "component-state:manual:create-story")
+      dispose()
+
   test "design_schema_maps_dom_properties_to_source_ownership":
     createRoot proc(dispose: proc()) =
       let root = tempWorkspaceDir("design-schema-map")
