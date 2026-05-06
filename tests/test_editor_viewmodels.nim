@@ -4,6 +4,7 @@ import std/[options, unittest, strutils, sequtils, os]
 import nim_agents
 import isonim/core/[signals, computation, owner]
 import isonim/viewmodel
+import isonim/editor/agent_context
 import isonim/editor/agent_harbor
 import isonim/editor/viewmodels
 import isonim/editor/workspace
@@ -4555,6 +4556,11 @@ suite "Editor ViewModels (M27 workspace file writes)":
       check vm.chat.permissionRequests.val[0].status == apsPending
       check vm.chat.proposedEdits.val.len == 1
       check vm.chat.proposedEdits.val[0].status == aepsProposed
+      check vm.chat.proposedEdits.val[0].sourceEdits[0].sourceScope ==
+        sskLocalInstance
+      check vm.chat.proposedEdits.val[0].sourceEdits[0].
+        sourceScopeChoices.anyIt(it.kind == sskLocalInstance and
+          it.impact.summary.len > 0)
       check vm.chat.proposedEdits.val[0].reviewDiagnostics.anyIt(
         it.source == "agent-review" and it.category == "accessibility")
       check vm.review.violations.val.anyIt(
@@ -4755,6 +4761,257 @@ suite "Editor ViewModels (M27 workspace file writes)":
       check vm.buildAgentPromptContext().reviewAnnotations.len == 0
       check vm.review.annotations.val.anyIt(
         it.id == first and it.state == ransResolved)
+      dispose()
+
+  test "m50_source_scope_choices_cover_property_ownership_contract":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("m50-source-scopes")
+      defer: removeDir(root)
+
+      func span(file: string; line: int): SourceSpan =
+        SourceSpan(file: file, line: line, column: 1,
+          endLine: line, endColumn: 20)
+
+      let story = StoryRef(group: "Cards", name: "Default", kind: skComponent)
+      let schemaFile = root / "components/card.schema"
+      let fixtureFile = root / "stories/card.fixture"
+      let classFile = root / "components/card.css"
+      let tokenFile = root / "design/tokens.schema"
+      createDir(root / "components")
+      createDir(root / "stories")
+      createDir(root / "design")
+      atomicWrite(schemaFile, "padding=16px")
+      atomicWrite(fixtureFile, "padding=16px")
+      atomicWrite(classFile, ".card { padding: 16px; }")
+      atomicWrite(tokenFile,
+        "component.card.padding=16px\ncomponent.card.radius=8px\n" &
+        "semantic.surface.card=#ffffff\nprimitive.color.surface=#ffffff")
+
+      let schema = DesignSystemSchema(
+        schemaVersion: 1,
+        projectId: "m50-example",
+        ownerPackage: "isonim-example",
+        frameworkContract: "isonim-editor-design-schema-v1",
+        nodes: @[
+          DesignSchemaNode(key: "fixtures.card.padding",
+            kind: dsnStoryFixture, name: "Card story fixture",
+            property: "padding", value: "16px",
+            sourceSpan: span(fixtureFile, 1), stories: @[story],
+            usageCount: 1),
+          DesignSchemaNode(key: "components.card.padding",
+            kind: dsnComponentVariant, name: "Card component API",
+            component: "Card", property: "padding", value: "16px",
+            sourceSpan: span(schemaFile, 1), stories: @[story],
+            components: @["Card"], usageCount: 2),
+          DesignSchemaNode(key: "classes.card.padding",
+            kind: dsnClassDefinition, name: "card",
+            property: "padding", value: "16px",
+            sourceSpan: span(classFile, 1), stories: @[story],
+            components: @["Card"], usageCount: 7),
+          DesignSchemaNode(key: "component.card.padding",
+            kind: dsnComponentToken, name: "Card padding token",
+            component: "Card", property: "padding", value: "16px",
+            sourceSpan: span(tokenFile, 1), stories: @[story],
+            components: @["Card"], usageCount: 3),
+          DesignSchemaNode(key: "semantic.spacing.card",
+            kind: dsnSemanticToken, name: "Card semantic spacing",
+            property: "padding", value: "token(primitive.spacing.base)",
+            sourceSpan: span(tokenFile, 2), stories: @[story],
+            components: @["Card"], usageCount: 4),
+          DesignSchemaNode(key: "primitive.spacing.base",
+            kind: dsnFoundation, name: "Base spacing",
+            property: "padding", value: "16px",
+            sourceSpan: span(tokenFile, 3), stories: @[story],
+            components: @["Card"], usageCount: 9),
+          DesignSchemaNode(key: "components.card.columns",
+            kind: dsnComponentVariant, name: "Card grid columns",
+            component: "Card", property: "grid-template-columns",
+            value: "1fr auto", sourceSpan: span(schemaFile, 2),
+            stories: @[story], components: @["Card"], usageCount: 2),
+          DesignSchemaNode(key: "component.card.radius",
+            kind: dsnComponentToken, name: "Card radius token",
+            component: "Card", property: "border-radius", value: "8px",
+            sourceSpan: span(tokenFile, 4), stories: @[story],
+            components: @["Card"], usageCount: 5),
+          DesignSchemaNode(key: "semantic.surface.card",
+            kind: dsnSemanticToken, name: "Card semantic surface",
+            property: "background", value: "token(primitive.color.surface)",
+            sourceSpan: span(tokenFile, 5), stories: @[story],
+            components: @["Card"], usageCount: 6),
+          DesignSchemaNode(key: "primitive.color.surface",
+            kind: dsnFoundation, name: "Surface primitive",
+            property: "background", value: "#ffffff",
+            sourceSpan: span(tokenFile, 6), stories: @[story],
+            components: @["Card"], usageCount: 8)
+        ],
+        sourceOwnership: @[
+          DesignSourceOwnership(
+            elementSourceKey: "card.root",
+            property: "padding",
+            schemaKey: "classes.card.padding",
+            nodeKey: "classes.card.padding",
+            sourceSpan: span(classFile, 1),
+            cssModuleFile: classFile,
+            cssModuleClass: "card"),
+          DesignSourceOwnership(
+            elementSourceKey: "card.root",
+            property: "grid-template-columns",
+            schemaKey: "components.card.columns",
+            nodeKey: "components.card.columns",
+            sourceSpan: span(schemaFile, 2)),
+          DesignSourceOwnership(
+            elementSourceKey: "card.root",
+            property: "border-radius",
+            schemaKey: "component.card.radius",
+            nodeKey: "component.card.radius",
+            sourceSpan: span(tokenFile, 4)),
+          DesignSourceOwnership(
+            elementSourceKey: "card.root",
+            property: "background",
+            schemaKey: "semantic.surface.card",
+            nodeKey: "semantic.surface.card",
+            sourceSpan: span(tokenFile, 5))
+        ])
+
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "M50 source scope example",
+        storyGroups = @[StoryGroup(name: "Cards", kind: skComponent,
+          items: @[StoryItem(name: "Default", kind: skComponent,
+            group: "Cards")])],
+        initialStory = some(story),
+        designSystemSchema = schema,
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true)))
+      check vm.selectInspectorElement(ElementRef(
+        id: "card-root",
+        sourceKey: "card.root",
+        schemaKey: "components.card.padding",
+        tag: "article",
+        sourceFile: schemaFile,
+        sourceLine: 1,
+        properties: @[
+          PropertyInfo(name: "padding", value: "16px",
+            origin: poTailwindClass, originDetail: "class:card",
+            sourceFile: classFile, sourceLine: 1,
+            schemaKey: "classes.card.padding", sharedCount: 7,
+            directStyleAllowed: true),
+          PropertyInfo(name: "grid-template-columns", value: "1fr auto",
+            origin: poConstant, originDetail: "schema:components.card.columns",
+            sourceFile: schemaFile, sourceLine: 2,
+            schemaKey: "components.card.columns", sharedCount: 2,
+            directStyleAllowed: true),
+          PropertyInfo(name: "border-radius", value: "8px",
+            origin: poThemeToken, originDetail: "token:component.card.radius",
+            sourceFile: tokenFile, sourceLine: 4,
+            schemaKey: "component.card.radius",
+            tokenName: "component.card.radius", sharedCount: 5,
+            directStyleAllowed: true),
+          PropertyInfo(name: "background", value: "token(semantic.surface.card)",
+            origin: poThemeToken, originDetail: "token:semantic.surface.card",
+            sourceFile: tokenFile, sourceLine: 5,
+            schemaKey: "semantic.surface.card",
+            tokenName: "semantic.surface.card", sharedCount: 6,
+            directStyleAllowed: true)
+        ]))
+
+      let prop = vm.inspector.selectedElement.val.properties[0]
+      let choices = vm.sourceScopeChoices(prop)
+      for kind in [
+        sskLocalInstance, sskStoryFixture, sskComponentSchemaApi,
+        sskSharedClass, sskComponentToken, sskSemanticToken,
+        sskGlobalPrimitiveToken
+      ]:
+        check choices.anyIt(it.kind == kind and it.label.len > 0)
+
+      let sharedClass = choices.filterIt(it.kind == sskSharedClass)[0]
+      check sharedClass.ownerLabel.contains("isonim-example")
+      check sharedClass.sourceFile == classFile
+      check sharedClass.schemaKey == "classes.card.padding"
+      check sharedClass.usageCount == 7
+      check sharedClass.affectedComponents == @["Card"]
+      check sharedClass.affectedStories == @[story]
+      check sharedClass.riskLevel in {ssrMedium, ssrHigh}
+      check vm.sourceScopeImpacts(prop).anyIt(
+        it.schemaKey == "primitive.spacing.base" and it.usageCount == 9)
+
+      let editors = vm.inspector.propertyEditors.val
+      let paddingEditor = editors.filterIt(it.property == "padding")[0]
+      check paddingEditor.sourceScopeChoices.len >= 7
+      check paddingEditor.sourceScopeChoices.anyIt(it.kind == sskSharedClass and
+        it.usageCount == 7 and it.riskLevel in {ssrMedium, ssrHigh})
+      check paddingEditor.impactSummaries.len > 0
+      check paddingEditor.impactSummaries.anyIt(
+        it.schemaKey == "classes.card.padding" and it.usageCount == 7)
+      check editors.filterIt(it.property == "grid-template-columns")[0].
+        sourceScopeChoices.anyIt(it.kind == sskComponentSchemaApi and
+          it.schemaKey == "components.card.columns" and it.usageCount == 2)
+      check editors.filterIt(it.property == "border-radius")[0].
+        sourceScopeChoices.anyIt(it.kind == sskComponentToken and
+          it.schemaKey == "component.card.radius" and it.usageCount == 5)
+      check editors.filterIt(it.property == "background")[0].
+        sourceScopeChoices.anyIt(it.kind == sskSemanticToken and
+          it.schemaKey == "semantic.surface.card" and it.usageCount == 6)
+
+      let edit = vm.editInspectorProperty(PropertyEditRequest(
+        property: "padding", newValue: "20px", kind: pekCss,
+        scope: pesShared, origin: peoInspector))
+      check edit.status == pesAccepted
+      check edit.sourceEdit.sourceScope == sskSharedClass
+      check edit.sourceEdit.sourceScopeChoices.anyIt(
+        it.kind == sskSharedClass and it.impact.usageCount == 7)
+      check edit.record.sourceScope == sskSharedClass
+
+      let reviewId = vm.addReviewAnnotation("Keep this change shared.",
+        suggestedScope = pesShared)
+      check reviewId.len > 0
+      check vm.review.annotations.val[0].sourceScopeChoices.anyIt(
+        it.kind == sskSharedClass)
+
+      let context = vm.buildAgentPromptContext()
+      var agentMapHasSharedClass = false
+      for entry in context.sourceMap:
+        if entry.property == "padding":
+          for choice in entry.sourceScopeChoices:
+            if choice.kind == sskSharedClass:
+              agentMapHasSharedClass = true
+      check agentMapHasSharedClass
+
+      let blocks = editorPromptContextToAcpContentBlocks(context,
+        "Adjust the shared card padding.")
+      let promptText = blocks.mapIt(it.text).join("\n")
+      check promptText.contains("sourceScopeChoices:")
+      check promptText.contains("kind=sskSharedClass")
+      check promptText.contains("sourceScope=sskSharedClass")
+      check promptText.contains("impact schema=classes.card.padding")
+      check promptText.contains("usage=7")
+      check promptText.contains("risk=ssrMedium") or
+        promptText.contains("risk=ssrHigh")
+      check promptText.contains("reviewAnnotations:")
+      check promptText.contains("pendingSourceEdits:")
+      dispose()
+
+  test "m50_fallback_shared_count_sets_non_none_scope_risk":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      check vm.selectInspectorElement(ElementRef(
+        id: "fallback-card",
+        sourceKey: "fallback.card",
+        tag: "article",
+        sourceFile: "card.nim",
+        sourceLine: 12,
+        properties: @[
+          PropertyInfo(name: "padding", value: "12px",
+            origin: poTailwindClass, originDetail: "class:shared-card",
+            sourceFile: "card.css", sourceLine: 4,
+            schemaKey: "classes.shared-card.padding", sharedCount: 9,
+            directStyleAllowed: true)
+        ]))
+      let prop = vm.inspector.selectedElement.val.properties[0]
+      let shared = vm.sourceScopeChoices(prop).filterIt(
+        it.kind == sskSharedClass)[0]
+      check shared.usageCount == 9
+      check shared.riskLevel != ssrNone
+      check shared.impact.riskLevel != ssrNone
       dispose()
 
   test "agent_proposals_target_design_schema_scopes":

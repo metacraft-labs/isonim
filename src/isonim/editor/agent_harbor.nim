@@ -197,6 +197,26 @@ proc applyAgentEvents*(chat: AgentChatVM; review: ReviewResultsVM;
   for event in events:
     chat.applyAgentEvent(review, event)
 
+func agentEventSourceScopeChoices(event: AgentEvent): seq[SourceScopeChoice] =
+  let impact = SourceScopeImpact(
+    ownerLabel: "Agent Harbor proposal",
+    sourceFile: event.filePath,
+    sourceLine: event.line,
+    usageCount: 1,
+    riskLevel: ssrLow,
+    summary: "updates the proposed source edit")
+  @[SourceScopeChoice(
+    kind: sskLocalInstance,
+    label: sourceScopeChoiceLabel(sskLocalInstance),
+    ownerLabel: impact.ownerLabel,
+    sourceFile: impact.sourceFile,
+    sourceLine: impact.sourceLine,
+    editable: true,
+    usageCount: impact.usageCount,
+    riskLevel: impact.riskLevel,
+    impact: impact,
+    reason: "Agent Harbor event did not include a project-owned schema scope.")]
+
 func proposalPlanFromEvent(event: AgentEvent): SourceEditPlan =
   let before =
     if event.linesRemoved > 0: "-" & $event.linesRemoved & " lines"
@@ -214,7 +234,9 @@ func proposalPlanFromEvent(event: AgentEvent): SourceEditPlan =
     newValue: after,
     originDetail: "nim-agents:" & $event.kind,
     scope: pesLocal,
+    sourceScope: sskLocalInstance,
     planKind: cspInlineStyleUpdate,
+    sourceScopeChoices: agentEventSourceScopeChoices(event),
     reversible: true,
     previewBefore: before,
     previewAfter: after,

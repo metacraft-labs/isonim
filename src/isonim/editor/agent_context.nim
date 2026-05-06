@@ -31,6 +31,29 @@ proc editJournalToAcpContentBlocks*(edits: seq[EditRecord]): seq[ContentBlock] =
       " " & edit.oldValue & " -> " & edit.newValue
   @[textBlock(lines.join("\n"))]
 
+func sourceScopeImpactLine(prefix: string; impact: SourceScopeImpact): string =
+  prefix & "impact schema=" & impact.schemaKey & " owner=" &
+    impact.ownerLabel & " usage=" & $impact.usageCount & " risk=" &
+    $impact.riskLevel & " summary=" & impact.summary
+
+func sourceScopeChoiceLine(prefix: string; choice: SourceScopeChoice): string =
+  prefix & "choice kind=" & $choice.kind & " label=" & choice.label &
+    " owner=" & choice.ownerLabel & " file=" & choice.sourceFile & ":" &
+    $choice.sourceLine & " schema=" & choice.schemaKey & " editable=" &
+    $choice.editable & " usage=" & $choice.usageCount & " risk=" &
+    $choice.riskLevel & " reason=" & choice.reason
+
+proc addSourceScopeChoiceLines(lines: var seq[string];
+    choices: seq[SourceScopeChoice]; prefix = "  ") =
+  if choices.len == 0:
+    return
+  lines.add prefix & "sourceScopeChoices:"
+  for choice in choices:
+    lines.add sourceScopeChoiceLine(prefix & "- ", choice)
+    if choice.impact.summary.len > 0 or choice.impact.schemaKey.len > 0 or
+        choice.impact.usageCount > 0:
+      lines.add sourceScopeImpactLine(prefix & "  ", choice.impact)
+
 proc sourceMapToAcpContentBlocks*(entries: seq[AgentSourceMapEntry]): seq[
     ContentBlock] =
   if entries.len == 0:
@@ -40,6 +63,7 @@ proc sourceMapToAcpContentBlocks*(entries: seq[AgentSourceMapEntry]): seq[
     lines.add "- " & entry.elementTag & "." & entry.property & " -> " &
       entry.file & ":" & $entry.line & " origin=" & entry.originDetail &
       " schema=" & entry.schemaKey
+    lines.addSourceScopeChoiceLines(entry.sourceScopeChoices)
   @[textBlock(lines.join("\n"))]
 
 proc designSystemSchemaToAcpContentBlocks*(entries: seq[
@@ -83,7 +107,10 @@ proc pendingSourceEditsToAcpContentBlocks*(
   for edit in edits:
     lines.add "- " & edit.file & ":" & $edit.line & " " & edit.property &
       " " & edit.oldValue & " -> " & edit.newValue & " scope=" &
-      $edit.scope & " schema=" & edit.schemaKey
+      $edit.scope & " sourceScope=" & $edit.sourceScope & " schema=" &
+      edit.schemaKey & " token=" & edit.tokenName & " variant=" &
+      edit.variantKey
+    lines.addSourceScopeChoiceLines(edit.sourceScopeChoices)
   @[textBlock(lines.join("\n"))]
 
 proc reviewAnnotationsToAcpContentBlocks*(
@@ -96,6 +123,7 @@ proc reviewAnnotationsToAcpContentBlocks*(
       " scope=" & $annotation.suggestedScope & " element=" &
       annotation.elementId & " schema=" & annotation.ownership.schemaKey &
       " viewport=" & $annotation.viewport.viewport & " " & annotation.text
+    lines.addSourceScopeChoiceLines(annotation.sourceScopeChoices)
   @[textBlock(lines.join("\n"))]
 
 proc stringListToAcpContentBlock(label: string; values: seq[string]): seq[

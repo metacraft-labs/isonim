@@ -1664,9 +1664,13 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
   let propName = prop.name
   let value = prop.value
   let unit = numericUnit(value, "")
-  let hasDesignSystemScope = prop.sharedCount > 0 or prop.tokenName.len > 0 or
-    prop.schemaKey.len > 0 or prop.origin == poThemeToken
-  let scope = if hasDesignSystemScope: "DS" else: "local"
+  let scopeChoices = vm.sourceScopeChoices(prop)
+  var sharedScopeIndex = -1
+  for i in 0 ..< scopeChoices.len:
+    if scopeChoices[i].kind != sskLocalInstance and scopeChoices[i].editable:
+      sharedScopeIndex = i
+      break
+  let hasDesignSystemScope = sharedScopeIndex >= 0
   let binding = originLabel(prop.origin)
   let commit = proc() =
     let nextValue = normalizePrimitiveInputValue(propName, r.inputValue(inputNode))
@@ -1733,7 +1737,7 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
             color = (if hasDesignSystemScope: gold else: textMuted),
             font_size = "9px",
             cursor = (if hasDesignSystemScope: "pointer" else: "default")):
-        text scope
+        text (if hasDesignSystemScope: "DS" else: "local")
       tdiv(ref = resetNode, role = "button", tabindex = "0",
             `aria-label` = "Reset " & propName & " property",
             height = "22px",
@@ -3366,34 +3370,12 @@ proc renderStyleManagerPanel[R, E](r: R; vm: EditorVM; frame: E;
 
 func designSystemProperties(selected: ElementRef): seq[PropertyInfo] =
   for prop in selected.properties:
-    if prop.sharedCount > 0 or prop.tokenName.len > 0 or prop.schemaKey.len > 0 or
-        prop.origin == poThemeToken:
+    if prop.sharedCount > 0 or prop.tokenName.len > 0 or prop.schemaKey.len > 0:
       result.add prop
-
-func designSystemOwnerLabel(prop: PropertyInfo): string =
-  if prop.tokenName.len > 0:
-    "token " & prop.tokenName
-  elif prop.schemaKey.len > 0:
-    prop.schemaKey
-  elif prop.originDetail.len > 0:
-    prop.originDetail
-  else:
-    prop.sourceFile & ":" & $prop.sourceLine
-
-func designSystemImpactLabel(prop: PropertyInfo): string =
-  if prop.sharedCount > 1:
-    "updates " & $prop.sharedCount & " mapped uses"
-  elif prop.sharedCount == 1:
-    "updates 1 mapped use"
-  elif prop.tokenName.len > 0 or prop.origin == poThemeToken:
-    "updates token consumers"
-  else:
-    "updates shared schema"
 
 proc renderDesignSystemImpactPanel[R, E](r: R; vm: EditorVM; frame: E;
     selected: ElementRef): E =
   let sharedProps = designSystemProperties(selected)
-  discard vm
   discard frame
   result = ui(r):
     details(open = "open",
@@ -3417,36 +3399,38 @@ proc renderDesignSystemImpactPanel[R, E](r: R; vm: EditorVM; frame: E;
         else:
           for i in 0 ..< min(sharedProps.len, 6):
             let prop = sharedProps[i]
-            let owner = designSystemOwnerLabel(prop)
-            let impact = designSystemImpactLabel(prop)
-            tdiv(display = "grid",
-                  `grid-template-columns` = "minmax(0, 1fr) auto",
-                  gap = "6px", align_items = "center",
-                  padding = "5px 6px",
-                  border = "1px solid " & border,
-                  border_radius = "5px",
-                  background_color = bgSidebar):
-              tdiv(display = "flex", flex_direction = "column", gap = "2px",
-                    min_width = "0"):
-                span(font_size = "11px", color = textPrimary,
-                      white_space = "nowrap", overflow = "hidden",
-                      text_overflow = "ellipsis"):
-                  text prop.name & " = " & prop.value
-                span(font_size = "10px", color = gold,
-                      white_space = "nowrap", overflow = "hidden",
-                      text_overflow = "ellipsis"):
-                  text impact
-                span(font_size = "9px", color = textDim,
-                      white_space = "nowrap", overflow = "hidden",
-                      text_overflow = "ellipsis"):
-                  text owner
-              tdiv(role = "note",
-                    `aria-label` = "Use the property row DS control to edit " &
-                      prop.name & " in design system scope",
-                    padding = "4px 6px", border_radius = "4px",
-                    background_color = bgSurface, color = gold,
-                    font_size = "10px"):
-                text "DS"
+            let impacts = vm.sourceScopeImpacts(prop)
+            if impacts.len > 0:
+              let impact = impacts[0]
+              tdiv(display = "grid",
+                    `grid-template-columns` = "minmax(0, 1fr) auto",
+                    gap = "6px", align_items = "center",
+                    padding = "5px 6px",
+                    border = "1px solid " & border,
+                    border_radius = "5px",
+                    background_color = bgSidebar):
+                tdiv(display = "flex", flex_direction = "column", gap = "2px",
+                      min_width = "0"):
+                  span(font_size = "11px", color = textPrimary,
+                        white_space = "nowrap", overflow = "hidden",
+                        text_overflow = "ellipsis"):
+                    text prop.name & " = " & prop.value
+                  span(font_size = "10px", color = gold,
+                        white_space = "nowrap", overflow = "hidden",
+                        text_overflow = "ellipsis"):
+                    text impact.summary
+                  span(font_size = "9px", color = textDim,
+                        white_space = "nowrap", overflow = "hidden",
+                        text_overflow = "ellipsis"):
+                    text impact.ownerLabel & (
+                      if impact.schemaKey.len > 0: " " & impact.schemaKey else: "")
+                tdiv(role = "note",
+                      `aria-label` = "Use the property row DS control to edit " &
+                        prop.name & " in design system scope",
+                      padding = "4px 6px", border_radius = "4px",
+                      background_color = bgSurface, color = gold,
+                      font_size = "10px"):
+                  text "DS"
         if sharedProps.len > 6:
           span(font_size = "10px", color = textDim):
             text "+" & $(sharedProps.len - 6) & " more shared properties"

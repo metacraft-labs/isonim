@@ -32,6 +32,7 @@ type
     hoveredItem*: Signal[int]
 
   InspectorVM* = ref object of ViewModel
+    designSystemSchema*: Signal[DesignSystemSchema]
     selectedElement*: Signal[ElementRef]
     layers*: Signal[seq[ElementLayerRow]]
     layerSearch*: Signal[string]
@@ -1095,7 +1096,35 @@ func diagnostic(kind: PropertyEditDiagnosticKind; element: ElementRef;
     line: element.sourceLine,
     property: property)
 
-proc editRecord(prop: PropertyInfo; request: PropertyEditRequest): EditRecord =
+func fallbackSourceScopeKind(prop: PropertyInfo;
+    request: PropertyEditRequest): SourceScopeChoiceKind =
+  if request.scope != pesShared: sskLocalInstance
+  elif prop.tokenName.startsWith("primitive.") or
+      prop.tokenName.startsWith("foundation."): sskGlobalPrimitiveToken
+  elif prop.tokenName.len > 0 or prop.origin == poThemeToken: sskSemanticToken
+  elif prop.schemaKey.startsWith("components.") or prop.variantKey.len > 0:
+    sskComponentSchemaApi
+  elif prop.schemaKey.startsWith("fixtures."): sskStoryFixture
+  elif prop.schemaKey.startsWith("classes.") or prop.sharedCount > 0:
+    sskSharedClass
+  else: sskLocalInstance
+
+func selectedSourceScopeKind(prop: PropertyInfo; request: PropertyEditRequest;
+    choices: seq[SourceScopeChoice]): SourceScopeChoiceKind =
+  if request.scope != pesShared:
+    return sskLocalInstance
+  for choice in choices:
+    if choice.kind != sskLocalInstance and choice.editable and
+        choice.schemaKey in [prop.schemaKey, prop.tokenName, prop.variantKey]:
+      return choice.kind
+  for choice in choices:
+    if choice.kind != sskLocalInstance and choice.editable and
+        (choice.schemaKey.len > 0 or choice.usageCount > 0):
+      return choice.kind
+  prop.fallbackSourceScopeKind(request)
+
+proc editRecord(prop: PropertyInfo; request: PropertyEditRequest;
+    sourceScopeChoices: seq[SourceScopeChoice] = @[]): EditRecord =
   let normalized = parseCssPropertyValue(prop.name, request.newValue)
   EditRecord(
     file: prop.sourceFile,
@@ -1106,11 +1135,13 @@ proc editRecord(prop: PropertyInfo; request: PropertyEditRequest): EditRecord =
     origin: prop.origin,
     originDetail: prop.originDetail,
     scope: request.scope,
+    sourceScope: prop.selectedSourceScopeKind(request, sourceScopeChoices),
     isShared: request.scope == pesShared,
     editOrigin: request.origin,
     sourcePlanKind: prop.cssSourcePlanKind(request, normalized))
 
-proc sourcePlan(prop: PropertyInfo; request: PropertyEditRequest): SourceEditPlan =
+proc sourcePlan(prop: PropertyInfo; request: PropertyEditRequest;
+    sourceScopeChoices: seq[SourceScopeChoice] = @[]): SourceEditPlan =
   let normalized = parseCssPropertyValue(prop.name, request.newValue)
   let planKind = prop.cssSourcePlanKind(request, normalized)
   let before = prop.originDetail & " " & prop.name & ": " & prop.value
@@ -1128,10 +1159,12 @@ proc sourcePlan(prop: PropertyInfo; request: PropertyEditRequest): SourceEditPla
     newValue: normalized.canonical,
     originDetail: prop.originDetail,
     scope: request.scope,
+    sourceScope: prop.selectedSourceScopeKind(request, sourceScopeChoices),
     planKind: planKind,
     schemaKey: prop.schemaKey,
     tokenName: if normalized.tokenName.len > 0: normalized.tokenName else: prop.tokenName,
     variantKey: prop.variantKey,
+    sourceScopeChoices: sourceScopeChoices,
     reversible: true,
     previewBefore: before,
     previewAfter: after,
@@ -1144,6 +1177,12 @@ proc sourcePlan(prop: PropertyInfo; request: PropertyEditRequest): SourceEditPla
     conflictKey: prop.sourceFile & ":" & $prop.sourceLine & ":" & prop.name &
       variantSuffix,
     expectedOldValue: expectedOld)
+
+proc sourceScopeChoices*(schema: DesignSystemSchema; element: ElementRef;
+    prop: PropertyInfo): seq[SourceScopeChoice]
+
+proc sourceScopeImpacts*(schema: DesignSystemSchema; element: ElementRef;
+    prop: PropertyInfo): seq[SourceScopeImpact]
 
 func primitiveUnitFromText(raw: string): string =
   let text = raw.strip()
@@ -2582,8 +2621,10 @@ proc editProperty*(inspector: InspectorVM;
   inspector.selectedElement.val = updated
   inspector.editDiagnostics.val = @[]
 
-  let record = prop.editRecord(normalizedRequest)
-  let plan = prop.sourcePlan(normalizedRequest)
+  let sourceChoices = sourceScopeChoices(inspector.designSystemSchema.val,
+    element, prop)
+  let record = prop.editRecord(normalizedRequest, sourceChoices)
+  let plan = prop.sourcePlan(normalizedRequest, sourceChoices)
   inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
       SourceEditPlan] =
     result = @[]
@@ -3690,6 +3731,176 @@ proc designSchemaImpact*(editor: EditorVM;
 
 proc validateFoundationTokenEdit(editor: EditorVM; token: FoundationTokenEntry;
     newValue: string): seq[FoundationEditDiagnostic]
+
+func sourceScopeChoiceLabel*(kind: SourceScopeChoiceKind): string =
+  case kind
+  of sskLocalInstance: "Local instance"
+  of sskStoryFixture: "Story fixture"
+  of sskComponentSchemaApi: "Component schema/API"
+  of sskSharedClass: "Shared class"
+  of sskComponentToken: "Component token"
+  of sskSemanticToken: "Semantic token"
+  of sskGlobalPrimitiveToken: "Global primitive token"
+
+func sourceScopeKindForNode(kind: DesignSchemaNodeKind): SourceScopeChoiceKind =
+  case kind
+  of dsnStoryFixture:
+    sskStoryFixture
+  of dsnComponentVariant, dsnComponentState, dsnDensityMode,
+      dsnResponsiveMode, dsnStyleDefinition:
+    sskComponentSchemaApi
+  of dsnClassDefinition:
+    sskSharedClass
+  of dsnComponentToken:
+    sskComponentToken
+  of dsnSemanticToken:
+    sskSemanticToken
+  of dsnFoundation:
+    sskGlobalPrimitiveToken
+
+func sourceScopeRisk(impact: DesignSchemaImpact;
+    fallbackUsageCount = 0): SourceScopeRiskLevel =
+  let usageCount = max(fallbackUsageCount, impact.usageCount)
+  if impact.reviewLevel in {dsrlAccessibility, dsrlDesignSystem}:
+    ssrHigh
+  elif impact.reviewLevel == dsrlShared or usageCount > 5:
+    ssrMedium
+  elif usageCount > 1:
+    ssrLow
+  else:
+    ssrNone
+
+func sourceScopeSummary(kind: SourceScopeChoiceKind; usageCount: int): string =
+  if kind == sskLocalInstance:
+    "Updates only the selected rendered element."
+  elif usageCount > 1:
+    "updates " & $usageCount & " mapped uses"
+  elif usageCount == 1:
+    "updates 1 mapped use"
+  else:
+    "updates the mapped project source"
+
+proc sourceScopeChoices*(schema: DesignSystemSchema; element: ElementRef;
+    prop: PropertyInfo): seq[SourceScopeChoice] =
+  proc makeChoice(kind: SourceScopeChoiceKind; ownerLabel = "";
+      file = ""; line = 0; schemaKey = ""; editable = false;
+      usageCount = 0; affectedComponents: seq[string] = @[];
+      affectedStories: seq[StoryRef] = @[]; reason = "";
+      impact = DesignSchemaImpact()): SourceScopeChoice =
+    let risk = sourceScopeRisk(impact, usageCount)
+    let label = kind.sourceScopeChoiceLabel()
+    let owner =
+      if ownerLabel.len > 0: ownerLabel
+      elif schema.ownerPackage.len > 0: schema.ownerPackage
+      else: "Project"
+    let summary = sourceScopeSummary(kind, max(usageCount, impact.usageCount))
+    let scopeImpact = SourceScopeImpact(
+      ownerLabel: owner,
+      sourceFile: file,
+      sourceLine: line,
+      schemaKey: schemaKey,
+      usageCount: max(usageCount, impact.usageCount),
+      affectedComponents:
+        if impact.affectedComponents.len > 0: impact.affectedComponents
+        else: affectedComponents,
+      affectedStories:
+        if impact.affectedStories.len > 0: impact.affectedStories
+        else: affectedStories,
+      riskLevel: risk,
+      summary: summary)
+    SourceScopeChoice(kind: kind, label: label, ownerLabel: owner,
+      sourceFile: file, sourceLine: line, schemaKey: schemaKey,
+      editable: editable, usageCount: scopeImpact.usageCount,
+      affectedComponents: scopeImpact.affectedComponents,
+      affectedStories: scopeImpact.affectedStories, riskLevel: risk,
+      impact: scopeImpact, reason: reason)
+
+  result.add makeChoice(sskLocalInstance, "Selected instance",
+    if prop.sourceFile.len > 0: prop.sourceFile else: element.sourceFile,
+    if prop.sourceLine > 0: prop.sourceLine else: element.sourceLine,
+    if prop.schemaKey.len > 0: prop.schemaKey else: element.schemaKey,
+    prop.hasSource or prop.directStyleAllowed or element.hasSource,
+    1, reason = "Edit this element without changing shared sources.")
+
+  for kind in [sskStoryFixture, sskComponentSchemaApi, sskSharedClass,
+      sskComponentToken, sskSemanticToken, sskGlobalPrimitiveToken]:
+    var best = DesignSchemaNode()
+    for node in schema.nodes:
+      if node.property != prop.name:
+        continue
+      if node.kind.sourceScopeKindForNode() != kind:
+        continue
+      if best.key.len == 0 or node.key in [
+          prop.schemaKey, prop.tokenName, prop.variantKey, element.schemaKey]:
+        best = node
+        if node.key in [prop.schemaKey, prop.tokenName, prop.variantKey,
+            element.schemaKey]:
+          break
+    if best.key.len == 0:
+      let propSuggestsKind =
+        (kind == sskStoryFixture and prop.schemaKey.startsWith("fixtures.")) or
+        (kind == sskComponentSchemaApi and
+          (prop.schemaKey.startsWith("components.") or prop.variantKey.len > 0)) or
+        (kind == sskSharedClass and
+          (prop.schemaKey.startsWith("classes.") or prop.sharedCount > 0)) or
+        (kind == sskComponentToken and
+          (prop.tokenName.startsWith("component.") or
+            prop.schemaKey.contains(".components."))) or
+        (kind == sskSemanticToken and
+          (prop.tokenName.len > 0 or prop.schemaKey.startsWith("semantic.") or
+            prop.origin == poThemeToken)) or
+        (kind == sskGlobalPrimitiveToken and
+          (prop.tokenName.startsWith("primitive.") or
+            prop.tokenName.startsWith("foundation.")))
+      if propSuggestsKind:
+        result.add makeChoice(kind,
+          ownerLabel =
+            if prop.tokenName.len > 0: "token " & prop.tokenName
+            elif prop.schemaKey.len > 0: prop.schemaKey
+            else: prop.originDetail,
+          file = prop.sourceFile,
+          line = prop.sourceLine,
+          schemaKey = prop.schemaKey,
+          editable = prop.hasSource or prop.directStyleAllowed,
+          usageCount = prop.sharedCount,
+          reason = "Property source map exposes this scope without a full schema node.")
+      else:
+        result.add makeChoice(kind, reason =
+          "No project schema owner is currently mapped for this scope.")
+    else:
+      let impact = designSchemaImpact(schema, best.key)
+      let ownerLabel =
+        if schema.ownerPackage.len > 0: schema.ownerPackage & ":" & best.name
+        elif best.name.len > 0: best.name
+        else: best.key
+      result.add makeChoice(kind,
+        ownerLabel = ownerLabel,
+        file = best.sourceSpan.file,
+        line = best.sourceSpan.line,
+        schemaKey = best.key,
+        editable = best.sourceSpan.hasSource,
+        usageCount = best.usageCount,
+        affectedComponents = best.components,
+        affectedStories = best.stories,
+        reason = "Source-backed " & kind.sourceScopeChoiceLabel().toLowerAscii(),
+        impact = impact)
+
+proc sourceScopeChoices*(editor: EditorVM; prop: PropertyInfo): seq[
+    SourceScopeChoice] =
+  sourceScopeChoices(editor.designSystemSchema.val,
+    editor.inspector.selectedElement.val, prop)
+
+proc sourceScopeImpacts*(schema: DesignSystemSchema; element: ElementRef;
+    prop: PropertyInfo): seq[SourceScopeImpact] =
+  for choice in sourceScopeChoices(schema, element, prop):
+    if choice.kind != sskLocalInstance and
+        (choice.schemaKey.len > 0 or choice.usageCount > 0):
+      result.add choice.impact
+
+proc sourceScopeImpacts*(editor: EditorVM; prop: PropertyInfo): seq[
+    SourceScopeImpact] =
+  sourceScopeImpacts(editor.designSystemSchema.val,
+    editor.inspector.selectedElement.val, prop)
 
 func styleScopeChoiceLabel*(kind: StyleScopeChoiceKind): string =
   case kind
@@ -5668,7 +5879,7 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
 func agentProposalId(count: int): string =
   "agent-proposal-" & $(count + 1)
 
-func sourceMapEntries(element: ElementRef;
+proc sourceMapEntries(editor: EditorVM; element: ElementRef;
     pending: seq[SourceEditPlan]): seq[AgentSourceMapEntry] =
   for prop in element.properties:
     result.add AgentSourceMapEntry(
@@ -5679,7 +5890,8 @@ func sourceMapEntries(element: ElementRef;
       originDetail: prop.originDetail,
       schemaKey: prop.schemaKey,
       tokenName: prop.tokenName,
-      variantKey: prop.variantKey)
+      variantKey: prop.variantKey,
+      sourceScopeChoices: editor.sourceScopeChoices(prop))
   for plan in pending:
     result.add AgentSourceMapEntry(
       elementTag: element.tag,
@@ -5689,7 +5901,8 @@ func sourceMapEntries(element: ElementRef;
       originDetail: plan.originDetail,
       schemaKey: plan.schemaKey,
       tokenName: plan.tokenName,
-      variantKey: plan.variantKey)
+      variantKey: plan.variantKey,
+      sourceScopeChoices: plan.sourceScopeChoices)
 
 func schemaSnapshot(adapter: WorkspaceEditAdapter): seq[AgentDesignSystemSchemaEntry] =
   if adapter.isNil:
@@ -5934,7 +6147,7 @@ proc buildAgentPromptContext*(editor: EditorVM): AgentPromptContext =
     selectedElement: editor.inspector.selectedElement.val,
     accumulatedEdits: editor.chat.accumulatedEdits.val,
     pendingSourceEdits: editor.inspector.pendingSourceEdits.val,
-    sourceMap: sourceMapEntries(editor.inspector.selectedElement.val,
+    sourceMap: sourceMapEntries(editor, editor.inspector.selectedElement.val,
       editor.inspector.pendingSourceEdits.val),
     designSystemSchema: schemaEntries,
     reviewAnnotations: annotations,
@@ -6022,6 +6235,9 @@ proc addReviewAnnotation*(editor: EditorVM; text: string;
     source: source,
     severity: severity,
     suggestedScope: suggestedScope,
+    sourceScopeChoices:
+      if element.properties.len > 0: editor.sourceScopeChoices(element.properties[0])
+      else: @[],
     includedInPrompt: true,
     state: ransOpen)
   if annotation.elementId.len == 0:
@@ -6472,7 +6688,10 @@ proc createStoryboardVM*(): StoryboardVM =
     selectedItem: selectedItem,
     hoveredItem: hoveredItem)
 
-proc createInspectorVM*(): InspectorVM =
+proc createInspectorVM*(designSystemSchema: Signal[DesignSystemSchema] = nil): InspectorVM =
+  let schemaSignal =
+    if designSystemSchema.isNil: createSignal(DesignSystemSchema())
+    else: designSystemSchema
   let selectedElement = createSignal(ElementRef())
   let layers = createSignal[seq[ElementLayerRow]](@[])
   let layerSearch = createSignal("")
@@ -6564,6 +6783,10 @@ proc createInspectorVM*(): InspectorVM =
     for prop in selectedElement.val.properties:
       let value = parseCssPropertyValue(prop.name, prop.value)
       let category = cssPropertyCategory(prop.name)
+      let choices = sourceScopeChoices(schemaSignal.val,
+        selectedElement.val, prop)
+      let impacts = sourceScopeImpacts(schemaSignal.val,
+        selectedElement.val, prop)
       result.add CSSPropertyEditorVM(
         property: prop.name,
         category: category,
@@ -6580,6 +6803,8 @@ proc createInspectorVM*(): InspectorVM =
         supportsLocalScope: true,
         supportsSharedScope: prop.sharedCount > 0 or prop.tokenName.len > 0 or
           prop.variantKey.len > 0 or prop.origin == poThemeToken,
+        sourceScopeChoices: choices,
+        impactSummaries: impacts,
         diagnostics: prop.validateCssPropertyValue(PropertyEditRequest(
           property: prop.name,
           newValue: prop.value,
@@ -6624,6 +6849,7 @@ proc createInspectorVM*(): InspectorVM =
   let flexDirection = createSignal(fdRow)
 
   InspectorVM(
+    designSystemSchema: schemaSignal,
     selectedElement: selectedElement,
     layers: layers,
     layerSearch: layerSearch,
@@ -8319,7 +8545,7 @@ proc createEditorVM*(): EditorVM =
 
   let sidebar = createSidebarVM()
   let storyboard = createStoryboardVM()
-  let inspector = createInspectorVM()
+  let inspector = createInspectorVM(designSystemSchema)
   let vectorEditor = createVectorEditorVM()
   let foundations = createFoundationEditorVM()
   let variants = createComponentVariantEditorVM()

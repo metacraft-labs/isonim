@@ -604,6 +604,47 @@ type
     tokenName*: string
     variant*: CSSResponsiveVariant
 
+  SourceScopeChoiceKind* = enum
+    sskLocalInstance
+    sskStoryFixture
+    sskComponentSchemaApi
+    sskSharedClass
+    sskComponentToken
+    sskSemanticToken
+    sskGlobalPrimitiveToken
+
+  SourceScopeRiskLevel* = enum
+    ssrNone
+    ssrLow
+    ssrMedium
+    ssrHigh
+
+  SourceScopeImpact* = object
+    ownerLabel*: string
+    sourceFile*: string
+    sourceLine*: int
+    schemaKey*: string
+    usageCount*: int
+    affectedComponents*: seq[string]
+    affectedStories*: seq[StoryRef]
+    riskLevel*: SourceScopeRiskLevel
+    summary*: string
+
+  SourceScopeChoice* = object
+    kind*: SourceScopeChoiceKind
+    label*: string
+    ownerLabel*: string
+    sourceFile*: string
+    sourceLine*: int
+    schemaKey*: string
+    editable*: bool
+    usageCount*: int
+    affectedComponents*: seq[string]
+    affectedStories*: seq[StoryRef]
+    riskLevel*: SourceScopeRiskLevel
+    impact*: SourceScopeImpact
+    reason*: string
+
   CSSPropertyEditorVM* = object
     ## Headless property editor contract. Views may render controls from this.
     property*: string
@@ -615,6 +656,8 @@ type
     sharedCount*: int
     supportsLocalScope*: bool
     supportsSharedScope*: bool
+    sourceScopeChoices*: seq[SourceScopeChoice]
+    impactSummaries*: seq[SourceScopeImpact]
     diagnostics*: seq[PropertyEditDiagnostic]
 
   LongTailPropertyEvidenceStatus* = enum
@@ -828,10 +871,12 @@ type
     newValue*: string
     originDetail*: string
     scope*: PropertyEditScope
+    sourceScope*: SourceScopeChoiceKind
     planKind*: CSSSourcePlanKind
     schemaKey*: string
     tokenName*: string
     variantKey*: string
+    sourceScopeChoices*: seq[SourceScopeChoice]
     reversible*: bool
     previewBefore*: string
     previewAfter*: string
@@ -909,6 +954,7 @@ type
     schemaKey*: string
     tokenName*: string
     variantKey*: string
+    sourceScopeChoices*: seq[SourceScopeChoice]
 
   AgentDesignSystemSchemaEntry* = object
     key*: string
@@ -970,6 +1016,7 @@ type
     source*: string
     severity*: ReviewAnnotationSeverity
     suggestedScope*: PropertyEditScope
+    sourceScopeChoices*: seq[SourceScopeChoice]
     includedInPrompt*: bool
     state*: ReviewAnnotationState
 
@@ -1015,6 +1062,7 @@ type
     origin*: PropertyOrigin
     originDetail*: string
     scope*: PropertyEditScope
+    sourceScope*: SourceScopeChoiceKind
     isShared*: bool
     editOrigin*: PropertyEditOrigin
     sourcePlanKind*: CSSSourcePlanKind
