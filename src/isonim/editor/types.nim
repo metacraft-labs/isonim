@@ -1752,6 +1752,23 @@ type
     cpemManual
     cpemAi
 
+  ComponentPropertySurfaceKind* = enum
+    cpskComponentApi
+    cpskCssOnly
+
+  ComponentEditTargetKind* = enum
+    cetFixture
+    cetVariant
+    cetPseudoState
+    cetResponsive
+    cetComponentProp
+    cetSharedDesignSystem
+
+  ComponentEditBlastRadiusKind* = enum
+    cebrOneStory
+    cebrAllVariantsOfComponent
+    cebrSharedDesignSystem
+
   ComponentStateCoverageDiagnosticKind* = enum
     cscdMissingStory
     cscdMissingFixture
@@ -1797,6 +1814,38 @@ type
     sourceLine*: int
     schemaKey*: string
     projectSpecific*: bool
+
+  ComponentEditImpact* = object
+    targetKind*: ComponentEditTargetKind
+    blastRadius*: ComponentEditBlastRadiusKind
+    sourceScope*: SourceScopeChoiceKind
+    ownerLabel*: string
+    schemaKey*: string
+    sourceFile*: string
+    sourceLine*: int
+    affectedComponent*: string
+    affectedComponents*: seq[string]
+    affectedStories*: seq[StoryRef]
+    affectedVariantKeys*: seq[string]
+    usageCount*: int
+    summary*: string
+
+  ComponentPropertySurface* = object
+    component*: string
+    variantKey*: string
+    property*: string
+    value*: string
+    surfaceKind*: ComponentPropertySurfaceKind
+    targetKind*: ComponentEditTargetKind
+    sourceScope*: SourceScopeChoiceKind
+    schemaKey*: string
+    sourceFile*: string
+    sourceLine*: int
+    documentation*: string
+    usageGuidance*: string
+    cssOrigin*: PropertyOrigin
+    cssOriginDetail*: string
+    impact*: ComponentEditImpact
 
   ComponentVariantMatrixCell* = object
     component*: string
@@ -1845,6 +1894,7 @@ type
     sourceEdit*: SourceEditPlan
     diagnostics*: seq[ComponentVariantDiagnostic]
     affectedStory*: StoryRef
+    impact*: ComponentEditImpact
 
   # --- Preview ---
   Platform* = enum

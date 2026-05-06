@@ -5324,6 +5324,179 @@ suite "Editor ViewModels (M27 workspace file writes)":
       check vm.inspector.pendingSourceEdits.val.len == 0
       dispose()
 
+  test "m53_component_api_variant_fixture_and_css_surfaces_are_explicit":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("m53-component-api")
+      defer: removeDir(root)
+
+      let componentFile = root / "components/card.schema"
+      let fixtureFile = root / "fixtures/card.fixture"
+      let classFile = root / "components/card.css"
+      createDir(root / "components")
+      createDir(root / "fixtures")
+      atomicWrite(componentFile,
+        "size=md\nhover=false\nresponsive.compact=compact-off\n")
+      atomicWrite(fixtureFile, "title=Paris\n")
+      atomicWrite(classFile, "padding=16px\n")
+      let defaultStory = StoryRef(group: "Card", name: "Default",
+        kind: skComponent, index: 0)
+      let compactStory = StoryRef(group: "Card", name: "Compact",
+        kind: skComponent, index: 1)
+      let schemaEntries = @[
+        WorkspaceEditableSchemaEntry(key: "components.card.props.size",
+          kind: wskComponentVariant, file: componentFile,
+          path: "Card.default.size", story: defaultStory, property: "size"),
+        WorkspaceEditableSchemaEntry(key: "components.card.states.hover",
+          kind: wskComponentVariant, file: componentFile,
+          path: "Card.default.state.hover", story: defaultStory,
+          property: "state.hover"),
+        WorkspaceEditableSchemaEntry(key: "components.card.responsive.compact",
+          kind: wskComponentVariant, file: componentFile,
+          path: "Card.default.responsive.compact", story: compactStory,
+          property: "responsive.compact"),
+        WorkspaceEditableSchemaEntry(key: "fixtures.card.title",
+          kind: wskStoryFixture, file: fixtureFile,
+          path: "fixtures.card.title", story: defaultStory,
+          property: "title"),
+        WorkspaceEditableSchemaEntry(key: "classes.card.padding",
+          kind: wskSourceMap, file: classFile, path: "classes.card.padding",
+          story: defaultStory, property: "padding")
+      ]
+      let designSchema = DesignSystemSchema(
+        schemaVersion: 1,
+        projectId: "m53-example",
+        ownerPackage: "isonim-example",
+        frameworkContract: "isonim-editor-design-schema-v1",
+        nodes: @[
+          DesignSchemaNode(key: "classes.card.padding",
+            kind: dsnClassDefinition, name: "card padding",
+            component: "Card", property: "padding", value: "16px",
+            sourceSpan: SourceSpan(file: classFile, line: 1, column: 1,
+              endLine: 1, endColumn: 20),
+            stories: @[defaultStory, compactStory],
+            components: @["Card", "CardList"], usageCount: 8)
+        ])
+      let variants = @[
+        ComponentVariantDefinition(
+          component: "Card",
+          variantKey: "default",
+          story: defaultStory,
+          fixtureName: "card.default",
+          metadataName: "Default",
+          fields: @[
+            ComponentVariantField(name: "responsive.compact",
+              kind: cvfkResponsiveBehavior, value: "compact-off",
+              sourceFile: componentFile, sourceLine: 3,
+              schemaKey: "components.card.responsive.compact")
+          ],
+          properties: @[
+            ComponentPropertyDefinition(name: "size", kind: cpkEnum,
+              value: "md", options: @["sm", "md", "lg"],
+              sourceFile: componentFile, sourceLine: 1,
+              schemaKey: "components.card.props.size",
+              constructor: "card-schema"),
+            ComponentPropertyDefinition(name: "title", kind: cpkDataFixture,
+              value: "Paris", sourceFile: fixtureFile, sourceLine: 1,
+              schemaKey: "components.card.props.title",
+              fixtureKey: "fixtures.card.title",
+              constructor: "card-fixture")
+          ],
+          stateControls: @[
+            ComponentStateControl(key: "hover", kind: cskHover,
+              label: "hover", value: "false", options: @["false", "true"],
+              story: defaultStory, fixtureName: "card.hover",
+              sourceFile: componentFile, sourceLine: 2,
+              schemaKey: "components.card.states.hover")
+          ]),
+        ComponentVariantDefinition(
+          component: "Card",
+          variantKey: "compact",
+          story: compactStory,
+          fixtureName: "card.compact",
+          metadataName: "Compact",
+          properties: @[
+            ComponentPropertyDefinition(name: "size", kind: cpkEnum,
+              value: "sm", options: @["sm", "md", "lg"],
+              sourceFile: componentFile, sourceLine: 1,
+              schemaKey: "components.card.props.size",
+              constructor: "card-schema")
+          ])
+      ]
+      let recorder = WorkspaceEditRecorder()
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "M53 component API workspace",
+        storyGroups = @[StoryGroup(name: "Card", kind: skComponent,
+          items: @[
+            StoryItem(name: "Default", kind: skComponent, group: "Card"),
+            StoryItem(name: "Compact", kind: skComponent, group: "Card")
+          ])],
+        componentVariants = variants,
+        designSystemSchema = designSchema,
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true),
+        editAdapter = adapterFor(root, schemaEntries, recorder = recorder),
+        initialStory = some(defaultStory)))
+      check vm.selectInspectorElement(ElementRef(
+        id: "card-root",
+        sourceKey: "card.root",
+        schemaKey: "components.card.props.size",
+        tag: "article",
+        sourceFile: componentFile,
+        sourceLine: 1,
+        properties: @[
+          PropertyInfo(name: "padding", value: "16px",
+            origin: poTailwindClass, originDetail: "class:card",
+            sourceFile: classFile, sourceLine: 1,
+            schemaKey: "classes.card.padding", sharedCount: 8,
+            directStyleAllowed: true)
+        ]))
+
+      let surfaces = vm.componentPropertySurfaces("Card")
+      check surfaces.anyIt(it.surfaceKind == cpskComponentApi and
+        it.property == "size" and it.targetKind == cetComponentProp and
+        it.impact.blastRadius == cebrAllVariantsOfComponent and
+        it.impact.affectedVariantKeys.len == 2)
+      check surfaces.anyIt(it.surfaceKind == cpskComponentApi and
+        it.property == "title" and it.targetKind == cetFixture and
+        it.impact.blastRadius == cebrOneStory)
+      check surfaces.anyIt(it.surfaceKind == cpskComponentApi and
+        it.property == "state.hover" and it.targetKind == cetPseudoState)
+      check surfaces.anyIt(it.surfaceKind == cpskCssOnly and
+        it.property == "padding" and it.targetKind == cetSharedDesignSystem and
+        it.impact.blastRadius == cebrSharedDesignSystem and
+        it.impact.usageCount == 8)
+
+      let propEdit = vm.editComponentProperty("Card", "default", "size", "lg")
+      check propEdit.status == pesAccepted
+      check propEdit.sourceEdit.sourceScope == sskComponentSchemaApi
+      check propEdit.impact.blastRadius == cebrAllVariantsOfComponent
+      check propEdit.impact.affectedVariantKeys == @["default", "compact"]
+
+      let fixtureEdit = vm.editComponentProperty("Card", "default", "title",
+        "Sofia")
+      check fixtureEdit.status == pesAccepted
+      check fixtureEdit.sourceEdit.sourceScope == sskStoryFixture
+      check fixtureEdit.impact.blastRadius == cebrOneStory
+
+      let stateEdit = vm.editComponentStateControl("Card", "default", "hover",
+        "true")
+      check stateEdit.status == pesAccepted
+      check stateEdit.impact.targetKind == cetPseudoState
+      check stateEdit.sourceEdit.schemaKey == "components.card.states.hover"
+
+      let responsiveEdit = vm.editComponentVariantField("Card", "default",
+        "responsive.compact", "compact-on")
+      check responsiveEdit.status == pesAccepted
+      check responsiveEdit.impact.targetKind == cetResponsive
+      check responsiveEdit.sourceEdit.sourceScope == sskComponentSchemaApi
+
+      let saved = vm.applyWorkspaceFileEdits()
+      check saved.ok
+      check readFile(componentFile).contains("lg")
+      check readFile(componentFile).contains("true")
+      check readFile(fixtureFile).contains("Sofia")
+      dispose()
+
   test "agent_proposals_target_design_schema_scopes":
     createRoot proc(dispose: proc()) =
       let root = tempWorkspaceDir("agent-proposal-scopes")

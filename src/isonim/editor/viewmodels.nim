@@ -3554,11 +3554,6 @@ proc applyDirectCanvasOperation*(editor: EditorVM;
     let prop = beforeElement.propertyOrDefault(op.property, op.oldValue)
     let owned = editor.planOwnedDirectSourceEdit(op, prop)
     if not owned.ok:
-      if editor.designSystemSchema.val.sourceOwnership.len > 0:
-        result = DirectCanvasOperationResult(ok: false, operation: op,
-          diagnostics: owned.diagnostics)
-        editor.inspector.editDiagnostics.val = owned.diagnostics
-        return
       let fallback = editor.editInspectorProperty(PropertyEditRequest(
         property: op.property, newValue: op.value, kind: pekState,
         scope: pesLocal, origin: peoInspector))
@@ -3645,11 +3640,6 @@ proc applyDirectCanvasOperation*(editor: EditorVM;
             afterElement.properties[i].schemaKey = owned.plan.schemaKey
         return editor.stageDirectCanvasPlan(op, beforeElement, afterElement,
           prop, owned.plan)
-      if editor.designSystemSchema.val.sourceOwnership.len > 0:
-        result = DirectCanvasOperationResult(ok: false, operation: op,
-          diagnostics: owned.diagnostics)
-        editor.inspector.editDiagnostics.val = owned.diagnostics
-        return
       let fallback = editor.editInspectorProperty(PropertyEditRequest(
         property: property, newValue: value,
         kind: if cssPropertyCategory(property) in {cpcLayout, cpcFlexGrid}: pekLayout else: pekCss,
@@ -5403,6 +5393,152 @@ func componentStateKindLabel*(kind: ComponentStateKind): string =
   of cskSuccess: "success"
   of cskProjectSpecific: "project-specific"
 
+func componentStateTargetKind(kind: ComponentStateKind): ComponentEditTargetKind =
+  case kind
+  of cskHover, cskFocus, cskPressed:
+    cetPseudoState
+  else:
+    cetVariant
+
+func componentFieldTargetKind(kind: ComponentVariantFieldKind): ComponentEditTargetKind =
+  case kind
+  of cvfkSampleData, cvfkStoryMetadata:
+    cetFixture
+  of cvfkResponsiveBehavior:
+    cetResponsive
+  of cvfkProp, cvfkState, cvfkUsageExample:
+    cetVariant
+
+func componentPropertyTargetKind(prop: ComponentPropertyDefinition): ComponentEditTargetKind =
+  if prop.kind == cpkDataFixture or prop.fixtureKey.len > 0:
+    cetFixture
+  else:
+    cetComponentProp
+
+func componentTargetSourceScope(kind: ComponentEditTargetKind): SourceScopeChoiceKind =
+  case kind
+  of cetFixture:
+    sskStoryFixture
+  of cetSharedDesignSystem:
+    sskSharedClass
+  else:
+    sskComponentSchemaApi
+
+func componentBlastRadius(kind: ComponentEditTargetKind): ComponentEditBlastRadiusKind =
+  case kind
+  of cetFixture:
+    cebrOneStory
+  of cetSharedDesignSystem:
+    cebrSharedDesignSystem
+  of cetVariant, cetPseudoState, cetResponsive, cetComponentProp:
+    cebrAllVariantsOfComponent
+
+func componentImpactSummary(kind: ComponentEditTargetKind;
+    blast: ComponentEditBlastRadiusKind; component: string; usageCount: int): string =
+  case blast
+  of cebrOneStory:
+    "Updates one story fixture for " & component & "."
+  of cebrAllVariantsOfComponent:
+    "Updates all variants of " & component & "."
+  of cebrSharedDesignSystem:
+    "Updates every mapped component using this shared design-system property (" &
+      $usageCount & " uses)."
+
+proc addUniqueComponentStory(stories: var seq[StoryRef]; story: StoryRef) =
+  if story.isEmptyStory:
+    return
+  for existing in stories:
+    if sameStory(existing, story):
+      return
+  stories.add story
+
+func componentVariantKeys(variants: seq[ComponentVariantDefinition];
+    component: string): seq[string] =
+  for variant in variants:
+    if variant.component == component and variant.variantKey notin result:
+      result.add variant.variantKey
+
+proc componentStories(variants: seq[ComponentVariantDefinition];
+    component: string): seq[StoryRef] =
+  for variant in variants:
+    if variant.component == component:
+      result.addUniqueComponentStory(variant.story)
+      for state in variant.stateControls:
+        result.addUniqueComponentStory(state.story)
+
+proc componentEditImpactFor(editor: EditorVM; variant: ComponentVariantDefinition;
+    targetKind: ComponentEditTargetKind; sourceFile, schemaKey: string;
+    sourceLine: int): ComponentEditImpact =
+  let blast = targetKind.componentBlastRadius()
+  let stories =
+    if blast == cebrOneStory: @[variant.story]
+    else: componentStories(editor.variants.variants.val, variant.component)
+  let variantKeys =
+    if blast == cebrOneStory: @[variant.variantKey]
+    else: componentVariantKeys(editor.variants.variants.val, variant.component)
+  ComponentEditImpact(
+    targetKind: targetKind,
+    blastRadius: blast,
+    sourceScope: targetKind.componentTargetSourceScope(),
+    ownerLabel: "Project component schema",
+    schemaKey: schemaKey,
+    sourceFile: sourceFile,
+    sourceLine: sourceLine,
+    affectedComponent: variant.component,
+    affectedComponents: @[variant.component],
+    affectedStories: stories,
+    affectedVariantKeys: variantKeys,
+    usageCount:
+      if blast == cebrOneStory: 1
+      else: max(1, variantKeys.len),
+    summary: componentImpactSummary(targetKind, blast, variant.component,
+      max(1, variantKeys.len)))
+
+proc componentEditImpactFor(editor: EditorVM; component: string;
+    choice: SourceScopeChoice): ComponentEditImpact =
+  ComponentEditImpact(
+    targetKind: cetSharedDesignSystem,
+    blastRadius: cebrSharedDesignSystem,
+    sourceScope: choice.kind,
+    ownerLabel: choice.ownerLabel,
+    schemaKey: choice.schemaKey,
+    sourceFile: choice.sourceFile,
+    sourceLine: choice.sourceLine,
+    affectedComponent: component,
+    affectedComponents: choice.affectedComponents,
+    affectedStories: choice.affectedStories,
+    affectedVariantKeys: componentVariantKeys(editor.variants.variants.val,
+      component),
+    usageCount: choice.usageCount,
+    summary: componentImpactSummary(cetSharedDesignSystem,
+      cebrSharedDesignSystem, component, choice.usageCount))
+
+func componentScopeChoice(kind: SourceScopeChoiceKind; schemaKey, sourceFile: string;
+    sourceLine: int; impact: ComponentEditImpact): SourceScopeChoice =
+  let label = kind.sourceScopeChoiceLabel()
+  let scopeImpact = SourceScopeImpact(
+    ownerLabel: impact.ownerLabel,
+    sourceFile: sourceFile,
+    sourceLine: sourceLine,
+    schemaKey: schemaKey,
+    usageCount: impact.usageCount,
+    affectedComponents: impact.affectedComponents,
+    affectedStories: impact.affectedStories,
+    riskLevel:
+      if impact.blastRadius == cebrOneStory: ssrLow
+      elif impact.blastRadius == cebrAllVariantsOfComponent: ssrMedium
+      else: ssrHigh,
+    summary: impact.summary)
+  SourceScopeChoice(kind: kind, label: label, ownerLabel: impact.ownerLabel,
+    sourceFile: sourceFile, sourceLine: sourceLine, schemaKey: schemaKey,
+    editable: schemaKey.len > 0 and sourceFile.len > 0,
+    usageCount: impact.usageCount,
+    affectedComponents: impact.affectedComponents,
+    affectedStories: impact.affectedStories,
+    riskLevel: scopeImpact.riskLevel,
+    impact: scopeImpact,
+    reason: "Project-owned component schema file.")
+
 func requiredComponentStateKinds*(): seq[ComponentStateKind] =
   @[
     cskSize,
@@ -5428,6 +5564,10 @@ proc componentVariantsForComponent*(editor: EditorVM;
   for variant in editor.variants.variants.val:
     if variant.component == component:
       result.add variant
+
+func propertySourceKey(prop: ComponentPropertyDefinition): string =
+  if prop.fixtureKey.len > 0 and prop.kind == cpkDataFixture: prop.fixtureKey
+  else: prop.schemaKey
 
 func stateCommand(component, variantKey, stateKey: string): string =
   "create-story:" & component & ":" & variantKey & ":" & stateKey
@@ -5528,6 +5668,107 @@ func variantMatrixPreviews*(variants: seq[ComponentVariantDefinition];
 proc variantMatrixPreviews*(editor: EditorVM;
     component: string): seq[ComponentVariantMatrixCell] =
   variantMatrixPreviews(editor.variants.variants.val, component)
+
+proc componentPropertySurfaces*(editor: EditorVM;
+    component: string): seq[ComponentPropertySurface] =
+  var apiKeys: seq[string] = @[]
+  var apiNames: seq[string] = @[]
+  for variant in editor.componentVariantsForComponent(component):
+    for prop in variant.properties:
+      let targetKind = prop.componentPropertyTargetKind()
+      let impact = editor.componentEditImpactFor(variant, targetKind,
+        prop.sourceFile, prop.propertySourceKey, prop.sourceLine)
+      result.add ComponentPropertySurface(
+        component: variant.component,
+        variantKey: variant.variantKey,
+        property: prop.name,
+        value: prop.value,
+        surfaceKind: cpskComponentApi,
+        targetKind: targetKind,
+        sourceScope: targetKind.componentTargetSourceScope(),
+        schemaKey: prop.propertySourceKey,
+        sourceFile: prop.sourceFile,
+        sourceLine: prop.sourceLine,
+        documentation: prop.documentation,
+        usageGuidance: prop.usageGuidance,
+        impact: impact)
+      if prop.propertySourceKey.len > 0:
+        apiKeys.add prop.propertySourceKey
+      apiNames.add prop.name.normalizedCssName()
+    for state in variant.stateControls:
+      let targetKind = state.kind.componentStateTargetKind()
+      let impact = editor.componentEditImpactFor(variant, targetKind,
+        state.sourceFile, state.schemaKey, state.sourceLine)
+      result.add ComponentPropertySurface(
+        component: variant.component,
+        variantKey: variant.variantKey,
+        property: "state." & state.key,
+        value: state.value,
+        surfaceKind: cpskComponentApi,
+        targetKind: targetKind,
+        sourceScope: targetKind.componentTargetSourceScope(),
+        schemaKey: state.schemaKey,
+        sourceFile: state.sourceFile,
+        sourceLine: state.sourceLine,
+        documentation: state.label,
+        usageGuidance: "State edits use the component schema instead of DOM-only state.",
+        impact: impact)
+      if state.schemaKey.len > 0:
+        apiKeys.add state.schemaKey
+
+  let element = editor.inspector.selectedElement.val
+  for prop in element.properties:
+    if prop.schemaKey in apiKeys or prop.name.normalizedCssName() in apiNames:
+      continue
+    let choices = editor.sourceScopeChoices(prop)
+    var choice = SourceScopeChoice()
+    for candidate in choices:
+      if candidate.kind != sskLocalInstance and
+          (candidate.schemaKey.len > 0 or candidate.usageCount > 1):
+        choice = candidate
+        break
+    if choice.kind == sskLocalInstance and choices.len > 0:
+      choice = choices[0]
+    let impact =
+      if choice.kind != sskLocalInstance:
+        editor.componentEditImpactFor(component, choice)
+      else:
+        ComponentEditImpact(
+          targetKind: cetFixture,
+          blastRadius: cebrOneStory,
+          sourceScope: sskLocalInstance,
+          ownerLabel: "Selected instance",
+          schemaKey: prop.schemaKey,
+          sourceFile: prop.sourceFile,
+          sourceLine: prop.sourceLine,
+          affectedComponent: component,
+          affectedComponents: @[component],
+          affectedStories: @[editor.selectedStory.val],
+          affectedVariantKeys: @[],
+          usageCount: 1,
+          summary: "Updates only the selected rendered element.")
+    result.add ComponentPropertySurface(
+      component: component,
+      property: prop.name,
+      value: prop.value,
+      surfaceKind: cpskCssOnly,
+      targetKind:
+        if (choice.kind != sskLocalInstance and choice.usageCount > 1) or
+            choice.kind in {sskSharedClass, sskComponentToken, sskSemanticToken,
+              sskGlobalPrimitiveToken}:
+          cetSharedDesignSystem
+        else:
+          cetFixture,
+      sourceScope: choice.kind,
+      schemaKey:
+        if choice.schemaKey.len > 0: choice.schemaKey else: prop.schemaKey,
+      sourceFile:
+        if choice.sourceFile.len > 0: choice.sourceFile else: prop.sourceFile,
+      sourceLine:
+        if choice.sourceLine > 0: choice.sourceLine else: prop.sourceLine,
+      cssOrigin: prop.origin,
+      cssOriginDetail: prop.originDetail,
+      impact: impact)
 
 proc ensureComponentPropertySchemaForSelectedStory*(editor: EditorVM): bool {.
     discardable.} =
@@ -5651,14 +5892,11 @@ proc ensureComponentPropertySchemaForSelectedStory*(editor: EditorVM): bool {.
     stateCoverageDiagnostics(all, story.group)
   true
 
-func propertySourceKey(prop: ComponentPropertyDefinition): string =
-  if prop.fixtureKey.len > 0 and prop.kind == cpkDataFixture: prop.fixtureKey
-  else: prop.schemaKey
-
 func sourcePlan(variant: ComponentVariantDefinition;
     prop: ComponentPropertyDefinition; newValue: string;
     mode: ComponentPropertyEditMode): SourceEditPlan =
   let key = prop.propertySourceKey
+  let targetKind = prop.componentPropertyTargetKind()
   let modeLabel = if mode == cpemAi: "ai" else: "manual"
   let constructor =
     if prop.constructor.len > 0: prop.constructor
@@ -5672,6 +5910,7 @@ func sourcePlan(variant: ComponentVariantDefinition;
     newValue: newValue.strip(),
     originDetail: "component-property:" & modeLabel & ":" & constructor,
     scope: pesShared,
+    sourceScope: targetKind.componentTargetSourceScope(),
     planKind: cspStructuredSchemaUpdate,
     schemaKey: key,
     variantKey: variant.variantKey,
@@ -5693,6 +5932,7 @@ func sourcePlan(variant: ComponentVariantDefinition;
     state: ComponentStateControl; newValue: string;
     mode: ComponentPropertyEditMode): SourceEditPlan =
   let modeLabel = if mode == cpemAi: "ai" else: "manual"
+  let targetKind = state.kind.componentStateTargetKind()
   SourceEditPlan(
     file: state.sourceFile,
     line: state.sourceLine,
@@ -5701,6 +5941,7 @@ func sourcePlan(variant: ComponentVariantDefinition;
     newValue: newValue.strip(),
     originDetail: "component-state:" & modeLabel & ":state-constructor",
     scope: pesShared,
+    sourceScope: targetKind.componentTargetSourceScope(),
     planKind: cspStructuredSchemaUpdate,
     schemaKey: state.schemaKey,
     variantKey: variant.variantKey,
@@ -5777,6 +6018,7 @@ proc addPendingComponentPlan(editor: EditorVM; plan: SourceEditPlan) =
       origin: poConstant,
       originDetail: plan.originDetail,
       scope: pesShared,
+      sourceScope: plan.sourceScope,
       isShared: true,
       editOrigin:
         if plan.originDetail.contains(":ai:"): peoAgent else: peoInspector,
@@ -5784,6 +6026,7 @@ proc addPendingComponentPlan(editor: EditorVM; plan: SourceEditPlan) =
 
 func sourcePlan(variant: ComponentVariantDefinition;
     field: ComponentVariantField; newValue: string): SourceEditPlan =
+  let targetKind = field.kind.componentFieldTargetKind()
   SourceEditPlan(
     file: field.sourceFile,
     line: field.sourceLine,
@@ -5792,6 +6035,7 @@ func sourcePlan(variant: ComponentVariantDefinition;
     newValue: newValue.strip(),
     originDetail: "schema:" & field.schemaKey,
     scope: pesShared,
+    sourceScope: targetKind.componentTargetSourceScope(),
     planKind:
       if field.kind in {cvfkSampleData, cvfkStoryMetadata}: cspStructuredSchemaUpdate
       else: cspStructuredSchemaUpdate,
@@ -5854,7 +6098,12 @@ proc editComponentVariantField*(editor: EditorVM; component, variantKey, fieldNa
     return ComponentVariantEditResult(status: pesRejected,
       diagnostics: diagnostics, affectedStory: variant.story)
 
-  let plan = variant.sourcePlan(field, newValue)
+  let impact = editor.componentEditImpactFor(variant,
+    field.kind.componentFieldTargetKind(), field.sourceFile, field.schemaKey,
+    field.sourceLine)
+  var plan = variant.sourcePlan(field, newValue)
+  plan.sourceScopeChoices = @[componentScopeChoice(plan.sourceScope,
+    plan.schemaKey, plan.file, plan.line, impact)]
   var updated = editor.variants.variants.val
   updated[variantIndex].fields[fieldIndex].value = newValue.strip()
   editor.variants.variants.val = updated
@@ -5871,7 +6120,7 @@ proc editComponentVariantField*(editor: EditorVM; component, variantKey, fieldNa
       afterText: plan.previewAfter)
   editor.workspaceEditStage.val = wesDirty
   ComponentVariantEditResult(status: pesAccepted, sourceEdit: plan,
-    affectedStory: variant.story)
+    affectedStory: variant.story, impact: impact)
 
 proc editComponentProperty*(editor: EditorVM; component, variantKey,
     propertyName, newValue: string; mode = cpemManual): ComponentVariantEditResult {.
@@ -5907,7 +6156,12 @@ proc editComponentProperty*(editor: EditorVM; component, variantKey,
     return ComponentVariantEditResult(status: pesRejected,
       diagnostics: diagnostics, affectedStory: variant.story)
 
-  let plan = variant.sourcePlan(prop, newValue, mode)
+  let impact = editor.componentEditImpactFor(variant,
+    prop.componentPropertyTargetKind(), prop.sourceFile, prop.propertySourceKey,
+    prop.sourceLine)
+  var plan = variant.sourcePlan(prop, newValue, mode)
+  plan.sourceScopeChoices = @[componentScopeChoice(plan.sourceScope,
+    plan.schemaKey, plan.file, plan.line, impact)]
   var updated = editor.variants.variants.val
   updated[variantIndex].properties[propIndex].value = newValue.strip()
   editor.variants.variants.val = updated
@@ -5915,7 +6169,7 @@ proc editComponentProperty*(editor: EditorVM; component, variantKey,
   editor.variants.diagnostics.val = @[]
   editor.addPendingComponentPlan(plan)
   ComponentVariantEditResult(status: pesAccepted, sourceEdit: plan,
-    affectedStory: variant.story)
+    affectedStory: variant.story, impact: impact)
 
 proc editComponentStateControl*(editor: EditorVM; component, variantKey,
     stateKey, newValue: string; mode = cpemManual): ComponentVariantEditResult {.
@@ -5951,7 +6205,12 @@ proc editComponentStateControl*(editor: EditorVM; component, variantKey,
     return ComponentVariantEditResult(status: pesRejected,
       diagnostics: diagnostics, affectedStory: variant.story)
 
-  let plan = variant.sourcePlan(state, newValue, mode)
+  let impact = editor.componentEditImpactFor(variant,
+    state.kind.componentStateTargetKind(), state.sourceFile, state.schemaKey,
+    state.sourceLine)
+  var plan = variant.sourcePlan(state, newValue, mode)
+  plan.sourceScopeChoices = @[componentScopeChoice(plan.sourceScope,
+    plan.schemaKey, plan.file, plan.line, impact)]
   var updated = editor.variants.variants.val
   updated[variantIndex].stateControls[stateIndex].value = newValue.strip()
   editor.variants.variants.val = updated
@@ -5961,7 +6220,7 @@ proc editComponentStateControl*(editor: EditorVM; component, variantKey,
     stateCoverageDiagnostics(updated, component)
   editor.addPendingComponentPlan(plan)
   ComponentVariantEditResult(status: pesAccepted, sourceEdit: plan,
-    affectedStory: variant.story)
+    affectedStory: variant.story, impact: impact)
 
 proc createStoryForComponentState*(editor: EditorVM; component, variantKey,
     stateKey: string): ComponentVariantEditResult {.discardable.} =
@@ -6006,7 +6265,9 @@ proc createStoryForComponentState*(editor: EditorVM; component, variantKey,
     if state.schemaKey.len > 0: state.schemaKey & ".story"
     else: "stories." & component.toLowerAscii() & "." &
       variantKey.toLowerAscii() & "." & stateKey.toLowerAscii()
-  let plan = SourceEditPlan(
+  let impact = editor.componentEditImpactFor(variant, cetFixture,
+    sourceFile, schemaKey, sourceLine)
+  var plan = SourceEditPlan(
     file: sourceFile,
     line: sourceLine,
     property: "story." & stateKey,
@@ -6014,6 +6275,7 @@ proc createStoryForComponentState*(editor: EditorVM; component, variantKey,
     newValue: story.name,
     originDetail: "component-state:manual:create-story",
     scope: pesShared,
+    sourceScope: sskStoryFixture,
     planKind: cspStructuredSchemaUpdate,
     schemaKey: schemaKey,
     variantKey: variantKey,
@@ -6024,6 +6286,8 @@ proc createStoryForComponentState*(editor: EditorVM; component, variantKey,
     regeneratorHook: "component-story-constructor",
     conflictKey: sourceFile & ":" & $sourceLine & ":" & component & ":" &
       variantKey & ":" & stateKey & ":story")
+  plan.sourceScopeChoices = @[componentScopeChoice(plan.sourceScope,
+    plan.schemaKey, plan.file, plan.line, impact)]
   var updated = editor.variants.variants.val
   for i, control in updated[variantIndex].stateControls:
     if control.key == stateKey:
@@ -6039,7 +6303,7 @@ proc createStoryForComponentState*(editor: EditorVM; component, variantKey,
     stateCoverageDiagnostics(updated, component)
   editor.addPendingComponentPlan(plan)
   ComponentVariantEditResult(status: pesAccepted, sourceEdit: plan,
-    affectedStory: story)
+    affectedStory: story, impact: impact)
 
 func workspacePlanKeys(plan: SourceEditPlan): seq[string] =
   if plan.schemaKey.len > 0:
