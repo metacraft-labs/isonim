@@ -1750,22 +1750,22 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
       commitSource = false)
   result = ui(r):
     tdiv(display = "grid",
-          `grid-template-columns` = "72px minmax(58px, 1fr) 36px 42px 42px 24px 24px",
-          align_items = "center", gap = "4px",
-          min_height = "28px", max_width = "100%", overflow = "hidden"):
+          `grid-template-columns` = "76px minmax(50px, 1fr) 30px 34px 36px 20px 22px",
+          align_items = "center", gap = "3px",
+          min_height = "24px", max_width = "100%", overflow = "hidden"):
       label(ref = labelNode,
-            font_size = "10px", color = textMuted,
+            font_size = "10px", color = textSecondary,
             white_space = "nowrap", overflow = "hidden",
             text_overflow = "ellipsis", cursor = "ew-resize",
             title = "Scrub " & propName & " value"):
         text propName
       input(ref = inputNode,
             class = "editor-input",
-            height = "24px",
-            background_color = bgSurface,
+            height = "22px",
+            background_color = "#0F172A",
             border = "1px solid " & border,
-            border_radius = "4px",
-            padding = "0 6px",
+            border_radius = "3px",
+            padding = "0 5px",
             font_size = "11px",
             color = textPrimary,
             outline = "none",
@@ -1779,8 +1779,8 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
             display = "flex", align_items = "center",
             justify_content = "center",
             border = "1px solid " & border,
-            border_radius = "4px",
-            background_color = bgSurface,
+            border_radius = "3px",
+            background_color = "#0F172A",
             color = textMuted, font_size = "9px",
             cursor = "pointer"):
         text (if unit.len > 0: unit else: "-")
@@ -1789,8 +1789,8 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
             display = "flex", align_items = "center",
             justify_content = "center",
             border = "1px solid " & border,
-            border_radius = "4px",
-            background_color = bgSurface,
+            border_radius = "3px",
+            background_color = "#0F172A",
             color = textMuted, font_size = "9px",
             white_space = "nowrap", overflow = "hidden"):
         text binding
@@ -1799,8 +1799,8 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
             height = "22px",
             position = "relative",
             border = "1px solid " & border,
-            border_radius = "4px",
-            background_color = bgSurface,
+            border_radius = "3px",
+            background_color = "#0F172A",
             color = (if editableScopeCount > 1: gold else: textMuted),
             font_size = "9px",
             cursor = "pointer"):
@@ -1858,8 +1858,8 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
             display = "flex", align_items = "center",
             justify_content = "center",
             border = "1px solid " & border,
-            border_radius = "4px",
-            background_color = bgSurface,
+            border_radius = "3px",
+            background_color = "#0F172A",
             color = textMuted, font_size = "11px",
             cursor = "pointer"):
         text "r"
@@ -1869,8 +1869,8 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
             display = "flex", align_items = "center",
             justify_content = "center",
             border = "1px solid " & border,
-            border_radius = "4px",
-            background_color = bgSurface,
+            border_radius = "3px",
+            background_color = "#0F172A",
             color = textMuted, font_size = "13px",
             cursor = "pointer"):
         text "..."
@@ -1931,14 +1931,17 @@ proc renderCascadeIndicator[R, E](r: R; prop: PropertyInfo): E =
     elif prop.schemaKey.len > 0: prop.schemaKey
     else: prop.sourceFile & ":" & $prop.sourceLine
   result = ui(r):
-    tdiv(display = "flex", align_items = "center", gap = "5px",
-          padding = "4px 6px", border_radius = "4px",
-          background_color = bgBase):
-      span(font_size = "9px", font_weight = "700", color = color):
+    tdiv(display = "grid",
+          `grid-template-columns` = "auto auto minmax(0, 1fr)",
+          align_items = "center", gap = "4px",
+          min_width = "0",
+          padding = "1px 0",
+          background_color = "transparent"):
+      span(font_size = "8px", font_weight = "700", color = color):
         text tone
-      span(font_size = "9px", color = textMuted):
+      span(font_size = "8px", color = textMuted):
         text label
-      span(font_size = "10px", color = textDim, font_family = "monospace",
+      span(font_size = "8px", color = textDim, font_family = "monospace",
             flex = "1", min_width = "0",
             white_space = "nowrap", overflow = "hidden",
             text_overflow = "ellipsis"):
@@ -2691,21 +2694,24 @@ proc renderSwatches[R, E](r: R; vm: EditorVM; frame: E; propName,
 proc renderRichPropertyControl[R, E](r: R; vm: EditorVM; frame: E;
     clipboard: StyleClipboard; prop: PropertyInfo; fallback: string): E =
   result = ui(r):
-    tdiv(display = "flex", flex_direction = "column", gap = "4px",
-          padding = "5px 0",
+    tdiv(display = "flex", flex_direction = "column", gap = "3px",
+          padding = "4px 0",
           border_bottom = "1px solid " & borderFaint)
   r.setAttribute(result, "data-inspector-control", prop.name)
   r.appendChild(result, renderPropertyInput[R, E](r, vm, frame, prop, fallback))
   let metaRow = ui(r):
-    tdiv(display = "flex", align_items = "center", gap = "5px")
+    tdiv(display = "grid",
+          `grid-template-columns` = "minmax(0, 1fr) auto",
+          align_items = "center", gap = "4px",
+          padding_left = "76px")
   r.appendChild(metaRow, renderCascadeIndicator[R, E](r, prop))
   r.appendChild(metaRow, renderPropertyActions[R, E](r, vm, frame, clipboard,
     prop.name, prop.value, fallback))
   r.appendChild(result, metaRow)
   let advanced = ui(r):
     details(`aria-label` = "Show advanced " & prop.name & " controls"):
-      summary(cursor = "pointer", color = textMuted, font_size = "10px",
-              padding = "2px 0"):
+      summary(cursor = "pointer", color = textMuted, font_size = "9px",
+              padding = "1px 0 1px 76px"):
         text "Advanced"
   if isNumericProperty(prop.name):
     r.appendChild(advanced, renderNumericAffordances[R, E](r, vm, frame,
@@ -3517,36 +3523,55 @@ proc renderDesignSystemImpactPanel[R, E](r: R; vm: EditorVM; frame: E;
   discard frame
   discard selected
   result = ui(r):
-    details(open = "open",
-            `aria-label` = "Source scope property impact"):
-      summary(cursor = "pointer", color = textMuted, font_size = "10px",
-              padding = "2px 0"):
+    details(open = "open", `aria-label` = "Source scope property impact"):
+      summary(cursor = "pointer", color = textSecondary, font_size = "10px",
+              font_weight = "600",
+              padding = "4px 0"):
         text "Source impact"
-      tdiv(display = "flex", flex_direction = "column", gap = "6px",
-            padding = "8px", border = "1px solid " & border,
-            border_radius = "6px", background_color = bgBase):
-        tdiv(display = "flex", flex_direction = "column", gap = "2px"):
-          span(font_size = "10px", font_weight = "700",
-                color = textSecondary,
-                text_transform = "uppercase", letter_spacing = "0.5px"):
-            text "Scope impact"
-          span(font_size = "10px", color = textDim):
-            text "Use the row scope selector to choose local, fixture, class, API, or token source ownership."
+      tdiv(display = "flex", flex_direction = "column", gap = "5px",
+            padding = "6px", border = "1px solid " & border,
+            border_radius = "5px", background_color = "#0F172A"):
+        span(font_size = "9px", color = textDim):
+          text "Scope impact: use the row scope selector for local, fixture, class, API, or token ownership."
+        tdiv(display = "grid",
+              `grid-template-columns` = "repeat(3, minmax(0, 1fr))",
+              gap = "4px"):
+          tdiv(display = "flex", flex_direction = "column", gap = "1px",
+                padding = "4px", border = "1px solid " & borderFaint,
+                border_radius = "4px"):
+            span(font_size = "8px", color = textDim):
+              text "Scoped props"
+            span(font_size = "11px", font_weight = "700", color = textPrimary):
+              text $impactRows.len
+          tdiv(display = "flex", flex_direction = "column", gap = "1px",
+                padding = "4px", border = "1px solid " & borderFaint,
+                border_radius = "4px"):
+            span(font_size = "8px", color = textDim):
+              text "Shared"
+            span(font_size = "11px", font_weight = "700", color = gold):
+              text $sharedEditors.len
+          tdiv(display = "flex", flex_direction = "column", gap = "1px",
+                padding = "4px", border = "1px solid " & borderFaint,
+                border_radius = "4px"):
+            span(font_size = "8px", color = textDim):
+              text "Staged"
+            span(font_size = "11px", font_weight = "700", color = green):
+              text $commitPreviews.len
         if impactRows.len == 0:
           span(font_size = "10px", color = textDim):
             text "This selection has no source-backed property scopes."
         else:
-          for i in 0 ..< min(impactRows.len, 6):
+          for i in 0 ..< min(impactRows.len, 3):
             let row = impactRows[i]
             let editor = row.editor
             let impact = row.impact
             tdiv(display = "grid",
                   `grid-template-columns` = "minmax(0, 1fr) auto",
-                  gap = "6px", align_items = "center",
-                  padding = "5px 6px",
-                  border = "1px solid " & border,
-                  border_radius = "5px",
-                  background_color = bgSidebar):
+                  gap = "5px", align_items = "center",
+                  padding = "4px 5px",
+                  border = "1px solid " & borderFaint,
+                  border_radius = "4px",
+                  background_color = bgCard):
               tdiv(display = "flex", flex_direction = "column", gap = "2px",
                     min_width = "0"):
                 span(font_size = "11px", color = textPrimary,
@@ -3566,24 +3591,23 @@ proc renderDesignSystemImpactPanel[R, E](r: R; vm: EditorVM; frame: E;
               tdiv(role = "note",
                     `aria-label` = "Use the property row source scope selector for " &
                       editor.property,
-                    padding = "4px 6px", border_radius = "4px",
+                    padding = "3px 5px", border_radius = "4px",
                     background_color = bgSurface, color = gold,
-                    font_size = "10px"):
+                    font_size = "9px"):
                 text $editor.sourceScopeChoices.len & " scopes"
-        if impactRows.len > 6:
+        if impactRows.len > 3:
           span(font_size = "10px", color = textDim):
-            text "+" & $(impactRows.len - 6) & " more source-backed properties"
+            text "+" & $(impactRows.len - 3) & " more source-backed properties"
         tdiv(display = "flex", flex_direction = "column", gap = "4px",
               `aria-label` = "Shared design-system editors"):
-          span(font_size = "10px", font_weight = "700",
-                color = textSecondary,
-                text_transform = "uppercase", letter_spacing = "0.5px"):
+          span(font_size = "10px", font_weight = "600",
+                color = textSecondary):
             text "Shared editors"
           if sharedEditors.len == 0:
             span(font_size = "10px", color = textDim):
               text "No shared design-system editor is available for this selection."
           else:
-            for i in 0 ..< min(sharedEditors.len, 8):
+            for i in 0 ..< min(sharedEditors.len, 4):
               let editor = sharedEditors[i]
               let scope = editor.sourceScope.kind.sourceScopeChoiceLabel()
               tdiv(display = "grid",
@@ -3610,9 +3634,8 @@ proc renderDesignSystemImpactPanel[R, E](r: R; vm: EditorVM; frame: E;
                   text $editor.flowCapabilities.len & " flows"
         tdiv(display = "flex", flex_direction = "column", gap = "4px",
               `aria-label` = "Scope-specific commit previews"):
-          span(font_size = "10px", font_weight = "700",
-                color = textSecondary,
-                text_transform = "uppercase", letter_spacing = "0.5px"):
+          span(font_size = "10px", font_weight = "600",
+                color = textSecondary):
             text "Commit preview"
           if commitPreviews.len == 0:
             span(font_size = "10px", color = textDim):
@@ -3664,18 +3687,48 @@ proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;
   r.clearChildren(content)
   if vm.inspector.hasElement.val:
     let selected = vm.inspector.selectedElement.val
+    let sourceLabel =
+      if selected.sourceFile.len > 0:
+        selected.sourceFile & ":" & $selected.sourceLine
+      else:
+        "runtime selection"
+    let elementLabel =
+      selected.tag
+    let sizeLabel =
+      if fallbackPropertyValue(selected, "width", "").len > 0:
+        fallbackPropertyValue(selected, "width", "") & " x " &
+          fallbackPropertyValue(selected, "height", "")
+      else:
+        "auto"
     let summary = ui(r):
-      tdiv(display = "flex", flex_direction = "column", gap = "4px",
-            padding = "10px", border = "1px solid " & border,
-            border_radius = "6px", background_color = bgBase):
-        span(font_size = "10px", font_weight = "700", color = textSecondary,
-              text_transform = "uppercase", letter_spacing = "0.5px"):
-          text "Selection"
-        span(font_size = "12px", color = textPrimary,
-              font_family = "monospace"):
-          text selected.tag
-        span(font_size = "11px", color = textDim):
-          text selected.sourceFile & ":" & $selected.sourceLine
+      tdiv(display = "grid",
+            `grid-template-columns` = "minmax(0, 1fr) auto",
+            align_items = "center", gap = "6px",
+            padding = "6px",
+            border = "1px solid " & borderFaint,
+            border_radius = "5px",
+            background_color = "#0F172A"):
+        tdiv(display = "flex", flex_direction = "column", gap = "2px",
+              min_width = "0"):
+          span(font_size = "8px", font_weight = "700", color = textDim,
+                text_transform = "uppercase"):
+            text "Selection"
+          span(font_size = "11px", font_weight = "700",
+                color = textPrimary, font_family = "monospace",
+                white_space = "nowrap", overflow = "hidden",
+                text_overflow = "ellipsis"):
+            text elementLabel
+          span(font_size = "9px", color = textDim,
+                white_space = "nowrap", overflow = "hidden",
+                text_overflow = "ellipsis"):
+            text sourceLabel
+        tdiv(display = "flex", flex_direction = "column",
+              align_items = "flex-end", gap = "2px"):
+          span(font_size = "9px", color = textSecondary,
+                font_family = "monospace"):
+            text sizeLabel
+          span(font_size = "8px", color = accent):
+            text "selected"
     r.appendChild(content, summary)
     r.appendChild(content, renderDesignSystemImpactPanel[R, E](r, vm, frame,
       selected))
@@ -3801,10 +3854,13 @@ proc populateSectionTabs[R, E](r: R; vm: EditorVM; frame, tabs, content: E;
     let tab = ui(r):
       tdiv(role = "tab", tabindex = "0",
             display = "flex", align_items = "center",
+            height = "20px",
             padding = "0 7px", font_size = "10px", font_weight = "600",
             cursor = "pointer", white_space = "nowrap",
-            color = (if active: accent else: textMuted),
-            box_shadow = (if active: "inset 0 -2px 0 " & accent else: "none")):
+            border_radius = "3px",
+            color = (if active: textPrimary else: textMuted),
+            background_color = (if active: bgSurface else: "transparent"),
+            border = "1px solid " & (if active: border else: "transparent")):
         text label
     r.setAttribute(tab, "aria-label", "Show " & label & " edit controls")
     let activate = r.inspectorSectionHandler(vm, frame, tabs, content,
@@ -3824,13 +3880,13 @@ proc populateSectionAccordions[R, E](r: R; vm: EditorVM; frame, tabs, content,
     let node = ui(r):
       tdiv(role = "button", tabindex = "0",
             display = "grid",
-            `grid-template-columns` = "14px minmax(0, 1fr)",
-            align_items = "center", gap = "5px",
-            min_height = "30px",
-            padding = "0 2px",
-            border_radius = "4px",
+            `grid-template-columns` = "12px minmax(0, 1fr) 3px",
+            align_items = "center", gap = "4px",
+            min_height = "26px",
+            padding = "0 4px",
+            border_radius = "3px",
             cursor = "pointer",
-            background_color = "transparent",
+            background_color = (if active: "#172033" else: "transparent"),
             color = (if active: textPrimary else: textMuted),
             border_bottom = "1px solid " & borderFaint,
             overflow = "hidden"):
@@ -3841,6 +3897,9 @@ proc populateSectionAccordions[R, E](r: R; vm: EditorVM; frame, tabs, content,
               white_space = "nowrap", overflow = "hidden",
               text_overflow = "ellipsis"):
           text title
+        span(width = "3px", height = "14px", border_radius = "2px",
+              background_color = (if active: accent else: "transparent")):
+          text ""
     r.setAttribute(node, "aria-label", "Toggle " & title &
       " inspector section")
     r.setAttribute(node, "aria-expanded", if expanded: "true" else: "false")
@@ -3871,27 +3930,32 @@ proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
           border_left = "1px solid " & border):
       tdiv(display = "flex", align_items = "center",
             justify_content = "space-between",
-            height = "30px", min_height = "30px",
-            padding = "0 8px",
+            height = "32px", min_height = "32px",
+            padding = "0 6px",
             background_color = bgCard,
             border_bottom = "1px solid " & border):
         tdiv(display = "flex", align_items = "center", gap = "2px",
-              background_color = bgSurface,
+              background_color = "#0F172A",
               border = "1px solid " & border,
-              border_radius = "4px",
-              padding = "2px"):
-          span(padding = "2px 7px",
+              border_radius = "3px",
+              padding = "1px"):
+          span(padding = "2px 6px",
                 border_radius = "3px",
                 background_color = accent,
                 color = textPrimary,
                 font_size = "10px",
                 font_weight = "700"):
             text "Design"
-          span(padding = "2px 7px",
+          span(padding = "2px 6px",
                 color = textDim,
                 font_size = "10px",
                 font_weight = "600"):
-            text "Source"
+            text "Proto"
+          span(padding = "2px 6px",
+                color = textDim,
+                font_size = "10px",
+                font_weight = "600"):
+            text "Inspect"
         tdiv(display = "flex", gap = "3px"):
           tdiv(ref = narrowButton, role = "button", tabindex = "0",
                 `aria-label` = "Narrow right panel",
@@ -3910,7 +3974,7 @@ proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
                 border_radius = "4px",
                 font_size = "10px", cursor = "pointer",
                 background_color = bgSurface, color = textMuted):
-            text "w"
+            text "1"
           tdiv(ref = widenButton, role = "button", tabindex = "0",
                 `aria-label` = "Widen right panel",
                 width = "22px", height = "22px",
@@ -3933,16 +3997,16 @@ proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
       tdiv(display = "grid",
             `grid-template-columns` = "minmax(0, 1fr) auto auto",
             align_items = "center",
-            gap = "4px",
-            padding = "6px 8px",
+            gap = "3px",
+            padding = "5px 6px",
             border_bottom = "1px solid " & border):
         input(ref = searchInput,
               class = "editor-input",
-              height = "24px",
-              background_color = bgSurface,
+              height = "22px",
+              background_color = "#0F172A",
               border = "1px solid " & border,
-              border_radius = "4px",
-              padding = "0 7px",
+              border_radius = "3px",
+              padding = "0 6px",
               font_size = "11px",
               color = textPrimary,
               outline = "none",
@@ -3951,7 +4015,7 @@ proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
               placeholder = "Search")
         tdiv(ref = collapseButton, role = "button", tabindex = "0",
               `aria-label` = "Collapse all inspector sections",
-              width = "24px", height = "24px",
+              width = "22px", height = "22px",
               display = "flex", align_items = "center",
               justify_content = "center",
               border_radius = "4px",
@@ -3961,7 +4025,7 @@ proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
           text "-"
         tdiv(ref = expandButton, role = "button", tabindex = "0",
               `aria-label` = "Expand relevant inspector sections",
-              width = "24px", height = "24px",
+              width = "22px", height = "22px",
               display = "flex", align_items = "center",
               justify_content = "center",
               border_radius = "4px",
@@ -3971,15 +4035,17 @@ proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
           text "+"
       tdiv(ref = sectionsNode,
             display = "flex", flex_direction = "column",
-            padding = "0 8px",
+            padding = "0 6px",
             border_bottom = "1px solid " & border):
         discard
   r.bindRightPanelWidth(result, vm)
 
   let tabs = ui(r):
     tdiv(class = "editor-tabbar",
-          display = "flex", align_items = "stretch",
-          height = "24px", min_height = "24px",
+          display = "flex", align_items = "center", gap = "2px",
+          height = "26px", min_height = "26px",
+          padding = "2px 6px",
+          background_color = bgSidebar,
           border_bottom = "1px solid " & border,
           overflow_x = "auto", scrollbar_width = "none")
   r.appendChild(result, tabs)
@@ -4032,7 +4098,7 @@ proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
 
   let content = ui(r):
     tdiv(flex = "1", display = "flex", flex_direction = "column",
-          padding = "8px", overflow_y = "auto", gap = "8px")
+          padding = "6px", overflow_y = "auto", gap = "6px")
   r.appendChild(result, content)
   r.populateSectionTabs(vm, frame, tabs, content, clipboard)
   r.populateSectionAccordions(vm, frame, tabs, content, sectionsNode,
