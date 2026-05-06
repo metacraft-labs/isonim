@@ -1,0 +1,15 @@
+{
+  "name": "js-framework-benchmark-keyed-isonim-hmr",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "dist/main.js",
+  "js-framework-benchmark": {
+    "frameworkVersion": "0.1.0-hmr",
+    "frameworkHomeURL": "https://github.com/metacraft-labs/isonim",
+    "language": "Nim",
+    "keyed": true
+  },
+  "scripts": {
+    "build-prod": "echo 'Pre-built: run just bench-build-hmr from the isonim project root'"
+  }
+}

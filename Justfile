@@ -185,9 +185,31 @@ test-browser-editor: test-browser-editor-example test-browser-editor-consumer
 
 # --- Benchmarks ---
 
-# Build js-framework-benchmark entry
+# Build js-framework-benchmark entry. The benchmark imports
+# `nim_everywhere/js_collections` transitively; resolve via an
+# explicit --path so the build doesn't depend on `nimble develop`
+# state. We invoke nim directly here rather than via the
+# benchmarks/.../build.sh wrapper because the wrapper is intended to
+# stay path-agnostic (so it works whether nimble develop has linked
+# nim_everywhere or not).
 bench-build:
-    bash benchmarks/keyed/isonim/build.sh
+    mkdir -p benchmarks/keyed/isonim/dist
+    nim js -d:danger --path:$PWD/../nim-everywhere/src \
+      -o:benchmarks/keyed/isonim/dist/main.raw.js \
+      benchmarks/keyed/isonim/src/main.nim
+    npx terser benchmarks/keyed/isonim/dist/main.raw.js --compress --mangle \
+      -o benchmarks/keyed/isonim/dist/main.js
+
+# Build the HMR-enabled benchmark entry. Same workload as
+# bench-build, but compiled with -d:isonimHmr so the HMR runtime is
+# linked in. Use this to quantify HMR's bundle-size cost.
+bench-build-hmr:
+    mkdir -p benchmarks/keyed/isonim-hmr/dist
+    nim js -d:danger -d:isonimHmr --path:$PWD/../nim-everywhere/src \
+      -o:benchmarks/keyed/isonim-hmr/dist/main.raw.js \
+      benchmarks/keyed/isonim-hmr/src/main.nim
+    npx terser benchmarks/keyed/isonim-hmr/dist/main.raw.js --compress --mangle \
+      -o benchmarks/keyed/isonim-hmr/dist/main.js
 
 # Show benchmark bundle size (raw, minified, gzipped)
 bench-size:
@@ -206,12 +228,14 @@ bench-setup:
     BENCH_SETUP_ONLY=1 bash benchmarks/run-comparison.sh || true
     @echo "Runner ready at benchmarks/runner/"
 
-# Run IsoNim vs SolidJS comparison benchmark
-bench-compare: bench-build
+# Run IsoNim vs SolidJS comparison benchmark. Builds both isonim
+# variants (vanilla + HMR-enabled) so the comparison includes the
+# HMR overhead measurement alongside the SolidJS reference.
+bench-compare: bench-build bench-build-hmr
     bash benchmarks/run-comparison.sh
 
 # Run comparison with fewer iterations (quick check)
-bench-compare-quick: bench-build
+bench-compare-quick: bench-build bench-build-hmr
     BENCH_ITERATIONS=3 bash benchmarks/run-comparison.sh
 
 # View benchmark results (starts HTTP server)

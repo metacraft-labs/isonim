@@ -11,9 +11,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RUNNER_DIR="$SCRIPT_DIR/runner"
 ISONIM_ENTRY="$SCRIPT_DIR/keyed/isonim"
+ISONIM_HMR_ENTRY="$SCRIPT_DIR/keyed/isonim-hmr"
 RESULTS_DIR="$SCRIPT_DIR/results"
 
-FRAMEWORKS=("keyed/isonim" "keyed/solid")
+# Default: include both isonim variants (vanilla + HMR-enabled) so we
+# can quantify the cost of the HMR runtime alongside the SolidJS
+# comparison. Set BENCH_FRAMEWORKS to override.
+FRAMEWORKS_STR="${BENCH_FRAMEWORKS:-keyed/isonim keyed/isonim-hmr keyed/solid}"
+read -r -a FRAMEWORKS <<<"$FRAMEWORKS_STR"
 NUM_ITERATIONS="${BENCH_ITERATIONS:-5}"
 
 # ---------------------------------------------------------------------------
@@ -71,17 +76,25 @@ if [ ! -d "$SOLID_DIR/dist" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Step 4: Copy/refresh isonim entry into the runner
+# Step 4: Copy/refresh isonim entries into the runner
 # ---------------------------------------------------------------------------
-echo "=== Copying IsoNim benchmark entry ==="
-ISONIM_DEST="$RUNNER_DIR/frameworks/keyed/isonim"
-mkdir -p "$ISONIM_DEST/dist"
-cp "$ISONIM_ENTRY/index.html" "$ISONIM_DEST/"
-cp "$ISONIM_ENTRY/package.json" "$ISONIM_DEST/"
-cp "$ISONIM_ENTRY/package-lock.json" "$ISONIM_DEST/"
-cp "$ISONIM_ENTRY/dist/main.js" "$ISONIM_DEST/dist/"
-# Create a minimal node_modules marker so the runner considers it "installed"
-mkdir -p "$ISONIM_DEST/node_modules"
+copy_isonim_entry() {
+  local src="$1"
+  local name="$2"
+  local dest="$RUNNER_DIR/frameworks/keyed/$name"
+  echo "=== Copying $name benchmark entry ==="
+  mkdir -p "$dest/dist"
+  cp "$src/index.html" "$dest/"
+  cp "$src/package.json" "$dest/"
+  cp "$src/package-lock.json" "$dest/"
+  cp "$src/dist/main.js" "$dest/dist/"
+  mkdir -p "$dest/node_modules"
+}
+
+copy_isonim_entry "$ISONIM_ENTRY" "isonim"
+if [ -d "$ISONIM_HMR_ENTRY" ] && [ -f "$ISONIM_HMR_ENTRY/dist/main.js" ]; then
+  copy_isonim_entry "$ISONIM_HMR_ENTRY" "isonim-hmr"
+fi
 
 # ---------------------------------------------------------------------------
 # Step 5: Build the benchmark driver (webdriver-ts)
