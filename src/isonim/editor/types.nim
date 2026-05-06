@@ -646,6 +646,62 @@ type
     impact*: SourceScopeImpact
     reason*: string
 
+  SharedDesignEditorCategory* = enum
+    sdecColor
+    sdecSpacing
+    sdecRadii
+    sdecTypography
+    sdecShadowElevation
+    sdecMotion
+    sdecComponentToken
+    sdecSemanticToken
+    sdecSharedClass
+    sdecUnsupported
+
+  SharedDesignEditorStatus* = enum
+    sdesEditable
+    sdesReadOnly
+    sdesUnsupported
+
+  SharedDesignFlowKind* = enum
+    sdfEditValue
+    sdfDetach
+    sdfPromote
+    sdfTokenize
+
+  SharedDesignCommitPreview* = object
+    property*: string
+    sourceScope*: SourceScopeChoiceKind
+    plan*: SourceEditPlan
+    sourceDiff*: string
+    affectedComponents*: seq[string]
+    affectedStories*: seq[StoryRef]
+    livePreviewable*: bool
+    dependentExamplesLivePreviewed*: bool
+    rebuildRequired*: bool
+    fullReloadRequired*: bool
+    regenerationRequired*: bool
+    reloadRequired*: bool
+    previewStateLabel*: string
+    diagnostics*: seq[PropertyEditDiagnostic]
+
+  SharedDesignPropertyEditor* = object
+    property*: string
+    category*: SharedDesignEditorCategory
+    value*: CSSPropertyValue
+    sourceScope*: SourceScopeChoice
+    status*: SharedDesignEditorStatus
+    readOnlyReason*: string
+    commitPreview*: SharedDesignCommitPreview
+    flowCapabilities*: seq[SharedDesignFlowKind]
+    diagnostics*: seq[PropertyEditDiagnostic]
+
+  SharedDesignEditResult* = object
+    status*: PropertyEditStatus
+    editor*: SharedDesignPropertyEditor
+    sourceEdit*: SourceEditPlan
+    diagnostics*: seq[PropertyEditDiagnostic]
+
   CSSPropertyEditorVM* = object
     ## Headless property editor contract. Views may render controls from this.
     property*: string

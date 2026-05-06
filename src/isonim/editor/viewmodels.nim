@@ -202,6 +202,7 @@ proc setSectionExpanded*(inspector: InspectorVM; section: InspectorSection;
     expanded: bool)
 proc recordEditorTiming*(editor: EditorVM; kind: EditorPerformanceBudgetKind;
     durationMs: int; detail: string)
+proc detachStyleClass*(editor: EditorVM; property: string): StyleOperationResult {.discardable.}
 
 func commandLabel*(kind: EditorCommandKind): string =
   case kind
@@ -3902,6 +3903,430 @@ proc sourceScopeImpacts*(editor: EditorVM; prop: PropertyInfo): seq[
   sourceScopeImpacts(editor.designSystemSchema.val,
     editor.inspector.selectedElement.val, prop)
 
+func sharedDesignCategory*(prop: PropertyInfo;
+    sourceScope = sskLocalInstance): SharedDesignEditorCategory =
+  discard sourceScope
+
+  let name = prop.name.normalizedCssName()
+  if cssPropertyCategory(name) == cpcColor or name in [
+      "background", "background-color", "color", "border-color",
+      "outline-color"]:
+    sdecColor
+  elif cssPropertyCategory(name) == cpcSpacing or name in [
+      "gap", "row-gap", "column-gap", "padding", "padding-top",
+      "padding-right", "padding-bottom", "padding-left", "margin",
+      "margin-top", "margin-right", "margin-bottom", "margin-left"]:
+    sdecSpacing
+  elif name.contains("radius"):
+    sdecRadii
+  elif cssPropertyCategory(name) == cpcTypography or name.startsWith("font") or
+      name.startsWith("text") or name in ["line-height", "letter-spacing"]:
+    sdecTypography
+  elif name.contains("shadow") or name == "elevation":
+    sdecShadowElevation
+  elif cssPropertyCategory(name) == cpcTransitions or
+      name.startsWith("transition") or name.startsWith("animation"):
+    sdecMotion
+  else:
+    sdecUnsupported
+
+func sharedDesignCategoryLabel*(category: SharedDesignEditorCategory): string =
+  case category
+  of sdecColor: "Color"
+  of sdecSpacing: "Spacing"
+  of sdecRadii: "Radii"
+  of sdecTypography: "Typography"
+  of sdecShadowElevation: "Shadow/elevation"
+  of sdecMotion: "Motion"
+  of sdecComponentToken: "Component token"
+  of sdecSemanticToken: "Semantic token"
+  of sdecSharedClass: "Shared class"
+  of sdecUnsupported: "Unsupported"
+
+func sourcePlanKindForScope(kind: SourceScopeChoiceKind;
+    fallback: CSSSourcePlanKind): CSSSourcePlanKind =
+  case kind
+  of sskLocalInstance:
+    fallback
+  of sskComponentToken, sskSemanticToken, sskGlobalPrimitiveToken:
+    cspTokenUpdate
+  of sskStoryFixture, sskComponentSchemaApi, sskSharedClass:
+    cspStructuredSchemaUpdate
+
+func sourceDiff(plan: SourceEditPlan): string =
+  let file = if plan.file.len > 0: plan.file else: "<unknown source>"
+  "--- " & file & "\n" &
+    "- " & plan.previewBefore & "\n" &
+    "+ " & plan.previewAfter
+
+func storyIn(story: StoryRef; stories: seq[StoryRef]): bool =
+  for candidate in stories:
+    if sameStory(story, candidate):
+      return true
+
+func sourcePlanRequiresRegeneration(plan: SourceEditPlan): bool =
+  plan.regeneratorHook.len > 0 or
+    plan.planKind in {cspStructuredSchemaUpdate, cspTokenUpdate}
+
+func sourcePlanRequiresFullReload(plan: SourceEditPlan;
+    sourceScope: SourceScopeChoiceKind): bool =
+  sourcePlanRequiresRegeneration(plan) or
+    sourceScope in {sskSharedClass, sskComponentToken, sskSemanticToken,
+      sskGlobalPrimitiveToken}
+
+func previewStateLabel(livePreviewable, rebuildRequired,
+    fullReloadRequired: bool): string =
+  let live =
+    if livePreviewable: "live preview: selected element"
+    else: "live preview: unavailable"
+  let commit =
+    if fullReloadRequired: "commit: rebuild + full reload"
+    elif rebuildRequired: "commit: rebuild"
+    else: "commit: affected preview reload"
+  live & " | " & commit
+
+proc commitPreviewFor(editor: EditorVM; prop: PropertyInfo;
+    plan: SourceEditPlan; choice: SourceScopeChoice;
+    diagnostics: seq[PropertyEditDiagnostic] = @[]): SharedDesignCommitPreview =
+  let stories =
+    if choice.affectedStories.len > 0: choice.affectedStories
+    else: choice.impact.affectedStories
+  let components =
+    if choice.affectedComponents.len > 0: choice.affectedComponents
+    else: choice.impact.affectedComponents
+  let currentStory = editor.selectedStory.val
+  let hasLivePreview = stories.len > 0 and currentStory.storyIn(stories) and
+    editor.preview.current.val.status == ppsRendered
+  let rebuildRequired = sourcePlanRequiresRegeneration(plan)
+  let fullReloadRequired = sourcePlanRequiresFullReload(plan, choice.kind)
+  SharedDesignCommitPreview(
+    property: prop.name,
+    sourceScope: choice.kind,
+    plan: plan,
+    sourceDiff: plan.sourceDiff(),
+    affectedComponents: components,
+    affectedStories: stories,
+    livePreviewable: hasLivePreview,
+    dependentExamplesLivePreviewed: hasLivePreview,
+    rebuildRequired: rebuildRequired,
+    fullReloadRequired: fullReloadRequired,
+    regenerationRequired: rebuildRequired,
+    reloadRequired: stories.len > 0 or fullReloadRequired,
+    previewStateLabel: previewStateLabel(hasLivePreview, rebuildRequired,
+      fullReloadRequired),
+    diagnostics: diagnostics)
+
+func firstChoiceOfKind(choices: seq[SourceScopeChoice];
+    kind: SourceScopeChoiceKind): SourceScopeChoice =
+  for choice in choices:
+    if choice.kind == kind:
+      return choice
+
+func matchingSourceScopeNodes(schema: DesignSystemSchema; element: ElementRef;
+    prop: PropertyInfo; kind: SourceScopeChoiceKind): seq[DesignSchemaNode] =
+  for node in schema.nodes:
+    if node.property == prop.name and node.kind.sourceScopeKindForNode() == kind:
+      result.add node
+
+func exactSourceScopeNode(nodes: seq[DesignSchemaNode]; element: ElementRef;
+    prop: PropertyInfo): DesignSchemaNode =
+  for node in nodes:
+    if node.key in [prop.schemaKey, prop.tokenName, prop.variantKey,
+        element.schemaKey]:
+      return node
+
+func sourceScopeDiagnosticsForChoice(schema: DesignSystemSchema;
+    element: ElementRef; prop: PropertyInfo; choice: SourceScopeChoice;
+    requestedKind: SourceScopeChoiceKind): seq[PropertyEditDiagnostic] =
+  if choice.kind != requestedKind:
+    result.add PropertyEditDiagnostic(kind: pedSchemaViolation,
+      message: "No M50 source-scope choice exists for " &
+        requestedKind.sourceScopeChoiceLabel() & ".",
+      file: prop.sourceFile, line: prop.sourceLine, property: prop.name)
+    return
+
+  let nodes = matchingSourceScopeNodes(schema, element, prop, requestedKind)
+  if nodes.len > 1 and exactSourceScopeNode(nodes, element, prop).key.len == 0:
+    result.add PropertyEditDiagnostic(kind: pedSchemaViolation,
+      message: "Multiple " & requestedKind.sourceScopeChoiceLabel() &
+        " owners match this property; choose a source-backed schema key first.",
+      file: prop.sourceFile, line: prop.sourceLine, property: prop.name)
+  if not choice.editable:
+    result.add PropertyEditDiagnostic(kind: pedSchemaViolation,
+      message:
+        if choice.reason.len > 0: choice.reason
+        else: "This scope has no source-backed writer in the project schema.",
+      file: if choice.sourceFile.len > 0: choice.sourceFile else: prop.sourceFile,
+      line: if choice.sourceLine > 0: choice.sourceLine else: prop.sourceLine,
+      property: prop.name)
+
+func sharedScopePlan(prop: PropertyInfo; request: PropertyEditRequest;
+    choices: seq[SourceScopeChoice]; choice: SourceScopeChoice): SourceEditPlan =
+  result = prop.sourcePlan(request, choices)
+  result.sourceScope = choice.kind
+  result.planKind = choice.kind.sourcePlanKindForScope(result.planKind)
+  if choice.sourceFile.len > 0:
+    result.file = choice.sourceFile
+  if choice.sourceLine > 0:
+    result.line = choice.sourceLine
+  if choice.schemaKey.len > 0:
+    result.schemaKey = choice.schemaKey
+  if choice.kind in {sskComponentToken, sskSemanticToken,
+      sskGlobalPrimitiveToken} and result.tokenName.len == 0:
+    result.tokenName = result.schemaKey
+  if choice.kind != sskLocalInstance:
+    result.scope = pesShared
+  result.sourceScopeChoices = choices
+  result.originDetail = "shared-design:" & choice.kind.sourceScopeChoiceLabel() &
+    ":" & result.schemaKey
+  result.previewBefore = result.property & ": " & result.oldValue
+  result.previewAfter = result.property & ": " & result.newValue
+  result.conflictKey = result.file & ":" & $result.line & ":" &
+    result.property & ":" & $choice.kind
+
+proc sharedDesignEditorFor(editor: EditorVM; prop: PropertyInfo;
+    choice: SourceScopeChoice; proposedValue = ""): SharedDesignPropertyEditor =
+  let valueText = if proposedValue.len > 0: proposedValue else: prop.value
+  let request = PropertyEditRequest(property: prop.name, newValue: valueText,
+    kind: if cssPropertyCategory(prop.name) in {cpcLayout, cpcFlexGrid}: pekLayout else: pekCss,
+    scope: if choice.kind == sskLocalInstance: pesLocal else: pesShared,
+    origin: peoInspector)
+  let normalized = parseCssPropertyValue(prop.name,
+    normalizePrimitiveInputValue(prop.name, valueText))
+  var diagnostics = prop.validateCssPropertyValue(request, normalized)
+  let category = prop.sharedDesignCategory(choice.kind)
+  var status = sdesEditable
+  var readOnlyReason = ""
+  if category == sdecUnsupported:
+    status = sdesUnsupported
+    readOnlyReason = "This shared token/property family is read-only until source-write tests exist."
+  elif not choice.editable:
+    status = sdesReadOnly
+    readOnlyReason =
+      if choice.reason.len > 0: choice.reason
+      else: "This scope has no source-backed writer in the project schema."
+  if readOnlyReason.len > 0:
+    diagnostics.add PropertyEditDiagnostic(kind: pedSchemaViolation,
+      message: readOnlyReason,
+      file: if choice.sourceFile.len > 0: choice.sourceFile else: prop.sourceFile,
+      line: if choice.sourceLine > 0: choice.sourceLine else: prop.sourceLine,
+      property: prop.name)
+
+  let plan = prop.sharedScopePlan(request, editor.sourceScopeChoices(prop), choice)
+  result = SharedDesignPropertyEditor(
+    property: prop.name,
+    category: category,
+    value: normalized,
+    sourceScope: choice,
+    status: status,
+    readOnlyReason: readOnlyReason,
+    commitPreview: editor.commitPreviewFor(prop, plan, choice, diagnostics),
+    flowCapabilities:
+      if status == sdesEditable:
+        case choice.kind
+        of sskLocalInstance:
+          @[sdfEditValue, sdfPromote, sdfTokenize]
+        of sskSharedClass:
+          @[sdfEditValue, sdfDetach, sdfPromote, sdfTokenize]
+        of sskComponentToken, sskSemanticToken, sskGlobalPrimitiveToken:
+          @[sdfEditValue, sdfTokenize]
+        of sskStoryFixture, sskComponentSchemaApi:
+          @[sdfEditValue, sdfPromote, sdfTokenize]
+      else:
+        @[],
+    diagnostics: diagnostics)
+
+proc sharedDesignPropertyEditors*(editor: EditorVM): seq[
+    SharedDesignPropertyEditor] =
+  for prop in editor.inspector.selectedElement.val.properties:
+    for choice in editor.sourceScopeChoices(prop):
+      if choice.kind == sskLocalInstance:
+        continue
+      let candidate = editor.sharedDesignEditorFor(prop, choice)
+      if candidate.status != sdesUnsupported or candidate.diagnostics.len > 0:
+        result.add candidate
+
+proc sharedDesignCommitPreviews*(editor: EditorVM): seq[
+    SharedDesignCommitPreview] =
+  for preview in editor.inspector.sourcePreviews.val:
+    var choice = SourceScopeChoice(kind: preview.plan.sourceScope,
+      label: preview.plan.sourceScope.sourceScopeChoiceLabel())
+    for candidate in preview.plan.sourceScopeChoices:
+      if candidate.kind == preview.plan.sourceScope:
+        choice = candidate
+        break
+    var prop = PropertyInfo(name: preview.plan.property,
+      value: preview.plan.oldValue,
+      sourceFile: preview.plan.file,
+      sourceLine: preview.plan.line,
+      schemaKey: preview.plan.schemaKey,
+      tokenName: preview.plan.tokenName)
+    for elementProp in editor.inspector.selectedElement.val.properties:
+      if elementProp.name == preview.plan.property:
+        prop = elementProp
+        break
+    result.add editor.commitPreviewFor(prop, preview.plan, choice)
+
+proc planSharedDesignEdit*(editor: EditorVM; property, newValue: string;
+    sourceScope: SourceScopeChoiceKind): SharedDesignEditResult =
+  let element = editor.inspector.selectedElement.val
+  if element.tag.len == 0:
+    let diagnostic = PropertyEditDiagnostic(kind: pedMissingSelection,
+      message: "Select an element before editing shared design-system sources.",
+      file: element.sourceFile, line: element.sourceLine, property: property)
+    return SharedDesignEditResult(status: pesRejected,
+      diagnostics: @[diagnostic])
+
+  var prop = PropertyInfo()
+  var found = false
+  for candidate in element.properties:
+    if candidate.name == property:
+      prop = candidate
+      found = true
+      break
+  if not found:
+    let diagnostic = PropertyEditDiagnostic(kind: pedUnknownProperty,
+      message: "The selected element does not expose this shared property.",
+      file: element.sourceFile, line: element.sourceLine, property: property)
+    return SharedDesignEditResult(status: pesRejected,
+      diagnostics: @[diagnostic])
+
+  let choices = editor.sourceScopeChoices(prop)
+  let choice = choices.firstChoiceOfKind(sourceScope)
+  let scopeDiagnostics = sourceScopeDiagnosticsForChoice(
+    editor.designSystemSchema.val, element, prop, choice, sourceScope)
+  if scopeDiagnostics.len > 0:
+    return SharedDesignEditResult(status: pesRejected,
+      diagnostics: scopeDiagnostics)
+
+  let editorVm = editor.sharedDesignEditorFor(prop, choice, newValue)
+  if editorVm.status != sdesEditable or editorVm.diagnostics.len > 0:
+    return SharedDesignEditResult(status: pesRejected, editor: editorVm,
+      diagnostics: editorVm.diagnostics)
+
+  SharedDesignEditResult(status: pesAccepted, editor: editorVm,
+    sourceEdit: editorVm.commitPreview.plan)
+
+proc editSharedDesignProperty*(editor: EditorVM; property, newValue: string;
+    sourceScope: SourceScopeChoiceKind): SharedDesignEditResult {.discardable.} =
+  result = editor.planSharedDesignEdit(property, newValue, sourceScope)
+  if result.status != pesAccepted:
+    editor.inspector.editDiagnostics.val = result.diagnostics
+    return
+
+  let plan = result.sourceEdit
+  let beforeElement = editor.inspector.selectedElement.val
+  var afterElement = beforeElement
+  for i, prop in afterElement.properties:
+    if prop.name == property:
+      afterElement.properties[i].value = plan.newValue
+      afterElement.properties[i].sourceFile = plan.file
+      afterElement.properties[i].sourceLine = plan.line
+      afterElement.properties[i].schemaKey = plan.schemaKey
+      afterElement.properties[i].tokenName = plan.tokenName
+      afterElement.properties[i].originDetail = plan.originDetail
+      break
+
+  let record = EditRecord(file: plan.file, line: plan.line,
+    property: plan.property, oldValue: plan.oldValue, newValue: plan.newValue,
+    origin: poThemeToken, originDetail: plan.originDetail, scope: plan.scope,
+    sourceScope: plan.sourceScope, isShared: plan.scope == pesShared,
+    editOrigin: peoInspector, sourcePlanKind: plan.planKind)
+  editor.inspector.selectedElement.val = afterElement
+  editor.inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
+      SourceEditPlan] =
+    result = @[]
+    for existing in prev:
+      if existing.conflictKey != plan.conflictKey:
+        result.add existing
+    result.add plan
+  editor.inspector.sourcePreviews.update proc(prev: seq[CSSSourcePreview]): seq[
+      CSSSourcePreview] =
+    result = @[]
+    for existing in prev:
+      if existing.plan.conflictKey != plan.conflictKey:
+        result.add existing
+    result.add CSSSourcePreview(plan: plan, beforeText: plan.previewBefore,
+      afterText: plan.previewAfter)
+  editor.inspector.undoStack.update proc(prev: seq[CSSPropertyEditTransaction]): seq[
+      CSSPropertyEditTransaction] =
+    result = prev
+    result.add CSSPropertyEditTransaction(record: record,
+      sourceEdit: plan, beforeElement: beforeElement,
+      afterElement: afterElement)
+  editor.inspector.redoStack.val = @[]
+  editor.inspector.editDiagnostics.val = @[]
+  editor.workspaceEditStage.val = wesDirty
+  editor.chat.accumulatedEdits.update proc(prev: seq[EditRecord]): seq[EditRecord] =
+    result = prev
+    result.add record
+
+proc detachSharedDesignProperty*(editor: EditorVM;
+    property: string): SharedDesignEditResult {.discardable.} =
+  let element = editor.inspector.selectedElement.val
+  var prop = PropertyInfo()
+  var found = false
+  for candidate in element.properties:
+    if candidate.name == property:
+      prop = candidate
+      found = true
+      break
+  if not found:
+    let diagnostic = PropertyEditDiagnostic(kind: pedUnknownProperty,
+      message: "The selected element does not expose a detachable shared style property.",
+      file: element.sourceFile, line: element.sourceLine, property: property)
+    editor.inspector.editDiagnostics.val = @[diagnostic]
+    return SharedDesignEditResult(status: pesRejected,
+      diagnostics: @[diagnostic])
+
+  result = editor.planSharedDesignEdit(property, prop.value, sskSharedClass)
+  if result.status != pesAccepted:
+    editor.inspector.editDiagnostics.val = result.diagnostics
+    return
+  discard editor.detachStyleClass(property)
+  result.sourceEdit = editor.inspector.pendingSourceEdits.val[^1]
+
+proc promoteSharedDesignProperty*(editor: EditorVM; property, newValue: string;
+    targetScope: SourceScopeChoiceKind): SharedDesignEditResult {.discardable.} =
+  editor.editSharedDesignProperty(property, newValue, targetScope)
+
+proc tokenizeSharedDesignProperty*(editor: EditorVM; property,
+    tokenKey: string): SharedDesignEditResult {.discardable.} =
+  if tokenKey.strip().len == 0:
+    let element = editor.inspector.selectedElement.val
+    let diagnostic = PropertyEditDiagnostic(kind: pedInvalidTokenReference,
+      message: "Choose a design token before tokenizing a shared property.",
+      file: element.sourceFile, line: element.sourceLine, property: property)
+    editor.inspector.editDiagnostics.val = @[diagnostic]
+    return SharedDesignEditResult(status: pesRejected,
+      diagnostics: @[diagnostic])
+
+  let matches = editor.designSystemSchema.val.nodes.filterIt(
+    it.key.sameTokenKey(tokenKey) and
+    it.kind in {dsnFoundation, dsnSemanticToken, dsnComponentToken})
+  if matches.len != 1:
+    let element = editor.inspector.selectedElement.val
+    let diagnostic = PropertyEditDiagnostic(kind: pedInvalidTokenReference,
+      message:
+        if matches.len == 0:
+          "No source-backed design token matches '" & tokenKey & "'."
+        else:
+          "Multiple design tokens match '" & tokenKey & "'; choose an unambiguous token key.",
+      file: element.sourceFile, line: element.sourceLine, property: property)
+    editor.inspector.editDiagnostics.val = @[diagnostic]
+    return SharedDesignEditResult(status: pesRejected,
+      diagnostics: @[diagnostic])
+
+  let target =
+    case matches[0].kind
+    of dsnComponentToken:
+      sskComponentToken
+    of dsnFoundation:
+      sskGlobalPrimitiveToken
+    else:
+      sskSemanticToken
+  editor.editSharedDesignProperty(property, "token(" & tokenKey & ")", target)
+
 func styleScopeChoiceLabel*(kind: StyleScopeChoiceKind): string =
   case kind
   of sscLocalInstance: "Local instance"
@@ -4086,6 +4511,15 @@ proc selectedStyleProperty(editor: EditorVM; property: string): PropertyInfo =
     originDetail: "generated-fallback", sourceFile: element.sourceFile,
     sourceLine: element.sourceLine, schemaKey: element.schemaKey,
     directStyleAllowed: true)
+
+proc findSelectedStyleProperty(editor: EditorVM; property: string): tuple[
+    ok: bool, prop: PropertyInfo] =
+  let element = editor.inspector.selectedElement.val
+  for candidate in element.properties:
+    if candidate.name == property:
+      return (true, candidate)
+  (false, PropertyInfo(name: property, sourceFile: element.sourceFile,
+    sourceLine: element.sourceLine, schemaKey: element.schemaKey))
 
 proc styleScopeChoices*(editor: EditorVM; prop: PropertyInfo): seq[
     StyleScopeChoice] =
@@ -4360,6 +4794,80 @@ proc stageStyleOperation(editor: EditorVM; operation: StyleClassOperationKind;
   StyleOperationResult(status: pesAccepted, operation: operation,
     classEntry: classEntry, sourceEdit: plan)
 
+func styleDiagnostic(kind: StyleDiagnosticKind; prop: PropertyInfo;
+    message: string; tokenKey = ""; className = ""): StyleDiagnostic =
+  StyleDiagnostic(kind: kind, message: message, property: prop.name,
+    value: prop.value, tokenKey: tokenKey, className: className,
+    file: prop.sourceFile, line: prop.sourceLine)
+
+func rejectStyleOperation(operation: StyleClassOperationKind; prop: PropertyInfo;
+    message: string; tokenKey = ""; className = ""): StyleOperationResult =
+  let diagnostic = styleDiagnostic(
+    if operation == scokTokenizeValue: sdkHardcodedColorMatchingToken
+    else: sdkUnsafeDetachment,
+    prop, message, tokenKey, className)
+  StyleOperationResult(status: pesRejected, operation: operation,
+    classEntry: StyleClassEntry(className: className, properties: @[prop],
+      sourceFile: prop.sourceFile, sourceLine: prop.sourceLine,
+      schemaKey: prop.schemaKey, editable: false),
+    diagnostics: @[diagnostic])
+
+proc styleScopeMatches(editor: EditorVM; prop: PropertyInfo;
+    scope: StyleScopeChoiceKind; targetKey = ""): seq[DesignSchemaNode] =
+  for node in editor.designSystemSchema.val.nodes:
+    if node.kind.schemaScopeForNode() != scope:
+      continue
+    if targetKey.len > 0:
+      if node.key.sameTokenKey(targetKey):
+        result.add node
+    elif node.property == prop.name:
+      result.add node
+
+proc resolveStyleScope(editor: EditorVM; prop: PropertyInfo;
+    scope: StyleScopeChoiceKind; targetKey = ""): tuple[
+      ok: bool, key: string, file: string, line: int, diagnostics: seq[
+      StyleDiagnostic]] =
+  if scope == sscLocalInstance:
+    result.ok = prop.hasSource or prop.directStyleAllowed
+    result.key = if targetKey.len > 0: targetKey else: prop.schemaKey
+    result.file = prop.sourceFile
+    result.line = prop.sourceLine
+    if not result.ok:
+      result.diagnostics.add styleDiagnostic(sdkUnsafeDetachment, prop,
+        "Local style scope has no source-backed writer.")
+    return
+
+  let matches = editor.styleScopeMatches(prop, scope, targetKey)
+  if matches.len == 0:
+    result.diagnostics.add styleDiagnostic(sdkUnsafeDetachment, prop,
+      "No source-backed " & scope.styleScopeChoiceLabel().toLowerAscii() &
+        " owner is mapped for this property.")
+    return
+  if matches.len > 1:
+    var exact = DesignSchemaNode()
+    for node in matches:
+      if node.key in [prop.schemaKey, prop.tokenName, prop.variantKey]:
+        exact = node
+        break
+    if exact.key.len == 0:
+      result.diagnostics.add styleDiagnostic(sdkUnsafeDetachment, prop,
+        "Multiple " & scope.styleScopeChoiceLabel().toLowerAscii() &
+          " owners match this property; choose an unambiguous schema key.")
+      return
+    result.key = exact.key
+    result.file = exact.sourceSpan.file
+    result.line = exact.sourceSpan.line
+    result.ok = exact.sourceSpan.hasSource
+  else:
+    result.key = matches[0].key
+    result.file = matches[0].sourceSpan.file
+    result.line = matches[0].sourceSpan.line
+    result.ok = matches[0].sourceSpan.hasSource
+  if not result.ok:
+    result.diagnostics.add styleDiagnostic(sdkUnsafeDetachment, prop,
+      "The selected " & scope.styleScopeChoiceLabel().toLowerAscii() &
+        " owner has no writable source span.")
+
 proc createStyleClass*(editor: EditorVM; className, property,
     value: string): StyleOperationResult {.discardable.} =
   let element = editor.inspector.selectedElement.val
@@ -4416,8 +4924,19 @@ proc duplicateStyleClass*(editor: EditorVM; className,
   editor.stageStyleOperation(scokDuplicateClass, entry, plan)
 
 proc detachStyleClass*(editor: EditorVM; property: string): StyleOperationResult {.discardable.} =
-  let prop = editor.selectedStyleProperty(property)
+  let found = editor.findSelectedStyleProperty(property)
+  if not found.ok:
+    return rejectStyleOperation(scokDetachClass, found.prop,
+      "The selected element does not expose a detachable style property.")
+  let prop = found.prop
   let className = prop.originDetail.classNameFromOriginDetail()
+  if className.len == 0:
+    return rejectStyleOperation(scokDetachClass, prop,
+      "Only class-backed properties can be detached.", className = className)
+  if not (prop.hasSource or prop.directStyleAllowed):
+    return rejectStyleOperation(scokDetachClass, prop,
+      "Detaching this class requires a source-backed local style target.",
+      className = className)
   let entry = StyleClassEntry(className: className, properties: @[prop],
     sourceFile: prop.sourceFile, sourceLine: prop.sourceLine,
     schemaKey: prop.schemaKey, sharedCount: prop.sharedCount,
@@ -4425,13 +4944,32 @@ proc detachStyleClass*(editor: EditorVM; property: string): StyleOperationResult
   let plan = stylePlan(scokDetachClass, prop.sourceFile, prop.sourceLine,
     prop.name, prop.value, prop.value, "style-class:detach:" & className,
     prop.schemaKey, planKind = cspInlineStyleUpdate)
-  editor.stageStyleOperation(scokDetachClass, entry, plan)
+  result = editor.stageStyleOperation(scokDetachClass, entry, plan)
+  if prop.sharedCount > 1 or prop.origin == poTailwindClass:
+    result.diagnostics.add styleDiagnostic(sdkUnsafeDetachment, prop,
+      "Detaching this class affects shared style ownership; verify the generated local override.",
+      className = className)
 
 proc promoteLocalOverride*(editor: EditorVM; property: string;
     scope: StyleScopeChoiceKind; targetKey = ""): StyleOperationResult {.discardable.} =
-  let prop = editor.selectedStyleProperty(property)
+  let found = editor.findSelectedStyleProperty(property)
+  if not found.ok:
+    return rejectStyleOperation(scokPromoteLocalOverride, found.prop,
+      "The selected element does not expose a promotable style property.")
+  let prop = found.prop
+  if prop.origin != poSetStyle and prop.sharedCount > 0:
+    return rejectStyleOperation(scokPromoteLocalOverride, prop,
+      "Only local overrides can be promoted to shared source scopes.")
+  let resolved = editor.resolveStyleScope(prop, scope, targetKey)
+  if not resolved.ok:
+    return StyleOperationResult(status: pesRejected,
+      operation: scokPromoteLocalOverride,
+      classEntry: StyleClassEntry(properties: @[prop], sourceFile: prop.sourceFile,
+        sourceLine: prop.sourceLine, schemaKey: prop.schemaKey),
+      diagnostics: resolved.diagnostics)
   let key =
     if targetKey.len > 0: targetKey
+    elif resolved.key.len > 0: resolved.key
     elif prop.schemaKey.len > 0: prop.schemaKey
     else:
       case scope
@@ -4449,26 +4987,51 @@ proc promoteLocalOverride*(editor: EditorVM; property: string;
       cspStructuredSchemaUpdate
     else:
       cspStructuredSchemaUpdate
-  let plan = stylePlan(scokPromoteLocalOverride, prop.sourceFile,
-    prop.sourceLine, prop.name, prop.value, prop.value,
+  let plan = stylePlan(scokPromoteLocalOverride,
+    if resolved.file.len > 0: resolved.file else: prop.sourceFile,
+    max(1, if resolved.line > 0: resolved.line else: prop.sourceLine),
+    prop.name, prop.value, prop.value,
     "style-promote:" & scope.styleScopeChoiceLabel(), key,
     if planKind == cspTokenUpdate: key else: "", planKind)
   editor.stageStyleOperation(scokPromoteLocalOverride,
     StyleClassEntry(className: prop.originDetail.classNameFromOriginDetail(),
-      properties: @[prop], sourceFile: prop.sourceFile,
-      sourceLine: prop.sourceLine, schemaKey: key, editable: true),
+      properties: @[prop], sourceFile: plan.file,
+      sourceLine: plan.line, schemaKey: key, editable: true),
     plan)
 
 proc tokenizeStyleValue*(editor: EditorVM; property,
     tokenKey: string): StyleOperationResult {.discardable.} =
-  let prop = editor.selectedStyleProperty(property)
+  let found = editor.findSelectedStyleProperty(property)
+  if not found.ok:
+    return rejectStyleOperation(scokTokenizeValue, found.prop,
+      "The selected element does not expose a tokenizable style property.",
+      tokenKey = tokenKey)
+  let prop = found.prop
+  if tokenKey.strip().len == 0:
+    return rejectStyleOperation(scokTokenizeValue, prop,
+      "Choose a design token before tokenizing this value.", tokenKey = tokenKey)
+  let scope =
+    if tokenKey.startsWith("component."): sscComponentToken
+    elif tokenKey.startsWith("primitive.") or tokenKey.startsWith("foundation."):
+      sscGlobalPrimitiveToken
+    else:
+      sscSemanticToken
+  let resolved = editor.resolveStyleScope(prop, scope, tokenKey)
+  if not resolved.ok:
+    return StyleOperationResult(status: pesRejected,
+      operation: scokTokenizeValue,
+      classEntry: StyleClassEntry(properties: @[prop], sourceFile: prop.sourceFile,
+        sourceLine: prop.sourceLine, schemaKey: tokenKey),
+      diagnostics: resolved.diagnostics)
   let newValue = "token(" & tokenKey & ")"
-  let plan = stylePlan(scokTokenizeValue, prop.sourceFile, prop.sourceLine,
+  let plan = stylePlan(scokTokenizeValue,
+    if resolved.file.len > 0: resolved.file else: prop.sourceFile,
+    max(1, if resolved.line > 0: resolved.line else: prop.sourceLine),
     prop.name, prop.value, newValue, "style-tokenize:" & tokenKey,
     tokenKey, tokenKey, cspTokenUpdate)
   editor.stageStyleOperation(scokTokenizeValue,
-    StyleClassEntry(properties: @[prop], sourceFile: prop.sourceFile,
-      sourceLine: prop.sourceLine, schemaKey: tokenKey, editable: true),
+    StyleClassEntry(properties: @[prop], sourceFile: plan.file,
+      sourceLine: plan.line, schemaKey: tokenKey, editable: true),
     plan)
 
 proc foundationDiagnostic(kind: FoundationEditDiagnosticKind;

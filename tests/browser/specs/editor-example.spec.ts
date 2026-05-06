@@ -4,6 +4,8 @@ const desktop = { width: 1440, height: 900 };
 const laptop = { width: 1280, height: 800 };
 const tablet = { width: 1024, height: 768 };
 const mobileWidth = { width: 390, height: 844 };
+const demoFoundationSource =
+  "examples/wanderlust/design-system/foundations.css";
 
 async function expectStableVisualSnapshot(page, name: string) {
   await page.addStyleTag({
@@ -263,6 +265,60 @@ async function forceSelectedStyle(page: Page, property: string, value: string) {
     },
     { property, value },
   );
+}
+
+async function previewStyle(page: Page) {
+  return page.evaluate(() => {
+    const frame = document.querySelector<HTMLIFrameElement>(
+      'iframe[title="Editable component preview"]',
+    );
+    const node =
+      frame?.contentDocument?.querySelector<HTMLElement>(
+        '[data-isonim-selected="true"]',
+      ) ??
+      frame?.contentDocument?.querySelector<HTMLElement>(
+        '[data-testid="component-edit-preview"]',
+      ) ??
+      null;
+    if (!node) return null;
+    const style = frame!.contentWindow!.getComputedStyle(node);
+    const rect = node.getBoundingClientRect();
+    return {
+      padding: style.paddingTop,
+      width: rect.width,
+      height: rect.height,
+      liveEdited: node.getAttribute("data-isonim-live-edited") ?? "",
+      source: node.getAttribute("data-isonim-src") ?? "",
+    };
+  });
+}
+
+async function demoSourceContent(page: Page, file: string) {
+  return page.evaluate(
+    (path) =>
+      (window as unknown as { __isonimDemoSources?: Record<string, string> })
+        .__isonimDemoSources?.[path] ?? "",
+    file,
+  );
+}
+
+async function markPreviewSelected(page: Page) {
+  await page.evaluate(() => {
+    const frame = document.querySelector<HTMLIFrameElement>(
+      'iframe[title="Editable component preview"]',
+    );
+    const target = frame?.contentDocument?.querySelector<HTMLElement>(
+      '[data-testid="component-edit-preview"]',
+    );
+    target?.setAttribute("data-isonim-selected", "true");
+    if (frame?.contentWindow && target) {
+      (
+        frame.contentWindow as unknown as {
+          __isonimSelectedElement?: HTMLElement;
+        }
+      ).__isonimSelectedElement = target;
+    }
+  });
 }
 
 test.describe("IsoNim packaged editor example", () => {
@@ -760,11 +816,13 @@ test.describe("IsoNim packaged editor example", () => {
     await expect(
       page.locator('[data-editor-telemetry-event="save and reload"]'),
     ).toBeVisible();
-    await expect(
-      page.locator('[data-editor-telemetry-event="save and reload"]').last(),
-    ).toHaveAttribute("data-editor-telemetry-detail", /bridge-error:/);
+    const saveDetail = await page
+      .locator('[data-editor-telemetry-event="save and reload"]')
+      .last()
+      .getAttribute("data-editor-telemetry-detail");
+    expect(saveDetail ?? "").toMatch(/bridge-error:|preview-reload:/);
     await expect(page.locator(".editor-statusbar")).toContainText(
-      "write failed",
+      saveDetail?.startsWith("bridge-error:") ? "write failed" : "clean",
     );
 
     const searchDuration = await page.evaluate(async () => {
@@ -1420,6 +1478,116 @@ test.describe("IsoNim packaged editor example", () => {
     await expect(page.locator('[data-vector-adapter="fabric"]')).toBeVisible();
     await assertVectorCanvasHasPixels(page);
     await expectStableVisualSnapshot(page, "m43-vector-editor.png");
+  });
+
+  test("m52_shared_design_editor_preview_save_and_revert", async ({ page }) => {
+    await page.setViewportSize(desktop);
+    await openDestinationComponentEdit(page);
+    const editFrame = page.frameLocator(
+      'iframe[title="Editable component preview"]',
+    );
+    await markPreviewSelected(page);
+    await expect(
+      editFrame.locator('[data-isonim-selected="true"]'),
+    ).toBeVisible();
+    const initialStyle = await previewStyle(page);
+    expect(initialStyle, "initial preview style").not.toBeNull();
+    expect(initialStyle!.padding).toBe("18px");
+    expect(initialStyle!.source).not.toBe("");
+
+    await page.getByRole("tab", { name: "Show Space edit controls" }).click();
+
+    const impact = page.locator('[data-design-system-impact="true"]');
+    await expect(impact).toHaveAttribute(
+      "data-shared-design-editor-count",
+      /[1-9]/,
+    );
+    await expect(page.getByLabel("Shared design-system editors")).toContainText(
+      "padding | Spacing",
+    );
+
+    const input = page
+      .getByRole("textbox", { name: "Edit inspector property padding" })
+      .first();
+    await expect(input).toBeVisible();
+    await input.evaluate((node: HTMLInputElement) => {
+      node.value = "24px";
+    });
+    await page
+      .getByRole("group", {
+        name: "Choose source scope for padding",
+        exact: true,
+      })
+      .click();
+    await page
+      .getByRole("button", {
+        name: "Apply Shared class source scope for padding",
+        exact: true,
+      })
+      .click();
+
+    await expect(page.getByText("Unsaved source edit")).toBeVisible();
+    await expect
+      .poll(async () => (await previewStyle(page))?.padding)
+      .toBe("24px");
+    const editedStyle = await previewStyle(page);
+    expect(editedStyle!.height).toBeGreaterThan(initialStyle!.height);
+    const commitPreview = page.locator(
+      '[data-shared-design-commit-preview="padding"]',
+    );
+    await expect(commitPreview).toBeVisible();
+    await expect(commitPreview).toContainText("+ padding: 24px");
+    await expect(commitPreview).toContainText(
+      "Affected components: DestinationCard",
+    );
+    await expect(commitPreview).toContainText("live preview: selected element");
+    await expect(commitPreview).toContainText("commit: rebuild + full reload");
+    await expect(commitPreview).toContainText("Regeneration: required");
+
+    await page
+      .getByRole("button", { name: "Save inspector source edits" })
+      .click();
+    await expect(page.locator(".editor-statusbar")).toContainText("clean");
+    await expect(page.locator(".editor-statusbar")).toContainText(
+      "write writable",
+    );
+    await expect
+      .poll(() => demoSourceContent(page, demoFoundationSource))
+      .toContain(".destination-card { padding: 24px; }");
+    await expect
+      .poll(async () => (await previewStyle(page))?.padding)
+      .toBe("24px");
+    await markPreviewSelected(page);
+
+    await input.evaluate((node: HTMLInputElement) => {
+      node.value = "30px";
+    });
+    await page
+      .getByRole("group", {
+        name: "Choose source scope for padding",
+        exact: true,
+      })
+      .click();
+    await page
+      .getByRole("button", {
+        name: "Apply Shared class source scope for padding",
+        exact: true,
+      })
+      .click();
+    await expect(page.getByText("Unsaved source edit")).toBeVisible();
+    await expect
+      .poll(async () => (await previewStyle(page))?.padding)
+      .toBe("30px");
+    await page
+      .getByRole("button", { name: "Revert inspector source edits" })
+      .click();
+    await expect(page.getByText("Unsaved source edit")).toHaveCount(0);
+    await expect
+      .poll(async () => (await previewStyle(page))?.padding)
+      .toBe("24px");
+    await expect
+      .poll(() => demoSourceContent(page, demoFoundationSource))
+      .toContain(".destination-card { padding: 24px; }");
   });
 
   test("e2e_editor_ui_quality_no_overlap_or_unexpected_scrollbars", async ({

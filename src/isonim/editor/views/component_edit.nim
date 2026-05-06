@@ -31,7 +31,27 @@ func htmlEscape(value: string): string =
     .replace(">", "&gt;")
     .replace("\"", "&quot;")
 
-func componentEditPreviewDocument(preview: ProjectPreview): string =
+func previewSchemaKey(selected: ElementRef): string =
+  func ownerPrefix(key, property: string): string =
+    result = key
+    let suffix = "." & property
+    while result.endsWith(suffix):
+      result = result[0 ..< result.len - suffix.len]
+  for prop in selected.properties:
+    if prop.name == "padding" and prop.schemaKey.len > 0:
+      return ownerPrefix(prop.schemaKey, prop.name)
+  if selected.schemaKey.len > 0:
+    return ownerPrefix(selected.schemaKey, "padding")
+  ""
+
+func previewPadding(selected: ElementRef): string =
+  for prop in selected.properties:
+    if prop.name == "padding" and prop.value.len > 0:
+      return prop.value
+  "18px"
+
+func componentEditPreviewDocument(preview: ProjectPreview;
+    selected: ElementRef): string =
   if preview.documentHtml.len > 0:
     return preview.documentHtml
   if preview.bodyText.len == 0:
@@ -45,17 +65,20 @@ func componentEditPreviewDocument(preview: ProjectPreview): string =
       metadata.sourceFile & ":" & $max(metadata.sourceLine, 1)
     else:
       "preview:" & preview.story.group & ":" & preview.story.name
+  let schemaKey = previewSchemaKey(selected)
+  let padding = previewPadding(selected)
   """
 <!doctype html>
 <html>
   <body style="margin:0;padding:24px;background:#F8FAFC;color:#111827;font:14px/1.5 system-ui,sans-serif">
-    <article data-testid="component-edit-preview" data-isonim-src="$1" style="max-width:420px;border:1px solid #CBD5E1;border-radius:8px;background:white;padding:18px;box-shadow:0 8px 24px rgba(15,23,42,.12)">
-      <h1 style="margin:0 0 8px;font-size:20px;line-height:1.2">$2</h1>
-      <p style="margin:0;color:#475569">$3</p>
+    <article data-testid="component-edit-preview" data-isonim-src="$1" data-isonim-schema-key="$2" style="max-width:420px;border:1px solid #CBD5E1;border-radius:8px;background:white;padding:$3;box-shadow:0 8px 24px rgba(15,23,42,.12)">
+      <h1 style="margin:0 0 8px;font-size:20px;line-height:1.2">$4</h1>
+      <p style="margin:0;color:#475569">$5</p>
     </article>
   </body>
 </html>
-""" % [source.htmlEscape, title.htmlEscape, preview.bodyText.htmlEscape]
+""" % [source.htmlEscape, schemaKey.htmlEscape, padding.htmlEscape,
+    title.htmlEscape, preview.bodyText.htmlEscape]
 
 type
   StyleClipboard = ref object
@@ -328,7 +351,8 @@ proc editablePreviewDocument(documentHtml: string;
         label: label,
         tag: node.tagName.toLowerCase(),
         sourceKey: sourceKeyFor(node),
-        schemaKey: 'dom.' + (node.getAttribute('data-testid') || node.tagName.toLowerCase()),
+      schemaKey: node.getAttribute('data-isonim-schema-key') ||
+        ('dom.' + (node.getAttribute('data-testid') || node.tagName.toLowerCase())),
         domPath: cssPath(node),
         sourceFile: source.file,
         sourceLine: Number(source.line) || 0,
@@ -540,7 +564,8 @@ proc editablePreviewDocument(documentHtml: string;
     const stack = ancestorStack(el).reverse().map(stableSelector);
     const stackIds = ancestorStack(el).reverse().map(identityFor);
     const elementId = identityFor(el);
-    const schemaKey = 'dom.' + (el.getAttribute('data-testid') || el.tagName.toLowerCase());
+    const schemaKey = el.getAttribute('data-isonim-schema-key') ||
+      ('dom.' + (el.getAttribute('data-testid') || el.tagName.toLowerCase()));
     parent.dispatchEvent(new CustomEvent('isonim-preview-element-selected', {
       detail: {
         elementId: elementId,
@@ -1704,8 +1729,11 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
   proc commitScope(kind: SourceScopeChoiceKind) =
     let nextValue = normalizePrimitiveInputValue(propName, r.inputValue(inputNode))
     r.setInputValue(inputNode, nextValue)
-    r.applyCssValue(vm, frame, propName, nextValue,
-      scope = if kind == sskLocalInstance: pesLocal else: pesShared)
+    if kind == sskLocalInstance:
+      r.applyCssValue(vm, frame, propName, nextValue, scope = pesLocal)
+    else:
+      discard vm.editSharedDesignProperty(propName, nextValue, kind)
+      r.applyLivePreviewStyle(frame, propName, nextValue)
   proc scopeChoiceHandler(kind: SourceScopeChoiceKind; editable: bool): proc() =
     let capturedKind = kind
     let capturedEditable = editable
@@ -3483,6 +3511,8 @@ proc renderDesignSystemImpactPanel[R, E](r: R; vm: EditorVM; frame: E;
   for editor in vm.inspector.propertyEditors.val:
     if editor.impactSummaries.len > 0:
       impactRows.add ImpactRow(editor: editor, impact: editor.impactSummaries[0])
+  let sharedEditors = vm.sharedDesignPropertyEditors()
+  let commitPreviews = vm.sharedDesignCommitPreviews()
   discard frame
   discard selected
   result = ui(r):
@@ -3542,10 +3572,91 @@ proc renderDesignSystemImpactPanel[R, E](r: R; vm: EditorVM; frame: E;
         if impactRows.len > 6:
           span(font_size = "10px", color = textDim):
             text "+" & $(impactRows.len - 6) & " more source-backed properties"
+        tdiv(display = "flex", flex_direction = "column", gap = "4px",
+              `aria-label` = "Shared design-system editors"):
+          span(font_size = "10px", font_weight = "700",
+                color = textSecondary,
+                text_transform = "uppercase", letter_spacing = "0.5px"):
+            text "Shared editors"
+          if sharedEditors.len == 0:
+            span(font_size = "10px", color = textDim):
+              text "No shared design-system editor is available for this selection."
+          else:
+            for i in 0 ..< min(sharedEditors.len, 8):
+              let editor = sharedEditors[i]
+              let scope = editor.sourceScope.kind.sourceScopeChoiceLabel()
+              tdiv(display = "grid",
+                    `grid-template-columns` = "minmax(0, 1fr) auto",
+                    gap = "6px", align_items = "center",
+                    padding = "5px 6px",
+                    border = "1px solid " & border,
+                    border_radius = "5px",
+                    background_color = bgSidebar):
+                tdiv(display = "flex", flex_direction = "column", gap = "2px",
+                      min_width = "0"):
+                  span(font_size = "10px", color = textPrimary,
+                        white_space = "nowrap", overflow = "hidden",
+                        text_overflow = "ellipsis"):
+                    text editor.property & " | " &
+                      editor.category.sharedDesignCategoryLabel()
+                  span(font_size = "9px", color = textDim,
+                        white_space = "nowrap", overflow = "hidden",
+                        text_overflow = "ellipsis"):
+                    text scope & " | " &
+                      (if editor.status == sdesEditable: "editable" else: editor.readOnlyReason)
+                span(font_size = "9px",
+                      color = (if editor.status == sdesEditable: green else: gold)):
+                  text $editor.flowCapabilities.len & " flows"
+        tdiv(display = "flex", flex_direction = "column", gap = "4px",
+              `aria-label` = "Scope-specific commit previews"):
+          span(font_size = "10px", font_weight = "700",
+                color = textSecondary,
+                text_transform = "uppercase", letter_spacing = "0.5px"):
+            text "Commit preview"
+          if commitPreviews.len == 0:
+            span(font_size = "10px", color = textDim):
+              text "No shared source diff is staged."
+          else:
+            for i in 0 ..< commitPreviews.len:
+              let preview = commitPreviews[i]
+              tdiv(`data-shared-design-commit-preview` = preview.property,
+                    display = "flex", flex_direction = "column", gap = "3px",
+                    padding = "5px 6px",
+                    border = "1px solid " & border,
+                    border_radius = "5px",
+                    background_color = bgSidebar):
+                span(font_size = "10px", color = textPrimary,
+                      white_space = "nowrap", overflow = "hidden",
+                      text_overflow = "ellipsis"):
+                  text preview.property & " | " &
+                    preview.sourceScope.sourceScopeChoiceLabel()
+                span(font_size = "9px", color = gold,
+                      font_family = "monospace", white_space = "pre-wrap",
+                      overflow_wrap = "anywhere"):
+                  text preview.sourceDiff
+                span(font_size = "9px", color = textDim):
+                  text "Affected components: " & (
+                    if preview.affectedComponents.len > 0:
+                      preview.affectedComponents.join(", ")
+                    else:
+                      "none") & " | affected stories: " &
+                    $preview.affectedStories.len
+                span(font_size = "9px", color = textDim):
+                  text preview.previewStateLabel
+                span(font_size = "9px", color = textDim):
+                  text "Regeneration: " &
+                    (if preview.regenerationRequired: "required" else: "not required") &
+                    " | reload: " &
+                    (if preview.fullReloadRequired: "full"
+                    elif preview.reloadRequired: "affected"
+                    else: "not required")
   r.setAttribute(result, "data-design-system-impact", "true")
   r.setAttribute(result, "data-design-system-property-count", $impactRows.len)
   r.setAttribute(result, "data-source-scope-impact", "true")
   r.setAttribute(result, "data-source-scope-impact-count", $impactRows.len)
+  r.setAttribute(result, "data-shared-design-editor-count", $sharedEditors.len)
+  r.setAttribute(result, "data-shared-design-commit-preview-count",
+    $commitPreviews.len)
 
 proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;
     clipboard: StyleClipboard) =
@@ -4025,7 +4136,8 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
         metadata.sourceFile & ":" & $max(metadata.sourceLine, 1)
       else:
         "No source metadata")
-    let previewDocument = componentEditPreviewDocument(previewState)
+    let previewDocument = componentEditPreviewDocument(previewState,
+      vm.inspector.selectedElement.val)
     let nextSrcdoc =
       if vm.editMode.val == emView:
         previewDocument & "\n<!-- isonim-reload:" & $reloadGeneration & " -->"

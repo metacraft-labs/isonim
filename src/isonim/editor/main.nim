@@ -10,26 +10,76 @@ import isonim/core/signals
 import isonim/editor
 import isonim/editor/browser
 
+const DemoFoundationSource = "examples/wanderlust/design-system/foundations.css"
+
+proc exposeDemoSource(file, content: string) =
+  when defined(js):
+    {.emit: ["""
+      window.__isonimDemoSources = window.__isonimDemoSources || {};
+      window.__isonimDemoSources[toJSStr(""", file, """)] = toJSStr(""", content, """);
+    """].}
+
 proc demoInspectorElement(): ElementRef =
   ElementRef(
+    id: "destination-card-root",
+    sourceKey: "destination-card.root",
     tag: "DestinationCard",
-    sourceFile: "examples/wanderlust/components/views.nim",
-    sourceLine: 42,
+    sourceFile: DemoFoundationSource,
+    sourceLine: 9,
     properties: @[
       PropertyInfo(
         name: "padding",
-        value: "20",
+        value: "18px",
         origin: poTailwindClass,
-        originDetail: "class:p-5",
-        sourceFile: "examples/wanderlust/components/views.nim",
-        sourceLine: 42),
+        originDetail: "class:destination-card",
+        sourceFile: DemoFoundationSource,
+        sourceLine: 9,
+        schemaKey: "classes.destination-card.padding",
+        sharedCount: 4,
+        directStyleAllowed: true),
       PropertyInfo(
         name: "border-radius",
-        value: "14",
-        origin: poTailwindClass,
-        originDetail: "class:rounded-[14px]",
-        sourceFile: "examples/wanderlust/components/views.nim",
-        sourceLine: 42)
+        value: "14px",
+        origin: poThemeToken,
+        originDetail: "token:wanderlust.foundation.radius.card",
+        sourceFile: DemoFoundationSource,
+        sourceLine: 5,
+        schemaKey: "wanderlust.foundation.radius.card",
+        tokenName: "wanderlust.foundation.radius.card",
+        sharedCount: 5,
+        directStyleAllowed: true)
+    ])
+
+func demoSourceSpan(line: int): SourceSpan =
+  SourceSpan(file: DemoFoundationSource, line: line, column: 1,
+    endLine: line, endColumn: 80)
+
+proc demoDesignSystemSchema(): DesignSystemSchema =
+  let componentStory = StoryRef(group: "DestinationCard", name: "Default",
+    kind: skComponent, index: 0)
+  DesignSystemSchema(
+    schemaVersion: 1,
+    projectId: "wanderlust-demo",
+    ownerPackage: "isonim-example",
+    frameworkContract: "isonim-editor-design-schema-v1",
+    nodes: @[
+      DesignSchemaNode(key: "classes.destination-card.padding",
+        kind: dsnClassDefinition, name: "destination-card",
+        component: "DestinationCard", property: "padding", value: "18px",
+        sourceSpan: demoSourceSpan(9), stories: @[componentStory],
+        components: @["DestinationCard"], usageCount: 4),
+      DesignSchemaNode(key: "wanderlust.foundation.radius.card",
+        kind: dsnComponentToken, name: "Destination card radius",
+        component: "DestinationCard", property: "border-radius",
+        value: "14px", sourceSpan: demoSourceSpan(5),
+        stories: @[componentStory], components: @["DestinationCard"],
+        usageCount: 5),
+      DesignSchemaNode(key: "wanderlust.foundation.space.card",
+        kind: dsnComponentToken, name: "Destination card spacing",
+        component: "DestinationCard", property: "padding",
+        value: "16px", sourceSpan: demoSourceSpan(4),
+        stories: @[componentStory], components: @["DestinationCard"],
+        usageCount: 3)
     ])
 
 proc demoVectorSymbols(): seq[VectorSymbol] =
@@ -47,8 +97,6 @@ proc demoVectorSymbols(): seq[VectorSymbol] =
       svgContent: "<path d=\"M12 22s7-6.1 7-13a7 7 0 10-14 0c0 6.9 7 13 7 13z\" />",
       tags: @["map", "place"], width: 24, height: 24)
   ]
-
-const DemoFoundationSource = "examples/wanderlust/design-system/foundations.css"
 
 proc demoFoundationTokens(): seq[FoundationTokenEntry] =
   let foundationStory = StoryRef(group: "Foundations", name: "Colors",
@@ -111,11 +159,21 @@ proc demoVectorEditAdapter(vectorSource, foundationSource: ref string): Workspac
       path: token.key,
       story: foundationStory,
       property: token.property)
+  schema.add WorkspaceEditableSchemaEntry(
+    key: "classes.destination-card.padding",
+    kind: wskSourceMap,
+    file: DemoFoundationSource,
+    path: "classes.destination-card.padding",
+    story: StoryRef(group: "DestinationCard", name: "Default",
+      kind: skComponent, index: 0),
+    property: "padding")
   result = WorkspaceEditAdapter(schema: schema)
   result.readFile = proc(file: string): WorkspaceReadResult =
     if file == DemoFoundationSource:
+      exposeDemoSource(file, foundationSource[])
       WorkspaceReadResult(ok: true, content: foundationSource[])
     else:
+      exposeDemoSource(file, vectorSource[])
       WorkspaceReadResult(ok: true, content: vectorSource[])
   result.patchFile = proc(plan: SourceEditPlan; content: string;
       schema: WorkspaceEditableSchemaEntry): WorkspacePatchResult =
@@ -138,6 +196,7 @@ proc demoVectorEditAdapter(vectorSource, foundationSource: ref string): Workspac
       foundationSource[] = content
     else:
       vectorSource[] = content
+    exposeDemoSource(file, content)
     WorkspaceOperationResult(ok: true)
   result.formatFiles = proc(files: seq[string]): WorkspaceOperationResult =
     WorkspaceOperationResult(ok: true)
@@ -171,7 +230,9 @@ proc main() =
     "--wl-radius-card: 14px;\n" &
     "--wl-shadow-card: 0 12px 28px #0F172A;\n" &
     "--wl-motion-fast: 120ms;\n" &
-    "--wl-breakpoint-compact: 640px;\n"
+    "--wl-breakpoint-compact: 640px;\n" &
+    ".destination-card { padding: 18px; }\n"
+  exposeDemoSource(DemoFoundationSource, foundationSource[])
   let workspace = newEditorWorkspace(
     title = "Wanderlust",
     storyGroups = groups,
@@ -179,6 +240,7 @@ proc main() =
     flowSteps = wanderlust.wanderlustFlowSteps(groups),
     vectorSymbols = demoVectorSymbols(),
     foundationTokens = demoFoundationTokens(),
+    designSystemSchema = demoDesignSystemSchema(),
     initialVectorSymbol = some(0),
     initialInspectorElement = some(demoInspectorElement()),
     previewHook = wanderlust.wanderlustPreviewHook,

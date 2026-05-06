@@ -4307,6 +4307,28 @@ suite "Editor ViewModels (M27 workspace file writes)":
         storyGroups = @[StoryGroup(name: "Card", kind: skComponent,
           items: @[StoryItem(name: "Default", kind: skComponent,
             group: "Card")])],
+        designSystemSchema = DesignSystemSchema(
+          schemaVersion: 1,
+          projectId: "metacraft-web-backoffice",
+          ownerPackage: "metacraft-web",
+          frameworkContract: "isonim-editor-design-schema-v1",
+          nodes: @[
+            DesignSchemaNode(key: "semantic.surface.raised",
+              kind: dsnSemanticToken, name: "Raised surface",
+              property: "background-color", value: "#f8fafc",
+              sourceSpan: SourceSpan(file: viewFile, line: 1,
+                column: 1, endLine: 1, endColumn: 40)),
+            DesignSchemaNode(key: "classes.card.padding",
+              kind: dsnClassDefinition, name: "card",
+              property: "padding", value: "16px",
+              sourceSpan: SourceSpan(file: cssFile, line: 1,
+                column: 1, endLine: 1, endColumn: 24)),
+            DesignSchemaNode(key: "classes.card.radius",
+              kind: dsnClassDefinition, name: "card-radius",
+              property: "border-radius", value: "8px",
+              sourceSpan: SourceSpan(file: viewFile, line: 2,
+                column: 1, endLine: 2, endColumn: 24))
+          ]),
         initialStory = some(writeStory),
         permissions = EditorWorkspacePermissions(readSource: true,
           writeSource: true),
@@ -4346,6 +4368,7 @@ suite "Editor ViewModels (M27 workspace file writes)":
       check detach.status == pesAccepted
       check detach.sourceEdit.planKind == cspInlineStyleUpdate
       check detach.sourceEdit.originDetail.startsWith("style-class:detach")
+      check detach.diagnostics.anyIt(it.kind == sdkUnsafeDetachment)
 
       let tokenize = vm.tokenizeStyleValue("background-color",
         "semantic.surface.raised")
@@ -4360,6 +4383,14 @@ suite "Editor ViewModels (M27 workspace file writes)":
       check readFile(viewFile).contains("token(semantic.surface.raised)")
       check readFile(cssFile).contains("padding: 16px")
       check vm.inspector.pendingSourceEdits.val.len == 0
+
+      let missingDetach = vm.detachSharedDesignProperty("margin")
+      check missingDetach.status == pesRejected
+      check missingDetach.diagnostics.anyIt(it.kind == pedUnknownProperty)
+      let missingToken = vm.tokenizeSharedDesignProperty("background-color",
+        "semantic.surface.missing")
+      check missingToken.status == pesRejected
+      check missingToken.diagnostics.anyIt(it.kind == pedInvalidTokenReference)
 
       let classVm = createEditorVM(newEditorWorkspace(
         title = "M39 style class operations workspace",
@@ -4393,6 +4424,40 @@ suite "Editor ViewModels (M27 workspace file writes)":
       check duplicated.status == pesAccepted
       check duplicated.sourceEdit.originDetail == "style-class:duplicate"
       check classVm.inspector.pendingSourceEdits.val.len == 3
+
+      let ambiguousVm = createEditorVM(newEditorWorkspace(
+        title = "M39 ambiguous style promotion workspace",
+        storyGroups = @[],
+        designSystemSchema = DesignSystemSchema(
+          schemaVersion: 1,
+          projectId: "metacraft-web-backoffice",
+          ownerPackage: "metacraft-web",
+          frameworkContract: "isonim-editor-design-schema-v1",
+          nodes: @[
+            DesignSchemaNode(key: "semantic.surface.raised",
+              kind: dsnSemanticToken, name: "Raised surface",
+              property: "background-color", value: "#f8fafc",
+              sourceSpan: SourceSpan(file: tokenFile, line: 1,
+                column: 1, endLine: 1, endColumn: 32)),
+            DesignSchemaNode(key: "semantic.surface.alt",
+              kind: dsnSemanticToken, name: "Alt surface",
+              property: "background-color", value: "#ffffff",
+              sourceSpan: SourceSpan(file: tokenFile, line: 2,
+                column: 1, endLine: 2, endColumn: 32))
+          ])))
+      check ambiguousVm.selectInspectorElement(ElementRef(
+        tag: "article",
+        sourceFile: viewFile,
+        sourceLine: 1,
+        properties: @[PropertyInfo(name: "background-color", value: "#ffffff",
+          origin: poSetStyle, originDetail: "style.background-color",
+          sourceFile: viewFile, sourceLine: 1,
+          directStyleAllowed: true)]))
+      let ambiguousPromote = ambiguousVm.promoteLocalOverride(
+        "background-color", sscSemanticToken)
+      check ambiguousPromote.status == pesRejected
+      check ambiguousPromote.diagnostics.anyIt(
+        it.message.contains("Multiple semantic token owners"))
       dispose()
 
   test "design_schema_preserves_framework_consumer_boundary":
@@ -5012,6 +5077,251 @@ suite "Editor ViewModels (M27 workspace file writes)":
       check shared.usageCount == 9
       check shared.riskLevel != ssrNone
       check shared.impact.riskLevel != ssrNone
+      dispose()
+
+  test "m52_shared_design_property_editors_plan_preview_undo_save_and_revert":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("m52-shared-design")
+      defer: removeDir(root)
+
+      createDir(root / "design")
+      createDir(root / "components")
+      let tokenFile = root / "design/tokens.schema"
+      let classFile = root / "components/card.css"
+      atomicWrite(tokenFile,
+        "semantic.surface.card=#ffffff\n" &
+        "component.card.radius=9px\n" &
+        "component.card.fontSize=15px\n" &
+        "component.card.shadow=0 8px 24px #0F172A\n" &
+        "component.card.motion=120ms\n" &
+        "component.card.padding=18px\n")
+      atomicWrite(classFile, ".card { padding: 16px; }\nfilter=none\n")
+
+      func sourceSpan(file: string; line: int): SourceSpan =
+        SourceSpan(file: file, line: line, column: 1,
+          endLine: line, endColumn: 40)
+
+      let story = StoryRef(group: "Card", name: "Default", kind: skComponent,
+        index: 0)
+      let schema = DesignSystemSchema(
+        schemaVersion: 1,
+        projectId: "m52-example",
+        ownerPackage: "isonim-example",
+        frameworkContract: "isonim-editor-design-schema-v1",
+        nodes: @[
+          DesignSchemaNode(key: "semantic.surface.card",
+            kind: dsnSemanticToken, name: "Surface card",
+            property: "background-color", value: "#ffffff",
+            sourceSpan: sourceSpan(tokenFile, 1), stories: @[story],
+            components: @["Card"], usageCount: 6),
+          DesignSchemaNode(key: "classes.card.padding",
+            kind: dsnClassDefinition, name: "card",
+            property: "padding", value: "16px",
+            sourceSpan: sourceSpan(classFile, 1), stories: @[story],
+            components: @["Card"], usageCount: 7),
+          DesignSchemaNode(key: "component.card.padding",
+            kind: dsnComponentToken, name: "Card padding token",
+            property: "padding", value: "18px",
+            sourceSpan: sourceSpan(tokenFile, 6), stories: @[story],
+            components: @["Card"], usageCount: 4),
+          DesignSchemaNode(key: "component.card.radius",
+            kind: dsnComponentToken, name: "Card radius token",
+            property: "border-radius", value: "9px",
+            sourceSpan: sourceSpan(tokenFile, 2), stories: @[story],
+            components: @["Card"], usageCount: 5),
+          DesignSchemaNode(key: "component.card.fontSize",
+            kind: dsnComponentToken, name: "Card font size token",
+            property: "font-size", value: "15px",
+            sourceSpan: sourceSpan(tokenFile, 3), stories: @[story],
+            components: @["Card"], usageCount: 3),
+          DesignSchemaNode(key: "component.card.shadow",
+            kind: dsnComponentToken, name: "Card shadow token",
+            property: "box-shadow", value: "0 8px 24px #0F172A",
+            sourceSpan: sourceSpan(tokenFile, 4), stories: @[story],
+            components: @["Card"], usageCount: 3),
+          DesignSchemaNode(key: "component.card.motion",
+            kind: dsnComponentToken, name: "Card motion token",
+            property: "transition-duration", value: "120ms",
+            sourceSpan: sourceSpan(tokenFile, 5), stories: @[story],
+            components: @["Card"], usageCount: 3),
+          DesignSchemaNode(key: "classes.card.filter",
+            kind: dsnClassDefinition, name: "card-filter",
+            property: "filter", value: "none",
+            sourceSpan: sourceSpan(classFile, 2), stories: @[story],
+            components: @["Card"], usageCount: 2)
+        ])
+
+      let workspaceSchema = @[
+        WorkspaceEditableSchemaEntry(key: "semantic.surface.card",
+          kind: wskToken, file: tokenFile, path: "semantic.surface.card",
+          story: story, property: "background-color"),
+        WorkspaceEditableSchemaEntry(key: "classes.card.padding",
+          kind: wskSourceMap, file: classFile, path: "classes.card.padding",
+          story: story, property: "padding"),
+        WorkspaceEditableSchemaEntry(key: "component.card.padding",
+          kind: wskToken, file: tokenFile, path: "component.card.padding",
+          story: story, property: "padding"),
+        WorkspaceEditableSchemaEntry(key: "component.card.radius",
+          kind: wskToken, file: tokenFile, path: "component.card.radius",
+          story: story, property: "border-radius"),
+        WorkspaceEditableSchemaEntry(key: "component.card.fontSize",
+          kind: wskToken, file: tokenFile, path: "component.card.fontSize",
+          story: story, property: "font-size"),
+        WorkspaceEditableSchemaEntry(key: "component.card.shadow",
+          kind: wskToken, file: tokenFile, path: "component.card.shadow",
+          story: story, property: "box-shadow"),
+        WorkspaceEditableSchemaEntry(key: "component.card.motion",
+          kind: wskToken, file: tokenFile, path: "component.card.motion",
+          story: story, property: "transition-duration"),
+        WorkspaceEditableSchemaEntry(key: "classes.card.filter",
+          kind: wskSourceMap, file: classFile, path: "classes.card.filter",
+          story: story, property: "filter")
+      ]
+      let recorder = WorkspaceEditRecorder()
+      let adapter = adapterFor(root, workspaceSchema, recorder = recorder)
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "M52 shared design workspace",
+        storyGroups = @[StoryGroup(name: "Card", kind: skComponent,
+          items: @[StoryItem(name: "Default", kind: skComponent,
+            group: "Card")])],
+        initialStory = some(story),
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true),
+        sourceAdapterReady = true,
+        editAdapter = adapter,
+        designSystemSchema = schema,
+        previewHook = proc(story: StoryRef;
+            platform: Platform): ProjectPreview {.closure.} =
+          ProjectPreview(status: ppsRendered, story: story,
+            title: "Card preview", bodyText: "Card preview " & $platform,
+            metadata: StoryRenderMetadata(story: story,
+              sourceFile: tokenFile, sourceLine: 1))))
+      check vm.selectInspectorElement(ElementRef(
+        id: "card-root",
+        sourceKey: "card.root",
+        tag: "article",
+        sourceFile: tokenFile,
+        sourceLine: 1,
+        properties: @[
+          PropertyInfo(name: "background-color", value: "#ffffff",
+            origin: poThemeToken, originDetail: "token:semantic.surface.card",
+            sourceFile: tokenFile, sourceLine: 1,
+            schemaKey: "semantic.surface.card",
+            tokenName: "semantic.surface.card", sharedCount: 6,
+            directStyleAllowed: true),
+          PropertyInfo(name: "padding", value: "16px",
+            origin: poTailwindClass, originDetail: "class:card",
+            sourceFile: classFile, sourceLine: 1,
+            schemaKey: "classes.card.padding", sharedCount: 7,
+            directStyleAllowed: true),
+          PropertyInfo(name: "border-radius", value: "9px",
+            origin: poThemeToken, originDetail: "token:component.card.radius",
+            sourceFile: tokenFile, sourceLine: 2,
+            schemaKey: "component.card.radius",
+            tokenName: "component.card.radius", sharedCount: 5,
+            directStyleAllowed: true),
+          PropertyInfo(name: "font-size", value: "15px",
+            origin: poThemeToken, originDetail: "token:component.card.fontSize",
+            sourceFile: tokenFile, sourceLine: 3,
+            schemaKey: "component.card.fontSize",
+            tokenName: "component.card.fontSize", sharedCount: 3,
+            directStyleAllowed: true),
+          PropertyInfo(name: "box-shadow", value: "0 8px 24px #0F172A",
+            origin: poThemeToken, originDetail: "token:component.card.shadow",
+            sourceFile: tokenFile, sourceLine: 4,
+            schemaKey: "component.card.shadow",
+            tokenName: "component.card.shadow", sharedCount: 3,
+            directStyleAllowed: true),
+          PropertyInfo(name: "transition-duration", value: "120ms",
+            origin: poThemeToken, originDetail: "token:component.card.motion",
+            sourceFile: tokenFile, sourceLine: 5,
+            schemaKey: "component.card.motion",
+            tokenName: "component.card.motion", sharedCount: 3,
+            directStyleAllowed: true),
+          PropertyInfo(name: "filter", value: "none",
+            origin: poTailwindClass, originDetail: "class:card-filter",
+            sourceFile: classFile, sourceLine: 2,
+            schemaKey: "classes.card.filter", sharedCount: 2,
+            directStyleAllowed: true)
+        ]))
+
+      let unsupported = vm.planSharedDesignEdit("filter", "blur(2px)",
+        sskSharedClass)
+      check unsupported.status == pesRejected
+      check unsupported.diagnostics.anyIt(it.message.contains("read-only"))
+
+      let cases = @[
+        ("background-color", "#f8fafc", sskSemanticToken, sdecColor,
+          cspTokenUpdate),
+        ("padding", "24px", sskSharedClass, sdecSpacing,
+          cspStructuredSchemaUpdate),
+        ("border-radius", "12px", sskComponentToken, sdecRadii,
+          cspTokenUpdate),
+        ("font-size", "16px", sskComponentToken, sdecTypography,
+          cspTokenUpdate),
+        ("box-shadow", "0 10px 30px #0F172A", sskComponentToken,
+          sdecShadowElevation, cspTokenUpdate),
+        ("transition-duration", "180ms", sskComponentToken, sdecMotion,
+          cspTokenUpdate)
+      ]
+      for item in cases:
+        let planned = vm.planSharedDesignEdit(item[0], " " & item[1] & " ",
+          item[2])
+        check planned.status == pesAccepted
+        check planned.editor.category == item[3]
+        check planned.editor.value.canonical == item[1]
+        check planned.sourceEdit.planKind == item[4]
+        check planned.sourceEdit.sourceScope == item[2]
+        check planned.editor.commitPreview.sourceDiff.contains("+ " & item[0])
+        check planned.editor.commitPreview.affectedComponents == @["Card"]
+        check planned.editor.commitPreview.affectedStories == @[story]
+        check planned.editor.commitPreview.livePreviewable
+        check planned.editor.commitPreview.dependentExamplesLivePreviewed
+        check planned.editor.commitPreview.rebuildRequired
+        check planned.editor.commitPreview.regenerationRequired
+        check planned.editor.commitPreview.fullReloadRequired
+        check planned.editor.commitPreview.reloadRequired
+        check planned.editor.commitPreview.previewStateLabel.contains(
+          "commit: rebuild + full reload")
+
+        let edited = vm.editSharedDesignProperty(item[0], " " & item[1] & " ",
+          item[2])
+        check edited.status == pesAccepted
+        check vm.inspector.pendingSourceEdits.val.anyIt(
+          it.property == item[0] and it.sourceScope == item[2])
+        check vm.inspector.undoCssPropertyEdit()
+        check vm.inspector.redoCssPropertyEdit()
+
+      check vm.sharedDesignCommitPreviews().len == cases.len
+      check vm.sharedDesignCommitPreviews().allIt(
+        it.sourceDiff.contains("--- ") and it.affectedStories.len == 1 and
+        it.regenerationRequired and it.fullReloadRequired)
+      let invalid = vm.planSharedDesignEdit("padding", "-1px",
+        sskSharedClass)
+      check invalid.status == pesRejected
+      check invalid.diagnostics.anyIt(it.kind == pedInvalidCssValue)
+
+      let saved = vm.applyWorkspaceFileEdits()
+      check saved.ok
+      check readFile(tokenFile).contains("#f8fafc")
+      check readFile(tokenFile).contains("12px")
+      check readFile(tokenFile).contains("16px")
+      check readFile(tokenFile).contains("0 10px 30px #0F172A")
+      check readFile(tokenFile).contains("180ms")
+      check readFile(classFile).contains("24px")
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check recorder.reloadedStories.len >= 1
+      check recorder.reloadedStories.anyIt(it.group == "Card" and
+        it.name == "Default")
+
+      discard vm.editSharedDesignProperty("padding", "28px", sskSharedClass)
+      check vm.inspector.selectedElement.val.properties.anyIt(
+        it.name == "padding" and it.value == "28px")
+      let reverted = vm.runEditorCommand(eckRevert)
+      check reverted.status == ecsSucceeded
+      check vm.inspector.selectedElement.val.properties.anyIt(
+        it.name == "padding" and it.value == "24px")
+      check vm.inspector.pendingSourceEdits.val.len == 0
       dispose()
 
   test "agent_proposals_target_design_schema_scopes":
