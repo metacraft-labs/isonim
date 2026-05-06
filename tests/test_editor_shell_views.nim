@@ -25,6 +25,23 @@ proc findByAttr(node: MockNode; name, value: string): MockNode =
     if found != nil:
       return found
 
+proc countByAttr(node: MockNode; name, value: string): int =
+  if node.kind == mnkElement and name in node.attributes and
+      node.attributes[name] == value:
+    inc result
+  for child in node.children:
+    result += countByAttr(child, name, value)
+
+proc collectByAttr(node: MockNode; name, value: string; result: var seq[MockNode]) =
+  if node.kind == mnkElement and name in node.attributes and
+      node.attributes[name] == value:
+    result.add node
+  for child in node.children:
+    collectByAttr(child, name, value, result)
+
+proc findAllByAttr(node: MockNode; name, value: string): seq[MockNode] =
+  collectByAttr(node, name, value, result)
+
 proc countInteractive(node: MockNode): int =
   if node.kind == mnkElement and
       ("click" in node.eventListeners or "keydown" in node.eventListeners):
@@ -103,7 +120,7 @@ suite "Editor Shell Views (M2)":
 
       # Tabs should expose every inspector section.
       let tabs = panel.children[0]
-      check tabs.children.len == 11
+      check tabs.children.len == 12
 
       dispose()
 
@@ -134,23 +151,61 @@ suite "Editor Shell Views (M2)":
       let view = renderComponentEditView[MockRenderer, MockNode](r, vm)
       let impact = findByAttr(view, "data-design-system-impact", "true")
       check impact != nil
+      check impact.attributes["data-source-scope-impact"] == "true"
       check impact.attributes["data-design-system-property-count"] == "1"
-      check view.textContent.contains("Shared edit impact")
-      check view.textContent.contains("Use local edits for this selection only")
+      check impact.attributes["data-source-scope-impact-count"] == "1"
+      check view.textContent.contains("Scope impact")
+      check view.textContent.contains("row scope selector")
       check view.textContent.contains("updates 5 mapped uses")
       check view.textContent.contains("token space.card.gap")
       check view.textContent.contains("CSS Layout / Grid / Flex / Constraints")
+      check findByAttr(view, "data-inspector-section", "layout") != nil
+      check findByAttr(view, "data-inspector-section", "size") != nil
+      check findByAttr(view, "data-inspector-section", "spacing") != nil
+      check findByAttr(view, "data-inspector-section", "position") != nil
+      check findByAttr(view, "data-inspector-section", "fill") != nil
+      check findByAttr(view, "data-inspector-section", "stroke") != nil
+      check findByAttr(view, "data-inspector-section", "typography") != nil
+      check findByAttr(view, "data-inspector-section", "effects") != nil
+      check findByAttr(view, "data-inspector-section", "transitions") != nil
+      check findByAttr(view, "data-inspector-section", "filters") != nil
+      check findByAttr(view, "data-inspector-section", "state") != nil
+      check findByAttr(view, "data-inspector-section", "source") != nil
 
-      let gapInput = findByAttr(view, "aria-label",
+      let denseRows = findAllByAttr(view, "data-inspector-dense-row", "true")
+      check denseRows.len >= 2
+      var gapRow: MockNode
+      for row in denseRows:
+        check row.attributes["data-inspector-row-slots"] ==
+          "label scrub-value unit binding scope reset more"
+        for slot in [
+          "label-scrubber", "value-field", "unit-picker",
+          "binding-indicator", "scope-selector", "reset", "actions"
+        ]:
+          check countByAttr(row, "data-inspector-row-slot", slot) == 1
+        if row.attributes.getOrDefault("data-inspector-property") == "gap" and
+            row.attributes.getOrDefault("data-inspector-property-source-key") ==
+            "semantic.spacing.card-gap":
+          gapRow = row
+      check gapRow != nil
+      let gapInput = findByAttr(gapRow, "aria-label",
         "Edit inspector property gap")
-      let sharedScope = findByAttr(view, "aria-label",
-        "Apply shared design system scope for gap")
+      let scopeSelector = findByAttr(gapRow, "aria-label",
+        "Choose source scope for gap")
+      let sharedScope = findByAttr(gapRow, "aria-label",
+        "Apply Shared class source scope for gap")
       check gapInput != nil
+      check scopeSelector != nil
+      check scopeSelector.attributes["data-inspector-row-slot"] == "scope-selector"
+      check scopeSelector.attributes["data-source-scope-count"] == "7"
       check sharedScope != nil
+      check sharedScope.attributes["data-source-scope-editable"] == "true"
+      check "click" in sharedScope.eventListeners
       r.setInputValue(gapInput, "24px")
       sharedScope.fireEvent("click")
       check vm.inspector.pendingSourceEdits.val.len == 1
       check vm.inspector.pendingSourceEdits.val[0].scope == pesShared
+      check vm.inspector.pendingSourceEdits.val[0].sourceScope == sskSharedClass
       check vm.inspector.selectedElement.val.properties[0].value == "24px"
       dispose()
 

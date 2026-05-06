@@ -31,9 +31,7 @@ proc injectEditorStyles*() =
     .editor-manual-inspector {
       scrollbar-width: thin;
     }
-    .editor-sidebar::-webkit-resizer,
-    .editor-chat::-webkit-resizer,
-    .editor-manual-inspector::-webkit-resizer {
+    .editor-sidebar::-webkit-resizer {
       background: #334155;
     }
     .editor-statusbar [role="button"]:hover,
@@ -229,6 +227,7 @@ func inspectorSectionSlug(section: InspectorSection): string =
   of isTransitions: "transitions"
   of isFilters: "filters"
   of isState: "state"
+  of isSource: "source"
 
 func inspectorSectionFromSlug(slug: string;
     fallback: InspectorSection): InspectorSection =
@@ -244,6 +243,7 @@ func inspectorSectionFromSlug(slug: string;
   of "transitions", "transition": isTransitions
   of "filters", "filter": isFilters
   of "state": isState
+  of "source": isSource
   else: fallback
 
 func boolSlug(value: bool): string =

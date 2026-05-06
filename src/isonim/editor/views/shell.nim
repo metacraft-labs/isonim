@@ -39,11 +39,11 @@ const
 
 const inspectorSections = [
   isLayout, isSize, isSpacing, isPosition, isFill, isStroke, isTypography,
-  isEffects, isTransitions, isFilters, isState]
+  isEffects, isTransitions, isFilters, isState, isSource]
 
 const inspectorSectionNames = [
   "Layout", "Size", "Space", "Pos", "Fill", "Stroke", "Type", "FX", "Trans",
-  "Filter", "State"]
+  "Filter", "State", "Source"]
 
 const sidebarSections = [
   ssUserJourneys, ssPages, ssComponents, ssFoundations, ssGuidelines]
@@ -298,8 +298,9 @@ proc bindRightPanelWidth[R, E](r: R; node: E; vm: EditorVM) =
   createRenderEffect proc() =
     let width = $vm.rightPanelWidth.val & "px"
     r.setStyle(node, "width", width)
-    r.setStyle(node, "min-width", width)
-    r.setStyle(node, "max-width", width)
+    r.setStyle(node, "flex-basis", width)
+    r.setStyle(node, "min-width", "260px")
+    r.setStyle(node, "max-width", "520px")
     r.setAttribute(node, "data-right-panel-width", $vm.rightPanelWidth.val)
 
 proc statusPanelButton[R, E](r: R; vm: EditorVM; panel: EditorPanel;
@@ -832,7 +833,7 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
   result = ui(r):
     tdiv(class = "editor-inspector",
           display = "flex", flex_direction = "column",
-          width = "320px", min_width = "320px", max_width = "320px",
+          width = "320px", min_width = "260px", max_width = "520px",
           height = "100%",
           background_color = bgSidebar,
           border_left = "1px solid " & borderStrong,

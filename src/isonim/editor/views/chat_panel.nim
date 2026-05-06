@@ -27,8 +27,9 @@ proc bindRightPanelWidth[R, E](r: R; node: E; vm: EditorVM) =
   createRenderEffect proc() =
     let width = $vm.rightPanelWidth.val & "px"
     r.setStyle(node, "width", width)
-    r.setStyle(node, "min-width", width)
-    r.setStyle(node, "max-width", width)
+    r.setStyle(node, "flex-basis", width)
+    r.setStyle(node, "min-width", "260px")
+    r.setStyle(node, "max-width", "520px")
     r.setAttribute(node, "data-right-panel-width", $vm.rightPanelWidth.val)
 
 proc rememberPanelFocus(vm: EditorVM; id: string): proc() =
@@ -127,8 +128,8 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
     tdiv(
       class = "editor-chat",
       width = "320px",
-      min_width = "320px",
-      max_width = "320px",
+      min_width = "260px",
+      max_width = "520px",
       display = "flex",
       flex_direction = "column",
       height = "100%",
@@ -213,6 +214,9 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   r.setAttribute(narrowButton, "data-isonim-focus-id", "right-panel-narrow")
   r.setAttribute(resetButton, "data-isonim-focus-id", "right-panel-reset")
   r.setAttribute(widenButton, "data-isonim-focus-id", "right-panel-widen")
+  r.setAttribute(narrowButton, "data-right-panel-resize-affordance", "narrow")
+  r.setAttribute(resetButton, "data-right-panel-resize-affordance", "reset")
+  r.setAttribute(widenButton, "data-right-panel-resize-affordance", "widen")
   r.addEventListener(narrowButton, "click", proc() = vm.adjustRightPanelWidth(-40))
   r.addEventListener(narrowButton, "keydown", proc() = vm.adjustRightPanelWidth(-40))
   r.addEventListener(narrowButton, "focus", rememberPanelFocus(vm,

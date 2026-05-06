@@ -66,8 +66,9 @@ proc bindRightPanelWidth[R, E](r: R; node: E; vm: EditorVM) =
   createRenderEffect proc() =
     let width = $vm.rightPanelWidth.val & "px"
     r.setStyle(node, "width", width)
-    r.setStyle(node, "min-width", width)
-    r.setStyle(node, "max-width", width)
+    r.setStyle(node, "flex-basis", width)
+    r.setStyle(node, "min-width", "260px")
+    r.setStyle(node, "max-width", "520px")
     r.setAttribute(node, "data-right-panel-width", $vm.rightPanelWidth.val)
 
 proc rememberPanelFocus(vm: EditorVM; id: string): proc() =
@@ -1140,12 +1141,12 @@ proc installPreviewSelectionBridge[R, E](r: R; frame: E; vm: EditorVM) =
 
 const richSections = [
   isLayout, isSize, isSpacing, isPosition, isFill, isStroke, isTypography,
-  isEffects, isTransitions, isFilters
+  isEffects, isTransitions, isFilters, isState, isSource
 ]
 
 const richSectionLabels = [
   "Layout", "Size", "Space", "Position", "Fill", "Stroke", "Type",
-  "Effects", "Transitions", "Filters"
+  "Effects", "Transitions", "Filters", "State", "Source"
 ]
 
 func fallbackPropertyValue(element: ElementRef; name,
@@ -1265,6 +1266,8 @@ func sectionProperties(section: InspectorSection): seq[(string, string)] =
     ]
   of isState:
     @[]
+  of isSource:
+    @[]
 
 func quickValues(propertyName: string): seq[string] =
   case propertyName
@@ -1323,6 +1326,23 @@ func originLabel(origin: PropertyOrigin): string =
   of poThemeToken: "token"
   of poConstant: "const"
   of poInherited: "inherited"
+
+func sourceScopeAbbrev(kind: SourceScopeChoiceKind): string =
+  case kind
+  of sskLocalInstance: "Loc"
+  of sskStoryFixture: "Fix"
+  of sskComponentSchemaApi: "API"
+  of sskSharedClass: "Cls"
+  of sskComponentToken: "Tok"
+  of sskSemanticToken: "Sem"
+  of sskGlobalPrimitiveToken: "Prim"
+
+func sourceScopeRiskLabel(risk: SourceScopeRiskLevel): string =
+  case risk
+  of ssrNone: "none"
+  of ssrLow: "low"
+  of ssrMedium: "med"
+  of ssrHigh: "high"
 
 func originTone(origin: PropertyOrigin): string =
   case origin
@@ -1656,22 +1676,42 @@ proc inspectorLiveValueHandler[R, E](r: R; vm: EditorVM; frame: E; propName,
 
 proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
     fallback: string): E =
+  var labelNode: E
   var inputNode: E
   var resetNode: E
   var unitNode: E
   var moreNode: E
   var scopeNode: E
+  var bindingNode: E
   let propName = prop.name
   let value = prop.value
   let unit = numericUnit(value, "")
   let scopeChoices = vm.sourceScopeChoices(prop)
-  var sharedScopeIndex = -1
+  var selectedScopeIndex = 0
+  var editableScopeCount = 0
   for i in 0 ..< scopeChoices.len:
-    if scopeChoices[i].kind != sskLocalInstance and scopeChoices[i].editable:
-      sharedScopeIndex = i
+    if scopeChoices[i].editable:
+      inc editableScopeCount
+    if scopeChoices[i].kind != sskLocalInstance and scopeChoices[i].editable and
+        (prop.sharedCount > 0 or prop.tokenName.len > 0 or prop.schemaKey.len > 0):
+      selectedScopeIndex = i
       break
-  let hasDesignSystemScope = sharedScopeIndex >= 0
+  let selectedScope =
+    if scopeChoices.len > 0: scopeChoices[selectedScopeIndex]
+    else: SourceScopeChoice(kind: sskLocalInstance, label: "Local instance",
+      editable: true)
   let binding = originLabel(prop.origin)
+  proc commitScope(kind: SourceScopeChoiceKind) =
+    let nextValue = normalizePrimitiveInputValue(propName, r.inputValue(inputNode))
+    r.setInputValue(inputNode, nextValue)
+    r.applyCssValue(vm, frame, propName, nextValue,
+      scope = if kind == sskLocalInstance: pesLocal else: pesShared)
+  proc scopeChoiceHandler(kind: SourceScopeChoiceKind; editable: bool): proc() =
+    let capturedKind = kind
+    let capturedEditable = editable
+    result = proc() =
+      if capturedEditable:
+        commitScope(capturedKind)
   let commit = proc() =
     let nextValue = normalizePrimitiveInputValue(propName, r.inputValue(inputNode))
     r.setInputValue(inputNode, nextValue)
@@ -1684,7 +1724,8 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
           `grid-template-columns` = "72px minmax(58px, 1fr) 36px 42px 42px 24px 24px",
           align_items = "center", gap = "4px",
           min_height = "28px", max_width = "100%", overflow = "hidden"):
-      label(font_size = "10px", color = textMuted,
+      label(ref = labelNode,
+            font_size = "10px", color = textMuted,
             white_space = "nowrap", overflow = "hidden",
             text_overflow = "ellipsis", cursor = "ew-resize",
             title = "Scrub " & propName & " value"):
@@ -1714,7 +1755,8 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
             color = textMuted, font_size = "9px",
             cursor = "pointer"):
         text (if unit.len > 0: unit else: "-")
-      tdiv(height = "22px",
+      tdiv(ref = bindingNode,
+            height = "22px",
             display = "flex", align_items = "center",
             justify_content = "center",
             border = "1px solid " & border,
@@ -1723,21 +1765,64 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
             color = textMuted, font_size = "9px",
             white_space = "nowrap", overflow = "hidden"):
         text binding
-      tdiv(ref = scopeNode, role = "button", tabindex = "0",
-            `aria-label` = (if hasDesignSystemScope:
-              "Apply shared design system scope for " & propName
-            else:
-              "Property " & propName & " is local-only"),
+      details(ref = scopeNode,
+            `aria-label` = "Choose source scope for " & propName,
             height = "22px",
-            display = "flex", align_items = "center",
-            justify_content = "center",
+            position = "relative",
             border = "1px solid " & border,
             border_radius = "4px",
             background_color = bgSurface,
-            color = (if hasDesignSystemScope: gold else: textMuted),
+            color = (if editableScopeCount > 1: gold else: textMuted),
             font_size = "9px",
-            cursor = (if hasDesignSystemScope: "pointer" else: "default")):
-        text (if hasDesignSystemScope: "DS" else: "local")
+            cursor = "pointer"):
+        summary(display = "flex", align_items = "center",
+                justify_content = "center",
+                height = "20px", list_style = "none",
+                white_space = "nowrap", overflow = "hidden",
+                text_overflow = "ellipsis"):
+          text selectedScope.kind.sourceScopeAbbrev()
+        tdiv(position = "absolute", right = "0", top = "23px",
+              z_index = "20", min_width = "170px",
+              display = "flex", flex_direction = "column", gap = "2px",
+              padding = "4px", border = "1px solid " & border,
+              border_radius = "5px", background_color = bgSidebar,
+              box_shadow = "0 8px 24px rgba(0,0,0,0.28)"):
+          for i in 0 ..< scopeChoices.len:
+            let choice = scopeChoices[i]
+            let scopeLabel = choice.label
+            let risk = choice.riskLevel.sourceScopeRiskLabel()
+            var choiceNode: E
+            tdiv(ref = choiceNode,
+                  role = "button", tabindex = "0",
+                  `aria-label` = "Apply " & scopeLabel &
+                    " source scope for " & propName,
+                  display = "grid",
+                  `grid-template-columns` = "32px minmax(0, 1fr) auto",
+                  align_items = "center", gap = "5px",
+                  min_height = "22px",
+                  padding = "3px 4px",
+                  border_radius = "4px",
+                  background_color =
+                    (if i == selectedScopeIndex: bgSurface else: "transparent"),
+                  color = (if choice.editable: textPrimary else: textDim),
+                  cursor = (if choice.editable: "pointer" else: "default")):
+              span(font_size = "9px", color =
+                    (if choice.kind == sskLocalInstance: textMuted else: gold)):
+                text choice.kind.sourceScopeAbbrev()
+              span(font_size = "9px",
+                    white_space = "nowrap", overflow = "hidden",
+                    text_overflow = "ellipsis"):
+                text scopeLabel
+              span(font_size = "8px", color = textDim):
+                text risk
+            block:
+              let kind = choice.kind
+              let editable = choice.editable
+              r.setAttribute(choiceNode, "data-source-scope-editable",
+                if editable: "true" else: "false")
+              let applyScope = scopeChoiceHandler(kind, editable)
+              r.addEventListener(choiceNode, "click", applyScope)
+              r.addEventListener(choiceNode, "keydown", applyScope)
       tdiv(ref = resetNode, role = "button", tabindex = "0",
             `aria-label` = "Reset " & propName & " property",
             height = "22px",
@@ -1763,8 +1848,21 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
   r.setAttribute(inputNode, "aria-label", "Edit inspector property " & propName)
   r.setAttribute(inputNode, "data-isonim-focus-id", "property-" & propName)
   r.setAttribute(result, "data-inspector-dense-row", "true")
+  r.setAttribute(result, "data-inspector-property", propName)
+  r.setAttribute(result, "data-inspector-property-source-key", prop.schemaKey)
   r.setAttribute(result, "data-inspector-row-slots",
     "label scrub-value unit binding scope reset more")
+  r.setAttribute(labelNode, "data-inspector-row-slot", "label-scrubber")
+  r.setAttribute(labelNode, "data-inspector-label-scrubber", "true")
+  r.setAttribute(inputNode, "data-inspector-row-slot", "value-field")
+  r.setAttribute(unitNode, "data-inspector-row-slot", "unit-picker")
+  r.setAttribute(bindingNode, "data-inspector-row-slot", "binding-indicator")
+  r.setAttribute(bindingNode, "aria-label", "Binding indicator for " & propName)
+  r.setAttribute(scopeNode, "data-inspector-row-slot", "scope-selector")
+  r.setAttribute(scopeNode, "data-inspector-scope-selector", "true")
+  r.setAttribute(scopeNode, "data-source-scope-count", $scopeChoices.len)
+  r.setAttribute(resetNode, "data-inspector-row-slot", "reset")
+  r.setAttribute(moreNode, "data-inspector-row-slot", "actions")
   r.setInputValue(inputNode, value)
   r.addEventListener(inputNode, "change", commit)
   r.addEventListener(inputNode, "blur", commit)
@@ -1780,13 +1878,9 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
     r.applyCssValue(vm, frame, propName, nextValue)
   r.addEventListener(unitNode, "click", cycleUnit)
   r.addEventListener(unitNode, "keydown", cycleUnit)
-  if hasDesignSystemScope:
-    let commitShared = proc() =
-      let nextValue = normalizePrimitiveInputValue(propName, r.inputValue(inputNode))
-      r.setInputValue(inputNode, nextValue)
-      r.applyCssValue(vm, frame, propName, nextValue, scope = pesShared)
-    r.addEventListener(scopeNode, "click", commitShared)
-    r.addEventListener(scopeNode, "keydown", commitShared)
+  let applySelectedScope = proc() =
+    commitScope(selectedScope.kind)
+  r.addEventListener(scopeNode, "keydown", applySelectedScope)
   let reset = proc() = r.applyCssValue(vm, frame, propName, fallback)
   r.addEventListener(resetNode, "click", reset)
   r.addEventListener(resetNode, "keydown", reset)
@@ -2620,6 +2714,17 @@ proc sectionTitle(section: InspectorSection): string =
       return richSectionLabels[i]
   "Inspector"
 
+func sectionFullTitle(section: InspectorSection): string =
+  case section
+  of isSpacing: "Spacing"
+  of isTypography: "Typography"
+  of isEffects: "Effects"
+  of isTransitions: "Transitions"
+  of isFilters: "Filters"
+  of isState: "State"
+  of isSource: "Source"
+  else: sectionTitle(section)
+
 proc renderBoxModelSummary[R, E](r: R; selected: ElementRef): E =
   let padding = fallbackPropertyValue(selected, "padding", "0px")
   let margin = fallbackPropertyValue(selected, "margin", "0px")
@@ -3368,21 +3473,24 @@ proc renderStyleManagerPanel[R, E](r: R; vm: EditorVM; frame: E;
     r.addEventListener(button, "click", promote)
     r.addEventListener(button, "keydown", promote)
 
-func designSystemProperties(selected: ElementRef): seq[PropertyInfo] =
-  for prop in selected.properties:
-    if prop.sharedCount > 0 or prop.tokenName.len > 0 or prop.schemaKey.len > 0:
-      result.add prop
-
 proc renderDesignSystemImpactPanel[R, E](r: R; vm: EditorVM; frame: E;
     selected: ElementRef): E =
-  let sharedProps = designSystemProperties(selected)
+  type ImpactRow = object
+    editor: CSSPropertyEditorVM
+    impact: SourceScopeImpact
+
+  var impactRows: seq[ImpactRow] = @[]
+  for editor in vm.inspector.propertyEditors.val:
+    if editor.impactSummaries.len > 0:
+      impactRows.add ImpactRow(editor: editor, impact: editor.impactSummaries[0])
   discard frame
+  discard selected
   result = ui(r):
     details(open = "open",
-            `aria-label` = "Design system property impact"):
+            `aria-label` = "Source scope property impact"):
       summary(cursor = "pointer", color = textMuted, font_size = "10px",
               padding = "2px 0"):
-        text "Design system"
+        text "Source impact"
       tdiv(display = "flex", flex_direction = "column", gap = "6px",
             padding = "8px", border = "1px solid " & border,
             border_radius = "6px", background_color = bgBase):
@@ -3390,52 +3498,54 @@ proc renderDesignSystemImpactPanel[R, E](r: R; vm: EditorVM; frame: E;
           span(font_size = "10px", font_weight = "700",
                 color = textSecondary,
                 text_transform = "uppercase", letter_spacing = "0.5px"):
-            text "Shared edit impact"
+            text "Scope impact"
           span(font_size = "10px", color = textDim):
-            text "Use local edits for this selection only. Use DS scope to edit the shared design-system source."
-        if sharedProps.len == 0:
+            text "Use the row scope selector to choose local, fixture, class, API, or token source ownership."
+        if impactRows.len == 0:
           span(font_size = "10px", color = textDim):
-            text "This selection has no shared token or schema-backed properties."
+            text "This selection has no source-backed property scopes."
         else:
-          for i in 0 ..< min(sharedProps.len, 6):
-            let prop = sharedProps[i]
-            let impacts = vm.sourceScopeImpacts(prop)
-            if impacts.len > 0:
-              let impact = impacts[0]
-              tdiv(display = "grid",
-                    `grid-template-columns` = "minmax(0, 1fr) auto",
-                    gap = "6px", align_items = "center",
-                    padding = "5px 6px",
-                    border = "1px solid " & border,
-                    border_radius = "5px",
-                    background_color = bgSidebar):
-                tdiv(display = "flex", flex_direction = "column", gap = "2px",
-                      min_width = "0"):
-                  span(font_size = "11px", color = textPrimary,
-                        white_space = "nowrap", overflow = "hidden",
-                        text_overflow = "ellipsis"):
-                    text prop.name & " = " & prop.value
-                  span(font_size = "10px", color = gold,
-                        white_space = "nowrap", overflow = "hidden",
-                        text_overflow = "ellipsis"):
-                    text impact.summary
-                  span(font_size = "9px", color = textDim,
-                        white_space = "nowrap", overflow = "hidden",
-                        text_overflow = "ellipsis"):
-                    text impact.ownerLabel & (
-                      if impact.schemaKey.len > 0: " " & impact.schemaKey else: "")
-                tdiv(role = "note",
-                      `aria-label` = "Use the property row DS control to edit " &
-                        prop.name & " in design system scope",
-                      padding = "4px 6px", border_radius = "4px",
-                      background_color = bgSurface, color = gold,
-                      font_size = "10px"):
-                  text "DS"
-        if sharedProps.len > 6:
+          for i in 0 ..< min(impactRows.len, 6):
+            let row = impactRows[i]
+            let editor = row.editor
+            let impact = row.impact
+            tdiv(display = "grid",
+                  `grid-template-columns` = "minmax(0, 1fr) auto",
+                  gap = "6px", align_items = "center",
+                  padding = "5px 6px",
+                  border = "1px solid " & border,
+                  border_radius = "5px",
+                  background_color = bgSidebar):
+              tdiv(display = "flex", flex_direction = "column", gap = "2px",
+                    min_width = "0"):
+                span(font_size = "11px", color = textPrimary,
+                      white_space = "nowrap", overflow = "hidden",
+                      text_overflow = "ellipsis"):
+                  text editor.property & " = " & editor.value.canonical
+                span(font_size = "10px", color = gold,
+                      white_space = "nowrap", overflow = "hidden",
+                      text_overflow = "ellipsis"):
+                  text impact.summary
+                span(font_size = "9px", color = textDim,
+                      white_space = "nowrap", overflow = "hidden",
+                      text_overflow = "ellipsis"):
+                  text impact.ownerLabel & " | " & impact.riskLevel.sourceScopeRiskLabel() &
+                    " risk" & (
+                      if impact.schemaKey.len > 0: " | " & impact.schemaKey else: "")
+              tdiv(role = "note",
+                    `aria-label` = "Use the property row source scope selector for " &
+                      editor.property,
+                    padding = "4px 6px", border_radius = "4px",
+                    background_color = bgSurface, color = gold,
+                    font_size = "10px"):
+                text $editor.sourceScopeChoices.len & " scopes"
+        if impactRows.len > 6:
           span(font_size = "10px", color = textDim):
-            text "+" & $(sharedProps.len - 6) & " more shared properties"
+            text "+" & $(impactRows.len - 6) & " more source-backed properties"
   r.setAttribute(result, "data-design-system-impact", "true")
-  r.setAttribute(result, "data-design-system-property-count", $sharedProps.len)
+  r.setAttribute(result, "data-design-system-property-count", $impactRows.len)
+  r.setAttribute(result, "data-source-scope-impact", "true")
+  r.setAttribute(result, "data-source-scope-impact-count", $impactRows.len)
 
 proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;
     clipboard: StyleClipboard) =
@@ -3598,6 +3708,7 @@ proc populateSectionAccordions[R, E](r: R; vm: EditorVM; frame, tabs, content,
     let active = vm.inspector.activeSection.val == section
     let expanded = section in vm.inspector.expandedSections.val
     let title = sectionTitle(section)
+    let fullTitle = sectionFullTitle(section)
     let node = ui(r):
       tdiv(role = "button", tabindex = "0",
             display = "grid",
@@ -3619,10 +3730,10 @@ proc populateSectionAccordions[R, E](r: R; vm: EditorVM; frame, tabs, content,
           text title
         span(font_size = "9px", color = (if active: accent else: textDim)):
           text (if active: "active" else: "ready")
-    r.setAttribute(node, "aria-label", "Toggle " & title &
+    r.setAttribute(node, "aria-label", "Toggle " & fullTitle &
       " inspector section")
     r.setAttribute(node, "aria-expanded", if expanded: "true" else: "false")
-    r.setAttribute(node, "data-inspector-section", title.toLowerAscii())
+    r.setAttribute(node, "data-inspector-section", fullTitle.toLowerAscii())
     let toggle = r.inspectorSectionAccordionHandler(vm, frame, tabs, content,
       sectionsNode, clipboard, section)
     r.addEventListener(node, "click", toggle)
@@ -3642,7 +3753,7 @@ proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
   let clipboard = StyleClipboard()
   result = ui(r):
     tdiv(class = "editor-manual-inspector",
-          width = "320px", min_width = "320px", max_width = "320px",
+          width = "320px", min_width = "260px", max_width = "520px",
           display = "flex", flex_direction = "column",
           background_color = bgSidebar, overflow_y = "auto",
           overflow_x = "hidden",
@@ -3735,6 +3846,9 @@ proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
   r.setAttribute(narrowButton, "data-isonim-focus-id", "right-panel-narrow")
   r.setAttribute(resetWidthButton, "data-isonim-focus-id", "right-panel-reset")
   r.setAttribute(widenButton, "data-isonim-focus-id", "right-panel-widen")
+  r.setAttribute(narrowButton, "data-right-panel-resize-affordance", "narrow")
+  r.setAttribute(resetWidthButton, "data-right-panel-resize-affordance", "reset")
+  r.setAttribute(widenButton, "data-right-panel-resize-affordance", "widen")
   let save = proc() =
     discard vm.runEditorCommand(eckSave)
     r.commitLivePreviewStyles(frame)

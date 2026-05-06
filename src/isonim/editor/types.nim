@@ -192,6 +192,7 @@ type
     isTransitions ## CSS transitions and animations
     isFilters     ## CSS filter functions (brightness, contrast, etc.)
     isState       ## ViewModel signal editor
+    isSource      ## Source ownership, cascade, and impact controls
 
   # --- Component detail page ---
   UsageExample* = object

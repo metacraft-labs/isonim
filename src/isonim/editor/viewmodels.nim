@@ -6697,7 +6697,7 @@ proc createInspectorVM*(designSystemSchema: Signal[DesignSystemSchema] = nil): I
   let layerSearch = createSignal("")
   let sectionSearch = createSignal("")
   let expandedSections = createSignal[seq[InspectorSection]](@[
-    isLayout, isSpacing, isFill
+    isLayout, isSpacing, isFill, isSource
   ])
   let focusedControlId = createSignal("")
   let commandPaletteHooksReady = createSignal(true)
@@ -6759,7 +6759,7 @@ proc createInspectorVM*(designSystemSchema: Signal[DesignSystemSchema] = nil): I
     let query = sectionSearch.val.strip.toLowerAscii()
     for section in [
       isLayout, isSize, isSpacing, isPosition, isFill, isStroke, isTypography,
-      isEffects, isTransitions, isFilters, isState
+      isEffects, isTransitions, isFilters, isState, isSource
     ]:
       let label = case section
         of isLayout: "layout display flex grid overflow"
@@ -6773,6 +6773,7 @@ proc createInspectorVM*(designSystemSchema: Signal[DesignSystemSchema] = nil): I
         of isTransitions: "transitions animation duration curve"
         of isFilters: "filters brightness contrast saturate blur"
         of isState: "state viewmodel signals"
+        of isSource: "source ownership cascade scope impact"
       if query.len == 0 or label.contains(query):
         result.add section
   )
