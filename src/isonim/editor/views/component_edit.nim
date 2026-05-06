@@ -23,6 +23,7 @@ const
   textDim = "#475569"
   accent = "#3B82F6"
   green = "#22C55E"
+  gold = "#F59E0B"
 
 func htmlEscape(value: string): string =
   value.replace("&", "&amp;")
@@ -953,7 +954,8 @@ proc editablePreviewDocument(documentHtml: string;
   else:
     documentHtml & injected
 
-proc applyInspectorValue(vm: EditorVM; propName, value: string)
+proc applyInspectorValue(vm: EditorVM; propName, value: string;
+    scope = pesLocal)
 
 proc installPreviewSelectionBridge[R, E](r: R; frame: E; vm: EditorVM) =
   when defined(js):
@@ -1403,9 +1405,10 @@ func numericStepValue(value: string; delta: int): string =
   except ValueError:
     value
 
-proc applyInspectorValue(vm: EditorVM; propName, value: string) =
+proc applyInspectorValue(vm: EditorVM; propName, value: string;
+    scope = pesLocal) =
   discard vm.editCssProperty(propName, normalizePrimitiveInputValue(propName, value),
-    pesLocal, peoInspector)
+    scope, peoInspector)
 
 proc applyLivePreviewStyle[R, E](r: R; frame: E; propName, value: string) =
   when defined(js):
@@ -1543,9 +1546,9 @@ proc restorePreviewSelection[R, E](r: R; frame: E; id: string) =
     discard id
 
 proc applyCssValue[R, E](r: R; vm: EditorVM; frame: E; propName,
-    value: string; commitSource = true) =
+    value: string; commitSource = true; scope = pesLocal) =
   if commitSource:
-    vm.applyInspectorValue(propName, value)
+    vm.applyInspectorValue(propName, value, scope)
   r.applyLivePreviewStyle(frame, propName, value)
 
 proc applyResponsiveCssValue[R, E](r: R; vm: EditorVM; frame: E; modeKey,
@@ -1657,10 +1660,13 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
   var resetNode: E
   var unitNode: E
   var moreNode: E
+  var scopeNode: E
   let propName = prop.name
   let value = prop.value
   let unit = numericUnit(value, "")
-  let scope = if prop.sharedCount > 0: "shared" else: "local"
+  let hasDesignSystemScope = prop.sharedCount > 0 or prop.tokenName.len > 0 or
+    prop.schemaKey.len > 0 or prop.origin == poThemeToken
+  let scope = if hasDesignSystemScope: "DS" else: "local"
   let binding = originLabel(prop.origin)
   let commit = proc() =
     let nextValue = normalizePrimitiveInputValue(propName, r.inputValue(inputNode))
@@ -1713,13 +1719,20 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
             color = textMuted, font_size = "9px",
             white_space = "nowrap", overflow = "hidden"):
         text binding
-      tdiv(height = "22px",
+      tdiv(ref = scopeNode, role = "button", tabindex = "0",
+            `aria-label` = (if hasDesignSystemScope:
+              "Apply shared design system scope for " & propName
+            else:
+              "Property " & propName & " is local-only"),
+            height = "22px",
             display = "flex", align_items = "center",
             justify_content = "center",
             border = "1px solid " & border,
             border_radius = "4px",
             background_color = bgSurface,
-            color = textMuted, font_size = "9px"):
+            color = (if hasDesignSystemScope: gold else: textMuted),
+            font_size = "9px",
+            cursor = (if hasDesignSystemScope: "pointer" else: "default")):
         text scope
       tdiv(ref = resetNode, role = "button", tabindex = "0",
             `aria-label` = "Reset " & propName & " property",
@@ -1763,6 +1776,13 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
     r.applyCssValue(vm, frame, propName, nextValue)
   r.addEventListener(unitNode, "click", cycleUnit)
   r.addEventListener(unitNode, "keydown", cycleUnit)
+  if hasDesignSystemScope:
+    let commitShared = proc() =
+      let nextValue = normalizePrimitiveInputValue(propName, r.inputValue(inputNode))
+      r.setInputValue(inputNode, nextValue)
+      r.applyCssValue(vm, frame, propName, nextValue, scope = pesShared)
+    r.addEventListener(scopeNode, "click", commitShared)
+    r.addEventListener(scopeNode, "keydown", commitShared)
   let reset = proc() = r.applyCssValue(vm, frame, propName, fallback)
   r.addEventListener(resetNode, "click", reset)
   r.addEventListener(resetNode, "keydown", reset)
@@ -3344,6 +3364,95 @@ proc renderStyleManagerPanel[R, E](r: R; vm: EditorVM; frame: E;
     r.addEventListener(button, "click", promote)
     r.addEventListener(button, "keydown", promote)
 
+func designSystemProperties(selected: ElementRef): seq[PropertyInfo] =
+  for prop in selected.properties:
+    if prop.sharedCount > 0 or prop.tokenName.len > 0 or prop.schemaKey.len > 0 or
+        prop.origin == poThemeToken:
+      result.add prop
+
+func designSystemOwnerLabel(prop: PropertyInfo): string =
+  if prop.tokenName.len > 0:
+    "token " & prop.tokenName
+  elif prop.schemaKey.len > 0:
+    prop.schemaKey
+  elif prop.originDetail.len > 0:
+    prop.originDetail
+  else:
+    prop.sourceFile & ":" & $prop.sourceLine
+
+func designSystemImpactLabel(prop: PropertyInfo): string =
+  if prop.sharedCount > 1:
+    "updates " & $prop.sharedCount & " mapped uses"
+  elif prop.sharedCount == 1:
+    "updates 1 mapped use"
+  elif prop.tokenName.len > 0 or prop.origin == poThemeToken:
+    "updates token consumers"
+  else:
+    "updates shared schema"
+
+proc renderDesignSystemImpactPanel[R, E](r: R; vm: EditorVM; frame: E;
+    selected: ElementRef): E =
+  let sharedProps = designSystemProperties(selected)
+  discard vm
+  discard frame
+  result = ui(r):
+    details(open = "open",
+            `aria-label` = "Design system property impact"):
+      summary(cursor = "pointer", color = textMuted, font_size = "10px",
+              padding = "2px 0"):
+        text "Design system"
+      tdiv(display = "flex", flex_direction = "column", gap = "6px",
+            padding = "8px", border = "1px solid " & border,
+            border_radius = "6px", background_color = bgBase):
+        tdiv(display = "flex", flex_direction = "column", gap = "2px"):
+          span(font_size = "10px", font_weight = "700",
+                color = textSecondary,
+                text_transform = "uppercase", letter_spacing = "0.5px"):
+            text "Shared edit impact"
+          span(font_size = "10px", color = textDim):
+            text "Use local edits for this selection only. Use DS scope to edit the shared design-system source."
+        if sharedProps.len == 0:
+          span(font_size = "10px", color = textDim):
+            text "This selection has no shared token or schema-backed properties."
+        else:
+          for i in 0 ..< min(sharedProps.len, 6):
+            let prop = sharedProps[i]
+            let owner = designSystemOwnerLabel(prop)
+            let impact = designSystemImpactLabel(prop)
+            tdiv(display = "grid",
+                  `grid-template-columns` = "minmax(0, 1fr) auto",
+                  gap = "6px", align_items = "center",
+                  padding = "5px 6px",
+                  border = "1px solid " & border,
+                  border_radius = "5px",
+                  background_color = bgSidebar):
+              tdiv(display = "flex", flex_direction = "column", gap = "2px",
+                    min_width = "0"):
+                span(font_size = "11px", color = textPrimary,
+                      white_space = "nowrap", overflow = "hidden",
+                      text_overflow = "ellipsis"):
+                  text prop.name & " = " & prop.value
+                span(font_size = "10px", color = gold,
+                      white_space = "nowrap", overflow = "hidden",
+                      text_overflow = "ellipsis"):
+                  text impact
+                span(font_size = "9px", color = textDim,
+                      white_space = "nowrap", overflow = "hidden",
+                      text_overflow = "ellipsis"):
+                  text owner
+              tdiv(role = "note",
+                    `aria-label` = "Use the property row DS control to edit " &
+                      prop.name & " in design system scope",
+                    padding = "4px 6px", border_radius = "4px",
+                    background_color = bgSurface, color = gold,
+                    font_size = "10px"):
+                text "DS"
+        if sharedProps.len > 6:
+          span(font_size = "10px", color = textDim):
+            text "+" & $(sharedProps.len - 6) & " more shared properties"
+  r.setAttribute(result, "data-design-system-impact", "true")
+  r.setAttribute(result, "data-design-system-property-count", $sharedProps.len)
+
 proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;
     clipboard: StyleClipboard) =
   r.clearChildren(content)
@@ -3362,6 +3471,8 @@ proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;
         span(font_size = "11px", color = textDim):
           text selected.sourceFile & ":" & $selected.sourceLine
     r.appendChild(content, summary)
+    r.appendChild(content, renderDesignSystemImpactPanel[R, E](r, vm, frame,
+      selected))
 
     let active = vm.inspector.activeSection.val
     let expanded = active in vm.inspector.expandedSections.val
@@ -3405,10 +3516,10 @@ proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;
 
     if active in {isLayout, isSize, isPosition}:
       let layoutAccordion = ui(r):
-        details(open = "open", `aria-label` = "Show layout auto grid constraint controls"):
+        details(open = "open", `aria-label` = "Show CSS layout grid flex constraint controls"):
           summary(cursor = "pointer", color = textMuted, font_size = "10px",
                   padding = "2px 0"):
-            text "Layout / Auto / Grid / Constraints"
+            text "CSS Layout / Grid / Flex / Constraints"
       r.appendChild(layoutAccordion, renderLayoutControlSummary[R, E](r, vm,
         frame, selected))
       r.appendChild(content, layoutAccordion)

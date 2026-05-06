@@ -9,6 +9,7 @@ import isonim/editor/stories
 import isonim/editor/types
 import isonim/editor/views/shell
 import isonim/editor/views/chat_panel
+import isonim/editor/views/component_edit
 import isonim/editor/views/component_detail
 import isonim/editor/views/foundations_page
 import isonim/editor/views/page_preview
@@ -104,6 +105,53 @@ suite "Editor Shell Views (M2)":
       let tabs = panel.children[0]
       check tabs.children.len == 11
 
+      dispose()
+
+  test "component_edit_inspector_explains_and_applies_design_system_scope":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.selectInspectorElement(ElementRef(
+        id: "card-title",
+        tag: "h2",
+        sourceFile: "apps/back-office/src/backoffice_ui/cards.nim",
+        sourceLine: 42,
+        properties: @[
+          PropertyInfo(name: "gap", value: "16px", origin: poThemeToken,
+            originDetail: "spacing token",
+            sourceFile: "apps/back-office/src/backoffice_ui/cards.nim",
+            sourceLine: 43,
+            sharedCount: 5,
+            schemaKey: "semantic.spacing.card-gap",
+            tokenName: "space.card.gap"),
+          PropertyInfo(name: "border-radius", value: "8px",
+            origin: poSetStyle,
+            originDetail: "local radius",
+            sourceFile: "apps/back-office/src/backoffice_ui/cards.nim",
+            sourceLine: 44)
+        ]))
+
+      let view = renderComponentEditView[MockRenderer, MockNode](r, vm)
+      let impact = findByAttr(view, "data-design-system-impact", "true")
+      check impact != nil
+      check impact.attributes["data-design-system-property-count"] == "1"
+      check view.textContent.contains("Shared edit impact")
+      check view.textContent.contains("Use local edits for this selection only")
+      check view.textContent.contains("updates 5 mapped uses")
+      check view.textContent.contains("token space.card.gap")
+      check view.textContent.contains("CSS Layout / Grid / Flex / Constraints")
+
+      let gapInput = findByAttr(view, "aria-label",
+        "Edit inspector property gap")
+      let sharedScope = findByAttr(view, "aria-label",
+        "Apply shared design system scope for gap")
+      check gapInput != nil
+      check sharedScope != nil
+      r.setInputValue(gapInput, "24px")
+      sharedScope.fireEvent("click")
+      check vm.inspector.pendingSourceEdits.val.len == 1
+      check vm.inspector.pendingSourceEdits.val[0].scope == pesShared
+      check vm.inspector.selectedElement.val.properties[0].value == "24px"
       dispose()
 
   test "test_views_contain_no_hardcoded_values":
