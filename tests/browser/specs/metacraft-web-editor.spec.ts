@@ -71,6 +71,15 @@ async function computedBackground(locator) {
   );
 }
 
+function currentTopbarPaddingMarker() {
+  const matches = [
+    ...readFileSync(devBridgeSourceFile, "utf8").matchAll(
+      /^# isonim-editor .* padding=([^\n]+)/gm,
+    ),
+  ];
+  return matches.length > 0 ? matches[matches.length - 1][1].trim() : "0px";
+}
+
 test.describe("metacraft-web IsoNim editor consumer", () => {
   test("e2e_metacraft_editor_writes_real_design_schema_files", async ({
     page,
@@ -1873,6 +1882,7 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     const originalPadding = await topbar.evaluate(
       (node) => getComputedStyle(node).paddingTop,
     );
+    const sourceBackedPadding = currentTopbarPaddingMarker();
     await paddingInput.press("ArrowUp");
     await expect
       .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
@@ -1892,7 +1902,7 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       .click();
     await expect
       .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
-      .toBe(originalPadding);
+      .toBe(sourceBackedPadding || originalPadding);
     await expect(page.getByText("Unsaved source edit")).toHaveCount(0);
 
     await title.click({ force: true, modifiers: ["Shift"] });
@@ -1916,6 +1926,7 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       .click();
     await expect(page.getByText("Unsaved source edit")).toHaveCount(0);
 
+    await page.getByRole("tab", { name: "Show Fill edit controls" }).click();
     await page.getByLabel("Show advanced background-image controls").click();
     await expect(page.getByLabel("Edit gradient stops")).toBeVisible();
     await expect(

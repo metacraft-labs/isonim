@@ -17,6 +17,7 @@ const
   bgCard = "#151D2E"
   bgPreview = "#0D1525"
   border = "#334155"
+  borderFaint = "#1E293B"
   textPrimary = "#F1F5F9"
   textSecondary = "#94A3B8"
   textMuted = "#64748B"
@@ -2691,8 +2692,8 @@ proc renderRichPropertyControl[R, E](r: R; vm: EditorVM; frame: E;
     clipboard: StyleClipboard; prop: PropertyInfo; fallback: string): E =
   result = ui(r):
     tdiv(display = "flex", flex_direction = "column", gap = "4px",
-          padding = "6px", border = "1px solid " & border,
-          border_radius = "5px", background_color = "#0F172A")
+          padding = "5px 0",
+          border_bottom = "1px solid " & borderFaint)
   r.setAttribute(result, "data-inspector-control", prop.name)
   r.appendChild(result, renderPropertyInput[R, E](r, vm, frame, prop, fallback))
   let metaRow = ui(r):
@@ -3823,14 +3824,15 @@ proc populateSectionAccordions[R, E](r: R; vm: EditorVM; frame, tabs, content,
     let node = ui(r):
       tdiv(role = "button", tabindex = "0",
             display = "grid",
-            `grid-template-columns` = "14px minmax(0, 1fr) auto",
+            `grid-template-columns` = "14px minmax(0, 1fr)",
             align_items = "center", gap = "5px",
-            min_height = "24px",
-            padding = "3px 5px",
+            min_height = "30px",
+            padding = "0 2px",
             border_radius = "4px",
             cursor = "pointer",
-            background_color = (if active: bgSurface else: "transparent"),
+            background_color = "transparent",
             color = (if active: textPrimary else: textMuted),
+            border_bottom = "1px solid " & borderFaint,
             overflow = "hidden"):
         span(font_size = "10px", color = textDim):
           text (if expanded: "v" else: ">")
@@ -3839,8 +3841,6 @@ proc populateSectionAccordions[R, E](r: R; vm: EditorVM; frame, tabs, content,
               white_space = "nowrap", overflow = "hidden",
               text_overflow = "ellipsis"):
           text title
-        span(font_size = "9px", color = (if active: accent else: textDim)):
-          text (if active: "active" else: "ready")
     r.setAttribute(node, "aria-label", "Toggle " & title &
       " inspector section")
     r.setAttribute(node, "aria-expanded", if expanded: "true" else: "false")
@@ -3871,47 +3871,74 @@ proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
           border_left = "1px solid " & border):
       tdiv(display = "flex", align_items = "center",
             justify_content = "space-between",
-            height = "34px", min_height = "34px",
+            height = "30px", min_height = "30px",
             padding = "0 8px",
             background_color = bgCard,
             border_bottom = "1px solid " & border):
-        span(font_size = "12px", font_weight = "700", color = textSecondary,
-              text_transform = "uppercase", letter_spacing = "0.5px"):
-          text "Inspector"
-      tdiv(display = "flex", gap = "4px"):
+        tdiv(display = "flex", align_items = "center", gap = "2px",
+              background_color = bgSurface,
+              border = "1px solid " & border,
+              border_radius = "4px",
+              padding = "2px"):
+          span(padding = "2px 7px",
+                border_radius = "3px",
+                background_color = accent,
+                color = textPrimary,
+                font_size = "10px",
+                font_weight = "700"):
+            text "Design"
+          span(padding = "2px 7px",
+                color = textDim,
+                font_size = "10px",
+                font_weight = "600"):
+            text "Source"
+        tdiv(display = "flex", gap = "3px"):
           tdiv(ref = narrowButton, role = "button", tabindex = "0",
                 `aria-label` = "Narrow right panel",
-                padding = "3px 7px", border_radius = "4px",
+                width = "22px", height = "22px",
+                display = "flex", align_items = "center",
+                justify_content = "center",
+                border_radius = "4px",
                 font_size = "10px", cursor = "pointer",
                 background_color = bgSurface, color = textMuted):
             text "-"
           tdiv(ref = resetWidthButton, role = "button", tabindex = "0",
                 `aria-label` = "Reset right panel width",
-                padding = "3px 7px", border_radius = "4px",
+                width = "22px", height = "22px",
+                display = "flex", align_items = "center",
+                justify_content = "center",
+                border_radius = "4px",
                 font_size = "10px", cursor = "pointer",
                 background_color = bgSurface, color = textMuted):
             text "w"
           tdiv(ref = widenButton, role = "button", tabindex = "0",
                 `aria-label` = "Widen right panel",
-                padding = "3px 7px", border_radius = "4px",
+                width = "22px", height = "22px",
+                display = "flex", align_items = "center",
+                justify_content = "center",
+                border_radius = "4px",
                 font_size = "10px", cursor = "pointer",
                 background_color = bgSurface, color = textMuted):
             text "+"
           tdiv(ref = revertButton, role = "button", tabindex = "0",
-                padding = "3px 7px", border_radius = "4px",
+                padding = "3px 6px", border_radius = "4px",
                 font_size = "10px", cursor = "pointer",
                 background_color = bgSurface, color = textMuted):
             text "Revert"
           tdiv(ref = saveButton, role = "button", tabindex = "0",
-                padding = "3px 7px", border_radius = "4px",
+                padding = "3px 6px", border_radius = "4px",
                 font_size = "10px", font_weight = "600", cursor = "pointer",
                 background_color = accent, color = textPrimary):
             text "Save"
-      tdiv(display = "flex", flex_direction = "column", gap = "6px",
-            padding = "8px", border_bottom = "1px solid " & border):
+      tdiv(display = "grid",
+            `grid-template-columns` = "minmax(0, 1fr) auto auto",
+            align_items = "center",
+            gap = "4px",
+            padding = "6px 8px",
+            border_bottom = "1px solid " & border):
         input(ref = searchInput,
               class = "editor-input",
-              height = "26px",
+              height = "24px",
               background_color = bgSurface,
               border = "1px solid " & border,
               border_radius = "4px",
@@ -3921,33 +3948,38 @@ proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
               outline = "none",
               min_width = "0",
               `aria-label` = "Search inspector sections",
-              placeholder = "Search sections")
-        tdiv(display = "grid",
-              `grid-template-columns` = "1fr 1fr",
-              gap = "4px"):
-          tdiv(ref = collapseButton, role = "button", tabindex = "0",
-                `aria-label` = "Collapse all inspector sections",
-                padding = "4px 6px", border_radius = "4px",
-                background_color = bgSurface, color = textMuted,
-                font_size = "10px", text_align = "center",
-                cursor = "pointer"):
-            text "Collapse"
-          tdiv(ref = expandButton, role = "button", tabindex = "0",
-                `aria-label` = "Expand relevant inspector sections",
-                padding = "4px 6px", border_radius = "4px",
-                background_color = bgSurface, color = textMuted,
-                font_size = "10px", text_align = "center",
-                cursor = "pointer"):
-            text "Expand"
-        tdiv(ref = sectionsNode,
-              display = "flex", flex_direction = "column", gap = "3px"):
-          discard
+              placeholder = "Search")
+        tdiv(ref = collapseButton, role = "button", tabindex = "0",
+              `aria-label` = "Collapse all inspector sections",
+              width = "24px", height = "24px",
+              display = "flex", align_items = "center",
+              justify_content = "center",
+              border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "10px",
+              cursor = "pointer"):
+          text "-"
+        tdiv(ref = expandButton, role = "button", tabindex = "0",
+              `aria-label` = "Expand relevant inspector sections",
+              width = "24px", height = "24px",
+              display = "flex", align_items = "center",
+              justify_content = "center",
+              border_radius = "4px",
+              background_color = bgSurface, color = textMuted,
+              font_size = "10px",
+              cursor = "pointer"):
+          text "+"
+      tdiv(ref = sectionsNode,
+            display = "flex", flex_direction = "column",
+            padding = "0 8px",
+            border_bottom = "1px solid " & border):
+        discard
   r.bindRightPanelWidth(result, vm)
 
   let tabs = ui(r):
     tdiv(class = "editor-tabbar",
           display = "flex", align_items = "stretch",
-          height = "30px", min_height = "30px",
+          height = "24px", min_height = "24px",
           border_bottom = "1px solid " & border,
           overflow_x = "auto", scrollbar_width = "none")
   r.appendChild(result, tabs)
