@@ -102,6 +102,86 @@ proc selectedComponentVariant(vm: EditorVM;
   else:
     ComponentVariantDefinition()
 
+proc componentVariantsForStory(vm: EditorVM;
+    story: StoryRef): seq[ComponentVariantDefinition] =
+  result = vm.componentVariantsForComponent(story.group)
+  if result.len > 0:
+    return
+  for variant in vm.variants.variants.val:
+    if variant.story.group == story.group and variant.story.name == story.name:
+      result.add variant
+
+func jsString(value: string): string =
+  value
+    .replace("\\", "\\\\")
+    .replace("\"", "\\\"")
+    .replace("\n", "\\n")
+    .replace("\r", "\\r")
+
+func jsLiteral(value: string): string =
+  "\"" & value.jsString & "\""
+
+func componentPropertyValue(variant: ComponentVariantDefinition;
+    name: string): string =
+  for prop in variant.properties:
+    if prop.name == name:
+      return prop.value
+  ""
+
+func previewMutationValue(mutation: PreviewVariantMutation;
+    sourceValue: string): string =
+  for value in mutation.values:
+    if value.sourceValue == sourceValue:
+      return value.previewValue
+  sourceValue
+
+func previewMutationClassValues(mutation: PreviewVariantMutation): seq[string] =
+  for value in mutation.values:
+    if value.previewValue.len > 0 and value.previewValue notin result:
+      result.add value.previewValue
+
+proc componentPreviewVariantScript(vm: EditorVM;
+    preview: ProjectPreview): string =
+  if preview.variantMutations.len == 0:
+    return ""
+  let story = vm.selectedStory.val
+  let variants = vm.componentVariantsForStory(story)
+  if variants.len == 0:
+    return ""
+  let variant = vm.selectedComponentVariant(variants)
+  for mutation in preview.variantMutations:
+    if mutation.component != variant.component:
+      continue
+    if mutation.variantKey.len > 0 and
+        mutation.variantKey != variant.variantKey:
+      continue
+    if mutation.selector.len == 0 or mutation.property.len == 0:
+      continue
+    let sourceValue = variant.componentPropertyValue(mutation.property)
+    if sourceValue.len == 0:
+      continue
+    let previewValue = mutation.previewMutationValue(sourceValue)
+    result.add "var node = doc.querySelector(" & mutation.selector.jsLiteral &
+      ");\n"
+    result.add "if (node) {\n"
+    case mutation.kind
+    of pvmkClassToken:
+      if mutation.classPrefix.len == 0:
+        result.add "}\n"
+        continue
+      for classValue in mutation.previewMutationClassValues():
+        result.add "  node.classList.remove(" &
+          (mutation.classPrefix & classValue).jsLiteral & ");\n"
+      result.add "  node.classList.add(" &
+        (mutation.classPrefix & previewValue).jsLiteral & ");\n"
+    of pvmkAttribute:
+      if mutation.attributeName.len == 0:
+        result.add "}\n"
+        continue
+      result.add "  node.setAttribute(" & mutation.attributeName.jsLiteral &
+        ", " & previewValue.jsLiteral & ");\n"
+    result.add "}\n"
+
 proc renderComponentPropertyInput[R, E](r: R; vm: EditorVM;
     variant: ComponentVariantDefinition;
     prop: ComponentPropertyDefinition): E =
@@ -226,12 +306,13 @@ proc populateComponentPropertyPanel[R, E](r: R; vm: EditorVM; panel: E) =
   if story.kind notin {skComponent, skPattern}:
     r.setStyle(panel, "display", "none")
     return
-  let variants = vm.componentVariantsForComponent(story.group)
+  let variants = vm.componentVariantsForStory(story)
   if variants.len == 0:
     r.setStyle(panel, "display", "none")
     return
   let variant = vm.selectedComponentVariant(variants)
-  let coverage = vm.stateCoverageDiagnostics(story.group)
+  let componentKey = variant.component
+  let coverage = vm.stateCoverageDiagnostics(componentKey)
   let pendingCount = vm.inspector.pendingSourceEdits.val.len
   vm.variants.stateDiagnostics.val = coverage
   r.setStyle(panel, "display", "flex")
@@ -324,7 +405,7 @@ proc populateComponentPropertyPanel[R, E](r: R; vm: EditorVM; panel: E) =
             gap = "6px"):
         discard
   r.setAttribute(matrix, "data-component-variant-matrix", "true")
-  let matrixCells = variantMatrixPreviews(vm, story.group)
+  let matrixCells = variantMatrixPreviews(vm, componentKey)
   for matrixCell in matrixCells:
     let cell = matrixCell
     let cellNode = ui(r):
@@ -520,8 +601,13 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
         "Project-owned component state")
     r.setAttribute(projectFrame, "title", "Component preview " & title)
     r.setAttribute(projectFrame, "height", "1")
+    let reloadGeneration = vm.livePreviewReloadGeneration.val
     r.setAttribute(projectFrame, "srcdoc",
-      if showProject: preview.documentHtml else: "")
+      if showProject:
+        preview.documentHtml & "\n<!-- isonim-reload:" & $reloadGeneration &
+          " -->"
+      else:
+        "")
     r.setStyle(projectFrame, "width", "100%")
     r.setStyle(projectFrame, "min-height", "1px")
     r.setStyle(projectFrame, "overflow", "hidden")
@@ -531,6 +617,36 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
 
     when defined(js):
       let frame = projectFrame
+      let variantScript = vm.componentPreviewVariantScript(preview)
+      {.emit: ["""
+        (function (frame, sourceRaw) {
+          const source = Array.isArray(sourceRaw)
+            ? String.fromCharCode.apply(null, sourceRaw)
+            : String(sourceRaw || '');
+          if (!frame) return;
+          const apply = () => {
+            if (!source) return;
+            try {
+              const doc = frame.contentDocument;
+              if (!doc) return;
+              Function('doc', source)(doc);
+            } catch (_) {
+              // Preview variant metadata is best-effort; broken consumer
+              // selectors must not break the editor shell.
+            }
+          };
+          frame.__isonimApplyPreviewVariants = apply;
+          if (!frame.__isonimPreviewVariantListenerInstalled) {
+            frame.__isonimPreviewVariantListenerInstalled = true;
+            frame.addEventListener('load', () => {
+              if (frame.__isonimApplyPreviewVariants) {
+                frame.__isonimApplyPreviewVariants();
+              }
+            });
+          }
+          requestAnimationFrame(apply);
+        })(""", frame, ", ", variantScript, """);
+      """].}
       {.emit: ["""
         const frame = """, frame, """;
         if (frame && !frame.__isonimAutoHeightInstalled) {

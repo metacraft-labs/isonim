@@ -3721,7 +3721,7 @@ proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;
 
     if active in {isLayout, isSize, isPosition}:
       let layoutAccordion = ui(r):
-        details(open = "open", `aria-label` = "Show CSS layout grid flex constraint controls"):
+        details(open = "open", `aria-label` = "Show layout auto grid constraint controls"):
           summary(cursor = "pointer", color = textMuted, font_size = "10px",
                   padding = "2px 0"):
             text "CSS Layout / Grid / Flex / Constraints"
@@ -3841,7 +3841,7 @@ proc populateSectionAccordions[R, E](r: R; vm: EditorVM; frame, tabs, content,
           text title
         span(font_size = "9px", color = (if active: accent else: textDim)):
           text (if active: "active" else: "ready")
-    r.setAttribute(node, "aria-label", "Toggle " & fullTitle &
+    r.setAttribute(node, "aria-label", "Toggle " & title &
       " inspector section")
     r.setAttribute(node, "aria-expanded", if expanded: "true" else: "false")
     r.setAttribute(node, "data-inspector-section", fullTitle.toLowerAscii())
@@ -4008,6 +4008,7 @@ proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
 
   let inspectorRoot = result
   createRenderEffect proc() =
+    discard vm.activeView.val
     r.populateSectionAccordions(vm, frame, tabs, content, sectionsNode,
       clipboard)
     r.populateInspectorContent(vm, frame, content, clipboard)

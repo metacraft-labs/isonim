@@ -101,6 +101,8 @@ type
     diagnostics*: Signal[seq[ComponentVariantDiagnostic]]
     stateDiagnostics*: Signal[seq[ComponentStateCoverageDiagnostic]]
     selectedVariant*: Signal[int]
+    undoStack*: Signal[seq[ComponentVariantEditHistoryEntry]]
+    redoStack*: Signal[seq[ComponentVariantEditHistoryEntry]]
     variantMatrix*: Memo[seq[ComponentVariantMatrixCell]]
     hasDiagnostics*: Memo[bool]
 
@@ -1943,6 +1945,9 @@ proc undoVectorEdit*(editor: EditorVM): bool {.discardable.}
 proc redoVectorEdit*(editor: EditorVM): bool {.discardable.}
 proc undoFoundationTokenEdit*(editor: EditorVM): bool {.discardable.}
 proc redoFoundationTokenEdit*(editor: EditorVM): bool {.discardable.}
+proc undoComponentVariantEdit*(editor: EditorVM): bool {.discardable.}
+proc redoComponentVariantEdit*(editor: EditorVM): bool {.discardable.}
+proc clearSourceEditJournal*(inspector: InspectorVM)
 proc evaluateCommand*(editor: EditorVM;
     kind: EditorCommandKind): EditorCommandState
 
@@ -2032,14 +2037,16 @@ proc commandRequirementFailure(editor: EditorVM;
   if kind == eckUndo:
     if editor.inspector.undoStack.val.len == 0 and
         editor.vectorEditor.undoStack.val.len == 0 and
-        editor.foundations.undoStack.val.len == 0:
+        editor.foundations.undoStack.val.len == 0 and
+        editor.variants.undoStack.val.len == 0:
       return "There is no edit to undo."
     return ""
 
   if kind == eckRedo:
     if editor.inspector.redoStack.val.len == 0 and
         editor.vectorEditor.redoStack.val.len == 0 and
-        editor.foundations.redoStack.val.len == 0:
+        editor.foundations.redoStack.val.len == 0 and
+        editor.variants.redoStack.val.len == 0:
       return "There is no edit to redo."
     return ""
 
@@ -2054,7 +2061,8 @@ proc commandRequirementFailure(editor: EditorVM;
   if kind in {eckRevert, eckDiscard} and
       (editor.inspector.pendingSourceEdits.val.len > 0 or
         editor.chat.accumulatedEdits.val.len > 0 or
-        editor.foundations.undoStack.val.len > 0):
+        editor.foundations.undoStack.val.len > 0 or
+        editor.variants.undoStack.val.len > 0):
     return ""
 
   if story.isEmptyStory:
@@ -2092,7 +2100,8 @@ proc commandRequirementFailure(editor: EditorVM;
   of eckRevert, eckDiscard:
     if editor.inspector.pendingSourceEdits.val.len == 0 and
         editor.chat.accumulatedEdits.val.len == 0 and
-        editor.foundations.undoStack.val.len == 0:
+        editor.foundations.undoStack.val.len == 0 and
+        editor.variants.undoStack.val.len == 0:
       "There are no edits to discard."
     else:
       ""
@@ -2229,17 +2238,32 @@ proc runEditorCommand*(editor: EditorVM;
             break
       editor.foundations.tokens.val = updatedTokens
       editor.foundations.selectedTokenKey.val = foundationStack[0].key
+    let variantStack = editor.variants.undoStack.val
+    if variantStack.len > 0:
+      var updatedVariants = editor.variants.variants.val
+      for historyIndex in countdown(variantStack.len - 1, 0):
+        let history = variantStack[historyIndex]
+        for i, variant in updatedVariants:
+          if variant.component == history.beforeVariant.component and
+              variant.variantKey == history.beforeVariant.variantKey:
+            updatedVariants[i] = history.beforeVariant
+            break
+      editor.variants.variants.val = updatedVariants
+      editor.variants.selectedVariant.val = variantStack[0].selectedBefore
     let vectorStack = editor.vectorEditor.undoStack.val
     if vectorStack.len > 0:
       editor.vectorEditor.document.val = vectorStack[0].beforeDocument
-    editor.inspector.pendingSourceEdits.val = @[]
-    editor.inspector.sourcePreviews.val = @[]
+    editor.inspector.clearSourceEditJournal()
     editor.inspector.undoStack.val = @[]
     editor.inspector.redoStack.val = @[]
     editor.foundations.undoStack.val = @[]
     editor.foundations.redoStack.val = @[]
     editor.foundations.impacts.val = @[]
     editor.foundations.diagnostics.val = @[]
+    editor.variants.undoStack.val = @[]
+    editor.variants.redoStack.val = @[]
+    editor.variants.diagnostics.val = @[]
+    editor.variants.stateDiagnostics.val = @[]
     editor.vectorEditor.undoStack.val = @[]
     editor.vectorEditor.redoStack.val = @[]
     editor.inspector.conflicts.val = @[]
@@ -2280,11 +2304,13 @@ proc runEditorCommand*(editor: EditorVM;
   of eckUndo:
     if not editor.inspector.undoCssPropertyEdit():
       if not editor.undoVectorEdit():
-        discard editor.undoFoundationTokenEdit()
+        if not editor.undoFoundationTokenEdit():
+          discard editor.undoComponentVariantEdit()
   of eckRedo:
     if not editor.inspector.redoCssPropertyEdit():
       if not editor.redoVectorEdit():
-        discard editor.redoFoundationTokenEdit()
+        if not editor.redoFoundationTokenEdit():
+          discard editor.redoComponentVariantEdit()
   of eckToggleSidebar:
     editor.togglePanel(epSidebar)
   of eckToggleInspector:
@@ -2429,6 +2455,77 @@ proc clearSelection*(inspector: InspectorVM) =
   inspector.selectedElement.val = ElementRef()
   inspector.editDiagnostics.val = @[]
   inspector.refreshLayerFlags()
+
+func sameSourceJournalSlot(a, b: SourceEditPlan): bool =
+  if a.conflictKey.len > 0 and b.conflictKey.len > 0:
+    return a.conflictKey == b.conflictKey
+  if a.schemaKey.len > 0 and b.schemaKey.len > 0:
+    return a.schemaKey == b.schemaKey
+  a.file.len > 0 and a.file == b.file and a.property == b.property and
+    a.sourceScope == b.sourceScope
+
+func sameSourceJournalEntry(a, b: SourceEditPlan): bool =
+  a.sameSourceJournalSlot(b) and a.oldValue == b.oldValue and
+    a.newValue == b.newValue and a.previewBefore == b.previewBefore and
+    a.previewAfter == b.previewAfter
+
+proc journalSourceEdit*(inspector: InspectorVM; plan: SourceEditPlan;
+    replaceExisting = true) =
+  ## Single source-edit journal used by manual controls and accepted AI plans.
+  inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
+      SourceEditPlan] =
+    result = @[]
+    for existing in prev:
+      if replaceExisting and existing.sameSourceJournalSlot(plan):
+        continue
+      result.add existing
+    result.add plan
+  inspector.sourcePreviews.update proc(prev: seq[CSSSourcePreview]): seq[
+      CSSSourcePreview] =
+    result = @[]
+    for existing in prev:
+      if replaceExisting and existing.plan.sameSourceJournalSlot(plan):
+        continue
+      result.add existing
+    result.add CSSSourcePreview(plan: plan, beforeText: plan.previewBefore,
+      afterText: plan.previewAfter)
+  inspector.conflicts.val = @[]
+  inspector.editDiagnostics.val = @[]
+
+proc removeJournaledSourceEdit*(inspector: InspectorVM; plan: SourceEditPlan) =
+  inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
+      SourceEditPlan] =
+    result = @[]
+    for existing in prev:
+      if not existing.sameSourceJournalEntry(plan):
+        result.add existing
+  inspector.sourcePreviews.update proc(prev: seq[CSSSourcePreview]): seq[
+      CSSSourcePreview] =
+    result = @[]
+    for preview in prev:
+      if not preview.plan.sameSourceJournalEntry(plan):
+        result.add preview
+  if inspector.pendingSourceEdits.val.len == 0:
+    inspector.conflicts.val = @[]
+
+proc clearSourceEditJournal*(inspector: InspectorVM) =
+  inspector.pendingSourceEdits.val = @[]
+  inspector.sourcePreviews.val = @[]
+  inspector.conflicts.val = @[]
+  inspector.editDiagnostics.val = @[]
+
+proc sourceJournalOwnershipDiagnostics*(inspector: InspectorVM): seq[
+    PropertyEditDiagnostic] =
+  for plan in inspector.pendingSourceEdits.val:
+    if plan.scope == pesUnspecified:
+      result.add PropertyEditDiagnostic(kind: pedSchemaViolation,
+        message: "Pending source edit must use an explicit ownership scope.",
+        file: plan.file, line: plan.line, property: plan.property)
+    if plan.schemaKey.len == 0 and plan.conflictKey.len == 0 and
+        plan.tokenName.len == 0 and plan.variantKey.len == 0:
+      result.add PropertyEditDiagnostic(kind: pedSchemaViolation,
+        message: "Pending source edit is missing a stable source owner key.",
+        file: plan.file, line: plan.line, property: plan.property)
 
 func rowIndex(rows: seq[ElementLayerRow]; id: string): int =
   for i, row in rows:
@@ -2626,21 +2723,7 @@ proc editProperty*(inspector: InspectorVM;
     element, prop)
   let record = prop.editRecord(normalizedRequest, sourceChoices)
   let plan = prop.sourcePlan(normalizedRequest, sourceChoices)
-  inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
-      SourceEditPlan] =
-    result = @[]
-    for existing in prev:
-      if existing.conflictKey != plan.conflictKey:
-        result.add existing
-    result.add plan
-  inspector.sourcePreviews.update proc(prev: seq[CSSSourcePreview]): seq[
-      CSSSourcePreview] =
-    result = @[]
-    for existing in prev:
-      if existing.plan.conflictKey != plan.conflictKey:
-        result.add existing
-    result.add CSSSourcePreview(plan: plan, beforeText: plan.previewBefore,
-      afterText: plan.previewAfter)
+  inspector.journalSourceEdit(plan)
   inspector.undoStack.update proc(prev: seq[CSSPropertyEditTransaction]): seq[
       CSSPropertyEditTransaction] =
     result = prev
@@ -2743,7 +2826,7 @@ proc applyPendingSourceEdits*(inspector: InspectorVM;
       remaining.add plan
   inspector.pendingSourceEdits.val = remaining
   if remaining.len == 0:
-    inspector.sourcePreviews.val = @[]
+    inspector.clearSourceEditJournal()
 
 proc undoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
   let stack = inspector.undoStack.val
@@ -2757,18 +2840,7 @@ proc undoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
       CSSPropertyEditTransaction] =
     result = prev
     result.add txn
-  inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
-      SourceEditPlan] =
-    result = @[]
-    for plan in prev:
-      if plan.conflictKey != txn.sourceEdit.conflictKey:
-        result.add plan
-  inspector.sourcePreviews.update proc(prev: seq[CSSSourcePreview]): seq[
-      CSSSourcePreview] =
-    result = @[]
-    for preview in prev:
-      if preview.plan.conflictKey != txn.sourceEdit.conflictKey:
-        result.add preview
+  inspector.removeJournaledSourceEdit(txn.sourceEdit)
   true
 
 proc redoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
@@ -2783,53 +2855,47 @@ proc redoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
       CSSPropertyEditTransaction] =
     result = prev
     result.add txn
-  inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
-      SourceEditPlan] =
-    result = prev
-    result.add txn.sourceEdit
-  inspector.sourcePreviews.update proc(prev: seq[CSSSourcePreview]): seq[
-      CSSSourcePreview] =
-    result = prev
-    result.add CSSSourcePreview(
-      plan: txn.sourceEdit,
-      beforeText: txn.sourceEdit.previewBefore,
-      afterText: txn.sourceEdit.previewAfter)
+  inspector.journalSourceEdit(txn.sourceEdit)
   true
 
 proc discardCssPropertyEdits*(inspector: InspectorVM) =
   let stack = inspector.undoStack.val
   if stack.len > 0:
     inspector.selectedElement.val = stack[0].beforeElement
-  inspector.pendingSourceEdits.val = @[]
-  inspector.sourcePreviews.val = @[]
+  inspector.clearSourceEditJournal()
   inspector.undoStack.val = @[]
   inspector.redoStack.val = @[]
-  inspector.conflicts.val = @[]
-  inspector.editDiagnostics.val = @[]
 
 proc markCssPropertyEditsSaved*(inspector: InspectorVM) =
-  inspector.pendingSourceEdits.val = @[]
-  inspector.sourcePreviews.val = @[]
+  inspector.clearSourceEditJournal()
   inspector.undoStack.val = @[]
   inspector.redoStack.val = @[]
-  inspector.conflicts.val = @[]
-  inspector.editDiagnostics.val = @[]
 
-proc detectCssSourceConflicts*(inspector: InspectorVM;
+proc actualConflictMatchesPlan(actual: CSSSourceConflict;
+    plan: SourceEditPlan): bool =
+  if actual.file != plan.file:
+    return false
+  if actual.property == plan.property:
+    return true
+  actual.property.len > 0 and actual.property in [
+    plan.schemaKey, plan.tokenName, plan.variantKey, plan.conflictKey]
+
+proc detectSourceJournalConflicts*(inspector: InspectorVM;
     actualValues: seq[CSSSourceConflict]): seq[CSSSourceConflict] =
   ## Accepts project-owned current source values and reports mismatches.
-  ## The actualValue field carries the value read from disk.
+  ## The actualValue field carries the value read from disk for any scope.
   var conflicts: seq[CSSSourceConflict] = @[]
   for plan in inspector.pendingSourceEdits.val:
     for actual in actualValues:
-      if actual.file == plan.file and actual.property == plan.property and
+      if actual.actualConflictMatchesPlan(plan) and
           actual.actualValue != plan.expectedOldValue:
         conflicts.add CSSSourceConflict(
           file: plan.file,
           property: plan.property,
           expectedOldValue: plan.expectedOldValue,
           actualValue: actual.actualValue,
-          message: "Source changed before the pending CSS edit could be saved.")
+          message: "Source changed before the pending " & $plan.sourceScope &
+            " edit could be saved; retry after reloading or rebasing the source.")
   inspector.conflicts.val = conflicts
   if conflicts.len > 0:
     inspector.editDiagnostics.val = conflicts.mapIt(PropertyEditDiagnostic(
@@ -2839,6 +2905,10 @@ proc detectCssSourceConflicts*(inspector: InspectorVM;
       line: 0,
       property: it.property))
   conflicts
+
+proc detectCssSourceConflicts*(inspector: InspectorVM;
+    actualValues: seq[CSSSourceConflict]): seq[CSSSourceConflict] =
+  inspector.detectSourceJournalConflicts(actualValues)
 
 proc saveCssPropertyEdits*(inspector: InspectorVM;
     adapter: SourceEditAdapter): bool {.discardable.} =
@@ -3299,19 +3369,7 @@ proc applyResponsiveLayoutOverride*(editor: EditorVM; modeKey, property,
       variantKey: modeKey)
   editor.inspector.selectedElement.val = element
   let sourceEdit = result.sourceEdit
-  editor.inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
-      SourceEditPlan] =
-    result = @[]
-    for existing in prev:
-      if existing.conflictKey != sourceEdit.conflictKey:
-        result.add existing
-    result.add sourceEdit
-  editor.inspector.sourcePreviews.update proc(prev: seq[CSSSourcePreview]): seq[
-      CSSSourcePreview] =
-    result = prev
-    result.add CSSSourcePreview(plan: sourceEdit,
-      beforeText: sourceEdit.previewBefore,
-      afterText: sourceEdit.previewAfter)
+  editor.inspector.journalSourceEdit(sourceEdit)
   editor.workspaceEditStage.val = wesDirty
   editor.inspector.editDiagnostics.val = @[]
 
@@ -3387,21 +3445,7 @@ proc stageDirectCanvasPlan(editor: EditorVM; operation: DirectCanvasOperation;
     editOrigin: peoInspector,
     sourcePlanKind: plan.planKind)
   editor.inspector.selectedElement.val = afterElement
-  editor.inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
-      SourceEditPlan] =
-    result = @[]
-    for existing in prev:
-      if existing.conflictKey != plan.conflictKey:
-        result.add existing
-    result.add plan
-  editor.inspector.sourcePreviews.update proc(prev: seq[CSSSourcePreview]): seq[
-      CSSSourcePreview] =
-    result = @[]
-    for existing in prev:
-      if existing.plan.conflictKey != plan.conflictKey:
-        result.add existing
-    result.add CSSSourcePreview(plan: plan, beforeText: plan.previewBefore,
-      afterText: plan.previewAfter)
+  editor.inspector.journalSourceEdit(plan)
   editor.inspector.undoStack.update proc(prev: seq[CSSPropertyEditTransaction]): seq[
       CSSPropertyEditTransaction] =
     result = prev
@@ -3467,6 +3511,7 @@ proc planOwnedDirectSourceEdit(editor: EditorVM; operation: DirectCanvasOperatio
     newValue: operation.value.strip(),
     originDetail: prefix & ownership.nodeKey,
     scope: pesShared,
+    sourceScope: if planKind == cspTokenUpdate: sskComponentToken else: sskSharedClass,
     planKind: planKind,
     schemaKey: ownership.nodeKey,
     tokenName: if planKind == cspTokenUpdate: ownership.nodeKey else: prop.tokenName,
@@ -4223,21 +4268,7 @@ proc editSharedDesignProperty*(editor: EditorVM; property, newValue: string;
     sourceScope: plan.sourceScope, isShared: plan.scope == pesShared,
     editOrigin: peoInspector, sourcePlanKind: plan.planKind)
   editor.inspector.selectedElement.val = afterElement
-  editor.inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
-      SourceEditPlan] =
-    result = @[]
-    for existing in prev:
-      if existing.conflictKey != plan.conflictKey:
-        result.add existing
-    result.add plan
-  editor.inspector.sourcePreviews.update proc(prev: seq[CSSSourcePreview]): seq[
-      CSSSourcePreview] =
-    result = @[]
-    for existing in prev:
-      if existing.plan.conflictKey != plan.conflictKey:
-        result.add existing
-    result.add CSSSourcePreview(plan: plan, beforeText: plan.previewBefore,
-      afterText: plan.previewAfter)
+  editor.inspector.journalSourceEdit(plan)
   editor.inspector.undoStack.update proc(prev: seq[CSSPropertyEditTransaction]): seq[
       CSSPropertyEditTransaction] =
     result = prev
@@ -4682,6 +4713,13 @@ func stylePlan(operation: StyleClassOperationKind; file: string; line: int;
     newValue: newValue,
     originDetail: originDetail,
     scope: if operation in {scokPromoteLocalOverride, scokTokenizeValue}: pesShared else: pesLocal,
+    sourceScope:
+      if operation == scokTokenizeValue or planKind == cspTokenUpdate:
+        sskComponentToken
+      elif operation in {scokPromoteLocalOverride, scokDetachClass}:
+        sskSharedClass
+      else:
+        sskLocalInstance,
     planKind: planKind,
     schemaKey: schemaKey,
     tokenName: tokenName,
@@ -4771,15 +4809,7 @@ proc styleManagerSnapshot*(editor: EditorVM; property: string;
 
 proc stageStyleOperation(editor: EditorVM; operation: StyleClassOperationKind;
     classEntry: StyleClassEntry; plan: SourceEditPlan): StyleOperationResult =
-  editor.inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
-      SourceEditPlan] =
-    result = prev
-    result.add plan
-  editor.inspector.sourcePreviews.update proc(prev: seq[CSSSourcePreview]): seq[
-      CSSSourcePreview] =
-    result = prev
-    result.add CSSSourcePreview(plan: plan, beforeText: plan.previewBefore,
-      afterText: plan.previewAfter)
+  editor.inspector.journalSourceEdit(plan, replaceExisting = false)
   editor.workspaceEditStage.val = wesDirty
   StyleOperationResult(status: pesAccepted, operation: operation,
     classEntry: classEntry, sourceEdit: plan)
@@ -5042,6 +5072,7 @@ func sourcePlan(token: FoundationTokenEntry; newValue: string): SourceEditPlan =
     newValue: newValue.strip(),
     originDetail: "schema:" & token.schemaKey,
     scope: pesShared,
+    sourceScope: sskGlobalPrimitiveToken,
     planKind: cspTokenUpdate,
     schemaKey: token.schemaKey,
     tokenName: token.key,
@@ -5230,18 +5261,7 @@ proc selectFoundationToken*(editor: EditorVM; key: string): bool {.discardable.}
   false
 
 proc removePendingFoundationEdit(editor: EditorVM; edit: SourceEditPlan) =
-  editor.inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
-      SourceEditPlan] =
-    result = @[]
-    for plan in prev:
-      if plan.conflictKey != edit.conflictKey:
-        result.add plan
-  editor.inspector.sourcePreviews.update proc(prev: seq[CSSSourcePreview]): seq[
-      CSSSourcePreview] =
-    result = @[]
-    for preview in prev:
-      if preview.plan.conflictKey != edit.conflictKey:
-        result.add preview
+  editor.inspector.removeJournaledSourceEdit(edit)
   editor.workspaceEditStage.val =
     if editor.inspector.pendingSourceEdits.val.len == 0: wesClean else: wesDirty
 
@@ -5282,16 +5302,7 @@ proc redoFoundationTokenEdit*(editor: EditorVM): bool {.discardable.} =
       FoundationEditHistoryEntry] =
     result = prev
     result.add entry
-  editor.inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
-      SourceEditPlan] =
-    result = prev
-    result.add entry.sourceEdit
-  editor.inspector.sourcePreviews.update proc(prev: seq[CSSSourcePreview]): seq[
-      CSSSourcePreview] =
-    result = prev
-    result.add CSSSourcePreview(plan: entry.sourceEdit,
-      beforeText: entry.sourceEdit.previewBefore,
-      afterText: entry.sourceEdit.previewAfter)
+  editor.inspector.journalSourceEdit(entry.sourceEdit)
   editor.workspaceEditStage.val = wesDirty
   true
 
@@ -5341,15 +5352,7 @@ proc editFoundationToken*(editor: EditorVM; key, newValue: string): FoundationEd
       afterToken: afterToken,
       sourceEdit: plan)
   editor.foundations.redoStack.val = @[]
-  editor.inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
-      SourceEditPlan] =
-    result = prev
-    result.add plan
-  editor.inspector.sourcePreviews.update proc(prev: seq[CSSSourcePreview]): seq[
-      CSSSourcePreview] =
-    result = prev
-    result.add CSSSourcePreview(plan: plan, beforeText: plan.previewBefore,
-      afterText: plan.previewAfter)
+  editor.inspector.journalSourceEdit(plan)
   editor.workspaceEditStage.val = wesDirty
   FoundationEditResult(status: pesAccepted, sourceEdit: plan, impacts: @[impact])
 
@@ -5781,6 +5784,9 @@ proc ensureComponentPropertySchemaForSelectedStory*(editor: EditorVM): bool {.
     return false
   if editor.componentVariantsForComponent(story.group).len > 0:
     return false
+  for variant in editor.variants.variants.val:
+    if variant.story.group == story.group and variant.story.name == story.name:
+      return false
   let preview = editor.preview.current.val
   let metadata = preview.metadata
   if preview.documentHtml.len == 0 and metadata.sourceFile.len == 0:
@@ -5995,15 +6001,7 @@ func validateComponentStateEdit(variant: ComponentVariantDefinition;
       "Component state must use one of: " & state.options.join(", ") & ".")
 
 proc addPendingComponentPlan(editor: EditorVM; plan: SourceEditPlan) =
-  editor.inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
-      SourceEditPlan] =
-    result = prev
-    result.add plan
-  editor.inspector.sourcePreviews.update proc(prev: seq[CSSSourcePreview]): seq[
-      CSSSourcePreview] =
-    result = prev
-    result.add CSSSourcePreview(plan: plan, beforeText: plan.previewBefore,
-      afterText: plan.previewAfter)
+  editor.inspector.journalSourceEdit(plan)
   editor.workspaceEditStage.val = wesDirty
   editor.workspaceEditDiagnostics.val = @[]
   editor.chat.accumulatedEdits.update proc(prev: seq[EditRecord]): seq[
@@ -6023,6 +6021,21 @@ proc addPendingComponentPlan(editor: EditorVM; plan: SourceEditPlan) =
       editOrigin:
         if plan.originDetail.contains(":ai:"): peoAgent else: peoInspector,
       sourcePlanKind: plan.planKind)
+
+proc stageComponentVariantJournal(editor: EditorVM;
+    beforeVariant, afterVariant: ComponentVariantDefinition;
+    selectedBefore, selectedAfter: int; plan: SourceEditPlan) =
+  editor.addPendingComponentPlan(plan)
+  editor.variants.undoStack.update proc(prev: seq[ComponentVariantEditHistoryEntry]): seq[
+      ComponentVariantEditHistoryEntry] =
+    result = prev
+    result.add ComponentVariantEditHistoryEntry(
+      beforeVariant: beforeVariant,
+      afterVariant: afterVariant,
+      selectedBefore: selectedBefore,
+      selectedAfter: selectedAfter,
+      sourceEdit: plan)
+  editor.variants.redoStack.val = @[]
 
 func sourcePlan(variant: ComponentVariantDefinition;
     field: ComponentVariantField; newValue: string): SourceEditPlan =
@@ -6104,21 +6117,14 @@ proc editComponentVariantField*(editor: EditorVM; component, variantKey, fieldNa
   var plan = variant.sourcePlan(field, newValue)
   plan.sourceScopeChoices = @[componentScopeChoice(plan.sourceScope,
     plan.schemaKey, plan.file, plan.line, impact)]
+  let selectedBefore = editor.variants.selectedVariant.val
   var updated = editor.variants.variants.val
   updated[variantIndex].fields[fieldIndex].value = newValue.strip()
   editor.variants.variants.val = updated
   editor.variants.selectedVariant.val = variantIndex
   editor.variants.diagnostics.val = @[]
-  editor.inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
-      SourceEditPlan] =
-    result = prev
-    result.add plan
-  editor.inspector.sourcePreviews.update proc(prev: seq[CSSSourcePreview]): seq[
-      CSSSourcePreview] =
-    result = prev
-    result.add CSSSourcePreview(plan: plan, beforeText: plan.previewBefore,
-      afterText: plan.previewAfter)
-  editor.workspaceEditStage.val = wesDirty
+  editor.stageComponentVariantJournal(variant, updated[variantIndex],
+    selectedBefore, variantIndex, plan)
   ComponentVariantEditResult(status: pesAccepted, sourceEdit: plan,
     affectedStory: variant.story, impact: impact)
 
@@ -6162,12 +6168,14 @@ proc editComponentProperty*(editor: EditorVM; component, variantKey,
   var plan = variant.sourcePlan(prop, newValue, mode)
   plan.sourceScopeChoices = @[componentScopeChoice(plan.sourceScope,
     plan.schemaKey, plan.file, plan.line, impact)]
+  let selectedBefore = editor.variants.selectedVariant.val
   var updated = editor.variants.variants.val
   updated[variantIndex].properties[propIndex].value = newValue.strip()
   editor.variants.variants.val = updated
   editor.variants.selectedVariant.val = variantIndex
   editor.variants.diagnostics.val = @[]
-  editor.addPendingComponentPlan(plan)
+  editor.stageComponentVariantJournal(variant, updated[variantIndex],
+    selectedBefore, variantIndex, plan)
   ComponentVariantEditResult(status: pesAccepted, sourceEdit: plan,
     affectedStory: variant.story, impact: impact)
 
@@ -6211,6 +6219,7 @@ proc editComponentStateControl*(editor: EditorVM; component, variantKey,
   var plan = variant.sourcePlan(state, newValue, mode)
   plan.sourceScopeChoices = @[componentScopeChoice(plan.sourceScope,
     plan.schemaKey, plan.file, plan.line, impact)]
+  let selectedBefore = editor.variants.selectedVariant.val
   var updated = editor.variants.variants.val
   updated[variantIndex].stateControls[stateIndex].value = newValue.strip()
   editor.variants.variants.val = updated
@@ -6218,7 +6227,8 @@ proc editComponentStateControl*(editor: EditorVM; component, variantKey,
   editor.variants.diagnostics.val = @[]
   editor.variants.stateDiagnostics.val =
     stateCoverageDiagnostics(updated, component)
-  editor.addPendingComponentPlan(plan)
+  editor.stageComponentVariantJournal(variant, updated[variantIndex],
+    selectedBefore, variantIndex, plan)
   ComponentVariantEditResult(status: pesAccepted, sourceEdit: plan,
     affectedStory: variant.story, impact: impact)
 
@@ -6288,6 +6298,7 @@ proc createStoryForComponentState*(editor: EditorVM; component, variantKey,
       variantKey & ":" & stateKey & ":story")
   plan.sourceScopeChoices = @[componentScopeChoice(plan.sourceScope,
     plan.schemaKey, plan.file, plan.line, impact)]
+  let selectedBefore = editor.variants.selectedVariant.val
   var updated = editor.variants.variants.val
   for i, control in updated[variantIndex].stateControls:
     if control.key == stateKey:
@@ -6301,9 +6312,56 @@ proc createStoryForComponentState*(editor: EditorVM; component, variantKey,
   editor.variants.diagnostics.val = @[]
   editor.variants.stateDiagnostics.val =
     stateCoverageDiagnostics(updated, component)
-  editor.addPendingComponentPlan(plan)
+  editor.stageComponentVariantJournal(variant, updated[variantIndex],
+    selectedBefore, variantIndex, plan)
   ComponentVariantEditResult(status: pesAccepted, sourceEdit: plan,
     affectedStory: story, impact: impact)
+
+proc replaceVariant(variants: var seq[ComponentVariantDefinition];
+    replacement: ComponentVariantDefinition): bool =
+  for i, variant in variants:
+    if variant.component == replacement.component and
+        variant.variantKey == replacement.variantKey:
+      variants[i] = replacement
+      return true
+  false
+
+proc undoComponentVariantEdit*(editor: EditorVM): bool {.discardable.} =
+  let stack = editor.variants.undoStack.val
+  if stack.len == 0:
+    return false
+  let entry = stack[^1]
+  var updated = editor.variants.variants.val
+  discard updated.replaceVariant(entry.beforeVariant)
+  editor.variants.variants.val = updated
+  editor.variants.selectedVariant.val = entry.selectedBefore
+  editor.variants.undoStack.val = stack[0 ..< stack.len - 1]
+  editor.variants.redoStack.update proc(prev: seq[ComponentVariantEditHistoryEntry]): seq[
+      ComponentVariantEditHistoryEntry] =
+    result = prev
+    result.add entry
+  editor.inspector.removeJournaledSourceEdit(entry.sourceEdit)
+  editor.workspaceEditStage.val =
+    if editor.inspector.pendingSourceEdits.val.len == 0: wesClean else: wesDirty
+  true
+
+proc redoComponentVariantEdit*(editor: EditorVM): bool {.discardable.} =
+  let stack = editor.variants.redoStack.val
+  if stack.len == 0:
+    return false
+  let entry = stack[^1]
+  var updated = editor.variants.variants.val
+  discard updated.replaceVariant(entry.afterVariant)
+  editor.variants.variants.val = updated
+  editor.variants.selectedVariant.val = entry.selectedAfter
+  editor.variants.redoStack.val = stack[0 ..< stack.len - 1]
+  editor.variants.undoStack.update proc(prev: seq[ComponentVariantEditHistoryEntry]): seq[
+      ComponentVariantEditHistoryEntry] =
+    result = prev
+    result.add entry
+  editor.inspector.journalSourceEdit(entry.sourceEdit)
+  editor.workspaceEditStage.val = wesDirty
+  true
 
 func workspacePlanKeys(plan: SourceEditPlan): seq[string] =
   if plan.schemaKey.len > 0:
@@ -6453,6 +6511,15 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
     editor.workspaceEditDiagnostics.val = @[]
     return WorkspaceEditResult(ok: true, stage: wesClean)
 
+  let ownershipDiagnostics = editor.inspector.sourceJournalOwnershipDiagnostics()
+  if ownershipDiagnostics.len > 0:
+    var diagnostics: seq[WorkspaceEditDiagnostic] = @[]
+    for diagnostic in ownershipDiagnostics:
+      diagnostics.add workspaceDiagnostic(wedUnsafeSourceMap,
+        diagnostic.message, file = diagnostic.file,
+        schemaKey = "", property = diagnostic.property)
+    return editor.failWorkspaceEdit(diagnostics)
+
   let adapterReq = editor.requireWorkspaceAdapter()
   if not adapterReq.ok:
     return editor.failWorkspaceEdit(adapterReq.diagnostics)
@@ -6523,7 +6590,7 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
         not adapter.allowMissingExpectedOldValue and
         plan.expectedOldValue notin drafts[draftPos].currentContent:
       diagnostics.add workspaceDiagnostic(wedSourceConflict,
-        "Source changed before the pending edit could be applied.",
+        "Source changed before the pending edit could be applied; reload or rebase the stale source plan, then retry.",
         file = targetFile,
         schemaKey = resolved.entry.key,
         property = plan.property)
@@ -6675,6 +6742,8 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
   editor.vectorEditor.redoStack.val = @[]
   editor.foundations.undoStack.val = @[]
   editor.foundations.redoStack.val = @[]
+  editor.variants.undoStack.val = @[]
+  editor.variants.redoStack.val = @[]
   editor.chat.accumulatedEdits.val = @[]
   editor.workspaceEditStage.val = wesClean
   editor.workspaceEditDiagnostics.val = @[]
@@ -6698,6 +6767,12 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
     generatedArtifacts: generatedArtifacts,
     requiredTestCommands: requiredTestCommands,
     reviewDiagnostics: reviewDiagnostics)
+
+proc retryWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardable.} =
+  ## Retry the same journal after an adapter conflict or transient bridge error.
+  editor.workspaceBridgeRecovered.val = false
+  editor.workspaceEditDiagnostics.val = @[]
+  editor.applyWorkspaceFileEdits()
 
 # ===========================================================================
 # AgentChatVM actions
@@ -7224,10 +7299,8 @@ proc acceptAgentProposedEdit*(editor: EditorVM; id: string;
       diagnostics: @[workspaceDiagnostic(wedMissingSchema,
         "Agent edit proposal does not contain selected source edits.")])
 
-  editor.inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
-      SourceEditPlan] =
-    result = prev
-    result.add accepted
+  for plan in accepted:
+    editor.inspector.journalSourceEdit(plan)
   editor.workspaceEditStage.val = wesDirty
   result = editor.applyWorkspaceFileEdits()
   if result.ok:
@@ -7272,10 +7345,8 @@ proc revertAgentProposedEdit*(editor: EditorVM; id: string): WorkspaceEditResult
     return WorkspaceEditResult(ok: false, stage: wesFailed,
       diagnostics: @[workspaceDiagnostic(wedPatchFailed,
         "Agent edit proposal has no reversible source edits.")])
-  editor.inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
-      SourceEditPlan] =
-    result = prev
-    result.add reversals
+  for plan in reversals:
+    editor.inspector.journalSourceEdit(plan)
   editor.workspaceEditStage.val = wesDirty
   result = editor.applyWorkspaceFileEdits()
   if result.ok:
@@ -8313,23 +8384,36 @@ func importVectorDocumentSvg*(symbol: VectorSymbol; svg: string): VectorDocument
   doc.selectedIds = if doc.objects.len > 0: @[doc.objects[0].id] else: @[]
   doc
 
+func sourceFor(doc: VectorDocument): VectorSourceOrigin =
+  if doc.source.schemaKey.len > 0 or doc.source.file.len > 0:
+    return doc.source
+  if doc.symbols.len > 0 and
+      (doc.symbols[0].source.schemaKey.len > 0 or
+        doc.symbols[0].source.file.len > 0):
+    return doc.symbols[0].source
+  for obj in doc.objects:
+    if obj.source.schemaKey.len > 0 or obj.source.file.len > 0:
+      return obj.source
+
 func vectorSourcePlan(doc: VectorDocument; beforeSvg, afterSvg: string;
     expectedOldValue = beforeSvg): SourceEditPlan =
+  let source = doc.sourceFor()
   SourceEditPlan(
-    file: doc.source.file,
+    file: source.file,
     property: "svgContent",
     oldValue: beforeSvg,
     newValue: afterSvg,
     originDetail: "vector-symbol:" & doc.name,
     scope: pesShared,
+    sourceScope: sskSharedClass,
     planKind: cspStructuredSchemaUpdate,
-    schemaKey: doc.source.schemaKey,
+    schemaKey: source.schemaKey,
     reversible: true,
     previewBefore: beforeSvg,
     previewAfter: afterSvg,
     formatterHook: "svgo",
     regeneratorHook: "vector-symbol",
-    conflictKey: doc.source.schemaKey,
+    conflictKey: source.schemaKey,
     expectedOldValue: expectedOldValue)
 
 func validateVectorAccessibility*(doc: VectorDocument): seq[VectorDiagnostic] =
@@ -8419,10 +8503,7 @@ proc commitVectorDocument(editor: EditorVM; operation: VectorOperationKind;
       afterDocument: afterDoc,
       sourceEdit: plan)
   editor.vectorEditor.redoStack.val = @[]
-  editor.inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
-      SourceEditPlan] =
-    result = prev
-    result.add plan
+  editor.inspector.journalSourceEdit(plan, replaceExisting = false)
   editor.workspaceEditStage.val = wesDirty
   VectorOperationResult(ok: true, operation: operation, document: afterDoc,
     sourceEdit: plan, diagnostics: editor.vectorEditor.diagnostics.val)
@@ -8471,10 +8552,7 @@ proc commitVectorSourceSnapshot*(editor: EditorVM; operation: VectorOperationKin
       afterDocument: afterDoc,
       sourceEdit: plan)
   editor.vectorEditor.redoStack.val = @[]
-  editor.inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
-      SourceEditPlan] =
-    result = prev
-    result.add plan
+  editor.inspector.journalSourceEdit(plan, replaceExisting = false)
   editor.workspaceEditStage.val = wesDirty
   VectorOperationResult(ok: true, operation: operation, document: afterDoc,
     sourceEdit: plan, diagnostics: editor.vectorEditor.diagnostics.val)
@@ -9067,19 +9145,7 @@ proc undoVectorEdit*(editor: EditorVM): bool {.discardable.} =
       VectorEditTransaction] =
     result = prev
     result.add tx
-  editor.inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
-      SourceEditPlan] =
-    result = prev
-    if prev.len > 0:
-      for i in countdown(prev.high, 0):
-        let plan = prev[i]
-        if plan.file == tx.sourceEdit.file and
-            plan.schemaKey == tx.sourceEdit.schemaKey and
-            plan.property == tx.sourceEdit.property and
-            plan.oldValue == tx.sourceEdit.oldValue and
-            plan.newValue == tx.sourceEdit.newValue:
-          result.delete(i)
-          break
+  editor.inspector.removeJournaledSourceEdit(tx.sourceEdit)
   editor.vectorEditor.document.val = tx.beforeDocument
   editor.workspaceEditStage.val =
     if editor.inspector.pendingSourceEdits.val.len == 0: wesClean else: wesDirty
@@ -9096,10 +9162,7 @@ proc redoVectorEdit*(editor: EditorVM): bool {.discardable.} =
     result = prev
     result.add tx
   editor.vectorEditor.document.val = tx.afterDocument
-  editor.inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
-      SourceEditPlan] =
-    result = prev
-    result.add tx.sourceEdit
+  editor.inspector.journalSourceEdit(tx.sourceEdit, replaceExisting = false)
   editor.workspaceEditStage.val = wesDirty
   true
 
@@ -9216,6 +9279,8 @@ proc createComponentVariantEditorVM*(): ComponentVariantEditorVM =
   let diagnostics = createSignal[seq[ComponentVariantDiagnostic]](@[])
   let stateDiagnostics = createSignal[seq[ComponentStateCoverageDiagnostic]](@[])
   let selectedVariant = createSignal(-1)
+  let undoStack = createSignal[seq[ComponentVariantEditHistoryEntry]](@[])
+  let redoStack = createSignal[seq[ComponentVariantEditHistoryEntry]](@[])
   let variantMatrix = createMemo[seq[ComponentVariantMatrixCell]](proc(): seq[
       ComponentVariantMatrixCell] =
     var component = ""
@@ -9237,6 +9302,8 @@ proc createComponentVariantEditorVM*(): ComponentVariantEditorVM =
     diagnostics: diagnostics,
     stateDiagnostics: stateDiagnostics,
     selectedVariant: selectedVariant,
+    undoStack: undoStack,
+    redoStack: redoStack,
     variantMatrix: variantMatrix,
     hasDiagnostics: hasDiagnostics)
 

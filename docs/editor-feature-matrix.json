@@ -431,6 +431,10 @@
         {
           "name": "e2e_selection_survives_mode_viewport_and_save_cycles",
           "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
+        },
+        {
+          "name": "preserves_history_selection_and_inspector_focus_after_write_bridge_rebuild",
+          "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
         }
       ],
       "screenshotVisualAssertions": {
@@ -473,7 +477,8 @@
           "evidence": [
             "tests/browser/specs/metacraft-web-editor.spec.ts:edits real metacraft component DOM through the inspector",
             "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_canvas_selection_matches_layer_tree_and_breadcrumbs",
-            "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_selection_survives_mode_viewport_and_save_cycles"
+            "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_selection_survives_mode_viewport_and_save_cycles",
+            "tests/browser/specs/metacraft-web-editor.spec.ts:preserves_history_selection_and_inspector_focus_after_write_bridge_rebuild"
           ]
         }
       },
@@ -575,7 +580,7 @@
       "placeholderUi": false,
       "browserBehavior": ["focus", "iframe"],
       "implementation": "M38 extends the component variant editor with schema-backed component properties for enum, boolean, text, icon, slot/content, data fixture, density, platform, and accessibility labels; state controls for size, emphasis, tone, selected, disabled, hover, focus, pressed, loading, empty, error, success, and project-specific states; structured source plans for schema/fixture/source constructors; variant matrix previews; actionable coverage diagnostics; create-story-for-state commands; per-property documentation and usage guidance; and shared AI/manual pending edit journal context.",
-      "knownLimitations": "Functional M38 coverage is not Figma-grade. Browser coverage uses the live metacraft-web component preview path with runtime schema inference when the consumer has not supplied a full component-property schema, so it proves source-plan routing, matrix/state controls, save/revert, and diagnostics without claiming complete Figma-grade component API extraction, screenshot baselines, or exhaustive visual comparison across every component/state.",
+      "knownLimitations": "Functional M38 coverage is not Figma-grade. Browser coverage uses the live metacraft-web component preview path and the consumer-supplied component property schema for the Status badge fixture, so it proves real schema save/revert routing, matrix/state controls, and diagnostics without claiming complete Figma-grade component API extraction, screenshot baselines, or exhaustive visual comparison across every component/state.",
       "headlessTests": [
         {
           "name": "component_variant_editor_updates_story_fixtures",
@@ -593,7 +598,7 @@
       "playwrightRequired": true,
       "playwrightTests": [
         {
-          "name": "e2e_component_variant_matrix_and_state_controls",
+          "name": "e2e_component_variant_matrix_state_controls_write_real_schema_files",
           "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
         }
       ],
@@ -617,7 +622,7 @@
         "metacraftWeb": {
           "status": "covered",
           "evidence": [
-            "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_component_variant_matrix_and_state_controls",
+            "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_component_variant_matrix_state_controls_write_real_schema_files",
             "../metacraft-web/apps/back-office/tests/test_backoffice_editor_workspace.nim"
           ]
         }
@@ -1155,6 +1160,10 @@
         {
           "name": "keeps editor state in browser history",
           "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
+        },
+        {
+          "name": "preserves_history_selection_and_inspector_focus_after_write_bridge_rebuild",
+          "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
         }
       ],
       "screenshotVisualAssertions": {
@@ -1174,7 +1183,8 @@
         "metacraftWeb": {
           "status": "covered",
           "evidence": [
-            "tests/browser/specs/metacraft-web-editor.spec.ts:keeps editor state in browser history"
+            "tests/browser/specs/metacraft-web-editor.spec.ts:keeps editor state in browser history",
+            "tests/browser/specs/metacraft-web-editor.spec.ts:preserves_history_selection_and_inspector_focus_after_write_bridge_rebuild"
           ]
         }
       },
@@ -1440,7 +1450,7 @@
           "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
         },
         {
-          "name": "e2e_component_variant_matrix_and_state_controls",
+          "name": "e2e_component_variant_matrix_state_controls_write_real_schema_files",
           "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
         }
       ],

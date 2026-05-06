@@ -1753,6 +1753,7 @@ suite "Editor ViewModels (M27 workspace file writes)":
       newValue: newValue,
       originDetail: "schema:" & schemaKey,
       scope: pesShared,
+      sourceScope: sskSharedClass,
       planKind: planKind,
       schemaKey: schemaKey,
       reversible: true,
@@ -5495,6 +5496,157 @@ suite "Editor ViewModels (M27 workspace file writes)":
       check readFile(componentFile).contains("lg")
       check readFile(componentFile).contains("true")
       check readFile(fixtureFile).contains("Sofia")
+      dispose()
+
+  test "m54_source_edit_journal_covers_local_component_shared_token_and_ai_scopes":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("m54-journal")
+      defer: removeDir(root)
+
+      let styleFile = root / "card.css"
+      let componentFile = root / "card.schema"
+      let tokenFile = root / "tokens.schema"
+      atomicWrite(styleFile, "color=#111827\npadding=16px\n")
+      atomicWrite(componentFile, "size=md\ntitle=Paris\n")
+      atomicWrite(tokenFile, "surface=#ffffff\n")
+      let story = StoryRef(group: "Card", name: "Default",
+        kind: skComponent, index: 0)
+      let schema = @[
+        WorkspaceEditableSchemaEntry(key: "local.card.color",
+          kind: wskSourceMap, file: styleFile, path: "card.color",
+          story: story, property: "color"),
+        WorkspaceEditableSchemaEntry(key: "classes.card.padding",
+          kind: wskSourceMap, file: styleFile, path: "card.padding",
+          story: story, property: "padding"),
+        WorkspaceEditableSchemaEntry(key: "components.card.props.size",
+          kind: wskComponentVariant, file: componentFile,
+          path: "Card.default.size", story: story, property: "size"),
+        WorkspaceEditableSchemaEntry(key: "fixtures.card.title",
+          kind: wskStoryFixture, file: componentFile,
+          path: "Card.default.title", story: story, property: "title"),
+        WorkspaceEditableSchemaEntry(key: "tokens.surface",
+          kind: wskToken, file: tokenFile, path: "tokens.surface",
+          story: story, property: "surface")
+      ]
+      let variants = @[
+        ComponentVariantDefinition(component: "Card", variantKey: "default",
+          story: story,
+          properties: @[ComponentPropertyDefinition(name: "size",
+            kind: cpkEnum, value: "md", options: @["sm", "md", "lg"],
+            sourceFile: componentFile, sourceLine: 1,
+            schemaKey: "components.card.props.size",
+            constructor: "card-schema")])
+      ]
+      let recorder = WorkspaceEditRecorder()
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "M54 journal workspace",
+        storyGroups = @[StoryGroup(name: "Card", kind: skComponent,
+          items: @[StoryItem(name: "Default", kind: skComponent,
+            group: "Card")])],
+        foundationTokens = @[FoundationTokenEntry(key: "surface",
+          kind: ftkSemanticColor, value: "#ffffff",
+          sourceFile: tokenFile, sourceLine: 1,
+          schemaKey: "tokens.surface", property: "surface",
+          affectedStories: @[story])],
+        componentVariants = variants,
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true),
+        editAdapter = adapterFor(root, schema, recorder = recorder),
+        initialStory = some(story)))
+      check vm.selectInspectorElement(ElementRef(id: "card",
+        sourceKey: "card", schemaKey: "local.card.color", tag: "article",
+        sourceFile: styleFile, sourceLine: 1,
+        properties: @[
+          PropertyInfo(name: "color", value: "#111827",
+            origin: poConstant, originDetail: "schema:local.card.color",
+            sourceFile: styleFile, sourceLine: 1,
+            schemaKey: "local.card.color"),
+          PropertyInfo(name: "padding", value: "16px",
+            origin: poTailwindClass, originDetail: "class:card",
+            sourceFile: styleFile, sourceLine: 2,
+            schemaKey: "classes.card.padding", sharedCount: 3)
+        ]))
+
+      check vm.editCssProperty("color", "#0f172a", pesLocal).status == pesAccepted
+      check vm.editSharedDesignProperty("padding", "20px",
+        sskSharedClass).status == pesAccepted
+      check vm.editFoundationToken("surface", "#f8fafc").status == pesAccepted
+      let componentEdit = vm.editComponentProperty("Card", "default", "size",
+        "lg")
+      check componentEdit.status == pesAccepted
+      check vm.inspector.pendingSourceEdits.val.len == 4
+      check vm.inspector.sourcePreviews.val.len == 4
+      check vm.inspector.sourceJournalOwnershipDiagnostics().len == 0
+
+      check vm.undoComponentVariantEdit()
+      check vm.variants.variants.val[0].properties[0].value == "md"
+      check vm.inspector.pendingSourceEdits.val.len == 3
+      check vm.redoComponentVariantEdit()
+      check vm.variants.variants.val[0].properties[0].value == "lg"
+      check vm.inspector.pendingSourceEdits.val.len == 4
+
+      let saved = vm.applyWorkspaceFileEdits()
+      check saved.ok
+      check readFile(styleFile).contains("color=#0f172a")
+      check readFile(styleFile).contains("padding=20px")
+      check readFile(componentFile).contains("size=lg")
+      check readFile(tokenFile).contains("surface=#f8fafc")
+
+      discard vm.chat.addAgentEditProposal(AgentEditProposal(
+        title: "Fixture title",
+        summary: "Change fixture title",
+        sourceEdits: @[planFor(componentFile, "title", "Paris", "Sofia",
+          "fixtures.card.title")],
+        selectedEditIndexes: @[0],
+        validity: aepvCurrent))
+      let accepted = vm.acceptAgentProposedEdit("agent-proposal-1")
+      check accepted.ok
+      check readFile(componentFile).contains("title=Sofia")
+      dispose()
+
+  test "m54_conflict_retry_and_stale_source_diagnostics_keep_journal_dirty":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("m54-conflict")
+      defer: removeDir(root)
+      let schemaFile = root / "card.schema"
+      atomicWrite(schemaFile, "padding=20px\n")
+      let schema = @[WorkspaceEditableSchemaEntry(
+        key: "components.card.padding", kind: wskSourceMap,
+        file: schemaFile, path: "card.padding", story: writeStory,
+        property: "padding")]
+      let recorder = WorkspaceEditRecorder()
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "M54 conflict workspace",
+        storyGroups = @[StoryGroup(name: "Card", kind: skComponent,
+          items: @[StoryItem(name: "Default", kind: skComponent,
+            group: "Card")])],
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true),
+        editAdapter = adapterFor(root, schema, recorder = recorder)))
+      vm.inspector.journalSourceEdit(planFor(schemaFile, "padding", "16px",
+        "24px", "components.card.padding"))
+      vm.workspaceEditStage.val = wesDirty
+
+      let conflicted = vm.applyWorkspaceFileEdits()
+      check not conflicted.ok
+      check conflicted.diagnostics.anyIt(
+        it.kind == wedSourceConflict and it.message.contains("retry"))
+      check vm.inspector.pendingSourceEdits.val.len == 1
+      check vm.workspaceEditStage.val == wesFailed
+
+      atomicWrite(schemaFile, "padding=16px\n")
+      let retried = vm.retryWorkspaceFileEdits()
+      check retried.ok
+      check readFile(schemaFile).contains("padding=24px")
+      check vm.inspector.pendingSourceEdits.val.len == 0
+
+      vm.inspector.journalSourceEdit(SourceEditPlan(
+        file: schemaFile, property: "opacity", oldValue: "1",
+        newValue: "0.8", scope: pesUnspecified,
+        schemaKey: "components.card.opacity",
+        conflictKey: schemaFile & ":opacity"))
+      check vm.inspector.sourceJournalOwnershipDiagnostics().anyIt(
+        it.message.contains("explicit ownership scope"))
       dispose()
 
   test "agent_proposals_target_design_schema_scopes":

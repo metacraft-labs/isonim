@@ -1701,6 +1701,13 @@ type
     afterToken*: FoundationTokenEntry
     sourceEdit*: SourceEditPlan
 
+  ComponentVariantEditHistoryEntry* = object
+    beforeVariant*: ComponentVariantDefinition
+    afterVariant*: ComponentVariantDefinition
+    selectedBefore*: int
+    selectedAfter*: int
+    sourceEdit*: SourceEditPlan
+
   FoundationEditDiagnostic* = object
     kind*: FoundationEditDiagnosticKind
     message*: string
@@ -1912,6 +1919,27 @@ type
     ppsUnsupportedStory
     ppsRendered
 
+  PreviewVariantMutationKind* = enum
+    pvmkClassToken
+    pvmkAttribute
+
+  PreviewVariantValueMap* = object
+    ## Consumer-owned mapping from schema values to rendered preview values.
+    sourceValue*: string
+    previewValue*: string
+
+  PreviewVariantMutation* = object
+    ## Generic DOM mutation that lets consumer previews reflect unsaved
+    ## component API changes without editor-owned project assumptions.
+    component*: string
+    variantKey*: string
+    property*: string
+    selector*: string
+    kind*: PreviewVariantMutationKind
+    classPrefix*: string
+    attributeName*: string
+    values*: seq[PreviewVariantValueMap]
+
   ProjectPreview* = object
     ## Headless preview payload produced by a project-owned preview hook.
     status*: ProjectPreviewStatus
@@ -1920,6 +1948,7 @@ type
     bodyText*: string
     documentHtml*: string
     metadata*: StoryRenderMetadata
+    variantMutations*: seq[PreviewVariantMutation]
 
   ProjectPreviewHook* = proc(story: StoryRef;
                             platform: Platform): ProjectPreview {.closure.}

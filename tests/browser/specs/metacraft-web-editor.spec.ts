@@ -8,6 +8,11 @@ const devBridgeSourceFile = resolve(
 const devBridgeTokenFile = resolve(
   "../../../metacraft-web/dist/editor-dev-workspace/packages/metacraft-design/src/metacraft_design/tokens.nim",
 );
+const devBridgeComponentSchemaFile = resolve(
+  "../../../metacraft-web/dist/editor-dev-workspace/apps/back-office/src/backoffice_editor/component_schema.schema",
+);
+const componentSchemaBridgeFile =
+  "apps/back-office/src/backoffice_editor/component_schema.schema";
 
 async function setInspectorProperty(
   page,
@@ -28,6 +33,33 @@ async function setInspectorProperty(
   }, value);
   await expect(input).toHaveValue(value);
   await expect(page.getByText("Unsaved source edit")).toBeVisible();
+}
+
+async function revertDevBridgeFiles(page, files) {
+  const response = await page.evaluate(async (changes) => {
+    const reverted = await fetch("/__isonim-dev-bridge/transaction", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        mode: "revert",
+        files: changes,
+      }),
+    });
+    return await reverted.json();
+  }, files);
+  expect(response.ok).toBe(true);
+}
+
+async function iframeReloadGeneration(frame) {
+  const srcdoc = (await frame.getAttribute("srcdoc")) ?? "";
+  const match = srcdoc.match(/isonim-reload:(\d+)/);
+  return match ? Number(match[1]) : -1;
+}
+
+async function computedBackground(locator) {
+  return await locator.evaluate(
+    (node) => getComputedStyle(node).backgroundColor,
+  );
 }
 
 test.describe("metacraft-web IsoNim editor consumer", () => {
@@ -314,7 +346,11 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     ).toHaveAttribute("aria-current", "true");
     await expect(page).toHaveURL(/kind=page/);
     await expect(page).toHaveURL(/story=Customer%20detail/);
-    await page.getByRole("button", { name: "Open Pages section" }).click();
+    await page
+      .getByRole("button", {
+        name: "Select story Back-office pages / Operations dashboard",
+      })
+      .click();
     await page
       .getByRole("button", {
         name: "Select story Back-office pages / Operations dashboard",
@@ -844,13 +880,115 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(page.getByText("Unsaved source edit")).toHaveCount(0);
   });
 
-  test("e2e_component_variant_matrix_and_state_controls", async ({ page }) => {
-    await page.goto("/");
+  test("preserves_history_selection_and_inspector_focus_after_write_bridge_rebuild", async ({
+    page,
+  }) => {
+    await page.goto("/?writeBridge=1");
+    await expect(page.locator(".editor-statusbar")).toContainText(
+      "write writable",
+    );
+    const beforeText = readFileSync(devBridgeSourceFile, "utf8");
 
     await page.getByRole("button", { name: "Open Components section" }).click();
     await page
       .getByRole("button", {
         name: "Select story Operational components / Topbar",
+      })
+      .click();
+    await page
+      .getByRole("button", { name: "Open selected component in edit mode" })
+      .click();
+    await expect(page).toHaveURL(/view=edit/);
+
+    const editFrame = page.frameLocator(
+      'iframe[title="Editable component preview"]',
+    );
+    const editFrameElement = page.locator(
+      'iframe[title="Editable component preview"]',
+    );
+    const topbar = editFrame.getByTestId("component-topbar");
+    await expect.poll(() => iframeReloadGeneration(editFrameElement)).toBe(0);
+    await topbar
+      .locator("h1.bo-title")
+      .click({ force: true, modifiers: ["Shift"] });
+    await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
+
+    await setInspectorProperty(page, "Space", "padding", "20px");
+    await expect
+      .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
+      .toBe("20px");
+
+    const sectionSearch = page.getByRole("textbox", {
+      name: "Search inspector sections",
+    });
+    await sectionSearch.focus();
+    await expect(sectionSearch).toBeFocused();
+    await page
+      .getByRole("button", { name: "Save inspector source edits" })
+      .click();
+
+    await expect(page.getByText("Unsaved source edit")).toHaveCount(0);
+    await expect(page.locator(".editor-statusbar")).toContainText("clean");
+    await expect
+      .poll(() => readFileSync(devBridgeSourceFile, "utf8"))
+      .not.toBe(beforeText);
+    await expect.poll(() => iframeReloadGeneration(editFrameElement)).toBe(1);
+    const afterText = readFileSync(devBridgeSourceFile, "utf8");
+    expect(afterText).toContain("padding=20px");
+    await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
+    await expect(sectionSearch).toBeFocused();
+
+    await page.getByRole("button", { name: "Open Pages section" }).click();
+    await expect(page).toHaveURL(/view=page/);
+    await expect(
+      page
+        .frameLocator('[aria-label="Preview device frame"] iframe')
+        .getByText("Operations dashboard")
+        .first(),
+    ).toBeVisible();
+
+    await page.goBack();
+    await expect(page).toHaveURL(/view=edit/);
+    await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
+    await expect(sectionSearch).toBeFocused();
+    await page.goForward();
+    await expect(page).toHaveURL(/view=page/);
+    await page.goBack();
+    await expect(page).toHaveURL(/view=edit/);
+    await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
+    await expect(sectionSearch).toBeFocused();
+
+    await revertDevBridgeFiles(page, [
+      {
+        file: "apps/back-office/src/backoffice_ui/components.nim",
+        beforeText,
+        afterText,
+      },
+    ]);
+    await expect
+      .poll(() => readFileSync(devBridgeSourceFile, "utf8"))
+      .toBe(beforeText);
+  });
+
+  test("e2e_component_variant_matrix_state_controls_write_real_schema_files", async ({
+    page,
+  }) => {
+    await page.goto("/?writeBridge=1");
+    await expect(page.locator(".editor-statusbar")).toContainText(
+      "write writable",
+    );
+    await expect
+      .poll(() => readFileSync(devBridgeComponentSchemaFile, "utf8"))
+      .toContain("tone=neutral");
+    const beforeComponentSchema = readFileSync(
+      devBridgeComponentSchemaFile,
+      "utf8",
+    );
+
+    await page.getByRole("button", { name: "Open Components section" }).click();
+    await page
+      .getByRole("button", {
+        name: "Select story Operational components / Status badge tones",
       })
       .click();
 
@@ -863,56 +1001,115 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     ).toBeVisible();
     await expect(
       propertyPanel.locator("[data-component-variant-matrix-cell]"),
-    ).toHaveCount(13);
+    ).toHaveCount(2);
     await expect(
-      propertyPanel.getByLabel("Edit component property size"),
-    ).toHaveValue("md");
+      propertyPanel.getByLabel("Edit component property tone"),
+    ).toHaveValue("neutral");
     await expect(
-      propertyPanel.getByLabel("Cycle component property density"),
-    ).toHaveAttribute("title", /density/);
+      propertyPanel.getByLabel("Cycle component property tone"),
+    ).toHaveAttribute("title", /Status badge tone API/);
+    await expect(
+      page
+        .frameLocator(
+          'iframe[title="Component preview Operational components / Status badge tones"]',
+        )
+        .getByTestId("component-status-badges"),
+    ).toBeVisible();
+    const previewFrame = page.locator(
+      'iframe[title="Component preview Operational components / Status badge tones"]',
+    );
+    const schemaBadge = page
+      .frameLocator(
+        'iframe[title="Component preview Operational components / Status badge tones"]',
+      )
+      .getByTestId("component-schema-status-badge");
+    await expect.poll(() => iframeReloadGeneration(previewFrame)).toBe(0);
+    await expect(schemaBadge).toHaveClass(/bo-status-neutral/);
+    const neutralBackground = await computedBackground(schemaBadge);
 
-    await propertyPanel.getByLabel("Cycle component property size").click();
+    await propertyPanel.getByLabel("Cycle component property tone").click();
     await expect(page.getByText("dirty")).toBeVisible();
     await expect(
       propertyPanel.getByText("1 component plan(s) staged"),
     ).toBeVisible();
-
-    await propertyPanel
-      .getByRole("button", { name: "Set component state loading" })
-      .click();
     await expect(
-      propertyPanel.getByText("2 component plan(s) staged"),
-    ).toBeVisible();
-    await expect(
-      propertyPanel
-        .locator('[data-component-variant-matrix-cell*="loading"]')
-        .first(),
-    ).toContainText("missing story");
-
-    await page
-      .getByRole("button", {
-        name: "Create story for Operational components loading state",
-      })
-      .click();
-    await expect(
-      propertyPanel.getByText("3 component plan(s) staged"),
-    ).toBeVisible();
-    await expect(
-      propertyPanel
-        .locator('[data-component-variant-matrix-cell*="loading"]')
-        .first(),
-    ).toContainText("covered");
+      propertyPanel.getByLabel("Edit component property tone"),
+    ).toHaveValue("success");
+    await expect(schemaBadge).toHaveClass(/bo-status-success/);
+    await expect
+      .poll(() => computedBackground(schemaBadge))
+      .not.toBe(neutralBackground);
+    const successBackground = await computedBackground(schemaBadge);
 
     await page
       .getByRole("button", { name: "Revert component property source edits" })
       .click();
     await expect(page.getByText("dirty")).toHaveCount(0);
+    await expect(
+      propertyPanel.getByLabel("Edit component property tone"),
+    ).toHaveValue("neutral");
+    await expect(schemaBadge).toHaveClass(/bo-status-neutral/);
+    await expect
+      .poll(() => computedBackground(schemaBadge))
+      .toBe(neutralBackground);
+    expect(readFileSync(devBridgeComponentSchemaFile, "utf8")).toBe(
+      beforeComponentSchema,
+    );
 
-    await propertyPanel.getByLabel("Cycle component property size").click();
+    await propertyPanel.getByLabel("Cycle component property tone").click();
+    await expect(
+      propertyPanel.getByText("1 component plan(s) staged"),
+    ).toBeVisible();
     await page
       .getByRole("button", { name: "Save component property source edits" })
       .click();
     await expect(page.getByText("dirty")).toHaveCount(0);
+    await expect
+      .poll(() => readFileSync(devBridgeComponentSchemaFile, "utf8"))
+      .toContain("tone=success");
+    await expect.poll(() => iframeReloadGeneration(previewFrame)).toBe(1);
+    await expect(schemaBadge).toHaveClass(/bo-status-success/);
+    await expect
+      .poll(() => computedBackground(schemaBadge))
+      .toBe(successBackground);
+    const afterComponentSchema = readFileSync(
+      devBridgeComponentSchemaFile,
+      "utf8",
+    );
+    expect(afterComponentSchema).not.toBe(beforeComponentSchema);
+
+    await revertDevBridgeFiles(page, [
+      {
+        file: componentSchemaBridgeFile,
+        beforeText: beforeComponentSchema,
+        afterText: afterComponentSchema,
+      },
+    ]);
+    await expect
+      .poll(() => readFileSync(devBridgeComponentSchemaFile, "utf8"))
+      .toBe(beforeComponentSchema);
+    await page.reload();
+    await expect(
+      page.getByLabel("Component property schema and variant matrix").first(),
+    ).toBeVisible();
+    await expect(page.getByLabel("Edit component property tone")).toHaveValue(
+      "neutral",
+    );
+    await expect(
+      page
+        .frameLocator(
+          'iframe[title="Component preview Operational components / Status badge tones"]',
+        )
+        .getByTestId("component-schema-status-badge"),
+    ).toHaveClass(/bo-status-neutral/);
+    const revertedSchemaBadge = page
+      .frameLocator(
+        'iframe[title="Component preview Operational components / Status badge tones"]',
+      )
+      .getByTestId("component-schema-status-badge");
+    await expect
+      .poll(() => computedBackground(revertedSchemaBadge))
+      .toBe(neutralBackground);
   });
 
   test("comment mode stores structured review annotations for AI prompt selection", async ({

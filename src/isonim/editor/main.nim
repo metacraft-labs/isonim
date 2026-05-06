@@ -267,6 +267,7 @@ proc main() =
           newValue: "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><title>Compass</title><path d=\"M12 2l5 15-5-3-5 3 5-15z\" /></svg>",
           originDetail: "fake-agent:svgContent",
           scope: pesShared,
+          sourceScope: sskSharedClass,
           planKind: cspStructuredSchemaUpdate,
           schemaKey: "symbols.compass.svg",
           reversible: true,
