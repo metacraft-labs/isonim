@@ -14,12 +14,13 @@ import isonim/web/dom_api
 
 # Track which events have been delegated on the document.
 # Uses JS-native Set to avoid pulling std/sets (and its hash table) into the bundle.
-var delegatedEvents: HashSet[NativeString]
+# Disambiguate against std/sets.HashSet (re-exported transitively from platform).
+var delegatedEvents: platform.HashSet[NativeString]
 
 proc ensureDelegatedEvents() =
   ## Lazily initialize the set (JS Set can't be initialized at module scope as threadvar).
   if delegatedEvents.isNil:
-    delegatedEvents = newHashSet[NativeString]()
+    delegatedEvents = platform.newHashSet[NativeString]()
 
 proc jsConcatCstrings(a, b: cstring): cstring {.importcpp: "(# + #)".}
 

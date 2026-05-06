@@ -30,13 +30,24 @@ export default defineConfig({
       reuseExistingServer: true,
     },
     {
+      command: "npx serve ./hmr_fixture -l 8082 -s",
+      port: 8082,
+      reuseExistingServer: true,
+    },
+    {
+      command: "/tmp/isonim_test_server",
+      port: 8083,
+      reuseExistingServer: false,
+      env: { HMR_TRANSPORT_PORT: "8083" },
+    },
+    {
       command: "npx serve ../../build/editor -l 8090 -s",
       port: 8090,
       reuseExistingServer: true,
     },
     {
       command:
-        "bash -lc 'rm -rf dist/editor-dev-workspace && mkdir -p dist/editor-dev-workspace/apps/back-office/src/backoffice_ui dist/editor-dev-workspace/packages/metacraft-design/src/metacraft_design && cp apps/back-office/src/backoffice_ui/components.nim dist/editor-dev-workspace/apps/back-office/src/backoffice_ui/components.nim && cp packages/metacraft-design/src/metacraft_design/tokens.nim dist/editor-dev-workspace/packages/metacraft-design/src/metacraft_design/tokens.nim && METACRAFT_EDITOR_SOURCE_ROOT=\"$PWD/dist/editor-dev-workspace\" node tools/serve_editor_dev_bridge.mjs dist/back-office-editor 8092'",
+        "bash -lc 'rm -rf dist/editor-dev-workspace && mkdir -p dist/editor-dev-workspace/apps/back-office/src/backoffice_ui dist/editor-dev-workspace/apps/back-office/src/backoffice_editor dist/editor-dev-workspace/packages/metacraft-design/src/metacraft_design && cp apps/back-office/src/backoffice_ui/components.nim dist/editor-dev-workspace/apps/back-office/src/backoffice_ui/components.nim && cp apps/back-office/src/backoffice_editor/component_schema.schema dist/editor-dev-workspace/apps/back-office/src/backoffice_editor/component_schema.schema && cp apps/back-office/src/backoffice_editor/story_fixtures.schema dist/editor-dev-workspace/apps/back-office/src/backoffice_editor/story_fixtures.schema && cp packages/metacraft-design/src/metacraft_design/tokens.nim dist/editor-dev-workspace/packages/metacraft-design/src/metacraft_design/tokens.nim && METACRAFT_EDITOR_SOURCE_ROOT=\"$PWD/dist/editor-dev-workspace\" node tools/serve_editor_dev_bridge.mjs dist/back-office-editor 8092'",
       cwd: "../../../metacraft-web",
       port: 8092,
       reuseExistingServer: false,
@@ -55,6 +66,20 @@ export default defineConfig({
       testMatch: "ssr-hydration.spec.ts",
       use: {
         baseURL: "http://localhost:8081",
+      },
+    },
+    {
+      name: "hmr",
+      testMatch: "hmr.spec.ts",
+      use: {
+        baseURL: "http://localhost:8082",
+      },
+    },
+    {
+      name: "hmr-transport",
+      testMatch: "hmr_transport.spec.ts",
+      use: {
+        baseURL: "http://localhost:8083",
       },
     },
     {

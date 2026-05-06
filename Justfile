@@ -244,8 +244,31 @@ build-hydrate:
 # Build all SSR test assets
 build-ssr-test-all: build-ssr-test build-hydrate
 
+# Build the HMR fixture bundle (JS target with -d:isonimHmr).
+build-hmr-fixture:
+    mkdir -p tests/browser/hmr_fixture
+    nim js -d:isonimHmr --path:src --path:../nim-everywhere/src -o:tests/browser/hmr_fixture/main.js tests/browser/hmr_fixture/main.nim
+
+# Run the HMR Playwright spec (requires: just build-hmr-fixture).
+test-browser-hmr: build-hmr-fixture
+    cd tests/browser && npx playwright test --project=hmr
+
+# Build the SSE-transport fixture: the dev server, the "before" and
+# "after" client bundles, and the seeded main.js. The Playwright
+# project triggers a rebuild via the dev server's POST /__isonim/trigger
+# endpoint to swap before → after at runtime.
+build-hmr-transport-fixture:
+    nim c -d:isServer --path:src --path:../nim-everywhere/src --path:../nim-faststreams --path:../nim-stew -o:/tmp/isonim_test_server tests/browser/hmr_transport_fixture/server.nim
+    nim js -d:isonimHmr --path:src --path:../nim-everywhere/src -o:tests/browser/hmr_transport_fixture/before.js tests/browser/hmr_transport_fixture/app.nim
+    nim js -d:isonimHmr -d:transportFixtureAfter --path:src --path:../nim-everywhere/src -o:tests/browser/hmr_transport_fixture/after.js tests/browser/hmr_transport_fixture/app.nim
+    cp tests/browser/hmr_transport_fixture/before.js tests/browser/hmr_transport_fixture/main.js
+
+# Run the SSE-transport Playwright spec.
+test-browser-hmr-transport: build-hmr-transport-fixture
+    cd tests/browser && npx playwright test --project=hmr-transport
+
 # Run Playwright browser tests (requires: just demo-build && cd tests/browser && npm install)
-test-browser: test-browser-demo test-browser-ssr
+test-browser: test-browser-demo test-browser-ssr test-browser-hmr test-browser-hmr-transport
 
 # Run Playwright demo app tests only
 test-browser-demo:

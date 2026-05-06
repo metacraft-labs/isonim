@@ -42,12 +42,29 @@ proc tmpl*(html: cstring): proc(): Node =
 proc render*(code: proc(): Node, element: Element): proc() =
   ## Creates a reactive root and inserts the component tree into the target element.
   ## Returns a dispose function that cleans up the reactive tree and clears the element.
+  ##
+  ## The root component is routed through `insert` so the insertion site is a
+  ## reactive seam. This lets HMR (`renderHot` under `-d:isonimHmr`) swap the
+  ## root component in place via reconciliation in `insertExpression`, instead
+  ## of disposing and re-mounting the reactive root.
   var disposer: proc()
   createRoot proc(dispose: proc()) =
     disposer = dispose
-    let res = code()
-    if not res.isNodeNil:
-      element.Node.appendChild(res)
+    # Route through insertExpression with a function accessor so the
+    # insertion site participates in dom-expressions reconciliation. When
+    # `accessor` returns a Node, insertExpression installs it inside a
+    # createRenderEffect and the effect tracks no signals (untrack), so
+    # the body runs exactly once. When the accessor returns a function
+    # (e.g., the HMR proxy under `-d:isonimHmr`), insertExpression unwraps
+    # and reactively reconciles in place.
+    let accessor = proc(): Node = untrack(proc(): Node = code())
+    # Nim's type system rejects a direct cast from a closure to JsRoot, but
+    # at runtime a Nim closure compiled to JS *is* a JS function — exactly
+    # what insertExpression's `typeof === 'function'` branch wants. Use an
+    # emit to bypass the type check.
+    var jsAccessor: JsRoot
+    {.emit: [jsAccessor, " = ", accessor, ";"].}
+    discard insertExpression(element.Node, jsAccessor, nil, nil)
   return proc() =
     if disposer != nil:
       disposer()
@@ -151,7 +168,14 @@ proc insertExpression*(parent: Node, value: JsRoot, current: JsRoot,
     marker: Node = nil): JsRoot =
   ## The core insertion logic handling strings, nodes, arrays, functions.
   ## Ported from dom-expressions client.js insertExpression.
-  if cast[pointer](value) == cast[pointer](current):
+  # JS-level reference equality short-circuit. `cast[pointer]` followed by
+  # `==` is unreliable on the Nim JS backend for closure/tuple-shaped
+  # JsRoot values: nim emits structural per-field comparison, which both
+  # produces malformed JS for closures and misses the semantic meaning.
+  # `===` is the right operator here regardless.
+  var ptrEq: bool
+  {.emit: [ptrEq, " = (", value, " === ", current, ");"].}
+  if ptrEq:
     return current
 
   var t: cstring
