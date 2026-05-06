@@ -14,25 +14,34 @@ const devBridgeComponentSchemaFile = resolve(
 const componentSchemaBridgeFile =
   "apps/back-office/src/backoffice_editor/component_schema.schema";
 
+async function fillInspectorInputValue(page, input, value: string) {
+  await input.fill("");
+  await input.fill(value);
+  await expect(input).toHaveValue(value);
+  const focusTarget = page.getByRole("button", {
+    name: "Reset right panel width",
+  });
+  await focusTarget.focus();
+  await expect(focusTarget).toBeFocused();
+  await expect(input).toHaveValue(value);
+  await expect(page.getByText("Unsaved source edit")).toBeVisible();
+}
+
 async function setInspectorProperty(
   page,
   tab: string,
   property: string,
   value: string,
 ) {
-  await page.getByRole("tab", { name: `Show ${tab} edit controls` }).click();
+  const tabButton = page.getByRole("tab", {
+    name: `Show ${tab} edit controls`,
+  });
+  await tabButton.click();
   const input = page
     .getByRole("textbox", { name: `Edit inspector property ${property}` })
     .first();
   await expect(input).toBeVisible();
-  await input.evaluate((node: HTMLInputElement, nextValue) => {
-    node.value = String(nextValue);
-    node.dispatchEvent(new Event("input", { bubbles: true }));
-    node.dispatchEvent(new Event("change", { bubbles: true }));
-    node.dispatchEvent(new Event("blur", { bubbles: true }));
-  }, value);
-  await expect(input).toHaveValue(value);
-  await expect(page.getByText("Unsaved source edit")).toBeVisible();
+  await fillInspectorInputValue(page, input, value);
 }
 
 async function revertDevBridgeFiles(page, files) {
@@ -878,6 +887,124 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
       .toBe("20px");
     await expect(page.getByText("Unsaved source edit")).toHaveCount(0);
+  });
+
+  test("e2e_metacraft_shared_scope_save_reload_verify_and_revert", async ({
+    page,
+  }) => {
+    await page.goto("/?writeBridge=1");
+    await expect(page.locator(".editor-statusbar")).toContainText(
+      "write writable",
+    );
+    const beforeText = readFileSync(devBridgeSourceFile, "utf8");
+
+    await page.getByRole("button", { name: "Open Components section" }).click();
+    await page
+      .getByRole("button", {
+        name: "Select story Operational components / Topbar",
+      })
+      .click();
+    await page
+      .getByRole("button", { name: "Open selected component in edit mode" })
+      .click();
+
+    const editFrame = page.frameLocator(
+      'iframe[title="Editable component preview"]',
+    );
+    const topbar = editFrame.getByTestId("component-topbar");
+    await topbar
+      .locator("h1.bo-title")
+      .click({ force: true, modifiers: ["Shift"] });
+    await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
+
+    const sharedScopeSpaceTab = page.getByRole("tab", {
+      name: "Show Space edit controls",
+    });
+    await sharedScopeSpaceTab.click();
+    await expect(
+      page.locator('[data-design-system-impact="true"]'),
+    ).toContainText("Source impact");
+    const paddingInput = page.getByRole("textbox", {
+      name: "Edit inspector property padding",
+      exact: true,
+    });
+    await fillInspectorInputValue(page, paddingInput, "28px");
+    await page
+      .getByRole("group", {
+        name: "Choose source scope for padding",
+        exact: true,
+      })
+      .click();
+    await page
+      .getByRole("button", {
+        name: "Apply Shared class source scope for padding",
+        exact: true,
+      })
+      .click();
+    await expect(page.getByText("Unsaved source edit")).toBeVisible();
+    await expect(
+      page.locator('[data-shared-design-commit-preview="padding"]'),
+    ).toContainText("Affected components");
+
+    await page
+      .getByRole("button", { name: "Save inspector source edits" })
+      .click();
+    await expect(page.getByText("Unsaved source edit")).toHaveCount(0);
+    await expect
+      .poll(() => readFileSync(devBridgeSourceFile, "utf8"))
+      .toContain("padding=28px");
+    const afterText = readFileSync(devBridgeSourceFile, "utf8");
+    expect(afterText).not.toBe(beforeText);
+
+    await page.reload();
+    await page.getByRole("button", { name: "Open Components section" }).click();
+    await page
+      .getByRole("button", {
+        name: "Select story Operational components / Topbar",
+      })
+      .click();
+    const reloadedTopbar = page
+      .frameLocator(
+        'iframe[title="Component preview Operational components / Topbar"]',
+      )
+      .getByTestId("component-topbar");
+    await expect
+      .poll(() =>
+        reloadedTopbar.evaluate((node) => getComputedStyle(node).paddingTop),
+      )
+      .toBe("28px");
+    await expect
+      .poll(() => readFileSync(devBridgeSourceFile, "utf8"))
+      .toBe(afterText);
+
+    await revertDevBridgeFiles(page, [
+      {
+        file: "apps/back-office/src/backoffice_ui/components.nim",
+        beforeText,
+        afterText,
+      },
+    ]);
+    await expect
+      .poll(() => readFileSync(devBridgeSourceFile, "utf8"))
+      .toBe(beforeText);
+
+    await page.reload();
+    await page.getByRole("button", { name: "Open Components section" }).click();
+    await page
+      .getByRole("button", {
+        name: "Select story Operational components / Topbar",
+      })
+      .click();
+    const revertedTopbar = page
+      .frameLocator(
+        'iframe[title="Component preview Operational components / Topbar"]',
+      )
+      .getByTestId("component-topbar");
+    await expect
+      .poll(() =>
+        revertedTopbar.evaluate((node) => getComputedStyle(node).paddingTop),
+      )
+      .not.toBe("28px");
   });
 
   test("preserves_history_selection_and_inspector_focus_after_write_bridge_rebuild", async ({

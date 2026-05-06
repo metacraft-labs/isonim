@@ -419,6 +419,8 @@ proc editorRouteUrl(vm: EditorVM): string =
     "section=" & encodeParam(inspectorSectionSlug(
         vm.inspector.activeSection.val))
   ]
+  if routeParam("writeBridge") == "1":
+    parts.add "writeBridge=1"
 
   let story = vm.selectedStory.val
   if story.group.len > 0 and story.name.len > 0:

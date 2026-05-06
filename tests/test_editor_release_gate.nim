@@ -139,6 +139,21 @@ const
     "transition-duration",
     "aspect-ratio"
   ]
+  RequiredM55EvidenceIds = [
+    "source_scope_model",
+    "compact_inspector",
+    "shared_design_system_editors",
+    "component_api_editors",
+    "multi_scope_save_revert"
+  ]
+  RequiredM55VisualBaselines = [
+    "compact_inspector",
+    "scope_selector",
+    "impact_panel",
+    "component_api_editor",
+    "token_editor",
+    "shared_edit_review"
+  ]
 
 proc stringItems(node: JsonNode): seq[string] =
   for item in node.getElems:
@@ -262,6 +277,27 @@ proc checkImplementationReferences(row: JsonNode) =
   check row["implementationReferences"].getElems.len > 0
   for item in row["implementationReferences"].getElems:
     check fileExists(item.getStr)
+
+proc checkEvidenceArray(entry: JsonNode; key: string) =
+  check entry.hasKey(key)
+  check entry[key].getElems.len > 0
+  for item in entry[key].getElems:
+    checkEvidenceReference(item.getStr)
+
+func baselineToken(id: string): string =
+  id.replace("_", "-")
+
+proc checkM55VisualBaseline(baseline: JsonNode) =
+  check baseline["status"].getStr == "passing"
+  let snapshotFile = baseline["snapshotFile"].getStr
+  check snapshotFile.endsWith(".png")
+  check snapshotFile.contains("m55-" & baselineToken(baseline["id"].getStr))
+  check fileExists(snapshotFile)
+  check baseline.hasKey("assertions")
+  check baseline["assertions"].getElems.len >= 2
+  for assertion in baseline["assertions"].getElems:
+    check assertion.getStr.len > 20
+  checkEvidenceArray(baseline, "evidence")
 
 proc checkFigmaGradeRequirements(row: JsonNode) =
   let status = row["status"].getStr
@@ -530,6 +566,82 @@ suite "IsoNim editor maturity gate":
     check metacraftJust.contains("run-back-office-editor-bridge-prod ")
     check metacraftJust.contains("run-back-office-editor-test-matrix:")
 
+  test "m55_design_system_editing_gate_has_individual_evidence":
+    let doc = matrix()
+    check doc.hasKey("m55DesignSystemEditingGate")
+    let gate = doc["m55DesignSystemEditingGate"]
+    check gate["milestone"].getStr == "M55"
+    check gate["releaseLabel"].getStr ==
+      "end-to-end design-system editing quality gate"
+    check gate["figmaWebflowGradeClaim"].getBool == false
+    check gate["overclaimPolicy"]["requiresVisualEvidence"].getBool
+    check gate["overclaimPolicy"]["requiresSourceWriteEvidence"].getBool
+    check gate["overclaimPolicy"]["requiresConsumerEvidence"].getBool
+
+    var byId: Table[string, JsonNode]
+    for entry in gate["featureEvidence"].getElems:
+      byId[entry["id"].getStr] = entry
+      check entry["status"].getStr in [
+        "functional",
+        "validated_in_metacraft"
+      ]
+      check entry["claimLevel"].getStr == "functional"
+      check not entry["figmaWebflowGradeClaim"].getBool
+      check entry["limitations"].getStr.len > 50
+      check entry["limitations"].getStr.contains("not")
+      for key in [
+        "headlessEvidence",
+        "browserEvidence",
+        "sourceWriteEvidence",
+        "consumerEvidence",
+        "visualEvidence"
+      ]:
+        checkEvidenceArray(entry, key)
+
+    for featureId in RequiredM55EvidenceIds:
+      check byId.hasKey(featureId)
+
+    var visualById: Table[string, JsonNode]
+    var seenVisualPaths: Table[string, bool]
+    var visualBytesById: Table[string, string]
+    for baseline in gate["visualBaselines"].getElems:
+      let visualId = baseline["id"].getStr
+      let snapshotFile = baseline["snapshotFile"].getStr
+      visualById[visualId] = baseline
+      checkM55VisualBaseline(baseline)
+      check not seenVisualPaths.hasKey(snapshotFile)
+      seenVisualPaths[snapshotFile] = true
+      visualBytesById[visualId] = readFile(snapshotFile)
+
+    for visualId in RequiredM55VisualBaselines:
+      check visualById.hasKey(visualId)
+
+    for leftId, leftBytes in visualBytesById:
+      check leftBytes.len > 0
+      for rightId, rightBytes in visualBytesById:
+        if leftId < rightId:
+          check leftBytes != rightBytes
+
+  test "m55_gate_rejects_figma_webflow_overclaim_without_release_evidence":
+    let doc = matrix()
+    let gate = doc["m55DesignSystemEditingGate"]
+    check gate["overclaimPolicy"]["blockedTerms"].getElems.len >= 2
+
+    for entry in gate["featureEvidence"].getElems:
+      let claimLevel = entry["claimLevel"].getStr
+      if entry["figmaWebflowGradeClaim"].getBool or
+          claimLevel in ["figma_grade", "webflow_grade",
+            "validated_in_metacraft"]:
+        check entry["visualEvidence"].getElems.len > 0
+        check entry["sourceWriteEvidence"].getElems.len > 0
+        check entry["consumerEvidence"].getElems.len > 0
+        check entry["browserEvidence"].getElems.len > 0
+      else:
+        check claimLevel == "functional"
+        check entry["limitations"].getStr.contains("Figma") or
+          entry["limitations"].getStr.contains("Webflow") or
+          entry["limitations"].getStr.contains("parity")
+
   test "no_weak_editor_quality_tests":
     let doc = matrix()
     var scanned: Table[string, bool]
@@ -556,6 +668,12 @@ suite "IsoNim editor maturity gate":
       "Add a property editor",
       "Add a direct manipulation command",
       "Add an AI proposal scope",
+      "New Consumer Project Checklist",
+      "Required schema files",
+      "Required source maps",
+      "Required design-token mappings",
+      "Required tests",
+      "compact inspector, scope selector, impact panel",
       "run-back-office-editor-dev",
       "run-back-office-editor-test-matrix"
     ]:

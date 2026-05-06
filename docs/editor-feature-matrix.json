@@ -1634,6 +1634,245 @@
       ]
     }
   ],
+  "m55DesignSystemEditingGate": {
+    "milestone": "M55",
+    "releaseLabel": "end-to-end design-system editing quality gate",
+    "figmaWebflowGradeClaim": false,
+    "overclaimPolicy": {
+      "requiresBrowserEvidence": true,
+      "requiresVisualEvidence": true,
+      "requiresSourceWriteEvidence": true,
+      "requiresConsumerEvidence": true,
+      "blockedTerms": [
+        "Figma-grade",
+        "Webflow-grade",
+        "full design-tool parity"
+      ],
+      "notes": "M55 is a release gate for the new design-system editing direction. It requires visual, source-write, and consumer evidence before any covered workflow can be described as Figma/Webflow grade."
+    },
+    "featureEvidence": [
+      {
+        "id": "source_scope_model",
+        "title": "Source Scope Model",
+        "status": "validated_in_metacraft",
+        "claimLevel": "functional",
+        "figmaWebflowGradeClaim": false,
+        "headlessEvidence": [
+          "tests/test_editor_viewmodels.nim:m50_source_scope_choices_cover_property_ownership_contract",
+          "tests/test_editor_viewmodels.nim:m50_fallback_shared_count_sets_non_none_scope_risk",
+          "../metacraft-web/apps/back-office/tests/test_backoffice_editor_workspace.nim:project owned source scopes do not leak framework ownership"
+        ],
+        "browserEvidence": [
+          "tests/browser/specs/editor-example.spec.ts:m52_shared_design_editor_preview_save_and_revert",
+          "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_metacraft_shared_scope_save_reload_verify_and_revert"
+        ],
+        "sourceWriteEvidence": [
+          "tests/browser/specs/editor-example.spec.ts:m52_shared_design_editor_preview_save_and_revert",
+          "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_metacraft_shared_scope_save_reload_verify_and_revert"
+        ],
+        "consumerEvidence": [
+          "../metacraft-web/apps/back-office/tests/test_backoffice_editor_workspace.nim:project owned source scopes do not leak framework ownership",
+          "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_metacraft_shared_scope_save_reload_verify_and_revert"
+        ],
+        "visualEvidence": [
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes"
+        ],
+        "limitations": "Functional source ownership is evidenced in the example and metacraft-web. This does not claim full Figma/Webflow source-scope ergonomics for every possible consumer schema, migration, or class/token conflict."
+      },
+      {
+        "id": "compact_inspector",
+        "title": "Compact Inspector",
+        "status": "functional",
+        "claimLevel": "functional",
+        "figmaWebflowGradeClaim": false,
+        "headlessEvidence": [
+          "tests/test_editor_shell_views.nim:component_edit_inspector_explains_and_applies_design_system_scope",
+          "tests/test_editor_viewmodels.nim:m50_source_scope_choices_cover_property_ownership_contract"
+        ],
+        "browserEvidence": [
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes",
+          "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_inspector_sections_are_keyboard_and_pointer_operable"
+        ],
+        "sourceWriteEvidence": [
+          "tests/browser/specs/editor-example.spec.ts:m52_shared_design_editor_preview_save_and_revert",
+          "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_metacraft_editor_writes_real_design_schema_files"
+        ],
+        "consumerEvidence": [
+          "tests/browser/specs/metacraft-web-editor.spec.ts:edits real metacraft component DOM through the inspector",
+          "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_inspector_sections_are_keyboard_and_pointer_operable"
+        ],
+        "visualEvidence": [
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes"
+        ],
+        "limitations": "The compact inspector is visually baselined and source-write exercised through representative rows. It is not a blanket Figma/Webflow-grade claim for every inspector category, popover, mobile density, or source conflict state."
+      },
+      {
+        "id": "shared_design_system_editors",
+        "title": "Shared Design-System Editors",
+        "status": "validated_in_metacraft",
+        "claimLevel": "functional",
+        "figmaWebflowGradeClaim": false,
+        "headlessEvidence": [
+          "tests/test_editor_viewmodels.nim:m52_shared_design_property_editors_plan_preview_undo_save_and_revert",
+          "tests/test_editor_viewmodels.nim:m54_source_edit_journal_covers_local_component_shared_token_and_ai_scopes"
+        ],
+        "browserEvidence": [
+          "tests/browser/specs/editor-example.spec.ts:m52_shared_design_editor_preview_save_and_revert",
+          "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_metacraft_shared_scope_save_reload_verify_and_revert"
+        ],
+        "sourceWriteEvidence": [
+          "tests/browser/specs/editor-example.spec.ts:m52_shared_design_editor_preview_save_and_revert",
+          "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_metacraft_shared_scope_save_reload_verify_and_revert"
+        ],
+        "consumerEvidence": [
+          "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_style_manager_scope_choices_update_real_preview",
+          "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_metacraft_shared_scope_save_reload_verify_and_revert"
+        ],
+        "visualEvidence": [
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes"
+        ],
+        "limitations": "Representative shared color/spacing/token/class flows have browser, visual, source-write, and metacraft-web evidence. This does not claim exhaustive Figma/Webflow parity for every token category, dependency graph, or shared-class migration."
+      },
+      {
+        "id": "component_api_editors",
+        "title": "Component API Editors",
+        "status": "validated_in_metacraft",
+        "claimLevel": "functional",
+        "figmaWebflowGradeClaim": false,
+        "headlessEvidence": [
+          "tests/test_editor_viewmodels.nim:m53_component_api_variant_fixture_and_css_surfaces_are_explicit",
+          "../metacraft-web/apps/back-office/tests/test_backoffice_editor_workspace.nim:metacraft_component_api_fixture_variant_and_state_edits_use_project_schema"
+        ],
+        "browserEvidence": [
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes",
+          "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_component_variant_matrix_state_controls_write_real_schema_files"
+        ],
+        "sourceWriteEvidence": [
+          "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_component_variant_matrix_state_controls_write_real_schema_files",
+          "../metacraft-web/apps/back-office/tests/test_backoffice_editor_bridge_client.nim:back-office bridge client batches multi-file editor saves"
+        ],
+        "consumerEvidence": [
+          "../metacraft-web/apps/back-office/tests/test_backoffice_editor_workspace.nim:metacraft_component_api_fixture_variant_and_state_edits_use_project_schema",
+          "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_component_variant_matrix_state_controls_write_real_schema_files"
+        ],
+        "visualEvidence": [
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes"
+        ],
+        "limitations": "Component API editing has schema-write and visual evidence for representative example and metacraft-web surfaces. It is not complete Figma/Webflow-grade component authoring for every component contract, slot shape, missing story, or responsive state."
+      },
+      {
+        "id": "multi_scope_save_revert",
+        "title": "Multi-Scope Save and Revert",
+        "status": "validated_in_metacraft",
+        "claimLevel": "functional",
+        "figmaWebflowGradeClaim": false,
+        "headlessEvidence": [
+          "tests/test_editor_viewmodels.nim:m54_source_edit_journal_covers_local_component_shared_token_and_ai_scopes",
+          "tests/test_editor_viewmodels.nim:m54_conflict_retry_and_stale_source_diagnostics_keep_journal_dirty",
+          "../metacraft-web/apps/back-office/tests/test_editor_dev_bridge.mjs:editor dev bridge handles dry-run, apply, save, revert, conflicts, and revision watching"
+        ],
+        "browserEvidence": [
+          "tests/browser/specs/editor-example.spec.ts:m52_shared_design_editor_preview_save_and_revert",
+          "tests/browser/specs/metacraft-web-editor.spec.ts:preserves_history_selection_and_inspector_focus_after_write_bridge_rebuild",
+          "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_metacraft_shared_scope_save_reload_verify_and_revert"
+        ],
+        "sourceWriteEvidence": [
+          "../metacraft-web/apps/back-office/tests/test_editor_dev_bridge.mjs:editor dev bridge handles dry-run, apply, save, revert, conflicts, and revision watching",
+          "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_metacraft_shared_scope_save_reload_verify_and_revert",
+          "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_component_variant_matrix_state_controls_write_real_schema_files"
+        ],
+        "consumerEvidence": [
+          "tests/browser/specs/metacraft-web-editor.spec.ts:preserves_history_selection_and_inspector_focus_after_write_bridge_rebuild",
+          "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_metacraft_shared_scope_save_reload_verify_and_revert",
+          "../metacraft-web/apps/back-office/tests/test_backoffice_editor_bridge_client.nim:back-office bridge client batches multi-file editor saves"
+        ],
+        "visualEvidence": [
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes"
+        ],
+        "limitations": "Multi-scope save/revert is release-gated for promoted local, shared, token, component API, and bridge-backed paths. It does not claim remote collaboration, every consumer adapter, or complete Figma/Webflow-grade conflict-resolution UI."
+      }
+    ],
+    "visualBaselines": [
+      {
+        "id": "compact_inspector",
+        "status": "passing",
+        "snapshotFile": "tests/browser/specs/editor-example.spec.ts-snapshots/m55-compact-inspector-editor-example-linux.png",
+        "assertions": [
+          "Token manager is visible",
+          "Style class cascade token manager is visible",
+          "Element tree selected state is visible"
+        ],
+        "evidence": [
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes"
+        ]
+      },
+      {
+        "id": "scope_selector",
+        "status": "passing",
+        "snapshotFile": "tests/browser/specs/editor-example.spec.ts-snapshots/m55-scope-selector-editor-example-linux.png",
+        "assertions": [
+          "Space edit controls are selected",
+          "Padding source scope chooser is open",
+          "Shared class source scope option is visible"
+        ],
+        "evidence": [
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes"
+        ]
+      },
+      {
+        "id": "impact_panel",
+        "status": "passing",
+        "snapshotFile": "tests/browser/specs/editor-example.spec.ts-snapshots/m55-impact-panel-editor-example-linux.png",
+        "assertions": [
+          "Shared design-system editors include padding | Spacing",
+          "Shared design editor count is nonzero",
+          "Impact panel includes DestinationCard before the 24px edit is staged"
+        ],
+        "evidence": [
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes"
+        ]
+      },
+      {
+        "id": "component_api_editor",
+        "status": "passing",
+        "snapshotFile": "tests/browser/specs/editor-example.spec.ts-snapshots/m55-component-api-editor-editor-example-linux.png",
+        "assertions": [
+          "DestinationCard component detail is open",
+          "Component variant matrix is visible",
+          "Component API editor state is captured before vector mode"
+        ],
+        "evidence": [
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes"
+        ]
+      },
+      {
+        "id": "token_editor",
+        "status": "passing",
+        "snapshotFile": "tests/browser/specs/editor-example.spec.ts-snapshots/m55-token-editor-editor-example-linux.png",
+        "assertions": [
+          "Foundations view is open",
+          "Color foundation category is selected",
+          "Foundation token value editor is visible for color.blue.600"
+        ],
+        "evidence": [
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes"
+        ]
+      },
+      {
+        "id": "shared_edit_review",
+        "status": "passing",
+        "snapshotFile": "tests/browser/specs/editor-example.spec.ts-snapshots/m55-shared-edit-review-editor-example-linux.png",
+        "assertions": [
+          "Unsaved source edit is visible",
+          "Shared commit preview count increases after staging",
+          "Padding commit preview shows + padding: 24px and affected DestinationCard"
+        ],
+        "evidence": [
+          "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes"
+        ]
+      }
+    ]
+  },
   "longTailPropertyEvidence": [
     {
       "family": "typography",

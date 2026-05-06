@@ -100,6 +100,58 @@ the component detail view. The editor may inject generic selection metadata and
 event handlers into that iframe, but project-specific source files, line
 numbers, schema keys, and patch behavior belong to the consumer workspace.
 
+## New Consumer Project Checklist
+
+A new consumer project should not mark design-system editing as release-ready
+until it has all of the following project-owned inputs and tests.
+
+Required schema files:
+
+- A design-system schema file or generated schema module that lists editable
+  tokens, shared classes, component API fields, fixtures, states, and source
+  ownership keys.
+- Component API and fixture schema files for every component that exposes
+  semantic props, variants, slot/content fields, or state controls.
+- A bridge allowlist that names the files the local editor may read, dry-run,
+  apply, save, or revert.
+
+Required source maps:
+
+- Stable `data-isonim-*` element identifiers in every preview document.
+- Source-map entries from selected DOM properties to file paths, line/range or
+  structured-field ownership, source scope kind, schema key, token name, and
+  reload behavior.
+- Usage and impact metadata for shared edits, including affected components,
+  stories, pages, accessibility diagnostics, and rebuild or full-reload needs.
+
+Required design-token mappings:
+
+- Token category metadata for color, semantic alias, typography, spacing,
+  radius, shadow, motion, and breakpoint tokens that the project wants to edit.
+- Mappings from CSS properties and component API fields to token names, modes,
+  aliases, fallback values, validation rules, contrast checks, and source plans.
+- Explicit limitations for token categories that are read-only, browser-limited,
+  consumer-unvalidated, or unsupported.
+
+Required tests:
+
+- Headless ViewModel tests that resolve source scopes, component API fields,
+  token mappings, source plans, dirty state, undo/redo, save, revert, conflict,
+  and stale-source diagnostics.
+- Browser tests for any workflow that depends on pointer, focus, iframe, canvas,
+  keyboard, layout measurement, preview reload, or visual state.
+- Consumer-owned write-bridge tests for dry-run, apply, save, revert, rollback,
+  stale revisions, traversal denial, symlink denial, oversized writes, and
+  concurrent transaction rejection.
+- Visual baselines for compact inspector, scope selector, impact panel,
+  component API editor, token editor, and shared edit review states before
+  claiming Figma/Webflow-grade behavior.
+
+M55 keeps the new design direction at a functional release gate. A consumer can
+say a workflow is covered only when browser, source-write, consumer, and visual
+evidence exist for that workflow; otherwise the matrix must keep the limitation
+explicit.
+
 ### Add a design-system schema
 
 Define `WorkspaceEditableSchemaEntry` values in the consumer workspace adapter,

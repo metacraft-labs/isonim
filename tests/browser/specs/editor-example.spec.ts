@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Locator, type Page } from "@playwright/test";
 
 const desktop = { width: 1440, height: 900 };
 const laptop = { width: 1280, height: 800 };
@@ -20,6 +20,26 @@ async function expectStableVisualSnapshot(page, name: string) {
   });
   await expect(page).toHaveScreenshot(name, {
     fullPage: true,
+    maxDiffPixelRatio: 0.03,
+  });
+}
+
+async function expectStableElementSnapshot(
+  page: Page,
+  locator: Locator,
+  name: string,
+) {
+  await page.addStyleTag({
+    content: `
+      *, *::before, *::after {
+        animation-duration: 0s !important;
+        animation-delay: 0s !important;
+        transition-duration: 0s !important;
+        caret-color: transparent !important;
+      }
+    `,
+  });
+  await expect(locator).toHaveScreenshot(name, {
     maxDiffPixelRatio: 0.03,
   });
 }
@@ -1438,10 +1458,99 @@ test.describe("IsoNim packaged editor example", () => {
       page.getByLabel(/Style class cascade token manager/),
     ).toBeVisible();
     await expect(page.getByLabel(/Element tree selected/)).toBeVisible();
+    await expectStableVisualSnapshot(page, "m55-compact-inspector.png");
     await expectStableVisualSnapshot(
       page,
       "m43-edit-inspector-token-style-layers.png",
     );
+
+    await page.getByRole("tab", { name: "Show Space edit controls" }).click();
+    await page
+      .getByRole("group", {
+        name: "Choose source scope for padding",
+        exact: true,
+      })
+      .click();
+    await expect(
+      page.getByRole("button", {
+        name: "Apply Shared class source scope for padding",
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expectStableVisualSnapshot(page, "m55-scope-selector.png");
+    await page.keyboard.press("Escape");
+
+    const impact = page.locator('[data-design-system-impact="true"]');
+    await expect(impact).toHaveAttribute(
+      "data-shared-design-editor-count",
+      /[1-9]/,
+    );
+    await expect(page.getByLabel("Shared design-system editors")).toContainText(
+      "padding | Spacing",
+    );
+    await expect(impact).toContainText("DestinationCard");
+    await expect(impact).not.toContainText("+ padding: 24px");
+    const initialCommitPreviewCount = Number(
+      (await impact.getAttribute("data-shared-design-commit-preview-count")) ??
+        "0",
+    );
+    await expectStableElementSnapshot(page, impact, "m55-impact-panel.png");
+
+    const paddingInput = page
+      .getByRole("textbox", {
+        name: "Edit inspector property padding",
+        exact: true,
+      })
+      .first();
+    await expect(paddingInput).toBeVisible();
+    await paddingInput.fill("");
+    await paddingInput.fill("24px");
+    await paddingInput.blur();
+    await page
+      .getByRole("group", {
+        name: "Choose source scope for padding",
+        exact: true,
+      })
+      .click();
+    await page
+      .getByRole("button", {
+        name: "Apply Shared class source scope for padding",
+        exact: true,
+      })
+      .click();
+    await expect(page.getByText("Unsaved source edit")).toBeVisible();
+    await expect
+      .poll(async () => (await previewStyle(page))?.padding)
+      .toBe("24px");
+    await expect(
+      page.locator('[data-design-system-impact="true"]'),
+    ).toContainText("DestinationCard");
+    await expect
+      .poll(async () =>
+        Number(
+          (await page
+            .locator('[data-design-system-impact="true"]')
+            .getAttribute("data-shared-design-commit-preview-count")) ?? "0",
+        ),
+      )
+      .toBeGreaterThan(initialCommitPreviewCount);
+    const sharedReview = page.locator('[data-design-system-impact="true"]');
+    await expect(sharedReview).toBeVisible();
+    await expect(sharedReview).toContainText("padding | Shared class");
+    await expect(sharedReview).toContainText("+ padding: 24px");
+    await expect(sharedReview).toContainText(
+      "Affected components: DestinationCard",
+    );
+    await expect(sharedReview).toContainText("live preview: selected element");
+    await expect(sharedReview).toContainText("Regeneration: required");
+    await expectStableElementSnapshot(
+      page,
+      sharedReview,
+      "m55-shared-edit-review.png",
+    );
+    await page
+      .getByRole("button", { name: "Revert inspector source edits" })
+      .click();
 
     await page.getByRole("button", { name: "Narrow right panel" }).click();
     await expect(page.locator(".editor-manual-inspector")).toHaveAttribute(
@@ -1472,7 +1581,20 @@ test.describe("IsoNim packaged editor example", () => {
     await expectStableVisualSnapshot(page, "m43-ai-mode-proposals.png");
 
     await openDestinationComponentDetail(page);
+    await expectStableVisualSnapshot(page, "m55-component-api-editor.png");
     await expectStableVisualSnapshot(page, "m43-component-variant-matrix.png");
+
+    await page.goto("/?view=foundations#foundations");
+    await page
+      .getByRole("button", { name: "Select foundation category Color" })
+      .click();
+    await page
+      .getByRole("button", { name: "Select foundation token color.blue.600" })
+      .click();
+    await expect(
+      page.getByRole("textbox", { name: "Foundation token value" }),
+    ).toBeVisible();
+    await expectStableVisualSnapshot(page, "m55-token-editor.png");
 
     await page.goto("/?view=vector#vector-editor");
     await expect(page.locator('[data-vector-adapter="fabric"]')).toBeVisible();
