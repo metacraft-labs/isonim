@@ -118,8 +118,11 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
     of asReady: "Connected"
     of asError: "Error"
   let connectionLabel = vm.chat.connectionState.val
+  # Idle uses textSecondary (not textDim) so the connection-status dot reads
+  # as an actual indicator, not body text. Loading/ready/error keep their
+  # semantic colours.
   let statusColor = case agentState
-    of asIdle: textDim
+    of asIdle: textSecondary
     of asLoading: gold
     of asReady: green
     of asError: gold
@@ -238,9 +241,9 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   # When messages exist we cap the area and scroll internally.
   let messagesArea = ui(r):
     tdiv(
-      max_height = "360px",
+      max_height = "560px",
       overflow_y = "auto",
-      padding = "12px",
+      padding = "12px 12px 8px 12px",
       display = "flex",
       flex_direction = "column",
       gap = "10px")
@@ -263,6 +266,62 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
         span(font_size = "11px", line_height = "1.5", color = textDim):
           text "Manual Edit mode opens the source-backed inspector in this same sidebar space."
     r.appendChild(messagesArea, empty)
+
+    # Suggested prompts: keep the AI side-panel populated even when there
+    # are no messages yet, so the pane doesn't read as 70% dead space at
+    # tall viewports. These are illustrative starting points; they fill the
+    # visual gap between the intro card and the review-loop sections.
+    let suggestionsHeading = ui(r):
+      tdiv(
+        display = "flex",
+        align_items = "center",
+        justify_content = "space-between",
+        margin_top = "4px"):
+        span(
+          font_size = "10px",
+          font_weight = "700",
+          color = textSecondary,
+          text_transform = "uppercase",
+          letter_spacing = "0.5px"):
+          text "Suggested prompts"
+        span(font_size = "10px", color = textDim):
+          text "tap to insert"
+    r.appendChild(messagesArea, suggestionsHeading)
+
+    let suggestions = [
+      "Audit the selected component for accessibility regressions",
+      "Suggest a calmer accent token for status badges",
+      "Trace where this padding value is shared across the design system",
+      "Generate a missing variant story for this component"
+    ]
+    for prompt in suggestions:
+      let promptText = $prompt
+      let chip = ui(r):
+        tdiv(
+          `role` = "button",
+          tabindex = "0",
+          `aria-label` = "Insert suggested prompt",
+          display = "flex",
+          align_items = "center",
+          gap = "8px",
+          padding = "8px 10px",
+          border = "1px solid " & borderFaint,
+          border_radius = "6px",
+          background_color = bgInput,
+          cursor = "pointer",
+          transition = "border-color 0.12s, background-color 0.12s"):
+          span(font_size = "11px", color = textDim):
+            text "\xE2\x9C\xA8"
+          span(font_size = "11px", line_height = "1.4",
+                color = textPrimary,
+                white_space = "normal",
+                overflow = "hidden"):
+            text promptText
+      r.addEventListener(chip, "click", proc() =
+        vm.chat.inputText.val = promptText)
+      r.addEventListener(chip, "keydown", proc() =
+        vm.chat.inputText.val = promptText)
+      r.appendChild(messagesArea, chip)
 
   for msg in messages:
     let isUser = msg.kind == cmkUser
@@ -305,12 +364,32 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
 
   let reviewLoopArea = ui(r):
     tdiv(
-      margin_top = "auto",
-      padding = "10px 12px",
+      padding = "8px 12px",
       border_top = "1px solid " & borderFaint,
       display = "flex",
       flex_direction = "column",
       gap = "8px")
+  # Spacer flex item that absorbs remaining vertical space, pushing the
+  # transcript + composer to the bottom while the empty-state card and
+  # review-loop sections cluster at the top of the pane. A muted centered
+  # "ready" hint makes the negative space read as intentional product space
+  # rather than empty filler at tall viewports.
+  let bottomSpacer = ui(r):
+    tdiv(flex = "1", min_height = "12px",
+          display = "flex", align_items = "center",
+          justify_content = "center",
+          padding = "24px 18px"):
+      tdiv(display = "flex", flex_direction = "column",
+            align_items = "center", gap = "6px",
+            opacity = "0.55", max_width = "240px",
+            text_align = "center"):
+        span(font_size = "18px", color = textSecondary):
+          text "\xE2\x97\x8B"
+        span(font_size = "11px", font_weight = "600", color = textSecondary,
+              letter_spacing = "0.3px"):
+          text "Ready when you are"
+        span(font_size = "10px", line_height = "1.5", color = textDim):
+          text "Pick a suggested prompt above, or describe a token, variant, or layout change to start a session."
   proc appendReviewHeading(label: string) =
     let heading = ui(r):
       span(
@@ -330,6 +409,26 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
 
   proc syncReviewLoop() =
     r.clearChildren(reviewLoopArea)
+    let totalActivity = vm.review.annotations.val.len +
+      vm.chat.permissionRequests.val.len +
+      vm.chat.proposedEdits.val.len
+    if totalActivity == 0:
+      # Collapse three repetitive "No ..." stubs into one calm activity line
+      # so the empty state reads as a single deliberate placeholder rather
+      # than a stack of muted filler rows.
+      let placeholder = ui(r):
+        tdiv(display = "flex", flex_direction = "column", gap = "4px"):
+          span(
+            font_size = "10px",
+            font_weight = "600",
+            color = textSecondary,
+            text_transform = "uppercase",
+            letter_spacing = "0.5px"):
+            text "Activity"
+          span(font_size = "11px", color = textDim):
+            text "No review comments, permission requests, or agent proposed edits yet."
+      r.appendChild(reviewLoopArea, placeholder)
+      return
     appendReviewHeading("Design Review Comments")
     if vm.review.annotations.val.len == 0:
       appendReviewSummary("No review comments")
@@ -587,6 +686,7 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   createRenderEffect proc() =
     syncReviewLoop()
   r.appendChild(panel, reviewLoopArea)
+  r.appendChild(panel, bottomSpacer)
 
   var transcriptTextNode: E
   let transcript = ui(r):
@@ -606,8 +706,9 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   # Input area
   let inputArea = ui(r):
     tdiv(
-      padding = "8px 12px 12px 12px",
-      border_top = "1px solid " & borderFaint)
+      padding = "10px 12px 12px 12px",
+      border_top = "1px solid " & border,
+      background_color = bgSidebar)
 
   let inputRow = ui(r):
     tdiv(display = "flex", align_items = "center", gap = "8px")
@@ -617,7 +718,7 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
       flex = "1",
       height = "34px",
       background_color = bgInput,
-      border = "1px solid " & border,
+      border = "1px solid " & borderFaint,
       border_radius = "8px",
       padding = "0 10px",
       font_size = "12px",

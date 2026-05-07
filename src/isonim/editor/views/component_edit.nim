@@ -2644,46 +2644,127 @@ proc renderBezierAffordances[R, E](r: R; vm: EditorVM; frame: E;
     r.appendChild(presets, button)
   r.appendChild(result, presets)
 
+func segmentedIcon(propName, value: string): string =
+  ## Iconic glyph for visual layout/alignment property values, used to render
+  ## Figma-style segmented strips. Empty result means "fall back to text label".
+  case propName
+  of "flex-direction":
+    case value
+    of "row": "\xE2\x86\x92"          # →
+    of "column": "\xE2\x86\x93"       # ↓
+    of "row-reverse": "\xE2\x86\x90"  # ←
+    of "column-reverse": "\xE2\x86\x91" # ↑
+    else: ""
+  of "align-items", "align-self":
+    case value
+    of "stretch": "\xE2\x87\x95"      # ⇕
+    of "center": "\xE2\x97\x8F"       # ● (mid-axis dot)
+    of "flex-start": "\xE2\x86\xA5"   # ↥
+    of "flex-end": "\xE2\x86\xA7"     # ↧
+    of "baseline": "\xE2\x80\xBE"     # ‾
+    of "auto": "\xE2\x97\x8B"         # ○
+    else: ""
+  of "align-content":
+    case value
+    of "stretch": "\xE2\x87\x95"      # ⇕
+    of "center": "\xE2\x97\x8F"       # ●
+    of "flex-start": "\xE2\x86\xA5"   # ↥
+    of "flex-end": "\xE2\x86\xA7"     # ↧
+    of "space-between": "\xE2\x86\x95" # ↕
+    else: ""
+  of "justify-content":
+    case value
+    of "flex-start": "\xE2\x87\xA4"   # ⇤
+    of "center": "\xE2\x97\x8F"       # ●
+    of "flex-end": "\xE2\x87\xA5"     # ⇥
+    of "space-between": "\xE2\x87\x86" # ⇆
+    of "space-around": "\xE2\x87\x8C" # ⇌
+    of "space-evenly": "\xE2\x89\xA1" # ≡
+    else: ""
+  of "text-align":
+    case value
+    of "left": "\xE2\x87\xA4"         # ⇤
+    of "center": "\xE2\x97\x8F"       # ●
+    of "right": "\xE2\x87\xA5"        # ⇥
+    of "justify": "\xE2\x98\xB0"      # ☰
+    else: ""
+  else: ""
+
+func hasSegmentedIcons(propName: string): bool =
+  ## True when at least one quickValue for this property has an iconic glyph.
+  for value in quickValues(propName):
+    if segmentedIcon(propName, value).len > 0:
+      return true
+  false
+
 proc renderQuickValues[R, E](r: R; vm: EditorVM; frame: E; propName,
     current: string): E =
+  ## All enum properties render as a Figma-style connected segmented strip:
+  ## one outer 1px border around the whole group, hairline dividers between
+  ## cells, no inter-cell gap. Visual layout properties (flex-direction,
+  ## align-items, justify-content, text-align) use iconic glyphs; everything
+  ## else uses tight text labels. Same shape, same row height, no stylistic
+  ## seam between neighbouring rows.
   let values = quickValues(propName)
+  let useIcons = hasSegmentedIcons(propName)
   result = ui(r):
-    tdiv(display = "flex", flex_wrap = "wrap", gap = "4px")
-  for value in values:
-    let nextValue = $value
-    let chip = ui(r):
+    tdiv(display = "inline-flex", align_items = "stretch",
+          border = "1px solid " & border,
+          border_radius = "4px",
+          background_color = bgSurface,
+          overflow = "hidden", max_width = "100%")
+  for i in 0 ..< values.len:
+    let nextValue = $values[i]
+    let isActive = current == nextValue
+    let isLast = i == values.high
+    let glyph = segmentedIcon(propName, nextValue)
+    let display = if glyph.len > 0: glyph else: nextValue
+    let cell = ui(r):
       tdiv(role = "button", tabindex = "0",
-            padding = "4px 7px", border_radius = "4px",
-            font_size = "10px", font_weight = "500",
+            min_width = (if useIcons: "26px" else: "32px"),
+            height = "22px",
+            padding = (if useIcons: "0 6px" else: "0 7px"),
+            display = "flex", align_items = "center",
+            justify_content = "center",
+            font_size = (if glyph.len > 0: "13px" else: "10px"),
+            font_weight = (if isActive: "700" else: "600"),
             cursor = "pointer",
-            background_color = (if current ==
-                nextValue: accent else: bgSurface),
-            color = (if current == nextValue: textPrimary else: textMuted),
-            border = "1px solid " & (if current ==
-                nextValue: accent else: border)):
-        text nextValue
-    r.setAttribute(chip, "aria-label",
+            white_space = "nowrap",
+            background_color = (if isActive: accent else: "transparent"),
+            color = (if isActive: textPrimary else: textSecondary),
+            border_right = (if isLast: "none" else: "1px solid " & border),
+            transition = "background-color 0.12s, color 0.12s"):
+        text display
+    r.setAttribute(cell, "aria-label",
       "Set " & propName & " to " & nextValue)
+    r.setAttribute(cell, "title", nextValue)
+    r.setAttribute(cell, "data-segmented-strip-cell", nextValue)
+    r.setAttribute(cell, "data-segmented-strip-active",
+      if isActive: "true" else: "false")
     let activate = r.inspectorLiveValueHandler(vm, frame, propName, nextValue)
-    r.addEventListener(chip, "click", activate)
-    r.addEventListener(chip, "keydown", activate)
-    r.appendChild(result, chip)
+    r.addEventListener(cell, "click", activate)
+    r.addEventListener(cell, "keydown", activate)
+    r.appendChild(result, cell)
+  r.setAttribute(result, "data-segmented-strip", propName)
 
 proc renderSwatches[R, E](r: R; vm: EditorVM; frame: E; propName,
     current: string): E =
   let values = swatchesFor(propName)
   result = ui(r):
-    tdiv(display = "flex", flex_wrap = "wrap", gap = "6px",
+    tdiv(display = "flex", flex_wrap = "wrap", gap = "4px",
           align_items = "center")
   for value in values:
     let nextValue = $value
+    let isActive = current == nextValue
     let swatch = ui(r):
       tdiv(role = "button", tabindex = "0",
-            width = "22px", height = "22px", border_radius = "4px",
+            width = "20px", height = "20px", border_radius = "4px",
             cursor = "pointer",
             background_color = nextValue,
-            border = "2px solid " & (if current ==
-                nextValue: accent else: border))
+            border = "1px solid " & (if isActive: accent else: borderFaint),
+            box_shadow = (if isActive:
+              "0 0 0 1px " & accent
+            else: "inset 0 0 0 1px rgba(255,255,255,0.04)"))
     r.setAttribute(swatch, "aria-label",
       "Set " & propName & " to " & nextValue)
     let activate = r.inspectorLiveValueHandler(vm, frame, propName, nextValue)
@@ -3124,8 +3205,7 @@ proc renderElementTree[R, E](r: R; vm: EditorVM; frame: E;
   var clearButton: E
   result = ui(r):
     tdiv(display = "flex", flex_direction = "column", gap = "7px",
-          padding = "10px", border = "1px solid " & border,
-          border_radius = "6px", background_color = bgBase):
+          padding = "8px 0"):
       tdiv(display = "flex", align_items = "center",
             justify_content = "space-between", gap = "8px"):
         span(font_size = "10px", font_weight = "700", color = textSecondary,
@@ -3600,11 +3680,12 @@ proc renderDesignSystemImpactPanel[R, E](r: R; vm: EditorVM; frame: E;
             tdiv(display = "grid",
                   grid_template_columns = "minmax(0, 1fr) auto",
                   gap = "5px", align_items = "center",
-                  padding = "4px 5px",
+                  padding = "3px 6px",
+                  min_height = "22px",
                   border = "1px solid " & borderFaint,
                   border_radius = "4px",
                   background_color = bgCard):
-              tdiv(display = "flex", flex_direction = "column", gap = "2px",
+              tdiv(display = "flex", flex_direction = "column", gap = "1px",
                     min_width = "0"):
                 span(font_size = "11px", color = textPrimary,
                       white_space = "nowrap", overflow = "hidden",
