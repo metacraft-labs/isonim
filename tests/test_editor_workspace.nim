@@ -42,7 +42,7 @@ suite "IsoNim Editor workspace API":
     check workspace.panels.inspector
 
   test "createEditorVM loads a workspace without demo coupling":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let workspace = newEditorWorkspace(
         title = "Project Workspace",
         storyGroups = @[
@@ -79,7 +79,7 @@ suite "IsoNim Editor workspace API":
       dispose()
 
   test "editor_vm_workspace_initial_state_is_applied":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let groups = wanderlust.buildWanderlustStoryboard()
       let flowStory = StoryRef(
         group: groups[0].items[1].group,

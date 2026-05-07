@@ -26,7 +26,7 @@ proc mountCounter*(container: Element): DisposeProc {.exportc.} =
   ## Returns a dispose function that cleans up the reactive tree.
   var disposer: proc()
 
-  createRoot proc(dispose: proc()) =
+  createRoot do (dispose: proc()):
     disposer = dispose
 
     let count = createSignal(0)
@@ -36,7 +36,7 @@ proc mountCounter*(container: Element): DisposeProc {.exportc.} =
 
     let display = document.createElement("span")
     display.className = "count-display"
-    createRenderEffect proc() =
+    createRenderEffect do:
       display.textContent = cstring($count.val)
     wrapper.appendChild(display.Node)
 
@@ -70,13 +70,13 @@ proc mountTaskItem*(container: Element, text: cstring, done: bool = false): Disp
   ## Returns a dispose function.
   var disposer: proc()
 
-  createRoot proc(dispose: proc()) =
+  createRoot do (dispose: proc()):
     disposer = dispose
 
     let isDone = createSignal(done)
 
     let li = document.createElement("li")
-    createRenderEffect proc() =
+    createRenderEffect do:
       if isDone.val:
         li.className = "completed"
       else:
@@ -84,7 +84,7 @@ proc mountTaskItem*(container: Element, text: cstring, done: bool = false): Disp
 
     let checkbox = document.createElement("input")
     checkbox.setAttribute("type", "checkbox")
-    createRenderEffect proc() =
+    createRenderEffect do:
       if isDone.val:
         checkbox.setAttribute("checked", "")
       else:
@@ -117,7 +117,7 @@ proc mountTaskManager*(container: Element, initialTasks: seq[cstring] = @[]): Di
   ## Returns a dispose function.
   var disposer: proc()
 
-  createRoot proc(dispose: proc()) =
+  createRoot do (dispose: proc()):
     disposer = dispose
 
     let store = createTaskStore()
@@ -169,7 +169,7 @@ proc mountTaskManager*(container: Element, initialTasks: seq[cstring] = @[]): Di
     emptyMsg.textContent = "No tasks"
 
     # Reactive list rendering
-    createRenderEffect proc() =
+    createRenderEffect do:
       let tasks = store.filteredTasks.val
       section.innerHTML = ""
       if tasks.len == 0:
@@ -210,7 +210,7 @@ proc mountTaskManager*(container: Element, initialTasks: seq[cstring] = @[]): Di
     let footerContainer = document.createElement("div")
     appDiv.appendChild(footerContainer.Node)
 
-    createRenderEffect proc() =
+    createRenderEffect do:
       footerContainer.innerHTML = ""
       if store.tasks.val.len > 0:
         let footer = document.createElement("footer")
@@ -277,7 +277,7 @@ proc registerStorybookWebComponents*() {.exportc.} =
 
       let display = document.createElement("span")
       display.className = "count-display"
-      createRenderEffect proc() =
+      createRenderEffect do:
         display.textContent = cstring($count.val)
       wrapper.appendChild(display.Node)
 
@@ -319,7 +319,7 @@ proc registerStorybookWebComponents*() {.exportc.} =
       let taskText = getProp(cstring"text")
 
       let li = document.createElement("li")
-      createRenderEffect proc() =
+      createRenderEffect do:
         if isDone.val:
           li.className = "completed"
         else:
@@ -327,7 +327,7 @@ proc registerStorybookWebComponents*() {.exportc.} =
 
       let checkbox = document.createElement("input")
       checkbox.setAttribute("type", "checkbox")
-      createRenderEffect proc() =
+      createRenderEffect do:
         if isDone.val:
           checkbox.setAttribute("checked", "")
         else:

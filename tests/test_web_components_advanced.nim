@@ -391,7 +391,7 @@ registerCustomElement(
     let current = createSignal(getProp(cstring"value"))
 
     let span = document.createElement("span")
-    createRenderEffect proc() =
+    createRenderEffect do:
       span.textContent = current.val
     ctx.renderRoot.appendChild(span)
 
@@ -431,7 +431,7 @@ registerCustomElement(
   proc(ctx: CustomElementContext, getProp: proc(name: cstring): cstring) =
     let current = createSignal(getProp(cstring"msg"))
     let span = document.createElement("span")
-    createRenderEffect proc() =
+    createRenderEffect do:
       span.textContent = current.val
     ctx.renderRoot.appendChild(span)
 
@@ -451,7 +451,7 @@ registerCustomElement(
     let sigB = createSignal(getProp(cstring"b"))
 
     let span = document.createElement("span")
-    createRenderEffect proc() =
+    createRenderEffect do:
       span.textContent = sigA.val & cstring"+" & sigB.val
     ctx.renderRoot.appendChild(span)
 
@@ -465,7 +465,7 @@ registerCustomElement(
 
 suite "Web Components Advanced - Attribute Reactivity":
   test "changing attribute after connection updates component":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let el = createCustomInstance(cstring"adv-reactive", (cstring"value", cstring"initial"))
       check getShadowTextContent(el) == cstring"initial"
 
@@ -476,7 +476,7 @@ suite "Web Components Advanced - Attribute Reactivity":
       dispose()
 
   test "multiple attribute changes are all reflected":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let el = createCustomInstance(cstring"adv-reactive")
       check getShadowTextContent(el) == cstring"default"
 
@@ -492,7 +492,7 @@ suite "Web Components Advanced - Attribute Reactivity":
       dispose()
 
   test "multi-prop component reacts to individual prop changes":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let el = createCustomInstance(cstring"adv-multi",
         (cstring"a", cstring"X"), (cstring"b", cstring"Y"))
       check getShadowTextContent(el) == cstring"X+Y"
@@ -507,7 +507,7 @@ suite "Web Components Advanced - Attribute Reactivity":
 
 suite "Web Components Advanced - Custom Events":
   test "custom event is dispatched on attribute change":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let el = createCustomInstance(cstring"adv-reactive", (cstring"value", cstring"start"))
 
       var receivedValue: cstring = cstring""
@@ -521,7 +521,7 @@ suite "Web Components Advanced - Custom Events":
       dispose()
 
   test "multiple event listeners receive the event":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let el = createCustomInstance(cstring"adv-reactive")
 
       var count1 = 0
@@ -544,7 +544,7 @@ suite "Web Components Advanced - Custom Events":
       dispose()
 
   test "event detail contains correct payload":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let el = createCustomInstance(cstring"adv-reactive")
 
       var detailValue: cstring = cstring""
@@ -559,7 +559,7 @@ suite "Web Components Advanced - Custom Events":
 
 suite "Web Components Advanced - Multiple Instances":
   test "two instances of same component have independent state":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let el1 = createCustomInstance(cstring"adv-reactive", (cstring"value", cstring"A"))
       let el2 = createCustomInstance(cstring"adv-reactive", (cstring"value", cstring"B"))
 
@@ -578,7 +578,7 @@ suite "Web Components Advanced - Multiple Instances":
       dispose()
 
   test "events on one instance do not fire on another":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let el1 = createCustomInstance(cstring"adv-reactive")
       let el2 = createCustomInstance(cstring"adv-reactive")
 
@@ -638,7 +638,7 @@ suite "Web Components Advanced - Lifecycle":
 
 suite "Web Components Advanced - Light DOM":
   test "light DOM component renders into element itself":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let el = createCustomInstance(cstring"adv-light")
       # No shadow root
       let sr = getShadowRoot(el)
@@ -648,7 +648,7 @@ suite "Web Components Advanced - Light DOM":
       dispose()
 
   test "light DOM component reacts to attribute changes":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let el = createCustomInstance(cstring"adv-light", (cstring"msg", cstring"hello"))
       check el.textContent == cstring"hello"
 

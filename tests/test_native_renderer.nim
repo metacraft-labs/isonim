@@ -34,7 +34,7 @@ proc createCounter*[R, N](renderer: R): N =
     count.val = count.val - 1
   )
 
-  createRenderEffect proc() =
+  createRenderEffect do:
     renderer.setTextContent(label, "Count: " & $count.val)
 
   return container
@@ -131,7 +131,7 @@ suite "Native Renderer - Basic Operations":
 
 suite "Native Renderer - Reactive":
   test "reactive counter works with NativeRenderer":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = NativeRenderer()
       let counter = createCounter[NativeRenderer, NativeWidget](r)
 
@@ -166,12 +166,12 @@ suite "Native Renderer - Reactive":
     check native.textContent(list.children[2]) == "Test app"
 
   test "reactive signal updates native widget":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = NativeRenderer()
       let name = createSignal("World")
       let label = r.createElement("span")
 
-      createRenderEffect proc() =
+      createRenderEffect do:
         r.setTextContent(label, "Hello, " & name.val & "!")
 
       check native.textContent(label) == "Hello, World!"
@@ -206,7 +206,7 @@ suite "Native Renderer - Widget Tree Rendering":
 suite "Cross-Renderer Compatibility":
   test "same counter component works across all three renderers":
     ## Proves the reactive core is truly decoupled from rendering.
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let nr = NativeRenderer()
       let tr = TerminalRenderer()
       let mr = MockRenderer()

@@ -11,7 +11,7 @@ suite "IsoNim Task Store ViewModel":
     resetIdCounter()
 
   test "starts with an empty task list":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let store = createTaskStore()
       check store.tasks.val.len == 0
       check store.filteredTasks.val.len == 0
@@ -20,7 +20,7 @@ suite "IsoNim Task Store ViewModel":
       dispose()
 
   test "adds a task":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let store = createTaskStore()
       store.addTask("Buy milk")
       check store.tasks.val.len == 1
@@ -29,7 +29,7 @@ suite "IsoNim Task Store ViewModel":
       dispose()
 
   test "ignores blank tasks":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let store = createTaskStore()
       store.addTask("")
       store.addTask("   ")
@@ -37,7 +37,7 @@ suite "IsoNim Task Store ViewModel":
       dispose()
 
   test "toggles a task":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let store = createTaskStore()
       store.addTask("Task A")
       let id = store.tasks.val[0].id
@@ -50,7 +50,7 @@ suite "IsoNim Task Store ViewModel":
       dispose()
 
   test "removes a task":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let store = createTaskStore()
       store.addTask("Task A")
       store.addTask("Task B")
@@ -63,7 +63,7 @@ suite "IsoNim Task Store ViewModel":
       dispose()
 
   test "removes task deselects if that task was selected":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let store = createTaskStore()
       store.addTask("Task A")
       let id = store.tasks.val[0].id
@@ -75,7 +75,7 @@ suite "IsoNim Task Store ViewModel":
       dispose()
 
   test "filters tasks by active":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let store = createTaskStore()
       store.addTask("Task A")
       store.addTask("Task B")
@@ -88,7 +88,7 @@ suite "IsoNim Task Store ViewModel":
       dispose()
 
   test "filters tasks by completed":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let store = createTaskStore()
       store.addTask("Task A")
       store.addTask("Task B")
@@ -101,7 +101,7 @@ suite "IsoNim Task Store ViewModel":
       dispose()
 
   test "shows all tasks with all filter":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let store = createTaskStore()
       store.addTask("Task A")
       store.addTask("Task B")
@@ -112,7 +112,7 @@ suite "IsoNim Task Store ViewModel":
       dispose()
 
   test "counts active and completed correctly":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let store = createTaskStore()
       store.addTask("A")
       store.addTask("B")
@@ -125,7 +125,7 @@ suite "IsoNim Task Store ViewModel":
       dispose()
 
   test "clears completed tasks":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let store = createTaskStore()
       store.addTask("A")
       store.addTask("B")
@@ -140,7 +140,7 @@ suite "IsoNim Task Store ViewModel":
       dispose()
 
   test "clears completed deselects if selected task was completed":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let store = createTaskStore()
       store.addTask("A")
       let id = store.tasks.val[0].id
@@ -152,11 +152,11 @@ suite "IsoNim Task Store ViewModel":
       dispose()
 
   test "effect fires on task count change":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       var effectLog: seq[int] = @[]
       let tasks = createSignal[seq[Task]](@[])
 
-      createEffect proc() =
+      createEffect do:
         effectLog.add tasks.val.len
 
       # Initial effect should have run with 0
@@ -173,7 +173,7 @@ suite "IsoNim Task Store ViewModel":
       dispose()
 
   test "memo recomputes only when dependencies change":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       var memoCallCount = 0
       let tasks = createSignal[seq[Task]](@[])
       let filter = createSignal(fAll)

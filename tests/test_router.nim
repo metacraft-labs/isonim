@@ -96,7 +96,7 @@ suite "Prefix Matching":
 
 suite "Router Signal Integration":
   test "createRouter matches initial path":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = createRouter(@[
         RouteEntry(pattern: parsePattern("/"), component: proc() = discard),
         RouteEntry(pattern: parsePattern("/about"), component: proc() = discard),
@@ -107,7 +107,7 @@ suite "Router Signal Integration":
       dispose()
 
   test "navigate updates matchedRoute signal":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = createRouter(@[
         RouteEntry(pattern: parsePattern("/"), component: proc() = discard),
         RouteEntry(pattern: parsePattern("/about"), component: proc() = discard),
@@ -125,7 +125,7 @@ suite "Router Signal Integration":
       dispose()
 
   test "navigate to parameterized route updates params":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = createRouter(@[
         RouteEntry(pattern: parsePattern("/"), component: proc() = discard),
         RouteEntry(pattern: parsePattern("/users/:id"), component: proc() = discard),
@@ -143,7 +143,7 @@ suite "Router Signal Integration":
       dispose()
 
   test "navigate to non-existent route yields no match":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = createRouter(@[
         RouteEntry(pattern: parsePattern("/"), component: proc() = discard),
         RouteEntry(pattern: parsePattern("/about"), component: proc() = discard),
@@ -155,14 +155,14 @@ suite "Router Signal Integration":
       dispose()
 
   test "reactive effect observes route changes":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = createRouter(@[
         RouteEntry(pattern: parsePattern("/"), component: proc() = discard),
         RouteEntry(pattern: parsePattern("/page"), component: proc() = discard),
       ], "/")
 
       var observedIdx = -99
-      createEffect proc() =
+      createEffect do:
         observedIdx = r.matchedIndex.val
 
       check observedIdx == 0  # initial match on "/"
@@ -175,7 +175,7 @@ suite "Router Signal Integration":
       dispose()
 
   test "matchedRoute returns correct entry":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       var aboutCalled = false
       let aboutComp = proc() = aboutCalled = true
 
@@ -192,7 +192,7 @@ suite "Router Signal Integration":
       dispose()
 
   test "global activeRouter is set":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = createRouter(@[
         RouteEntry(pattern: parsePattern("/"), component: proc() = discard),
       ], "/")
@@ -200,7 +200,7 @@ suite "Router Signal Integration":
       dispose()
 
   test "createRouter with custom initial path":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = createRouter(@[
         RouteEntry(pattern: parsePattern("/"), component: proc() = discard),
         RouteEntry(pattern: parsePattern("/dashboard"), component: proc() = discard),
@@ -211,7 +211,7 @@ suite "Router Signal Integration":
 
 suite "RouteParams — reactive params":
   test "navigate to /users/42 — params.get(id) == 42":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = createRouter(@[
         RouteEntry(pattern: parsePattern("/"), component: proc() = discard),
         RouteEntry(pattern: parsePattern("/users/:id"), component: proc() = discard),
@@ -222,7 +222,7 @@ suite "RouteParams — reactive params":
       dispose()
 
   test "same signal updates when navigating /users/1 to /users/2":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = createRouter(@[
         RouteEntry(pattern: parsePattern("/users/:id"), component: proc() = discard),
       ], "/users/1")
@@ -237,7 +237,7 @@ suite "RouteParams — reactive params":
       dispose()
 
   test "getInt returns correct integer value":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = createRouter(@[
         RouteEntry(pattern: parsePattern("/users/:id"), component: proc() = discard),
       ], "/users/42")
@@ -250,7 +250,7 @@ suite "RouteParams — reactive params":
       dispose()
 
   test "missing param returns empty string":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = createRouter(@[
         RouteEntry(pattern: parsePattern("/about"), component: proc() = discard),
       ], "/about")
@@ -259,7 +259,7 @@ suite "RouteParams — reactive params":
       dispose()
 
   test "getAll returns snapshot of all params":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = createRouter(@[
         RouteEntry(pattern: parsePattern("/users/:id/posts/:postId"), component: proc() = discard),
       ], "/users/7/posts/99")
@@ -276,7 +276,7 @@ suite "RouteParams — reactive params":
       dispose()
 
   test "param cleared when navigating to route without that param":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = createRouter(@[
         RouteEntry(pattern: parsePattern("/users/:id"), component: proc() = discard),
         RouteEntry(pattern: parsePattern("/about"), component: proc() = discard),
@@ -290,13 +290,13 @@ suite "RouteParams — reactive params":
       dispose()
 
   test "reactive effect fires when param changes":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = createRouter(@[
         RouteEntry(pattern: parsePattern("/users/:id"), component: proc() = discard),
       ], "/users/1")
 
       var observed = ""
-      createEffect proc() =
+      createEffect do:
         observed = r.routeParams.get("id").val
 
       check observed == "1"
@@ -306,7 +306,7 @@ suite "RouteParams — reactive params":
 
 suite "Nested Layouts":
   test "nested route matching — parent + child":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       var layoutRendered = false
       var childRendered = false
       var childId = ""
@@ -345,7 +345,7 @@ suite "Nested Layouts":
       dispose()
 
   test "navigate between children — layout persists in chain":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       var layoutCallCount = 0
       let layoutComp = proc() = inc layoutCallCount
 
@@ -389,7 +389,7 @@ suite "Nested Layouts":
       dispose()
 
   test "nested params merge parent + child":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = createRouter(@[
         RouteEntry(
           pattern: parsePattern("/org/:orgId"),
@@ -409,7 +409,7 @@ suite "Nested Layouts":
 
 suite "Outlet — child projection":
   test "OutletState renders child from match chain":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       var parentRendered = false
       var childRendered = false
 
@@ -426,7 +426,7 @@ suite "Outlet — child projection":
       dispose()
 
   test "OutletState swaps child when chain changes":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       var childARendered = 0
       var childBRendered = 0
 
@@ -454,7 +454,7 @@ suite "Outlet — child projection":
       dispose()
 
   test "OutletState preserves layout — same component not re-rendered":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       var layoutRenderCount = 0
       let layoutComp = proc() = inc layoutRenderCount
 
@@ -482,7 +482,7 @@ suite "Outlet — child projection":
 
 suite "Layout Persistence":
   test "layout signal retains value across child navigation":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       # Simulate a layout that has its own counter signal
       var counterSignal: Signal[int]
       var layoutRendered = false
@@ -519,7 +519,7 @@ suite "Layout Persistence":
       dispose()
 
   test "layout signal destroyed when layout changes":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       var layoutARendered = 0
       var layoutBRendered = 0
 
@@ -546,7 +546,7 @@ suite "Layout Persistence":
       dispose()
 
   test "full router: layout persists across sibling navigations":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       var layoutRenderCount = 0
       var counterSignal: Signal[int]
 
@@ -658,7 +658,7 @@ when defined(js):
 
   suite "JS History API Integration":
     test "navigate calls pushState and updates URL":
-      createRoot proc(dispose: proc()) =
+      createRoot do (dispose: proc()):
         let r = createRouter(@[
           RouteEntry(pattern: parsePattern("/"), component: proc() = discard),
           RouteEntry(pattern: parsePattern("/test"), component: proc() = discard),
@@ -676,7 +676,7 @@ when defined(js):
         dispose()
 
     test "navigate with replace calls replaceState":
-      createRoot proc(dispose: proc()) =
+      createRoot do (dispose: proc()):
         let r = createRouter(@[
           RouteEntry(pattern: parsePattern("/"), component: proc() = discard),
           RouteEntry(pattern: parsePattern("/replaced"), component: proc() = discard),
@@ -691,7 +691,7 @@ when defined(js):
         dispose()
 
     test "popstate handler updates currentPath":
-      createRoot proc(dispose: proc()) =
+      createRoot do (dispose: proc()):
         let r = createRouter(@[
           RouteEntry(pattern: parsePattern("/"), component: proc() = discard),
           RouteEntry(pattern: parsePattern("/page1"), component: proc() = discard),

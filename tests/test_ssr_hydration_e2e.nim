@@ -607,7 +607,7 @@ suite "SSR-Hydration E2E - Counter":
     # The count signal for the client-side component
     let count = createSignal(5)
 
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       # Set up hydration context
       sharedConfig.registry = newHydrationRegistry()
       sharedConfig.context = HydrationContext(id: "", count: 0)
@@ -682,7 +682,7 @@ suite "SSR-Hydration E2E - Counter":
 
     let count = createSignal(0)
 
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       sharedConfig.registry = newHydrationRegistry()
       sharedConfig.context = HydrationContext(id: "", count: 0)
       {.emit: [sharedConfig.completed, " = globalThis._$HY.completed;"].}
@@ -767,7 +767,7 @@ suite "SSR-Hydration E2E - List":
 
     let items = createSignal(cstring"alpha,beta,gamma")
 
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       sharedConfig.registry = newHydrationRegistry()
       sharedConfig.context = HydrationContext(id: "", count: 0)
       {.emit: [sharedConfig.completed, " = globalThis._$HY.completed;"].}
@@ -832,7 +832,7 @@ suite "SSR-Hydration E2E - List":
     let itemCount = createSignal(3)
     let listText = createSignal(cstring"first,second,third")
 
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       sharedConfig.registry = newHydrationRegistry()
       sharedConfig.context = HydrationContext(id: "", count: 0)
       {.emit: [sharedConfig.completed, " = globalThis._$HY.completed;"].}
@@ -1014,7 +1014,7 @@ suite "SSR-Hydration E2E - Key Consistency":
     let container = makeSSRContainer(cstring(ssrHtml))
     initHydrationGlobals()
 
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       sharedConfig.registry = newHydrationRegistry()
       sharedConfig.context = HydrationContext(id: "", count: 0)
 
@@ -1143,7 +1143,7 @@ suite "SSR-Hydration E2E - Demo App":
     let clientTitle = createSignal(cstring"Task Manager")
     let clientTasks = createSignal(cstring"Learn IsoNim,Build demo app")
 
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       sharedConfig.registry = newHydrationRegistry()
       sharedConfig.context = HydrationContext(id: "", count: 0)
       {.emit: [sharedConfig.completed, " = globalThis._$HY.completed;"].}

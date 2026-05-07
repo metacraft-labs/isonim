@@ -53,7 +53,7 @@ suite "Editor Shell Views (M2)":
 
   test "test_editor_shell_three_panel_layout":
     ## Editor renders sidebar, preview, and inspector panels
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createEditorVM()
       vm.sidebar.groups.val = buildStoryboard()
@@ -71,7 +71,7 @@ suite "Editor Shell Views (M2)":
 
   test "test_sidebar_renders_groups":
     ## Sidebar shows storyboard groups
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createEditorVM()
       vm.sidebar.groups.val = buildStoryboard()
@@ -92,7 +92,7 @@ suite "Editor Shell Views (M2)":
 
   test "test_preview_pane_shows_toolbar":
     ## Preview pane has toolbar with mode toggle and platform selector
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createEditorVM()
 
@@ -109,7 +109,7 @@ suite "Editor Shell Views (M2)":
 
   test "test_inspector_renders_all_sections":
     ## Inspector shows section tabs and content area
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createEditorVM()
 
@@ -125,7 +125,7 @@ suite "Editor Shell Views (M2)":
       dispose()
 
   test "component_edit_inspector_explains_and_applies_design_system_scope":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createEditorVM()
       vm.selectInspectorElement(ElementRef(
@@ -222,7 +222,7 @@ suite "Editor Shell Views (M2)":
 
   test "test_chat_section_has_input":
     ## Agent chat area has input bar and send button
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createEditorVM()
 
@@ -235,7 +235,7 @@ suite "Editor Shell Views (M2)":
       dispose()
 
   test "editor_shell_mock_renderer_exposes_clickable_controls":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createEditorVM()
       vm.sidebar.groups.val = buildStoryboard()
@@ -406,7 +406,7 @@ suite "Editor Shell Views (M2)":
       dispose()
 
   test "sidebar sections expose top level editor navigation":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createEditorVM()
       vm.sidebar.groups.val = buildStoryboard()
@@ -436,7 +436,7 @@ suite "Editor Shell Views (M2)":
       dispose()
 
   test "storyboard renders project previews for flow cards":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createEditorVM()
       vm.sidebar.groups.val = @[
@@ -468,7 +468,7 @@ suite "Editor Shell Views (M2)":
       dispose()
 
   test "storyboard journey cards open matching page stories":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createEditorVM()
       let cartPage = StoryRef(group: "Pages", name: "Cart Page",
@@ -521,7 +521,7 @@ suite "Editor Shell Views (M2)":
       dispose()
 
   test "storyboard exposes figma-style zoom and pan state":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createEditorVM()
       vm.sidebar.groups.val = @[
@@ -570,7 +570,7 @@ suite "Editor Shell Views (M2)":
       dispose()
 
   test "component detail edit action opens functional edit mode":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createEditorVM()
       vm.sidebar.groups.val = buildStoryboard()
@@ -592,7 +592,7 @@ suite "Editor Shell Views (M2)":
       dispose()
 
   test "editor_edit_buttons_dispatch_commands":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createEditorVM()
       vm.sidebar.groups.val = buildStoryboard()
@@ -637,7 +637,7 @@ suite "Editor Shell Views (M2)":
       dispose()
 
   test "component detail renders project preview documents":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = MockRenderer()
       let componentStory = StoryRef(group: "Components",
         name: "Real Button", kind: skComponent, index: 0)
@@ -677,7 +677,7 @@ suite "Editor Shell Views (M2)":
       dispose()
 
   test "editor_dom_mount_has_empty_agent_state":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createEditorVM()
 
@@ -692,7 +692,7 @@ suite "Editor Shell Views (M2)":
       dispose()
 
   test "status bar renders element breadcrumb stack":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createEditorVM()
       vm.selectedStory.val = StoryRef(group: "Components",

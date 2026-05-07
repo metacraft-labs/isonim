@@ -15,7 +15,7 @@ suite "rxcore API":
     root proc(dispose: proc()) =
       let s = createSignal(0)
       var observed = -1
-      effect proc() =
+      effect do:
         observed = s.val
       check observed == 0
       s.val = 5
@@ -171,7 +171,7 @@ suite "rxcore + MockRenderer integration":
       let textNode = r.createTextNode("")
       r.appendChild(container, textNode)
 
-      effect proc() =
+      effect do:
         r.setTextContent(textNode, "hello " & name.val)
 
       check textNode.text == "hello world"
@@ -184,7 +184,7 @@ suite "rxcore + MockRenderer integration":
       let cls = createSignal("primary")
       let el = r.createElement("div")
 
-      effect proc() =
+      effect do:
         r.setAttribute(el, "class", cls.val)
 
       check el.attributes["class"] == "primary"
@@ -200,7 +200,7 @@ suite "rxcore + MockRenderer integration":
       let textNode = r.createTextNode("")
       r.appendChild(el, textNode)
 
-      effect proc() =
+      effect do:
         r.setTextContent(textNode, label())
 
       check textNode.text == "Count: 0"

@@ -363,7 +363,7 @@ import components
 suite "Accessibility - ARIA Attributes":
   test "role attribute on non-semantic elements":
     ## div with role="button" should have the role attribute set
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let root = ui(renderer):
         tdiv(role = "button"):
@@ -374,7 +374,7 @@ suite "Accessibility - ARIA Attributes":
 
   test "aria-label on interactive elements":
     ## Buttons and inputs should support aria-label
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let root = ui(renderer):
         tdiv:
@@ -392,7 +392,7 @@ suite "Accessibility - ARIA Attributes":
 
   test "aria-checked updates reactively via signal":
     ## aria-checked should update when the underlying signal changes
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let checked = createSignal(false)
 
@@ -409,7 +409,7 @@ suite "Accessibility - ARIA Attributes":
 
   test "aria-hidden toggled via signal":
     ## aria-hidden should toggle when a signal changes
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let hidden = createSignal(false)
 
@@ -424,7 +424,7 @@ suite "Accessibility - ARIA Attributes":
 
   test "aria-expanded for collapsible sections":
     ## aria-expanded should reflect the expanded state
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let expanded = createSignal(false)
 
@@ -444,7 +444,7 @@ suite "Accessibility - ARIA Attributes":
 
   test "aria-live region for dynamic content":
     ## aria-live should be set on regions that update dynamically
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let count = createSignal(0)
 
@@ -460,7 +460,7 @@ suite "Accessibility - ARIA Attributes":
 
   test "aria-describedby and aria-labelledby associations":
     ## Elements should reference other elements via aria-describedby/labelledby
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
 
       let root = ui(renderer):
@@ -478,7 +478,7 @@ suite "Accessibility - ARIA Attributes":
 
   test "accessibility helper procs set ARIA attributes":
     ## The accessibility module helpers should set correct attributes
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let node = renderer.createElement("div")
 
@@ -518,7 +518,7 @@ suite "Accessibility - ARIA Attributes":
 suite "Accessibility - Semantic HTML Structure":
   test "task list uses ul/li elements":
     ## The task list should use semantic list markup, not div soup
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let store = createTaskStore()
       store.addTask("First task")
@@ -550,7 +550,7 @@ suite "Accessibility - Semantic HTML Structure":
 
   test "headings use correct h1-h6 elements":
     ## Headers should use proper heading tags
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
 
       let root = ui(renderer):
@@ -565,7 +565,7 @@ suite "Accessibility - Semantic HTML Structure":
 
   test "buttons are button elements":
     ## Interactive buttons should use the button tag, not clickable divs
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       var clicked = 0
 
@@ -579,7 +579,7 @@ suite "Accessibility - Semantic HTML Structure":
 
   test "form inputs have associated labels":
     ## Input elements should have labels associated via 'for' attribute or nesting
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
 
       # Label via 'for' attribute
@@ -599,7 +599,7 @@ suite "Accessibility - Semantic HTML Structure":
 
   test "nested label contains input":
     ## Labels can also contain their inputs directly
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
 
       let root = ui(renderer):
@@ -615,7 +615,7 @@ suite "Accessibility - Semantic HTML Structure":
 
   test "navigation uses nav element":
     ## Navigation sections should use the nav element
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
 
       let root = ui(renderer):
@@ -631,7 +631,7 @@ suite "Accessibility - Semantic HTML Structure":
 
   test "main content uses main element":
     ## Primary content area should use the main element
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
 
       let root = ui(renderer):
@@ -647,7 +647,7 @@ suite "Accessibility - Semantic HTML Structure":
 
   test "task header uses semantic header and form elements":
     ## The renderTaskHeader component should produce header/form/button elements
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let store = createTaskStore()
       let parent = renderer.createElement("div")
@@ -670,7 +670,7 @@ suite "Accessibility - Semantic HTML Structure":
 
   test "task footer uses semantic footer element":
     ## The renderTaskFooter component should produce a footer element
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let store = createTaskStore()
       store.addTask("A task")
@@ -761,7 +761,7 @@ when defined(js):
 
     test "no spurious tabindex on regular elements":
       ## Regular interactive elements should not have tabindex set randomly
-      createRoot proc(dispose: proc()) =
+      createRoot do (dispose: proc()):
         let container = document.createElement("div")
 
         let btn = document.createElement("button")
@@ -780,7 +780,7 @@ when defined(js):
 
     test "Enter key on button triggers click handler":
       ## Pressing Enter on a button should trigger its click handler
-      createRoot proc(dispose: proc()) =
+      createRoot do (dispose: proc()):
         var clicked = 0
         let btn = document.createElement("button")
         btn.textContent = "Submit"
@@ -804,7 +804,7 @@ when defined(js):
 
     test "Space key on button triggers click handler":
       ## Pressing Space on a button should trigger its click handler
-      createRoot proc(dispose: proc()) =
+      createRoot do (dispose: proc()):
         var clicked = 0
         let btn = document.createElement("button")
         btn.textContent = "Toggle"
@@ -826,7 +826,7 @@ when defined(js):
 
     test "Escape key dismisses content":
       ## Escape key should be able to dismiss modal-like content
-      createRoot proc(dispose: proc()) =
+      createRoot do (dispose: proc()):
         var dismissed = false
         let container = document.createElement("div")
         let overlay = document.createElement("div")
@@ -848,7 +848,7 @@ when defined(js):
 
     test "custom tabindex values are preserved":
       ## When tabindex is explicitly set, it should be preserved
-      createRoot proc(dispose: proc()) =
+      createRoot do (dispose: proc()):
         let container = document.createElement("div")
 
         let skipLink = document.createElement("a")
@@ -876,7 +876,7 @@ when defined(js):
 
     test "focus moves to input after adding task":
       ## After submitting the form, focus should conceptually return to the input
-      createRoot proc(dispose: proc()) =
+      createRoot do (dispose: proc()):
         let container = document.createElement("div")
         let form = document.createElement("form")
         let input = document.createElement("input")
@@ -915,7 +915,7 @@ when defined(js):
 
     test "focus trap keeps focus within container":
       ## Tab from the last focusable element should wrap to the first
-      createRoot proc(dispose: proc()) =
+      createRoot do (dispose: proc()):
         let modal = document.createElement("div")
         modal.setAttribute("role", "dialog")
         modal.setAttribute("aria-modal", "true")
@@ -946,7 +946,7 @@ when defined(js):
 
     test "dialog has correct ARIA attributes":
       ## Modal dialogs should have role=dialog and aria-modal=true
-      createRoot proc(dispose: proc()) =
+      createRoot do (dispose: proc()):
         let modal = document.createElement("div")
         modal.setAttribute("role", "dialog")
         modal.setAttribute("aria-modal", "true")
@@ -964,7 +964,7 @@ when defined(js):
 
     test "removed element does not leave dangling focus reference":
       ## When a focused element is removed, the focus reference should be cleared
-      createRoot proc(dispose: proc()) =
+      createRoot do (dispose: proc()):
         let container = document.createElement("div")
         let btn = document.createElement("button")
         btn.textContent = "Deletable"
@@ -991,7 +991,7 @@ when defined(js):
 suite "Accessibility - Screen Reader Text":
   test "visually hidden text for screen readers":
     ## sr-only spans should contain text accessible to screen readers
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let count = createSignal(3)
 
@@ -1010,7 +1010,7 @@ suite "Accessibility - Screen Reader Text":
 
   test "alt text on images":
     ## Images should have descriptive alt text
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
 
       let root = ui(renderer):
@@ -1029,7 +1029,7 @@ suite "Accessibility - Screen Reader Text":
 
   test "button labels are descriptive":
     ## Buttons should have descriptive text, not just icons
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
 
       let root = ui(renderer):
@@ -1050,7 +1050,7 @@ suite "Accessibility - Screen Reader Text":
 
   test "srOnlyClass helper for screen reader text":
     ## Using srOnlyClass() to build accessible hidden text
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
 
       let root = ui(renderer):
@@ -1064,7 +1064,7 @@ suite "Accessibility - Screen Reader Text":
 
   test "live region announces task count changes":
     ## An aria-live region should update reactively to announce changes
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let store = createTaskStore()
 
@@ -1085,7 +1085,7 @@ suite "Accessibility - Screen Reader Text":
 
   test "task completion announced via aria attributes":
     ## When a task is toggled, the aria-checked attribute should reflect the state
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let done = createSignal(false)
 

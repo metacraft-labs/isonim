@@ -104,7 +104,7 @@ Key patterns:
 ```nim
 proc mountMyWidget*(container: Element, label: cstring): proc() {.exportc.} =
   var disposer: proc()
-  createRoot proc(dispose: proc()) =
+  createRoot do (dispose: proc()):
     disposer = dispose
     # Build reactive DOM here...
     container.Node.appendChild(widget.Node)

@@ -25,7 +25,7 @@ proc createCounter*[R, N](renderer: R): N =
   renderer.addEventListener(incBtn, "click", proc() = count.val = count.val + 1)
   renderer.addEventListener(decBtn, "click", proc() = count.val = count.val - 1)
 
-  createRenderEffect proc() =
+  createRenderEffect do:
     renderer.setTextContent(label, "Count: " & $count.val)
 
   return container

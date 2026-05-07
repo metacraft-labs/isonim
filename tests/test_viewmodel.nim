@@ -21,7 +21,7 @@ suite "ViewModel Pattern":
   test "test_demo_vm_state_transitions":
     ## All state transitions verified with fake time.
     withFakeTime:
-      createRoot proc(dispose: proc()) =
+      createRoot do (dispose: proc()):
         let vm = createTaskViewModel()
 
         # Initial state is Idle
@@ -48,7 +48,7 @@ suite "ViewModel Pattern":
   test "test_demo_vm_async_operations":
     ## Async resource loading with TestClock.
     withFakeTime:
-      createRoot proc(dispose: proc()) =
+      createRoot do (dispose: proc()):
         var callCount = 0
 
         # Service that simulates async with a scheduled callback
@@ -81,7 +81,7 @@ suite "ViewModel Pattern":
   test "test_demo_vm_error_paths":
     ## Injected failures produce correct error states.
     withFakeTime:
-      createRoot proc(dispose: proc()) =
+      createRoot do (dispose: proc()):
         # Service that always fails
         let failService = TaskService(
           fetchDetails: proc(id: int): (AsyncState, string) =
@@ -111,7 +111,7 @@ suite "ViewModel Pattern":
 
   test "test_demo_vm_error_then_idle":
     ## After error, state can be manually reset.
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let failService = TaskService(
         fetchDetails: proc(id: int): (AsyncState, string) =
           (asError, "fail")
@@ -135,7 +135,7 @@ suite "ViewModel Pattern":
     ## ViewModel dispose cleans up the reactive root.
     var vm: TaskViewModel
 
-    createRoot proc(outerDispose: proc()) =
+    createRoot do (outerDispose: proc()):
       vm = withViewModel proc(dispose: proc()): TaskViewModel =
         let innerVm = createTaskViewModel()
         innerVm
@@ -150,7 +150,7 @@ suite "ViewModel Pattern":
 
   test "test_demo_vm_service_injection":
     ## Service injection allows swapping implementations.
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       var log: seq[string] = @[]
 
       let loggingService = TaskService(
@@ -217,7 +217,7 @@ suite "Demo SSR":
 
   test "e2e_demo_ssr_escapes_content":
     ## SSR properly escapes special characters.
-    let html = renderToString proc(): string =
+    let html = renderToString do () -> string:
       var store = createTaskStore()
       store.addTask("<script>alert('xss')</script>")
 
@@ -232,7 +232,7 @@ suite "Demo SSR":
 
   test "e2e_demo_ssr_empty_store":
     ## SSR renders correctly with no tasks.
-    let html = renderToString proc(): string =
+    let html = renderToString do () -> string:
       var store = createTaskStore()
       ssrElement("div", {"class": "app"}, children =
         ssrElement("ul", children =
@@ -262,7 +262,7 @@ suite "Performance":
     # Measure store creation + task addition
     let startCreate = performanceNow()
     for i in 0 ..< iterations:
-      createRoot proc(dispose: proc()) =
+      createRoot do (dispose: proc()):
         let store = createTaskStore()
         store.addTask("Task " & $i)
         check store.tasks.val.len == 1
@@ -279,7 +279,7 @@ suite "Performance":
     # Measure ViewModel with service injection
     let startVm = performanceNow()
     for i in 0 ..< iterations:
-      createRoot proc(dispose: proc()) =
+      createRoot do (dispose: proc()):
         let vm = createTaskViewModel()
         vm.store.addTask("Perf task")
         vm.fetchTaskDetails(vm.store.tasks.val[0].id)

@@ -95,7 +95,7 @@ proc createApp(): Node =
   emptyMsg.textContent = "No tasks"
 
   # Reactive list rendering
-  createRenderEffect proc() =
+  createRenderEffect do:
     # Clear section and re-add task header + new list
     section.innerHTML = ""
     section.appendChild(taskHeader)
@@ -142,7 +142,7 @@ proc createApp(): Node =
   let footerContainer = document.createElement("div")
   appDiv.appendChild(footerContainer)
 
-  createRenderEffect proc() =
+  createRenderEffect do:
     footerContainer.innerHTML = ""
     if store.tasks.val.len > 0:
       let footer = document.createElement("footer")

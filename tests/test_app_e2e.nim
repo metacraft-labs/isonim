@@ -519,7 +519,7 @@ proc createDemoApp(store: TaskStore): Node =
   emptyMsg.className = "empty"
   emptyMsg.textContent = "No tasks"
 
-  createRenderEffect proc() =
+  createRenderEffect do:
     let tasks = store.filteredTasks.val
     section.innerHTML = ""
     if tasks.len == 0:
@@ -557,7 +557,7 @@ proc createDemoApp(store: TaskStore): Node =
   let footerContainer = document.createElement("div")
   appDiv.appendChild(footerContainer)
 
-  createRenderEffect proc() =
+  createRenderEffect do:
     footerContainer.innerHTML = ""
     if store.tasks.val.len > 0:
       let footer = document.createElement("footer")
@@ -599,7 +599,7 @@ suite "App E2E - Headless":
     clearDelegatedEvents()
 
   test "app renders initial empty state":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let store = createTaskStore()
       let app = createDemoApp(store)
 
@@ -618,7 +618,7 @@ suite "App E2E - Headless":
       dispose()
 
   test "app adds and displays tasks":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let store = createTaskStore()
       let app = createDemoApp(store)
 
@@ -647,7 +647,7 @@ suite "App E2E - Headless":
       dispose()
 
   test "app toggles task completion":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let store = createTaskStore()
       let app = createDemoApp(store)
 
@@ -674,7 +674,7 @@ suite "App E2E - Headless":
       dispose()
 
   test "app removes task":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let store = createTaskStore()
       let app = createDemoApp(store)
 
@@ -694,7 +694,7 @@ suite "App E2E - Headless":
       dispose()
 
   test "app filters by active":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let store = createTaskStore()
       let app = createDemoApp(store)
 
@@ -722,7 +722,7 @@ suite "App E2E - Headless":
       dispose()
 
   test "app clears completed tasks":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let store = createTaskStore()
       let app = createDemoApp(store)
 
@@ -744,7 +744,7 @@ suite "App E2E - Headless":
       dispose()
 
   test "app form submit adds task via event":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let store = createTaskStore()
       let app = createDemoApp(store)
 
@@ -769,7 +769,7 @@ suite "App E2E - Headless":
 
   test "app full user flow":
     ## Simulates a complete user session: add tasks, toggle, filter, clear.
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let store = createTaskStore()
       let app = createDemoApp(store)
 

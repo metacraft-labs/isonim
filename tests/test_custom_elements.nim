@@ -458,7 +458,7 @@ suite "Web Components - Reactive":
         let count = createSignal(initVal)
 
         let span = document.createElement("span")
-        createRenderEffect proc() =
+        createRenderEffect do:
           span.textContent = cstring($count.val)
         ctx.renderRoot.appendChild(span)
 
@@ -468,7 +468,7 @@ suite "Web Components - Reactive":
         {.emit: [ctx.element, "._setCount = ", setter, ";"].}
     )
 
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let el = createCustomInstance(cstring"test-reactive", (cstring"initial", cstring"5"))
       check getShadowTextContent(el) == cstring"5"
 

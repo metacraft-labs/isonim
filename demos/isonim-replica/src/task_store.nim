@@ -136,7 +136,7 @@ proc createTaskStore*(): TaskStore =
   )
 
   # Side-effect: log task count changes
-  createEffect proc() =
+  createEffect do:
     let count = tasks.val.len
     log.update proc(prev: seq[string]): seq[string] =
       result = prev

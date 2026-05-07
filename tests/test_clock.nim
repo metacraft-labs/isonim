@@ -101,9 +101,9 @@ suite "Effects with fake time":
   test "deferred effects work under fake time":
     withFakeTime:
       var observed = -1
-      createRoot proc(dispose: proc()) =
+      createRoot do (dispose: proc()):
         let s = createSignal(0)
-        createEffect proc() =
+        createEffect do:
           observed = s.val
         check observed == 0
         s.val = 5

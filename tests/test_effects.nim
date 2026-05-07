@@ -3,37 +3,37 @@ import isonim/core/[types, graph, signals, owner, computation, batch]
 
 suite "Effects":
   test "createEffect tracks signal and re-runs on change":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let s = createSignal(0)
       var observed = -1
-      createEffect proc() =
+      createEffect do:
         observed = s.val
       check observed == 0  # Initial run
       s.val = 5
       check observed == 5  # Re-run after signal change
 
   test "effect cleanup runs before re-execution":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let s = createSignal(0)
       var cleanupRan = false
-      createEffect proc() =
+      createEffect do:
         discard s.val
-        onCleanup proc() =
+        onCleanup do:
           cleanupRan = true
       check cleanupRan == false
       s.val = 1  # Should trigger cleanup then re-run
       check cleanupRan == true
 
   test "nested effects track independently":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let a = createSignal(0)
       let b = createSignal(0)
       var outerRuns = 0
       var innerRuns = 0
-      createEffect proc() =
+      createEffect do:
         inc outerRuns
         discard a.val
-        createEffect proc() =
+        createEffect do:
           inc innerRuns
           discard b.val
       check outerRuns == 1
@@ -49,7 +49,7 @@ suite "Memos":
       value: int
 
   test "createMemo caches and updates":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let a = createSignal(1)
       let b = createSignal(2)
       let sum = createMemo(proc(): int = a.val + b.val)
@@ -58,10 +58,10 @@ suite "Memos":
       check sum.val == 12
 
   test "memo only recomputes when dependencies change":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let s = createSignal(0)
       var computeCount = 0
-      let doubled = createMemo proc(): int =
+      let doubled = createMemo do () -> int:
         inc computeCount
         s.val * 2
       check doubled.val == 0
@@ -73,7 +73,7 @@ suite "Memos":
       check computeCount == 2
 
   test "memo diamond dependency":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let s = createSignal(1)
       let doubled = createMemo(proc(): int = s.val * 2)
       let tripled = createMemo(proc(): int = s.val * 3)
@@ -83,7 +83,7 @@ suite "Memos":
       check sum.val == 10  # 4 + 6
 
   test "memo preserves seqs of value objects on JS target":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let rows = createSignal(newSeq[Row]())
       let visible = createMemo[seq[Row]] proc(): seq[Row] =
         for row in rows.val:
@@ -104,9 +104,9 @@ suite "Owners":
     var observed = -1
     var disposeRoot: proc()
     let s = createSignal(0)
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       disposeRoot = dispose
-      createEffect proc() =
+      createEffect do:
         observed = s.val
     check observed == 0
     s.val = 1
@@ -116,16 +116,16 @@ suite "Owners":
     check observed == 1  # Effect was disposed
 
   test "nested createRoot - disposing child doesn't affect parent":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       var parentObserved = -1
       var childObserved = -1
       var disposeChild: proc()
       let s = createSignal(0)
-      createEffect proc() =
+      createEffect do:
         parentObserved = s.val
-      createRoot proc(innerDispose: proc()) =
+      createRoot do (innerDispose: proc()):
         disposeChild = innerDispose
-        createEffect proc() =
+        createEffect do:
           childObserved = s.val
       s.val = 1
       check parentObserved == 1
@@ -137,8 +137,8 @@ suite "Owners":
 
   test "onCleanup runs on disposal":
     var cleaned = false
-    createRoot proc(dispose: proc()) =
-      onCleanup proc() =
+    createRoot do (dispose: proc()):
+      onCleanup do:
         cleaned = true
       check cleaned == false
       dispose()
@@ -146,21 +146,21 @@ suite "Owners":
 
   test "runWithOwner runs in given owner context":
     var ownerRef: OwnerBase
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       ownerRef = getOwner()
     var observed = -1
     let s = createSignal(0)
     runWithOwner(ownerRef) do:
-      createEffect proc() =
+      createEffect do:
         observed = s.val
     check observed == 0
 
 suite "Batch":
   test "batch coalesces multiple writes":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let s = createSignal(0)
       var runCount = 0
-      createEffect proc() =
+      createEffect do:
         discard s.val
         inc runCount
       check runCount == 1
@@ -171,11 +171,11 @@ suite "Batch":
       check runCount == 2  # Only one re-execution after batch
 
   test "untrack prevents dependency registration":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let a = createSignal(1)
       let b = createSignal(2)
       var observed = -1
-      createEffect proc() =
+      createEffect do:
         observed = a.val + untrack(proc(): int = b.val)
       check observed == 3
       b.val = 10  # Should NOT trigger re-run

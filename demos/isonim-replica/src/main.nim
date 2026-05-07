@@ -65,7 +65,7 @@ proc createApp(): Node =
   taskList.className = "task-list"
 
   # Reactive list rendering
-  createRenderEffect proc() =
+  createRenderEffect do:
     let tasks = store.filteredTasks.val
     # Clear section
     section.innerHTML = ""
@@ -110,7 +110,7 @@ proc createApp(): Node =
   let footerContainer = document.createElement("div")
   appDiv.appendChild(footerContainer)
 
-  createRenderEffect proc() =
+  createRenderEffect do:
     footerContainer.innerHTML = ""
     if store.tasks.val.len > 0:
       let footer = document.createElement("footer")
@@ -150,7 +150,7 @@ proc createApp(): Node =
   let detailContainer = document.createElement("div")
   appDiv.appendChild(detailContainer)
 
-  createRenderEffect proc() =
+  createRenderEffect do:
     detailContainer.innerHTML = ""
     let sid = store.selectedId.val
     if sid >= 0:
@@ -181,7 +181,7 @@ proc createApp(): Node =
   let logContainer = document.createElement("div")
   appDiv.appendChild(logContainer)
 
-  createRenderEffect proc() =
+  createRenderEffect do:
     logContainer.innerHTML = ""
     let entries = store.log.val
     if entries.len > 0:

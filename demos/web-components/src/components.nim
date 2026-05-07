@@ -44,7 +44,7 @@ registerCustomElement(
 
     let display = document.createElement("span")
     display.className = "count-display"
-    createRenderEffect proc() =
+    createRenderEffect do:
       display.textContent = cstring($count.val)
     wrapper.appendChild(display.Node)
 
@@ -125,7 +125,7 @@ registerCustomElement(
     thumb.className = "toggle-thumb"
     track.appendChild(thumb.Node)
 
-    createRenderEffect proc() =
+    createRenderEffect do:
       if checked.val:
         track.className = "toggle-track checked"
       else:
@@ -142,7 +142,7 @@ registerCustomElement(
 
     let labelSpan = document.createElement("span")
     labelSpan.className = "toggle-label"
-    createRenderEffect proc() =
+    createRenderEffect do:
       labelSpan.textContent = labelText.val
 
     wrapper.appendChild(labelSpan.Node)
@@ -200,7 +200,7 @@ registerCustomElement(
     let badge = document.createElement("span")
     badge.className = "badge"
 
-    createRenderEffect proc() =
+    createRenderEffect do:
       badge.textContent = badgeCount.val
       let v = variant.val
       var cls = cstring"badge"
@@ -314,7 +314,7 @@ registerCustomElement(
     let listContainer = document.createElement("div")
     listContainer.className = "tasks"
 
-    createRenderEffect proc() =
+    createRenderEffect do:
       listContainer.innerHTML = ""
       let currentTasks = tasks.val
       if currentTasks.len == 0:
@@ -376,7 +376,7 @@ registerCustomElement(
     # Summary
     let summary = document.createElement("div")
     summary.className = "summary"
-    createRenderEffect proc() =
+    createRenderEffect do:
       let total = tasks.val.len
       var doneCount = 0
       for t in tasks.val:

@@ -99,18 +99,18 @@ proc createTerminalPanel*(
   term.onData(onInput)
 
   # -- Reactive effect: write output signal to terminal --
-  createRenderEffect proc() =
+  createRenderEffect do:
     let text = output.val
     if text.len > 0:
       term.write(text)
 
   # -- Reactive effect: resize terminal when dimensions change --
-  createRenderEffect proc() =
+  createRenderEffect do:
     let dims = dimensions.val
     term.resize(dims.cols, dims.rows)
 
   # -- Cleanup: dispose terminal on unmount --
-  onCleanup proc() =
+  onCleanup do:
     term.dispose()
 
   TerminalPanel(
@@ -129,7 +129,7 @@ suite "PoC: Terminal Host":
 
   test "container creation and library init":
     ## IsoNim creates a container div; the terminal attaches to it.
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = MockRenderer()
       let output = createSignal("")
       let dims = createSignal((cols: 80, rows: 24))
@@ -148,7 +148,7 @@ suite "PoC: Terminal Host":
 
   test "reactive output — writing to signal causes terminal.write":
     ## Updating the output signal reactively pushes text to the terminal.
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = MockRenderer()
       let output = createSignal("")
       let dims = createSignal((cols: 80, rows: 24))
@@ -169,7 +169,7 @@ suite "PoC: Terminal Host":
 
   test "input callback — terminal input triggers IsoNim callback":
     ## User typing in the terminal fires the onInput callback.
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = MockRenderer()
       let output = createSignal("")
       let dims = createSignal((cols: 80, rows: 24))
@@ -192,7 +192,7 @@ suite "PoC: Terminal Host":
 
   test "resize handling — reactive dimensions signal triggers terminal.resize":
     ## Changing the dimensions signal reactively resizes the terminal.
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = MockRenderer()
       let output = createSignal("")
       let dims = createSignal((cols: 80, rows: 24))
@@ -215,7 +215,7 @@ suite "PoC: Terminal Host":
 
   test "status bar reflects dimensions reactively":
     ## The IsoNim-rendered status bar updates when dimensions change.
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = MockRenderer()
       let output = createSignal("")
       let dims = createSignal((cols: 80, rows: 24))
@@ -233,7 +233,7 @@ suite "PoC: Terminal Host":
   test "surrounding IsoNim UI coexists with terminal container":
     ## The toolbar (IsoNim) + terminal container (library) + status bar
     ## (IsoNim) coexist in the same DOM tree.
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = MockRenderer()
       let output = createSignal("")
       let dims = createSignal((cols: 80, rows: 24))
@@ -262,7 +262,7 @@ suite "PoC: Terminal Host":
     ## Disposing the reactive root triggers terminal cleanup.
     var termRef: MockTerminal
 
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = MockRenderer()
       let output = createSignal("")
       let dims = createSignal((cols: 80, rows: 24))
@@ -278,7 +278,7 @@ suite "PoC: Terminal Host":
 
   test "full round-trip: output + input + resize":
     ## Integration test: exercises the full lifecycle.
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = MockRenderer()
       let output = createSignal("")
       let dims = createSignal((cols: 80, rows: 24))

@@ -416,7 +416,7 @@ suite "Web Renderer - insert":
     let container = makeContainer()
     let count = createSignal(0)
 
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       insert(container, proc(): cstring = cstring($count.val))
 
       # Initial value should be rendered
@@ -506,7 +506,7 @@ suite "Web Renderer - counter demo compilation":
 
     let count = createSignal(0)
 
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let el = tmpl("<div><span></span></div>")()
       let span = el.firstChild
 

@@ -30,7 +30,7 @@ proc createCounter*[R, N](renderer: R): N =
   renderer.addEventListener(incBtn, "click", proc() = count.val = count.val + 1)
   renderer.addEventListener(decBtn, "click", proc() = count.val = count.val - 1)
 
-  createRenderEffect proc() =
+  createRenderEffect do:
     renderer.setTextContent(label, "Count: " & $count.val)
 
   return container
@@ -95,7 +95,7 @@ suite "Terminal Renderer":
 
   test "test_terminal_counter":
     ## Counter component renders and updates in terminal.
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = TerminalRenderer()
       let app = createCounter[TerminalRenderer, TerminalNode](r)
 
@@ -133,7 +133,7 @@ suite "Terminal Renderer":
   test "test_same_component_dual_target":
     ## Same component logic works with both MockRenderer and TerminalRenderer.
     ## This is the key proof of GUI-agnostic architecture.
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       # Create counter with MockRenderer
       let mockR = MockRenderer()
       let mockApp = createCounter[MockRenderer, MockNode](mockR)

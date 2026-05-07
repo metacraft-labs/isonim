@@ -101,11 +101,11 @@ proc EditorPanel(r: MockRenderer; code: Signal[string]; language: string):
 
   onMount proc() =
     editorRef = createMonacoEditor(editorContainer, code.val, language)
-    onCleanup proc() =
+    onCleanup do:
       editorRef.destroy()
 
   # Reactive bridge: push code changes to Monaco
-  createEffect proc() =
+  createEffect do:
     if editorRef != nil and not editorRef.disposed:
       editorRef.setValue(code.val)
 
@@ -124,7 +124,7 @@ proc TerminalPanel(r: MockRenderer):
 
   onMount proc() =
     termRef = createXtermTerminal(termContainer)
-    onCleanup proc() =
+    onCleanup do:
       termRef.destroy()
 
   result = (root: panel, terminal: addr termRef)
@@ -135,7 +135,7 @@ proc TerminalPanel(r: MockRenderer):
 
 suite "Monaco-like editor hosting":
   test "EditorPanel creates and mounts editor":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = MockRenderer()
       let code = createSignal("proc main() =\n  echo \"hello\"")
       let (panel, editorPtr) = EditorPanel(r, code, "nim")
@@ -155,7 +155,7 @@ suite "Monaco-like editor hosting":
       check editor.container.attributes["data-language"] == "nim"
 
   test "EditorPanel reacts to code signal changes":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = MockRenderer()
       let code = createSignal("let x = 1")
       let (panel, editorPtr) = EditorPanel(r, code, "nim")
@@ -173,7 +173,7 @@ suite "Monaco-like editor hosting":
     var editor: MockMonacoEditor
     var myDispose: proc()
 
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       myDispose = dispose
       let r = MockRenderer()
       let code = createSignal("hello")
@@ -187,7 +187,7 @@ suite "Monaco-like editor hosting":
     check editor.disposed == true
 
   test "TerminalPanel creates and mounts terminal":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = MockRenderer()
       let (panel, termPtr) = TerminalPanel(r)
       let term = termPtr[]
@@ -204,7 +204,7 @@ suite "Monaco-like editor hosting":
     var term: MockXtermTerminal
     var myDispose: proc()
 
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       myDispose = dispose
       let r = MockRenderer()
       let (panel, termPtr) = TerminalPanel(r)
@@ -220,7 +220,7 @@ suite "Monaco-like editor hosting":
     var editor: MockMonacoEditor
     var terminal: MockXtermTerminal
 
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       myDispose = dispose
       let r = MockRenderer()
       let code = createSignal("echo 42")
@@ -248,7 +248,7 @@ suite "Monaco-like editor hosting":
         onCleanup(cleanup)
 
       # Reactive bridge
-      createEffect proc() =
+      createEffect do:
         if editor != nil and not editor.disposed:
           editor.setValue(code.val)
 
@@ -270,7 +270,7 @@ suite "Monaco-like editor hosting":
 
   test "editor with bidirectional sync":
     ## Pattern: Monaco fires onChange -> updates signal -> other UI reacts
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = MockRenderer()
       let code = createSignal("initial")
       var editorHost: MockNode
@@ -287,11 +287,11 @@ suite "Monaco-like editor hosting":
         # When user edits in Monaco, push back to signal
         editor.onDidChangeContent proc(newCode: string) =
           code.val = newCode
-        onCleanup proc() =
+        onCleanup do:
           editor.destroy()
 
       # A reactive effect that mirrors code to statusText
-      createEffect proc() =
+      createEffect do:
         statusText = "Code: " & code.val
 
       check statusText == "Code: initial"

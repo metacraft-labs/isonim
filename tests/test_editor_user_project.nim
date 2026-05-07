@@ -11,7 +11,7 @@ suite "User Project ViewModels (M1)":
 
   test "test_task_row_vm_state_transitions":
     ## TaskRowVM transitions through active/completed/editing/saving/error
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let vm = createTaskRowVM(TaskData(id: 1, text: "Test", completed: false))
       check vm.displayState.val == tdsActive
       check vm.isCompleted.val == false
@@ -38,7 +38,7 @@ suite "User Project ViewModels (M1)":
 
   test "test_task_list_vm_filtering":
     ## TaskListVM.filteredTasks memo correctly filters
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let vm = createTaskAppVM()
       vm.store.addTask("Active task")
       vm.store.addTask("Done task")
@@ -58,7 +58,7 @@ suite "User Project ViewModels (M1)":
 
   test "test_task_app_vm_composition":
     ## TaskAppVM composes child VMs and propagates state
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let vm = createTaskAppVM()
       check vm.hasTasks.val == false
       check vm.hasCompletedTasks.val == false
@@ -92,7 +92,7 @@ suite "User Project ViewModels (M1)":
 
   test "test_mock_provider_covers_all_flows":
     ## Each flow has realistic mock data
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       # Empty provider
       let empty = emptyProvider()
       check empty.tasks.len == 0

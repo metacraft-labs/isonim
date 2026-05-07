@@ -10,7 +10,7 @@ import task_store
 proc renderTaskApp*(): string =
   ## Renders the task manager as an HTML string using SSR.
   ## Pre-populates with sample data for demonstration.
-  renderToString proc(): string =
+  renderToString do () -> string:
     var store = createTaskStore()
     # Pre-populate with sample data
     store.addTask("Learn IsoNim")

@@ -11,7 +11,7 @@ suite "M8 — Responsive Design":
 
   test "test_responsive_narrow_collapses_panels":
     ## At narrow viewport, both panels should collapse
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let vm = createEditorVM()
       check vm.panels.val.sidebar == true
       check vm.panels.val.inspector == true
@@ -24,7 +24,7 @@ suite "M8 — Responsive Design":
 
   test "test_responsive_medium_inspector_toggle":
     ## At medium viewport, inspector toggleable, sidebar visible
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let vm = createEditorVM()
       vm.panels.val = PanelVisibility(sidebar: true, inspector: false)
       check vm.panels.val.sidebar == true
@@ -37,7 +37,7 @@ suite "M8 — Responsive Design":
 
   test "test_responsive_wide_all_visible":
     ## At wide viewport, all panels visible (default)
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let vm = createEditorVM()
       check vm.panels.val.sidebar == true
       check vm.panels.val.inspector == true
@@ -45,7 +45,7 @@ suite "M8 — Responsive Design":
 
   test "test_sidebar_toggle":
     ## Sidebar toggle button shows/hides sidebar
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let vm = createEditorVM()
       check vm.panels.val.sidebar == true
 
@@ -60,7 +60,7 @@ suite "M9 — Design Polish":
 
   test "test_empty_state_no_project":
     ## Without any stories loaded, sidebar shows empty state
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let vm = createEditorVM()
       check vm.sidebar.groups.val.len == 0
       check vm.sidebar.filteredItems.val.len == 0
@@ -69,7 +69,7 @@ suite "M9 — Design Polish":
 
   test "test_empty_state_no_element_selected":
     ## With no element selected, inspector shows placeholder
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let vm = createEditorVM()
       check vm.inspector.hasElement.val == false
       check vm.inspector.properties.val.len == 0
@@ -77,7 +77,7 @@ suite "M9 — Design Polish":
 
   test "test_error_state_agent_session":
     ## Agent session failure is reflected in VM
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let vm = createEditorVM()
       check vm.chat.sessionStatus.val == asIdle
 
@@ -90,7 +90,7 @@ suite "M9 — Design Polish":
 
   test "test_flow_empty_state":
     ## FlowPlayerVM with no steps handles gracefully
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let vm = createEditorVM()
       check vm.flowPlayer.totalSteps.val == 0
       check vm.flowPlayer.isFirstStep.val == true
@@ -105,7 +105,7 @@ suite "M9 — Design Polish":
 
   test "test_platform_switching":
     ## Platform selector changes preview platform
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let vm = createEditorVM()
       check vm.platform.val == pfWeb
 

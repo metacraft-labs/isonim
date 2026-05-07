@@ -59,7 +59,7 @@ when not defined(js):
 
   suite "createServerResource — C target (SSR)":
     test "server function resource resolves immediately":
-      createRoot proc(dispose: proc()) =
+      createRoot do (dispose: proc()):
         let r = createServerResource[User](
           proc(): User = getUser(1)
         )
@@ -68,7 +68,7 @@ when not defined(js):
         check r.val.name == "User 1"
 
     test "zero-arg server function resource":
-      createRoot proc(dispose: proc()) =
+      createRoot do (dispose: proc()):
         let r = createServerResource[int](
           proc(): int = getCount()
         )
@@ -76,7 +76,7 @@ when not defined(js):
         check r.val == 42
 
     test "string-returning server function":
-      createRoot proc(dispose: proc()) =
+      createRoot do (dispose: proc()):
         let r = createServerResource[string](
           proc(): string = getUserName(7)
         )
@@ -84,14 +84,14 @@ when not defined(js):
         check r.val == "User 7"
 
     test "resource is not loading after synchronous resolve":
-      createRoot proc(dispose: proc()) =
+      createRoot do (dispose: proc()):
         let r = createServerResource[int](
           proc(): int = getCount()
         )
         check r.loading == false
 
     test "failing server function produces errored resource":
-      createRoot proc(dispose: proc()) =
+      createRoot do (dispose: proc()):
         let r = createServerResource[string](
           proc(): string = failingFetch()
         )
@@ -99,7 +99,7 @@ when not defined(js):
         check "server error" in r.error.val
 
     test "multiple resources in one scope all resolve":
-      createRoot proc(dispose: proc()) =
+      createRoot do (dispose: proc()):
         let userRes = createServerResource[User](
           proc(): User = getUser(10)
         )
@@ -118,7 +118,7 @@ when not defined(js):
 
   suite "createServerResource — SSR renderToString integration":
     test "resource data appears in rendered HTML":
-      let html = renderToString proc(): string =
+      let html = renderToString do () -> string:
         let user = createServerResource[User](
           proc(): User = getUser(42)
         )
@@ -130,7 +130,7 @@ when not defined(js):
       check "ID: 42" in html
 
     test "multiple resources in rendered HTML":
-      let html = renderToString proc(): string =
+      let html = renderToString do () -> string:
         let user = createServerResource[User](
           proc(): User = getUser(1)
         )
@@ -148,7 +148,7 @@ when not defined(js):
       check "Body of post 99" in html
 
     test "resource error handled in rendered HTML":
-      let html = renderToString proc(): string =
+      let html = renderToString do () -> string:
         let r = createServerResource[string](
           proc(): string = failingFetch()
         )
@@ -242,7 +242,7 @@ when not defined(js):
 
   suite "createServerResource — source variant (C target)":
     test "source-based server resource resolves immediately":
-      createRoot proc(dispose: proc()) =
+      createRoot do (dispose: proc()):
         let id = createSignal(5)
         let r = createServerResource[int, User](
           proc(): int = id.val,
@@ -252,7 +252,7 @@ when not defined(js):
         check r.val.name == "User 5"
 
     test "source-based resource refetches on source change":
-      createRoot proc(dispose: proc()) =
+      createRoot do (dispose: proc()):
         let id = createSignal(1)
         var fetchCount = 0
         let r = createServerResource[int, User](

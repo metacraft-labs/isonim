@@ -22,7 +22,7 @@ proc renderTaskItem[R, N](renderer: R; parent: N; store: TaskStore;
     item: proc(): Task; index: proc(): int) =
   ## Renders a single task list item with reactive class, text, and handlers.
   let li = renderer.createElement("li")
-  createRenderEffect proc() =
+  createRenderEffect do:
     let t = item()
     if t.done:
       renderer.setAttribute(li, "class", "completed")
@@ -34,7 +34,7 @@ proc renderTaskItem[R, N](renderer: R; parent: N; store: TaskStore;
   renderer.appendChild(li, checkbox)
 
   let span = renderer.createElement("span")
-  createRenderEffect proc() =
+  createRenderEffect do:
     renderer.setTextContent(span, item().text)
   renderer.addEventListener(span, "click", proc() =
     store.setSelectedId(item().id)
@@ -62,7 +62,7 @@ proc renderTaskList*[R, N](renderer: R; parent: N; store: TaskStore) =
         proc(): seq[Task] = store.filteredTasks.val,
         proc(item: proc(): Task, index: proc(): int): N =
           let li = renderer.createElement("li")
-          createRenderEffect proc() =
+          createRenderEffect do:
             let t = item()
             if t.done:
               renderer.setAttribute(li, "class", "completed")
@@ -76,7 +76,7 @@ proc renderTaskList*[R, N](renderer: R; parent: N; store: TaskStore) =
           renderer.appendChild(li, checkbox)
 
           let span = renderer.createElement("span")
-          createRenderEffect proc() =
+          createRenderEffect do:
             renderer.setTextContent(span, item().text)
           renderer.addEventListener(span, "click", proc() =
             store.setSelectedId(item().id)
@@ -106,7 +106,7 @@ proc renderTaskFooter*[R, N](renderer: R; parent: N; store: TaskStore) =
       renderer.setAttribute(footer, "class", "task-footer")
 
       let countSpan = renderer.createElement("span")
-      createRenderEffect proc() =
+      createRenderEffect do:
         let ac = store.activeCount.val
         let suffix = if ac != 1: "s" else: ""
         renderer.setTextContent(countSpan, $ac & " item" & suffix & " left")
@@ -118,7 +118,7 @@ proc renderTaskFooter*[R, N](renderer: R; parent: N; store: TaskStore) =
         let filterVal = f
         let btn = renderer.createElement("button")
         renderer.setTextContent(btn, $filterVal)
-        createRenderEffect proc() =
+        createRenderEffect do:
           if store.filter.val == filterVal:
             renderer.setAttribute(btn, "class", "selected")
           else:
@@ -149,7 +149,7 @@ proc renderEffectLog*[R, N](renderer: R; parent: N; store: TaskStore) =
       renderer.setAttribute(details, "class", "effect-log")
 
       let summary = renderer.createElement("summary")
-      createRenderEffect proc() =
+      createRenderEffect do:
         renderer.setTextContent(summary, "Effect log (" & $store.log.val.len & " entries)")
       renderer.appendChild(details, summary)
 
@@ -158,7 +158,7 @@ proc renderEffectLog*[R, N](renderer: R; parent: N; store: TaskStore) =
         proc(): seq[string] = store.log.val,
         proc(item: proc(): string, index: proc(): int): N =
           let li = renderer.createElement("li")
-          createRenderEffect proc() =
+          createRenderEffect do:
             renderer.setTextContent(li, item())
           li
       )

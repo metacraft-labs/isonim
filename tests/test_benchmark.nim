@@ -193,8 +193,8 @@ suite "Benchmark Reactive Integration":
     var effectCount = 0
     let row = Row(id: 1, label: createSignal("initial"))
 
-    createRoot proc(dispose: proc()) =
-      createEffect proc() =
+    createRoot do (dispose: proc()):
+      createEffect do:
         discard row.label.val
         inc effectCount
 
@@ -209,8 +209,8 @@ suite "Benchmark Reactive Integration":
     var effectCount = 0
     let data = createSignal(newSeq[Row]())
 
-    createRoot proc(dispose: proc()) =
-      createEffect proc() =
+    createRoot do (dispose: proc()):
+      createEffect do:
         discard data.val
         inc effectCount
 
@@ -225,8 +225,8 @@ suite "Benchmark Reactive Integration":
     var effectCount = 0
     let selected = createSignal(0)
 
-    createRoot proc(dispose: proc()) =
-      createEffect proc() =
+    createRoot do (dispose: proc()):
+      createEffect do:
         discard selected.val
         inc effectCount
 
@@ -242,11 +242,11 @@ suite "Benchmark Reactive Integration":
   test "update operation triggers per-row label effects":
     var updates = 0
 
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let rows = buildData(30)
       # Track effect on a single row
       let trackedRow = rows[10]
-      createEffect proc() =
+      createEffect do:
         discard trackedRow.label.val
         inc updates
 

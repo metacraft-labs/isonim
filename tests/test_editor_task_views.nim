@@ -13,7 +13,7 @@ suite "User Project Views (M3)":
 
   test "test_task_row_view_active_state":
     ## TaskRow renders with full opacity for active task
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createTaskRowVM(TaskData(id: 1, text: "Buy groceries", completed: false))
       let row = renderTaskRow[MockRenderer, MockNode](r, vm, proc() = discard, proc() = discard)
@@ -25,7 +25,7 @@ suite "User Project Views (M3)":
 
   test "test_task_row_view_completed_state":
     ## TaskRow renders with strikethrough for completed task
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createTaskRowVM(TaskData(id: 1, text: "Done task", completed: true))
       let row = renderTaskRow[MockRenderer, MockNode](r, vm, proc() = discard, proc() = discard)
@@ -37,7 +37,7 @@ suite "User Project Views (M3)":
 
   test "test_task_app_view_empty_state":
     ## TaskApp renders empty state message when no tasks
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createTaskAppVM()
       let app = renderTaskApp[MockRenderer, MockNode](r, vm)
@@ -48,7 +48,7 @@ suite "User Project Views (M3)":
 
   test "test_task_app_view_with_mock_data":
     ## TaskApp renders task rows when mock data is applied
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createTaskAppVM()
       vm.applyMock(activeWorkspaceProvider())
@@ -60,7 +60,7 @@ suite "User Project Views (M3)":
 
   test "test_all_stories_produce_views":
     ## Every component story produces a non-empty rendered tree
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = MockRenderer()
 
       for story in taskRowStories():
@@ -78,7 +78,7 @@ suite "User Project Views (M3)":
 
   test "test_reactive_update_changes_view":
     ## Completing a task via VM updates the view reactively
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createTaskRowVM(TaskData(id: 1, text: "Test", completed: false))
       let row = renderTaskRow[MockRenderer, MockNode](r, vm, proc() = discard, proc() = discard)

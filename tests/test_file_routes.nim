@@ -75,7 +75,7 @@ suite "fileRoutes macro — compile-time directory scan":
     check "/users/:id/posts" in paths
 
   test "routes match expected URLs via router":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = createRouter(routes, "/")
       check r.hasMatch()
 

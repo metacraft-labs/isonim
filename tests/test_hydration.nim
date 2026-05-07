@@ -791,7 +791,7 @@ suite "Hydration - E2E Counter":
     let count = createSignal(0)
 
     # Hydrate with a counter component
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       # Set up hydration context manually (since we can't use hydrate()
       # which calls render() which creates its own root)
       sharedConfig.registry = newHydrationRegistry()
@@ -868,7 +868,7 @@ suite "Hydration - E2E List":
 
     let items = createSignal(cstring"a,b")
 
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       sharedConfig.registry = newHydrationRegistry()
       sharedConfig.context = HydrationContext(id: "", count: 0)
       {.emit: [sharedConfig.completed, " = globalThis._$HY.completed;"].}

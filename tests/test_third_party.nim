@@ -56,7 +56,7 @@ proc destroy*(w: MockLibraryWidget) =
 suite "ref and onMount":
   test "ref captures created element":
     ## The ref=variable pattern assigns the DOM element to the variable
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       var containerEl: MockNode
 
@@ -76,7 +76,7 @@ suite "ref and onMount":
 
   test "onMount fires after element exists":
     ## onMount runs its callback once, after the reactive root is set up
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       var mounted = false
       var mountedEl: MockNode
@@ -97,7 +97,7 @@ suite "ref and onMount":
 
   test "onMount does not track signals":
     ## onMount should not re-run when signals change
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let count = createSignal(0)
       var mountCount = 0
@@ -125,7 +125,7 @@ suite "ref and onMount":
     var cleanedUp = false
     var myDispose: proc()
 
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       myDispose = dispose
       let renderer = MockRenderer()
 
@@ -134,7 +134,7 @@ suite "ref and onMount":
           discard
 
       onMount proc() =
-        onCleanup proc() =
+        onCleanup do:
           cleanedUp = true
 
     check cleanedUp == false
@@ -147,7 +147,7 @@ suite "ref and onMount":
     var widget: MockLibraryWidget
     let initialCount = widgetCount
 
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       myDispose = dispose
       let renderer = MockRenderer()
 
@@ -159,7 +159,7 @@ suite "ref and onMount":
 
       onMount proc() =
         widget = createMockWidget(containerEl, "hello")
-        onCleanup proc() =
+        onCleanup do:
           widget.destroy()
 
     # Widget should be created
@@ -179,7 +179,7 @@ suite "ref and onMount":
     var myDispose: proc()
     var widget: MockLibraryWidget
 
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       myDispose = dispose
       let renderer = MockRenderer()
       let value = createSignal("initial")
@@ -192,11 +192,11 @@ suite "ref and onMount":
 
       onMount proc() =
         widget = createMockWidget(containerEl, value.val)
-        onCleanup proc() =
+        onCleanup do:
           widget.destroy()
 
       # Reactive bridge: when `value` changes, update the widget
-      createEffect proc() =
+      createEffect do:
         if widget != nil:
           widget.updateValue(value.val)
 
@@ -214,7 +214,7 @@ suite "ref and onMount":
 
   test "multiple refs in same tree":
     ## Multiple ref bindings in the same ui block all work
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       var header: MockNode
       var content: MockNode

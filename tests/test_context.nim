@@ -5,44 +5,44 @@ import isonim/testing/test_utils
 
 suite "Context":
   test "createContext and useContext with default":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let theme = createContext("light")
       check useContext(theme) == "light"
 
   test "provide overrides default":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let theme = createContext("light")
       provide(theme, "dark")
       check useContext(theme) == "dark"
 
   test "nested provider overrides outer":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let theme = createContext("light")
       provide(theme, "outer")
       check useContext(theme) == "outer"
-      createRoot proc(dispose: proc()) =
+      createRoot do (dispose: proc()):
         provide(theme, "inner")
         check useContext(theme) == "inner"
       # Back in outer scope
       check useContext(theme) == "outer"
 
   test "child inherits parent context":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let lang = createContext("en")
       provide(lang, "fr")
-      createRoot proc(dispose: proc()) =
+      createRoot do (dispose: proc()):
         # No provide here -- should inherit parent
         check useContext(lang) == "fr"
 
 suite "Resource":
   test "resource fetch lifecycle - ready":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = createResource[int](proc(): int = 42)
       check r.val == 42
       check r.state.val == rsReady
 
   test "resource fetch lifecycle - error":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = createResource[int](proc(): int =
         raise newException(CatchableError, "network error")
       )
@@ -50,7 +50,7 @@ suite "Resource":
       check r.error.val == "network error"
 
   test "resource with source refetches":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let source = createSignal(1)
       var fetchCount = 0
       let r = createResource[int, int](
@@ -66,7 +66,7 @@ suite "Resource":
       check fetchCount == 2
 
   test "resource loading state":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let r = createResource[int](proc(): int = 42)
       check r.loading == false  # Already resolved (synchronous)
       check r.state.val == rsReady
@@ -87,10 +87,10 @@ suite "Suspense":
 
 suite "Transition":
   test "startTransition batches updates":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let s = createSignal(0)
       var runCount = 0
-      createEffect proc() =
+      createEffect do:
         discard s.val
         inc runCount
       check runCount == 1
@@ -101,7 +101,7 @@ suite "Transition":
       check runCount == 2  # Batched -- one re-run
 
   test "useTransition pending signal":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let (pending, start) = useTransition()
       check pending() == false
       # After start completes, pending should be false
@@ -111,14 +111,14 @@ suite "Transition":
 
 suite "Resource with TestClock":
   test "deferred resource starts pending":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let dr = createDeferredResource[int]()
       check dr.resource.state.val == rsPending
       check dr.resource.loading == true
       check dr.resource.val == 0  # default
 
   test "deferred resource resolves":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let dr = createDeferredResource[int]()
       dr.resolve(42)
       check dr.resource.val == 42
@@ -126,7 +126,7 @@ suite "Resource with TestClock":
       check dr.resource.loading == false
 
   test "deferred resource rejects":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let dr = createDeferredResource[int]()
       dr.reject("timeout")
       check dr.resource.state.val == rsErrored
@@ -135,7 +135,7 @@ suite "Resource with TestClock":
   test "deferred resource with scheduled resolution":
     ## Resource resolves after simulated delay via TestClock
     withFakeTime:
-      createRoot proc(dispose: proc()) =
+      createRoot do (dispose: proc()):
         let dr = createDeferredResource[string]()
         check dr.resource.state.val == rsPending
 
@@ -155,7 +155,7 @@ suite "Resource with TestClock":
   test "deferred resource with scheduled rejection":
     ## Resource errors after simulated timeout
     withFakeTime:
-      createRoot proc(dispose: proc()) =
+      createRoot do (dispose: proc()):
         let dr = createDeferredResource[int]()
 
         discard tc.schedule(proc() =
@@ -172,7 +172,7 @@ suite "Resource with TestClock":
   test "multiple deferred resources with staggered resolution":
     ## Two resources resolve at different times
     withFakeTime:
-      createRoot proc(dispose: proc()) =
+      createRoot do (dispose: proc()):
         let dr1 = createDeferredResource[string]()
         let dr2 = createDeferredResource[string]()
 
@@ -191,7 +191,7 @@ suite "Resource with TestClock":
 suite "Suspense with deferred resources":
   test "suspense boundary tracks deferred resources":
     withFakeTime:
-      createRoot proc(dispose: proc()) =
+      createRoot do (dispose: proc()):
         let ctx = newSuspenseContext()
         let dr = createDeferredResource[string]()
 
@@ -210,7 +210,7 @@ suite "Suspense with deferred resources":
 
   test "suspense with multiple pending resources":
     withFakeTime:
-      createRoot proc(dispose: proc()) =
+      createRoot do (dispose: proc()):
         let ctx = newSuspenseContext()
         let dr1 = createDeferredResource[int]()
         let dr2 = createDeferredResource[int]()
@@ -241,7 +241,7 @@ suite "Suspense with deferred resources":
 suite "Transition with TestClock":
   test "transition pending tracks deferred work":
     withFakeTime:
-      createRoot proc(dispose: proc()) =
+      createRoot do (dispose: proc()):
         let (pending, start) = useTransition()
         let s = createSignal(0)
         var completed = false
@@ -257,11 +257,11 @@ suite "Transition with TestClock":
   test "effect observes deferred resource state changes":
     ## An effect tracking resource state fires when resource resolves
     withFakeTime:
-      createRoot proc(dispose: proc()) =
+      createRoot do (dispose: proc()):
         let dr = createDeferredResource[string]()
         var observedStates: seq[ResourceState] = @[]
 
-        createEffect proc() =
+        createEffect do:
           observedStates.add(dr.resource.state.val)
 
         check observedStates == @[rsPending]

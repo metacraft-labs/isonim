@@ -13,7 +13,7 @@ proc renderAddButton(r: MockRenderer): MockNode =
 suite "DSL":
   test "test_dsl_static_html":
     ## ui with static content produces correct MockNode tree
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let root = ui(renderer):
         tdiv(class = "container"):
@@ -39,7 +39,7 @@ suite "DSL":
 
   test "test_dsl_dynamic_text_update":
     ## Signal-dependent text updates MockNode when signal changes
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let count = createSignal(0)
 
@@ -56,7 +56,7 @@ suite "DSL":
 
   test "test_dsl_dynamic_attribute":
     ## Signal-dependent attribute updates via createRenderEffect
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let cls = createSignal("red")
 
@@ -70,7 +70,7 @@ suite "DSL":
 
   test "test_dsl_event_handler":
     ## onclick registers handler; mock event triggers callback
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       var clicked = 0
 
@@ -86,7 +86,7 @@ suite "DSL":
 
   test "test_for_keyed_reconciliation":
     ## For adds/removes/reorders MockNodes matching array changes
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let items = createSignal(@["a", "b", "c"])
       let parent = renderer.createElement("div")
@@ -95,7 +95,7 @@ suite "DSL":
         proc(): seq[string] = items.val,
         proc(item: proc(): string, index: proc(): int): MockNode =
           let node = renderer.createElement("span")
-          createRenderEffect proc() =
+          createRenderEffect do:
             renderer.setTextContent(node, item())
           node
       )
@@ -125,7 +125,7 @@ suite "DSL":
 
   test "test_index_stable_references":
     ## Index keeps stable node refs; updates signal value in-place
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let items = createSignal(@[10, 20, 30])
       let parent = renderer.createElement("div")
@@ -134,7 +134,7 @@ suite "DSL":
         proc(): seq[int] = items.val,
         proc(item: proc(): int, index: int): MockNode =
           let node = renderer.createElement("span")
-          createRenderEffect proc() =
+          createRenderEffect do:
             renderer.setTextContent(node, $item())
           node
       )
@@ -161,7 +161,7 @@ suite "DSL":
 
   test "test_show_conditional":
     ## Show renders content when true, fallback when false
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let visible = createSignal(true)
       let parent = renderer.createElement("div")
@@ -194,7 +194,7 @@ suite "DSL":
 
   test "test_error_boundary_catches":
     ## ErrorBoundary renders fallback when child throws
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let parent = renderer.createElement("div")
 
@@ -214,7 +214,7 @@ suite "DSL":
 
   test "test_dsl_nested_components":
     ## Nested components create proper owner hierarchy
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       var outerOwner: OwnerBase
       var innerOwner: OwnerBase
@@ -239,15 +239,15 @@ suite "DSL":
       var innerVal = 0
       let s = createSignal(0)
 
-      createRoot proc(d1: proc()) =
+      createRoot do (d1: proc()):
         outerDispose = d1
         outerOwner = getOwner()
-        createEffect proc() =
+        createEffect do:
           outerVal = s.val
-        createRoot proc(d2: proc()) =
+        createRoot do (d2: proc()):
           innerDispose = d2
           innerOwner = getOwner()
-          createEffect proc() =
+          createEffect do:
             innerVal = s.val
 
       s.val = 5
@@ -265,7 +265,7 @@ suite "DSL":
 
   test "test_dsl_appends_helper_proc_result":
     ## Component/helper procs returning nodes compose naturally inside ui blocks.
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
 
       let root = ui(renderer):
@@ -280,7 +280,7 @@ suite "DSL":
 
   test "test_dsl_appends_helper_proc_result_in_if_else_branch":
     ## Helper procs returning nodes also append from natural if/else branches.
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let showFallback = true
 
@@ -299,7 +299,7 @@ suite "DSL":
 
   test "test_dsl_if_true_branch":
     ## if statement inside ui body renders the true branch
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let cond = true
       let root = ui(renderer):
@@ -315,7 +315,7 @@ suite "DSL":
 
   test "test_dsl_if_false_branch":
     ## if statement inside ui body renders the else branch
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let cond = false
       let root = ui(renderer):
@@ -331,7 +331,7 @@ suite "DSL":
 
   test "test_dsl_for_loop":
     ## for loop inside ui body creates children for each iteration
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let items = @["alpha", "beta", "gamma"]
       let root = ui(renderer):
@@ -348,7 +348,7 @@ suite "DSL":
 
   test "test_dsl_case_statement":
     ## case statement inside ui body selects the correct branch
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       type Color = enum red, green, blue
       let c = green
@@ -367,7 +367,7 @@ suite "DSL":
 
   test "test_dsl_nested_if_for":
     ## if and for can be nested inside each other in the DSL
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let showList = true
       let items = @["x", "y"]

@@ -107,16 +107,16 @@ proc EventLogPanel(renderer: MockRenderer;
   ])
 
   # Reactive bridge: signal changes -> library API calls (NOT DOM updates)
-  createEffect proc() =
+  createEffect do:
     let data = dataSource.val
     dtInstance.reload(data)
 
-  createEffect proc() =
+  createEffect do:
     let term = searchQuery.val
     dtInstance.search(term)
 
   # Cleanup: when the reactive root is disposed, destroy the library instance
-  onCleanup proc() =
+  onCleanup do:
     dtInstance.destroy()
 
   result = (root: root, tableEl: tableRef, dt: dtInstance)
@@ -129,7 +129,7 @@ proc EventLogPanel(renderer: MockRenderer;
 suite "DataTable hosting PoC":
 
   test "container element is created and mounted":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let dataSource = createSignal[seq[seq[string]]](@[])
       let searchQuery = createSignal("")
@@ -152,7 +152,7 @@ suite "DataTable hosting PoC":
       check thead.children[0].children.len == 3  # 3 <th>s
 
   test "library initializes on the element (simulated onMount)":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let dataSource = createSignal[seq[seq[string]]](@[])
       let searchQuery = createSignal("")
@@ -168,7 +168,7 @@ suite "DataTable hosting PoC":
       check dt.drawCount >= 1
 
   test "signal change triggers library reload, not DOM rebuild":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let dataSource = createSignal[seq[seq[string]]](@[])
       let searchQuery = createSignal("")
@@ -196,7 +196,7 @@ suite "DataTable hosting PoC":
       check currentTableEl == tableEl  # Same object reference
 
   test "search signal triggers library search, not IsoNim re-render":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let dataSource = createSignal[seq[seq[string]]](@[])
       let searchQuery = createSignal("")
@@ -214,7 +214,7 @@ suite "DataTable hosting PoC":
       check dt.drawCount == initialDraws + 2
 
   test "multiple data updates work correctly":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let dataSource = createSignal[seq[seq[string]]](@[])
       let searchQuery = createSignal("")
@@ -235,7 +235,7 @@ suite "DataTable hosting PoC":
       check dt.rowCount == 0
 
   test "batch signal updates coalesce into single library call":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let dataSource = createSignal[seq[seq[string]]](@[])
       let searchQuery = createSignal("")
@@ -258,7 +258,7 @@ suite "DataTable hosting PoC":
     let dataSource = createSignal[seq[seq[string]]](@[])
     let searchQuery = createSignal("")
 
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let (root, tableEl, dt) = EventLogPanel(renderer, dataSource, searchQuery)
       dtRef = dt
       check dtRef.destroyed == false
@@ -275,7 +275,7 @@ suite "DataTable hosting PoC":
     let dataSource = createSignal[seq[seq[string]]](@[])
     let searchQuery = createSignal("")
 
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       disposeRoot = dispose
       let (root, tableEl, dt) = EventLogPanel(renderer, dataSource, searchQuery)
       dtRef = dt
@@ -288,7 +288,7 @@ suite "DataTable hosting PoC":
     check dtRef.reloadCount == reloadsBeforeDispose
 
   test "IsoNim UI chrome is separate from library-owned DOM":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let dataSource = createSignal[seq[seq[string]]](@[])
       let searchQuery = createSignal("")

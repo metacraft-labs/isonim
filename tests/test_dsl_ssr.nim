@@ -54,7 +54,7 @@ suite "ui (SSR string mode)":
 
   test "dynamic_text":
     ## Dynamic expressions evaluated inline, no effects
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let count = createSignal(42)
       let html = ui:
         span: text $count.val
@@ -64,7 +64,7 @@ suite "ui (SSR string mode)":
 
   test "dynamic_attribute":
     ## Dynamic attributes evaluated inline
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let cls = createSignal("active")
       let html = ui:
         tdiv(class = cls.val)
@@ -123,7 +123,7 @@ suite "ui (SSR string mode)":
 
   test "mixed_static_and_dynamic":
     ## Mix of static and dynamic content in one tree
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let name = createSignal("World")
       let html = ui:
         tdiv:
@@ -139,7 +139,7 @@ suite "ui (SSR string mode)":
 suite "isomorphicUi":
   test "client_mode":
     ## isomorphicUi produces element tree in client mode (no -d:isServer)
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let root = isomorphicUi(renderer):
         tdiv(class = "app"):

@@ -8,10 +8,10 @@ import isonim/ssr/[renderer, escape, markers]
 
 suite "Signal Edge Cases":
   test "NaN writing NaN again notifies observers (NaN != NaN)":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let s = createSignal(NaN)
       var runCount = 0
-      createEffect proc() =
+      createEffect do:
         discard s.val
         inc runCount
       check runCount == 1
@@ -19,10 +19,10 @@ suite "Signal Edge Cases":
       check runCount == 2
 
   test "Infinity propagates correctly":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let s = createSignal(0.0)
       var observed = 0.0
-      createEffect proc() =
+      createEffect do:
         observed = s.val
       check observed == 0.0
 
@@ -37,7 +37,7 @@ suite "Signal Edge Cases":
       # Writing same Inf should not notify (Inf == Inf)
       var runCount = 0
       var s2 = createSignal(Inf)
-      createEffect proc() =
+      createEffect do:
         discard s2.val
         inc runCount
       check runCount == 1
@@ -45,10 +45,10 @@ suite "Signal Edge Cases":
       check runCount == 1  # no re-run
 
   test "negative zero vs positive zero treated as equal":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let s = createSignal(0.0)
       var runCount = 0
-      createEffect proc() =
+      createEffect do:
         discard s.val
         inc runCount
       check runCount == 1
@@ -56,10 +56,10 @@ suite "Signal Edge Cases":
       check runCount == 1  # default comparator should suppress
 
   test "empty string signal works correctly":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let s = createSignal("")
       var observed = "init"
-      createEffect proc() =
+      createEffect do:
         observed = s.val
       check observed == ""
 
@@ -72,7 +72,7 @@ suite "Signal Edge Cases":
       # Writing same empty string should not re-trigger
       var runCount = 0
       var s2 = createSignal("")
-      createEffect proc() =
+      createEffect do:
         discard s2.val
         inc runCount
       check runCount == 1
@@ -85,12 +85,12 @@ suite "Owner Disposal During Active Effect":
     var effectRunCount = 0
     var disposeRoot: proc()
 
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       disposeRoot = dispose
       let s = createSignal(0)
-      onCleanup proc() =
+      onCleanup do:
         cleanupRan = true
-      createEffect proc() =
+      createEffect do:
         inc effectRunCount
         let v = s.val
         if v == 1:
@@ -106,22 +106,22 @@ suite "Owner Disposal During Active Effect":
       check effectRunCount == 2
 
   test "dispose child root while parent effect is executing":
-    createRoot proc(outerDispose: proc()) =
+    createRoot do (outerDispose: proc()):
       let s = createSignal(0)
       var parentRuns = 0
       var childRuns = 0
       var childCleanupRan = false
       var disposeChild: proc()
 
-      createRoot proc(innerDispose: proc()) =
+      createRoot do (innerDispose: proc()):
         disposeChild = innerDispose
-        onCleanup proc() =
+        onCleanup do:
           childCleanupRan = true
-        createEffect proc() =
+        createEffect do:
           inc childRuns
           discard s.val
 
-      createEffect proc() =
+      createEffect do:
         inc parentRuns
         discard s.val
 
@@ -139,7 +139,7 @@ suite "Owner Disposal During Active Effect":
 
 suite "Nested Reconciliation (forEachKeyed)":
   test "nested forEachKeyed with inner and outer list mutations":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let outerItems = createSignal(@[@[1, 2], @[3, 4], @[5, 6]])
       let parent = renderer.createElement("div")
@@ -154,7 +154,7 @@ suite "Nested Reconciliation (forEachKeyed)":
             innerList,
             proc(item: proc(): int, innerIndex: proc(): int): MockNode =
               let node = renderer.createElement("span")
-              createRenderEffect proc() =
+              createRenderEffect do:
                 renderer.setTextContent(node, $item())
               node
           )
@@ -205,13 +205,13 @@ suite "Nested Reconciliation (forEachKeyed)":
 
 suite "Concurrent Signal Bursts":
   test "100 signals in a batch triggers effect exactly once":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       var signals: seq[Signal[int]] = @[]
       for i in 0 ..< 100:
         signals.add(createSignal(0))
 
       var runCount = 0
-      createEffect proc() =
+      createEffect do:
         var sum = 0
         for i in 0 ..< 100:
           sum += signals[i].val
@@ -227,13 +227,13 @@ suite "Concurrent Signal Bursts":
       check runCount == 2
 
   test "sequential writes coalesce via runUpdates":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       var signals: seq[Signal[int]] = @[]
       for i in 0 ..< 100:
         signals.add(createSignal(0))
 
       var runCount = 0
-      createEffect proc() =
+      createEffect do:
         var sum = 0
         for i in 0 ..< 100:
           sum += signals[i].val
@@ -259,14 +259,14 @@ suite "Concurrent Signal Bursts":
 suite "Resource Cancellation":
   test "changing source before first fetch completes discards first result":
     withFakeTime:
-      createRoot proc(dispose: proc()) =
+      createRoot do (dispose: proc()):
         var dr1 = createDeferredResource[string]()
         var dr2 = createDeferredResource[string]()
         var observedStates: seq[ResourceState] = @[]
         var currentDr = dr1
 
         # Track resource states
-        createEffect proc() =
+        createEffect do:
           observedStates.add(currentDr.resource.state.val)
 
         check observedStates == @[rsPending]
@@ -300,7 +300,7 @@ suite "Resource Cancellation":
         check dr2.resource.state.val == rsReady
 
   test "resource with source signal refetch discards stale results":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let source = createSignal(1)
       var fetchResults: seq[int] = @[]
       let r = createResource[int, int](
@@ -325,7 +325,7 @@ suite "Resource Cancellation":
 
 suite "Error Boundary Nesting":
   test "inner error boundary catches before outer":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let parent = renderer.createElement("div")
 
@@ -360,7 +360,7 @@ suite "Error Boundary Nesting":
       check parent.children[0].children[0].textContent == "Inner caught: inner error"
 
   test "error in inner fallback propagates to outer boundary":
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let parent = renderer.createElement("div")
 
@@ -395,7 +395,7 @@ when not defined(js):
       resetHydrationCounter()
 
     test "1000 list items render correctly with hydration markers":
-      let html = renderToString proc(): string =
+      let html = renderToString do () -> string:
         var items: seq[string] = @[]
         for i in 0 ..< 1000:
           items.add("Item " & $i)

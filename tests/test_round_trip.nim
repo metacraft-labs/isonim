@@ -66,7 +66,7 @@ suite "SSR ↔ Client structural equivalence":
   test "same_static_structure":
     ## bare `ui` and renderer-mode `ui` produce the same tag structure
     ## for static content.
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
 
       # Client mode
@@ -112,7 +112,7 @@ suite "SSR ↔ Client structural equivalence":
 
   test "same_dynamic_values":
     ## Both modes evaluate reactive values the same way.
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let count = createSignal(7)
       let label = createSignal("items")
@@ -131,7 +131,7 @@ suite "SSR ↔ Client structural equivalence":
 
   test "same_attributes":
     ## Attributes render identically in both modes.
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let cls = createSignal("active")
 
@@ -152,7 +152,7 @@ suite "SSR ↔ Client structural equivalence":
   test "event_handlers_client_only":
     ## Events work in client mode, are silently skipped in SSR.
     var clicked = 0
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
 
       let clientRoot = ui(renderer):
@@ -206,7 +206,7 @@ suite "Demo app SSR integration":
 
   test "page_header_isomorphic":
     ## pageHeader works in both client and SSR modes.
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let clientNode = pageHeader(renderer)
 
@@ -221,7 +221,7 @@ suite "Demo app SSR integration":
 
   test "empty_state_isomorphic":
     ## emptyState works in both modes.
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let clientNode = emptyState(renderer)
 
@@ -233,7 +233,7 @@ suite "Demo app SSR integration":
 
   test "task_list_ssr_empty":
     ## SSR renders empty state for empty task list.
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let store = createTaskStore()
       let html = renderTaskListSsr(store)
       check "No tasks" in html
@@ -242,7 +242,7 @@ suite "Demo app SSR integration":
 
   test "task_list_ssr_with_items":
     ## SSR renders task items correctly.
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let store = createTaskStore()
       store.addTask("Buy groceries")
       store.addTask("Walk the dog")
@@ -259,7 +259,7 @@ suite "Demo app SSR integration":
 
   test "task_footer_ssr":
     ## SSR renders footer with correct count.
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let store = createTaskStore()
       store.addTask("Task 1")
       store.addTask("Task 2")
@@ -275,7 +275,7 @@ suite "Demo app SSR integration":
 
   test "task_footer_ssr_empty":
     ## SSR renders nothing when no tasks.
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let store = createTaskStore()
       let html = renderTaskFooterSsr(store)
       check html == ""
@@ -283,7 +283,7 @@ suite "Demo app SSR integration":
 
   test "full_page_ssr":
     ## Full-page SSR produces valid complete HTML.
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let store = createTaskStore()
       store.addTask("Review PR")
       store.addTask("Deploy to staging")
@@ -307,7 +307,7 @@ suite "Demo app SSR integration":
 
   test "ssr_then_client_same_data":
     ## SSR and client rendering of the same store produce equivalent content.
-    createRoot proc(dispose: proc()) =
+    createRoot do (dispose: proc()):
       let renderer = MockRenderer()
       let store = createTaskStore()
       store.addTask("Shared task")
