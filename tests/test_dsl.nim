@@ -1,5 +1,5 @@
 import unittest
-import std/tables
+import std/[tables, sugar]
 import isonim/core/[signals, computation, owner, batch, graph]
 import isonim/testing/mock_dom
 import isonim/dsl/ui
@@ -381,3 +381,135 @@ suite "DSL":
       check root.children.len == 2
       check root.children[0].textContent == "x"
       check root.children[1].textContent == "y"
+
+# ---------------------------------------------------------------------------
+# `std/sugar` interop
+#
+# These tests pin down which `std/sugar` idioms compose cleanly with the `ui`
+# DSL — the answers aren't obvious because the DSL macro inspects AST shapes
+# at compile time, and sugar expansions can produce shapes the macro doesn't
+# match. The intent is that examples and user code can use sugar's `=>` and
+# `capture` wherever they'd reach for a `proc(...) = ...` block.
+# ---------------------------------------------------------------------------
+suite "DSL — std/sugar interop":
+  test "onclick accepts () => stmt closure":
+    ## sugar's `=>` produces `proc() = stmt`, which is exactly what `onclick`
+    ## consumes (handler: proc() in MockRenderer.addEventListener). The
+    ## one-line form should work without a `proc()` wrapper.
+    createRoot do (dispose: proc()):
+      let renderer = MockRenderer()
+      var clicked = 0
+      let root = ui(renderer):
+        button(onclick = () => (inc clicked)):
+          text "Click"
+      check clicked == 0
+      root.fireEvent("click")
+      check clicked == 1
+      root.fireEvent("click")
+      check clicked == 2
+      dispose()
+
+  test "onclick accepts () => (stmt; stmt) multi-statement closure":
+    ## Multiple statements packed into a tuple-style group. The trailing
+    ## value is whatever the last statement returns; for void side
+    ## effects this stays a `proc()`.
+    createRoot do (dispose: proc()):
+      let renderer = MockRenderer()
+      var trail: seq[int] = @[]
+      let root = ui(renderer):
+        button(onclick = () => (trail.add 1; trail.add 2; trail.add 3)):
+          text "Click"
+      root.fireEvent("click")
+      check trail == @[1, 2, 3]
+      dispose()
+
+  test "onclick closure can write to an enclosing signal":
+    ## A common shape — the click handler bumps a signal that the rest of
+    ## the tree reacts to. Verifies the `=>` body sees the surrounding
+    ## scope and that signal writes through it run through the normal
+    ## reactive cascade.
+    createRoot do (dispose: proc()):
+      let renderer = MockRenderer()
+      let count = createSignal(0)
+      var rendered = -1
+      let root = ui(renderer):
+        tdiv:
+          button(onclick = () => (count.val = count.val + 1)):
+            text "+"
+          span: text $count.val
+      createEffect do:
+        rendered = count.val
+      check rendered == 0
+      root.children[0].fireEvent("click")
+      check count.val == 1
+      check rendered == 1
+      root.children[0].fireEvent("click")
+      check count.val == 2
+      check rendered == 2
+      dispose()
+
+  test "capture creates per-iteration closures for buttons":
+    ## The classic loop-closure trap: without `capture`, every handler
+    ## sees the final loop value. With `capture i`, each handler keeps
+    ## its own `i`. This is one of the headline reasons sugar exists, and
+    ## it should compose with the DSL.
+    createRoot do (dispose: proc()):
+      let renderer = MockRenderer()
+      let parent = renderer.createElement("div")
+      var lastClicked = -1
+      for i in 0 ..< 4:
+        capture i:
+          let btn = ui(renderer):
+            button(onclick = () => (lastClicked = i)):
+              text $i
+          renderer.appendChild(parent, btn)
+      check parent.children.len == 4
+      parent.children[0].fireEvent("click")
+      check lastClicked == 0
+      parent.children[2].fireEvent("click")
+      check lastClicked == 2
+      parent.children[3].fireEvent("click")
+      check lastClicked == 3
+      dispose()
+
+  test "=> closure works as a builder passed to a helper":
+    ## Helpers that accept a `() -> MockNode` builder argument should
+    ## also accept the sugar shorthand. Lets users pull DSL fragments
+    ## into reusable layout helpers without a `proc():` wrapper at every
+    ## call site. Note: a `:` DSL block can't appear inside `=>`'s parens
+    ## directly (Nim parser limitation), so the typical pattern is to
+    ## name the inner builder and reference it from the `=>` body.
+    proc panel(r: MockRenderer; build: () -> MockNode): MockNode =
+      let p = r.createElement("div")
+      r.setAttribute(p, "class", "panel")
+      r.appendChild(p, build())
+      p
+
+    proc buildSaveButton(r: MockRenderer): MockNode =
+      ui(r):
+        button(class = "primary"): text "Save"
+
+    createRoot do (dispose: proc()):
+      let renderer = MockRenderer()
+      let p = renderer.panel(() => buildSaveButton(renderer))
+      check p.attributes["class"] == "panel"
+      check p.children.len == 1
+      check p.children[0].tag == "button"
+      check p.children[0].attributes["class"] == "primary"
+      dispose()
+
+  test "text directive does NOT accept () => closure (documented gap)":
+    ## The DSL's `text` directive consumes an *expression* and wraps the
+    ## evaluation itself in a render effect — it does not consume a
+    ## builder closure. The right shape is `text $signal.val`, not
+    ## `text () => $signal.val`. This test pins that in: the working
+    ## form must compile and behave reactively.
+    createRoot do (dispose: proc()):
+      let renderer = MockRenderer()
+      let count = createSignal(0)
+      let root = ui(renderer):
+        span: text $count.val
+      check root.children[0].text == "0"
+      count.val = 42
+      check root.children[0].text == "42"
+      dispose()
