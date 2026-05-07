@@ -13,32 +13,32 @@ import isonim/ssr/escape
 import isonim/dsl/ui
 
 # ---------------------------------------------------------------------------
-# Test components — each returns HTML via uiString
+# Test components — each returns HTML via the bare `ui` form
 # ---------------------------------------------------------------------------
 
 proc IndexPage(): string =
-  uiString:
+  ui:
     h1: text "Welcome"
     p: text "Home page"
 
 proc AboutPage(): string =
-  uiString:
+  ui:
     h1: text "About"
     p: text "About this site"
 
 proc UserPage(id: string): string =
-  uiString:
+  ui:
     h1: text "User " & id
     p: text "Profile for user " & id
 
 proc UsersLayout(childHtml: string): string =
-  uiString:
+  ui:
     tdiv(class = "users-layout"):
       nav: text "Users Navigation"
       raw childHtml
 
 proc UserDetailPage(id: string): string =
-  uiString:
+  ui:
     section:
       h2: text "Detail for " & id
       p: text "Detailed info about user " & id
@@ -166,7 +166,7 @@ suite "SSR Routing — nested routes with layout":
 
   test "parent exact match without children":
     proc allUsersPage(): string =
-      uiString:
+      ui:
         h1: text "All Users"
 
     let routes = @[

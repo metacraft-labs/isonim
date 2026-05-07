@@ -43,23 +43,23 @@ proc emptyState*(renderer: auto): auto =
         text "Add your first task above"
 
 # ---------------------------------------------------------------------------
-# SSR-specific rendering using uiString
+# SSR-specific rendering using bare `ui:` blocks (no renderer arg)
 # ---------------------------------------------------------------------------
 
 proc renderTaskListSsr*(store: TaskStore): string =
   ## Server-side renders the full task list.
-  ## Uses uiString for structure, ssrFor for iteration.
+  ## Uses ui for structure, ssrFor for iteration.
   let tasks = store.filteredTasks.val
   if tasks.len == 0:
-    return uiString:
+    return ui:
       p(class = "empty"):
         text "No tasks"
 
-  uiString:
+  ui:
     ul(class = "task-list"):
       raw ssrFor(tasks, proc(task: Task, index: int): string =
         let doneClass = if task.done: "completed" else: ""
-        uiString:
+        ui:
           li(class = doneClass):
             input(ttype = "checkbox")
             span: text task.text
@@ -77,7 +77,7 @@ proc renderTaskFooterSsr*(store: TaskStore): string =
   let suffix = if ac != 1: "s" else: ""
   let countText = $ac & " item" & suffix & " left"
 
-  uiString:
+  ui:
     footer(class = "task-footer"):
       span: text countText
       tdiv(class = "filters"):
@@ -90,13 +90,13 @@ proc renderTaskFooterSsr*(store: TaskStore): string =
 
 proc renderFullPageSsr*(store: TaskStore): string =
   ## Full-page SSR rendering of the task manager.
-  ## Demonstrates uiString composing multiple components.
-  let pageHeaderHtml = uiString:
+  ## Demonstrates `ui:` composing multiple components.
+  let pageHeaderHtml = ui:
     header(class = "page-header"):
       h1: text "IsoNim Task Manager"
       p(class = "subtitle"):
         text "A reactive UI demo -- same code, server and client"
-  let taskHeaderHtml = uiString:
+  let taskHeaderHtml = ui:
     header:
       h1: text "Task Manager"
       form:
@@ -105,7 +105,7 @@ proc renderFullPageSsr*(store: TaskStore): string =
           text "Add"
   let taskListHtml = renderTaskListSsr(store)
   let footerHtml = renderTaskFooterSsr(store)
-  uiString:
+  ui:
     tdiv(class = "app"):
       raw pageHeaderHtml
       section:

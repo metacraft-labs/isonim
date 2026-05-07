@@ -432,7 +432,7 @@ suite "Accessibility - ARIA Attributes":
         tdiv:
           button(`aria-expanded` = (if expanded.val: "true" else: "false")):
             text "Toggle section"
-          showIf(expanded.val):
+          if expanded.val:
             tdiv:
               text "Expanded content"
 

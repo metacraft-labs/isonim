@@ -1,7 +1,7 @@
 ## SSR → Client round-trip integration tests.
 ##
 ## Verifies that:
-## 1. uiString and ui produce structurally equivalent output
+## 1. The bare `ui` form for SSR produces structurally equivalent output
 ## 2. SSR HTML contains correct hydration markers
 ## 3. The same component renders consistently across modes
 ## 4. Full-page SSR with the demo task store produces valid HTML
@@ -64,7 +64,7 @@ proc countOccurrences(haystack, needle: string): int =
 
 suite "SSR ↔ Client structural equivalence":
   test "same_static_structure":
-    ## ui and uiString produce the same tag structure
+    ## bare `ui` and renderer-mode `ui` produce the same tag structure
     ## for static content.
     createRoot proc(dispose: proc()) =
       let renderer = MockRenderer()
@@ -78,7 +78,7 @@ suite "SSR ↔ Client structural equivalence":
             span: text "Footer text"
 
       # SSR mode
-      let ssrHtml = uiString:
+      let ssrHtml = ui:
         tdiv(class = "container"):
           h1: text "Title"
           p: text "Body"
@@ -122,7 +122,7 @@ suite "SSR ↔ Client structural equivalence":
         span: text $count.val & " " & label.val
 
       # SSR mode
-      let ssrHtml = uiString:
+      let ssrHtml = ui:
         span: text $count.val & " " & label.val
 
       check clientRoot.textContent == "7 items"
@@ -140,7 +140,7 @@ suite "SSR ↔ Client structural equivalence":
         tdiv(class = cls.val, id = "main")
 
       # SSR
-      let ssrHtml = uiString:
+      let ssrHtml = ui:
         tdiv(class = cls.val, id = "main")
 
       check clientRoot.attributes["class"] == "active"
@@ -159,7 +159,7 @@ suite "SSR ↔ Client structural equivalence":
         button(onclick = proc() = inc clicked):
           text "Click"
 
-      let ssrHtml = uiString:
+      let ssrHtml = ui:
         button(onclick = proc() = inc clicked):
           text "Click"
 
@@ -176,7 +176,7 @@ suite "SSR hydration markers":
   test "hydration_keys_in_dynamic_elements":
     ## Elements with hydrate=true get data-hk attributes in SSR mode.
     resetHydrationCounter()
-    let html = uiString:
+    let html = ui:
       tdiv(hydrate = true):
         span(hydrate = true):
           text "Dynamic"
@@ -188,7 +188,7 @@ suite "SSR hydration markers":
     ## Hydration keys are sequential within a render.
     resetHydrationCounter()
     let html = renderToString(proc(): string =
-      uiString:
+      ui:
         tdiv(hydrate = true):
           span(hydrate = true): text "A"
           span(hydrate = true): text "B"

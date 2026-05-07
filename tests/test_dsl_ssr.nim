@@ -1,4 +1,4 @@
-## Tests for uiString (SSR mode DSL) and isomorphicUi.
+## Tests for the bare `ui:` form (SSR mode DSL) and isomorphicUi.
 ## Verifies that the same DSL syntax generates correct HTML strings
 ## for server-side rendering.
 
@@ -11,10 +11,10 @@ import isonim/ssr/markers
 import isonim/testing/mock_dom
 import isonim/ssr/renderer
 
-suite "uiString":
+suite "ui (SSR string mode)":
   test "static_elements":
     ## Basic static HTML generation
-    let html = uiString:
+    let html = ui:
       tdiv(class = "container"):
         h1: text "Hello"
         p: text "World"
@@ -27,7 +27,7 @@ suite "uiString":
 
   test "nested_elements":
     ## Deeply nested element generation
-    let html = uiString:
+    let html = ui:
       tdiv:
         section:
           article:
@@ -40,7 +40,7 @@ suite "uiString":
 
   test "void_elements":
     ## Self-closing void elements (br, input, img, etc.)
-    let html = uiString:
+    let html = ui:
       tdiv:
         input(ttype = "text", placeholder = "Enter text")
         br()
@@ -56,7 +56,7 @@ suite "uiString":
     ## Dynamic expressions evaluated inline, no effects
     createRoot proc(dispose: proc()) =
       let count = createSignal(42)
-      let html = uiString:
+      let html = ui:
         span: text $count.val
 
       check "<span>42</span>" in html
@@ -66,7 +66,7 @@ suite "uiString":
     ## Dynamic attributes evaluated inline
     createRoot proc(dispose: proc()) =
       let cls = createSignal("active")
-      let html = uiString:
+      let html = ui:
         tdiv(class = cls.val)
 
       check "class=\"active\"" in html
@@ -75,7 +75,7 @@ suite "uiString":
   test "event_handlers_ignored":
     ## Event handlers are silently ignored in SSR mode
     var clicked = 0
-    let html = uiString:
+    let html = ui:
       button(onclick = proc() = inc clicked):
         text "Click"
 
@@ -85,7 +85,7 @@ suite "uiString":
 
   test "html_escaping":
     ## Special characters are escaped in text and attributes
-    let html = uiString:
+    let html = ui:
       tdiv(title = "a\"b&c"):
         text "<script>alert('xss')</script>"
 
@@ -95,7 +95,7 @@ suite "uiString":
 
   test "multiple_attributes":
     ## Multiple attributes rendered correctly
-    let html = uiString:
+    let html = ui:
       a(href = "/page", class = "link", target = "_blank"):
         text "Link"
 
@@ -107,7 +107,7 @@ suite "uiString":
 
   test "empty_element":
     ## Element with no children
-    let html = uiString:
+    let html = ui:
       tdiv(class = "empty")
 
     check "<div class=\"empty\"></div>" == html
@@ -115,7 +115,7 @@ suite "uiString":
   test "hydration_key":
     ## Elements with hydrate=true get data-hk attributes
     resetHydrationCounter()
-    let html = uiString:
+    let html = ui:
       tdiv(hydrate = true):
         text "hydrated"
 
@@ -125,7 +125,7 @@ suite "uiString":
     ## Mix of static and dynamic content in one tree
     createRoot proc(dispose: proc()) =
       let name = createSignal("World")
-      let html = uiString:
+      let html = ui:
         tdiv:
           h1: text "Hello"
           p: text $("Welcome, " & name.val)
@@ -155,10 +155,10 @@ suite "isomorphicUi":
       dispose()
 
 suite "SSR + renderToString integration":
-  test "uiString_in_renderToString":
+  test "ui_in_renderToString":
     ## uiString works inside renderToString
     let html = renderToString(proc(): string =
-      uiString:
+      ui:
         tdiv(class = "page"):
           header:
             h1: text "My App"
@@ -173,25 +173,25 @@ suite "SSR + renderToString integration":
     check "<main><p>Content here</p></main>" in html
     check "<footer><p>Footer</p></footer>" in html
 
-  test "uiString_with_signals_in_renderToString":
+  test "ui_with_signals_in_renderToString":
     ## Signals work correctly in SSR context
     let html = renderToString(proc(): string =
       let count = createSignal(5)
       let label = createSignal("tasks")
-      uiString:
+      ui:
         tdiv:
           span: text $count.val & " " & label.val
     )
 
     check "5 tasks" in html
 
-  test "uiString_with_loop":
+  test "ui_with_loop":
     ## Use ssrFor with uiString for list items
     let items = @["Apple", "Banana", "Cherry"]
-    let html = uiString:
+    let html = ui:
       ul:
         raw ssrFor(items, proc(item: string, index: int): string =
-          uiString:
+          ui:
             li: text item
         )
 
@@ -200,99 +200,27 @@ suite "SSR + renderToString integration":
     check "<li>Banana</li>" in html
     check "<li>Cherry</li>" in html
 
-  test "uiString_with_conditional":
+  test "ui_with_conditional":
     ## Use ssrShow with uiString
     let loggedIn = true
     let bodyFn = proc(): string =
-      uiString:
+      ui:
         span: text "Welcome!"
     let fallbackFn = proc(): string =
-      uiString:
+      ui:
         span: text "Please log in"
-    let html = uiString:
+    let html = ui:
       tdiv:
         raw ssrShow(loggedIn, bodyFn, fallbackFn)
 
     check "Welcome!" in html
     check "Please log in" notin html
 
-  test "uiString_showIf_ssr":
-    ## showIf in SSR mode renders body when condition is true
-    let loggedIn = true
-    let html = uiString:
-      tdiv:
-        showIf(loggedIn):
-          p: text "Welcome"
-
-    check "<p>Welcome</p>" in html
-    check "<div>" in html
-
-  test "uiString_showIf_ssr_false":
-    ## showIf in SSR mode renders nothing when condition is false (no fallback)
-    let loggedIn = false
-    let html = uiString:
-      tdiv:
-        showIf(loggedIn):
-          p: text "Welcome"
-
-    check "<p>Welcome</p>" notin html
-    check "<div></div>" == html
-
-  test "uiString_showIf_ssr_fallback":
-    ## showIf + showElse in SSR mode
-    let loggedIn = false
-    let html = uiString:
-      tdiv:
-        showIf(loggedIn):
-          p: text "Welcome"
-        showElse:
-          p: text "Please log in"
-
-    check "Welcome" notin html
-    check "<p>Please log in</p>" in html
-
-  test "uiString_showIf_ssr_fallback_true":
-    ## showIf + showElse in SSR mode when condition is true
-    let loggedIn = true
-    let html = uiString:
-      tdiv:
-        showIf(loggedIn):
-          p: text "Welcome"
-        showElse:
-          p: text "Please log in"
-
-    check "<p>Welcome</p>" in html
-    check "Please log in" notin html
-
-  test "uiString_forIn_ssr":
-    ## forIn in SSR mode renders list items
-    let items = @["Apple", "Banana", "Cherry"]
-    let html = uiString:
-      ul:
-        forIn(items):
-          li: text item
-
-    check "<ul>" in html
-    check "<li>Apple</li>" in html
-    check "<li>Banana</li>" in html
-    check "<li>Cherry</li>" in html
-
-  test "uiString_forIn_ssr_with_index":
-    ## forIn in SSR mode provides index variable
-    let items = @["a", "b"]
-    let html = uiString:
-      ul:
-        forIn(items):
-          li: text $index & ": " & item
-
-    check "<li>0: a</li>" in html
-    check "<li>1: b</li>" in html
-
 suite "SSR natural control flow":
-  test "uiString_if_true":
+  test "ui_if_true":
     ## Natural if/else in SSR mode renders correct branch
     let loggedIn = true
-    let html = uiString:
+    let html = ui:
       tdiv:
         if loggedIn:
           p: text "Welcome"
@@ -302,10 +230,10 @@ suite "SSR natural control flow":
     check "<p>Welcome</p>" in html
     check "Please log in" notin html
 
-  test "uiString_if_false":
+  test "ui_if_false":
     ## Natural if/else in SSR mode renders else branch
     let loggedIn = false
-    let html = uiString:
+    let html = ui:
       tdiv:
         if loggedIn:
           p: text "Welcome"
@@ -315,20 +243,20 @@ suite "SSR natural control flow":
     check "Welcome" notin html
     check "<p>Please log in</p>" in html
 
-  test "uiString_if_no_else":
+  test "ui_if_no_else":
     ## Natural if without else renders nothing when false
     let show = false
-    let html = uiString:
+    let html = ui:
       tdiv:
         if show:
           p: text "shown"
 
     check "<div></div>" == html
 
-  test "uiString_for_loop":
+  test "ui_for_loop":
     ## Natural for loop in SSR mode renders list items
     let items = @["Apple", "Banana", "Cherry"]
-    let html = uiString:
+    let html = ui:
       ul:
         for item in items:
           li: text item
@@ -338,11 +266,11 @@ suite "SSR natural control flow":
     check "<li>Banana</li>" in html
     check "<li>Cherry</li>" in html
 
-  test "uiString_case_statement":
+  test "ui_case_statement":
     ## Natural case statement in SSR mode selects correct branch
     type Color = enum red, green, blue
     let c = green
-    let html = uiString:
+    let html = ui:
       tdiv:
         case c
         of red:
@@ -356,11 +284,11 @@ suite "SSR natural control flow":
     check "RED" notin html
     check "BLUE" notin html
 
-  test "uiString_nested_if_for":
+  test "ui_nested_if_for":
     ## Nested if and for in SSR mode
     let showList = true
     let items = @["x", "y"]
-    let html = uiString:
+    let html = ui:
       tdiv:
         if showList:
           for item in items:

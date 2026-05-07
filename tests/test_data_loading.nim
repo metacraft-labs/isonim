@@ -122,7 +122,7 @@ when not defined(js):
         let user = createServerResource[User](
           proc(): User = getUser(42)
         )
-        uiString:
+        ui:
           h1: text user.val.name
           p: text "ID: " & $user.val.id
 
@@ -137,7 +137,7 @@ when not defined(js):
         let post = createServerResource[Post](
           proc(): Post = getPost(99)
         )
-        uiString:
+        ui:
           tdiv:
             h1: text user.val.name
             h2: text post.val.title
@@ -153,10 +153,10 @@ when not defined(js):
           proc(): string = failingFetch()
         )
         if r.state.val == rsErrored:
-          uiString:
+          ui:
             p(class = "error"): text "Error: " & r.error.val
         else:
-          uiString:
+          ui:
             p: text r.val
 
       check "error" in html
@@ -173,7 +173,7 @@ when not defined(js):
             let user = createServerResource[User](
               proc(): User = getUser(parseInt(id))
             )
-            uiString:
+            ui:
               h1: text user.val.name
               p: text "Profile for " & user.val.name
         ),
@@ -194,7 +194,7 @@ when not defined(js):
             let count = createServerResource[int](
               proc(): int = getCount()
             )
-            uiString:
+            ui:
               tdiv(class = "dashboard"):
                 h1: text user.val.name & "'s Dashboard"
                 p: text "Items: " & $count.val
@@ -207,7 +207,7 @@ when not defined(js):
 
     test "nested route with layout and server resource":
       proc usersLayout(childHtml: string): string =
-        uiString:
+        ui:
           tdiv(class = "users-layout"):
             nav: text "Users Nav"
             raw childHtml
@@ -226,7 +226,7 @@ when not defined(js):
                 let user = createServerResource[User](
                   proc(): User = getUser(parseInt(id))
                 )
-                uiString:
+                ui:
                   section:
                     h2: text user.val.name
                     p: text "ID: " & $user.val.id

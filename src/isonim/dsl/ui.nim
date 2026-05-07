@@ -40,15 +40,6 @@ import tailwind
 
 var gensymCounter {.compileTime.} = 0
 
-const
-  deprecatedShowIfMessage =
-    "DEPRECATED IsoNim DSL directive `showIf`/`showElse`: migrate immediately " &
-    "to natural Nim `if`/`else` inside `ui`, `uiString`, or `uiWrite` blocks."
-  deprecatedForInMessage =
-    "DEPRECATED IsoNim DSL directive `forIn`: migrate immediately to natural " &
-    "Nim `for item in items` / `for index, item in items` loops inside `ui`, " &
-    "`uiString`, or `uiWrite` blocks."
-
 proc attrNameStr(node: NimNode): string {.compileTime.} =
   ## Extract an attribute name from an attribute key node.
   ##
@@ -149,12 +140,6 @@ proc isElementCall(name: string; node: NimNode): bool {.compileTime.} =
 proc processNode(rendererSym: NimNode; node: NimNode;
     stmts: NimNode): NimNode {.compileTime.}
 
-proc processShowIf(rendererSym, parentSym: NimNode; children: NimNode;
-                    idx: int; stmts: NimNode): int {.compileTime.}
-
-proc processForIn(rendererSym, parentSym: NimNode; node: NimNode;
-                  stmts: NimNode) {.compileTime.}
-
 proc processChildren(rendererSym, parentSym: NimNode; body: NimNode;
     stmts: NimNode) {.compileTime.}
 
@@ -228,19 +213,10 @@ proc processChildren(rendererSym, parentSym: NimNode; body: NimNode;
     let child = body[i]
     case child.kind
     of nnkCall, nnkCommand:
-      let name = if child[0].kind == nnkIdent: child[0].strVal else: ""
-      if name == "showIf":
-        i = processShowIf(rendererSym, parentSym, body, i, stmts)
-        continue
-      elif name == "forIn":
-        processForIn(rendererSym, parentSym, child, stmts)
-        inc i
-        continue
-      else:
-        let childNode = processNode(rendererSym, child, stmts)
-        if childNode != nil:
-          stmts.add(newCall(newDotExpr(rendererSym, ident"appendChild"),
-                            parentSym, childNode))
+      let childNode = processNode(rendererSym, child, stmts)
+      if childNode != nil:
+        stmts.add(newCall(newDotExpr(rendererSym, ident"appendChild"),
+                          parentSym, childNode))
     of nnkIdent:
       # Bare identifier — check if it's a known HTML void element (e.g. `br`, `hr`)
       let tagName = resolveTagName(child.strVal)
@@ -264,147 +240,6 @@ proc processChildren(rendererSym, parentSym: NimNode; body: NimNode;
       # Pass through arbitrary Nim statements (let, var, discard, etc.)
       stmts.add(child)
     inc i
-
-proc processShowIf(rendererSym, parentSym: NimNode; children: NimNode;
-                    idx: int; stmts: NimNode): int {.compileTime.} =
-  ## Process a showIf directive. Returns the next index to process.
-  ## showIf(condition): body
-  ## optionally followed by showElse: fallback
-  let showNode = children[idx]
-  warning(deprecatedShowIfMessage, showNode)
-  # Extract condition expression (first arg after the name)
-  let condExpr = showNode[1]
-  # Extract body (the stmt list, last arg)
-  let bodyBlock = showNode[^1]
-
-  # Check for optional showElse following
-  var fallbackBlock: NimNode = nil
-  var nextIdx = idx + 1
-  if nextIdx < children.len:
-    let nextChild = children[nextIdx]
-    if nextChild.kind in {nnkCall, nnkCommand}:
-      let nextName = if nextChild[0].kind == nnkIdent: nextChild[
-          0].strVal else: ""
-      if nextName == "showElse":
-        fallbackBlock = nextChild[^1]
-        nextIdx = nextIdx + 1
-
-  # Generate: show(renderer, parent, proc(): bool = condition, bodyProc, fallbackProc)
-  # Body proc: creates child elements and returns root
-  let bodyProcStmts = newStmtList()
-  let bodyRootSym = genName("showBody")
-  # Create a wrapper element for the body content
-  bodyProcStmts.add(newLetStmt(bodyRootSym,
-    newCall(newDotExpr(rendererSym, ident"createElement"), newStrLitNode("span"))))
-  processChildren(rendererSym, bodyRootSym, bodyBlock, bodyProcStmts)
-  bodyProcStmts.add(bodyRootSym)
-
-  # Use typeof to get the node type from the renderer
-  let nodeType = newCall(ident"typeof",
-    newCall(newDotExpr(rendererSym, ident"createElement"), newStrLitNode("")))
-
-  let bodyProc = newProc(
-    params = [nodeType],
-    body = bodyProcStmts
-  )
-
-  let condProc = newProc(
-    params = [ident"bool"],
-    body = newStmtList(condExpr)
-  )
-
-  if fallbackBlock != nil:
-    let fallbackProcStmts = newStmtList()
-    let fallbackRootSym = genName("showFallback")
-    fallbackProcStmts.add(newLetStmt(fallbackRootSym,
-      newCall(newDotExpr(rendererSym, ident"createElement"), newStrLitNode("span"))))
-    processChildren(rendererSym, fallbackRootSym, fallbackBlock, fallbackProcStmts)
-    fallbackProcStmts.add(fallbackRootSym)
-
-    let fallbackProc = newProc(
-      params = [nodeType],
-      body = fallbackProcStmts
-    )
-
-    stmts.add(newCall(ident"show", rendererSym, parentSym, condProc, bodyProc, fallbackProc))
-  else:
-    stmts.add(newCall(ident"show", rendererSym, parentSym, condProc, bodyProc))
-
-  return nextIdx
-
-proc processForIn(rendererSym, parentSym: NimNode; node: NimNode;
-                  stmts: NimNode) {.compileTime.} =
-  ## Process a forIn directive.
-  ## forIn(seq_expr): body
-  ## Generates a call to forEachKeyed with injected `item` and `index` variables.
-  warning(deprecatedForInMessage, node)
-  let seqExpr = node[1]
-  let bodyBlock = node[^1]
-
-  # Generate: forEachKeyed(renderer, parent, proc(): auto = seqExpr,
-  #   proc(item: proc(): auto, index: proc(): int): auto = ...)
-  # Use typeof to get the seq element type and node type
-  let nodeType = newCall(ident"typeof",
-    newCall(newDotExpr(rendererSym, ident"createElement"), newStrLitNode("")))
-
-  let eachProc = newProc(
-    params = [newCall(ident"typeof", seqExpr)],
-    body = newStmtList(seqExpr)
-  )
-
-  # Body proc receives item accessor and index accessor
-  let itemParam = ident"itemAccessor"
-  let indexParam = ident"indexAccessor"
-
-  let bodyProcStmts = newStmtList()
-  let forBodyRootSym = genName("forBody")
-  bodyProcStmts.add(newLetStmt(forBodyRootSym,
-    newCall(newDotExpr(rendererSym, ident"createElement"), newStrLitNode("span"))))
-
-  # Inject `item` template that calls the accessor, and `index` template
-  # Use a template so `item` in the body expands to `itemAccessor()`
-  bodyProcStmts.add(
-    newNimNode(nnkTemplateDef).add(
-      ident"item",
-      newEmptyNode(), newEmptyNode(),
-      newNimNode(nnkFormalParams).add(ident"untyped"),
-      newEmptyNode(), newEmptyNode(),
-      newStmtList(newCall(itemParam))
-    )
-  )
-  bodyProcStmts.add(
-    newNimNode(nnkTemplateDef).add(
-      ident"index",
-      newEmptyNode(), newEmptyNode(),
-      newNimNode(nnkFormalParams).add(ident"untyped"),
-      newEmptyNode(), newEmptyNode(),
-      newStmtList(newCall(indexParam))
-    )
-  )
-
-  processChildren(rendererSym, forBodyRootSym, bodyBlock, bodyProcStmts)
-  bodyProcStmts.add(forBodyRootSym)
-
-  # Build the element type for item accessor: typeof(seqExpr[0])
-  let elemType = newCall(ident"typeof",
-    newNimNode(nnkBracketExpr).add(seqExpr, newIntLitNode(0)))
-
-  let bodyProc = newProc(
-    params = [
-      nodeType,
-      newIdentDefs(itemParam, newNimNode(nnkProcTy).add(
-        newNimNode(nnkFormalParams).add(elemType),
-        newEmptyNode()
-    )),
-    newIdentDefs(indexParam, newNimNode(nnkProcTy).add(
-      newNimNode(nnkFormalParams).add(ident"int"),
-      newEmptyNode()
-    ))
-  ],
-    body = bodyProcStmts
-  )
-
-  stmts.add(newCall(ident"forEachKeyed", rendererSym, parentSym, eachProc, bodyProc))
 
 proc processNode(rendererSym: NimNode; node: NimNode;
     stmts: NimNode): NimNode {.compileTime.} =
@@ -598,10 +433,6 @@ macro ui*(renderer: untyped; body: untyped): untyped =
 
 proc ssrNodeExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.}
 
-proc ssrShowIfExpr(children: NimNode; idx: int; stmts: NimNode): (NimNode,
-    int) {.compileTime.}
-proc ssrForInExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.}
-
 proc ssrChildrenExpr(body: NimNode; stmts: NimNode): NimNode {.compileTime.} =
   ## Generates a string expression for a list of SSR children.
   ## Returns a NimNode representing the concatenated HTML string.
@@ -611,23 +442,9 @@ proc ssrChildrenExpr(body: NimNode; stmts: NimNode): NimNode {.compileTime.} =
     let child = body[i]
     case child.kind
     of nnkCall, nnkCommand:
-      let name = if child[0].kind == nnkIdent: child[0].strVal else: ""
-      if name == "showIf":
-        let (expr, nextIdx) = ssrShowIfExpr(body, i, stmts)
-        if expr != nil:
-          parts.add(expr)
-        i = nextIdx
-        continue
-      elif name == "forIn":
-        let expr = ssrForInExpr(child, stmts)
-        if expr != nil:
-          parts.add(expr)
-        inc i
-        continue
-      else:
-        let expr = ssrNodeExpr(child, stmts)
-        if expr != nil:
-          parts.add(expr)
+      let expr = ssrNodeExpr(child, stmts)
+      if expr != nil:
+        parts.add(expr)
     of nnkIdent:
       # Bare identifier — check if it's a known HTML void element (e.g. `br`, `hr`, `img`)
       let tagName = resolveTagName(child.strVal)
@@ -766,80 +583,6 @@ proc ssrChildrenExpr(body: NimNode; stmts: NimNode): NimNode {.compileTime.} =
     result = parts[0]
     for i in 1 ..< parts.len:
       result = newCall(ident"&", result, parts[i])
-
-proc ssrShowIfExpr(children: NimNode; idx: int; stmts: NimNode): (NimNode,
-    int) {.compileTime.} =
-  ## Generates an if/else string expression for showIf/showElse in SSR mode.
-  let showNode = children[idx]
-  warning(deprecatedShowIfMessage, showNode)
-  let condExpr = showNode[1]
-  let bodyBlock = showNode[^1]
-
-  # Check for optional showElse following
-  var fallbackBlock: NimNode = nil
-  var nextIdx = idx + 1
-  if nextIdx < children.len:
-    let nextChild = children[nextIdx]
-    if nextChild.kind in {nnkCall, nnkCommand}:
-      let nextName = if nextChild[0].kind == nnkIdent: nextChild[
-          0].strVal else: ""
-      if nextName == "showElse":
-        fallbackBlock = nextChild[^1]
-        nextIdx = nextIdx + 1
-
-  let bodyExpr = ssrChildrenExpr(bodyBlock, stmts)
-
-  if fallbackBlock != nil:
-    let fallbackExpr = ssrChildrenExpr(fallbackBlock, stmts)
-    # Generate: if condition: bodyHtml else: fallbackHtml
-    let ifExpr = newNimNode(nnkIfExpr).add(
-      newNimNode(nnkElifExpr).add(condExpr, bodyExpr),
-      newNimNode(nnkElseExpr).add(fallbackExpr)
-    )
-    return (ifExpr, nextIdx)
-  else:
-    # Generate: if condition: bodyHtml else: ""
-    let ifExpr = newNimNode(nnkIfExpr).add(
-      newNimNode(nnkElifExpr).add(condExpr, bodyExpr),
-      newNimNode(nnkElseExpr).add(newStrLitNode(""))
-    )
-    return (ifExpr, nextIdx)
-
-proc ssrForInExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.} =
-  ## Generates a loop string expression for forIn in SSR mode.
-  ## forIn(seq_expr): body -> block: var res = ""; for index, item in seqExpr: res.add(childHtml); res
-  warning(deprecatedForInMessage, node)
-  let seqExpr = node[1]
-  let bodyBlock = node[^1]
-
-  let resSym = genName("forRes")
-  # Use a local stmts list so that arbitrary Nim statements inside the forIn
-  # body (let bindings, if-else, etc.) are emitted inside the for loop rather
-  # than being hoisted to the outer scope where `item`/`index` aren't defined.
-  let innerStmts = newStmtList()
-  let childExpr = ssrChildrenExpr(bodyBlock, innerStmts)
-
-  # Build the for-loop body: first the inner statements, then res.add(childExpr)
-  let loopBody = newStmtList()
-  for s in innerStmts:
-    loopBody.add(s)
-  loopBody.add(newCall(newDotExpr(resSym, ident"add"), childExpr))
-
-  # Build: block: var res = ""; for index, item in seqExpr: <loopBody>; res
-  let forLoop = newNimNode(nnkForStmt).add(
-    ident"index",
-    ident"item",
-    seqExpr,
-    loopBody
-  )
-
-  let blockBody = newStmtList(
-    newVarStmt(resSym, newStrLitNode("")),
-    forLoop,
-    resSym
-  )
-
-  return newBlockStmt(blockBody)
 
 proc ssrNodeExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.} =
   ## Generates a string expression for a single SSR node.
@@ -994,7 +737,6 @@ type
     sokNimStmt      ## Pass-through Nim statement (let, var, discard, etc.)
     sokIf           ## if/elif/else control flow
     sokFor          ## for loop
-    sokForIn        ## forIn DSL directive
     sokCase         ## case statement
 
   StreamOp* = ref object
@@ -1014,9 +756,6 @@ type
       forVars*: seq[NimNode]   ## loop variables
       forIter*: NimNode        ## iterator expression
       forBody*: seq[StreamOp]
-    of sokForIn:
-      seqExpr*: NimNode
-      forInBody*: seq[StreamOp]
     of sokCase:
       caseExpr*: NimNode
       caseOfBranches*: seq[tuple[values: seq[NimNode]; body: seq[StreamOp]]]
@@ -1037,25 +776,13 @@ proc escapeAttrCompileTime(s: string): string {.compileTime.} =
 
 proc collectNode(node: NimNode; ops: var seq[StreamOp]) {.compileTime.}
 
-proc collectShowIf(children: NimNode; idx: int;
-    ops: var seq[StreamOp]): int {.compileTime.}
-
-proc collectForIn(node: NimNode; ops: var seq[StreamOp]) {.compileTime.}
-
 proc collectChildren(body: NimNode; ops: var seq[StreamOp]) {.compileTime.} =
   var i = 0
   while i < body.len:
     let child = body[i]
     case child.kind
     of nnkCall, nnkCommand:
-      let name = if child[0].kind == nnkIdent: child[0].strVal else: ""
-      if name == "showIf":
-        i = collectShowIf(body, i, ops)
-        continue
-      elif name == "forIn":
-        collectForIn(child, ops)
-      else:
-        collectNode(child, ops)
+      collectNode(child, ops)
     of nnkIdent:
       let tagName = resolveTagName(child.strVal)
       if isVoidElement(tagName):
@@ -1111,50 +838,6 @@ proc collectChildren(body: NimNode; ops: var seq[StreamOp]) {.compileTime.} =
     else:
       ops.add(StreamOp(kind: sokNimStmt, stmt: child))
     inc i
-
-proc collectShowIf(children: NimNode; idx: int;
-    ops: var seq[StreamOp]): int {.compileTime.} =
-  let showNode = children[idx]
-  warning(deprecatedShowIfMessage, showNode)
-  let condExpr = showNode[1]
-  let bodyBlock = showNode[^1]
-
-  var fallbackBlock: NimNode = nil
-  var nextIdx = idx + 1
-  if nextIdx < children.len:
-    let nextChild = children[nextIdx]
-    if nextChild.kind in {nnkCall, nnkCommand}:
-      let nextName = if nextChild[0].kind == nnkIdent: nextChild[
-          0].strVal else: ""
-      if nextName == "showElse":
-        fallbackBlock = nextChild[^1]
-        nextIdx = nextIdx + 1
-
-  var bodyOps: seq[StreamOp]
-  collectChildren(bodyBlock, bodyOps)
-
-  var branches: seq[tuple[cond: NimNode; body: seq[StreamOp]]]
-  branches.add((cond: condExpr, body: bodyOps))
-
-  if fallbackBlock != nil:
-    var fallbackOps: seq[StreamOp]
-    collectChildren(fallbackBlock, fallbackOps)
-    branches.add((cond: NimNode(nil), body: fallbackOps))
-
-  ops.add(StreamOp(kind: sokIf, ifBranches: branches))
-  return nextIdx
-
-proc collectForIn(node: NimNode; ops: var seq[StreamOp]) {.compileTime.} =
-  warning(deprecatedForInMessage, node)
-  let seqExpr = node[1]
-  let bodyBlock = node[^1]
-
-  var bodyOps: seq[StreamOp]
-  collectChildren(bodyBlock, bodyOps)
-
-  ops.add(StreamOp(kind: sokForIn,
-    seqExpr: seqExpr,
-    forInBody: bodyOps))
 
 proc collectNode(node: NimNode; ops: var seq[StreamOp]) {.compileTime.} =
   if node.kind in {nnkCall, nnkCommand}:
@@ -1255,10 +938,6 @@ proc coalesce(ops: seq[StreamOp]): seq[StreamOp] {.compileTime.} =
         result.add(StreamOp(kind: sokFor,
           forVars: op.forVars, forIter: op.forIter,
           forBody: coalesce(op.forBody)))
-      of sokForIn:
-        result.add(StreamOp(kind: sokForIn,
-          seqExpr: op.seqExpr,
-          forInBody: coalesce(op.forInBody)))
       of sokCase:
         var newBranches: seq[tuple[values: seq[NimNode]; body: seq[StreamOp]]]
         for branch in op.caseOfBranches:
@@ -1314,12 +993,6 @@ proc emit(ops: seq[StreamOp]; streamSym: NimNode;
       forNode.add(op.forIter)
       forNode.add(forBody)
       stmts.add(forNode)
-    of sokForIn:
-      let loopBody = newStmtList()
-      emit(op.forInBody, streamSym, loopBody)
-      let forLoop = newNimNode(nnkForStmt).add(
-        ident"index", ident"item", op.seqExpr, loopBody)
-      stmts.add(forLoop)
     of sokCase:
       var caseNode = newNimNode(nnkCaseStmt)
       caseNode.add(op.caseExpr)
@@ -1410,10 +1083,6 @@ macro ui*(body: untyped): untyped =
   ## are evaluated inline (no reactive effects). Event handlers are ignored.
   result = uiSsrImpl(body)
 
-macro uiString*(body: untyped): untyped {.deprecated: "use `ui` instead".} =
-  ## Deprecated: use `ui` without a renderer argument instead.
-  result = uiSsrImpl(body)
-
 macro isomorphicUi*(renderer: untyped; body: untyped): untyped =
   ## Isomorphic DSL macro: compiles to `ui(renderer)` in client mode
   ## or `ui` (SSR string mode) when `-d:isServer` is defined.
@@ -1438,14 +1107,3 @@ macro isomorphicUi*(renderer: untyped; body: untyped): untyped =
 
   result.add(serverBranch)
   result.add(clientBranch)
-
-# Backward-compatible aliases (deprecated)
-template buildHtml*(renderer: untyped; body: untyped): untyped {.deprecated: "use `ui` instead".} =
-  ui(renderer, body)
-
-template buildHtmlString*(body: untyped): untyped {.deprecated: "use `ui` instead".} =
-  ui(body)
-
-template isomorphicHtml*(renderer: untyped;
-    body: untyped): untyped {.deprecated: "use `isomorphicUi` instead".} =
-  isomorphicUi(renderer, body)
