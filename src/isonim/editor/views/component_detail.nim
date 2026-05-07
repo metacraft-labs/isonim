@@ -628,6 +628,7 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
     r.appendChild(genericContent, section)
   r.appendChild(content, genericContent)
 
+  var lastProjectSrcdoc = ""
   createRenderEffect proc() =
     let story = vm.selectedStory.val
     let preview = vm.preview.current.val
@@ -654,12 +655,15 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
     r.setAttribute(projectFrame, "title", "Component preview " & title)
     r.setAttribute(projectFrame, "height", "1")
     let reloadGeneration = vm.livePreviewReloadGeneration.val
-    r.setAttribute(projectFrame, "srcdoc",
+    let nextProjectSrcdoc =
       if showProject:
         preview.documentHtml & "\n<!-- isonim-reload:" & $reloadGeneration &
           " -->"
       else:
-        "")
+        ""
+    if nextProjectSrcdoc != lastProjectSrcdoc:
+      r.setAttribute(projectFrame, "srcdoc", nextProjectSrcdoc)
+      lastProjectSrcdoc = nextProjectSrcdoc
     r.setStyle(projectFrame, "width", "100%")
     r.setStyle(projectFrame, "min-height", "1px")
     r.setStyle(projectFrame, "overflow", "hidden")

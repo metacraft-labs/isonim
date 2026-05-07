@@ -1193,6 +1193,7 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
         name: "Apply component property tone option success",
       }),
     ).toHaveAttribute("aria-pressed", "true");
+    await expect.poll(() => iframeReloadGeneration(previewFrame)).toBe(0);
     await expect(schemaBadge).toHaveClass(/bo-status-success/);
     await expect
       .poll(() => computedBackground(schemaBadge))
