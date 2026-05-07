@@ -1376,27 +1376,16 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(sectionSearch).toBeVisible();
     await sectionSearch.fill("fill");
     await expect(
-      page.getByRole("button", { name: "Toggle Fill inspector section" }),
+      page.getByRole("tab", { name: "Show Fill edit controls" }),
     ).toBeVisible();
     await expect(
-      page.getByRole("button", { name: "Toggle Layout inspector section" }),
+      page.getByRole("tab", { name: "Show Layout edit controls" }),
     ).toHaveCount(0);
 
-    const fillSection = page.getByRole("button", {
-      name: "Toggle Fill inspector section",
+    const fillSection = page.getByRole("tab", {
+      name: "Show Fill edit controls",
     });
     await fillSection.click();
-    await expect(fillSection).toHaveAttribute("aria-expanded", "true");
-    await expect(
-      page
-        .getByRole("textbox", { name: "Edit inspector property color" })
-        .first(),
-    ).toBeVisible();
-    await fillSection.press("Enter");
-    await expect(fillSection).toHaveAttribute("aria-expanded", "false");
-    await expect(page.getByText("Section collapsed")).toBeVisible();
-    await fillSection.press("Enter");
-    await expect(fillSection).toHaveAttribute("aria-expanded", "true");
     await expect(
       page
         .getByRole("textbox", { name: "Edit inspector property color" })
@@ -1415,11 +1404,11 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
         .first(),
     ).toBeVisible();
 
-    await page.getByRole("tab", { name: "Show Space edit controls" }).click();
     await sectionSearch.fill("space");
     await expect(
-      page.getByRole("button", { name: "Toggle Space inspector section" }),
+      page.getByRole("tab", { name: "Show Space edit controls" }),
     ).toBeVisible();
+    await page.getByRole("tab", { name: "Show Space edit controls" }).click();
     await expect(page.getByLabel("Show box model controls")).toBeVisible();
     await expect(page.getByLabel("Show raw CSS controls")).toBeVisible();
     await expect(

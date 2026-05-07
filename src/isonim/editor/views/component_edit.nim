@@ -3067,24 +3067,6 @@ proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;
     clipboard: StyleClipboard)
 proc populateSectionTabs[R, E](r: R; vm: EditorVM; frame, tabs, content: E;
     clipboard: StyleClipboard)
-proc populateSectionAccordions[R, E](r: R; vm: EditorVM; frame, tabs, content,
-    sectionsNode: E; clipboard: StyleClipboard)
-
-proc inspectorSectionAccordionHandler[R, E](r: R; vm: EditorVM; frame, tabs,
-    content, sectionsNode: E; clipboard: StyleClipboard;
-    section: InspectorSection): proc() =
-  let capturedSection = section
-  result = proc() =
-    if vm.inspector.activeSection.val == capturedSection and
-        capturedSection in vm.inspector.expandedSections.val:
-      vm.inspector.setSectionExpanded(capturedSection, false)
-    else:
-      vm.switchInspectorSection(capturedSection)
-      vm.inspector.setSectionExpanded(capturedSection, true)
-    r.populateSectionTabs(vm, frame, tabs, content, clipboard)
-    r.populateSectionAccordions(vm, frame, tabs, content, sectionsNode,
-      clipboard)
-    r.populateInspectorContent(vm, frame, content, clipboard)
 
 proc layerSelectHandler[R, E](r: R; vm: EditorVM; frame: E; id: string): proc() =
   let captured = id
@@ -3848,8 +3830,9 @@ proc inspectorSectionHandler[R, E](r: R; vm: EditorVM; frame, tabs, content: E;
 proc populateSectionTabs[R, E](r: R; vm: EditorVM; frame, tabs, content: E;
     clipboard: StyleClipboard) =
   r.clearChildren(tabs)
-  for i, section in richSections:
-    let label = richSectionLabels[i]
+  for section in vm.inspector.visibleSections.val:
+    let label = sectionTitle(section)
+    let fullTitle = sectionFullTitle(section)
     let active = vm.inspector.activeSection.val == section
     let tab = ui(r):
       tdiv(role = "tab", tabindex = "0",
@@ -3863,52 +3846,13 @@ proc populateSectionTabs[R, E](r: R; vm: EditorVM; frame, tabs, content: E;
             border = "1px solid " & (if active: border else: "transparent")):
         text label
     r.setAttribute(tab, "aria-label", "Show " & label & " edit controls")
+    r.setAttribute(tab, "data-inspector-section", fullTitle.toLowerAscii())
     let activate = r.inspectorSectionHandler(vm, frame, tabs, content,
       clipboard, section)
+    r.addEventListener(tab, "pointerdown", activate)
     r.addEventListener(tab, "click", activate)
     r.addEventListener(tab, "keydown", activate)
     r.appendChild(tabs, tab)
-
-proc populateSectionAccordions[R, E](r: R; vm: EditorVM; frame, tabs, content,
-    sectionsNode: E; clipboard: StyleClipboard) =
-  r.clearChildren(sectionsNode)
-  for section in vm.inspector.visibleSections.val:
-    let active = vm.inspector.activeSection.val == section
-    let expanded = section in vm.inspector.expandedSections.val
-    let title = sectionTitle(section)
-    let fullTitle = sectionFullTitle(section)
-    let node = ui(r):
-      tdiv(role = "button", tabindex = "0",
-            display = "grid",
-            `grid-template-columns` = "12px minmax(0, 1fr) 3px",
-            align_items = "center", gap = "4px",
-            min_height = "26px",
-            padding = "0 4px",
-            border_radius = "3px",
-            cursor = "pointer",
-            background_color = (if active: "#172033" else: "transparent"),
-            color = (if active: textPrimary else: textMuted),
-            border_bottom = "1px solid " & borderFaint,
-            overflow = "hidden"):
-        span(font_size = "10px", color = textDim):
-          text (if expanded: "v" else: ">")
-        span(font_size = "10px", font_weight = "700",
-              text_transform = "uppercase",
-              white_space = "nowrap", overflow = "hidden",
-              text_overflow = "ellipsis"):
-          text title
-        span(width = "3px", height = "14px", border_radius = "2px",
-              background_color = (if active: accent else: "transparent")):
-          text ""
-    r.setAttribute(node, "aria-label", "Toggle " & title &
-      " inspector section")
-    r.setAttribute(node, "aria-expanded", if expanded: "true" else: "false")
-    r.setAttribute(node, "data-inspector-section", fullTitle.toLowerAscii())
-    let toggle = r.inspectorSectionAccordionHandler(vm, frame, tabs, content,
-      sectionsNode, clipboard, section)
-    r.addEventListener(node, "click", toggle)
-    r.addEventListener(node, "keydown", toggle)
-    r.appendChild(sectionsNode, node)
 
 proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
   var saveButton: E
@@ -3919,13 +3863,12 @@ proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
   var searchInput: E
   var collapseButton: E
   var expandButton: E
-  var sectionsNode: E
   let clipboard = StyleClipboard()
   result = ui(r):
     tdiv(class = "editor-manual-inspector",
           width = "320px", min_width = "260px", max_width = "520px",
           display = "flex", flex_direction = "column",
-          background_color = bgSidebar, overflow_y = "auto",
+          background_color = bgSidebar, overflow_y = "hidden",
           overflow_x = "hidden",
           border_left = "1px solid " & border):
       tdiv(display = "flex", align_items = "center",
@@ -4033,11 +3976,6 @@ proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
               font_size = "10px",
               cursor = "pointer"):
           text "+"
-      tdiv(ref = sectionsNode,
-            display = "flex", flex_direction = "column",
-            padding = "0 6px",
-            border_bottom = "1px solid " & border):
-        discard
   r.bindRightPanelWidth(result, vm)
 
   let tabs = ui(r):
@@ -4101,14 +4039,11 @@ proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
           padding = "6px", overflow_y = "auto", gap = "6px")
   r.appendChild(result, content)
   r.populateSectionTabs(vm, frame, tabs, content, clipboard)
-  r.populateSectionAccordions(vm, frame, tabs, content, sectionsNode,
-    clipboard)
 
   let inspectorRoot = result
   createRenderEffect proc() =
     discard vm.activeView.val
-    r.populateSectionAccordions(vm, frame, tabs, content, sectionsNode,
-      clipboard)
+    r.populateSectionTabs(vm, frame, tabs, content, clipboard)
     r.populateInspectorContent(vm, frame, content, clipboard)
     r.restoreInspectorFocus(inspectorRoot, vm)
     let save = vm.evaluateCommand(eckSave)
