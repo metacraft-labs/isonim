@@ -106,7 +106,8 @@ proc restoreInspectorFocus[R, E](r: R; root: E; vm: EditorVM) =
     {.emit: ["""
       (function () {
         const root = """, root, """;
-        const id = """, vm.inspector.focusedControlId.val, """;
+        const id = """, vm.inspector.focusedControlId.val,
+        """;
         const toString = (raw) => Array.isArray(raw)
           ? String.fromCharCode.apply(null, raw)
           : String(raw || '');
@@ -1116,7 +1117,8 @@ proc installPreviewSelectionBridge[R, E](r: R; frame: E; vm: EditorVM) =
         window.__isonimPreviewDirectManipulationBridgeInstalled = true;
         window.addEventListener('isonim-preview-direct-manipulation', function (event) {
           const d = event.detail || {};
-          """, directManipulationFromBrowser, """(
+          """, directManipulationFromBrowser,
+        """(
             d.kind || '', d.property || '', d.value || '', d.oldValue || '',
             d.handle || '', d.command || '', d.sourceKey || '',
             d.measurement || '', Number(d.fromIndex || 0),
@@ -1301,7 +1303,8 @@ func quickValues(propertyName: string): seq[string] =
   of "display": @["block", "flex", "grid", "none"]
   of "flex-direction": @["row", "column", "row-reverse", "column-reverse"]
   of "flex-wrap": @["nowrap", "wrap", "wrap-reverse"]
-  of "justify-content": @["flex-start", "center", "space-between", "space-around", "space-evenly", "flex-end"]
+  of "justify-content": @["flex-start", "center", "space-between",
+      "space-around", "space-evenly", "flex-end"]
   of "align-items": @["stretch", "center", "flex-start", "flex-end"]
   of "align-content": @["stretch", "center", "space-between", "flex-start"]
   of "align-self": @["auto", "stretch", "center", "flex-start", "flex-end"]
@@ -1539,7 +1542,8 @@ proc selectPreviewElementById[R, E](r: R; frame: E; id: string) =
         ? String.fromCharCode.apply(null, raw)
         : String(raw || '');
       window.dispatchEvent(new CustomEvent('isonim-select-preview-element-id', {
-        detail: { id: toJsString(""", id, """) }
+        detail: { id: toJsString(""", id,
+        """) }
       }));
       })();
     """].}
@@ -1556,7 +1560,8 @@ proc hoverPreviewElementById[R, E](r: R; frame: E; id: string) =
         ? String.fromCharCode.apply(null, raw)
         : String(raw || '');
       window.dispatchEvent(new CustomEvent('isonim-hover-preview-element-id', {
-        detail: { id: toJsString(""", id, """) }
+        detail: { id: toJsString(""", id,
+        """) }
       }));
       })();
     """].}
@@ -1569,11 +1574,13 @@ proc restorePreviewSelection[R, E](r: R; frame: E; id: string) =
   when defined(js):
     {.emit: ["""
       (function () {
-        const frame = """, frame, """;
+        const frame = """, frame,
+        """;
         const toJsString = (raw) => Array.isArray(raw)
           ? String.fromCharCode.apply(null, raw)
           : String(raw || '');
-        const selectedId = toJsString(""", id, """);
+        const selectedId = toJsString(""", id,
+        """);
         if (!frame || !selectedId) return;
         window.__isonimPendingPreviewSelectionId = selectedId;
         const restore = () => {
@@ -1615,11 +1622,13 @@ proc attachLiveInputPreview[R, E](r: R; inputNode, frame: E; propName: string) =
     {.emit: ["""
       (function () {
         const input = """, inputNode, """;
-        const frame = """, frame, """;
+        const frame = """, frame,
+        """;
         const toJsString = (raw) => Array.isArray(raw)
           ? String.fromCharCode.apply(null, raw)
           : String(raw || '');
-        const prop = toJsString(""", propName, """);
+        const prop = toJsString(""", propName,
+        """);
         if (!input || input.__isonimLivePreviewInstalled) return;
         input.__isonimLivePreviewInstalled = true;
         input.addEventListener('input', () => {
@@ -1653,11 +1662,13 @@ proc attachLiveInputPreview[R, E](r: R; inputNode, frame: E; propName: string) =
     discard frame
     discard propName
 
-proc attachPrimitiveInputKeys[R, E](r: R; inputNode, frame: E; propName: string) =
+proc attachPrimitiveInputKeys[R, E](r: R; inputNode, frame: E;
+    propName: string) =
   when defined(js):
     {.emit: ["""
       (function () {
-        const input = """, inputNode, """;
+        const input = """, inputNode,
+        """;
         if (!input || input.__isonimPrimitiveKeysInstalled) return;
         input.__isonimPrimitiveKeysInstalled = true;
         function split(raw) {
@@ -1777,15 +1788,15 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
       dataAttrs: @[("data-source-scope-editable",
         if editable: "true" else: "false")],
       onChoose: scopeChoiceHandler(kind, editable))
-  var sourceScopeRow = renderCompactChoiceRow[R, E](r, "",
+  var sourceScopeRow = renderCompactChoiceRow[R, E](r, "Scope",
     "Choose source scope for " & propName, scopeOptions, visibleLimit = 2,
-    minHeight = "22px")
+    labelWidth = "34px", minHeight = "22px")
   scopeNode = sourceScopeRow.root
   result = ui(r):
     tdiv(display = "grid",
-          `grid-template-columns` = "76px minmax(44px, 1fr) 30px 34px 86px 20px 22px",
+          grid_template_columns = "76px minmax(44px, 1fr) 30px 34px 118px 20px 22px",
           align_items = "center", gap = "3px",
-          min_height = "24px", max_width = "100%", overflow = "hidden"):
+          min_height = "24px", max_width = "100%", overflow = "visible"):
       label(ref = labelNode,
             font_size = "10px", color = textSecondary,
             white_space = "nowrap", overflow = "hidden",
@@ -1911,7 +1922,7 @@ proc renderCascadeIndicator[R, E](r: R; prop: PropertyInfo): E =
     else: prop.sourceFile & ":" & $prop.sourceLine
   result = ui(r):
     tdiv(display = "grid",
-          `grid-template-columns` = "auto auto minmax(0, 1fr)",
+          grid_template_columns = "auto auto minmax(0, 1fr)",
           align_items = "center", gap = "4px",
           min_width = "0",
           padding = "1px 0",
@@ -1941,10 +1952,12 @@ proc attachNumericScrubber[R, E](r: R; node: E; vm: EditorVM; frame: E;
       r.applyCssValue(vm, frame, propName, $nextValue)
     {.emit: ["""
       (function () {
-        const node = """, node, """;
+        const node = """, node,
+        """;
         if (!node || node.__isonimScrubberInstalled) return;
         node.__isonimScrubberInstalled = true;
-        const initial = """, value, """;
+        const initial = """, value,
+        """;
         const toString = (raw) => Array.isArray(raw)
           ? String.fromCharCode.apply(null, raw)
           : String(raw || '');
@@ -1968,7 +1981,8 @@ proc attachNumericScrubber[R, E](r: R; node: E; vm: EditorVM; frame: E;
           if (!dragging) return;
           const speed = event.shiftKey ? 10 : (event.altKey ? 0.1 : 1);
           const next = start + (event.clientX - startX) * speed;
-          """, scrub, """(format(next, parsed.unit));
+          """, scrub,
+        """(format(next, parsed.unit));
           event.preventDefault();
         }
         function stop() {
@@ -1998,7 +2012,8 @@ proc attachColorPlane[R, E](r: R; node: E; vm: EditorVM; frame: E;
       r.applyCssValue(vm, frame, propName, $nextValue)
     {.emit: ["""
       (function () {
-        const node = """, node, """;
+        const node = """, node,
+        """;
         if (!node || node.__isonimColorPlaneInstalled) return;
         node.__isonimColorPlaneInstalled = true;
         function hslToHex(h, s, l) {
@@ -2015,7 +2030,8 @@ proc attachColorPlane[R, E](r: R; node: E; vm: EditorVM; frame: E;
           const x = Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(rect.width, 1)));
           const y = Math.max(0, Math.min(1, (event.clientY - rect.top) / Math.max(rect.height, 1)));
           const hue = Number(node.dataset.hue || 215);
-          """, choose, """(hslToHex(hue, x * 100, (1 - y) * 68 + 16));
+          """, choose,
+        """(hslToHex(hue, x * 100, (1 - y) * 68 + 16));
           event.preventDefault();
         }
         let dragging = false;
@@ -2043,7 +2059,8 @@ proc attachHueStrip[R, E](r: R; node: E; vm: EditorVM; frame: E;
     {.emit: ["""
       (function () {
         const node = """, node, """;
-        const plane = """, plane, """;
+        const plane = """, plane,
+        """;
         if (!node || node.__isonimHueStripInstalled) return;
         node.__isonimHueStripInstalled = true;
         function hslToHex(h, s, l) {
@@ -2060,7 +2077,8 @@ proc attachHueStrip[R, E](r: R; node: E; vm: EditorVM; frame: E;
           const x = Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(rect.width, 1)));
           const hue = Math.round(x * 360);
           if (plane) plane.dataset.hue = String(hue);
-          """, choose, """(hslToHex(hue, 72, 56));
+          """, choose,
+        """(hslToHex(hue, 72, 56));
           event.preventDefault();
         }
         let dragging = false;
@@ -2156,7 +2174,8 @@ proc renderNumericAffordances[R, E](r: R; vm: EditorVM; frame: E; propName,
           for candidate in ["px", "rem", "%", "auto"]:
             tdiv(role = "button", tabindex = "0",
                   padding = "3px 5px", border_radius = "4px",
-                  background_color = (if unit == candidate: accent else: bgSurface),
+                  background_color = (if unit ==
+                      candidate: accent else: bgSurface),
                   color = (if unit == candidate: textPrimary else: textMuted),
                   font_size = "9px", cursor = "pointer"):
               text candidate
@@ -2213,7 +2232,7 @@ proc renderFigmaColorAffordances[R, E](r: R; vm: EditorVM; frame: E; propName,
             background = "linear-gradient(to right, transparent, " & base &
               "), repeating-conic-gradient(#64748B 0% 25%, transparent 0% 50%) 50% / 8px 8px")
       tdiv(display = "grid",
-            `grid-template-columns` = "repeat(3, minmax(0, 1fr))",
+            grid_template_columns = "repeat(3, minmax(0, 1fr))",
             gap = "4px"):
         tdiv(ref = rgbButton, role = "button", tabindex = "0",
               padding = "4px 5px", border_radius = "4px",
@@ -2299,9 +2318,9 @@ proc renderGradientAffordances[R, E](r: R; vm: EditorVM; frame: E; propName,
       tdiv(height = "28px", border_radius = "5px",
             border = "1px solid " & border,
             background = (if value.contains("gradient("): value else:
-              "linear-gradient(90deg, #3B82F6 0%, #22C55E 100%)"))
+        "linear-gradient(90deg, #3B82F6 0%, #22C55E 100%)"))
       tdiv(display = "grid",
-            `grid-template-columns` = "repeat(5, minmax(0, 1fr))",
+            grid_template_columns = "repeat(5, minmax(0, 1fr))",
             gap = "4px"):
         tdiv(ref = linearButton, role = "button", tabindex = "0",
               padding = "4px", border_radius = "4px",
@@ -2329,9 +2348,10 @@ proc renderGradientAffordances[R, E](r: R; vm: EditorVM; frame: E; propName,
               font_size = "9px", text_align = "center", cursor = "pointer"):
           text "-stop"
       tdiv(display = "grid",
-            `grid-template-columns` = "repeat(3, minmax(0, 1fr))",
+            grid_template_columns = "repeat(3, minmax(0, 1fr))",
             gap = "4px"):
-        for stop in ["#3B82F6 0%", "token(semantic.accent) 48%", "#22C55E 100%"]:
+        for stop in ["#3B82F6 0%", "token(semantic.accent) 48%",
+            "#22C55E 100%"]:
           tdiv(role = "button", tabindex = "0",
                 padding = "4px 5px", border_radius = "4px",
                 background_color = bgSurface, color = textMuted,
@@ -2373,7 +2393,7 @@ proc renderBorderRadiusAffordances[R, E](r: R; vm: EditorVM; frame: E;
             border = "2px solid " & accent,
             border_radius = value, background_color = bgSurface)
       tdiv(display = "grid",
-            `grid-template-columns` = "1fr 1fr",
+            grid_template_columns = "1fr 1fr",
             gap = "4px", flex = "1"):
         for corner in ["top-left", "top-right", "bottom-left", "bottom-right"]:
           tdiv(role = "button", tabindex = "0",
@@ -2427,7 +2447,7 @@ proc renderShadowAffordances[R, E](r: R; vm: EditorVM; frame: E;
                   color = textMuted, font_size = "10px"):
               text label
       tdiv(display = "grid",
-            `grid-template-columns` = "repeat(4, minmax(0, 1fr))",
+            grid_template_columns = "repeat(4, minmax(0, 1fr))",
             gap = "4px"):
         tdiv(ref = presetButton, role = "button", tabindex = "0",
               height = "24px", display = "flex",
@@ -2494,14 +2514,15 @@ proc renderTypographyAffordances[R, E](r: R; vm: EditorVM; frame: E;
           background_color = bgBase):
       tdiv(border = "1px solid " & border, border_radius = "5px",
             background_color = bgSurface, color = textPrimary,
-            padding = "8px", font_size = (if propName == "font-size": value else: "14px"),
+            padding = "8px", font_size = (if propName ==
+                "font-size": value else: "14px"),
             font_weight = (if propName == "font-weight": value else: "600"),
             line_height = (if propName == "line-height": value else: "1.35"),
             white_space = "nowrap", overflow = "hidden",
             text_overflow = "ellipsis"):
         text "Typography preview"
       tdiv(display = "grid",
-            `grid-template-columns` = "repeat(3, minmax(0, 1fr))",
+            grid_template_columns = "repeat(3, minmax(0, 1fr))",
             gap = "4px"):
         tdiv(ref = styleButton, role = "button", tabindex = "0",
               padding = "4px", border_radius = "4px",
@@ -2680,7 +2701,7 @@ proc renderRichPropertyControl[R, E](r: R; vm: EditorVM; frame: E;
   r.appendChild(result, renderPropertyInput[R, E](r, vm, frame, prop, fallback))
   let metaRow = ui(r):
     tdiv(display = "grid",
-          `grid-template-columns` = "minmax(0, 1fr) auto",
+          grid_template_columns = "minmax(0, 1fr) auto",
           align_items = "center", gap = "4px",
           padding_left = "76px")
   r.appendChild(metaRow, renderCascadeIndicator[R, E](r, prop))
@@ -2804,7 +2825,7 @@ proc renderLayoutControlSummary[R, E](r: R; vm: EditorVM; frame: E;
         span(font_size = "10px", color = accent, font_family = "monospace"):
           text mode
       tdiv(display = "grid",
-            `grid-template-columns` = "repeat(4, minmax(0, 1fr))",
+            grid_template_columns = "repeat(4, minmax(0, 1fr))",
             gap = "4px"):
         tdiv(ref = rowButton, role = "button", tabindex = "0",
               padding = "4px 5px", border_radius = "4px",
@@ -2872,7 +2893,7 @@ proc renderLayoutControlSummary[R, E](r: R; vm: EditorVM; frame: E;
             font_size = "9px", text_align = "center", cursor = "pointer"):
         text "per-child alignment"
       tdiv(display = "grid",
-            `grid-template-columns` = "repeat(5, minmax(0, 1fr))",
+            grid_template_columns = "repeat(5, minmax(0, 1fr))",
             gap = "4px"):
         tdiv(ref = gridTracksButton, role = "button", tabindex = "0",
               padding = "4px", border_radius = "4px",
@@ -2900,7 +2921,7 @@ proc renderLayoutControlSummary[R, E](r: R; vm: EditorVM; frame: E;
               font_size = "9px", text_align = "center", cursor = "pointer"):
           text "areas"
       tdiv(display = "grid",
-            `grid-template-columns` = "repeat(5, minmax(0, 1fr))",
+            grid_template_columns = "repeat(5, minmax(0, 1fr))",
             gap = "4px"):
         tdiv(ref = constraintsButton, role = "button", tabindex = "0",
               padding = "4px", border_radius = "4px",
@@ -2928,7 +2949,7 @@ proc renderLayoutControlSummary[R, E](r: R; vm: EditorVM; frame: E;
               font_size = "9px", text_align = "center", cursor = "pointer"):
           text "overflow"
       tdiv(display = "grid",
-            `grid-template-columns` = "repeat(3, minmax(0, 1fr))",
+            grid_template_columns = "repeat(3, minmax(0, 1fr))",
             gap = "4px"):
         tdiv(ref = mobileButton, role = "button", tabindex = "0",
               padding = "4px", border_radius = "4px",
@@ -2954,22 +2975,31 @@ proc renderLayoutControlSummary[R, E](r: R; vm: EditorVM; frame: E;
     (gapButton, "Set auto layout gap to 24px", "gap", "24px"),
     (paddingButton, "Set auto layout padding to 20px", "padding", "20px"),
     (alignButton, "Set align items to center", "align-items", "center"),
-    (justifyButton, "Set justify content to space between", "justify-content", "space-between"),
-    (distributionButton, "Set distribution to space evenly", "justify-content", "space-evenly"),
+    (justifyButton, "Set justify content to space between", "justify-content",
+        "space-between"),
+    (distributionButton, "Set distribution to space evenly", "justify-content",
+        "space-evenly"),
     (hugButton, "Set sizing to hug content", "width", "fit-content"),
     (fillButton, "Set sizing to fill container", "flex-grow", "1"),
-    (fixedButton, "Set sizing to fixed width", "width", fallbackPropertyValue(selected, "width", "320px")),
+    (fixedButton, "Set sizing to fixed width", "width", fallbackPropertyValue(
+        selected, "width", "320px")),
     (orderButton, "Set child order to one", "order", "1"),
-    (childAlignButton, "Set per-child alignment to center", "align-self", "center"),
-    (gridTracksButton, "Set grid template tracks", "grid-template-columns", "repeat(2, minmax(0, 1fr))"),
+    (childAlignButton, "Set per-child alignment to center", "align-self",
+        "center"),
+    (gridTracksButton, "Set grid template tracks", "grid-template-columns",
+        "repeat(2, minmax(0, 1fr))"),
     (gridGapButton, "Set grid gap to 24px", "gap", "24px"),
-    (gridPlacementButton, "Set grid placement to span two", "grid-column", "span 2"),
+    (gridPlacementButton, "Set grid placement to span two", "grid-column",
+        "span 2"),
     (gridFlowButton, "Set grid auto flow dense", "grid-auto-flow", "row dense"),
-    (gridAreasButton, "Set grid named areas", "grid-template-areas", "\"main side\""),
-    (constraintsButton, "Set left right top bottom constraints", "position", "relative"),
+    (gridAreasButton, "Set grid named areas", "grid-template-areas",
+        "\"main side\""),
+    (constraintsButton, "Set left right top bottom constraints", "position",
+        "relative"),
     (minMaxButton, "Set min max width constraints", "min-width", "240px"),
     (intrinsicButton, "Set intrinsic content sizing", "width", "max-content"),
-    (aspectButton, "Set aspect ratio to sixteen nine", "aspect-ratio", "16 / 9"),
+    (aspectButton, "Set aspect ratio to sixteen nine", "aspect-ratio",
+        "16 / 9"),
     (overflowButton, "Set overflow strategy to auto", "overflow", "auto")
   ]
   for (node, label, propName, value) in actions:
@@ -3118,7 +3148,7 @@ proc renderElementTree[R, E](r: R; vm: EditorVM; frame: E;
             `aria-label` = "Search element layers",
             placeholder = "Search layers")
       tdiv(display = "grid",
-            `grid-template-columns` = "repeat(5, 1fr)",
+            grid_template_columns = "repeat(5, 1fr)",
             gap = "4px"):
         tdiv(ref = prevButton, role = "button", tabindex = "0",
               `aria-label` = "Select previous element",
@@ -3187,7 +3217,7 @@ proc renderElementTree[R, E](r: R; vm: EditorVM; frame: E;
     var selectNode: E
     let rowNode = ui(r):
       tdiv(display = "grid",
-            `grid-template-columns` = "18px minmax(0, 1fr) auto",
+            grid_template_columns = "18px minmax(0, 1fr) auto",
             align_items = "center", gap = "4px",
             min_height = "26px",
             padding = "3px 4px",
@@ -3225,7 +3255,8 @@ proc renderElementTree[R, E](r: R; vm: EditorVM; frame: E;
     r.addEventListener(rowNode, "mouseover", hover)
     r.appendChild(rowsNode, rowNode)
 
-func stylePanelProperty(selected: ElementRef; section: InspectorSection): string =
+func stylePanelProperty(selected: ElementRef;
+    section: InspectorSection): string =
   for (name, fallback) in sectionProperties(section):
     discard fallback
     for prop in selected.properties:
@@ -3236,7 +3267,8 @@ func stylePanelProperty(selected: ElementRef; section: InspectorSection): string
   else:
     "color"
 
-func demoScopeValue(propName, current: string; scope: StyleScopeChoiceKind): string =
+func demoScopeValue(propName, current: string;
+    scope: StyleScopeChoiceKind): string =
   case propName
   of "padding", "padding-top", "padding-right", "padding-bottom",
       "padding-left", "gap":
@@ -3296,7 +3328,7 @@ proc renderStyleManagerPanel[R, E](r: R; vm: EditorVM; frame: E;
             let className = snapshot.currentClassStack[i].className
             let editable = snapshot.currentClassStack[i].editable
             tdiv(display = "grid",
-                  `grid-template-columns` = "minmax(0, 1fr) auto",
+                  grid_template_columns = "minmax(0, 1fr) auto",
                   gap = "6px", align_items = "center",
                   min_height = "24px",
                   padding = "3px 5px", border = "1px solid " & border,
@@ -3307,7 +3339,7 @@ proc renderStyleManagerPanel[R, E](r: R; vm: EditorVM; frame: E;
                 text className
               span(font_size = "10px", color = textDim):
                 text if editable: "editable" else: "read-only"
-      tdiv(display = "grid", `grid-template-columns` = "1fr 1fr",
+      tdiv(display = "grid", grid_template_columns = "1fr 1fr",
             gap = "4px"):
         tdiv(ref = createClassButton, role = "button", tabindex = "0",
               `aria-label` = "Create reusable class for " & snapshot.property,
@@ -3322,7 +3354,8 @@ proc renderStyleManagerPanel[R, E](r: R; vm: EditorVM; frame: E;
               font_size = "10px", text_align = "center", cursor = "pointer"):
           text "Rename"
         tdiv(ref = duplicateClassButton, role = "button", tabindex = "0",
-              `aria-label` = "Duplicate reusable class for " & snapshot.property,
+              `aria-label` = "Duplicate reusable class for " &
+              snapshot.property,
               padding = "5px 6px", border_radius = "4px",
               background_color = bgSurface, color = textMuted,
               font_size = "10px", text_align = "center", cursor = "pointer"):
@@ -3335,7 +3368,7 @@ proc renderStyleManagerPanel[R, E](r: R; vm: EditorVM; frame: E;
           text "Detach"
       tdiv(display = "flex", flex_direction = "column", gap = "4px",
             `aria-label` = "Safe style scope choices"):
-        tdiv(display = "grid", `grid-template-columns` = "72px minmax(0, 1fr)",
+        tdiv(display = "grid", grid_template_columns = "72px minmax(0, 1fr)",
               align_items = "center", gap = "6px",
               min_height = "24px",
               `data-compact-choice-row` = "true"):
@@ -3343,26 +3376,30 @@ proc renderStyleManagerPanel[R, E](r: R; vm: EditorVM; frame: E;
                 white_space = "nowrap", overflow = "hidden",
                 text_overflow = "ellipsis"):
             text "Scope"
-          tdiv(display = "grid", `grid-template-columns` = "1fr 1fr auto",
+          tdiv(display = "grid", grid_template_columns = "1fr 1fr auto",
                 align_items = "center",
                 border = "1px solid " & border,
                 border_radius = "4px",
-                overflow = "hidden",
+                overflow = "visible",
                 background_color = "#0F172A",
                 `data-compact-choice-strip` = "true"):
             tdiv(ref = localScopeButton, role = "button", tabindex = "0",
-                  `aria-label` = "Apply local instance scope for " & snapshot.property,
+                  `aria-label` = "Apply local instance scope for " &
+                  snapshot.property,
                   padding = "4px 6px",
                   background_color = accent, color = textPrimary,
                   border_right = "1px solid " & border,
-                  font_size = "10px", text_align = "center", cursor = "pointer"):
+                  font_size = "10px", text_align = "center",
+                  cursor = "pointer"):
               text "Local"
             tdiv(ref = sharedScopeButton, role = "button", tabindex = "0",
-                  `aria-label` = "Apply shared class scope for " & snapshot.property,
+                  `aria-label` = "Apply shared class scope for " &
+                  snapshot.property,
                   padding = "4px 6px",
                   background_color = "transparent", color = textMuted,
                   border_right = "1px solid " & border,
-                  font_size = "10px", text_align = "center", cursor = "pointer"):
+                  font_size = "10px", text_align = "center",
+                  cursor = "pointer"):
               text "Class"
             details(height = "22px",
                     position = "relative",
@@ -3374,10 +3411,9 @@ proc renderStyleManagerPanel[R, E](r: R; vm: EditorVM; frame: E;
                       list_style = "none", cursor = "pointer",
                       `aria-label` = "More style scope choices for " &
                         snapshot.property):
-                text "v"
+                text "⌄"
               tdiv(position = "absolute", right = "0", top = "23px",
                     z_index = "20", min_width = "160px",
-                    display = "flex", flex_direction = "column", gap = "2px",
                     padding = "4px", border = "1px solid " & border,
                     border_radius = "5px", background_color = bgSidebar,
                     box_shadow = "0 8px 24px rgba(0,0,0,0.28)"):
@@ -3388,7 +3424,8 @@ proc renderStyleManagerPanel[R, E](r: R; vm: EditorVM; frame: E;
                         color = (if editable: textMuted else: textDim),
                         white_space = "nowrap", overflow = "hidden",
                         text_overflow = "ellipsis"):
-                    text choiceLabel & (if editable: " editable" else: " read-only")
+                    text choiceLabel & (
+                        if editable: " editable" else: " read-only")
       tdiv(display = "flex", flex_direction = "column", gap = "4px",
             `aria-label` = "Cascade source layers"):
         span(font_size = "10px", color = textMuted):
@@ -3398,7 +3435,7 @@ proc renderStyleManagerPanel[R, E](r: R; vm: EditorVM; frame: E;
           let layerValue = snapshot.cascadeLayers[i].value
           let editable = snapshot.cascadeLayers[i].editable
           tdiv(display = "grid",
-                `grid-template-columns` = "82px minmax(0, 1fr) auto",
+                grid_template_columns = "82px minmax(0, 1fr) auto",
                 gap = "5px", align_items = "center",
                 min_height = "24px",
                 padding = "3px 5px", border = "1px solid " & border,
@@ -3420,7 +3457,7 @@ proc renderStyleManagerPanel[R, E](r: R; vm: EditorVM; frame: E;
           let aliasOf = snapshot.tokenItems[i].aliasOf
           let usageCount = snapshot.tokenItems[i].impact.usageCount
           tdiv(display = "grid",
-                `grid-template-columns` = "minmax(0, 1fr) auto",
+                grid_template_columns = "minmax(0, 1fr) auto",
                 gap = "5px", align_items = "center",
                 min_height = "24px",
                 padding = "3px 5px", border = "1px solid " & border,
@@ -3525,7 +3562,7 @@ proc renderDesignSystemImpactPanel[R, E](r: R; vm: EditorVM; frame: E;
         span(font_size = "9px", color = textDim):
           text "Scope impact: use the row scope selector for local, fixture, class, API, or token ownership."
         tdiv(display = "grid",
-              `grid-template-columns` = "repeat(3, minmax(0, 1fr))",
+              grid_template_columns = "repeat(3, minmax(0, 1fr))",
               gap = "4px"):
           tdiv(display = "flex", flex_direction = "column", gap = "1px",
                 padding = "4px", border = "1px solid " & borderFaint,
@@ -3557,7 +3594,7 @@ proc renderDesignSystemImpactPanel[R, E](r: R; vm: EditorVM; frame: E;
             let editor = row.editor
             let impact = row.impact
             tdiv(display = "grid",
-                  `grid-template-columns` = "minmax(0, 1fr) auto",
+                  grid_template_columns = "minmax(0, 1fr) auto",
                   gap = "5px", align_items = "center",
                   padding = "4px 5px",
                   border = "1px solid " & borderFaint,
@@ -3576,9 +3613,11 @@ proc renderDesignSystemImpactPanel[R, E](r: R; vm: EditorVM; frame: E;
                 span(font_size = "9px", color = textDim,
                       white_space = "nowrap", overflow = "hidden",
                       text_overflow = "ellipsis"):
-                  text impact.ownerLabel & " | " & impact.riskLevel.sourceScopeRiskLabel() &
+                  text impact.ownerLabel & " | " &
+                      impact.riskLevel.sourceScopeRiskLabel() &
                     " risk" & (
-                      if impact.schemaKey.len > 0: " | " & impact.schemaKey else: "")
+                      if impact.schemaKey.len > 0: " | " &
+                      impact.schemaKey else: "")
               tdiv(role = "note",
                     `aria-label` = "Use the property row source scope selector for " &
                       editor.property,
@@ -3602,7 +3641,7 @@ proc renderDesignSystemImpactPanel[R, E](r: R; vm: EditorVM; frame: E;
               let editor = sharedEditors[i]
               let scope = editor.sourceScope.kind.sourceScopeChoiceLabel()
               tdiv(display = "grid",
-                    `grid-template-columns` = "minmax(0, 1fr) auto",
+                    grid_template_columns = "minmax(0, 1fr) auto",
                     gap = "6px", align_items = "center",
                     padding = "5px 6px",
                     border = "1px solid " & border,
@@ -3619,9 +3658,11 @@ proc renderDesignSystemImpactPanel[R, E](r: R; vm: EditorVM; frame: E;
                         white_space = "nowrap", overflow = "hidden",
                         text_overflow = "ellipsis"):
                     text scope & " | " &
-                      (if editor.status == sdesEditable: "editable" else: editor.readOnlyReason)
+                      (if editor.status ==
+                          sdesEditable: "editable" else: editor.readOnlyReason)
                 span(font_size = "9px",
-                      color = (if editor.status == sdesEditable: green else: gold)):
+                      color = (if editor.status ==
+                          sdesEditable: green else: gold)):
                   text $editor.flowCapabilities.len & " flows"
         tdiv(display = "flex", flex_direction = "column", gap = "4px",
               `aria-label` = "Scope-specific commit previews"):
@@ -3652,9 +3693,9 @@ proc renderDesignSystemImpactPanel[R, E](r: R; vm: EditorVM; frame: E;
                 span(font_size = "9px", color = textDim):
                   text "Affected components: " & (
                     if preview.affectedComponents.len > 0:
-                      preview.affectedComponents.join(", ")
-                    else:
-                      "none") & " | affected stories: " &
+                    preview.affectedComponents.join(", ")
+                  else:
+                    "none") & " | affected stories: " &
                     $preview.affectedStories.len
                 span(font_size = "9px", color = textDim):
                   text preview.previewStateLabel
@@ -3693,7 +3734,7 @@ proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;
         "auto"
     let summary = ui(r):
       tdiv(display = "grid",
-            `grid-template-columns` = "minmax(0, 1fr) auto",
+            grid_template_columns = "minmax(0, 1fr) auto",
             align_items = "center", gap = "6px",
             padding = "6px",
             border = "1px solid " & borderFaint,
@@ -3826,7 +3867,8 @@ proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;
           text "Click real rendered DOM in the iframe"
     r.appendChild(content, empty)
 
-proc populateInspectorImpact[R, E](r: R; vm: EditorVM; frame, impactContent: E) =
+proc populateInspectorImpact[R, E](r: R; vm: EditorVM; frame,
+    impactContent: E) =
   r.clearChildren(impactContent)
   if vm.inspector.hasElement.val:
     let selected = vm.inspector.selectedElement.val
@@ -3950,7 +3992,7 @@ proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
                 background_color = accent, color = textPrimary):
             text "Save"
       tdiv(display = "grid",
-            `grid-template-columns` = "minmax(0, 1fr)",
+            grid_template_columns = "minmax(0, 1fr)",
             align_items = "center",
             gap = "3px",
             padding = "5px 6px",
@@ -4182,7 +4224,8 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
     r.setStyle(projectFrame, "min-height", "320px")
     r.setStyle(projectFrame, "overflow", "hidden")
     let selectedId = vm.inspector.selectedElement.val.id
-    if selectedId.len > 0 and (srcdocChanged or selectedId != lastRestoredSelection):
+    if selectedId.len > 0 and (srcdocChanged or selectedId !=
+        lastRestoredSelection):
       lastRestoredSelection = selectedId
       r.restorePreviewSelection(projectFrame, selectedId)
 

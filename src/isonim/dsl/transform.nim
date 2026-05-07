@@ -69,6 +69,9 @@ const styleProperties* = [
   "margin", "margin-left", "margin-right", "margin-top", "margin-bottom",
   "gap", "flex", "flex-grow", "flex-shrink", "flex-wrap",
   "flex-direction", "align-items", "align-self", "justify-content",
+  "column-gap", "row-gap", "justify-items", "align-content", "place-items",
+  "grid-template-columns", "grid-template-rows", "grid-auto-flow",
+  "grid-auto-columns", "grid-auto-rows", "grid-column", "grid-row",
   "display", "position", "top", "right", "bottom", "left", "z-index",
   "overflow", "overflow-x", "overflow-y",
   # Visual
@@ -79,7 +82,7 @@ const styleProperties* = [
   "letter-spacing", "line-height", "white-space", "word-wrap",
   "border", "border-radius", "border-color", "border-width", "border-style",
   "border-top", "border-right", "border-bottom", "border-left",
-  "box-shadow", "outline", "cursor", "transition",
+  "box-shadow", "outline", "cursor", "transition", "list-style",
   "transform", "transform-origin",
   # Scrollbar
   "scrollbar-width",

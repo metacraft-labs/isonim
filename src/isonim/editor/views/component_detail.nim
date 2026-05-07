@@ -228,7 +228,7 @@ proc renderComponentPropertyInput[R, E](r: R; vm: EditorVM;
       cpemManual)
   result = ui(r):
     tdiv(display = "grid",
-          `grid-template-columns` = "82px minmax(0, 1fr) 30px",
+          grid_template_columns = "82px minmax(0, 1fr) 30px",
           align_items = "center", gap = "6px",
           min_height = "30px", max_width = "100%",
           overflow = "hidden"):
@@ -313,7 +313,7 @@ proc renderComponentStateButton[R, E](r: R; vm: EditorVM;
           border = "1px solid " & border,
           border_radius = "4px",
           background_color = (if currentValue in ["true", "success", "error"]:
-            bgSurface else: bgCard),
+      bgSurface else: bgCard),
           color = textSecondary,
           font_size = "10px",
           cursor = "pointer",
@@ -410,7 +410,7 @@ proc populateComponentPropertyPanel[R, E](r: R; vm: EditorVM; panel: E) =
 
   let props = ui(r):
     tdiv(display = "grid",
-          `grid-template-columns` = "repeat(auto-fit, minmax(230px, 1fr))",
+          grid_template_columns = "repeat(auto-fit, minmax(230px, 1fr))",
           gap = "8px")
   for property in variant.properties:
     let prop = property
@@ -437,7 +437,7 @@ proc populateComponentPropertyPanel[R, E](r: R; vm: EditorVM; panel: E) =
             text_transform = "uppercase"):
         text "States"
       tdiv(display = "grid",
-            `grid-template-columns` = "repeat(auto-fit, minmax(112px, 1fr))",
+            grid_template_columns = "repeat(auto-fit, minmax(112px, 1fr))",
             gap = "6px"):
         discard
   let stateGrid = states
@@ -453,7 +453,7 @@ proc populateComponentPropertyPanel[R, E](r: R; vm: EditorVM; panel: E) =
             text_transform = "uppercase"):
         text "Variant matrix"
       tdiv(display = "grid",
-            `grid-template-columns` = "repeat(auto-fit, minmax(132px, 1fr))",
+            grid_template_columns = "repeat(auto-fit, minmax(132px, 1fr))",
             gap = "6px"):
         discard
   r.setAttribute(matrix, "data-component-variant-matrix", "true")
@@ -700,7 +700,8 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
         })(""", frame, ", ", variantScript, """);
       """].}
       {.emit: ["""
-        const frame = """, frame, """;
+        const frame = """, frame,
+          """;
         if (frame && !frame.__isonimAutoHeightInstalled) {
           frame.__isonimAutoHeightInstalled = true;
           frame.style.overflow = 'hidden';
