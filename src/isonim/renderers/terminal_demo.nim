@@ -39,7 +39,11 @@ type
   TerminalRenderer* = object
     ## Terminal renderer backend.
 
-var nextTerminalNodeId*: int
+var nextTerminalNodeId* {.threadvar.}: int
+  ## Per-thread monotonic id counter. Was a plain `var` global until M0
+  ## of `isonim-tui` exposed the parallel-test race; the production
+  ## replacement renderer in `isonim_tui` mirrors `mock_dom.nim:40` and
+  ## this demo renderer follows suit so the two stay in lockstep.
 
 proc tagToKind(tag: string): TerminalNodeKind =
   case tag

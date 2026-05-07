@@ -3,7 +3,7 @@
 ## Demonstrates that the reactive core works with a terminal renderer,
 ## proving GUI-agnostic architecture.
 
-import isonim/renderers/terminal
+import isonim/renderers/terminal_demo as terminal
 import isonim/rxcore
 import isonim/core/computation
 

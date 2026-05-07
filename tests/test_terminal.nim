@@ -6,7 +6,7 @@
 
 import unittest
 import std/[tables, strutils]
-import isonim/renderers/terminal
+import isonim/renderers/terminal_demo as terminal
 import isonim/testing/mock_dom
 import isonim/core/[signals, computation, owner]
 
