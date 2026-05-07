@@ -185,9 +185,108 @@ proc componentPreviewVariantScript(vm: EditorVM;
       result.add "  node.textContent = " & previewValue.jsLiteral & ";\n"
     result.add "}\n"
 
-proc renderComponentPropertyInput[R, E](r: R; vm: EditorVM;
+func componentPropertyMutationsForProp(
+    mutations: seq[PreviewVariantMutation];
+    component, variantKey, propName: string): seq[PreviewVariantMutation] =
+  for m in mutations:
+    if m.component != component:
+      continue
+    if m.variantKey.len > 0 and m.variantKey != variantKey:
+      continue
+    if m.property != propName:
+      continue
+    if m.selector.len == 0:
+      continue
+    result.add m
+
+func componentPropertyMutationsJsLiteral(
+    mutations: seq[PreviewVariantMutation]): string =
+  ## Serialize the property's preview mutations as a JSON literal so the live
+  ## preview JS handler can apply them to the iframe without going through the
+  ## reactive signal store.
+  result = "["
+  for i, m in mutations:
+    if i > 0: result.add ","
+    result.add "{\"selector\":" & m.selector.jsLiteral
+    result.add ",\"kind\":" & $m.kind.ord
+    result.add ",\"attributeName\":" & m.attributeName.jsLiteral
+    result.add ",\"classPrefix\":" & m.classPrefix.jsLiteral
+    result.add ",\"values\":["
+    for j, v in m.values:
+      if j > 0: result.add ","
+      result.add "{\"sourceValue\":" & v.sourceValue.jsLiteral
+      result.add ",\"previewValue\":" & v.previewValue.jsLiteral & "}"
+    result.add "]}"
+  result.add "]"
+
+proc attachComponentPropertyLivePreview[R, E](r: R; inputNode, frame: E;
+    mutationsJson: string) =
+  ## Mirror what variantScript does on commit, but without committing: on each
+  ## `input` event, apply the matching preview mutations directly to the iframe
+  ## DOM. This lets the user see live changes while typing without triggering
+  ## a reactive rebuild that would steal focus from the input.
+  when defined(js):
+    {.emit: ["""
+      (function () {
+        const input = """, inputNode, """;
+        const frame = """, frame, """;
+        const toJsString = (raw) => Array.isArray(raw)
+          ? String.fromCharCode.apply(null, raw)
+          : String(raw || '');
+        const json = toJsString(""", mutationsJson, """);
+        if (!input || !frame) return;
+        if (input.__isonimComponentPropertyLivePreviewInstalled) return;
+        input.__isonimComponentPropertyLivePreviewInstalled = true;
+        let mutations;
+        try { mutations = JSON.parse(json); } catch (_) { mutations = []; }
+        if (!Array.isArray(mutations) || mutations.length === 0) return;
+        input.addEventListener('input', () => {
+          try {
+            const doc = frame.contentDocument;
+            if (!doc) return;
+            const value = input.value || '';
+            for (const m of mutations) {
+              const node = doc.querySelector(m.selector);
+              if (!node) continue;
+              let previewValue = value;
+              for (const v of m.values) {
+                if (v.sourceValue === value) {
+                  previewValue = v.previewValue;
+                  break;
+                }
+              }
+              if (m.kind === 0) {
+                if (!m.classPrefix) continue;
+                for (const v of m.values) {
+                  if (v.previewValue) {
+                    node.classList.remove(m.classPrefix + v.previewValue);
+                  }
+                }
+                if (previewValue) {
+                  node.classList.add(m.classPrefix + previewValue);
+                }
+              } else if (m.kind === 1) {
+                if (m.attributeName) {
+                  node.setAttribute(m.attributeName, previewValue);
+                }
+              } else if (m.kind === 2) {
+                node.textContent = previewValue;
+              }
+            }
+          } catch (_) {}
+        });
+      })();
+    """].}
+  else:
+    discard r
+    discard inputNode
+    discard frame
+    discard mutationsJson
+
+proc renderComponentPropertyInput[R, E](r: R; vm: EditorVM; frame: E;
     variant: ComponentVariantDefinition;
-    prop: ComponentPropertyDefinition): E =
+    prop: ComponentPropertyDefinition;
+    previewMutations: seq[PreviewVariantMutation]): E =
   let component = variant.component
   let variantKey = variant.variantKey
   let propName = prop.name
@@ -223,11 +322,6 @@ proc renderComponentPropertyInput[R, E](r: R; vm: EditorVM;
   let commit = proc() =
     discard vm.editComponentProperty(component, variantKey, propName,
       r.inputValue(inputNode), cpemManual)
-  let commitNonBlankInput = proc() =
-    let nextValue = r.inputValue(inputNode)
-    if nextValue.strip.len > 0:
-      discard vm.editComponentProperty(component, variantKey, propName,
-        nextValue, cpemManual)
   let cycle = proc() =
     let next = nextOption(propOptions, r.inputValue(inputNode))
     r.setInputValue(inputNode, next)
@@ -273,7 +367,11 @@ proc renderComponentPropertyInput[R, E](r: R; vm: EditorVM;
   r.setAttribute(cycleNode, "title",
     componentPropertyKindLabel(prop.kind) & ". " & prop.documentation & " " &
       prop.usageGuidance)
-  r.addEventListener(inputNode, "input", commitNonBlankInput)
+  let propMutations = componentPropertyMutationsForProp(previewMutations,
+    component, variantKey, propName)
+  if propMutations.len > 0:
+    r.attachComponentPropertyLivePreview(inputNode, frame,
+      componentPropertyMutationsJsLiteral(propMutations))
   r.addEventListener(cycleNode, "click", cycle)
   r.addEventListener(cycleNode, "keydown", cycle)
 
@@ -360,7 +458,8 @@ proc renderCreateStateStoryButton[R, E](r: R; vm: EditorVM;
   r.addEventListener(result, "click", create)
   r.addEventListener(result, "keydown", create)
 
-proc populateComponentPropertyPanel[R, E](r: R; vm: EditorVM; panel: E) =
+proc populateComponentPropertyPanel[R, E](r: R; vm: EditorVM; panel, frame: E;
+    previewMutations: seq[PreviewVariantMutation]) =
   r.clearChildren(panel)
   let story = vm.selectedStory.val
   if story.kind notin {skComponent, skPattern}:
@@ -430,7 +529,8 @@ proc populateComponentPropertyPanel[R, E](r: R; vm: EditorVM; panel: E) =
             background_color = bgCard,
             min_width = "0"):
         discard
-    r.appendChild(row, renderComponentPropertyInput[R, E](r, vm, variant, prop))
+    r.appendChild(row, renderComponentPropertyInput[R, E](r, vm, frame,
+      variant, prop, previewMutations))
     let guidance = ui(r):
       span(font_size = "10px", color = textDim, line_height = "1.35"):
         text (componentPropertyKindLabel(prop.kind) & " - " &
@@ -677,7 +777,8 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
     r.setStyle(projectFrame, "overflow", "hidden")
     r.setStyle(projectSection, "display", if showProject: "flex" else: "none")
     r.setStyle(genericContent, "display", if showProject: "none" else: "flex")
-    r.populateComponentPropertyPanel(vm, propertyPanel)
+    r.populateComponentPropertyPanel(vm, propertyPanel, projectFrame,
+      preview.variantMutations)
 
     when defined(js):
       let frame = projectFrame
