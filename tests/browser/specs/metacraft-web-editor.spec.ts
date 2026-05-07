@@ -1279,6 +1279,94 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       .toBe(neutralBackground);
   });
 
+  test("e2e_component_text_property_updates_panel_header_live_preview", async ({
+    page,
+  }) => {
+    await page.goto("/?writeBridge=1");
+    await expect(page.locator(".editor-statusbar")).toContainText(
+      "write writable",
+    );
+    await expect
+      .poll(() => readFileSync(devBridgeComponentSchemaFile, "utf8"))
+      .toContain("panelHeader.label=Customers");
+    const beforeComponentSchema = readFileSync(
+      devBridgeComponentSchemaFile,
+      "utf8",
+    );
+
+    await page.getByRole("button", { name: "Open Components section" }).click();
+    await page
+      .getByRole("button", {
+        name: "Select story Operational components / Panel header",
+      })
+      .click();
+
+    const propertyPanel = page
+      .getByLabel("Component property schema and variant matrix")
+      .first();
+    await expect(propertyPanel).toBeVisible();
+    const previewFrame = page.locator(
+      'iframe[title="Component preview Operational components / Panel header"]',
+    );
+    const panelHeaderTitle = page
+      .frameLocator(
+        'iframe[title="Component preview Operational components / Panel header"]',
+      )
+      .getByTestId("component-panel-header")
+      .locator("h2");
+    await expect.poll(() => iframeReloadGeneration(previewFrame)).toBe(0);
+    await expect(panelHeaderTitle).toHaveText("Customers");
+
+    const labelInput = propertyPanel
+      .getByRole("textbox", { name: "Edit component property label" })
+      .first();
+    await expect(labelInput).toBeVisible();
+    await labelInput.fill("Accounts");
+    await expect(page.getByText("dirty")).toBeVisible();
+    await expect(
+      propertyPanel.getByText("1 component plan(s) staged"),
+    ).toBeVisible();
+    await expect.poll(() => iframeReloadGeneration(previewFrame)).toBe(0);
+    await expect(panelHeaderTitle).toHaveText("Accounts");
+
+    await page
+      .getByRole("button", { name: "Save component property source edits" })
+      .click();
+    await expect(page.getByText("dirty")).toHaveCount(0);
+    await expect
+      .poll(() => readFileSync(devBridgeComponentSchemaFile, "utf8"))
+      .toContain("panelHeader.label=Accounts");
+    await expect.poll(() => iframeReloadGeneration(previewFrame)).toBe(1);
+    await expect(panelHeaderTitle).toHaveText("Accounts");
+
+    const afterComponentSchema = readFileSync(
+      devBridgeComponentSchemaFile,
+      "utf8",
+    );
+    await revertDevBridgeFiles(page, [
+      {
+        file: componentSchemaBridgeFile,
+        beforeText: beforeComponentSchema,
+        afterText: afterComponentSchema,
+      },
+    ]);
+    await expect
+      .poll(() => readFileSync(devBridgeComponentSchemaFile, "utf8"))
+      .toBe(beforeComponentSchema);
+    await page.reload();
+    await expect(
+      page.getByLabel("Component property schema and variant matrix").first(),
+    ).toBeVisible();
+    await expect(
+      page
+        .frameLocator(
+          'iframe[title="Component preview Operational components / Panel header"]',
+        )
+        .getByTestId("component-panel-header")
+        .locator("h2"),
+    ).toHaveText("Customers");
+  });
+
   test("comment mode stores structured review annotations for AI prompt selection", async ({
     page,
   }) => {

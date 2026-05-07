@@ -1922,6 +1922,7 @@ type
   PreviewVariantMutationKind* = enum
     pvmkClassToken
     pvmkAttribute
+    pvmkTextContent
 
   PreviewVariantValueMap* = object
     ## Consumer-owned mapping from schema values to rendered preview values.

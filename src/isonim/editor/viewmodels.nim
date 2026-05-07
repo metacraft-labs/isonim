@@ -6161,6 +6161,10 @@ proc editComponentProperty*(editor: EditorVM; component, variantKey,
     editor.variants.diagnostics.val = diagnostics
     return ComponentVariantEditResult(status: pesRejected,
       diagnostics: diagnostics, affectedStory: variant.story)
+  if newValue.strip() == prop.value:
+    editor.variants.diagnostics.val = @[]
+    return ComponentVariantEditResult(status: pesAccepted,
+      affectedStory: variant.story)
 
   let impact = editor.componentEditImpactFor(variant,
     prop.componentPropertyTargetKind(), prop.sourceFile, prop.propertySourceKey,

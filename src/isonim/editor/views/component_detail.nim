@@ -181,6 +181,8 @@ proc componentPreviewVariantScript(vm: EditorVM;
         continue
       result.add "  node.setAttribute(" & mutation.attributeName.jsLiteral &
         ", " & previewValue.jsLiteral & ");\n"
+    of pvmkTextContent:
+      result.add "  node.textContent = " & previewValue.jsLiteral & ";\n"
     result.add "}\n"
 
 proc renderComponentPropertyInput[R, E](r: R; vm: EditorVM;
@@ -221,6 +223,11 @@ proc renderComponentPropertyInput[R, E](r: R; vm: EditorVM;
   let commit = proc() =
     discard vm.editComponentProperty(component, variantKey, propName,
       r.inputValue(inputNode), cpemManual)
+  let commitNonBlankInput = proc() =
+    let nextValue = r.inputValue(inputNode)
+    if nextValue.strip.len > 0:
+      discard vm.editComponentProperty(component, variantKey, propName,
+        nextValue, cpemManual)
   let cycle = proc() =
     let next = nextOption(propOptions, r.inputValue(inputNode))
     r.setInputValue(inputNode, next)
@@ -266,6 +273,7 @@ proc renderComponentPropertyInput[R, E](r: R; vm: EditorVM;
   r.setAttribute(cycleNode, "title",
     componentPropertyKindLabel(prop.kind) & ". " & prop.documentation & " " &
       prop.usageGuidance)
+  r.addEventListener(inputNode, "input", commitNonBlankInput)
   r.addEventListener(cycleNode, "click", cycle)
   r.addEventListener(cycleNode, "keydown", cycle)
 
