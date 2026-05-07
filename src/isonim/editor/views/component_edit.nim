@@ -3712,8 +3712,6 @@ proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;
           span(font_size = "8px", color = accent):
             text "selected"
     r.appendChild(content, summary)
-    r.appendChild(content, renderDesignSystemImpactPanel[R, E](r, vm, frame,
-      selected))
 
     let active = vm.inspector.activeSection.val
     let expanded = active in vm.inspector.expandedSections.val
@@ -3819,6 +3817,13 @@ proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;
           text "Click real rendered DOM in the iframe"
     r.appendChild(content, empty)
 
+proc populateInspectorImpact[R, E](r: R; vm: EditorVM; frame, impactContent: E) =
+  r.clearChildren(impactContent)
+  if vm.inspector.hasElement.val:
+    let selected = vm.inspector.selectedElement.val
+    r.appendChild(impactContent, renderDesignSystemImpactPanel[R, E](r, vm,
+      frame, selected))
+
 proc inspectorSectionHandler[R, E](r: R; vm: EditorVM; frame, tabs, content: E;
     clipboard: StyleClipboard; section: InspectorSection): proc() =
   let capturedSection = section
@@ -3861,8 +3866,6 @@ proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
   var resetWidthButton: E
   var widenButton: E
   var searchInput: E
-  var collapseButton: E
-  var expandButton: E
   let clipboard = StyleClipboard()
   result = ui(r):
     tdiv(class = "editor-manual-inspector",
@@ -3938,7 +3941,7 @@ proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
                 background_color = accent, color = textPrimary):
             text "Save"
       tdiv(display = "grid",
-            `grid-template-columns` = "minmax(0, 1fr) auto auto",
+            `grid-template-columns` = "minmax(0, 1fr)",
             align_items = "center",
             gap = "3px",
             padding = "5px 6px",
@@ -3956,26 +3959,6 @@ proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
               min_width = "0",
               `aria-label` = "Search inspector sections",
               placeholder = "Search")
-        tdiv(ref = collapseButton, role = "button", tabindex = "0",
-              `aria-label` = "Collapse all inspector sections",
-              width = "22px", height = "22px",
-              display = "flex", align_items = "center",
-              justify_content = "center",
-              border_radius = "4px",
-              background_color = bgSurface, color = textMuted,
-              font_size = "10px",
-              cursor = "pointer"):
-          text "-"
-        tdiv(ref = expandButton, role = "button", tabindex = "0",
-              `aria-label` = "Expand relevant inspector sections",
-              width = "22px", height = "22px",
-              display = "flex", align_items = "center",
-              justify_content = "center",
-              border_radius = "4px",
-              background_color = bgSurface, color = textMuted,
-              font_size = "10px",
-              cursor = "pointer"):
-          text "+"
   r.bindRightPanelWidth(result, vm)
 
   let tabs = ui(r):
@@ -4009,14 +3992,6 @@ proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
   r.addEventListener(searchInput, "focus", rememberPanelFocus(vm,
     "section-search"))
   r.setAttribute(searchInput, "data-isonim-focus-id", "section-search")
-  r.addEventListener(collapseButton, "click", proc() =
-    vm.inspector.collapseAllSections())
-  r.addEventListener(collapseButton, "keydown", proc() =
-    vm.inspector.collapseAllSections())
-  r.addEventListener(expandButton, "click", proc() =
-    vm.inspector.expandRelevantSections())
-  r.addEventListener(expandButton, "keydown", proc() =
-    vm.inspector.expandRelevantSections())
   r.addEventListener(narrowButton, "click", proc() = vm.adjustRightPanelWidth(-40))
   r.addEventListener(narrowButton, "keydown", proc() = vm.adjustRightPanelWidth(-40))
   r.addEventListener(narrowButton, "focus", rememberPanelFocus(vm,
@@ -4034,16 +4009,24 @@ proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
   r.addEventListener(revertButton, "click", revert)
   r.addEventListener(revertButton, "keydown", revert)
 
+  let impactContent = ui(r):
+    tdiv(display = "flex", flex_direction = "column",
+          padding = "6px",
+          border_bottom = "1px solid " & border)
+  r.appendChild(result, impactContent)
+
   let content = ui(r):
     tdiv(flex = "1", display = "flex", flex_direction = "column",
           padding = "6px", overflow_y = "auto", gap = "6px")
   r.appendChild(result, content)
   r.populateSectionTabs(vm, frame, tabs, content, clipboard)
+  r.populateInspectorImpact(vm, frame, impactContent)
 
   let inspectorRoot = result
   createRenderEffect proc() =
     discard vm.activeView.val
     r.populateSectionTabs(vm, frame, tabs, content, clipboard)
+    r.populateInspectorImpact(vm, frame, impactContent)
     r.populateInspectorContent(vm, frame, content, clipboard)
     r.restoreInspectorFocus(inspectorRoot, vm)
     let save = vm.evaluateCommand(eckSave)

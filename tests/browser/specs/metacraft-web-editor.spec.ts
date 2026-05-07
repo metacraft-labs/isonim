@@ -1391,13 +1391,12 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
         .getByRole("textbox", { name: "Edit inspector property color" })
         .first(),
     ).toBeVisible();
-    await page
-      .getByRole("button", { name: "Collapse all inspector sections" })
-      .click();
-    await expect(page.getByText("Section collapsed")).toBeVisible();
-    await page
-      .getByRole("button", { name: "Expand relevant inspector sections" })
-      .press("Enter");
+    await expect(
+      page.getByRole("button", { name: "Collapse all inspector sections" }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "Expand relevant inspector sections" }),
+    ).toHaveCount(0);
     await expect(
       page
         .getByRole("textbox", { name: "Edit inspector property color" })
