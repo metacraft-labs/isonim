@@ -1794,9 +1794,9 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
   scopeNode = sourceScopeRow.root
   result = ui(r):
     tdiv(display = "grid",
-          grid_template_columns = "76px minmax(44px, 1fr) 30px 34px 118px 20px 22px",
-          align_items = "center", gap = "3px",
-          min_height = "24px", max_width = "100%", overflow = "visible"):
+          grid_template_columns = "60px minmax(36px, 1fr) 24px 24px 72px 20px 20px",
+          align_items = "center", gap = "2px",
+          min_height = "22px", max_width = "100%", overflow = "visible"):
       label(ref = labelNode,
             font_size = "10px", color = textSecondary,
             white_space = "nowrap", overflow = "hidden",
@@ -3031,8 +3031,7 @@ proc renderRawCssEditor[R, E](r: R; vm: EditorVM; frame: E;
   let title = sectionTitle(section)
   result = ui(r):
     tdiv(display = "flex", flex_direction = "column", gap = "6px",
-          padding = "10px", border = "1px solid " & border,
-          border_radius = "6px", background_color = bgBase):
+          padding = "8px 0"):
       tdiv(display = "flex", align_items = "center",
             justify_content = "space-between"):
         span(font_size = "10px", font_weight = "700", color = textSecondary,
@@ -3295,8 +3294,7 @@ proc renderStyleManagerPanel[R, E](r: R; vm: EditorVM; frame: E;
   var duplicateClassButton: E
   result = ui(r):
     tdiv(display = "flex", flex_direction = "column", gap = "8px",
-          padding = "10px", border = "1px solid " & border,
-          border_radius = "6px", background_color = bgBase):
+          padding = "8px 0"):
       tdiv(display = "flex", align_items = "center",
             justify_content = "space-between", gap = "8px"):
         span(font_size = "10px", font_weight = "700", color = textSecondary,
@@ -3478,8 +3476,14 @@ proc renderStyleManagerPanel[R, E](r: R; vm: EditorVM; frame: E;
         else:
           for i in 0 ..< snapshot.diagnostics.len:
             let message = snapshot.diagnostics[i].message
-            span(font_size = "10px", color = "#FCA5A5"):
-              text message
+            tdiv(display = "flex", align_items = "flex-start", gap = "6px",
+                  padding = "4px 8px",
+                  border_left = "2px solid " & gold,
+                  background_color = "rgba(245,158,11,.08)",
+                  border_radius = "0 4px 4px 0"):
+              span(font_size = "10px", color = "#FCD34D",
+                    line_height = "1.45"):
+                text message
       tdiv(ref = promoteButton, role = "button", tabindex = "0",
             `aria-label` = "Promote local override for " & snapshot.property,
             padding = "5px 6px", border_radius = "4px",
@@ -3735,31 +3739,37 @@ proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;
     let summary = ui(r):
       tdiv(display = "grid",
             grid_template_columns = "minmax(0, 1fr) auto",
-            align_items = "center", gap = "6px",
-            padding = "6px",
+            align_items = "center", gap = "8px",
+            padding = "8px 10px",
             border = "1px solid " & borderFaint,
-            border_radius = "5px",
+            border_radius = "6px",
             background_color = "#0F172A"):
-        tdiv(display = "flex", flex_direction = "column", gap = "2px",
+        tdiv(display = "flex", flex_direction = "column", gap = "3px",
               min_width = "0"):
-          span(font_size = "8px", font_weight = "700", color = textDim,
+          span(font_size = "9px", font_weight = "700", color = textSecondary,
+                letter_spacing = "0.5px",
                 text_transform = "uppercase"):
             text "Selection"
-          span(font_size = "11px", font_weight = "700",
+          span(font_size = "13px", font_weight = "700",
                 color = textPrimary, font_family = "monospace",
                 white_space = "nowrap", overflow = "hidden",
                 text_overflow = "ellipsis"):
             text elementLabel
-          span(font_size = "9px", color = textDim,
+          span(font_size = "10px", color = textMuted,
                 white_space = "nowrap", overflow = "hidden",
                 text_overflow = "ellipsis"):
             text sourceLabel
         tdiv(display = "flex", flex_direction = "column",
-              align_items = "flex-end", gap = "2px"):
-          span(font_size = "9px", color = textSecondary,
-                font_family = "monospace"):
+              align_items = "flex-end", gap = "4px"):
+          span(font_size = "10px", color = textSecondary,
+                font_family = "monospace", font_weight = "600"):
             text sizeLabel
-          span(font_size = "8px", color = accent):
+          span(font_size = "9px", color = accent, font_weight = "700",
+                letter_spacing = "0.5px",
+                text_transform = "uppercase",
+                padding = "2px 6px",
+                border_radius = "10px",
+                background_color = "rgba(59, 130, 246, 0.15)"):
             text "selected"
     r.appendChild(content, summary)
 
@@ -3893,13 +3903,15 @@ proc populateSectionTabs[R, E](r: R; vm: EditorVM; frame, tabs, content: E;
     let tab = ui(r):
       tdiv(role = "tab", tabindex = "0",
             display = "flex", align_items = "center",
-            height = "20px",
-            padding = "0 7px", font_size = "10px", font_weight = "600",
+            height = "26px",
+            padding = "0 8px", font_size = "11px", font_weight = "600",
             cursor = "pointer", white_space = "nowrap",
-            border_radius = "3px",
             color = (if active: textPrimary else: textMuted),
-            background_color = (if active: bgSurface else: "transparent"),
-            border = "1px solid " & (if active: border else: "transparent")):
+            background_color = "transparent",
+            border_bottom = "2px solid " &
+              (if active: accent else: "transparent"),
+            margin_bottom = "-1px",
+            transition = "color 0.12s, border-color 0.12s"):
         text label
     r.setAttribute(tab, "aria-label", "Show " & label & " edit controls")
     r.setAttribute(tab, "data-inspector-section", fullTitle.toLowerAscii())

@@ -151,7 +151,8 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
       padding = "10px 12px",
       border_bottom = "1px solid " & border,
       min_height = "40px"):
-      tdiv(display = "flex", align_items = "center", gap = "8px"):
+      tdiv(display = "flex", align_items = "center", gap = "8px",
+            min_width = "0"):
         span(font_size = "13px"):
           text "\xE2\x9C\xA8"
         span(
@@ -159,7 +160,8 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
           font_weight = "600",
           color = textSecondary,
           text_transform = "uppercase",
-          letter_spacing = "0.5px"):
+          letter_spacing = "0.5px",
+          white_space = "nowrap"):
           text "AI Assistant"
       # Status dot
       tdiv(display = "flex", align_items = "center", gap = "4px"):
@@ -192,7 +194,8 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
           height = "6px",
           border_radius = "3px",
           background_color = statusColor)
-        span(ref = statusTextNode, font_size = "9px", color = textDim):
+        span(ref = statusTextNode, font_size = "9px", color = textDim,
+              white_space = "nowrap"):
           text statusLabel & " / " & connectionLabel
         tdiv(
           `role` = "button",
@@ -230,10 +233,12 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   r.addEventListener(widenButton, "focus", rememberPanelFocus(vm,
     "right-panel-widen"))
 
-  # Messages area
+  # Messages area. Don't expand to fill the panel — at tall viewports that
+  # leaves a huge empty band between the empty-state card and the composer.
+  # When messages exist we cap the area and scroll internally.
   let messagesArea = ui(r):
     tdiv(
-      flex = "1",
+      max_height = "360px",
       overflow_y = "auto",
       padding = "12px",
       display = "flex",
@@ -245,9 +250,11 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
       tdiv(
         display = "flex",
         flex_direction = "column",
-        justify_content = "center",
-        gap = "10px",
-        min_height = "100%",
+        gap = "8px",
+        padding = "14px",
+        border = "1px dashed " & borderFaint,
+        border_radius = "8px",
+        background_color = bgInput,
         color = textSecondary):
         span(font_size = "12px", font_weight = "700", color = textPrimary):
           text "Ask for design-system changes"
@@ -298,6 +305,7 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
 
   let reviewLoopArea = ui(r):
     tdiv(
+      margin_top = "auto",
       padding = "10px 12px",
       border_top = "1px solid " & borderFaint,
       display = "flex",
