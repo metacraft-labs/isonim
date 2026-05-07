@@ -14,6 +14,16 @@ type
     tnkButton    ## Interactive button — renders as [label]
     tnkInput     ## Text input field
 
+  TerminalEvent* = ref object
+    ## Event passed to event-arg handlers in the terminal renderer.
+    ## Mirrors the browser's `Event` shape so user code stays portable
+    ## across renderers — `type`, `target`, plus the cancellation flags.
+    `type`*: string
+    target*: TerminalNode
+    currentTarget*: TerminalNode
+    defaultPrevented*: bool
+    propagationStopped*: bool
+
   TerminalNode* = ref object
     kind*: TerminalNodeKind
     tag*: string              ## Original tag name (for debugging)
@@ -23,6 +33,7 @@ type
     children*: seq[TerminalNode]
     parent*: TerminalNode
     eventListeners*: Table[string, seq[proc()]]
+    eventHandlers*: Table[string, seq[proc(ev: TerminalEvent)]]
     id*: int                  ## Unique node id
 
   TerminalRenderer* = object
@@ -45,7 +56,8 @@ proc createElement*(r: TerminalRenderer; tag: string): TerminalNode =
     attributes: initTable[string, string](),
     styles: initTable[string, string](),
     children: @[],
-    eventListeners: initTable[string, seq[proc()]]()
+    eventListeners: initTable[string, seq[proc()]](),
+    eventHandlers: initTable[string, seq[proc(ev: TerminalEvent)]]()
   )
 
 proc createTextNode*(r: TerminalRenderer; text: string): TerminalNode =
@@ -56,7 +68,8 @@ proc createTextNode*(r: TerminalRenderer; text: string): TerminalNode =
     text: text,
     attributes: initTable[string, string](),
     styles: initTable[string, string](),
-    eventListeners: initTable[string, seq[proc()]]()
+    eventListeners: initTable[string, seq[proc()]](),
+    eventHandlers: initTable[string, seq[proc(ev: TerminalEvent)]]()
   )
 
 proc appendChild*(r: TerminalRenderer; parent, child: TerminalNode) =
@@ -104,7 +117,8 @@ proc setTextContent*(r: TerminalRenderer; node: TerminalNode; text: string) =
       parent: node,
       attributes: initTable[string, string](),
       styles: initTable[string, string](),
-      eventListeners: initTable[string, seq[proc()]]()
+      eventListeners: initTable[string, seq[proc()]](),
+      eventHandlers: initTable[string, seq[proc(ev: TerminalEvent)]]()
     )
     node.children.add(textNode)
 
@@ -115,6 +129,15 @@ proc addEventListener*(r: TerminalRenderer; node: TerminalNode; event: string; h
   if event notin node.eventListeners:
     node.eventListeners[event] = @[]
   node.eventListeners[event].add(handler)
+
+proc addEventListener*(r: TerminalRenderer; node: TerminalNode; event: string;
+    handler: proc(ev: TerminalEvent)) =
+  ## Overload for handlers that receive a `TerminalEvent`. Lets terminal
+  ## UIs read `ev.target` or call `ev.preventDefault` from the same
+  ## `(ev) =>` shorthand the web renderer accepts.
+  if event notin node.eventHandlers:
+    node.eventHandlers[event] = @[]
+  node.eventHandlers[event].add(handler)
 
 proc firstChild*(r: TerminalRenderer; node: TerminalNode): TerminalNode =
   if node.children.len > 0: node.children[0] else: nil
@@ -132,11 +155,33 @@ proc parentNode*(r: TerminalRenderer; node: TerminalNode): TerminalNode =
 
 # ---- Test helpers ----
 
+proc preventDefault*(ev: TerminalEvent) =
+  ev.defaultPrevented = true
+
+proc stopPropagation*(ev: TerminalEvent) =
+  ev.propagationStopped = true
+
 proc fireEvent*(node: TerminalNode; event: string) =
   ## Triggers all handlers registered for the given event on a node.
+  ## Calls no-arg handlers as-is, then synthesises a TerminalEvent for
+  ## any event-arg handlers registered on the same event name.
   if event in node.eventListeners:
     for handler in node.eventListeners[event]:
       handler()
+  if event in node.eventHandlers:
+    let ev = TerminalEvent(`type`: event, target: node, currentTarget: node)
+    for handler in node.eventHandlers[event]:
+      handler(ev)
+
+proc fireEventWith*(node: TerminalNode; event: string; ev: TerminalEvent) =
+  ## Like `fireEvent` but uses a caller-supplied event so tests can
+  ## inspect mutations after dispatch.
+  if event in node.eventListeners:
+    for handler in node.eventListeners[event]:
+      handler()
+  if event in node.eventHandlers:
+    for handler in node.eventHandlers[event]:
+      handler(ev)
 
 proc textContent*(node: TerminalNode): string =
   ## Returns the concatenated text content of a node and its descendants.

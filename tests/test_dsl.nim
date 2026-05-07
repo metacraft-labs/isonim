@@ -513,3 +513,113 @@ suite "DSL — std/sugar interop":
       count.val = 42
       check root.children[0].text == "42"
       dispose()
+
+  test "onclick accepts (ev) => stmt closure receiving the event":
+    ## A handler that wants to inspect the event uses sugar's
+    ## `(ev: MockEvent) => …` form. The renderer's `addEventListener`
+    ## now overloads on handler arity: the no-arg overload from earlier
+    ## tests, plus this event-arg overload. Nim picks the right one
+    ## from the closure's signature.
+    createRoot do (dispose: proc()):
+      let renderer = MockRenderer()
+      var seenType = ""
+      var seenTarget: MockNode = nil
+      let root = ui(renderer):
+        button(onclick = (ev: MockEvent) => (seenType = ev.`type`;
+                                              seenTarget = ev.target)):
+          text "Click"
+      root.fireEvent("click")
+      check seenType == "click"
+      check seenTarget == root
+      dispose()
+
+  test "(ev) => preventDefault marks the event as defaultPrevented":
+    ## Handlers can call `preventDefault` to flag the event. The mock
+    ## records this on the event itself so tests can assert that the
+    ## handler ran the prevention path.
+    createRoot do (dispose: proc()):
+      let renderer = MockRenderer()
+      let root = ui(renderer):
+        button(onclick = (ev: MockEvent) => ev.preventDefault()):
+          text "Submit"
+      let ev = MockEvent(`type`: "click", target: root, currentTarget: root)
+      root.fireEventWith("click", ev)
+      check ev.defaultPrevented
+      check not ev.propagationStopped
+      dispose()
+
+  test "(ev) => stopPropagation marks the event as propagationStopped":
+    ## Symmetric to the preventDefault test — `stopPropagation` flips
+    ## a separate flag on the same event object.
+    createRoot do (dispose: proc()):
+      let renderer = MockRenderer()
+      let root = ui(renderer):
+        button(onclick = (ev: MockEvent) => ev.stopPropagation()):
+          text "Stop"
+      let ev = MockEvent(`type`: "click", target: root, currentTarget: root)
+      root.fireEventWith("click", ev)
+      check ev.propagationStopped
+      check not ev.defaultPrevented
+      dispose()
+
+  test "no-arg and event-arg handlers can coexist on the same element":
+    ## Nim resolves each handler's overload independently from its
+    ## closure type. Attaching one handler of each shape to the same
+    ## element should run both — fireEvent invokes the no-arg seq,
+    ## then synthesises a MockEvent for the event-arg seq.
+    createRoot do (dispose: proc()):
+      let renderer = MockRenderer()
+      var noArgRan = 0
+      var evArgType = ""
+      let root = ui(renderer):
+        button(onclick = () => (inc noArgRan)):
+          text "A"
+      # The DSL only emits a single onclick from one element, so to
+      # exercise the coexistence path we register the second handler
+      # directly through the renderer overload.
+      renderer.addEventListener(root, "click",
+          (ev: MockEvent) => (evArgType = ev.`type`))
+      root.fireEvent("click")
+      check noArgRan == 1
+      check evArgType == "click"
+      dispose()
+
+  test "event-arg overload applies uniformly to non-click events":
+    ## The overload selection is purely on handler arity — it does NOT
+    ## look at the event name. This pins down that `oninput`,
+    ## `onkeydown`, `onchange`, etc. all accept the same `(ev) => …`
+    ## shorthand. If any future change started gating overloads by
+    ## event name, this test would fail.
+    createRoot do (dispose: proc()):
+      let renderer = MockRenderer()
+      var inputType = ""
+      var keydownType = ""
+      var changeNoArg = 0
+      let root = ui(renderer):
+        input(oninput = (ev: MockEvent) => (inputType = ev.`type`),
+              onkeydown = (ev: MockEvent) => (keydownType = ev.`type`),
+              onchange = () => (inc changeNoArg))
+      root.fireEvent("input")
+      root.fireEvent("keydown")
+      root.fireEvent("change")
+      check inputType == "input"
+      check keydownType == "keydown"
+      check changeNoArg == 1
+      dispose()
+
+  test "ev.target identity is the firing node across event types":
+    ## `target` should reference the node that fired the event, not the
+    ## element the listener was attached to. With `fireEvent` synthesising
+    ## the event on `node`, that means target == node for every event.
+    createRoot do (dispose: proc()):
+      let renderer = MockRenderer()
+      var clickTarget: MockNode = nil
+      var inputTarget: MockNode = nil
+      let root = ui(renderer):
+        input(onclick = (ev: MockEvent) => (clickTarget = ev.target),
+              oninput = (ev: MockEvent) => (inputTarget = ev.target))
+      root.fireEvent("click")
+      root.fireEvent("input")
+      check clickTarget == root
+      check inputTarget == root
+      dispose()

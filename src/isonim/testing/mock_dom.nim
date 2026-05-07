@@ -11,6 +11,17 @@ type
     mnkElement
     mnkText
 
+  MockEvent* = ref object
+    ## Test-time stand-in for the browser `Event` object. Carries the
+    ## subset of fields handlers commonly read or write — `type`, `target`,
+    ## `currentTarget`, plus `defaultPrevented` and `propagationStopped`
+    ## that `preventDefault` / `stopPropagation` flip.
+    `type`*: string
+    target*: MockNode
+    currentTarget*: MockNode
+    defaultPrevented*: bool
+    propagationStopped*: bool
+
   MockNode* = ref object
     id*: int                              ## Unique node ID (for hashing)
     kind*: MockNodeKind
@@ -20,7 +31,8 @@ type
     styles*: Table[string, string]        ## Style properties
     children*: seq[MockNode]              ## Child nodes
     parent*: MockNode                     ## Parent reference
-    eventListeners*: Table[string, seq[proc()]]  ## Event handlers
+    eventListeners*: Table[string, seq[proc()]]              ## No-arg handlers
+    eventHandlers*: Table[string, seq[proc(ev: MockEvent)]]  ## Event-arg handlers
 
   MockRenderer* = object
     ## Mock renderer backend for unit testing.
@@ -38,7 +50,8 @@ proc createElement*(r: MockRenderer; tag: string): MockNode =
     attributes: initTable[string, string](),
     styles: initTable[string, string](),
     children: @[],
-    eventListeners: initTable[string, seq[proc()]]()
+    eventListeners: initTable[string, seq[proc()]](),
+    eventHandlers: initTable[string, seq[proc(ev: MockEvent)]]()
   )
 
 proc createTextNode*(r: MockRenderer; text: string): MockNode =
@@ -48,7 +61,8 @@ proc createTextNode*(r: MockRenderer; text: string): MockNode =
     kind: mnkText, text: text,
     attributes: initTable[string, string](),
     styles: initTable[string, string](),
-    eventListeners: initTable[string, seq[proc()]]()
+    eventListeners: initTable[string, seq[proc()]](),
+    eventHandlers: initTable[string, seq[proc(ev: MockEvent)]]()
   )
 
 proc appendChild*(r: MockRenderer; parent, child: MockNode) =
@@ -94,7 +108,8 @@ proc setTextContent*(r: MockRenderer; node: MockNode; text: string) =
     let textNode = MockNode(id: nextMockNodeId, kind: mnkText, text: text, parent: node,
                             attributes: initTable[string, string](),
                             styles: initTable[string, string](),
-                            eventListeners: initTable[string, seq[proc()]]())
+                            eventListeners: initTable[string, seq[proc()]](),
+                            eventHandlers: initTable[string, seq[proc(ev: MockEvent)]]())
     node.children.add(textNode)
 
 proc setStyle*(r: MockRenderer; node: MockNode; prop, value: string) =
@@ -104,6 +119,15 @@ proc addEventListener*(r: MockRenderer; node: MockNode; event: string; handler: 
   if event notin node.eventListeners:
     node.eventListeners[event] = @[]
   node.eventListeners[event].add(handler)
+
+proc addEventListener*(r: MockRenderer; node: MockNode; event: string;
+    handler: proc(ev: MockEvent)) =
+  ## Overload accepting an event-receiving handler — mirrors the DOM's
+  ## `(ev) => …` form. The DSL picks this overload when the user's handler
+  ## takes a single `MockEvent` parameter.
+  if event notin node.eventHandlers:
+    node.eventHandlers[event] = @[]
+  node.eventHandlers[event].add(handler)
 
 proc firstChild*(r: MockRenderer; node: MockNode): MockNode =
   if node.children.len > 0: node.children[0] else: nil
@@ -128,14 +152,39 @@ proc clearChildren*(r: MockRenderer; node: MockNode) =
 proc clearEventListeners*(r: MockRenderer; node: MockNode) =
   ## Remove all event listeners from a mock node.
   node.eventListeners.clear()
+  node.eventHandlers.clear()
 
 # ---- Test helpers ----
 
+proc preventDefault*(ev: MockEvent) =
+  ## Mark a MockEvent as having `preventDefault()` called on it.
+  ev.defaultPrevented = true
+
+proc stopPropagation*(ev: MockEvent) =
+  ## Mark a MockEvent as having `stopPropagation()` called on it.
+  ev.propagationStopped = true
+
 proc fireEvent*(node: MockNode; event: string) =
   ## Triggers all handlers registered for the given event on a node.
+  ## Calls no-arg handlers as-is, and synthesises a fresh MockEvent
+  ## (with `target` and `currentTarget` set to `node`) for event-arg ones.
   if event in node.eventListeners:
     for handler in node.eventListeners[event]:
       handler()
+  if event in node.eventHandlers:
+    let ev = MockEvent(`type`: event, target: node, currentTarget: node)
+    for handler in node.eventHandlers[event]:
+      handler(ev)
+
+proc fireEventWith*(node: MockNode; event: string; ev: MockEvent) =
+  ## Like `fireEvent` but uses a caller-supplied MockEvent so tests can
+  ## inspect mutations (e.g. `defaultPrevented`) after dispatch.
+  if event in node.eventListeners:
+    for handler in node.eventListeners[event]:
+      handler()
+  if event in node.eventHandlers:
+    for handler in node.eventHandlers[event]:
+      handler(ev)
 
 proc textContent*(node: MockNode): string =
   ## Returns the concatenated text content of a node and its descendants.

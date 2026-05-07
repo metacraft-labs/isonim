@@ -50,6 +50,13 @@ proc addEventListener*(r: DomRenderer; node: DomElement; event: string;
                         handler: proc()) =
   node.addEventListener(event.cstring, proc(e: Event) = handler())
 
+proc addEventListener*(r: DomRenderer; node: DomElement; event: string;
+                        handler: proc(ev: Event)) =
+  ## Overload for handlers that consume the browser `Event`. Passes the
+  ## handler through unwrapped so it can call `ev.preventDefault`,
+  ## `ev.stopPropagation`, inspect `ev.target`, etc.
+  node.addEventListener(event.cstring, handler)
+
 proc inputValue*(r: DomRenderer; node: DomElement): string =
   var value: cstring
   {.emit: [value, " = ", node, ".value || ''"].}

@@ -90,6 +90,14 @@ proc addEventListener*(r: WebRenderer; node: Element; event: string;
     handler()
   dom_api.addEventListener(Node(node), cstring(event), wrappedHandler)
 
+proc addEventListener*(r: WebRenderer; node: Element; event: string;
+                        handler: proc(ev: Event)) =
+  ## Overload for handlers that consume the browser `Event`. Unlike the
+  ## no-arg form, this passes through to `dom_api.addEventListener`
+  ## without wrapping — Nim's overload resolution selects this one when
+  ## the DSL emits a handler whose argument type is `Event`.
+  dom_api.addEventListener(Node(node), cstring(event), EventHandler(handler))
+
 # ---------------------------------------------------------------------------
 # Navigation helpers (match MockRenderer interface)
 # ---------------------------------------------------------------------------
