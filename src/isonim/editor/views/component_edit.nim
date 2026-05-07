@@ -3298,8 +3298,8 @@ proc renderElementTree[R, E](r: R; vm: EditorVM; frame: E;
       tdiv(display = "grid",
             grid_template_columns = "18px minmax(0, 1fr) auto",
             align_items = "center", gap = "4px",
-            min_height = "26px",
-            padding = "3px 4px",
+            min_height = "22px",
+            padding = "2px 4px",
             padding_left = $(4 + depth * 12) & "px",
             border_radius = "4px",
             background_color = (if selectedRow: "rgba(59,130,246,.22)" else: "transparent"),
@@ -3376,11 +3376,15 @@ proc renderStyleManagerPanel[R, E](r: R; vm: EditorVM; frame: E;
     tdiv(display = "flex", flex_direction = "column", gap = "8px",
           padding = "8px 0"):
       tdiv(display = "flex", align_items = "center",
-            justify_content = "space-between", gap = "8px"):
+            justify_content = "space-between", gap = "8px",
+            min_width = "0"):
         span(font_size = "10px", font_weight = "700", color = textSecondary,
-              text_transform = "uppercase", letter_spacing = "0.5px"):
+              text_transform = "uppercase", letter_spacing = "0.5px",
+              flex_shrink = "0"):
           text "Style manager"
-        span(font_size = "10px", color = accent, font_family = "monospace"):
+        span(font_size = "10px", color = accent, font_family = "monospace",
+              white_space = "nowrap", overflow = "hidden",
+              text_overflow = "ellipsis", min_width = "0"):
           text snapshot.property & " = " & snapshot.finalValue
       input(class = "editor-input",
             height = "26px",
@@ -3512,12 +3516,15 @@ proc renderStyleManagerPanel[R, E](r: R; vm: EditorVM; frame: E;
           let layerKind = snapshot.cascadeLayers[i].kind
           let layerValue = snapshot.cascadeLayers[i].value
           let editable = snapshot.cascadeLayers[i].editable
+          let zebraBg =
+            if i mod 2 == 0: "rgba(255,255,255,0.015)" else: "transparent"
           tdiv(display = "grid",
                 grid_template_columns = "82px minmax(0, 1fr) auto",
                 gap = "5px", align_items = "center",
                 min_height = "24px",
-                padding = "3px 5px", border = "1px solid " & border,
-                border_radius = "4px"):
+                padding = "3px 5px", border = "1px solid " & borderFaint,
+                border_radius = "4px",
+                background_color = zebraBg):
             span(font_size = "10px", color = textDim):
               text styleCascadeLayerLabel(layerKind)
             span(font_size = "10px", color = textPrimary,
@@ -3841,9 +3848,10 @@ proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;
                 text_overflow = "ellipsis"):
             text sourceLabel
         tdiv(display = "flex", flex_direction = "column",
-              align_items = "flex-end", gap = "4px"):
+              align_items = "flex-end", gap = "3px"):
           span(font_size = "10px", color = textSecondary,
-                font_family = "monospace", font_weight = "600"):
+                font_family = "monospace", font_weight = "600",
+                line_height = "1.2"):
             text sizeLabel
           span(font_size = "9px", color = accent, font_weight = "700",
                 letter_spacing = "0.5px",
@@ -3984,8 +3992,10 @@ proc populateSectionTabs[R, E](r: R; vm: EditorVM; frame, tabs, content: E;
     let tab = ui(r):
       tdiv(role = "tab", tabindex = "0",
             display = "flex", align_items = "center",
+            justify_content = "center",
             height = "26px",
-            padding = "0 8px", font_size = "11px", font_weight = "600",
+            min_width = "40px",
+            padding = "0 10px", font_size = "11px", font_weight = "600",
             cursor = "pointer", white_space = "nowrap",
             color = (if active: textPrimary else: textMuted),
             background_color = "transparent",

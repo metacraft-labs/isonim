@@ -376,20 +376,39 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   # rather than empty filler at tall viewports.
   let bottomSpacer = ui(r):
     tdiv(flex = "1", min_height = "12px",
-          display = "flex", align_items = "center",
-          justify_content = "center",
-          padding = "24px 18px"):
-      tdiv(display = "flex", flex_direction = "column",
-            align_items = "center", gap = "6px",
-            opacity = "0.55", max_width = "240px",
-            text_align = "center"):
-        span(font_size = "18px", color = textSecondary):
-          text "\xE2\x97\x8B"
-        span(font_size = "11px", font_weight = "600", color = textSecondary,
-              letter_spacing = "0.3px"):
-          text "Ready when you are"
-        span(font_size = "10px", line_height = "1.5", color = textDim):
-          text "Pick a suggested prompt above, or describe a token, variant, or layout change to start a session."
+          display = "flex", flex_direction = "column",
+          align_items = "stretch",
+          padding = "12px 18px 18px 18px"):
+      # Author the empty band: spacer above + faint horizon rule + spacer
+      # below + placeholder anchored to the composer. The two flex spacers
+      # optically center the rule between the ACTIVITY baseline and the
+      # placeholder cap.
+      tdiv(flex = "1")
+      tdiv(height = "1px",
+            background = "linear-gradient(to right, transparent, " &
+              borderFaint & " 30%, " & borderFaint & " 70%, transparent)")
+      tdiv(flex = "1")
+      tdiv(display = "flex", align_items = "center",
+            justify_content = "center"):
+        tdiv(display = "flex", flex_direction = "column",
+              align_items = "center", gap = "10px",
+              max_width = "240px",
+              text_align = "center"):
+          # Soft radial halo under the placeholder glyph so it doesn't read
+          # as an outline floating on flat slate.
+          tdiv(width = "44px", height = "44px",
+                border_radius = "22px",
+                display = "flex", align_items = "center",
+                justify_content = "center",
+                background = "radial-gradient(circle, rgba(59,130,246,0.10) 0%, rgba(59,130,246,0) 70%)"):
+            span(font_size = "22px", color = textSecondary,
+                  opacity = "0.9"):
+              text "\xE2\x97\x8B"
+          span(font_size = "11px", font_weight = "700", color = textSecondary,
+                letter_spacing = "0.3px"):
+            text "Ready when you are"
+          span(font_size = "10px", line_height = "1.55", color = textDim):
+            text "Pick a suggested prompt above, or describe a token, variant, or layout change to start a session."
   proc appendReviewHeading(label: string) =
     let heading = ui(r):
       span(
@@ -708,7 +727,8 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
     tdiv(
       padding = "10px 12px 12px 12px",
       border_top = "1px solid " & border,
-      background_color = bgSidebar)
+      background_color = bgSidebar,
+      box_shadow = "0 -8px 16px -8px rgba(15, 23, 42, 0.55)")
 
   let inputRow = ui(r):
     tdiv(display = "flex", align_items = "center", gap = "8px")
