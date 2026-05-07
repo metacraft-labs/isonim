@@ -105,9 +105,6 @@ proc selectedComponentVariant(vm: EditorVM;
 
 proc componentVariantsForStory(vm: EditorVM;
     story: StoryRef): seq[ComponentVariantDefinition] =
-  result = vm.componentVariantsForComponent(story.group)
-  if result.len > 0:
-    return
   for variant in vm.variants.variants.val:
     if variant.story.group == story.group and variant.story.name == story.name:
       result.add variant

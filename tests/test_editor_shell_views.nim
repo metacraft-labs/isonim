@@ -738,6 +738,98 @@ suite "Editor Shell Views (M2)":
 
       dispose()
 
+  test "component detail picks story-specific variants after fallback synthesis":
+    ## Regression: when a sibling story in the same group has no pre-defined
+    ## variant, ensureComponentPropertySchemaForSelectedStory synthesizes a
+    ## fallback variant. That synthesized variant must not leak into the
+    ## property panels of other stories in the same group.
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let groupName = "Components"
+      let storyA = StoryRef(group: groupName, name: "Story A",
+        kind: skComponent, index: 0)
+      let storyB = StoryRef(group: groupName, name: "Story B",
+        kind: skComponent, index: 1)
+      let storyC = StoryRef(group: groupName, name: "Story C",
+        kind: skComponent, index: 2)
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = @[
+        StoryGroup(name: groupName, kind: skComponent, expanded: true,
+          items: @[
+            StoryItem(name: storyA.name, kind: skComponent, group: groupName),
+            StoryItem(name: storyB.name, kind: skComponent, group: groupName),
+            StoryItem(name: storyC.name, kind: skComponent, group: groupName)
+          ])
+      ]
+      vm.variants.variants.val = @[
+        ComponentVariantDefinition(
+          component: "CompA",
+          variantKey: "default",
+          story: storyA,
+          properties: @[
+            ComponentPropertyDefinition(
+              name: "alpha", kind: cpkText, value: "A-value",
+              sourceFile: "components/comp_a.nim", sourceLine: 1,
+              schemaKey: "comp.a.alpha")
+          ]),
+        ComponentVariantDefinition(
+          component: "CompB",
+          variantKey: "default",
+          story: storyB,
+          properties: @[
+            ComponentPropertyDefinition(
+              name: "beta", kind: cpkText, value: "B-value",
+              sourceFile: "components/comp_b.nim", sourceLine: 1,
+              schemaKey: "comp.b.beta")
+          ])
+      ]
+      vm.preview.hook = proc(story: StoryRef;
+          platform: Platform): ProjectPreview =
+        ProjectPreview(
+          status: ppsRendered,
+          story: story,
+          title: story.group & " / " & story.name,
+          documentHtml: "<main>" & story.name & "</main>")
+
+      proc renderFor(story: StoryRef): MockNode =
+        discard vm.selectStory(story)
+        renderComponentDetail[MockRenderer, MockNode](r, vm)
+
+      block:
+        let detail = renderFor(storyA)
+        check findByAttr(detail, "data-component-property-control", "alpha") != nil
+        check findByAttr(detail, "data-component-property-control", "beta") == nil
+        check findByAttr(detail, "data-component-property-control", "label") == nil
+
+      # Story C has no real variant — selecting it triggers
+      # ensureComponentPropertySchemaForSelectedStory which appends a
+      # fallback variant tied to storyC.
+      let variantsBefore = vm.variants.variants.val.len
+      discard renderFor(storyC)
+      check vm.variants.variants.val.len == variantsBefore + 1
+      check vm.variants.variants.val[^1].story == storyC
+
+      # Returning to storyA must surface CompA's properties, NOT the
+      # synthesized variant created for storyC.
+      block:
+        let detail = renderFor(storyA)
+        check findByAttr(detail, "data-component-property-control", "alpha") != nil
+        check findByAttr(detail, "data-component-property-control", "label") == nil
+
+      # Same for storyB after the synthesis.
+      block:
+        let detail = renderFor(storyB)
+        check findByAttr(detail, "data-component-property-control", "beta") != nil
+        check findByAttr(detail, "data-component-property-control", "alpha") == nil
+        check findByAttr(detail, "data-component-property-control", "label") == nil
+
+      # Story C itself still shows its own synthesized variant.
+      block:
+        let detail = renderFor(storyC)
+        check findByAttr(detail, "data-component-property-control", "label") != nil
+
+      dispose()
+
   test "editor_dom_mount_has_empty_agent_state":
     createRoot do (dispose: proc()):
       let r = MockRenderer()

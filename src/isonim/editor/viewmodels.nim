@@ -5782,8 +5782,6 @@ proc ensureComponentPropertySchemaForSelectedStory*(editor: EditorVM): bool {.
   let story = editor.selectedStory.val
   if story.kind notin {skComponent, skPattern} or story.group.len == 0:
     return false
-  if editor.componentVariantsForComponent(story.group).len > 0:
-    return false
   for variant in editor.variants.variants.val:
     if variant.story.group == story.group and variant.story.name == story.name:
       return false
