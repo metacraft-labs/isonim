@@ -4009,16 +4009,20 @@ proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
   r.addEventListener(revertButton, "click", revert)
   r.addEventListener(revertButton, "keydown", revert)
 
-  let impactContent = ui(r):
-    tdiv(display = "flex", flex_direction = "column",
-          padding = "6px",
-          border_bottom = "1px solid " & border)
-  r.appendChild(result, impactContent)
-
-  let content = ui(r):
+  let inspectorBody = ui(r):
     tdiv(flex = "1", display = "flex", flex_direction = "column",
           padding = "6px", overflow_y = "auto", gap = "6px")
-  r.appendChild(result, content)
+  r.appendChild(result, inspectorBody)
+
+  let content = ui(r):
+    tdiv(display = "flex", flex_direction = "column", gap = "6px")
+  r.appendChild(inspectorBody, content)
+
+  let impactContent = ui(r):
+    tdiv(display = "flex", flex_direction = "column",
+          padding_top = "6px",
+          border_top = "1px solid " & border)
+  r.appendChild(inspectorBody, impactContent)
   r.populateSectionTabs(vm, frame, tabs, content, clipboard)
   r.populateInspectorImpact(vm, frame, impactContent)
 

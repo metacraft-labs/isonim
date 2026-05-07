@@ -930,13 +930,20 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       name: "Show Space edit controls",
     });
     await sharedScopeSpaceTab.click();
-    await expect(
-      page.locator('[data-design-system-impact="true"]'),
-    ).toContainText("Source impact");
     const paddingInput = page.getByRole("textbox", {
       name: "Edit inspector property padding",
       exact: true,
     });
+    const impactPanel = page.locator('[data-design-system-impact="true"]');
+    await expect(impactPanel).toContainText("Source impact");
+    await expect(paddingInput).toBeVisible();
+    await expect(async () => {
+      const inputBox = await paddingInput.boundingBox();
+      const impactBox = await impactPanel.boundingBox();
+      expect(inputBox).not.toBeNull();
+      expect(impactBox).not.toBeNull();
+      expect(impactBox!.y).toBeGreaterThan(inputBox!.y);
+    }).toPass();
     await fillInspectorInputValue(page, paddingInput, "28px");
     await page
       .getByRole("group", {
