@@ -9,6 +9,7 @@ import isonim/core/[signals, computation]
 import isonim/dsl/ui
 import isonim/editor/viewmodels
 import isonim/editor/types
+import isonim/editor/views/choice_row
 
 const
   bgBase = "#0B1120"
@@ -1708,6 +1709,7 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
   var unitNode: E
   var moreNode: E
   var scopeNode: E
+  var scopeHost: E
   var bindingNode: E
   let propName = prop.name
   let value = prop.value
@@ -1748,9 +1750,40 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
   let preview = proc() =
     r.applyCssValue(vm, frame, propName, r.inputValue(inputNode),
       commitSource = false)
+  var scopeOptions: seq[CompactChoiceOption] = @[]
+  var orderedScopeIndexes: seq[int] = @[]
+  for preferred in [sskLocalInstance, sskSharedClass]:
+    for i in 0 ..< scopeChoices.len:
+      if scopeChoices[i].kind == preferred and i notin orderedScopeIndexes:
+        orderedScopeIndexes.add i
+        break
+  if selectedScopeIndex notin orderedScopeIndexes:
+    orderedScopeIndexes.add selectedScopeIndex
+  for i in 0 ..< scopeChoices.len:
+    if i notin orderedScopeIndexes:
+      orderedScopeIndexes.add i
+  for i in orderedScopeIndexes:
+    let choice = scopeChoices[i]
+    let kind = choice.kind
+    let editable = choice.editable
+    let label = choice.label
+    let risk = choice.riskLevel.sourceScopeRiskLabel()
+    scopeOptions.add CompactChoiceOption(
+      label: label & " " & risk,
+      shortLabel: kind.sourceScopeAbbrev(),
+      ariaLabel: "Apply " & label & " source scope for " & propName,
+      selected: i == selectedScopeIndex,
+      enabled: editable,
+      dataAttrs: @[("data-source-scope-editable",
+        if editable: "true" else: "false")],
+      onChoose: scopeChoiceHandler(kind, editable))
+  var sourceScopeRow = renderCompactChoiceRow[R, E](r, "",
+    "Choose source scope for " & propName, scopeOptions, visibleLimit = 2,
+    minHeight = "22px")
+  scopeNode = sourceScopeRow.root
   result = ui(r):
     tdiv(display = "grid",
-          `grid-template-columns` = "76px minmax(50px, 1fr) 30px 34px 36px 20px 22px",
+          `grid-template-columns` = "76px minmax(44px, 1fr) 30px 34px 86px 20px 22px",
           align_items = "center", gap = "3px",
           min_height = "24px", max_width = "100%", overflow = "hidden"):
       label(ref = labelNode,
@@ -1794,64 +1827,8 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
             color = textMuted, font_size = "9px",
             white_space = "nowrap", overflow = "hidden"):
         text binding
-      details(ref = scopeNode,
-            `aria-label` = "Choose source scope for " & propName,
-            height = "22px",
-            position = "relative",
-            border = "1px solid " & border,
-            border_radius = "3px",
-            background_color = "#0F172A",
-            color = (if editableScopeCount > 1: gold else: textMuted),
-            font_size = "9px",
-            cursor = "pointer"):
-        summary(display = "flex", align_items = "center",
-                justify_content = "center",
-                height = "20px", list_style = "none",
-                white_space = "nowrap", overflow = "hidden",
-                text_overflow = "ellipsis"):
-          text selectedScope.kind.sourceScopeAbbrev()
-        tdiv(position = "absolute", right = "0", top = "23px",
-              z_index = "20", min_width = "170px",
-              display = "flex", flex_direction = "column", gap = "2px",
-              padding = "4px", border = "1px solid " & border,
-              border_radius = "5px", background_color = bgSidebar,
-              box_shadow = "0 8px 24px rgba(0,0,0,0.28)"):
-          for i in 0 ..< scopeChoices.len:
-            let choice = scopeChoices[i]
-            let scopeLabel = choice.label
-            let risk = choice.riskLevel.sourceScopeRiskLabel()
-            var choiceNode: E
-            tdiv(ref = choiceNode,
-                  role = "button", tabindex = "0",
-                  `aria-label` = "Apply " & scopeLabel &
-                    " source scope for " & propName,
-                  display = "grid",
-                  `grid-template-columns` = "32px minmax(0, 1fr) auto",
-                  align_items = "center", gap = "5px",
-                  min_height = "22px",
-                  padding = "3px 4px",
-                  border_radius = "4px",
-                  background_color =
-                    (if i == selectedScopeIndex: bgSurface else: "transparent"),
-                  color = (if choice.editable: textPrimary else: textDim),
-                  cursor = (if choice.editable: "pointer" else: "default")):
-              span(font_size = "9px", color =
-                    (if choice.kind == sskLocalInstance: textMuted else: gold)):
-                text choice.kind.sourceScopeAbbrev()
-              span(font_size = "9px",
-                    white_space = "nowrap", overflow = "hidden",
-                    text_overflow = "ellipsis"):
-                text scopeLabel
-              span(font_size = "8px", color = textDim):
-                text risk
-            block:
-              let kind = choice.kind
-              let editable = choice.editable
-              r.setAttribute(choiceNode, "data-source-scope-editable",
-                if editable: "true" else: "false")
-              let applyScope = scopeChoiceHandler(kind, editable)
-              r.addEventListener(choiceNode, "click", applyScope)
-              r.addEventListener(choiceNode, "keydown", applyScope)
+      tdiv(ref = scopeHost, min_width = "0"):
+        discard
       tdiv(ref = resetNode, role = "button", tabindex = "0",
             `aria-label` = "Reset " & propName & " property",
             height = "22px",
@@ -1875,6 +1852,7 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
             cursor = "pointer"):
         text "..."
   r.setAttribute(inputNode, "aria-label", "Edit inspector property " & propName)
+  r.appendChild(scopeHost, sourceScopeRow.root)
   r.setAttribute(inputNode, "data-isonim-focus-id", "property-" & propName)
   r.setAttribute(result, "data-inspector-dense-row", "true")
   r.setAttribute(result, "data-inspector-property", propName)
@@ -1889,6 +1867,7 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
   r.setAttribute(bindingNode, "aria-label", "Binding indicator for " & propName)
   r.setAttribute(scopeNode, "data-inspector-row-slot", "scope-selector")
   r.setAttribute(scopeNode, "data-inspector-scope-selector", "true")
+  r.setAttribute(scopeNode, "data-compact-choice-strip", "true")
   r.setAttribute(scopeNode, "data-source-scope-count", $scopeChoices.len)
   r.setAttribute(resetNode, "data-inspector-row-slot", "reset")
   r.setAttribute(moreNode, "data-inspector-row-slot", "actions")
@@ -3356,30 +3335,60 @@ proc renderStyleManagerPanel[R, E](r: R; vm: EditorVM; frame: E;
           text "Detach"
       tdiv(display = "flex", flex_direction = "column", gap = "4px",
             `aria-label` = "Safe style scope choices"):
-        span(font_size = "10px", color = textMuted):
-          text "Safe scopes"
-        tdiv(display = "grid", `grid-template-columns` = "1fr 1fr",
-              gap = "4px"):
-          tdiv(ref = localScopeButton, role = "button", tabindex = "0",
-                `aria-label` = "Apply local instance scope for " & snapshot.property,
-                padding = "5px 6px", border_radius = "4px",
-                background_color = accent, color = textPrimary,
-                font_size = "10px", text_align = "center", cursor = "pointer"):
-            text "Local"
-          tdiv(ref = sharedScopeButton, role = "button", tabindex = "0",
-                `aria-label` = "Apply shared class scope for " & snapshot.property,
-                padding = "5px 6px", border_radius = "4px",
-                background_color = bgSurface, color = textMuted,
-                font_size = "10px", text_align = "center", cursor = "pointer"):
-            text "Class"
-          for i in 0 ..< snapshot.scopeChoices.len:
-            let choiceLabel = snapshot.scopeChoices[i].label
-            let editable = snapshot.scopeChoices[i].editable
-            span(font_size = "10px",
-                  color = (if editable: textMuted else: textDim),
-                  white_space = "nowrap", overflow = "hidden",
-                  text_overflow = "ellipsis"):
-              text choiceLabel & (if editable: " editable" else: " read-only")
+        tdiv(display = "grid", `grid-template-columns` = "72px minmax(0, 1fr)",
+              align_items = "center", gap = "6px",
+              min_height = "24px",
+              `data-compact-choice-row` = "true"):
+          span(font_size = "10px", color = textMuted,
+                white_space = "nowrap", overflow = "hidden",
+                text_overflow = "ellipsis"):
+            text "Scope"
+          tdiv(display = "grid", `grid-template-columns` = "1fr 1fr auto",
+                align_items = "center",
+                border = "1px solid " & border,
+                border_radius = "4px",
+                overflow = "hidden",
+                background_color = "#0F172A",
+                `data-compact-choice-strip` = "true"):
+            tdiv(ref = localScopeButton, role = "button", tabindex = "0",
+                  `aria-label` = "Apply local instance scope for " & snapshot.property,
+                  padding = "4px 6px",
+                  background_color = accent, color = textPrimary,
+                  border_right = "1px solid " & border,
+                  font_size = "10px", text_align = "center", cursor = "pointer"):
+              text "Local"
+            tdiv(ref = sharedScopeButton, role = "button", tabindex = "0",
+                  `aria-label` = "Apply shared class scope for " & snapshot.property,
+                  padding = "4px 6px",
+                  background_color = "transparent", color = textMuted,
+                  border_right = "1px solid " & border,
+                  font_size = "10px", text_align = "center", cursor = "pointer"):
+              text "Class"
+            details(height = "22px",
+                    position = "relative",
+                    font_size = "10px",
+                    color = textDim):
+              summary(display = "flex", align_items = "center",
+                      justify_content = "center",
+                      width = "22px", height = "22px",
+                      list_style = "none", cursor = "pointer",
+                      `aria-label` = "More style scope choices for " &
+                        snapshot.property):
+                text "v"
+              tdiv(position = "absolute", right = "0", top = "23px",
+                    z_index = "20", min_width = "160px",
+                    display = "flex", flex_direction = "column", gap = "2px",
+                    padding = "4px", border = "1px solid " & border,
+                    border_radius = "5px", background_color = bgSidebar,
+                    box_shadow = "0 8px 24px rgba(0,0,0,0.28)"):
+                for i in 0 ..< snapshot.scopeChoices.len:
+                  let choiceLabel = snapshot.scopeChoices[i].label
+                  let editable = snapshot.scopeChoices[i].editable
+                  span(font_size = "10px",
+                        color = (if editable: textMuted else: textDim),
+                        white_space = "nowrap", overflow = "hidden",
+                        text_overflow = "ellipsis"):
+                    text choiceLabel & (if editable: " editable" else: " read-only")
       tdiv(display = "flex", flex_direction = "column", gap = "4px",
             `aria-label` = "Cascade source layers"):
         span(font_size = "10px", color = textMuted):

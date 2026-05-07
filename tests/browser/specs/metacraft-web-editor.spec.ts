@@ -1146,10 +1146,19 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       propertyPanel.locator("[data-component-variant-matrix-cell]"),
     ).toHaveCount(2);
     await expect(
-      propertyPanel.getByLabel("Edit component property tone"),
-    ).toHaveValue("neutral");
+      propertyPanel.getByRole("group", {
+        name: "Choose component property tone",
+      }),
+    ).toHaveAttribute("data-component-property-options", "4");
     await expect(
-      propertyPanel.getByLabel("Cycle component property tone"),
+      propertyPanel.getByRole("button", {
+        name: "Apply component property tone option neutral",
+      }),
+    ).toHaveAttribute("aria-pressed", "true");
+    await expect(
+      propertyPanel.getByRole("group", {
+        name: "Choose component property tone",
+      }),
     ).toHaveAttribute("title", /Status badge tone API/);
     await expect(
       page
@@ -1170,14 +1179,20 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(schemaBadge).toHaveClass(/bo-status-neutral/);
     const neutralBackground = await computedBackground(schemaBadge);
 
-    await propertyPanel.getByLabel("Cycle component property tone").click();
+    await propertyPanel
+      .getByRole("button", {
+        name: "Apply component property tone option success",
+      })
+      .click();
     await expect(page.getByText("dirty")).toBeVisible();
     await expect(
       propertyPanel.getByText("1 component plan(s) staged"),
     ).toBeVisible();
     await expect(
-      propertyPanel.getByLabel("Edit component property tone"),
-    ).toHaveValue("success");
+      propertyPanel.getByRole("button", {
+        name: "Apply component property tone option success",
+      }),
+    ).toHaveAttribute("aria-pressed", "true");
     await expect(schemaBadge).toHaveClass(/bo-status-success/);
     await expect
       .poll(() => computedBackground(schemaBadge))
@@ -1189,8 +1204,10 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       .click();
     await expect(page.getByText("dirty")).toHaveCount(0);
     await expect(
-      propertyPanel.getByLabel("Edit component property tone"),
-    ).toHaveValue("neutral");
+      propertyPanel.getByRole("button", {
+        name: "Apply component property tone option neutral",
+      }),
+    ).toHaveAttribute("aria-pressed", "true");
     await expect(schemaBadge).toHaveClass(/bo-status-neutral/);
     await expect
       .poll(() => computedBackground(schemaBadge))
@@ -1199,7 +1216,11 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       beforeComponentSchema,
     );
 
-    await propertyPanel.getByLabel("Cycle component property tone").click();
+    await propertyPanel
+      .getByRole("button", {
+        name: "Apply component property tone option success",
+      })
+      .click();
     await expect(
       propertyPanel.getByText("1 component plan(s) staged"),
     ).toBeVisible();
@@ -1235,9 +1256,11 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(
       page.getByLabel("Component property schema and variant matrix").first(),
     ).toBeVisible();
-    await expect(page.getByLabel("Edit component property tone")).toHaveValue(
-      "neutral",
-    );
+    await expect(
+      page.getByRole("button", {
+        name: "Apply component property tone option neutral",
+      }),
+    ).toHaveAttribute("aria-pressed", "true");
     await expect(
       page
         .frameLocator(

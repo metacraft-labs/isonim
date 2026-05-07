@@ -1465,14 +1465,12 @@ test.describe("IsoNim packaged editor example", () => {
     );
 
     await page.getByRole("tab", { name: "Show Space edit controls" }).click();
-    await page
-      .getByRole("group", {
-        name: "Choose source scope for padding",
-        exact: true,
-      })
-      .click();
+    const paddingScopeGroup = page.getByRole("group", {
+      name: "Choose source scope for padding",
+      exact: true,
+    });
     await expect(
-      page.getByRole("button", {
+      paddingScopeGroup.getByRole("button", {
         name: "Apply Shared class source scope for padding",
         exact: true,
       }),
@@ -1488,7 +1486,7 @@ test.describe("IsoNim packaged editor example", () => {
     await expect(page.getByLabel("Shared design-system editors")).toContainText(
       "padding | Spacing",
     );
-    await expect(impact).toContainText("DestinationCard");
+    await expect(impact).toContainText(/destination-card/i);
     await expect(impact).not.toContainText("+ padding: 24px");
     const initialCommitPreviewCount = Number(
       (await impact.getAttribute("data-shared-design-commit-preview-count")) ??
@@ -1506,13 +1504,7 @@ test.describe("IsoNim packaged editor example", () => {
     await paddingInput.fill("");
     await paddingInput.fill("24px");
     await paddingInput.blur();
-    await page
-      .getByRole("group", {
-        name: "Choose source scope for padding",
-        exact: true,
-      })
-      .click();
-    await page
+    await paddingScopeGroup
       .getByRole("button", {
         name: "Apply Shared class source scope for padding",
         exact: true,

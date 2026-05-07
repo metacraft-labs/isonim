@@ -9,6 +9,7 @@ import isonim/core/[computation, signals]
 import isonim/dsl/ui
 import isonim/editor/viewmodels
 import isonim/editor/types
+import isonim/editor/views/choice_row
 
 const
   bgBase = "#0B1120"
@@ -185,12 +186,38 @@ proc componentPreviewVariantScript(vm: EditorVM;
 proc renderComponentPropertyInput[R, E](r: R; vm: EditorVM;
     variant: ComponentVariantDefinition;
     prop: ComponentPropertyDefinition): E =
-  var inputNode: E
-  var cycleNode: E
   let component = variant.component
   let variantKey = variant.variantKey
   let propName = prop.name
   let propOptions = prop.options
+  proc choosePropertyOption(nextValue: string): proc() =
+    let capturedValue = nextValue
+    result = proc() =
+      discard vm.editComponentProperty(component, variantKey, propName,
+        capturedValue, cpemManual)
+  if propOptions.len > 0:
+    var choices: seq[CompactChoiceOption] = @[]
+    for option in propOptions:
+      choices.add CompactChoiceOption(
+        label: option,
+        shortLabel: option,
+        ariaLabel: "Apply component property " & propName & " option " & option,
+        selected: option == prop.value,
+        enabled: true,
+        onChoose: choosePropertyOption(option))
+    let choiceRow = renderCompactChoiceRow[R, E](r, prop.name,
+      "Choose component property " & prop.name, choices, visibleLimit = 3,
+      labelWidth = "82px", minHeight = "30px")
+    result = choiceRow.root
+    r.setAttribute(result, "data-component-property-control", prop.name)
+    r.setAttribute(result, "data-component-property-options", $propOptions.len)
+    r.setAttribute(result, "title",
+      componentPropertyKindLabel(prop.kind) & ". " & prop.documentation & " " &
+        prop.usageGuidance)
+    return
+
+  var inputNode: E
+  var cycleNode: E
   let commit = proc() =
     discard vm.editComponentProperty(component, variantKey, propName,
       r.inputValue(inputNode), cpemManual)
@@ -250,6 +277,31 @@ proc renderComponentStateButton[R, E](r: R; vm: EditorVM;
   let stateKey = state.key
   let stateOptions = state.options
   let currentValue = state.value
+  proc chooseStateOption(nextValue: string): proc() =
+    let capturedValue = nextValue
+    result = proc() =
+      discard vm.editComponentStateControl(component, variantKey, stateKey,
+        capturedValue, cpemManual)
+  if stateOptions.len > 0:
+    var choices: seq[CompactChoiceOption] = @[]
+    for option in stateOptions:
+      choices.add CompactChoiceOption(
+        label: option,
+        shortLabel: option,
+        ariaLabel: "Apply component state " & state.key & " option " & option,
+        selected: option == currentValue,
+        enabled: true,
+        onChoose: chooseStateOption(option))
+    let choiceRow = renderCompactChoiceRow[R, E](r, state.label,
+      "Choose component state " & state.key, choices, visibleLimit = 2,
+      labelWidth = "64px", minHeight = "26px")
+    result = choiceRow.root
+    r.setAttribute(result, "data-component-state-control", state.key)
+    r.setAttribute(result, "title",
+      componentStateKindLabel(state.kind) & " state routed through schema " &
+        state.schemaKey)
+    return
+
   let activate = proc() =
     let next = nextOption(stateOptions, currentValue)
     discard vm.editComponentStateControl(component, variantKey, stateKey, next,

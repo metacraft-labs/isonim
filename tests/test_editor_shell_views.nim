@@ -197,9 +197,10 @@ suite "Editor Shell Views (M2)":
       check gapInput != nil
       check scopeSelector != nil
       check scopeSelector.attributes["data-inspector-row-slot"] == "scope-selector"
+      check scopeSelector.attributes["data-compact-choice-strip"] == "true"
       check scopeSelector.attributes["data-source-scope-count"] == "7"
       check sharedScope != nil
-      check sharedScope.attributes["data-source-scope-editable"] == "true"
+      check sharedScope.attributes["data-compact-choice-enabled"] == "true"
       check "click" in sharedScope.eventListeners
       r.setInputValue(gapInput, "24px")
       sharedScope.fireEvent("click")
@@ -673,6 +674,67 @@ suite "Editor Shell Views (M2)":
       check frame.styles["overflow"] == "hidden"
       check frame.attributes["height"] == "1"
       check detail.textContent.contains("Rendered by project-owned component code.")
+
+      dispose()
+
+  test "component detail renders option controls as compact choice rows":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      let story = StoryRef(group: "StatusBadge", name: "Neutral",
+        kind: skComponent, index: 0)
+      vm.sidebar.groups.val = @[
+        StoryGroup(name: "Components", kind: skComponent, expanded: true,
+          items: @[StoryItem(name: story.name, kind: story.kind,
+            group: story.group)])
+      ]
+      vm.variants.variants.val = @[
+        ComponentVariantDefinition(
+          component: "StatusBadge",
+          variantKey: "base",
+          story: story,
+          properties: @[
+            ComponentPropertyDefinition(
+              name: "tone",
+              kind: cpkEnum,
+              value: "neutral",
+              options: @["neutral", "success", "error"],
+              sourceFile: "components/status_badge.nim",
+              sourceLine: 12,
+              schemaKey: "status.tone",
+              documentation: "Status badge tone API",
+              usageGuidance: "Choose a semantic status tone.")
+          ],
+          stateControls: @[
+            ComponentStateControl(
+              key: "disabled",
+              label: "Disabled",
+              kind: cskDisabled,
+              value: "false",
+              options: @["false", "true"],
+              sourceFile: "components/status_badge.nim",
+              sourceLine: 18,
+              schemaKey: "status.disabled")
+          ])
+      ]
+      discard vm.selectStory(story)
+
+      let detail = renderComponentDetail[MockRenderer, MockNode](r, vm)
+      let tone = findByAttr(detail, "aria-label",
+        "Choose component property tone")
+      let success = findByAttr(detail, "aria-label",
+        "Apply component property tone option success")
+      let disabled = findByAttr(detail, "aria-label",
+        "Choose component state disabled")
+      check tone != nil
+      check tone.attributes["data-compact-choice-row"] == "true"
+      check tone.attributes["data-component-property-options"] == "3"
+      check success != nil
+      check success.attributes["data-compact-choice-enabled"] == "true"
+      success.fireEvent("click")
+      check vm.variants.variants.val[0].properties[0].value == "success"
+      check disabled != nil
+      check disabled.attributes["data-compact-choice-row"] == "true"
 
       dispose()
 
