@@ -58,13 +58,27 @@ proc injectEditorStyles*() =
       border-top: none;
       padding-top: 0;
     }
-    /* When a property has a segmented strip, the free-text input is redundant. */
+    /* Segmented-strip rows: strip replaces value/unit/scope cells inline. */
+    [data-inspector-control] {
+      position: relative;
+    }
     [data-inspector-control]:has(> [data-segmented-strip])
-      [data-inspector-row-slot="value-field"] {
+      [data-inspector-row-slot="value-field"],
+    [data-inspector-control]:has(> [data-segmented-strip])
+      [data-inspector-row-slot="unit-picker"],
+    [data-inspector-control]:has(> [data-segmented-strip])
+      [data-inspector-row-slot="scope-selector"] {
       visibility: hidden;
     }
-    [data-inspector-control] [data-segmented-strip] {
-      margin-top: 2px;
+    [data-inspector-control] > [data-segmented-strip] {
+      position: absolute;
+      top: 0;
+      left: 119px;
+      right: 28px;
+      height: 22px;
+      margin: 0;
+      max-width: none;
+      display: flex !important;
     }
     @media (max-width: 768px) {
       .editor-sidebar { width: 100% !important; min-width: 100% !important; }

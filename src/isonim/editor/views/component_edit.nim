@@ -1438,20 +1438,29 @@ func isNumericProperty(propName: string): bool =
   ]
 
 func numericUnit(value: string; fallback = "px"): string =
+  ## Extract a numeric unit (px, em, rem, %, fr, …) from a CSS value. Returns
+  ## "" when the value isn't numeric — `rgb(...)`, `transparent`, `auto`,
+  ## complex strings like `5.6px 10.4px` (we look at the first token only),
+  ## etc. — so the unit chip in the inspector can hide for unitless props.
   let text = value.strip()
   if text.len == 0:
     return fallback
   var i = 0
-  if text[i] in {'+', '-'}:
+  if i < text.len and text[i] in {'+', '-'}:
     inc i
+  let numStart = i
   while i < text.len and (text[i].isDigit or text[i] == '.'):
     inc i
-  if i < text.len:
-    text[i .. ^1]
-  elif text in ["auto", "none", "normal", "inherit"]:
-    ""
-  else:
-    fallback
+  if i == numStart:
+    return ""
+  let unitStart = i
+  while i < text.len and (text[i].isAlphaAscii or text[i] == '%'):
+    inc i
+  if i > unitStart:
+    return text[unitStart ..< i]
+  if text in ["auto", "none", "normal", "inherit"]:
+    return ""
+  fallback
 
 func numericText(value: string; fallback = "0"): string =
   let text = value.strip()
@@ -1818,7 +1827,7 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
   scopeNode = sourceScopeRow.root
   result = ui(r):
     tdiv(display = "grid",
-          grid_template_columns = "116px minmax(0, 1fr) 30px 48px 22px",
+          grid_template_columns = "116px minmax(0, 1fr) 30px 60px 22px",
           align_items = "center", gap = "3px",
           min_height = "22px", max_width = "100%", overflow = "visible"):
       label(ref = labelNode,
@@ -1827,31 +1836,45 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
             text_overflow = "ellipsis", cursor = "ew-resize",
             title = "Scrub " & propName & " value"):
         text propName
-      input(ref = inputNode,
-            class = "editor-input",
-            height = "22px",
-            background_color = "#0F172A",
-            border = "1px solid " & border,
-            border_radius = "3px",
-            padding = "0 6px",
-            font_size = "11px",
-            color = textPrimary,
-            outline = "none",
-            min_width = "0",
-            oninput = preview,
-            onchange = commit,
-            onblur = commit)
+      tdiv(display = "flex", align_items = "center", gap = "4px",
+            min_width = "0", overflow = "hidden",
+            `data-inspector-row-slot` = "value-field"):
+        if swatchesFor(propName).len > 0:
+          tdiv(width = "14px", height = "14px",
+                flex = "0 0 14px",
+                border_radius = "3px",
+                border = "1px solid " & borderFaint,
+                box_shadow = "inset 0 0 0 1px rgba(255, 255, 255, 0.06)",
+                background_color = value)
+        input(ref = inputNode,
+              class = "editor-input",
+              height = "22px",
+              background_color = "#0F172A",
+              border = "1px solid " & border,
+              border_radius = "3px",
+              padding = "0 6px",
+              font_size = "11px",
+              color = textPrimary,
+              outline = "none",
+              flex = "1",
+              min_width = "0",
+              oninput = preview,
+              onchange = commit,
+              onblur = commit)
       tdiv(ref = unitNode, role = "button", tabindex = "0",
             `aria-label` = "Cycle unit for " & propName,
             height = "22px",
-            display = "flex", align_items = "center",
+            display = (if unit.len > 0: "flex" else: "none"),
+            align_items = "center",
             justify_content = "center",
             border = "1px solid " & border,
             border_radius = "3px",
             background_color = "#0F172A",
             color = textMuted, font_size = "9px",
+            white_space = "nowrap",
+            overflow = "hidden",
             cursor = "pointer"):
-        text (if unit.len > 0: unit else: "-")
+        text unit
       tdiv(ref = scopeHost, min_width = "0", overflow = "hidden"):
         discard
       tdiv(ref = moreNode, role = "button", tabindex = "0",
@@ -1899,7 +1922,6 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
     "label scrub-value unit binding scope reset more")
   r.setAttribute(labelNode, "data-inspector-row-slot", "label-scrubber")
   r.setAttribute(labelNode, "data-inspector-label-scrubber", "true")
-  r.setAttribute(inputNode, "data-inspector-row-slot", "value-field")
   r.setAttribute(unitNode, "data-inspector-row-slot", "unit-picker")
   r.setAttribute(bindingNode, "data-inspector-row-slot", "binding-indicator")
   r.setAttribute(scopeNode, "data-inspector-row-slot", "scope-selector")
