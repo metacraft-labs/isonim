@@ -3,7 +3,7 @@
 ## Source-backed component editing: a real project preview iframe on the left
 ## and a functional inspector on the right.
 
-import std/[strutils]
+import std/[strutils, math, strformat]
 
 import isonim/core/[signals, computation]
 import isonim/dsl/ui
@@ -1185,6 +1185,30 @@ func fallbackPropertyValue(element: ElementRef; name,
       return prop.value
   fallback
 
+func roundedPxValue(raw: string): string =
+  ## Round a numeric CSS value (e.g. "50.8938px") to 1 decimal so the
+  ## selection summary doesn't read like raw browser noise. Non-numeric
+  ## inputs ("auto", "fit-content", "100%") pass through unchanged.
+  let trimmed = raw.strip()
+  if trimmed.len == 0:
+    return raw
+  var i = 0
+  if i < trimmed.len and trimmed[i] in {'+', '-'}:
+    inc i
+  let numStart = i
+  while i < trimmed.len and trimmed[i] in {'0'..'9', '.'}:
+    inc i
+  if i == numStart:
+    return trimmed
+  let suffix = trimmed[i .. ^1].strip()
+  let n =
+    try: parseFloat(trimmed[0 ..< i])
+    except ValueError: return trimmed
+  let rounded =
+    if abs(n - round(n)) < 0.05: $int(round(n))
+    else: fmt"{n:.1f}"
+  if suffix.len > 0: rounded & suffix else: rounded
+
 func sectionProperties(section: InspectorSection): seq[(string, string)] =
   case section
   of isLayout:
@@ -1788,14 +1812,14 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
       dataAttrs: @[("data-source-scope-editable",
         if editable: "true" else: "false")],
       onChoose: scopeChoiceHandler(kind, editable))
-  var sourceScopeRow = renderCompactChoiceRow[R, E](r, "Scope",
-    "Choose source scope for " & propName, scopeOptions, visibleLimit = 2,
-    labelWidth = "34px", minHeight = "22px")
+  var sourceScopeRow = renderCompactChoiceRow[R, E](r, "",
+    "Choose source scope for " & propName, scopeOptions, visibleLimit = 1,
+    labelWidth = "0", minHeight = "22px")
   scopeNode = sourceScopeRow.root
   result = ui(r):
     tdiv(display = "grid",
-          grid_template_columns = "60px minmax(36px, 1fr) 24px 24px 72px 20px 20px",
-          align_items = "center", gap = "2px",
+          grid_template_columns = "116px minmax(0, 1fr) 30px 48px 22px",
+          align_items = "center", gap = "3px",
           min_height = "22px", max_width = "100%", overflow = "visible"):
       label(ref = labelNode,
             font_size = "10px", color = textSecondary,
@@ -1809,7 +1833,7 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
             background_color = "#0F172A",
             border = "1px solid " & border,
             border_radius = "3px",
-            padding = "0 5px",
+            padding = "0 6px",
             font_size = "11px",
             color = textPrimary,
             outline = "none",
@@ -1828,29 +1852,8 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
             color = textMuted, font_size = "9px",
             cursor = "pointer"):
         text (if unit.len > 0: unit else: "-")
-      tdiv(ref = bindingNode,
-            height = "22px",
-            display = "flex", align_items = "center",
-            justify_content = "center",
-            border = "1px solid " & border,
-            border_radius = "3px",
-            background_color = "#0F172A",
-            color = textMuted, font_size = "9px",
-            white_space = "nowrap", overflow = "hidden"):
-        text binding
-      tdiv(ref = scopeHost, min_width = "0"):
+      tdiv(ref = scopeHost, min_width = "0", overflow = "hidden"):
         discard
-      tdiv(ref = resetNode, role = "button", tabindex = "0",
-            `aria-label` = "Reset " & propName & " property",
-            height = "22px",
-            display = "flex", align_items = "center",
-            justify_content = "center",
-            border = "1px solid " & border,
-            border_radius = "3px",
-            background_color = "#0F172A",
-            color = textMuted, font_size = "11px",
-            cursor = "pointer"):
-        text "r"
       tdiv(ref = moreNode, role = "button", tabindex = "0",
             `aria-label` = "More " & propName & " property actions",
             height = "22px",
@@ -1862,6 +1865,30 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
             color = textMuted, font_size = "13px",
             cursor = "pointer"):
         text "..."
+      # Hidden slots — kept in the DOM so accessibility tools, tests and the
+      # row's More menu can still reach the binding indicator and the Reset
+      # action, but display:none keeps the visible grid to a single 22px line.
+      tdiv(ref = bindingNode,
+            display = "none",
+            `aria-label` = "Binding indicator for " & propName,
+            font_size = "9px", color = textMuted,
+            padding = "1px 6px", border = "1px solid " & border,
+            border_radius = "3px",
+            background_color = "#0F172A",
+            white_space = "nowrap", overflow = "hidden",
+            text_overflow = "ellipsis"):
+        text binding
+      tdiv(ref = resetNode, role = "button", tabindex = "0",
+            display = "none",
+            `aria-label` = "Reset " & propName & " property",
+            height = "22px",
+            padding = "0 8px",
+            border = "1px solid " & border,
+            border_radius = "4px",
+            background_color = bgSurface,
+            color = textMuted, font_size = "10px",
+            cursor = "pointer"):
+        text "Reset"
   r.setAttribute(inputNode, "aria-label", "Edit inspector property " & propName)
   r.appendChild(scopeHost, sourceScopeRow.root)
   r.setAttribute(inputNode, "data-isonim-focus-id", "property-" & propName)
@@ -1875,7 +1902,6 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
   r.setAttribute(inputNode, "data-inspector-row-slot", "value-field")
   r.setAttribute(unitNode, "data-inspector-row-slot", "unit-picker")
   r.setAttribute(bindingNode, "data-inspector-row-slot", "binding-indicator")
-  r.setAttribute(bindingNode, "aria-label", "Binding indicator for " & propName)
   r.setAttribute(scopeNode, "data-inspector-row-slot", "scope-selector")
   r.setAttribute(scopeNode, "data-inspector-scope-selector", "true")
   r.setAttribute(scopeNode, "data-compact-choice-strip", "true")
@@ -2774,26 +2800,33 @@ proc renderSwatches[R, E](r: R; vm: EditorVM; frame: E; propName,
 
 proc renderRichPropertyControl[R, E](r: R; vm: EditorVM; frame: E;
     clipboard: StyleClipboard; prop: PropertyInfo; fallback: string): E =
+  ## Single-line dense row, Figma-style. Cascade origin, copy/paste/reset and
+  ## the always-on swatch palette live behind an inline "More" disclosure so
+  ## each row is one ~22-24px line by default. Short segmented strips
+  ## (`quickValues`) stay inline because the reviewer flagged them as the
+  ## clearest affordance in the pane.
   result = ui(r):
-    tdiv(display = "flex", flex_direction = "column", gap = "3px",
-          padding = "4px 0",
+    tdiv(display = "flex", flex_direction = "column", gap = "0",
+          padding = "1px 0",
           border_bottom = "1px solid " & borderFaint)
   r.setAttribute(result, "data-inspector-control", prop.name)
   r.appendChild(result, renderPropertyInput[R, E](r, vm, frame, prop, fallback))
-  let metaRow = ui(r):
-    tdiv(display = "grid",
-          grid_template_columns = "minmax(0, 1fr) auto",
-          align_items = "center", gap = "4px",
-          padding_left = "76px")
-  r.appendChild(metaRow, renderCascadeIndicator[R, E](r, prop))
-  r.appendChild(metaRow, renderPropertyActions[R, E](r, vm, frame, clipboard,
-    prop.name, prop.value, fallback))
-  r.appendChild(result, metaRow)
+  if quickValues(prop.name).len > 0:
+    r.appendChild(result, renderQuickValues[R, E](r, vm, frame, prop.name,
+      prop.value))
   let advanced = ui(r):
-    details(`aria-label` = "Show advanced " & prop.name & " controls"):
-      summary(cursor = "pointer", color = textMuted, font_size = "9px",
-              padding = "1px 0 1px 76px"):
-        text "Advanced"
+    details(`aria-label` = "Show " & prop.name & " more controls"):
+      summary(cursor = "pointer", color = textDim, font_size = "9px",
+              padding = "1px 0 1px 64px",
+              white_space = "nowrap", overflow = "hidden",
+              text_overflow = "ellipsis"):
+        text "More"
+  r.appendChild(advanced, renderCascadeIndicator[R, E](r, prop))
+  r.appendChild(advanced, renderPropertyActions[R, E](r, vm, frame, clipboard,
+    prop.name, prop.value, fallback))
+  if swatchesFor(prop.name).len > 0:
+    r.appendChild(advanced, renderSwatches[R, E](r, vm, frame, prop.name,
+      prop.value))
   if isNumericProperty(prop.name):
     r.appendChild(advanced, renderNumericAffordances[R, E](r, vm, frame,
       prop.name, prop.value))
@@ -2816,12 +2849,6 @@ proc renderRichPropertyControl[R, E](r: R; vm: EditorVM; frame: E;
   if prop.name == "transition-timing-function":
     r.appendChild(advanced, renderBezierAffordances[R, E](r, vm, frame,
       prop.name, prop.value))
-  if quickValues(prop.name).len > 0:
-    r.appendChild(result, renderQuickValues[R, E](r, vm, frame, prop.name,
-      prop.value))
-  if swatchesFor(prop.name).len > 0:
-    r.appendChild(result, renderSwatches[R, E](r, vm, frame, prop.name,
-      prop.value))
   r.appendChild(result, advanced)
 
 proc sectionTitle(section: InspectorSection): string =
@@ -3642,7 +3669,7 @@ proc renderDesignSystemImpactPanel[R, E](r: R; vm: EditorVM; frame: E;
   discard frame
   discard selected
   result = ui(r):
-    details(open = "open", `aria-label` = "Source scope property impact"):
+    details(`aria-label` = "Source scope property impact"):
       summary(cursor = "pointer", color = textSecondary, font_size = "10px",
               font_weight = "600",
               padding = "4px 0"):
@@ -3820,8 +3847,8 @@ proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;
       selected.tag
     let sizeLabel =
       if fallbackPropertyValue(selected, "width", "").len > 0:
-        fallbackPropertyValue(selected, "width", "") & " x " &
-          fallbackPropertyValue(selected, "height", "")
+        roundedPxValue(fallbackPropertyValue(selected, "width", "")) & " × " &
+          roundedPxValue(fallbackPropertyValue(selected, "height", ""))
       else:
         "auto"
     let summary = ui(r):
@@ -3874,8 +3901,10 @@ proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;
             pointer_events = "none"):
         span(font_size = "11px", font_weight = "700", color = textSecondary,
               text_transform = "uppercase", letter_spacing = "0.5px"):
-          text (if expanded: "v " else: "> ") & sectionTitle(active)
-        span(font_size = "10px", color = accent, font_family = "monospace"):
+          text sectionTitle(active)
+        span(font_size = "9px", color = accent, font_family = "monospace",
+              letter_spacing = "0.4px",
+              text_transform = "uppercase"):
           text "source-backed"
     r.setAttribute(heading, "aria-expanded", if expanded: "true" else: "false")
     r.setStyle(heading, "pointer-events", "none")
@@ -3902,9 +3931,9 @@ proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;
       r.appendChild(content, collapsed)
       return
 
-    if active in {isLayout, isSize, isPosition}:
+    if active == isLayout:
       let layoutAccordion = ui(r):
-        details(open = "open", `aria-label` = "Show layout auto grid constraint controls"):
+        details(`aria-label` = "Show layout auto grid constraint controls"):
           summary(cursor = "pointer", color = textMuted, font_size = "10px",
                   padding = "2px 0"):
             text "CSS Layout / Grid / Flex / Constraints"
@@ -3927,7 +3956,7 @@ proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;
         renderRichPropertyControl[R, E](r, vm, frame, clipboard, prop, fallback))
 
     let rawAccordion = ui(r):
-      details(open = "open", `aria-label` = "Show raw CSS controls"):
+      details(`aria-label` = "Show raw CSS controls"):
         summary(cursor = "pointer", color = textMuted, font_size = "10px",
                 padding = "2px 0"):
           text "Raw CSS"
@@ -3935,7 +3964,7 @@ proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;
       renderRawCssEditor[R, E](r, vm, frame, selected, active))
     r.appendChild(content, rawAccordion)
     let sourceAccordion = ui(r):
-      details(open = "open", `aria-label` = "Show source and cascade controls"):
+      details(`aria-label` = "Show source and cascade controls"):
         summary(cursor = "pointer", color = textMuted, font_size = "10px",
                 padding = "2px 0"):
           text "Source / Cascade"

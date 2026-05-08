@@ -45,6 +45,27 @@ proc injectEditorStyles*() =
     .editor-manual-inspector details:not([open]) > *:not(summary) {
       display: none !important;
     }
+    /* Per-row "More" disclosure: hidden by default, revealed on row hover. */
+    [data-inspector-control] > details > summary {
+      display: none;
+    }
+    [data-inspector-control]:hover > details > summary,
+    [data-inspector-control] > details[open] > summary,
+    [data-inspector-control]:focus-within > details > summary {
+      display: block;
+    }
+    [data-inspector-control] > details {
+      border-top: none;
+      padding-top: 0;
+    }
+    /* When a property has a segmented strip, the free-text input is redundant. */
+    [data-inspector-control]:has(> [data-segmented-strip])
+      [data-inspector-row-slot="value-field"] {
+      visibility: hidden;
+    }
+    [data-inspector-control] [data-segmented-strip] {
+      margin-top: 2px;
+    }
     @media (max-width: 768px) {
       .editor-sidebar { width: 100% !important; min-width: 100% !important; }
       .editor-preview { display: none !important; }
