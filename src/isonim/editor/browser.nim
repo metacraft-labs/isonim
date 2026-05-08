@@ -76,12 +76,18 @@ proc injectEditorStyles*() =
     [data-inspector-control] > [data-segmented-strip] {
       position: absolute;
       top: 0;
-      left: 119px;
-      right: 91px;
+      left: 139px;
+      right: 87px;
       height: 22px;
       margin: 0;
       max-width: none;
       display: flex !important;
+    }
+    /* Scope chip: monospace + uppercase so abbreviations align column-wise. */
+    [data-inspector-scope-selector="true"] [role="button"] {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: 0.4px;
+      text-transform: uppercase;
     }
     @media (max-width: 768px) {
       .editor-sidebar { width: 100% !important; min-width: 100% !important; }

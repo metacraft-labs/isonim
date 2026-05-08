@@ -1252,7 +1252,9 @@ func sectionProperties(section: InspectorSection): seq[(string, string)] =
       ("padding-left", "0px"),
       ("margin", "0px"),
       ("margin-top", "0px"),
-      ("margin-bottom", "0px")
+      ("margin-right", "0px"),
+      ("margin-bottom", "0px"),
+      ("margin-left", "0px")
     ]
   of isPosition:
     @[
@@ -1827,7 +1829,7 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
   scopeNode = sourceScopeRow.root
   result = ui(r):
     tdiv(display = "grid",
-          grid_template_columns = "116px minmax(0, 1fr) 30px 60px 22px",
+          grid_template_columns = "136px minmax(0, 1fr) 30px 56px 22px",
           align_items = "center", gap = "3px",
           min_height = "22px", max_width = "100%", overflow = "visible"):
       label(ref = labelNode,
@@ -4021,8 +4023,6 @@ proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;
                 font_size = "10px"):
             for i in 0 ..< selected.properties.len:
               let prop = selected.properties[i]
-              if prop.origin == poInherited:
-                continue
               let originColor =
                 case prop.origin
                 of poThemeToken: "#FBBF24"
