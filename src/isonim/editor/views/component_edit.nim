@@ -2770,7 +2770,8 @@ proc renderQuickValues[R, E](r: R; vm: EditorVM; frame: E; propName,
     let display = if glyph.len > 0: glyph else: nextValue
     let cell = ui(r):
       tdiv(role = "button", tabindex = "0",
-            min_width = (if useIcons: "26px" else: "32px"),
+            flex = "1 1 0",
+            min_width = "0",
             height = "22px",
             padding = (if useIcons: "0 6px" else: "0 7px"),
             display = "flex", align_items = "center",
@@ -2779,6 +2780,8 @@ proc renderQuickValues[R, E](r: R; vm: EditorVM; frame: E; propName,
             font_weight = (if isActive: "700" else: "600"),
             cursor = "pointer",
             white_space = "nowrap",
+            overflow = "hidden",
+            text_overflow = "ellipsis",
             background_color = (if isActive: accent else: "transparent"),
             color = (if isActive: textPrimary else: textSecondary),
             border_right = (if isLast: "none" else: "1px solid " & border),
@@ -3973,73 +3976,94 @@ proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;
       let pseudoStates = ["hover", "focus", "active", "disabled",
         "focus-visible", "focus-within"]
       let stateBox = ui(r):
-        tdiv(display = "flex", flex_direction = "column", gap = "8px",
+        tdiv(display = "flex", flex_direction = "column", gap = "6px",
               padding = "4px 0"):
           tdiv(font_size = "9px", color = textDim,
                 text_transform = "uppercase", letter_spacing = "0.5px"):
             text "Pseudo-states"
-          tdiv(display = "grid",
-                grid_template_columns = "repeat(3, minmax(0, 1fr))",
-                gap = "4px"):
+          tdiv(display = "flex", flex_wrap = "wrap", gap = "3px"):
             for state in pseudoStates:
               tdiv(role = "button", tabindex = "0",
                     `aria-label` = "Toggle :" & state & " preview",
                     `data-inspector-pseudo-state` = state,
-                    display = "flex", align_items = "center",
+                    display = "inline-flex", align_items = "center",
                     justify_content = "center",
-                    height = "24px", padding = "0 6px",
+                    height = "22px", padding = "0 8px",
                     border = "1px solid " & border,
-                    border_radius = "4px",
+                    border_radius = "11px",
                     background_color = "#0F172A",
                     color = textMuted, font_size = "10px",
-                    cursor = "pointer"):
+                    font_family = "monospace",
+                    cursor = "pointer",
+                    white_space = "nowrap"):
                 text ":" & state
           tdiv(font_size = "10px", color = textDim,
                 line_height = "1.4",
-                padding_top = "4px"):
+                padding_top = "2px"):
             text "Toggle a pseudo-state to preview hover, focus, active, " &
-              "or disabled styling for the selected element."
+              "or disabled styling on the selected element."
       r.appendChild(content, stateBox)
 
     if active == isSource:
       let cascadeBox = ui(r):
         tdiv(display = "flex", flex_direction = "column", gap = "6px",
               padding = "4px 0"):
-          tdiv(font_size = "9px", color = textDim,
-                text_transform = "uppercase", letter_spacing = "0.5px"):
-            text "Cascade origin"
-          tdiv(display = "flex", flex_direction = "column", gap = "4px",
-                font_family = "monospace", font_size = "10px"):
+          tdiv(display = "grid",
+                grid_template_columns = "116px minmax(0, 1fr) 56px",
+                align_items = "center", gap = "6px",
+                font_size = "9px", color = textDim,
+                text_transform = "uppercase",
+                letter_spacing = "0.5px"):
+            span(): text "Property"
+            span(): text "Computed"
+            span(text_align = "right"): text "Origin"
+          tdiv(display = "flex", flex_direction = "column", gap = "2px",
+                font_size = "10px"):
             for i in 0 ..< selected.properties.len:
               let prop = selected.properties[i]
               if prop.origin == poInherited:
                 continue
+              let originColor =
+                case prop.origin
+                of poThemeToken: "#FBBF24"
+                of poConstant: "#FBBF24"
+                of poInherited: textDim
+                else: accent
+              let originBg =
+                case prop.origin
+                of poThemeToken: "rgba(251, 191, 36, 0.12)"
+                of poConstant: "rgba(251, 191, 36, 0.08)"
+                else: "rgba(59, 130, 246, 0.12)"
               tdiv(display = "grid",
-                    grid_template_columns = "104px minmax(0, 1fr) auto",
+                    grid_template_columns = "116px minmax(0, 1fr) 56px",
                     align_items = "center", gap = "6px",
-                    padding = "2px 4px",
-                    border_radius = "3px",
-                    background_color = bgBase):
-                span(color = textMuted,
+                    padding = "3px 4px",
+                    border_radius = "3px"):
+                span(color = textSecondary,
+                      font_family = "monospace",
                       white_space = "nowrap", overflow = "hidden",
                       text_overflow = "ellipsis"):
                   text prop.name
                 span(color = textPrimary,
+                      font_family = "monospace",
                       white_space = "nowrap", overflow = "hidden",
                       text_overflow = "ellipsis"):
                   text prop.value
-                span(color = (
-                      case prop.origin
-                      of poThemeToken, poConstant: "#FBBF24"
-                      else: accent), font_size = "9px"):
+                span(color = originColor,
+                      background_color = originBg,
+                      font_size = "9px",
+                      font_weight = "700",
+                      letter_spacing = "0.4px",
+                      text_transform = "uppercase",
+                      padding = "2px 6px",
+                      border_radius = "10px",
+                      text_align = "center",
+                      white_space = "nowrap"):
                   text originLabel(prop.origin)
           tdiv(font_size = "10px", color = textDim,
                 line_height = "1.4",
-                padding_top = "4px"):
-            text "Sources above are owned by " &
-              (if selected.sourceFile.len > 0: selected.sourceFile
-                else: "this selection") &
-              ". Open Source / Cascade below for full origin chain."
+                padding_top = "2px"):
+            text "Open Source / Cascade below for the full origin chain."
       r.appendChild(content, cascadeBox)
 
     for (propName, fallback) in sectionProperties(active):
