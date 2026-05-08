@@ -65,16 +65,14 @@ proc injectEditorStyles*() =
     [data-inspector-control]:has(> [data-segmented-strip])
       [data-inspector-row-slot="value-field"],
     [data-inspector-control]:has(> [data-segmented-strip])
-      [data-inspector-row-slot="unit-picker"],
-    [data-inspector-control]:has(> [data-segmented-strip])
-      [data-inspector-row-slot="scope-selector"] {
+      [data-inspector-row-slot="unit-picker"] {
       visibility: hidden;
     }
     [data-inspector-control] > [data-segmented-strip] {
       position: absolute;
       top: 0;
       left: 119px;
-      right: 28px;
+      right: 91px;
       height: 22px;
       margin: 0;
       max-width: none;
