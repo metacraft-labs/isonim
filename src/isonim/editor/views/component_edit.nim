@@ -1185,6 +1185,23 @@ func fallbackPropertyValue(element: ElementRef; name,
       return prop.value
   fallback
 
+func filterSliderBackground(propName, value: string): string =
+  ## Render a 0-200% slider track inside the value input on filter rows.
+  ## Lets `brightness`, `contrast`, `saturate` read as scrubbers without
+  ## changing the input control.
+  if propName notin ["brightness", "contrast", "saturate"]:
+    return "#0F172A"
+  let raw = value.strip()
+  var num = 1.0
+  try: num = parseFloat(raw)
+  except ValueError: discard
+  let pct = max(0.0, min(100.0, num * 50.0))
+  let pctStr = $int(pct)
+  result =
+    "linear-gradient(to right, rgba(59, 130, 246, 0.28) 0%, " &
+    "rgba(59, 130, 246, 0.28) " & pctStr & "%, " &
+    "#0F172A " & pctStr & "%, #0F172A 100%)"
+
 func roundedPxValue(raw: string): string =
   ## Round a numeric CSS value (e.g. "50.8938px") to 1 decimal so the
   ## selection summary doesn't read like raw browser noise. Non-numeric
@@ -1851,7 +1868,7 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
         input(ref = inputNode,
               class = "editor-input",
               height = "22px",
-              background_color = "#0F172A",
+              background = filterSliderBackground(propName, value),
               border = "1px solid " & border,
               border_radius = "3px",
               padding = "0 6px",
@@ -4004,6 +4021,31 @@ proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;
                 padding_top = "2px"):
             text "Toggle a pseudo-state to preview hover, focus, active, " &
               "or disabled styling on the selected element."
+          tdiv(font_size = "9px", color = textDim,
+                text_transform = "uppercase", letter_spacing = "0.5px",
+                padding_top = "12px"):
+            text "Common combinations"
+          tdiv(display = "flex", flex_direction = "column", gap = "4px",
+                font_size = "10px"):
+            for combo in [
+              (":hover + :focus-visible", "Keyboard + pointer affordance"),
+              (":active + :hover", "Pressed-while-hovered"),
+              (":disabled", "Read-only / non-interactive"),
+              (":focus-within", "Container holds focused descendant")
+            ]:
+              tdiv(display = "grid",
+                    grid_template_columns = "168px minmax(0, 1fr)",
+                    align_items = "center", gap = "8px",
+                    padding = "3px 4px",
+                    border_radius = "3px"):
+                span(color = textSecondary,
+                      font_family = "monospace",
+                      white_space = "nowrap"):
+                  text combo[0]
+                span(color = textDim,
+                      white_space = "nowrap", overflow = "hidden",
+                      text_overflow = "ellipsis"):
+                  text combo[1]
       r.appendChild(content, stateBox)
 
     if active == isSource:
