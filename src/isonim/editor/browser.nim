@@ -26,6 +26,11 @@ proc injectEditorStyles*() =
   let style = document.createElement("style")
   style.textContent = cstring"""
     .editor-tabbar::-webkit-scrollbar { display: none; }
+    /* Inspector tabbar: fade the right edge so overflow reads as scrollable. */
+    .editor-manual-inspector .editor-tabbar {
+      mask-image: linear-gradient(to right, black calc(100% - 24px), transparent 100%);
+      -webkit-mask-image: linear-gradient(to right, black calc(100% - 24px), transparent 100%);
+    }
     .editor-sidebar,
     .editor-chat,
     .editor-manual-inspector {

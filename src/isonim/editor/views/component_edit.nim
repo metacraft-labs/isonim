@@ -1865,16 +1865,16 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
             `aria-label` = "Cycle unit for " & propName,
             height = "22px",
             display = "flex",
-            visibility = (if unit.len > 0: "visible" else: "hidden"),
             align_items = "center",
             justify_content = "center",
-            border = "1px solid " & border,
+            border = (if unit.len > 0: "1px solid " & border
+                      else: "1px solid transparent"),
             border_radius = "3px",
-            background_color = "#0F172A",
+            background_color = (if unit.len > 0: "#0F172A" else: "transparent"),
             color = textMuted, font_size = "9px",
             white_space = "nowrap",
             overflow = "hidden",
-            cursor = "pointer"):
+            cursor = (if unit.len > 0: "pointer" else: "default")):
         text unit
       tdiv(ref = scopeHost, min_width = "0", overflow = "hidden"):
         discard
@@ -1931,7 +1931,7 @@ proc renderPropertyInput[R, E](r: R; vm: EditorVM; frame: E; prop: PropertyInfo;
   r.setAttribute(scopeNode, "data-source-scope-count", $scopeChoices.len)
   r.setAttribute(resetNode, "data-inspector-row-slot", "reset")
   r.setAttribute(moreNode, "data-inspector-row-slot", "actions")
-  r.setInputValue(inputNode, value)
+  r.setInputValue(inputNode, roundedPxValue(value))
   r.addEventListener(inputNode, "change", commit)
   r.addEventListener(inputNode, "blur", commit)
   r.addEventListener(inputNode, "input", preview)
@@ -3925,10 +3925,6 @@ proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;
         span(font_size = "11px", font_weight = "700", color = textSecondary,
               text_transform = "uppercase", letter_spacing = "0.5px"):
           text sectionTitle(active)
-        span(font_size = "9px", color = accent, font_family = "monospace",
-              letter_spacing = "0.4px",
-              text_transform = "uppercase"):
-          text "source-backed"
     r.setAttribute(heading, "aria-expanded", if expanded: "true" else: "false")
     r.setStyle(heading, "pointer-events", "none")
     r.appendChild(content, heading)
@@ -3972,6 +3968,79 @@ proc populateInspectorContent[R, E](r: R; vm: EditorVM; frame, content: E;
             text "Box model"
       r.appendChild(boxAccordion, renderBoxModelSummary[R, E](r, selected))
       r.appendChild(content, boxAccordion)
+
+    if active == isState:
+      let pseudoStates = ["hover", "focus", "active", "disabled",
+        "focus-visible", "focus-within"]
+      let stateBox = ui(r):
+        tdiv(display = "flex", flex_direction = "column", gap = "8px",
+              padding = "4px 0"):
+          tdiv(font_size = "9px", color = textDim,
+                text_transform = "uppercase", letter_spacing = "0.5px"):
+            text "Pseudo-states"
+          tdiv(display = "grid",
+                grid_template_columns = "repeat(3, minmax(0, 1fr))",
+                gap = "4px"):
+            for state in pseudoStates:
+              tdiv(role = "button", tabindex = "0",
+                    `aria-label` = "Toggle :" & state & " preview",
+                    `data-inspector-pseudo-state` = state,
+                    display = "flex", align_items = "center",
+                    justify_content = "center",
+                    height = "24px", padding = "0 6px",
+                    border = "1px solid " & border,
+                    border_radius = "4px",
+                    background_color = "#0F172A",
+                    color = textMuted, font_size = "10px",
+                    cursor = "pointer"):
+                text ":" & state
+          tdiv(font_size = "10px", color = textDim,
+                line_height = "1.4",
+                padding_top = "4px"):
+            text "Toggle a pseudo-state to preview hover, focus, active, " &
+              "or disabled styling for the selected element."
+      r.appendChild(content, stateBox)
+
+    if active == isSource:
+      let cascadeBox = ui(r):
+        tdiv(display = "flex", flex_direction = "column", gap = "6px",
+              padding = "4px 0"):
+          tdiv(font_size = "9px", color = textDim,
+                text_transform = "uppercase", letter_spacing = "0.5px"):
+            text "Cascade origin"
+          tdiv(display = "flex", flex_direction = "column", gap = "4px",
+                font_family = "monospace", font_size = "10px"):
+            for i in 0 ..< selected.properties.len:
+              let prop = selected.properties[i]
+              if prop.origin == poInherited:
+                continue
+              tdiv(display = "grid",
+                    grid_template_columns = "104px minmax(0, 1fr) auto",
+                    align_items = "center", gap = "6px",
+                    padding = "2px 4px",
+                    border_radius = "3px",
+                    background_color = bgBase):
+                span(color = textMuted,
+                      white_space = "nowrap", overflow = "hidden",
+                      text_overflow = "ellipsis"):
+                  text prop.name
+                span(color = textPrimary,
+                      white_space = "nowrap", overflow = "hidden",
+                      text_overflow = "ellipsis"):
+                  text prop.value
+                span(color = (
+                      case prop.origin
+                      of poThemeToken, poConstant: "#FBBF24"
+                      else: accent), font_size = "9px"):
+                  text originLabel(prop.origin)
+          tdiv(font_size = "10px", color = textDim,
+                line_height = "1.4",
+                padding_top = "4px"):
+            text "Sources above are owned by " &
+              (if selected.sourceFile.len > 0: selected.sourceFile
+                else: "this selection") &
+              ". Open Source / Cascade below for full origin chain."
+      r.appendChild(content, cascadeBox)
 
     for (propName, fallback) in sectionProperties(active):
       let prop = propertyInfo(selected, propName, fallback)
