@@ -35,6 +35,11 @@ export default defineConfig({
       reuseExistingServer: true,
     },
     {
+      command: "npx serve ./hmr_parametric_fixture -l 8084 -s",
+      port: 8084,
+      reuseExistingServer: true,
+    },
+    {
       command: "/tmp/isonim_test_server",
       port: 8083,
       reuseExistingServer: false,
@@ -73,6 +78,13 @@ export default defineConfig({
       testMatch: "hmr.spec.ts",
       use: {
         baseURL: "http://localhost:8082",
+      },
+    },
+    {
+      name: "hmr-parametric",
+      testMatch: "hmr_parametric.spec.ts",
+      use: {
+        baseURL: "http://localhost:8084",
       },
     },
     {

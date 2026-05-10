@@ -190,6 +190,73 @@ when defined(isonimHmr):
   proc registrySize*(root: HmrRoot): int = root.registry.entries.len
   proc currentGeneration*(root: HmrRoot): int = root.registry.currentGen
 
+  # ---------------------------------------------------------------------------
+  # Multi-instance mount support (`mountUiHot`)
+  #
+  # `renderHot` is a singleton: it publishes `globalThis.__isonim_hmr_root`
+  # and any subsequent call returns the existing root. That fits a single-app
+  # entry point but does not fit apps that mount HMR-aware regions
+  # independently (codetracer mounts one IsoNim view per panel, on demand,
+  # into different DOM containers).
+  #
+  # `mountUiHot` is the multi-instance variant. Each call creates an
+  # independent reactive root and is the reactive boundary for parametric
+  # `{.uiComponent.}` calls inside `factory`: when a slot's factory signal
+  # is rewritten on bundle reload, only mounts whose factory closure
+  # transitively reads that slot re-run.
+  # ---------------------------------------------------------------------------
+
+  type
+    HmrMount* = ref object
+      ## Handle returned by `mountUiHot`. Disposing it tears down the
+      ## reactive root and clears the container.
+      container*: Element
+      dispose*: proc()
+      onError*: proc(err: ref Exception)
+
+  proc mountUiHot*(
+      container: Element;
+      factory: proc(): Node;
+      onError: proc(err: ref Exception) = nil): HmrMount =
+    ## Mount a hot-reloading UI subtree into `container`.
+    ##
+    ## The factory closure is wrapped in a `createRenderEffect` (via
+    ## `insertExpression`) so any reads of `slot.factory.val` made by
+    ## parametric `{.uiComponent.}` calls subscribe the effect to slot
+    ## swaps. When a slot's factory is rewritten (bundle reload, hash
+    ## changed), every mount whose factory transitively reaches that
+    ## slot re-runs and the DOM is reconciled in place by
+    ## `insertExpression`. Mounts whose factory does not touch the
+    ## changed slot are not re-evaluated; their DOM is literally
+    ## untouched.
+    ##
+    ## Failure containment: if the factory throws (typically because a
+    ## newly-loaded slot factory is broken), the previous Node identity
+    ## is returned, which trips `insertExpression`'s pointer-equality
+    ## short-circuit and leaves the DOM as-is. The error is reported
+    ## via `onError` if provided. The next successful re-run clears
+    ## the error state.
+    let mount = HmrMount(container: container, onError: onError)
+    var lastGoodNode: Node = nil
+    let onErr = onError
+    let userFactory = factory
+
+    var disposer: proc()
+    createRoot proc(dispose: proc()) =
+      disposer = dispose
+      let accessor = proc(): Node =
+        try:
+          let n = userFactory()
+          lastGoodNode = n
+          return n
+        except Exception as err:
+          if onErr != nil: onErr(err)
+          return lastGoodNode
+
+      discard insertExpression(container.Node, accessor.toJs.JsRoot, nil, nil)
+    mount.dispose = disposer
+    return mount
+
 else:
   ## `-d:isonimHmr` not set — provide no-op stubs so app code can be
   ## written once and behave correctly in both modes. Generated JS contains
@@ -212,3 +279,22 @@ else:
 
   proc registrySize*(root: HmrRoot): int = 0
   proc currentGeneration*(root: HmrRoot): int = 0
+
+  type
+    HmrMount* = ref object
+      container*: Element
+      dispose*: proc()
+      onError*: proc(err: ref Exception)
+
+  proc mountUiHot*(
+      container: Element;
+      factory: proc(): Node;
+      onError: proc(err: ref Exception) = nil): HmrMount =
+    ## Without `-d:isonimHmr`: route through the existing reactive
+    ## `render` so the no-flag and with-flag mounts behave identically
+    ## for the visible output. The HMR-specific machinery (slot
+    ## subscriptions) is gone, so the factory is called once and any
+    ## reactive reads inside it work exactly as in a hand-rolled mount.
+    let mount = HmrMount(container: container, onError: onError)
+    mount.dispose = render(factory, container)
+    return mount

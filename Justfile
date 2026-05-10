@@ -277,6 +277,17 @@ build-hmr-fixture:
 test-browser-hmr: build-hmr-fixture
     cd tests/browser && npx playwright test --project=hmr
 
+# Build the parametric-HMR fixture (JS target with -d:isonimHmr). The
+# fixture exercises the parametric `{.uiComponent.}` dispatch and
+# `mountUiHot` via two independent panel mounts.
+build-hmr-parametric-fixture:
+    mkdir -p tests/browser/hmr_parametric_fixture
+    nim js -d:isonimHmr --path:src --path:../nim-everywhere/src -o:tests/browser/hmr_parametric_fixture/main.js tests/browser/hmr_parametric_fixture/main.nim
+
+# Run the parametric-HMR Playwright spec.
+test-browser-hmr-parametric: build-hmr-parametric-fixture
+    cd tests/browser && npx playwright test --project=hmr-parametric
+
 # Build the SSE-transport fixture: the dev server, the "before" and
 # "after" client bundles, and the seeded main.js. The Playwright
 # project triggers a rebuild via the dev server's POST /__isonim/trigger
@@ -292,7 +303,7 @@ test-browser-hmr-transport: build-hmr-transport-fixture
     cd tests/browser && npx playwright test --project=hmr-transport
 
 # Run Playwright browser tests (requires: just demo-build && cd tests/browser && npm install)
-test-browser: test-browser-demo test-browser-ssr test-browser-hmr test-browser-hmr-transport
+test-browser: test-browser-demo test-browser-ssr test-browser-hmr test-browser-hmr-parametric test-browser-hmr-transport
 
 # Run Playwright demo app tests only
 test-browser-demo:
