@@ -49,6 +49,12 @@ import isonim/web/hmr_transport
 # hmr_css_watch is reused for the link.href swap pattern when
 # the server tells us a stylesheet changed.
 import isonim/web/hmr_css_watch
+# hmr_fs_watch exports applyBundleByInlineScript, which we prefer
+# over applyBundleByScriptTag in Electron-with-Node hosts. The
+# script-tag-with-?v= approach unreliably resolves on file://
+# URLs under some Electron + Chromium versions; inline-script
+# injection sidesteps that by reading the bundle bytes ourselves.
+import isonim/web/hmr_fs_watch
 
 export hmr_transport
 
@@ -221,11 +227,66 @@ method disconnect*(t: LiveReloadTransport) =
   t.socket = jsNull()
   t.isConnected = false
 
+proc requireFn(name: cstring): JsObject
+  {.importjs: "(globalThis.require && globalThis.require(#))".}
+
+proc isFunctionJs(x: JsObject): bool
+  {.importjs: "(typeof # === 'function')".}
+
+proc resolveBundlePath(bundleUrl: cstring): cstring =
+  ## Resolve a relative `bundleUrl` to its on-disk path using the
+  ## document's location. Works in Electron renderers where the
+  ## document is loaded from a `file://` URL: the URL constructor's
+  ## standard relative-resolution gives us the absolute file path,
+  ## from which we strip the `file://` prefix. Returns an empty
+  ## string for non-file documents (real HTTP servers, etc.) so
+  ## callers fall back to the script-tag path.
+  var p: cstring
+  {.emit: ["""
+    try {
+      var resolved = new URL(""", bundleUrl, """, document.baseURI || window.location.href).href;
+      if (resolved.indexOf('file://') === 0) {
+        var path = decodeURIComponent(resolved.substring('file://'.length));
+        // Strip the URL fragment / query if any — file paths
+        // shouldn't carry them, but `new URL` may have appended.
+        var q = path.indexOf('?');
+        if (q >= 0) path = path.substring(0, q);
+        var h = path.indexOf('#');
+        if (h >= 0) path = path.substring(0, h);
+        """, p, """ = path;
+      } else {
+        """, p, """ = '';
+      }
+    } catch (e) {
+      """, p, """ = '';
+    }
+  """].}
+  p
+
 proc installLiveReloadTransport*(
     url: cstring = cstring"ws://localhost:35729/livereload";
     bundleUrl: cstring = cstring"/main.js"): LiveReloadTransport =
   ## Build, install, return. The default URL matches the canonical
   ## LiveReload-server contract; pass a different one when running
   ## behind a proxy / non-standard port.
+  ##
+  ## When `globalThis.require('fs')` is available (Electron renderer
+  ## with Node integration; pure browsers don't have it), the
+  ## transport's `onUpdate` is wired to read the bundle locally and
+  ## inject inline rather than relying on the default
+  ## `applyBundleByScriptTag` cache-bust-query path. The two
+  ## approaches are semantically equivalent in browsers, but on
+  ## file:// the script-tag path is unreliable across Electron
+  ## versions, so we prefer the inline path whenever Node is there.
   result = newLiveReloadTransport(url, bundleUrl)
-  installTransport(result)
+  let transport = result
+  let fs = requireFn(cstring"fs")
+  let nodeAvailable =
+    not fs.isNil and not fs.isUndefined and isFunctionJs(fs["readFileSync"])
+  if nodeAvailable:
+    let resolved = resolveBundlePath(bundleUrl)
+    if resolved.len > 0:
+      let bundleFile = resolved
+      transport.onUpdate = proc(unusedUrl: cstring) =
+        applyBundleByInlineScript(fs, bundleFile)
+  installTransport(transport)
