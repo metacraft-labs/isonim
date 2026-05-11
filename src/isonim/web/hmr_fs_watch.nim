@@ -48,7 +48,12 @@ type
     debounceMs*: int
       ## Coalescing window for change events. The first event arms a
       ## one-shot timer; subsequent events within the window reset it.
-    watcher: JsObject     # active fs.FSWatcher handle, or null
+    pollIntervalMs*: int
+      ## `fs.watchFile` polling interval. The renderer polls
+      ## `stat(bundleFile)` this often, so a smaller value reduces
+      ## HMR latency at the cost of a tiny background CPU bump.
+    fsHandle: JsObject    ## cached `require('fs')` for disconnect
+    isConnected: bool
     pendingTimer: JsObject
 
 # Reading `globalThis.require` rather than top-level `require()` lets
@@ -68,42 +73,106 @@ proc jsNull(): JsObject {.importjs: "(null)".}
 proc isFunctionJs(x: JsObject): bool
   {.importjs: "(typeof # === 'function')".}
 
-proc fsWatch(fs, path, callback: JsObject): JsObject
-  {.importjs: "#.watch(#, {persistent: false}, #)".}
-  ## Wraps Node's `fs.watch(path, options, listener)`. We pass
-  ## `persistent: false` so this watcher does not keep the renderer
-  ## process alive on its own — the Electron lifetime is what should
-  ## drive the renderer.
+proc fsWatchFile(fs, path, options, callback: JsObject)
+  {.importjs: "#.watchFile(#, #, #)".}
+  ## Wraps Node's `fs.watchFile(path, options, listener)`. We use
+  ## the *polling* variant rather than the more famous inotify-based
+  ## `fs.watch` because build systems (Tup, makefiles using
+  ## atomic-rename, even editors writing via tmp+rename) replace the
+  ## target file by renaming a sibling into place. inotify's handle
+  ## tracks the *inode*, not the *path*: after a rename it stays
+  ## attached to the orphaned old inode and never sees changes to
+  ## the new file at the same path. `fs.watchFile` polls
+  ## `stat(path)` on an interval and is rename-robust by
+  ## construction. Default 250 ms polling interval — fast enough
+  ## that an HMR cycle still feels instant, slow enough that the
+  ## background cost is negligible.
 
-proc fsWatcherClose(watcher: JsObject)
-  {.importjs: "#.close()".}
+proc fsUnwatchFile(fs, path: JsObject)
+  {.importjs: "#.unwatchFile(#)".}
+
+proc fsReadFileSync(fs, path, encoding: JsObject): cstring
+  {.importjs: "#.readFileSync(#, #)".}
+
+# document handle shared with hmr_transport.
+var documentJsLocal {.importjs: "document".}: JsObject
+
+proc applyBundleByInlineScript*(fs: JsObject; bundleFile: cstring;
+                                onApplied: proc() = nil;
+                                onApplyError: proc(msg: cstring) = nil) =
+  ## Apply a new bundle by reading the local file via Node `fs` and
+  ## injecting it as an inline `<script>` element. This sidesteps
+  ## two failure modes the `<script src=URL?v=…>` approach hits:
+  ##
+  ## - file:// URLs with a query string fail to resolve under some
+  ##   Electron + Chromium versions (the file system has no concept
+  ##   of a query; if the renderer's URL handler doesn't strip it
+  ##   before stat()ing, the request 404s).
+  ## - Loading the same URL twice on a real HTTP server can be
+  ##   served from the browser cache; the cache-bust query is the
+  ##   only defence, and it's unreliable in the first case.
+  ##
+  ## Inline content is always fresh — every script tag has new
+  ## source text and runs unconditionally.
+  ##
+  ## ENOENT handling: build systems (notably Tup) can move the
+  ## target file aside during a rebuild, then rename the new file
+  ## back into place. `fs.watchFile`'s poll may fire on the
+  ## intermediate state when the path doesn't resolve. Swallow the
+  ## ENOENT here; the next mtime change (from the rename completion)
+  ## will trigger another reload and succeed.
+  let content =
+    try:
+      fsReadFileSync(fs, toJs(bundleFile), toJs(cstring"utf8"))
+    except CatchableError as err:
+      if onApplyError != nil:
+        onApplyError(cstring"[isonim hmr] read failed: " & cstring(err.msg))
+      return
+  let script = documentJsLocal.createElement(cstring"script")
+  script["type"] = toJs(cstring"text/javascript")
+  script["text"] = toJs(content)
+  discard documentJsLocal["head"].appendChild(script)
+  if onApplied != nil:
+    onApplied()
 
 proc newFsWatchTransport*(
     bundleFile: cstring;
     bundleUrl: cstring;
-    debounceMs: int = 80): FsWatchTransport =
+    debounceMs: int = 80;
+    pollIntervalMs: int = 250): FsWatchTransport =
   FsWatchTransport(
     bundleFile: bundleFile,
     bundleUrl: bundleUrl,
     debounceMs: debounceMs,
-    watcher: jsNull(),
+    pollIntervalMs: pollIntervalMs,
+    fsHandle: jsNull(),
+    isConnected: false,
     pendingTimer: jsNull())
 
+proc watchOptionsJs(persistent: bool; interval: int): JsObject
+  {.importjs: "({persistent: #, interval: #})".}
+
+proc statsAreEqual(a, b: JsObject): bool =
+  ## importjs `#` placeholders are sequential — using the same arg
+  ## twice needs an emit body.
+  {.emit: [result,
+    " = (", a, ".mtimeMs === ", b, ".mtimeMs && ",
+    a, ".size === ", b, ".size);"].}
+
 method connect*(t: FsWatchTransport) =
-  ## Open the fs.watch handle. Idempotent — if a watcher is already
-  ## active, return immediately. We require Node integration; fail
-  ## loud via `onError` if `globalThis.require` is missing instead of
-  ## silently no-op'ing, since a user installing this transport in a
-  ## pure-browser context probably has a config bug they want to know
-  ## about.
-  if not t.watcher.isNil and not t.watcher.isUndefined:
+  ## Install the `fs.watchFile` poll. Idempotent — if already
+  ## connected, return immediately. We require Node integration;
+  ## fail loud via `onError` if `globalThis.require` is missing
+  ## rather than silently no-op'ing.
+  if t.isConnected:
     return
 
   let fs = requireFn(cstring"fs")
-  let isAvailable = not fs.isNil and not fs.isUndefined and isFunctionJs(fs["watch"])
+  let isAvailable =
+    not fs.isNil and not fs.isUndefined and isFunctionJs(fs["watchFile"])
   if not isAvailable:
     if t.onError != nil:
-      t.onError(cstring("[isonim hmr_fs_watch] fs.watch unavailable — " &
+      t.onError(cstring("[isonim hmr_fs_watch] fs.watchFile unavailable — " &
         "needs Node integration (Electron renderer, or browser with " &
         "nodeIntegration enabled)"))
     return
@@ -112,11 +181,12 @@ method connect*(t: FsWatchTransport) =
     if t.onUpdate != nil:
       t.onUpdate(t.bundleUrl)
 
-  proc onChange(ev: JsObject; filename: JsObject) =
-    # Debounce: arm a one-shot timer; reset it on every subsequent
-    # event within the window. Only the final event in a flurry
-    # triggers `onUpdate`, so a half-written bundle never makes it to
-    # the browser.
+  proc onPoll(curr: JsObject; prev: JsObject) =
+    # `fs.watchFile`'s listener fires on every poll, even when the
+    # stats are unchanged. Compare mtime + size to find the real
+    # changes before arming the debounce timer.
+    if statsAreEqual(curr, prev):
+      return
     if not t.pendingTimer.isNil and not t.pendingTimer.isUndefined:
       clearTimeoutJs(t.pendingTimer)
     t.pendingTimer = setTimeoutJs(toJs(proc() =
@@ -124,7 +194,10 @@ method connect*(t: FsWatchTransport) =
       fireUpdate()
     ), t.debounceMs)
 
-  t.watcher = fsWatch(fs, toJs(t.bundleFile), toJs(onChange))
+  let opts = watchOptionsJs(false, t.pollIntervalMs)
+  fsWatchFile(fs, toJs(t.bundleFile), opts, toJs(onPoll))
+  t.fsHandle = fs
+  t.isConnected = true
   if t.onConnected != nil:
     t.onConnected()
 
@@ -132,19 +205,32 @@ method disconnect*(t: FsWatchTransport) =
   if not t.pendingTimer.isNil and not t.pendingTimer.isUndefined:
     clearTimeoutJs(t.pendingTimer)
     t.pendingTimer = jsNull()
-  if t.watcher.isNil or t.watcher.isUndefined:
+  if not t.isConnected:
     return
-  fsWatcherClose(t.watcher)
-  t.watcher = jsNull()
+  fsUnwatchFile(t.fsHandle, toJs(t.bundleFile))
+  t.fsHandle = jsNull()
+  t.isConnected = false
   if t.onDisconnected != nil:
     t.onDisconnected()
 
 proc installFsWatchTransport*(
     bundleFile: cstring;
     bundleUrl: cstring;
-    debounceMs: int = 80): FsWatchTransport =
-  ## Convenience wrapper: build the transport, route `onUpdate` through
-  ## the default `applyBundleByScriptTag`, connect, and return the
-  ## handle so the caller can `disconnect()` later if needed.
-  result = newFsWatchTransport(bundleFile, bundleUrl, debounceMs)
+    debounceMs: int = 80;
+    pollIntervalMs: int = 250): FsWatchTransport =
+  ## Convenience wrapper: build the transport, install a node-fs-based
+  ## inline-script `onUpdate` that sidesteps file:// + cache-bust
+  ## query string fragility, connect, and return the handle so the
+  ## caller can `disconnect()` later if needed. The `bundleUrl`
+  ## argument is kept for symmetry with the SSE transport's interface
+  ## but is not used by this onUpdate path (the bundle is read by
+  ## absolute filesystem path).
+  let transport = newFsWatchTransport(
+    bundleFile, bundleUrl, debounceMs, pollIntervalMs)
+  let fs = requireFn(cstring"fs")
+  if not fs.isNil and not fs.isUndefined:
+    let bf = transport.bundleFile
+    transport.onUpdate = proc(unusedUrl: cstring) =
+      applyBundleByInlineScript(fs, bf)
+  result = transport
   installTransport(result)

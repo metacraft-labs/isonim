@@ -36,7 +36,7 @@ import std/jsffi
 type
   CssWatcher* = ref object
     ## Handle for a single CSS file watcher. `disconnect()` tears down
-    ## the underlying `fs.watch` handle and the pending debounce
+    ## the underlying `fs.watchFile` poll and the pending debounce
     ## timer.
     bundleFile*: cstring
     linkSelector*: cstring
@@ -44,7 +44,9 @@ type
       ## change. Typically `link[href*="<filename>"]` or a more
       ## specific selector.
     debounceMs*: int
-    watcher: JsObject
+    pollIntervalMs*: int
+    fsHandle: JsObject
+    isConnected: bool
     pendingTimer: JsObject
     onError*: proc(msg: cstring)
     onUpdate*: proc(href: cstring)
@@ -69,11 +71,25 @@ proc jsNull(): JsObject {.importjs: "(null)".}
 proc isFunctionJs(x: JsObject): bool
   {.importjs: "(typeof # === 'function')".}
 
-proc fsWatch(fs, path, callback: JsObject): JsObject
-  {.importjs: "#.watch(#, {persistent: false}, #)".}
+proc fsWatchFile(fs, path, options, callback: JsObject)
+  {.importjs: "#.watchFile(#, #, #)".}
+  ## Polling-based watcher. See the matching note in
+  ## `hmr_fs_watch.nim` — build systems that replace files via
+  ## atomic rename (Tup, Stylus's own out-file dance) defeat
+  ## inotify-backed `fs.watch`, so we poll via `fs.watchFile`.
 
-proc fsWatcherClose(watcher: JsObject)
-  {.importjs: "#.close()".}
+proc fsUnwatchFile(fs, path: JsObject)
+  {.importjs: "#.unwatchFile(#)".}
+
+proc watchOptionsJs(persistent: bool; interval: int): JsObject
+  {.importjs: "({persistent: #, interval: #})".}
+
+proc statsAreEqual(a, b: JsObject): bool =
+  ## importjs `#` placeholders are sequential — using the same arg
+  ## twice needs an emit body.
+  {.emit: [result,
+    " = (", a, ".mtimeMs === ", b, ".mtimeMs && ",
+    a, ".size === ", b, ".size);"].}
 
 # Browser-side helpers — these run in the renderer's window context.
 
@@ -161,24 +177,28 @@ proc swapLinkHref(linkNode: JsObject; newHref: cstring;
 # ---------------------------------------------------------------------------
 
 proc newCssWatcher*(bundleFile, linkSelector: cstring;
-                    debounceMs: int = 80): CssWatcher =
+                    debounceMs: int = 80;
+                    pollIntervalMs: int = 250): CssWatcher =
   CssWatcher(
     bundleFile: bundleFile,
     linkSelector: linkSelector,
     debounceMs: debounceMs,
-    watcher: jsNull(),
+    pollIntervalMs: pollIntervalMs,
+    fsHandle: jsNull(),
+    isConnected: false,
     pendingTimer: jsNull())
 
 proc connect*(t: CssWatcher) =
-  ## Open the fs.watch handle. Idempotent.
-  if not t.watcher.isNil and not t.watcher.isUndefined:
+  ## Install the fs.watchFile poll. Idempotent.
+  if t.isConnected:
     return
 
   let fs = requireFn(cstring"fs")
-  let isAvailable = not fs.isNil and not fs.isUndefined and isFunctionJs(fs["watch"])
+  let isAvailable =
+    not fs.isNil and not fs.isUndefined and isFunctionJs(fs["watchFile"])
   if not isAvailable:
     if t.onError != nil:
-      t.onError(cstring("[isonim hmr_css_watch] fs.watch unavailable — " &
+      t.onError(cstring("[isonim hmr_css_watch] fs.watchFile unavailable — " &
         "needs Node integration (Electron renderer, or browser with " &
         "nodeIntegration enabled)"))
     return
@@ -196,7 +216,9 @@ proc connect*(t: CssWatcher) =
       if t.onUpdate != nil: t.onUpdate(h)
     swapLinkHref(linkNode, newHref, onDone)
 
-  proc onChange(ev: JsObject; filename: JsObject) =
+  proc onPoll(curr: JsObject; prev: JsObject) =
+    if statsAreEqual(curr, prev):
+      return
     if not t.pendingTimer.isNil and not t.pendingTimer.isUndefined:
       clearTimeoutJs(t.pendingTimer)
     t.pendingTimer = setTimeoutJs(toJs(proc() =
@@ -204,20 +226,25 @@ proc connect*(t: CssWatcher) =
       fireSwap()
     ), t.debounceMs)
 
-  t.watcher = fsWatch(fs, toJs(t.bundleFile), toJs(onChange))
+  let opts = watchOptionsJs(false, t.pollIntervalMs)
+  fsWatchFile(fs, toJs(t.bundleFile), opts, toJs(onPoll))
+  t.fsHandle = fs
+  t.isConnected = true
 
 proc disconnect*(t: CssWatcher) =
   if not t.pendingTimer.isNil and not t.pendingTimer.isUndefined:
     clearTimeoutJs(t.pendingTimer)
     t.pendingTimer = jsNull()
-  if t.watcher.isNil or t.watcher.isUndefined:
+  if not t.isConnected:
     return
-  fsWatcherClose(t.watcher)
-  t.watcher = jsNull()
+  fsUnwatchFile(t.fsHandle, toJs(t.bundleFile))
+  t.fsHandle = jsNull()
+  t.isConnected = false
 
 proc installCssWatcher*(bundleFile, linkSelector: cstring;
-                        debounceMs: int = 80): CssWatcher =
+                        debounceMs: int = 80;
+                        pollIntervalMs: int = 250): CssWatcher =
   ## Convenience wrapper: build the watcher, connect, return the
   ## handle so the caller can `disconnect()` later if needed.
-  result = newCssWatcher(bundleFile, linkSelector, debounceMs)
+  result = newCssWatcher(bundleFile, linkSelector, debounceMs, pollIntervalMs)
   result.connect()
