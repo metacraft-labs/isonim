@@ -33,14 +33,15 @@ import isonim/web/client  # for the reactive `insert(Node, accessor)` overload
 import isonim/web/hmr_component
 import isonim/web/hmr
 
-type
-  CounterVm* = ref object
-    count*: Signal[int]
-    label*: Signal[string]
+# The CounterVm type lives in its own module so the Playwright
+# spec can edit it and verify the plugin's transitive-Nim-deps
+# watcher picks the change up. (Module named `counter_state` to
+# avoid Nim's case+underscore identifier folding clashing with the
+# `counterVm` binding below.)
+import ./counter_state
+export counter_state
 
-let counterVm* = CounterVm(
-  count: signals.createSignal(0),
-  label: signals.createSignal("clicks"))
+let counterVm* = newCounterVm()
 
 proc counterPanel*(vm: CounterVm): isonim_dom.Element {.uiComponent.} =
   ## Edit me and watch the running page update in place.

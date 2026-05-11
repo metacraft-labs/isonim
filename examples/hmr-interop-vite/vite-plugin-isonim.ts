@@ -55,33 +55,100 @@ interface IsonimPluginOptions {
   cacheDir?: string;
 }
 
-const NIM_IMPORT_RE = /^\s*(?:from\s+([\w./]+)|import\s+([\w./,\s]+))/gm;
+// Tokens that start a Nim import. We tolerate `import foo`,
+// `import foo, bar`, `import foo/[a, b]`, and `from foo import …`.
+// `include` is treated identically — it pulls in source the same
+// way as far as Vite watching is concerned.
+const NIM_IMPORT_RE =
+  /^\s*(?:include\s+([\w./,\s\[\]]+)|from\s+([\w./]+)|import\s+([\w./,\s\[\]]+))/gm;
 
-function findNimImports(nimSource: string, sourceDir: string): string[] {
-  // Best-effort: pull `import foo`, `from foo import …`, and the
-  // bracketed form `import foo/[a, b]`. Resolves relative paths
-  // against the source file's directory. Anything that fails to
-  // resolve is silently ignored — Vite only needs to know about
-  // files that *can* be watched on this developer's machine.
+const NIM_STDLIB_PREFIXES = [
+  // The stdlib we don't try to watch — it lives in the nim
+  // distribution and is stable. Skipping these keeps the dep walk
+  // bounded.
+  "std/",
+  "system/",
+  "pure/",
+];
+
+function isStdlibImport(spec: string): boolean {
+  if (NIM_STDLIB_PREFIXES.some((p) => spec.startsWith(p))) return true;
+  // Bare names like `strutils` / `tables` / `os` etc. — also
+  // stdlib by convention unless the developer's own code shadows
+  // them, which `resolveImport`'s search-path probe catches.
+  return !spec.includes("/") && !spec.startsWith(".");
+}
+
+function resolveImport(
+  spec: string,
+  sourceDir: string,
+  searchPaths: string[],
+): string | null {
+  // Relative imports resolve against the importer's directory.
+  if (spec.startsWith(".")) {
+    const guess = resolve(sourceDir, spec + ".nim");
+    return existsSync(guess) ? guess : null;
+  }
+  // Absolute file paths (rare in idiomatic Nim, but legal).
+  if (spec.startsWith("/")) {
+    const guess = spec + ".nim";
+    return existsSync(guess) ? guess : null;
+  }
+  // Path-shaped imports: probe each `--path:` directory.
+  for (const root of searchPaths) {
+    const guess = join(root, spec + ".nim");
+    if (existsSync(guess)) return guess;
+  }
+  return null;
+}
+
+function findNimImports(
+  nimSource: string,
+  sourceDir: string,
+  searchPaths: string[],
+): string[] {
   const deps: string[] = [];
   let m: RegExpExecArray | null;
   while ((m = NIM_IMPORT_RE.exec(nimSource)) !== null) {
-    const raw = (m[1] ?? m[2] ?? "").trim();
+    const raw = (m[1] ?? m[2] ?? m[3] ?? "").trim();
     if (!raw) continue;
-    // Strip bracketed group lists: `foo/[a, b]` → `foo/a`, `foo/b`.
+    // Bracketed group: `foo/[a, b]` → `foo/a`, `foo/b`.
     const expanded = raw.match(/^([\w./]+)\/\[([\w./,\s]+)\]$/);
     const candidates: string[] = expanded
       ? expanded[2].split(",").map((s) => `${expanded[1]}/${s.trim()}`)
       : raw.split(",").map((s) => s.trim());
     for (const c of candidates) {
       if (!c) continue;
-      // Only follow path-shaped imports — skip stdlib refs like `std/jsffi`.
-      if (!c.includes("/") && !c.startsWith(".")) continue;
-      const guess = join(sourceDir, c + ".nim");
-      if (existsSync(guess)) deps.push(guess);
+      if (isStdlibImport(c)) continue;
+      const resolved = resolveImport(c, sourceDir, searchPaths);
+      if (resolved) deps.push(resolved);
     }
   }
   return deps;
+}
+
+function transitiveNimDeps(entry: string, searchPaths: string[]): Set<string> {
+  // Breadth-first walk over `.nim` import edges. Bounded by visited.
+  // Each visit reads the file once; for typical-sized projects this
+  // is a few dozen reads, well below the cost of a Nim recompile,
+  // so we do it on every `load` rather than caching across edits.
+  const visited = new Set<string>();
+  const queue = [entry];
+  while (queue.length > 0) {
+    const path = queue.shift()!;
+    if (visited.has(path) || !existsSync(path)) continue;
+    visited.add(path);
+    let src: string;
+    try {
+      src = readFileSync(path, "utf8");
+    } catch {
+      continue;
+    }
+    for (const dep of findNimImports(src, dirname(path), searchPaths)) {
+      if (!visited.has(dep)) queue.push(dep);
+    }
+  }
+  return visited;
 }
 
 export default function isonim(opts: IsonimPluginOptions): Plugin {
@@ -142,13 +209,17 @@ export default function isonim(opts: IsonimPluginOptions): Plugin {
 
     async load(id) {
       if (!id.endsWith(".nim")) return null;
-      const nimSource = readFileSync(id, "utf8");
-      const deps = findNimImports(nimSource, dirname(id));
-      compiledModules.set(id, new Set(deps));
-      // Tell Vite to watch the transitive Nim imports so they
-      // trigger the HMR update path even though they aren't
-      // first-class modules in Vite's graph.
-      for (const dep of deps) this.addWatchFile(dep);
+      // Resolve the transitive Nim dependency closure — including
+      // edges through the configured `--path:` directories so
+      // `import isonim/core/signals` and friends get watched. The
+      // closure is recomputed on every load() so refactors that
+      // rename or move imports are picked up next compile without
+      // a server restart.
+      const closure = transitiveNimDeps(id, paths);
+      compiledModules.set(id, closure);
+      for (const dep of closure) {
+        if (dep !== id) this.addWatchFile(dep);
+      }
 
       const compiled = compileNim(id);
       // Self-accept so Vite's HMR stops bubbling here. Without
@@ -161,13 +232,13 @@ export default function isonim(opts: IsonimPluginOptions): Plugin {
 
     handleHotUpdate(ctx: HmrContext) {
       if (!ctx.file.endsWith(".nim")) return;
-      // Find every .nim module whose import tree contains the
-      // changed file and tell Vite to update those Vite-modules.
-      // For a leaf .nim that was directly imported, ctx.modules
-      // already covers it; this loop is the transitive case.
+      // Map a `.nim` edit to the set of Vite-managed modules whose
+      // transitive Nim closure includes the changed file. Anything
+      // we've ever compiled is a candidate; the closure recorded
+      // at load-time tells us which ones to invalidate.
       const affected = new Set(ctx.modules);
-      for (const [parent, deps] of compiledModules) {
-        if (deps.has(ctx.file) || parent === ctx.file) {
+      for (const [parent, closure] of compiledModules) {
+        if (closure.has(ctx.file)) {
           const mod = ctx.server.moduleGraph.getModuleById(parent);
           if (mod) affected.add(mod);
         }

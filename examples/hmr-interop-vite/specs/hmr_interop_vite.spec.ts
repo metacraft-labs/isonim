@@ -30,17 +30,18 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const EXAMPLE_ROOT = resolve(__dirname, "..");
 const NIM_SOURCE = join(EXAMPLE_ROOT, "src", "counter.nim");
+const NIM_VM_SOURCE = join(EXAMPLE_ROOT, "src", "counter_state.nim");
 
-function captureNimSource(): string {
+function captureNimSource(path: string): string {
   // Wash out any leftover mutation from a previous crashed run.
   try {
-    execSync(`git checkout HEAD -- ${JSON.stringify(NIM_SOURCE)}`, {
+    execSync(`git checkout HEAD -- ${JSON.stringify(path)}`, {
       stdio: "ignore",
     });
   } catch {
     // Untracked or no git — fall through with whatever's on disk.
   }
-  return readFileSync(NIM_SOURCE, "utf8");
+  return readFileSync(path, "utf8");
 }
 
 test.describe("IsoNim × Vite HMR interop", () => {
@@ -49,7 +50,7 @@ test.describe("IsoNim × Vite HMR interop", () => {
   test("editing counter.nim updates DOM in place; counter signal value survives the swap", async ({
     page,
   }) => {
-    const original = captureNimSource();
+    const original = captureNimSource(NIM_SOURCE);
     try {
       await page.goto("/");
       await expect(page.locator("#counter-root")).toBeVisible();
@@ -110,6 +111,78 @@ test.describe("IsoNim × Vite HMR interop", () => {
       expect(navsAfter).toBe(navsBefore);
     } finally {
       writeFileSync(NIM_SOURCE, original);
+    }
+  });
+
+  test("editing a transitively-imported .nim file also triggers HMR (proves the plugin's dep walker)", async ({
+    page,
+  }) => {
+    // counter.nim imports ./counter_state.nim. Vite has no idea
+    // about that edge — the .nim file isn't a Vite module. The
+    // plugin's transitiveNimDeps walker has to surface the
+    // import to Vite via `addWatchFile` AND map a counter_state
+    // edit back to counter.nim in handleHotUpdate. If either
+    // breaks, this test times out because Vite never schedules
+    // an HMR update.
+    const originalVm = captureNimSource(NIM_VM_SOURCE);
+    try {
+      await page.goto("/");
+      await expect(page.locator("#counter-root")).toBeVisible();
+
+      await page.click("#counter-inc");
+      await page.click("#counter-inc");
+      await expect(page.locator("#counter-label")).toContainText(
+        "Count: 2 clicks",
+      );
+
+      // Edit the imported module: change the default label.
+      const edited = originalVm.replace(
+        '"clicks"): CounterVm',
+        '"taps"): CounterVm',
+      );
+      if (edited === originalVm) {
+        throw new Error(
+          "could not find default-label literal in counter_state.nim — " +
+            "fixture has drifted.",
+        );
+      }
+      writeFileSync(NIM_VM_SOURCE, edited);
+
+      // The module-scope `counterVm = newCounterVm()` runs at
+      // module init. When Vite invalidates counter.nim because
+      // counter_state.nim changed and the new bundle re-runs the
+      // init, a *new* CounterVm with `label = "taps"` replaces
+      // the old one. The mount's reactive closure still holds
+      // the old `counterVm` ref, so the assertion is: a fresh
+      // page load *would* show "taps", but the current mount
+      // continues to show "clicks". This is the standard caveat
+      // for module-scope state that the host's HMR can't reach;
+      // the spec docs the limitation in
+      // Hot-Module-Reload-Host-Interop.md anti-patterns.
+      //
+      // What we *can* assert: HMR fired (Vite ran handleHotUpdate
+      // and dispatched an update). We detect that by watching the
+      // counter slot re-render — the new module init re-registers
+      // the slot which re-runs the mount's effect. Element
+      // identity of #counter-root changes when the slot factory
+      // is rewritten.
+      const handleBefore = await page.evaluateHandle(() =>
+        document.getElementById("counter-root"),
+      );
+      // Wait for the slot factory to be replaced (a new node
+      // with the same id is inserted). We use a polling
+      // expression because the swap is async after the WS
+      // message lands.
+      await page.waitForFunction(
+        (oldRef) => {
+          const cur = document.getElementById("counter-root");
+          return cur !== null && !cur.isSameNode(oldRef as Node);
+        },
+        handleBefore,
+        { timeout: 30_000 },
+      );
+    } finally {
+      writeFileSync(NIM_VM_SOURCE, originalVm);
     }
   });
 });
