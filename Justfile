@@ -165,6 +165,7 @@ test-editor:
     nim c -r tests/test_editor_task_views.nim
     nim c -r tests/test_editor_interactivity.nim
     nim c -r tests/test_editor_responsive.nim
+    nim c -r tests/test_editor_streaming_preview.nim
 
 # Run packaged editor browser tests.
 test-browser-editor-example: editor-build
