@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>IsoNim × LiveReload HMR interop demo</title>
+    <link id="styles" rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <h1>IsoNim × LiveReload</h1>
+    <p>
+      A fake LiveReload-protocol server is running on
+      <code>ws://localhost:35729/livereload</code>. The Playwright spec drives
+      it to send <code>reload</code> messages for the stylesheet and for the JS
+      bundle, and asserts the transport reacts correctly.
+    </p>
+    <div id="counter-mount"></div>
+    <script src="main.js"></script>
+  </body>
+</html>

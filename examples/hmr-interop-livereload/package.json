@@ -1,0 +1,14 @@
+{
+  "name": "isonim-hmr-interop-livereload",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Reference integration: isonim HMR through a LiveReload-protocol WebSocket server.",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.40.0",
+    "ws": "^8.18.0"
+  }
+}

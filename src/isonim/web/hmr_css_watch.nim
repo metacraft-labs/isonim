@@ -144,8 +144,8 @@ proc cacheBust(href: cstring): cstring =
 # Swap logic — swap-then-replace pattern
 # ---------------------------------------------------------------------------
 
-proc swapLinkHref(linkNode: JsObject; newHref: cstring;
-                  onDone: proc(href: cstring) = nil) =
+proc swapLinkHref*(linkNode: JsObject; newHref: cstring;
+                    onDone: proc(href: cstring) = nil) =
   ## Fetch the new sheet via a clone, then atomically update the
   ## original link's href and detach the clone. Browsers reuse the
   ## already-cached stylesheet from the clone fetch when the original

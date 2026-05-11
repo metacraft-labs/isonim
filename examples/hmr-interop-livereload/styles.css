@@ -1,0 +1,8 @@
+/*
+  Initial stylesheet — the Playwright spec swaps the marker rule
+  below by rewriting this file and asking the LiveReload server to
+  send a reload message.
+*/
+.ct-livereload-marker {
+  color: rgb(10, 20, 30);
+}
