@@ -114,7 +114,7 @@ test.describe("IsoNim × Vite HMR interop", () => {
     }
   });
 
-  test("editing a transitively-imported .nim file also triggers HMR (proves the plugin's dep walker)", async ({
+  test("editing a transitively-imported .nim file triggers Vite HMR via the plugin's dep walker", async ({
     page,
   }) => {
     // counter.nim imports ./counter_state.nim. Vite has no idea
@@ -124,18 +124,31 @@ test.describe("IsoNim × Vite HMR interop", () => {
     // edit back to counter.nim in handleHotUpdate. If either
     // breaks, this test times out because Vite never schedules
     // an HMR update.
+    //
+    // Note: a `symBodyHash`-clean edit to counter_state.nim does
+    // NOT cause a DOM swap, because counterPanel's body in
+    // counter.nim is unchanged — the slot's factory hash matches,
+    // and the runtime correctly skips the redundant write. So we
+    // assert on Vite's client-side HMR log instead, which is
+    // emitted whenever Vite *dispatches* an update over the WS,
+    // regardless of whether the new bundle's slot writes were
+    // semantically effectful. That's the right contract for "the
+    // walker is plumbed through Vite".
     const originalVm = captureNimSource(NIM_VM_SOURCE);
+    const hmrUpdates: string[] = [];
+    page.on("console", (msg) => {
+      const t = msg.text();
+      if (t.includes("[vite]") && t.includes("hot updated")) {
+        hmrUpdates.push(t);
+      }
+    });
     try {
       await page.goto("/");
       await expect(page.locator("#counter-root")).toBeVisible();
 
-      await page.click("#counter-inc");
-      await page.click("#counter-inc");
-      await expect(page.locator("#counter-label")).toContainText(
-        "Count: 2 clicks",
-      );
+      hmrUpdates.length = 0; // reset baseline
 
-      // Edit the imported module: change the default label.
+      // Edit the imported module — change the default label.
       const edited = originalVm.replace(
         '"clicks"): CounterVm',
         '"taps"): CounterVm',
@@ -148,39 +161,15 @@ test.describe("IsoNim × Vite HMR interop", () => {
       }
       writeFileSync(NIM_VM_SOURCE, edited);
 
-      // The module-scope `counterVm = newCounterVm()` runs at
-      // module init. When Vite invalidates counter.nim because
-      // counter_state.nim changed and the new bundle re-runs the
-      // init, a *new* CounterVm with `label = "taps"` replaces
-      // the old one. The mount's reactive closure still holds
-      // the old `counterVm` ref, so the assertion is: a fresh
-      // page load *would* show "taps", but the current mount
-      // continues to show "clicks". This is the standard caveat
-      // for module-scope state that the host's HMR can't reach;
-      // the spec docs the limitation in
-      // Hot-Module-Reload-Host-Interop.md anti-patterns.
-      //
-      // What we *can* assert: HMR fired (Vite ran handleHotUpdate
-      // and dispatched an update). We detect that by watching the
-      // counter slot re-render — the new module init re-registers
-      // the slot which re-runs the mount's effect. Element
-      // identity of #counter-root changes when the slot factory
-      // is rewritten.
-      const handleBefore = await page.evaluateHandle(() =>
-        document.getElementById("counter-root"),
-      );
-      // Wait for the slot factory to be replaced (a new node
-      // with the same id is inserted). We use a polling
-      // expression because the swap is async after the WS
-      // message lands.
-      await page.waitForFunction(
-        (oldRef) => {
-          const cur = document.getElementById("counter-root");
-          return cur !== null && !cur.isSameNode(oldRef as Node);
-        },
-        handleBefore,
-        { timeout: 30_000 },
-      );
+      // Wait for Vite to dispatch an HMR update. The plugin's
+      // handleHotUpdate must return a non-empty module list for
+      // counter.nim → Vite sends a `hot updated` message → the
+      // client logs it. Generous timeout because the Nim
+      // recompile dominates (~1-3s on a warm cache).
+      await expect
+        .poll(() => hmrUpdates.length, { timeout: 30_000 })
+        .toBeGreaterThan(0);
+      expect(hmrUpdates.some((u) => u.includes("counter.nim"))).toBe(true);
     } finally {
       writeFileSync(NIM_VM_SOURCE, originalVm);
     }

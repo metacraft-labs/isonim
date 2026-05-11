@@ -59,8 +59,15 @@ interface IsonimPluginOptions {
 // `import foo, bar`, `import foo/[a, b]`, and `from foo import …`.
 // `include` is treated identically — it pulls in source the same
 // way as far as Vite watching is concerned.
-const NIM_IMPORT_RE =
-  /^\s*(?:include\s+([\w./,\s\[\]]+)|from\s+([\w./]+)|import\s+([\w./,\s\[\]]+))/gm;
+//
+// The character class is intentionally newline-free: `\s` in
+// JavaScript regex includes `\n`, which would let a greedy `+`
+// gobble half the file when an import line is followed by other
+// code (e.g. `import ./foo\nexport foo\n…` becomes one match,
+// and the captured "module name" is then garbage). We match a
+// single line at a time and strip comments first.
+const NIM_IMPORT_LINE_RE =
+  /^(?:include|from|import)[ \t]+([\w./,\[\] \t]+?)(?:[ \t]+as[ \t]+\w+)?$/;
 
 const NIM_STDLIB_PREFIXES = [
   // The stdlib we don't try to watch — it lives in the nim
@@ -108,9 +115,15 @@ function findNimImports(
   searchPaths: string[],
 ): string[] {
   const deps: string[] = [];
-  let m: RegExpExecArray | null;
-  while ((m = NIM_IMPORT_RE.exec(nimSource)) !== null) {
-    const raw = (m[1] ?? m[2] ?? m[3] ?? "").trim();
+  for (const rawLine of nimSource.split("\n")) {
+    // Strip line comments (everything after `#` that isn't inside
+    // a string — best-effort; Nim's comment syntax is simple
+    // enough that this works for import lines in practice).
+    const line = rawLine.replace(/#.*$/, "").trim();
+    if (!line) continue;
+    const m = NIM_IMPORT_LINE_RE.exec(line);
+    if (!m) continue;
+    const raw = m[1].trim();
     if (!raw) continue;
     // Bracketed group: `foo/[a, b]` → `foo/a`, `foo/b`.
     const expanded = raw.match(/^([\w./]+)\/\[([\w./,\s]+)\]$/);
