@@ -78,7 +78,7 @@ proc emptyEditorWorkspace*(): EditorWorkspace =
     permissions: defaultEditorPermissions(),
     sourceAdapterReady: false,
     editAdapter: nil,
-    platform: pfWeb,
+    platform: pbWeb,
     panels: defaultPanelVisibility(),
     designSystemSchema: DesignSystemSchema()
   )
@@ -109,7 +109,7 @@ proc newEditorWorkspace*(title: string;
                           permissions = defaultEditorPermissions();
                           sourceAdapterReady = false;
                           editAdapter: WorkspaceEditAdapter = nil;
-                          platform = pfWeb;
+                          platform = pbWeb;
                           panels = defaultPanelVisibility()): EditorWorkspace =
   ## Convenience constructor for project-owned workspace definitions.
   EditorWorkspace(

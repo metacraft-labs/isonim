@@ -9,6 +9,7 @@ import isonim/core/[signals, computation]
 import isonim/dsl/ui
 import isonim/editor/viewmodels
 import isonim/editor/types
+import isonim/editor/views/choice_row
 import isonim/editor/views/storyboard
 import isonim/editor/views/component_detail
 import isonim/editor/views/component_edit
@@ -134,7 +135,15 @@ proc storySelectHandler(vm: EditorVM; story: StoryRef): proc() =
 
 proc platformHandler(vm: EditorVM; platform: Platform): proc() =
   let captured = platform
-  result = proc() = vm.changePlatform(captured)
+  result = proc() =
+    if vm.streamingPreview != nil and
+        captured in vm.streamingPreview.availableBackends.val:
+      selectBackend(vm.streamingPreview, captured)
+    vm.changePlatform(captured)
+
+proc viewportSelectHandler(vm: EditorVM; viewport: PreviewViewport): proc() =
+  let captured = viewport
+  result = proc() = vm.changeViewport(captured)
 
 proc inspectorSectionHandler(vm: EditorVM; section: InspectorSection): proc() =
   let captured = section
@@ -190,9 +199,6 @@ proc isSelectedStory(vm: EditorVM; story: StoryRef): bool =
   let selected = vm.selectedStory.val
   selected.group == story.group and selected.name == story.name and
     selected.kind == story.kind
-
-proc isActivePlatform(vm: EditorVM; platform: Platform): bool =
-  vm.platform.val == platform
 
 proc isActiveInspectorSection(vm: EditorVM; section: InspectorSection): bool =
   vm.inspector.activeSection.val == section
@@ -260,16 +266,6 @@ proc bindSidebarItemFilter[R, E](r: R; node: E; vm: EditorVM;
     r.setStyle(node, "display",
       if matchesSidebarSearch(vm.sidebar.searchFilter.val, capturedGroup,
           capturedItem): "flex" else: "none")
-
-proc bindPlatformState[R, E](r: R; node: E; vm: EditorVM;
-    platform: Platform) =
-  let captured = platform
-  createRenderEffect proc() =
-    let isActive = vm.isActivePlatform(captured)
-    r.setAttribute(node, "aria-pressed", if isActive: "true" else: "false")
-    r.setStyle(node, "background-color",
-        if isActive: accent else: "transparent")
-    r.setStyle(node, "color", if isActive: textPrimary else: textMuted)
 
 proc bindInspectorTabState[R, E](r: R; node: E; vm: EditorVM;
     section: InspectorSection) =
@@ -680,69 +676,178 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
             r.bindSidebarSectionState(sectionHeader, sectionDisclosure,
               sectionBody, vm, section)
 
+proc renderPreviewLeftEdge*[R, E](r: R; vm: EditorVM): E =
+  ## Left-edge column: the M57 preview-pane chrome's backend switcher
+  ## stacked on top of the screen-size switcher. Both groups follow the
+  ## compact segmented-strip idiom from the inspector choice-row pattern
+  ## (see `renderCompactChoiceColumn`). The strip is the same on every
+  ## active editor view, so the consumer mounts it once next to the
+  ## center column.
+  result = ui(r):
+    tdiv(display = "flex", flex_direction = "column",
+          gap = "8px",
+          padding = "8px 4px",
+          background_color = bgToolbar,
+          border_right = "1px solid " & border,
+          `data-preview-left-edge` = "true")
+
+  const backends = [pbWeb, pbTui, pbGpui, pbFreya, pbCocoa, pbAndroid]
+  const backendShortLabels =
+    ["Web", "TUI", "GPU", "Frya", "Coc", "And"]
+
+  var backendOptions: seq[CompactChoiceOption] = @[]
+  let active = vm.platform.val
+  for i in 0 ..< backends.len:
+    let b = backends[i]
+    let available =
+      if vm.streamingPreview != nil:
+        vm.streamingPreview.backendIsAvailable(b)
+      else:
+        true
+    let captured = b
+    backendOptions.add CompactChoiceOption(
+      label: backendLabel(b),
+      shortLabel: backendShortLabels[i],
+      ariaLabel: "Preview backend " & backendLabel(b),
+      selected: active == b,
+      enabled: available,
+      dataAttrs: @[
+        ("data-preview-backend", backendId(b)),
+        ("data-preview-backend-available",
+          if available: "true" else: "false")],
+      onChoose: platformHandler(vm, captured))
+
+  let backendColumn = renderCompactChoiceColumn[R, E](r,
+    ariaLabel = "Preview backend",
+    options = backendOptions,
+    visibleLimit = backends.len,
+    chipWidth = "46px",
+    chipHeight = "22px",
+    dataAttrs = @[
+      ("data-edge-strip", "backend"),
+      ("data-preview-edge-group", "backend")])
+  r.appendChild(result, backendColumn.root)
+
+  var viewportOptions: seq[CompactChoiceOption] = @[]
+  let pinnedForBackend = pinnedViewports(vm.platform.val)
+  let popupForBackend = popupViewports(vm.platform.val)
+  let activeViewport = vm.viewport.val
+  for vp in pinnedForBackend:
+    let captured = vp
+    viewportOptions.add CompactChoiceOption(
+      label: vp.label,
+      shortLabel: vp.label,
+      ariaLabel: "Preview viewport " & vp.label,
+      selected: viewportsEqual(activeViewport, vp),
+      enabled: true,
+      dataAttrs: @[
+        ("data-preview-viewport", vp.slug),
+        ("data-preview-viewport-pinned", "true")],
+      onChoose: viewportSelectHandler(vm, captured))
+  for vp in popupForBackend:
+    let captured = vp
+    viewportOptions.add CompactChoiceOption(
+      label: vp.label,
+      shortLabel: vp.label,
+      ariaLabel: "Preview viewport " & vp.label,
+      selected: viewportsEqual(activeViewport, vp),
+      enabled: true,
+      dataAttrs: @[
+        ("data-preview-viewport", vp.slug),
+        ("data-preview-viewport-pinned", "false")],
+      onChoose: viewportSelectHandler(vm, captured))
+
+  let viewportColumn = renderCompactChoiceColumn[R, E](r,
+    ariaLabel = "Preview screen size",
+    options = viewportOptions,
+    visibleLimit = pinnedForBackend.len,
+    chipWidth = "46px",
+    chipHeight = "22px",
+    dataAttrs = @[
+      ("data-edge-strip", "viewport"),
+      ("data-preview-edge-group", "viewport")])
+  r.appendChild(result, viewportColumn.root)
+
+proc renderPreviewRightEdge*[R, E](r: R; vm: EditorVM): E =
+  ## Right-edge column: the M57 preview-pane chrome's View / Comment /
+  ## Edit mode toggle.
+  result = ui(r):
+    tdiv(display = "flex", flex_direction = "column",
+          padding = "8px 4px",
+          background_color = bgToolbar,
+          border_left = "1px solid " & border,
+          `data-preview-right-edge` = "true")
+
+  const modes = [emView, emComment, emEdit]
+  const modeLabels = ["View", "Comment", "Edit"]
+  const modeShorts = ["View", "Cmt", "Edit"]
+
+  var modeOptions: seq[CompactChoiceOption] = @[]
+  let activeMode = vm.editMode.val
+  for i in 0 ..< modes.len:
+    let mode = modes[i]
+    let captured = mode
+    let command = case mode
+      of emView: eckInspect
+      of emComment: eckComment
+      of emEdit: eckEdit
+    let state = vm.evaluateCommand(command)
+    # The edge-strip mode chips use a distinct aria-label so existing
+    # tests that target the per-view "Switch to X mode" buttons still
+    # disambiguate. The new chips advertise their edge-strip provenance.
+    modeOptions.add CompactChoiceOption(
+      label: modeLabels[i],
+      shortLabel: modeShorts[i],
+      ariaLabel: "Preview mode " & modeLabels[i],
+      selected: activeMode == mode,
+      enabled: state.status != ecsDisabled,
+      dataAttrs: @[
+        ("data-preview-mode", modeLabels[i].toLowerAscii()),
+        ("data-preview-mode-disabled",
+          if state.status == ecsDisabled: "true" else: "false")],
+      onChoose: editModeHandler(vm, captured))
+
+  let modeColumn = renderCompactChoiceColumn[R, E](r,
+    ariaLabel = "Preview mode",
+    options = modeOptions,
+    visibleLimit = modes.len,
+    chipWidth = "44px",
+    chipHeight = "26px",
+    dataAttrs = @[
+      ("data-edge-strip", "mode"),
+      ("data-preview-edge-group", "mode")])
+  r.appendChild(result, modeColumn.root)
+
 proc renderPreviewPane*[R, E](r: R; vm: EditorVM): E =
-  ## Center panel: component preview with toolbar.
-  ## viewBtn/editBtn need refs for reactive effect, so we extract them.
+  ## Center panel: component preview with M57 edge-strip chrome.
+  ##
+  ## Top toolbar keeps the view switcher and breadcrumb (spec § "Top
+  ## toolbar — what stays"). The View / Comment / Edit mode toggle moves
+  ## to a right-edge vertical compact-choice column; the
+  ## PreviewBackend / viewport selectors move to two stacked groups on
+  ## a left-edge column. The streaming-preview VM, when present on
+  ## `vm.streamingPreview`, drives backend availability and selection.
   let pane = ui(r):
     tdiv(class = "editor-preview",
           display = "flex", flex_direction = "column",
           flex = "1", min_width = "0", height = "100%",
           background_color = bgBase)
 
-  # Toolbar — mode toggle buttons need refs for reactive styling
+  # --- Top toolbar (view switcher + breadcrumb only) -----------------------
   let toolbar = ui(r):
     tdiv(display = "flex", align_items = "center",
-          justify_content = "space-between",
+          justify_content = "flex-start",
+          gap = "12px",
           height = "44px", min_height = "44px", padding = "0 16px",
           background_color = bgToolbar,
-          border_bottom = "1px solid " & border)
-
-  let modeToggle = ui(r):
-    tdiv(display = "flex", align_items = "center", gap = "1px",
-          background_color = bgSurface, border_radius = "6px",
-          padding = "3px")
-
-  var modeButtons: seq[(EditMode, E)] = @[]
-  for option in [(emView, "View"), (emComment, "Comment"), (emEdit, "Edit")]:
-    let capturedMode = option[0]
-    let label = option[1]
-    let modeBtn = ui(r):
-      tdiv(padding = "4px 12px", border_radius = "4px",
-            font_size = "12px", font_weight = "500",
-            cursor = "pointer", transition = "all 0.15s"):
-        text label
-    r.makeButton(modeBtn, "Switch to " & label.toLowerAscii() & " mode")
-    let chooseMode = editModeHandler(vm, capturedMode)
-    r.addEventListener(modeBtn, "click", chooseMode)
-    r.addEventListener(modeBtn, "keydown", chooseMode)
-    r.appendChild(modeToggle, modeBtn)
-    modeButtons.add (capturedMode, modeBtn)
-
-  # Reactive effect — only place we need manual setStyle
-  createRenderEffect proc() =
-    for (mode, node) in modeButtons:
-      let active = vm.editMode.val == mode
-      let command = case mode
-        of emView: eckInspect
-        of emComment: eckComment
-        of emEdit: eckEdit
-      let state = vm.evaluateCommand(command)
-      r.setStyle(node, "background-color", if active: accent else: "transparent")
-      r.setStyle(node, "color", if active: textPrimary else: textMuted)
-      r.setAttribute(node, "aria-pressed", if active: "true" else: "false")
-      r.setAttribute(node, "aria-disabled",
-        if state.status == ecsDisabled: "true" else: "false")
-      if state.diagnostic.len > 0:
-        r.setAttribute(node, "title", state.diagnostic)
-      else:
-        r.removeAttribute(node, "title")
-
-  r.appendChild(toolbar, modeToggle)
+          border_bottom = "1px solid " & border,
+          `data-preview-toolbar` = "true")
 
   let viewSwitcher = ui(r):
     tdiv(display = "flex", align_items = "center", gap = "1px",
           background_color = bgSurface, border_radius = "6px",
-          padding = "3px")
+          padding = "3px",
+          `data-preview-view-switcher` = "true")
 
   for option in [
     (evStoryboard, "Flow"),
@@ -765,55 +870,39 @@ proc renderPreviewPane*[R, E](r: R; vm: EditorVM): E =
     r.appendChild(viewSwitcher, switchBtn)
   r.appendChild(toolbar, viewSwitcher)
 
-  # Breadcrumb + platform selector — built inline
   let breadcrumb = ui(r):
-    tdiv(display = "flex", align_items = "center", gap = "6px"):
+    tdiv(display = "flex", align_items = "center", gap = "6px",
+          min_width = "0", flex = "1",
+          `data-preview-breadcrumb` = "true"):
       span(font_size = "8px", color = textDim):
         text "\xE2\x97\x8B"
-      span(font_size = "12px", color = textMuted):
+      span(font_size = "12px", color = textMuted,
+            white_space = "nowrap", overflow = "hidden",
+            text_overflow = "ellipsis"):
         text "No selection"
   r.appendChild(toolbar, breadcrumb)
 
-  let platformSel = ui(r):
-    tdiv(display = "flex", align_items = "center", gap = "1px",
-          background_color = bgSurface, border_radius = "6px",
-          padding = "3px"):
-      for i, plat in [pfWeb, pfIOS, pfAndroid]:
-        let label = case plat
-          of pfWeb: "Web"
-          of pfIOS: "iOS"
-          of pfAndroid: "Android"
-        let choosePlatform = platformHandler(vm, plat)
-        var platformButton: E
-        tdiv(padding = "4px 10px", border_radius = "4px",
-              ref = platformButton,
-              `role` = "button", tabindex = "0",
-              `aria-label` = "Preview " & label & " platform",
-              `aria-pressed` = (if vm.isActivePlatform(
-                  plat): "true" else: "false"),
-              onclick = choosePlatform,
-              onkeydown = choosePlatform,
-              font_size = "11px", font_weight = "500",
-              cursor = "pointer", transition = "all 0.15s",
-              background_color = (if vm.isActivePlatform(
-                  plat): accent else: "transparent"),
-              color = (if vm.isActivePlatform(
-                  plat): textPrimary else: textMuted)):
-          text label
-        block:
-          r.bindPlatformState(platformButton, vm, plat)
-  r.appendChild(toolbar, platformSel)
-
   r.appendChild(pane, toolbar)
 
-  # Preview area — fully inline
+  # --- Body row: [left edge | preview canvas | right edge] -----------------
+  let body = ui(r):
+    tdiv(flex = "1", display = "flex", flex_direction = "row",
+          min_width = "0", min_height = "0",
+          align_items = "stretch",
+          `data-preview-body` = "true")
+
+  r.appendChild(body, renderPreviewLeftEdge[R, E](r, vm))
+
+  # Preview canvas — fully inline (preserves the existing affordance).
   let previewArea = ui(r):
     tdiv(flex = "1", display = "flex",
           align_items = "center", justify_content = "center",
           background_color = bgBase, position = "relative",
+          min_width = "0",
           background_image = "radial-gradient(circle, " & borderFaint &
           " 1px, transparent 1px)",
-          background_size = "24px 24px"):
+          background_size = "24px 24px",
+          `data-preview-canvas` = "true"):
       tdiv(display = "flex", flex_direction = "column",
             align_items = "center", gap = "10px",
             padding = "32px", background_color = bgBase,
@@ -824,7 +913,12 @@ proc renderPreviewPane*[R, E](r: R; vm: EditorVM): E =
           text "Select a story from the sidebar"
         span(font_size = "12px", color = textDim):
           text "Components render here with live preview"
-  r.appendChild(pane, previewArea)
+  r.appendChild(body, previewArea)
+
+  r.appendChild(body, renderPreviewRightEdge[R, E](r, vm))
+
+  r.appendChild(pane, body)
+
   pane
 
 proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
@@ -1333,6 +1427,12 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
   let vectorEditorEl = renderVectorEditor[R, E](r, vm)
   let chatEl = renderChatPanel[R, E](r, vm) # ever-present on all views
 
+  # M57 edge-strip chrome: persistent left and right edges that wrap the
+  # active center view. They share the editor VM so backend / viewport /
+  # mode selections survive view switching.
+  let leftEdgeEl = renderPreviewLeftEdge[R, E](r, vm)
+  let rightEdgeEl = renderPreviewRightEdge[R, E](r, vm)
+
   # Default: storyboard visible, everything else hidden
   r.setStyle(componentDetailEl, "display", "none")
   r.setStyle(componentEditEl, "display", "none")
@@ -1358,17 +1458,26 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
         evVectorEditor: "flex" else: "none")
     r.setStyle(sidebarEl, "display", if panels.sidebar and view !=
         evVectorEditor: "flex" else: "none")
+    # The edge strips wrap a preview viewport, so they only make sense on
+    # the views that show a renderable preview. Vector editor and the
+    # storyboard canvas keep their own chrome.
+    let showEdges = view in {evComponentDetail, evComponentEdit,
+        evPagePreview, evFoundationsPage}
+    r.setStyle(leftEdgeEl, "display", if showEdges: "flex" else: "none")
+    r.setStyle(rightEdgeEl, "display", if showEdges: "flex" else: "none")
     let manualEditMode = view == evComponentEdit and vm.editMode.val == emEdit
     r.setStyle(chatEl, "display",
       if panels.inspector and not manualEditMode: "flex" else: "none")
 
   r.appendChild(shell, sidebarEl)
+  r.appendChild(shell, leftEdgeEl)
   r.appendChild(shell, storyboardEl)
   r.appendChild(shell, componentDetailEl)
   r.appendChild(shell, componentEditEl)
   r.appendChild(shell, pagePreviewEl)
   r.appendChild(shell, foundationsEl)
   r.appendChild(shell, vectorEditorEl)
+  r.appendChild(shell, rightEdgeEl)
   r.appendChild(shell, chatEl) # always last (right side)
   r.appendChild(shellRoot, shell)
   r.appendChild(shellRoot, renderCommandPalette[R, E](r, vm))

@@ -65,19 +65,16 @@
 ## WebSocket client, and assert the `hello` M packet announces the
 ## backend identifier the launcher requested.
 
-import std/[net, options, os, osproc, strutils, tables, times]
+import std/[options, tables]
+when not defined(js):
+  import std/[net, os, osproc, times]
 
 import isonim/core/[signals, computation]
+import isonim/editor/types
+
+export types.PreviewBackend
 
 type
-  PreviewBackend* = enum
-    pbWeb       ## Default — native iframe, no bridge.
-    pbTui       ## `isonim-tui-serve` (M26); D/M/P wire protocol.
-    pbGpui      ## `isonim-render-serve` + GPUI adapter (RS-M2).
-    pbFreya     ## `isonim-render-serve` + Freya adapter (RS-M4).
-    pbCocoa     ## `isonim-render-serve` + Cocoa adapter (RS-M5).
-    pbAndroid   ## `isonim-render-serve` + Android adapter (RS-M6).
-
   BridgeStatus* = enum
     bsIdle       ## No bridge running (Web/TUI default).
     bsLaunching  ## Subprocess spawned; waiting for listen.
@@ -88,7 +85,8 @@ type
     ## Handle returned by `launchBridge`. Owns the child process.
     backend*: PreviewBackend
     port*: int
-    process*: Process
+    when not defined(js):
+      process*: Process
     binary*: string
 
   StreamingPreviewVM* = ref object
@@ -212,111 +210,114 @@ proc binaryFor*(reg: BackendBinaryRegistry;
   else:
     none(string)
 
-proc defaultStubBinary*(): string =
-  ## Resolve the stub `isonim-render-serve` binary. Order:
-  ##
-  ##   1. `$ISONIM_RENDER_SERVE_BIN` (set by the test harness).
-  ##   2. `findExe("isonim-render-serve")` on `$PATH`.
-  ##   3. Empty string — caller treats as "binary not found".
-  let envPath = getEnv(DefaultBridgeBinaryEnv)
-  if envPath.len > 0:
-    return envPath
-  let path = findExe("isonim-render-serve")
-  if path.len > 0:
-    return path
-  ""
+when not defined(js):
+  proc defaultStubBinary*(): string =
+    ## Resolve the stub `isonim-render-serve` binary. Order:
+    ##
+    ##   1. `$ISONIM_RENDER_SERVE_BIN` (set by the test harness).
+    ##   2. `findExe("isonim-render-serve")` on `$PATH`.
+    ##   3. Empty string — caller treats as "binary not found".
+    let envPath = getEnv(DefaultBridgeBinaryEnv)
+    if envPath.len > 0:
+      return envPath
+    let path = findExe("isonim-render-serve")
+    if path.len > 0:
+      return path
+    ""
 
 # ---------------------------------------------------------------------------
-# Port allocation + bridge launcher
+# Port allocation + bridge launcher (native-only — `std/net`/`std/osproc`
+# don't compile under the JS target)
 # ---------------------------------------------------------------------------
 
-proc pickEphemeralPort*(): int =
-  ## Bind a temporary socket to port 0; read the kernel-assigned
-  ## port; close. Same pattern the `isonim-render-serve` tests use
-  ## (`ws_test_client.pickPort`).
-  let s = newSocket()
-  s.bindAddr(Port(0))
-  let p = s.getLocalAddr()[1]
-  s.close()
-  int(p)
+when not defined(js):
+  proc pickEphemeralPort*(): int =
+    ## Bind a temporary socket to port 0; read the kernel-assigned
+    ## port; close. Same pattern the `isonim-render-serve` tests use
+    ## (`ws_test_client.pickPort`).
+    let s = newSocket()
+    s.bindAddr(Port(0))
+    let p = s.getLocalAddr()[1]
+    s.close()
+    int(p)
 
-proc waitForListen(host: string; port: int;
-                  timeoutMs: int): bool =
-  ## Poll-connect until the bridge binds. Returns true on success.
-  let deadline = epochTime() + (timeoutMs.float / 1000.0)
-  while epochTime() < deadline:
-    try:
-      let s = newSocket()
-      defer: s.close()
-      s.connect(host, Port(port), timeout = BridgeListenPollMs)
-      return true
-    except CatchableError:
-      sleep(BridgeListenPollMs)
-  false
+  proc waitForListen(host: string; port: int;
+                    timeoutMs: int): bool =
+    ## Poll-connect until the bridge binds. Returns true on success.
+    let deadline = epochTime() + (timeoutMs.float / 1000.0)
+    while epochTime() < deadline:
+      try:
+        let s = newSocket()
+        defer: s.close()
+        s.connect(host, Port(port), timeout = BridgeListenPollMs)
+        return true
+      except CatchableError:
+        sleep(BridgeListenPollMs)
+    false
 
-proc launchBridge*(reg: BackendBinaryRegistry;
-                  backend: PreviewBackend;
-                  componentPath: string = "";
-                  port: int = 0;
-                  width: int = 640;
-                  height: int = 480;
-                  fps: int = 20;
-                  staticDir: string = ""): BridgeProcess =
-  ## Spawn the bridge child process for `backend`. Returns a
-  ## `BridgeProcess` whose `port` field tells the editor where to
-  ## point its iframe. Raises `OSError` if the binary is not
-  ## registered or fails to bind.
-  ##
-  ## The widget calls this on Mode menu transitions to a non-Web /
-  ## non-TUI backend, and again on hot-reload after the editor's
-  ## recompile pipeline produces a fresh per-backend binary.
-  doAssert backendNeedsRenderServe(backend),
-    "launchBridge is only for native render-serve backends"
-  let bin = block:
-    let b = reg.binaryFor(backend)
-    if b.isSome: b.get()
-    else: defaultStubBinary()
-  if bin.len == 0:
-    raise newException(OSError,
-      "no bridge binary registered for " & backendLabel(backend) &
-      " and " & DefaultBridgeBinaryEnv & " / $PATH lookup failed")
-  if not fileExists(bin):
-    raise newException(OSError,
-      "bridge binary not found: " & bin)
-  let assigned = if port > 0: port else: pickEphemeralPort()
-  var args = @[
-    "--port", $assigned,
-    "--backend", backendId(backend),
-    "--width", $width,
-    "--height", $height,
-    "--fps", $fps]
-  if staticDir.len > 0:
-    args.add @["--static", staticDir]
-  if componentPath.len > 0:
-    # Forwarded to the per-backend adapter binary's CLI when one is
-    # registered. The stub `isonim-render-serve` binary ignores
-    # unknown args via `quit(... , 1)`, so we only add this flag
-    # when the registered binary is not the stub.
-    let stub = defaultStubBinary()
-    if stub.len == 0 or bin != stub:
-      args.add @["--component", componentPath]
-  let p = startProcess(bin, args = args,
-                      options = {poStdErrToStdOut, poUsePath})
-  let ok = waitForListen("127.0.0.1", assigned, BridgeListenTimeoutMs)
-  if not ok:
-    p.terminate()
-    discard p.waitForExit(timeout = 1000)
-    raise newException(OSError,
-      "bridge " & bin & " did not bind to 127.0.0.1:" & $assigned &
-      " within " & $BridgeListenTimeoutMs & "ms")
-  BridgeProcess(backend: backend, port: assigned, process: p,
-                binary: bin)
+  proc launchBridge*(reg: BackendBinaryRegistry;
+                    backend: PreviewBackend;
+                    componentPath: string = "";
+                    port: int = 0;
+                    width: int = 640;
+                    height: int = 480;
+                    fps: int = 20;
+                    staticDir: string = ""): BridgeProcess =
+    ## Spawn the bridge child process for `backend`. Returns a
+    ## `BridgeProcess` whose `port` field tells the editor where to
+    ## point its iframe. Raises `OSError` if the binary is not
+    ## registered or fails to bind.
+    ##
+    ## The widget calls this on Mode menu transitions to a non-Web /
+    ## non-TUI backend, and again on hot-reload after the editor's
+    ## recompile pipeline produces a fresh per-backend binary.
+    doAssert backendNeedsRenderServe(backend),
+      "launchBridge is only for native render-serve backends"
+    let bin = block:
+      let b = reg.binaryFor(backend)
+      if b.isSome: b.get()
+      else: defaultStubBinary()
+    if bin.len == 0:
+      raise newException(OSError,
+        "no bridge binary registered for " & backendLabel(backend) &
+        " and " & DefaultBridgeBinaryEnv & " / $PATH lookup failed")
+    if not fileExists(bin):
+      raise newException(OSError,
+        "bridge binary not found: " & bin)
+    let assigned = if port > 0: port else: pickEphemeralPort()
+    var args = @[
+      "--port", $assigned,
+      "--backend", backendId(backend),
+      "--width", $width,
+      "--height", $height,
+      "--fps", $fps]
+    if staticDir.len > 0:
+      args.add @["--static", staticDir]
+    if componentPath.len > 0:
+      # Forwarded to the per-backend adapter binary's CLI when one is
+      # registered. The stub `isonim-render-serve` binary ignores
+      # unknown args via `quit(... , 1)`, so we only add this flag
+      # when the registered binary is not the stub.
+      let stub = defaultStubBinary()
+      if stub.len == 0 or bin != stub:
+        args.add @["--component", componentPath]
+    let p = startProcess(bin, args = args,
+                        options = {poStdErrToStdOut, poUsePath})
+    let ok = waitForListen("127.0.0.1", assigned, BridgeListenTimeoutMs)
+    if not ok:
+      p.terminate()
+      discard p.waitForExit(timeout = 1000)
+      raise newException(OSError,
+        "bridge " & bin & " did not bind to 127.0.0.1:" & $assigned &
+        " within " & $BridgeListenTimeoutMs & "ms")
+    BridgeProcess(backend: backend, port: assigned, process: p,
+                  binary: bin)
 
-proc stop*(bp: BridgeProcess) =
-  ## Tear down the child process. Safe to call twice.
-  if bp.process != nil and bp.process.running:
-    bp.process.terminate()
-    discard bp.process.waitForExit(timeout = 2000)
+  proc stop*(bp: BridgeProcess) =
+    ## Tear down the child process. Safe to call twice.
+    if bp.process != nil and bp.process.running:
+      bp.process.terminate()
+      discard bp.process.waitForExit(timeout = 2000)
 
 proc bridgeUrlFor*(port: int): string =
   ## Builds the iframe `src` the preview pane should load. The

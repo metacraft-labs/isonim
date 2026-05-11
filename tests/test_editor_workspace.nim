@@ -74,7 +74,7 @@ suite "IsoNim Editor workspace API":
       check vm.sidebar.groups.val[0].name == "Customers"
       check vm.flowPlayer.steps.val.len == 1
       check vm.activeView.val == evStoryboard
-      check vm.platform.val == pfWeb
+      check vm.platform.val == pbWeb
 
       dispose()
 
@@ -143,7 +143,7 @@ suite "IsoNim Editor workspace API":
         initialInspectorSection = isTypography,
         initialVectorSymbol = some(0),
         initialReviewBaseline = some(reviewBaseline),
-        platform = pfIOS,
+        platform = pbCocoa,
         panels = PanelVisibility(sidebar: false, inspector: true))
 
       let vm = createEditorVM(workspace)
@@ -159,7 +159,7 @@ suite "IsoNim Editor workspace API":
       check vm.vectorEditor.selectedSymbol.val == 0
       check vm.review.violations.val.len == 1
       check computation.val(vm.review.warningCount) == 1
-      check vm.platform.val == pfIOS
+      check vm.platform.val == pbCocoa
       check vm.panels.val.sidebar == false
       check vm.panels.val.inspector == true
       dispose()

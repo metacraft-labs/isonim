@@ -1904,15 +1904,56 @@ type
     impact*: ComponentEditImpact
 
   # --- Preview ---
-  Platform* = enum
-    pfWeb
-    pfIOS
-    pfAndroid
+  PreviewBackend* = enum
+    ## Canonical preview backend identifier. Surfaces the six renderer
+    ## targets we support (Web / TUI / GPUI / Freya / Cocoa / Android).
+    ## Replaces the legacy 3-value `Platform` enum (`pfWeb`/`pfIOS`/
+    ## `pfAndroid`) per M57; iOS preview is now expressed as the Cocoa
+    ## renderer + a phone viewport size instead of a separate platform.
+    pbWeb     ## Default — iframe HTML preview.
+    pbTui     ## `isonim-tui-serve` (M26); D/M/P wire protocol.
+    pbGpui    ## `isonim-render-serve` + GPUI adapter (RS-M2).
+    pbFreya   ## `isonim-render-serve` + Freya adapter (RS-M4).
+    pbCocoa   ## `isonim-render-serve` + Cocoa adapter (RS-M5).
+    pbAndroid ## `isonim-render-serve` + Android adapter (RS-M6).
 
-  PreviewViewport* = enum
-    pvDesktop
-    pvTablet
-    pvMobile
+  Platform* = PreviewBackend
+    ## Backward-compatible alias retained for downstream code that still
+    ## reads the broader "platform" concept. Treat `PreviewBackend` as
+    ## the canonical name in new code; the alias keeps API symmetry with
+    ## existing fields named `platform` (e.g. `ReviewViewportContext`,
+    ## `AgentPromptContext`, `EditorWorkspace.platform`).
+
+  PreviewViewportKind* = enum
+    ## Catalogue of well-known preview viewport presets. The accompanying
+    ## `PreviewViewport` object carries the resolved label / extent / unit
+    ## metadata so renderers don't need to switch on the kind directly.
+    pvkDesktop
+    pvkLaptop
+    pvkTablet
+    pvkPhone
+    pvkTui80x24
+    pvkTui120x40
+    pvkWide
+    pvkUltrawide
+    pvkPhoneSm
+    pvkPhoneXl
+    pvkCustom
+
+  PreviewViewport* = object
+    ## Descriptor for the active preview viewport. Replaces the legacy
+    ## 3-value enum (`pvDesktop`/`pvTablet`/`pvMobile`) with a richer
+    ## object that captures the per-backend pinned/popup classification
+    ## from the editor spec § "Preview-pane chrome layout".
+    kind*: PreviewViewportKind
+    slug*: string  ## Stable identifier used in URLs and serialisation.
+    label*: string ## Human-facing label rendered in the edge strip.
+    width*: int
+      ## Pixels for graphical backends, character cells for TUI viewports.
+    height*: int
+    isCells*: bool
+      ## True iff the extent is measured in cell grid units (TUI-style);
+      ## false for pixel viewports.
 
   ProjectPreviewStatus* = enum
     ppsMissingSelection

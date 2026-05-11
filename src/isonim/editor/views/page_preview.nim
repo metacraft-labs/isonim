@@ -55,23 +55,25 @@ proc bindModeButton[R, E](r: R; node: E; vm: EditorVM; mode: EditMode) =
 
 proc bindViewportButton[R, E](r: R; node: E; vm: EditorVM;
     viewport: PreviewViewport) =
+  let captured = viewport
   createRenderEffect proc() =
-    let active = vm.viewport.val == viewport
+    let active = viewportsEqual(vm.viewport.val, captured)
     r.setAttribute(node, "aria-pressed", if active: "true" else: "false")
     r.setStyle(node, "background-color", if active: accent else: "transparent")
     r.setStyle(node, "color", if active: textPrimary else: textMuted)
 
 proc viewportButton[R, E](r: R; vm: EditorVM; viewport: PreviewViewport): E =
   let label = previewViewportLabel(viewport)
+  let captured = viewport
   result = ui(r):
     tdiv(padding = "4px 10px", border_radius = "4px",
           font_size = "11px", font_weight = "500",
           cursor = "pointer", transition = "all 0.15s"):
       text label
   r.makeButton(result, "Preview " & label & " viewport")
-  r.addEventListener(result, "click", proc() = vm.changeViewport(viewport))
-  r.addEventListener(result, "keydown", proc() = vm.changeViewport(viewport))
-  r.bindViewportButton(result, vm, viewport)
+  r.addEventListener(result, "click", proc() = vm.changeViewport(captured))
+  r.addEventListener(result, "keydown", proc() = vm.changeViewport(captured))
+  r.bindViewportButton(result, vm, captured)
 
 proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
   let container = ui(r):
@@ -135,7 +137,9 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
           background_color = bgSurface, border_radius = "6px",
           padding = "3px"):
       discard
-  for viewport in [pvDesktop, pvTablet, pvMobile]:
+  # Iterate the pinned set for the current backend so the page preview's
+  # legacy toolbar surfaces the same chips the M57 edge strip would.
+  for viewport in pinnedViewports(vm.platform.val):
     r.appendChild(viewportToggle, viewportButton[R, E](r, vm, viewport))
   r.appendChild(controls, viewportToggle)
   r.appendChild(toolbar, controls)
@@ -211,7 +215,10 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
     r.setStyle(deviceFrame, "min-width", $width & "px")
     r.setStyle(deviceFrame, "min-height", $height & "px")
     r.setStyle(deviceFrame, "border-radius",
-      if viewport == pvDesktop: "8px" else: "18px")
+      case viewport.kind
+      of pvkDesktop, pvkLaptop, pvkWide, pvkUltrawide,
+          pvkTui80x24, pvkTui120x40: "8px"
+      else: "18px")
     r.setStyle(previewFrame, "width", "100%")
     r.setStyle(previewFrame, "height", "100%")
     if preview.documentHtml.len > 0:

@@ -63,7 +63,13 @@ suite "Editor Shell Views (M2)":
       # Shell mounts the main editor row, command palette, telemetry overlay,
       # and status bar.
       check shell.children.len == 4
-      check shell.children[0].children.len == 8
+      # Editor row children: sidebar, M57 left edge strip, six view
+      # containers (storyboard / componentDetail / componentEdit /
+      # pagePreview / foundations / vectorEditor), M57 right edge strip,
+      # chat panel.
+      check shell.children[0].children.len == 10
+      check findByAttr(shell, "data-preview-left-edge", "true") != nil
+      check findByAttr(shell, "data-preview-right-edge", "true") != nil
       check findByAttr(shell, "data-foundations-page", "true") != nil
       check findByAttr(shell, "data-editor-command-palette", "true") != nil
       check findByAttr(shell, "data-editor-telemetry-overlay", "true") != nil
@@ -91,19 +97,42 @@ suite "Editor Shell Views (M2)":
       dispose()
 
   test "test_preview_pane_shows_toolbar":
-    ## Preview pane has toolbar with mode toggle and platform selector
+    ## Preview pane has top toolbar (view switcher + breadcrumb) plus a
+    ## body row with left edge / canvas / right edge per the M57
+    ## edge-strip chrome.
     createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createEditorVM()
 
       let pane = renderPreviewPane[MockRenderer, MockNode](r, vm)
 
-      # Should have toolbar and preview area
-      check pane.children.len >= 2
+      # Pane should have a top toolbar plus a body row.
+      check pane.children.len == 2
+      let toolbar = findByAttr(pane, "data-preview-toolbar", "true")
+      let body = findByAttr(pane, "data-preview-body", "true")
+      check toolbar != nil
+      check body != nil
 
-      # Toolbar should have mode toggle and platform selector
-      let toolbar = pane.children[0]
-      check toolbar.children.len >= 2
+      # The view switcher and breadcrumb stay in the top toolbar; the
+      # mode toggle and platform selector are removed.
+      check findByAttr(toolbar, "data-preview-view-switcher", "true") != nil
+      check findByAttr(toolbar, "data-preview-breadcrumb", "true") != nil
+      check findByAttr(toolbar, "data-edge-strip", "mode") == nil
+      check findByAttr(toolbar, "data-edge-strip", "backend") == nil
+
+      # Body row contains the three edge containers (left edge, canvas,
+      # right edge).
+      check findByAttr(body, "data-preview-left-edge", "true") != nil
+      check findByAttr(body, "data-preview-canvas", "true") != nil
+      check findByAttr(body, "data-preview-right-edge", "true") != nil
+
+      # Left edge hosts the backend and viewport strips; right edge
+      # hosts the mode strip.
+      let leftEdge = findByAttr(body, "data-preview-left-edge", "true")
+      check findByAttr(leftEdge, "data-edge-strip", "backend") != nil
+      check findByAttr(leftEdge, "data-edge-strip", "viewport") != nil
+      let rightEdge = findByAttr(body, "data-preview-right-edge", "true")
+      check findByAttr(rightEdge, "data-edge-strip", "mode") != nil
 
       dispose()
 
@@ -336,13 +365,21 @@ suite "Editor Shell Views (M2)":
       vectorView.fireEvent("click")
       check vm.activeView.val == evVectorEditor
 
-      let iosButton = findByAttr(preview, "aria-label", "Preview iOS platform")
-      check iosButton != nil
-      check iosButton.attributes["aria-pressed"] == "false"
-      iosButton.fireEvent("click")
-      check vm.platform.val == pfIOS
-      check iosButton.attributes["aria-pressed"] == "true"
-      check iosButton.styles["background-color"] == "#3B82F6"
+      # The legacy top-toolbar "Preview iOS platform" button moved to
+      # the M57 left-edge backend strip. The right-edge mode strip
+      # exposes View/Comment/Edit; the left-edge strip exposes the six
+      # PreviewBackend values. Cocoa is the renderer formerly tagged
+      # "iOS"; clicking it drives `vm.platform` to pbCocoa.
+      let topBar = findByAttr(preview, "data-preview-toolbar", "true")
+      check topBar != nil
+      check findByAttr(topBar, "aria-label", "Preview iOS platform") == nil
+      check findByAttr(topBar, "data-preview-mode", "view") == nil
+      let cocoaButton = findByAttr(preview,
+        "aria-label", "Preview backend Cocoa")
+      check cocoaButton != nil
+      check cocoaButton.attributes["aria-pressed"] == "false"
+      cocoaButton.fireEvent("click")
+      check vm.platform.val == pbCocoa
 
       vm.flowPlayer.steps.val = userFlows()[0].steps
       let flowShell = renderEditorShell[MockRenderer, MockNode](r, vm)

@@ -233,17 +233,29 @@ func storyKindFromSlug(slug: string; fallback: StoryKind): StoryKind =
   else: fallback
 
 func viewportSlug(viewport: PreviewViewport): string =
-  case viewport
-  of pvDesktop: "desktop"
-  of pvTablet: "tablet"
-  of pvMobile: "mobile"
+  previewViewportSlug(viewport)
 
 func viewportFromSlug(slug: string; fallback: PreviewViewport): PreviewViewport =
-  case slug.normalize
-  of "desktop": pvDesktop
-  of "tablet": pvTablet
-  of "mobile": pvMobile
-  else: fallback
+  ## Resolve a route param back to a `PreviewViewport`. Recognises both
+  ## built-in slugs and the `custom-<w>x<h>(c?)` form produced by
+  ## `makeCustomViewport`. Falls back to the supplied default.
+  let norm = slug.normalize
+  if norm.startsWith("custom-"):
+    let body = norm[7 .. ^1]
+    let isCells = body.endsWith("c")
+    let extentPart = if isCells: body[0 .. ^2] else: body
+    let xIdx = extentPart.find('x')
+    if xIdx > 0:
+      try:
+        let w = parseInt(extentPart[0 ..< xIdx])
+        let h = parseInt(extentPart[xIdx + 1 .. ^1])
+        return makeCustomViewport(w, h, isCells = isCells)
+      except ValueError:
+        discard
+  for vp in allBuiltinViewports():
+    if vp.slug == norm:
+      return vp
+  fallback
 
 func editModeSlug(mode: EditMode): string =
   case mode

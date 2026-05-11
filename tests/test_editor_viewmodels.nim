@@ -24,7 +24,11 @@ suite "Editor ViewModels (M0)":
       check vm.panels.val.sidebar == true
       check vm.panels.val.inspector == true
       check vm.rightPanelWidth.val == 320
-      check vm.platform.val == pfWeb
+      check vm.platform.val == pbWeb
+      # M57: viewport is now the richer descriptor object.
+      check vm.viewport.val.kind == pvkDesktop
+      check vm.viewport.val.slug == "desktop"
+      check vm.streamingPreview == nil
       dispose()
 
   test "inspector_panel_vm_persists_section_and_width_state":
@@ -390,7 +394,7 @@ suite "Editor ViewModels (M18 headless contracts)":
 
       vm.togglePanel(epSidebar)
       vm.switchInspectorSection(isFilters)
-      vm.changePlatform(pfAndroid)
+      vm.changePlatform(pbAndroid)
       vm.setAgentState(asLoading)
       vm.setAgentState(asError)
       vm.setAgentState(asReady)
@@ -398,7 +402,7 @@ suite "Editor ViewModels (M18 headless contracts)":
       check vm.activeView.val == evVectorEditor
       check vm.panels.val.sidebar == false
       check vm.inspector.activeSection.val == isFilters
-      check vm.platform.val == pfAndroid
+      check vm.platform.val == pbAndroid
       check vm.chat.sessionStatus.val == asReady
       check vm.selectedStory.val.name == ""
       check vm.hasSelection.val == false
@@ -1492,7 +1496,7 @@ suite "Editor ViewModels (M26 source-backed CSS property editors)":
       check responsiveEditModes(schema).anyIt(
         it.key == "modes.compact-dashboard.gap" and
           it.kind == rmkProjectDefined)
-      check layoutModeKey(pvMobile) == "mobile"
+      check layoutModeKey(makeBuiltinViewport(pvkPhone)) == "mobile"
       check vm.selectInspectorElement(ElementRef(
         id: "card-root",
         sourceKey: "card.root",
@@ -2572,7 +2576,7 @@ suite "Editor ViewModels (M27 workspace file writes)":
       check vm.workspaceEditAffectedStories.val.len == 1
       check vm.workspaceEditFullReload.val
 
-      vm.changePlatform(pfIOS)
+      vm.changePlatform(pbCocoa)
       check vm.preview.current.val.bodyText.contains("title=Sofia")
       check vm.preview.current.val.bodyText.contains("step=Compare")
       check recorder.reloadedStories.len == 1
@@ -3559,7 +3563,7 @@ suite "Editor ViewModels (M27 workspace file writes)":
       atomicWrite(schemaFile,
         "size=md\nselected=false\nlabel=Run report\nicon=play\n" &
         "content=Run report\nfixture=ops-ready\ndensity=comfortable\n" &
-        "platform=pfWeb\nariaLabel=Run report\n")
+        "platform=pbWeb\nariaLabel=Run report\n")
       atomicWrite(fixtureFile, "title=Paris\n")
       let story = StoryRef(group: "Button", name: "Default",
         kind: skComponent, index: 0)
@@ -3672,8 +3676,9 @@ suite "Editor ViewModels (M27 workspace file writes)":
               "fixtures.button.title"),
             prop("density", cpkDensity, "comfortable",
               @["compact", "comfortable"], 7),
-            prop("platform", cpkPlatform, "pfWeb",
-              @["pfWeb", "pfIOS", "pfAndroid"], 8),
+            prop("platform", cpkPlatform, "pbWeb",
+              @["pbWeb", "pbTui", "pbGpui", "pbFreya", "pbCocoa",
+                "pbAndroid"], 8),
             prop("ariaLabel", cpkAccessibilityLabel, "Run report", @[], 9)
           ],
           stateControls: states,
@@ -4772,7 +4777,7 @@ suite "Editor ViewModels (M27 workspace file writes)":
         designSystemSchema = schema,
         permissions = EditorWorkspacePermissions(readSource: true,
           writeSource: true)))
-      vm.changeViewport(pvMobile)
+      vm.changeViewport(makeBuiltinViewport(pvkPhone))
       check vm.selectInspectorElement(ElementRef(
         id: "title",
         sourceKey: "card-title",
@@ -4805,7 +4810,7 @@ suite "Editor ViewModels (M27 workspace file writes)":
       check second.len > 0
       check vm.review.annotations.val.len == 2
       check vm.review.annotations.val[0].selectedElement.id == "title"
-      check vm.review.annotations.val[0].viewport.viewport == pvMobile
+      check vm.review.annotations.val[0].viewport.viewport.kind == pvkPhone
       check vm.review.annotations.val[0].ownership.ownerPackage == "isonim-tests"
       check vm.review.annotations.val[0].ownership.schemaKey ==
         "components.card.padding"
@@ -5842,21 +5847,21 @@ suite "Editor ViewModels (M20 story flow preview runtime)":
         initialView = evPagePreview,
         initialStory = some(selected),
         previewHook = previewHook,
-        platform = pfIOS))
+        platform = pbCocoa))
 
       let preview = vm.preview.current.val
       check calls.len >= 1
       check calls[^1].name == "Destination Detail"
       check preview.status == ppsRendered
       check preview.title == "Project render: Destination Detail"
-      check preview.bodyText == "Exact project preview for Pages on pfIOS"
+      check preview.bodyText == "Exact project preview for Pages on pbCocoa"
       check preview.metadata.sourceFile ==
         "examples/wanderlust/pages/views.nim"
 
       let r = MockRenderer()
       let node = renderPagePreview[MockRenderer, MockNode](r, vm)
       check node.textContent.contains("Project render: Destination Detail")
-      check node.textContent.contains("Exact project preview for Pages on pfIOS")
+      check node.textContent.contains("Exact project preview for Pages on pbCocoa")
 
       for story in [
         findItem(groups, "Pages", "Home / Discover", skPage),
@@ -5867,7 +5872,7 @@ suite "Editor ViewModels (M20 story flow preview runtime)":
         findItem(groups, "Plan a Trip", "Taps Santorini card to see details",
           skFlow)
       ]:
-        let projectPreview = wanderlust.wanderlustPreviewHook(story, pfWeb)
+        let projectPreview = wanderlust.wanderlustPreviewHook(story, pbWeb)
         check projectPreview.status == ppsRendered
         check projectPreview.metadata.story.kind == story.kind
         check projectPreview.metadata.renderKind.len > 0

@@ -107,11 +107,11 @@ suite "M9 — Design Polish":
     ## Platform selector changes preview platform
     createRoot do (dispose: proc()):
       let vm = createEditorVM()
-      check vm.platform.val == pfWeb
+      check vm.platform.val == pbWeb
 
-      vm.platform.val = pfIOS
-      check vm.platform.val == pfIOS
+      vm.platform.val = pbCocoa
+      check vm.platform.val == pbCocoa
 
-      vm.platform.val = pfAndroid
-      check vm.platform.val == pfAndroid
+      vm.platform.val = pbAndroid
+      check vm.platform.val == pbAndroid
       dispose()

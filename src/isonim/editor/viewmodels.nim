@@ -8,8 +8,10 @@ import std/[algorithm, json, math, sequtils, strutils]
 import isonim/core/[signals, computation]
 import isonim/viewmodel
 import isonim/editor/types
+import isonim/editor/streaming_preview
 
 export types
+export streaming_preview
 
 # ===========================================================================
 # All ViewModel types (single type block for forward references)
@@ -183,6 +185,12 @@ type
     review*: ReviewResultsVM
     preview*: ProjectPreviewVM
     flowPlayer*: FlowPlayerVM
+    streamingPreview*: StreamingPreviewVM
+      ## Optional handle to the M57 streaming-preview ViewModel. When
+      ## nil the edge-strip backend switcher treats every backend as
+      ## enabled and only drives `platform`; when present the strip
+      ## drives `selectBackend` on the streaming-preview VM and mirrors
+      ## `availableBackends` into the disabled state.
     hasSelection*: Memo[bool]
 
 func isEmptyStory(story: StoryRef): bool =
@@ -481,50 +489,150 @@ func viewForStory(story: StoryRef): EditorView =
   of skComponent, skPattern, skGuideline:
     evComponentDetail
 
-func platformForViewport*(viewport: PreviewViewport): Platform =
-  case viewport
-  of pvDesktop:
-    pfWeb
-  of pvTablet:
-    pfIOS
-  of pvMobile:
-    pfAndroid
+func makeBuiltinViewport*(kind: PreviewViewportKind): PreviewViewport =
+  ## Construct a `PreviewViewport` for one of the well-known presets.
+  ## Centralises the spec's pinned/popup tables (slug, label, extent).
+  case kind
+  of pvkDesktop:
+    PreviewViewport(kind: pvkDesktop, slug: "desktop", label: "Desktop",
+      width: 1440, height: 900, isCells: false)
+  of pvkLaptop:
+    PreviewViewport(kind: pvkLaptop, slug: "laptop", label: "Laptop",
+      width: 1280, height: 800, isCells: false)
+  of pvkTablet:
+    PreviewViewport(kind: pvkTablet, slug: "tablet", label: "Tablet",
+      width: 1024, height: 768, isCells: false)
+  of pvkPhone:
+    PreviewViewport(kind: pvkPhone, slug: "phone", label: "Phone",
+      width: 390, height: 844, isCells: false)
+  of pvkTui80x24:
+    PreviewViewport(kind: pvkTui80x24, slug: "tui-80x24",
+      label: "TUI 80x24", width: 80, height: 24, isCells: true)
+  of pvkTui120x40:
+    PreviewViewport(kind: pvkTui120x40, slug: "tui-120x40",
+      label: "TUI 120x40", width: 120, height: 40, isCells: true)
+  of pvkWide:
+    PreviewViewport(kind: pvkWide, slug: "wide", label: "Wide",
+      width: 1920, height: 1080, isCells: false)
+  of pvkUltrawide:
+    PreviewViewport(kind: pvkUltrawide, slug: "ultrawide",
+      label: "Ultrawide", width: 2560, height: 1080, isCells: false)
+  of pvkPhoneSm:
+    PreviewViewport(kind: pvkPhoneSm, slug: "phone-sm", label: "Phone SM",
+      width: 360, height: 640, isCells: false)
+  of pvkPhoneXl:
+    PreviewViewport(kind: pvkPhoneXl, slug: "phone-xl", label: "Phone XL",
+      width: 430, height: 932, isCells: false)
+  of pvkCustom:
+    PreviewViewport(kind: pvkCustom, slug: "custom", label: "Custom",
+      width: 0, height: 0, isCells: false)
 
-func viewportForPlatform*(platform: Platform): PreviewViewport =
-  case platform
-  of pfWeb:
-    pvDesktop
-  of pfIOS:
-    pvTablet
-  of pfAndroid:
-    pvMobile
+func makeCustomViewport*(width, height: int; isCells = false): PreviewViewport =
+  ## User-typed custom viewport. The slug embeds the extent so route
+  ## serialisation round-trips, and the label reads like a chip.
+  let unit = if isCells: "c" else: "px"
+  PreviewViewport(
+    kind: pvkCustom,
+    slug: "custom-" & $width & "x" & $height & unit,
+    label: $width & " x " & $height &
+      (if isCells: " cells" else: ""),
+    width: width,
+    height: height,
+    isCells: isCells)
+
+func allBuiltinViewports*(): seq[PreviewViewport] =
+  ## Every built-in preset, in stable order for tests/snapshots.
+  for k in [pvkDesktop, pvkLaptop, pvkTablet, pvkPhone,
+            pvkTui80x24, pvkTui120x40,
+            pvkWide, pvkUltrawide, pvkPhoneSm, pvkPhoneXl]:
+    result.add makeBuiltinViewport(k)
+
+func defaultViewport*(backend: PreviewBackend): PreviewViewport =
+  ## Backend-aware default viewport. Spec § "Left edge — backend switcher
+  ## + screen-size switcher" pins `desktop` for the graphical backends,
+  ## `phone` for the Android backend, and `tui-80x24` for the TUI backend.
+  case backend
+  of pbTui: makeBuiltinViewport(pvkTui80x24)
+  of pbAndroid: makeBuiltinViewport(pvkPhone)
+  of pbWeb, pbGpui, pbFreya, pbCocoa: makeBuiltinViewport(pvkDesktop)
+
+func pinnedViewports*(backend: PreviewBackend): seq[PreviewViewport] =
+  ## Spec table — pinned chips per backend in render order.
+  case backend
+  of pbWeb, pbGpui, pbFreya, pbCocoa:
+    @[
+      makeBuiltinViewport(pvkDesktop),
+      makeBuiltinViewport(pvkLaptop),
+      makeBuiltinViewport(pvkTablet),
+      makeBuiltinViewport(pvkPhone),
+    ]
+  of pbAndroid:
+    @[
+      makeBuiltinViewport(pvkPhone),
+      makeBuiltinViewport(pvkTablet),
+      makeBuiltinViewport(pvkPhoneSm),
+      makeBuiltinViewport(pvkPhoneXl),
+    ]
+  of pbTui:
+    @[
+      makeBuiltinViewport(pvkTui80x24),
+      makeBuiltinViewport(pvkTui120x40),
+    ]
+
+func popupViewports*(backend: PreviewBackend): seq[PreviewViewport] =
+  ## Spec table — overflow popup contents per backend (excluding pinned
+  ## entries). Custom-entry sentinel is appended last and signalled via
+  ## `kind == pvkCustom`.
+  case backend
+  of pbWeb, pbGpui, pbFreya, pbCocoa:
+    @[
+      makeBuiltinViewport(pvkWide),
+      makeBuiltinViewport(pvkUltrawide),
+      makeBuiltinViewport(pvkPhoneSm),
+      makeBuiltinViewport(pvkPhoneXl),
+      makeBuiltinViewport(pvkCustom),
+    ]
+  of pbAndroid:
+    @[
+      makeBuiltinViewport(pvkDesktop),
+      makeBuiltinViewport(pvkLaptop),
+      makeBuiltinViewport(pvkWide),
+      makeBuiltinViewport(pvkUltrawide),
+      makeBuiltinViewport(pvkCustom),
+    ]
+  of pbTui:
+    @[
+      makeBuiltinViewport(pvkCustom),
+    ]
+
+func builtinViewportFromSlug*(slug: string): PreviewViewport =
+  ## Resolve a slug back to its built-in `PreviewViewport`. Returns the
+  ## desktop default when the slug is unknown / empty.
+  for vp in allBuiltinViewports():
+    if vp.slug == slug:
+      return vp
+  result = makeBuiltinViewport(pvkDesktop)
 
 func previewViewportLabel*(viewport: PreviewViewport): string =
-  case viewport
-  of pvDesktop:
-    "Desktop"
-  of pvTablet:
-    "Tablet"
-  of pvMobile:
-    "Mobile"
+  if viewport.label.len > 0: viewport.label
+  else: makeBuiltinViewport(viewport.kind).label
 
 func previewViewportWidth*(viewport: PreviewViewport): int =
-  case viewport
-  of pvDesktop:
-    1280
-  of pvTablet:
-    834
-  of pvMobile:
-    390
+  viewport.width
 
 func previewViewportHeight*(viewport: PreviewViewport): int =
-  case viewport
-  of pvDesktop:
-    900
-  of pvTablet:
-    1112
-  of pvMobile:
-    844
+  viewport.height
+
+func previewViewportSlug*(viewport: PreviewViewport): string =
+  if viewport.slug.len > 0: viewport.slug
+  else: makeBuiltinViewport(viewport.kind).slug
+
+func viewportsEqual*(a, b: PreviewViewport): bool =
+  ## Equality used by the edge strip active-state binding.
+  a.kind == b.kind and
+    (a.kind != pvkCustom or
+      (a.width == b.width and a.height == b.height and
+        a.isCells == b.isCells))
 
 func isShared(prop: PropertyInfo): bool =
   prop.sharedCount > 0
@@ -1864,12 +1972,28 @@ proc clearInspectorSelection*(editor: EditorVM) =
   editor.inspector.refreshLayerFlags()
 
 proc changePlatform*(editor: EditorVM; platform: Platform) =
+  ## Backwards-compatible name retained from the legacy 3-value enum.
+  ## In the unified world the "platform" axis is the preview backend, so
+  ## the only follow-on effect is making sure the viewport stays sensible
+  ## for the new backend (the existing chip is kept when it's still in
+  ## the backend's pinned set, otherwise we drop to the backend default).
   editor.platform.val = platform
-  editor.viewport.val = viewportForPlatform(platform)
+  let current = editor.viewport.val
+  let pinned = pinnedViewports(platform)
+  var keep = false
+  for chip in pinned:
+    if chip.kind == current.kind:
+      keep = true
+      break
+  if not keep and current.kind != pvkCustom:
+    editor.viewport.val = defaultViewport(platform)
 
 proc changeViewport*(editor: EditorVM; viewport: PreviewViewport) =
+  ## In the unified backend/viewport world the viewport selection no
+  ## longer feeds back into the backend. Setting the viewport just
+  ## updates the signal so the iframe / streaming bridge picks the new
+  ## extent on its next render.
   editor.viewport.val = viewport
-  editor.platform.val = platformForViewport(viewport)
 
 func importVectorDocumentSvg*(symbol: VectorSymbol; svg: string): VectorDocument
 func diagnoseUnsupportedVectorSvgFeatures*(svg: string;
@@ -3165,10 +3289,15 @@ func responsiveEditModes*(schema: DesignSystemSchema): seq[ResponsiveEditMode] =
           kind: rmkProjectDefined, sourceSpan: node.sourceSpan)
 
 func layoutModeKey*(viewport: PreviewViewport): string =
-  case viewport
-  of pvDesktop: "desktop"
-  of pvTablet: "tablet"
-  of pvMobile: "mobile"
+  ## Slug used to index per-viewport design-system overrides. Picks the
+  ## stable preset slug so existing schema files continue to resolve.
+  case viewport.kind
+  of pvkDesktop, pvkLaptop, pvkWide, pvkUltrawide: "desktop"
+  of pvkTablet: "tablet"
+  of pvkPhone, pvkPhoneSm, pvkPhoneXl: "mobile"
+  of pvkTui80x24, pvkTui120x40: "tui"
+  of pvkCustom:
+    if viewport.slug.len > 0: viewport.slug else: "custom"
 
 func layoutCommand*(family: LayoutControlFamily; property, value: string;
     scope = pesLocal; modeKey = ""; childSourceKey = "";
@@ -5880,7 +6009,8 @@ proc ensureComponentPropertySchemaForSelectedStory*(editor: EditorVM): bool {.
       prop("density", cpkDensity, "comfortable",
         @["compact", "comfortable"], 7),
       prop("platform", cpkPlatform, $editor.platform.val,
-        @["pfWeb", "pfIOS", "pfAndroid"], 8),
+        @["pbWeb", "pbTui", "pbGpui", "pbFreya", "pbCocoa", "pbAndroid"],
+        8),
       prop("ariaLabel", cpkAccessibilityLabel,
         story.group & " " & story.name, @[], 9)
     ],
@@ -9419,8 +9549,8 @@ proc createEditorVM*(): EditorVM =
   let editMode = createSignal(emView)
   let panels = createSignal(PanelVisibility(sidebar: true, inspector: true))
   let rightPanelWidth = createSignal(320)
-  let platform = createSignal(pfWeb)
-  let viewport = createSignal(pvDesktop)
+  let platform = createSignal(pbWeb)
+  let viewport = createSignal(defaultViewport(pbWeb))
   let workspacePermissions = createSignal(defaultWorkspacePermissions())
   let sourceAdapterReady = createSignal(false)
   let workspaceEditStage = createSignal(wesClean)
@@ -9491,4 +9621,5 @@ proc createEditorVM*(): EditorVM =
     review: review,
     preview: preview,
     flowPlayer: flowPlayer,
+    streamingPreview: nil,
     hasSelection: hasSelection)

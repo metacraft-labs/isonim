@@ -1902,4 +1902,57 @@ test.describe("IsoNim packaged editor example", () => {
     const narrowShot = await page.screenshot({ fullPage: true });
     expect(narrowShot.length).toBeGreaterThan(5000);
   });
+
+  test("m57_preview_pane_edge_strip_chrome_drives_mode_backend_and_viewport", async ({
+    page,
+  }) => {
+    await page.setViewportSize(desktop);
+    await page.goto("/?view=page");
+    await expect(page.locator(".editor-sidebar")).toBeVisible();
+    await expect(page.getByText("IsoNim Editor")).toBeVisible();
+
+    // The right-edge strip exposes the three preview modes.
+    const rightEdge = page.locator('[data-preview-right-edge="true"]').first();
+    await expect(rightEdge).toBeVisible();
+    const modeStrip = rightEdge.locator('[data-edge-strip="mode"]').first();
+    await expect(modeStrip).toBeVisible();
+    await expect(modeStrip).toHaveAttribute("aria-orientation", "vertical");
+    for (const slug of ["view", "comment", "edit"]) {
+      await expect(
+        modeStrip.locator(`[data-preview-mode="${slug}"]`),
+      ).toHaveCount(1);
+    }
+
+    // The left-edge backend strip exposes all six PreviewBackend values.
+    const leftEdge = page.locator('[data-preview-left-edge="true"]').first();
+    await expect(leftEdge).toBeVisible();
+    const backendStrip = leftEdge
+      .locator('[data-edge-strip="backend"]')
+      .first();
+    await expect(backendStrip).toBeVisible();
+    for (const id of ["web", "tui", "gpui", "freya", "cocoa", "android"]) {
+      await expect(
+        backendStrip.locator(`[data-preview-backend="${id}"]`),
+      ).toHaveCount(1);
+    }
+
+    // The left-edge viewport strip pins desktop/laptop/tablet/phone for the
+    // web backend, with an overflow chevron for the long-tail entries.
+    const viewportStrip = leftEdge
+      .locator('[data-edge-strip="viewport"]')
+      .first();
+    await expect(viewportStrip).toBeVisible();
+    for (const slug of ["desktop", "laptop", "tablet", "phone"]) {
+      await expect(
+        viewportStrip
+          .locator(
+            `[data-preview-viewport="${slug}"]:not([data-compact-choice-overflow-option="true"])`,
+          )
+          .first(),
+      ).toBeVisible();
+    }
+    await expect(
+      viewportStrip.locator('[data-compact-choice-overflow="true"]'),
+    ).toBeVisible();
+  });
 });

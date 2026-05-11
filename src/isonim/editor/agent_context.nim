@@ -176,4 +176,4 @@ proc editorContextToAcpContentBlocks*(story: StoryRef; element: ElementRef;
     selectedElement: element,
     accumulatedEdits: edits,
     sourceMap: sourceMap,
-    platform: pfWeb), userPrompt)
+    platform: pbWeb), userPrompt)
