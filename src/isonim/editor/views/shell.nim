@@ -676,6 +676,121 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
             r.bindSidebarSectionState(sectionHeader, sectionDisclosure,
               sectionBody, vm, section)
 
+proc bindBackendChip[R, E](r: R; chip: E; vm: EditorVM;
+    backend: PreviewBackend) =
+  ## Rewire the backend chip's reactive bits (aria-pressed, accent
+  ## fill, font weight, text colour) to track `vm.platform`. Called
+  ## from `renderPreviewLeftEdge` once per visible chip so the active
+  ## chip flips without rebuilding the strip.
+  ##
+  ## Also installs a click / keydown listener that dispatches the
+  ## backend change *every* time, regardless of the snapshot-time
+  ## enabled flag the choice-row macro baked into its own
+  ## `compactChoiceHandler` capture. Reason: the chip's enabled flag
+  ## depends on `vm.streamingPreview.availableBackends`, which may
+  ## itself flip after construction; the choice-row's captured handler
+  ## would otherwise refuse the click for ever. The platform handler
+  ## already checks availability internally before forwarding to
+  ## `selectBackend`.
+  let captured = backend
+  createRenderEffect proc() =
+    let selected = vm.platform.val == captured
+    let available =
+      if vm.streamingPreview != nil:
+        vm.streamingPreview.backendIsAvailable(captured)
+      else:
+        true
+    r.setAttribute(chip, "aria-pressed", if selected: "true" else: "false")
+    r.setStyle(chip, "background-color",
+      if selected: accent & "55" else: "transparent")
+    r.setStyle(chip, "color",
+      if available: (if selected: textPrimary else: textMuted) else: textDim)
+    r.setStyle(chip, "font-weight", if selected: "700" else: "500")
+    r.setStyle(chip, "box-shadow",
+      if selected: "inset 0 0 0 1px rgba(147,197,253,.28)" else: "none")
+    r.setAttribute(chip, "data-preview-backend-available",
+      if available: "true" else: "false")
+    r.setAttribute(chip, "aria-disabled",
+      if available: "false" else: "true")
+    r.setAttribute(chip, "data-compact-choice-enabled",
+      if available: "true" else: "false")
+    r.setAttribute(chip, "tabindex",
+      if available: "0" else: "-1")
+  let liveHandler = platformHandler(vm, captured)
+  let availabilityCheck = proc() =
+    let okNow =
+      if vm.streamingPreview != nil:
+        vm.streamingPreview.backendIsAvailable(captured)
+      else:
+        true
+    if okNow:
+      liveHandler()
+  r.addEventListener(chip, "click", availabilityCheck)
+  r.addEventListener(chip, "keydown", availabilityCheck)
+
+proc bindViewportChip[R, E](r: R; chip: E; vm: EditorVM;
+    viewport: PreviewViewport) =
+  ## Rewire the viewport chip's reactive bits to track `vm.viewport`.
+  ## Also installs a live click listener so the chip dispatches the
+  ## viewport change regardless of any stale `enabled` capture inside
+  ## the choice-row's compactChoiceHandler.
+  let captured = viewport
+  createRenderEffect proc() =
+    let selected = viewportsEqual(vm.viewport.val, captured)
+    r.setAttribute(chip, "aria-pressed", if selected: "true" else: "false")
+    r.setStyle(chip, "background-color",
+      if selected: accent & "55" else: "transparent")
+    r.setStyle(chip, "color",
+      if selected: textPrimary else: textMuted)
+    r.setStyle(chip, "font-weight", if selected: "700" else: "500")
+    r.setStyle(chip, "box-shadow",
+      if selected: "inset 0 0 0 1px rgba(147,197,253,.28)" else: "none")
+  let liveHandler = viewportSelectHandler(vm, captured)
+  r.addEventListener(chip, "click", liveHandler)
+  r.addEventListener(chip, "keydown", liveHandler)
+
+proc bindModeChip[R, E](r: R; chip: E; vm: EditorVM;
+    mode: EditMode) =
+  ## Rewire the mode chip's reactive bits to track `vm.editMode` and
+  ## the per-mode command-enabled state.
+  ##
+  ## Like `bindBackendChip`, this also installs a live event listener
+  ## so the chip's onClick path bypasses the snapshot-time `enabled`
+  ## capture that the choice-row's compactChoiceHandler bakes in. The
+  ## per-mode command (eckInspect / eckComment / eckEdit) is gated by
+  ## `vm.runEditorCommand` itself, which re-evaluates the requirement
+  ## on every invocation; deferring to the VM avoids the stale-capture
+  ## class of bug that motivated this fix.
+  let captured = mode
+  let command = case mode
+    of emView: eckInspect
+    of emComment: eckComment
+    of emEdit: eckEdit
+  let capturedCommand = command
+  createRenderEffect proc() =
+    let selected = vm.editMode.val == captured
+    let state = vm.evaluateCommand(capturedCommand)
+    let enabled = state.status != ecsDisabled
+    r.setAttribute(chip, "aria-pressed", if selected: "true" else: "false")
+    r.setStyle(chip, "background-color",
+      if selected: accent & "55" else: "transparent")
+    r.setStyle(chip, "color",
+      if enabled: (if selected: textPrimary else: textMuted) else: textDim)
+    r.setStyle(chip, "font-weight", if selected: "700" else: "500")
+    r.setStyle(chip, "box-shadow",
+      if selected: "inset 0 0 0 1px rgba(147,197,253,.28)" else: "none")
+    r.setAttribute(chip, "data-preview-mode-disabled",
+      if enabled: "false" else: "true")
+    r.setAttribute(chip, "aria-disabled",
+      if enabled: "false" else: "true")
+    r.setAttribute(chip, "data-compact-choice-enabled",
+      if enabled: "true" else: "false")
+    r.setAttribute(chip, "tabindex",
+      if enabled: "0" else: "-1")
+  let liveHandler = editModeHandler(vm, captured)
+  r.addEventListener(chip, "click", liveHandler)
+  r.addEventListener(chip, "keydown", liveHandler)
+
 proc renderPreviewLeftEdge*[R, E](r: R; vm: EditorVM): E =
   ## Left-edge column: the M57 preview-pane chrome's backend switcher
   ## stacked on top of the screen-size switcher. Both groups follow the
@@ -683,6 +798,11 @@ proc renderPreviewLeftEdge*[R, E](r: R; vm: EditorVM): E =
   ## (see `renderCompactChoiceColumn`). The strip is the same on every
   ## active editor view, so the consumer mounts it once next to the
   ## center column.
+  ##
+  ## The chip strip itself is built once via `renderCompactChoiceColumn`;
+  ## the active-state styling on each chip then tracks `vm.platform` /
+  ## `vm.viewport` via `createRenderEffect` so flipping a signal does
+  ## not require re-running this proc.
   result = ui(r):
     tdiv(display = "flex", flex_direction = "column",
           gap = "8px",
@@ -727,11 +847,18 @@ proc renderPreviewLeftEdge*[R, E](r: R; vm: EditorVM): E =
       ("data-edge-strip", "backend"),
       ("data-preview-edge-group", "backend")])
   r.appendChild(result, backendColumn.root)
+  # Wire the backend chips' active-state styling to vm.platform; the
+  # column's per-chip aria-pressed / background colour now flip
+  # without re-rendering the strip.
+  for k in 0 ..< backendColumn.optionNodes.len:
+    let idx = backendColumn.optionIndexes[k]
+    r.bindBackendChip(backendColumn.optionNodes[k], vm, backends[idx])
 
   var viewportOptions: seq[CompactChoiceOption] = @[]
   let pinnedForBackend = pinnedViewports(vm.platform.val)
   let popupForBackend = popupViewports(vm.platform.val)
   let activeViewport = vm.viewport.val
+  var allViewports: seq[PreviewViewport] = @[]
   for vp in pinnedForBackend:
     let captured = vp
     viewportOptions.add CompactChoiceOption(
@@ -744,6 +871,7 @@ proc renderPreviewLeftEdge*[R, E](r: R; vm: EditorVM): E =
         ("data-preview-viewport", vp.slug),
         ("data-preview-viewport-pinned", "true")],
       onChoose: viewportSelectHandler(vm, captured))
+    allViewports.add vp
   for vp in popupForBackend:
     let captured = vp
     viewportOptions.add CompactChoiceOption(
@@ -756,6 +884,7 @@ proc renderPreviewLeftEdge*[R, E](r: R; vm: EditorVM): E =
         ("data-preview-viewport", vp.slug),
         ("data-preview-viewport-pinned", "false")],
       onChoose: viewportSelectHandler(vm, captured))
+    allViewports.add vp
 
   let viewportColumn = renderCompactChoiceColumn[R, E](r,
     ariaLabel = "Preview screen size",
@@ -767,6 +896,10 @@ proc renderPreviewLeftEdge*[R, E](r: R; vm: EditorVM): E =
       ("data-edge-strip", "viewport"),
       ("data-preview-edge-group", "viewport")])
   r.appendChild(result, viewportColumn.root)
+  for k in 0 ..< viewportColumn.optionNodes.len:
+    let idx = viewportColumn.optionIndexes[k]
+    if idx >= 0 and idx < allViewports.len:
+      r.bindViewportChip(viewportColumn.optionNodes[k], vm, allViewports[idx])
 
 proc renderPreviewRightEdge*[R, E](r: R; vm: EditorVM): E =
   ## Right-edge column: the M57 preview-pane chrome's View / Comment /
@@ -817,6 +950,11 @@ proc renderPreviewRightEdge*[R, E](r: R; vm: EditorVM): E =
       ("data-edge-strip", "mode"),
       ("data-preview-edge-group", "mode")])
   r.appendChild(result, modeColumn.root)
+  # Wire the mode chips' active-state styling to vm.editMode so the
+  # right-edge strip flips without re-rendering.
+  for k in 0 ..< modeColumn.optionNodes.len:
+    let idx = modeColumn.optionIndexes[k]
+    r.bindModeChip(modeColumn.optionNodes[k], vm, modes[idx])
 
 proc renderPreviewPane*[R, E](r: R; vm: EditorVM): E =
   ## Center panel: component preview with M57 edge-strip chrome.

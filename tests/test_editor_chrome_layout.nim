@@ -11,7 +11,6 @@
 import std/[sequtils, tables, unittest]
 import isonim/core/[signals, computation, owner]
 import isonim/testing/mock_dom
-import isonim/viewmodel
 import isonim/editor/viewmodels
 import isonim/editor/types
 import isonim/editor/streaming_preview
@@ -527,4 +526,69 @@ suite "M57 renderPreviewPane edge strips":
       check edit != nil
       edit.fireEvent("click")
       check vm.editMode.val == emEdit
+      dispose()
+
+suite "M57 edge-strip reactivity":
+
+  test "backend strip flips aria-pressed when vm.platform changes without re-render":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      let pane = renderPreviewPane[MockRenderer, MockNode](r, vm)
+      let strip = findByAttr(pane, "data-edge-strip", "backend")
+      check strip != nil
+      let webBtn = findByAttr(strip, "data-preview-backend", "web")
+      let tuiBtn = findByAttr(strip, "data-preview-backend", "tui")
+      check webBtn != nil
+      check tuiBtn != nil
+      # Initial: web is active.
+      check webBtn.attributes["aria-pressed"] == "true"
+      check tuiBtn.attributes["aria-pressed"] == "false"
+      # Flip the signal — do NOT re-run renderPreviewPane.
+      vm.changePlatform(pbTui)
+      # The same DOM nodes must reflect the new active backend.
+      check webBtn.attributes["aria-pressed"] == "false"
+      check tuiBtn.attributes["aria-pressed"] == "true"
+      # And the background/color/font-weight must follow the active flag.
+      check tuiBtn.styles.getOrDefault("font-weight") == "700"
+      check webBtn.styles.getOrDefault("font-weight") == "500"
+      dispose()
+
+  test "mode strip flips aria-pressed when vm.editMode changes without re-render":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.selectedStory.val = StoryRef(group: "Components", name: "Sample",
+        kind: skComponent, index: 0)
+      let pane = renderPreviewPane[MockRenderer, MockNode](r, vm)
+      let strip = findByAttr(pane, "data-edge-strip", "mode")
+      check strip != nil
+      let viewBtn = findByAttr(strip, "data-preview-mode", "view")
+      let commentBtn = findByAttr(strip, "data-preview-mode", "comment")
+      check viewBtn != nil
+      check commentBtn != nil
+      check viewBtn.attributes["aria-pressed"] == "true"
+      check commentBtn.attributes["aria-pressed"] == "false"
+      vm.setEditMode(emComment)
+      check viewBtn.attributes["aria-pressed"] == "false"
+      check commentBtn.attributes["aria-pressed"] == "true"
+      dispose()
+
+  test "viewport strip flips aria-pressed when vm.viewport changes without re-render":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      let pane = renderPreviewPane[MockRenderer, MockNode](r, vm)
+      let strip = findByAttr(pane, "data-edge-strip", "viewport")
+      check strip != nil
+      # Web pins desktop/laptop/tablet/phone; desktop is the default.
+      let desktopBtn = findByAttr(strip, "data-preview-viewport", "desktop")
+      let tabletBtn = findByAttr(strip, "data-preview-viewport", "tablet")
+      check desktopBtn != nil
+      check tabletBtn != nil
+      check desktopBtn.attributes["aria-pressed"] == "true"
+      check tabletBtn.attributes["aria-pressed"] == "false"
+      vm.changeViewport(makeBuiltinViewport(pvkTablet))
+      check desktopBtn.attributes["aria-pressed"] == "false"
+      check tabletBtn.attributes["aria-pressed"] == "true"
       dispose()
