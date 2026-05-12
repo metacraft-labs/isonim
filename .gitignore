@@ -57,3 +57,5 @@ examples/streaming_stress/mock_db
 examples/streaming_stress/db_client
 examples/streaming_stress/server
 examples/streaming_stress/streaming_handler
+tests/test_native_hcr_shim
+tests/_build/
