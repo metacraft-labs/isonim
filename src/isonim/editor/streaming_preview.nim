@@ -152,6 +152,21 @@ func backendId*(b: PreviewBackend): string =
   of pbCocoa: "cocoa"
   of pbAndroid: "android"
 
+func backendFromId*(id: string): PreviewBackend =
+  ## Inverse of `backendId`. Used by the M58 thunk-driven chip rebuild
+  ## path to recover the `PreviewBackend` enum value from the
+  ## `data-preview-backend` data attribute baked into each chip option.
+  ## Returns `pbWeb` for unrecognised inputs (callers normally only feed
+  ## values produced by `backendId` so this is a guard, not a contract).
+  case id
+  of "web": pbWeb
+  of "tui": pbTui
+  of "gpui": pbGpui
+  of "freya": pbFreya
+  of "cocoa": pbCocoa
+  of "android": pbAndroid
+  else: pbWeb
+
 func backendNeedsRenderServe*(b: PreviewBackend): bool =
   ## True if the back-end is served by `isonim-render-serve`
   ## (i.e. not Web and not TUI, which have other transports).

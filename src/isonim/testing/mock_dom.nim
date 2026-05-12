@@ -38,6 +38,10 @@ type
     ## Mock renderer backend for unit testing.
 
 var nextMockNodeId* {.threadvar.}: int
+var mockActiveElement* {.threadvar.}: MockNode
+  ## Test-time stand-in for `document.activeElement`. Updated by
+  ## `r.focus(node)`; cleared when the focused node is detached from
+  ## its parent via `removeChild`.
 
 # Type alias for the abstract_renderer concept check
 type ElementHandle* = MockNode
@@ -66,10 +70,39 @@ proc createTextNode*(r: MockRenderer; text: string): MockNode =
   )
 
 proc appendChild*(r: MockRenderer; parent, child: MockNode) =
+  ## Mirrors the browser `Node.appendChild` semantics: if `child` is
+  ## already attached (possibly to `parent` at a different index), it is
+  ## detached from its current position first, then appended to the end
+  ## of `parent.children`. Focus on the moved node survives — real
+  ## browsers preserve `document.activeElement` across same-tree moves.
+  if child.parent != nil:
+    let oldParent = child.parent
+    var oldIdx = -1
+    for i, c in oldParent.children:
+      if c == child:
+        oldIdx = i
+        break
+    if oldIdx >= 0:
+      oldParent.children.delete(oldIdx)
   child.parent = parent
   parent.children.add(child)
 
 proc insertBefore*(r: MockRenderer; parent, child, reference: MockNode) =
+  ## Mirrors the browser `Node.insertBefore(child, reference)` semantics:
+  ## if `child` already has a parent (possibly the same `parent`), it is
+  ## detached from its current position first, then re-inserted at the
+  ## reference's slot. Crucially, this preserves focus — moving a
+  ## focused node within its parent does NOT clear `document.activeElement`
+  ## in real browsers.
+  if child.parent != nil:
+    let oldParent = child.parent
+    var oldIdx = -1
+    for i, c in oldParent.children:
+      if c == child:
+        oldIdx = i
+        break
+    if oldIdx >= 0:
+      oldParent.children.delete(oldIdx)
   child.parent = parent
   var idx = -1
   for i, c in parent.children:
@@ -90,6 +123,17 @@ proc removeChild*(r: MockRenderer; parent, child: MockNode) =
       break
   if idx >= 0:
     parent.children.delete(idx)
+  if mockActiveElement == child:
+    mockActiveElement = nil
+
+proc focus*(r: MockRenderer; node: MockNode) =
+  ## Mark `node` as the focused element in the mock DOM. Mirrors the
+  ## browser's `HTMLElement.focus()` API minus the scroll behaviour.
+  mockActiveElement = node
+
+proc activeElement*(r: MockRenderer): MockNode =
+  ## Returns the currently-focused mock element, or nil.
+  mockActiveElement
 
 proc setAttribute*(r: MockRenderer; node: MockNode; name, value: string) =
   node.attributes[name] = value

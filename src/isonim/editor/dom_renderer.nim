@@ -107,3 +107,13 @@ proc nextSibling*(r: DomRenderer; node: DomElement): DomElement =
 
 proc parentNode*(r: DomRenderer; node: DomElement): DomElement =
   node.parentElement
+
+proc focus*(r: DomRenderer; node: DomElement) =
+  ## Move keyboard focus to `node`. Used by the M58 choice-column rebuild
+  ## to transfer focus to the active chip when a focused chip is removed
+  ## by a backend-driven re-pin of the chip set.
+  {.emit: [node, ".focus({preventScroll: true})"].}
+
+proc activeElement*(r: DomRenderer): DomElement =
+  ## Returns the currently-focused DOM element (or nil).
+  cast[Element](document.activeElement)

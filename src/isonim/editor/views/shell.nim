@@ -791,31 +791,22 @@ proc bindModeChip[R, E](r: R; chip: E; vm: EditorVM;
   r.addEventListener(chip, "click", liveHandler)
   r.addEventListener(chip, "keydown", liveHandler)
 
-proc renderPreviewLeftEdge*[R, E](r: R; vm: EditorVM): E =
-  ## Left-edge column: the M57 preview-pane chrome's backend switcher
-  ## stacked on top of the screen-size switcher. Both groups follow the
-  ## compact segmented-strip idiom from the inspector choice-row pattern
-  ## (see `renderCompactChoiceColumn`). The strip is the same on every
-  ## active editor view, so the consumer mounts it once next to the
-  ## center column.
-  ##
-  ## The chip strip itself is built once via `renderCompactChoiceColumn`;
-  ## the active-state styling on each chip then tracks `vm.platform` /
-  ## `vm.viewport` via `createRenderEffect` so flipping a signal does
-  ## not require re-running this proc.
-  result = ui(r):
-    tdiv(display = "flex", flex_direction = "column",
-          gap = "8px",
-          padding = "8px 4px",
-          background_color = bgToolbar,
-          border_right = "1px solid " & border,
-          `data-preview-left-edge` = "true")
+proc backendsForLeftEdge(): array[6, PreviewBackend] =
+  [pbWeb, pbTui, pbGpui, pbFreya, pbCocoa, pbAndroid]
 
-  const backends = [pbWeb, pbTui, pbGpui, pbFreya, pbCocoa, pbAndroid]
-  const backendShortLabels =
-    ["Web", "TUI", "GPU", "Frya", "Coc", "And"]
+proc backendShortLabelsForLeftEdge(): array[6, string] =
+  ["Web", "TUI", "GPU", "Frya", "Coc", "And"]
 
-  var backendOptions: seq[CompactChoiceOption] = @[]
+proc buildBackendOptions(vm: EditorVM): seq[CompactChoiceOption] =
+  ## M58: the backend strip's option list is now produced by a thunk so
+  ## the column's `createRenderEffect` re-runs and diffs the chip set
+  ## whenever `vm.platform` or `vm.streamingPreview.availableBackends`
+  ## change. Today the backend ENUM list is fixed; the availability flag
+  ## is what flips per option, but routing it through the thunk gives
+  ## the column a single reactive idiom shared with the viewport strip.
+  result = @[]
+  let backends = backendsForLeftEdge()
+  let backendShortLabels = backendShortLabelsForLeftEdge()
   let active = vm.platform.val
   for i in 0 ..< backends.len:
     let b = backends[i]
@@ -825,7 +816,7 @@ proc renderPreviewLeftEdge*[R, E](r: R; vm: EditorVM): E =
       else:
         true
     let captured = b
-    backendOptions.add CompactChoiceOption(
+    result.add CompactChoiceOption(
       label: backendLabel(b),
       shortLabel: backendShortLabels[i],
       ariaLabel: "Preview backend " & backendLabel(b),
@@ -837,31 +828,19 @@ proc renderPreviewLeftEdge*[R, E](r: R; vm: EditorVM): E =
           if available: "true" else: "false")],
       onChoose: platformHandler(vm, captured))
 
-  let backendColumn = renderCompactChoiceColumn[R, E](r,
-    ariaLabel = "Preview backend",
-    options = backendOptions,
-    visibleLimit = backends.len,
-    chipWidth = "46px",
-    chipHeight = "22px",
-    dataAttrs = @[
-      ("data-edge-strip", "backend"),
-      ("data-preview-edge-group", "backend")])
-  r.appendChild(result, backendColumn.root)
-  # Wire the backend chips' active-state styling to vm.platform; the
-  # column's per-chip aria-pressed / background colour now flip
-  # without re-rendering the strip.
-  for k in 0 ..< backendColumn.optionNodes.len:
-    let idx = backendColumn.optionIndexes[k]
-    r.bindBackendChip(backendColumn.optionNodes[k], vm, backends[idx])
-
-  var viewportOptions: seq[CompactChoiceOption] = @[]
-  let pinnedForBackend = pinnedViewports(vm.platform.val)
-  let popupForBackend = popupViewports(vm.platform.val)
+proc buildViewportOptions(vm: EditorVM): seq[CompactChoiceOption] =
+  ## M58 thunk producing the viewport strip's option list. Reading
+  ## `vm.platform.val` here registers the column's rebuild effect with
+  ## the platform signal so switching backend flips the pinned chip
+  ## set in place.
+  result = @[]
+  let backend = vm.platform.val
+  let pinnedForBackend = pinnedViewports(backend)
+  let popupForBackend = popupViewports(backend)
   let activeViewport = vm.viewport.val
-  var allViewports: seq[PreviewViewport] = @[]
   for vp in pinnedForBackend:
     let captured = vp
-    viewportOptions.add CompactChoiceOption(
+    result.add CompactChoiceOption(
       label: vp.label,
       shortLabel: vp.label,
       ariaLabel: "Preview viewport " & vp.label,
@@ -871,10 +850,9 @@ proc renderPreviewLeftEdge*[R, E](r: R; vm: EditorVM): E =
         ("data-preview-viewport", vp.slug),
         ("data-preview-viewport-pinned", "true")],
       onChoose: viewportSelectHandler(vm, captured))
-    allViewports.add vp
   for vp in popupForBackend:
     let captured = vp
-    viewportOptions.add CompactChoiceOption(
+    result.add CompactChoiceOption(
       label: vp.label,
       shortLabel: vp.label,
       ariaLabel: "Preview viewport " & vp.label,
@@ -884,38 +862,111 @@ proc renderPreviewLeftEdge*[R, E](r: R; vm: EditorVM): E =
         ("data-preview-viewport", vp.slug),
         ("data-preview-viewport-pinned", "false")],
       onChoose: viewportSelectHandler(vm, captured))
-    allViewports.add vp
 
+proc viewportFromChipOption(option: CompactChoiceOption): PreviewViewport =
+  ## Recover the `PreviewViewport` enum value from a chip's data
+  ## attributes; the M58 thunk path needs this because
+  ## `onChipMounted` only sees the option, not the original viewport
+  ## list.
+  for (key, value) in option.dataAttrs:
+    if key == "data-preview-viewport":
+      return builtinViewportFromSlug(value)
+  result = builtinViewportFromSlug("desktop")
+
+proc modeFromChipOption(option: CompactChoiceOption): EditMode =
+  for (key, value) in option.dataAttrs:
+    if key == "data-preview-mode":
+      case value
+      of "view": return emView
+      of "comment": return emComment
+      of "edit": return emEdit
+      else: discard
+  result = emView
+
+proc renderPreviewLeftEdge*[R, E](r: R; vm: EditorVM): E =
+  ## Left-edge column: the M57 preview-pane chrome's backend switcher
+  ## stacked on top of the screen-size switcher. Both groups follow the
+  ## compact segmented-strip idiom from the inspector choice-row pattern
+  ## (see `renderCompactChoiceColumn`). The strip is the same on every
+  ## active editor view, so the consumer mounts it once next to the
+  ## center column.
+  ##
+  ## M58: the chip set itself is now reactive — the thunk overload of
+  ## `renderCompactChoiceColumn` re-evaluates the option list on each
+  ## `createRenderEffect` tick and diffs / patches DOM. Per-chip
+  ## reactive bindings (aria-pressed, fill, availability) are still
+  ## installed by the M57 helpers (`bindBackendChip`, `bindViewportChip`)
+  ## — they are now invoked via `onChipMounted` for newly-added chips.
+  result = ui(r):
+    tdiv(display = "flex", flex_direction = "column",
+          gap = "8px",
+          padding = "8px 4px",
+          background_color = bgToolbar,
+          border_right = "1px solid " & border,
+          `data-preview-left-edge` = "true")
+
+  let backends = backendsForLeftEdge()
+  let backendCount = backends.len
+  let capturedVm = vm
+
+  let backendThunk = proc(): seq[CompactChoiceOption] =
+    buildBackendOptions(capturedVm)
+
+  let backendOnChipMounted = proc(node: E; option: CompactChoiceOption;
+      index: int) =
+    var backendId = ""
+    for (key, value) in option.dataAttrs:
+      if key == "data-preview-backend":
+        backendId = value
+        break
+    let b = backendFromId(backendId)
+    r.bindBackendChip(node, capturedVm, b)
+
+  let backendColumn = renderCompactChoiceColumn[R, E](r,
+    ariaLabel = "Preview backend",
+    optionsThunk = backendThunk,
+    visibleLimit = backendCount,
+    chipWidth = "46px",
+    chipHeight = "22px",
+    dataAttrs = @[
+      ("data-edge-strip", "backend"),
+      ("data-preview-edge-group", "backend")],
+    onChipMounted = backendOnChipMounted)
+  r.appendChild(result, backendColumn.root)
+
+  let viewportThunk = proc(): seq[CompactChoiceOption] =
+    buildViewportOptions(capturedVm)
+
+  let viewportVisibleLimitThunk = proc(): int =
+    pinnedViewports(capturedVm.platform.val).len
+
+  let viewportOnChipMounted = proc(node: E; option: CompactChoiceOption;
+      index: int) =
+    let vp = viewportFromChipOption(option)
+    r.bindViewportChip(node, capturedVm, vp)
+
+  # Pinned-count is itself a function of vm.platform; the thunk
+  # `viewportVisibleLimitThunk` reads it on every column-rebuild tick so
+  # the chevron threshold updates when the backend changes.
   let viewportColumn = renderCompactChoiceColumn[R, E](r,
     ariaLabel = "Preview screen size",
-    options = viewportOptions,
-    visibleLimit = pinnedForBackend.len,
+    optionsThunk = viewportThunk,
+    visibleLimitThunk = viewportVisibleLimitThunk,
     chipWidth = "46px",
     chipHeight = "22px",
     dataAttrs = @[
       ("data-edge-strip", "viewport"),
-      ("data-preview-edge-group", "viewport")])
+      ("data-preview-edge-group", "viewport")],
+    onChipMounted = viewportOnChipMounted)
   r.appendChild(result, viewportColumn.root)
-  for k in 0 ..< viewportColumn.optionNodes.len:
-    let idx = viewportColumn.optionIndexes[k]
-    if idx >= 0 and idx < allViewports.len:
-      r.bindViewportChip(viewportColumn.optionNodes[k], vm, allViewports[idx])
 
-proc renderPreviewRightEdge*[R, E](r: R; vm: EditorVM): E =
-  ## Right-edge column: the M57 preview-pane chrome's View / Comment /
-  ## Edit mode toggle.
-  result = ui(r):
-    tdiv(display = "flex", flex_direction = "column",
-          padding = "8px 4px",
-          background_color = bgToolbar,
-          border_left = "1px solid " & border,
-          `data-preview-right-edge` = "true")
-
+proc buildModeOptions(vm: EditorVM): seq[CompactChoiceOption] =
+  ## M58 thunk for the mode-strip option list. The set is statically
+  ## three entries — the migration to the thunk pattern is for idiom
+  ## uniformity with the left-edge strips (per the M58 spec).
   const modes = [emView, emComment, emEdit]
   const modeLabels = ["View", "Comment", "Edit"]
   const modeShorts = ["View", "Cmt", "Edit"]
-
-  var modeOptions: seq[CompactChoiceOption] = @[]
   let activeMode = vm.editMode.val
   for i in 0 ..< modes.len:
     let mode = modes[i]
@@ -925,10 +976,7 @@ proc renderPreviewRightEdge*[R, E](r: R; vm: EditorVM): E =
       of emComment: eckComment
       of emEdit: eckEdit
     let state = vm.evaluateCommand(command)
-    # The edge-strip mode chips use a distinct aria-label so existing
-    # tests that target the per-view "Switch to X mode" buttons still
-    # disambiguate. The new chips advertise their edge-strip provenance.
-    modeOptions.add CompactChoiceOption(
+    result.add CompactChoiceOption(
       label: modeLabels[i],
       shortLabel: modeShorts[i],
       ariaLabel: "Preview mode " & modeLabels[i],
@@ -940,21 +988,39 @@ proc renderPreviewRightEdge*[R, E](r: R; vm: EditorVM): E =
           if state.status == ecsDisabled: "true" else: "false")],
       onChoose: editModeHandler(vm, captured))
 
+proc renderPreviewRightEdge*[R, E](r: R; vm: EditorVM): E =
+  ## Right-edge column: the M57 preview-pane chrome's View / Comment /
+  ## Edit mode toggle. M58: migrated to the thunk overload of
+  ## `renderCompactChoiceColumn` for idiom uniformity with the left-edge
+  ## strips; the mode option set is statically three entries so the
+  ## thunk returns the same seq every tick.
+  result = ui(r):
+    tdiv(display = "flex", flex_direction = "column",
+          padding = "8px 4px",
+          background_color = bgToolbar,
+          border_left = "1px solid " & border,
+          `data-preview-right-edge` = "true")
+
+  let capturedVm = vm
+  let modeThunk = proc(): seq[CompactChoiceOption] =
+    buildModeOptions(capturedVm)
+
+  let modeOnChipMounted = proc(node: E; option: CompactChoiceOption;
+      index: int) =
+    let mode = modeFromChipOption(option)
+    r.bindModeChip(node, capturedVm, mode)
+
   let modeColumn = renderCompactChoiceColumn[R, E](r,
     ariaLabel = "Preview mode",
-    options = modeOptions,
-    visibleLimit = modes.len,
+    optionsThunk = modeThunk,
+    visibleLimit = 3,
     chipWidth = "44px",
     chipHeight = "26px",
     dataAttrs = @[
       ("data-edge-strip", "mode"),
-      ("data-preview-edge-group", "mode")])
+      ("data-preview-edge-group", "mode")],
+    onChipMounted = modeOnChipMounted)
   r.appendChild(result, modeColumn.root)
-  # Wire the mode chips' active-state styling to vm.editMode so the
-  # right-edge strip flips without re-rendering.
-  for k in 0 ..< modeColumn.optionNodes.len:
-    let idx = modeColumn.optionIndexes[k]
-    r.bindModeChip(modeColumn.optionNodes[k], vm, modes[idx])
 
 proc renderPreviewPane*[R, E](r: R; vm: EditorVM): E =
   ## Center panel: component preview with M57 edge-strip chrome.
