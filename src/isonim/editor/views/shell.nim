@@ -24,19 +24,21 @@ import isonim/editor/views/chat_panel
 const
   editorProductName = "IsoNim Editor"
   editorVersion = "0.1.0"
-  bgBase = "#0B1120"
-  bgSurface = "#1E293B"
-  bgSidebar = "#111827"
-  bgToolbar = "#151D2E"
-  border = "#334155"
-  borderStrong = "#475569"
-  borderFaint = "#1E293B"
-  textPrimary = "#F1F5F9"
-  textSecondary = "#94A3B8"
-  textMuted = "#64748B"
-  textDim = "#475569"
-  accent = "#3B82F6"
-  accentSoft = "#1E3A5F"
+  bgBase = "#0D0E14"
+  bgSurface = "#1A1B26"
+  bgSidebar = "#15161F"
+  bgToolbar = "#16171F"
+  bgEdgeStrip = "#0B0C12"
+  border = "#2A2C3A"
+  borderStrong = "#363849"
+  borderFaint = "#1F212C"
+  textPrimary = "#ECEDF3"
+  textSecondary = "#9CA0B0"
+  textMuted = "#6B6F80"
+  textDim = "#4A4D5C"
+  accent = "#7C7AED"
+  accentSoft = "#272752"
+  accentHot = "#A5A4F3"
 
 const inspectorSections = [
   isLayout, isSize, isSpacing, isPosition, isFill, isStroke, isTypography,
@@ -418,24 +420,23 @@ proc renderStatusBar[R, E](r: R; vm: EditorVM): E =
   createRenderEffect proc() =
     r.clearChildren(statusBadges)
     let selected = vm.inspector.selectedElement.val
-    let dirty = if vm.inspector.isDirty.val: "dirty" else: "clean"
-    let write = writeBridgeStateLabel(vm.writeBridgeClientState())
     let mode = case vm.editMode.val
       of emView: "View"
       of emComment: "Comment"
       of emEdit: "Edit"
-    for badge in [
-      "mode " & mode,
-      "element " & (if selected.tag.len > 0: selected.tag else: "none"),
-      dirty,
-      "scope " & selectedScopeLabel(selected),
-      "binding " & selectedOriginLabel(selected),
-      "write " & write
-    ]:
+    # Compact status badges — show only the user-meaningful state. The
+    # scope/binding/dirty/write badges are dev-only diagnostics and now
+    # live behind the telemetry overlay; the status bar reads as a single
+    # quiet line: "mode · selection".
+    var badges: seq[string] = @[mode]
+    if selected.tag.len > 0:
+      badges.add selected.tag
+    for i in 0 ..< badges.len:
+      let badgeText = badges[i]
       let node = ui(r):
         span(white_space = "nowrap", color = textDim,
               font_size = "10px"):
-          text badge
+          text badgeText
       r.appendChild(statusBadges, node)
 
     r.clearChildren(breadcrumbNode)
@@ -541,11 +542,12 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
                     border_radius = "5px", cursor = "pointer",
                     background_color = (
                         if sExpanded: bgSurface else: "transparent")):
-                span(font_size = "12px", color = accent):
+                span(font_size = "10px", color = textMuted,
+                      opacity = "0.85"):
                   text sIcon
-                span(font_size = "11px", font_weight = "800",
-                      color = textPrimary, text_transform = "uppercase",
-                      letter_spacing = "0.8px"):
+                span(font_size = "10px", font_weight = "600",
+                      color = textMuted, text_transform = "uppercase",
+                      letter_spacing = "0.9px"):
                   text sLabel
               tdiv(ref = sectionDisclosure,
                     display = "flex", align_items = "center",
@@ -602,11 +604,11 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
                               if gShowsStories: toggleGroup else: openJourney),
                           gap = "6px", padding = "5px 8px 5px 18px",
                           border_radius = "4px", cursor = "pointer"):
-                      span(font_size = "11px", color = textSecondary):
+                      span(font_size = "10px", color = textMuted):
                         text gIcon
-                      span(font_size = "10px", font_weight = "700",
-                            color = textSecondary, text_transform = "uppercase",
-                            letter_spacing = "0.7px"):
+                      span(font_size = "12px", font_weight = "500",
+                            color = textPrimary,
+                            letter_spacing = "0.1px"):
                         text gName
                       span(ref = groupChevron,
                             font_size = "9px", color = textMuted,
@@ -621,7 +623,6 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
                         var itemIdx = 0
                         for item in gItems:
                           let iName = $item.name
-                          let iDesc = $item.description
                           let iGroup = $item.group
                           let iKind = item.kind
                           let story = StoryRef(group: iGroup, name: iName,
@@ -654,13 +655,11 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
                                 background_color = storyBackground,
                                 border_left = storyBorder):
                             span(font_size = "12px", line_height = "1.4",
-                                  color = textPrimary,
+                                  color = (
+                                      if selected: textPrimary
+                                      else: textSecondary),
                                   font_weight = storyWeight):
                               text iName
-                            if iDesc.len > 0:
-                              span(font_size = "11px", color = textMuted,
-                                    line_height = "1.3", margin_top = "2px"):
-                                text iDesc
                           block:
                             r.bindSidebarStoryState(storyNode, vm, story)
                             r.bindSidebarItemFilter(storyNode, vm, group, item)
@@ -702,12 +701,17 @@ proc bindBackendChip[R, E](r: R; chip: E; vm: EditorVM;
         true
     r.setAttribute(chip, "aria-pressed", if selected: "true" else: "false")
     r.setStyle(chip, "background-color",
-      if selected: accent & "55" else: "transparent")
+      if selected: accent
+      elif available: bgSurface
+      else: "transparent")
     r.setStyle(chip, "color",
-      if available: (if selected: textPrimary else: textMuted) else: textDim)
-    r.setStyle(chip, "font-weight", if selected: "700" else: "500")
+      if selected: "#FFFFFF"
+      elif available: textSecondary
+      else: textDim)
+    r.setStyle(chip, "font-weight", if selected: "700" else: "600")
     r.setStyle(chip, "box-shadow",
-      if selected: "inset 0 0 0 1px rgba(147,197,253,.28)" else: "none")
+      if selected: "0 2px 8px rgba(124,122,237,0.35), inset 0 0 0 1px " & accentHot
+      else: "none")
     r.setAttribute(chip, "data-preview-backend-available",
       if available: "true" else: "false")
     r.setAttribute(chip, "aria-disabled",
@@ -739,12 +743,12 @@ proc bindViewportChip[R, E](r: R; chip: E; vm: EditorVM;
     let selected = viewportsEqual(vm.viewport.val, captured)
     r.setAttribute(chip, "aria-pressed", if selected: "true" else: "false")
     r.setStyle(chip, "background-color",
-      if selected: accent & "55" else: "transparent")
+      if selected: accentSoft else: "transparent")
     r.setStyle(chip, "color",
       if selected: textPrimary else: textMuted)
-    r.setStyle(chip, "font-weight", if selected: "700" else: "500")
+    r.setStyle(chip, "font-weight", if selected: "600" else: "500")
     r.setStyle(chip, "box-shadow",
-      if selected: "inset 0 0 0 1px rgba(147,197,253,.28)" else: "none")
+      if selected: "inset 0 0 0 1px " & accent else: "none")
   let liveHandler = viewportSelectHandler(vm, captured)
   r.addEventListener(chip, "click", liveHandler)
   r.addEventListener(chip, "keydown", liveHandler)
@@ -773,12 +777,17 @@ proc bindModeChip[R, E](r: R; chip: E; vm: EditorVM;
     let enabled = state.status != ecsDisabled
     r.setAttribute(chip, "aria-pressed", if selected: "true" else: "false")
     r.setStyle(chip, "background-color",
-      if selected: accent & "55" else: "transparent")
+      if selected: accent
+      elif enabled: bgSurface
+      else: "transparent")
     r.setStyle(chip, "color",
-      if enabled: (if selected: textPrimary else: textMuted) else: textDim)
-    r.setStyle(chip, "font-weight", if selected: "700" else: "500")
+      if selected: "#FFFFFF"
+      elif enabled: textSecondary
+      else: textDim)
+    r.setStyle(chip, "font-weight", if selected: "700" else: "600")
     r.setStyle(chip, "box-shadow",
-      if selected: "inset 0 0 0 1px rgba(147,197,253,.28)" else: "none")
+      if selected: "0 2px 8px rgba(124,122,237,0.35), inset 0 0 0 1px " & accentHot
+      else: "none")
     r.setAttribute(chip, "data-preview-mode-disabled",
       if enabled: "false" else: "true")
     r.setAttribute(chip, "aria-disabled",
@@ -795,7 +804,7 @@ proc backendsForLeftEdge(): array[6, PreviewBackend] =
   [pbWeb, pbTui, pbGpui, pbFreya, pbCocoa, pbAndroid]
 
 proc backendShortLabelsForLeftEdge(): array[6, string] =
-  ["Web", "TUI", "GPU", "Frya", "Coc", "And"]
+  ["Web", "TUI", "GPUI", "Freya", "Cocoa", "Droid"]
 
 proc buildBackendOptions(vm: EditorVM): seq[CompactChoiceOption] =
   ## M58: the backend strip's option list is now produced by a thunk so
@@ -885,23 +894,24 @@ proc modeFromChipOption(option: CompactChoiceOption): EditMode =
 
 proc renderPreviewLeftEdge*[R, E](r: R; vm: EditorVM): E =
   ## Left-edge column: the M57 preview-pane chrome's backend switcher
-  ## stacked on top of the screen-size switcher. Both groups follow the
-  ## compact segmented-strip idiom from the inspector choice-row pattern
-  ## (see `renderCompactChoiceColumn`). The strip is the same on every
-  ## active editor view, so the consumer mounts it once next to the
-  ## center column.
+  ## stacked on top of the screen-size switcher. This is the editor's
+  ## visual signature — a 56 px-wide vertical column flush against the
+  ## absolute left edge of the shell, containing six backend tabs
+  ## (Web / TUI / GPUI / Freya / Cocoa / Android), each as a labelled
+  ## icon-style chip. The active chip is filled with the accent color.
   ##
-  ## M58: the chip set itself is now reactive — the thunk overload of
+  ## M58: the chip set itself is reactive — the thunk overload of
   ## `renderCompactChoiceColumn` re-evaluates the option list on each
   ## `createRenderEffect` tick and diffs / patches DOM. Per-chip
   ## reactive bindings (aria-pressed, fill, availability) are still
   ## installed by the M57 helpers (`bindBackendChip`, `bindViewportChip`)
-  ## — they are now invoked via `onChipMounted` for newly-added chips.
+  ## — they are invoked via `onChipMounted` for newly-added chips.
   result = ui(r):
     tdiv(display = "flex", flex_direction = "column",
-          gap = "8px",
-          padding = "8px 4px",
-          background_color = bgToolbar,
+          gap = "12px",
+          padding = "12px 6px",
+          width = "56px", min_width = "56px",
+          background_color = bgEdgeStrip,
           border_right = "1px solid " & border,
           `data-preview-left-edge` = "true")
 
@@ -926,8 +936,8 @@ proc renderPreviewLeftEdge*[R, E](r: R; vm: EditorVM): E =
     ariaLabel = "Preview backend",
     optionsThunk = backendThunk,
     visibleLimit = backendCount,
-    chipWidth = "46px",
-    chipHeight = "22px",
+    chipWidth = "44px",
+    chipHeight = "40px",
     dataAttrs = @[
       ("data-edge-strip", "backend"),
       ("data-preview-edge-group", "backend")],
@@ -952,8 +962,8 @@ proc renderPreviewLeftEdge*[R, E](r: R; vm: EditorVM): E =
     ariaLabel = "Preview screen size",
     optionsThunk = viewportThunk,
     visibleLimitThunk = viewportVisibleLimitThunk,
-    chipWidth = "46px",
-    chipHeight = "22px",
+    chipWidth = "44px",
+    chipHeight = "24px",
     dataAttrs = @[
       ("data-edge-strip", "viewport"),
       ("data-preview-edge-group", "viewport")],
@@ -990,14 +1000,16 @@ proc buildModeOptions(vm: EditorVM): seq[CompactChoiceOption] =
 
 proc renderPreviewRightEdge*[R, E](r: R; vm: EditorVM): E =
   ## Right-edge column: the M57 preview-pane chrome's View / Comment /
-  ## Edit mode toggle. M58: migrated to the thunk overload of
-  ## `renderCompactChoiceColumn` for idiom uniformity with the left-edge
-  ## strips; the mode option set is statically three entries so the
-  ## thunk returns the same seq every tick.
+  ## Edit mode toggle. Sits flush against the absolute right edge of the
+  ## shell, mirroring the left-edge backend strip for visual symmetry.
+  ## M58: uses the thunk overload of `renderCompactChoiceColumn` for
+  ## idiom uniformity with the left-edge strips.
   result = ui(r):
     tdiv(display = "flex", flex_direction = "column",
-          padding = "8px 4px",
-          background_color = bgToolbar,
+          gap = "12px",
+          padding = "12px 6px",
+          width = "56px", min_width = "56px",
+          background_color = bgEdgeStrip,
           border_left = "1px solid " & border,
           `data-preview-right-edge` = "true")
 
@@ -1015,7 +1027,7 @@ proc renderPreviewRightEdge*[R, E](r: R; vm: EditorVM): E =
     optionsThunk = modeThunk,
     visibleLimit = 3,
     chipWidth = "44px",
-    chipHeight = "26px",
+    chipHeight = "40px",
     dataAttrs = @[
       ("data-edge-strip", "mode"),
       ("data-preview-edge-group", "mode")],
@@ -1098,25 +1110,59 @@ proc renderPreviewPane*[R, E](r: R; vm: EditorVM): E =
   r.appendChild(body, renderPreviewLeftEdge[R, E](r, vm))
 
   # Preview canvas — fully inline (preserves the existing affordance).
+  # Empty state: a quiet branded landing card centered on the canvas.
   let previewArea = ui(r):
     tdiv(flex = "1", display = "flex",
           align_items = "center", justify_content = "center",
           background_color = bgBase, position = "relative",
           min_width = "0",
-          background_image = "radial-gradient(circle, " & borderFaint &
-          " 1px, transparent 1px)",
-          background_size = "24px 24px",
+          background_image = "radial-gradient(circle at center, " &
+            borderFaint & " 1px, transparent 1.5px)",
+          background_size = "28px 28px",
           `data-preview-canvas` = "true"):
       tdiv(display = "flex", flex_direction = "column",
-            align_items = "center", gap = "10px",
-            padding = "32px", background_color = bgBase,
-            border_radius = "12px"):
-        tdiv(font_size = "40px", opacity = "0.25"):
-          text "\xF0\x9F\x8E\xA8"
-        span(font_size = "14px", color = textMuted, font_weight = "500"):
-          text "Select a story from the sidebar"
-        span(font_size = "12px", color = textDim):
-          text "Components render here with live preview"
+            align_items = "stretch", gap = "20px",
+            padding = "40px", max_width = "520px", width = "100%",
+            background_color = bgSurface,
+            border = "1px solid " & border,
+            border_radius = "14px",
+            box_shadow = "0 24px 80px rgba(0,0,0,0.32)"):
+        tdiv(display = "flex", flex_direction = "column", gap = "6px"):
+          span(font_size = "11px", font_weight = "600",
+                color = accentHot, text_transform = "uppercase",
+                letter_spacing = "0.12em"):
+            text "IsoNim Examples"
+          span(font_size = "20px", font_weight = "600",
+                color = textPrimary, letter_spacing = "-0.01em"):
+            text "Pick a story to start exploring"
+          span(font_size = "13px", color = textSecondary,
+                line_height = "1.5"):
+            text "Six renderers wrap the same view-model. Choose " &
+              "Task App or Settings App from the sidebar to load a " &
+              "live demo into the preview canvas."
+        tdiv(display = "flex", flex_direction = "column", gap = "10px"):
+          for hint in [
+            ("Switch renderers", "Use the left-edge strip"),
+            ("Resize the preview", "Viewport chips under the strip"),
+            ("View · Comment · Edit", "Right-edge mode toggle")]:
+            let title = hint[0]
+            let detail = hint[1]
+            tdiv(display = "flex", align_items = "center", gap = "12px",
+                  padding = "10px 14px",
+                  background_color = bgBase,
+                  border = "1px solid " & border,
+                  border_radius = "8px"):
+              tdiv(width = "8px", height = "8px",
+                    border_radius = "999px",
+                    background_color = accent,
+                    flex_shrink = "0")
+              tdiv(display = "flex", flex_direction = "column",
+                    flex = "1", gap = "2px"):
+                span(font_size = "13px", font_weight = "500",
+                      color = textPrimary):
+                  text title
+                span(font_size = "11px", color = textMuted):
+                  text detail
   r.appendChild(body, previewArea)
 
   r.appendChild(body, renderPreviewRightEdge[R, E](r, vm))
@@ -1610,14 +1656,43 @@ proc renderTelemetryOverlay[R, E](r: R; vm: EditorVM): E =
             text eventDuration & "ms"
       r.appendChild(eventsNode, item)
 
+proc renderEditorTitleBar[R, E](r: R; vm: EditorVM): E =
+  ## Slim header bar above the shell row. Carries the product name (and
+  ## the currently-loaded project) so the editor reads as a real tool
+  ## rather than a frameless canvas. The header sits above the M57 edge
+  ## strips and the sidebar.
+  result = ui(r):
+    tdiv(display = "flex", align_items = "center",
+          gap = "12px",
+          height = "36px", min_height = "36px",
+          padding = "0 14px",
+          background_color = bgSidebar,
+          border_bottom = "1px solid " & border):
+      tdiv(display = "flex", align_items = "center", gap = "8px"):
+        tdiv(width = "20px", height = "20px",
+              border_radius = "6px",
+              background_image = "linear-gradient(135deg, #7C7AED, #A5A4F3)",
+              box_shadow = "0 1px 4px rgba(124,122,237,0.4)")
+        span(font_size = "13px", font_weight = "600",
+              color = textPrimary, letter_spacing = "-0.005em"):
+          text editorProductName
+        span(font_size = "11px", color = textMuted):
+          text "IsoNim Examples"
+      tdiv(flex = "1")
+      span(font_size = "11px", color = textDim, font_family = "monospace"):
+        text "v" & editorVersion
+
 proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
-  ## Top-level editor layout: sidebar + storyboard/preview + inspector.
+  ## Top-level editor layout: title bar + (sidebar + preview + inspector) +
+  ## status bar.
   let shellRoot = ui(r):
     tdiv(display = "flex", flex_direction = "column",
           width = "100%", height = "100%",
-          font_family = "-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif",
+          font_family = "-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif",
           font_size = "14px", background_color = bgBase,
           color = textPrimary, overflow = "hidden")
+  let titleBar = renderEditorTitleBar[R, E](r, vm)
+  r.appendChild(shellRoot, titleBar)
   let shell = ui(r):
     tdiv(display = "flex", flex = "1", min_height = "0",
           width = "100%", overflow = "hidden")
@@ -1662,27 +1737,31 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
         evVectorEditor: "flex" else: "none")
     r.setStyle(sidebarEl, "display", if panels.sidebar and view !=
         evVectorEditor: "flex" else: "none")
-    # The edge strips wrap a preview viewport, so they only make sense on
-    # the views that show a renderable preview. Vector editor and the
-    # storyboard canvas keep their own chrome.
-    let showEdges = view in {evComponentDetail, evComponentEdit,
-        evPagePreview, evFoundationsPage}
+    # The M57 edge strips are the editor's chrome signature: they belong on
+    # every view that has a preview pane (everything except the standalone
+    # vector editor). The strips are always-visible columns on the absolute
+    # left and right edges of the shell — see `renderEditorShell` for the
+    # mount order (leftEdge before sidebar; rightEdge after the inspector).
+    let showEdges = view != evVectorEditor
     r.setStyle(leftEdgeEl, "display", if showEdges: "flex" else: "none")
     r.setStyle(rightEdgeEl, "display", if showEdges: "flex" else: "none")
     let manualEditMode = view == evComponentEdit and vm.editMode.val == emEdit
     r.setStyle(chatEl, "display",
       if panels.inspector and not manualEditMode: "flex" else: "none")
 
-  r.appendChild(shell, sidebarEl)
+  # Mount order is the on-screen order (flex row, left to right):
+  #   [M57 left edge | sidebar | center view | inspector chat | M57 right edge]
+  # The M57 strips bracket the entire shell — that's their spec signature.
   r.appendChild(shell, leftEdgeEl)
+  r.appendChild(shell, sidebarEl)
   r.appendChild(shell, storyboardEl)
   r.appendChild(shell, componentDetailEl)
   r.appendChild(shell, componentEditEl)
   r.appendChild(shell, pagePreviewEl)
   r.appendChild(shell, foundationsEl)
   r.appendChild(shell, vectorEditorEl)
+  r.appendChild(shell, chatEl) # inspector / AI chat
   r.appendChild(shell, rightEdgeEl)
-  r.appendChild(shell, chatEl) # always last (right side)
   r.appendChild(shellRoot, shell)
   r.appendChild(shellRoot, renderCommandPalette[R, E](r, vm))
   r.appendChild(shellRoot, renderTelemetryOverlay[R, E](r, vm))

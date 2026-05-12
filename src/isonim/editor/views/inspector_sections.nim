@@ -10,17 +10,17 @@ import isonim/editor/types
 import isonim/editor/views/controls
 
 const
-  bgBase = "#0B1120"
-  bgSurface = "#1E293B"
-  bgSidebar = "#111827"
-  bgInput = "#0F172A"
-  border = "#334155"
-  borderFaint = "#1E293B"
-  textPrimary = "#F1F5F9"
-  textSecondary = "#94A3B8"
-  textMuted = "#64748B"
-  textDim = "#475569"
-  accent = "#3B82F6"
+  bgBase = "#0D0E14"
+  bgSurface = "#1A1B26"
+  bgSidebar = "#15161F"
+  bgInput = "#0F1018"
+  border = "#2A2C3A"
+  borderFaint = "#1F212C"
+  textPrimary = "#ECEDF3"
+  textSecondary = "#9CA0B0"
+  textMuted = "#6B6F80"
+  textDim = "#4A4D5C"
+  accent = "#7C7AED"
   gold = "#F59E0B"
 
 proc sectionHeader[R, E](r: R; title, origin: string): E =

@@ -11,16 +11,17 @@ import isonim/editor/viewmodels
 import isonim/editor/types
 
 const
-  bgBase = "#0B1120"
-  bgSurface = "#1E293B"
-  bgCard = "#151D2E"
-  border = "#334155"
-  borderFaint = "#1E293B"
-  textPrimary = "#F1F5F9"
-  textSecondary = "#94A3B8"
-  textMuted = "#64748B"
-  textDim = "#475569"
-  accent = "#3B82F6"
+  bgBase = "#0D0E14"
+  bgSurface = "#1A1B26"
+  bgCard = "#15161F"
+  border = "#2A2C3A"
+  borderFaint = "#1F212C"
+  textPrimary = "#ECEDF3"
+  textSecondary = "#9CA0B0"
+  textMuted = "#6B6F80"
+  textDim = "#4A4D5C"
+  accent = "#7C7AED"
+  accentSoft = "#272752"
 
 type
   FlowRow = object
@@ -35,30 +36,34 @@ type
     story: StoryRef
 
 proc renderGenericMiniPreview[R, E](r: R; label: string): E =
-  ## Project-neutral thumbnail used by the editor framework.
+  ## Project-neutral thumbnail used by the editor framework. Dark-themed
+  ## skeleton card that blends with the canvas — never the bright white
+  ## block from the earlier baseline.
   ui(r):
     tdiv(display = "flex", flex_direction = "column",
           width = "100%", height = "100%",
-          background_color = "#F8FAFC", color = "#0F172A",
-          font_family = "-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif"):
+          background_color = bgCard, color = textPrimary,
+          font_family = "-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif"):
       tdiv(height = "24px", display = "flex", align_items = "center",
-            gap = "4px", padding = "0 8px", background_color = "#E2E8F0"):
+            gap = "4px", padding = "0 8px",
+            background_color = bgSurface,
+            border_bottom = "1px solid " & border):
         for i in 0 .. 2:
           tdiv(width = "5px", height = "5px", border_radius = "999px",
-                background_color = (if i == 0: "#EF4444" elif i ==
-                    1: "#F59E0B" else: "#22C55E"))
+                background_color = border)
       tdiv(flex = "1", display = "flex", flex_direction = "column",
-            gap = "8px", padding = "12px"):
+            gap = "10px", padding = "16px"):
         tdiv(width = "52%", height = "10px", border_radius = "999px",
-              background_color = "#CBD5E1")
+              background_color = borderFaint)
         tdiv(width = "78%", height = "28px", border_radius = "8px",
-              background_color = "#E2E8F0")
-        tdiv(display = "grid", grid_template_columns = "1fr 1fr", gap = "6px"):
+              background_color = bgSurface, border = "1px solid " & border)
+        tdiv(display = "grid", grid_template_columns = "1fr 1fr", gap = "8px"):
           for i in 0 .. 3:
-            tdiv(height = "24px", border_radius = "6px",
-                  background_color = (if i == 0: "#DBEAFE" else: "#E2E8F0"))
-        tdiv(margin_top = "auto", font_size = "10px", font_weight = "700",
-              color = "#475569", line_height = "1.25"):
+            tdiv(height = "26px", border_radius = "6px",
+                  background_color = (if i == 0: accentSoft else: bgSurface),
+                  border = "1px solid " & border)
+        tdiv(margin_top = "auto", font_size = "10px", font_weight = "600",
+              color = textMuted, line_height = "1.3"):
           text label
 
 proc renderProjectMiniPreview[R, E](r: R; vm: EditorVM; story: StoryRef;

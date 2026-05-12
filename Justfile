@@ -364,3 +364,11 @@ bench-all: bench-build demo-build build-web-components
     @echo ""
     @echo "=== Test Count Metrics ==="
     ./scripts/collect-metrics.sh --tests
+
+# Lint hook expected by the workspace pre-commit framework. The IsoNim
+# Nim style is enforced by --styleCheck:usages --styleCheck:error inside
+# the test recipes; this recipe is a placeholder so pre-commit's
+# `just lint` hook resolves. Extend it with nimpretty / nim check when
+# the linting story is ready.
+lint:
+    @echo "isonim: lint placeholder (Nim style enforced inside test recipes)"

@@ -12,37 +12,45 @@ import isonim/editor/types
 import isonim/editor/views/choice_row
 
 const
-  bgBase = "#0B1120"
-  bgSurface = "#1E293B"
-  bgCard = "#151D2E"
-  bgPreview = "#0D1525"
-  border = "#334155"
-  borderFaint = "#1E293B"
-  textPrimary = "#F1F5F9"
-  textSecondary = "#94A3B8"
-  textMuted = "#64748B"
-  textDim = "#475569"
-  accent = "#3B82F6"
+  bgBase = "#0D0E14"
+  bgSurface = "#1A1B26"
+  bgCard = "#15161F"
+  bgPreview = "#0F1018"
+  border = "#2A2C3A"
+  borderFaint = "#1F212C"
+  textPrimary = "#ECEDF3"
+  textSecondary = "#9CA0B0"
+  textMuted = "#6B6F80"
+  textDim = "#4A4D5C"
+  accent = "#7C7AED"
   green = "#22C55E"
   red = "#EF4444"
 
 proc renderGenericComponentPreview[R, E](r: R; title, description: string): E =
+  ## Generic dark-themed placeholder card. The real demo lives in the
+  ## iframe `srcdoc` provided by the preview hook; this card only shows
+  ## when no preview document is available.
   ui(r):
-    tdiv(width = "320px", padding = "18px",
-          background_color = "#FFFFFF", color = "#0F172A",
-          border_radius = "12px",
-          display = "flex", flex_direction = "column", gap = "10px"):
-      tdiv(height = "96px", border_radius = "10px",
-            background_color = "#DBEAFE")
-      span(font_size = "17px", font_weight = "700"):
+    tdiv(width = "360px", padding = "22px",
+          background_color = bgCard, color = textPrimary,
+          border = "1px solid " & border,
+          border_radius = "14px",
+          display = "flex", flex_direction = "column", gap = "14px"):
+      tdiv(height = "100px", border_radius = "10px",
+            background_image = "linear-gradient(135deg, #272752, #15161F)",
+            border = "1px solid " & border)
+      span(font_size = "16px", font_weight = "600",
+            letter_spacing = "-0.01em",
+            color = textPrimary):
         text title
-      span(font_size = "13px", color = "#64748B", line_height = "1.4"):
+      span(font_size = "12px", color = textMuted, line_height = "1.45"):
         text description
       tdiv(display = "flex", gap = "8px"):
-        tdiv(height = "24px", width = "72px", border_radius = "999px",
-              background_color = "#E0E7FF")
-        tdiv(height = "24px", width = "56px", border_radius = "999px",
-              background_color = "#F1F5F9")
+        tdiv(height = "26px", width = "76px", border_radius = "999px",
+              background_color = accent)
+        tdiv(height = "26px", width = "62px", border_radius = "999px",
+              background_color = "transparent",
+              border = "1px solid " & border)
 
 proc sectionLabel[R, E](r: R; title: string): E =
   ui(r):
