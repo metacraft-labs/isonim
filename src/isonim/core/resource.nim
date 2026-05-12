@@ -1,6 +1,7 @@
 ## Async resources for IsoNim.
 ## createResource wraps a fetcher function with reactive state tracking.
 
+import std/json
 import signals, computation
 import nim_everywhere/async_compat
 
@@ -12,15 +13,27 @@ type
     rsRefreshing  ## Refetching (previous data still available)
     rsErrored     ## Fetch failed
 
+  ResourceFetcherInfo*[T] = object
+    ## Mirrors SolidJS's ~ResourceFetcherInfo<T, R>~ (with ~R = JsonNode~).
+    ## Passed to async fetchers on every invocation. On the initial load
+    ## ~refetching~ is ~false~ and ~info~ is ~nil~; on a refresh
+    ## ~refetching~ is ~true~ and ~info~ is whatever opaque payload the
+    ## caller passed to ~r.refresh(payload)~ (or ~nil~ when none was
+    ## supplied).
+    value*: T               ## current resource value (default(T) on first load)
+    refetching*: bool       ## false on initial load, true on r.refresh(...)
+    info*: JsonNode         ## opaque payload from r.refresh(info); nil otherwise
+
   Resource*[T] = object
     data*: Signal[T]
     state*: Signal[ResourceState]
     error*: Signal[string]
-    refresher*: proc() {.closure.}
+    refresher*: proc(info: JsonNode) {.closure.}
       ## Optional re-fetch trigger installed by async createResource overloads.
       ## Sync overloads leave this `nil`; calling `refresh(r)` on a sync resource
       ## is a no-op. Async overloads populate this so callers can request a
-      ## manual re-fetch via `r.refresh()`.
+      ## manual re-fetch via `r.refresh()` (optionally with a JsonNode payload
+      ## forwarded to the fetcher via ~info.info~).
 
 proc createResource*[T](
   fetcher: proc(): T;
@@ -130,13 +143,17 @@ proc createDeferredResource*[T](initialValue: T = default(T)): DeferredResource[
 ## the fetcher.
 
 proc createResource*[T](
-  fetcher: proc(): PlatformFuture[T];
+  fetcher: proc(info: ResourceFetcherInfo[T]): PlatformFuture[T];
   initialValue: T = default(T)
 ): Resource[T] =
   ## Async overload — initial fetch begins immediately; state transitions
   ## ~rsPending~ → ~rsReady~ (or ~rsErrored~). Subsequent ~refresh~ calls
   ## transition ~rsReady~ → ~rsRefreshing~ → ~rsReady~/~rsErrored~ while
   ## keeping the previous `data.val` visible during the refetch.
+  ##
+  ## The fetcher always receives a ~ResourceFetcherInfo[T]~ — callers that
+  ## don't care about it can ignore the parameter (Nim allows unused
+  ## parameters; the convention is to name it ~_info~).
   let data = createSignal(initialValue)
   let state = createSignal(rsPending)
   let error = createSignal("")
@@ -146,7 +163,7 @@ proc createResource*[T](
   let generation = new(int)
   generation[] = 0
 
-  proc launch() =
+  proc launch(refetching: bool; payload: JsonNode) =
     let prev = state.value  # untracked
     if prev == rsReady or prev == rsRefreshing:
       state.val = rsRefreshing
@@ -154,7 +171,11 @@ proc createResource*[T](
       state.val = rsPending
     generation[].inc
     let myGen = generation[]
-    let fut = fetcher()
+    let info = ResourceFetcherInfo[T](
+      value: data.value,  # untracked read of the current value
+      refetching: refetching,
+      info: payload)
+    let fut = fetcher(info)
     fut.onComplete(
       onSuccess = proc(value: T) =
         if myGen == generation[]:
@@ -168,12 +189,12 @@ proc createResource*[T](
 
   result = Resource[T](
     data: data, state: state, error: error,
-    refresher: proc() = launch())
-  launch()
+    refresher: proc(info: JsonNode) = launch(true, info))
+  launch(false, nil)
 
 proc createResource*[S, T](
   source: proc(): S;
-  fetcher: proc(s: S): PlatformFuture[T];
+  fetcher: proc(s: S; info: ResourceFetcherInfo[T]): PlatformFuture[T];
   initialValue: T = default(T)
 ): Resource[T] =
   ## Source-tracked async overload — refetches whenever `source()` changes.
@@ -181,14 +202,20 @@ proc createResource*[S, T](
   ## refetch. Out-of-order completions are discarded via a generation
   ## counter. `refresh(r)` re-runs the fetcher with the current source
   ## value.
+  ##
+  ## The fetcher always receives a ~ResourceFetcherInfo[T]~ as its second
+  ## argument. ~refetching~ is ~false~ only on the very first invocation;
+  ## every subsequent fetch (whether triggered by a source change or by
+  ## ~r.refresh(...)~) sets ~refetching = true~.
   let data = createSignal(initialValue)
   let state = createSignal(rsUnresolved)
   let error = createSignal("")
   let generation = new(int)
   generation[] = 0
   var lastSource: S
+  var firstRun = true
 
-  proc fire(sourceVal: S) =
+  proc fire(sourceVal: S; refetching: bool; payload: JsonNode) =
     let prev = state.value
     if prev == rsReady or prev == rsRefreshing:
       state.val = rsRefreshing
@@ -196,7 +223,11 @@ proc createResource*[S, T](
       state.val = rsPending
     generation[].inc
     let myGen = generation[]
-    let fut = fetcher(sourceVal)
+    let info = ResourceFetcherInfo[T](
+      value: data.value,
+      refetching: refetching,
+      info: payload)
+    let fut = fetcher(sourceVal, info)
     fut.onComplete(
       onSuccess = proc(value: T) =
         if myGen == generation[]:
@@ -211,39 +242,26 @@ proc createResource*[S, T](
   createEffect proc() =
     let sourceVal = source()  # tracked dependency
     lastSource = sourceVal
-    fire(sourceVal)
+    let isRefetch = not firstRun
+    firstRun = false
+    fire(sourceVal, isRefetch, nil)
 
   result = Resource[T](
     data: data, state: state, error: error,
-    refresher: proc() = fire(lastSource))
+    refresher: proc(info: JsonNode) = fire(lastSource, true, info))
 
-proc refresh*[T](r: Resource[T]) =
+proc refresh*[T](r: Resource[T]; info: JsonNode = nil) =
   ## Manually trigger a re-fetch on an async resource. State transitions:
   ##   - ~rsReady~ / ~rsRefreshing~ → ~rsRefreshing~ (data.val stays visible)
   ##   - ~rsErrored~ / ~rsUnresolved~ / ~rsPending~ → ~rsPending~
   ##   - on success → ~rsReady~ with the new value
   ##   - on failure → ~rsErrored~ with the error message
   ##
+  ## When ~info~ is non-nil, the JsonNode is forwarded to the fetcher via
+  ## ~ResourceFetcherInfo[T].info~. Default-nil so existing callers can
+  ## continue to write ~r.refresh()~ unchanged.
+  ##
   ## A no-op when called on a sync-created resource (the resource has no
   ## installed `refresher` closure).
   if r.refresher != nil:
-    r.refresher()
-
-proc refresh*[T](r: Resource[T]; fetcher: proc(): PlatformFuture[T]) =
-  ## Manually trigger a re-fetch using a caller-supplied fetcher. Useful
-  ## when the original fetcher is not stored on the resource (e.g. when a
-  ## consumer wants to vary the fetcher across refreshes).
-  let prev = r.state.value
-  if prev == rsReady or prev == rsRefreshing:
-    r.state.val = rsRefreshing
-  else:
-    r.state.val = rsPending
-  let fut = fetcher()
-  fut.onComplete(
-    onSuccess = proc(value: T) =
-      r.data.val = value
-      r.error.val = ""
-      r.state.val = rsReady,
-    onError = proc(message: string) =
-      r.error.val = message
-      r.state.val = rsErrored)
+    r.refresher(info)

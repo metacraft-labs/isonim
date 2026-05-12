@@ -14,8 +14,13 @@
 ## Out-of-order completion handling: when refresh is triggered twice
 ## rapidly, the older fetch's late completion is discarded — only the
 ## most-recent fetch's result is applied.
+##
+## Refinement (IsoNim-Resource-Async-Refinement): the fetcher always
+## receives a `ResourceFetcherInfo[T]` so callers can observe whether the
+## current call is the initial load, a plain refresh, or a refresh that
+## carries an opaque JsonNode payload (mirroring SolidJS).
 
-import std/unittest
+import std/[json, unittest]
 import nim_everywhere
 import nim_everywhere/async_compat
 import isonim/core/[signals, owner, resource]
@@ -28,7 +33,7 @@ suite "Resource async overload":
     defer: ctx.uninstall()
     createRoot do (dispose: proc()):
       let r = createResource[int](
-        proc(): PlatformFuture[int] =
+        proc(info: ResourceFetcherInfo[int]): PlatformFuture[int] =
           let f = newFuture[int]("test-fetch")
           ctx.schedule(50, proc() = f.complete(42))
           f,
@@ -57,7 +62,7 @@ suite "Resource async overload":
     defer: ctx.uninstall()
     createRoot do (dispose: proc()):
       let r = createResource[int](
-        proc(): PlatformFuture[int] =
+        proc(info: ResourceFetcherInfo[int]): PlatformFuture[int] =
           let f = newFuture[int]("test-fail")
           ctx.schedule(20, proc() =
             f.fail(newException(CatchableError, "boom")))
@@ -82,7 +87,7 @@ suite "Resource async overload":
       let src = createSignal("a")
       let r = createResource[string, string](
         source = proc(): string = src.val,
-        fetcher = proc(s: string): PlatformFuture[string] =
+        fetcher = proc(s: string; info: ResourceFetcherInfo[string]): PlatformFuture[string] =
           let captured = s
           let f = newFuture[string]("test-source-refetch")
           ctx.schedule(50, proc() = f.complete("loaded:" & captured))
@@ -114,7 +119,7 @@ suite "Resource async overload":
     var callCount = 0
     createRoot do (dispose: proc()):
       let r = createResource[string](
-        proc(): PlatformFuture[string] =
+        proc(info: ResourceFetcherInfo[string]): PlatformFuture[string] =
           let myCall = callCount
           inc callCount
           let f = newFuture[string]("test-refresh")
@@ -153,7 +158,7 @@ suite "Resource async overload":
     var labels = @["slow", "fast1", "fast2"]
     createRoot do (dispose: proc()):
       let r = createResource[string](
-        proc(): PlatformFuture[string] =
+        proc(info: ResourceFetcherInfo[string]): PlatformFuture[string] =
           let myCall = callCount
           inc callCount
           let f = newFuture[string]("test-ooo")
@@ -197,7 +202,7 @@ suite "Resource async overload":
       let src = createSignal(10)
       let r = createResource[int, string](
         source = proc(): int = src.val,
-        fetcher = proc(s: int): PlatformFuture[string] =
+        fetcher = proc(s: int; info: ResourceFetcherInfo[string]): PlatformFuture[string] =
           inc counter
           let myCounter = counter
           let captured = s
@@ -220,4 +225,142 @@ suite "Resource async overload":
       drainPlatformCallbacks()
       check r.state.val == rsReady
       check r.data.val == "10#2"
+      dispose()
+
+  test "test_fetcher_receives_info_object":
+    ## On initial load, the fetcher's info has refetching == false and
+    ## info.info is nil. The fetcher signature accepts
+    ## `info: ResourceFetcherInfo[T]`.
+    let ctx = newFakeAsyncContext()
+    ctx.install()
+    defer: ctx.uninstall()
+    var seenRefetching = true        # initialise to the "wrong" value
+    var seenInfoIsNil = false        # so an unobserved value would fail
+    var observed = false
+    createRoot do (dispose: proc()):
+      let r = createResource[int](
+        proc(info: ResourceFetcherInfo[int]): PlatformFuture[int] =
+          seenRefetching = info.refetching
+          seenInfoIsNil = info.info.isNil
+          observed = true
+          let f = newFuture[int]("test-info-initial")
+          ctx.schedule(5, proc() = f.complete(7))
+          f,
+        initialValue = 0)
+      ctx.advance(5)
+      ctx.runPending()
+      drainPlatformCallbacks()
+      check r.state.val == rsReady
+      check observed
+      check seenRefetching == false
+      check seenInfoIsNil == true
+      dispose()
+
+  test "test_plain_refresh_sets_refetching_true":
+    ## After `r.refresh()` (no payload), the next fetcher call sees
+    ## info.refetching == true and info.info is nil.
+    let ctx = newFakeAsyncContext()
+    ctx.install()
+    defer: ctx.uninstall()
+    var callCount = 0
+    var refetchingPerCall: array[2, bool]
+    var infoNilPerCall: array[2, bool]
+    createRoot do (dispose: proc()):
+      let r = createResource[int](
+        proc(info: ResourceFetcherInfo[int]): PlatformFuture[int] =
+          let idx = callCount
+          inc callCount
+          refetchingPerCall[idx] = info.refetching
+          infoNilPerCall[idx] = info.info.isNil
+          let f = newFuture[int]("test-plain-refresh")
+          ctx.schedule(5, proc() = f.complete(idx + 1))
+          f,
+        initialValue = 0)
+      ctx.advance(5)
+      ctx.runPending()
+      drainPlatformCallbacks()
+      check r.state.val == rsReady
+      # Now trigger plain refresh.
+      r.refresh()
+      ctx.advance(5)
+      ctx.runPending()
+      drainPlatformCallbacks()
+      check callCount == 2
+      check refetchingPerCall[0] == false
+      check infoNilPerCall[0] == true
+      check refetchingPerCall[1] == true
+      check infoNilPerCall[1] == true
+      dispose()
+
+  test "test_refresh_with_info_forwards_payload":
+    ## `r.refresh(%*{"reason": "stale"})` -> fetcher sees
+    ## info.refetching == true and info.info["reason"].getStr == "stale".
+    let ctx = newFakeAsyncContext()
+    ctx.install()
+    defer: ctx.uninstall()
+    var callCount = 0
+    var seenPayload: JsonNode = nil
+    var seenRefetching = false
+    createRoot do (dispose: proc()):
+      let r = createResource[int](
+        proc(info: ResourceFetcherInfo[int]): PlatformFuture[int] =
+          let idx = callCount
+          inc callCount
+          if idx == 1:
+            seenPayload = info.info
+            seenRefetching = info.refetching
+          let f = newFuture[int]("test-refresh-payload")
+          ctx.schedule(5, proc() = f.complete(idx + 1))
+          f,
+        initialValue = 0)
+      ctx.advance(5)
+      ctx.runPending()
+      drainPlatformCallbacks()
+      check r.state.val == rsReady
+      # Trigger refresh with a JsonNode payload.
+      r.refresh(%*{"reason": "stale"})
+      ctx.advance(5)
+      ctx.runPending()
+      drainPlatformCallbacks()
+      check callCount == 2
+      check seenRefetching == true
+      check (not seenPayload.isNil)
+      check seenPayload["reason"].getStr == "stale"
+      dispose()
+
+  test "test_info_value_holds_previous":
+    ## After initial load to value 10, on `r.refresh()` the fetcher
+    ## sees info.value == 10 (the previous resource value, before the
+    ## new fetch completes).
+    let ctx = newFakeAsyncContext()
+    ctx.install()
+    defer: ctx.uninstall()
+    var callCount = 0
+    var seenValueOnRefresh = -1
+    createRoot do (dispose: proc()):
+      let r = createResource[int](
+        proc(info: ResourceFetcherInfo[int]): PlatformFuture[int] =
+          let idx = callCount
+          inc callCount
+          if idx == 1:
+            seenValueOnRefresh = info.value
+          let f = newFuture[int]("test-info-value")
+          # First call returns 10; refresh returns 99.
+          let outcome = if idx == 0: 10 else: 99
+          ctx.schedule(5, proc() = f.complete(outcome))
+          f,
+        initialValue = 0)
+      ctx.advance(5)
+      ctx.runPending()
+      drainPlatformCallbacks()
+      check r.state.val == rsReady
+      check r.data.val == 10
+      # Refresh — the fetcher should see info.value == 10.
+      r.refresh()
+      check seenValueOnRefresh == 10
+      # Drain to leave the resource in a clean state.
+      ctx.advance(5)
+      ctx.runPending()
+      drainPlatformCallbacks()
+      check r.data.val == 99
       dispose()
