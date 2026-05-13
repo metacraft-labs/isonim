@@ -1637,7 +1637,7 @@ proc togglePanel*(editor: EditorVM; panel: EditorPanel) =
                                         inspector: not current.inspector)
 
 func clampRightPanelWidth*(width: int): int =
-  max(260, min(520, width))
+  max(240, min(420, width))
 
 proc setRightPanelWidth*(editor: EditorVM; width: int) =
   editor.rightPanelWidth.val = clampRightPanelWidth(width)
@@ -9548,7 +9548,7 @@ proc createEditorVM*(): EditorVM =
   let selectedStory = createSignal(StoryRef())
   let editMode = createSignal(emView)
   let panels = createSignal(PanelVisibility(sidebar: true, inspector: true))
-  let rightPanelWidth = createSignal(320)
+  let rightPanelWidth = createSignal(280)
   let platform = createSignal(pbWeb)
   let viewport = createSignal(defaultViewport(pbWeb))
   let workspacePermissions = createSignal(defaultWorkspacePermissions())

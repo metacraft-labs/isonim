@@ -84,7 +84,7 @@ proc renderProjectMiniPreview[R, E](r: R; vm: EditorVM; story: StoryRef;
   r.setStyle(frame, "top", "0")
   r.setStyle(frame, "width", "1280px")
   r.setStyle(frame, "height", "900px")
-  r.setStyle(frame, "transform", "scale(0.295)")
+  r.setStyle(frame, "transform", "scale(0.395)")
   r.setStyle(frame, "transform-origin", "top left")
   r.setStyle(frame, "pointer-events", "none")
   frame
@@ -108,9 +108,12 @@ proc layoutFlows(groups: seq[StoryGroup]; steps: seq[FlowStep]): seq[FlowRow] =
     if group.kind == skFlow:
       var row = FlowRow(flowName: group.name, flowDesc: group.description)
       var x = 0.0
-      let cardW = 400.0
-      let cardH = 520.0
-      let gapX = 56.0
+      # v3: enlarge flow cards so each one reads as a proper preview rather
+      # than a thumbnail. The shell-laptop reviewer flagged the previous
+      # 400x520 cards as "small/two-per-row".
+      let cardW = 520.0
+      let cardH = 620.0
+      let gapX = 48.0
       for i, item in group.items:
         let story = resolveFlowCardStory(item, i, steps)
         row.cards.add FlowCard(x: x, y: 0, w: cardW, h: cardH,
@@ -430,8 +433,8 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
       let cardContent = ui(r):
         tdiv(flex = "1", position = "relative",
               margin = "8px 8px 0 8px", border_radius = "8px",
-              overflow = "hidden", background_color = "#FAFAF9",
-              box_shadow = "inset 0 0 0 1px rgba(0,0,0,0.06)")
+              overflow = "hidden", background_color = bgBase,
+              box_shadow = "inset 0 0 0 1px " & borderFaint)
       r.appendChild(cardEl, cardContent)
 
       let preview = renderProjectMiniPreview[R, E](r, vm, story, stepLabel)
@@ -484,7 +487,7 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
           r.setStyle(arrow, "width", $aw & "px")
           r.appendChild(inner, arrow)
 
-    rowY = cardsTop + 520 + 64 # card height + gap between flow rows
+    rowY = cardsTop + 620 + 56 # card height + gap between flow rows
 
   # Empty state if no flows
   if flows.len == 0:

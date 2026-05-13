@@ -297,8 +297,8 @@ proc bindRightPanelWidth[R, E](r: R; node: E; vm: EditorVM) =
     let width = $vm.rightPanelWidth.val & "px"
     r.setStyle(node, "width", width)
     r.setStyle(node, "flex-basis", width)
-    r.setStyle(node, "min-width", "260px")
-    r.setStyle(node, "max-width", "520px")
+    r.setStyle(node, "min-width", "240px")
+    r.setStyle(node, "max-width", "420px")
     r.setAttribute(node, "data-right-panel-width", $vm.rightPanelWidth.val)
 
 proc statusPanelButton[R, E](r: R; vm: EditorVM; panel: EditorPanel;
@@ -710,7 +710,7 @@ proc bindBackendChip[R, E](r: R; chip: E; vm: EditorVM;
       else: textDim)
     r.setStyle(chip, "font-weight", if selected: "700" else: "600")
     r.setStyle(chip, "box-shadow",
-      if selected: "0 2px 8px rgba(124,122,237,0.35), inset 0 0 0 1px " & accentHot
+      if selected: "0 3px 12px rgba(124,122,237,0.55), inset 0 0 0 1px " & accentHot
       else: "none")
     r.setAttribute(chip, "data-preview-backend-available",
       if available: "true" else: "false")
@@ -786,7 +786,7 @@ proc bindModeChip[R, E](r: R; chip: E; vm: EditorVM;
       else: textDim)
     r.setStyle(chip, "font-weight", if selected: "700" else: "600")
     r.setStyle(chip, "box-shadow",
-      if selected: "0 2px 8px rgba(124,122,237,0.35), inset 0 0 0 1px " & accentHot
+      if selected: "0 3px 12px rgba(124,122,237,0.55), inset 0 0 0 1px " & accentHot
       else: "none")
     r.setAttribute(chip, "data-preview-mode-disabled",
       if enabled: "false" else: "true")
@@ -908,9 +908,9 @@ proc renderPreviewLeftEdge*[R, E](r: R; vm: EditorVM): E =
   ## — they are invoked via `onChipMounted` for newly-added chips.
   result = ui(r):
     tdiv(display = "flex", flex_direction = "column",
-          gap = "12px",
+          gap = "10px",
           padding = "12px 6px",
-          width = "56px", min_width = "56px",
+          width = "64px", min_width = "64px",
           background_color = bgEdgeStrip,
           border_right = "1px solid " & border,
           `data-preview-left-edge` = "true")
@@ -936,13 +936,23 @@ proc renderPreviewLeftEdge*[R, E](r: R; vm: EditorVM): E =
     ariaLabel = "Preview backend",
     optionsThunk = backendThunk,
     visibleLimit = backendCount,
-    chipWidth = "44px",
+    chipWidth = "52px",
     chipHeight = "40px",
     dataAttrs = @[
       ("data-edge-strip", "backend"),
       ("data-preview-edge-group", "backend")],
     onChipMounted = backendOnChipMounted)
   r.appendChild(result, backendColumn.root)
+
+  # v3: Hairline divider visually separates the backend chip stack from
+  # the viewport sub-strip below — the reviewer flagged "M57 + viewport
+  # sub-strip cramped without divider" on shell-laptop.
+  let edgeDivider = ui(r):
+    tdiv(height = "1px", margin = "4px 6px",
+          background_color = border,
+          opacity = "0.65",
+          `data-preview-edge-divider` = "true")
+  r.appendChild(result, edgeDivider)
 
   let viewportThunk = proc(): seq[CompactChoiceOption] =
     buildViewportOptions(capturedVm)
@@ -962,7 +972,7 @@ proc renderPreviewLeftEdge*[R, E](r: R; vm: EditorVM): E =
     ariaLabel = "Preview screen size",
     optionsThunk = viewportThunk,
     visibleLimitThunk = viewportVisibleLimitThunk,
-    chipWidth = "44px",
+    chipWidth = "52px",
     chipHeight = "24px",
     dataAttrs = @[
       ("data-edge-strip", "viewport"),
@@ -976,7 +986,10 @@ proc buildModeOptions(vm: EditorVM): seq[CompactChoiceOption] =
   ## uniformity with the left-edge strips (per the M58 spec).
   const modes = [emView, emComment, emEdit]
   const modeLabels = ["View", "Comment", "Edit"]
-  const modeShorts = ["View", "Cmt", "Edit"]
+  # Short labels mirror the full labels — the v3 widened right edge has
+  # room for "Comment" without truncating, so we no longer fall back to
+  # the cramped "Cmt" abbreviation that v2 used.
+  const modeShorts = ["View", "Comment", "Edit"]
   let activeMode = vm.editMode.val
   for i in 0 ..< modes.len:
     let mode = modes[i]
@@ -1008,7 +1021,7 @@ proc renderPreviewRightEdge*[R, E](r: R; vm: EditorVM): E =
     tdiv(display = "flex", flex_direction = "column",
           gap = "12px",
           padding = "12px 6px",
-          width = "56px", min_width = "56px",
+          width = "64px", min_width = "64px",
           background_color = bgEdgeStrip,
           border_left = "1px solid " & border,
           `data-preview-right-edge` = "true")
@@ -1026,7 +1039,7 @@ proc renderPreviewRightEdge*[R, E](r: R; vm: EditorVM): E =
     ariaLabel = "Preview mode",
     optionsThunk = modeThunk,
     visibleLimit = 3,
-    chipWidth = "44px",
+    chipWidth = "52px",
     chipHeight = "40px",
     dataAttrs = @[
       ("data-edge-strip", "mode"),
@@ -1177,7 +1190,7 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
   result = ui(r):
     tdiv(class = "editor-inspector",
           display = "flex", flex_direction = "column",
-          width = "320px", min_width = "260px", max_width = "520px",
+          width = "280px", min_width = "240px", max_width = "420px",
           height = "100%",
           background_color = bgSidebar,
           border_left = "1px solid " & borderStrong,
@@ -1267,7 +1280,7 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
 
       # Agent chat area
       tdiv(display = "flex", flex_direction = "column",
-            height = "220px", min_height = "220px",
+            height = "160px", min_height = "160px",
             border_top = "1px solid " & borderStrong,
             background_color = bgSidebar):
 

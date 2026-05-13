@@ -485,9 +485,12 @@ proc populateComponentPropertyPanel[R, E](r: R; vm: EditorVM; panel, frame: E;
   var revertButton: E
   let header = ui(r):
     tdiv(display = "flex", justify_content = "space-between",
-          align_items = "baseline", gap = "12px"):
-      tdiv(display = "flex", flex_direction = "column", gap = "3px"):
-        span(font_size = "13px", font_weight = "700", color = textPrimary):
+          align_items = "baseline", gap = "12px",
+          margin_top = "16px", padding_bottom = "8px",
+          border_bottom = "1px solid " & borderFaint):
+      tdiv(display = "flex", flex_direction = "column", gap = "4px"):
+        span(font_size = "15px", font_weight = "700", color = textPrimary,
+              letter_spacing = "-0.005em"):
           text "Component properties"
         span(font_size = "11px", color = textMuted):
           text ("Schema-backed controls for " & variant.component & " / " &
@@ -520,12 +523,15 @@ proc populateComponentPropertyPanel[R, E](r: R; vm: EditorVM; panel, frame: E;
   r.addEventListener(revertButton, "keydown", proc() =
     discard vm.runEditorCommand(eckRevert))
 
+  # Property cards: show the first 3 by default; gate the rest behind a
+  # native <details> disclosure so the panel stays compact.
+  let visiblePropCount = min(3, variant.properties.len)
   let props = ui(r):
     tdiv(display = "grid",
           grid_template_columns = "repeat(auto-fit, minmax(230px, 1fr))",
           gap = "8px")
-  for property in variant.properties:
-    let prop = property
+  for i in 0 ..< visiblePropCount:
+    let prop = variant.properties[i]
     let row = ui(r):
       tdiv(display = "flex", flex_direction = "column", gap = "4px",
             padding = "8px",
@@ -544,6 +550,45 @@ proc populateComponentPropertyPanel[R, E](r: R; vm: EditorVM; panel, frame: E;
     r.appendChild(props, row)
   r.appendChild(panel, props)
 
+  if variant.properties.len > visiblePropCount:
+    let hiddenCount = variant.properties.len - visiblePropCount
+    let disclosure = ui(r):
+      details()
+    let summaryNode = ui(r):
+      summary(list_style = "none", cursor = "pointer",
+            padding = "6px 10px", border_radius = "6px",
+            background_color = bgCard,
+            border = "1px solid " & borderFaint,
+            font_size = "11px", font_weight = "600",
+            color = accent, display = "inline-block",
+            margin_top = "2px"):
+        text ("Show all variants (+" & $hiddenCount & ")")
+    r.appendChild(disclosure, summaryNode)
+    let detailsGrid = ui(r):
+      tdiv(display = "grid",
+            grid_template_columns = "repeat(auto-fit, minmax(230px, 1fr))",
+            gap = "8px", margin_top = "8px")
+    for i in visiblePropCount ..< variant.properties.len:
+      let prop = variant.properties[i]
+      let row = ui(r):
+        tdiv(display = "flex", flex_direction = "column", gap = "4px",
+              padding = "8px",
+              border = "1px solid " & borderFaint,
+              border_radius = "6px",
+              background_color = bgCard,
+              min_width = "0"):
+          discard
+      r.appendChild(row, renderComponentPropertyInput[R, E](r, vm, frame,
+        variant, prop, previewMutations))
+      let guidance = ui(r):
+        span(font_size = "10px", color = textDim, line_height = "1.35"):
+          text (componentPropertyKindLabel(prop.kind) & " - " &
+            prop.usageGuidance)
+      r.appendChild(row, guidance)
+      r.appendChild(detailsGrid, row)
+    r.appendChild(disclosure, detailsGrid)
+    r.appendChild(panel, disclosure)
+
   let states = ui(r):
     tdiv(display = "flex", flex_direction = "column", gap = "7px"):
       span(font_size = "11px", font_weight = "700", color = textSecondary,
@@ -554,11 +599,39 @@ proc populateComponentPropertyPanel[R, E](r: R; vm: EditorVM; panel, frame: E;
             gap = "6px"):
         discard
   let stateGrid = states
-  for stateControl in variant.stateControls:
-    let state = stateControl
+  # v3: cap the visible state grid at four entries; the rest go behind a
+  # native disclosure. The story-selected-wide reviewer flagged 13 stacked
+  # state rows as "filler" pulling weight from the preview.
+  let visibleStateCount = min(4, variant.stateControls.len)
+  for i in 0 ..< visibleStateCount:
+    let state = variant.stateControls[i]
     r.appendChild(stateGrid, renderComponentStateButton[R, E](r, vm, variant,
       state))
   r.appendChild(panel, states)
+  if variant.stateControls.len > visibleStateCount:
+    let hiddenStates = variant.stateControls.len - visibleStateCount
+    let statesDisclosure = ui(r):
+      details()
+    let statesSummary = ui(r):
+      summary(list_style = "none", cursor = "pointer",
+            padding = "6px 10px", border_radius = "6px",
+            background_color = bgCard,
+            border = "1px solid " & borderFaint,
+            font_size = "11px", font_weight = "600",
+            color = accent, display = "inline-block",
+            margin_top = "2px"):
+        text ("Show all states (+" & $hiddenStates & ")")
+    r.appendChild(statesDisclosure, statesSummary)
+    let hiddenStateGrid = ui(r):
+      tdiv(display = "grid",
+            grid_template_columns = "repeat(auto-fit, minmax(112px, 1fr))",
+            gap = "6px", margin_top = "8px")
+    for i in visibleStateCount ..< variant.stateControls.len:
+      let state = variant.stateControls[i]
+      r.appendChild(hiddenStateGrid, renderComponentStateButton[R, E](r, vm,
+        variant, state))
+    r.appendChild(statesDisclosure, hiddenStateGrid)
+    r.appendChild(panel, statesDisclosure)
 
   let matrix = ui(r):
     tdiv(display = "flex", flex_direction = "column", gap = "7px"):
@@ -679,17 +752,18 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
           display = "none", flex_direction = "column",
           border = "1px solid " & border, border_radius = "8px",
           overflow = "hidden"):
-      tdiv(display = "flex", align_items = "baseline", gap = "12px",
-            padding = "12px 16px",
-            background_color = bgCard,
-            border_bottom = "1px solid " & border):
-        span(ref = projectName,
-              font_size = "14px", font_weight = "600", color = textPrimary):
+      # v3: the card-header (story name + description) was duplicating the
+      # page-header breadcrumb above AND the iframe srcdoc's own header.
+      # Carry projectName / projectDescription as off-screen ARIA nodes so
+      # the createRenderEffect chain below keeps working without painting
+      # the duplicate row.
+      tdiv(position = "absolute", left = "-9999px",
+            width = "1px", height = "1px", overflow = "hidden"):
+        span(ref = projectName, font_size = "0", color = textPrimary):
           text ""
-        span(ref = projectDescription,
-              font_size = "12px", color = textMuted):
+        span(ref = projectDescription, font_size = "0", color = textPrimary):
           text ""
-      tdiv(padding = "24px", display = "flex",
+      tdiv(padding = "28px 24px 24px", display = "flex",
             justify_content = "center",
             background_color = bgPreview,
             min_height = "120px"):

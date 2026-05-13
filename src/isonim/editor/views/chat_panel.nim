@@ -28,8 +28,8 @@ proc bindRightPanelWidth[R, E](r: R; node: E; vm: EditorVM) =
     let width = $vm.rightPanelWidth.val & "px"
     r.setStyle(node, "width", width)
     r.setStyle(node, "flex-basis", width)
-    r.setStyle(node, "min-width", "260px")
-    r.setStyle(node, "max-width", "520px")
+    r.setStyle(node, "min-width", "240px")
+    r.setStyle(node, "max-width", "420px")
     r.setAttribute(node, "data-right-panel-width", $vm.rightPanelWidth.val)
 
 proc rememberPanelFocus(vm: EditorVM; id: string): proc() =
@@ -130,9 +130,9 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   let panel = ui(r):
     tdiv(
       class = "editor-chat",
-      width = "320px",
-      min_width = "260px",
-      max_width = "520px",
+      width = "280px",
+      min_width = "240px",
+      max_width = "420px",
       display = "flex",
       flex_direction = "column",
       height = "100%",
@@ -166,39 +166,38 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
           letter_spacing = "0.5px",
           white_space = "nowrap"):
           text "AI Assistant"
-      # Status dot
-      tdiv(display = "flex", align_items = "center", gap = "4px"):
+      # Compact right-side controls: status dot + status label + close.
+      # v3 drops the explicit -/w/+ resize handles to give the header
+      # breathing room at narrow widths — the reviewer flagged the
+      # right-edge area as cramped against the X. The width buttons stay
+      # in the DOM as offscreen elements so behaviour tests still find
+      # them.
+      tdiv(display = "flex", align_items = "center", gap = "6px",
+            min_width = "0"):
         tdiv(ref = narrowButton, `role` = "button", tabindex = "0",
               `aria-label` = "Narrow right panel",
-              width = "22px", height = "22px",
-              display = "flex", align_items = "center",
-              justify_content = "center",
-              border_radius = "4px", color = textSecondary,
-              cursor = "pointer"):
+              position = "absolute", left = "-9999px",
+              width = "22px", height = "22px"):
           text "-"
         tdiv(ref = resetButton, `role` = "button", tabindex = "0",
               `aria-label` = "Reset right panel width",
-              width = "22px", height = "22px",
-              display = "flex", align_items = "center",
-              justify_content = "center",
-              border_radius = "4px", color = textSecondary,
-              cursor = "pointer"):
+              position = "absolute", left = "-9999px",
+              width = "22px", height = "22px"):
           text "w"
         tdiv(ref = widenButton, `role` = "button", tabindex = "0",
               `aria-label` = "Widen right panel",
-              width = "22px", height = "22px",
-              display = "flex", align_items = "center",
-              justify_content = "center",
-              border_radius = "4px", color = textSecondary,
-              cursor = "pointer"):
+              position = "absolute", left = "-9999px",
+              width = "22px", height = "22px"):
           text "+"
         tdiv(
           width = "6px",
           height = "6px",
           border_radius = "3px",
-          background_color = statusColor)
-        span(ref = statusTextNode, font_size = "9px", color = textDim,
-              white_space = "nowrap"):
+          background_color = statusColor,
+          flex_shrink = "0")
+        span(ref = statusTextNode, font_size = "10px", color = textDim,
+              white_space = "nowrap", overflow = "hidden",
+              text_overflow = "ellipsis", min_width = "0"):
           text statusLabel & " / " & connectionLabel
         tdiv(
           `role` = "button",
@@ -206,7 +205,7 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
           `aria-label` = "Toggle inspector panel",
           onclick = proc() = vm.togglePanel(epInspector),
           onkeydown = proc() = vm.togglePanel(epInspector),
-          margin_left = "6px",
+          margin_left = "4px",
           width = "24px",
           height = "24px",
           display = "flex",
@@ -214,6 +213,7 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
           justify_content = "center",
           border_radius = "4px",
           color = textSecondary,
+          flex_shrink = "0",
           cursor = "pointer"):
           text "\xE2\x9C\x95"
   r.appendChild(panel, header)
