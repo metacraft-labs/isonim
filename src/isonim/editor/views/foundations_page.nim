@@ -115,6 +115,46 @@ proc renderFoundationsPage*[R, E](r: R; vm: EditorVM): E =
           text "Clean"
   r.appendChild(page, header)
 
+  # M-EVP-1: per-backend preview iframe for foundation stories. The
+  # foundations page is primarily a token browser, but a foundation story
+  # (e.g. "Typography", "Spacing") also produces a backend-styled
+  # `documentHtml` via the project's preview hook. Surfacing that as an
+  # iframe lets the user see the per-backend rendering when they click a
+  # backend chip while a foundation story is selected — the same reactive
+  # chain that powers `component_detail.nim` and `page_preview.nim`.
+  var foundationProjectFrame: E
+  let foundationProjectSection = ui(r):
+    tdiv(`data-foundation-project-frame-host` = "true",
+          display = "none",
+          flex_direction = "column",
+          padding = "12px 20px", gap = "8px",
+          border_bottom = "1px solid " & border):
+      span(font_size = "10px", font_weight = "700",
+            color = textDim, text_transform = "uppercase"):
+        text "Story preview"
+      iframe(ref = foundationProjectFrame,
+          title = "Foundation preview",
+          width = "100%",
+          height = "240",
+          border = "0",
+          `data-foundation-project-frame` = "true")
+  r.appendChild(page, foundationProjectSection)
+
+  var lastFoundationSrcdoc = ""
+  createRenderEffect proc() =
+    let story = vm.selectedStory.val
+    let preview = vm.preview.current.val
+    let showFoundationProject = story.kind == skFoundation and
+      preview.documentHtml.len > 0
+    let nextSrcdoc =
+      if showFoundationProject: preview.documentHtml
+      else: ""
+    if nextSrcdoc != lastFoundationSrcdoc:
+      r.setAttribute(foundationProjectFrame, "srcdoc", nextSrcdoc)
+      lastFoundationSrcdoc = nextSrcdoc
+    r.setStyle(foundationProjectSection, "display",
+      if showFoundationProject: "flex" else: "none")
+
   let body = ui(r):
     tdiv(display = "grid",
           grid_template_columns = "220px minmax(260px, 1fr) 320px",

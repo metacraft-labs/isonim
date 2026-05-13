@@ -69,16 +69,23 @@ proc renderGenericMiniPreview[R, E](r: R; label: string): E =
 proc renderProjectMiniPreview[R, E](r: R; vm: EditorVM; story: StoryRef;
     label: string): E =
   ## Flow cards render the project-owned preview document when available.
-  let preview = vm.preview.hook(story, vm.platform.val)
-  if preview.documentHtml.len == 0:
+  ## M-EVP-1: the srcdoc assignment is wrapped in a `createRenderEffect`
+  ## so clicking a backend chip (which flips `vm.platform`) repaints every
+  ## flow-card iframe with the new per-backend documentHtml. We resolve
+  ## the initial preview once to decide whether to show the iframe or
+  ## the placeholder card; subsequent backend-chip clicks reuse the same
+  ## iframe via the reactive effect below.
+  let capturedStory = story
+  let initialPreview = vm.preview.hook(capturedStory, vm.platform.val)
+  if initialPreview.documentHtml.len == 0:
     return renderGenericMiniPreview[R, E](r, label)
 
   let frame = ui(r):
     iframe(title = "Flow preview " & label,
         width = "1280",
         height = "900",
-        border = "0")
-  r.setAttribute(frame, "srcdoc", preview.documentHtml)
+        border = "0",
+        `data-flow-mini-preview` = "true")
   r.setStyle(frame, "position", "absolute")
   r.setStyle(frame, "left", "0")
   r.setStyle(frame, "top", "0")
@@ -87,6 +94,15 @@ proc renderProjectMiniPreview[R, E](r: R; vm: EditorVM; story: StoryRef;
   r.setStyle(frame, "transform", "scale(0.395)")
   r.setStyle(frame, "transform-origin", "top left")
   r.setStyle(frame, "pointer-events", "none")
+  var lastSrcdoc = ""
+  createRenderEffect proc() =
+    let preview = vm.preview.hook(capturedStory, vm.platform.val)
+    let nextSrcdoc =
+      if preview.documentHtml.len > 0: preview.documentHtml
+      else: ""
+    if nextSrcdoc != lastSrcdoc:
+      r.setAttribute(frame, "srcdoc", nextSrcdoc)
+      lastSrcdoc = nextSrcdoc
   frame
 
 func hasConcreteScreenRef(story: StoryRef): bool =

@@ -793,6 +793,7 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
             height = "1",
             border = "0",
             scrolling = "no",
+            `data-component-project-frame` = "true",
             background_color = "#FFFFFF")
   r.appendChild(content, projectPreviewSection)
 
@@ -848,14 +849,20 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
         story.group & " / " & story.name
       else:
         "Component preview"
+    # M-EVP-1: widen the gate so backend switching also reaches `skGuideline`
+    # stories (and any other kind that `viewmodels.viewForStory` routes to
+    # `evComponentDetail`). The gate now keys off "the project supplied a
+    # documentHtml" rather than a kind allow-list, so any chip click that
+    # produces fresh HTML repaints the iframe.
     let showProject = preview.documentHtml.len > 0 and
-      story.kind in {skComponent, skPattern}
+      story.kind in {skComponent, skPattern, skGuideline}
 
     r.setTextContent(headerTitle, title)
     r.setTextContent(projectName,
-      if story.kind in {skComponent, skPattern}: story.name else: "")
+      if story.kind in {skComponent, skPattern, skGuideline}: story.name else: "")
     r.setTextContent(projectDescription,
-      if story.kind in {skComponent, skPattern} and preview.bodyText.len > 0:
+      if story.kind in {skComponent, skPattern, skGuideline} and
+          preview.bodyText.len > 0:
         preview.bodyText
       else:
         "Project-owned component state")

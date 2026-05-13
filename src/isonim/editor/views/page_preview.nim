@@ -182,7 +182,8 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
           title = "Project preview",
           width = "100%",
           height = "100%",
-          border = "0")
+          border = "0",
+          `data-page-project-frame` = "true")
   r.appendChild(frameHostNode, frame)
   r.appendChild(container, frameHostNode)
   r.enableDragScroll(frameHost)
