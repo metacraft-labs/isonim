@@ -23,7 +23,7 @@ suite "Editor ViewModels (M0)":
       check vm.hasSelection.val == false
       check vm.panels.val.sidebar == true
       check vm.panels.val.inspector == true
-      check vm.rightPanelWidth.val == 320
+      check vm.rightPanelWidth.val == 280
       check vm.platform.val == pbWeb
       # M57: viewport is now the richer descriptor object.
       check vm.viewport.val.kind == pvkDesktop
@@ -55,9 +55,9 @@ suite "Editor ViewModels (M0)":
       check vm.editMode.val == emComment
       check vm.rightPanelWidth.val == 420
       vm.adjustRightPanelWidth(-200)
-      check vm.rightPanelWidth.val == 260
+      check vm.rightPanelWidth.val == 240
       vm.adjustRightPanelWidth(600)
-      check vm.rightPanelWidth.val == 520
+      check vm.rightPanelWidth.val == 420
 
       vm.inspector.collapseAllSections()
       check vm.inspector.expandedSections.val.len == 0
@@ -67,7 +67,7 @@ suite "Editor ViewModels (M0)":
 
       vm.setEditMode(emView)
       check vm.editMode.val == emView
-      check vm.rightPanelWidth.val == 520
+      check vm.rightPanelWidth.val == 420
       check vm.inspector.activeSection.val == isFill
       dispose()
 
