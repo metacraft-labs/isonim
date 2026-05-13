@@ -18,6 +18,8 @@ import isonim/editor/streaming_preview
 import isonim/editor/views/shell
 import isonim/editor/views/choice_row
 import isonim/editor/views/component_detail
+import isonim/editor/views/page_preview
+import isonim/editor/views/vector_editor
 
 proc findByAttr(node: MockNode; name, value: string): MockNode =
   if node.kind == mnkElement and name in node.attributes and
@@ -1395,6 +1397,7 @@ const sampleStoriesByKind: array[StoryKind, tuple[group, name: string]] = [
   skPage: (group: "Pages", name: "Empty State"),
   skFlow: (group: "First Task", name: "User opens the app for the first time"),
   skGuideline: (group: "Guidelines", name: "Do / Don't"),
+  skVectorSymbol: (group: "Vector Symbols", name: "Compass"),
 ]
 
 proc findStoryItem(groups: seq[StoryGroup]; kind: StoryKind;
@@ -2069,4 +2072,457 @@ suite "RS-M11 component detail mount differentiation":
         # The iframe's srcdoc is cleared on non-Web so the iframe
         # doesn't load any HTML in the background.
         check frame.attributes.getOrDefault("srcdoc", "") == ""
+      dispose()
+
+# ---------------------------------------------------------------------------
+# M-EVP-8: Vector editor — affordances + usage-context companion.
+# ---------------------------------------------------------------------------
+#
+# Real-stack tests for the inline sidebar "Edit" affordance, the
+# Edit-mode dblclick on a vector-symbol element inside the Page
+# preview, the usage-context companion panel (split <=3, carousel >3),
+# the ESC / back-affordance close paths, and the regression invariants
+# from M-EVP-3 / M-EVP-4 / M-EVP-7 / M-EVP-9.
+
+proc seedVectorSymbolFixture(usages: int; symbolName = "Carousel"):
+    seq[StoryGroup] =
+  ## Build a minimal storyboard that holds:
+  ##   * one Foundations group (so the sidebar isn't empty);
+  ##   * one Vector Symbols group containing ``symbolName``;
+  ##   * one Pages group containing ``usages`` pages, each referencing
+  ##     ``symbolName`` so ``computeVectorEditorUsages`` returns
+  ##     exactly ``usages``.
+  result.add StoryGroup(
+    name: "Foundations", kind: skFoundation, expanded: true,
+    description: "Tokens",
+    items: @[
+      StoryItem(name: "Colors", description: "palette",
+        kind: skFoundation, group: "Foundations")])
+  result.add StoryGroup(
+    name: "Vector Symbols", kind: skVectorSymbol, expanded: true,
+    description: "SVG icons",
+    items: @[
+      StoryItem(name: symbolName, description: "test symbol",
+        kind: skVectorSymbol, group: "Vector Symbols")])
+  var pageItems: seq[StoryItem]
+  for i in 0 ..< usages:
+    pageItems.add StoryItem(
+      name: "Usage Page " & $(i + 1),
+      description: "Page that references the symbol",
+      kind: skPage, group: "Pages",
+      usesVectorSymbols: @[symbolName])
+  result.add StoryGroup(
+    name: "Pages", kind: skPage, expanded: true,
+    description: "Usage pages",
+    items: pageItems)
+
+suite "M-EVP-8 vector editor affordances":
+
+  test "sidebar exposes an inline Edit affordance on every vector-symbol row":
+    ## Test 1: for the seeded "Compass" vector symbol row, exactly one
+    ## element with ``data-vector-edit="true"`` is mounted next to the
+    ## row. The button carries a stable aria-label and is keyboard
+    ## reachable.
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = buildStoryboard()
+      let sidebar = renderSidebar[MockRenderer, MockNode](r, vm)
+
+      let editButtons = findAllByAttr(sidebar, "data-vector-edit", "true")
+      check editButtons.len >= 1
+      # Every Edit button carries a stable aria-label that names the
+      # symbol — the spec says "Edit <symbol name>".
+      var seenSymbols: seq[string]
+      for btn in editButtons:
+        let label = btn.attributes.getOrDefault("aria-label")
+        check label.startsWith("Edit vector symbol ")
+        check btn.attributes.getOrDefault("role") == "button"
+        check btn.attributes.getOrDefault("tabindex") == "0"
+        let target = btn.attributes.getOrDefault("data-vector-edit-target")
+        check target.len > 0
+        let parts = target.split("/")
+        if parts.len == 2:
+          seenSymbols.add parts[1]
+      # The seeded storyboard has at least the three demo symbols
+      # (Compass / Heart / Pin).
+      check "Compass" in seenSymbols
+      check "Heart" in seenSymbols
+      dispose()
+
+  test "clicking the sidebar Edit affordance opens the vector editor":
+    ## Test 2: locate the Compass Edit button in the rendered sidebar,
+    ## fire a real ``click`` event, assert ``activeView`` becomes
+    ## ``evVectorEditor`` AND ``vectorEditorTarget`` resolves to the
+    ## same symbol story.
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = buildStoryboard()
+      let sidebar = renderSidebar[MockRenderer, MockNode](r, vm)
+
+      # Sanity: pre-click state.
+      check vm.activeView.val != evVectorEditor
+      check vm.vectorEditorTarget.val.isNone
+
+      let editBtn = findByAttr(sidebar, "data-vector-edit-target",
+        "Vector Symbols/Compass")
+      check editBtn != nil
+      check editBtn.attributes.getOrDefault("aria-label") ==
+        "Edit vector symbol Compass"
+
+      editBtn.fireEvent("click")
+
+      check vm.activeView.val == evVectorEditor
+      check vm.vectorEditorTarget.val.isSome
+      let target = vm.vectorEditorTarget.val.get
+      check target.kind == skVectorSymbol
+      check target.group == "Vector Symbols"
+      check target.name == "Compass"
+      dispose()
+
+  test "Edit-mode dblclick on a vector-symbol element in a Page preview opens the vector editor":
+    ## Test 3: render the editor shell, select a Page story that uses
+    ## the "Hero" symbol, switch the active mode to Edit, then locate
+    ## the rendered hit-test handle with
+    ## ``data-isonim-vector-symbol="Hero"`` and fire a real
+    ## ``dblclick``. Assert the vector editor opens for the Hero
+    ## symbol.
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = buildStoryboard()
+      # Select the "Empty State" page (which the demo seed marks as
+      # using both Compass and Hero — see ``buildStoryboard``).
+      let story = StoryRef(group: "Pages", name: "Empty State",
+        kind: skPage, index: 0)
+      check vm.selectStory(story)
+      check vm.activeView.val == evPagePreview
+      # Switch to Edit mode.
+      vm.editMode.val = emEdit
+
+      let pagePreview = renderPagePreview[MockRenderer, MockNode](r, vm)
+      let handle = findByAttr(pagePreview, "data-isonim-vector-symbol",
+        "Hero")
+      check handle != nil
+      check handle.attributes.getOrDefault("data-vector-symbol-target") ==
+        "Hero"
+
+      handle.fireEvent("dblclick")
+
+      check vm.activeView.val == evVectorEditor
+      check vm.vectorEditorTarget.val.isSome
+      check vm.vectorEditorTarget.val.get.name == "Hero"
+      dispose()
+
+  test "non-Edit-mode dblclick does NOT open the vector editor":
+    ## Test 4: same setup as test 3 but with the active mode at View.
+    ## The dblclick must be a no-op (activeView stays on the page
+    ## preview).
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = buildStoryboard()
+      let story = StoryRef(group: "Pages", name: "Empty State",
+        kind: skPage, index: 0)
+      check vm.selectStory(story)
+      check vm.activeView.val == evPagePreview
+      # Keep the mode at View (default).
+      check vm.editMode.val == emView
+
+      let pagePreview = renderPagePreview[MockRenderer, MockNode](r, vm)
+      let handle = findByAttr(pagePreview, "data-isonim-vector-symbol",
+        "Hero")
+      check handle != nil
+
+      handle.fireEvent("dblclick")
+
+      # The view did NOT switch to vector editor — the affordance is
+      # gated on Edit mode.
+      check vm.activeView.val == evPagePreview
+      check vm.vectorEditorTarget.val.isNone
+      dispose()
+
+  test "usage-context split renders one panel per usage when <=3 usages":
+    ## Test 5: seed a vector symbol with exactly 2 usages, open the
+    ## vector editor on it, render the vector editor view, assert the
+    ## stacked split panel renders exactly two ``data-vector-usage``
+    ## markers.
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = seedVectorSymbolFixture(usages = 2,
+        symbolName = "SplitSymbol")
+      let symbolStory = StoryRef(group: "Vector Symbols",
+        name: "SplitSymbol", kind: skVectorSymbol, index: 0)
+      check vm.openVectorEditor(symbolStory)
+      check vm.vectorEditorUsages.val.len == 2
+
+      let editorView = renderVectorEditor[MockRenderer, MockNode](r, vm)
+
+      let splitHost = findByAttr(editorView,
+        "data-vector-editor-usage-split", "true")
+      check splitHost != nil
+      check splitHost.styles.getOrDefault("display") == "flex"
+
+      let stacked = findByAttr(editorView, "data-vector-usage-layout",
+        "split")
+      check stacked != nil
+      check stacked.styles.getOrDefault("display") == "flex"
+
+      let carousel = findByAttr(editorView, "data-vector-usage-carousel",
+        "true")
+      check carousel != nil
+      # Carousel host stays hidden when the split layout owns the
+      # right column.
+      check carousel.styles.getOrDefault("display") == "none"
+
+      let usages = findAllByAttr(stacked, "data-vector-usage", "true")
+      check usages.len == 2
+      check usages[0].attributes.getOrDefault("data-vector-usage-story") ==
+        "Pages/Usage Page 1"
+      check usages[1].attributes.getOrDefault("data-vector-usage-story") ==
+        "Pages/Usage Page 2"
+      dispose()
+
+  test "usage-context carousel renders one panel at a time when >3 usages, Next/Prev clamp at boundaries":
+    ## Test 6: seed a vector symbol with 5 usages, open the editor,
+    ## render the view. Assert the carousel host is visible AND
+    ## ``data-vector-usage-index="0"``. Click Next four times → assert
+    ## index becomes 4. Click Next one more time → still 4 (clamp at
+    ## last). Click Prev five times → assert index becomes 0 (clamp).
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = seedVectorSymbolFixture(usages = 5,
+        symbolName = "CarouselSymbol")
+      let symbolStory = StoryRef(group: "Vector Symbols",
+        name: "CarouselSymbol", kind: skVectorSymbol, index: 0)
+      check vm.openVectorEditor(symbolStory)
+      check vm.vectorEditorUsages.val.len == 5
+
+      let editorView = renderVectorEditor[MockRenderer, MockNode](r, vm)
+      let carousel = findByAttr(editorView, "data-vector-usage-carousel",
+        "true")
+      check carousel != nil
+      # Carousel host must be visible.
+      check carousel.styles.getOrDefault("display") == "flex"
+      # Split host must be hidden.
+      let stacked = findByAttr(editorView, "data-vector-usage-layout",
+        "split")
+      check stacked != nil
+      check stacked.styles.getOrDefault("display") == "none"
+      # Initial index = 0.
+      check carousel.attributes.getOrDefault("data-vector-usage-index") ==
+        "0"
+      # Exactly one usage card is rendered inside the carousel content
+      # at any one time.
+      let carouselContent = findByAttr(carousel,
+        "data-vector-usage-carousel-content", "true")
+      check carouselContent != nil
+      var firstVisible = findAllByAttr(carouselContent, "data-vector-usage",
+        "true")
+      check firstVisible.len == 1
+      check firstVisible[0].attributes.getOrDefault(
+        "data-vector-usage-story") == "Pages/Usage Page 1"
+
+      let nextBtn = findByAttr(carousel, "data-vector-usage-next", "true")
+      check nextBtn != nil
+      let prevBtn = findByAttr(carousel, "data-vector-usage-prev", "true")
+      check prevBtn != nil
+
+      # Advance four times → index = 4 (last valid index).
+      for _ in 0 ..< 4:
+        nextBtn.fireEvent("click")
+      check vm.vectorEditorUsageIndex.val == 4
+      check carousel.attributes.getOrDefault("data-vector-usage-index") ==
+        "4"
+
+      # One more Next click — index must clamp at 4 (no wrap).
+      nextBtn.fireEvent("click")
+      check vm.vectorEditorUsageIndex.val == 4
+      check carousel.attributes.getOrDefault("data-vector-usage-index") ==
+        "4"
+      # Next button is aria-disabled at the boundary.
+      check nextBtn.attributes.getOrDefault("aria-disabled") == "true"
+
+      # Five Prev clicks → index must clamp at 0.
+      for _ in 0 ..< 5:
+        prevBtn.fireEvent("click")
+      check vm.vectorEditorUsageIndex.val == 0
+      check carousel.attributes.getOrDefault("data-vector-usage-index") ==
+        "0"
+      check prevBtn.attributes.getOrDefault("aria-disabled") == "true"
+
+      # Dot indicators: one dot per usage.
+      let dots = findByAttr(carousel, "data-vector-usage-dots", "true")
+      check dots != nil
+      var dotCount = 0
+      for child in dots.children:
+        if child.attributes.getOrDefault("data-vector-usage-dot").len > 0:
+          inc dotCount
+      check dotCount == 5
+      dispose()
+
+  test "ESC keydown on the shell escape-key node closes the vector editor and restores the previous view":
+    ## Test 7: open the vector editor from the Page preview view,
+    ## then dispatch a real ``keydown`` event on the shell's
+    ## ``data-shell-escape-key`` node. Assert ``activeView`` reverts
+    ## to ``evPagePreview`` AND ``vectorEditorTarget`` becomes
+    ## ``none``.
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = buildStoryboard()
+      # Land on the page preview first so ``previousView`` snapshots
+      # it when the vector editor opens.
+      check vm.selectStory(StoryRef(group: "Pages", name: "Empty State",
+        kind: skPage, index: 0))
+      check vm.activeView.val == evPagePreview
+
+      let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
+
+      # Open the vector editor (simulate the Compass Edit button click
+      # — same code path the production sidebar drives).
+      let editBtn = findByAttr(shell, "data-vector-edit-target",
+        "Vector Symbols/Compass")
+      check editBtn != nil
+      editBtn.fireEvent("click")
+      check vm.activeView.val == evVectorEditor
+      check vm.vectorEditorTarget.val.isSome
+
+      let escNode = findByAttr(shell, "data-shell-escape-key", "true")
+      check escNode != nil
+
+      escNode.fireEvent("keydown")
+
+      # ESC reverted the view and cleared the target.
+      check vm.activeView.val == evPagePreview
+      check vm.vectorEditorTarget.val.isNone
+      check vm.vectorEditorUsages.val.len == 0
+      dispose()
+
+  test "chrome bar back-affordance is rendered only when the vector editor is active":
+    ## Test 8: render the shell once with the storyboard view active,
+    ## then again with the vector editor active. Assert
+    ## ``data-vector-editor-back`` is rendered AND keyboard-clickable
+    ## only in the vector-editor case, and that clicking it closes
+    ## the vector editor.
+    createRoot do (dispose: proc()):
+      block:
+        let r = MockRenderer()
+        let vm = createEditorVM()
+        vm.sidebar.groups.val = buildStoryboard()
+        vm.activeView.val = evStoryboard
+        let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
+        # The back affordance node exists in the rendered subtree but
+        # its enclosing vector-editor view is hidden via ``display: none``
+        # whenever activeView != evVectorEditor.
+        let vectorEditorEl = findByAttr(shell, "data-vector-editor", "true")
+        check vectorEditorEl != nil
+        check vectorEditorEl.styles.getOrDefault("display", "none") ==
+          "none"
+        let backBtn = findByAttr(shell, "data-vector-editor-back", "true")
+        # The marker still lives inside the vector-editor toolbar tree.
+        check backBtn != nil
+
+      block:
+        let r = MockRenderer()
+        let vm = createEditorVM()
+        vm.sidebar.groups.val = buildStoryboard()
+        let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
+        # Open the vector editor via the affordance the production
+        # sidebar exposes (same path the test above proves).
+        let editBtn = findByAttr(shell, "data-vector-edit-target",
+          "Vector Symbols/Heart")
+        check editBtn != nil
+        editBtn.fireEvent("click")
+        check vm.activeView.val == evVectorEditor
+
+        let vectorEditorEl = findByAttr(shell, "data-vector-editor", "true")
+        check vectorEditorEl != nil
+        check vectorEditorEl.styles.getOrDefault("display", "none") == "flex"
+
+        let backBtn = findByAttr(shell, "data-vector-editor-back", "true")
+        check backBtn != nil
+        check backBtn.attributes.getOrDefault("role") == "button"
+        check backBtn.attributes.getOrDefault("aria-label") ==
+          "Close vector editor"
+
+        backBtn.fireEvent("click")
+
+        # Back affordance closed the vector editor.
+        check vm.activeView.val != evVectorEditor
+        check vm.vectorEditorTarget.val.isNone
+      dispose()
+
+  test "selecting a non-vector story in the sidebar closes the open vector editor":
+    ## Real-stack: open the vector editor, then click a Page row in
+    ## the sidebar. The vector editor must close and the new page
+    ## must be selected.
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = buildStoryboard()
+      let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
+
+      let editBtn = findByAttr(shell, "data-vector-edit-target",
+        "Vector Symbols/Compass")
+      check editBtn != nil
+      editBtn.fireEvent("click")
+      check vm.activeView.val == evVectorEditor
+      check vm.vectorEditorTarget.val.isSome
+
+      let pageRow = findByAttr(shell, "aria-label",
+        "Select story Pages / Empty State")
+      check pageRow != nil
+      pageRow.fireEvent("click")
+
+      check vm.activeView.val == evPagePreview
+      check vm.vectorEditorTarget.val.isNone
+      check vm.selectedStory.val.group == "Pages"
+      check vm.selectedStory.val.name == "Empty State"
+      dispose()
+
+  test "regression probe: M-EVP-3 / M-EVP-4 / M-EVP-7 / M-EVP-9 invariants still hold":
+    ## Spot-check that the prior-milestone invariants survive the
+    ## M-EVP-8 vector-editor affordances + companion split.
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = buildStoryboard()
+      let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
+
+      # M-EVP-3: chrome bar inter-cluster gap stays within [12, 16] px.
+      let bar = findByAttr(shell, "data-preview-chrome-bar", "true")
+      check bar != nil
+      let gapPx = parsePxValue(bar.styles.getOrDefault("gap"))
+      check gapPx >= 12
+      check gapPx <= 16
+
+      # M-EVP-7: no view-switcher chip group anywhere in the shell.
+      check findByAttr(shell, "data-preview-view-switcher", "true") == nil
+      check findAllByAttr(bar, "data-toolbar-cluster",
+        "view-switcher").len == 0
+      check findAllByAttr(bar, "data-toolbar-cluster", "backend").len == 1
+      check findAllByAttr(bar, "data-toolbar-cluster", "viewport").len == 1
+      check findAllByAttr(bar, "data-toolbar-cluster", "mode").len == 1
+
+      # M-EVP-4: selecting a story row produces the indigo accent marker.
+      let activeStory = StoryRef(group: "TaskRow", name: "Active task",
+        kind: skComponent, index: 0)
+      check vm.selectStory(activeStory)
+      let row = findByAttr(shell, "data-story-row", "TaskRow/Active task")
+      check row != nil
+      check rowMarkerIsAccent(row)
+      check rowBackgroundIsAccentTinted(row)
+
+      # M-EVP-9: quick-nav strip still present with exactly five icons.
+      let strip = findByAttr(shell, "data-sidebar-quicknav", "true")
+      check strip != nil
+      var navIcons: seq[MockNode]
+      for child in strip.children:
+        if "data-category-kind" in child.attributes:
+          navIcons.add child
+      check navIcons.len == 5
       dispose()

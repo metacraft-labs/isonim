@@ -167,6 +167,23 @@ proc buildStoryboard*(): seq[StoryGroup] =
       StoryItem(name: "Spacing & Radii", description: "Spacing scale and border radii", kind: skFoundation, group: "Foundations"),
     ])
 
+  # M-EVP-8: vector symbols. Sit under Foundations in the sidebar
+  # (folded into the same quick-nav category) and expose an inline
+  # "Edit" affordance that opens the dedicated vector editor.
+  groups.add StoryGroup(
+    name: "Vector Symbols", kind: skVectorSymbol, expanded: true,
+    description: "Reusable SVG icons / illustrations",
+    items: @[
+      StoryItem(name: "Compass", description: "Travel / navigation icon",
+        kind: skVectorSymbol, group: "Vector Symbols"),
+      StoryItem(name: "Heart", description: "Save / favourite icon",
+        kind: skVectorSymbol, group: "Vector Symbols"),
+      StoryItem(name: "Pin", description: "Map / place marker icon",
+        kind: skVectorSymbol, group: "Vector Symbols"),
+      StoryItem(name: "Hero", description: "Empty-state illustration",
+        kind: skVectorSymbol, group: "Vector Symbols"),
+    ])
+
   # Components
   groups.add StoryGroup(
     name: "TaskRow", kind: skComponent, expanded: true,
@@ -195,11 +212,24 @@ proc buildStoryboard*(): seq[StoryGroup] =
   for page in pageStories():
     # Pages are individual items in a "Pages" group
     discard
+  # M-EVP-8: seed `usesVectorSymbols` on a subset of pages so the vector
+  # editor's usage-context companion has real data to surface in tests
+  # and in the demo. The seed deliberately spreads "Hero" across all
+  # four pages (>3 → carousel) and "Compass" across two (<=3 → split).
+  func pageUsesSymbols(name: string): seq[string] =
+    case name
+    of "Empty State": @["Compass", "Hero"]
+    of "Active Workspace": @["Compass", "Hero"]
+    of "All Done": @["Hero"]
+    of "Heavy Usage": @["Hero", "Pin"]
+    else: @[]
   groups.add StoryGroup(
     name: "Pages", kind: skPage, expanded: true,
     description: "Full app views with realistic data",
     items: pageStories().mapIt(
-      StoryItem(name: it.name, description: it.description, kind: skPage, group: "Pages")))
+      StoryItem(name: it.name, description: it.description,
+        kind: skPage, group: "Pages",
+        usesVectorSymbols: pageUsesSymbols(it.name))))
 
   # Patterns
   groups.add StoryGroup(

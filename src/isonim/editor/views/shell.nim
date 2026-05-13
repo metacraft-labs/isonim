@@ -86,6 +86,7 @@ func quickNavLabel(kind: StoryKind): string =
   of skPage: "Pages"
   of skFlow: "User Journeys"
   of skGuideline: "Guidelines"
+  of skVectorSymbol: "Foundations" # M-EVP-8: vector symbols fold into Foundations.
 
 func quickNavIcon(kind: StoryKind): string =
   case kind
@@ -95,6 +96,7 @@ func quickNavIcon(kind: StoryKind): string =
   of skPage: "\xE2\x96\xA1"
   of skFlow: "\xE2\x96\xB7"
   of skGuideline: "\xE2\x97\x8B"
+  of skVectorSymbol: "\xE2\x97\x87" # M-EVP-8: shares the Foundations diamond.
 
 func quickNavSectionId(kind: StoryKind): string =
   ## Slug used in ``data-quicknav-section`` markers on the section
@@ -107,6 +109,7 @@ func quickNavSectionId(kind: StoryKind): string =
   of skPage: "pages"
   of skFlow: "user-journeys"
   of skGuideline: "guidelines"
+  of skVectorSymbol: "foundations" # M-EVP-8: vector symbols nest inside Foundations.
 
 func sectionToQuickNavKind(section: SidebarSection): StoryKind =
   case section
@@ -162,7 +165,8 @@ func groupInSection(group: StoryGroup; section: SidebarSection): bool =
   of ssComponents:
     group.kind in {skComponent, skPattern}
   of ssFoundations:
-    group.kind == skFoundation
+    group.kind in {skFoundation, skVectorSymbol}
+      # M-EVP-8: vector-symbol groups appear in the Foundations section.
   of ssGuidelines:
     group.kind == skGuideline
 
@@ -199,6 +203,30 @@ proc sectionOpenHandler(vm: EditorVM; section: SidebarSection): proc() =
 proc storySelectHandler(vm: EditorVM; story: StoryRef): proc() =
   let captured = story
   result = proc() = discard vm.sidebar.selectStory(vm, captured)
+
+proc openVectorEditorHandler*(vm: EditorVM; story: StoryRef): proc() =
+  ## M-EVP-8: inline Edit affordance handler. Opens the vector editor
+  ## on the supplied vector-symbol story. Defined ``*`` so the page /
+  ## component preview hooks (Edit-mode double-click) can re-use it.
+  let captured = story
+  result = proc() = discard vm.openVectorEditor(captured)
+
+proc closeVectorEditorHandler*(vm: EditorVM): proc() =
+  ## M-EVP-8: chrome-bar back affordance handler.
+  result = proc() = vm.closeVectorEditor()
+
+proc vectorUsageNextHandler*(vm: EditorVM): proc() =
+  result = proc() = vm.nextVectorUsage()
+
+proc vectorUsagePrevHandler*(vm: EditorVM): proc() =
+  result = proc() = vm.prevVectorUsage()
+
+proc vectorUsageJumpHandler*(vm: EditorVM; index: int): proc() =
+  let captured = index
+  result = proc() =
+    let total = vm.vectorEditorUsages.val.len
+    if captured >= 0 and captured < total:
+      vm.vectorEditorUsageIndex.val = captured
 
 proc platformHandler(vm: EditorVM; platform: Platform): proc() =
   let captured = platform
@@ -752,6 +780,7 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
                     of skPage: "\xE2\x96\xA1"
                     of skFlow: "\xE2\x96\xB7"
                     of skGuideline: "\xE2\x97\x8B"
+                    of skVectorSymbol: "\xE2\x9C\x8F" # pencil — M-EVP-8 affordance hint
                   let gExpanded = group.expanded
                   let gChevron = if gExpanded: "\xE2\x96\xBE" else: "\xE2\x96\xB8"
                   var groupNode: E
@@ -826,8 +855,11 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
                           let storyWeight =
                             if selected: "500" else: "400"
                           var storyNode: E
+                          var storyEditBtn: E
+                          let isVector = iKind == skVectorSymbol
 
-                          tdiv(display = "flex", flex_direction = "column",
+                          tdiv(display = "flex", flex_direction = "row",
+                                align_items = "center",
                                 ref = storyNode,
                                 `role` = "button", tabindex = "0",
                                 `aria-label` = "Select story " & iGroup &
@@ -845,14 +877,46 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
                                 border_left_style = "solid",
                                 border_left_color = storyBorderColor):
                             span(font_size = "12px", line_height = "1.4",
+                                  flex = "1", min_width = "0",
+                                  overflow = "hidden",
+                                  text_overflow = "ellipsis",
+                                  white_space = "nowrap",
                                   color = (
                                       if selected: textPrimary
                                       else: textSecondary),
                                   font_weight = storyWeight):
                               text iName
+                            # M-EVP-8: vector-symbol rows expose an inline
+                            # "Edit" affordance that opens the vector editor
+                            # for the symbol. The button stops click
+                            # propagation so the surrounding row's click
+                            # handler (which would route to the default
+                            # ``viewForStory`` view) does not also fire.
+                            if isVector:
+                              tdiv(ref = storyEditBtn,
+                                    `data-vector-edit` = "true",
+                                    `data-vector-edit-target` =
+                                      iGroup & "/" & iName,
+                                    `role` = "button", tabindex = "0",
+                                    `aria-label` =
+                                      "Edit vector symbol " & iName,
+                                    margin_left = "8px",
+                                    flex_shrink = "0",
+                                    padding = "2px 6px",
+                                    border_radius = "3px",
+                                    font_size = "10px",
+                                    color = textSecondary,
+                                    background_color = bgSurface,
+                                    border = "1px solid " & border,
+                                    cursor = "pointer"):
+                                text "Edit"
                           block:
                             r.bindSidebarStoryState(storyNode, vm, story)
                             r.bindSidebarItemFilter(storyNode, vm, group, item)
+                            if isVector:
+                              let openVec = openVectorEditorHandler(vm, story)
+                              r.addEventListener(storyEditBtn, "click", openVec)
+                              r.addEventListener(storyEditBtn, "keydown", openVec)
                           inc itemIdx
                     else:
                       tdiv(ref = groupBody, display = "none")
@@ -2036,4 +2100,35 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
   r.appendChild(shellRoot, renderCommandPalette[R, E](r, vm))
   r.appendChild(shellRoot, renderTelemetryOverlay[R, E](r, vm))
   r.appendChild(shellRoot, renderStatusBar[R, E](r, vm))
+
+  # M-EVP-8: ESC closes the vector editor and routes back to the prior
+  # view. We add a single keyboard-event entry-point inside the shell
+  # tagged with ``data-shell-escape-key="true"`` that listens for the
+  # ``keydown`` event. JS wires ``document.keydown`` (filtered on
+  # ``event.key === "Escape"``) to ``fireEvent("keydown")`` on this
+  # node, so the same no-arg handler closes the vector editor whether
+  # the trigger comes from a real keystroke (production) or a
+  # ``node.fireEvent("keydown")`` call (headless tests).
+  let escKeyNode = ui(r):
+    tdiv(`data-shell-escape-key` = "true",
+          position = "absolute", width = "0", height = "0",
+          overflow = "hidden", `aria-hidden` = "true")
+  r.appendChild(shellRoot, escKeyNode)
+  r.addEventListener(escKeyNode, "keydown", proc() =
+    if vm.activeView.val == evVectorEditor:
+      vm.closeVectorEditor())
+  when defined(js):
+    {.emit: ["""
+      (function () {
+        const node = """, escKeyNode, """;
+        if (!node || node.__isonimEscBound) return;
+        node.__isonimEscBound = true;
+        document.addEventListener('keydown', function (event) {
+          if (event.key !== 'Escape') return;
+          const ev = new Event('keydown', { bubbles: false });
+          node.dispatchEvent(ev);
+        });
+      })();
+    """].}
+
   shellRoot

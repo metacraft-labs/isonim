@@ -163,6 +163,22 @@ type
 
   EditorVM* = ref object of ViewModel
     activeView*: Signal[EditorView]
+    previousView*: Signal[EditorView]
+      ## M-EVP-8: snapshot of the view that was active immediately
+      ## before the vector editor opened. Restored on ESC / back
+      ## affordance so the user lands back on the page or component
+      ## they were in.
+    vectorEditorTarget*: Signal[Option[StoryRef]]
+      ## M-EVP-8: the vector-symbol story currently loaded in the
+      ## vector editor (none when the editor is not open).
+    vectorEditorUsages*: Signal[seq[VectorSymbolUsage]]
+      ## M-EVP-8: snapshot of every Page/Component story that
+      ## references the currently-edited symbol. Drives the
+      ## split-vs-carousel companion panel layout.
+    vectorEditorUsageIndex*: Signal[int]
+      ## M-EVP-8: 0-indexed position of the active usage when the
+      ## carousel variant is rendered (>3 usages). Clamps at
+      ## [0, usages.len - 1]; never wraps.
     selectedStory*: Signal[StoryRef]
     editMode*: Signal[EditMode]
     panels*: Signal[PanelVisibility]
@@ -505,7 +521,10 @@ func viewForStory*(story: StoryRef): EditorView =
     evPagePreview
   of skFoundation:
     evFoundationsPage
-  of skComponent, skPattern, skGuideline:
+  of skComponent, skPattern, skGuideline, skVectorSymbol:
+    ## M-EVP-8: clicking a vector-symbol row lands on the component
+    ## detail view by default; the inline "Edit" affordance is the
+    ## only path that opens the dedicated vector editor.
     evComponentDetail
 
 func makeBuiltinViewport*(kind: PreviewViewportKind): PreviewViewport =
@@ -1593,14 +1612,99 @@ proc selectStory*(editor: EditorVM; story: StoryRef): bool {.discardable.} =
   if not editor.hasStory(story):
     return false
 
+  let nextView = viewForStory(story)
+  # M-EVP-8: selecting a non-vector-symbol story while the vector editor
+  # is open closes it before routing to the new view. Selecting the same
+  # vector-symbol story keeps the editor open (no-op on the target /
+  # usages).
+  if editor.activeView.val == evVectorEditor and story.kind != skVectorSymbol:
+    editor.vectorEditorTarget.val = none(StoryRef)
+    editor.vectorEditorUsages.val = @[]
+    editor.vectorEditorUsageIndex.val = 0
+  # Track the prior view so the back affordance has a target. Skip the
+  # snapshot when we're already in the vector editor — the snapshot
+  # taken at ``openVectorEditor`` time is the one we want to restore.
+  if editor.activeView.val != evVectorEditor and
+      editor.activeView.val != nextView:
+    editor.previousView.val = editor.activeView.val
+
   editor.selectedStory.val = story
-  editor.activeView.val = viewForStory(story)
+  editor.activeView.val = nextView
   discard editor.ensureComponentPropertySchemaForSelectedStory()
   editor.storyboard.selectedItem.val = editor.findCanvasItem(story)
   editor.syncFlowStep(story)
   editor.recordEditorTiming(epbkStorySelection, 1,
     "story-selection:" & story.group & "/" & story.name)
   true
+
+proc computeVectorEditorUsages*(editor: EditorVM; symbolName: string):
+    seq[VectorSymbolUsage] =
+  ## M-EVP-8: walk every Page/Component story in the sidebar storyboard
+  ## and collect those whose ``usesVectorSymbols`` list mentions
+  ## ``symbolName``. Returned in storyboard order so the companion
+  ## panel renders usages in the same order the user sees them in the
+  ## sidebar.
+  result = @[]
+  if symbolName.len == 0:
+    return
+  for group in editor.sidebar.groups.val:
+    var itemIdx = 0
+    for item in group.items:
+      if symbolName in item.usesVectorSymbols:
+        result.add VectorSymbolUsage(
+          story: StoryRef(group: item.group, name: item.name,
+            kind: item.kind, index: itemIdx),
+          anchor: "",
+          thumbnail: "")
+      inc itemIdx
+
+proc openVectorEditor*(editor: EditorVM; story: StoryRef): bool {.discardable.} =
+  ## M-EVP-8: open the vector editor on the supplied vector-symbol
+  ## story. Snapshots the prior view into ``previousView`` so ESC /
+  ## the back affordance can restore it, populates the usage list and
+  ## resets the carousel index. Returns false when ``story`` is not a
+  ## vector-symbol story so callers can guard.
+  if story.kind != skVectorSymbol:
+    return false
+  if editor.activeView.val != evVectorEditor:
+    editor.previousView.val = editor.activeView.val
+  editor.vectorEditorTarget.val = some(story)
+  editor.vectorEditorUsages.val =
+    editor.computeVectorEditorUsages(story.name)
+  editor.vectorEditorUsageIndex.val = 0
+  editor.selectedStory.val = story
+  editor.activeView.val = evVectorEditor
+  true
+
+proc closeVectorEditor*(editor: EditorVM) =
+  ## M-EVP-8: close the vector editor and restore ``previousView``.
+  ## Idempotent — calling when the editor is already closed is a
+  ## no-op that still resets the target / usages signals so they
+  ## don't leak across sessions.
+  let restore =
+    if editor.previousView.val == evVectorEditor: evStoryboard
+    else: editor.previousView.val
+  editor.vectorEditorTarget.val = none(StoryRef)
+  editor.vectorEditorUsages.val = @[]
+  editor.vectorEditorUsageIndex.val = 0
+  if editor.activeView.val == evVectorEditor:
+    editor.activeView.val = restore
+
+proc nextVectorUsage*(editor: EditorVM) =
+  ## M-EVP-8: advance the usage carousel index. Clamps at the last
+  ## valid index — does NOT wrap, per the spec.
+  let total = editor.vectorEditorUsages.val.len
+  if total <= 0:
+    return
+  let cur = editor.vectorEditorUsageIndex.val
+  if cur + 1 < total:
+    editor.vectorEditorUsageIndex.val = cur + 1
+
+proc prevVectorUsage*(editor: EditorVM) =
+  ## M-EVP-8: move the usage carousel index backward. Clamps at 0.
+  let cur = editor.vectorEditorUsageIndex.val
+  if cur > 0:
+    editor.vectorEditorUsageIndex.val = cur - 1
 
 proc selectCanvasItem*(editor: EditorVM; index: int): bool {.discardable.} =
   ## Select a storyboard canvas item by index. Invalid indices are no-ops.
@@ -1643,6 +1747,11 @@ proc stopFlow*(editor: EditorVM): bool {.discardable.} =
   editor.selectFlowStep(0)
 
 proc setActiveView*(editor: EditorVM; view: EditorView) =
+  ## Direct setter for the active view. Tracks ``previousView`` so the
+  ## M-EVP-8 back affordance / ESC handler can restore the prior view
+  ## when the vector editor closes.
+  if view != editor.activeView.val and editor.activeView.val != evVectorEditor:
+    editor.previousView.val = editor.activeView.val
   editor.activeView.val = view
 
 proc togglePanel*(editor: EditorVM; panel: EditorPanel) =
@@ -2570,11 +2679,14 @@ proc setActiveCategory*(sidebar: SidebarVM; kind: StoryKind;
   ## default) collapses the four sibling sections so the focused
   ## category fills the visible sidebar.
   sidebar.activeCategory.val = some(kind)
+  # M-EVP-8: ``skVectorSymbol`` folds into Foundations the same way
+  # ``skPattern`` folds into Components, so the quick-nav strip
+  # continues to expose exactly five icons.
   let section = case kind
     of skFlow: ssUserJourneys
     of skPage: ssPages
     of skComponent, skPattern: ssComponents
-    of skFoundation: ssFoundations
+    of skFoundation, skVectorSymbol: ssFoundations
     of skGuideline: ssGuidelines
   if collapseSiblings:
     var next = SidebarSectionExpansion(
@@ -2599,6 +2711,11 @@ proc categoryHasStories*(sidebar: SidebarVM; kind: StoryKind): bool =
     of skComponent, skPattern:
       # Components section bundles both component and pattern groups.
       if g.kind in {skComponent, skPattern} and g.items.len > 0:
+        return true
+    of skFoundation, skVectorSymbol:
+      # M-EVP-8: vector-symbol groups appear under the Foundations
+      # quick-nav icon (no dedicated icon).
+      if g.kind in {skFoundation, skVectorSymbol} and g.items.len > 0:
         return true
     else:
       if g.kind == kind and g.items.len > 0:
@@ -9628,6 +9745,10 @@ proc createFlowPlayerVM*(): FlowPlayerVM =
 proc createEditorVM*(): EditorVM =
   ## Create the top-level editor ViewModel with all sub-VMs wired up.
   let activeView = createSignal(evStoryboard)
+  let previousView = createSignal(evStoryboard)
+  let vectorEditorTarget = createSignal(none(StoryRef))
+  let vectorEditorUsages = createSignal[seq[VectorSymbolUsage]](@[])
+  let vectorEditorUsageIndex = createSignal(0)
   let selectedStory = createSignal(StoryRef())
   let editMode = createSignal(emView)
   let panels = createSignal(PanelVisibility(sidebar: true, inspector: true))
@@ -9670,6 +9791,10 @@ proc createEditorVM*(): EditorVM =
 
   EditorVM(
     activeView: activeView,
+    previousView: previousView,
+    vectorEditorTarget: vectorEditorTarget,
+    vectorEditorUsages: vectorEditorUsages,
+    vectorEditorUsageIndex: vectorEditorUsageIndex,
     selectedStory: selectedStory,
     editMode: editMode,
     panels: panels,

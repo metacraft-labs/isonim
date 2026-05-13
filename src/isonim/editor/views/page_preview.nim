@@ -10,6 +10,26 @@ import isonim/editor/viewmodels
 const
   bgBase = "#0B1120"
 
+proc vectorTargetDblclickHandler(vm: EditorVM; symbolName: string): proc() =
+  ## M-EVP-8: open the vector editor for the symbol whose hit-test
+  ## handle was double-clicked. The handler refuses the open when the
+  ## active mode is not ``emEdit`` so the same handle works as a
+  ## read-only marker in View / Comment modes.
+  let captured = symbolName
+  result = proc() =
+    if vm.editMode.val != emEdit:
+      return
+    for group in vm.sidebar.groups.val:
+      if group.kind == skVectorSymbol:
+        var idx = 0
+        for item in group.items:
+          if item.name == captured:
+            discard vm.openVectorEditor(StoryRef(
+              group: item.group, name: item.name,
+              kind: skVectorSymbol, index: idx))
+            return
+          inc idx
+
 proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
   ## M-EVP-6: per-view inner toolbar removed. The canonical chrome bar
   ## lives in `renderPreviewChromeBar` above the view stack; the page
@@ -64,6 +84,47 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
   r.appendChild(frameHostNode, frame)
   r.appendChild(container, frameHostNode)
   r.enableDragScroll(frameHost)
+
+  # M-EVP-8: vector-symbol hit-test handles. The Nim-rendered tree gets
+  # one handle per symbol referenced by the current story. Each handle:
+  #   * carries ``data-isonim-vector-symbol="<name>"`` so the iframe's
+  #     internal dblclick handler can stencil-match the same marker;
+  #   * carries ``data-vector-symbol-target="<name>"`` so headless
+  #     tests can find and double-click it directly;
+  #   * is mounted inside the device frame's fallback panel surface so
+  #     it inherits the editor mode and doesn't compete with the
+  #     iframe's render path.
+  var hitTestRoot: E
+  let hitTestNode = ui(r):
+    tdiv(ref = hitTestRoot,
+          `data-vector-hittest-host` = "true",
+          position = "absolute", top = "0", left = "0",
+          width = "1px", height = "1px", overflow = "hidden")
+  r.appendChild(deviceFrame, hitTestNode)
+
+  createRenderEffect proc() =
+    r.clearChildren(hitTestRoot)
+    let story = vm.selectedStory.val
+    var handles: seq[string]
+    for group in vm.sidebar.groups.val:
+      if group.kind == story.kind:
+        for item in group.items:
+          if item.group == story.group and item.name == story.name:
+            for sym in item.usesVectorSymbols:
+              if sym notin handles:
+                handles.add sym
+    for symName in handles:
+      let captured = symName
+      var handleEl: E
+      let handle = ui(r):
+        tdiv(ref = handleEl,
+              `data-isonim-vector-symbol` = captured,
+              `data-vector-symbol-target` = captured,
+              `aria-label` = "Vector symbol " & captured & " hit test",
+              width = "1px", height = "1px")
+      let onDblClick = vectorTargetDblclickHandler(vm, captured)
+      r.addEventListener(handleEl, "dblclick", onDblClick)
+      r.appendChild(hitTestRoot, handle)
 
   createRenderEffect proc() =
     let preview = vm.preview.current.val

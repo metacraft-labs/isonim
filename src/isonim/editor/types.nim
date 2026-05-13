@@ -4,12 +4,15 @@
 type
   # --- Story types ---
   StoryKind* = enum
-    skFoundation ## Design token display (colors, typography, spacing)
-    skComponent  ## Individual component in a specific state
-    skPattern    ## Composition pattern (forms, tables, navigation)
-    skPage       ## Full page composition with realistic data
-    skFlow       ## Multi-step user navigation sequence
-    skGuideline  ## Usage guideline (do/don't, content, motion, a11y)
+    skFoundation   ## Design token display (colors, typography, spacing)
+    skComponent    ## Individual component in a specific state
+    skPattern      ## Composition pattern (forms, tables, navigation)
+    skPage         ## Full page composition with realistic data
+    skFlow         ## Multi-step user navigation sequence
+    skGuideline    ## Usage guideline (do/don't, content, motion, a11y)
+    skVectorSymbol ## M-EVP-8: Reusable SVG symbol (icon/illustration).
+                   ## Carries a sidebar "edit" affordance that opens the
+                   ## vector editor (see ``openVectorEditor``).
 
   SidebarSection* = enum
     ssUserJourneys
@@ -46,6 +49,10 @@ type
     description*: string
     kind*: StoryKind
     group*: string ## Parent group name
+    usesVectorSymbols*: seq[string]
+      ## M-EVP-8: names of vector symbols this story references. The
+      ## vector editor's usage-context companion reads this to surface
+      ## every Page/Component that uses the symbol being edited.
 
   StoryRenderMetadata* = object
     ## Project-owned render metadata for a story, separate from sidebar copy.
@@ -518,6 +525,15 @@ type
     svgContent*: string ## Raw SVG source
     tags*: seq[string]  ## Searchable tags
     width*, height*: float
+
+  VectorSymbolUsage* = object
+    ## M-EVP-8: a single Page/Component story that references the vector
+    ## symbol currently loaded in the vector editor. Drives the
+    ## usage-context companion panel (split for <=3 usages, carousel for
+    ## >3 usages).
+    story*: StoryRef
+    anchor*: string    ## Optional element path / fragment selector
+    thumbnail*: string ## Optional thumbnail URI / inline SVG
 
   PropertyOrigin* = enum
     poTailwindClass ## From a Tailwind utility in class="..."

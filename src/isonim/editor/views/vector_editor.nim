@@ -4,6 +4,8 @@
 ## Left: tool palette. Center: SVG canvas with grid. Right: properties
 ## (stroke, fill, transform). Bottom: layers panel.
 
+import std/options
+
 import isonim/core/[signals, computation]
 import isonim/dsl/ui
 import isonim/editor/viewmodels
@@ -121,6 +123,8 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
           background_color = bgBase):
 
       # Top toolbar
+      var backBtn: E
+      var symbolNameLabel: E
       tdiv(display = "flex", align_items = "center",
             justify_content = "space-between",
             height = "44px", min_height = "44px", padding = "0 16px",
@@ -128,9 +132,26 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
             `data-vector-editor-toolbar` = "true",
             border_bottom = "1px solid " & border):
         tdiv(display = "flex", align_items = "center", gap = "10px"):
+          # M-EVP-8: back affordance. Only rendered when the vector
+          # editor is active; the shell's view-stack effect already
+          # gates the whole subtree on ``evVectorEditor`` so the
+          # button is intrinsically scoped to the right view.
+          tdiv(ref = backBtn,
+                `data-vector-editor-back` = "true",
+                `role` = "button", tabindex = "0",
+                `aria-label` = "Close vector editor",
+                display = "flex", align_items = "center",
+                justify_content = "center",
+                width = "26px", height = "26px",
+                border_radius = "4px", cursor = "pointer",
+                color = textSecondary, font_size = "16px",
+                background_color = bgSurface,
+                border = "1px solid " & border):
+            text "\xE2\x86\x90" # ←
           span(font_size = "13px", font_weight = "600", color = textPrimary):
             text "Vector Editor"
-          span(font_size = "11px", color = textDim):
+          span(ref = symbolNameLabel,
+                font_size = "11px", color = textDim):
             text "\xE2\x80\x94 check-icon.svg"
         # Boolean operations are delegated to Paper.js, a supplemental path backend.
         tdiv(display = "flex", align_items = "center", gap = "2px",
@@ -176,6 +197,21 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
             r.addEventListener(saveTop, "click", save)
             r.addEventListener(saveTop, "keydown", save)
             r.bindVectorSaveState(saveTop, vm)
+
+      block:
+        # M-EVP-8: wire the back affordance + reactive symbol-name label.
+        let close = proc() = vm.closeVectorEditor()
+        r.addEventListener(backBtn, "click", close)
+        r.addEventListener(backBtn, "keydown", close)
+        let capturedVm = vm
+        createRenderEffect proc() =
+          let target = capturedVm.vectorEditorTarget.val
+          let label =
+            if target.isSome:
+              "\xE2\x80\x94 " & target.get.name
+            else:
+              ""
+          r.setTextContent(symbolNameLabel, label)
 
   # Main area: tool palette + canvas + properties
   let mainArea = ui(r):
@@ -473,5 +509,195 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
 
   r.appendChild(mainArea, propsPanel)
 
-  r.appendChild(container, mainArea)
+  # M-EVP-8: usage-context companion panel. The centre column splits
+  # into [vector canvas | usages]. The split is only mounted when the
+  # vector editor has a target — until then the canvas fills the full
+  # width. The right split is reactive: the layout switches between
+  # the stacked variant (<=3 usages) and the carousel variant (>3
+  # usages) by toggling display on the two host containers.
+  let splitRoot = ui(r):
+    tdiv(`data-vector-editor-split` = "true",
+          flex = "1", display = "flex", flex_direction = "row",
+          min_height = "0", overflow = "hidden")
+
+  let leftSplit = ui(r):
+    tdiv(`data-vector-editor-canvas-split` = "true",
+          flex = "1.5", display = "flex", flex_direction = "column",
+          min_width = "0", overflow = "hidden")
+  r.appendChild(leftSplit, mainArea)
+
+  var stackedPanel: E
+  var carouselPanel: E
+  var carouselPrev: E
+  var carouselNext: E
+  var carouselDots: E
+  var carouselContent: E
+  var usagePanelRoot: E
+  let rightSplit = ui(r):
+    tdiv(ref = usagePanelRoot,
+          `data-vector-editor-usage-split` = "true",
+          flex = "1", display = "none", flex_direction = "column",
+          min_width = "0", overflow_y = "auto",
+          background_color = bgSidebar,
+          border_left = "1px solid " & border):
+      tdiv(padding = "10px 14px",
+            border_bottom = "1px solid " & borderFaint,
+            color = textSecondary, font_size = "11px",
+            font_weight = "600",
+            text_transform = "uppercase",
+            letter_spacing = "0.5px"):
+        text "Usage Context"
+      tdiv(ref = stackedPanel,
+            `data-vector-usage-layout` = "split",
+            display = "none", flex_direction = "column",
+            gap = "10px", padding = "10px 12px")
+      tdiv(ref = carouselPanel,
+            `data-vector-usage-carousel` = "true",
+            `data-vector-usage-layout` = "carousel",
+            `data-vector-usage-index` = "0",
+            display = "none", flex_direction = "column",
+            gap = "8px", padding = "10px 12px"):
+        tdiv(ref = carouselContent,
+              `data-vector-usage-carousel-content` = "true",
+              display = "flex", flex_direction = "column",
+              gap = "6px", min_height = "120px",
+              padding = "8px",
+              background_color = bgCard,
+              border = "1px solid " & border,
+              border_radius = "6px")
+        tdiv(display = "flex", align_items = "center",
+              justify_content = "space-between",
+              gap = "8px"):
+          tdiv(ref = carouselPrev,
+                `data-vector-usage-prev` = "true",
+                `role` = "button", tabindex = "0",
+                `aria-label` = "Previous vector usage",
+                padding = "4px 8px",
+                border_radius = "4px",
+                border = "1px solid " & border,
+                background_color = bgSurface,
+                color = textSecondary, font_size = "11px",
+                cursor = "pointer"):
+            text "\xE2\x80\xB9 Prev"
+          tdiv(ref = carouselDots,
+                `data-vector-usage-dots` = "true",
+                display = "flex", align_items = "center",
+                gap = "6px")
+          tdiv(ref = carouselNext,
+                `data-vector-usage-next` = "true",
+                `role` = "button", tabindex = "0",
+                `aria-label` = "Next vector usage",
+                padding = "4px 8px",
+                border_radius = "4px",
+                border = "1px solid " & border,
+                background_color = bgSurface,
+                color = textSecondary, font_size = "11px",
+                cursor = "pointer"):
+            text "Next \xE2\x80\xBA"
+
+  r.appendChild(splitRoot, leftSplit)
+  r.appendChild(splitRoot, rightSplit)
+  r.appendChild(container, splitRoot)
+
+  block:
+    let capturedVm = vm
+    # Wire prev/next/jump handlers once.
+    r.addEventListener(carouselPrev, "click", proc() = capturedVm.prevVectorUsage())
+    r.addEventListener(carouselPrev, "keydown", proc() = capturedVm.prevVectorUsage())
+    r.addEventListener(carouselNext, "click", proc() = capturedVm.nextVectorUsage())
+    r.addEventListener(carouselNext, "keydown", proc() = capturedVm.nextVectorUsage())
+
+    proc renderUsageRow(label: string; usage: VectorSymbolUsage): E =
+      ui(r):
+        tdiv(`data-vector-usage` = "true",
+              `data-vector-usage-label` = label,
+              `data-vector-usage-story` =
+                usage.story.group & "/" & usage.story.name,
+              display = "flex", flex_direction = "column",
+              gap = "4px", padding = "10px 12px",
+              border = "1px solid " & border,
+              border_radius = "6px",
+              background_color = bgCard,
+              # Read-only — clicks in usage previews must NOT bubble
+              # into selection in the main vector editor.
+              pointer_events = "none"):
+          span(font_size = "10px", font_weight = "600",
+                color = textSecondary,
+                text_transform = "uppercase",
+                letter_spacing = "0.5px"):
+            text label
+          tdiv(min_height = "80px",
+                background_color = bgSurface,
+                border_radius = "4px",
+                padding = "8px",
+                color = textMuted, font_size = "11px"):
+            text usage.story.group & " / " & usage.story.name
+
+    createRenderEffect proc() =
+      let usages = capturedVm.vectorEditorUsages.val
+      let count = usages.len
+      let visible = count > 0 and
+        capturedVm.activeView.val == evVectorEditor
+      r.setStyle(usagePanelRoot, "display", if visible: "flex" else: "none")
+
+      let useCarousel = count > 3
+      r.setStyle(stackedPanel, "display",
+        if visible and not useCarousel: "flex" else: "none")
+      r.setStyle(carouselPanel, "display",
+        if visible and useCarousel: "flex" else: "none")
+
+      # Rebuild stacked variant: <=3 usages stacked vertically.
+      r.clearChildren(stackedPanel)
+      if visible and not useCarousel:
+        for usage in usages:
+          let label = usage.story.group & " / " & usage.story.name
+          let row = renderUsageRow(label, usage)
+          r.appendChild(stackedPanel, row)
+
+      # Rebuild carousel variant: only the active index is shown.
+      if visible and useCarousel:
+        var idx = capturedVm.vectorEditorUsageIndex.val
+        if idx < 0: idx = 0
+        if idx >= count: idx = count - 1
+        # Defensive write-back so the signal reflects the clamped value.
+        if capturedVm.vectorEditorUsageIndex.val != idx:
+          capturedVm.vectorEditorUsageIndex.val = idx
+        r.setAttribute(carouselPanel, "data-vector-usage-index", $idx)
+        r.clearChildren(carouselContent)
+        let usage = usages[idx]
+        let label = usage.story.group & " / " & usage.story.name
+        r.appendChild(carouselContent, renderUsageRow(label, usage))
+        # Boundary state on prev / next buttons.
+        let atFirst = idx <= 0
+        let atLast = idx >= count - 1
+        r.setAttribute(carouselPrev, "aria-disabled",
+          if atFirst: "true" else: "false")
+        r.setAttribute(carouselNext, "aria-disabled",
+          if atLast: "true" else: "false")
+        r.setStyle(carouselPrev, "opacity", if atFirst: "0.4" else: "1")
+        r.setStyle(carouselNext, "opacity", if atLast: "0.4" else: "1")
+        # Rebuild dot indicators.
+        r.clearChildren(carouselDots)
+        for i in 0 ..< count:
+          let capturedIdx = i
+          let isActive = i == idx
+          var dotNode: E
+          let dot = ui(r):
+            tdiv(ref = dotNode,
+                  `data-vector-usage-dot` = $i,
+                  `role` = "button", tabindex = "0",
+                  `aria-label` = "Show usage " & $(i + 1),
+                  `aria-current` =
+                    (if isActive: "true" else: "false"),
+                  width = "8px", height = "8px",
+                  border_radius = "4px",
+                  cursor = "pointer",
+                  background_color =
+                    (if isActive: accent else: borderFaint))
+          r.addEventListener(dotNode, "click", proc() =
+            capturedVm.vectorEditorUsageIndex.val = capturedIdx)
+          r.addEventListener(dotNode, "keydown", proc() =
+            capturedVm.vectorEditorUsageIndex.val = capturedIdx)
+          r.appendChild(carouselDots, dot)
+
   container

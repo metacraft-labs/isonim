@@ -221,6 +221,7 @@ func storyKindSlug(kind: StoryKind): string =
   of skPage: "page"
   of skFlow: "flow"
   of skGuideline: "guideline"
+  of skVectorSymbol: "vector-symbol"
 
 func storyKindFromSlug(slug: string; fallback: StoryKind): StoryKind =
   case slug.normalize
@@ -230,6 +231,7 @@ func storyKindFromSlug(slug: string; fallback: StoryKind): StoryKind =
   of "page": skPage
   of "flow": skFlow
   of "guideline": skGuideline
+  of "vectorsymbol": skVectorSymbol
   else: fallback
 
 func viewportSlug(viewport: PreviewViewport): string =

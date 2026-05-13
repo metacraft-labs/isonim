@@ -21,6 +21,11 @@ type
     currentTarget*: MockNode
     defaultPrevented*: bool
     propagationStopped*: bool
+    key*: string
+      ## Test-time analogue of ``KeyboardEvent.key`` (e.g. "Escape",
+      ## "ArrowLeft"). Empty by default — tests that exercise key-aware
+      ## handlers should populate it on a ``MockEvent`` passed to
+      ## ``fireEventWith``.
 
   MockNode* = ref object
     id*: int                              ## Unique node ID (for hashing)

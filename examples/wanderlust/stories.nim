@@ -20,6 +20,7 @@ func renderKind(kind: StoryKind): string =
   of skPage: "page"
   of skFlow: "flow"
   of skGuideline: "guideline"
+  of skVectorSymbol: "vector-symbol"
 
 func flowStepScreen(group, name: string): StoryRef =
   case group
@@ -376,6 +377,8 @@ proc wanderlustPreviewHook*(story: StoryRef;
     of skFlow:
       let screen = flowStepScreen(story.group, story.name)
       "Flow action renders project screen " & screen.group & " / " & screen.name
+    of skVectorSymbol:
+      "Vector symbol fixture for " & story.name.toLowerAscii()
 
   ProjectPreview(
     status: ppsRendered,

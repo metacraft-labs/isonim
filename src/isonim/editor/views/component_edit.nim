@@ -791,6 +791,25 @@ proc editablePreviewDocument(documentHtml: string;
     if (!selected) return;
     event.preventDefault();
     event.stopPropagation();
+    // M-EVP-8: if the resolved element (or one of its ancestors) carries
+    // the `data-isonim-vector-symbol` marker, forward the dblclick to
+    // the host editor so it opens the vector editor instead of entering
+    // inline text editing.
+    var vectorEl = selected;
+    while (vectorEl && vectorEl.getAttribute &&
+        !vectorEl.getAttribute('data-isonim-vector-symbol')) {
+      vectorEl = vectorEl.parentElement;
+    }
+    if (vectorEl && vectorEl.getAttribute) {
+      var symbolName = vectorEl.getAttribute('data-isonim-vector-symbol');
+      if (symbolName) {
+        parent.dispatchEvent(new CustomEvent('isonim-preview-vector-edit', {
+          detail: { symbol: symbolName,
+                    elementPath: cssPath(vectorEl) }
+        }));
+        return;
+      }
+    }
     selectElement(selected);
     const before = String(selected.textContent || '').trim().replace(/\s+/g, ' ');
     selected.setAttribute('contenteditable', 'true');
@@ -1140,6 +1159,34 @@ proc installPreviewSelectionBridge[R, E](r: R; frame: E; vm: EditorVM) =
           const d = event.detail || {};
           """, addCommentToPrompt,
         """(d.selector || '', d.ancestry || '', d.text || '', d.domSnapshot || '', d.screenshotRef || '');
+        });
+      }
+    """].}
+
+    # M-EVP-8: bridge for the iframe's vector-symbol dblclick handler.
+    let openVectorFromBrowser = proc(symbol, elementPath: cstring) =
+      let symName = $symbol
+      if symName.len == 0:
+        return
+      # Resolve the symbol name to a sidebar story. The vector-symbols
+      # group exposes one story per symbol — we look up by name.
+      for group in vm.sidebar.groups.val:
+        if group.kind == skVectorSymbol:
+          var idx = 0
+          for item in group.items:
+            if item.name == symName:
+              discard vm.openVectorEditor(StoryRef(
+                group: item.group, name: item.name,
+                kind: skVectorSymbol, index: idx))
+              return
+            inc idx
+    {.emit: ["""
+      if (!window.__isonimPreviewVectorEditBridgeInstalled) {
+        window.__isonimPreviewVectorEditBridgeInstalled = true;
+        window.addEventListener('isonim-preview-vector-edit', function (event) {
+          const d = event.detail || {};
+          """, openVectorFromBrowser,
+        """(d.symbol || '', d.elementPath || '');
         });
       }
     """].}

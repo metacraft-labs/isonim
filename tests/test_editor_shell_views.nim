@@ -64,8 +64,10 @@ suite "Editor Shell Views (M2)":
       let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
 
       # Shell mounts the main editor row, command palette, telemetry overlay,
-      # and status bar.
-      check shell.children.len == 4
+      # status bar, and (M-EVP-8) a hidden ``data-shell-escape-key`` node
+      # that the ESC handler binds to.
+      check shell.children.len == 5
+      check findByAttr(shell, "data-shell-escape-key", "true") != nil
       # Editor row children: sidebar, center column, chat panel.
       check shell.children[0].children.len == 3
       check findByAttr(shell, "data-preview-center-column", "true") != nil
