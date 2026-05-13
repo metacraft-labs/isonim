@@ -8,7 +8,7 @@
 ## with the headless mock renderer, and click through the actual signal
 ## handlers — no behaviour mocks.
 
-import std/[sequtils, tables, unittest]
+import std/[sequtils, strutils, tables, unittest]
 import isonim/core/[signals, computation, owner]
 import isonim/testing/mock_dom
 import isonim/editor/viewmodels
@@ -777,4 +777,126 @@ suite "M58 chip-set reactivity":
       vm.streamingPreview.availableBackends.val =
         @[pbWeb, pbGpui, pbTui]
       check tuiBtn.attributes["aria-disabled"] == "false"
+      dispose()
+
+# ---------------------------------------------------------------------------
+# M-EVP-3: Toolbar density — inter-cluster gaps + right padding
+# ---------------------------------------------------------------------------
+
+proc parsePxValue(raw: string): int =
+  ## Parse a CSS pixel value like `"14px"` into the integer `14`. Trims
+  ## whitespace and tolerates upper-case `"PX"`. Fails the calling test
+  ## (returns -1) if `raw` is not a `<int>px` literal — the M-EVP-3 spec
+  ## requires the layout to declare gap / padding via single-component
+  ## pixel values so the headless test can assert numeric bounds.
+  var s = raw.strip().toLowerAscii()
+  if s.endsWith("px"):
+    s = s[0 ..< s.len - 2]
+  try:
+    parseInt(s.strip())
+  except ValueError:
+    -1
+
+suite "M-EVP-3 preview chrome bar density":
+
+  test "toolbar declares >=12 px and <=16 px inter-cluster gap":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      let bar = renderPreviewChromeBar[MockRenderer, MockNode](r, vm)
+
+      # The chrome bar is identifiable via two stable attributes; both
+      # MUST be present for clarity, so we resolve via the more-specific
+      # `data-preview-chrome-bar` marker.
+      check bar.attributes.getOrDefault("data-preview-chrome-bar") == "true"
+      check bar.attributes.getOrDefault("data-preview-toolbar") == "true"
+
+      # The toolbar root must use a `flex` row container so `gap`
+      # actually positions sibling clusters.
+      check bar.styles.getOrDefault("display") == "flex"
+
+      let gapRaw = bar.styles.getOrDefault("gap")
+      check gapRaw.len > 0
+      let gapPx = parsePxValue(gapRaw)
+      check gapPx >= 12
+      check gapPx <= 16
+      dispose()
+
+  test "toolbar declares >=12 px right padding before the inspector edge":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      let bar = renderPreviewChromeBar[MockRenderer, MockNode](r, vm)
+
+      # Padding-right must be declared as a single-component pixel value
+      # (rather than baked into the `padding` shorthand) so we can read
+      # the inspector-edge breathing room directly from the mock node's
+      # style table. This is the headless analogue of "mode chips never
+      # touch the inspector border" from the v5 review.
+      let paddingRight = bar.styles.getOrDefault("padding-right")
+      check paddingRight.len > 0
+      let paddingRightPx = parsePxValue(paddingRight)
+      check paddingRightPx >= 12
+      dispose()
+
+  test "toolbar contains all four chip clusters tagged for visual separation":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      let bar = renderPreviewChromeBar[MockRenderer, MockNode](r, vm)
+
+      # Each of the four clusters must be a direct child of the toolbar
+      # and carry a stable `data-toolbar-cluster` attribute so future
+      # layout changes can address them without depending on the
+      # rendering order. The test additionally verifies the order matches
+      # the v5 left-to-right reading: view-switcher → backend → viewport
+      # → mode.
+      let clusterAttr = "data-toolbar-cluster"
+      let clusters = findAllByAttr(bar, clusterAttr, "view-switcher") &
+        findAllByAttr(bar, clusterAttr, "backend") &
+        findAllByAttr(bar, clusterAttr, "viewport") &
+        findAllByAttr(bar, clusterAttr, "mode")
+      check clusters.len == 4
+
+      # Every cluster must be a direct child of the toolbar — if a
+      # future refactor nests them inside an intermediate wrapper the
+      # flex `gap` no longer applies between them, so this is the
+      # invariant the visual separation rests on.
+      let clusterKinds = @["view-switcher", "backend", "viewport", "mode"]
+      var directChildClusters: seq[string] = @[]
+      for child in bar.children:
+        let kind = child.attributes.getOrDefault(clusterAttr)
+        if kind.len > 0:
+          directChildClusters.add kind
+      check directChildClusters == clusterKinds
+      dispose()
+
+  test "regression probe: collapsing toolbar gap to 0 invalidates the M-EVP-3 invariant":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      let bar = renderPreviewChromeBar[MockRenderer, MockNode](r, vm)
+
+      # Sanity: the production rendering passes the inter-cluster gap
+      # assertion. (Asserted in the first test of this suite; repeated
+      # here in case the gap test is filtered out.)
+      check parsePxValue(bar.styles.getOrDefault("gap")) >= 12
+
+      # Mutate the rendered DOM to simulate a regression (someone drops
+      # the toolbar `gap` to 0 / removes the padding) and confirm the
+      # same parser+bounds expression that the production test relies on
+      # would catch it. This is the "convince yourself the assertion
+      # actually exercises the property" check the M-EVP-3 spec calls
+      # for — the asserts inverted below intentionally fail the
+      # M-EVP-3 spec when the layout regresses.
+      r.setStyle(bar, "gap", "0px")
+      r.setStyle(bar, "padding-right", "0px")
+
+      let mutatedGap = parsePxValue(bar.styles.getOrDefault("gap"))
+      let mutatedPaddingRight =
+        parsePxValue(bar.styles.getOrDefault("padding-right"))
+      # Negative assertions: the same conditions the spec tests assert
+      # MUST be false after the regression mutation.
+      check not (mutatedGap >= 12 and mutatedGap <= 16)
+      check not (mutatedPaddingRight >= 12)
       dispose()

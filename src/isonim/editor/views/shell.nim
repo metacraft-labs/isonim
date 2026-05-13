@@ -1688,12 +1688,21 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
   ## Replaces the M57 left/right edge strips and the per-view
   ## breadcrumb / "Edit | Code" toolbars. Wraps to a second row on
   ## narrow viewports so the four groups stay readable at 1440x900.
+  # M-EVP-3: explicit `gap = "14px"` (centred in the spec's 12-16 px
+  # band) gives every adjacent chip cluster a clearly-visible breathing
+  # gap; `padding-right = "12px"` keeps the rightmost (mode) cluster
+  # from sitting flush against the inspector edge. Padding is declared
+  # via the four `padding-{top,right,bottom,left}` properties (not the
+  # shorthand) so the headless layout test can assert `padding-right`
+  # directly from `node.styles`.
   let toolbar = ui(r):
     tdiv(display = "flex", align_items = "center",
           justify_content = "flex-start",
-          gap = "10px", flex_wrap = "wrap",
+          gap = "14px", flex_wrap = "wrap",
           row_gap = "6px",
-          min_height = "44px", padding = "8px 16px",
+          min_height = "44px",
+          padding_top = "8px", padding_right = "12px",
+          padding_bottom = "8px", padding_left = "16px",
           background_color = bgToolbar,
           border_bottom = "1px solid " & border,
           `data-preview-toolbar` = "true",
@@ -1703,7 +1712,8 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
     tdiv(display = "flex", align_items = "center", gap = "1px",
           background_color = bgSurface, border_radius = "6px",
           padding = "3px",
-          `data-preview-view-switcher` = "true")
+          `data-preview-view-switcher` = "true",
+          `data-toolbar-cluster` = "view-switcher")
   for option in [
     (evStoryboard, "Flow"),
     (evComponentDetail, "Detail"),
@@ -1756,7 +1766,8 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
     chipHeight = "26px",
     dataAttrs = @[
       ("data-edge-strip", "backend"),
-      ("data-preview-edge-group", "backend")],
+      ("data-preview-edge-group", "backend"),
+      ("data-toolbar-cluster", "backend")],
     onChipMounted = backendOnChipMounted)
   tiltHorizontal(backendCol.root, "Preview backend")
   r.appendChild(toolbar, backendCol.root)
@@ -1777,7 +1788,8 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
     chipHeight = "24px",
     dataAttrs = @[
       ("data-edge-strip", "viewport"),
-      ("data-preview-edge-group", "viewport")],
+      ("data-preview-edge-group", "viewport"),
+      ("data-toolbar-cluster", "viewport")],
     onChipMounted = viewportOnChipMounted)
   tiltHorizontal(viewportCol.root, "Preview screen size")
   r.appendChild(toolbar, viewportCol.root)
@@ -1796,7 +1808,8 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
     chipHeight = "26px",
     dataAttrs = @[
       ("data-edge-strip", "mode"),
-      ("data-preview-edge-group", "mode")],
+      ("data-preview-edge-group", "mode"),
+      ("data-toolbar-cluster", "mode")],
     onChipMounted = modeOnChipMounted)
   tiltHorizontal(modeCol.root, "Preview mode")
   r.appendChild(toolbar, modeCol.root)
