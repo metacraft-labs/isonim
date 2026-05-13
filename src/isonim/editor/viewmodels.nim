@@ -9784,6 +9784,17 @@ proc createEditorVM*(): EditorVM =
   let review = createReviewResultsVM()
   let preview = createProjectPreviewVM(selectedStory, platform)
   let flowPlayer = createFlowPlayerVM()
+  # RS-M11 Pattern A: the editor's bundle needs the streaming-preview
+  # VM so the non-Web canvas can route F/M/I packets and surface manifest
+  # selections back to the sidebar. Web stays the default backend; the
+  # chip click flips `vm.platform` AND `streamingPreview.selectedBackend`.
+  # Under `nim js` `detectAvailableBackends()` only returns Web + TUI
+  # because none of the `defined(linux)/macosx/...` guards apply to the
+  # JS host. Surface every backend so the edge-strip chips appear; the
+  # launcher availability is enforced by the bridge port table — chip
+  # clicks for unreachable backends simply yield no WebSocket.
+  let streamingPreview = newStreamingPreviewVM(initial = pbWeb,
+    available = @[pbWeb, pbTui, pbGpui, pbFreya, pbCocoa, pbAndroid])
 
   let hasSelection = createMemo[bool](proc(): bool =
     selectedStory.val.name.len > 0
@@ -9829,5 +9840,5 @@ proc createEditorVM*(): EditorVM =
     review: review,
     preview: preview,
     flowPlayer: flowPlayer,
-    streamingPreview: nil,
+    streamingPreview: streamingPreview,
     hasSelection: hasSelection)

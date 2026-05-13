@@ -809,6 +809,9 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
   r.appendChild(content, genericContent)
 
   var lastProjectSrcdoc = ""
+  when defined(js):
+    var bridgeHandle: BridgeClientHandle = nil
+    var attachedBackend: PreviewBackend = pbWeb
   createRenderEffect proc() =
     let story = vm.selectedStory.val
     let preview = vm.preview.current.val
@@ -869,6 +872,30 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
     r.setStyle(genericContent, "display", if showProject: "none" else: "flex")
     r.populateComponentPropertyPanel(vm, propertyPanel, projectFrame,
       preview.variantMutations)
+
+    # RS-M11 Pattern A: when the canvas takes over (non-Web backend),
+    # open a real WebSocket from the editor bundle to that backend's
+    # render-serve launcher. The launcher (started by
+    # `playwright.config.ts` for the browser test, and by the editor
+    # at runtime once auto-launch lands) streams F + element-tree M
+    # packets that paint the canvas and feed the manifest cache.
+    # Detach when switching backends or moving back to Web.
+    when defined(js):
+      let activeBackend = vm.platform.val
+      let streaming = vm.streamingPreview
+      if useCanvas and streaming != nil:
+        if bridgeHandle == nil or attachedBackend != activeBackend:
+          if bridgeHandle != nil:
+            detachBridgeClient(bridgeHandle)
+            bridgeHandle = nil
+          let url = bridgeUrlForBackend(activeBackend)
+          if url.len > 0:
+            bridgeHandle = attachBridgeClient(streaming, projectCanvas, url)
+            attachedBackend = activeBackend
+      else:
+        if bridgeHandle != nil:
+          detachBridgeClient(bridgeHandle)
+          bridgeHandle = nil
 
     when defined(js):
       let frame = projectFrame

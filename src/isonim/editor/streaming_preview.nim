@@ -68,6 +68,9 @@
 import std/[options, tables]
 when not defined(js):
   import std/[net, os, osproc, times]
+when defined(js):
+  import std/jsffi
+  import std/dom
 
 import isonim/core/[signals, computation]
 import isonim/editor/types
@@ -462,3 +465,280 @@ proc clickCanvas*(vm: StreamingPreviewVM; x, y: int): bool =
   ## so subscribers (e.g. the sidebar selection memo) re-run on
   ## change.
   vm.canvas.selectAt(x, y)
+
+# ---------------------------------------------------------------------------
+# RS-M11 Pattern A: browser-side bridge client (JS target only).
+# ---------------------------------------------------------------------------
+#
+# When the editor bundle runs in a real browser and the user selects a
+# non-Web preview backend, we need to:
+#   1. Open a WebSocket to the per-backend launcher's bridge port.
+#   2. Decode incoming binary `F` packets and paint them on the
+#      mounted `<canvas data-canvas-active="true">` element.
+#   3. Decode `M` packets and route their JSON body through
+#      ``dispatchMetaPacket``. The `element-tree` sub-kind feeds the
+#      `PreviewCanvasVM` manifest cache; the editor's sidebar selection
+#      memo reactively follows.
+#   4. Forward `mousedown` / `mouseup` / `mousemove` / `click` / `wheel`
+#      events from the canvas back to the launcher as `I` packets.
+#
+# The wire layout is the RS-M0 protocol (see
+# `isonim-render-serve/static/index.html` for the reference JS).
+# Per-backend launcher ports come from `playwright.config.ts` /
+# `BridgePortFor`:
+#
+#   pbTui     → 8102
+#   pbGpui    → 8103
+#   pbFreya   → 8104
+#   pbCocoa   → 8105
+#   pbAndroid → 8106
+#
+# These ports are the bridge ports `isonim-examples` uses. They are
+# also exposed to the playwright suite via `BRIDGE_PORTS`. The editor
+# binds them through ``bridgeUrlForBackend`` so tests and runtime
+# agree on a single source of truth.
+
+func bridgePortForBackend*(backend: PreviewBackend): int =
+  ## Default per-backend bridge port. Matches
+  ## `isonim-examples/tests/browser/playwright.config.ts`. Web has no
+  ## bridge (the editor renders Web in an iframe), so it returns 0.
+  case backend
+  of pbWeb: 0
+  of pbTui: 8102
+  of pbGpui: 8103
+  of pbFreya: 8104
+  of pbCocoa: 8105
+  of pbAndroid: 8106
+
+func bridgeUrlForBackend*(backend: PreviewBackend): string =
+  ## WebSocket URL for ``backend``'s default bridge launcher. Empty
+  ## for ``pbWeb`` (which uses the iframe path).
+  let port = bridgePortForBackend(backend)
+  if port == 0: "" else: "ws://127.0.0.1:" & $port & "/"
+
+when defined(js):
+  type BridgeClientHandle* = ref object
+    ## Opaque handle stored on `StreamingPreviewVM` while a bridge
+    ## client is attached. Holds the live `WebSocket` JS object plus
+    ## the canvas element so ``detachBridgeClient`` can close cleanly.
+    socket*: JsObject
+    canvas*: Element
+    url*: string
+
+  proc attachBridgeClient*(vm: StreamingPreviewVM; canvas: Element;
+                          bridgeUrl: string): BridgeClientHandle =
+    ## Open a WebSocket from the editor bundle to ``bridgeUrl`` and
+    ## wire its F/M/I packet stream into ``vm`` + ``canvas``.
+    ##
+    ## The implementation is a thin Nim wrapper around an `{.emit.}`
+    ## JS block — same wire decoding as
+    ## `isonim-render-serve/static/index.html`. The reason we don't
+    ## use individual `importjs` procs for every step is that the WS
+    ## listeners need to close over the VM dispatch callbacks via a
+    ## tiny shim object, and an inline emit keeps the byte-level
+    ## decoding tracing the reference one-to-one.
+    var socket: JsObject
+    let dispatchMeta = proc(body: cstring) =
+      vm.dispatchMetaPacket($body)
+    let onClick = proc(x: int; y: int) =
+      discard vm.clickCanvas(x, y)
+      when defined(js):
+        # Test-only side channel: mirror the resolved component path to
+        # window so the playwright Pattern-A spec can assert the
+        # editor's sidebar selection followed the click. Gated on
+        # `__isonimTestMode === true` so production builds never write.
+        let path = vm.canvas.selectedComponentPath.val
+        let id = vm.canvas.selectedElementId.val
+        {.emit: ["""
+          try {
+            if (window.__isonimTestMode === true) {
+              window.__isonimSelectedComponentPath = """, path.cstring, """;
+              window.__isonimSelectedElementId = """, id.cstring, """;
+            }
+          } catch (_) {}
+        """].}
+    {.emit: ["""
+      (function (canvas, url, dispatchMeta, onClick) {
+        if (!canvas || !url) return null;
+        var ws = new WebSocket(url);
+        ws.binaryType = 'arraybuffer';
+        function readU32LE(view, offset) {
+          return view.getUint32(offset, true);
+        }
+        function ensureSize(width, height) {
+          if (canvas.width !== width || canvas.height !== height) {
+            canvas.width = width;
+            canvas.height = height;
+          }
+        }
+        function handleF(bytes) {
+          var view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+          var flags = bytes[1];
+          if ((flags & 0xFC) !== 0) { ws.close(1002, 'reserved flag bits set'); return; }
+          var isDiff = (flags & 0x01) !== 0;
+          var isVideo = (flags & 0x02) !== 0;
+          if (isVideo) { ws.close(1002, 'video bit set at protocolVersion=1'); return; }
+          var width = readU32LE(view, 2);
+          var height = readU32LE(view, 6);
+          var length = readU32LE(view, 10);
+          var payload = bytes.subarray(14, 14 + length);
+          ensureSize(width, height);
+          var ctx = canvas.getContext('2d');
+          if (!ctx) return;
+          if (!isDiff) {
+            if (payload.length !== width * height * 4) {
+              ws.close(1002, 'full frame length mismatch'); return;
+            }
+            var img = new ImageData(new Uint8ClampedArray(payload), width, height);
+            ctx.putImageData(img, 0, 0);
+          } else {
+            var count = new DataView(payload.buffer, payload.byteOffset).getUint32(0, true);
+            var off = 4;
+            for (var i = 0; i < count; i++) {
+              var rv = new DataView(payload.buffer, payload.byteOffset + off);
+              var rx = rv.getUint32(0, true);
+              var ry = rv.getUint32(4, true);
+              var rw = rv.getUint32(8, true);
+              var rh = rv.getUint32(12, true);
+              var rlen = rv.getUint32(16, true);
+              off += 20;
+              var rectBytes = payload.subarray(off, off + rlen);
+              off += rlen;
+              var rimg = new ImageData(new Uint8ClampedArray(rectBytes), rw, rh);
+              ctx.putImageData(rimg, rx, ry);
+            }
+          }
+        }
+        function handleM(bytes) {
+          var view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+          var length = readU32LE(view, 1);
+          var json = new TextDecoder('utf-8').decode(bytes.subarray(5, 5 + length));
+          var node;
+          try { node = JSON.parse(json); } catch (_) { return; }
+          if (node) {
+            if (node.type === 'hello' && node.initialSize) {
+              ensureSize(node.initialSize.width, node.initialSize.height);
+            } else if (node.type === 'resize') {
+              ensureSize(node.width, node.height);
+            } else if (node.type === 'hot-reload') {
+              var ctx = canvas.getContext('2d');
+              if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+            }
+          }
+          dispatchMeta(json);
+          // Test-only instrumentation. Production builds leave
+          // `window.__isonimTestMode` unset (or set to anything other
+          // than `true`); the strict `=== true` guard keeps this side
+          // channel firmly out of production page lifetimes. The
+          // playwright suite flips the flag on via addInitScript and
+          // mirrors the latest element-tree manifest onto window.
+          try {
+            if (window.__isonimTestMode === true && node && node.type === 'element-tree') {
+              window.__isonimManifest = node;
+              if (!Array.isArray(window.__isonimManifests)) {
+                window.__isonimManifests = [];
+              }
+              window.__isonimManifests.push(node);
+            }
+          } catch (_) {}
+        }
+        function encodeI(jsonStr) {
+          var enc = new TextEncoder();
+          var body = enc.encode(jsonStr);
+          var buf = new Uint8Array(5 + body.length);
+          buf[0] = 0x49;
+          var n = body.length;
+          buf[1] = n & 0xFF;
+          buf[2] = (n >>> 8) & 0xFF;
+          buf[3] = (n >>> 16) & 0xFF;
+          buf[4] = (n >>> 24) & 0xFF;
+          buf.set(body, 5);
+          return buf;
+        }
+        function sendInput(obj) {
+          if (ws.readyState !== WebSocket.OPEN) return;
+          try { ws.send(encodeI(JSON.stringify(obj))); } catch (_) {}
+        }
+        function modsFromEvent(e) {
+          return { ctrl: !!e.ctrlKey, shift: !!e.shiftKey,
+                   alt: !!e.altKey, meta: !!e.metaKey };
+        }
+        function pointFromEvent(e) {
+          var rect = canvas.getBoundingClientRect();
+          var x = Math.round((e.clientX - rect.left) * (canvas.width / rect.width));
+          var y = Math.round((e.clientY - rect.top) * (canvas.height / rect.height));
+          return { x: x, y: y };
+        }
+        ws.addEventListener('message', function (e) {
+          if (!(e.data instanceof ArrayBuffer)) return;
+          var bytes = new Uint8Array(e.data);
+          if (bytes.length === 0) return;
+          var kind = String.fromCharCode(bytes[0]);
+          if (kind === 'F') { handleF(bytes); }
+          else if (kind === 'M') { handleM(bytes); }
+        });
+        function onMouseDown(e) {
+          var p = pointFromEvent(e);
+          sendInput({ type: 'mouse', action: 'down', button: e.button,
+                      x: p.x, y: p.y, modifiers: modsFromEvent(e) });
+        }
+        function onMouseUp(e) {
+          var p = pointFromEvent(e);
+          sendInput({ type: 'mouse', action: 'up', button: e.button,
+                      x: p.x, y: p.y, modifiers: modsFromEvent(e) });
+        }
+        function onMouseMove(e) {
+          var p = pointFromEvent(e);
+          sendInput({ type: 'mouse', action: 'move', button: -1,
+                      x: p.x, y: p.y, modifiers: modsFromEvent(e) });
+        }
+        function onClickEvt(e) {
+          var p = pointFromEvent(e);
+          sendInput({ type: 'mouse', action: 'click', button: e.button,
+                      x: p.x, y: p.y, modifiers: modsFromEvent(e) });
+          onClick(p.x, p.y);
+        }
+        function onWheel(e) {
+          var p = pointFromEvent(e);
+          sendInput({ type: 'scroll', x: p.x, y: p.y,
+                      deltaX: e.deltaX, deltaY: e.deltaY,
+                      modifiers: modsFromEvent(e) });
+        }
+        canvas.addEventListener('mousedown', onMouseDown);
+        canvas.addEventListener('mouseup', onMouseUp);
+        canvas.addEventListener('mousemove', onMouseMove);
+        canvas.addEventListener('click', onClickEvt);
+        canvas.addEventListener('wheel', onWheel);
+        ws.__isonimHandlers = {
+          mousedown: onMouseDown, mouseup: onMouseUp,
+          mousemove: onMouseMove, click: onClickEvt, wheel: onWheel,
+        };
+        ws.__isonimCanvas = canvas;
+        """, socket, """ = ws;
+      })(""", canvas, ", ", bridgeUrl.cstring, ", ",
+       dispatchMeta, ", ", onClick, """);
+    """].}
+    BridgeClientHandle(socket: socket, canvas: canvas, url: bridgeUrl)
+
+  proc detachBridgeClient*(handle: BridgeClientHandle) =
+    ## Close the WebSocket and unbind the canvas mouse listeners. Safe
+    ## to call when the handle is nil — the editor calls this on
+    ## backend switches even when no bridge was attached.
+    if handle == nil: return
+    var sock = handle.socket
+    let canvas = handle.canvas
+    {.emit: ["""
+      (function (ws, canvas) {
+        if (!ws) return;
+        try {
+          if (ws.__isonimHandlers && canvas) {
+            for (var k in ws.__isonimHandlers) {
+              canvas.removeEventListener(k, ws.__isonimHandlers[k]);
+            }
+            ws.__isonimHandlers = null;
+          }
+        } catch (_) {}
+        try { ws.close(); } catch (_) {}
+      })(""", sock, ", ", canvas, ");"].}
+    handle.socket = nil
+    handle.canvas = nil

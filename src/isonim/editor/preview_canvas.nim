@@ -23,6 +23,19 @@
 ## This module is JS-target-clean (no `std/os`, no native sockets);
 ## the canvas paint happens via the `{.emit.}` blocks in
 ## `component_detail.nim` so this module stays renderer-agnostic.
+##
+## Pattern-A JS consumer (RS-M11 follow-up).
+## ----------------------------------------
+## When compiled with `nim js`, this module also exposes
+## ``attachBridgeClient`` / ``detachBridgeClient`` which open a real
+## WebSocket from the editor's bundle to a render-serve launcher and
+## drive the canvas + manifest signals end-to-end. The wire layout is
+## the same RS-M0 protocol the bridge's own `static/index.html`
+## implements (`'F' | u8 flags | u32 width | u32 height | u32 length |
+## payload` for frames, `'M' | u32 length | UTF-8 JSON` for meta,
+## `'I' | u32 length | UTF-8 JSON` for input). This file emits the JS
+## directly via `{.emit.}` so the implementation tracks the static
+## reference page byte-for-byte.
 
 import std/options
 import isonim/core/signals
