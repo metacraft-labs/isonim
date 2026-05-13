@@ -17,6 +17,13 @@ proc reconcileArrays*[R, N](
   ## Uses a bidirectional scan with map fallback for efficient node reordering.
   ## Modifies currentNodes in-place to match newNodes.
 
+  # `mixin` so `==` / `hash` resolve at instantiation time. Required
+  # for distinct-pointer node types (e.g. `CocoaElement = Id = distinct
+  # pointer`) where the user-supplied `==` (borrowed from `pointer`)
+  # and `hash` live in a module reachable only from the leaves, not
+  # from this generic core.
+  mixin `==`, hash
+
   let cLen = currentNodes.len
   let nLen = newNodes.len
 
