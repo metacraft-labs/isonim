@@ -29,6 +29,11 @@ const
   bgSidebar = "#15161F"
   bgToolbar = "#16171F"
   bgEdgeStrip = "#0B0C12"
+  # v4: dedicated preview-pane background, ~+4L lighter than bgSidebar so the
+  # three panels (sidebar / preview / inspector) read as distinct surfaces
+  # rather than one continuous dark slab. The previous bgBase value sat darker
+  # than bgSidebar, which made the centre panel disappear into the sidebar.
+  bgPreview = "#1F2030"
   border = "#2A2C3A"
   borderStrong = "#363849"
   borderFaint = "#1F212C"
@@ -602,17 +607,28 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
                               if gShowsStories: toggleGroup else: openJourney),
                           onkeydown = (
                               if gShowsStories: toggleGroup else: openJourney),
-                          gap = "6px", padding = "5px 8px 5px 18px",
+                          gap = "6px", padding = "8px 8px 8px 18px",
                           border_radius = "4px", cursor = "pointer"):
-                      span(font_size = "10px", color = textMuted):
+                      span(font_size = "10px", color = textMuted,
+                            flex_shrink = "0"):
                         text gIcon
+                      # v4: group names are typically "App / Story" — they
+                      # wrap awkwardly to two lines at laptop width. Lock
+                      # the row to a single line with ellipsis so the
+                      # sidebar reads as a clean list rather than a
+                      # rag-right scroll.
                       span(font_size = "12px", font_weight = "500",
                             color = textPrimary,
-                            letter_spacing = "0.1px"):
+                            letter_spacing = "0.1px",
+                            white_space = "nowrap",
+                            overflow = "hidden",
+                            text_overflow = "ellipsis",
+                            flex = "1", min_width = "0"):
                         text gName
                       span(ref = groupChevron,
                             font_size = "9px", color = textMuted,
-                            margin_left = "auto"):
+                            margin_left = "auto",
+                            flex_shrink = "0"):
                         if gShowsStories:
                           text gChevron
 
@@ -629,9 +645,13 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
                                                 kind: iKind, index: itemIdx)
                           let selectStory = storySelectHandler(vm, story)
                           let selected = vm.isSelectedStory(story)
+                          # v4: bump per-story row vertical padding so each
+                          # row reads at ~32px tall — the v3 reviewer flagged
+                          # the 28px-effective rows as cramped in the
+                          # shell-laptop sidebar.
                           let storyPadding =
-                            if selected: "4px 12px 4px 28px"
-                            else: "4px 12px 4px 30px"
+                            if selected: "7px 12px 7px 28px"
+                            else: "7px 12px 7px 30px"
                           let storyBackground =
                             if selected: accentSoft else: "transparent"
                           let storyBorder =
@@ -936,7 +956,7 @@ proc renderPreviewLeftEdge*[R, E](r: R; vm: EditorVM): E =
     ariaLabel = "Preview backend",
     optionsThunk = backendThunk,
     visibleLimit = backendCount,
-    chipWidth = "52px",
+    chipWidth = "44px",
     chipHeight = "40px",
     dataAttrs = @[
       ("data-edge-strip", "backend"),
@@ -972,7 +992,7 @@ proc renderPreviewLeftEdge*[R, E](r: R; vm: EditorVM): E =
     ariaLabel = "Preview screen size",
     optionsThunk = viewportThunk,
     visibleLimitThunk = viewportVisibleLimitThunk,
-    chipWidth = "52px",
+    chipWidth = "44px",
     chipHeight = "24px",
     dataAttrs = @[
       ("data-edge-strip", "viewport"),
@@ -1039,7 +1059,7 @@ proc renderPreviewRightEdge*[R, E](r: R; vm: EditorVM): E =
     ariaLabel = "Preview mode",
     optionsThunk = modeThunk,
     visibleLimit = 3,
-    chipWidth = "52px",
+    chipWidth = "44px",
     chipHeight = "40px",
     dataAttrs = @[
       ("data-edge-strip", "mode"),
@@ -1060,7 +1080,7 @@ proc renderPreviewPane*[R, E](r: R; vm: EditorVM): E =
     tdiv(class = "editor-preview",
           display = "flex", flex_direction = "column",
           flex = "1", min_width = "0", height = "100%",
-          background_color = bgBase)
+          background_color = bgPreview)
 
   # --- Top toolbar (view switcher + breadcrumb only) -----------------------
   let toolbar = ui(r):

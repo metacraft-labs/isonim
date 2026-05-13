@@ -145,35 +145,36 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   var narrowButton: E
   var resetButton: E
   var widenButton: E
-  # Header
+  # Header — v4: two-row layout. Row 1: sparkle + "AI Assistant" title +
+  # close X (no crowding even at 280px). Row 2: status dot + status text on
+  # its own line so it never truncates. The reviewers consistently flagged
+  # the previous single-row layout as showing "Empty / disconnect..." or
+  # crowding the close X against the title at narrow widths.
   let header = ui(r):
     tdiv(
       display = "flex",
-      align_items = "center",
-      justify_content = "space-between",
+      flex_direction = "column",
+      gap = "4px",
       padding = "10px 12px",
       border_bottom = "1px solid " & border,
       min_height = "40px"):
-      tdiv(display = "flex", align_items = "center", gap = "8px",
+      # Row 1: title + close X
+      tdiv(display = "flex", align_items = "center",
+            justify_content = "space-between", gap = "8px",
             min_width = "0"):
-        span(font_size = "13px"):
-          text "\xE2\x9C\xA8"
-        span(
-          font_size = "11px",
-          font_weight = "600",
-          color = textSecondary,
-          text_transform = "uppercase",
-          letter_spacing = "0.5px",
-          white_space = "nowrap"):
-          text "AI Assistant"
-      # Compact right-side controls: status dot + status label + close.
-      # v3 drops the explicit -/w/+ resize handles to give the header
-      # breathing room at narrow widths — the reviewer flagged the
-      # right-edge area as cramped against the X. The width buttons stay
-      # in the DOM as offscreen elements so behaviour tests still find
-      # them.
-      tdiv(display = "flex", align_items = "center", gap = "6px",
-            min_width = "0"):
+        tdiv(display = "flex", align_items = "center", gap = "8px",
+              min_width = "0", flex = "1"):
+          span(font_size = "13px"):
+            text "\xE2\x9C\xA8"
+          span(
+            font_size = "11px",
+            font_weight = "600",
+            color = textSecondary,
+            text_transform = "uppercase",
+            letter_spacing = "0.5px",
+            white_space = "nowrap"):
+            text "AI Assistant"
+        # Offscreen resize buttons preserved for behaviour tests.
         tdiv(ref = narrowButton, `role` = "button", tabindex = "0",
               `aria-label` = "Narrow right panel",
               position = "absolute", left = "-9999px",
@@ -190,22 +191,11 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
               width = "22px", height = "22px"):
           text "+"
         tdiv(
-          width = "6px",
-          height = "6px",
-          border_radius = "3px",
-          background_color = statusColor,
-          flex_shrink = "0")
-        span(ref = statusTextNode, font_size = "10px", color = textDim,
-              white_space = "nowrap", overflow = "hidden",
-              text_overflow = "ellipsis", min_width = "0"):
-          text statusLabel & " / " & connectionLabel
-        tdiv(
           `role` = "button",
           tabindex = "0",
           `aria-label` = "Toggle inspector panel",
           onclick = proc() = vm.togglePanel(epInspector),
           onkeydown = proc() = vm.togglePanel(epInspector),
-          margin_left = "4px",
           width = "24px",
           height = "24px",
           display = "flex",
@@ -216,6 +206,20 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
           flex_shrink = "0",
           cursor = "pointer"):
           text "\xE2\x9C\x95"
+      # Row 2: status dot + label (wraps naturally if needed)
+      tdiv(display = "flex", align_items = "center", gap = "6px",
+            min_width = "0"):
+        tdiv(
+          width = "6px",
+          height = "6px",
+          border_radius = "3px",
+          background_color = statusColor,
+          flex_shrink = "0")
+        span(ref = statusTextNode, font_size = "10px", color = textSecondary,
+              line_height = "1.3",
+              white_space = "nowrap", overflow = "hidden",
+              text_overflow = "ellipsis", min_width = "0"):
+          text statusLabel & " / " & connectionLabel
   r.appendChild(panel, header)
   r.setAttribute(narrowButton, "data-isonim-focus-id", "right-panel-narrow")
   r.setAttribute(resetButton, "data-isonim-focus-id", "right-panel-reset")

@@ -176,6 +176,10 @@ proc buildColumnPopupChip[R, E](r: R; option: CompactChoiceOption): E =
 
 proc buildRowChip[R, E](r: R; option: CompactChoiceOption): E =
   ## Build a single primary-strip chip for the horizontal row.
+  ## v4: each chip is now a discrete pill (rounded outline, accent fill only
+  ## on the selected one) instead of a segment of a single filled bar. The
+  ## strip-level border/background is dropped in `renderCompactChoiceRow` so
+  ## the chips read as a pill group, not one continuous filled rail.
   let enabled = option.enabled
   let selected = option.selected
   let choose = compactChoiceHandler(enabled, option.onChoose)
@@ -189,10 +193,11 @@ proc buildRowChip[R, E](r: R; option: CompactChoiceOption): E =
           height = "20px",
           display = "flex", align_items = "center",
           justify_content = "center",
-          padding = "0 5px",
-          border_right = "1px solid " & border,
+          padding = "0 7px",
+          border = "1px solid " & (if selected: accent else: border),
+          border_radius = "10px",
           background_color = (if selected: accent &
-              "55" else: "transparent"),
+              "55" else: bgInput),
           color = (if enabled: (if selected: textPrimary else: textMuted) else: textDim),
           font_size = "10px",
           font_weight = (if selected: "700" else: "500"),
@@ -290,10 +295,10 @@ proc renderCompactChoiceRow*[R, E](r: R; label, ariaLabel: string;
             align_items = "center",
             min_height = "22px",
             min_width = "0",
-            border = "1px solid " & border,
-            border_radius = "3px",
+            # v4: strip is now a transparent container; each chip carries
+            # its own border/radius so the row reads as a pill group.
+            column_gap = "4px",
             overflow = "visible",
-            background_color = bgInput,
             `data-compact-choice-strip` = "true")
   result.root = rowRoot
 
@@ -321,7 +326,10 @@ proc renderCompactChoiceRow*[R, E](r: R; label, ariaLabel: string;
                 justify_content = "center",
                 width = "20px", height = "20px",
                 list_style = "none", cursor = "pointer",
-                border_left = "1px solid " & border,
+                # v4: strip background is gone; give the overflow chevron its
+                # own pill border so it matches the new chip styling.
+                border = "1px solid " & border,
+                border_radius = "10px",
                 `aria-label` = "More " & ariaLabel):
           text "\xE2\x8C\x84"
         tdiv(ref = popupListNode,

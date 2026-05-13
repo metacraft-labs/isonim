@@ -492,7 +492,9 @@ proc populateComponentPropertyPanel[R, E](r: R; vm: EditorVM; panel, frame: E;
         span(font_size = "15px", font_weight = "700", color = textPrimary,
               letter_spacing = "-0.005em"):
           text "Component properties"
-        span(font_size = "11px", color = textMuted):
+        # v4: bump caption from textMuted to textSecondary so the row reads
+        # at a glance; reviewers flagged the previous tone as "near-illegible".
+        span(font_size = "11px", color = textSecondary, line_height = "1.4"):
           text ("Schema-backed controls for " & variant.component & " / " &
             variant.variantKey)
       tdiv(display = "flex", align_items = "center", gap = "6px"):
@@ -542,10 +544,21 @@ proc populateComponentPropertyPanel[R, E](r: R; vm: EditorVM; panel, frame: E;
         discard
     r.appendChild(row, renderComponentPropertyInput[R, E](r, vm, frame,
       variant, prop, previewMutations))
+    # v4: split the kind tag from the usage guidance into two visually
+    # distinct spans so the kind reads as a tag (uppercase, accent-on-muted)
+    # and the body reads as a sentence. The previous "Boolean - usage..."
+    # single-line span concatenated visually with the input above it
+    # ("valueBoolean", "displaytype") — reviewers consistently flagged this.
     let guidance = ui(r):
-      span(font_size = "10px", color = textDim, line_height = "1.35"):
-        text (componentPropertyKindLabel(prop.kind) & " - " &
-          prop.usageGuidance)
+      tdiv(display = "flex", flex_direction = "column", gap = "2px",
+            margin_top = "2px"):
+        span(font_size = "9px", font_weight = "700",
+              letter_spacing = "0.5px",
+              text_transform = "uppercase",
+              color = textMuted):
+          text componentPropertyKindLabel(prop.kind)
+        span(font_size = "10px", color = textDim, line_height = "1.35"):
+          text prop.usageGuidance
     r.appendChild(row, guidance)
     r.appendChild(props, row)
   r.appendChild(panel, props)
@@ -580,10 +593,17 @@ proc populateComponentPropertyPanel[R, E](r: R; vm: EditorVM; panel, frame: E;
           discard
       r.appendChild(row, renderComponentPropertyInput[R, E](r, vm, frame,
         variant, prop, previewMutations))
+      # v4: same split as the visible-prop card above.
       let guidance = ui(r):
-        span(font_size = "10px", color = textDim, line_height = "1.35"):
-          text (componentPropertyKindLabel(prop.kind) & " - " &
-            prop.usageGuidance)
+        tdiv(display = "flex", flex_direction = "column", gap = "2px",
+              margin_top = "2px"):
+          span(font_size = "9px", font_weight = "700",
+                letter_spacing = "0.5px",
+                text_transform = "uppercase",
+                color = textMuted):
+            text componentPropertyKindLabel(prop.kind)
+          span(font_size = "10px", color = textDim, line_height = "1.35"):
+            text prop.usageGuidance
       r.appendChild(row, guidance)
       r.appendChild(detailsGrid, row)
     r.appendChild(disclosure, detailsGrid)

@@ -442,8 +442,12 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
       r.appendChild(cardContent, preview)
 
       # Card label: "N. Action description"
+      # v4: bump horizontal padding to 16px so the caption aligns with the
+      # inner content frame (the preview iframe uses an 8px outer margin +
+      # 8px iframe inset). Previous 12px caused the caption to read as
+      # flush-left under cards with no indent.
       let cardLabel = ui(r):
-        tdiv(padding = "8px 12px", font_size = "11px",
+        tdiv(padding = "10px 16px 12px 16px", font_size = "11px",
               color = textSecondary, overflow = "hidden",
               line_height = "1.4"):
           span(font_weight = "700", color = accent, font_size = "12px"):
