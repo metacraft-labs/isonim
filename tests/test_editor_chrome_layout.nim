@@ -8,7 +8,7 @@
 ## with the headless mock renderer, and click through the actual signal
 ## handlers — no behaviour mocks.
 
-import std/[sequtils, strutils, tables, unittest]
+import std/[options, sequtils, strutils, tables, unittest]
 import isonim/core/[signals, computation, owner]
 import isonim/testing/mock_dom
 import isonim/editor/viewmodels
@@ -1682,6 +1682,314 @@ suite "M-EVP-7 sidebar drives view":
         check vm.selectedStory.val.kind == kind
         check vm.activeView.val ==
           viewForStory(vm.selectedStory.val)
+      dispose()
+
+# ---------------------------------------------------------------------------
+# M-EVP-9: Sidebar quick-navigation icons + filter.
+# ---------------------------------------------------------------------------
+#
+# Real-stack tests for the sidebar quick-nav strip + search input. The
+# strip lives directly below the workspace-title / search row and
+# carries one icon per canonical StoryKind category. Clicking an icon
+# activates its category. Empty categories are aria-disabled. The
+# search input filters story names in real time.
+#
+# These tests use ``renderSidebar`` (and the full editor shell where
+# necessary) with the headless mock renderer; they fire real ``click``
+# / ``input`` events on the rendered nodes so the assertions exercise
+# the production event path, not synthetic VM calls.
+
+proc seedTwoWorkspacesWithNoFlows(): seq[StoryGroup] =
+  ## M-EVP-9 fixture: two app workspaces sharing four populated
+  ## categories (Foundation, Component, Page, Guideline) and ZERO
+  ## skFlow stories — so the Flow quick-nav icon must render as
+  ## aria-disabled.
+  result.add StoryGroup(
+    name: "Task App / Foundations", kind: skFoundation, expanded: true,
+    description: "Task app tokens",
+    items: @[
+      StoryItem(name: "Task Colors", description: "palette",
+        kind: skFoundation, group: "Task App / Foundations")])
+  result.add StoryGroup(
+    name: "Settings App / Foundations", kind: skFoundation, expanded: true,
+    description: "Settings app tokens",
+    items: @[
+      StoryItem(name: "Settings Colors", description: "palette",
+        kind: skFoundation, group: "Settings App / Foundations")])
+  result.add StoryGroup(
+    name: "TaskRow", kind: skComponent, expanded: true,
+    description: "Task row component",
+    items: @[
+      StoryItem(name: "Active task", description: "in-progress",
+        kind: skComponent, group: "TaskRow")])
+  result.add StoryGroup(
+    name: "SettingsRow", kind: skComponent, expanded: true,
+    description: "Settings row component",
+    items: @[
+      StoryItem(name: "Toggle on", description: "switch on",
+        kind: skComponent, group: "SettingsRow")])
+  result.add StoryGroup(
+    name: "Task Pages", kind: skPage, expanded: true,
+    description: "Pages",
+    items: @[
+      StoryItem(name: "Task Empty", description: "no tasks",
+        kind: skPage, group: "Task Pages")])
+  result.add StoryGroup(
+    name: "Task Guidelines", kind: skGuideline, expanded: true,
+    description: "Guidelines",
+    items: @[
+      StoryItem(name: "Do / Don't", description: "rules",
+        kind: skGuideline, group: "Task Guidelines")])
+
+proc quickNavIconForKind(strip: MockNode; kind: StoryKind): MockNode =
+  findByAttr(strip, "data-category-kind", $kind)
+
+suite "M-EVP-9 sidebar quick nav":
+
+  test "quick-nav strip is present in the sidebar, exactly one":
+    ## Acceptance: the strip exists with stable
+    ## ``data-sidebar-quicknav="true"`` and sits inside the sidebar
+    ## (below the search input).
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = buildStoryboard()
+      let sidebar = renderSidebar[MockRenderer, MockNode](r, vm)
+
+      let strips = findAllByAttr(sidebar, "data-sidebar-quicknav", "true")
+      check strips.len == 1
+      check strips[0].kind == mnkElement
+
+      # Strip is a descendant of the sidebar root (sanity).
+      check sidebar.attributes.getOrDefault("class") == "editor-sidebar"
+      dispose()
+
+  test "strip exposes exactly five icons, one per StoryKind category":
+    ## Five canonical categories (Foundations, Components, Pages,
+    ## User Journeys / Flow, Guidelines). skPattern folds into the
+    ## Components icon, so the icon count is exactly five — NOT one
+    ## per StoryKind enum value.
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = buildStoryboard()
+      let sidebar = renderSidebar[MockRenderer, MockNode](r, vm)
+      let strip = findByAttr(sidebar, "data-sidebar-quicknav", "true")
+      check strip != nil
+
+      var icons: seq[MockNode]
+      for child in strip.children:
+        if "data-category-kind" in child.attributes:
+          icons.add child
+      check icons.len == 5
+
+      # Each icon must carry its StoryKind as the data-category-kind.
+      let expectedKinds = [skFoundation, skComponent, skPage, skFlow,
+          skGuideline]
+      var seenKinds: seq[string]
+      for icon in icons:
+        seenKinds.add icon.attributes["data-category-kind"]
+      for k in expectedKinds:
+        check $k in seenKinds
+      check seenKinds.len == expectedKinds.len
+
+      # Every icon must declare role=button so it's keyboard-reachable.
+      for icon in icons:
+        check icon.attributes.getOrDefault("role") == "button"
+      dispose()
+
+  test "clicking an icon activates its category and updates activeCategory":
+    ## Real DOM click: locate the Components icon, fire ``click``,
+    ## confirm ``vm.sidebar.activeCategory.val`` becomes
+    ## ``some(skComponent)``. Then click the Foundations icon and
+    ## confirm activeCategory updates.
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = buildStoryboard()
+      let sidebar = renderSidebar[MockRenderer, MockNode](r, vm)
+      let strip = findByAttr(sidebar, "data-sidebar-quicknav", "true")
+      check strip != nil
+
+      check vm.sidebar.activeCategory.val.isNone
+
+      let componentIcon = quickNavIconForKind(strip, skComponent)
+      check componentIcon != nil
+      componentIcon.fireEvent("click")
+      check vm.sidebar.activeCategory.val.isSome
+      check vm.sidebar.activeCategory.val.get == skComponent
+
+      let foundationIcon = quickNavIconForKind(strip, skFoundation)
+      check foundationIcon != nil
+      foundationIcon.fireEvent("click")
+      check vm.sidebar.activeCategory.val.isSome
+      check vm.sidebar.activeCategory.val.get == skFoundation
+      dispose()
+
+  test "typing in the search input filters the visible story rows":
+    ## Type a query that matches exactly one seeded story name. Assert
+    ## exactly one story row remains visible (display != "none") and
+    ## that its containing group is expanded.
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = buildStoryboard()
+      let sidebar = renderSidebar[MockRenderer, MockNode](r, vm)
+
+      let searchInput = findByAttr(sidebar, "data-sidebar-search", "true")
+      check searchInput != nil
+
+      # "Spacing & Radii" lives only in the Foundations group and is
+      # the only story whose name contains the substring "spacing".
+      r.setInputValue(searchInput, "spacing")
+      searchInput.fireEvent("input")
+
+      check vm.sidebar.searchQuery.val == "spacing"
+
+      # Walk every story row in the sidebar and count how many are
+      # visible. Exactly one ("Foundations/Spacing & Radii") may be
+      # visible.
+      proc walk(node: MockNode; visibleStoryRows: var seq[string]) =
+        if node.kind == mnkElement and "data-story-row" in node.attributes:
+          if node.styles.getOrDefault("display", "flex") != "none":
+            visibleStoryRows.add node.attributes["data-story-row"]
+        for child in node.children:
+          walk(child, visibleStoryRows)
+      var visibleStoryRows: seq[string]
+      walk(sidebar, visibleStoryRows)
+      check visibleStoryRows == @["Foundations/Spacing & Radii"]
+
+      var storyRows: seq[MockNode]
+      collectByAttr(sidebar, "data-story-row",
+        "Foundations/Spacing & Radii", storyRows)
+      check storyRows.len == 1
+      check storyRows[0].styles.getOrDefault("display", "flex") != "none"
+
+      # Other story rows are hidden.
+      var taskRowActive: seq[MockNode]
+      collectByAttr(sidebar, "data-story-row",
+        "TaskRow/Active task", taskRowActive)
+      check taskRowActive.len == 1
+      check taskRowActive[0].styles.getOrDefault("display") == "none"
+
+      # The Foundations section is expanded so the surviving story row
+      # is visible without the user having to manually disclose it.
+      check vm.sidebar.sections.val.foundations == true
+      dispose()
+
+  test "clearing the search restores visibility and prior expansion state":
+    ## After filtering, blank the input. Assert all stories return to
+    ## their unfiltered display state AND the prior expansion snapshot
+    ## is restored (the search auto-expanded every section; clearing
+    ## must restore the original layout).
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = buildStoryboard()
+      # Snapshot the pre-search expansion state.
+      let priorSections = vm.sidebar.sections.val
+
+      let sidebar = renderSidebar[MockRenderer, MockNode](r, vm)
+      let searchInput = findByAttr(sidebar, "data-sidebar-search", "true")
+      check searchInput != nil
+
+      # Filter to a single-match query.
+      r.setInputValue(searchInput, "spacing")
+      searchInput.fireEvent("input")
+      check vm.sidebar.searchQuery.val == "spacing"
+      # The filter auto-expanded every section.
+      check vm.sidebar.sections.val.guidelines == true
+
+      # Clear the filter.
+      r.setInputValue(searchInput, "")
+      searchInput.fireEvent("input")
+      check vm.sidebar.searchQuery.val == ""
+
+      # Restoration invariant: prior expansion state is back.
+      check vm.sidebar.sections.val == priorSections
+
+      # All story rows return to their unfiltered display. The
+      # TaskRow/Active task row that was hidden during the filter is
+      # visible again.
+      var taskRowActive: seq[MockNode]
+      collectByAttr(sidebar, "data-story-row",
+        "TaskRow/Active task", taskRowActive)
+      check taskRowActive.len == 1
+      check taskRowActive[0].styles.getOrDefault("display", "flex") != "none"
+
+      var foundationRows: seq[MockNode]
+      collectByAttr(sidebar, "data-story-row",
+        "Foundations/Spacing & Radii", foundationRows)
+      check foundationRows.len == 1
+      check foundationRows[0].styles.getOrDefault("display", "flex") != "none"
+      dispose()
+
+  test "empty category icon is aria-disabled and click is a no-op":
+    ## Seed two workspaces with NO Flow stories. The Flow quick-nav
+    ## icon must carry ``aria-disabled="true"`` AND clicking it must
+    ## NOT update ``activeCategory`` (no spurious side effect).
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = seedTwoWorkspacesWithNoFlows()
+      let sidebar = renderSidebar[MockRenderer, MockNode](r, vm)
+      let strip = findByAttr(sidebar, "data-sidebar-quicknav", "true")
+      check strip != nil
+
+      let flowIcon = quickNavIconForKind(strip, skFlow)
+      check flowIcon != nil
+      check flowIcon.attributes.getOrDefault("aria-disabled") == "true"
+      check flowIcon.attributes.getOrDefault("tabindex") == "-1"
+
+      # Pre-click: activeCategory is none.
+      check vm.sidebar.activeCategory.val.isNone
+
+      flowIcon.fireEvent("click")
+      # Empty category refuses the click — activeCategory stays None.
+      check vm.sidebar.activeCategory.val.isNone
+
+      # Sanity: a populated category in the same fixture is NOT
+      # aria-disabled and DOES respond to clicks.
+      let foundationIcon = quickNavIconForKind(strip, skFoundation)
+      check foundationIcon != nil
+      check foundationIcon.attributes.getOrDefault("aria-disabled") == "false"
+      foundationIcon.fireEvent("click")
+      check vm.sidebar.activeCategory.val.isSome
+      check vm.sidebar.activeCategory.val.get == skFoundation
+      dispose()
+
+  test "regression: M-EVP-3 / M-EVP-4 / M-EVP-7 invariants still hold":
+    ## Spot-check that the previous-milestone invariants survive the
+    ## quick-nav strip addition.
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = buildStoryboard()
+      let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
+
+      # M-EVP-3: chrome bar gap stays within [12, 16] px.
+      let bar = findByAttr(shell, "data-preview-chrome-bar", "true")
+      check bar != nil
+      let gapPx = parsePxValue(bar.styles.getOrDefault("gap"))
+      check gapPx >= 12
+      check gapPx <= 16
+
+      # M-EVP-7: no view-switcher chip group anywhere in the shell.
+      check findByAttr(shell, "data-preview-view-switcher", "true") == nil
+      check findAllByAttr(bar, "data-toolbar-cluster", "view-switcher").len == 0
+      check findAllByAttr(bar, "data-toolbar-cluster", "backend").len == 1
+      check findAllByAttr(bar, "data-toolbar-cluster", "viewport").len == 1
+      check findAllByAttr(bar, "data-toolbar-cluster", "mode").len == 1
+
+      # M-EVP-4: selecting a story row produces the indigo accent
+      # marker (border + tinted bg). We use the existing helpers.
+      let activeStory = StoryRef(group: "TaskRow", name: "Active task",
+        kind: skComponent, index: 0)
+      check vm.selectStory(activeStory)
+      let row = findByAttr(shell, "data-story-row", "TaskRow/Active task")
+      check row != nil
+      check rowMarkerIsAccent(row)
+      check rowBackgroundIsAccentTinted(row)
       dispose()
 
 # ---------------------------------------------------------------------------

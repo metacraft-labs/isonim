@@ -4,7 +4,7 @@
 ## No CSS, no colors, no rendering — only signals, memos, and enums.
 ## Created via withViewModel inside createRoot.
 
-import std/[algorithm, json, math, sequtils, strutils]
+import std/[algorithm, json, math, options, sequtils, strutils]
 import isonim/core/[signals, computation]
 import isonim/viewmodel
 import isonim/editor/types
@@ -21,7 +21,20 @@ type
   SidebarVM* = ref object of ViewModel
     groups*: Signal[seq[StoryGroup]]
     sections*: Signal[SidebarSectionExpansion]
-    searchFilter*: Signal[string]
+    searchQuery*: Signal[string]
+      ## M-EVP-9: real-time filter query for the sidebar story tree.
+      ## Lowercased on read by ``matchesSidebarSearch`` so the
+      ## case-insensitive substring check is consistent across the
+      ## render effects.
+    activeCategory*: Signal[Option[StoryKind]]
+      ## M-EVP-9: the currently focused category (set by clicking a
+      ## quick-nav icon). Used to scroll the matching section group
+      ## into view and to collapse non-matching sections.
+    priorExpansion*: Signal[Option[SidebarSectionExpansion]]
+      ## M-EVP-9: snapshot of the expansion state taken when the
+      ## search query becomes non-empty. Restored when the query is
+      ## cleared so the user's manual collapse / expand state isn't
+      ## lost by the filter's auto-expand behaviour.
     filteredItems*: Memo[seq[StoryGroup]]
 
   StoryboardVM* = ref object of ViewModel
@@ -2530,7 +2543,67 @@ proc toggleGroup*(sidebar: SidebarVM; groupName: string) =
         result[i].expanded = not result[i].expanded
 
 proc setSearch*(sidebar: SidebarVM; query: string) =
-  sidebar.searchFilter.val = query
+  ## M-EVP-9: update the live search query. When the query transitions
+  ## from empty -> non-empty, snapshot the current expansion state so
+  ## we can restore it on clear; when the query becomes empty again
+  ## restore the prior snapshot and expand every section so filter
+  ## results are visible without manual disclosure.
+  let prevQuery = sidebar.searchQuery.val
+  if prevQuery.len == 0 and query.len > 0:
+    sidebar.priorExpansion.val = some(sidebar.sections.val)
+    # Expand every section so any matching group becomes visible
+    # without the user having to manually disclose its section.
+    sidebar.sections.val = SidebarSectionExpansion(
+      userJourneys: true, pages: true, components: true,
+      foundations: true, guidelines: true)
+  elif prevQuery.len > 0 and query.len == 0:
+    let prior = sidebar.priorExpansion.val
+    if prior.isSome:
+      sidebar.sections.val = prior.get
+      sidebar.priorExpansion.val = none(SidebarSectionExpansion)
+  sidebar.searchQuery.val = query
+
+proc setActiveCategory*(sidebar: SidebarVM; kind: StoryKind;
+    collapseSiblings = true) =
+  ## M-EVP-9: focus a category by ``StoryKind``. Sets the
+  ## ``activeCategory`` signal, opens the matching section, and (by
+  ## default) collapses the four sibling sections so the focused
+  ## category fills the visible sidebar.
+  sidebar.activeCategory.val = some(kind)
+  let section = case kind
+    of skFlow: ssUserJourneys
+    of skPage: ssPages
+    of skComponent, skPattern: ssComponents
+    of skFoundation: ssFoundations
+    of skGuideline: ssGuidelines
+  if collapseSiblings:
+    var next = SidebarSectionExpansion(
+      userJourneys: false, pages: false, components: false,
+      foundations: false, guidelines: false)
+    case section
+    of ssUserJourneys: next.userJourneys = true
+    of ssPages: next.pages = true
+    of ssComponents: next.components = true
+    of ssFoundations: next.foundations = true
+    of ssGuidelines: next.guidelines = true
+    sidebar.sections.val = next
+  else:
+    sidebar.setSectionExpanded(section, true)
+
+proc categoryHasStories*(sidebar: SidebarVM; kind: StoryKind): bool =
+  ## M-EVP-9: returns true if at least one workspace has a story of
+  ## the given ``kind``. Used to mark the quick-nav icon for an empty
+  ## category as ``aria-disabled``.
+  for g in sidebar.groups.val:
+    case kind
+    of skComponent, skPattern:
+      # Components section bundles both component and pattern groups.
+      if g.kind in {skComponent, skPattern} and g.items.len > 0:
+        return true
+    else:
+      if g.kind == kind and g.items.len > 0:
+        return true
+  false
 
 # ===========================================================================
 # InspectorVM actions
@@ -7678,10 +7751,12 @@ proc stop*(player: FlowPlayerVM) =
 proc createSidebarVM*(): SidebarVM =
   let groups = createSignal[seq[StoryGroup]](@[])
   let sections = createSignal(defaultSidebarSections())
-  let searchFilter = createSignal("")
+  let searchQuery = createSignal("")
+  let activeCategory = createSignal(none(StoryKind))
+  let priorExpansion = createSignal(none(SidebarSectionExpansion))
 
   let filteredItems = createMemo[seq[StoryGroup]](proc(): seq[StoryGroup] =
-    let query = searchFilter.val.toLowerAscii()
+    let query = searchQuery.val.toLowerAscii()
     let allGroups = groups.val
     if query.len == 0:
       return allGroups
@@ -7703,7 +7778,9 @@ proc createSidebarVM*(): SidebarVM =
   SidebarVM(
     groups: groups,
     sections: sections,
-    searchFilter: searchFilter,
+    searchQuery: searchQuery,
+    activeCategory: activeCategory,
+    priorExpansion: priorExpansion,
     filteredItems: filteredItems)
 
 proc createStoryboardVM*(): StoryboardVM =

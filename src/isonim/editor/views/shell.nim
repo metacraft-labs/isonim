@@ -3,7 +3,7 @@
 ## Fully dogfoods IsoNim: all elements via ui macro with if/for/case.
 ## Only uses manual setStyle for reactive effects (createRenderEffect).
 
-import std/strutils
+import std/[options, strutils]
 
 import isonim/core/[signals, computation]
 import isonim/dsl/ui
@@ -70,6 +70,51 @@ const inspectorSectionNames = [
 
 const sidebarSections = [
   ssUserJourneys, ssPages, ssComponents, ssFoundations, ssGuidelines]
+
+# M-EVP-9: canonical quick-nav category order. One icon per StoryKind
+# *category type* (skPattern is folded into the Components section, so
+# it doesn't get its own icon). Five icons total, matching the five
+# top-level sidebar sections.
+const quickNavCategories: array[5, StoryKind] = [
+  skFoundation, skComponent, skPage, skFlow, skGuideline]
+
+func quickNavLabel(kind: StoryKind): string =
+  case kind
+  of skFoundation: "Foundations"
+  of skComponent: "Components"
+  of skPattern: "Components"
+  of skPage: "Pages"
+  of skFlow: "User Journeys"
+  of skGuideline: "Guidelines"
+
+func quickNavIcon(kind: StoryKind): string =
+  case kind
+  of skFoundation: "\xE2\x97\x87"
+  of skComponent: "\xE2\x97\xBB"
+  of skPattern: "\xE2\x97\xA8"
+  of skPage: "\xE2\x96\xA1"
+  of skFlow: "\xE2\x96\xB7"
+  of skGuideline: "\xE2\x97\x8B"
+
+func quickNavSectionId(kind: StoryKind): string =
+  ## Slug used in ``data-quicknav-section`` markers on the section
+  ## body, so the quick-nav handler can ``scrollIntoView`` the right
+  ## section.
+  case kind
+  of skFoundation: "foundations"
+  of skComponent: "components"
+  of skPattern: "components"
+  of skPage: "pages"
+  of skFlow: "user-journeys"
+  of skGuideline: "guidelines"
+
+func sectionToQuickNavKind(section: SidebarSection): StoryKind =
+  case section
+  of ssUserJourneys: skFlow
+  of ssPages: skPage
+  of ssComponents: skComponent
+  of ssFoundations: skFoundation
+  of ssGuidelines: skGuideline
 
 func sectionLabel(section: SidebarSection): string =
   case section
@@ -194,24 +239,67 @@ proc searchInputHandler[R, E](r: R; vm: EditorVM; input: E): proc() =
   let capturedInput = input
   result = proc() = vm.sidebar.setSearch(r.inputValue(capturedInput))
 
+proc dispatchSidebarSectionScroll(sectionId: string) =
+  ## M-EVP-9: ask the host page to scroll the matching sidebar section
+  ## into view. Native renderers (and the headless mock) make this a
+  ## no-op; only the JS target wires this through to ``scrollIntoView``.
+  when defined(js):
+    {.emit: ["""
+      (function () {
+        const toJsString = (raw) => Array.isArray(raw)
+          ? String.fromCharCode.apply(null, raw)
+          : String(raw || '');
+        const id = toJsString(""", sectionId, """);
+        if (!id) return;
+        const el = document.querySelector('[data-quicknav-section="' + id + '"]');
+        if (el && typeof el.scrollIntoView === 'function') {
+          el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+        }
+      })();
+    """].}
+  else:
+    discard sectionId
+
+proc quickNavHandler(vm: EditorVM; kind: StoryKind): proc() =
+  ## M-EVP-9: click handler for a quick-nav icon. Empty categories
+  ## refuse the click (the icon carries ``aria-disabled="true"`` and
+  ## ``tabindex="-1"`` so the affordance is also a11y-disabled). Live
+  ## categories activate, collapse siblings, and scroll into view.
+  let captured = kind
+  result = proc() =
+    if not vm.sidebar.categoryHasStories(captured):
+      return
+    vm.sidebar.setActiveCategory(captured)
+    dispatchSidebarSectionScroll(quickNavSectionId(captured))
+
 proc matchesSidebarSearch(query: string; group: StoryGroup): bool =
+  ## M-EVP-9: a group is visible if any of its stories matches (or if
+  ## the query is empty). We DON'T treat the group description as a
+  ## match — story names are the user-facing filter target per the
+  ## spec ("Search input filters story names in real time"). Group
+  ## name still matches because it functions as the component path.
   if query.len == 0:
     return true
   let q = query.toLowerAscii()
-  if q in group.name.toLowerAscii() or q in group.description.toLowerAscii():
+  if q in group.name.toLowerAscii():
     return true
   for item in group.items:
-    if q in item.name.toLowerAscii() or q in item.description.toLowerAscii():
+    if q in item.name.toLowerAscii():
       return true
 
 proc matchesSidebarSearch(query: string; group: StoryGroup;
     item: StoryItem): bool =
+  ## M-EVP-9: a story is visible if its name matches OR its
+  ## component-path (group name) matches OR the query is empty. The
+  ## group description is intentionally NOT consulted — otherwise a
+  ## stray word in the description ("colors, typography, spacing")
+  ## would surface every sibling item under the group as a "match".
   if query.len == 0:
     return true
   let q = query.toLowerAscii()
-  if q in group.name.toLowerAscii() or q in group.description.toLowerAscii():
+  if q in group.name.toLowerAscii():
     return true
-  q in item.name.toLowerAscii() or q in item.description.toLowerAscii()
+  q in item.name.toLowerAscii()
 
 proc isSelectedStory(vm: EditorVM; story: StoryRef): bool =
   let selected = vm.selectedStory.val
@@ -249,7 +337,7 @@ proc bindSidebarGroupFilter[R, E](r: R; node: E; vm: EditorVM;
   let captured = group
   createRenderEffect proc() =
     r.setStyle(node, "display",
-      if matchesSidebarSearch(vm.sidebar.searchFilter.val, captured): "flex"
+      if matchesSidebarSearch(vm.sidebar.searchQuery.val, captured): "flex"
       else: "none")
 
 proc bindSidebarSectionState[R, E](r: R; header, disclosure, body: E;
@@ -283,8 +371,39 @@ proc bindSidebarItemFilter[R, E](r: R; node: E; vm: EditorVM;
   let capturedItem = item
   createRenderEffect proc() =
     r.setStyle(node, "display",
-      if matchesSidebarSearch(vm.sidebar.searchFilter.val, capturedGroup,
+      if matchesSidebarSearch(vm.sidebar.searchQuery.val, capturedGroup,
           capturedItem): "flex" else: "none")
+
+proc bindQuickNavIcon[R, E](r: R; node: E; vm: EditorVM; kind: StoryKind) =
+  ## M-EVP-9: keep each quick-nav icon's enabled/active state in sync
+  ## with ``vm.sidebar.groups`` (empty -> disabled) and
+  ## ``vm.sidebar.activeCategory`` (active -> tinted background +
+  ## ``aria-pressed="true"``).
+  let captured = kind
+  createRenderEffect proc() =
+    let hasStories = vm.sidebar.categoryHasStories(captured)
+    let activeOpt = vm.sidebar.activeCategory.val
+    let active = activeOpt.isSome and activeOpt.get == captured
+    r.setAttribute(node, "aria-disabled",
+      if hasStories: "false" else: "true")
+    r.setAttribute(node, "data-category-empty",
+      if hasStories: "false" else: "true")
+    r.setAttribute(node, "tabindex",
+      if hasStories: "0" else: "-1")
+    r.setAttribute(node, "aria-pressed",
+      if active: "true" else: "false")
+    r.setStyle(node, "color",
+      if not hasStories: textDim
+      elif active: textPrimary
+      else: textMuted)
+    r.setStyle(node, "background-color",
+      if active and hasStories: accentSoft
+      elif hasStories: "transparent"
+      else: "transparent")
+    r.setStyle(node, "cursor",
+      if hasStories: "pointer" else: "default")
+    r.setStyle(node, "opacity",
+      if hasStories: "1" else: "0.45")
 
 proc bindInspectorTabState[R, E](r: R; node: E; vm: EditorVM;
     section: InspectorSection) =
@@ -520,6 +639,7 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
             text "\xF0\x9F\x94\x8D"
           input(class = "editor-input",
                 ref = searchInput,
+                `data-sidebar-search` = "true",
                 background_color = "transparent", border = "none",
                 font_size = "12px", color = textSecondary,
                 outline = "none", flex = "1",
@@ -530,6 +650,42 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
         r.addEventListener(searchInput, "input", onSearch)
         r.addEventListener(searchInput, "change", onSearch)
         r.addEventListener(searchInput, "keyup", onSearch)
+
+      # M-EVP-9: Quick-navigation strip — one icon per canonical
+      # design-system category. Click an icon to focus that category
+      # (activates ``SidebarVM.activeCategory``, collapses siblings,
+      # scrolls the matching section into view). Empty categories are
+      # marked ``aria-disabled="true"`` and refuse the click.
+      tdiv(`data-sidebar-quicknav` = "true",
+            display = "flex", flex_direction = "row",
+            align_items = "center", justify_content = "space-around",
+            gap = "4px", padding = "6px 8px",
+            border_bottom = "1px solid " & borderFaint,
+            background_color = bgSidebar):
+        for k in quickNavCategories:
+          var iconNode: E
+          let cKind = k
+          let cLabel = quickNavLabel(k)
+          let cIcon = quickNavIcon(k)
+          let cSectionId = quickNavSectionId(k)
+          let onPick = quickNavHandler(vm, cKind)
+          tdiv(ref = iconNode,
+                `data-category-kind` = $cKind,
+                `data-quicknav-icon` = cSectionId,
+                `role` = "button",
+                `aria-label` = "Focus " & cLabel & " category",
+                onclick = onPick,
+                onkeydown = onPick,
+                display = "flex", align_items = "center",
+                justify_content = "center",
+                width = "28px", height = "26px",
+                border_radius = "5px",
+                font_size = "13px",
+                color = textMuted,
+                transition = "background-color 0.12s, color 0.12s"):
+            text cIcon
+          block:
+            r.bindQuickNavIcon(iconNode, vm, cKind)
 
       # Story sections
       tdiv(display = "flex", flex_direction = "column",
@@ -545,8 +701,10 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
           var sectionDisclosure: E
           var sectionBody: E
 
+          let qnSectionId = quickNavSectionId(sectionToQuickNavKind(section))
           tdiv(display = "flex", flex_direction = "column", gap = "2px",
-                margin_bottom = "6px"):
+                margin_bottom = "6px",
+                `data-quicknav-section` = qnSectionId):
             tdiv(display = "flex", align_items = "center",
                   gap = "4px"):
               tdiv(display = "flex", align_items = "center", flex = "1",
