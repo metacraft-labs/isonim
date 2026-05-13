@@ -71,8 +71,14 @@ when not defined(js):
 
 import isonim/core/[signals, computation]
 import isonim/editor/types
+import isonim/editor/preview_canvas
+import isonim_render_serve
 
 export types.PreviewBackend
+export preview_canvas
+export isonim_render_serve.ElementTreeManifest
+export isonim_render_serve.ElementEntry
+export isonim_render_serve.ElementBounds
 
 type
   BridgeStatus* = enum
@@ -106,6 +112,19 @@ type
     reloadGeneration*: Signal[int]
     bridgeUrl*: Memo[string]
     needsBridge*: Memo[bool]
+    canvas*: PreviewCanvasVM
+      ## RS-M11: per-canvas state holder. Mirrors the surface
+      ## dimensions, the latest `element-tree` manifest, and the
+      ## selected element id. The editor's `component_detail.nim`
+      ## wires pointer events on the mounted `<canvas>` into this
+      ## VM via `selectAt(x, y)`.
+    selectedElementId*: Signal[string]
+      ## Convenience proxy — `vm.canvas.selectedElementId` is the
+      ## same signal, but having it on the top-level VM keeps the
+      ## test assertion shape simple (`vm.selectedElementPath.val`
+      ## per the spec).
+    selectedElementPath*: Signal[string]
+      ## Convenience proxy — see `selectedElementId`.
 
   BackendBinaryRegistry* = ref object
     ## Maps `PreviewBackend` -> path of the executable that hosts
@@ -368,6 +387,8 @@ proc newStreamingPreviewVM*(initial: PreviewBackend = pbWeb;
     else:
       "")
 
+  let canvas = newPreviewCanvasVM()
+
   StreamingPreviewVM(
     selectedBackend: selectedBackend,
     availableBackends: availableBackends,
@@ -377,7 +398,10 @@ proc newStreamingPreviewVM*(initial: PreviewBackend = pbWeb;
     componentPath: componentPath,
     reloadGeneration: reloadGeneration,
     bridgeUrl: bridgeUrl,
-    needsBridge: needsBridge)
+    needsBridge: needsBridge,
+    canvas: canvas,
+    selectedElementId: canvas.selectedElementId,
+    selectedElementPath: canvas.selectedComponentPath)
 
 proc selectBackend*(vm: StreamingPreviewVM; backend: PreviewBackend) =
   ## Mode menu wiring. Editor calls this on user click; clears any
@@ -411,3 +435,30 @@ proc bumpReloadGeneration*(vm: StreamingPreviewVM) =
   ## (or a file-watcher) fires. Anything observing
   ## `vm.reloadGeneration` re-runs.
   vm.reloadGeneration.val = vm.reloadGeneration.val + 1
+
+# ---------------------------------------------------------------------------
+# RS-M11: M-packet dispatch + canvas hit-test forwarding
+# ---------------------------------------------------------------------------
+
+proc dispatchMetaPacket*(vm: StreamingPreviewVM; jsonBody: string) =
+  ## Dispatch one decoded M-packet JSON body. Today the only sub-kind
+  ## the editor consumes from a launcher is `element-tree`; other
+  ## sub-kinds (`hello`, `resize`, `hot-reload`, …) are handled by
+  ## the existing bridge plumbing or simply ignored. Unknown sub-
+  ## kinds are intentionally non-fatal per RS-M0 § "Error handling".
+  if isElementTreeBody(jsonBody):
+    try:
+      let manifest = decodeElementTreeJson(jsonBody)
+      vm.canvas.updateManifest(manifest)
+    except PacketProtocolError:
+      # Malformed manifest: drop it. The bridge will re-emit on the
+      # next change.
+      discard
+
+proc clickCanvas*(vm: StreamingPreviewVM; x, y: int): bool =
+  ## Editor's pointer handler calls this. Returns true if the click
+  ## resolved to a manifest entry. The selection signals
+  ## (`selectedElementId` / `selectedElementPath`) update reactively
+  ## so subscribers (e.g. the sidebar selection memo) re-run on
+  ## change.
+  vm.canvas.selectAt(x, y)

@@ -9,6 +9,7 @@ import isonim/core/[computation, signals]
 import isonim/dsl/ui
 import isonim/editor/viewmodels
 import isonim/editor/types
+import isonim/editor/streaming_preview
 import isonim/editor/views/choice_row
 
 const
@@ -726,6 +727,7 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
   var projectName: E
   var projectDescription: E
   var projectFrame: E
+  var projectCanvas: E
   let projectPreviewSection = ui(r):
     tdiv(ref = projectSection,
           display = "none", flex_direction = "column",
@@ -754,6 +756,17 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
             scrolling = "no",
             `data-component-project-frame` = "true",
             background_color = "#FFFFFF")
+        # RS-M11: non-Web preview canvas. Mounted always but
+        # toggled visible only when the selected backend is non-Web
+        # (the iframe takes its place for Web). The `<canvas>` is
+        # painted by the streaming-preview VM's F-packet handler and
+        # forwards clicks to the manifest hit-test.
+        canvas(ref = projectCanvas,
+            width = "1280",
+            height = "1",
+            `data-component-project-canvas` = "true",
+            display = "none",
+            background_color = "#000000")
   r.appendChild(content, projectPreviewSection)
 
   var propertyPanel: E
@@ -815,6 +828,10 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
     # produces fresh HTML repaints the iframe.
     let showProject = preview.documentHtml.len > 0 and
       story.kind in {skComponent, skPattern, skGuideline}
+    # RS-M11: when the selected backend is non-Web, the canvas takes
+    # over from the iframe inside the same `projectSection`. Web keeps
+    # the iframe srcdoc path intact (no behavioural change there).
+    let useCanvas = showProject and vm.platform.val != pbWeb
 
     r.setTextContent(projectName,
       if story.kind in {skComponent, skPattern, skGuideline}: story.name else: "")
@@ -828,7 +845,7 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
     r.setAttribute(projectFrame, "height", "1")
     let reloadGeneration = vm.livePreviewReloadGeneration.val
     let nextProjectSrcdoc =
-      if showProject:
+      if showProject and not useCanvas:
         preview.documentHtml & "\n<!-- isonim-reload:" & $reloadGeneration &
           " -->"
       else:
@@ -839,6 +856,15 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
     r.setStyle(projectFrame, "width", "100%")
     r.setStyle(projectFrame, "min-height", "1px")
     r.setStyle(projectFrame, "overflow", "hidden")
+    # RS-M11: iframe stays for Web, canvas takes over for non-Web.
+    r.setStyle(projectFrame, "display",
+               if useCanvas: "none" else: "block")
+    r.setStyle(projectCanvas, "display",
+               if useCanvas: "block" else: "none")
+    r.setStyle(projectCanvas, "width", "100%")
+    r.setStyle(projectCanvas, "min-height", "1px")
+    r.setAttribute(projectCanvas, "data-canvas-active",
+                   if useCanvas: "true" else: "false")
     r.setStyle(projectSection, "display", if showProject: "flex" else: "none")
     r.setStyle(genericContent, "display", if showProject: "none" else: "flex")
     r.populateComponentPropertyPanel(vm, propertyPanel, projectFrame,

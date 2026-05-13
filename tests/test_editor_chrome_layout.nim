@@ -17,6 +17,7 @@ import isonim/editor/stories
 import isonim/editor/streaming_preview
 import isonim/editor/views/shell
 import isonim/editor/views/choice_row
+import isonim/editor/views/component_detail
 
 proc findByAttr(node: MockNode; name, value: string): MockNode =
   if node.kind == mnkElement and name in node.attributes and
@@ -1681,4 +1682,83 @@ suite "M-EVP-7 sidebar drives view":
         check vm.selectedStory.val.kind == kind
         check vm.activeView.val ==
           viewForStory(vm.selectedStory.val)
+      dispose()
+
+# ---------------------------------------------------------------------------
+# RS-M11: Web keeps the iframe; non-Web mounts the canvas.
+# ---------------------------------------------------------------------------
+
+suite "RS-M11 component detail mount differentiation":
+
+  test "pbWeb + showProject keeps the iframe and hides the canvas":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      let story = StoryRef(group: "Components", name: "Real Button",
+        kind: skComponent, index: 0)
+      vm.sidebar.groups.val = @[
+        StoryGroup(name: "Components", kind: skComponent, expanded: true,
+          items: @[StoryItem(name: story.name, kind: story.kind,
+            group: story.group)])
+      ]
+      vm.preview.hook = proc(story: StoryRef;
+          platform: Platform): ProjectPreview =
+        ProjectPreview(
+          status: ppsRendered,
+          story: story,
+          title: story.group & " / " & story.name,
+          bodyText: "Rendered by project-owned component code.",
+          documentHtml: "<main data-testid=\"real-component\">Button</main>")
+      discard vm.selectStory(story)
+      vm.platform.val = pbWeb
+
+      let detail = renderComponentDetail[MockRenderer, MockNode](r, vm)
+      let frame = findByAttr(detail, "data-component-project-frame", "true")
+      let canvas = findByAttr(detail, "data-component-project-canvas", "true")
+      check frame != nil
+      check canvas != nil
+      # Web → iframe is visible, canvas is hidden.
+      check frame.styles.getOrDefault("display", "block") != "none"
+      check canvas.styles.getOrDefault("display", "none") == "none"
+      # The iframe still carries the srcdoc (Web path is unchanged).
+      check frame.attributes.getOrDefault("srcdoc", "").contains(
+        "real-component")
+      check canvas.attributes.getOrDefault("data-canvas-active") == "false"
+      dispose()
+
+  test "non-Web + showProject mounts the canvas and hides the iframe":
+    createRoot do (dispose: proc()):
+      for backend in [pbTui, pbGpui, pbFreya, pbCocoa, pbAndroid]:
+        let r = MockRenderer()
+        let vm = createEditorVM()
+        let story = StoryRef(group: "Components", name: "Real Button",
+          kind: skComponent, index: 0)
+        vm.sidebar.groups.val = @[
+          StoryGroup(name: "Components", kind: skComponent, expanded: true,
+            items: @[StoryItem(name: story.name, kind: story.kind,
+              group: story.group)])
+        ]
+        vm.preview.hook = proc(story: StoryRef;
+            platform: Platform): ProjectPreview =
+          ProjectPreview(
+            status: ppsRendered,
+            story: story,
+            title: story.group & " / " & story.name,
+            bodyText: "Rendered by project-owned component code.",
+            documentHtml: "<main>Button</main>")
+        discard vm.selectStory(story)
+        vm.platform.val = backend
+
+        let detail = renderComponentDetail[MockRenderer, MockNode](r, vm)
+        let frame = findByAttr(detail, "data-component-project-frame", "true")
+        let canvas = findByAttr(detail, "data-component-project-canvas", "true")
+        check frame != nil
+        check canvas != nil
+        # Non-Web → canvas is visible, iframe is hidden.
+        check canvas.styles.getOrDefault("display", "none") == "block"
+        check frame.styles.getOrDefault("display", "block") == "none"
+        check canvas.attributes.getOrDefault("data-canvas-active") == "true"
+        # The iframe's srcdoc is cleared on non-Web so the iframe
+        # doesn't load any HTML in the background.
+        check frame.attributes.getOrDefault("srcdoc", "") == ""
       dispose()
