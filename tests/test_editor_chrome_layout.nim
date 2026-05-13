@@ -1082,3 +1082,140 @@ suite "M-EVP-4 sidebar selection state":
       check rowA.attributes.getOrDefault("aria-current") == "true"
 
       dispose()
+
+# ---------------------------------------------------------------------------
+# M-EVP-5: Preview canvas surface contrast — distinct bg or hairline border.
+# ---------------------------------------------------------------------------
+
+proc canvasBgDiffersFromPane(canvas, pane: MockNode): bool =
+  ## The canvas surface "differs from the surrounding panel by at least
+  ## one luminance step" if its declared `background-color` is a
+  ## different literal from the pane's. The mock renderer preserves the
+  ## literal token value verbatim, so case-insensitive equality is the
+  ## tightest check we can make without re-implementing CSS colour
+  ## parsing — and it's what the spec calls for ("background-color
+  ## differs from the panel's").
+  let canvasBg =
+    canvas.styles.getOrDefault("background-color").strip().toLowerAscii()
+  let paneBg =
+    pane.styles.getOrDefault("background-color").strip().toLowerAscii()
+  canvasBg.len > 0 and paneBg.len > 0 and canvasBg != paneBg
+
+proc canvasHasVisibleBorder(canvas: MockNode): bool =
+  ## A "visible 1 px hairline border" is a non-empty `border`
+  ## declaration that isn't `none` or `0` — i.e. a real solid edge the
+  ## user can see. The DSL emits the shorthand `border` (e.g.
+  ## `"1px solid #2A2C3A"`), so we check the `border` key directly.
+  let raw =
+    canvas.styles.getOrDefault("border").strip().toLowerAscii()
+  raw.len > 0 and raw != "none" and not raw.startsWith("0 ") and
+    raw != "0" and raw != "0px"
+
+proc canvasContrastInvariant(canvas, pane: MockNode): bool =
+  ## The M-EVP-5 acceptance: EITHER background-color contrast against
+  ## the surrounding pane, OR a visible 1 px border on the canvas
+  ## itself. Either condition individually qualifies; both is fine.
+  canvasBgDiffersFromPane(canvas, pane) or canvasHasVisibleBorder(canvas)
+
+suite "M-EVP-5 preview canvas surface contrast":
+
+  test "preview canvas reads as a focal area distinct from the surrounding pane":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      let pane = renderPreviewPane[MockRenderer, MockNode](r, vm)
+
+      # Resolve the canvas via its stable `data-preview-canvas`
+      # attribute — the spec calls this out explicitly. The
+      # surrounding pane is the `editor-preview` root that hosts it.
+      let canvas = findByAttr(pane, "data-preview-canvas", "true")
+      check canvas != nil
+      check pane.attributes.getOrDefault("class") == "editor-preview"
+
+      # Acceptance: the canvas EITHER has a distinct background-color
+      # from the pane, OR carries a visible (non-empty) border.
+      check canvasContrastInvariant(canvas, pane)
+
+      # Strengthen — the current implementation does BOTH (it picks a
+      # bgCanvas one luminance step lighter than bgPreview AND adds a
+      # 1 px hairline border in the canonical `border` token colour).
+      # If a future change drops one of them this stricter check fires
+      # while the looser acceptance invariant above still holds.
+      check canvasBgDiffersFromPane(canvas, pane)
+      check canvasHasVisibleBorder(canvas)
+
+      # Pin the specific tokens so an accidental swap to a colour that
+      # happens to equal `bgPreview` (or to the global `bgBase` void
+      # behind the editor) does not silently regress the focal-area
+      # affordance reviewers asked for.
+      check canvas.styles.getOrDefault("background-color").
+        toLowerAscii() == bgCanvas.toLowerAscii()
+      check pane.styles.getOrDefault("background-color").
+        toLowerAscii() == bgPreview.toLowerAscii()
+      check canvas.styles.getOrDefault("background-color").
+        toLowerAscii() != pane.styles.getOrDefault("background-color").
+        toLowerAscii()
+      check canvas.styles.getOrDefault("border") ==
+        "1px solid " & border
+
+      dispose()
+
+  test "negative assertion: sibling surfaces do not trigger the canvas check":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+
+      # The sidebar is a SIBLING surface to the preview pane. Its root
+      # is `editor-sidebar` and it does NOT carry `data-preview-canvas`
+      # — proving the M-EVP-5 test addresses the canvas by its specific
+      # data attribute rather than "any element with a distinct bg".
+      let sidebar = renderSidebar[MockRenderer, MockNode](r, vm)
+      check sidebar.attributes.getOrDefault("class") == "editor-sidebar"
+      let sidebarHasCanvas = findByAttr(sidebar, "data-preview-canvas",
+        "true")
+      check sidebarHasCanvas == nil
+
+      # And the pane itself is not the canvas — the canvas is a
+      # specific descendant of the pane addressed by its data
+      # attribute, not the pane root.
+      let pane = renderPreviewPane[MockRenderer, MockNode](r, vm)
+      check pane.attributes.getOrDefault("data-preview-canvas") != "true"
+      let canvas = findByAttr(pane, "data-preview-canvas", "true")
+      check canvas != nil
+      check canvas != pane
+
+      dispose()
+
+  test "regression probe: clearing bg AND border invalidates the M-EVP-5 invariant":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      let pane = renderPreviewPane[MockRenderer, MockNode](r, vm)
+      let canvas = findByAttr(pane, "data-preview-canvas", "true")
+      check canvas != nil
+
+      # Sanity: production rendering satisfies the M-EVP-5 invariant.
+      check canvasContrastInvariant(canvas, pane)
+
+      # Mutate the canvas's rendered style to simulate a regression
+      # (someone strips BOTH the distinct background colour AND the
+      # hairline border, leaving the canvas to read as the same
+      # surface as the surrounding pane). Because the test reads from
+      # the rendered mock element, the same boolean expression that
+      # passed above must now fail. This is the "convince yourself
+      # the assertion exercises the actual rendered style, not
+      # internal VM state" probe the M-EVP-5 spec asks for.
+      let paneBg = pane.styles.getOrDefault("background-color")
+      r.setStyle(canvas, "background-color", paneBg)
+      r.setStyle(canvas, "border", "none")
+
+      check not canvasBgDiffersFromPane(canvas, pane)
+      check not canvasHasVisibleBorder(canvas)
+      check not canvasContrastInvariant(canvas, pane)
+
+      # The `data-preview-canvas` attribute is unchanged — proves the
+      # failing assertion above is about RENDERED style, not the
+      # element's identity.
+      check canvas.attributes.getOrDefault("data-preview-canvas") == "true"
+
+      dispose()

@@ -33,8 +33,21 @@ const
   # three panels (sidebar / preview / inspector) read as distinct surfaces
   # rather than one continuous dark slab. The previous bgBase value sat darker
   # than bgSidebar, which made the centre panel disappear into the sidebar.
-  bgPreview = "#1F2030"
-  border = "#2A2C3A"
+  bgPreview* = "#1F2030"
+    ## M-EVP-5: exported so the preview-canvas surface-contrast test can
+    ## compare the canvas background against the surrounding pane without
+    ## hardcoding the hex literal.
+  bgCanvas* = "#262838"
+    ## M-EVP-5: the preview canvas itself sits one luminance step
+    ## lighter than `bgPreview` so the canvas reads as the visible focal
+    ## area inside the preview pane rather than blending into the panel
+    ## surface (or into `bgBase`, the global shell void). Exported so
+    ## the surface-contrast test can refer to it without duplicating the
+    ## hex.
+  border* = "#2A2C3A"
+    ## M-EVP-5: exported so the preview-canvas hairline-border test can
+    ## refer to the canonical border token rather than hardcoding the
+    ## hex; matches the M-EVP-4 export pattern for `accent`.
   borderStrong = "#363849"
   borderFaint = "#1F212C"
   textPrimary = "#ECEDF3"
@@ -1119,11 +1132,18 @@ proc renderPreviewPane*[R, E](r: R; vm: EditorVM): E =
 
   # Preview canvas — fully inline (preserves the existing affordance).
   # Empty state: a quiet branded landing card centered on the canvas.
+  # M-EVP-5: the canvas itself sits one luminance step lighter than
+  # the surrounding pane (`bgPreview`) AND carries a 1 px hairline
+  # border, so it reads as the visible focal area inside the pane
+  # rather than blending into the panel surface. Both acceptance
+  # conditions hold individually; doing both yields the unambiguous
+  # "canvas surface" affordance reviewers asked for.
   let previewArea = ui(r):
     tdiv(flex = "1", display = "flex",
           align_items = "center", justify_content = "center",
-          background_color = bgBase, position = "relative",
+          background_color = bgCanvas, position = "relative",
           min_width = "0",
+          border = "1px solid " & border,
           background_image = "radial-gradient(circle at center, " &
             borderFaint & " 1px, transparent 1.5px)",
           background_size = "28px 28px",
