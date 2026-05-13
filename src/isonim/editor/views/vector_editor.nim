@@ -102,11 +102,20 @@ proc bindVectorSaveState[R, E](r: R; node: E; vm: EditorVM) =
     r.setStyle(node, "opacity", if disabled: "0.5" else: "1")
 
 proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
+  ## M-EVP-6 note: the vector editor keeps its own top toolbar (title +
+  ## boolean ops + zoom + Save + Export SVG) because the shared chrome
+  ## bar is hidden while the vector view is active (`shell.nim` sets
+  ## `display: none` on `chromeBarEl` for `evVectorEditor`). The
+  ## acceptance "exactly one top bar above the view body" already holds
+  ## for the vector editor — there is no duplicate to drop. M-EVP-8
+  ## tracks the broader vector-affordance refactor (boolean ops, export,
+  ## usage-context panel).
   let tools = vectorTools()
   var fabricHost: E
 
   let container = ui(r):
     tdiv(class = "editor-preview",
+          `data-vector-editor` = "true",
           flex = "1", display = "flex", flex_direction = "column",
           min_width = "0", height = "100%",
           background_color = bgBase):
@@ -116,6 +125,7 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
             justify_content = "space-between",
             height = "44px", min_height = "44px", padding = "0 16px",
             background_color = bgCard,
+            `data-vector-editor-toolbar` = "true",
             border_bottom = "1px solid " & border):
         tdiv(display = "flex", align_items = "center", gap = "10px"):
           span(font_size = "13px", font_weight = "600", color = textPrimary):

@@ -2,8 +2,6 @@
 ##
 ## Renders project-owned preview documents in an editor-owned responsive frame.
 
-import std/strutils
-
 import isonim/core/[computation, signals]
 import isonim/dsl/ui
 import isonim/editor/types
@@ -11,139 +9,18 @@ import isonim/editor/viewmodels
 
 const
   bgBase = "#0B1120"
-  bgCard = "#151D2E"
-  bgSurface = "#1E293B"
-  border = "#334155"
-  textPrimary = "#F1F5F9"
-  textMuted = "#64748B"
-  textDim = "#475569"
-  accent = "#3B82F6"
-
-proc makeButton[R, E](r: R; node: E; label: string) =
-  r.setAttribute(node, "role", "button")
-  r.setAttribute(node, "tabindex", "0")
-  r.setAttribute(node, "aria-label", label)
-
-proc modeHandler(vm: EditorVM; mode: EditMode): proc() =
-  let captured = mode
-  result = proc() =
-    case captured
-    of emView:
-      discard vm.runEditorCommand(eckInspect)
-    of emComment:
-      discard vm.runEditorCommand(eckComment)
-    of emEdit:
-      discard vm.runEditorCommand(eckEdit)
-
-proc bindModeButton[R, E](r: R; node: E; vm: EditorVM; mode: EditMode) =
-  createRenderEffect proc() =
-    let active = vm.editMode.val == mode
-    let command = case mode
-      of emView: eckInspect
-      of emComment: eckComment
-      of emEdit: eckEdit
-    let state = vm.evaluateCommand(command)
-    r.setAttribute(node, "aria-pressed", if active: "true" else: "false")
-    r.setAttribute(node, "aria-disabled",
-      if state.status == ecsDisabled: "true" else: "false")
-    if state.diagnostic.len > 0:
-      r.setAttribute(node, "title", state.diagnostic)
-    else:
-      r.removeAttribute(node, "title")
-    r.setStyle(node, "background-color", if active: accent else: "transparent")
-    r.setStyle(node, "color", if active: textPrimary else: textMuted)
-
-proc bindViewportButton[R, E](r: R; node: E; vm: EditorVM;
-    viewport: PreviewViewport) =
-  let captured = viewport
-  createRenderEffect proc() =
-    let active = viewportsEqual(vm.viewport.val, captured)
-    r.setAttribute(node, "aria-pressed", if active: "true" else: "false")
-    r.setStyle(node, "background-color", if active: accent else: "transparent")
-    r.setStyle(node, "color", if active: textPrimary else: textMuted)
-
-proc viewportButton[R, E](r: R; vm: EditorVM; viewport: PreviewViewport): E =
-  let label = previewViewportLabel(viewport)
-  let captured = viewport
-  result = ui(r):
-    tdiv(padding = "4px 10px", border_radius = "4px",
-          font_size = "11px", font_weight = "500",
-          cursor = "pointer", transition = "all 0.15s"):
-      text label
-  r.makeButton(result, "Preview " & label & " viewport")
-  r.addEventListener(result, "click", proc() = vm.changeViewport(captured))
-  r.addEventListener(result, "keydown", proc() = vm.changeViewport(captured))
-  r.bindViewportButton(result, vm, captured)
 
 proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
+  ## M-EVP-6: per-view inner toolbar removed. The canonical chrome bar
+  ## lives in `renderPreviewChromeBar` above the view stack; the page
+  ## preview body starts directly at the preview canvas.
   let container = ui(r):
     tdiv(class = "editor-preview",
+          `data-page-preview` = "true",
           flex = "1", display = "flex", flex_direction = "column",
           min_width = "0", height = "100%",
           background_color = bgBase):
       discard
-
-  let toolbar = ui(r):
-    tdiv(display = "flex", align_items = "center",
-          justify_content = "space-between",
-          gap = "12px", height = "44px", min_height = "44px",
-          padding = "0 16px", background_color = bgCard,
-          border_bottom = "1px solid " & border):
-      discard
-
-  var titleNode: E
-  var sourceNode: E
-  let breadcrumb = ui(r):
-    tdiv(display = "flex", flex_direction = "column", min_width = "0",
-          gap = "2px"):
-      span(ref = titleNode, font_size = "13px", font_weight = "600",
-            color = textPrimary, white_space = "nowrap",
-            overflow = "hidden", text_overflow = "ellipsis"):
-        text ""
-      span(ref = sourceNode, font_size = "11px", color = textDim,
-            white_space = "nowrap", overflow = "hidden",
-            text_overflow = "ellipsis"):
-        text ""
-  r.appendChild(toolbar, breadcrumb)
-
-  let controls = ui(r):
-    tdiv(display = "flex", align_items = "center", gap = "8px"):
-      discard
-
-  let modeToggle = ui(r):
-    tdiv(display = "flex", align_items = "center", gap = "1px",
-          background_color = bgSurface, border_radius = "6px",
-          padding = "3px"):
-      discard
-
-  for option in [(emView, "View"), (emComment, "Comment"), (emEdit, "Edit")]:
-    let capturedMode = option[0]
-    let label = option[1]
-    let modeBtn = ui(r):
-      tdiv(padding = "4px 12px", border_radius = "4px",
-            font_size = "11px", font_weight = "500",
-            cursor = "pointer", transition = "all 0.15s"):
-        text label
-    r.makeButton(modeBtn, "Switch to " & label.toLowerAscii() & " mode")
-    let chooseMode = modeHandler(vm, capturedMode)
-    r.addEventListener(modeBtn, "click", chooseMode)
-    r.addEventListener(modeBtn, "keydown", chooseMode)
-    r.bindModeButton(modeBtn, vm, capturedMode)
-    r.appendChild(modeToggle, modeBtn)
-  r.appendChild(controls, modeToggle)
-
-  let viewportToggle = ui(r):
-    tdiv(display = "flex", align_items = "center", gap = "1px",
-          background_color = bgSurface, border_radius = "6px",
-          padding = "3px"):
-      discard
-  # Iterate the pinned set for the current backend so the page preview's
-  # legacy toolbar surfaces the same chips the M57 edge strip would.
-  for viewport in pinnedViewports(vm.platform.val):
-    r.appendChild(viewportToggle, viewportButton[R, E](r, vm, viewport))
-  r.appendChild(controls, viewportToggle)
-  r.appendChild(toolbar, controls)
-  r.appendChild(container, toolbar)
 
   var frameHost: E
   let frameHostNode = ui(r):
@@ -200,14 +77,7 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
         vm.selectedStory.val.group & " / " & vm.selectedStory.val.name
       else:
         "Project preview"
-    let source =
-      if preview.metadata.sourceFile.len > 0:
-        preview.metadata.sourceFile & ":" & $preview.metadata.sourceLine
-      else:
-        previewViewportLabel(viewport) & " preview"
 
-    r.setTextContent(titleNode, title)
-    r.setTextContent(sourceNode, source)
     r.setTextContent(fallbackTitle, title)
     r.setTextContent(fallbackBody,
       if preview.bodyText.len > 0: preview.bodyText else: "Workspace page preview")

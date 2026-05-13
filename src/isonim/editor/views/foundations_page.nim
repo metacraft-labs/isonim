@@ -89,31 +89,17 @@ proc tokenPreviewStyle(token: FoundationTokenEntry): string =
     "padding:" & value & ";"
 
 proc renderFoundationsPage*[R, E](r: R; vm: EditorVM): E =
+  ## M-EVP-6: per-view inner header (breadcrumb + status) removed. The
+  ## canonical chrome bar lives in `renderPreviewChromeBar` above the
+  ## view stack; the foundations page body starts directly at the
+  ## per-backend foundation preview iframe (when present) and the
+  ## token-browser grid.
   let page = ui(r):
     tdiv(class = "editor-preview",
           `data-foundations-page` = "true",
           display = "flex", flex_direction = "column",
           flex = "1", min_width = "0", height = "100%",
           background_color = bgBase, color = textPrimary)
-
-  var headerStatus: E
-  let header = ui(r):
-    tdiv(display = "flex", align_items = "center",
-          justify_content = "space-between",
-          height = "44px", min_height = "44px", padding = "0 20px",
-          background_color = bgCard,
-          border_bottom = "1px solid " & border):
-      tdiv(display = "flex", align_items = "center", gap = "8px"):
-        span(font_size = "11px", color = textDim):
-          text "Foundations"
-        span(font_size = "11px", color = textDim):
-          text ">"
-        span(font_size = "13px", font_weight = "600", color = textPrimary):
-          text "Token browser"
-      tdiv(display = "flex", align_items = "center", gap = "8px"):
-        span(ref = headerStatus, font_size = "11px", color = textMuted):
-          text "Clean"
-  r.appendChild(page, header)
 
   # M-EVP-1: per-backend preview iframe for foundation stories. The
   # foundations page is primarily a token browser, but a foundation story
@@ -326,9 +312,6 @@ proc renderFoundationsPage*[R, E](r: R; vm: EditorVM): E =
   r.appendChild(body, detail)
 
   createRenderEffect proc() =
-    r.setTextContent(headerStatus,
-      (if vm.foundations.isDirty.val: "Unsaved token edit" else: "Clean") &
-      " - source " & (if vm.sourceAdapterReady.val: "ready" else: "missing"))
     r.setInputValue(searchInput, vm.foundations.searchFilter.val)
     r.setTextContent(tokenList, "")
     for token in vm.foundations.filteredTokens.val:

@@ -1219,3 +1219,150 @@ suite "M-EVP-5 preview canvas surface contrast":
       check canvas.attributes.getOrDefault("data-preview-canvas") == "true"
 
       dispose()
+
+# ---------------------------------------------------------------------------
+# M-EVP-6: Single chrome bar — per-view inner top bars are gone.
+# ---------------------------------------------------------------------------
+
+proc collectChromeBars(node: MockNode): seq[MockNode] =
+  ## Walk the rendered shell and collect every element tagged with the
+  ## canonical chrome-bar marker `data-preview-chrome-bar="true"`. The
+  ## M-EVP-6 acceptance is "exactly one" of these above each view body.
+  result = findAllByAttr(node, "data-preview-chrome-bar", "true")
+
+proc viewBodyFor(stack: MockNode; bodyAttr: string): MockNode =
+  ## Resolve the view body element inside the shell's view stack by the
+  ## stable `data-<view>` attribute we set in M-EVP-6. The view stack is
+  ## addressed via `data-preview-view-stack="true"` in `shell.nim`.
+  findByAttr(stack, bodyAttr, "true")
+
+proc has44pxBorderBottomToolbarWithModeChips(node: MockNode): bool =
+  ## A "duplicate inner toolbar" is an element whose declared style
+  ## resembles a top-bar (44px tall + `border-bottom: 1px solid ...`)
+  ## AND whose subtree carries breadcrumb/mode/viewport markers — i.e.
+  ## the pre-M-EVP-6 scaffolding we just deleted. We walk the subtree
+  ## and check both invariants.
+  if node.kind == mnkElement:
+    let height = node.styles.getOrDefault("height")
+    let minHeight = node.styles.getOrDefault("min-height")
+    let borderBottom = node.styles.getOrDefault("border-bottom")
+    let looksLikeTopBar = (height == "44px" or minHeight == "44px") and
+      borderBottom.len > 0 and borderBottom != "none"
+    if looksLikeTopBar:
+      # Mode/viewport/backend chip markers — the markers used by the
+      # M57 chrome bar and the now-deleted per-view inner toolbars.
+      let hasModeChips =
+        findByAttr(node, "data-preview-mode", "view") != nil or
+        findByAttr(node, "data-preview-mode", "edit") != nil or
+        findByAttr(node, "data-preview-mode", "comment") != nil
+      let hasViewportChips =
+        findByAttr(node, "data-preview-viewport", "desktop") != nil or
+        findByAttr(node, "data-preview-viewport", "tablet") != nil or
+        findByAttr(node, "data-preview-viewport", "phone") != nil
+      let hasBackendChips =
+        findByAttr(node, "data-preview-backend", "web") != nil or
+        findByAttr(node, "data-preview-backend", "cocoa") != nil or
+        findByAttr(node, "data-preview-backend", "android") != nil
+      if hasModeChips or hasViewportChips or hasBackendChips:
+        return true
+  for child in node.children:
+    if has44pxBorderBottomToolbarWithModeChips(child):
+      return true
+  false
+
+const viewBodyAttrs = [
+  (evStoryboard, "data-storyboard-canvas"),
+  (evComponentDetail, "data-component-detail"),
+  (evComponentEdit, "data-component-edit"),
+  (evPagePreview, "data-page-preview"),
+  (evFoundationsPage, "data-foundations-page"),
+  (evVectorEditor, "data-vector-editor"),
+]
+
+suite "M-EVP-6 single top bar":
+
+  test "exactly one chrome bar renders above the view body for every editor view":
+    for entry in viewBodyAttrs:
+      let view = entry[0]
+      let bodyAttr = entry[1]
+      createRoot do (dispose: proc()):
+        let r = MockRenderer()
+        let vm = createEditorVM()
+        vm.sidebar.groups.val = buildStoryboard()
+        vm.activeView.val = view
+
+        let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
+        let chromeBars = collectChromeBars(shell)
+        # Acceptance: there is exactly one canonical chrome bar in the
+        # whole shell tree — the one above the view stack — and no
+        # duplicate inside any view body.
+        check chromeBars.len == 1
+
+        # The view body for this active view must be present in the
+        # view stack and must NOT host its own 44 px top-toolbar row.
+        let stack = findByAttr(shell, "data-preview-view-stack", "true")
+        check stack != nil
+        let body = viewBodyFor(stack, bodyAttr)
+        check body != nil
+        # Negative assertion: no duplicate top bar exists inside the
+        # view body itself.
+        check not has44pxBorderBottomToolbarWithModeChips(body)
+        dispose()
+
+  test "chrome bar still highlights the active backend after dropping inner bars":
+    for backend in [pbWeb, pbTui, pbGpui, pbFreya, pbCocoa, pbAndroid]:
+      createRoot do (dispose: proc()):
+        let r = MockRenderer()
+        let vm = createEditorVM()
+        vm.changePlatform(backend)
+
+        let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
+        let chromeBars = collectChromeBars(shell)
+        check chromeBars.len == 1
+        let bar = chromeBars[0]
+
+        # Locate the backend pill group; reuse the M57 markers the
+        # existing chrome-bar tests rely on.
+        let backendStrip = findByAttr(bar, "data-edge-strip", "backend")
+        check backendStrip != nil
+        let activePill = findByAttr(backendStrip,
+          "data-preview-backend", backendId(backend))
+        check activePill != nil
+        check activePill.attributes.getOrDefault("aria-pressed") == "true"
+        dispose()
+
+  test "regression probe: re-introducing a 44 px inner toolbar with chip markers fails the gate":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.activeView.val = evComponentDetail
+
+      let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
+      let stack = findByAttr(shell, "data-preview-view-stack", "true")
+      check stack != nil
+      let body = findByAttr(stack, "data-component-detail", "true")
+      check body != nil
+
+      # Sanity: production rendering passes the no-duplicate-bar gate.
+      check not has44pxBorderBottomToolbarWithModeChips(body)
+
+      # Inject a fake inner toolbar that simulates a regression — a
+      # 44 px row with a `border-bottom` and a mode-chip marker inside
+      # the view body. We construct the nodes via the renderer's
+      # `createElement` so they share the same lifecycle / hashing
+      # as production-rendered nodes.
+      let fakeBar = r.createElement("div")
+      r.setStyle(fakeBar, "height", "44px")
+      r.setStyle(fakeBar, "min-height", "44px")
+      r.setStyle(fakeBar, "border-bottom", "1px solid #334155")
+      let chip = r.createElement("div")
+      r.setAttribute(chip, "data-preview-mode", "edit")
+      r.appendChild(fakeBar, chip)
+      r.appendChild(body, fakeBar)
+
+      # The same assertion expression that passed above must now fail —
+      # this is the "convince yourself the gate exercises the rendered
+      # tree, not internal state" probe.
+      check has44pxBorderBottomToolbarWithModeChips(body)
+
+      dispose()

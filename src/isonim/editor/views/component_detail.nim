@@ -706,57 +706,16 @@ proc populateComponentPropertyPanel[R, E](r: R; vm: EditorVM; panel, frame: E;
     r.appendChild(panel, diagnostics)
 
 proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
+  ## M-EVP-6: per-view inner toolbar (breadcrumb + Edit/Code buttons)
+  ## removed. The canonical chrome bar lives in `renderPreviewChromeBar`
+  ## above the view stack; the component detail body starts directly at
+  ## the scrollable content area.
   let page = ui(r):
     tdiv(class = "editor-preview",
+          `data-component-detail` = "true",
           flex = "1", display = "flex", flex_direction = "column",
           min_width = "0", height = "100%",
           background_color = bgBase, overflow_y = "auto")
-
-  # Header bar
-  var editButton: E
-  var headerTitle: E
-  let header = ui(r):
-    tdiv(display = "flex", align_items = "center",
-          justify_content = "space-between",
-          height = "44px", min_height = "44px", padding = "0 20px",
-          background_color = bgCard,
-          border_bottom = "1px solid " & border):
-      tdiv(display = "flex", align_items = "center", gap = "8px"):
-        span(font_size = "11px", color = textDim):
-          text "Components"
-        span(font_size = "11px", color = textDim):
-          text "\xE2\x80\xBA"
-        span(ref = headerTitle,
-              font_size = "13px", font_weight = "600", color = textPrimary):
-          text "Component preview"
-      tdiv(display = "flex", align_items = "center", gap = "8px"):
-        tdiv(ref = editButton,
-              padding = "4px 12px", border_radius = "4px",
-              font_size = "11px", font_weight = "500",
-              background_color = accent, color = textPrimary,
-              cursor = "pointer"):
-          text "Edit"
-        tdiv(padding = "4px 12px", border_radius = "4px",
-              font_size = "11px", font_weight = "500",
-              background_color = bgSurface, color = textMuted,
-              cursor = "default"):
-          text "Code"
-  r.appendChild(page, header)
-  r.setAttribute(editButton, "role", "button")
-  r.setAttribute(editButton, "tabindex", "0")
-  r.setAttribute(editButton, "aria-label", "Open selected component in edit mode")
-  r.addEventListener(editButton, "click", proc() =
-    discard vm.runEditorCommand(eckEdit))
-  r.addEventListener(editButton, "keydown", proc() =
-    discard vm.runEditorCommand(eckEdit))
-  createRenderEffect proc() =
-    let state = vm.evaluateCommand(eckEdit)
-    r.setAttribute(editButton, "aria-disabled",
-      if state.status == ecsDisabled: "true" else: "false")
-    if state.diagnostic.len > 0:
-      r.setAttribute(editButton, "title", state.diagnostic)
-    else:
-      r.removeAttribute(editButton, "title")
 
   # Scrollable content
   let content = ui(r):
@@ -857,7 +816,6 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
     let showProject = preview.documentHtml.len > 0 and
       story.kind in {skComponent, skPattern, skGuideline}
 
-    r.setTextContent(headerTitle, title)
     r.setTextContent(projectName,
       if story.kind in {skComponent, skPattern, skGuideline}: story.name else: "")
     r.setTextContent(projectDescription,

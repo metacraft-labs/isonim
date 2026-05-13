@@ -4386,17 +4386,18 @@ proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
       if revert.status == ecsDisabled: "0.45" else: "1")
 
 proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
-  var editModeButton: E
-  var commentModeButton: E
-  var viewModeButton: E
-  var titleNode: E
-  var sourceNode: E
+  ## M-EVP-6: per-view inner toolbar (breadcrumb + Edit/Comment/View
+  ## mode buttons) and the inner status caption row removed. The
+  ## canonical chrome bar (above the view stack) hosts the mode chips
+  ## now; the component-edit body starts directly at the editable
+  ## preview iframe.
   var projectFrame: E
   var lastSrcdoc = ""
   var lastRestoredSelection = ""
 
   let container = ui(r):
     tdiv(class = "editor-preview",
+          `data-component-edit` = "true",
           flex = "1", display = "flex",
           min_width = "0", height = "100%",
           background_color = bgBase)
@@ -4404,40 +4405,6 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
   let preview = ui(r):
     tdiv(flex = "1", display = "flex", flex_direction = "column",
           min_width = "0"):
-      tdiv(display = "flex", align_items = "center",
-            justify_content = "space-between",
-            height = "44px", min_height = "44px", padding = "0 16px",
-            background_color = bgCard,
-            border_bottom = "1px solid " & border):
-        tdiv(display = "flex", flex_direction = "column", gap = "2px",
-              min_width = "0"):
-          span(ref = titleNode, font_size = "13px", font_weight = "600",
-                color = textPrimary, white_space = "nowrap",
-                overflow = "hidden", text_overflow = "ellipsis"):
-            text "Component edit"
-          span(ref = sourceNode, font_size = "11px", color = textDim,
-                white_space = "nowrap", overflow = "hidden",
-                text_overflow = "ellipsis"):
-            text ""
-        tdiv(display = "flex", align_items = "center", gap = "8px"):
-          tdiv(ref = editModeButton,
-                padding = "4px 12px", border_radius = "4px",
-                font_size = "11px", font_weight = "500",
-                cursor = "pointer",
-                background_color = accent, color = textPrimary):
-            text "Edit"
-          tdiv(ref = commentModeButton,
-                padding = "4px 12px", border_radius = "4px",
-                font_size = "11px", font_weight = "500",
-                cursor = "pointer",
-                background_color = bgSurface, color = textMuted):
-            text "Comment"
-          tdiv(ref = viewModeButton,
-                padding = "4px 12px", border_radius = "4px",
-                font_size = "11px", font_weight = "500",
-                cursor = "pointer",
-                background_color = bgSurface, color = textMuted):
-            text "View"
       tdiv(flex = "1", overflow = "auto", background_color = bgPreview,
             padding = "24px"):
         iframe(ref = projectFrame,
@@ -4446,58 +4413,17 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
           height = "480",
           border = "0",
           background_color = "#FFFFFF")
-      tdiv(display = "flex", align_items = "center", gap = "6px",
-            height = "32px", padding = "0 16px",
-            background_color = bgSurface,
-            border_top = "1px solid " & border,
-            font_size = "11px", color = textMuted):
-        span: text "Click an element to select it"
-        span(color = textDim): text "•"
-        span: text "Edit color or spacing in the inspector"
 
   let inspectorPanel = renderInspector[R, E](r, vm, projectFrame)
   r.appendChild(container, preview)
   r.appendChild(container, inspectorPanel)
 
-  r.setAttribute(editModeButton, "role", "button")
-  r.setAttribute(editModeButton, "tabindex", "0")
-  r.setAttribute(editModeButton, "aria-label", "Switch to edit mode")
-  r.setAttribute(commentModeButton, "role", "button")
-  r.setAttribute(commentModeButton, "tabindex", "0")
-  r.setAttribute(commentModeButton, "aria-label", "Switch to comment mode")
-  r.setAttribute(viewModeButton, "role", "button")
-  r.setAttribute(viewModeButton, "tabindex", "0")
-  r.setAttribute(viewModeButton, "aria-label", "Switch to view mode")
-  r.addEventListener(editModeButton, "click", proc() =
-    discard vm.runEditorCommand(eckEdit))
-  r.addEventListener(editModeButton, "keydown", proc() =
-    discard vm.runEditorCommand(eckEdit))
-  r.addEventListener(commentModeButton, "click", proc() =
-    discard vm.runEditorCommand(eckComment))
-  r.addEventListener(commentModeButton, "keydown", proc() =
-    discard vm.runEditorCommand(eckComment))
-  r.addEventListener(viewModeButton, "click", proc() =
-    discard vm.runEditorCommand(eckInspect))
-  r.addEventListener(viewModeButton, "keydown", proc() =
-    discard vm.runEditorCommand(eckInspect))
   installPreviewSelectionBridge[R, E](r, projectFrame, vm)
 
   createRenderEffect proc() =
     let previewState = vm.preview.current.val
     let reloadGeneration = vm.livePreviewReloadGeneration.val
     let metadata = previewState.metadata
-    let title =
-      if previewState.title.len > 0: previewState.title
-      elif vm.selectedStory.val.group.len > 0:
-        vm.selectedStory.val.group & " / " & vm.selectedStory.val.name
-      else:
-        "Component edit"
-    r.setTextContent(titleNode, title)
-    r.setTextContent(sourceNode,
-      if metadata.sourceFile.len > 0:
-        metadata.sourceFile & ":" & $max(metadata.sourceLine, 1)
-      else:
-        "No source metadata")
     let previewDocument = componentEditPreviewDocument(previewState,
       vm.inspector.selectedElement.val)
     let nextSrcdoc =
@@ -4520,33 +4446,6 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
       r.restorePreviewSelection(projectFrame, selectedId)
 
     let editing = vm.editMode.val == emEdit
-    let editState = vm.evaluateCommand(eckEdit)
-    let commentState = vm.evaluateCommand(eckComment)
-    let inspectState = vm.evaluateCommand(eckInspect)
-    r.setAttribute(editModeButton, "aria-pressed",
-      if editing: "true" else: "false")
-    r.setAttribute(viewModeButton, "aria-pressed",
-      if vm.editMode.val == emView: "true" else: "false")
-    r.setAttribute(commentModeButton, "aria-pressed",
-      if vm.editMode.val == emComment: "true" else: "false")
-    r.setAttribute(editModeButton, "aria-disabled",
-      if editState.status == ecsDisabled: "true" else: "false")
-    r.setAttribute(viewModeButton, "aria-disabled",
-      if inspectState.status == ecsDisabled: "true" else: "false")
-    r.setAttribute(commentModeButton, "aria-disabled",
-      if commentState.status == ecsDisabled: "true" else: "false")
-    r.setStyle(editModeButton, "background-color",
-      if editing: accent else: bgSurface)
-    r.setStyle(editModeButton, "color",
-      if editing: textPrimary else: textMuted)
-    r.setStyle(commentModeButton, "background-color",
-      if vm.editMode.val == emComment: accent else: bgSurface)
-    r.setStyle(commentModeButton, "color",
-      if vm.editMode.val == emComment: textPrimary else: textMuted)
-    r.setStyle(viewModeButton, "background-color",
-      if vm.editMode.val == emView: accent else: bgSurface)
-    r.setStyle(viewModeButton, "color",
-      if vm.editMode.val == emView: textPrimary else: textMuted)
     r.setStyle(inspectorPanel, "display",
       if editing and vm.panels.val.inspector: "flex" else: "none")
 

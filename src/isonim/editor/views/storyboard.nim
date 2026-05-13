@@ -241,143 +241,24 @@ proc installFigmaCanvasNavigation[R, E](r: R; viewport, content: E;
       }
     """].}
 
-proc toggleFlowPlayback(vm: EditorVM) =
-  if vm.flowPlayer.playState.val == psPlaying:
-    vm.flowPlayer.pause()
-  else:
-    vm.flowPlayer.play()
-
 proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
+  ## M-EVP-6: per-view inner toolbar (User Journeys label + flow
+  ## playback + zoom + Fit) removed. The canonical chrome bar lives
+  ## above the view stack; the storyboard body starts directly at the
+  ## canvas area. Flow playback and zoom controls remain reachable via
+  ## the underlying VM operations (`vm.prevFlowStep`,
+  ## `vm.nextFlowStep`, `vm.stopFlow`, `vm.zoomStoryboardFromCenter`,
+  ## `vm.resetStoryboardView`); their visual affordances are tracked
+  ## under the broader chrome consolidation series (M-EVP-7..M-EVP-9).
   let flows = layoutFlows(vm.sidebar.groups.val, vm.flowPlayer.steps.val)
 
   let canvas = ui(r):
     tdiv(class = "editor-preview",
+          `data-storyboard-canvas` = "true",
           flex = "1", display = "flex", flex_direction = "column",
           min_width = "0", height = "100%",
           background_color = bgBase):
-
-      # Toolbar
-      tdiv(display = "flex", align_items = "center",
-            justify_content = "space-between",
-            height = "44px", min_height = "44px", padding = "0 16px",
-            background_color = bgCard,
-            border_bottom = "1px solid " & border):
-        tdiv(display = "flex", align_items = "center", gap = "10px"):
-          span(font_size = "13px", font_weight = "600", color = textPrimary):
-            text "User Journeys"
-          span(font_size = "11px", color = textDim):
-            text $(flows.len) & " journeys"
-        # Flow playback controls
-        tdiv(display = "flex", align_items = "center", gap = "4px",
-              background_color = bgSurface, border_radius = "6px",
-              padding = "3px"):
-          tdiv(width = "26px", height = "26px",
-                `role` = "button", tabindex = "0",
-                `aria-label` = "Previous flow step",
-                onclick = proc() = discard vm.prevFlowStep(),
-                onkeydown = proc() = discard vm.prevFlowStep(),
-                display = "flex", align_items = "center",
-                justify_content = "center",
-                border_radius = "4px",
-                color = textSecondary, font_size = "13px", cursor = "pointer"):
-            text "<"
-          tdiv(width = "26px", height = "26px",
-                `role` = "button", tabindex = "0",
-                `aria-label` = (if vm.flowPlayer.playState.val ==
-                    psPlaying: "Pause flow" else: "Play flow"),
-                `aria-pressed` = (if vm.flowPlayer.playState.val ==
-                    psPlaying: "true" else: "false"),
-                onclick = proc() = vm.toggleFlowPlayback(),
-                onkeydown = proc() = vm.toggleFlowPlayback(),
-                display = "flex", align_items = "center",
-                justify_content = "center",
-                border_radius = "4px",
-                background_color = (if vm.flowPlayer.playState.val ==
-                    psPlaying: accent else: "transparent"),
-                color = (if vm.flowPlayer.playState.val ==
-                    psPlaying: textPrimary else: textSecondary),
-                font_size = "12px", cursor = "pointer"):
-            text (if vm.flowPlayer.playState.val == psPlaying: "||" else: ">")
-          tdiv(width = "26px", height = "26px",
-                `role` = "button", tabindex = "0",
-                `aria-label` = "Stop flow",
-                onclick = proc() = discard vm.stopFlow(),
-                onkeydown = proc() = discard vm.stopFlow(),
-                display = "flex", align_items = "center",
-                justify_content = "center",
-                border_radius = "4px",
-                color = textSecondary, font_size = "11px", cursor = "pointer"):
-            text "[]"
-          tdiv(width = "26px", height = "26px",
-                `role` = "button", tabindex = "0",
-                `aria-label` = "Next flow step",
-                onclick = proc() = discard vm.nextFlowStep(),
-                onkeydown = proc() = discard vm.nextFlowStep(),
-                display = "flex", align_items = "center",
-                justify_content = "center",
-                border_radius = "4px",
-                color = textSecondary, font_size = "13px", cursor = "pointer"):
-            text ">"
-        # Zoom controls (Figma-style)
-        tdiv(display = "flex", align_items = "center", gap = "4px",
-              background_color = bgSurface, border_radius = "6px",
-              padding = "3px"):
-          tdiv(width = "26px", height = "26px",
-                `role` = "button", tabindex = "0",
-                `aria-label` = "Zoom storyboard out",
-                onclick = proc() =
-            vm.zoomStoryboardFromCenter(vm.storyboard.zoom.val / 1.2),
-                onkeydown = proc() =
-            vm.zoomStoryboardFromCenter(vm.storyboard.zoom.val / 1.2),
-                display = "flex", align_items = "center",
-                justify_content = "center",
-                border_radius = "4px",
-                color = textSecondary, font_size = "14px", cursor = "pointer"):
-            text "\xE2\x88\x92"
-          # Zoom slider track
-          tdiv(width = "80px", height = "4px", border_radius = "2px",
-                background_color = bgBase, position = "relative",
-                cursor = "pointer"):
-            # Slider thumb
-            tdiv(position = "absolute", left = "50%", top = "-4px",
-                  width = "12px", height = "12px", border_radius = "6px",
-                  background_color = accent, margin_left = "-6px",
-                  cursor = "grab", box_shadow = "0 1px 3px rgba(0,0,0,0.3)")
-          tdiv(width = "26px", height = "26px",
-                `role` = "button", tabindex = "0",
-                `aria-label` = "Zoom storyboard in",
-                onclick = proc() =
-            vm.zoomStoryboardFromCenter(vm.storyboard.zoom.val * 1.2),
-                onkeydown = proc() =
-            vm.zoomStoryboardFromCenter(vm.storyboard.zoom.val * 1.2),
-                display = "flex", align_items = "center",
-                justify_content = "center",
-                border_radius = "4px",
-                color = textSecondary, font_size = "14px", cursor = "pointer"):
-            text "+"
-          # Percentage label
-          var zoomLabel: E
-          tdiv(padding = "0 6px", min_width = "36px", text_align = "center",
-                ref = zoomLabel,
-                font_size = "11px", color = textMuted,
-                border_left = "1px solid " & border, margin_left = "2px"):
-            text "100%"
-          block:
-            createRenderEffect proc() =
-              r.setTextContent(zoomLabel, $(int(vm.storyboard.zoom.val * 100)) & "%")
-        # Fit + Pan hint
-        tdiv(display = "flex", align_items = "center", gap = "4px"):
-          tdiv(padding = "4px 10px", border_radius = "4px",
-                `role` = "button", tabindex = "0",
-                `aria-label` = "Fit storyboard",
-                onclick = proc() = vm.resetStoryboardView(),
-                onkeydown = proc() = vm.resetStoryboardView(),
-                font_size = "11px", font_weight = "500",
-                background_color = bgSurface, color = textMuted,
-                cursor = "pointer"):
-            text "Fit"
-          span(font_size = "10px", color = textDim):
-            text "Drag or wheel to pan"
+      discard
 
   # Canvas area
   let canvasArea = ui(r):
