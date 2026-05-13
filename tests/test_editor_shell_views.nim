@@ -289,7 +289,10 @@ suite "Editor Shell Views (M2)":
       check vm.selectedStory.val.name == "Active task"
       check storyButton.attributes["aria-current"] == "true"
       check storyButton.styles["background-color"].len > 0
-      check storyButton.styles["border-left"].contains("#3B82F6")
+      # M-EVP-4: the selected row's accent marker is split into the three
+      # `border-left-*` sub-keys; the indigo `accent` token is `#7C7AED`.
+      check storyButton.styles["border-left-color"].toLowerAscii() ==
+        accent.toLowerAscii()
 
       let sidebarToggle = findByAttr(shell, "aria-label", "Toggle TaskRow stories")
       check sidebarToggle != nil
@@ -356,7 +359,12 @@ suite "Editor Shell Views (M2)":
       fillTab.fireEvent("click")
       check vm.inspector.activeSection.val == isFill
       check fillTab.attributes["aria-selected"] == "true"
-      check fillTab.styles["box-shadow"].contains("#3B82F6")
+      # The active inspector tab carries an inset accent box-shadow.
+      # The token is `accent` (`#7C7AED`); the older `#3B82F6` was a
+      # stale reference to the controls.nim accent that never wired
+      # into the inspector tab binding.
+      check fillTab.styles["box-shadow"].toLowerAscii().contains(
+        accent.toLowerAscii())
 
       let preview = renderPreviewPane[MockRenderer, MockNode](r, vm)
       let vectorView = findByAttr(preview, "aria-label", "Open Vector editor view")

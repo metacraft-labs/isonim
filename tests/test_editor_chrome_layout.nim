@@ -13,6 +13,7 @@ import isonim/core/[signals, computation, owner]
 import isonim/testing/mock_dom
 import isonim/editor/viewmodels
 import isonim/editor/types
+import isonim/editor/stories
 import isonim/editor/streaming_preview
 import isonim/editor/views/shell
 import isonim/editor/views/choice_row
@@ -899,4 +900,185 @@ suite "M-EVP-3 preview chrome bar density":
       # MUST be false after the regression mutation.
       check not (mutatedGap >= 12 and mutatedGap <= 16)
       check not (mutatedPaddingRight >= 12)
+      dispose()
+
+# ---------------------------------------------------------------------------
+# M-EVP-4: Sidebar story-row selection state — indigo accent marker.
+# ---------------------------------------------------------------------------
+
+proc rowMarkerIsAccent(row: MockNode): bool =
+  ## A story row "carries the indigo accent marker" if its rendered
+  ## `border-left-color` matches the exported `accent` token. We use a
+  ## case-insensitive comparison because computed-style serialisations
+  ## may differ in case (the mock renderer preserves the literal, but
+  ## the test must remain robust to future renderers that normalise).
+  let borderColor =
+    row.styles.getOrDefault("border-left-color").strip().toLowerAscii()
+  borderColor == accent.toLowerAscii()
+
+proc rowBackgroundIsAccentTinted(row: MockNode): bool =
+  ## The selected row's tinted backdrop is the `accentSoft` token
+  ## (`#272752`). Treat any non-transparent indigo-tinted backdrop as
+  ## "accent-derived"; today's implementation uses `accentSoft`
+  ## directly. The negative assertion below relies on
+  ## `background-color` being `"transparent"` (the literal we set) when
+  ## a row is NOT selected.
+  let bg =
+    row.styles.getOrDefault("background-color").strip().toLowerAscii()
+  bg == accentSoft.toLowerAscii()
+
+suite "M-EVP-4 sidebar selection state":
+
+  test "selected story row carries the indigo accent marker (border + tinted bg)":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = buildStoryboard()
+
+      let sidebar = renderSidebar[MockRenderer, MockNode](r, vm)
+
+      # TaskRow / Active task is in the `TaskRow` component group, which
+      # `buildStoryboard()` marks as `expanded: true`, so its rows are
+      # in the rendered tree.
+      let activeStory = StoryRef(group: "TaskRow", name: "Active task",
+        kind: skComponent, index: 0)
+      check vm.selectStory(activeStory)
+
+      let row = findByAttr(sidebar, "data-story-row", "TaskRow/Active task")
+      check row != nil
+
+      # aria-current is the existing semantic hook; check it flipped too
+      # so the test pins both the accessible state and the visual.
+      check row.attributes.getOrDefault("aria-current") == "true"
+
+      # Acceptance: the row's border-left-color must equal the accent
+      # token. (Spec allows EITHER border OR tinted bg; this
+      # implementation does both, and the positive assertion below
+      # requires at least one.)
+      check (rowMarkerIsAccent(row) or rowBackgroundIsAccentTinted(row))
+
+      # Strengthen — we picked "both" as the styling choice, so verify
+      # both invariants explicitly. If a future change drops one of
+      # them, this stricter check fires.
+      check rowMarkerIsAccent(row)
+      check rowBackgroundIsAccentTinted(row)
+
+      # And the structural invariant: the 3 px border-left always
+      # renders solid (selected or not), so the indentation rhythm
+      # doesn't shift across selection toggles.
+      check row.styles.getOrDefault("border-left-width") == "3px"
+      check row.styles.getOrDefault("border-left-style") == "solid"
+
+      dispose()
+
+  test "unselected story rows do NOT carry the accent marker (negative assertion)":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = buildStoryboard()
+      let sidebar = renderSidebar[MockRenderer, MockNode](r, vm)
+
+      let activeStory = StoryRef(group: "TaskRow", name: "Active task",
+        kind: skComponent, index: 0)
+      check vm.selectStory(activeStory)
+
+      # The "Completed task" row sits next to "Active task" in the
+      # TaskRow group; it must NOT carry the accent marker while
+      # "Active task" is selected.
+      let unselectedRow = findByAttr(sidebar, "data-story-row",
+        "TaskRow/Completed task")
+      check unselectedRow != nil
+      check unselectedRow.attributes.getOrDefault("aria-current") == "false"
+
+      # Negative invariants: neither the accent border nor the
+      # accent-tinted background may be present on an unselected row.
+      check not rowMarkerIsAccent(unselectedRow)
+      check not rowBackgroundIsAccentTinted(unselectedRow)
+
+      # The unselected row still declares a 3 px transparent left
+      # border so its left edge sits at the same horizontal position as
+      # the selected row's accent stripe.
+      check unselectedRow.styles.getOrDefault("border-left-width") == "3px"
+      check unselectedRow.styles.getOrDefault("border-left-style") == "solid"
+      check unselectedRow.styles.getOrDefault("border-left-color") ==
+        "transparent"
+      check unselectedRow.styles.getOrDefault("background-color") ==
+        "transparent"
+
+      dispose()
+
+  test "selection state is reactive: switching stories moves the marker":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = buildStoryboard()
+      let sidebar = renderSidebar[MockRenderer, MockNode](r, vm)
+
+      let storyA = StoryRef(group: "TaskRow", name: "Active task",
+        kind: skComponent, index: 0)
+      let storyB = StoryRef(group: "TaskRow", name: "Completed task",
+        kind: skComponent, index: 1)
+
+      check vm.selectStory(storyA)
+      let rowA = findByAttr(sidebar, "data-story-row", "TaskRow/Active task")
+      let rowB = findByAttr(sidebar, "data-story-row",
+        "TaskRow/Completed task")
+      check rowA != nil
+      check rowB != nil
+
+      # Initial state: A selected, B unselected.
+      check rowMarkerIsAccent(rowA)
+      check rowBackgroundIsAccentTinted(rowA)
+      check not rowMarkerIsAccent(rowB)
+      check not rowBackgroundIsAccentTinted(rowB)
+
+      # Reactive transition: select B; A loses the marker, B gains it.
+      check vm.selectStory(storyB)
+
+      check rowA.attributes.getOrDefault("aria-current") == "false"
+      check rowB.attributes.getOrDefault("aria-current") == "true"
+
+      check not rowMarkerIsAccent(rowA)
+      check not rowBackgroundIsAccentTinted(rowA)
+      check rowMarkerIsAccent(rowB)
+      check rowBackgroundIsAccentTinted(rowB)
+
+      dispose()
+
+  test "regression probe: mutating selection-state style invalidates the M-EVP-4 invariant":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = buildStoryboard()
+      let sidebar = renderSidebar[MockRenderer, MockNode](r, vm)
+
+      let storyA = StoryRef(group: "TaskRow", name: "Active task",
+        kind: skComponent, index: 0)
+      check vm.selectStory(storyA)
+      let rowA = findByAttr(sidebar, "data-story-row", "TaskRow/Active task")
+      check rowA != nil
+
+      # Sanity: positive invariant holds on the unmutated tree.
+      check rowMarkerIsAccent(rowA)
+      check rowBackgroundIsAccentTinted(rowA)
+
+      # Mutate the rendered DOM directly to simulate a regression
+      # (someone strips both the accent border AND the accent-tinted
+      # background from the selected row). Because the test reads from
+      # the rendered mock element, the same assertion expression that
+      # passed above must now fail. This is the "convince yourself the
+      # assertion exercises the actual rendered style, not internal VM
+      # state" probe the M-EVP-4 spec asks for.
+      r.setStyle(rowA, "border-left-color", "transparent")
+      r.setStyle(rowA, "background-color", "transparent")
+
+      check not rowMarkerIsAccent(rowA)
+      check not rowBackgroundIsAccentTinted(rowA)
+
+      # Internal VM state remains "selected" — proves the failing
+      # assertion above is about RENDERED style, not VM truth.
+      check vm.selectedStory.val.group == storyA.group
+      check vm.selectedStory.val.name == storyA.name
+      check rowA.attributes.getOrDefault("aria-current") == "true"
+
       dispose()
