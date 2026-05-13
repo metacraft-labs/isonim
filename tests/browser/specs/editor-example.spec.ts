@@ -1903,30 +1903,30 @@ test.describe("IsoNim packaged editor example", () => {
     expect(narrowShot.length).toBeGreaterThan(5000);
   });
 
-  test("m57_preview_pane_edge_strip_chrome_drives_mode_backend_and_viewport", async ({
+  test("preview_pane_top_toolbar_drives_mode_backend_and_viewport", async ({
     page,
   }) => {
     await page.setViewportSize(desktop);
     await page.goto("/?view=page");
     await expect(page.locator(".editor-sidebar")).toBeVisible();
-    await expect(page.getByText("IsoNim Editor")).toBeVisible();
 
-    // The right-edge strip exposes the three preview modes.
-    const rightEdge = page.locator('[data-preview-right-edge="true"]').first();
-    await expect(rightEdge).toBeVisible();
-    const modeStrip = rightEdge.locator('[data-edge-strip="mode"]').first();
+    // Consolidated chrome bar at the top of the center column hosts
+    // the view switcher AND all three chip groups (mode / backend /
+    // viewport). The legacy left/right edge strips are gone.
+    const chromeBar = page.locator('[data-preview-chrome-bar="true"]').first();
+    await expect(chromeBar).toBeVisible();
+
+    // Mode chips.
+    const modeStrip = chromeBar.locator('[data-edge-strip="mode"]').first();
     await expect(modeStrip).toBeVisible();
-    await expect(modeStrip).toHaveAttribute("aria-orientation", "vertical");
     for (const slug of ["view", "comment", "edit"]) {
       await expect(
         modeStrip.locator(`[data-preview-mode="${slug}"]`),
       ).toHaveCount(1);
     }
 
-    // The left-edge backend strip exposes all six PreviewBackend values.
-    const leftEdge = page.locator('[data-preview-left-edge="true"]').first();
-    await expect(leftEdge).toBeVisible();
-    const backendStrip = leftEdge
+    // Backend chips — all six PreviewBackend values.
+    const backendStrip = chromeBar
       .locator('[data-edge-strip="backend"]')
       .first();
     await expect(backendStrip).toBeVisible();
@@ -1936,9 +1936,9 @@ test.describe("IsoNim packaged editor example", () => {
       ).toHaveCount(1);
     }
 
-    // The left-edge viewport strip pins desktop/laptop/tablet/phone for the
-    // web backend, with an overflow chevron for the long-tail entries.
-    const viewportStrip = leftEdge
+    // Viewport chips — desktop/laptop/tablet/phone pinned for the web
+    // backend, with an overflow chevron for the long-tail entries.
+    const viewportStrip = chromeBar
       .locator('[data-edge-strip="viewport"]')
       .first();
     await expect(viewportStrip).toBeVisible();

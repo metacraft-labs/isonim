@@ -285,9 +285,9 @@ suite "M57 vertical compact choice column":
 
       dispose()
 
-suite "M57 renderPreviewPane edge strips":
+suite "Preview-pane top toolbar (consolidated chrome)":
 
-  test "top toolbar drops the mode toggle and platform dropdown":
+  test "top toolbar hosts view switcher AND all three chip groups":
     createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createEditorVM()
@@ -295,6 +295,8 @@ suite "M57 renderPreviewPane edge strips":
 
       let toolbar = findByAttr(pane, "data-preview-toolbar", "true")
       check toolbar != nil
+      # The legacy "Switch to mode" / "Preview {iOS,Android} platform"
+      # text buttons are gone — chips replace them.
       check findByAttr(toolbar, "aria-label", "Switch to view mode") == nil
       check findByAttr(toolbar, "aria-label", "Switch to comment mode") == nil
       check findByAttr(toolbar, "aria-label", "Switch to edit mode") == nil
@@ -309,11 +311,16 @@ suite "M57 renderPreviewPane edge strips":
         "Open Flow editor view") != nil
       check findByAttr(viewSwitcher, "aria-label",
         "Open Detail editor view") != nil
-      check findByAttr(toolbar, "data-preview-breadcrumb", "true") != nil
+      # The breadcrumb is dropped — sidebar shows selection.
+      check findByAttr(toolbar, "data-preview-breadcrumb", "true") == nil
+      # All three chip groups live in the toolbar.
+      check findByAttr(toolbar, "data-edge-strip", "backend") != nil
+      check findByAttr(toolbar, "data-edge-strip", "viewport") != nil
+      check findByAttr(toolbar, "data-edge-strip", "mode") != nil
 
       dispose()
 
-  test "right-edge strip exposes three mode segments and drives editMode":
+  test "mode strip exposes three segments and drives editMode":
     createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createEditorVM()
@@ -326,7 +333,7 @@ suite "M57 renderPreviewPane edge strips":
 
       let modeStrip = findByAttr(pane, "data-edge-strip", "mode")
       check modeStrip != nil
-      check modeStrip.attributes["aria-orientation"] == "vertical"
+      check modeStrip.attributes["aria-orientation"] == "horizontal"
 
       let viewBtn = findByAttr(modeStrip, "data-preview-mode", "view")
       let commentBtn = findByAttr(modeStrip, "data-preview-mode", "comment")
@@ -347,7 +354,7 @@ suite "M57 renderPreviewPane edge strips":
 
       dispose()
 
-  test "left-edge backend strip exposes six segments per PreviewBackend":
+  test "backend strip exposes six segments per PreviewBackend":
     createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createEditorVM()
@@ -416,7 +423,7 @@ suite "M57 renderPreviewPane edge strips":
 
       dispose()
 
-  test "left-edge viewport strip pins per-backend chips and shows overflow":
+  test "viewport strip pins per-backend chips and shows overflow":
     createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createEditorVM()
@@ -495,7 +502,7 @@ suite "M57 renderPreviewPane edge strips":
       check visibleTabletChips == 0
       dispose()
 
-  test "end-to-end edge-strip drive backend, viewport, and mode signals":
+  test "end-to-end toolbar chip groups drive backend, viewport, and mode signals":
     createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createEditorVM()
@@ -551,7 +558,7 @@ suite "M57 edge-strip reactivity":
       check tuiBtn.attributes["aria-pressed"] == "true"
       # And the background/color/font-weight must follow the active flag.
       check tuiBtn.styles.getOrDefault("font-weight") == "700"
-      check webBtn.styles.getOrDefault("font-weight") == "500"
+      check webBtn.styles.getOrDefault("font-weight") == "600"
       dispose()
 
   test "mode strip flips aria-pressed when vm.editMode changes without re-render":

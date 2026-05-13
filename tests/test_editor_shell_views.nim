@@ -52,7 +52,10 @@ proc countInteractive(node: MockNode): int =
 suite "Editor Shell Views (M2)":
 
   test "test_editor_shell_three_panel_layout":
-    ## Editor renders sidebar, preview, and inspector panels
+    ## Editor renders sidebar, center column (chrome bar + views), and
+    ## inspector panels. The global title bar and the M57 left/right
+    ## edge strips are gone — backend / viewport / mode chips live in
+    ## the shared preview chrome bar above the center view stack.
     createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createEditorVM()
@@ -63,13 +66,18 @@ suite "Editor Shell Views (M2)":
       # Shell mounts the main editor row, command palette, telemetry overlay,
       # and status bar.
       check shell.children.len == 4
-      # Editor row children: sidebar, M57 left edge strip, six view
-      # containers (storyboard / componentDetail / componentEdit /
-      # pagePreview / foundations / vectorEditor), M57 right edge strip,
-      # chat panel.
-      check shell.children[0].children.len == 10
-      check findByAttr(shell, "data-preview-left-edge", "true") != nil
-      check findByAttr(shell, "data-preview-right-edge", "true") != nil
+      # Editor row children: sidebar, center column, chat panel.
+      check shell.children[0].children.len == 3
+      check findByAttr(shell, "data-preview-center-column", "true") != nil
+      check findByAttr(shell, "data-preview-chrome-bar", "true") != nil
+      check findByAttr(shell, "data-preview-view-stack", "true") != nil
+      # Backend / viewport / mode chips live in the shared chrome bar.
+      check findByAttr(shell, "data-edge-strip", "backend") != nil
+      check findByAttr(shell, "data-edge-strip", "viewport") != nil
+      check findByAttr(shell, "data-edge-strip", "mode") != nil
+      # Legacy edge-strip containers are gone.
+      check findByAttr(shell, "data-preview-left-edge", "true") == nil
+      check findByAttr(shell, "data-preview-right-edge", "true") == nil
       check findByAttr(shell, "data-foundations-page", "true") != nil
       check findByAttr(shell, "data-editor-command-palette", "true") != nil
       check findByAttr(shell, "data-editor-telemetry-overlay", "true") != nil
@@ -97,9 +105,9 @@ suite "Editor Shell Views (M2)":
       dispose()
 
   test "test_preview_pane_shows_toolbar":
-    ## Preview pane has top toolbar (view switcher + breadcrumb) plus a
-    ## body row with left edge / canvas / right edge per the M57
-    ## edge-strip chrome.
+    ## Preview pane has a top toolbar that hosts the view switcher and
+    ## all three chip groups (backend / viewport / mode) directly. The
+    ## legacy left/right edge strips and the breadcrumb are gone.
     createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createEditorVM()
@@ -113,26 +121,17 @@ suite "Editor Shell Views (M2)":
       check toolbar != nil
       check body != nil
 
-      # The view switcher and breadcrumb stay in the top toolbar; the
-      # mode toggle and platform selector are removed.
+      # View switcher + all three chip groups now live in the toolbar.
       check findByAttr(toolbar, "data-preview-view-switcher", "true") != nil
-      check findByAttr(toolbar, "data-preview-breadcrumb", "true") != nil
-      check findByAttr(toolbar, "data-edge-strip", "mode") == nil
-      check findByAttr(toolbar, "data-edge-strip", "backend") == nil
+      check findByAttr(toolbar, "data-preview-breadcrumb", "true") == nil
+      check findByAttr(toolbar, "data-edge-strip", "backend") != nil
+      check findByAttr(toolbar, "data-edge-strip", "viewport") != nil
+      check findByAttr(toolbar, "data-edge-strip", "mode") != nil
 
-      # Body row contains the three edge containers (left edge, canvas,
-      # right edge).
-      check findByAttr(body, "data-preview-left-edge", "true") != nil
+      # Body row contains only the preview canvas — no edge columns.
       check findByAttr(body, "data-preview-canvas", "true") != nil
-      check findByAttr(body, "data-preview-right-edge", "true") != nil
-
-      # Left edge hosts the backend and viewport strips; right edge
-      # hosts the mode strip.
-      let leftEdge = findByAttr(body, "data-preview-left-edge", "true")
-      check findByAttr(leftEdge, "data-edge-strip", "backend") != nil
-      check findByAttr(leftEdge, "data-edge-strip", "viewport") != nil
-      let rightEdge = findByAttr(body, "data-preview-right-edge", "true")
-      check findByAttr(rightEdge, "data-edge-strip", "mode") != nil
+      check findByAttr(body, "data-preview-left-edge", "true") == nil
+      check findByAttr(body, "data-preview-right-edge", "true") == nil
 
       dispose()
 
@@ -365,15 +364,18 @@ suite "Editor Shell Views (M2)":
       vectorView.fireEvent("click")
       check vm.activeView.val == evVectorEditor
 
-      # The legacy top-toolbar "Preview iOS platform" button moved to
-      # the M57 left-edge backend strip. The right-edge mode strip
-      # exposes View/Comment/Edit; the left-edge strip exposes the six
-      # PreviewBackend values. Cocoa is the renderer formerly tagged
-      # "iOS"; clicking it drives `vm.platform` to pbCocoa.
+      # The legacy top-toolbar "Preview iOS platform" button is gone.
+      # The three chip groups (backend / viewport / mode) now live in
+      # the same top toolbar as the view switcher. Cocoa is the
+      # renderer formerly tagged "iOS"; clicking it drives
+      # `vm.platform` to pbCocoa.
       let topBar = findByAttr(preview, "data-preview-toolbar", "true")
       check topBar != nil
       check findByAttr(topBar, "aria-label", "Preview iOS platform") == nil
-      check findByAttr(topBar, "data-preview-mode", "view") == nil
+      check findByAttr(topBar, "data-preview-mode", "view") != nil
+      check findByAttr(topBar, "data-edge-strip", "backend") != nil
+      check findByAttr(topBar, "data-edge-strip", "viewport") != nil
+      check findByAttr(topBar, "data-edge-strip", "mode") != nil
       let cocoaButton = findByAttr(preview,
         "aria-label", "Preview backend Cocoa")
       check cocoaButton != nil

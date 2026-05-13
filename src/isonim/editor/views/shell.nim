@@ -913,92 +913,13 @@ proc modeFromChipOption(option: CompactChoiceOption): EditMode =
   result = emView
 
 proc renderPreviewLeftEdge*[R, E](r: R; vm: EditorVM): E =
-  ## Left-edge column: the M57 preview-pane chrome's backend switcher
-  ## stacked on top of the screen-size switcher. This is the editor's
-  ## visual signature — a 56 px-wide vertical column flush against the
-  ## absolute left edge of the shell, containing six backend tabs
-  ## (Web / TUI / GPUI / Freya / Cocoa / Android), each as a labelled
-  ## icon-style chip. The active chip is filled with the accent color.
-  ##
-  ## M58: the chip set itself is reactive — the thunk overload of
-  ## `renderCompactChoiceColumn` re-evaluates the option list on each
-  ## `createRenderEffect` tick and diffs / patches DOM. Per-chip
-  ## reactive bindings (aria-pressed, fill, availability) are still
-  ## installed by the M57 helpers (`bindBackendChip`, `bindViewportChip`)
-  ## — they are invoked via `onChipMounted` for newly-added chips.
+  ## Legacy left-edge column. The backend / viewport chip groups moved
+  ## into the preview-pane's top toolbar (see `renderPreviewPane`); this
+  ## proc is preserved only to keep its public symbol stable for code
+  ## that still imports it directly. Returns a hidden stub.
   result = ui(r):
-    tdiv(display = "flex", flex_direction = "column",
-          gap = "10px",
-          padding = "12px 6px",
-          width = "64px", min_width = "64px",
-          background_color = bgEdgeStrip,
-          border_right = "1px solid " & border,
-          `data-preview-left-edge` = "true")
-
-  let backends = backendsForLeftEdge()
-  let backendCount = backends.len
-  let capturedVm = vm
-
-  let backendThunk = proc(): seq[CompactChoiceOption] =
-    buildBackendOptions(capturedVm)
-
-  let backendOnChipMounted = proc(node: E; option: CompactChoiceOption;
-      index: int) =
-    var backendId = ""
-    for (key, value) in option.dataAttrs:
-      if key == "data-preview-backend":
-        backendId = value
-        break
-    let b = backendFromId(backendId)
-    r.bindBackendChip(node, capturedVm, b)
-
-  let backendColumn = renderCompactChoiceColumn[R, E](r,
-    ariaLabel = "Preview backend",
-    optionsThunk = backendThunk,
-    visibleLimit = backendCount,
-    chipWidth = "44px",
-    chipHeight = "40px",
-    dataAttrs = @[
-      ("data-edge-strip", "backend"),
-      ("data-preview-edge-group", "backend")],
-    onChipMounted = backendOnChipMounted)
-  r.appendChild(result, backendColumn.root)
-
-  # v3: Hairline divider visually separates the backend chip stack from
-  # the viewport sub-strip below — the reviewer flagged "M57 + viewport
-  # sub-strip cramped without divider" on shell-laptop.
-  let edgeDivider = ui(r):
-    tdiv(height = "1px", margin = "4px 6px",
-          background_color = border,
-          opacity = "0.65",
-          `data-preview-edge-divider` = "true")
-  r.appendChild(result, edgeDivider)
-
-  let viewportThunk = proc(): seq[CompactChoiceOption] =
-    buildViewportOptions(capturedVm)
-
-  let viewportVisibleLimitThunk = proc(): int =
-    pinnedViewports(capturedVm.platform.val).len
-
-  let viewportOnChipMounted = proc(node: E; option: CompactChoiceOption;
-      index: int) =
-    let vp = viewportFromChipOption(option)
-    r.bindViewportChip(node, capturedVm, vp)
-
-  # Pinned-count is itself a function of vm.platform; the thunk
-  # `viewportVisibleLimitThunk` reads it on every column-rebuild tick so
-  # the chevron threshold updates when the backend changes.
-  let viewportColumn = renderCompactChoiceColumn[R, E](r,
-    ariaLabel = "Preview screen size",
-    optionsThunk = viewportThunk,
-    visibleLimitThunk = viewportVisibleLimitThunk,
-    chipWidth = "44px",
-    chipHeight = "24px",
-    dataAttrs = @[
-      ("data-edge-strip", "viewport"),
-      ("data-preview-edge-group", "viewport")],
-    onChipMounted = viewportOnChipMounted)
-  r.appendChild(result, viewportColumn.root)
+    tdiv(display = "none",
+          `data-preview-left-edge-legacy` = "true")
 
 proc buildModeOptions(vm: EditorVM): seq[CompactChoiceOption] =
   ## M58 thunk for the mode-strip option list. The set is statically
@@ -1032,62 +953,36 @@ proc buildModeOptions(vm: EditorVM): seq[CompactChoiceOption] =
       onChoose: editModeHandler(vm, captured))
 
 proc renderPreviewRightEdge*[R, E](r: R; vm: EditorVM): E =
-  ## Right-edge column: the M57 preview-pane chrome's View / Comment /
-  ## Edit mode toggle. Sits flush against the absolute right edge of the
-  ## shell, mirroring the left-edge backend strip for visual symmetry.
-  ## M58: uses the thunk overload of `renderCompactChoiceColumn` for
-  ## idiom uniformity with the left-edge strips.
+  ## Legacy right-edge column. The mode chip group moved into the
+  ## preview-pane's top toolbar (see `renderPreviewPane`); this proc is
+  ## preserved only to keep its public symbol stable. Returns a hidden
+  ## stub.
   result = ui(r):
-    tdiv(display = "flex", flex_direction = "column",
-          gap = "12px",
-          padding = "12px 6px",
-          width = "64px", min_width = "64px",
-          background_color = bgEdgeStrip,
-          border_left = "1px solid " & border,
-          `data-preview-right-edge` = "true")
-
-  let capturedVm = vm
-  let modeThunk = proc(): seq[CompactChoiceOption] =
-    buildModeOptions(capturedVm)
-
-  let modeOnChipMounted = proc(node: E; option: CompactChoiceOption;
-      index: int) =
-    let mode = modeFromChipOption(option)
-    r.bindModeChip(node, capturedVm, mode)
-
-  let modeColumn = renderCompactChoiceColumn[R, E](r,
-    ariaLabel = "Preview mode",
-    optionsThunk = modeThunk,
-    visibleLimit = 3,
-    chipWidth = "44px",
-    chipHeight = "40px",
-    dataAttrs = @[
-      ("data-edge-strip", "mode"),
-      ("data-preview-edge-group", "mode")],
-    onChipMounted = modeOnChipMounted)
-  r.appendChild(result, modeColumn.root)
+    tdiv(display = "none",
+          `data-preview-right-edge-legacy` = "true")
 
 proc renderPreviewPane*[R, E](r: R; vm: EditorVM): E =
-  ## Center panel: component preview with M57 edge-strip chrome.
-  ##
-  ## Top toolbar keeps the view switcher and breadcrumb (spec § "Top
-  ## toolbar — what stays"). The View / Comment / Edit mode toggle moves
-  ## to a right-edge vertical compact-choice column; the
-  ## PreviewBackend / viewport selectors move to two stacked groups on
-  ## a left-edge column. The streaming-preview VM, when present on
-  ## `vm.streamingPreview`, drives backend availability and selection.
+  ## Center panel: component preview with consolidated top-toolbar
+  ## chrome. The legacy M57 left/right edge strips are gone — backend,
+  ## viewport, and mode chip groups all live in the preview-pane's top
+  ## toolbar alongside the view switcher. The streaming-preview VM,
+  ## when present on `vm.streamingPreview`, drives backend availability
+  ## and selection.
   let pane = ui(r):
     tdiv(class = "editor-preview",
           display = "flex", flex_direction = "column",
           flex = "1", min_width = "0", height = "100%",
           background_color = bgPreview)
 
-  # --- Top toolbar (view switcher + breadcrumb only) -----------------------
+  # --- Top toolbar (view switcher + backend / viewport / mode chips) -----
+  # Wraps to two rows on narrow viewports so the four groups stay
+  # readable at 1440x900 without horizontal scroll.
   let toolbar = ui(r):
     tdiv(display = "flex", align_items = "center",
           justify_content = "flex-start",
-          gap = "12px",
-          height = "44px", min_height = "44px", padding = "0 16px",
+          gap = "10px", flex_wrap = "wrap",
+          row_gap = "6px",
+          min_height = "44px", padding = "8px 14px",
           background_color = bgToolbar,
           border_bottom = "1px solid " & border,
           `data-preview-toolbar` = "true")
@@ -1119,28 +1014,96 @@ proc renderPreviewPane*[R, E](r: R; vm: EditorVM): E =
     r.appendChild(viewSwitcher, switchBtn)
   r.appendChild(toolbar, viewSwitcher)
 
-  let breadcrumb = ui(r):
-    tdiv(display = "flex", align_items = "center", gap = "6px",
-          min_width = "0", flex = "1",
-          `data-preview-breadcrumb` = "true"):
-      span(font_size = "8px", color = textDim):
-        text "\xE2\x97\x8B"
-      span(font_size = "12px", color = textMuted,
-            white_space = "nowrap", overflow = "hidden",
-            text_overflow = "ellipsis"):
-        text "No selection"
-  r.appendChild(toolbar, breadcrumb)
+  # --- Backend / Viewport / Mode chip groups (was: left + right edge) -----
+  # All three chip groups now live in the top toolbar so the preview pane
+  # sits edge-to-edge without vertical chrome columns. Each group is
+  # rendered as a horizontal compact-choice row reusing the thunk-driven
+  # M58 reactive pipeline; the column variants previously used for the
+  # M57 edge strips are gone.
+  let capturedVm = vm
+
+  # Reuse `renderCompactChoiceColumn` (which already has the M58
+  # reactive chip-set rebuild logic) and override its CSS to flow
+  # horizontally. This keeps M58's per-backend viewport pinned-set
+  # reactivity intact without duplicating the rebuild machinery.
+  proc tiltHorizontal(root: E; ariaLabel: string) =
+    r.setStyle(root, "flex-direction", "row")
+    r.setStyle(root, "width", "auto")
+    r.setStyle(root, "min-width", "0")
+    r.setAttribute(root, "aria-orientation", "horizontal")
+
+  let backendThunk = proc(): seq[CompactChoiceOption] =
+    buildBackendOptions(capturedVm)
+  let backendOnChipMounted = proc(node: E; option: CompactChoiceOption;
+      index: int) =
+    var backendId = ""
+    for (key, value) in option.dataAttrs:
+      if key == "data-preview-backend":
+        backendId = value
+        break
+    let b = backendFromId(backendId)
+    r.bindBackendChip(node, capturedVm, b)
+  let backendCol = renderCompactChoiceColumn[R, E](r,
+    ariaLabel = "Preview backend",
+    optionsThunk = backendThunk,
+    visibleLimit = 6,
+    chipWidth = "44px",
+    chipHeight = "26px",
+    dataAttrs = @[
+      ("data-edge-strip", "backend"),
+      ("data-preview-edge-group", "backend")],
+    onChipMounted = backendOnChipMounted)
+  tiltHorizontal(backendCol.root, "Preview backend")
+  r.appendChild(toolbar, backendCol.root)
+
+  let viewportThunk = proc(): seq[CompactChoiceOption] =
+    buildViewportOptions(capturedVm)
+  let viewportVisibleLimitThunk = proc(): int =
+    pinnedViewports(capturedVm.platform.val).len
+  let viewportOnChipMounted = proc(node: E; option: CompactChoiceOption;
+      index: int) =
+    let vp = viewportFromChipOption(option)
+    r.bindViewportChip(node, capturedVm, vp)
+  let viewportCol = renderCompactChoiceColumn[R, E](r,
+    ariaLabel = "Preview screen size",
+    optionsThunk = viewportThunk,
+    visibleLimitThunk = viewportVisibleLimitThunk,
+    chipWidth = "44px",
+    chipHeight = "24px",
+    dataAttrs = @[
+      ("data-edge-strip", "viewport"),
+      ("data-preview-edge-group", "viewport")],
+    onChipMounted = viewportOnChipMounted)
+  tiltHorizontal(viewportCol.root, "Preview screen size")
+  r.appendChild(toolbar, viewportCol.root)
+
+  let modeThunk = proc(): seq[CompactChoiceOption] =
+    buildModeOptions(capturedVm)
+  let modeOnChipMounted = proc(node: E; option: CompactChoiceOption;
+      index: int) =
+    let mode = modeFromChipOption(option)
+    r.bindModeChip(node, capturedVm, mode)
+  let modeCol = renderCompactChoiceColumn[R, E](r,
+    ariaLabel = "Preview mode",
+    optionsThunk = modeThunk,
+    visibleLimit = 3,
+    chipWidth = "60px",
+    chipHeight = "26px",
+    dataAttrs = @[
+      ("data-edge-strip", "mode"),
+      ("data-preview-edge-group", "mode")],
+    onChipMounted = modeOnChipMounted)
+  tiltHorizontal(modeCol.root, "Preview mode")
+  r.appendChild(toolbar, modeCol.root)
 
   r.appendChild(pane, toolbar)
 
-  # --- Body row: [left edge | preview canvas | right edge] -----------------
+  # --- Body row: preview canvas only (edge strips removed) ----------------
   let body = ui(r):
     tdiv(flex = "1", display = "flex", flex_direction = "row",
           min_width = "0", min_height = "0",
           align_items = "stretch",
           `data-preview-body` = "true")
-
-  r.appendChild(body, renderPreviewLeftEdge[R, E](r, vm))
 
   # Preview canvas — fully inline (preserves the existing affordance).
   # Empty state: a quiet branded landing card centered on the canvas.
@@ -1197,8 +1160,6 @@ proc renderPreviewPane*[R, E](r: R; vm: EditorVM): E =
                 span(font_size = "11px", color = textMuted):
                   text detail
   r.appendChild(body, previewArea)
-
-  r.appendChild(body, renderPreviewRightEdge[R, E](r, vm))
 
   r.appendChild(pane, body)
 
@@ -1715,17 +1676,146 @@ proc renderEditorTitleBar[R, E](r: R; vm: EditorVM): E =
       span(font_size = "11px", color = textDim, font_family = "monospace"):
         text "v" & editorVersion
 
+proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
+  ## Shared preview-pane top toolbar that sits above every view in the
+  ## center column. Carries the view-switcher (Flow / Detail / Page /
+  ## Foundations / Vector) plus the three reactive chip groups
+  ## (Backend / Viewport / Mode). Mounted once per shell and shared
+  ## across the storyboard, component detail, component edit, page
+  ## preview, foundations, and vector views — so clicking a backend
+  ## chip always works no matter which view is active.
+  ##
+  ## Replaces the M57 left/right edge strips and the per-view
+  ## breadcrumb / "Edit | Code" toolbars. Wraps to a second row on
+  ## narrow viewports so the four groups stay readable at 1440x900.
+  let toolbar = ui(r):
+    tdiv(display = "flex", align_items = "center",
+          justify_content = "flex-start",
+          gap = "10px", flex_wrap = "wrap",
+          row_gap = "6px",
+          min_height = "44px", padding = "8px 16px",
+          background_color = bgToolbar,
+          border_bottom = "1px solid " & border,
+          `data-preview-toolbar` = "true",
+          `data-preview-chrome-bar` = "true")
+
+  let viewSwitcher = ui(r):
+    tdiv(display = "flex", align_items = "center", gap = "1px",
+          background_color = bgSurface, border_radius = "6px",
+          padding = "3px",
+          `data-preview-view-switcher` = "true")
+  for option in [
+    (evStoryboard, "Flow"),
+    (evComponentDetail, "Detail"),
+    (evPagePreview, "Page"),
+    (evFoundationsPage, "Foundations"),
+    (evVectorEditor, "Vector")]:
+    let targetView = option[0]
+    let label = option[1]
+    let chooseView = activeViewHandler(vm, targetView)
+    let switchBtn = ui(r):
+      tdiv(padding = "4px 10px", border_radius = "4px",
+            font_size = "11px", font_weight = "500",
+            cursor = "pointer", transition = "all 0.15s"):
+        text label
+    r.makeButton(switchBtn, "Open " & label & " editor view")
+    r.addEventListener(switchBtn, "click", chooseView)
+    r.addEventListener(switchBtn, "keydown", chooseView)
+    r.bindActiveViewStyle(switchBtn, vm, targetView)
+    r.appendChild(viewSwitcher, switchBtn)
+  r.appendChild(toolbar, viewSwitcher)
+
+  let capturedVm = vm
+
+  # Reuse `renderCompactChoiceColumn` (which already has the M58
+  # reactive chip-set rebuild logic) and override its CSS to flow
+  # horizontally. This keeps M58's per-backend viewport pinned-set
+  # reactivity intact without duplicating the rebuild machinery.
+  proc tiltHorizontal(root: E; ariaLabel: string) =
+    r.setStyle(root, "flex-direction", "row")
+    r.setStyle(root, "width", "auto")
+    r.setStyle(root, "min-width", "0")
+    r.setAttribute(root, "aria-orientation", "horizontal")
+
+  let backendThunk = proc(): seq[CompactChoiceOption] =
+    buildBackendOptions(capturedVm)
+  let backendOnChipMounted = proc(node: E; option: CompactChoiceOption;
+      index: int) =
+    var backendId = ""
+    for (key, value) in option.dataAttrs:
+      if key == "data-preview-backend":
+        backendId = value
+        break
+    let b = backendFromId(backendId)
+    r.bindBackendChip(node, capturedVm, b)
+  let backendCol = renderCompactChoiceColumn[R, E](r,
+    ariaLabel = "Preview backend",
+    optionsThunk = backendThunk,
+    visibleLimit = 6,
+    chipWidth = "44px",
+    chipHeight = "26px",
+    dataAttrs = @[
+      ("data-edge-strip", "backend"),
+      ("data-preview-edge-group", "backend")],
+    onChipMounted = backendOnChipMounted)
+  tiltHorizontal(backendCol.root, "Preview backend")
+  r.appendChild(toolbar, backendCol.root)
+
+  let viewportThunk = proc(): seq[CompactChoiceOption] =
+    buildViewportOptions(capturedVm)
+  let viewportVisibleLimitThunk = proc(): int =
+    pinnedViewports(capturedVm.platform.val).len
+  let viewportOnChipMounted = proc(node: E; option: CompactChoiceOption;
+      index: int) =
+    let vp = viewportFromChipOption(option)
+    r.bindViewportChip(node, capturedVm, vp)
+  let viewportCol = renderCompactChoiceColumn[R, E](r,
+    ariaLabel = "Preview screen size",
+    optionsThunk = viewportThunk,
+    visibleLimitThunk = viewportVisibleLimitThunk,
+    chipWidth = "44px",
+    chipHeight = "24px",
+    dataAttrs = @[
+      ("data-edge-strip", "viewport"),
+      ("data-preview-edge-group", "viewport")],
+    onChipMounted = viewportOnChipMounted)
+  tiltHorizontal(viewportCol.root, "Preview screen size")
+  r.appendChild(toolbar, viewportCol.root)
+
+  let modeThunk = proc(): seq[CompactChoiceOption] =
+    buildModeOptions(capturedVm)
+  let modeOnChipMounted = proc(node: E; option: CompactChoiceOption;
+      index: int) =
+    let mode = modeFromChipOption(option)
+    r.bindModeChip(node, capturedVm, mode)
+  let modeCol = renderCompactChoiceColumn[R, E](r,
+    ariaLabel = "Preview mode",
+    optionsThunk = modeThunk,
+    visibleLimit = 3,
+    chipWidth = "60px",
+    chipHeight = "26px",
+    dataAttrs = @[
+      ("data-edge-strip", "mode"),
+      ("data-preview-edge-group", "mode")],
+    onChipMounted = modeOnChipMounted)
+  tiltHorizontal(modeCol.root, "Preview mode")
+  r.appendChild(toolbar, modeCol.root)
+
+  toolbar
+
 proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
-  ## Top-level editor layout: title bar + (sidebar + preview + inspector) +
-  ## status bar.
+  ## Top-level editor layout: [sidebar | center column | inspector chat] +
+  ## status bar. The global title bar and the M57 left/right edge strips
+  ## are gone — backend / viewport / mode chips now live in the shared
+  ## preview chrome bar at the top of the center column
+  ## (`renderPreviewChromeBar`). The shell row sits edge-to-edge at the
+  ## top of the viewport.
   let shellRoot = ui(r):
     tdiv(display = "flex", flex_direction = "column",
           width = "100%", height = "100%",
           font_family = "-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif",
           font_size = "14px", background_color = bgBase,
           color = textPrimary, overflow = "hidden")
-  let titleBar = renderEditorTitleBar[R, E](r, vm)
-  r.appendChild(shellRoot, titleBar)
   let shell = ui(r):
     tdiv(display = "flex", flex = "1", min_height = "0",
           width = "100%", overflow = "hidden")
@@ -1739,11 +1829,18 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
   let vectorEditorEl = renderVectorEditor[R, E](r, vm)
   let chatEl = renderChatPanel[R, E](r, vm) # ever-present on all views
 
-  # M57 edge-strip chrome: persistent left and right edges that wrap the
-  # active center view. They share the editor VM so backend / viewport /
-  # mode selections survive view switching.
-  let leftEdgeEl = renderPreviewLeftEdge[R, E](r, vm)
-  let rightEdgeEl = renderPreviewRightEdge[R, E](r, vm)
+  # Center column wraps the shared preview chrome bar + the view stack
+  # so the toolbar sits above every view. Replaces the previous
+  # per-view top toolbars + the legacy global title bar.
+  let chromeBarEl = renderPreviewChromeBar[R, E](r, vm)
+  let centerColumn = ui(r):
+    tdiv(display = "flex", flex_direction = "column",
+          flex = "1", min_width = "0", min_height = "0",
+          `data-preview-center-column` = "true")
+  let viewStack = ui(r):
+    tdiv(display = "flex", flex = "1", min_width = "0", min_height = "0",
+          flex_direction = "column",
+          `data-preview-view-stack` = "true")
 
   # Default: storyboard visible, everything else hidden
   r.setStyle(componentDetailEl, "display", "none")
@@ -1770,31 +1867,28 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
         evVectorEditor: "flex" else: "none")
     r.setStyle(sidebarEl, "display", if panels.sidebar and view !=
         evVectorEditor: "flex" else: "none")
-    # The M57 edge strips are the editor's chrome signature: they belong on
-    # every view that has a preview pane (everything except the standalone
-    # vector editor). The strips are always-visible columns on the absolute
-    # left and right edges of the shell — see `renderEditorShell` for the
-    # mount order (leftEdge before sidebar; rightEdge after the inspector).
-    let showEdges = view != evVectorEditor
-    r.setStyle(leftEdgeEl, "display", if showEdges: "flex" else: "none")
-    r.setStyle(rightEdgeEl, "display", if showEdges: "flex" else: "none")
+    # Vector editor takes over the whole center column; hide the
+    # shared chrome bar so the vector-editor toolbar isn't doubled up.
+    r.setStyle(chromeBarEl, "display",
+      if view == evVectorEditor: "none" else: "flex")
     let manualEditMode = view == evComponentEdit and vm.editMode.val == emEdit
     r.setStyle(chatEl, "display",
       if panels.inspector and not manualEditMode: "flex" else: "none")
 
+  r.appendChild(viewStack, storyboardEl)
+  r.appendChild(viewStack, componentDetailEl)
+  r.appendChild(viewStack, componentEditEl)
+  r.appendChild(viewStack, pagePreviewEl)
+  r.appendChild(viewStack, foundationsEl)
+  r.appendChild(viewStack, vectorEditorEl)
+  r.appendChild(centerColumn, chromeBarEl)
+  r.appendChild(centerColumn, viewStack)
+
   # Mount order is the on-screen order (flex row, left to right):
-  #   [M57 left edge | sidebar | center view | inspector chat | M57 right edge]
-  # The M57 strips bracket the entire shell — that's their spec signature.
-  r.appendChild(shell, leftEdgeEl)
+  #   [sidebar | center column (chrome bar + view stack) | inspector chat]
   r.appendChild(shell, sidebarEl)
-  r.appendChild(shell, storyboardEl)
-  r.appendChild(shell, componentDetailEl)
-  r.appendChild(shell, componentEditEl)
-  r.appendChild(shell, pagePreviewEl)
-  r.appendChild(shell, foundationsEl)
-  r.appendChild(shell, vectorEditorEl)
+  r.appendChild(shell, centerColumn)
   r.appendChild(shell, chatEl) # inspector / AI chat
-  r.appendChild(shell, rightEdgeEl)
   r.appendChild(shellRoot, shell)
   r.appendChild(shellRoot, renderCommandPalette[R, E](r, vm))
   r.appendChild(shellRoot, renderTelemetryOverlay[R, E](r, vm))
