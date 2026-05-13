@@ -328,7 +328,22 @@ proc checkNoWeakMarkers(path: string) =
   for marker in PlaceholderAssertions:
     check not text.contains(marker)
 
+const MissingSiblingDiagnostic = """
+test_editor_release_gate requires the metacraft-web sibling repo to be
+present at ../metacraft-web (relative to isonim). The release-gate
+manifest in docs/editor-feature-matrix.json declares cross-repo test
+files; without the sibling, the gate cannot verify the editor is
+releaseable. Per the user's real-environment-tests rule, this is a
+hard failure, not a skip. Clone the sibling via the workspace tooling
+(e.g. `workspace init metacraft-web` or `repo sync`), then re-run.
+"""
+
 suite "IsoNim editor maturity gate":
+
+  test "release_gate_prerequisites_present":
+    if not dirExists("../metacraft-web"):
+      echo MissingSiblingDiagnostic
+    require dirExists("../metacraft-web")
 
   test "editor_quality_matrix_blocks_overclaimed_features":
     let doc = matrix()
