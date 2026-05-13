@@ -179,10 +179,6 @@ proc inspectorPropertyEditHandler[R, E](r: R; vm: EditorVM; input: E;
     discard vm.editCssProperty(capturedProperty, r.inputValue(capturedInput),
       pesLocal, peoInspector)
 
-proc activeViewHandler(vm: EditorVM; view: EditorView): proc() =
-  let captured = view
-  result = proc() = vm.setActiveView(captured)
-
 proc editModeHandler(vm: EditorVM; mode: EditMode): proc() =
   let captured = mode
   result = proc() =
@@ -224,15 +220,6 @@ proc isSelectedStory(vm: EditorVM; story: StoryRef): bool =
 
 proc isActiveInspectorSection(vm: EditorVM; section: InspectorSection): bool =
   vm.inspector.activeSection.val == section
-
-proc bindActiveViewStyle[R, E](r: R; node: E; vm: EditorVM;
-    view: EditorView) =
-  let captured = view
-  createRenderEffect proc() =
-    let isActive = vm.activeView.val == captured
-    r.setStyle(node, "background-color",
-        if isActive: accent else: "transparent")
-    r.setStyle(node, "color", if isActive: textPrimary else: textMuted)
 
 proc bindSidebarStoryState[R, E](r: R; node: E; vm: EditorVM;
     story: StoryRef) =
@@ -999,9 +986,11 @@ proc renderPreviewPane*[R, E](r: R; vm: EditorVM): E =
           flex = "1", min_width = "0", height = "100%",
           background_color = bgPreview)
 
-  # --- Top toolbar (view switcher + backend / viewport / mode chips) -----
-  # Wraps to two rows on narrow viewports so the four groups stay
-  # readable at 1440x900 without horizontal scroll.
+  # --- Top toolbar (backend / viewport / mode chips) ---------------------
+  # M-EVP-7: the view-switcher chip group is gone; the sidebar drives
+  # the active view via ``selectStory`` + ``viewForStory``. Wraps to two
+  # rows on narrow viewports so the three groups stay readable at
+  # 1440x900 without horizontal scroll.
   let toolbar = ui(r):
     tdiv(display = "flex", align_items = "center",
           justify_content = "flex-start",
@@ -1011,33 +1000,6 @@ proc renderPreviewPane*[R, E](r: R; vm: EditorVM): E =
           background_color = bgToolbar,
           border_bottom = "1px solid " & border,
           `data-preview-toolbar` = "true")
-
-  let viewSwitcher = ui(r):
-    tdiv(display = "flex", align_items = "center", gap = "1px",
-          background_color = bgSurface, border_radius = "6px",
-          padding = "3px",
-          `data-preview-view-switcher` = "true")
-
-  for option in [
-    (evStoryboard, "Flow"),
-    (evComponentDetail, "Detail"),
-    (evPagePreview, "Page"),
-    (evFoundationsPage, "Foundations"),
-    (evVectorEditor, "Vector")]:
-    let targetView = option[0]
-    let label = option[1]
-    let chooseView = activeViewHandler(vm, targetView)
-    let switchBtn = ui(r):
-      tdiv(padding = "4px 10px", border_radius = "4px",
-            font_size = "11px", font_weight = "500",
-            cursor = "pointer", transition = "all 0.15s"):
-        text label
-    r.makeButton(switchBtn, "Open " & label & " editor view")
-    r.addEventListener(switchBtn, "click", chooseView)
-    r.addEventListener(switchBtn, "keydown", chooseView)
-    r.bindActiveViewStyle(switchBtn, vm, targetView)
-    r.appendChild(viewSwitcher, switchBtn)
-  r.appendChild(toolbar, viewSwitcher)
 
   # --- Backend / Viewport / Mode chip groups (was: left + right edge) -----
   # All three chip groups now live in the top toolbar so the preview pane
@@ -1710,16 +1672,21 @@ proc renderEditorTitleBar[R, E](r: R; vm: EditorVM): E =
 
 proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
   ## Shared preview-pane top toolbar that sits above every view in the
-  ## center column. Carries the view-switcher (Flow / Detail / Page /
-  ## Foundations / Vector) plus the three reactive chip groups
+  ## center column. Carries the three reactive chip groups
   ## (Backend / Viewport / Mode). Mounted once per shell and shared
   ## across the storyboard, component detail, component edit, page
   ## preview, foundations, and vector views — so clicking a backend
   ## chip always works no matter which view is active.
   ##
+  ## M-EVP-7: the view-switcher chip group (Flow / Detail / Page /
+  ## Foundations / Vector) was removed because the sidebar is now the
+  ## sole navigation surface. ``selectStory`` derives the active view
+  ## from the selected story's ``StoryKind`` via ``viewForStory``, so a
+  ## dedicated chrome-bar tab strip would duplicate the sidebar's role.
+  ##
   ## Replaces the M57 left/right edge strips and the per-view
   ## breadcrumb / "Edit | Code" toolbars. Wraps to a second row on
-  ## narrow viewports so the four groups stay readable at 1440x900.
+  ## narrow viewports so the three groups stay readable at 1440x900.
   # M-EVP-3: explicit `gap = "14px"` (centred in the spec's 12-16 px
   # band) gives every adjacent chip cluster a clearly-visible breathing
   # gap; `padding-right = "12px"` keeps the rightmost (mode) cluster
@@ -1739,33 +1706,6 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
           border_bottom = "1px solid " & border,
           `data-preview-toolbar` = "true",
           `data-preview-chrome-bar` = "true")
-
-  let viewSwitcher = ui(r):
-    tdiv(display = "flex", align_items = "center", gap = "1px",
-          background_color = bgSurface, border_radius = "6px",
-          padding = "3px",
-          `data-preview-view-switcher` = "true",
-          `data-toolbar-cluster` = "view-switcher")
-  for option in [
-    (evStoryboard, "Flow"),
-    (evComponentDetail, "Detail"),
-    (evPagePreview, "Page"),
-    (evFoundationsPage, "Foundations"),
-    (evVectorEditor, "Vector")]:
-    let targetView = option[0]
-    let label = option[1]
-    let chooseView = activeViewHandler(vm, targetView)
-    let switchBtn = ui(r):
-      tdiv(padding = "4px 10px", border_radius = "4px",
-            font_size = "11px", font_weight = "500",
-            cursor = "pointer", transition = "all 0.15s"):
-        text label
-    r.makeButton(switchBtn, "Open " & label & " editor view")
-    r.addEventListener(switchBtn, "click", chooseView)
-    r.addEventListener(switchBtn, "keydown", chooseView)
-    r.bindActiveViewStyle(switchBtn, vm, targetView)
-    r.appendChild(viewSwitcher, switchBtn)
-  r.appendChild(toolbar, viewSwitcher)
 
   let capturedVm = vm
 

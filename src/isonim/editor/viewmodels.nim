@@ -478,10 +478,16 @@ func writeBridgeContractDiagnostics*(
       "Write bridge is missing required capabilities: " &
         contract.missingCapabilities.join(", ") & ".")
 
-func viewForStory(story: StoryRef): EditorView =
+func viewForStory*(story: StoryRef): EditorView =
+  ## Canonical mapping from sidebar ``StoryKind`` to the editor view that
+  ## owns that kind. M-EVP-7 makes the sidebar the only navigation
+  ## surface, so ``selectStory`` calls this to switch ``vm.activeView``
+  ## whenever a story row is clicked. The spec table in
+  ## ``codetracer-specs/Front-Ends/IsoNim/isonim-editor.md`` ("Sidebar
+  ## drives view selection") is the source of truth.
   case story.kind
   of skFlow:
-    evPagePreview
+    evStoryboard
   of skPage:
     evPagePreview
   of skFoundation:

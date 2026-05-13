@@ -288,7 +288,7 @@ suite "M57 vertical compact choice column":
 
 suite "Preview-pane top toolbar (consolidated chrome)":
 
-  test "top toolbar hosts view switcher AND all three chip groups":
+  test "top toolbar hosts the three chip groups and NO view-switcher":
     createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createEditorVM()
@@ -305,13 +305,17 @@ suite "Preview-pane top toolbar (consolidated chrome)":
       check findByAttr(toolbar, "aria-label", "Preview iOS platform") == nil
       check findByAttr(toolbar, "aria-label", "Preview Android platform") == nil
 
-      let viewSwitcher = findByAttr(toolbar,
-        "data-preview-view-switcher", "true")
-      check viewSwitcher != nil
-      check findByAttr(viewSwitcher, "aria-label",
-        "Open Flow editor view") != nil
-      check findByAttr(viewSwitcher, "aria-label",
-        "Open Detail editor view") != nil
+      # M-EVP-7: the view-switcher chip group is gone. The sidebar is
+      # the only navigation surface; ``selectStory`` derives the active
+      # view from the selected story's kind via ``viewForStory``.
+      check findByAttr(toolbar, "data-preview-view-switcher", "true") == nil
+      check findByAttr(toolbar, "aria-label", "Open Flow editor view") == nil
+      check findByAttr(toolbar, "aria-label", "Open Detail editor view") == nil
+      check findByAttr(toolbar, "aria-label", "Open Page editor view") == nil
+      check findByAttr(toolbar, "aria-label",
+        "Open Foundations editor view") == nil
+      check findByAttr(toolbar, "aria-label",
+        "Open Vector editor view") == nil
       # The breadcrumb is dropped — sidebar shows selection.
       check findByAttr(toolbar, "data-preview-breadcrumb", "true") == nil
       # All three chip groups live in the toolbar.
@@ -840,30 +844,31 @@ suite "M-EVP-3 preview chrome bar density":
       check paddingRightPx >= 12
       dispose()
 
-  test "toolbar contains all four chip clusters tagged for visual separation":
+  test "toolbar contains exactly the three chip clusters tagged for visual separation":
     createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createEditorVM()
       let bar = renderPreviewChromeBar[MockRenderer, MockNode](r, vm)
 
-      # Each of the four clusters must be a direct child of the toolbar
-      # and carry a stable `data-toolbar-cluster` attribute so future
-      # layout changes can address them without depending on the
-      # rendering order. The test additionally verifies the order matches
-      # the v5 left-to-right reading: view-switcher → backend → viewport
-      # → mode.
+      # M-EVP-7: each of the three remaining clusters must be a direct
+      # child of the toolbar and carry a stable `data-toolbar-cluster`
+      # attribute so future layout changes can address them without
+      # depending on the rendering order. The test additionally
+      # verifies the order matches the v5 left-to-right reading:
+      # backend → viewport → mode. The view-switcher cluster is gone
+      # because the sidebar drives the active view.
       let clusterAttr = "data-toolbar-cluster"
-      let clusters = findAllByAttr(bar, clusterAttr, "view-switcher") &
-        findAllByAttr(bar, clusterAttr, "backend") &
+      check findAllByAttr(bar, clusterAttr, "view-switcher").len == 0
+      let clusters = findAllByAttr(bar, clusterAttr, "backend") &
         findAllByAttr(bar, clusterAttr, "viewport") &
         findAllByAttr(bar, clusterAttr, "mode")
-      check clusters.len == 4
+      check clusters.len == 3
 
       # Every cluster must be a direct child of the toolbar — if a
       # future refactor nests them inside an intermediate wrapper the
       # flex `gap` no longer applies between them, so this is the
       # invariant the visual separation rests on.
-      let clusterKinds = @["view-switcher", "backend", "viewport", "mode"]
+      let clusterKinds = @["backend", "viewport", "mode"]
       var directChildClusters: seq[string] = @[]
       for child in bar.children:
         let kind = child.attributes.getOrDefault(clusterAttr)
@@ -1365,4 +1370,315 @@ suite "M-EVP-6 single top bar":
       # tree, not internal state" probe.
       check has44pxBorderBottomToolbarWithModeChips(body)
 
+      dispose()
+
+# ---------------------------------------------------------------------------
+# M-EVP-7: Sidebar drives view selection — view-switcher chip group is gone.
+# ---------------------------------------------------------------------------
+#
+# The spec ("Sidebar drives view selection") makes the sidebar the only
+# navigation surface. ``selectStory`` derives ``vm.activeView`` from the
+# selected story's kind via ``viewForStory``. The chrome bar's view-pill
+# strip (Flow / Detail / Page / Foundations / Vector) is therefore
+# redundant and removed.
+#
+# These tests are deliberately real-stack: they instantiate the real
+# editor VM, mount the real sidebar (via ``renderEditorShell``), and
+# fire click events on the actual sidebar story rows. There are no
+# in-process behaviour mocks.
+
+const sampleStoriesByKind: array[StoryKind, tuple[group, name: string]] = [
+  skFoundation: (group: "Foundations", name: "Colors"),
+  skComponent: (group: "TaskRow", name: "Active task"),
+  skPattern: (group: "Patterns", name: "Form Layout"),
+  skPage: (group: "Pages", name: "Empty State"),
+  skFlow: (group: "First Task", name: "User opens the app for the first time"),
+  skGuideline: (group: "Guidelines", name: "Do / Don't"),
+]
+
+proc findStoryItem(groups: seq[StoryGroup]; kind: StoryKind;
+    group, name: string): StoryRef =
+  ## Resolve a ``StoryRef`` from the demo storyboard so the click-driven
+  ## tests below address the same story object the sidebar renders.
+  var idx = 0
+  for g in groups:
+    var itemIdx = 0
+    for it in g.items:
+      if it.kind == kind and it.group == group and it.name == name:
+        return StoryRef(group: it.group, name: it.name, kind: it.kind,
+            index: itemIdx)
+      inc itemIdx
+    inc idx
+
+proc ensureGroupExpanded(vm: EditorVM; groupName: string) =
+  ## Force ``groupName`` open so its story rows are mounted in the
+  ## rendered sidebar. ``buildStoryboard`` defaults several groups to
+  ## ``expanded = false``; we flip them via the sidebar's
+  ## ``toggleGroup`` API rather than mutating the signal directly so
+  ## the same code path the production UI uses is exercised.
+  var alreadyOpen = false
+  for g in vm.sidebar.groups.val:
+    if g.name == groupName:
+      alreadyOpen = g.expanded
+      break
+  if not alreadyOpen:
+    vm.sidebar.toggleGroup(groupName)
+
+suite "M-EVP-7 sidebar drives view":
+
+  test "chrome bar has NO view-switcher chip group (negative assertion)":
+    ## Walk the rendered shell and confirm every marker associated with
+    ## the removed view-switcher chip group is absent. This is the
+    ## negative assertion the spec calls for.
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = buildStoryboard()
+
+      let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
+      let chromeBar = findByAttr(shell, "data-preview-chrome-bar", "true")
+      check chromeBar != nil
+
+      # The view-switcher container marker MUST be gone — anywhere in
+      # the chrome bar OR in the wider shell.
+      check findByAttr(shell, "data-preview-view-switcher", "true") == nil
+      check findByAttr(chromeBar, "data-preview-view-switcher", "true") == nil
+
+      # Per-pill aria-labels for the removed buttons MUST be gone too.
+      for label in [
+          "Open Flow editor view",
+          "Open Detail editor view",
+          "Open Page editor view",
+          "Open Foundations editor view",
+          "Open Vector editor view"]:
+        check findByAttr(shell, "aria-label", label) == nil
+
+      # The view-switcher cluster marker is gone.
+      check findAllByAttr(chromeBar, "data-toolbar-cluster",
+          "view-switcher").len == 0
+
+      # The three remaining clusters survive (sanity).
+      check findByAttr(chromeBar, "data-toolbar-cluster", "backend") != nil
+      check findByAttr(chromeBar, "data-toolbar-cluster", "viewport") != nil
+      check findByAttr(chromeBar, "data-toolbar-cluster", "mode") != nil
+      dispose()
+
+  test "every StoryKind maps to the expected EditorView via viewForStory":
+    ## Mapping assertion: for each ``StoryKind`` exposed in the demo
+    ## storyboard, call ``editor.selectStory`` and confirm
+    ## ``editor.activeView.val`` equals ``viewForStory(story)``. This
+    ## verifies the wiring at the VM layer independently of the DOM.
+    createRoot do (dispose: proc()):
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = buildStoryboard()
+
+      for kind in StoryKind:
+        let entry = sampleStoriesByKind[kind]
+        let story = findStoryItem(vm.sidebar.groups.val, kind,
+            entry.group, entry.name)
+        # Sanity — every sample must resolve in the demo storyboard.
+        check story.kind == kind
+        check story.group == entry.group
+        check story.name == entry.name
+
+        let ok = vm.selectStory(story)
+        check ok
+        check vm.selectedStory.val.group == entry.group
+        check vm.selectedStory.val.name == entry.name
+        check vm.selectedStory.val.kind == kind
+        check vm.activeView.val == viewForStory(story)
+
+      # Spec contract: the canonical mapping per the spec's
+      # "Sidebar drives view selection" table.
+      check viewForStory(StoryRef(kind: skFlow)) == evStoryboard
+      check viewForStory(StoryRef(kind: skPage)) == evPagePreview
+      check viewForStory(StoryRef(kind: skFoundation)) == evFoundationsPage
+      check viewForStory(StoryRef(kind: skComponent)) == evComponentDetail
+      check viewForStory(StoryRef(kind: skPattern)) == evComponentDetail
+      check viewForStory(StoryRef(kind: skGuideline)) == evComponentDetail
+      dispose()
+
+  test "clicking a sidebar story row flips activeView to viewForStory(story)":
+    ## Real-stack DOM click: for each sample story (except ``skFlow``,
+    ## which is reached through its journey-group row, not an
+    ## individual story row), locate its sidebar row in the rendered
+    ## shell, fire a click, and confirm both ``selectedStory`` and
+    ## ``activeView`` update. This proves the sidebar — not the chrome
+    ## bar — drives the active view.
+    for kind in StoryKind:
+      if kind == skFlow:
+        continue
+      createRoot do (dispose: proc()):
+        let r = MockRenderer()
+        let vm = createEditorVM()
+        vm.sidebar.groups.val = buildStoryboard()
+        # Expand every section so every kind's group is visible
+        # regardless of the demo defaults.
+        vm.sidebar.setSectionExpanded(ssUserJourneys, true)
+        vm.sidebar.setSectionExpanded(ssPages, true)
+        vm.sidebar.setSectionExpanded(ssComponents, true)
+        vm.sidebar.setSectionExpanded(ssFoundations, true)
+        vm.sidebar.setSectionExpanded(ssGuidelines, true)
+        # Expand the groups that default to collapsed so their rows
+        # are mounted in the rendered tree (we drive clicks against
+        # real DOM nodes, not synthetic VM calls).
+        let entry = sampleStoriesByKind[kind]
+        ensureGroupExpanded(vm, entry.group)
+
+        let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
+        let rowLabel = "Select story " & entry.group & " / " & entry.name
+        let row = findByAttr(shell, "aria-label", rowLabel)
+        check row != nil
+        check row.attributes.getOrDefault("role") == "button"
+
+        let expectedView =
+          viewForStory(StoryRef(kind: kind, group: entry.group,
+              name: entry.name))
+        row.fireEvent("click")
+
+        check vm.selectedStory.val.group == entry.group
+        check vm.selectedStory.val.name == entry.name
+        check vm.selectedStory.val.kind == kind
+        check vm.activeView.val == expectedView
+        dispose()
+
+  test "clicking a User Journey group row opens the storyboard view (skFlow path)":
+    ## ``skFlow`` groups don't expand into story rows in the sidebar;
+    ## they are journey entries that open the storyboard canvas
+    ## directly (via ``journeyOpenHandler``). This test exercises that
+    ## sidebar surface so the ``skFlow -> evStoryboard`` route is
+    ## verified end-to-end through the real DOM.
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = buildStoryboard()
+      vm.sidebar.setSectionExpanded(ssUserJourneys, true)
+
+      # Start somewhere else so the click is the only path to evStoryboard.
+      vm.activeView.val = evComponentDetail
+
+      let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
+      let journeyLabel = "Open First Task journey"
+      let row = findByAttr(shell, "aria-label", journeyLabel)
+      check row != nil
+      check row.attributes.getOrDefault("role") == "button"
+
+      row.fireEvent("click")
+      check vm.activeView.val == evStoryboard
+      dispose()
+
+  test "per-view: every sidebar-reachable EditorView is opened by clicking the sidebar":
+    ## Inverse of the mapping test: for every ``EditorView`` value the
+    ## sidebar can reach, click the corresponding sidebar surface and
+    ## confirm ``activeView`` lands there. The sidebar-unreachable
+    ## views (``evComponentEdit`` — opened by Edit mode;
+    ## ``evVectorEditor`` — owned by the M-EVP-8 affordance) are
+    ## intentionally excluded. ``evStoryboard`` is reached through the
+    ## ``Open <Flow> journey`` group row, not an individual story row.
+    type
+      ClickKind = enum
+        ckStoryRow, ckJourneyRow
+      ViewProbe = tuple
+        target: EditorView
+        click: ClickKind
+        groupName: string
+        storyName: string
+        rowLabel: string
+
+    let probes: seq[ViewProbe] = @[
+      (target: evStoryboard, click: ckJourneyRow,
+        groupName: "First Task", storyName: "",
+        rowLabel: "Open First Task journey"),
+      (target: evComponentDetail, click: ckStoryRow,
+        groupName: "TaskRow", storyName: "Active task",
+        rowLabel: "Select story TaskRow / Active task"),
+      (target: evPagePreview, click: ckStoryRow,
+        groupName: "Pages", storyName: "Empty State",
+        rowLabel: "Select story Pages / Empty State"),
+      (target: evFoundationsPage, click: ckStoryRow,
+        groupName: "Foundations", storyName: "Colors",
+        rowLabel: "Select story Foundations / Colors"),
+    ]
+
+    # Sanity: the probe set covers every sidebar-reachable view.
+    var coveredViews: seq[EditorView] = @[]
+    for probe in probes:
+      if probe.target notin coveredViews:
+        coveredViews.add probe.target
+    for view in EditorView:
+      if view in {evComponentEdit, evVectorEditor}:
+        check view notin coveredViews
+      else:
+        check view in coveredViews
+
+    for probe in probes:
+      createRoot do (dispose: proc()):
+        let r = MockRenderer()
+        let vm = createEditorVM()
+        vm.sidebar.groups.val = buildStoryboard()
+        vm.sidebar.setSectionExpanded(ssUserJourneys, true)
+        vm.sidebar.setSectionExpanded(ssPages, true)
+        vm.sidebar.setSectionExpanded(ssComponents, true)
+        vm.sidebar.setSectionExpanded(ssFoundations, true)
+        vm.sidebar.setSectionExpanded(ssGuidelines, true)
+        if probe.click == ckStoryRow:
+          ensureGroupExpanded(vm, probe.groupName)
+
+        # Start on a deliberately wrong view so the sidebar click is
+        # the only path that can move ``activeView`` to ``probe.target``.
+        case probe.target
+        of evStoryboard:
+          vm.activeView.val = evComponentDetail
+        else:
+          vm.activeView.val = evStoryboard
+
+        let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
+        let row = findByAttr(shell, "aria-label", probe.rowLabel)
+        check row != nil
+        check row.attributes.getOrDefault("role") == "button"
+        row.fireEvent("click")
+        check vm.activeView.val == probe.target
+        dispose()
+
+  test "regression probe: clicking through stories keeps activeView in sync":
+    ## Sequence test: click several sidebar rows of different kinds and
+    ## confirm ``activeView`` always matches
+    ## ``viewForStory(currentStory)``. This catches the case where a
+    ## stale view-switcher (re-introduced by mistake) overrides the
+    ## sidebar's selection. ``skFlow`` is skipped because flow groups
+    ## don't expand into story rows in the sidebar (their entry point
+    ## is the journey-group row, covered by a separate test above).
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = buildStoryboard()
+      vm.sidebar.setSectionExpanded(ssUserJourneys, true)
+      vm.sidebar.setSectionExpanded(ssPages, true)
+      vm.sidebar.setSectionExpanded(ssComponents, true)
+      vm.sidebar.setSectionExpanded(ssFoundations, true)
+      vm.sidebar.setSectionExpanded(ssGuidelines, true)
+      for kind in StoryKind:
+        if kind == skFlow:
+          continue
+        let entry = sampleStoriesByKind[kind]
+        ensureGroupExpanded(vm, entry.group)
+
+      let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
+
+      # Walk through a fixed sequence that flips between views
+      # repeatedly, mixing every sidebar-reachable kind.
+      let sequence = [
+        skFoundation, skComponent, skPage, skGuideline,
+        skPattern, skFoundation, skComponent, skPage,
+        skPattern, skGuideline
+      ]
+      for kind in sequence:
+        let entry = sampleStoriesByKind[kind]
+        let rowLabel = "Select story " & entry.group & " / " & entry.name
+        let row = findByAttr(shell, "aria-label", rowLabel)
+        check row != nil
+        row.fireEvent("click")
+        check vm.selectedStory.val.kind == kind
+        check vm.activeView.val ==
+          viewForStory(vm.selectedStory.val)
       dispose()

@@ -313,7 +313,11 @@ suite "Editor ViewModels (M18 headless contracts)":
       let flowStory = refFrom(groups, 0, 0)
       check vm.selectStory(flowStory)
       check vm.selectedStory.val.name == flowStory.name
-      check vm.activeView.val == evPagePreview
+      # M-EVP-7: ``skFlow`` stories now map to the storyboard canvas
+      # per the spec table ("Sidebar drives view selection"); the
+      # pre-M-EVP-7 mapping routed flows to the page preview, which
+      # contradicted the spec.
+      check vm.activeView.val == evStoryboard
       dispose()
 
   test "editor_vm_canvas_selection_drives_story_and_flow_state":

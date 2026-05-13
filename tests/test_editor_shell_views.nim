@@ -105,9 +105,12 @@ suite "Editor Shell Views (M2)":
       dispose()
 
   test "test_preview_pane_shows_toolbar":
-    ## Preview pane has a top toolbar that hosts the view switcher and
-    ## all three chip groups (backend / viewport / mode) directly. The
-    ## legacy left/right edge strips and the breadcrumb are gone.
+    ## Preview pane has a top toolbar that hosts all three chip groups
+    ## (backend / viewport / mode) directly. The legacy left/right edge
+    ## strips and the breadcrumb are gone. M-EVP-7 also removed the
+    ## view-switcher chip group — the sidebar is the only navigation
+    ## surface and the active view is derived from the selected story's
+    ## kind via ``viewForStory``.
     createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createEditorVM()
@@ -121,8 +124,9 @@ suite "Editor Shell Views (M2)":
       check toolbar != nil
       check body != nil
 
-      # View switcher + all three chip groups now live in the toolbar.
-      check findByAttr(toolbar, "data-preview-view-switcher", "true") != nil
+      # M-EVP-7: the view-switcher is GONE; only the three chip groups
+      # remain.
+      check findByAttr(toolbar, "data-preview-view-switcher", "true") == nil
       check findByAttr(toolbar, "data-preview-breadcrumb", "true") == nil
       check findByAttr(toolbar, "data-edge-strip", "backend") != nil
       check findByAttr(toolbar, "data-edge-strip", "viewport") != nil
@@ -367,10 +371,17 @@ suite "Editor Shell Views (M2)":
         accent.toLowerAscii())
 
       let preview = renderPreviewPane[MockRenderer, MockNode](r, vm)
-      let vectorView = findByAttr(preview, "aria-label", "Open Vector editor view")
-      check vectorView != nil
-      vectorView.fireEvent("click")
+      # M-EVP-7: the view-switcher chip group is gone — the chrome bar
+      # no longer carries an "Open Vector editor view" button. The
+      # vector-editor affordance is owned by the sidebar's per-symbol
+      # action (tracked by M-EVP-8); for this regression test we drive
+      # the VM directly to confirm the view-state machine still flips
+      # to the vector editor.
+      check findByAttr(preview, "aria-label", "Open Vector editor view") == nil
+      check findByAttr(preview, "data-preview-view-switcher", "true") == nil
+      vm.setActiveView(evVectorEditor)
       check vm.activeView.val == evVectorEditor
+      vm.setActiveView(evStoryboard)
 
       # The legacy top-toolbar "Preview iOS platform" button is gone.
       # The three chip groups (backend / viewport / mode) now live in
