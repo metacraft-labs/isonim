@@ -49,6 +49,14 @@ type
     manifest*: Signal[Option[ElementTreeManifest]]
     selectedElementId*: Signal[string]
     selectedComponentPath*: Signal[string]
+    hoveredElementId*: Signal[Option[string]]
+      ## M-EVP-10: id of the manifest entry currently under the
+      ## pointer (or `none` when the pointer is off any entry).
+      ## Updates synchronously on `hoverAt`.
+    hoveredComponentPath*: Signal[Option[string]]
+      ## M-EVP-10: `componentPath` of the hovered entry. Mirrors
+      ## `hoveredElementId` so the overlay can bind directly to a
+      ## human-readable signal.
 
 proc newPreviewCanvasVM*(): PreviewCanvasVM =
   ## Construct a fresh canvas VM. Must be called inside a `createRoot`
@@ -58,7 +66,9 @@ proc newPreviewCanvasVM*(): PreviewCanvasVM =
     surfaceHeight: createSignal(0),
     manifest: createSignal(none(ElementTreeManifest)),
     selectedElementId: createSignal(""),
-    selectedComponentPath: createSignal(""))
+    selectedComponentPath: createSignal(""),
+    hoveredElementId: createSignal(none(string)),
+    hoveredComponentPath: createSignal(none(string)))
 
 proc updateManifest*(vm: PreviewCanvasVM;
                      manifest: ElementTreeManifest) =
@@ -77,6 +87,8 @@ proc clearManifest*(vm: PreviewCanvasVM) =
   vm.manifest.val = none(ElementTreeManifest)
   vm.selectedElementId.val = ""
   vm.selectedComponentPath.val = ""
+  vm.hoveredElementId.val = none(string)
+  vm.hoveredComponentPath.val = none(string)
 
 proc elementAt*(vm: PreviewCanvasVM; x, y: int): Option[ElementEntry] =
   ## Resolve a pointer coordinate to the smallest-area manifest
@@ -110,3 +122,39 @@ proc selectAt*(vm: PreviewCanvasVM; x, y: int): bool =
   vm.selectedElementId.val = hit.get.id
   vm.selectedComponentPath.val = hit.get.componentPath
   true
+
+proc hoverAt*(vm: PreviewCanvasVM; x, y: int): bool =
+  ## M-EVP-10: hit-test the pointer position and update the hover
+  ## signals. Returns true when the pointer is over a manifest entry
+  ## (and the signals now report that entry); false when the pointer
+  ## is off any entry (and the signals are cleared).
+  ##
+  ## Cheap to call on every mousemove: the underlying `elementAt`
+  ## scans the manifest in one linear pass and the signals only fire
+  ## change events when the resolved id actually changes (handled by
+  ## the `Signal` set-equal short-circuit).
+  let hit = elementAt(vm, x, y)
+  if hit.isNone:
+    if vm.hoveredElementId.val.isSome:
+      vm.hoveredElementId.val = none(string)
+      vm.hoveredComponentPath.val = none(string)
+    return false
+  let entry = hit.get
+  let currentId = vm.hoveredElementId.val
+  if currentId.isNone or currentId.get != entry.id:
+    vm.hoveredElementId.val = some(entry.id)
+    vm.hoveredComponentPath.val = some(entry.componentPath)
+  true
+
+proc boundsOf*(vm: PreviewCanvasVM; elementId: string): Option[ElementBounds] =
+  ## M-EVP-10: look up an element's bounds by id. The overlay layer
+  ## uses this to position the selection outline and edit-mode
+  ## handles. Returns `none` if the manifest is absent or no entry
+  ## matches the id (e.g. the manifest was just refreshed and the
+  ## previously-selected entry has gone away).
+  let m = vm.manifest.val
+  if m.isNone: return none(ElementBounds)
+  for e in m.get.elements:
+    if e.id == elementId:
+      return some(e.bounds)
+  none(ElementBounds)

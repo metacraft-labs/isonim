@@ -728,6 +728,19 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
   var projectDescription: E
   var projectFrame: E
   var projectCanvas: E
+  var canvasWrapper: E
+  var canvasOverlay: E
+  var hoverLabel: E
+  var hoverLabelText: E
+  var selectionOutline: E
+  var breadcrumb: E
+  var breadcrumbText: E
+  var handlesGroup: E
+  var handleElems: array[8, E]
+  const handleNames = [
+    "nw", "n", "ne", "e", "se", "s", "sw", "w",
+  ]
+  const accentBlue = "#3B82F6"
   let projectPreviewSection = ui(r):
     tdiv(ref = projectSection,
           display = "none", flex_direction = "column",
@@ -761,12 +774,98 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
         # (the iframe takes its place for Web). The `<canvas>` is
         # painted by the streaming-preview VM's F-packet handler and
         # forwards clicks to the manifest hit-test.
-        canvas(ref = projectCanvas,
-            width = "1280",
-            height = "1",
-            `data-component-project-canvas` = "true",
-            display = "none",
-            background_color = "#000000")
+        # M-EVP-10: the canvas now lives inside a relative-positioned
+        # wrapper so the absolute-positioned overlay (hover label,
+        # selection outline, breadcrumb, edit-mode handles) can
+        # paint on top without disturbing the iframe path.
+        tdiv(ref = canvasWrapper,
+              position = "relative",
+              display = "none",
+              width = "100%"):
+          canvas(ref = projectCanvas,
+              width = "1280",
+              height = "1",
+              `data-component-project-canvas` = "true",
+              display = "none",
+              background_color = "#000000")
+          tdiv(ref = canvasOverlay,
+                `data-canvas-overlay` = "true",
+                position = "absolute",
+                left = "0", top = "0", right = "0", bottom = "0",
+                pointer_events = "none",
+                display = "none"):
+            # Selection outline. Painted on click; visible while the
+            # selection signal is non-empty.
+            tdiv(ref = selectionOutline,
+                  `data-canvas-selection-outline` = "true",
+                  position = "absolute",
+                  border = "2px solid " & accentBlue,
+                  border_radius = "2px",
+                  box_shadow = "0 0 0 4px rgba(59,130,246,.18)",
+                  pointer_events = "none",
+                  box_sizing = "border-box",
+                  display = "none")
+            # Hover label that follows the cursor — production parity
+            # with the iframe path's `#isonim-editor-hover-label`.
+            tdiv(ref = hoverLabel,
+                  `data-canvas-hover-label` = "true",
+                  position = "absolute",
+                  pointer_events = "none",
+                  padding = "3px 6px",
+                  border_radius = "4px",
+                  background_color = "rgba(15,23,42,.94)",
+                  color = "#E2E8F0",
+                  font_family = "ui-monospace, SFMono-Regular, Menlo, monospace",
+                  font_size = "11px",
+                  line_height = "1.3",
+                  box_shadow = "0 4px 14px rgba(15,23,42,.28)",
+                  white_space = "nowrap",
+                  display = "none"):
+              span(ref = hoverLabelText):
+                text ""
+            # Selection breadcrumb chip — production parity with the
+            # iframe path's `#isonim-editor-selection-breadcrumb`.
+            tdiv(ref = breadcrumb,
+                  `data-canvas-selection-breadcrumb` = "true",
+                  position = "absolute",
+                  top = "6px", left = "6px",
+                  pointer_events = "none",
+                  padding = "3px 6px",
+                  border_radius = "5px",
+                  background_color = "rgba(15,23,42,.94)",
+                  color = "#CBD5E1",
+                  font_family = "ui-monospace, SFMono-Regular, Menlo, monospace",
+                  font_size = "10px",
+                  line_height = "1.3",
+                  box_shadow = "0 6px 18px rgba(15,23,42,.28)",
+                  max_width = "92%",
+                  overflow = "hidden",
+                  text_overflow = "ellipsis",
+                  white_space = "nowrap",
+                  display = "none"):
+              span(ref = breadcrumbText):
+                text ""
+            # Edit-mode handles: 8 corner + edge midpoints. Only
+            # rendered when `vm.editMode.val == emEdit`. Handles
+            # opt into pointer events; the rest of the overlay does
+            # not so clicks reach the canvas.
+            tdiv(ref = handlesGroup,
+                  position = "absolute",
+                  left = "0", top = "0", right = "0", bottom = "0",
+                  pointer_events = "none",
+                  display = "none"):
+              for hi in 0 ..< 8:
+                tdiv(ref = handleElems[hi],
+                      `data-canvas-selection-handle` = "true",
+                      `data-handle-position` = handleNames[hi],
+                      position = "absolute",
+                      width = "8px", height = "8px",
+                      margin_left = "-4px", margin_top = "-4px",
+                      border = "1px solid #FFFFFF",
+                      border_radius = "2px",
+                      background_color = accentBlue,
+                      pointer_events = "auto",
+                      box_sizing = "border-box")
   r.appendChild(content, projectPreviewSection)
 
   var propertyPanel: E
@@ -868,6 +967,13 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
     r.setStyle(projectCanvas, "min-height", "1px")
     r.setAttribute(projectCanvas, "data-canvas-active",
                    if useCanvas: "true" else: "false")
+    # M-EVP-10: the canvas-wrapper hosts both the canvas and the
+    # overlay layer. We toggle them as a unit so the overlay paints
+    # exactly when the canvas is active.
+    r.setStyle(canvasWrapper, "display",
+               if useCanvas: "block" else: "none")
+    r.setStyle(canvasOverlay, "display",
+               if useCanvas: "block" else: "none")
     r.setStyle(projectSection, "display", if showProject: "flex" else: "none")
     r.setStyle(genericContent, "display", if showProject: "none" else: "flex")
     r.populateComponentPropertyPanel(vm, propertyPanel, projectFrame,
@@ -976,6 +1082,156 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
           });
         }
       """].}
+
+  # M-EVP-10: overlay render-effect — paints the hover label,
+  # selection outline, breadcrumb, and (in emEdit) the 8 handles
+  # based on the streaming-preview VM's hover/selection signals.
+  # Scaling: manifest bounds are in F-packet pixel space; we map
+  # them to CSS pixel space via `canvas.clientWidth / canvas.width`
+  # (same direction Pattern A's `pointFromEvent` uses for inverse).
+  createRenderEffect proc() =
+    let streaming = vm.streamingPreview
+    if streaming == nil:
+      return
+    let useCanvas = vm.platform.val != pbWeb
+    let canvas = streaming.canvas
+    # Read signals so this effect re-runs on any change. Even when
+    # `useCanvas` is false we keep the dependency tree consistent
+    # by reading them first.
+    let hoverIdOpt = canvas.hoveredElementId.val
+    let hoverPathOpt = canvas.hoveredComponentPath.val
+    let selectedId = canvas.selectedElementId.val
+    let selectedPath = canvas.selectedComponentPath.val
+    let mode = vm.editMode.val
+    let manifestOpt = canvas.manifest.val
+    discard manifestOpt
+    if not useCanvas:
+      r.setStyle(hoverLabel, "display", "none")
+      r.setStyle(selectionOutline, "display", "none")
+      r.setStyle(breadcrumb, "display", "none")
+      r.setStyle(handlesGroup, "display", "none")
+      return
+
+    # ----------- Hover label -----------
+    if hoverPathOpt.isSome:
+      r.setTextContent(hoverLabelText, hoverPathOpt.get)
+      r.setStyle(hoverLabel, "display", "block")
+      # Position the label near the hovered element's top-right
+      # corner in CSS space. The overlay is positioned relative to
+      # the canvas wrapper, so we compute coords from the canvas's
+      # client dimensions vs its internal pixel buffer.
+      when defined(js):
+        let hid = hoverIdOpt
+        if hid.isSome:
+          let bOpt = canvas.boundsOf(hid.get)
+          if bOpt.isSome:
+            let b = bOpt.get
+            let bx = b.x
+            let by = b.y
+            let bw = b.w
+            let cnv = projectCanvas
+            let lbl = hoverLabel
+            {.emit: ["""
+              try {
+                var c = """, cnv, """;
+                var lbl = """, lbl, """;
+                if (c && lbl && c.width > 0 && c.height > 0) {
+                  var sx = c.clientWidth / c.width;
+                  var sy = c.clientHeight / c.height;
+                  var leftPx = (""", bx, """ + """, bw, """) * sx;
+                  var topPx = """, by, """ * sy;
+                  // Anchor a few px below the element's top edge so
+                  // the label is clearly attached to it (the iframe
+                  // path's translateY(-100%) anchors above; we keep
+                  // it inside the overlay region for the canvas).
+                  lbl.style.left = leftPx + 'px';
+                  lbl.style.top = topPx + 'px';
+                }
+              } catch (_) {}
+            """].}
+    else:
+      r.setStyle(hoverLabel, "display", "none")
+
+    # ----------- Selection outline + breadcrumb -----------
+    if selectedId.len > 0:
+      let bOpt = canvas.boundsOf(selectedId)
+      if bOpt.isSome:
+        let b = bOpt.get
+        r.setAttribute(selectionOutline, "data-element-id", selectedId)
+        r.setStyle(selectionOutline, "display", "block")
+        when defined(js):
+          let bx = b.x
+          let by = b.y
+          let bw = b.w
+          let bh = b.h
+          let cnv = projectCanvas
+          let outline = selectionOutline
+          {.emit: ["""
+            try {
+              var c = """, cnv, """;
+              var o = """, outline, """;
+              if (c && o && c.width > 0 && c.height > 0) {
+                var sx = c.clientWidth / c.width;
+                var sy = c.clientHeight / c.height;
+                o.style.left = (""", bx, """ * sx) + 'px';
+                o.style.top = (""", by, """ * sy) + 'px';
+                o.style.width = (""", bw, """ * sx) + 'px';
+                o.style.height = (""", bh, """ * sy) + 'px';
+              }
+            } catch (_) {}
+          """].}
+        # Breadcrumb chip
+        r.setTextContent(breadcrumbText, selectedPath)
+        r.setStyle(breadcrumb, "display", "inline-block")
+        # Handles (only in emEdit). Position 8 corner/edge midpoints
+        # in CSS space, anchored on the outline rectangle.
+        if mode == emEdit:
+          r.setStyle(handlesGroup, "display", "block")
+          when defined(js):
+            let cnv = projectCanvas
+            let bx = b.x
+            let by = b.y
+            let bw = b.w
+            let bh = b.h
+            for hi in 0 ..< 8:
+              let hEl = handleElems[hi]
+              let pos = handleNames[hi]
+              {.emit: ["""
+                try {
+                  var c = """, cnv, """;
+                  var h = """, hEl, """;
+                  if (c && h && c.width > 0 && c.height > 0) {
+                    var sx = c.clientWidth / c.width;
+                    var sy = c.clientHeight / c.height;
+                    var bx = """, bx, """ * sx;
+                    var by = """, by, """ * sy;
+                    var bw = """, bw, """ * sx;
+                    var bh = """, bh, """ * sy;
+                    var pos = """, pos.cstring, """;
+                    var x = bx, y = by;
+                    if (pos === 'nw') { x = bx; y = by; }
+                    else if (pos === 'n') { x = bx + bw / 2; y = by; }
+                    else if (pos === 'ne') { x = bx + bw; y = by; }
+                    else if (pos === 'e') { x = bx + bw; y = by + bh / 2; }
+                    else if (pos === 'se') { x = bx + bw; y = by + bh; }
+                    else if (pos === 's') { x = bx + bw / 2; y = by + bh; }
+                    else if (pos === 'sw') { x = bx; y = by + bh; }
+                    else if (pos === 'w') { x = bx; y = by + bh / 2; }
+                    h.style.left = x + 'px';
+                    h.style.top = y + 'px';
+                  }
+                } catch (_) {}
+              """].}
+        else:
+          r.setStyle(handlesGroup, "display", "none")
+      else:
+        r.setStyle(selectionOutline, "display", "none")
+        r.setStyle(breadcrumb, "display", "none")
+        r.setStyle(handlesGroup, "display", "none")
+    else:
+      r.setStyle(selectionOutline, "display", "none")
+      r.setStyle(breadcrumb, "display", "none")
+      r.setStyle(handlesGroup, "display", "none")
 
   # === Props / API Table ===
   let propsLabel = sectionLabel[R, E](r, "PROPERTIES")

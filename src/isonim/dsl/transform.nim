@@ -86,6 +86,9 @@ const styleProperties* = [
   "transform", "transform-origin",
   # Scrollbar
   "scrollbar-width",
+  # Interaction / sizing model — used by overlay layers that must
+  # not capture clicks meant for the underlying canvas (M-EVP-10).
+  "pointer-events", "box-sizing", "user-select", "touch-action",
 ]
 
 proc toStyleName*(nimName: string): string =

@@ -466,6 +466,12 @@ proc clickCanvas*(vm: StreamingPreviewVM; x, y: int): bool =
   ## change.
   vm.canvas.selectAt(x, y)
 
+proc hoverCanvas*(vm: StreamingPreviewVM; x, y: int): bool =
+  ## M-EVP-10: Editor's mousemove handler calls this. Forwards to
+  ## `PreviewCanvasVM.hoverAt`, which updates `hoveredElementId` /
+  ## `hoveredComponentPath` so the overlay's hover label re-renders.
+  vm.canvas.hoverAt(x, y)
+
 # ---------------------------------------------------------------------------
 # RS-M11 Pattern A: browser-side bridge client (JS target only).
 # ---------------------------------------------------------------------------
@@ -549,16 +555,70 @@ when defined(js):
         # `__isonimTestMode === true` so production builds never write.
         let path = vm.canvas.selectedComponentPath.val
         let id = vm.canvas.selectedElementId.val
+        let bOpt = vm.canvas.boundsOf(id)
+        # Surface the selected element's bounds (in F-packet pixel
+        # space) so the overlay can sanity-check its CSS-space
+        # transform and the playwright suite can assert outline
+        # positioning. `__isonimSelectedBounds` is null when no
+        # selection is active, an `{x,y,w,h}` object otherwise.
+        var boundsX = 0
+        var boundsY = 0
+        var boundsW = 0
+        var boundsH = 0
+        var haveBounds = false
+        if bOpt.isSome:
+          let b = bOpt.get
+          boundsX = b.x
+          boundsY = b.y
+          boundsW = b.w
+          boundsH = b.h
+          haveBounds = true
+        let haveBoundsFlag = if haveBounds: 1 else: 0
         {.emit: ["""
           try {
             if (window.__isonimTestMode === true) {
               window.__isonimSelectedComponentPath = """, path.cstring, """;
               window.__isonimSelectedElementId = """, id.cstring, """;
+              if (""", haveBoundsFlag, """) {
+                window.__isonimSelectedBounds = {
+                  x: """, boundsX, """,
+                  y: """, boundsY, """,
+                  w: """, boundsW, """,
+                  h: """, boundsH, """
+                };
+              } else {
+                window.__isonimSelectedBounds = null;
+              }
+            }
+          } catch (_) {}
+        """].}
+    let onHover = proc(x: int; y: int) =
+      discard vm.hoverCanvas(x, y)
+      when defined(js):
+        # Test-only side channel: mirror the hover signals to window
+        # so the playwright M-EVP-10 spec can assert hover labels
+        # follow the cursor. Same `__isonimTestMode === true` gate as
+        # the click-side channel above — production never writes.
+        let pOpt = vm.canvas.hoveredComponentPath.val
+        let iOpt = vm.canvas.hoveredElementId.val
+        let hovered = if pOpt.isSome: pOpt.get else: ""
+        let hoveredId = if iOpt.isSome: iOpt.get else: ""
+        let hasHoverFlag = if pOpt.isSome: 1 else: 0
+        {.emit: ["""
+          try {
+            if (window.__isonimTestMode === true) {
+              if (""", hasHoverFlag, """) {
+                window.__isonimHoveredComponentPath = """, hovered.cstring, """;
+                window.__isonimHoveredElementId = """, hoveredId.cstring, """;
+              } else {
+                window.__isonimHoveredComponentPath = null;
+                window.__isonimHoveredElementId = null;
+              }
             }
           } catch (_) {}
         """].}
     {.emit: ["""
-      (function (canvas, url, dispatchMeta, onClick) {
+      (function (canvas, url, dispatchMeta, onClick, onHover) {
         if (!canvas || !url) return null;
         var ws = new WebSocket(url);
         ws.binaryType = 'arraybuffer';
@@ -691,6 +751,25 @@ when defined(js):
           var p = pointFromEvent(e);
           sendInput({ type: 'mouse', action: 'move', button: -1,
                       x: p.x, y: p.y, modifiers: modsFromEvent(e) });
+          // M-EVP-10: drive the editor's hover hit-test on every
+          // mousemove. The Nim side updates the hover signals and the
+          // overlay re-renders. Also publishes the latest pointer
+          // CSS coords on the canvas DOM node so the overlay's hover
+          // label can anchor near the cursor without subscribing to
+          // pointer events itself.
+          try {
+            canvas.__isonimPointerCss = {
+              clientX: e.clientX,
+              clientY: e.clientY,
+            };
+          } catch (_) {}
+          onHover(p.x, p.y);
+        }
+        function onMouseLeave() {
+          // Clear hover state when the pointer leaves the canvas so
+          // the overlay's hover label vanishes.
+          try { canvas.__isonimPointerCss = null; } catch (_) {}
+          onHover(-1, -1);
         }
         function onClickEvt(e) {
           var p = pointFromEvent(e);
@@ -707,16 +786,18 @@ when defined(js):
         canvas.addEventListener('mousedown', onMouseDown);
         canvas.addEventListener('mouseup', onMouseUp);
         canvas.addEventListener('mousemove', onMouseMove);
+        canvas.addEventListener('mouseleave', onMouseLeave);
         canvas.addEventListener('click', onClickEvt);
         canvas.addEventListener('wheel', onWheel);
         ws.__isonimHandlers = {
           mousedown: onMouseDown, mouseup: onMouseUp,
-          mousemove: onMouseMove, click: onClickEvt, wheel: onWheel,
+          mousemove: onMouseMove, mouseleave: onMouseLeave,
+          click: onClickEvt, wheel: onWheel,
         };
         ws.__isonimCanvas = canvas;
         """, socket, """ = ws;
       })(""", canvas, ", ", bridgeUrl.cstring, ", ",
-       dispatchMeta, ", ", onClick, """);
+       dispatchMeta, ", ", onClick, ", ", onHover, """);
     """].}
     BridgeClientHandle(socket: socket, canvas: canvas, url: bridgeUrl)
 
