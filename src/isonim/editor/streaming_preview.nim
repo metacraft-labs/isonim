@@ -591,11 +591,46 @@ func bridgePortForBackend*(backend: PreviewBackend): int =
   of pbCocoa: 8105
   of pbAndroid: 8106
 
+when defined(js):
+  proc jsBridgeUrl(slug: cstring; fallbackPort: int): cstring {.importjs:
+    """
+    (function(slug, fallbackPort) {
+      var scheme = 'ws';
+      var host = '';
+      try {
+        if (window.location.protocol === 'https:') scheme = 'wss';
+        host = window.location.host || '';
+      } catch (_) {}
+      if (!host) host = '127.0.0.1:' + fallbackPort;
+      return scheme + '://' + host + '/bridge/' + slug;
+    })(#, #)
+    """.}
+
 func bridgeUrlForBackend*(backend: PreviewBackend): string =
   ## WebSocket URL for ``backend``'s default bridge launcher. Empty
   ## for ``pbWeb`` (which uses the iframe path).
+  ##
+  ## On JS targets we use a same-origin path-based URL
+  ## (``ws://<location.host>/bridge/<backend>``) so the page works
+  ## when the browser is on a different machine from the editor host
+  ## — ``tools/editor-server.mjs`` proxies these paths to the
+  ## launcher's localhost port. On native targets (tests, headless)
+  ## we keep the direct ``ws://127.0.0.1:<port>`` URL so the
+  ## launcher-subprocess tests don't need a proxy in the loop.
   let port = bridgePortForBackend(backend)
-  if port == 0: "" else: "ws://127.0.0.1:" & $port & "/"
+  if port == 0: return ""
+  when defined(js):
+    let slug =
+      case backend
+      of pbWeb: ""
+      of pbTui: "tui"
+      of pbGpui: "gpui"
+      of pbFreya: "freya"
+      of pbCocoa: "cocoa"
+      of pbAndroid: "android"
+    $jsBridgeUrl(slug.cstring, port)
+  else:
+    "ws://127.0.0.1:" & $port & "/"
 
 # ---------------------------------------------------------------------------
 # RS-M12 — JSON body builders for `select-story` and `apply-mutation`.
