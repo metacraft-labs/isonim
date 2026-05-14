@@ -26,6 +26,7 @@ import std/[asyncdispatch, asyncnet, base64, json, nativesockets,
             net, os, osproc, random, strutils, unittest]
 
 import isonim/core/[signals, computation, owner]
+import isonim/editor/types
 import isonim/editor/streaming_preview
 
 # Reuse the vendored RFC 6455 frame decoder so the client side
@@ -353,3 +354,106 @@ suite "RS-M7: bridge launcher integration":
         # Initial run + three bumps = 4 observations.
         check observedGenerations == @[0, 1, 2, 3]
         dispose()
+
+# ---------------------------------------------------------------------------
+# Suite 4 — RS-M12 publish-path invariants
+# ---------------------------------------------------------------------------
+
+suite "RS-M12: streaming-preview publish paths":
+
+  test "encodeSelectStoryBody matches a hand-rolled reference":
+    let body = encodeSelectStoryBody(
+      storyGroup = "Settings App / Pages",
+      storyName = "Appearance Group",
+      storyKind = "skPage",
+      storyId = "Settings App / Pages / Appearance Group")
+    let expected = """{"type":"select-story","group":"Settings App / Pages",""" &
+                   """"name":"Appearance Group","kind":"skPage",""" &
+                   """"storyId":"Settings App / Pages / Appearance Group"}"""
+    check body == expected
+
+  test "encodeApplyMutationBody supports primitive scalar literals":
+    let bodyBool = encodeApplyMutationBody(
+      target = "settings_app/views/Toggle#DarkMode",
+      key = "checked",
+      valueLiteral = "true",
+      scope = msLocalScope)
+    let expectedBool = """{"type":"apply-mutation",""" &
+                       """"target":"settings_app/views/Toggle#DarkMode",""" &
+                       """"key":"checked","value":true,"scope":"local"}"""
+    check bodyBool == expectedBool
+
+    let bodyStr = encodeApplyMutationBody(
+      target = "settings_app/views/Choice#Theme",
+      key = "selected",
+      valueLiteral = valueLiteralForString("solarized"),
+      scope = msSharedScope)
+    let expectedStr = """{"type":"apply-mutation",""" &
+                      """"target":"settings_app/views/Choice#Theme",""" &
+                      """"key":"selected","value":"solarized","scope":"shared"}"""
+    check bodyStr == expectedStr
+
+  test "storyKindWire / storyIdFor cover every editor story kind":
+    check storyKindWire(skPage) == "skPage"
+    check storyKindWire(skComponent) == "skComponent"
+    check storyKindWire(skPattern) == "skPattern"
+    check storyKindWire(skFoundation) == "skFoundation"
+    check storyKindWire(skFlow) == "skFlow"
+    check storyKindWire(skGuideline) == "skGuideline"
+    check storyKindWire(skVectorSymbol) == "skVectorSymbol"
+    check storyIdFor(StoryRef(group: "Settings App / Pages",
+                              name: "Appearance Group",
+                              kind: skPage)) ==
+      "Settings App / Pages / Appearance Group"
+
+  test "publishSelectStory routes through the registered publisher":
+    createRoot do (dispose: proc()):
+      let vm = newStreamingPreviewVM()
+      var captured: seq[tuple[group, name, kind, storyId: string]] = @[]
+      vm.setStoryPublisher(
+        sendStory = proc(g, n, k, sid: string) =
+          captured.add((g, n, k, sid)),
+        sendMutation = proc(t, k, v: string; s: MutationScopeKind) =
+          discard
+      )
+      vm.publishSelectStory("A", "B", "skPage", "A / B")
+      vm.publishSelectStory("X", "Y", "skComponent", "X / Y")
+      check captured.len == 2
+      check captured[0] == ("A", "B", "skPage", "A / B")
+      check captured[1] == ("X", "Y", "skComponent", "X / Y")
+      dispose()
+
+  test "publishApplyMutation is a no-op for the Web backend":
+    createRoot do (dispose: proc()):
+      let vm = newStreamingPreviewVM()
+      # Default selected backend is Web.
+      var captured: seq[string] = @[]
+      vm.setStoryPublisher(
+        sendStory = proc(g, n, k, sid: string) =
+          discard,
+        sendMutation = proc(t, k, v: string; s: MutationScopeKind) =
+          captured.add(t & "." & k))
+      vm.publishApplyMutation("x", "y", "1", msLocalScope)
+      check captured.len == 0
+      # Switch to a non-Web backend → mutations flow through.
+      vm.selectedBackend.val = pbGpui
+      vm.publishApplyMutation("x", "y", "1", msLocalScope)
+      check captured == @["x.y"]
+      dispose()
+
+  test "clearStoryPublisher silences subsequent publishes":
+    createRoot do (dispose: proc()):
+      let vm = newStreamingPreviewVM()
+      vm.selectedBackend.val = pbTui
+      var hits = 0
+      let sendStoryFn = proc(g, n, k, sid: string) =
+        inc hits
+      let sendMutationFn = proc(t, k, v: string; s: MutationScopeKind) =
+        discard
+      vm.setStoryPublisher(sendStory = sendStoryFn,
+                            sendMutation = sendMutationFn)
+      vm.publishSelectStory("A", "B", "skPage", "A / B")
+      check hits == 1
+      vm.clearStoryPublisher()
+      vm.publishSelectStory("C", "D", "skPage", "C / D")
+      check hits == 1  # no-op after clear

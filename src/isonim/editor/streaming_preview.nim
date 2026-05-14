@@ -84,6 +84,21 @@ export isonim_render_serve.ElementEntry
 export isonim_render_serve.ElementBounds
 
 type
+  MutationScopeKind* = enum
+    ## RS-M12. Editor → launcher ``apply-mutation`` scope. Mirrors
+    ## ``isonim_render_serve.MutationScope`` 1:1 but is duplicated
+    ## here so callers don't have to import `isonim_render_serve`
+    ## for the public API.
+    msLocalScope = "local"
+    msSharedScope = "shared"
+
+func mutationScopeWire*(scope: MutationScopeKind): string =
+  ## Wire string for the ``scope`` field of ``apply-mutation``.
+  case scope
+  of msLocalScope: "local"
+  of msSharedScope: "shared"
+
+type
   BridgeStatus* = enum
     bsIdle       ## No bridge running (Web/TUI default).
     bsLaunching  ## Subprocess spawned; waiting for listen.
@@ -128,6 +143,23 @@ type
       ## per the spec).
     selectedElementPath*: Signal[string]
       ## Convenience proxy — see `selectedElementId`.
+    publisher*: StoryPublisher
+      ## RS-M12. Set by the view layer when a bridge attaches; the
+      ## viewmodel layer publishes ``select-story`` /
+      ## ``apply-mutation`` packets through this hook.
+
+  StoryPublisher* = ref object
+    ## RS-M12. Optional hook that the view layer wires up so editor-
+    ## side code paths (viewmodels, inspector edits) can publish
+    ## ``select-story`` / ``apply-mutation`` packets to the active
+    ## bridge without taking a transitive dependency on
+    ## `BridgeClientHandle`. The view layer registers concrete
+    ## closures via `setStoryPublisher`; consumers call the publish
+    ## procs below. Calls when no publisher is registered are no-ops.
+    sendStoryFn*: proc(storyGroup, storyName, storyKind,
+                       storyId: string) {.closure.}
+    sendMutationFn*: proc(target, key, valueLiteral: string;
+                          scope: MutationScopeKind) {.closure.}
 
   BackendBinaryRegistry* = ref object
     ## Maps `PreviewBackend` -> path of the executable that hosts
@@ -404,7 +436,50 @@ proc newStreamingPreviewVM*(initial: PreviewBackend = pbWeb;
     needsBridge: needsBridge,
     canvas: canvas,
     selectedElementId: canvas.selectedElementId,
-    selectedElementPath: canvas.selectedComponentPath)
+    selectedElementPath: canvas.selectedComponentPath,
+    publisher: nil)
+
+proc setStoryPublisher*(vm: StreamingPreviewVM;
+                        sendStory: proc(storyGroup, storyName,
+                                        storyKind, storyId: string)
+                                    {.closure.};
+                        sendMutation: proc(target, key,
+                                           valueLiteral: string;
+                                           scope: MutationScopeKind)
+                                       {.closure.}) =
+  ## RS-M12: the view layer registers concrete bridge senders here
+  ## once a bridge has attached; pass nil-fn arguments to clear (on
+  ## detach). Idempotent — the binding installs the same closures
+  ## across re-attaches so consumer call-sites can keep firing
+  ## without dropping packets during reconnects.
+  vm.publisher = StoryPublisher(sendStoryFn: sendStory,
+                                sendMutationFn: sendMutation)
+
+proc clearStoryPublisher*(vm: StreamingPreviewVM) =
+  ## RS-M12. Call on bridge detach; subsequent publish attempts are
+  ## silent no-ops.
+  vm.publisher = nil
+
+proc publishSelectStory*(vm: StreamingPreviewVM;
+                          storyGroup, storyName, storyKind,
+                          storyId: string) =
+  ## RS-M12: fire ``select-story`` through the registered publisher.
+  ## No-op when no bridge is attached.
+  if vm == nil or vm.publisher == nil or vm.publisher.sendStoryFn == nil:
+    return
+  vm.publisher.sendStoryFn(storyGroup, storyName, storyKind, storyId)
+
+proc publishApplyMutation*(vm: StreamingPreviewVM;
+                            target, key, valueLiteral: string;
+                            scope: MutationScopeKind) =
+  ## RS-M12: fire ``apply-mutation`` through the registered
+  ## publisher. No-op when no bridge is attached or when the active
+  ## backend is Web (Web renders via iframe `srcdoc`; the wire path
+  ## is non-Web only).
+  if vm == nil or vm.selectedBackend.val == pbWeb: return
+  if vm.publisher == nil or vm.publisher.sendMutationFn == nil:
+    return
+  vm.publisher.sendMutationFn(target, key, valueLiteral, scope)
 
 proc selectBackend*(vm: StreamingPreviewVM; backend: PreviewBackend) =
   ## Mode menu wiring. Editor calls this on user click; clears any
@@ -521,6 +596,102 @@ func bridgeUrlForBackend*(backend: PreviewBackend): string =
   ## for ``pbWeb`` (which uses the iframe path).
   let port = bridgePortForBackend(backend)
   if port == 0: "" else: "ws://127.0.0.1:" & $port & "/"
+
+# ---------------------------------------------------------------------------
+# RS-M12 — JSON body builders for `select-story` and `apply-mutation`.
+# Used by the JS-side WS sender (below) and the native test harness.
+# The byte shape is hand-rolled here so the editor's outbound JSON is
+# deterministic (the launcher's reference round-trip test pins it).
+# ---------------------------------------------------------------------------
+
+proc jsonEscapeString(s: string): string =
+  ## Minimal RFC 8259 escaper for ASCII property strings the editor
+  ## emits. Mirrors the launcher-side helper in
+  ## ``isonim-render-serve/src/isonim_render_serve/event_dispatch.nim``.
+  result = newStringOfCap(s.len + 2)
+  result.add '"'
+  for ch in s:
+    case ch
+    of '\\': result.add "\\\\"
+    of '"': result.add "\\\""
+    of '\b': result.add "\\b"
+    of '\f': result.add "\\f"
+    of '\n': result.add "\\n"
+    of '\r': result.add "\\r"
+    of '\t': result.add "\\t"
+    else:
+      if ch.uint8 < 0x20'u8:
+        const hexChars = "0123456789abcdef"
+        result.add "\\u00"
+        result.add hexChars[int(ch.uint8 shr 4)]
+        result.add hexChars[int(ch.uint8 and 0x0F'u8)]
+      else:
+        result.add ch
+  result.add '"'
+
+proc encodeSelectStoryBody*(storyGroup, storyName, storyKind,
+                            storyId: string): string =
+  ## Build the ``select-story`` JSON body. Field order locked to
+  ## ``type, group, name, kind, storyId`` — see RS-M12 § *Wire
+  ## protocol changes*.
+  result = newStringOfCap(96 + storyId.len + storyGroup.len +
+                          storyName.len + storyKind.len)
+  result.add "{\"type\":\"select-story\""
+  result.add ",\"group\":"
+  result.add jsonEscapeString(storyGroup)
+  result.add ",\"name\":"
+  result.add jsonEscapeString(storyName)
+  result.add ",\"kind\":"
+  result.add jsonEscapeString(storyKind)
+  result.add ",\"storyId\":"
+  result.add jsonEscapeString(storyId)
+  result.add "}"
+
+proc encodeApplyMutationBody*(target, key, valueLiteral: string;
+                              scope: MutationScopeKind): string =
+  ## Build the ``apply-mutation`` JSON body. ``valueLiteral`` must
+  ## be the *JSON literal* of the value (e.g. ``"true"``, ``"14"``,
+  ## ``"\"solarized\""``) — the editor's inspector knows the
+  ## value's primitive type at edit time and emits the matching
+  ## literal so the launcher can decode it as the right JSON node
+  ## without a separate type tag. Field order locked to ``type,
+  ## target, key, value, scope``.
+  result = newStringOfCap(96 + target.len + key.len + valueLiteral.len)
+  result.add "{\"type\":\"apply-mutation\""
+  result.add ",\"target\":"
+  result.add jsonEscapeString(target)
+  result.add ",\"key\":"
+  result.add jsonEscapeString(key)
+  result.add ",\"value\":"
+  result.add valueLiteral
+  result.add ",\"scope\":"
+  result.add jsonEscapeString(mutationScopeWire(scope))
+  result.add "}"
+
+proc valueLiteralForString*(s: string): string =
+  ## Convenience for callers that have a raw string value to inject
+  ## as a JSON string literal in the ``apply-mutation`` body.
+  jsonEscapeString(s)
+
+func storyKindWire*(kind: StoryKind): string =
+  ## Wire identifier for ``select-story.kind``. Mirrors the editor
+  ## enum but ships as a flat string so the launcher can dispatch
+  ## without importing the editor types.
+  case kind
+  of skFoundation: "skFoundation"
+  of skComponent: "skComponent"
+  of skPattern: "skPattern"
+  of skPage: "skPage"
+  of skFlow: "skFlow"
+  of skGuideline: "skGuideline"
+  of skVectorSymbol: "skVectorSymbol"
+
+proc storyIdFor*(story: StoryRef): string =
+  ## Canonical ``"<group> / <name>"`` identifier the editor sends to
+  ## the launcher. Mirrors the format the launcher's story-id
+  ## taxonomy modules (``task_app/core/story_ids.nim`` /
+  ## ``settings_app/core/story_ids.nim``) declare.
+  story.group & " / " & story.name
 
 when defined(js):
   type BridgeClientHandle* = ref object
@@ -838,6 +1009,76 @@ when defined(js):
        dispatchMeta, ", ", onClick, ", ", onHover, ", ", onDblClick, """);
     """].}
     BridgeClientHandle(socket: socket, canvas: canvas, url: bridgeUrl)
+
+  proc sendSelectStory*(handle: BridgeClientHandle;
+                        storyGroup, storyName, storyKind,
+                        storyId: string) =
+    ## RS-M12: send a ``select-story`` I packet over the bridge's
+    ## WebSocket. The launcher's `StoryDispatchSink` decodes it and
+    ## reconfigures the live VM. No-op when the socket isn't open
+    ## yet — callers re-fire on bridge reconnect via the editor's
+    ## attach lifecycle.
+    if handle == nil: return
+    var sock = handle.socket
+    let body = encodeSelectStoryBody(storyGroup, storyName, storyKind,
+                                     storyId)
+    {.emit: ["""
+      (function (ws, jsonStr) {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        try {
+          var enc = new TextEncoder();
+          var bodyBytes = enc.encode(jsonStr);
+          var buf = new Uint8Array(5 + bodyBytes.length);
+          buf[0] = 0x49; // 'I'
+          var n = bodyBytes.length;
+          buf[1] = n & 0xFF;
+          buf[2] = (n >>> 8) & 0xFF;
+          buf[3] = (n >>> 16) & 0xFF;
+          buf[4] = (n >>> 24) & 0xFF;
+          buf.set(bodyBytes, 5);
+          ws.send(buf);
+        } catch (_) {}
+      })(""", sock, ", ", body.cstring, ");"].}
+
+  proc sendApplyMutation*(handle: BridgeClientHandle;
+                          target, key, valueLiteral: string;
+                          scope: MutationScopeKind) =
+    ## RS-M12: send an ``apply-mutation`` I packet. ``valueLiteral``
+    ## is the JSON literal of the value (see
+    ## ``encodeApplyMutationBody`` for the contract). No-op when the
+    ## socket isn't open.
+    if handle == nil: return
+    var sock = handle.socket
+    let body = encodeApplyMutationBody(target, key, valueLiteral, scope)
+    {.emit: ["""
+      (function (ws, jsonStr) {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        try {
+          var enc = new TextEncoder();
+          var bodyBytes = enc.encode(jsonStr);
+          var buf = new Uint8Array(5 + bodyBytes.length);
+          buf[0] = 0x49; // 'I'
+          var n = bodyBytes.length;
+          buf[1] = n & 0xFF;
+          buf[2] = (n >>> 8) & 0xFF;
+          buf[3] = (n >>> 16) & 0xFF;
+          buf[4] = (n >>> 24) & 0xFF;
+          buf.set(bodyBytes, 5);
+          ws.send(buf);
+        } catch (_) {}
+      })(""", sock, ", ", body.cstring, ");"].}
+
+  proc isBridgeOpen*(handle: BridgeClientHandle): bool =
+    ## Probe whether the bridge socket is OPEN — used by reactive
+    ## senders to delay the initial select-story until the WS
+    ## handshake completes.
+    if handle == nil or handle.socket == nil: return false
+    var sock = handle.socket
+    var ready = 0
+    {.emit: ["""
+      try { """, ready, """ = """, sock, """.readyState; } catch (_) {}
+    """].}
+    ready == 1  # WebSocket.OPEN
 
   proc detachBridgeClient*(handle: BridgeClientHandle) =
     ## Close the WebSocket and unbind the canvas mouse listeners. Safe

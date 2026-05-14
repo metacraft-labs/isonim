@@ -369,9 +369,60 @@ when defined(js):
     ## and re-attach if the backend changed.
     handle*: BridgeClientHandle
     attachedBackend*: PreviewBackend
+    lastSentStoryId*: string
+      ## RS-M12: dedupes redundant ``select-story`` sends. The
+      ## reactive render-effect can fire on signal changes that
+      ## don't actually represent a story switch (e.g. backend
+      ## change, edit-mode flip); tracking the last-sent id lets us
+      ## skip those no-op packets.
 
   proc newBridgeBinding*(): BridgeBinding =
-    BridgeBinding(handle: nil, attachedBackend: pbWeb)
+    BridgeBinding(handle: nil, attachedBackend: pbWeb,
+                  lastSentStoryId: "")
+
+  proc sendCurrentStory*(binding: BridgeBinding; vm: EditorVM) =
+    ## RS-M12: emit the ``select-story`` I packet for the editor's
+    ## currently-selected story over an attached bridge. Idempotent:
+    ## the second call with the same story is a no-op. Safe to call
+    ## without a live socket — the inner `sendSelectStory` guards on
+    ## `ws.readyState === OPEN`.
+    if binding.handle == nil: return
+    let story = vm.selectedStory.val
+    if story.group.len == 0 or story.name.len == 0: return
+    let storyId = storyIdFor(story)
+    if storyId == binding.lastSentStoryId: return
+    if not isBridgeOpen(binding.handle):
+      # Drop now; the caller's render effect re-fires when the WS
+      # transitions to OPEN. We deliberately do NOT buffer here —
+      # browsers fire `open` events that the WS-client emit block
+      # can pick up; the next reactive run will catch the new state.
+      return
+    sendSelectStory(binding.handle, story.group, story.name,
+                    storyKindWire(story.kind), storyId)
+    binding.lastSentStoryId = storyId
+
+  proc installStoryPublisher(binding: BridgeBinding;
+                              streaming: StreamingPreviewVM) =
+    ## RS-M12: register sender closures on the streaming-preview VM
+    ## so the viewmodel layer (inspector edits, story selection)
+    ## can publish without taking a transitive dependency on
+    ## ``BridgeClientHandle``. The closures capture ``binding`` by
+    ## reference so they pick up handle changes across re-attaches.
+    let b = binding
+    streaming.setStoryPublisher(
+      sendStory = proc(storyGroup, storyName, storyKind,
+                       storyId: string) =
+        if b.handle == nil: return
+        if storyId == b.lastSentStoryId: return
+        if not isBridgeOpen(b.handle): return
+        sendSelectStory(b.handle, storyGroup, storyName, storyKind,
+                        storyId)
+        b.lastSentStoryId = storyId,
+      sendMutation = proc(target, key, valueLiteral: string;
+                          scope: MutationScopeKind) =
+        if b.handle == nil: return
+        if not isBridgeOpen(b.handle): return
+        sendApplyMutation(b.handle, target, key, valueLiteral, scope))
 
   proc attachIfNeeded*(binding: BridgeBinding; vm: EditorVM;
                        canvas: Element; useCanvas: bool;
@@ -380,6 +431,11 @@ when defined(js):
     ## caller's main render-effect on every tick; detaches when
     ## ``useCanvas`` flips false, re-attaches when the backend
     ## changes.
+    ##
+    ## RS-M12: after every attach, fire ``sendCurrentStory`` so a
+    ## freshly opened bridge always knows which story to mount.
+    ## Subsequent story changes are picked up by the same render
+    ## effect (the closure subscribes to ``vm.selectedStory``).
     let streaming = vm.streamingPreview
     if streaming == nil:
       return
@@ -389,12 +445,20 @@ when defined(js):
         if binding.handle != nil:
           detachBridgeClient(binding.handle)
           binding.handle = nil
+          binding.lastSentStoryId = ""
         let url = bridgeUrlForBackend(activeBackend)
         if url.len > 0:
           binding.handle = attachBridgeClient(streaming, canvas, url,
                                                onVectorDbl)
           binding.attachedBackend = activeBackend
+          installStoryPublisher(binding, streaming)
+      # RS-M12: every reactive tick — including the one that just
+      # attached — tries to publish the current story. Once the WS
+      # is OPEN the send lands; until then it's a cheap no-op.
+      sendCurrentStory(binding, vm)
     else:
       if binding.handle != nil:
         detachBridgeClient(binding.handle)
         binding.handle = nil
+        binding.lastSentStoryId = ""
+        streaming.clearStoryPublisher()

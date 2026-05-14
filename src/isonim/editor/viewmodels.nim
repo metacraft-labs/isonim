@@ -1635,6 +1635,18 @@ proc selectStory*(editor: EditorVM; story: StoryRef): bool {.discardable.} =
   editor.syncFlowStep(story)
   editor.recordEditorTiming(epbkStorySelection, 1,
     "story-selection:" & story.group & "/" & story.name)
+  # RS-M12: publish the ``select-story`` packet to the active bridge.
+  # On the JS target, ``canvas_mount.attachIfNeeded``'s reactive
+  # effect ALSO fires `sendCurrentStory` on its next tick — the
+  # `lastSentStoryId` guard inside the bridge binding dedupes the
+  # two send paths, so packets land exactly once. This explicit
+  # call lets headless test harnesses (and any future native render
+  # surfaces) trigger the send without driving the canvas mount
+  # render effect.
+  let storyId = storyIdFor(story)
+  let kindWire = storyKindWire(story.kind)
+  editor.streamingPreview.publishSelectStory(story.group, story.name,
+                                              kindWire, storyId)
   true
 
 proc computeVectorEditorUsages*(editor: EditorVM; symbolName: string):
@@ -3135,6 +3147,25 @@ proc editInspectorProperty*(editor: EditorVM;
     editor.workspaceEditDiagnostics.val = @[]
     editor.recordEditorTiming(epbkPropertyEditPreview, 1,
       "source-plan:" & result.sourceEdit.property)
+    # RS-M12: publish the accepted edit to the active launcher
+    # bridge so the rendered surface reactively reflects the
+    # mutation. The publisher is registered by the view layer's
+    # ``BridgeBinding`` once a WebSocket attaches; ``publishApply-
+    # Mutation`` is a no-op when no bridge is connected or when the
+    # active backend is Web (Web renders via iframe srcdoc, not the
+    # bridge). The componentPath identity comes from the canvas-
+    # selected element — same string the launcher's element-tree
+    # manifest emits, so the dispatch on the launcher side maps to
+    # the same node.
+    let element = editor.inspector.selectedElement.val
+    let target = element.fallbackElementId()
+    let valueLiteral = valueLiteralForString(request.newValue)
+    let scopeKind =
+      if request.scope == pesShared: msSharedScope
+      else: msLocalScope
+    if target.len > 0:
+      editor.streamingPreview.publishApplyMutation(
+        target, request.property, valueLiteral, scopeKind)
     let acceptedRecord = result.record
     editor.chat.accumulatedEdits.update proc(prev: seq[EditRecord]): seq[EditRecord] =
       result = prev
