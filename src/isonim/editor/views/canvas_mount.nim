@@ -367,7 +367,13 @@ when defined(js):
     ## Lifecycle holder for a per-view bridge attachment. Stored on
     ## the view's closure so the next render-effect tick can detach
     ## and re-attach if the backend changed.
+    ##
+    ## RS-M13: ``tuiHandle`` is set when the active backend is
+    ## ``pbTui`` and an xterm.js Terminal is mounted; mutually
+    ## exclusive with ``handle`` (the canvas-based F/M/I client).
     handle*: BridgeClientHandle
+    tuiHandle*: TuiTerminalHandle
+    tuiHost*: Element
     attachedBackend*: PreviewBackend
     lastSentStoryId*: string
       ## RS-M12: dedupes redundant ``select-story`` sends. The
@@ -377,52 +383,116 @@ when defined(js):
       ## skip those no-op packets.
 
   proc newBridgeBinding*(): BridgeBinding =
-    BridgeBinding(handle: nil, attachedBackend: pbWeb,
+    BridgeBinding(handle: nil, tuiHandle: nil, tuiHost: nil,
+                  attachedBackend: pbWeb,
                   lastSentStoryId: "")
 
   proc sendCurrentStory*(binding: BridgeBinding; vm: EditorVM) =
-    ## RS-M12: emit the ``select-story`` I packet for the editor's
-    ## currently-selected story over an attached bridge. Idempotent:
-    ## the second call with the same story is a no-op. Safe to call
-    ## without a live socket — the inner `sendSelectStory` guards on
-    ## `ws.readyState === OPEN`.
-    if binding.handle == nil: return
+    ## RS-M12 / RS-M13: emit the ``select-story`` packet for the
+    ## editor's currently-selected story over whichever transport is
+    ## attached (F/M/I via ``BridgeClientHandle`` or D/M/P via
+    ## ``TuiTerminalHandle``). Idempotent: the second call with the
+    ## same story is a no-op. Safe to call without a live socket —
+    ## the inner senders guard on ``ws.readyState === OPEN``.
     let story = vm.selectedStory.val
     if story.group.len == 0 or story.name.len == 0: return
     let storyId = storyIdFor(story)
     if storyId == binding.lastSentStoryId: return
-    if not isBridgeOpen(binding.handle):
-      # Drop now; the caller's render effect re-fires when the WS
-      # transitions to OPEN. We deliberately do NOT buffer here —
-      # browsers fire `open` events that the WS-client emit block
-      # can pick up; the next reactive run will catch the new state.
-      return
-    sendSelectStory(binding.handle, story.group, story.name,
-                    storyKindWire(story.kind), storyId)
-    binding.lastSentStoryId = storyId
+    if binding.tuiHandle != nil:
+      if not isTuiBridgeOpen(binding.tuiHandle): return
+      sendTuiSelectStory(binding.tuiHandle, story.group, story.name,
+                         storyKindWire(story.kind), storyId)
+      binding.lastSentStoryId = storyId
+    elif binding.handle != nil:
+      if not isBridgeOpen(binding.handle): return
+      sendSelectStory(binding.handle, story.group, story.name,
+                      storyKindWire(story.kind), storyId)
+      binding.lastSentStoryId = storyId
 
   proc installStoryPublisher(binding: BridgeBinding;
                               streaming: StreamingPreviewVM) =
-    ## RS-M12: register sender closures on the streaming-preview VM
-    ## so the viewmodel layer (inspector edits, story selection)
-    ## can publish without taking a transitive dependency on
-    ## ``BridgeClientHandle``. The closures capture ``binding`` by
-    ## reference so they pick up handle changes across re-attaches.
+    ## RS-M12 / RS-M13: register sender closures on the streaming-
+    ## preview VM so the viewmodel layer (inspector edits, story
+    ## selection) can publish without taking a transitive dependency
+    ## on either handle type. The closures capture ``binding`` by
+    ## reference so they pick up handle changes across re-attaches
+    ## (including the F/M/I ↔ D/M/P swap when the user toggles TUI).
     let b = binding
     streaming.setStoryPublisher(
       sendStory = proc(storyGroup, storyName, storyKind,
                        storyId: string) =
-        if b.handle == nil: return
         if storyId == b.lastSentStoryId: return
-        if not isBridgeOpen(b.handle): return
-        sendSelectStory(b.handle, storyGroup, storyName, storyKind,
-                        storyId)
-        b.lastSentStoryId = storyId,
+        if b.tuiHandle != nil:
+          if not isTuiBridgeOpen(b.tuiHandle): return
+          sendTuiSelectStory(b.tuiHandle, storyGroup, storyName,
+                             storyKind, storyId)
+          b.lastSentStoryId = storyId
+        elif b.handle != nil:
+          if not isBridgeOpen(b.handle): return
+          sendSelectStory(b.handle, storyGroup, storyName, storyKind,
+                          storyId)
+          b.lastSentStoryId = storyId,
       sendMutation = proc(target, key, valueLiteral: string;
                           scope: MutationScopeKind) =
-        if b.handle == nil: return
-        if not isBridgeOpen(b.handle): return
-        sendApplyMutation(b.handle, target, key, valueLiteral, scope))
+        if b.tuiHandle != nil:
+          if not isTuiBridgeOpen(b.tuiHandle): return
+          sendTuiApplyMutation(b.tuiHandle, target, key,
+                               valueLiteral, scope)
+        elif b.handle != nil:
+          if not isBridgeOpen(b.handle): return
+          sendApplyMutation(b.handle, target, key, valueLiteral, scope))
+
+  proc ensureTuiHost(canvas: Element): Element =
+    ## Resolve (or lazily create) the ``<div data-tui-terminal="true">``
+    ## host that xterm.js mounts into. The host lives as a sibling of
+    ## the canvas inside the shared ``CanvasMount`` wrapper so the
+    ## overlay (hover label, selection outline) — which is also a
+    ## sibling of the canvas — overlays the terminal correctly.
+    ## Returns nil on JS-environment failure.
+    var host: Element
+    {.emit: ["""
+      (function (canvas) {
+        if (!canvas) return null;
+        var parent = canvas.parentNode;
+        if (!parent) return null;
+        var existing = parent.querySelector('[data-tui-terminal-host="true"]');
+        if (existing) {
+          """, host, """ = existing;
+          return;
+        }
+        var div = document.createElement('div');
+        div.setAttribute('data-tui-terminal-host', 'true');
+        div.style.position = 'absolute';
+        div.style.left = '0';
+        div.style.top = '0';
+        div.style.width = '100%';
+        div.style.height = '100%';
+        div.style.boxSizing = 'border-box';
+        div.style.backgroundColor = '#0a101e';
+        div.style.overflow = 'hidden';
+        // Insert BEFORE the canvas so any overlay siblings (which the
+        // shared canvas-mount inserts as later siblings of the canvas)
+        // continue to paint above the terminal.
+        parent.insertBefore(div, canvas);
+        """, host, """ = div;
+      })(""", canvas, ");"].}
+    host
+
+  proc setTuiHostVisible(host: Element; visible: bool) =
+    if host == nil: return
+    {.emit: ["""
+      (function (host, visible) {
+        if (!host) return;
+        host.style.display = visible ? 'block' : 'none';
+      })(""", host, ", ", visible, ");"].}
+
+  proc setCanvasHidden(canvas: Element; hidden: bool) =
+    if canvas == nil: return
+    {.emit: ["""
+      (function (canvas, hidden) {
+        if (!canvas) return;
+        canvas.style.visibility = hidden ? 'hidden' : 'visible';
+      })(""", canvas, ", ", hidden, ");"].}
 
   proc attachIfNeeded*(binding: BridgeBinding; vm: EditorVM;
                        canvas: Element; useCanvas: bool;
@@ -436,39 +506,63 @@ when defined(js):
     ## freshly opened bridge always knows which story to mount.
     ## Subsequent story changes are picked up by the same render
     ## effect (the closure subscribes to ``vm.selectedStory``).
+    ##
+    ## RS-M13: when the active backend is ``pbTui`` the editor
+    ## attaches an xterm.js Terminal (``attachTuiTerminalClient``)
+    ## inside a sibling ``<div data-tui-terminal="true">`` instead of
+    ## the canvas; the F/M/I clients keep using ``canvas`` for every
+    ## other non-Web backend.
     let streaming = vm.streamingPreview
     if streaming == nil:
       return
     let activeBackend = vm.platform.val
     if useCanvas:
-      if binding.handle == nil or binding.attachedBackend != activeBackend:
+      let backendChanged = binding.attachedBackend != activeBackend
+      let needsAttach = backendChanged or
+        (activeBackend == pbTui and binding.tuiHandle == nil) or
+        (activeBackend != pbTui and binding.handle == nil)
+      if needsAttach:
+        # Drop whichever transport (if any) is currently attached.
         if binding.handle != nil:
           detachBridgeClient(binding.handle)
           binding.handle = nil
-          binding.lastSentStoryId = ""
+        if binding.tuiHandle != nil:
+          detachTuiTerminalClient(binding.tuiHandle)
+          binding.tuiHandle = nil
+        binding.lastSentStoryId = ""
         let url = bridgeUrlForBackend(activeBackend)
         if url.len > 0:
-          # RS-M12 fix: register an onWsOpen callback so the initial
-          # select-story flushes the instant the WS handshake
-          # completes. Without this, sendCurrentStory below runs
-          # while readyState is still CONNECTING and is dropped;
-          # nothing else triggers a re-tick to retry, so the launcher
-          # renders its default content forever.
           let capturedBinding = binding
           let capturedVm = vm
           let onOpen = proc() =
             sendCurrentStory(capturedBinding, capturedVm)
-          binding.handle = attachBridgeClient(streaming, canvas, url,
-                                               onVectorDbl, onOpen)
+          if activeBackend == pbTui:
+            let host = ensureTuiHost(canvas)
+            binding.tuiHost = host
+            setTuiHostVisible(host, true)
+            setCanvasHidden(canvas, true)
+            binding.tuiHandle = attachTuiTerminalClient(
+              streaming, host, url, 80, 24, onOpen)
+          else:
+            setCanvasHidden(canvas, false)
+            if binding.tuiHost != nil:
+              setTuiHostVisible(binding.tuiHost, false)
+            binding.handle = attachBridgeClient(streaming, canvas, url,
+                                                 onVectorDbl, onOpen)
           binding.attachedBackend = activeBackend
           installStoryPublisher(binding, streaming)
-      # RS-M12: every reactive tick — including the one that just
-      # attached — tries to publish the current story. Once the WS
-      # is OPEN the send lands; until then it's a cheap no-op.
       sendCurrentStory(binding, vm)
     else:
       if binding.handle != nil:
         detachBridgeClient(binding.handle)
         binding.handle = nil
+      if binding.tuiHandle != nil:
+        detachTuiTerminalClient(binding.tuiHandle)
+        binding.tuiHandle = nil
+      if binding.tuiHost != nil:
+        setTuiHostVisible(binding.tuiHost, false)
+      setCanvasHidden(canvas, false)
+      if binding.lastSentStoryId.len > 0 or binding.handle != nil or
+         binding.tuiHandle != nil:
         binding.lastSentStoryId = ""
         streaming.clearStoryPublisher()

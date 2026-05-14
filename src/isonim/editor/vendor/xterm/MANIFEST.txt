@@ -1,0 +1,39 @@
+## Vendored xterm.js — pinned for RS-M13.
+##
+## Source: https://www.npmjs.com/package/xterm
+## Package: xterm
+## Version: 5.3.0
+##
+## License: MIT (see https://github.com/xtermjs/xterm.js/blob/5.3.0/LICENSE)
+##
+## Files (SHA-256):
+##
+##   xterm.js   f0aea0f75f48559013ae6643c2479dd737d26da42d5524e6d2b70915ae6523c7   283404 bytes
+##   xterm.css  832f3f2c603b43ad4351ff04970150cc7a873014276db126a6065c6dd81e4872     5383 bytes
+##
+## The vendoring procedure (reproducible from a clean shell):
+##
+##   tmpdir=$(mktemp -d)
+##   cd "$tmpdir"
+##   npm init -y
+##   npm install xterm@5.3.0
+##   cp node_modules/xterm/lib/xterm.js   <repo>/isonim/src/isonim/editor/vendor/xterm/xterm.js
+##   cp node_modules/xterm/css/xterm.css  <repo>/isonim/src/isonim/editor/vendor/xterm/xterm.css
+##   shasum -a 256 <repo>/isonim/src/isonim/editor/vendor/xterm/xterm.{js,css}
+##
+## The shasums above MUST match. If they don't, npm has shipped a
+## different tarball under the same version tag (this happens when
+## someone re-publishes a unique build); pin to a different patch
+## version after auditing the diff and bump this manifest.
+##
+## NO runtime npm dependency. The editor bundle copies these two
+## files into `build/editor/vendor/xterm/` (see the
+## `isonim-examples/Justfile` `editor-build` recipe) and the editor
+## HTML page loads them via `<script src="vendor/xterm/xterm.js">`
+## and `<link rel="stylesheet" href="vendor/xterm/xterm.css">` before
+## the Nim-emitted `editor.js`.
+##
+## The UMD bundle exposes a `Terminal` global on `window` when no AMD
+## / CommonJS loader is present. The editor's RS-M13 terminal-attach
+## block consumes `window.Terminal`; the Playwright probe asserts it
+## is defined after page load.

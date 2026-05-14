@@ -65,7 +65,7 @@
 ## WebSocket client, and assert the `hello` M packet announces the
 ## backend identifier the launcher requested.
 
-import std/[options, tables]
+import std/[json, options, strutils, tables]
 when not defined(js):
   import std/[net, os, osproc, times]
 when defined(js):
@@ -518,13 +518,55 @@ proc bumpReloadGeneration*(vm: StreamingPreviewVM) =
 # RS-M11: M-packet dispatch + canvas hit-test forwarding
 # ---------------------------------------------------------------------------
 
+proc decodeTuiElementTreeAsManifest(jsonBody: string): ElementTreeManifest =
+  ## RS-M13: handle the D/M/P TUI launcher's element-tree schema. It
+  ## differs from RS-M11's by:
+  ##
+  ##   * surface dims are ``surfaceCols`` / ``surfaceRows`` (cells)
+  ##     not ``surfaceWidth`` / ``surfaceHeight`` (pixels);
+  ##   * a top-level ``"boundsUnit": "cells"`` tag is present.
+  ##
+  ## We project into the existing ``ElementTreeManifest`` shape so
+  ## downstream code (``elementAt``, overlay positioning) works
+  ## unmodified. The bounds stay in cells — callers that need pixels
+  ## must branch on ``boundsUnit`` at the manifest level (the
+  ## TUI-terminal mount path translates cell coords directly).
+  let node = json.parseJson(jsonBody)
+  result.frameSeq = if node.hasKey("frameSeq"): node["frameSeq"].getInt else: 0
+  result.surfaceWidth = node["surfaceCols"].getInt
+  result.surfaceHeight = node["surfaceRows"].getInt
+  result.elements = @[]
+  for raw in node["elements"]:
+    var entry: ElementEntry
+    entry.id = raw["id"].getStr
+    entry.componentPath = raw["componentPath"].getStr
+    entry.kind = raw["kind"].getStr
+    let b = raw["bounds"]
+    entry.bounds = ElementBounds(
+      x: b["x"].getInt, y: b["y"].getInt,
+      w: b["w"].getInt, h: b["h"].getInt)
+    result.elements.add entry
+
 proc dispatchMetaPacket*(vm: StreamingPreviewVM; jsonBody: string) =
   ## Dispatch one decoded M-packet JSON body. Today the only sub-kind
   ## the editor consumes from a launcher is `element-tree`; other
   ## sub-kinds (`hello`, `resize`, `hot-reload`, …) are handled by
   ## the existing bridge plumbing or simply ignored. Unknown sub-
   ## kinds are intentionally non-fatal per RS-M0 § "Error handling".
+  ##
+  ## RS-M13: the TUI native-terminal launcher uses the same M sub-kind
+  ## but with cell coordinates and a ``"boundsUnit": "cells"`` tag.
+  ## We detect that variant by the tag's presence and decode through
+  ## a TUI-aware projection that re-uses the existing
+  ## ``ElementTreeManifest`` shape.
   if isElementTreeBody(jsonBody):
+    if jsonBody.contains("\"boundsUnit\":\"cells\""):
+      try:
+        let manifest = decodeTuiElementTreeAsManifest(jsonBody)
+        vm.canvas.updateManifest(manifest)
+      except CatchableError:
+        discard
+      return
     try:
       let manifest = decodeElementTreeJson(jsonBody)
       vm.canvas.updateManifest(manifest)
@@ -583,9 +625,14 @@ func bridgePortForBackend*(backend: PreviewBackend): int =
   ## Default per-backend bridge port. Matches
   ## `isonim-examples/tests/browser/playwright.config.ts`. Web has no
   ## bridge (the editor renders Web in an iframe), so it returns 0.
+  ##
+  ## RS-M13: the TUI backend moved off the pixel F/M/I transport
+  ## (which served on 8102) onto the D/M/P native-terminal transport
+  ## (which serves on 8112 via the new ``isonim-examples-tui-term``
+  ## launcher, proxied through ``/tui-bridge``).
   case backend
   of pbWeb: 0
-  of pbTui: 8102
+  of pbTui: 8112
   of pbGpui: 8103
   of pbFreya: 8104
   of pbCocoa: 8105
@@ -606,29 +653,49 @@ when defined(js):
     })(#, #)
     """.}
 
+  proc jsTuiBridgeUrl(fallbackPort: int): cstring {.importjs:
+    """
+    (function(fallbackPort) {
+      var scheme = 'ws';
+      var host = '';
+      try {
+        if (window.location.protocol === 'https:') scheme = 'wss';
+        host = window.location.host || '';
+      } catch (_) {}
+      if (!host) host = '127.0.0.1:' + fallbackPort;
+      return scheme + '://' + host + '/tui-bridge';
+    })(#)
+    """.}
+
 func bridgeUrlForBackend*(backend: PreviewBackend): string =
   ## WebSocket URL for ``backend``'s default bridge launcher. Empty
   ## for ``pbWeb`` (which uses the iframe path).
   ##
   ## On JS targets we use a same-origin path-based URL
-  ## (``ws://<location.host>/bridge/<backend>``) so the page works
-  ## when the browser is on a different machine from the editor host
-  ## — ``tools/editor-server.mjs`` proxies these paths to the
-  ## launcher's localhost port. On native targets (tests, headless)
-  ## we keep the direct ``ws://127.0.0.1:<port>`` URL so the
-  ## launcher-subprocess tests don't need a proxy in the loop.
+  ## (``ws://<location.host>/bridge/<backend>`` for F/M/I backends,
+  ## ``ws://<location.host>/tui-bridge`` for the RS-M13 TUI D/M/P
+  ## launcher) so the page works when the browser is on a different
+  ## machine from the editor host — ``tools/editor-server.mjs``
+  ## proxies these paths to the launcher's localhost port. On native
+  ## targets (tests, headless) we keep the direct ``ws://127.0.0.1:
+  ## <port>`` URL so the launcher-subprocess tests don't need a proxy
+  ## in the loop.
   let port = bridgePortForBackend(backend)
   if port == 0: return ""
   when defined(js):
-    let slug =
-      case backend
-      of pbWeb: ""
-      of pbTui: "tui"
-      of pbGpui: "gpui"
-      of pbFreya: "freya"
-      of pbCocoa: "cocoa"
-      of pbAndroid: "android"
-    $jsBridgeUrl(slug.cstring, port)
+    case backend
+    of pbTui:
+      $jsTuiBridgeUrl(port)
+    else:
+      let slug =
+        case backend
+        of pbWeb: ""
+        of pbTui: ""  # unreachable; handled above
+        of pbGpui: "gpui"
+        of pbFreya: "freya"
+        of pbCocoa: "cocoa"
+        of pbAndroid: "android"
+      $jsBridgeUrl(slug.cstring, port)
   else:
     "ws://127.0.0.1:" & $port & "/"
 
@@ -1145,3 +1212,282 @@ when defined(js):
       })(""", sock, ", ", canvas, ");"].}
     handle.socket = nil
     handle.canvas = nil
+
+  # ---------------------------------------------------------------------------
+  # RS-M13: TUI native-terminal client (xterm.js).
+  # ---------------------------------------------------------------------------
+  type
+    TuiTerminalHandle* = ref object
+      ## Opaque handle for an attached RS-M13 TUI terminal. Holds the
+      ## live WebSocket, the host DIV element, and the JS-side
+      ## xterm.js ``Terminal`` instance.
+      socket*: JsObject
+      host*: Element
+      term*: JsObject
+      url*: string
+
+  proc attachTuiTerminalClient*(vm: StreamingPreviewVM; host: Element;
+                                bridgeUrl: string;
+                                cols: int = 80; rows: int = 24;
+                                onWsOpen: proc() = nil):
+                                TuiTerminalHandle =
+    ## RS-M13: open a WS to ``bridgeUrl``, mount an xterm.js Terminal
+    ## inside ``host``, and wire the D/M/P packet stream into
+    ## ``vm`` + ``host``. D-packet payloads stream into ``term.write``;
+    ## M packets route through ``dispatchMetaPacket``; click handlers
+    ## translate cell coordinates to manifest hits via the editor's
+    ## ``clickCanvas`` / ``hoverCanvas`` callbacks.
+    var socket: JsObject
+    var term: JsObject
+    let dispatchMeta = proc(body: cstring) =
+      vm.dispatchMetaPacket($body)
+    let onClick = proc(x: int; y: int) =
+      discard vm.clickCanvas(x, y)
+      when defined(js):
+        let path = vm.canvas.selectedComponentPath.val
+        let id = vm.canvas.selectedElementId.val
+        let bOpt = vm.canvas.boundsOf(id)
+        var boundsX = 0
+        var boundsY = 0
+        var boundsW = 0
+        var boundsH = 0
+        var haveBounds = false
+        if bOpt.isSome:
+          let b = bOpt.get
+          boundsX = b.x
+          boundsY = b.y
+          boundsW = b.w
+          boundsH = b.h
+          haveBounds = true
+        let haveBoundsFlag = if haveBounds: 1 else: 0
+        {.emit: ["""
+          try {
+            if (window.__isonimTestMode === true) {
+              window.__isonimSelectedComponentPath = """, path.cstring, """;
+              window.__isonimSelectedElementId = """, id.cstring, """;
+              if (""", haveBoundsFlag, """) {
+                window.__isonimSelectedBounds = {
+                  x: """, boundsX, """,
+                  y: """, boundsY, """,
+                  w: """, boundsW, """,
+                  h: """, boundsH, """
+                };
+              } else {
+                window.__isonimSelectedBounds = null;
+              }
+            }
+          } catch (_) {}
+        """].}
+    let onHover = proc(x: int; y: int) =
+      discard vm.hoverCanvas(x, y)
+    {.emit: ["""
+      (function (host, url, cols, rows, dispatchMeta, onClick, onHover, onWsOpen) {
+        if (!host || !url) return null;
+        if (typeof window.Terminal === 'undefined') {
+          console.error('attachTuiTerminalClient: window.Terminal undefined; xterm.js bundle missing');
+          return null;
+        }
+        host.setAttribute('data-tui-terminal', 'true');
+        var term = new window.Terminal({
+          cols: cols, rows: rows,
+          scrollback: 0,
+          allowProposedApi: true,
+          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+          fontSize: 13,
+          theme: { background: '#0a101e', foreground: '#e2e8f0' },
+          disableStdin: true,
+          cursorBlink: false,
+          cursorStyle: 'block',
+          convertEol: false,
+        });
+        try { term.open(host); } catch (e) {
+          console.error('term.open failed', e);
+        }
+        var ws = new WebSocket(url);
+        ws.binaryType = 'arraybuffer';
+        ws.addEventListener('open', function () {
+          try { if (onWsOpen) onWsOpen(); } catch (_) {}
+        });
+        function readU32BE(view, offset) {
+          return view.getUint32(offset, false);
+        }
+        function decodeUtf8(bytes) {
+          return new TextDecoder('utf-8').decode(bytes);
+        }
+        // The D/M/P framing is 1-byte type + 4-byte BE length + payload.
+        // Multiple packets may share a single WS frame; we walk the
+        // buffer to drain all complete packets.
+        function handleFrame(bytes) {
+          var off = 0;
+          while (off + 5 <= bytes.length) {
+            var view = new DataView(bytes.buffer, bytes.byteOffset + off, 5);
+            var kind = bytes[off];
+            var n = readU32BE(view, 1);
+            if (off + 5 + n > bytes.length) break;
+            var payload = bytes.subarray(off + 5, off + 5 + n);
+            off += 5 + n;
+            if (kind === 0x44) { // 'D'
+              try { term.write(decodeUtf8(payload)); } catch (_) {}
+            } else if (kind === 0x4D) { // 'M'
+              var json = decodeUtf8(payload);
+              try {
+                var node = JSON.parse(json);
+                if (node && node.type === 'element-tree') {
+                  if (window.__isonimTestMode === true) {
+                    window.__isonimManifest = node;
+                    if (!Array.isArray(window.__isonimManifests)) {
+                      window.__isonimManifests = [];
+                    }
+                    window.__isonimManifests.push(node);
+                  }
+                }
+              } catch (_) {}
+              dispatchMeta(json);
+            }
+            // 'P' (0x50) from server side is not expected; ignore.
+          }
+        }
+        ws.addEventListener('message', function (e) {
+          if (!(e.data instanceof ArrayBuffer)) return;
+          var bytes = new Uint8Array(e.data);
+          if (bytes.length === 0) return;
+          handleFrame(bytes);
+        });
+        // Map pointer events on the xterm.js host element into
+        // cell-space (col, row) coords using the terminal's cell size.
+        function cellFromEvent(e) {
+          var rect = host.getBoundingClientRect();
+          if (rect.width <= 0 || rect.height <= 0) return null;
+          var cellW = rect.width / cols;
+          var cellH = rect.height / rows;
+          if (cellW <= 0 || cellH <= 0) return null;
+          var col = Math.floor((e.clientX - rect.left) / cellW);
+          var row = Math.floor((e.clientY - rect.top) / cellH);
+          if (col < 0 || row < 0 || col >= cols || row >= rows) return null;
+          return { col: col, row: row };
+        }
+        function onMouseMove(e) {
+          var c = cellFromEvent(e);
+          if (!c) { onHover(-1, -1); return; }
+          try {
+            host.__isonimPointerCss = {
+              clientX: e.clientX, clientY: e.clientY,
+            };
+          } catch (_) {}
+          onHover(c.col, c.row);
+        }
+        function onMouseLeave() {
+          try { host.__isonimPointerCss = null; } catch (_) {}
+          onHover(-1, -1);
+        }
+        function onClickEvt(e) {
+          var c = cellFromEvent(e);
+          if (!c) return;
+          onClick(c.col, c.row);
+        }
+        host.addEventListener('mousemove', onMouseMove);
+        host.addEventListener('mouseleave', onMouseLeave);
+        host.addEventListener('click', onClickEvt);
+        ws.__isonimTuiHandlers = {
+          mousemove: onMouseMove,
+          mouseleave: onMouseLeave,
+          click: onClickEvt,
+        };
+        ws.__isonimTuiHost = host;
+        """, socket, """ = ws;
+        """, term, """ = term;
+      })(""", host, ", ", bridgeUrl.cstring, ", ", cols, ", ", rows, ", ",
+       dispatchMeta, ", ", onClick, ", ", onHover, ", ", onWsOpen, """);
+    """].}
+    TuiTerminalHandle(socket: socket, host: host, term: term,
+                      url: bridgeUrl)
+
+  proc isTuiBridgeOpen*(handle: TuiTerminalHandle): bool =
+    if handle == nil or handle.socket == nil: return false
+    var sock = handle.socket
+    var ready = 0
+    {.emit: ["""
+      try { """, ready, """ = """, sock, """.readyState; } catch (_) {}
+    """].}
+    ready == 1
+
+  proc sendTuiSelectStory*(handle: TuiTerminalHandle;
+                           storyGroup, storyName, storyKind,
+                           storyId: string) =
+    ## RS-M13: send a ``select-story`` P packet over the TUI bridge.
+    ## Body bytes are byte-identical to the RS-M12 I-body (the wire
+    ## stays consistent across transports).
+    if handle == nil: return
+    var sock = handle.socket
+    let body = encodeSelectStoryBody(storyGroup, storyName, storyKind,
+                                     storyId)
+    {.emit: ["""
+      (function (ws, jsonStr) {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        try {
+          var enc = new TextEncoder();
+          var bodyBytes = enc.encode(jsonStr);
+          var buf = new Uint8Array(5 + bodyBytes.length);
+          buf[0] = 0x50; // 'P'
+          var n = bodyBytes.length;
+          buf[1] = (n >>> 24) & 0xFF;
+          buf[2] = (n >>> 16) & 0xFF;
+          buf[3] = (n >>> 8) & 0xFF;
+          buf[4] = n & 0xFF;
+          buf.set(bodyBytes, 5);
+          ws.send(buf);
+        } catch (_) {}
+      })(""", sock, ", ", body.cstring, ");"].}
+
+  proc sendTuiApplyMutation*(handle: TuiTerminalHandle;
+                             target, key, valueLiteral: string;
+                             scope: MutationScopeKind) =
+    if handle == nil: return
+    var sock = handle.socket
+    let body = encodeApplyMutationBody(target, key, valueLiteral, scope)
+    {.emit: ["""
+      (function (ws, jsonStr) {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        try {
+          var enc = new TextEncoder();
+          var bodyBytes = enc.encode(jsonStr);
+          var buf = new Uint8Array(5 + bodyBytes.length);
+          buf[0] = 0x50; // 'P'
+          var n = bodyBytes.length;
+          buf[1] = (n >>> 24) & 0xFF;
+          buf[2] = (n >>> 16) & 0xFF;
+          buf[3] = (n >>> 8) & 0xFF;
+          buf[4] = n & 0xFF;
+          buf.set(bodyBytes, 5);
+          ws.send(buf);
+        } catch (_) {}
+      })(""", sock, ", ", body.cstring, ");"].}
+
+  proc detachTuiTerminalClient*(handle: TuiTerminalHandle) =
+    if handle == nil: return
+    var sock = handle.socket
+    var term = handle.term
+    let host = handle.host
+    {.emit: ["""
+      (function (ws, term, host) {
+        if (ws) {
+          try {
+            if (ws.__isonimTuiHandlers && host) {
+              for (var k in ws.__isonimTuiHandlers) {
+                host.removeEventListener(k, ws.__isonimTuiHandlers[k]);
+              }
+              ws.__isonimTuiHandlers = null;
+            }
+          } catch (_) {}
+          try { ws.close(); } catch (_) {}
+        }
+        if (term) {
+          try { term.dispose(); } catch (_) {}
+        }
+        if (host) {
+          try { host.removeAttribute('data-tui-terminal'); } catch (_) {}
+        }
+      })(""", sock, ", ", term, ", ", host, ");"].}
+    handle.socket = nil
+    handle.term = nil
+    handle.host = nil
