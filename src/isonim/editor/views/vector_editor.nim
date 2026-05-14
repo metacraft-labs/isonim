@@ -342,16 +342,26 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
               ]
               for ci, cluster in actionClusters:
                 let isLast = ci == actionClusters.high
+                # M-EVP-12 fix-cycle 4 (review pass 4): bump inter-cluster
+                # padding/margin from 10px to 14px and thicken the hairline
+                # from borderFaint to border so the 5 semantic groups read
+                # as distinct clusters at thumb scale.
                 tdiv(display = "flex", gap = "4px",
-                      padding = "0 10px 0 0",
-                      margin_right = (if isLast: "0" else: "10px"),
+                      padding = "0 14px 0 0",
+                      margin_right = (if isLast: "0" else: "14px"),
                       border_right = (
                         if isLast: "0"
-                        else: "1px solid " & borderFaint),
+                        else: "1px solid " & border),
                       `data-vector-action-cluster` = $ci):
                   for action in cluster:
                     let actionName = action
                     var actionBtn: E
+                    # M-EVP-12 fix-cycle 4 (review pass 4): white-space:
+                    # nowrap stops two-word labels (import-sample, zoom-in,
+                    # set-fill, transform-selection, move-segment,
+                    # path-insert) from wrapping to two lines. The empty
+                    # state has enough horizontal space; the buttons just
+                    # need to stay on one line.
                     tdiv(ref = actionBtn,
                           `role` = "button", tabindex = "0",
                           `aria-label` = "Vector " & actionName,
@@ -360,6 +370,7 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
                           background_color = bgSurface,
                           border = "1px solid " & border,
                           color = textSecondary, font_size = "11px",
+                          white_space = "nowrap",
                           cursor = "pointer"):
                       text actionName
 
