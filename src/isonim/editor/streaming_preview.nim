@@ -532,7 +532,9 @@ when defined(js):
     url*: string
 
   proc attachBridgeClient*(vm: StreamingPreviewVM; canvas: Element;
-                          bridgeUrl: string): BridgeClientHandle =
+                          bridgeUrl: string;
+                          onVectorSymbolDblClick: proc(componentPath: string)
+                              = nil): BridgeClientHandle =
     ## Open a WebSocket from the editor bundle to ``bridgeUrl`` and
     ## wire its F/M/I packet stream into ``vm`` + ``canvas``.
     ##
@@ -543,6 +545,16 @@ when defined(js):
     ## listeners need to close over the VM dispatch callbacks via a
     ## tiny shim object, and an inline emit keeps the byte-level
     ## decoding tracing the reference one-to-one.
+    ##
+    ## ``onVectorSymbolDblClick`` is the M-EVP-11 hook: when the user
+    ## double-clicks a manifest entry whose ``kind == "vector-symbol"``,
+    ## the JS shim resolves the hit through ``PreviewCanvasVM.elementAt``
+    ## and invokes the callback with the matching ``componentPath``.
+    ## The callback walks the editor's sidebar for the seeded
+    ## ``skVectorSymbol`` story and calls ``openVectorEditor`` — that
+    ## bridge runs in the editor's view layer (``component_detail.nim``)
+    ## because ``streaming_preview`` cannot import ``viewmodels``
+    ## without creating a circular dependency.
     var socket: JsObject
     let dispatchMeta = proc(body: cstring) =
       vm.dispatchMetaPacket($body)
@@ -617,8 +629,22 @@ when defined(js):
             }
           } catch (_) {}
         """].}
+    let onDblClick = proc(x: int; y: int) =
+      ## M-EVP-11: hit-test the manifest at the dblclick coordinate.
+      ## When the resolved entry's ``kind == "vector-symbol"``, fire
+      ## the editor's vector-editor open path through the supplied
+      ## callback. Non-vector-symbol entries are intentional no-ops —
+      ## the Pattern A click → selection invariant must NOT regress.
+      let hit = vm.canvas.elementAt(x, y)
+      if hit.isNone:
+        return
+      let entry = hit.get
+      if entry.kind != "vector-symbol":
+        return
+      if onVectorSymbolDblClick != nil:
+        onVectorSymbolDblClick(entry.componentPath)
     {.emit: ["""
-      (function (canvas, url, dispatchMeta, onClick, onHover) {
+      (function (canvas, url, dispatchMeta, onClick, onHover, onDblClick) {
         if (!canvas || !url) return null;
         var ws = new WebSocket(url);
         ws.binaryType = 'arraybuffer';
@@ -777,6 +803,17 @@ when defined(js):
                       x: p.x, y: p.y, modifiers: modsFromEvent(e) });
           onClick(p.x, p.y);
         }
+        // M-EVP-11: dblclick path. The Nim closure first hit-tests the
+        // manifest and only invokes the editor's openVectorEditor when
+        // the resolved entry's kind === 'vector-symbol'. Non-vector
+        // dblclicks are deliberate no-ops so the Pattern A
+        // click → selection invariant is not perturbed.
+        function onDblClickEvt(e) {
+          var p = pointFromEvent(e);
+          sendInput({ type: 'mouse', action: 'dblclick', button: e.button,
+                      x: p.x, y: p.y, modifiers: modsFromEvent(e) });
+          onDblClick(p.x, p.y);
+        }
         function onWheel(e) {
           var p = pointFromEvent(e);
           sendInput({ type: 'scroll', x: p.x, y: p.y,
@@ -788,16 +825,17 @@ when defined(js):
         canvas.addEventListener('mousemove', onMouseMove);
         canvas.addEventListener('mouseleave', onMouseLeave);
         canvas.addEventListener('click', onClickEvt);
+        canvas.addEventListener('dblclick', onDblClickEvt);
         canvas.addEventListener('wheel', onWheel);
         ws.__isonimHandlers = {
           mousedown: onMouseDown, mouseup: onMouseUp,
           mousemove: onMouseMove, mouseleave: onMouseLeave,
-          click: onClickEvt, wheel: onWheel,
+          click: onClickEvt, dblclick: onDblClickEvt, wheel: onWheel,
         };
         ws.__isonimCanvas = canvas;
         """, socket, """ = ws;
       })(""", canvas, ", ", bridgeUrl.cstring, ", ",
-       dispatchMeta, ", ", onClick, ", ", onHover, """);
+       dispatchMeta, ", ", onClick, ", ", onHover, ", ", onDblClick, """);
     """].}
     BridgeClientHandle(socket: socket, canvas: canvas, url: bridgeUrl)
 

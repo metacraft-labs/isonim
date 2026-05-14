@@ -1658,6 +1658,68 @@ proc computeVectorEditorUsages*(editor: EditorVM; symbolName: string):
           thumbnail: "")
       inc itemIdx
 
+func componentPathLeafName(path: string): string =
+  ## Return the trailing identifier segment of a ``componentPath`` —
+  ## everything after the final ``/`` and before any ``#<index>`` suffix.
+  ## ``"task_app/views/TaskCheckIcon"`` → ``"TaskCheckIcon"``;
+  ## ``"task_app/views/TaskRow#7"`` → ``"TaskRow"``.
+  ## Used by ``findVectorSymbolStoryByComponentPath`` to map a canvas
+  ## dblclick hit on a vector-symbol leaf back to a sidebar story.
+  if path.len == 0:
+    return ""
+  var endIdx = path.len
+  for i in 0 ..< path.len:
+    if path[i] == '#':
+      endIdx = i
+      break
+  var startIdx = 0
+  for i in countdown(endIdx - 1, 0):
+    if path[i] == '/':
+      startIdx = i + 1
+      break
+  if endIdx <= startIdx:
+    return ""
+  path[startIdx ..< endIdx]
+
+func storyNameMatchesPath(storyName, leafName: string): bool =
+  ## Match a sidebar story name like ``"Task Check Icon"`` against a
+  ## componentPath leaf name like ``"TaskCheckIcon"``. The catalog
+  ## stores the human-readable form; the manifest carries the
+  ## identifier form. The match is direction-insensitive (the leaf
+  ## name may either equal the story name verbatim, or be the
+  ## space-stripped version of it).
+  if storyName.len == 0 or leafName.len == 0:
+    return false
+  if storyName == leafName:
+    return true
+  var stripped = ""
+  for ch in storyName:
+    if ch != ' ':
+      stripped.add ch
+  stripped == leafName
+
+proc findVectorSymbolStoryByComponentPath*(editor: EditorVM;
+    componentPath: string; story: var StoryRef): bool =
+  ## M-EVP-11: walk ``editor.sidebar.groups`` for a ``skVectorSymbol``
+  ## story whose name matches the trailing identifier of
+  ## ``componentPath``. Returns true (and fills ``story``) on hit;
+  ## false when the path does not map to any seeded symbol. Caller
+  ## then feeds the resulting ``story`` to ``openVectorEditor``.
+  let leaf = componentPathLeafName(componentPath)
+  if leaf.len == 0:
+    return false
+  for group in editor.sidebar.groups.val:
+    if group.kind != skVectorSymbol:
+      continue
+    for i, item in group.items:
+      if item.kind != skVectorSymbol:
+        continue
+      if storyNameMatchesPath(item.name, leaf):
+        story = StoryRef(group: item.group, name: item.name,
+                         kind: item.kind, index: i)
+        return true
+  false
+
 proc openVectorEditor*(editor: EditorVM; story: StoryRef): bool {.discardable.} =
   ## M-EVP-8: open the vector editor on the supplied vector-symbol
   ## story. Snapshots the prior view into ``previousView`` so ESC /

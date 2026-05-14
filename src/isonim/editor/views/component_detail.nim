@@ -996,7 +996,41 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
             bridgeHandle = nil
           let url = bridgeUrlForBackend(activeBackend)
           if url.len > 0:
-            bridgeHandle = attachBridgeClient(streaming, projectCanvas, url)
+            # M-EVP-11: closure that the streaming-preview JS shim
+            # fires when the user dblclicks a manifest entry whose
+            # ``kind == "vector-symbol"``. Walks the sidebar for the
+            # matching ``skVectorSymbol`` story, calls
+            # ``openVectorEditor``, and mirrors the resulting
+            # ``activeView`` / ``vectorEditorTarget`` onto window
+            # under the same ``__isonimTestMode === true`` gate the
+            # other M-EVP-10 hooks use. Production builds leave the
+            # flag unset so no DOM side channel leaks.
+            let editor = vm
+            let onVectorDbl = proc(componentPath: string) =
+              var story: StoryRef
+              if not editor.findVectorSymbolStoryByComponentPath(
+                  componentPath, story):
+                return
+              discard editor.openVectorEditor(story)
+              when defined(js):
+                let activeView = $editor.activeView.val
+                let targetPath =
+                  if editor.vectorEditorTarget.val.isSome:
+                    componentPath
+                  else:
+                    ""
+                {.emit: ["""
+                  try {
+                    if (window.__isonimTestMode === true) {
+                      window.__isonimEditorActiveView = """,
+                        activeView.cstring, """;
+                      window.__isonimVectorEditorTarget = """,
+                        targetPath.cstring, """;
+                    }
+                  } catch (_) {}
+                """].}
+            bridgeHandle = attachBridgeClient(streaming, projectCanvas,
+                                              url, onVectorDbl)
             attachedBackend = activeBackend
       else:
         if bridgeHandle != nil:
