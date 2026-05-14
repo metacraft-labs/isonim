@@ -6,6 +6,8 @@ import isonim/core/[computation, signals]
 import isonim/dsl/ui
 import isonim/editor/types
 import isonim/editor/viewmodels
+import isonim/editor/streaming_preview
+import isonim/editor/views/canvas_mount
 
 const
   bgBase = "#0B1120"
@@ -81,7 +83,44 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
           height = "100%",
           border = "0",
           `data-page-project-frame` = "true")
+  # M-EVP-13: Pattern A canvas mount for Pages. When the active
+  # backend is non-Web, the iframe hides and the canvas (fed by
+  # `attachBridgeClient`) takes over. The canvas wrapper does NOT
+  # live inside the device frame — the device frame is sized to the
+  # user's chosen viewport, which for TUI is 80x24 cells (i.e. 80x24
+  # CSS pixels under our `width: <viewport>px` rule). The launcher's
+  # 640x288 surface would be a thin stretched strip inside that box
+  # (the original M-EVP-13 bug report). Instead we paint the canvas
+  # into a sibling pane that fills the available preview area, with
+  # `object-fit: contain` preserving the launcher's surface ratio at
+  # the maximum readable size.
+  let pageCanvasMnt = renderCanvasMount[R, E](r, "data-page-project-canvas")
+  var canvasPaneEl: E
+  let canvasPaneNode = ui(r):
+    tdiv(ref = canvasPaneEl,
+          `data-page-canvas-pane` = "true",
+          display = "none",
+          flex = "1",
+          min_width = "0",
+          min_height = "0",
+          padding = "16px",
+          align_items = "stretch",
+          justify_content = "stretch",
+          flex_direction = "column"):
+      discard
+  r.setStyle(pageCanvasMnt.wrapper, "flex", "1")
+  r.setStyle(pageCanvasMnt.wrapper, "min-height", "320px")
+  r.appendChild(canvasPaneEl, pageCanvasMnt.wrapper)
   r.appendChild(frameHostNode, frame)
+  r.appendChild(frameHostNode, canvasPaneNode)
+  # M-EVP-13: breadcrumb sits in the host scroll region directly below
+  # the device frame so the canvas selection's componentPath is always
+  # readable, even when the device frame is sized to a small viewport
+  # (e.g. phone). Keep it inside `frameHostNode` so drag-scroll still
+  # works.
+  r.setStyle(pageCanvasMnt.breadcrumb, "margin", "12px 16px 0 16px")
+  r.setStyle(pageCanvasMnt.breadcrumb, "align-self", "flex-start")
+  r.appendChild(frameHostNode, pageCanvasMnt.breadcrumb)
   r.appendChild(container, frameHostNode)
   r.enableDragScroll(frameHost)
 
@@ -126,6 +165,10 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
       r.addEventListener(handleEl, "dblclick", onDblClick)
       r.appendChild(hitTestRoot, handle)
 
+  # M-EVP-13: bridge attach/detach for the page-preview canvas.
+  when defined(js):
+    let pageBridgeBinding = newBridgeBinding()
+
   createRenderEffect proc() =
     let preview = vm.preview.current.val
     let viewport = vm.viewport.val
@@ -138,6 +181,17 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
         vm.selectedStory.val.group & " / " & vm.selectedStory.val.name
       else:
         "Project preview"
+
+    # M-EVP-13: non-Web backend → canvas takes over for the page-
+    # preview view. Gate on the active story being a Page (skPage)
+    # so the page-preview module does not race with
+    # component_detail.nim / foundations_page.nim for the same
+    # bridge URL when another view is active (all three view roots
+    # are mounted concurrently in the editor's view stack and
+    # display-toggled, so unconditional attach would open three
+    # WebSockets to the same launcher).
+    let isPageStory = vm.selectedStory.val.kind == skPage
+    let useCanvas = isPageStory and vm.platform.val != pbWeb
 
     r.setTextContent(fallbackTitle, title)
     r.setTextContent(fallbackBody,
@@ -153,7 +207,17 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
       else: "18px")
     r.setStyle(previewFrame, "width", "100%")
     r.setStyle(previewFrame, "height", "100%")
-    if preview.documentHtml.len > 0:
+    # M-EVP-13: hide the viewport-sized device frame when the canvas
+    # takes over (TUI cell viewports are 80x24, far too small for the
+    # launcher's 640x288 surface to render legibly inside).
+    r.setStyle(deviceFrame, "display", if useCanvas: "none" else: "flex")
+    r.setStyle(canvasPaneEl, "display", if useCanvas: "flex" else: "none")
+    if useCanvas:
+      # Hide iframe + fallback; the canvas fills the dedicated pane.
+      r.setAttribute(previewFrame, "srcdoc", "")
+      r.setStyle(fallbackPanel, "display", "none")
+      r.setStyle(previewFrame, "display", "none")
+    elif preview.documentHtml.len > 0:
       r.setAttribute(previewFrame, "srcdoc", preview.documentHtml)
       r.setStyle(fallbackPanel, "display", "none")
       r.setStyle(previewFrame, "display", "block")
@@ -161,5 +225,16 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
       r.setAttribute(previewFrame, "srcdoc", "")
       r.setStyle(fallbackPanel, "display", "flex")
       r.setStyle(previewFrame, "display", "none")
+
+    # M-EVP-13: canvas + overlay visibility + fit-to-pane CSS.
+    r.applyCanvasFitStyle(pageCanvasMnt, useCanvas)
+
+    when defined(js):
+      pageBridgeBinding.attachIfNeeded(vm, pageCanvasMnt.canvas, useCanvas)
+
+  # M-EVP-13: overlay positioning effect — hover label, selection
+  # outline, breadcrumb, edit-mode handles. Shared with component_detail
+  # and foundations_page via canvas_mount.nim.
+  bindCanvasOverlayEffect(r, vm, pageCanvasMnt)
 
   container

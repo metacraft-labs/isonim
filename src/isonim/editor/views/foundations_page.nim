@@ -6,6 +6,8 @@ import isonim/core/[computation, signals]
 import isonim/dsl/ui
 import isonim/editor/types
 import isonim/editor/viewmodels
+import isonim/editor/streaming_preview
+import isonim/editor/views/canvas_mount
 
 const
   bgBase = "#0B1120"
@@ -109,8 +111,15 @@ proc renderFoundationsPage*[R, E](r: R; vm: EditorVM): E =
   # backend chip while a foundation story is selected — the same reactive
   # chain that powers `component_detail.nim` and `page_preview.nim`.
   var foundationProjectFrame: E
+  var foundationProjectSectionEl: E
+  # M-EVP-13: Pattern A canvas mount for Foundations. The shared helper
+  # builds the canvas + overlay tree; the iframe stays for Web while
+  # the canvas takes over for non-Web backends.
+  let foundationCanvasMnt = renderCanvasMount[R, E](r,
+    "data-foundation-project-canvas")
   let foundationProjectSection = ui(r):
-    tdiv(`data-foundation-project-frame-host` = "true",
+    tdiv(ref = foundationProjectSectionEl,
+          `data-foundation-project-frame-host` = "true",
           display = "none",
           flex_direction = "column",
           padding = "12px 20px", gap = "8px",
@@ -124,22 +133,50 @@ proc renderFoundationsPage*[R, E](r: R; vm: EditorVM): E =
           height = "240",
           border = "0",
           `data-foundation-project-frame` = "true")
+  # M-EVP-13: mount the canvas wrapper alongside the iframe inside the
+  # foundation-project section. The wrapper fills the available width
+  # and is sized to a min-height of 240px so the canvas reads at the
+  # same height as the iframe (the launcher's actual surface ratio is
+  # preserved via `object-fit: contain`).
+  r.setStyle(foundationCanvasMnt.wrapper, "width", "100%")
+  r.setStyle(foundationCanvasMnt.wrapper, "min-height", "240px")
+  r.appendChild(foundationProjectSection, foundationCanvasMnt.wrapper)
+  r.setStyle(foundationCanvasMnt.breadcrumb, "margin", "8px 0 0 0")
+  r.setStyle(foundationCanvasMnt.breadcrumb, "max-width", "100%")
+  r.appendChild(foundationProjectSection, foundationCanvasMnt.breadcrumb)
   r.appendChild(page, foundationProjectSection)
+
+  when defined(js):
+    let foundationBridgeBinding = newBridgeBinding()
 
   var lastFoundationSrcdoc = ""
   createRenderEffect proc() =
     let story = vm.selectedStory.val
     let preview = vm.preview.current.val
-    let showFoundationProject = story.kind == skFoundation and
+    let isFoundationStory = story.kind == skFoundation
+    let useCanvas = isFoundationStory and vm.platform.val != pbWeb
+    let showIframe = isFoundationStory and (not useCanvas) and
       preview.documentHtml.len > 0
+    # The section is visible when either the iframe path or the
+    # canvas path has something to show.
+    let showFoundationProject = showIframe or useCanvas
     let nextSrcdoc =
-      if showFoundationProject: preview.documentHtml
+      if showIframe: preview.documentHtml
       else: ""
     if nextSrcdoc != lastFoundationSrcdoc:
       r.setAttribute(foundationProjectFrame, "srcdoc", nextSrcdoc)
       lastFoundationSrcdoc = nextSrcdoc
-    r.setStyle(foundationProjectSection, "display",
+    r.setStyle(foundationProjectFrame, "display",
+      if showIframe: "block" else: "none")
+    r.setStyle(foundationProjectSectionEl, "display",
       if showFoundationProject: "flex" else: "none")
+    r.applyCanvasFitStyle(foundationCanvasMnt, useCanvas)
+    when defined(js):
+      foundationBridgeBinding.attachIfNeeded(vm, foundationCanvasMnt.canvas,
+                                             useCanvas)
+
+  # M-EVP-13: overlay positioning effect for the foundation canvas.
+  bindCanvasOverlayEffect(r, vm, foundationCanvasMnt)
 
   let body = ui(r):
     tdiv(display = "grid",
