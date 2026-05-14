@@ -723,36 +723,47 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
       # (activates ``SidebarVM.activeCategory``, collapses siblings,
       # scrolls the matching section into view). Empty categories are
       # marked ``aria-disabled="true"`` and refuse the click.
-      tdiv(`data-sidebar-quicknav` = "true",
-            display = "flex", flex_direction = "row",
-            align_items = "center", justify_content = "space-around",
-            gap = "4px", padding = "6px 8px",
-            border_bottom = "1px solid " & borderFaint,
-            background_color = bgSidebar):
-        for k in quickNavCategories:
-          var iconNode: E
-          let cKind = k
-          let cLabel = quickNavLabel(k)
-          let cIcon = quickNavIcon(k)
-          let cSectionId = quickNavSectionId(k)
-          let onPick = quickNavHandler(vm, cKind)
-          tdiv(ref = iconNode,
-                `data-category-kind` = $cKind,
-                `data-quicknav-icon` = cSectionId,
-                `role` = "button",
-                `aria-label` = "Focus " & cLabel & " category",
-                onclick = onPick,
-                onkeydown = onPick,
-                display = "flex", align_items = "center",
-                justify_content = "center",
-                width = "28px", height = "26px",
-                border_radius = "5px",
-                font_size = "13px",
-                color = textMuted,
-                transition = "background-color 0.12s, color 0.12s"):
-            text cIcon
-          block:
-            r.bindQuickNavIcon(iconNode, vm, cKind)
+      #
+      # M-EVP-12 fix-cycle 3 (Finding B): give the strip a clearly
+      # distinct container so wide-viewport reviewers don't read it as
+      # part of the sidebar tree below. Outer wrapper uses ``bgBase``
+      # (a touch darker than ``bgSidebar``) with 8px horizontal margin
+      # and a bottom hairline; the inner row inset adds breathing room
+      # so the 5 icons read as their own toolbar above the section
+      # tree.
+      tdiv(padding = "8px 8px 10px 8px",
+            border_bottom = "1px solid " & borderFaint):
+        tdiv(`data-sidebar-quicknav` = "true",
+              display = "flex", flex_direction = "row",
+              align_items = "center", justify_content = "space-around",
+              gap = "4px", padding = "6px 8px",
+              border_radius = "6px",
+              background_color = bgBase,
+              border = "1px solid " & borderFaint):
+          for k in quickNavCategories:
+            var iconNode: E
+            let cKind = k
+            let cLabel = quickNavLabel(k)
+            let cIcon = quickNavIcon(k)
+            let cSectionId = quickNavSectionId(k)
+            let onPick = quickNavHandler(vm, cKind)
+            tdiv(ref = iconNode,
+                  `data-category-kind` = $cKind,
+                  `data-quicknav-icon` = cSectionId,
+                  `role` = "button",
+                  `aria-label` = "Focus " & cLabel & " category",
+                  onclick = onPick,
+                  onkeydown = onPick,
+                  display = "flex", align_items = "center",
+                  justify_content = "center",
+                  width = "28px", height = "26px",
+                  border_radius = "5px",
+                  font_size = "13px",
+                  color = textMuted,
+                  transition = "background-color 0.12s, color 0.12s"):
+              text cIcon
+            block:
+              r.bindQuickNavIcon(iconNode, vm, cKind)
 
       # Story sections
       tdiv(display = "flex", flex_direction = "column",

@@ -37,31 +37,78 @@ type
 
 proc renderGenericMiniPreview[R, E](r: R; label: string): E =
   ## Project-neutral thumbnail used by the editor framework. Dark-themed
-  ## skeleton card that blends with the canvas — never the bright white
-  ## block from the earlier baseline.
+  ## designed snapshot — NOT a raw wireframe skeleton. The previous
+  ## skeleton form (grey rectangles with no semantic content) read as
+  ## placeholder boxes in the storyboard empty-state; M-EVP-12
+  ## fix-cycle 3 (Finding A) replaces it with an authored mini-snapshot
+  ## that mirrors the visual rhythm of the demo apps (top bar with
+  ## status pill + window dots, a hero title row, list rows with
+  ## leading dot indicators and trailing value chips, a small chart
+  ## bar group, and the action label at the bottom).
   ui(r):
     tdiv(display = "flex", flex_direction = "column",
           width = "100%", height = "100%",
           background_color = bgCard, color = textPrimary,
           font_family = "-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif"):
-      tdiv(height = "24px", display = "flex", align_items = "center",
-            gap = "4px", padding = "0 8px",
+      # Window chrome: traffic-light dots + status pill
+      tdiv(height = "26px", display = "flex", align_items = "center",
+            justify_content = "space-between", gap = "6px",
+            padding = "0 10px",
             background_color = bgSurface,
             border_bottom = "1px solid " & border):
-        for i in 0 .. 2:
+        tdiv(display = "flex", gap = "4px", align_items = "center"):
+          for i in 0 .. 2:
+            tdiv(width = "6px", height = "6px", border_radius = "999px",
+                  background_color = border)
+        tdiv(display = "flex", align_items = "center", gap = "4px",
+              padding = "1px 7px", border_radius = "999px",
+              background_color = accentSoft,
+              border = "1px solid " & border):
           tdiv(width = "5px", height = "5px", border_radius = "999px",
-                background_color = border)
+                background_color = accent)
+          span(font_size = "9px", color = textSecondary,
+                font_weight = "600", letter_spacing = "0.4px"):
+            text "LIVE"
       tdiv(flex = "1", display = "flex", flex_direction = "column",
-            gap = "10px", padding = "16px"):
-        tdiv(width = "52%", height = "10px", border_radius = "999px",
-              background_color = borderFaint)
-        tdiv(width = "78%", height = "28px", border_radius = "8px",
-              background_color = bgSurface, border = "1px solid " & border)
-        tdiv(display = "grid", grid_template_columns = "1fr 1fr", gap = "8px"):
-          for i in 0 .. 3:
-            tdiv(height = "26px", border_radius = "6px",
+            gap = "10px", padding = "14px 14px 10px 14px"):
+        # Hero header: title + subtitle
+        tdiv(display = "flex", flex_direction = "column", gap = "5px"):
+          tdiv(width = "62%", height = "11px", border_radius = "3px",
+                background_color = textSecondary, opacity = "0.85")
+          tdiv(width = "44%", height = "7px", border_radius = "3px",
+                background_color = textMuted, opacity = "0.55")
+        # Three list rows, each with a leading dot + label bar +
+        # trailing value chip. Reads as a "list of items with state"
+        # rather than a generic grid.
+        tdiv(display = "flex", flex_direction = "column", gap = "6px",
+              margin_top = "2px"):
+          for i in 0 .. 2:
+            tdiv(display = "flex", align_items = "center", gap = "8px",
+                  padding = "5px 7px", border_radius = "5px",
                   background_color = (if i == 0: accentSoft else: bgSurface),
-                  border = "1px solid " & border)
+                  border = "1px solid " & (if i == 0: accent else: border)):
+              tdiv(width = "7px", height = "7px", border_radius = "999px",
+                    background_color = (
+                        if i == 0: accent
+                        elif i == 1: textSecondary
+                        else: textMuted),
+                    opacity = (if i == 0: "1" else: "0.55"))
+              tdiv(flex = "1", height = "6px", border_radius = "3px",
+                    background_color = textMuted,
+                    opacity = (if i == 0: "0.7" else: "0.35"))
+              tdiv(width = "26px", height = "10px", border_radius = "999px",
+                    background_color = (
+                        if i == 0: accent else: borderFaint),
+                    opacity = (if i == 0: "0.7" else: "1"))
+        # Mini-chart strip: small bars suggesting "activity" rather
+        # than empty placeholder space.
+        tdiv(display = "flex", align_items = "flex-end", gap = "3px",
+              height = "22px", margin_top = "4px"):
+          const heights = [9, 14, 7, 18, 12, 20, 11, 16, 13, 22]
+          for h in heights:
+            tdiv(flex = "1", border_radius = "2px 2px 0 0",
+                  background_color = accent, opacity = "0.55",
+                  height = $h & "px")
         tdiv(margin_top = "auto", font_size = "10px", font_weight = "600",
               color = textMuted, line_height = "1.3"):
           text label
@@ -127,8 +174,15 @@ proc layoutFlows(groups: seq[StoryGroup]; steps: seq[FlowStep]): seq[FlowRow] =
       # v3: enlarge flow cards so each one reads as a proper preview rather
       # than a thumbnail. The shell-laptop reviewer flagged the previous
       # 400x520 cards as "small/two-per-row".
+      # M-EVP-12 fix-cycle 3 (Finding A): the previous 520×620 card was
+      # too tall — the iframe rasterises at 1280×900 scaled by 0.395,
+      # so the actual preview region was 506×356 followed by ~250 px
+      # of empty dark space inside each card. That void was the
+      # "raw wireframe placeholder" the P3 reviewer flagged. Tighten
+      # the card so the iframe fills it; the bottom row is just the
+      # step-label band.
       let cardW = 520.0
-      let cardH = 620.0
+      let cardH = 420.0
       let gapX = 48.0
       for i, item in group.items:
         let story = resolveFlowCardStory(item, i, steps)
@@ -388,7 +442,7 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
           r.setStyle(arrow, "width", $aw & "px")
           r.appendChild(inner, arrow)
 
-    rowY = cardsTop + 620 + 56 # card height + gap between flow rows
+    rowY = cardsTop + 420 + 56 # card height + gap between flow rows
 
   # Empty state if no flows
   if flows.len == 0:

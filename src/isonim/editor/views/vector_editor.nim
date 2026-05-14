@@ -323,25 +323,45 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
                 justify_content = "space-between"):
             span(font_size = "11px", color = textMuted):
               text "Fabric.js adapter handles selection, hit testing, transforms, grouping, drawing, and SVG export."
-            tdiv(display = "flex", gap = "6px"):
-              for action in ["import-sample", "zoom-in", "zoom-out", "pan-right",
-                  "set-fill", "set-stroke", "duplicate", "delete", "group",
-                  "ungroup", "transform-selection", "move-segment",
-                  "path-insert", "path-delete-node", "path-convert-smooth",
-                  "path-handle-drag", "path-nudge-right", "path-undo",
-                  "path-redo", "export"]:
-                let actionName = action
-                var actionBtn: E
-                tdiv(ref = actionBtn,
-                      `role` = "button", tabindex = "0",
-                      `aria-label` = "Vector " & actionName,
-                      `data-vector-action` = actionName,
-                      padding = "4px 8px", border_radius = "4px",
-                      background_color = bgSurface,
-                      border = "1px solid " & border,
-                      color = textSecondary, font_size = "11px",
-                      cursor = "pointer"):
-                  text actionName
+            # M-EVP-12 fix-cycle 3 (Finding C): cluster the 20 action
+            # buttons into 5 semantic groups (View / Fill+Stroke /
+            # Object / Path / History+Export) separated by 1px hairline
+            # dividers so the row reads as labelled tool clusters rather
+            # than one continuous wall of identical pills.
+            tdiv(display = "flex", align_items = "center", gap = "0",
+                  `data-vector-action-row` = "true"):
+              const actionClusters: array[5, seq[string]] = [
+                @["import-sample", "zoom-in", "zoom-out", "pan-right"],
+                @["set-fill", "set-stroke"],
+                @["duplicate", "delete", "group", "ungroup",
+                  "transform-selection"],
+                @["move-segment", "path-insert", "path-delete-node",
+                  "path-convert-smooth", "path-handle-drag",
+                  "path-nudge-right"],
+                @["path-undo", "path-redo", "export"],
+              ]
+              for ci, cluster in actionClusters:
+                let isLast = ci == actionClusters.high
+                tdiv(display = "flex", gap = "4px",
+                      padding = "0 10px 0 0",
+                      margin_right = (if isLast: "0" else: "10px"),
+                      border_right = (
+                        if isLast: "0"
+                        else: "1px solid " & borderFaint),
+                      `data-vector-action-cluster` = $ci):
+                  for action in cluster:
+                    let actionName = action
+                    var actionBtn: E
+                    tdiv(ref = actionBtn,
+                          `role` = "button", tabindex = "0",
+                          `aria-label` = "Vector " & actionName,
+                          `data-vector-action` = actionName,
+                          padding = "4px 8px", border_radius = "4px",
+                          background_color = bgSurface,
+                          border = "1px solid " & border,
+                          color = textSecondary, font_size = "11px",
+                          cursor = "pointer"):
+                      text actionName
 
           tdiv(ref = fabricHost,
                 `data-vector-adapter` = "fabric",
