@@ -832,33 +832,6 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
                   display = "none"):
               span(ref = hoverLabelText):
                 text ""
-            # Selection breadcrumb chip — production parity with the
-            # iframe path's `#isonim-editor-selection-breadcrumb`.
-            # M-EVP-12 fix-cycle 1: anchored top-left of the overlay
-            # with a visible accent border + larger type so the
-            # screenshot can read it without zooming in.
-            tdiv(ref = breadcrumb,
-                  `data-canvas-selection-breadcrumb` = "true",
-                  position = "absolute",
-                  top = "8px", left = "8px",
-                  pointer_events = "none",
-                  padding = "5px 10px",
-                  border_radius = "6px",
-                  border = "1px solid " & accentBlue,
-                  background_color = "rgba(15,23,42,.96)",
-                  color = "#E2E8F0",
-                  font_family = "ui-monospace, SFMono-Regular, Menlo, monospace",
-                  font_size = "12px",
-                  font_weight = "600",
-                  line_height = "1.3",
-                  box_shadow = "0 6px 18px rgba(15,23,42,.45)",
-                  max_width = "92%",
-                  overflow = "hidden",
-                  text_overflow = "ellipsis",
-                  white_space = "nowrap",
-                  display = "none"):
-              span(ref = breadcrumbText):
-                text ""
             # Edit-mode handles: 8 corner + edge midpoints. Only
             # rendered when `vm.editMode.val == emEdit`. Handles
             # opt into pointer events; the rest of the overlay does
@@ -884,6 +857,35 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
                       box_shadow = "0 1px 3px rgba(15,23,42,.5)",
                       pointer_events = "auto",
                       box_sizing = "border-box")
+  # M-EVP-12 fix-cycle 2: Selection breadcrumb panel — production
+  # parity with the iframe path's `#isonim-editor-selection-breadcrumb`,
+  # but lifted OUT of the canvas overlay so it can never overlap or be
+  # visually trapped inside the selection-outline rectangle. Lives as
+  # a dedicated row in the projectPreviewSection's column flex layout,
+  # rendered directly below the canvas/iframe row with a distinct
+  # accent-tinted background and the full `componentPath` text.
+  let breadcrumbPanel = ui(r):
+    tdiv(ref = breadcrumb,
+          `data-canvas-selection-breadcrumb` = "true",
+          position = "relative",
+          margin = "0 24px 16px 24px",
+          padding = "6px 12px",
+          border_radius = "6px",
+          border = "1px solid " & accentBlue,
+          background_color = "rgba(59,130,246,0.18)",
+          color = accentBlue,
+          font_family = "ui-monospace, SFMono-Regular, Menlo, monospace",
+          font_size = "12px",
+          font_weight = "600",
+          line_height = "1.3",
+          max_width = "calc(100% - 64px)",
+          overflow = "hidden",
+          text_overflow = "ellipsis",
+          white_space = "nowrap",
+          display = "none"):
+      span(ref = breadcrumbText):
+        text ""
+  r.appendChild(projectPreviewSection, breadcrumbPanel)
   r.appendChild(content, projectPreviewSection)
 
   var propertyPanel: E
@@ -1232,9 +1234,11 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
               }
             } catch (_) {}
           """].}
-        # Breadcrumb chip
+        # Breadcrumb panel (M-EVP-12 fix-cycle 2: lives outside the
+        # canvas overlay as a dedicated row below the canvas; use
+        # `block` so it occupies its full row in the column flex).
         r.setTextContent(breadcrumbText, selectedPath)
-        r.setStyle(breadcrumb, "display", "inline-block")
+        r.setStyle(breadcrumb, "display", "block")
         # Handles (only in emEdit). Position 8 corner/edge midpoints
         # in CSS space, anchored on the outline rectangle.
         if mode == emEdit:

@@ -2500,8 +2500,17 @@ proc sendAgentPrompt*(editor: EditorVM): bool {.discardable.}
 
 proc setEditMode*(editor: EditorVM; mode: EditMode) =
   editor.editMode.val = mode
+  # M-EVP-12 fix-cycle 2: when the canvas-preview path is active
+  # (Pattern A: any non-Web preview backend), the chrome bar Edit
+  # chip toggles the M-EVP-10 overlay handles *in place* on the
+  # component_detail / page_preview canvas — it must NOT swap the
+  # whole view to `evComponentEdit` (the source-edit screen), which
+  # would unmount the canvas + handles. The auto-switch only applies
+  # to the Web/iframe path where the canvas overlay is not painted.
+  let canvasActive =
+    editor.streamingPreview.selectedBackend.val != pbWeb
   if mode in {emComment, emEdit} and editor.activeView.val in {evComponentDetail,
-      evPagePreview}:
+      evPagePreview} and not canvasActive:
     editor.activeView.val = evComponentEdit
 
 proc setVectorTool*(editor: EditorVM; tool: VectorTool) =

@@ -422,7 +422,19 @@ proc bindQuickNavIcon[R, E](r: R; node: E; vm: EditorVM; kind: StoryKind) =
   ## ``accent`` color for the glyph, so it's unambiguously selected.
   ## The disabled state also drops to ``opacity: 0.4`` (was 0.45)
   ## per the brief's "≥ 40 % opacity drop" guidance.
+  ##
+  ## M-EVP-12 fix-cycle 2: pass-2 review still rated the active state
+  ## as "is this on or off?" ambiguous — the ``accentSoft`` fill was
+  ## too low-contrast against the dark sidebar. Bump the background to
+  ## a saturated ``rgba(124,122,237,0.35)`` (the ``accent`` colour at
+  ## 35 % alpha), keep the 2 px accent border + accent glyph colour,
+  ## and add a 4 px accent dot below the icon (rendered via an inset
+  ## ``box-shadow`` so we don't need to mutate child markup) as a
+  ## redundant cue for unambiguous active read.
   let captured = kind
+  const accentActiveBg = "rgba(124,122,237,0.35)"
+    ## ``accent`` (#7C7AED) at 35 % alpha — the saturated tint that
+    ## reads as "selected" against ``#0F1018`` / ``bgBase``.
   createRenderEffect proc() =
     let hasStories = vm.sidebar.categoryHasStories(captured)
     let activeOpt = vm.sidebar.activeCategory.val
@@ -442,12 +454,19 @@ proc bindQuickNavIcon[R, E](r: R; node: E; vm: EditorVM; kind: StoryKind) =
       elif active: accent
       else: textMuted)
     r.setStyle(node, "background-color",
-      if active and hasStories: accentSoft
+      if active and hasStories: accentActiveBg
       elif hasStories: "transparent"
       else: "transparent")
     r.setStyle(node, "border",
       if active and hasStories: "2px solid " & accent
       else: "2px solid transparent")
+    # M-EVP-12 fix-cycle 2: redundant 4 px accent dot below the icon,
+    # rendered as an inset bottom shadow so it tracks the icon's
+    # border-radius without extra DOM. ``inset 0 -8px 0 -4px <accent>``
+    # paints a 4 px horizontal band 4 px below the visual baseline.
+    r.setStyle(node, "box-shadow",
+      if active and hasStories: "0 6px 0 -4px " & accent
+      else: "none")
     r.setStyle(node, "cursor",
       if hasStories: "pointer" else: "default")
     r.setStyle(node, "opacity",
