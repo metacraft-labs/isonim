@@ -340,22 +340,28 @@ proc isActiveInspectorSection(vm: EditorVM; section: InspectorSection): bool =
 proc bindSidebarStoryState[R, E](r: R; node: E; vm: EditorVM;
     story: StoryRef) =
   ## M-EVP-4: sidebar row selection state. The selected row carries the
-  ## indigo `accent` as a 3 px left border AND an accent-tinted
-  ## background (`accentSoft`). Every row — selected or not — declares
-  ## a `border-left: 3px solid <color>` so the row's left edge does not
-  ## shift horizontally when selection toggles. Unselected rows use
-  ## `transparent`, which renders nothing but reserves the same 3 px.
+  ## indigo `accent` as a left border AND an accent-tinted background
+  ## (`accentSoft`). Every row — selected or not — declares a
+  ## ``border-left: <w>px solid <color>`` so the row's left edge does
+  ## not shift horizontally when selection toggles. Unselected rows
+  ## use ``transparent``, which renders nothing but reserves the same
+  ## width.
+  ##
+  ## M-EVP-12 fix-cycle 1: bumped from 3 px to 4 px so the accent
+  ## reads as the dominant selection cue at full-window screenshot
+  ## scale; the previous 3 px stripe was easy to miss against the
+  ## `accentSoft` background tint at 1920×1080.
   let captured = story
   createRenderEffect proc() =
     let isSelected = vm.isSelectedStory(captured)
     r.setAttribute(node, "aria-current", if isSelected: "true" else: "false")
-    # Padding identical between states; the 3 px transparent / accent
+    # Padding identical between states; the 4 px transparent / accent
     # border-left handles the visual indent rhythm. Vertical padding
     # mirrors the v4 polish (7 px) so the row reads at ~32 px tall.
     r.setStyle(node, "padding", "7px 12px 7px 28px")
     r.setStyle(node, "background-color",
         if isSelected: accentSoft else: "transparent")
-    r.setStyle(node, "border-left-width", "3px")
+    r.setStyle(node, "border-left-width", "4px")
     r.setStyle(node, "border-left-style", "solid")
     r.setStyle(node, "border-left-color",
         if isSelected: accent else: "transparent")
@@ -407,6 +413,15 @@ proc bindQuickNavIcon[R, E](r: R; node: E; vm: EditorVM; kind: StoryKind) =
   ## with ``vm.sidebar.groups`` (empty -> disabled) and
   ## ``vm.sidebar.activeCategory`` (active -> tinted background +
   ## ``aria-pressed="true"``).
+  ##
+  ## M-EVP-12 fix-cycle 1: the active state previously used
+  ## ``accentSoft`` background + ``textPrimary`` text. That combo was
+  ## too subtle for the v5-style screenshot review — the active icon
+  ## read as "slightly tinted" rather than "selected". The fix:
+  ## the active icon gets a 2 px accent border + the brighter
+  ## ``accent`` color for the glyph, so it's unambiguously selected.
+  ## The disabled state also drops to ``opacity: 0.4`` (was 0.45)
+  ## per the brief's "≥ 40 % opacity drop" guidance.
   let captured = kind
   createRenderEffect proc() =
     let hasStories = vm.sidebar.categoryHasStories(captured)
@@ -420,18 +435,23 @@ proc bindQuickNavIcon[R, E](r: R; node: E; vm: EditorVM; kind: StoryKind) =
       if hasStories: "0" else: "-1")
     r.setAttribute(node, "aria-pressed",
       if active: "true" else: "false")
+    r.setAttribute(node, "data-active",
+      if active and hasStories: "true" else: "false")
     r.setStyle(node, "color",
       if not hasStories: textDim
-      elif active: textPrimary
+      elif active: accent
       else: textMuted)
     r.setStyle(node, "background-color",
       if active and hasStories: accentSoft
       elif hasStories: "transparent"
       else: "transparent")
+    r.setStyle(node, "border",
+      if active and hasStories: "2px solid " & accent
+      else: "2px solid transparent")
     r.setStyle(node, "cursor",
       if hasStories: "pointer" else: "default")
     r.setStyle(node, "opacity",
-      if hasStories: "1" else: "0.45")
+      if hasStories: "1" else: "0.4")
 
 proc bindInspectorTabState[R, E](r: R; node: E; vm: EditorVM;
     section: InspectorSection) =

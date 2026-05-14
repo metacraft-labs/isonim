@@ -971,10 +971,12 @@ suite "M-EVP-4 sidebar selection state":
       check rowMarkerIsAccent(row)
       check rowBackgroundIsAccentTinted(row)
 
-      # And the structural invariant: the 3 px border-left always
+      # And the structural invariant: the 4 px border-left always
       # renders solid (selected or not), so the indentation rhythm
-      # doesn't shift across selection toggles.
-      check row.styles.getOrDefault("border-left-width") == "3px"
+      # doesn't shift across selection toggles. (M-EVP-12 fix-cycle 1
+      # bumped the width from 3 px to 4 px so the accent stripe reads
+      # as the dominant selection cue at full-window screenshot scale.)
+      check row.styles.getOrDefault("border-left-width") == "4px"
       check row.styles.getOrDefault("border-left-style") == "solid"
 
       dispose()
@@ -1003,10 +1005,11 @@ suite "M-EVP-4 sidebar selection state":
       check not rowMarkerIsAccent(unselectedRow)
       check not rowBackgroundIsAccentTinted(unselectedRow)
 
-      # The unselected row still declares a 3 px transparent left
+      # The unselected row still declares a 4 px transparent left
       # border so its left edge sits at the same horizontal position as
-      # the selected row's accent stripe.
-      check unselectedRow.styles.getOrDefault("border-left-width") == "3px"
+      # the selected row's accent stripe. (Width bumped from 3 px to
+      # 4 px in M-EVP-12 fix-cycle 1; see bindSidebarStoryState.)
+      check unselectedRow.styles.getOrDefault("border-left-width") == "4px"
       check unselectedRow.styles.getOrDefault("border-left-style") == "solid"
       check unselectedRow.styles.getOrDefault("border-left-color") ==
         "transparent"

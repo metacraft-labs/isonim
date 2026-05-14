@@ -796,48 +796,62 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
                 display = "none"):
             # Selection outline. Painted on click; visible while the
             # selection signal is non-empty.
+            # M-EVP-12 fix-cycle 1: bumped to 3px solid + a stronger
+            # glow halo so the outline reads at full-window screenshot
+            # scale (the previous 2px+18%-alpha halo was nearly
+            # invisible at 1920×1080).
             tdiv(ref = selectionOutline,
                   `data-canvas-selection-outline` = "true",
                   position = "absolute",
-                  border = "2px solid " & accentBlue,
-                  border_radius = "2px",
-                  box_shadow = "0 0 0 4px rgba(59,130,246,.18)",
+                  border = "3px solid " & accentBlue,
+                  border_radius = "3px",
+                  box_shadow = "0 0 0 6px rgba(59,130,246,.32)",
                   pointer_events = "none",
                   box_sizing = "border-box",
                   display = "none")
             # Hover label that follows the cursor — production parity
             # with the iframe path's `#isonim-editor-hover-label`.
+            # M-EVP-12 fix-cycle 1: bigger type and a tinted accent
+            # border so the label is unambiguously visible in the
+            # full-window screenshot view.
             tdiv(ref = hoverLabel,
                   `data-canvas-hover-label` = "true",
                   position = "absolute",
                   pointer_events = "none",
-                  padding = "3px 6px",
-                  border_radius = "4px",
-                  background_color = "rgba(15,23,42,.94)",
-                  color = "#E2E8F0",
+                  padding = "5px 9px",
+                  border_radius = "5px",
+                  border = "1px solid " & accentBlue,
+                  background_color = "rgba(15,23,42,.96)",
+                  color = "#F8FAFC",
                   font_family = "ui-monospace, SFMono-Regular, Menlo, monospace",
-                  font_size = "11px",
+                  font_size = "13px",
+                  font_weight = "600",
                   line_height = "1.3",
-                  box_shadow = "0 4px 14px rgba(15,23,42,.28)",
+                  box_shadow = "0 6px 18px rgba(15,23,42,.45)",
                   white_space = "nowrap",
                   display = "none"):
               span(ref = hoverLabelText):
                 text ""
             # Selection breadcrumb chip — production parity with the
             # iframe path's `#isonim-editor-selection-breadcrumb`.
+            # M-EVP-12 fix-cycle 1: anchored top-left of the overlay
+            # with a visible accent border + larger type so the
+            # screenshot can read it without zooming in.
             tdiv(ref = breadcrumb,
                   `data-canvas-selection-breadcrumb` = "true",
                   position = "absolute",
-                  top = "6px", left = "6px",
+                  top = "8px", left = "8px",
                   pointer_events = "none",
-                  padding = "3px 6px",
-                  border_radius = "5px",
-                  background_color = "rgba(15,23,42,.94)",
-                  color = "#CBD5E1",
+                  padding = "5px 10px",
+                  border_radius = "6px",
+                  border = "1px solid " & accentBlue,
+                  background_color = "rgba(15,23,42,.96)",
+                  color = "#E2E8F0",
                   font_family = "ui-monospace, SFMono-Regular, Menlo, monospace",
-                  font_size = "10px",
+                  font_size = "12px",
+                  font_weight = "600",
                   line_height = "1.3",
-                  box_shadow = "0 6px 18px rgba(15,23,42,.28)",
+                  box_shadow = "0 6px 18px rgba(15,23,42,.45)",
                   max_width = "92%",
                   overflow = "hidden",
                   text_overflow = "ellipsis",
@@ -849,6 +863,9 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
             # rendered when `vm.editMode.val == emEdit`. Handles
             # opt into pointer events; the rest of the overlay does
             # not so clicks reach the canvas.
+            # M-EVP-12 fix-cycle 1: bumped from 8×8 to 12×12 and
+            # added a stronger border so the handles read at
+            # full-window screenshot scale.
             tdiv(ref = handlesGroup,
                   position = "absolute",
                   left = "0", top = "0", right = "0", bottom = "0",
@@ -859,11 +876,12 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
                       `data-canvas-selection-handle` = "true",
                       `data-handle-position` = handleNames[hi],
                       position = "absolute",
-                      width = "8px", height = "8px",
-                      margin_left = "-4px", margin_top = "-4px",
-                      border = "1px solid #FFFFFF",
-                      border_radius = "2px",
+                      width = "12px", height = "12px",
+                      margin_left = "-6px", margin_top = "-6px",
+                      border = "2px solid #FFFFFF",
+                      border_radius = "3px",
                       background_color = accentBlue,
+                      box_shadow = "0 1px 3px rgba(15,23,42,.5)",
                       pointer_events = "auto",
                       box_sizing = "border-box")
   r.appendChild(content, projectPreviewSection)
