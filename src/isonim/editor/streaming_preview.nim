@@ -705,7 +705,8 @@ when defined(js):
   proc attachBridgeClient*(vm: StreamingPreviewVM; canvas: Element;
                           bridgeUrl: string;
                           onVectorSymbolDblClick: proc(componentPath: string)
-                              = nil): BridgeClientHandle =
+                              = nil;
+                          onWsOpen: proc() = nil): BridgeClientHandle =
     ## Open a WebSocket from the editor bundle to ``bridgeUrl`` and
     ## wire its F/M/I packet stream into ``vm`` + ``canvas``.
     ##
@@ -815,10 +816,16 @@ when defined(js):
       if onVectorSymbolDblClick != nil:
         onVectorSymbolDblClick(entry.componentPath)
     {.emit: ["""
-      (function (canvas, url, dispatchMeta, onClick, onHover, onDblClick) {
+      (function (canvas, url, dispatchMeta, onClick, onHover, onDblClick, onWsOpen) {
         if (!canvas || !url) return null;
         var ws = new WebSocket(url);
         ws.binaryType = 'arraybuffer';
+        // RS-M12: fire the onWsOpen Nim callback once the socket
+        // reaches OPEN state so the editor can flush queued sends
+        // (e.g. the initial `select-story` packet) without polling.
+        ws.addEventListener('open', function () {
+          try { if (onWsOpen) onWsOpen(); } catch (_) {}
+        });
         function readU32LE(view, offset) {
           return view.getUint32(offset, true);
         }
@@ -1006,7 +1013,8 @@ when defined(js):
         ws.__isonimCanvas = canvas;
         """, socket, """ = ws;
       })(""", canvas, ", ", bridgeUrl.cstring, ", ",
-       dispatchMeta, ", ", onClick, ", ", onHover, ", ", onDblClick, """);
+       dispatchMeta, ", ", onClick, ", ", onHover, ", ", onDblClick,
+       ", ", onWsOpen, """);
     """].}
     BridgeClientHandle(socket: socket, canvas: canvas, url: bridgeUrl)
 

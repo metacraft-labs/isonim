@@ -448,8 +448,18 @@ when defined(js):
           binding.lastSentStoryId = ""
         let url = bridgeUrlForBackend(activeBackend)
         if url.len > 0:
+          # RS-M12 fix: register an onWsOpen callback so the initial
+          # select-story flushes the instant the WS handshake
+          # completes. Without this, sendCurrentStory below runs
+          # while readyState is still CONNECTING and is dropped;
+          # nothing else triggers a re-tick to retry, so the launcher
+          # renders its default content forever.
+          let capturedBinding = binding
+          let capturedVm = vm
+          let onOpen = proc() =
+            sendCurrentStory(capturedBinding, capturedVm)
           binding.handle = attachBridgeClient(streaming, canvas, url,
-                                               onVectorDbl)
+                                               onVectorDbl, onOpen)
           binding.attachedBackend = activeBackend
           installStoryPublisher(binding, streaming)
       # RS-M12: every reactive tick — including the one that just
