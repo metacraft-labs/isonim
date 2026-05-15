@@ -1320,12 +1320,36 @@ when defined(js):
           return null;
         }
         host.setAttribute('data-tui-terminal', 'true');
+        // The host fills the preview pane. Center the xterm grid inside it so
+        // the cell rendering occupies the full available space instead of
+        // sitting as a tiny block in the top-left (reviewer feedback under
+        // M-EVP-14: a sub-pane-sized terminal looked like an editor text dump
+        // rather than a real terminal render).
+        host.style.display = 'flex';
+        host.style.alignItems = 'center';
+        host.style.justifyContent = 'center';
+        // Compute an initial font size that fills the host area for an
+        // 80x24 grid using approximate monospace metrics (char width ~=
+        // 0.6 * fontSize, line height ~= 1.15 * fontSize for SF Mono /
+        // Menlo). ResizeObserver below refits whenever the pane resizes.
+        function pickFontSize() {
+          var w = host.clientWidth || host.getBoundingClientRect().width || 0;
+          var h = host.clientHeight || host.getBoundingClientRect().height || 0;
+          if (w <= 0 || h <= 0) return 14;
+          var fw = w / (cols * 0.6);
+          var fh = h / (rows * 1.18);
+          var fs = Math.floor(Math.min(fw, fh));
+          if (fs < 8) fs = 8;
+          if (fs > 64) fs = 64;
+          return fs;
+        }
+        var initialFontSize = pickFontSize();
         var term = new window.Terminal({
           cols: cols, rows: rows,
           scrollback: 0,
           allowProposedApi: true,
           fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-          fontSize: 13,
+          fontSize: initialFontSize,
           theme: { background: '#0a101e', foreground: '#e2e8f0' },
           disableStdin: true,
           cursorBlink: false,
@@ -1335,6 +1359,30 @@ when defined(js):
         try { term.open(host); } catch (e) {
           console.error('term.open failed', e);
         }
+        // Install a ResizeObserver so the terminal refits when the
+        // preview pane (or the editor viewport) is resized. Tracks the
+        // last applied font size so we skip no-op refits.
+        var lastFontSize = initialFontSize;
+        var refitPending = false;
+        function refit() {
+          refitPending = false;
+          try {
+            var fs = pickFontSize();
+            if (fs !== lastFontSize) {
+              term.options.fontSize = fs;
+              lastFontSize = fs;
+            }
+          } catch (_) {}
+        }
+        var resizeObs = null;
+        try {
+          resizeObs = new ResizeObserver(function () {
+            if (refitPending) return;
+            refitPending = true;
+            requestAnimationFrame(refit);
+          });
+          resizeObs.observe(host);
+        } catch (_) {}
         var ws = new WebSocket(url);
         ws.binaryType = 'arraybuffer';
         ws.addEventListener('open', function () {
@@ -1426,6 +1474,7 @@ when defined(js):
           click: onClickEvt,
         };
         ws.__isonimTuiHost = host;
+        ws.__isonimTuiResizeObs = resizeObs;
         """, socket, """ = ws;
         """, term, """ = term;
       })(""", host, ", ", bridgeUrl.cstring, ", ", cols, ", ", rows, ", ",
@@ -1509,6 +1558,12 @@ when defined(js):
                 host.removeEventListener(k, ws.__isonimTuiHandlers[k]);
               }
               ws.__isonimTuiHandlers = null;
+            }
+          } catch (_) {}
+          try {
+            if (ws.__isonimTuiResizeObs) {
+              ws.__isonimTuiResizeObs.disconnect();
+              ws.__isonimTuiResizeObs = null;
             }
           } catch (_) {}
           try { ws.close(); } catch (_) {}
