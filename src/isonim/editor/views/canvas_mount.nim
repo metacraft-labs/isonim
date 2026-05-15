@@ -509,15 +509,9 @@ when defined(js):
     ## RS-M13: ``tuiHandle`` is set when the active backend is
     ## ``pbTui`` and an xterm.js Terminal is mounted; mutually
     ## exclusive with ``handle`` (the canvas-based F/M/I client).
-    ##
-    ## RS-M13b: ``rtHandle`` is set when the active backend is
-    ## ``pbGpui`` or ``pbFreya`` and a render-tree DOM host is
-    ## mounted; mutually exclusive with both other transports.
     handle*: BridgeClientHandle
     tuiHandle*: TuiTerminalHandle
     tuiHost*: Element
-    rtHandle*: RenderTreeHandle
-    rtHost*: Element
     attachedBackend*: PreviewBackend
     lastSentStoryId*: string
       ## RS-M12: dedupes redundant ``select-story`` sends. The
@@ -528,26 +522,21 @@ when defined(js):
 
   proc newBridgeBinding*(): BridgeBinding =
     BridgeBinding(handle: nil, tuiHandle: nil, tuiHost: nil,
-                  rtHandle: nil, rtHost: nil,
                   attachedBackend: pbWeb,
                   lastSentStoryId: "")
 
   proc sendCurrentStory*(binding: BridgeBinding; vm: EditorVM) =
-    ## RS-M12 / RS-M13 / RS-M13b: emit the ``select-story`` packet for
-    ## the editor's currently-selected story over whichever transport
-    ## is attached (F/M/I via ``BridgeClientHandle``, D/M/P via
-    ## ``TuiTerminalHandle``, or render-tree via ``RenderTreeHandle``).
-    ## Idempotent: the second call with the same story is a no-op.
+    ## RS-M12 / RS-M13: emit the ``select-story`` packet for the
+    ## editor's currently-selected story over whichever transport is
+    ## attached (F/M/I via ``BridgeClientHandle`` or D/M/P via
+    ## ``TuiTerminalHandle``). Idempotent: the second call with the
+    ## same story is a no-op. Safe to call without a live socket —
+    ## the inner senders guard on ``ws.readyState === OPEN``.
     let story = vm.selectedStory.val
     if story.group.len == 0 or story.name.len == 0: return
     let storyId = storyIdFor(story)
     if storyId == binding.lastSentStoryId: return
-    if binding.rtHandle != nil:
-      if not isRenderTreeBridgeOpen(binding.rtHandle): return
-      sendRenderTreeSelectStory(binding.rtHandle, story.group, story.name,
-                                storyKindWire(story.kind), storyId)
-      binding.lastSentStoryId = storyId
-    elif binding.tuiHandle != nil:
+    if binding.tuiHandle != nil:
       if not isTuiBridgeOpen(binding.tuiHandle): return
       sendTuiSelectStory(binding.tuiHandle, story.group, story.name,
                          storyKindWire(story.kind), storyId)
@@ -571,12 +560,7 @@ when defined(js):
       sendStory = proc(storyGroup, storyName, storyKind,
                        storyId: string) =
         if storyId == b.lastSentStoryId: return
-        if b.rtHandle != nil:
-          if not isRenderTreeBridgeOpen(b.rtHandle): return
-          sendRenderTreeSelectStory(b.rtHandle, storyGroup, storyName,
-                                    storyKind, storyId)
-          b.lastSentStoryId = storyId
-        elif b.tuiHandle != nil:
+        if b.tuiHandle != nil:
           if not isTuiBridgeOpen(b.tuiHandle): return
           sendTuiSelectStory(b.tuiHandle, storyGroup, storyName,
                              storyKind, storyId)
@@ -588,77 +572,13 @@ when defined(js):
           b.lastSentStoryId = storyId,
       sendMutation = proc(target, key, valueLiteral: string;
                           scope: MutationScopeKind) =
-        if b.rtHandle != nil:
-          if not isRenderTreeBridgeOpen(b.rtHandle): return
-          sendRenderTreeApplyMutation(b.rtHandle, target, key,
-                                      valueLiteral, scope)
-        elif b.tuiHandle != nil:
+        if b.tuiHandle != nil:
           if not isTuiBridgeOpen(b.tuiHandle): return
           sendTuiApplyMutation(b.tuiHandle, target, key,
                                valueLiteral, scope)
         elif b.handle != nil:
           if not isBridgeOpen(b.handle): return
           sendApplyMutation(b.handle, target, key, valueLiteral, scope))
-
-  proc ensureRenderTreeHost(canvas: Element; rendererId: string): Element =
-    ## RS-M13b: resolve (or lazily create) the
-    ## ``<div data-render-tree-host="<rendererId>">`` host the
-    ## materialiser paints DOM into. Sibling of the canvas inside the
-    ## shared `CanvasMount` wrapper so the overlay still paints on
-    ## top. Idempotent.
-    var host: Element
-    let rid = rendererId.cstring
-    {.emit: ["""
-      (function (canvas, rendererId) {
-        if (!canvas) return null;
-        var parent = canvas.parentNode;
-        if (!parent) return null;
-        var sel = '[data-render-tree-host-mount="true"]';
-        var existing = parent.querySelector(sel);
-        if (existing) {
-          existing.setAttribute('data-render-tree-host', rendererId);
-          // Reset any per-renderer scoping class from a previous attach.
-          existing.className = '';
-          existing.classList.add('render-tree-host');
-          existing.classList.add('render-tree-host--' + rendererId);
-          """, host, """ = existing;
-          return;
-        }
-        var div = document.createElement('div');
-        div.setAttribute('data-render-tree-host-mount', 'true');
-        div.setAttribute('data-render-tree-host', rendererId);
-        div.classList.add('render-tree-host');
-        div.classList.add('render-tree-host--' + rendererId);
-        div.style.position = 'absolute';
-        div.style.left = '0';
-        div.style.top = '0';
-        div.style.width = '100%';
-        div.style.height = '100%';
-        div.style.boxSizing = 'border-box';
-        div.style.overflow = 'auto';
-        // Insert BEFORE the canvas so overlay siblings (later children
-        // of the wrapper) keep painting on top.
-        parent.insertBefore(div, canvas);
-        """, host, """ = div;
-      })(""", canvas, ", ", rid, ");"].}
-    host
-
-  proc setRenderTreeHostVisible(host: Element; visible: bool) =
-    if host == nil: return
-    {.emit: ["""
-      (function (host, visible) {
-        if (!host) return;
-        host.style.display = visible ? 'block' : 'none';
-      })(""", host, ", ", visible, ");"].}
-
-  proc rendererIdFor(backend: PreviewBackend): string =
-    case backend
-    of pbGpui: "gpui"
-    of pbFreya: "freya"
-    else: ""
-
-  proc backendUsesRenderTree(backend: PreviewBackend): bool =
-    backend == pbGpui or backend == pbFreya
 
   proc ensureTuiHost(canvas: Element): Element =
     ## Resolve (or lazily create) the ``<div data-tui-terminal="true">``
@@ -738,9 +658,7 @@ when defined(js):
       let backendChanged = binding.attachedBackend != activeBackend
       let needsAttach = backendChanged or
         (activeBackend == pbTui and binding.tuiHandle == nil) or
-        (backendUsesRenderTree(activeBackend) and binding.rtHandle == nil) or
-        (activeBackend != pbTui and not backendUsesRenderTree(activeBackend) and
-         binding.handle == nil)
+        (activeBackend != pbTui and binding.handle == nil)
       if needsAttach:
         # Drop whichever transport (if any) is currently attached.
         if binding.handle != nil:
@@ -749,9 +667,6 @@ when defined(js):
         if binding.tuiHandle != nil:
           detachTuiTerminalClient(binding.tuiHandle)
           binding.tuiHandle = nil
-        if binding.rtHandle != nil:
-          detachRenderTreeClient(binding.rtHandle)
-          binding.rtHandle = nil
         binding.lastSentStoryId = ""
         let url = bridgeUrlForBackend(activeBackend)
         if url.len > 0:
@@ -763,30 +678,13 @@ when defined(js):
             let host = ensureTuiHost(canvas)
             binding.tuiHost = host
             setTuiHostVisible(host, true)
-            if binding.rtHost != nil:
-              setRenderTreeHostVisible(binding.rtHost, false)
             setCanvasHidden(canvas, true)
             binding.tuiHandle = attachTuiTerminalClient(
               streaming, host, url, 80, 24, onOpen)
-          elif backendUsesRenderTree(activeBackend):
-            # RS-M13b: GPUI / Freya render-tree DOM host.
-            let rendererId = rendererIdFor(activeBackend)
-            let host = ensureRenderTreeHost(canvas, rendererId)
-            binding.rtHost = host
-            setRenderTreeHostVisible(host, true)
-            if binding.tuiHost != nil:
-              setTuiHostVisible(binding.tuiHost, false)
-            setCanvasHidden(canvas, true)
-            binding.rtHandle = attachRenderTreeClient(
-              streaming, host, url, rendererId,
-              onVectorSymbolDblClick = onVectorDbl,
-              onWsOpen = onOpen)
           else:
             setCanvasHidden(canvas, false)
             if binding.tuiHost != nil:
               setTuiHostVisible(binding.tuiHost, false)
-            if binding.rtHost != nil:
-              setRenderTreeHostVisible(binding.rtHost, false)
             binding.handle = attachBridgeClient(streaming, canvas, url,
                                                  onVectorDbl, onOpen)
           binding.attachedBackend = activeBackend
@@ -799,15 +697,10 @@ when defined(js):
       if binding.tuiHandle != nil:
         detachTuiTerminalClient(binding.tuiHandle)
         binding.tuiHandle = nil
-      if binding.rtHandle != nil:
-        detachRenderTreeClient(binding.rtHandle)
-        binding.rtHandle = nil
       if binding.tuiHost != nil:
         setTuiHostVisible(binding.tuiHost, false)
-      if binding.rtHost != nil:
-        setRenderTreeHostVisible(binding.rtHost, false)
       setCanvasHidden(canvas, false)
       if binding.lastSentStoryId.len > 0 or binding.handle != nil or
-         binding.tuiHandle != nil or binding.rtHandle != nil:
+         binding.tuiHandle != nil:
         binding.lastSentStoryId = ""
         streaming.clearStoryPublisher()
