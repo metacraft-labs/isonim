@@ -535,6 +535,7 @@ proc decodeTuiElementTreeAsManifest(jsonBody: string): ElementTreeManifest =
   result.frameSeq = if node.hasKey("frameSeq"): node["frameSeq"].getInt else: 0
   result.surfaceWidth = node["surfaceCols"].getInt
   result.surfaceHeight = node["surfaceRows"].getInt
+  result.boundsUnit = "cells"
   result.elements = @[]
   for raw in node["elements"]:
     var entry: ElementEntry
@@ -1280,6 +1281,30 @@ when defined(js):
         """].}
     let onHover = proc(x: int; y: int) =
       discard vm.hoverCanvas(x, y)
+      when defined(js):
+        # M-EVP-10: mirror the hover signals to window under the gated
+        # ``__isonimTestMode === true`` flag so the playwright suite can
+        # assert that hovering over a manifest entry on the TUI surface
+        # drives the editor's hover hit-test (parity with the F/M/I
+        # ``attachBridgeClient`` mirror above).
+        let pOpt = vm.canvas.hoveredComponentPath.val
+        let iOpt = vm.canvas.hoveredElementId.val
+        let hovered = if pOpt.isSome: pOpt.get else: ""
+        let hoveredId = if iOpt.isSome: iOpt.get else: ""
+        let hasHoverFlag = if pOpt.isSome: 1 else: 0
+        {.emit: ["""
+          try {
+            if (window.__isonimTestMode === true) {
+              if (""", hasHoverFlag, """) {
+                window.__isonimHoveredComponentPath = """, hovered.cstring, """;
+                window.__isonimHoveredElementId = """, hoveredId.cstring, """;
+              } else {
+                window.__isonimHoveredComponentPath = null;
+                window.__isonimHoveredElementId = null;
+              }
+            }
+          } catch (_) {}
+        """].}
     {.emit: ["""
       (function (host, url, cols, rows, dispatchMeta, onClick, onHover, onWsOpen) {
         if (!host || !url) return null;

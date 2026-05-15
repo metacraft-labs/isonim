@@ -158,3 +158,21 @@ proc boundsOf*(vm: PreviewCanvasVM; elementId: string): Option[ElementBounds] =
     if e.id == elementId:
       return some(e.bounds)
   none(ElementBounds)
+
+proc boundsOfPath*(vm: PreviewCanvasVM;
+                   componentPath: string): Option[ElementBounds] =
+  ## Look up an element's bounds by componentPath. Acts as a fallback
+  ## for ``boundsOf`` when a manifest re-emission replaces a stable
+  ## componentPath with a fresh id (e.g. the launcher reseeded the VM
+  ## via ``select-story`` and the demo's per-instance ids were re-
+  ## allocated). The componentPath stays stable across re-emissions
+  ## for the same logical element (``task_app/views/TaskList``,
+  ## ``task_app/views/TaskRow#5`` etc.), so the overlay can still
+  ## paint the right rectangle even when the editor's
+  ## ``selectedElementId`` references a now-gone id.
+  let m = vm.manifest.val
+  if m.isNone: return none(ElementBounds)
+  for e in m.get.elements:
+    if e.componentPath == componentPath:
+      return some(e.bounds)
+  none(ElementBounds)

@@ -22,6 +22,7 @@
 ## ``codetracer-specs/Front-Ends/IsoNim/isonim-editor.status.org``
 ## for the acceptance criteria this helper exists to satisfy.
 
+import std/options
 import isonim/core/[computation, signals]
 import isonim/dsl/ui
 import isonim/editor/types
@@ -221,8 +222,17 @@ proc bindCanvasOverlayEffect*[R, E](r: R; vm: EditorVM;
   ## label, selection outline, breadcrumb, and (in ``emEdit``) the 8
   ## handles. Coordinates are mapped from F-packet pixel space to
   ## CSS pixel space via ``canvas.clientWidth / canvas.width``.
+  ##
+  ## RS-M13: when the manifest carries ``boundsUnit == "cells"`` (the
+  ## TUI D/M/P transport) the surface element is no longer the
+  ## ``<canvas>`` — it is the sibling ``<div data-tui-terminal="true">``
+  ## host that xterm.js painted into. The CSS-px translation switches
+  ## to ``cellW = hostRect.width / surfaceCols`` and the overlay still
+  ## paints over the correct rectangle because the host and the
+  ## overlay share the wrapper's coordinate space.
   let canvasEl = mount.canvas
   let overlayEl = mount.overlay
+  let wrapperEl = mount.wrapper
   let hoverLabel = mount.hoverLabel
   let hoverLabelText = mount.hoverLabelText
   let selectionOutline = mount.selectionOutline
@@ -231,6 +241,26 @@ proc bindCanvasOverlayEffect*[R, E](r: R; vm: EditorVM;
   let handlesGroup = mount.handlesGroup
   let handleElems = mount.handleElems
   discard overlayEl
+  discard wrapperEl
+
+  # Latched bounds for the currently-selected component, used to bridge
+  # the mid-reseed gap when the launcher re-emits the element-tree
+  # manifest with fresh ids. The window between the chrome bar setting
+  # ``emEdit`` and the new manifest landing can leave ``boundsOf`` AND
+  # ``boundsOfPath`` both returning none for one or two render ticks
+  # (the click-time id is stale; the new manifest hasn't been decoded
+  # yet). Without a latch, the overlay effect re-runs in that window,
+  # sees both lookups fail, hides the handles, and the user sees them
+  # flicker off.
+  #
+  # The latch is keyed by ``selectedComponentPath`` (stable across re-
+  # emissions for the same logical element) and resets on:
+  #   * an empty selection — the user explicitly cleared selection,
+  #     never paint a ghost outline;
+  #   * a path change — the user picked a different element, never
+  #     paint stale bounds for the new selection.
+  var latchedPath = ""
+  var latchedBounds: Option[ElementBounds] = none(ElementBounds)
 
   createRenderEffect proc() =
     let streaming = vm.streamingPreview
@@ -244,7 +274,12 @@ proc bindCanvasOverlayEffect*[R, E](r: R; vm: EditorVM;
     let selectedPath = canvas.selectedComponentPath.val
     let mode = vm.editMode.val
     let manifestOpt = canvas.manifest.val
-    discard manifestOpt
+    let isCellUnit =
+      manifestOpt.isSome and manifestOpt.get.boundsUnit == "cells"
+    let surfaceCols =
+      if isCellUnit: manifestOpt.get.surfaceWidth else: 0
+    let surfaceRows =
+      if isCellUnit: manifestOpt.get.surfaceHeight else: 0
     if not useCanvas:
       r.setStyle(hoverLabel, "display", "none")
       r.setStyle(selectionOutline, "display", "none")
@@ -259,19 +294,45 @@ proc bindCanvasOverlayEffect*[R, E](r: R; vm: EditorVM;
       when defined(js):
         let hid = hoverIdOpt
         if hid.isSome:
-          let bOpt = canvas.boundsOf(hid.get)
+          var bOpt = canvas.boundsOf(hid.get)
+          if bOpt.isNone:
+            # Fallback when a manifest re-emission shifted the id.
+            bOpt = canvas.boundsOfPath(hoverPathOpt.get)
           if bOpt.isSome:
             let b = bOpt.get
             let bx = b.x
             let by = b.y
             let bw = b.w
             let cnv = canvasEl
+            let wrap = wrapperEl
             let lbl = hoverLabel
+            let cellMode = if isCellUnit: 1 else: 0
+            let cols = surfaceCols
+            let rows = surfaceRows
             {.emit: ["""
               try {
                 var c = """, cnv, """;
+                var w = """, wrap, """;
                 var lbl = """, lbl, """;
-                if (c && lbl && c.width > 0 && c.height > 0) {
+                if (""", cellMode, """ && w && """, cols, """ > 0 && """, rows, """ > 0) {
+                  // RS-M13 cell-coord path: translate via the
+                  // xterm.js host's rect (the active TUI surface).
+                  var host = w.querySelector('[data-tui-terminal="true"]');
+                  if (host && lbl) {
+                    var hostRect = host.getBoundingClientRect();
+                    var wrapRect = w.getBoundingClientRect();
+                    if (hostRect.width > 0 && hostRect.height > 0) {
+                      var cellW = hostRect.width / """, cols, """;
+                      var cellH = hostRect.height / """, rows, """;
+                      var offX = hostRect.left - wrapRect.left;
+                      var offY = hostRect.top - wrapRect.top;
+                      var leftPx = offX + (""", bx, """ + """, bw, """) * cellW;
+                      var topPx = offY + """, by, """ * cellH;
+                      lbl.style.left = leftPx + 'px';
+                      lbl.style.top = topPx + 'px';
+                    }
+                  }
+                } else if (c && lbl && c.width > 0 && c.height > 0) {
                   var sx = c.clientWidth / c.width;
                   var sy = c.clientHeight / c.height;
                   var leftPx = (""", bx, """ + """, bw, """) * sx;
@@ -286,7 +347,35 @@ proc bindCanvasOverlayEffect*[R, E](r: R; vm: EditorVM;
 
     # ----------- Selection outline + breadcrumb -----------
     if selectedId.len > 0:
-      let bOpt = canvas.boundsOf(selectedId)
+      var bOpt = canvas.boundsOf(selectedId)
+      if bOpt.isNone and selectedPath.len > 0:
+        # Fallback: the manifest may have re-emitted with fresh ids
+        # while the selection signals still reference the click-time
+        # id. componentPath is stable across re-emissions so it lets
+        # the overlay continue painting the rectangle. Without this,
+        # the outline + breadcrumb + edit-mode handles all blink off
+        # when the launcher reseeds (RS-M12 ``select-story``).
+        bOpt = canvas.boundsOfPath(selectedPath)
+      # Mid-reseed bounds gap: when the chrome bar flips ``emEdit``
+      # the launcher may emit a fresh element-tree manifest with new
+      # ids before the new manifest has fully landed in the canvas
+      # VM. For that brief reactive window both lookups above return
+      # none, and without the latch the overlay effect hides the
+      # outline + breadcrumb + handles. We bridge that window by
+      # repainting the previous tick's bounds when:
+      #   * the selection's ``selectedComponentPath`` is unchanged,
+      #     AND
+      #   * the previous tick had a valid bounds for that path.
+      # Both conditions together guarantee the latch never paints
+      # stale bounds for a different element (path differs) or a
+      # cleared selection (the ``selectedId.len == 0`` branch below
+      # resets the latch before we get here).
+      if bOpt.isNone and selectedPath.len > 0 and
+         latchedPath == selectedPath and latchedBounds.isSome:
+        bOpt = latchedBounds
+      if bOpt.isSome and selectedPath.len > 0:
+        latchedPath = selectedPath
+        latchedBounds = bOpt
       if bOpt.isSome:
         let b = bOpt.get
         r.setAttribute(selectionOutline, "data-element-id", selectedId)
@@ -297,12 +386,33 @@ proc bindCanvasOverlayEffect*[R, E](r: R; vm: EditorVM;
           let bw = b.w
           let bh = b.h
           let cnv = canvasEl
+          let wrap = wrapperEl
           let outline = selectionOutline
+          let cellMode = if isCellUnit: 1 else: 0
+          let cols = surfaceCols
+          let rows = surfaceRows
           {.emit: ["""
             try {
               var c = """, cnv, """;
+              var w = """, wrap, """;
               var o = """, outline, """;
-              if (c && o && c.width > 0 && c.height > 0) {
+              if (""", cellMode, """ && w && o && """, cols, """ > 0 && """, rows, """ > 0) {
+                var host = w.querySelector('[data-tui-terminal="true"]');
+                if (host) {
+                  var hostRect = host.getBoundingClientRect();
+                  var wrapRect = w.getBoundingClientRect();
+                  if (hostRect.width > 0 && hostRect.height > 0) {
+                    var cellW = hostRect.width / """, cols, """;
+                    var cellH = hostRect.height / """, rows, """;
+                    var offX = hostRect.left - wrapRect.left;
+                    var offY = hostRect.top - wrapRect.top;
+                    o.style.left = (offX + """, bx, """ * cellW) + 'px';
+                    o.style.top = (offY + """, by, """ * cellH) + 'px';
+                    o.style.width = (""", bw, """ * cellW) + 'px';
+                    o.style.height = (""", bh, """ * cellH) + 'px';
+                  }
+                }
+              } else if (c && o && c.width > 0 && c.height > 0) {
                 var sx = c.clientWidth / c.width;
                 var sy = c.clientHeight / c.height;
                 o.style.left = (""", bx, """ * sx) + 'px';
@@ -318,22 +428,45 @@ proc bindCanvasOverlayEffect*[R, E](r: R; vm: EditorVM;
           r.setStyle(handlesGroup, "display", "block")
           when defined(js):
             let cnv = canvasEl
+            let wrap = wrapperEl
             let bx = b.x
             let by = b.y
             let bw = b.w
             let bh = b.h
+            let cellMode = if isCellUnit: 1 else: 0
+            let cols = surfaceCols
+            let rows = surfaceRows
             for hi in 0 ..< 8:
               let hEl = handleElems[hi]
               let pos = handleNames[hi]
               {.emit: ["""
                 try {
                   var c = """, cnv, """;
+                  var w = """, wrap, """;
                   var h = """, hEl, """;
-                  if (c && h && c.width > 0 && c.height > 0) {
-                    var sx = c.clientWidth / c.width;
-                    var sy = c.clientHeight / c.height;
-                    var bx = """, bx, """ * sx;
-                    var by = """, by, """ * sy;
+                  var sx = 0, sy = 0, offX = 0, offY = 0;
+                  var ok = false;
+                  if (""", cellMode, """ && w && h && """, cols, """ > 0 && """, rows, """ > 0) {
+                    var host = w.querySelector('[data-tui-terminal="true"]');
+                    if (host) {
+                      var hostRect = host.getBoundingClientRect();
+                      var wrapRect = w.getBoundingClientRect();
+                      if (hostRect.width > 0 && hostRect.height > 0) {
+                        sx = hostRect.width / """, cols, """;
+                        sy = hostRect.height / """, rows, """;
+                        offX = hostRect.left - wrapRect.left;
+                        offY = hostRect.top - wrapRect.top;
+                        ok = true;
+                      }
+                    }
+                  } else if (c && h && c.width > 0 && c.height > 0) {
+                    sx = c.clientWidth / c.width;
+                    sy = c.clientHeight / c.height;
+                    ok = true;
+                  }
+                  if (ok) {
+                    var bx = offX + """, bx, """ * sx;
+                    var by = offY + """, by, """ * sy;
                     var bw = """, bw, """ * sx;
                     var bh = """, bh, """ * sy;
                     var pos = """, pos.cstring, """;
@@ -358,6 +491,11 @@ proc bindCanvasOverlayEffect*[R, E](r: R; vm: EditorVM;
         r.setStyle(breadcrumb, "display", "none")
         r.setStyle(handlesGroup, "display", "none")
     else:
+      # Selection explicitly cleared — drop the latch so a future
+      # selection at the same componentPath doesn't briefly paint
+      # the previous bounds before the new manifest lands.
+      latchedPath = ""
+      latchedBounds = none(ElementBounds)
       r.setStyle(selectionOutline, "display", "none")
       r.setStyle(breadcrumb, "display", "none")
       r.setStyle(handlesGroup, "display", "none")
