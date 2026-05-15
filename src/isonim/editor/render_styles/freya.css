@@ -1,0 +1,106 @@
+/*
+ * IsoNim Editor — Freya render-tree CSS bundle (RS-M13b).
+ *
+ * Applied within `.render-tree-host--freya` only. Targets Material 3
+ * affordances: Roboto / system fallback, elevation shadows on cards,
+ * 12px rounded corners, ripple-surface markers on interactive elements.
+ *
+ * Selectors mirror `gpui.css` shape so the editor preview behaves
+ * consistently regardless of which render-tree host is mounted.
+ */
+
+.render-tree-host--freya {
+  font-family: Roboto, "Helvetica Neue", Arial, system-ui, sans-serif;
+  color: #e2e2e6;
+  background-color: #1a1c1e;
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  box-sizing: border-box;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.render-tree-host--freya [data-component-kind="app-shell"] {
+  background-color: #1a1c1e;
+  color: #e2e2e6;
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.3),
+    0 1px 3px 1px rgba(0, 0, 0, 0.15);
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+.render-tree-host--freya [data-component-kind="input"] input {
+  background-color: #22252a;
+  border: 1px solid #5e636b;
+  border-radius: 4px;
+  padding: 12px 16px;
+  color: #e2e2e6;
+  transition: border-color 150ms ease-out;
+}
+
+.render-tree-host--freya [data-component-kind="input"] input:focus {
+  border-color: #a8c7fa;
+  border-width: 2px;
+  outline: none;
+}
+
+.render-tree-host--freya button {
+  background-color: #a8c7fa;
+  color: #0a2b66;
+  border: none;
+  border-radius: 20px;
+  padding: 10px 16px;
+  font-weight: 500;
+  font-family: inherit;
+  letter-spacing: 0.1px;
+  cursor: pointer;
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.3),
+    0 1px 3px 1px rgba(0, 0, 0, 0.15);
+  position: relative;
+  overflow: hidden;
+  transition: box-shadow 150ms ease-out, background-color 150ms ease-out;
+}
+
+.render-tree-host--freya button:hover {
+  background-color: #b9d4ff;
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.3),
+    0 2px 6px 2px rgba(0, 0, 0, 0.15);
+}
+
+.render-tree-host--freya [data-component-kind="filter-bar"] button.selected {
+  background-color: #7da0d7;
+  color: #001b3f;
+}
+
+.render-tree-host--freya [data-component-kind="row"] {
+  background-color: #22252a;
+  border-radius: 12px;
+  margin-bottom: 4px;
+  padding: 12px 16px;
+  transition: background-color 120ms ease-out;
+}
+
+.render-tree-host--freya [data-component-kind="row"]:hover {
+  background-color: #2a2d32;
+}
+
+.render-tree-host--freya [data-component-kind="summary"] {
+  font-size: 12px;
+  color: #c4c7c5;
+  letter-spacing: 0.4px;
+  padding: 8px 16px;
+}
+
+.render-tree-host--freya [data-component-kind="vector-symbol"] {
+  color: #a8c7fa;
+  display: inline-block;
+}
