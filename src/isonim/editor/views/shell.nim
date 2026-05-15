@@ -88,6 +88,21 @@ func quickNavLabel(kind: StoryKind): string =
   of skGuideline: "Guidelines"
   of skVectorSymbol: "Foundations" # M-EVP-8: vector symbols fold into Foundations.
 
+func quickNavShortLabel(kind: StoryKind): string =
+  ## M-EVP-14 Wave B: tight caption shown directly under each quick-nav
+  ## glyph. The 260 px sidebar splits five icons across ~216 px usable
+  ## width, so the visible caption needs to fit ~40 px per cell without
+  ## ellipsis. The full label survives in the HTML `title` tooltip and
+  ## the `aria-label` for accessibility.
+  case kind
+  of skFoundation: "Found"
+  of skComponent: "Comps"
+  of skPattern: "Comps"
+  of skPage: "Pages"
+  of skFlow: "Flows"
+  of skGuideline: "Guide"
+  of skVectorSymbol: "Found"
+
 func quickNavIcon(kind: StoryKind): string =
   case kind
   of skFoundation: "\xE2\x97\x87"
@@ -735,8 +750,8 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
             border_bottom = "1px solid " & borderFaint):
         tdiv(`data-sidebar-quicknav` = "true",
               display = "flex", flex_direction = "row",
-              align_items = "center", justify_content = "space-around",
-              gap = "4px", padding = "6px 8px",
+              align_items = "stretch", justify_content = "space-around",
+              gap = "4px", padding = "6px 6px",
               border_radius = "6px",
               background_color = bgBase,
               border = "1px solid " & borderFaint):
@@ -744,9 +759,18 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
             var iconNode: E
             let cKind = k
             let cLabel = quickNavLabel(k)
+            let cShort = quickNavShortLabel(k)
             let cIcon = quickNavIcon(k)
             let cSectionId = quickNavSectionId(k)
             let onPick = quickNavHandler(vm, cKind)
+            # M-EVP-14 Wave B: the previous icon-only strip relied on
+            # hover tooltips (HTML `title`) for legibility, which static
+            # screenshot reviewers can't see. Add a tiny visible caption
+            # under each glyph so the meaning of the diamond / square /
+            # triangle / circle is unambiguous from a still capture.
+            # `quickNavShortLabel` keeps each caption inside the ~40 px
+            # cell budget; the full label still surfaces via `title` +
+            # `aria-label` for hover and screen-reader use.
             tdiv(ref = iconNode,
                   `data-category-kind` = $cKind,
                   `data-quicknav-icon` = cSectionId,
@@ -754,19 +778,26 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
                   `aria-label` = "Focus " & cLabel & " category",
                   onclick = onPick,
                   onkeydown = onPick,
-                  display = "flex", align_items = "center",
-                  justify_content = "center",
-                  width = "28px", height = "26px",
+                  display = "flex", flex_direction = "column",
+                  align_items = "center", justify_content = "center",
+                  flex = "1", min_width = "0",
+                  padding = "4px 2px",
                   border_radius = "5px",
-                  font_size = "13px",
                   color = textMuted,
                   transition = "background-color 0.12s, color 0.12s"):
-              text cIcon
+              span(font_size = "13px", line_height = "1"):
+                text cIcon
+              span(font_size = "9px", line_height = "1.1",
+                    margin_top = "3px",
+                    white_space = "nowrap", overflow = "hidden",
+                    text_overflow = "ellipsis",
+                    max_width = "100%",
+                    `data-quicknav-caption` = "true"):
+                text cShort
             block:
-              # M-EVP-14: add a native HTML `title` so the otherwise glyph-only
-              # icons surface a visible tooltip on hover (the aria-label was
-              # already there for screen readers, but reviewers flagged the
-              # icons as illegible without a visible label).
+              # Keep the native HTML `title` tooltip too — useful in
+              # interactive sessions and for any future narrower variant
+              # where the caption text gets ellipsised.
               r.setAttribute(iconNode, "title", cLabel)
               r.bindQuickNavIcon(iconNode, vm, cKind)
 

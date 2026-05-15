@@ -1320,27 +1320,45 @@ when defined(js):
           return null;
         }
         host.setAttribute('data-tui-terminal', 'true');
-        // The host fills the preview pane. Center the xterm grid inside it so
-        // the cell rendering occupies the full available space instead of
-        // sitting as a tiny block in the top-left (reviewer feedback under
-        // M-EVP-14: a sub-pane-sized terminal looked like an editor text dump
-        // rather than a real terminal render).
-        host.style.display = 'flex';
-        host.style.alignItems = 'center';
-        host.style.justifyContent = 'center';
-        // Compute an initial font size that fills the host area for an
-        // 80x24 grid using approximate monospace metrics (char width ~=
-        // 0.6 * fontSize, line height ~= 1.15 * fontSize for SF Mono /
-        // Menlo). ResizeObserver below refits whenever the pane resizes.
+        // The host is the *dedicated* terminal mount point — a sibling of
+        // the canvas inside the preview-pane wrapper (see `ensureTuiHost`
+        // in canvas_mount.nim). xterm.js's `.terminal` element fills its
+        // parent on its own; we deliberately keep `display: block` and
+        // explicit `box-sizing: border-box` on the host so no flex / grid
+        // layout leaks back into the wider editor chrome (sidebar,
+        // chrome-bar, inspector) — round-2 reviewer feedback under
+        // M-EVP-14 traced an editor-chrome scale regression to a prior
+        // `display:flex; align-items:center; justify-content:center;`
+        // applied here, where xterm's internal layout interacted with
+        // ResizeObserver to repeatedly re-fit and visibly compress the
+        // surrounding shell.
+        host.style.display = 'block';
+        host.style.boxSizing = 'border-box';
+        host.style.position = host.style.position || 'absolute';
+        host.style.overflow = 'hidden';
+        // Compute an initial font size that fits an 80x24 grid in the
+        // host area using approximate monospace metrics (char width ~=
+        // 0.6 * fontSize, line height ~= 1.18 * fontSize for SF Mono /
+        // Menlo). The reviewer's round-2 feedback flagged a font
+        // overshoot — when the pane is large the geometric solve gave
+        // ~20-24 px cells and only ~6-8 lines fit. We clamp the result so
+        // a standard 80x24 grid always fits comfortably regardless of
+        // pane area: the cell height stays ≤ 14 px (so ≥ 24 rows fit
+        // even in a short pane) and the cell width stays ≤ ~10 px (so
+        // ≥ 80 cols always fit horizontally). ResizeObserver below
+        // refits whenever the pane resizes.
         function pickFontSize() {
           var w = host.clientWidth || host.getBoundingClientRect().width || 0;
           var h = host.clientHeight || host.getBoundingClientRect().height || 0;
-          if (w <= 0 || h <= 0) return 14;
+          if (w <= 0 || h <= 0) return 12;
           var fw = w / (cols * 0.6);
           var fh = h / (rows * 1.18);
           var fs = Math.floor(Math.min(fw, fh));
+          // Clamp so the cell height ≤ 14 px and ≥ 8 px. 14 px line
+          // height with 1.18 leading => fs ≤ ~12.
+          var hardMax = 12;
+          if (fs > hardMax) fs = hardMax;
           if (fs < 8) fs = 8;
-          if (fs > 64) fs = 64;
           return fs;
         }
         var initialFontSize = pickFontSize();

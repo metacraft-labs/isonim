@@ -4384,8 +4384,8 @@ proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
   r.addEventListener(narrowButton, "keydown", proc() = vm.adjustRightPanelWidth(-40))
   r.addEventListener(narrowButton, "focus", rememberPanelFocus(vm,
     "right-panel-narrow"))
-  r.addEventListener(resetWidthButton, "click", proc() = vm.setRightPanelWidth(280))
-  r.addEventListener(resetWidthButton, "keydown", proc() = vm.setRightPanelWidth(280))
+  r.addEventListener(resetWidthButton, "click", proc() = vm.setRightPanelWidth(260))
+  r.addEventListener(resetWidthButton, "keydown", proc() = vm.setRightPanelWidth(260))
   r.addEventListener(resetWidthButton, "focus", rememberPanelFocus(vm,
     "right-panel-reset"))
   r.addEventListener(widenButton, "click", proc() = vm.adjustRightPanelWidth(40))

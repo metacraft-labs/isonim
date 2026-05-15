@@ -130,7 +130,7 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   let panel = ui(r):
     tdiv(
       class = "editor-chat",
-      width = "280px",
+      width = "260px",
       min_width = "240px",
       max_width = "420px",
       display = "flex",
@@ -231,8 +231,8 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   r.addEventListener(narrowButton, "keydown", proc() = vm.adjustRightPanelWidth(-40))
   r.addEventListener(narrowButton, "focus", rememberPanelFocus(vm,
     "right-panel-narrow"))
-  r.addEventListener(resetButton, "click", proc() = vm.setRightPanelWidth(280))
-  r.addEventListener(resetButton, "keydown", proc() = vm.setRightPanelWidth(280))
+  r.addEventListener(resetButton, "click", proc() = vm.setRightPanelWidth(260))
+  r.addEventListener(resetButton, "keydown", proc() = vm.setRightPanelWidth(260))
   r.addEventListener(resetButton, "focus", rememberPanelFocus(vm,
     "right-panel-reset"))
   r.addEventListener(widenButton, "click", proc() = vm.adjustRightPanelWidth(40))
