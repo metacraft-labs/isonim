@@ -231,8 +231,8 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   r.addEventListener(narrowButton, "keydown", proc() = vm.adjustRightPanelWidth(-40))
   r.addEventListener(narrowButton, "focus", rememberPanelFocus(vm,
     "right-panel-narrow"))
-  r.addEventListener(resetButton, "click", proc() = vm.setRightPanelWidth(320))
-  r.addEventListener(resetButton, "keydown", proc() = vm.setRightPanelWidth(320))
+  r.addEventListener(resetButton, "click", proc() = vm.setRightPanelWidth(280))
+  r.addEventListener(resetButton, "keydown", proc() = vm.setRightPanelWidth(280))
   r.addEventListener(resetButton, "focus", rememberPanelFocus(vm,
     "right-panel-reset"))
   r.addEventListener(widenButton, "click", proc() = vm.adjustRightPanelWidth(40))
@@ -243,14 +243,17 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   # Messages area. Don't expand to fill the panel — at tall viewports that
   # leaves a huge empty band between the empty-state card and the composer.
   # When messages exist we cap the area and scroll internally.
+  # M-EVP-14: tightened vertical padding + inter-card gap so the three
+  # cards (intro / suggested prompts / activity) don't visually compete
+  # with the preview pane.
   let messagesArea = ui(r):
     tdiv(
       max_height = "560px",
       overflow_y = "auto",
-      padding = "12px 12px 8px 12px",
+      padding = "8px 10px 6px 10px",
       display = "flex",
       flex_direction = "column",
-      gap = "10px")
+      gap = "6px")
 
   if messages.len == 0:
     let empty = ui(r):
@@ -368,11 +371,11 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
 
   let reviewLoopArea = ui(r):
     tdiv(
-      padding = "8px 12px",
+      padding = "6px 10px",
       border_top = "1px solid " & borderFaint,
       display = "flex",
       flex_direction = "column",
-      gap = "8px")
+      gap = "6px")
   # Spacer flex item that absorbs remaining vertical space, pushing the
   # transcript + composer to the bottom while the empty-state card and
   # review-loop sections cluster at the top of the pane. A muted centered

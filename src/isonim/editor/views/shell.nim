@@ -763,6 +763,11 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
                   transition = "background-color 0.12s, color 0.12s"):
               text cIcon
             block:
+              # M-EVP-14: add a native HTML `title` so the otherwise glyph-only
+              # icons surface a visible tooltip on hover (the aria-label was
+              # already there for screen readers, but reviewers flagged the
+              # icons as illegible without a visible label).
+              r.setAttribute(iconNode, "title", cLabel)
               r.bindQuickNavIcon(iconNode, vm, cKind)
 
       # Story sections
@@ -1046,13 +1051,17 @@ proc bindViewportChip[R, E](r: R; chip: E; vm: EditorVM;
   createRenderEffect proc() =
     let selected = viewportsEqual(vm.viewport.val, captured)
     r.setAttribute(chip, "aria-pressed", if selected: "true" else: "false")
+    # Unified active-chip styling (M-EVP-14): solid accent fill with white
+    # label so the active viewport chip reads with the same affordance as
+    # the active backend / mode chip.
     r.setStyle(chip, "background-color",
-      if selected: accentSoft else: "transparent")
+      if selected: accent else: "transparent")
     r.setStyle(chip, "color",
-      if selected: textPrimary else: textMuted)
-    r.setStyle(chip, "font-weight", if selected: "600" else: "500")
+      if selected: "#FFFFFF" else: textMuted)
+    r.setStyle(chip, "font-weight", if selected: "700" else: "500")
     r.setStyle(chip, "box-shadow",
-      if selected: "inset 0 0 0 1px " & accent else: "none")
+      if selected: "0 3px 12px rgba(124,122,237,0.55), inset 0 0 0 1px " & accentHot
+      else: "none")
   let liveHandler = viewportSelectHandler(vm, captured)
   r.addEventListener(chip, "click", liveHandler)
   r.addEventListener(chip, "keydown", liveHandler)
@@ -1108,7 +1117,7 @@ proc backendsForLeftEdge(): array[7, PreviewBackend] =
   [pbWeb, pbTui, pbGpui, pbFreya, pbCocoa, pbAndroid, pbIos]
 
 proc backendShortLabelsForLeftEdge(): array[7, string] =
-  ["Web", "TUI", "GPUI", "Freya", "Cocoa", "Droid", "iOS"]
+  ["Web", "TUI", "GPUI", "Freya", "Cocoa", "Android", "iOS"]
 
 proc buildBackendOptions(vm: EditorVM): seq[CompactChoiceOption] =
   ## M58: the backend strip's option list is now produced by a thunk so
@@ -1305,7 +1314,7 @@ proc renderPreviewPane*[R, E](r: R; vm: EditorVM): E =
   let backendCol = renderCompactChoiceColumn[R, E](r,
     ariaLabel = "Preview backend",
     optionsThunk = backendThunk,
-    visibleLimit = 6,
+    visibleLimit = 7,
     chipWidth = "44px",
     chipHeight = "26px",
     dataAttrs = @[
@@ -2005,7 +2014,7 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
   let backendCol = renderCompactChoiceColumn[R, E](r,
     ariaLabel = "Preview backend",
     optionsThunk = backendThunk,
-    visibleLimit = 6,
+    visibleLimit = 7,
     chipWidth = "44px",
     chipHeight = "26px",
     dataAttrs = @[
