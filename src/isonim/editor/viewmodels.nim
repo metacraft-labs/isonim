@@ -588,10 +588,11 @@ func allBuiltinViewports*(): seq[PreviewViewport] =
 func defaultViewport*(backend: PreviewBackend): PreviewViewport =
   ## Backend-aware default viewport. Spec § "Left edge — backend switcher
   ## + screen-size switcher" pins `desktop` for the graphical backends,
-  ## `phone` for the Android backend, and `tui-80x24` for the TUI backend.
+  ## `phone` for the Android + iOS backends, and `tui-80x24` for the
+  ## TUI backend.
   case backend
   of pbTui: makeBuiltinViewport(pvkTui80x24)
-  of pbAndroid: makeBuiltinViewport(pvkPhone)
+  of pbAndroid, pbIos: makeBuiltinViewport(pvkPhone)
   of pbWeb, pbGpui, pbFreya, pbCocoa: makeBuiltinViewport(pvkDesktop)
 
 func pinnedViewports*(backend: PreviewBackend): seq[PreviewViewport] =
@@ -604,7 +605,7 @@ func pinnedViewports*(backend: PreviewBackend): seq[PreviewViewport] =
       makeBuiltinViewport(pvkTablet),
       makeBuiltinViewport(pvkPhone),
     ]
-  of pbAndroid:
+  of pbAndroid, pbIos:
     @[
       makeBuiltinViewport(pvkPhone),
       makeBuiltinViewport(pvkTablet),
@@ -630,7 +631,7 @@ func popupViewports*(backend: PreviewBackend): seq[PreviewViewport] =
       makeBuiltinViewport(pvkPhoneXl),
       makeBuiltinViewport(pvkCustom),
     ]
-  of pbAndroid:
+  of pbAndroid, pbIos:
     @[
       makeBuiltinViewport(pvkDesktop),
       makeBuiltinViewport(pvkLaptop),
@@ -6307,7 +6308,8 @@ proc ensureComponentPropertySchemaForSelectedStory*(editor: EditorVM): bool {.
       prop("density", cpkDensity, "comfortable",
         @["compact", "comfortable"], 7),
       prop("platform", cpkPlatform, $editor.platform.val,
-        @["pbWeb", "pbTui", "pbGpui", "pbFreya", "pbCocoa", "pbAndroid"],
+        @["pbWeb", "pbTui", "pbGpui", "pbFreya", "pbCocoa", "pbAndroid",
+          "pbIos"],
         8),
       prop("ariaLabel", cpkAccessibilityLabel,
         story.group & " " & story.name, @[], 9)
@@ -9896,7 +9898,8 @@ proc createEditorVM*(): EditorVM =
   # launcher availability is enforced by the bridge port table — chip
   # clicks for unreachable backends simply yield no WebSocket.
   let streamingPreview = newStreamingPreviewVM(initial = pbWeb,
-    available = @[pbWeb, pbTui, pbGpui, pbFreya, pbCocoa, pbAndroid])
+    available = @[pbWeb, pbTui, pbGpui, pbFreya, pbCocoa, pbAndroid,
+                  pbIos])
 
   let hasSelection = createMemo[bool](proc(): bool =
     selectedStory.val.name.len > 0

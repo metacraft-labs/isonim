@@ -1921,17 +1921,23 @@ type
 
   # --- Preview ---
   PreviewBackend* = enum
-    ## Canonical preview backend identifier. Surfaces the six renderer
-    ## targets we support (Web / TUI / GPUI / Freya / Cocoa / Android).
-    ## Replaces the legacy 3-value `Platform` enum (`pfWeb`/`pfIOS`/
-    ## `pfAndroid`) per M57; iOS preview is now expressed as the Cocoa
-    ## renderer + a phone viewport size instead of a separate platform.
+    ## Canonical preview backend identifier. Surfaces the seven renderer
+    ## targets we support (Web / TUI / GPUI / Freya / Cocoa / Android /
+    ## iOS). Replaces the legacy 3-value `Platform` enum (`pfWeb`/
+    ## `pfIOS`/`pfAndroid`) per M57. Cocoa is Mac AppKit in-process;
+    ## iOS UIKit-on-device is now a first-class separate backend
+    ## (`pbIos`) that streams real device frames over a Wi-Fi TCP
+    ## socket, distinct from the historical "Cocoa renderer + phone
+    ## viewport" shorthand.
     pbWeb     ## Default — iframe HTML preview.
     pbTui     ## `isonim-tui-serve` (M26); D/M/P wire protocol.
     pbGpui    ## `isonim-render-serve` + GPUI adapter (RS-M2).
     pbFreya   ## `isonim-render-serve` + Freya adapter (RS-M4).
     pbCocoa   ## `isonim-render-serve` + Cocoa adapter (RS-M5).
     pbAndroid ## `isonim-render-serve` + Android adapter (RS-M6).
+    pbIos     ## `isonim-render-serve` + iOS UIKit on a real device,
+              ## streamed over a Wi-Fi TCP socket (host launcher binds
+              ## bridge port 8107).
 
   Platform* = PreviewBackend
     ## Backward-compatible alias retained for downstream code that still

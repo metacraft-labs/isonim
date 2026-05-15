@@ -1104,11 +1104,11 @@ proc bindModeChip[R, E](r: R; chip: E; vm: EditorVM;
   r.addEventListener(chip, "click", liveHandler)
   r.addEventListener(chip, "keydown", liveHandler)
 
-proc backendsForLeftEdge(): array[6, PreviewBackend] =
-  [pbWeb, pbTui, pbGpui, pbFreya, pbCocoa, pbAndroid]
+proc backendsForLeftEdge(): array[7, PreviewBackend] =
+  [pbWeb, pbTui, pbGpui, pbFreya, pbCocoa, pbAndroid, pbIos]
 
-proc backendShortLabelsForLeftEdge(): array[6, string] =
-  ["Web", "TUI", "GPUI", "Freya", "Cocoa", "Droid"]
+proc backendShortLabelsForLeftEdge(): array[7, string] =
+  ["Web", "TUI", "GPUI", "Freya", "Cocoa", "Droid", "iOS"]
 
 proc buildBackendOptions(vm: EditorVM): seq[CompactChoiceOption] =
   ## M58: the backend strip's option list is now produced by a thunk so

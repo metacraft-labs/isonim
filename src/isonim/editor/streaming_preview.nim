@@ -194,6 +194,7 @@ func backendLabel*(b: PreviewBackend): string =
   of pbFreya: "Freya"
   of pbCocoa: "Cocoa"
   of pbAndroid: "Android"
+  of pbIos: "iOS"
 
 func backendId*(b: PreviewBackend): string =
   ## Wire identifier passed to the bridge via `--backend <id>` and
@@ -205,6 +206,7 @@ func backendId*(b: PreviewBackend): string =
   of pbFreya: "freya"
   of pbCocoa: "cocoa"
   of pbAndroid: "android"
+  of pbIos: "ios"
 
 func backendFromId*(id: string): PreviewBackend =
   ## Inverse of `backendId`. Used by the M58 thunk-driven chip rebuild
@@ -219,6 +221,7 @@ func backendFromId*(id: string): PreviewBackend =
   of "freya": pbFreya
   of "cocoa": pbCocoa
   of "android": pbAndroid
+  of "ios": pbIos
   else: pbWeb
 
 func backendNeedsRenderServe*(b: PreviewBackend): bool =
@@ -226,7 +229,7 @@ func backendNeedsRenderServe*(b: PreviewBackend): bool =
   ## (i.e. not Web and not TUI, which have other transports).
   case b
   of pbWeb, pbTui: false
-  of pbGpui, pbFreya, pbCocoa, pbAndroid: true
+  of pbGpui, pbFreya, pbCocoa, pbAndroid, pbIos: true
 
 func detectAvailableBackends*(): seq[PreviewBackend] =
   ## Returns the back-ends the *current host* can serve. The Cocoa
@@ -247,6 +250,7 @@ func detectAvailableBackends*(): seq[PreviewBackend] =
     result.add pbFreya
   when defined(macosx):
     result.add pbCocoa
+    result.add pbIos
     when defined(android):
       result.add pbAndroid
   when defined(android):
@@ -616,6 +620,7 @@ proc hoverCanvas*(vm: StreamingPreviewVM; x, y: int): bool =
 #   pbFreya   → 8104
 #   pbCocoa   → 8105
 #   pbAndroid → 8106
+#   pbIos     → 8107
 #
 # These ports are the bridge ports `isonim-examples` uses. They are
 # also exposed to the playwright suite via `BRIDGE_PORTS`. The editor
@@ -638,6 +643,7 @@ func bridgePortForBackend*(backend: PreviewBackend): int =
   of pbFreya: 8104
   of pbCocoa: 8105
   of pbAndroid: 8106
+  of pbIos: 8107
 
 when defined(js):
   proc jsBridgeUrl(slug: cstring; fallbackPort: int): cstring {.importjs:
@@ -696,6 +702,7 @@ func bridgeUrlForBackend*(backend: PreviewBackend): string =
         of pbFreya: "freya"
         of pbCocoa: "cocoa"
         of pbAndroid: "android"
+        of pbIos: "ios"
       $jsBridgeUrl(slug.cstring, port)
   else:
     "ws://127.0.0.1:" & $port & "/"
