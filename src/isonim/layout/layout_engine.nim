@@ -82,6 +82,32 @@ proc insertChildBefore*(engine: LayoutEngine;
       # Fallback: append at end
       engine.addChild(parentHandle, childHandle)
 
+proc parseLayoutFloat(value: string): float =
+  ## Parse a CSS-like dimension value (strips `px` / `dp` units and
+  ## whitespace) into a float, returning `-1.0` for any value that
+  ## isn't purely numeric. Pulled out of `setLayoutStyle` so the
+  ## try-except sits in a small, leaf-shaped proc rather than at the
+  ## top of a large case-statement-bearing proc — the latter shape
+  ## tripped iOS ARM64 release builds where `parseFloat`'s ValueError
+  ## was raised through the entire case scope and the try-except in
+  ## the surrounding proc body didn't catch it cleanly (the exception
+  ## propagated through to the caller and silently aborted the
+  ## `setStyle` → composition-root chain, producing the M-EVP-14 iOS
+  ## "empty render" symptom on the device while every other backend
+  ## rendered fine). Isolating parseFloat in its own proc lets the
+  ## compiler emit a tight ValueError handler around exactly the
+  ## raising call, which Nim/iOS handle correctly.
+  let stripped = value.replace("px", "").replace("dp", "").strip()
+  if stripped.len == 0:
+    return -1.0
+  # Fast path: only call parseFloat when the string looks numeric.
+  # Avoids paying the try-except cost on every colour / class / font
+  # name pushed through `setStyle`.
+  let first = stripped[0]
+  if not (first in {'0'..'9', '-', '+', '.'}):
+    return -1.0
+  try: parseFloat(stripped) except ValueError: -1.0
+
 proc setLayoutStyle*(engine: LayoutEngine; viewHandle: int64; prop, value: string) =
   ## Apply a CSS-like style property to the Yoga node for this view.
   ## Non-layout properties (colors, fonts, etc.) are silently ignored.
@@ -89,44 +115,64 @@ proc setLayoutStyle*(engine: LayoutEngine; viewHandle: int64; prop, value: strin
   let idx = engine.handleToIndex[viewHandle]
   let node = engine.nodes[idx].yogaNode
 
-  # Parse numeric value (strip common units)
-  let stripped = value.replace("px", "").replace("dp", "").strip()
-  let numVal = try: parseFloat(stripped) except ValueError: -1.0
+  # NOTE: do NOT call `parseFloat` here at the top of the proc — see
+  # `parseLayoutFloat` for the iOS ARM64 release-build rationale. The
+  # branches that need a numeric value call `parseLayoutFloat(value)`
+  # lazily; non-numeric branches (`flex-direction`, `align-items`,
+  # the `discard` arm for colours, etc.) never trigger the try-except
+  # path at all.
 
   case prop
   of "width":
+    let numVal = parseLayoutFloat(value)
     if numVal > 0: YGNodeStyleSetWidth(node, cfloat(numVal))
   of "height":
+    let numVal = parseLayoutFloat(value)
     if numVal > 0: YGNodeStyleSetHeight(node, cfloat(numVal))
   of "min-width":
+    let numVal = parseLayoutFloat(value)
     if numVal > 0: YGNodeStyleSetMinWidth(node, cfloat(numVal))
   of "min-height":
+    let numVal = parseLayoutFloat(value)
     if numVal > 0: YGNodeStyleSetMinHeight(node, cfloat(numVal))
   of "max-width":
+    let numVal = parseLayoutFloat(value)
     if numVal > 0: YGNodeStyleSetMaxWidth(node, cfloat(numVal))
   of "max-height":
+    let numVal = parseLayoutFloat(value)
     if numVal > 0: YGNodeStyleSetMaxHeight(node, cfloat(numVal))
   of "padding":
+    let numVal = parseLayoutFloat(value)
     if numVal >= 0: YGNodeStyleSetPadding(node, YGEdge.All, cfloat(numVal))
   of "padding-left":
+    let numVal = parseLayoutFloat(value)
     if numVal >= 0: YGNodeStyleSetPadding(node, YGEdge.Left, cfloat(numVal))
   of "padding-right":
+    let numVal = parseLayoutFloat(value)
     if numVal >= 0: YGNodeStyleSetPadding(node, YGEdge.Right, cfloat(numVal))
   of "padding-top":
+    let numVal = parseLayoutFloat(value)
     if numVal >= 0: YGNodeStyleSetPadding(node, YGEdge.Top, cfloat(numVal))
   of "padding-bottom":
+    let numVal = parseLayoutFloat(value)
     if numVal >= 0: YGNodeStyleSetPadding(node, YGEdge.Bottom, cfloat(numVal))
   of "margin":
+    let numVal = parseLayoutFloat(value)
     if numVal >= 0: YGNodeStyleSetMargin(node, YGEdge.All, cfloat(numVal))
   of "margin-left":
+    let numVal = parseLayoutFloat(value)
     if numVal >= 0: YGNodeStyleSetMargin(node, YGEdge.Left, cfloat(numVal))
   of "margin-right":
+    let numVal = parseLayoutFloat(value)
     if numVal >= 0: YGNodeStyleSetMargin(node, YGEdge.Right, cfloat(numVal))
   of "margin-top":
+    let numVal = parseLayoutFloat(value)
     if numVal >= 0: YGNodeStyleSetMargin(node, YGEdge.Top, cfloat(numVal))
   of "margin-bottom":
+    let numVal = parseLayoutFloat(value)
     if numVal >= 0: YGNodeStyleSetMargin(node, YGEdge.Bottom, cfloat(numVal))
   of "gap":
+    let numVal = parseLayoutFloat(value)
     if numVal >= 0: YGNodeStyleSetGap(node, YGGutter.All, cfloat(numVal))
   of "flex-direction":
     case value
@@ -135,10 +181,13 @@ proc setLayoutStyle*(engine: LayoutEngine; viewHandle: int64; prop, value: strin
     of "column-reverse": YGNodeStyleSetFlexDirection(node, YGFlexDirection.ColumnReverse)
     else: YGNodeStyleSetFlexDirection(node, YGFlexDirection.Column)
   of "flex":
+    let numVal = parseLayoutFloat(value)
     if numVal > 0: YGNodeStyleSetFlex(node, cfloat(numVal))
   of "flex-grow":
+    let numVal = parseLayoutFloat(value)
     if numVal >= 0: YGNodeStyleSetFlexGrow(node, cfloat(numVal))
   of "flex-shrink":
+    let numVal = parseLayoutFloat(value)
     if numVal >= 0: YGNodeStyleSetFlexShrink(node, cfloat(numVal))
   of "align-items":
     case value
