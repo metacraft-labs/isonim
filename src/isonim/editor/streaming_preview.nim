@@ -1346,28 +1346,25 @@ when defined(js):
         host.style.boxSizing = 'border-box';
         host.style.position = host.style.position || 'absolute';
         host.style.overflow = 'hidden';
-        // Compute an initial font size that fits an 80x24 grid in the
-        // host area using approximate monospace metrics (char width ~=
-        // 0.6 * fontSize, line height ~= 1.18 * fontSize for SF Mono /
-        // Menlo). The reviewer's round-2 feedback flagged a font
-        // overshoot — when the pane is large the geometric solve gave
-        // ~20-24 px cells and only ~6-8 lines fit. We clamp the result so
-        // a standard 80x24 grid always fits comfortably regardless of
-        // pane area: the cell height stays ≤ 14 px (so ≥ 24 rows fit
-        // even in a short pane) and the cell width stays ≤ ~10 px (so
-        // ≥ 80 cols always fit horizontally). ResizeObserver below
-        // refits whenever the pane resizes.
+        // Compute an initial font size that fits the cols x rows grid
+        // in the host area using approximate monospace metrics (char
+        // width ~= 0.6 * fontSize, line height ~= 1.18 * fontSize for
+        // SF Mono / Menlo). M-EVP-14 round-8: the previous hardMax=12
+        // clamp made the terminal box mount at ~38 % of the preview
+        // pane width even on a 1500-px-wide pane; the strict reviewer
+        // read that as a tiny TUI box floating in empty editor canvas
+        // (with the rest of the pane left as the bare wrapper
+        // background). The geometric solve already guarantees the
+        // 80x24 grid fits the host; the cap was redundant. Drop it so
+        // the TUI actually fills the preview pane. Keep a floor of
+        // 8 px so very small panes still get a legible cell.
         function pickFontSize() {
           var w = host.clientWidth || host.getBoundingClientRect().width || 0;
           var h = host.clientHeight || host.getBoundingClientRect().height || 0;
-          if (w <= 0 || h <= 0) return 12;
+          if (w <= 0 || h <= 0) return 14;
           var fw = w / (cols * 0.6);
           var fh = h / (rows * 1.18);
           var fs = Math.floor(Math.min(fw, fh));
-          // Clamp so the cell height ≤ 14 px and ≥ 8 px. 14 px line
-          // height with 1.18 leading => fs ≤ ~12.
-          var hardMax = 12;
-          if (fs > hardMax) fs = hardMax;
           if (fs < 8) fs = 8;
           return fs;
         }
@@ -1387,32 +1384,16 @@ when defined(js):
         try { term.open(host); } catch (e) {
           console.error('term.open failed', e);
         }
-        // M-EVP-14 round-7 fix: xterm.js's canvas renderer (and the
-        // helper canvases the WebGL fallback creates) inherit the
-        // browser-default bilinear resampler when the cell grid is
-        // scaled to fit the preview pane. For an 8x8 ASCII bitmap font
-        // (or xterm's own glyph atlas) the correct filter is
-        // nearest-neighbour — bilinear smearing reads as a soft/blurry
-        // bitmap. We:
-        //
-        //   1. Install a one-shot ``<style>`` rule that targets every
-        //      ``canvas`` inside a ``[data-tui-terminal="true"]`` host
-        //      (cascade-based, survives xterm's lazy canvas creation).
-        //   2. Walk existing canvases and stamp ``imageRendering`` on
-        //      each one directly, so the first paint after ``term.open``
-        //      already reads pixel-crisp.
-        //   3. Install a MutationObserver to re-apply the inline style
-        //      on any canvas xterm spawns later (resize, theme change,
-        //      addon load), as a belt-and-braces guard against the CSS
-        //      rule being shadowed by a higher-specificity selector.
+        // M-EVP-14 round-7: belt-and-braces image-rendering hint on
+        // xterm.js's canvases. Round-8 lifted the pickFontSize cap so
+        // the TUI fills the preview pane at native resolution and the
+        // canvas is not bilinear-scaled in steady state; we keep the
+        // pixelated cascade as a guard against future code paths that
+        // resize the host without re-fitting the font.
         try {
           if (!document.getElementById('__isonim-tui-pixelated-style')) {
             var styleEl = document.createElement('style');
             styleEl.id = '__isonim-tui-pixelated-style';
-            // Cascading values: ``pixelated`` is the modern keyword
-            // (Chromium, WebKit, modern Firefox); ``crisp-edges`` is
-            // the legacy spec value some engines accept; the trailing
-            // ``-moz-crisp-edges`` covers older Gecko.
             styleEl.textContent =
               '[data-tui-terminal="true"] canvas {' +
               '  image-rendering: pixelated;' +
@@ -1426,7 +1407,6 @@ when defined(js):
           if (!c || c.tagName !== 'CANVAS') return;
           try {
             c.style.setProperty('image-rendering', 'pixelated');
-            // Fallback chain — last-supported wins per engine.
             c.style.setProperty('image-rendering', 'crisp-edges');
           } catch (_) {}
         }
