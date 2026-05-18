@@ -201,18 +201,55 @@ proc applyCanvasFitStyle*[R, E](r: R; mount: CanvasMount[E];
   ## selection outline, breadcrumb, handles) is *not* set here — that
   ## belongs to ``bindCanvasOverlayEffect`` whose reactive chain
   ## already hides them when the active backend is pbWeb.
+  ##
+  ## Quality polish: when CSS scales the canvas's intrinsic pixel
+  ## buffer (e.g. a 1170x2532 iPhone framebuffer rendered into a
+  ## ~230px-wide preview pane is a ~5x downscale), the browser default
+  ## resampler is bilinear and produces visibly soft text/UI edges.
+  ## Setting ``image-rendering`` opts into the highest-quality
+  ## resampler each engine ships. We set three cascading values so
+  ## each engine picks the one it understands and ignores the rest:
+  ##
+  ##   * ``auto`` — universal fallback (CSS spec value).
+  ##   * ``-webkit-optimize-contrast`` — WebKit/Blink high-quality.
+  ##   * ``high-quality`` — modern Firefox high-quality.
+  ##
+  ## We also paint a 1px hairline border + subtle inner shadow on the
+  ## wrapper so the rendered demo box reads as a framed surface
+  ## against the surrounding pane chrome (and the ``object-fit:
+  ## contain`` letterbox bands have a visible edge instead of bleeding
+  ## into the pane background).
   if active:
     r.setStyle(mount.wrapper, "display", "block")
+    r.setStyle(mount.wrapper, "border", "1px solid rgba(148,163,184,.45)")
+    r.setStyle(mount.wrapper, "border-radius", "6px")
+    r.setStyle(mount.wrapper, "box-shadow",
+               "0 0 0 1px rgba(15,23,42,.6), " &
+               "0 4px 12px rgba(15,23,42,.35)")
+    r.setStyle(mount.wrapper, "background-color", "#0a101e")
+    r.setStyle(mount.wrapper, "overflow", "hidden")
+    r.setStyle(mount.wrapper, "box-sizing", "border-box")
     r.setStyle(mount.canvas, "display", "block")
     r.setStyle(mount.overlay, "display", "block")
     r.setStyle(mount.canvas, "width", "100%")
     r.setStyle(mount.canvas, "height", "100%")
     r.setStyle(mount.canvas, "object-fit", "contain")
+    # Cascading image-rendering hints — last-supported wins per browser.
+    r.setStyle(mount.canvas, "image-rendering", "auto")
+    r.setStyle(mount.canvas, "image-rendering",
+               "-webkit-optimize-contrast")
+    r.setStyle(mount.canvas, "image-rendering", "high-quality")
     r.setAttribute(mount.canvas, "data-canvas-active", "true")
   else:
     r.setStyle(mount.wrapper, "display", "none")
+    r.setStyle(mount.wrapper, "border", "")
+    r.setStyle(mount.wrapper, "border-radius", "")
+    r.setStyle(mount.wrapper, "box-shadow", "")
+    r.setStyle(mount.wrapper, "background-color", "")
+    r.setStyle(mount.wrapper, "overflow", "")
     r.setStyle(mount.canvas, "display", "none")
     r.setStyle(mount.overlay, "display", "none")
+    r.setStyle(mount.canvas, "image-rendering", "")
     r.setAttribute(mount.canvas, "data-canvas-active", "false")
 
 proc bindCanvasOverlayEffect*[R, E](r: R; vm: EditorVM;

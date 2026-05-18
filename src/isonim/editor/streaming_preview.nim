@@ -959,6 +959,16 @@ when defined(js):
           ensureSize(width, height);
           var ctx = canvas.getContext('2d');
           if (!ctx) return;
+          // Quality polish: hint the canvas resampler to use the
+          // highest-quality kernel for any drawImage downscale. The
+          // current pipeline only goes through putImageData (no scaling
+          // at the canvas API layer) but this future-proofs the path
+          // if we ever switch to a smaller backing buffer + drawImage
+          // downscale. It also documents the intent to the next reader.
+          try {
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'high';
+          } catch (_) {}
           if (!isDiff) {
             if (payload.length !== width * height * 4) {
               ws.close(1002, 'full frame length mismatch'); return;
