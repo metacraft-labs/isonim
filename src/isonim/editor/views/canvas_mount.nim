@@ -14,9 +14,11 @@
 ##   * the reactive overlay-positioning effect (hover label position,
 ##     selection outline + breadcrumb + edit handles);
 ##   * the fit-to-pane CSS hooks. Use ``applyCanvasFitStyle`` to flip
-##     the canvas + wrapper to "fill the available preview area"
-##     (Approach A: ``width: 100%; height: 100%; object-fit:
-##     contain;``).
+##     the canvas + wrapper to the no-stretch display mode (canvas
+##     rendered at intrinsic pixel size, centered in a flex wrapper
+##     that letterboxes / crops as needed — the screen-capture
+##     automation is responsible for matching the launcher's emitted
+##     pixel size to the preview pane's rendered size).
 ##
 ## See M-EVP-13 in
 ## ``codetracer-specs/Front-Ends/IsoNim/isonim-editor.status.org``
@@ -189,38 +191,40 @@ proc renderCanvasMount*[R, E](r: R; canvasDataAttr: string = ""):
 
 proc applyCanvasFitStyle*[R, E](r: R; mount: CanvasMount[E];
                                  active: bool) =
-  ## Approach A from M-EVP-13: when the canvas is the active surface,
-  ## let it fill its parent (``width: 100%; height: 100%; object-fit:
-  ## contain``) so the rendered box matches the pane size while the
-  ## launcher's surface ratio is preserved. The parent must define a
-  ## height — for ``page_preview.nim`` the device-frame supplies it;
-  ## for ``component_detail.nim`` we set ``min-height`` on the row
-  ## the wrapper lives in.
+  ## No-stretch rule: when the canvas is the active surface, we render
+  ## it at its **intrinsic pixel size** (no CSS scaling). The wrapper
+  ## becomes a flex container that centers the canvas; if the canvas
+  ## is smaller than the pane, the wrapper letterboxes the surround
+  ## with its ``#0a101e`` background. If the canvas is larger than the
+  ## pane, ``overflow: hidden`` crops it centered.
+  ##
+  ## Image-rendering safety net: ``pixelated`` is set on the canvas so
+  ## that if any code path ever re-introduces CSS scaling, the
+  ## resampler is nearest-neighbour rather than bilinear (bilinear
+  ## scaling of UI screenshots reads as a stretched/softened image,
+  ## which the no-stretch rule exists to prevent).
+  ##
+  ## The screen-capture automation is responsible for matching the
+  ## launcher's emitted pixel size to the preview pane's rendered size
+  ## (``--width`` / ``--height`` CLI flags on software backends). On
+  ## real-device backends (e.g. iOS) where the device dictates the
+  ## frame size, this proc lets the wrapper crop/letterbox naturally
+  ## rather than stretching.
   ##
   ## Visibility of the per-affordance overlay children (hover label,
   ## selection outline, breadcrumb, handles) is *not* set here — that
   ## belongs to ``bindCanvasOverlayEffect`` whose reactive chain
   ## already hides them when the active backend is pbWeb.
   ##
-  ## Quality polish: when CSS scales the canvas's intrinsic pixel
-  ## buffer (e.g. a 1170x2532 iPhone framebuffer rendered into a
-  ## ~230px-wide preview pane is a ~5x downscale), the browser default
-  ## resampler is bilinear and produces visibly soft text/UI edges.
-  ## Setting ``image-rendering`` opts into the highest-quality
-  ## resampler each engine ships. We set three cascading values so
-  ## each engine picks the one it understands and ignores the rest:
-  ##
-  ##   * ``auto`` — universal fallback (CSS spec value).
-  ##   * ``-webkit-optimize-contrast`` — WebKit/Blink high-quality.
-  ##   * ``high-quality`` — modern Firefox high-quality.
-  ##
   ## We also paint a 1px hairline border + subtle inner shadow on the
   ## wrapper so the rendered demo box reads as a framed surface
-  ## against the surrounding pane chrome (and the ``object-fit:
-  ## contain`` letterbox bands have a visible edge instead of bleeding
-  ## into the pane background).
+  ## against the surrounding pane chrome (and the letterbox bands
+  ## around an undersized canvas have a visible edge instead of
+  ## bleeding into the pane background).
   if active:
-    r.setStyle(mount.wrapper, "display", "block")
+    r.setStyle(mount.wrapper, "display", "flex")
+    r.setStyle(mount.wrapper, "align-items", "center")
+    r.setStyle(mount.wrapper, "justify-content", "center")
     r.setStyle(mount.wrapper, "border", "1px solid rgba(148,163,184,.45)")
     r.setStyle(mount.wrapper, "border-radius", "6px")
     r.setStyle(mount.wrapper, "box-shadow",
@@ -231,17 +235,22 @@ proc applyCanvasFitStyle*[R, E](r: R; mount: CanvasMount[E];
     r.setStyle(mount.wrapper, "box-sizing", "border-box")
     r.setStyle(mount.canvas, "display", "block")
     r.setStyle(mount.overlay, "display", "block")
-    r.setStyle(mount.canvas, "width", "100%")
-    r.setStyle(mount.canvas, "height", "100%")
-    r.setStyle(mount.canvas, "object-fit", "contain")
-    # Cascading image-rendering hints — last-supported wins per browser.
-    r.setStyle(mount.canvas, "image-rendering", "auto")
-    r.setStyle(mount.canvas, "image-rendering",
-               "-webkit-optimize-contrast")
-    r.setStyle(mount.canvas, "image-rendering", "high-quality")
+    # Intrinsic pixel size — no CSS scaling. Setting width/height to
+    # auto lets the canvas's ``width``/``height`` HTML attributes
+    # drive its rendered size (1 CSS px per source pixel).
+    r.setStyle(mount.canvas, "width", "auto")
+    r.setStyle(mount.canvas, "height", "auto")
+    r.setStyle(mount.canvas, "object-fit", "")
+    r.setStyle(mount.canvas, "flex-shrink", "0")
+    # Safety net: if any path ever re-introduces CSS scaling, use
+    # nearest-neighbour (never bilinear) so the stretching is obvious
+    # instead of silently softening pixels.
+    r.setStyle(mount.canvas, "image-rendering", "pixelated")
     r.setAttribute(mount.canvas, "data-canvas-active", "true")
   else:
     r.setStyle(mount.wrapper, "display", "none")
+    r.setStyle(mount.wrapper, "align-items", "")
+    r.setStyle(mount.wrapper, "justify-content", "")
     r.setStyle(mount.wrapper, "border", "")
     r.setStyle(mount.wrapper, "border-radius", "")
     r.setStyle(mount.wrapper, "box-shadow", "")
@@ -250,6 +259,7 @@ proc applyCanvasFitStyle*[R, E](r: R; mount: CanvasMount[E];
     r.setStyle(mount.canvas, "display", "none")
     r.setStyle(mount.overlay, "display", "none")
     r.setStyle(mount.canvas, "image-rendering", "")
+    r.setStyle(mount.canvas, "flex-shrink", "")
     r.setAttribute(mount.canvas, "data-canvas-active", "false")
 
 proc bindCanvasOverlayEffect*[R, E](r: R; vm: EditorVM;
