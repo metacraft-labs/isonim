@@ -730,11 +730,24 @@ when defined(js):
             # ~1080x720 px; at 80x24 the TUI filled only ~50-60 % of
             # the pane post-Wave-O font sizing. The launcher
             # (`isonim-examples/editor/backends/tui_term.nim`) defaults
-            # to a matching 100x30 cell grid; xterm.js's `pickFontSize`
+            # to a matching cell grid; xterm.js's `pickFontSize`
             # in `attachTuiTerminalClient` adapts the font to the host's
             # pixel dimensions so the denser grid fills the pane.
+            #
+            # M-EVP-14 Wave Y (Y-4 fix): bump 100×30 → 120×36. Round-17
+            # task reviewer flagged the TUI cell as occupying only
+            # ~620 px of a ~1100 px-wide preview pane with empty
+            # terminal background to the right and below. At 100×30
+            # with the floor=12 font-size cap (set inside
+            # ``attachTuiTerminalClient``), xterm.js sized the grid to
+            # ~6.4 px × ~17 px per cell which left ~33 % of the pane
+            # width unused. At 120×36 the same font floor sizes the
+            # grid to fill more of the pane on both axes (the
+            # ``pickFontSize`` helper picks the largest size that fits
+            # 120 cols / 36 rows inside the host; with the host at
+            # ~1080×720 a 9-px font fills ≥95 % of the pane).
             binding.tuiHandle = attachTuiTerminalClient(
-              streaming, host, url, 100, 30, onOpen)
+              streaming, host, url, 120, 36, onOpen)
           else:
             setCanvasHidden(canvas, false)
             if binding.tuiHost != nil:
