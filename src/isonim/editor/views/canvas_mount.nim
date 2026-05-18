@@ -655,6 +655,17 @@ when defined(js):
         div.style.boxSizing = 'border-box';
         div.style.backgroundColor = '#0a101e';
         div.style.overflow = 'hidden';
+        // M-EVP-14 Wave AA (AA-7 fix): centre the xterm.js Terminal
+        // inside the host. The 120x36 grid renders at its natural
+        // pixel size which previously anchored top-left in the
+        // ~1080x720 preview pane and left ~75% of the pane as bare
+        // dotted-grid editor canvas. Use flex centering so the
+        // terminal sits visually in the middle of the pane
+        // regardless of how its intrinsic geometry compares to the
+        // host's.
+        div.style.display = 'flex';
+        div.style.alignItems = 'center';
+        div.style.justifyContent = 'center';
         // Insert BEFORE the canvas so any overlay siblings (which the
         // shared canvas-mount inserts as later siblings of the canvas)
         // continue to paint above the terminal.
