@@ -1840,7 +1840,12 @@ proc togglePanel*(editor: EditorVM; panel: EditorPanel) =
                                         inspector: not current.inspector)
 
 func clampRightPanelWidth*(width: int): int =
-  max(240, min(420, width))
+  # M-EVP-14 Wave Chrome CR-3: lowered the minimum from 240 → 200 so the
+  # AI inspector rail can shrink below the previous floor. The reviewer
+  # consistently flagged the right-rail as dominating the editor chrome
+  # vs the preview pane; the new floor lets users (and the default
+  # below) reclaim ~40 px of horizontal real estate for the preview.
+  max(200, min(420, width))
 
 proc setRightPanelWidth*(editor: EditorVM; width: int) =
   editor.rightPanelWidth.val = clampRightPanelWidth(width)
@@ -9856,7 +9861,11 @@ proc createEditorVM*(): EditorVM =
   let selectedStory = createSignal(StoryRef())
   let editMode = createSignal(emView)
   let panels = createSignal(PanelVisibility(sidebar: true, inspector: true))
-  let rightPanelWidth = createSignal(260)
+  # M-EVP-14 Wave Chrome CR-3: default AI inspector width 260 → 220 so
+  # the right rail sits at ~11.5 % of a 1920-wide viewport (down from
+  # ~13.5 %) and the preview pane gets ~40 px more focal width. Users
+  # can still widen via the resize affordance up to 420 px.
+  let rightPanelWidth = createSignal(220)
   let platform = createSignal(pbWeb)
   let viewport = createSignal(defaultViewport(pbWeb))
   let workspacePermissions = createSignal(defaultWorkspacePermissions())

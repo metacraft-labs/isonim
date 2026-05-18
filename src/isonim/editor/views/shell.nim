@@ -543,6 +543,26 @@ proc statusBreadcrumbParts(vm: EditorVM): seq[string] =
     result.add element.ancestors
   elif element.tag.len > 0:
     result.add element.tag
+  # M-EVP-14 Wave Chrome CR-4: suppress trailing path segments that
+  # duplicate the active story name (or its containing group path).
+  # The page-preview root element commonly tags as the same word as the
+  # story leaf (e.g. story name "Inbox" + element tag "Inbox"), which
+  # produced visibly redundant breadcrumb tails like
+  # "Task App / Pages / Inbox / Inbox". Trim consecutive duplicates
+  # from the right so the breadcrumb reads as the story path without
+  # the redundant echo.
+  while result.len >= 2 and result[^1] == result[^2]:
+    result.setLen(result.len - 1)
+  # Also drop the trailing element label if it equals the active story
+  # name — same redundancy class, but the duplicated segment may not be
+  # strictly adjacent if the breadcrumb interleaves the group / name
+  # halves of the story path against the element tag.
+  if story.name.len > 0 and result.len >= 2 and result[^1] == story.name and
+      not (result[^2] == story.name):
+    # only drop if the *story name itself* (result[^2] in the typical
+    # group+name+tag shape) is already present earlier in the chain.
+    if story.name in result[0 ..< result.high]:
+      result.setLen(result.len - 1)
 
 proc dispatchPreviewAncestorSelection(index: int) =
   when defined(js):
@@ -855,6 +875,16 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
                   display = (if sExpanded: "flex" else: "none"),
                   flex_direction = "column", gap = "2px"):
               for group in vm.sidebar.groups.val:
+                # M-EVP-14 Wave Chrome CR-5: suppress the
+                # "Toggle Setting Flow" pseudo-story from the sidebar
+                # tree. The Settings-app demo references its three flow
+                # steps from the settings storyboard but the flow itself
+                # is not a navigable demo from the sidebar — leaving it
+                # in the User Journeys section ghosts a non-functional
+                # entry. The flow's `StoryItem` records (used by the
+                # storyboard + launcher tests) are unaffected.
+                if group.name == "Toggle Setting Flow":
+                  continue
                 if groupInSection(group, section):
                   let gName = $group.name
                   let gItems = group.items
@@ -955,7 +985,15 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
                                     if selected: "true" else: "false"),
                                 onclick = selectStory,
                                 onkeydown = selectStory,
-                                padding = "7px 12px 7px 28px",
+                                # M-EVP-14 Wave Chrome CR-1: bumped vertical
+                                # padding from 7px → 10px each side so story
+                                # rows have visible breathing room (~40 px
+                                # row height vs the previous ~28 px). The
+                                # horizontal padding (28 px left, 12 px
+                                # right) is unchanged so the indent rhythm
+                                # against the section / group headers is
+                                # preserved.
+                                padding = "10px 12px 10px 28px",
                                 border_radius = "4px", cursor = "pointer",
                                 transition = "background-color 0.1s, border-left-color 0.1s",
                                 background_color = storyBackground,
@@ -1042,7 +1080,12 @@ proc bindBackendChip[R, E](r: R; chip: E; vm: EditorVM;
     r.setAttribute(chip, "aria-pressed", if selected: "true" else: "false")
     # M-EVP-14: pill chip styling.
     #  * Active   — solid #7C7AED fill, white text, font-weight 600,
-    #              no border.
+    #              no border (Wave Chrome CR-2: dropped the 1px
+    #              transparent border so the active chip reads as a
+    #              clean fill, not a bordered shape — the previous
+    #              "1px solid transparent" still reserved a 1px gap
+    #              that made the active state read as a border swap
+    #              rather than a fill state at thumbnail scale).
     #  * Inactive — transparent fill, muted #A0A2B0 label, 1px
     #              rgba(255,255,255,0.08) border.
     #  * Unavailable — same shape as inactive but with opacity 0.35 and
@@ -1054,7 +1097,7 @@ proc bindBackendChip[R, E](r: R; chip: E; vm: EditorVM;
       elif available: "#A0A2B0"
       else: textDim)
     r.setStyle(chip, "border",
-      if selected: "1px solid transparent"
+      if selected: "none"
       else: "1px solid rgba(255,255,255,0.08)")
     r.setStyle(chip, "border-radius", "6px")
     r.setStyle(chip, "padding", "4px 12px")
@@ -1103,7 +1146,7 @@ proc bindViewportChip[R, E](r: R; chip: E; vm: EditorVM;
     r.setStyle(chip, "color",
       if selected: "#FFFFFF" else: "#A0A2B0")
     r.setStyle(chip, "border",
-      if selected: "1px solid transparent"
+      if selected: "none"
       else: "1px solid rgba(255,255,255,0.08)")
     r.setStyle(chip, "border-radius", "6px")
     r.setStyle(chip, "padding", "4px 12px")
@@ -1147,7 +1190,7 @@ proc bindModeChip[R, E](r: R; chip: E; vm: EditorVM;
       elif enabled: "#A0A2B0"
       else: textDim)
     r.setStyle(chip, "border",
-      if selected: "1px solid transparent"
+      if selected: "none"
       else: "1px solid rgba(255,255,255,0.08)")
     r.setStyle(chip, "border-radius", "6px")
     r.setStyle(chip, "padding", "4px 12px")
@@ -1512,7 +1555,10 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
   result = ui(r):
     tdiv(class = "editor-inspector",
           display = "flex", flex_direction = "column",
-          width = "280px", min_width = "240px", max_width = "420px",
+          # M-EVP-14 Wave Chrome CR-3: narrowed inspector default
+          # (280 → 220 px) and floor (240 → 200 px) so the right rail
+          # stops competing with the preview pane for visual focus.
+          width = "220px", min_width = "200px", max_width = "420px",
           height = "100%",
           background_color = bgSidebar,
           border_left = "1px solid " & borderStrong,

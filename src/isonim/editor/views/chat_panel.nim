@@ -130,8 +130,13 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   let panel = ui(r):
     tdiv(
       class = "editor-chat",
-      width = "260px",
-      min_width = "240px",
+      # M-EVP-14 Wave Chrome CR-3: AI chat panel default 260 → 220 px,
+      # min 240 → 200 px. Matches `rightPanelWidth` defaults in
+      # viewmodels.nim and the inspector panel in shell.nim so the
+      # reviewer-flagged right-rail dominance is resolved consistently
+      # across both right-side panels (chat + inspector).
+      width = "220px",
+      min_width = "200px",
       max_width = "420px",
       display = "flex",
       flex_direction = "column",

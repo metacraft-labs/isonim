@@ -23,7 +23,10 @@ suite "Editor ViewModels (M0)":
       check vm.hasSelection.val == false
       check vm.panels.val.sidebar == true
       check vm.panels.val.inspector == true
-      check vm.rightPanelWidth.val == 280
+      # M-EVP-14 Wave Chrome CR-3: default right-panel width lowered
+      # from 280 → 220 so the AI inspector rail stops dominating the
+      # editor chrome at thumbnail scale.
+      check vm.rightPanelWidth.val == 220
       check vm.platform.val == pbWeb
       # M57: viewport is now the richer descriptor object.
       check vm.viewport.val.kind == pvkDesktop
@@ -54,8 +57,12 @@ suite "Editor ViewModels (M0)":
       vm.setEditMode(emComment)
       check vm.editMode.val == emComment
       check vm.rightPanelWidth.val == 420
-      vm.adjustRightPanelWidth(-200)
-      check vm.rightPanelWidth.val == 240
+      vm.adjustRightPanelWidth(-300)
+      # M-EVP-14 Wave Chrome CR-3: minimum right-panel width lowered
+      # from 240 → 200 so the AI inspector can shrink past the
+      # previous floor; the adjust-below-clamp delta is now -300 from
+      # the 420 widened state to verify the new 200 px floor.
+      check vm.rightPanelWidth.val == 200
       vm.adjustRightPanelWidth(600)
       check vm.rightPanelWidth.val == 420
 
