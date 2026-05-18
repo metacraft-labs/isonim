@@ -726,8 +726,15 @@ when defined(js):
             binding.tuiHost = host
             setTuiHostVisible(host, true)
             setCanvasHidden(canvas, true)
+            # Round-10 composition density: the editor preview pane is
+            # ~1080x720 px; at 80x24 the TUI filled only ~50-60 % of
+            # the pane post-Wave-O font sizing. The launcher
+            # (`isonim-examples/editor/backends/tui_term.nim`) defaults
+            # to a matching 100x30 cell grid; xterm.js's `pickFontSize`
+            # in `attachTuiTerminalClient` adapts the font to the host's
+            # pixel dimensions so the denser grid fills the pane.
             binding.tuiHandle = attachTuiTerminalClient(
-              streaming, host, url, 80, 24, onOpen)
+              streaming, host, url, 100, 30, onOpen)
           else:
             setCanvasHidden(canvas, false)
             if binding.tuiHost != nil:
