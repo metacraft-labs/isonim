@@ -1387,6 +1387,77 @@ when defined(js):
         try { term.open(host); } catch (e) {
           console.error('term.open failed', e);
         }
+        // M-EVP-14 round-7 fix: xterm.js's canvas renderer (and the
+        // helper canvases the WebGL fallback creates) inherit the
+        // browser-default bilinear resampler when the cell grid is
+        // scaled to fit the preview pane. For an 8x8 ASCII bitmap font
+        // (or xterm's own glyph atlas) the correct filter is
+        // nearest-neighbour — bilinear smearing reads as a soft/blurry
+        // bitmap. We:
+        //
+        //   1. Install a one-shot ``<style>`` rule that targets every
+        //      ``canvas`` inside a ``[data-tui-terminal="true"]`` host
+        //      (cascade-based, survives xterm's lazy canvas creation).
+        //   2. Walk existing canvases and stamp ``imageRendering`` on
+        //      each one directly, so the first paint after ``term.open``
+        //      already reads pixel-crisp.
+        //   3. Install a MutationObserver to re-apply the inline style
+        //      on any canvas xterm spawns later (resize, theme change,
+        //      addon load), as a belt-and-braces guard against the CSS
+        //      rule being shadowed by a higher-specificity selector.
+        try {
+          if (!document.getElementById('__isonim-tui-pixelated-style')) {
+            var styleEl = document.createElement('style');
+            styleEl.id = '__isonim-tui-pixelated-style';
+            // Cascading values: ``pixelated`` is the modern keyword
+            // (Chromium, WebKit, modern Firefox); ``crisp-edges`` is
+            // the legacy spec value some engines accept; the trailing
+            // ``-moz-crisp-edges`` covers older Gecko.
+            styleEl.textContent =
+              '[data-tui-terminal="true"] canvas {' +
+              '  image-rendering: pixelated;' +
+              '  image-rendering: crisp-edges;' +
+              '  image-rendering: -moz-crisp-edges;' +
+              '}';
+            document.head.appendChild(styleEl);
+          }
+        } catch (_) {}
+        function applyPixelatedToCanvas(c) {
+          if (!c || c.tagName !== 'CANVAS') return;
+          try {
+            c.style.setProperty('image-rendering', 'pixelated');
+            // Fallback chain — last-supported wins per engine.
+            c.style.setProperty('image-rendering', 'crisp-edges');
+          } catch (_) {}
+        }
+        try {
+          var existing = host.querySelectorAll('canvas');
+          for (var i = 0; i < existing.length; i++) {
+            applyPixelatedToCanvas(existing[i]);
+          }
+        } catch (_) {}
+        var pixelatedObs = null;
+        try {
+          pixelatedObs = new MutationObserver(function (muts) {
+            for (var m = 0; m < muts.length; m++) {
+              var added = muts[m].addedNodes;
+              for (var n = 0; n < added.length; n++) {
+                var node = added[n];
+                if (node && node.nodeType === 1) {
+                  if (node.tagName === 'CANVAS') {
+                    applyPixelatedToCanvas(node);
+                  } else if (node.querySelectorAll) {
+                    var cs = node.querySelectorAll('canvas');
+                    for (var k = 0; k < cs.length; k++) {
+                      applyPixelatedToCanvas(cs[k]);
+                    }
+                  }
+                }
+              }
+            }
+          });
+          pixelatedObs.observe(host, { childList: true, subtree: true });
+        } catch (_) {}
         // Install a ResizeObserver so the terminal refits when the
         // preview pane (or the editor viewport) is resized. Tracks the
         // last applied font size so we skip no-op refits.
@@ -1503,6 +1574,7 @@ when defined(js):
         };
         ws.__isonimTuiHost = host;
         ws.__isonimTuiResizeObs = resizeObs;
+        ws.__isonimTuiPixelatedObs = pixelatedObs;
         """, socket, """ = ws;
         """, term, """ = term;
       })(""", host, ", ", bridgeUrl.cstring, ", ", cols, ", ", rows, ", ",
@@ -1592,6 +1664,12 @@ when defined(js):
             if (ws.__isonimTuiResizeObs) {
               ws.__isonimTuiResizeObs.disconnect();
               ws.__isonimTuiResizeObs = null;
+            }
+          } catch (_) {}
+          try {
+            if (ws.__isonimTuiPixelatedObs) {
+              ws.__isonimTuiPixelatedObs.disconnect();
+              ws.__isonimTuiPixelatedObs = null;
             }
           } catch (_) {}
           try { ws.close(); } catch (_) {}
