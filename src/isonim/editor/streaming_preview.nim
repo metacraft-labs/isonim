@@ -1365,7 +1365,15 @@ when defined(js):
           var fw = w / (cols * 0.6);
           var fh = h / (rows * 1.18);
           var fs = Math.floor(Math.min(fw, fh));
-          if (fs < 8) fs = 8;
+          // M-EVP-14 Wave-X (X-3 fix): floor at 12 instead of 8 so the
+          // TUI never paints as the unreadable "tiny rectangle in the
+          // upper-left corner" reviewers flagged. At cols=100 / rows=30
+          // a 12-px font needs ~720 × 425 px to fit; if the host has not
+          // resolved its size yet we'd rather paint the grid slightly
+          // overflowing than render a thumbnail-scale TUI. The
+          // ResizeObserver below downsizes back if the host is later
+          // measured smaller (with min still respecting the 12-px floor).
+          if (fs < 12) fs = 12;
           return fs;
         }
         var initialFontSize = pickFontSize();
@@ -1462,6 +1470,14 @@ when defined(js):
           });
           resizeObs.observe(host);
         } catch (_) {}
+        // M-EVP-14 Wave-X (X-3 fix): schedule a delayed refit so the
+        // terminal recovers even if the ResizeObserver never fires
+        // (e.g. when the host was hidden + sized 0 at mount and only
+        // becomes visible after the first WS frame paints). 80 ms +
+        // 250 ms give two retry beats covering both the immediate-show
+        // and the layout-settle cases reviewers caught in Wave-X-3.
+        try { setTimeout(refit, 80); } catch (_) {}
+        try { setTimeout(refit, 250); } catch (_) {}
         var ws = new WebSocket(url);
         ws.binaryType = 'arraybuffer';
         ws.addEventListener('open', function () {
