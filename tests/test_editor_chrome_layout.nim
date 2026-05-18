@@ -565,8 +565,9 @@ suite "M57 edge-strip reactivity":
       check webBtn.attributes["aria-pressed"] == "false"
       check tuiBtn.attributes["aria-pressed"] == "true"
       # And the background/color/font-weight must follow the active flag.
-      check tuiBtn.styles.getOrDefault("font-weight") == "700"
-      check webBtn.styles.getOrDefault("font-weight") == "600"
+      # M-EVP-14 pill chip: active = 600, inactive = 500.
+      check tuiBtn.styles.getOrDefault("font-weight") == "600"
+      check webBtn.styles.getOrDefault("font-weight") == "500"
       dispose()
 
   test "mode strip flips aria-pressed when vm.editMode changes without re-render":

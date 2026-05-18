@@ -1040,18 +1040,29 @@ proc bindBackendChip[R, E](r: R; chip: E; vm: EditorVM;
       else:
         true
     r.setAttribute(chip, "aria-pressed", if selected: "true" else: "false")
+    # M-EVP-14: pill chip styling.
+    #  * Active   — solid #7C7AED fill, white text, font-weight 600,
+    #              no border.
+    #  * Inactive — transparent fill, muted #A0A2B0 label, 1px
+    #              rgba(255,255,255,0.08) border.
+    #  * Unavailable — same shape as inactive but with opacity 0.35 and
+    #              `cursor: not-allowed`.
     r.setStyle(chip, "background-color",
-      if selected: accent
-      elif available: bgSurface
-      else: "transparent")
+      if selected: accent else: "transparent")
     r.setStyle(chip, "color",
       if selected: "#FFFFFF"
-      elif available: textSecondary
+      elif available: "#A0A2B0"
       else: textDim)
-    r.setStyle(chip, "font-weight", if selected: "700" else: "600")
-    r.setStyle(chip, "box-shadow",
-      if selected: "0 3px 12px rgba(124,122,237,0.55), inset 0 0 0 1px " & accentHot
-      else: "none")
+    r.setStyle(chip, "border",
+      if selected: "1px solid transparent"
+      else: "1px solid rgba(255,255,255,0.08)")
+    r.setStyle(chip, "border-radius", "6px")
+    r.setStyle(chip, "padding", "4px 12px")
+    r.setStyle(chip, "font-weight", if selected: "600" else: "500")
+    r.setStyle(chip, "opacity", if available: "1" else: "0.35")
+    r.setStyle(chip, "cursor",
+      if available: "pointer" else: "not-allowed")
+    r.setStyle(chip, "box-shadow", "none")
     r.setAttribute(chip, "data-preview-backend-available",
       if available: "true" else: "false")
     r.setAttribute(chip, "aria-disabled",
@@ -1082,17 +1093,24 @@ proc bindViewportChip[R, E](r: R; chip: E; vm: EditorVM;
   createRenderEffect proc() =
     let selected = viewportsEqual(vm.viewport.val, captured)
     r.setAttribute(chip, "aria-pressed", if selected: "true" else: "false")
-    # Unified active-chip styling (M-EVP-14): solid accent fill with white
-    # label so the active viewport chip reads with the same affordance as
-    # the active backend / mode chip.
+    # M-EVP-14: unified pill chip styling — solid accent fill with
+    # white label on the active chip; transparent fill with muted label
+    # and a faint 1px border on the inactive chip. Mirrors
+    # `bindBackendChip` and `bindModeChip` so the three clusters share
+    # one affordance.
     r.setStyle(chip, "background-color",
       if selected: accent else: "transparent")
     r.setStyle(chip, "color",
-      if selected: "#FFFFFF" else: textMuted)
-    r.setStyle(chip, "font-weight", if selected: "700" else: "500")
-    r.setStyle(chip, "box-shadow",
-      if selected: "0 3px 12px rgba(124,122,237,0.55), inset 0 0 0 1px " & accentHot
-      else: "none")
+      if selected: "#FFFFFF" else: "#A0A2B0")
+    r.setStyle(chip, "border",
+      if selected: "1px solid transparent"
+      else: "1px solid rgba(255,255,255,0.08)")
+    r.setStyle(chip, "border-radius", "6px")
+    r.setStyle(chip, "padding", "4px 12px")
+    r.setStyle(chip, "font-weight", if selected: "600" else: "500")
+    r.setStyle(chip, "cursor", "pointer")
+    r.setStyle(chip, "opacity", "1")
+    r.setStyle(chip, "box-shadow", "none")
   let liveHandler = viewportSelectHandler(vm, captured)
   r.addEventListener(chip, "click", liveHandler)
   r.addEventListener(chip, "keydown", liveHandler)
@@ -1120,18 +1138,24 @@ proc bindModeChip[R, E](r: R; chip: E; vm: EditorVM;
     let state = vm.evaluateCommand(capturedCommand)
     let enabled = state.status != ecsDisabled
     r.setAttribute(chip, "aria-pressed", if selected: "true" else: "false")
+    # M-EVP-14: unified pill chip styling — see `bindBackendChip` for
+    # the shared rule.
     r.setStyle(chip, "background-color",
-      if selected: accent
-      elif enabled: bgSurface
-      else: "transparent")
+      if selected: accent else: "transparent")
     r.setStyle(chip, "color",
       if selected: "#FFFFFF"
-      elif enabled: textSecondary
+      elif enabled: "#A0A2B0"
       else: textDim)
-    r.setStyle(chip, "font-weight", if selected: "700" else: "600")
-    r.setStyle(chip, "box-shadow",
-      if selected: "0 3px 12px rgba(124,122,237,0.55), inset 0 0 0 1px " & accentHot
-      else: "none")
+    r.setStyle(chip, "border",
+      if selected: "1px solid transparent"
+      else: "1px solid rgba(255,255,255,0.08)")
+    r.setStyle(chip, "border-radius", "6px")
+    r.setStyle(chip, "padding", "4px 12px")
+    r.setStyle(chip, "font-weight", if selected: "600" else: "500")
+    r.setStyle(chip, "opacity", if enabled: "1" else: "0.35")
+    r.setStyle(chip, "cursor",
+      if enabled: "pointer" else: "not-allowed")
+    r.setStyle(chip, "box-shadow", "none")
     r.setAttribute(chip, "data-preview-mode-disabled",
       if enabled: "false" else: "true")
     r.setAttribute(chip, "aria-disabled",
@@ -1325,10 +1349,21 @@ proc renderPreviewPane*[R, E](r: R; vm: EditorVM): E =
   # reactive chip-set rebuild logic) and override its CSS to flow
   # horizontally. This keeps M58's per-backend viewport pinned-set
   # reactivity intact without duplicating the rebuild machinery.
+  ## M-EVP-14: the column variant ships its primary strip inside a
+  ## bordered, dark, rounded container (the M57 edge-strip affordance).
+  ## When the cluster lives in the chrome bar each chip should read as
+  ## its own pill — NOT as a segment of a single filled bar — so we
+  ## strip the container's background + border, force a transparent
+  ## surface, and add a 4px inter-chip gap so the pills don't kiss.
   proc tiltHorizontal(root: E; ariaLabel: string) =
     r.setStyle(root, "flex-direction", "row")
+    r.setStyle(root, "align-items", "center")
     r.setStyle(root, "width", "auto")
     r.setStyle(root, "min-width", "0")
+    r.setStyle(root, "background-color", "transparent")
+    r.setStyle(root, "border", "none")
+    r.setStyle(root, "border-radius", "0")
+    r.setStyle(root, "gap", "4px")
     r.setAttribute(root, "aria-orientation", "horizontal")
 
   let backendThunk = proc(): seq[CompactChoiceOption] =
@@ -2009,7 +2044,7 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
   let toolbar = ui(r):
     tdiv(display = "flex", align_items = "center",
           justify_content = "flex-start",
-          gap = "14px", flex_wrap = "wrap",
+          gap = "16px", flex_wrap = "wrap",
           row_gap = "6px",
           min_height = "44px",
           padding_top = "8px", padding_right = "12px",
@@ -2019,16 +2054,37 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
           `data-preview-toolbar` = "true",
           `data-preview-chrome-bar` = "true")
 
+  # M-EVP-14: a faint 1px vertical hairline sits between the three
+  # clusters so the Backend / Viewport / Mode groups read as clearly
+  # separate segments rather than one long chip strip.
+  proc clusterDivider(): E =
+    ui(r):
+      tdiv(width = "1px", height = "20px", flex = "0 0 1px",
+            background_color = "rgba(255,255,255,0.08)",
+            `aria-hidden` = "true",
+            `data-toolbar-cluster-divider` = "true")
+
   let capturedVm = vm
 
   # Reuse `renderCompactChoiceColumn` (which already has the M58
   # reactive chip-set rebuild logic) and override its CSS to flow
   # horizontally. This keeps M58's per-backend viewport pinned-set
   # reactivity intact without duplicating the rebuild machinery.
+  ## M-EVP-14: the column variant ships its primary strip inside a
+  ## bordered, dark, rounded container (the M57 edge-strip affordance).
+  ## When the cluster lives in the chrome bar each chip should read as
+  ## its own pill — NOT as a segment of a single filled bar — so we
+  ## strip the container's background + border, force a transparent
+  ## surface, and add a 4px inter-chip gap so the pills don't kiss.
   proc tiltHorizontal(root: E; ariaLabel: string) =
     r.setStyle(root, "flex-direction", "row")
+    r.setStyle(root, "align-items", "center")
     r.setStyle(root, "width", "auto")
     r.setStyle(root, "min-width", "0")
+    r.setStyle(root, "background-color", "transparent")
+    r.setStyle(root, "border", "none")
+    r.setStyle(root, "border-radius", "0")
+    r.setStyle(root, "gap", "4px")
     r.setAttribute(root, "aria-orientation", "horizontal")
 
   let backendThunk = proc(): seq[CompactChoiceOption] =
@@ -2055,6 +2111,7 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
     onChipMounted = backendOnChipMounted)
   tiltHorizontal(backendCol.root, "Preview backend")
   r.appendChild(toolbar, backendCol.root)
+  r.appendChild(toolbar, clusterDivider())
 
   let viewportThunk = proc(): seq[CompactChoiceOption] =
     buildViewportOptions(capturedVm)
@@ -2077,6 +2134,7 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
     onChipMounted = viewportOnChipMounted)
   tiltHorizontal(viewportCol.root, "Preview screen size")
   r.appendChild(toolbar, viewportCol.root)
+  r.appendChild(toolbar, clusterDivider())
 
   let modeThunk = proc(): seq[CompactChoiceOption] =
     buildModeOptions(capturedVm)

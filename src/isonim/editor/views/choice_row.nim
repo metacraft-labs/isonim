@@ -107,6 +107,14 @@ proc buildColumnChip[R, E](r: R; option: CompactChoiceOption;
   ## the chip's outer element with text content + onclick / onkeydown
   ## handlers already installed by the `ui` macro. The caller is
   ## responsible for any per-chip live reactive bindings.
+  ##
+  ## M-EVP-14: each chip is a real pill — rounded radius, padding
+  ## 4px 12px, transparent background with a subtle 1px border on the
+  ## inactive state, and font-weight 500. The active state (solid
+  ## indigo + white text) is applied by the caller's per-chip
+  ## bindBackendChip / bindViewportChip / bindModeChip render effect.
+  ## The chip width is treated as a *minimum* so horizontal toolbar
+  ## reuse (`tiltHorizontal`) lets the chip grow to fit its label.
   let enabled = option.enabled
   let selected = option.selected
   let choose = compactChoiceHandler(enabled, option.onChoose)
@@ -120,18 +128,26 @@ proc buildColumnChip[R, E](r: R; option: CompactChoiceOption;
           min_height = chipHeight,
           display = "flex", align_items = "center",
           justify_content = "center",
-          padding = "2px 4px",
-          border_bottom = "1px solid " & border,
-          background_color = (if selected: accent &
-              "55" else: "transparent"),
-          color = (if enabled: (if selected: textPrimary else: textMuted) else: textDim),
-          font_size = "10px",
-          font_weight = (if selected: "700" else: "500"),
+          padding = "4px 12px",
+          border = "1px solid " & (
+              if selected: "transparent"
+              else: "rgba(255,255,255,0.08)"),
+          border_radius = "6px",
+          background_color = (
+              if selected: accent else: "transparent"),
+          color = (
+              if selected: "#FFFFFF"
+              elif enabled: "#A0A2B0"
+              else: textDim),
+          opacity = (if enabled: "1" else: "0.35"),
+          font_size = "11px",
+          font_weight = (if selected: "600" else: "500"),
           line_height = "1",
-          box_shadow = (if selected: "inset 0 0 0 1px rgba(147,197,253,.28)" else: "none"),
-          cursor = (if enabled: "pointer" else: "default"),
+          cursor = (
+              if enabled: "pointer" else: "not-allowed"),
           white_space = "nowrap", overflow = "hidden",
           text_overflow = "ellipsis",
+          transition = "background-color 120ms ease, color 120ms ease, border-color 120ms ease",
           onclick = choose,
           onkeydown = choose):
       text option.visibleText()
