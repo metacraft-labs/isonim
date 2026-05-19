@@ -460,6 +460,30 @@ bench-design-review: bench-design-review-build
     fi
     exec ./build/bin/design_review_bench --iterations:1000
 
+# REV-M10: Run every REV-M10 acceptance test.  Four parser/scan tests
+# (run anywhere; no DB required) plus three e2e tests that spawn the
+# real ``isonim-review`` CLI subprocess against an ephemeral
+# PgFixture and a fake WebSocket bridge.  The CLI binary must be
+# built first via ``isonim-review-build``.
+test-design-review-acceptance: isonim-review-build
+    nim c -r --path:. --path:src --hints:off \
+        tests/test_migrated_task_app_brief_parses.nim
+    nim c -r --path:. --path:src --hints:off \
+        tests/test_migrated_settings_app_brief_parses.nim
+    nim c -r --path:. --path:src --hints:off \
+        tests/test_migrated_chrome_briefs_parse.nim
+    nim c -r --path:. --path:src --hints:off \
+        tests/test_no_dangling_references_to_old_brief_path.nim
+    nim c -r --path:. --path:src --path:vendor/db_connector/src \
+        --path:../isonim-render-serve/src --path:../nim-everywhere/src \
+        --hints:off tests/e2e_full_pipeline_run_through_task_app_brief.nim
+    nim c -r --path:. --path:src --path:vendor/db_connector/src \
+        --path:../isonim-render-serve/src --path:../nim-everywhere/src \
+        --hints:off tests/e2e_full_pipeline_round_trip_two_runs_visible_in_gallery.nim
+    nim c -r --path:. --path:src --path:vendor/db_connector/src \
+        --path:../isonim-render-serve/src --path:../nim-everywhere/src \
+        --hints:off tests/e2e_pipeline_refuses_dirty_workspace.nim
+
 # REV-M9: Run every bench-threshold test.  These tests run the benchmark
 # with abbreviated fixtures (--iterations:200) and assert that the
 # documented thresholds are satisfied.  They use the same PG cluster as

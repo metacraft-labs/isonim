@@ -105,3 +105,27 @@ tests/test_design_review_api_get_capture_png
 tests/test_design_review_api_brief_has_history
 # Stray compiled artefact from running the API handlers module directly.
 src/isonim/editor/design_review/api_handlers
+# REV-M8 layout persistence + gallery interaction test binaries
+tests/test_design_review_api_list_layouts
+tests/test_design_review_api_promote_layout
+tests/test_design_review_api_save_layout
+tests/test_design_review_brief_has_history_signal
+tests/test_design_review_daemon_discovery
+tests/test_design_review_gallery_drag_rearrange_vm
+tests/test_design_review_gallery_fetch_on_open
+tests/test_design_review_gallery_side_by_side_vm
+# REV-M9 benchmark test binaries
+tests/test_design_review_bench_thresholds_respected
+tests/e2e_design_review_bench_published
+tests/e2e_design_review_bench_regression
+tests/e2e_design_review_bench_runner
+# REV-M9 benchmark output (per-run JSON snapshots + github-action-benchmark blob).
+bench-results/
+# REV-M10 acceptance gate test binaries
+tests/test_migrated_chrome_briefs_parse
+tests/test_migrated_settings_app_brief_parses
+tests/test_migrated_task_app_brief_parses
+tests/test_no_dangling_references_to_old_brief_path
+tests/e2e_full_pipeline_round_trip_two_runs_visible_in_gallery
+tests/e2e_full_pipeline_run_through_task_app_brief
+tests/e2e_pipeline_refuses_dirty_workspace
