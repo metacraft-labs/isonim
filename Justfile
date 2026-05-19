@@ -125,6 +125,59 @@ test-design-review: isonim-review-build
     nim c -r tests/test_design_review_brief_index.nim
     nim c -r tests/test_design_review_isonim_review_cli.nim
 
+# --- REV-M3 userspace PostgreSQL dev cluster ---
+#
+# Defaults come from the dev shell:
+#   ISONIM_REVIEW_PGDATA="$PWD/.dev/postgres"
+#   ISONIM_REVIEW_PGPORT=5533
+# Override in your private ``.env`` or per-command.
+
+# Boot the design-review Postgres cluster (process-compose, detached).
+# Defaults are exported by the Nix dev shell; this target re-exports
+# them so ``just dev-pg-start`` also works under ``nix-shell -p`` or in
+# a non-direnv environment.
+dev-pg-start:
+    #!/usr/bin/env bash
+    set -e
+    export ISONIM_REVIEW_PGDATA="${ISONIM_REVIEW_PGDATA:-$PWD/.dev/postgres}"
+    export ISONIM_REVIEW_PGPORT="${ISONIM_REVIEW_PGPORT:-5533}"
+    export ISONIM_REVIEW_MIGRATIONS_DIR="${ISONIM_REVIEW_MIGRATIONS_DIR:-$PWD/db/migrations}"
+    # ``-D`` is process-compose's --detached (NOT --hide-disabled, which
+    # is the same letter in lowercase).
+    process-compose up -D -f process-compose.yaml --tui=false
+
+# Graceful shutdown.  Leaves $ISONIM_REVIEW_PGDATA intact for next run.
+dev-pg-stop:
+    #!/usr/bin/env bash
+    set -e
+    export ISONIM_REVIEW_PGDATA="${ISONIM_REVIEW_PGDATA:-$PWD/.dev/postgres}"
+    export ISONIM_REVIEW_PGPORT="${ISONIM_REVIEW_PGPORT:-5533}"
+    process-compose down -f process-compose.yaml
+
+# Full wipe: stop + rm -rf the project-local data dir.  Use when the
+# migration history is dirty or the cluster won't start.
+dev-pg-reset:
+    #!/usr/bin/env bash
+    export ISONIM_REVIEW_PGDATA="${ISONIM_REVIEW_PGDATA:-$PWD/.dev/postgres}"
+    export ISONIM_REVIEW_PGPORT="${ISONIM_REVIEW_PGPORT:-5533}"
+    -process-compose down -f process-compose.yaml || true
+    rm -rf "$ISONIM_REVIEW_PGDATA"
+
+# Interactive ``psql`` against the running dev cluster.
+dev-pg-psql:
+    #!/usr/bin/env bash
+    psql -h 127.0.0.1 -p "${ISONIM_REVIEW_PGPORT:-5533}" isonim_design_review
+
+# Run every REV-M3 PG integration test.  Each test owns its own
+# ephemeral cluster via ``tests/helpers/design_review_pg_fixture.nim``
+# so this target can run in CI without any prior ``dev-pg-start``.
+test-design-review-pg:
+    nim c -r tests/test_design_review_pg_schema.nim
+    nim c -r tests/test_design_review_pg_routines.nim
+    nim c -r tests/test_design_review_pg_roles.nim
+    nim c -r tests/smoke_design_review_pg_dump_restore.nim
+    nim c -r tests/e2e_design_review_pg_process_compose.nim
+
 # --- IsoNim Editor ---
 
 # REV-M2: regenerate the baked-in brief index before compiling the JS

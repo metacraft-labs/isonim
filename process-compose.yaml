@@ -1,0 +1,130 @@
+# IsoNim — REV-M3 userspace PostgreSQL substrate.
+#
+# Modelled on ~/blocksense/agent-harbor/main/process-compose.dev.yaml.
+# Renamed env vars (AH_DEV_* → ISONIM_REVIEW_*), database (isonim_design_review),
+# adds the two design-review roles, and applies the SQL migrations under
+# ``db/migrations/``.
+#
+# Usage:
+#   just dev-pg-start   # starts the cluster (detached)
+#   just dev-pg-stop    # graceful stop
+#   just dev-pg-reset   # stop + wipe PGDATA
+#   just dev-pg-psql    # interactive psql against the running cluster
+#
+# Test harness ``tests/helpers/design_review_pg_fixture.nim`` re-runs this
+# same compose against an ephemeral PGDATA/PGPORT for integration tests.
+#
+# No sudo.  No NixOS module.  No docker.
+
+version: "0.5"
+
+log_level: info
+
+# Inherit environment from the parent shell so PATH (provided by the Nix
+# dev shell or ``nix-shell -p``) reaches every spawned process.
+environment:
+  - PATH
+  - HOME
+  - USER
+  - ISONIM_REVIEW_PGDATA
+  - ISONIM_REVIEW_PGPORT
+  - ISONIM_REVIEW_MIGRATIONS_DIR
+
+processes:
+  # --- 1. ``initdb`` — runs once when the data dir is empty.
+  postgres-init:
+    command: |
+      set -e
+      : "${ISONIM_REVIEW_PGDATA:?ISONIM_REVIEW_PGDATA must be set}"
+      : "${ISONIM_REVIEW_PGPORT:?ISONIM_REVIEW_PGPORT must be set}"
+      mkdir -p "$ISONIM_REVIEW_PGDATA"
+      if [ ! -f "$ISONIM_REVIEW_PGDATA/PG_VERSION" ]; then
+        echo "[postgres-init] initdb -D $ISONIM_REVIEW_PGDATA"
+        initdb --locale=C.UTF-8 --encoding=UTF8 --auth=trust \
+          -D "$ISONIM_REVIEW_PGDATA"
+        {
+          echo "listen_addresses = '127.0.0.1'"
+          echo "port = $ISONIM_REVIEW_PGPORT"
+          echo "unix_socket_directories = '$ISONIM_REVIEW_PGDATA'"
+          echo "log_statement = 'all'"
+          echo "log_connections = on"
+          echo "log_disconnections = on"
+        } >> "$ISONIM_REVIEW_PGDATA/postgresql.conf"
+      else
+        echo "[postgres-init] PGDATA already initialised at $ISONIM_REVIEW_PGDATA"
+      fi
+    availability:
+      restart: no
+
+  # --- 2. The Postgres server itself.
+  postgres:
+    command: postgres -D "$ISONIM_REVIEW_PGDATA"
+    depends_on:
+      postgres-init:
+        condition: process_completed_successfully
+    readiness_probe:
+      exec:
+        command: pg_isready -h 127.0.0.1 -p $ISONIM_REVIEW_PGPORT
+      initial_delay_seconds: 1
+      period_seconds: 1
+      timeout_seconds: 5
+      success_threshold: 1
+      failure_threshold: 60
+    shutdown:
+      signal: 15 # SIGTERM
+      timeout_seconds: 30
+
+  # --- 3. Create the two roles (idempotent).
+  postgres-create-roles:
+    command: |
+      set -e
+      psql -h 127.0.0.1 -p "$ISONIM_REVIEW_PGPORT" -d postgres -v ON_ERROR_STOP=1 <<'SQL'
+      DO $do$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'design_review_migrator') THEN
+          CREATE ROLE design_review_migrator LOGIN;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'design_review_app') THEN
+          CREATE ROLE design_review_app LOGIN;
+        END IF;
+      END
+      $do$;
+      SQL
+    depends_on:
+      postgres:
+        condition: process_healthy
+    availability:
+      restart: no
+
+  # --- 4. Create the application database (idempotent).
+  postgres-create-db:
+    command: |
+      set -e
+      if ! psql -h 127.0.0.1 -p "$ISONIM_REVIEW_PGPORT" -lqt \
+          | cut -d \| -f 1 | grep -qw isonim_design_review; then
+        echo "[postgres-create-db] createdb isonim_design_review"
+        createdb -h 127.0.0.1 -p "$ISONIM_REVIEW_PGPORT" \
+          -O design_review_migrator isonim_design_review
+      else
+        echo "[postgres-create-db] isonim_design_review already exists"
+      fi
+    depends_on:
+      postgres-create-roles:
+        condition: process_completed_successfully
+    availability:
+      restart: no
+
+  # --- 5. Apply migrations as the migrator role.  Records applied versions
+  # in ``public.schema_migrations`` so re-runs are idempotent.
+  postgres-migrate:
+    # The migrate logic is non-trivial (idempotency check, integer
+    # version, content_sha) and would be painful to embed inside YAML
+    # quoting — so it lives in its own bash script that this step
+    # invokes.  ``ISONIM_REVIEW_MIGRATIONS_DIR`` defaults to the dev
+    # cluster's path; the fixture overrides it.
+    command: bash db/migrate.sh
+    depends_on:
+      postgres-create-db:
+        condition: process_completed_successfully
+    availability:
+      restart: no

@@ -26,10 +26,20 @@
             just
             chromium
             chromedriver
+            # REV-M3: userspace PostgreSQL substrate.  ``postgresql_16``
+            # provides ``initdb``, ``postgres``, ``psql``, ``pg_isready``,
+            # ``pg_dump``, ``pg_restore`` on $PATH.  ``process-compose``
+            # orchestrates the local dev cluster (see process-compose.yaml).
+            postgresql_16
+            process-compose
           ];
 
           shellHook = ''
             echo "IsoNim dev shell — nim $(nim --version 2>&1 | head -1), node $(node --version)"
+            # REV-M3 dev-cluster defaults; users may override in their own
+            # .envrc (see .envrc.example).
+            export ISONIM_REVIEW_PGDATA="''${ISONIM_REVIEW_PGDATA:-$PWD/.dev/postgres}"
+            export ISONIM_REVIEW_PGPORT="''${ISONIM_REVIEW_PGPORT:-5533}"
           '';
         };
 

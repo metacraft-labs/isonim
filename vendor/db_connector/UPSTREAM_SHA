@@ -1,0 +1,15 @@
+upstream: https://github.com/nim-lang/db_connector
+upstream_commit: 29450a2063970712422e1ab857695c12d80112a6
+upstream_commit_date: 2026-02-11
+copied_from: nim-lang/db_connector @ HEAD (2026-02-11, commit "fixes tests (#32)")
+copied_at: 2026-05-19
+tests_directory_excluded: yes
+modifications:
+  - .github/workflows/ci.yml: prettier replaced single quotes with double quotes
+    (path: 'nim' -> path: "nim").  Cosmetic only.
+  - README.md: prettier added trailing blank line.  Cosmetic only.
+notes: |
+  Vendored because std/db_postgres was removed in Nim 2.x and
+  `nimble install db_connector` segfaults on aarch64-darwin.  The
+  vendored copy is the upstream HEAD at the time of the REV-M3 work.
+  Source otherwise unmodified.

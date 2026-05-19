@@ -1,0 +1,25 @@
+# IsoNim — local environment overrides
+#
+# Copy to a project-private ``.env`` (loaded via ``dotenv_if_exists`` in
+# ``.envrc``) and tweak as needed.  Defaults are also exported by the Nix
+# dev shell, so you only need to set these if you want different values.
+#
+# ---------------------------------------------------------------------------
+# REV-M3 — userspace PostgreSQL design-review cluster
+# ---------------------------------------------------------------------------
+#
+# ``ISONIM_REVIEW_PGDATA``
+#   Filesystem path that PostgreSQL uses as ``$PGDATA``.  Project-local so
+#   each clone has its own cluster; gitignored under ``/.dev/``.
+#
+# ``ISONIM_REVIEW_PGPORT``
+#   TCP port the dev cluster listens on.  Anything in the user-port range
+#   works; the default 5533 is unlikely to collide with a system Postgres.
+
+export ISONIM_REVIEW_PGDATA="$PWD/.dev/postgres"
+export ISONIM_REVIEW_PGPORT=5533
+
+# Connection string consumed by ``isonim/src/isonim/editor/design_review/db.nim``
+# when ``$ISONIM_REVIEW_DB`` is unset.  Override here if you need a different
+# host, database name, or non-trust auth.
+# export ISONIM_REVIEW_DB="postgres://localhost:5533/isonim_design_review"
