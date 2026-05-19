@@ -1,22 +1,39 @@
-## REV-M1: ``isonim-review`` CLI entry point.
+## REV-M1 / REV-M4: ``isonim-review`` CLI entry point.
 ##
 ## Builds to ``build/bin/isonim-review`` via the Justfile target
-## ``isonim-review-build``. Only one subcommand is implemented in this
-## milestone — additional commands (``init``, ``db-health``,
-## ``start-run``, ``run-review``, ``serve``) land in REV-M3+ as
-## documented in the milestones file.
+## ``isonim-review-build``.
 ##
 ## Subcommand layout:
 ##
 ##   isonim-review briefs check --project <path>
+##       (REV-M1) Walk <path>/briefs/ and report parse status for
+##       every brief.  Exit 0 if all parse; exit 1 if any error.
 ##
-## Discovers ``<path>/briefs/`` (or the ``--project`` path itself if it
-## already ends in ``briefs``), walks every brief, and prints a status
-## summary. Exit 0 if every brief parses; exit 1 if any error.
+##   isonim-review init [--config <path>] [--migrations <dir>]
+##       (REV-M4) Apply db/migrations/*.sql idempotently as the
+##       migrator role.  Honors content-hash drift detection.
+##
+##   isonim-review db-health [--json] [--config <path>] [--migrations <dir>]
+##       (REV-M4) Run the five health probes; exit 0 if every DB
+##       probe is green.
+##
+##   isonim-review serve [--config <path>] [--migrations <dir>]
+##       (REV-M4) Long-running HTTP daemon.  Currently exposes
+##       ``GET /health``; REV-M7/M8 will wire the rest of
+##       ``/api/design-review/*``.
+##
+##   isonim-review --help
+##       Print the usage block.
 
 import std/[os, strutils, strformat, tables]
+
 import isonim/editor/design_review/brief_format
 import isonim/editor/design_review/brief_index
+
+import ./config
+import ./cmd_init
+import ./cmd_db_health
+import ./cmd_serve
 
 const Usage = """
 isonim-review — IsoNim design-review CLI
@@ -26,13 +43,56 @@ Usage:
       Walk <path>/briefs/ and report parse status for every brief.
       Exit 0 if all briefs parse; exit 1 if any error.
 
+  isonim-review init [--config <path>] [--migrations <dir>]
+      Apply db/migrations/*.sql against the running cluster as the
+      migrator role.  Idempotent: already-applied versions are
+      skipped; content-hash drift fails loudly.
+
+  isonim-review db-health [--json] [--config <path>] [--migrations <dir>]
+      Run five health probes (postgres, app role, migrator role,
+      schema version, process-compose).  Exit 0 if all DB probes
+      pass; non-zero otherwise.
+
+  isonim-review serve [--config <path>] [--migrations <dir>]
+      Start the HTTP daemon (default bind: 127.0.0.1:8113).
+      GET /health returns the same JSON as db-health --json.
+      REV-M7/M8 will mount /api/design-review/* routes here.
+
   isonim-review --help
       Print this message.
 """
 
+# --------------------------------------------------------------------------
+# Shared arg parsing helpers.  REV-M1 stayed with hand-rolled flag
+# extraction because ``std/parseopt`` doesn't play nicely with
+# subcommand-style CLIs; we continue that pattern here.
+# --------------------------------------------------------------------------
+
+proc parseSubArgs(args: seq[string]; expectedFlag: string): string =
+  ## Tiny argument parser for ``--key value`` or ``--key=value``.
+  var i = 0
+  while i < args.len:
+    let a = args[i]
+    if a == "--" & expectedFlag:
+      if i + 1 < args.len:
+        return args[i + 1]
+      return ""
+    if a.startsWith("--" & expectedFlag & "="):
+      return a[(expectedFlag.len + 3) .. ^1]
+    inc i
+  return ""
+
+proc hasFlag(args: seq[string]; flag: string): bool =
+  for a in args:
+    if a == "--" & flag:
+      return true
+  false
+
+# --------------------------------------------------------------------------
+# REV-M1: briefs check
+# --------------------------------------------------------------------------
+
 proc resolveBriefsDir(projectPath: string): string =
-  ## Accepts either a project root (containing ``briefs/``) or a direct
-  ## briefs directory. Returns the directory that should be walked.
   if projectPath.len == 0:
     return ""
   let direct = projectPath / "briefs"
@@ -41,10 +101,6 @@ proc resolveBriefsDir(projectPath: string): string =
   return projectPath
 
 proc errorClassName(msg: string; field: string): string =
-  ## Map a brief-parse error message back to its error-class name so
-  ## the CLI output is machine-readable. The walker only carries
-  ## ``BriefIndexError`` (path + message), so we infer the class from
-  ## message contents — this mirrors what ``parseBrief`` raises.
   if msg.contains("duplicate briefId"):
     return "DuplicateBriefIdError"
   if msg.contains("missing required field"):
@@ -59,8 +115,6 @@ proc errorClassName(msg: string; field: string): string =
   return "BriefParseError"
 
 proc inferField(msg: string): string =
-  ## Pull the field name out of the canonical error message
-  ## ``missing required field 'X' in ...``. Returns "" if not found.
   const Needle = "missing required field '"
   let idx = msg.find(Needle)
   if idx < 0: return ""
@@ -93,19 +147,40 @@ proc cmdBriefsCheck(project: string): int =
     stderr.write(fmt"{okCount} briefs OK, {errCount} broken" & "\n")
     return 1
 
-proc parseSubArgs(args: seq[string]; expectedFlag: string): string =
-  ## Tiny argument parser for ``--key value`` or ``--key=value``.
-  var i = 0
-  while i < args.len:
-    let a = args[i]
-    if a == "--" & expectedFlag:
-      if i + 1 < args.len:
-        return args[i + 1]
-      return ""
-    if a.startsWith("--" & expectedFlag & "="):
-      return a[(expectedFlag.len + 3) .. ^1]
-    inc i
-  return ""
+# --------------------------------------------------------------------------
+# REV-M4: init / db-health / serve
+# --------------------------------------------------------------------------
+
+proc resolveConfigAndDir(rest: seq[string]):
+    tuple[cfg: ReviewConfig; migDir: string] =
+  let configPath = parseSubArgs(rest, "config")
+  let migDirFlag = parseSubArgs(rest, "migrations")
+  let cfg =
+    try: loadConfig(configPath)
+    except TomlParseError as e:
+      stderr.writeLine("isonim-review: " & e.msg)
+      quit(2)
+  let migDir =
+    if migDirFlag.len > 0: migDirFlag
+    else: getCurrentDir() / "db" / "migrations"
+  (cfg, migDir)
+
+proc dispatchInit(rest: seq[string]): int =
+  let (cfg, migDir) = resolveConfigAndDir(rest)
+  cmdInit(cfg, migDir)
+
+proc dispatchDbHealth(rest: seq[string]): int =
+  let (cfg, migDir) = resolveConfigAndDir(rest)
+  let asJson = hasFlag(rest, "json")
+  cmdDbHealth(cfg, asJson, migDir)
+
+proc dispatchServe(rest: seq[string]): int =
+  let (cfg, migDir) = resolveConfigAndDir(rest)
+  cmdServe(cfg, migDir)
+
+# --------------------------------------------------------------------------
+# Top-level dispatch
+# --------------------------------------------------------------------------
 
 proc main(): int =
   var rawArgs: seq[string] = @[]
@@ -128,6 +203,12 @@ proc main(): int =
       stderr.write("isonim-review briefs check: --project <path> is required\n")
       return 2
     return cmdBriefsCheck(project)
+  of "init":
+    return dispatchInit(rawArgs[1 .. ^1])
+  of "db-health":
+    return dispatchDbHealth(rawArgs[1 .. ^1])
+  of "serve":
+    return dispatchServe(rawArgs[1 .. ^1])
   else:
     stderr.write(fmt"isonim-review: unknown command '{rawArgs[0]}'" & "\n")
     stderr.write(Usage)

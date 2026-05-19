@@ -109,14 +109,19 @@ test-ssr:
 test-web:
     nim js -r tests/test_web.nim
 
-# --- IsoNim Design Review CLI (REV-M1) ---
+# --- IsoNim Design Review CLI (REV-M1 + REV-M4) ---
 
 # Build the isonim-review CLI. Compiles tools/isonim_review/main.nim to
 # build/bin/isonim-review. Used by REV-M1's CLI integration tests and
 # by the capture / review loop (REV-M5+).
+#
+# REV-M4 added imports of ``db_connector/db_postgres`` for ``init`` /
+# ``db-health`` / ``serve`` so the binary now links against libpq at
+# runtime. The ``--path:vendor/db_connector/src`` switch keeps the
+# build hermetic against the vendored copy under ``vendor/``.
 isonim-review-build:
     mkdir -p build/bin
-    nim c -d:release --path:src --hints:off --out:build/bin/isonim-review tools/isonim_review/main.nim
+    nim c -d:release --path:src --path:vendor/db_connector/src --hints:off --out:build/bin/isonim-review tools/isonim_review/main.nim
     @echo "Built: build/bin/isonim-review"
 
 # Run REV-M1's design-review unit + integration tests.
@@ -124,6 +129,48 @@ test-design-review: isonim-review-build
     nim c -r tests/test_design_review_brief_format.nim
     nim c -r tests/test_design_review_brief_index.nim
     nim c -r tests/test_design_review_isonim_review_cli.nim
+
+# REV-M4: run all CLI-layer tests (config loader, init, db-health,
+# serve smoke, plus the two e2e tests that drive a real process-compose
+# cluster).  PG tests use the REV-M3 ephemeral fixture; the binary
+# must be built first via ``isonim-review-build``.
+test-design-review-cli: isonim-review-build
+    nim c -r --path:. --path:src --path:vendor/db_connector/src tests/test_design_review_cli_config.nim
+    nim c -r --path:. --path:src --path:vendor/db_connector/src tests/test_design_review_cli_init.nim
+    nim c -r --path:. --path:src --path:vendor/db_connector/src tests/test_design_review_cli_db_health.nim
+    nim c -r --path:. --path:src --path:vendor/db_connector/src tests/test_design_review_cli_serve_smoke.nim
+    nim c -r --path:. --path:src --path:vendor/db_connector/src tests/e2e_design_review_cli_init.nim
+    nim c -r --path:. --path:src --path:vendor/db_connector/src tests/e2e_design_review_cli_serve_lifecycle.nim
+
+# REV-M4: invoke the CLI's ``init`` against the running dev cluster.
+# Idempotent — re-running this against an already-migrated DB prints
+# ``skip ...`` lines and exits 0.  ``ISONIM_REVIEW_PGPORT`` defaults
+# to 5533 (the dev cluster's port); override via environment.
+isonim-review-init: isonim-review-build
+    #!/usr/bin/env bash
+    set -e
+    export ISONIM_REVIEW_PGPORT="${ISONIM_REVIEW_PGPORT:-5533}"
+    ./build/bin/isonim-review init --migrations "$PWD/db/migrations"
+
+# REV-M4: run the layered health probes against the running dev
+# cluster.  Exits 0 if every DB probe is green, non-zero otherwise.
+# The ``--json`` flag emits machine-readable output.
+isonim-review-health *FLAGS: isonim-review-build
+    #!/usr/bin/env bash
+    set -e
+    export ISONIM_REVIEW_PGPORT="${ISONIM_REVIEW_PGPORT:-5533}"
+    ./build/bin/isonim-review db-health --migrations "$PWD/db/migrations" {{FLAGS}}
+
+# REV-M4: start the long-running HTTP daemon.  Listens on
+# 127.0.0.1:8113 by default; override via ISONIM_REVIEW_PORT.
+# ``GET /health`` returns the same JSON as ``isonim-review-health
+# --json``; REV-M7/M8 will populate ``/api/design-review/*``.
+isonim-review-serve: isonim-review-build
+    #!/usr/bin/env bash
+    set -e
+    export ISONIM_REVIEW_PGPORT="${ISONIM_REVIEW_PGPORT:-5533}"
+    export ISONIM_REVIEW_PORT="${ISONIM_REVIEW_PORT:-8113}"
+    exec ./build/bin/isonim-review serve --migrations "$PWD/db/migrations"
 
 # --- REV-M3 userspace PostgreSQL dev cluster ---
 #

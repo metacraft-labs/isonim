@@ -2,3 +2,17 @@ vendor/
 node_modules/
 build/
 .dev/
+# Nested vendored bundle — prettier mangles minified xterm.js.
+src/isonim/editor/vendor/
+# REV-M1/M4: hand-rolled YAML-frontmatter fixtures.  The brief
+# parser only understands single-line flow scalars; letting prettier
+# reflow them across multiple lines would break the parser tests.
+tests/fixtures/design_review/
+# REV-M1: editor visual-review brief template; markdown layout is
+# load-bearing for the generator below.  Keep prettier off it until
+# the template is migrated to a structured input.
+tools/visual-review-brief.md
+# Pre-existing files prettier disagrees with; out of scope for the
+# REV-M4 milestone.  Track and migrate in a dedicated lint pass.
+tools/tailwind-extract.mjs
+tests/e2e_design_review_brief_tab.mjs

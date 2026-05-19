@@ -117,11 +117,15 @@ processes:
   # --- 5. Apply migrations as the migrator role.  Records applied versions
   # in ``public.schema_migrations`` so re-runs are idempotent.
   postgres-migrate:
-    # The migrate logic is non-trivial (idempotency check, integer
-    # version, content_sha) and would be painful to embed inside YAML
-    # quoting — so it lives in its own bash script that this step
-    # invokes.  ``ISONIM_REVIEW_MIGRATIONS_DIR`` defaults to the dev
-    # cluster's path; the fixture overrides it.
+    # REV-M3 shipped ``db/migrate.sh`` as the canonical driver; REV-M4
+    # replaced it with the Nim-native ``isonim-review init``
+    # subcommand which does the same idempotency check plus content-
+    # hash drift detection.  We keep the bash script as the bootstrap
+    # path here because it does not require building the Nim binary
+    # first — relevant for fresh-clone workflows where ``just
+    # isonim-review-build`` has not yet run.  After the first build,
+    # ``just isonim-review-init`` is the recommended entry point for
+    # hand-running migrations.
     command: bash db/migrate.sh
     depends_on:
       postgres-create-db:

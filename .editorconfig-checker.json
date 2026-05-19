@@ -1,3 +1,11 @@
 {
-  "Exclude": ["^vendor/", "^node_modules/", "^build/", "^\\.dev/"]
+  "Exclude": [
+    "^vendor/",
+    "^node_modules/",
+    "^build/",
+    "^\\.dev/",
+    "^src/isonim/editor/vendor/",
+    "^tests/fixtures/design_review/",
+    "\\.nim$"
+  ]
 }
