@@ -34,6 +34,7 @@ import ./config
 import ./cmd_init
 import ./cmd_db_health
 import ./cmd_serve
+import ./cmd_capture
 
 const Usage = """
 isonim-review — IsoNim design-review CLI
@@ -57,6 +58,15 @@ Usage:
       Start the HTTP daemon (default bind: 127.0.0.1:8113).
       GET /health returns the same JSON as db-health --json.
       REV-M7/M8 will mount /api/design-review/* routes here.
+
+  isonim-review capture --brief <briefId> [--viewport <label>]
+                        [--bridge <url>] [--workspace <path>]
+                        [--project <path>] [--config <path>]
+      (REV-M5) Drive a full capture sweep against the
+      isonim-render-serve bridge.  Refuses to run unless every repo
+      in the workspace is clean and pinned.  Stores PNGs under the
+      configured store path and writes a row to design_review.captures
+      per (preview, viewport).
 
   isonim-review --help
       Print this message.
@@ -178,6 +188,20 @@ proc dispatchServe(rest: seq[string]): int =
   let (cfg, migDir) = resolveConfigAndDir(rest)
   cmdServe(cfg, migDir)
 
+proc dispatchCapture(rest: seq[string]): int =
+  let configPath = parseSubArgs(rest, "config")
+  let cfg =
+    try: loadConfig(configPath)
+    except TomlParseError as e:
+      stderr.writeLine("isonim-review: " & e.msg)
+      quit(2)
+  let briefId   = parseSubArgs(rest, "brief")
+  let viewport  = parseSubArgs(rest, "viewport")
+  let bridgeUrl = parseSubArgs(rest, "bridge")
+  let workspace = parseSubArgs(rest, "workspace")
+  let project   = parseSubArgs(rest, "project")
+  cmdCapture(cfg, briefId, viewport, bridgeUrl, workspace, project)
+
 # --------------------------------------------------------------------------
 # Top-level dispatch
 # --------------------------------------------------------------------------
@@ -209,6 +233,8 @@ proc main(): int =
     return dispatchDbHealth(rawArgs[1 .. ^1])
   of "serve":
     return dispatchServe(rawArgs[1 .. ^1])
+  of "capture":
+    return dispatchCapture(rawArgs[1 .. ^1])
   else:
     stderr.write(fmt"isonim-review: unknown command '{rawArgs[0]}'" & "\n")
     stderr.write(Usage)

@@ -121,7 +121,7 @@ test-web:
 # build hermetic against the vendored copy under ``vendor/``.
 isonim-review-build:
     mkdir -p build/bin
-    nim c -d:release --path:src --path:vendor/db_connector/src --hints:off --out:build/bin/isonim-review tools/isonim_review/main.nim
+    nim c -d:release --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off --out:build/bin/isonim-review tools/isonim_review/main.nim
     @echo "Built: build/bin/isonim-review"
 
 # Run REV-M1's design-review unit + integration tests.
@@ -141,6 +141,28 @@ test-design-review-cli: isonim-review-build
     nim c -r --path:. --path:src --path:vendor/db_connector/src tests/test_design_review_cli_serve_smoke.nim
     nim c -r --path:. --path:src --path:vendor/db_connector/src tests/e2e_design_review_cli_init.nim
     nim c -r --path:. --path:src --path:vendor/db_connector/src tests/e2e_design_review_cli_serve_lifecycle.nim
+
+# REV-M5: run every REV-M5 capture-pipeline test.  Unit tests boot
+# fake WebSocket servers + ephemeral git workspaces; the idempotency
+# and e2e tests use the REV-M3 PgFixture + a real `isonim-review`
+# subprocess.  All paths use the same `--path:` set the CLI build uses.
+test-design-review-capture: isonim-review-build
+    nim c -r --path:. --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off tests/test_design_review_clean_tree.nim
+    nim c -r --path:. --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off tests/test_design_review_manifest_hash.nim
+    nim c -r --path:. --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off tests/test_design_review_capture_store.nim
+    nim c -r --path:. --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off tests/test_design_review_bridge_client.nim
+    nim c -r --path:. --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off tests/test_design_review_capture_native_dimensions.nim
+    nim c -r --path:. --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off tests/test_design_review_record_capture_idempotent.nim
+    nim c -r --path:. --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off tests/e2e_design_review_capture_fullsweep.nim
+
+# REV-M5: convenience target — drive a capture against the running
+# dev cluster + a user-spawned `isonim-render-serve` bridge.  The
+# default bridge URL matches the milestone document.
+isonim-review-capture brief="render.fixture" bridge="ws://127.0.0.1:8093": isonim-review-build
+    #!/usr/bin/env bash
+    set -e
+    export ISONIM_REVIEW_PGPORT="${ISONIM_REVIEW_PGPORT:-5533}"
+    ./build/bin/isonim-review capture --brief "{{brief}}" --bridge "{{bridge}}"
 
 # REV-M4: invoke the CLI's ``init`` against the running dev cluster.
 # Idempotent — re-running this against an already-migrated DB prints
