@@ -429,6 +429,51 @@ test-browser-editor: test-browser-editor-example test-browser-editor-consumer
 
 # --- Benchmarks ---
 
+# REV-M9: Build the design-review benchmark binary.  Compiles
+# ``bench/design_review_bench.nim`` to ``build/bin/design_review_bench``.
+# Used by ``just bench-design-review`` and by the four bench threshold
+# tests under ``tests/test_design_review_bench_*``.
+bench-design-review-build:
+    mkdir -p build/bin
+    nim c -d:release --path:vendor/db_connector/src --hints:off \
+        --out:build/bin/design_review_bench bench/design_review_bench.nim
+    @echo "Built: build/bin/design_review_bench"
+
+# REV-M9: Run the four design-review hot-path benchmarks against the
+# running process-compose Postgres cluster.  Asserts ``pg_isready``
+# first so we fail fast with a clear message if the cluster is down,
+# seeds the three idempotent fixtures, runs each routine 1000 times,
+# compares against ``bench/thresholds.toml``, and exits non-zero on any
+# threshold violation.  Outputs JSON to ``bench-results/<isodate>.json``
+# and ``bench-results/benchmark_results.json`` (github-action-benchmark
+# format) regardless of pass/fail.
+bench-design-review: bench-design-review-build
+    #!/usr/bin/env bash
+    set -e
+    export ISONIM_REVIEW_PGPORT="${ISONIM_REVIEW_PGPORT:-5533}"
+    export ISONIM_REVIEW_PGHOST="${ISONIM_REVIEW_PGHOST:-127.0.0.1}"
+    if ! pg_isready -h "$ISONIM_REVIEW_PGHOST" -p "$ISONIM_REVIEW_PGPORT" -q; then
+      echo "bench-design-review: process-compose Postgres not running on" \
+        "$ISONIM_REVIEW_PGHOST:$ISONIM_REVIEW_PGPORT" >&2
+      echo "  Start it with 'just dev-pg-start' and retry." >&2
+      exit 2
+    fi
+    exec ./build/bin/design_review_bench --iterations:1000
+
+# REV-M9: Run every bench-threshold test.  These tests run the benchmark
+# with abbreviated fixtures (--iterations:200) and assert that the
+# documented thresholds are satisfied.  They use the same PG cluster as
+# ``bench-design-review``; ``just dev-pg-start`` must already be up.
+test-design-review-bench: bench-design-review-build
+    nim c -r --path:. --path:src --path:vendor/db_connector/src --hints:off \
+        tests/test_design_review_bench_thresholds_respected.nim
+    nim c -r --path:. --path:src --path:vendor/db_connector/src --hints:off \
+        tests/e2e_design_review_bench_runner.nim
+    nim c -r --path:. --path:src --path:vendor/db_connector/src --hints:off \
+        tests/e2e_design_review_bench_regression.nim
+    nim c -r --path:. --path:src --path:vendor/db_connector/src --hints:off \
+        tests/e2e_design_review_bench_published.nim
+
 # Build js-framework-benchmark entry. The benchmark imports
 # `nim_everywhere/js_collections` transitively; resolve via an
 # explicit --path so the build doesn't depend on `nimble develop`

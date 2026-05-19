@@ -1,0 +1,29 @@
+# REV-M9 — design-review benchmark thresholds.
+#
+# Wall-clock millisecond budgets per routine.  CI fails fast if any
+# percentile exceeds the documented bound.  These values are the
+# *production* targets from the milestone spec; the test suite uses the
+# same numbers, not relaxed copies.
+#
+# Hardware caveat: thresholds were calibrated against a developer-grade
+# macOS arm64 host with the userspace process-compose Postgres cluster.
+# Slower CI hardware should run the bench three times and take the
+# median to filter cold-cache noise; only after that should the
+# threshold be revisited (and only with user sign-off — see the
+# milestone's Outstanding Tasks).
+
+[list_history]
+p50_ms_max = 20
+p95_ms_max = 50
+
+[fetch_run]
+p50_ms_max = 15
+p95_ms_max = 40
+
+[save_gallery_layout]
+p50_ms_max = 10
+p95_ms_max = 25
+
+[record_capture]
+p50_ms_max = 5
+p95_ms_max = 15
