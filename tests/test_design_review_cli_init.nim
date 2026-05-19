@@ -39,8 +39,8 @@ suite "REV-M4 isonim-review init":
 
   test "test_cli_init_applies_migrations_from_empty_db":
     ## Fresh cluster with no migrations applied → cmdInit reports
-    ## ``applied N`` and ``schema_migrations`` contains exactly the
-    ## two migration files we ship in REV-M3.
+    ## ``applied N`` and ``schema_migrations`` contains every migration
+    ## file we ship (REV-M3's 001+002 plus REV-M7's 003).
     let f = newPgFixture(applyMigrations = false)
     defer: f.shutdown()
 
@@ -52,10 +52,11 @@ suite "REV-M4 isonim-review init":
     let outText = readFile(tmpLog)
     removeFile(tmpLog)
     check rc == 0
-    check countMigrations(f) == 2
+    check countMigrations(f) == 3
     check "apply 001" in outText
     check "apply 002" in outText
-    check "applied 2 migration(s)" in outText
+    check "apply 003" in outText
+    check "applied 3 migration(s)" in outText
 
   test "test_cli_init_is_noop_on_already_migrated":
     ## Second run against the same cluster: every migration is
@@ -132,7 +133,7 @@ suite "REV-M4 isonim-review init":
       let c = connectMigrator(f)
       defer: c.close()
       parseInt(c.getValue(sql"SELECT count(*) FROM public.schema_migrations"))
-    check after == 1  # only migration 2's row remains
+    check after == 2  # migrations 2 and 3 remain (1 was DELETEd above)
 
   test "test_cli_init_refuses_modified_migration_file":
     ## Apply, copy a migration to a scratch dir, mutate one byte,
@@ -151,7 +152,7 @@ suite "REV-M4 isonim-review init":
     let scratch = getTempDir() / "isonim_review_migrations_drift"
     if dirExists(scratch): removeDir(scratch)
     createDir(scratch)
-    # Copy lib.sql + both migrations, then mutate migration 001.
+    # Copy lib.sql + every migration, then mutate migration 001.
     copyFile(MigDir / "lib.sql", scratch / "lib.sql")
     copyFile(
       MigDir / "001_design_review_schema.sql",
@@ -159,6 +160,9 @@ suite "REV-M4 isonim-review init":
     copyFile(
       MigDir / "002_design_review_routines.sql",
       scratch / "002_design_review_routines.sql")
+    copyFile(
+      MigDir / "003_design_review_fetch_capture.sql",
+      scratch / "003_design_review_fetch_capture.sql")
     let altered = scratch / "001_design_review_schema.sql"
     var body = readFile(altered)
     body.add "\n-- drift marker\n"
@@ -189,11 +193,11 @@ suite "REV-M4 isonim-review init":
     check "content hash mismatch" in outText
     check "migration 1" in outText
 
-    # Both rows still present — no partial reapplication.
+    # All rows still present — no partial reapplication.
     let after = block:
       let c = connectMigrator(f)
       defer: c.close()
       parseInt(c.getValue(sql"SELECT count(*) FROM public.schema_migrations"))
-    check after == 2
+    check after == 3
 
     removeDir(scratch)

@@ -58,7 +58,7 @@ proc waitForMigrated(port: int; timeoutSeconds = 60): bool =
           "connect_timeout=2")
       let v = conn.getValue(sql"""
         SELECT count(*) FROM public.schema_migrations""")
-      if parseInt(v) >= 2:
+      if parseInt(v) >= 3:
         ok = true
       conn.close()
     except DbError:

@@ -96,3 +96,12 @@ tests/test_editor_real_preview
 tests/test_editor_release_gate
 tests/test_editor_streaming_preview
 tests/test_editor_workspace
+# REV-M7 gallery + API test binaries
+tests/test_design_review_gallery_vm
+tests/test_design_review_gallery_no_setstyle
+tests/test_design_review_api_list_history
+tests/test_design_review_api_fetch_run
+tests/test_design_review_api_get_capture_png
+tests/test_design_review_api_brief_has_history
+# Stray compiled artefact from running the API handlers module directly.
+src/isonim/editor/design_review/api_handlers

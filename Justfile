@@ -304,6 +304,33 @@ test-design-review-brief-tab:
     nim c -r --path:src --path:. --path:../nim-everywhere/src --hints:off \
         tests/test_design_review_brief_tab_no_setstyle.nim
 
+# REV-M7: Run every REV-M7 gallery + API test.
+#
+# The four API tests boot the real ``isonim-review serve`` daemon
+# against an ephemeral ``PgFixture`` and exercise the four new
+# ``/api/design-review/*`` routes through ``std/httpclient`` — no
+# in-process shims.  The ViewModel + source-scan tests run pure-Nim
+# under the MockRenderer.  The Playwright e2e spins up the daemon and
+# drives Chromium against a minimal mount page.
+test-design-review-gallery: isonim-review-build
+    nim c -r --path:src --path:. --path:../nim-everywhere/src --hints:off \
+        tests/test_design_review_gallery_vm.nim
+    nim c -r --path:src --path:. --hints:off \
+        tests/test_design_review_gallery_no_setstyle.nim
+    nim c -r --path:. --path:src --path:vendor/db_connector/src \
+        --path:../nim-everywhere/src --hints:off \
+        tests/test_design_review_api_list_history.nim
+    nim c -r --path:. --path:src --path:vendor/db_connector/src \
+        --path:../nim-everywhere/src --hints:off \
+        tests/test_design_review_api_fetch_run.nim
+    nim c -r --path:. --path:src --path:vendor/db_connector/src \
+        --path:../nim-everywhere/src --hints:off \
+        tests/test_design_review_api_get_capture_png.nim
+    nim c -r --path:. --path:src --path:vendor/db_connector/src \
+        --path:../nim-everywhere/src --hints:off \
+        tests/test_design_review_api_brief_has_history.nim
+    node --test tests/e2e_design_review_gallery_overlay.mjs
+
 # Build and serve the editor
 editor-serve: editor-build
     @echo "Serving editor on http://localhost:8090"

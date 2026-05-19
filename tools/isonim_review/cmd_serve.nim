@@ -31,6 +31,10 @@ import std/[asyncdispatch, asynchttpserver, json, os, posix, strutils, tables]
 import ./config
 import ./cmd_db_health
 
+import isonim/editor/design_review/api_handlers
+import isonim/editor/design_review/capture_store
+import isonim/editor/design_review/db as dr_db
+
 type
   HandlerProc* = proc (req: Request): Future[void] {.async, gcsafe.}
 
@@ -191,9 +195,36 @@ proc runReviewServer*(srv: ReviewServer) =
   else:
     stderr.writeLine("isonim-review serve: exiting cleanly")
 
+proc mountDesignReviewRoutes*(srv: ReviewServer) =
+  ## Wire the REV-M7 ``/api/design-review/*`` handlers against ``srv``.
+  ## Opens a long-lived ``ReviewDb`` connection and a ``CaptureStore``
+  ## handle scoped to the configured store path; both live for the
+  ## process lifetime — the daemon is the only user.
+  let db = openReviewDb(env = true)
+  let store =
+    if srv.cfg.store.path.len > 0:
+      try: newCaptureStore(srv.cfg.store.path)
+      except CaptureStoreError:
+        nil
+    else:
+      nil
+  srv.registerHandler("/api/design-review/list-history",
+                      makeListHistory(db))
+  srv.registerHandler("/api/design-review/fetch-run",
+                      makeFetchRun(db))
+  srv.registerHandler("/api/design-review/get-capture-png",
+                      makeGetCapturePng(db, store))
+  srv.registerHandler("/api/design-review/brief-has-history",
+                      makeBriefHasHistory(db))
+
 proc cmdServe*(cfg: ReviewConfig; migDir: string = ""): int =
   ## CLI entrypoint.  Returns 0 on a clean shutdown.
   let srv = newReviewServer(cfg, migDir)
+  try:
+    mountDesignReviewRoutes(srv)
+  except CatchableError as e:
+    stderr.writeLine("isonim-review serve: route mount failed: " & e.msg)
+    return 2
   try:
     runReviewServer(srv)
     return 0

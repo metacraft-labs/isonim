@@ -10,8 +10,9 @@
 ## uses for REV-M3.
 ##
 ## The acceptance gate is the post-condition the milestone spells out
-## — ``SELECT count(*) FROM public.schema_migrations`` returns 2
-## between init and stop.
+## — ``SELECT count(*) FROM public.schema_migrations`` returns the
+## number of migration files we ship (REV-M3's 001+002 plus REV-M7's
+## 003) between init and stop.
 
 import std/[os, osproc, streams, strtabs, strutils, times, unittest]
 import db_connector/db_postgres
@@ -69,8 +70,9 @@ proc runEndToEnd() =
   # process-compose runs ``postgres-create-roles`` →
   # ``postgres-create-db`` → ``postgres-migrate`` *after* the database
   # is ready; ``pg_isready`` returning ok doesn't imply the migrate
-  # step has finished.  Wait until ``schema_migrations`` reports both
-  # versions before invoking the CLI — that's the natural barrier.
+  # step has finished.  Wait until ``schema_migrations`` reports every
+  # shipped migration before invoking the CLI — that's the natural
+  # barrier.
   proc migratorReady(): bool =
     var conn: DbConn
     try:
@@ -84,7 +86,7 @@ proc runEndToEnd() =
     try:
       let v = conn.getValue(sql"""
         SELECT count(*) FROM public.schema_migrations""")
-      return parseInt(v) >= 2
+      return parseInt(v) >= 3
     except DbError:
       return false
   let migrateDeadline = epochTime() + 60.0
@@ -97,8 +99,8 @@ proc runEndToEnd() =
   check migrateOk
 
   # Now run the CLI's ``init`` against the running cluster.  The
-  # process-compose ``postgres-migrate`` step has already applied the
-  # two migrations via the bash script, so this run is the idempotent
+  # process-compose ``postgres-migrate`` step has already applied every
+  # migration via the bash script, so this run is the idempotent
   # re-apply.  The CLI should converge to the same row count without
   # re-running any migration.
   var environ = newStringTable(modeCaseSensitive)
@@ -117,16 +119,16 @@ proc runEndToEnd() =
   check initRc == 0
   check ("apply 001" in outText) or ("skip 001" in outText)
   check ("apply 002" in outText) or ("skip 002" in outText)
+  check ("apply 003" in outText) or ("skip 003" in outText)
 
-  # Post-condition: schema_migrations contains exactly the two
-  # versions we shipped.
+  # Post-condition: schema_migrations contains every version we ship.
   let conn = open("", "", "",
     "host=127.0.0.1 port=" & $port & " dbname=isonim_design_review " &
     "user=design_review_migrator")
   let countStr = conn.getValue(sql"""
     SELECT count(*) FROM public.schema_migrations""")
   conn.close()
-  check parseInt(countStr) == 2
+  check parseInt(countStr) == 3
 
   let downCmd = "process-compose down --config " & ComposeFile.quoteShell &
       " --unix-socket " & sock &
