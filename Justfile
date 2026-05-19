@@ -109,6 +109,22 @@ test-ssr:
 test-web:
     nim js -r tests/test_web.nim
 
+# --- IsoNim Design Review CLI (REV-M1) ---
+
+# Build the isonim-review CLI. Compiles tools/isonim_review/main.nim to
+# build/bin/isonim-review. Used by REV-M1's CLI integration tests and
+# by the capture / review loop (REV-M5+).
+isonim-review-build:
+    mkdir -p build/bin
+    nim c -d:release --path:src --hints:off --out:build/bin/isonim-review tools/isonim_review/main.nim
+    @echo "Built: build/bin/isonim-review"
+
+# Run REV-M1's design-review unit + integration tests.
+test-design-review: isonim-review-build
+    nim c -r tests/test_design_review_brief_format.nim
+    nim c -r tests/test_design_review_brief_index.nim
+    nim c -r tests/test_design_review_isonim_review_cli.nim
+
 # --- IsoNim Editor ---
 
 # Build the editor (Nim → JS)
