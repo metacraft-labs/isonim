@@ -127,15 +127,35 @@ test-design-review: isonim-review-build
 
 # --- IsoNim Editor ---
 
-# Build the editor (Nim → JS)
-editor-build:
+# REV-M2: regenerate the baked-in brief index before compiling the JS
+# bundle. The default brief path is the sibling
+# `isonim-examples/briefs/` if it exists; otherwise the bake produces
+# an empty static index. Override via $ISONIM_BRIEFS.
+editor-bake-briefs:
+    @echo "==> Baking brief index → src/isonim/editor/design_review/brief_index_static.nim"
+    nim r --path:src --path:. --path:../nim-everywhere/src --hints:off \
+        src/isonim/editor/design_review/brief_index_build.nim \
+        --briefs:"${ISONIM_BRIEFS:-../isonim-examples/briefs}" \
+        --out:src/isonim/editor/design_review/brief_index_static.nim
+
+# Build the editor (Nim → JS).
+# REV-M2: pre-runs `editor-bake-briefs` so the JS bundle contains a
+# fresh build-time snapshot of the project's brief index.
+editor-build: editor-bake-briefs
     mkdir -p build/editor
-    nim js --path:src --path:. --path:../nim-everywhere/src -o:build/editor/editor.js src/isonim/editor/main.nim
+    nim js --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src -o:build/editor/editor.js src/isonim/editor/main.nim
     cp src/isonim/editor/index.html build/editor/index.html
     cp node_modules/fabric/dist/index.min.js build/editor/fabric.min.js
     cp node_modules/paper/dist/paper-core.min.js build/editor/paper-core.min.js
     cp node_modules/svgo/dist/svgo.browser.js build/editor/svgo.browser.js
     @echo "Built: build/editor/ — open build/editor/index.html"
+
+# REV-M2: Run the brief-tab VM and source-scan tests.
+test-design-review-brief-tab:
+    nim c -r --path:src --path:. --path:../nim-everywhere/src --hints:off \
+        tests/test_design_review_brief_tab_vm.nim
+    nim c -r --path:src --path:. --path:../nim-everywhere/src --hints:off \
+        tests/test_design_review_brief_tab_no_setstyle.nim
 
 # Build and serve the editor
 editor-serve: editor-build

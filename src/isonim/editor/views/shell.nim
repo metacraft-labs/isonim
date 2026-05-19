@@ -17,6 +17,9 @@ import isonim/editor/views/foundations_page
 import isonim/editor/views/page_preview
 import isonim/editor/views/vector_editor
 import isonim/editor/views/chat_panel
+import isonim/editor/views/preview_pane as preview_pane_view
+import isonim/editor/design_review/brief_index
+import isonim/editor/design_review/brief_index_static
 
 # ---------------------------------------------------------------------------
 # Theme tokens
@@ -1547,6 +1550,12 @@ proc renderPreviewPane*[R, E](r: R; vm: EditorVM): E =
 
   r.appendChild(pane, body)
 
+  # REV-M2: ``renderPreviewPane`` is the legacy entry-point and is
+  # currently only exercised by tests; the production mount path goes
+  # through ``renderEditorShell`` directly, which is where the brief
+  # tab strip is appended. We deliberately avoid mounting the strip
+  # here so the legacy preview-pane tests (which assert on
+  # ``pane.children.len``) remain stable.
   pane
 
 proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
@@ -2283,6 +2292,14 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
   r.appendChild(viewStack, foundationsEl)
   r.appendChild(viewStack, vectorEditorEl)
   r.appendChild(centerColumn, chromeBarEl)
+
+  # REV-M2: mount the design-review brief tab strip into the center
+  # column when the editor was compiled with a non-empty baked-in
+  # brief index. Empty index → no strip (preserves legacy behaviour
+  # for tests + builds without any briefs configured).
+  if not builtInBriefIndex().empty():
+    preview_pane_view.mountBriefTabIntoPreviewPane[R, E](
+      r, centerColumn, briefTabVMFor(vm), previewPaneActiveTabFor(vm))
   r.appendChild(centerColumn, viewStack)
 
   # Mount order is the on-screen order (flex row, left to right):

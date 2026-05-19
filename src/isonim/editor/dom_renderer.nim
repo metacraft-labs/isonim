@@ -46,6 +46,20 @@ proc setStyle*(r: DomRenderer; node: DomElement; prop, value: string) =
   let v = value.cstring
   {.emit: [node, ".style.setProperty(", p, ",", v, ")"].}
 
+proc setInnerHtml*(r: DomRenderer; node: DomElement; html: string) =
+  ## Replace the element's inner DOM with the supplied HTML string.
+  ## The brief tab uses this for the rendered markdown body.
+  let h = html.cstring
+  {.emit: [node, ".innerHTML = ", h].}
+
+proc getAttribute*(r: DomRenderer; node: DomElement; name: string): string =
+  ## Read an attribute. Returns the empty string when absent so the
+  ## brief tab's copy-button locator behaves the same as the mock.
+  var s: cstring
+  let n = name.cstring
+  {.emit: [s, " = ", node, ".getAttribute(", n, ") || ''"].}
+  $s
+
 proc addEventListener*(r: DomRenderer; node: DomElement; event: string;
                         handler: proc()) =
   node.addEventListener(event.cstring, proc(e: Event) = handler())

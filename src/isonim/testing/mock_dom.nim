@@ -164,6 +164,28 @@ proc setTextContent*(r: MockRenderer; node: MockNode; text: string) =
 proc setStyle*(r: MockRenderer; node: MockNode; prop, value: string) =
   node.styles[prop] = value
 
+proc setInnerHtml*(r: MockRenderer; node: MockNode; html: string) =
+  ## Mock-side stand-in for ``element.innerHTML = ...``. The mock DOM
+  ## doesn't parse HTML; we drop the raw string into a single child
+  ## text node so ``textContent`` recovers the markup verbatim and
+  ## tests can assert on the bytes the production renderer would
+  ## inject. Detaches existing children first.
+  for c in node.children:
+    c.parent = nil
+  node.children.setLen(0)
+  inc nextMockNodeId
+  let textNode = MockNode(id: nextMockNodeId, kind: mnkText, text: html, parent: node,
+                          attributes: initTable[string, string](),
+                          styles: initTable[string, string](),
+                          eventListeners: initTable[string, seq[proc()]](),
+                          eventHandlers: initTable[string, seq[proc(ev: MockEvent)]]())
+  node.children.add(textNode)
+  node.attributes["data-inner-html"] = html
+
+proc getAttribute*(r: MockRenderer; node: MockNode; name: string): string =
+  ## Look up an attribute or return the empty string when absent.
+  if name in node.attributes: node.attributes[name] else: ""
+
 proc addEventListener*(r: MockRenderer; node: MockNode; event: string; handler: proc()) =
   if event notin node.eventListeners:
     node.eventListeners[event] = @[]

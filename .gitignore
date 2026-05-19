@@ -59,3 +59,5 @@ examples/streaming_stress/server
 examples/streaming_stress/streaming_handler
 tests/test_native_hcr_shim
 tests/_build/
+tests/test_design_review_brief_tab_vm
+tests/test_design_review_brief_tab_no_setstyle

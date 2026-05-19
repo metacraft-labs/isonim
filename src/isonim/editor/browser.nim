@@ -582,6 +582,37 @@ proc installEditorHistorySync(vm: EditorVM) =
   onCleanup proc() =
     removePopstateListener(onPopstate)
 
+proc exposeWindowEditorHandle*(vm: EditorVM) =
+  ## REV-M2: install a small ``window.__isonimEditor`` helper that the
+  ## design-review e2e tests use to drive story selection.  The handle
+  ## exposes exactly one method (``selectStoryByName(group, name)``)
+  ## that constructs a synthetic ``StoryRef`` and feeds it through
+  ## ``EditorVM.selectedStory``.  No other public surface is exposed;
+  ## production consumers must use the regular sidebar affordances.
+  let capturedVm = vm
+  proc selectByName(group, name: cstring) =
+    let story = StoryRef(
+      group: $group,
+      name: $name,
+      kind: skPage,
+      index: 0)
+    capturedVm.selectedStory.val = story
+  # Expose as a window-level handle. We install the helper inside an
+  # IIFE so the closure (``selectByName``) is captured by reference
+  # and so the wrapper returns ``true`` regardless of the closure's
+  # internal return value — the e2e test only checks for truthiness.
+  let cb = selectByName
+  {.emit: ["""
+    (function () {
+      const fn = """, cb, """;
+      window.__isonimEditor = window.__isonimEditor || {};
+      window.__isonimEditor.selectStoryByName = function (group, name) {
+        fn(group, name);
+        return true;
+      };
+    })();
+  """].}
+
 proc mountEditor*(workspace: EditorWorkspace;
                   root: Element = document.body;
                   useHashRoute = true;
@@ -608,4 +639,10 @@ proc mountEditor*(workspace: EditorWorkspace;
     {.emit: [shell, ".style.inset='0'"].}
     {.emit: [shell, ".style.overflow='hidden'"].}
     root.appendChild(shell)
+    # REV-M2: expose a tiny window-level handle so Playwright e2e
+    # tests can drive story selection without having to scrape the
+    # sidebar DOM (which omits stories that aren't part of the demo
+    # workspace).  The handle is intentionally minimal — production
+    # consumers should not rely on it.
+    exposeWindowEditorHandle(vm)
   mounted
