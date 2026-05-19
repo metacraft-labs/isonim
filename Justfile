@@ -164,6 +164,31 @@ isonim-review-capture brief="render.fixture" bridge="ws://127.0.0.1:8093": isoni
     export ISONIM_REVIEW_PGPORT="${ISONIM_REVIEW_PGPORT:-5533}"
     ./build/bin/isonim-review capture --brief "{{brief}}" --bridge "{{bridge}}"
 
+# REV-M6: run every REV-M6 run-review test (reviewer-output parser,
+# brief_at_revision, agent_dispatch with PG, and the e2e CLI tests).
+# Same `--path:` set the CLI build uses; PG tests use PgFixture.
+test-design-review-run-review: isonim-review-build
+    nim c -r --path:. --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off tests/test_design_review_reviewer_output.nim
+    nim c -r --path:. --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off tests/test_design_review_brief_at_revision.nim
+    nim c -r --path:. --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off tests/test_design_review_agent_dispatch.nim
+    nim c -r --path:. --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off tests/e2e_design_review_run_review.nim
+
+# REV-M6: convenience target — invoke `isonim-review run-review` against
+# the running dev cluster.  Defaults to the canned backend so a typo in
+# `claude-code` doesn't kick off a real model call.
+isonim-review-run-review run="" cannedPath="canned.md" agentBackend="canned" agentVersion="v1": isonim-review-build
+    #!/usr/bin/env bash
+    set -e
+    export ISONIM_REVIEW_PGPORT="${ISONIM_REVIEW_PGPORT:-5533}"
+    if [ -z "{{run}}" ]; then
+      echo "usage: just isonim-review-run-review run=<run_id> [cannedPath=...] [agentBackend=canned|claude-code] [agentVersion=...]"
+      exit 2
+    fi
+    ./build/bin/isonim-review run-review --run "{{run}}" \
+      --agent-backend "{{agentBackend}}" \
+      --canned-path "{{cannedPath}}" \
+      --agent-version "{{agentVersion}}"
+
 # REV-M4: invoke the CLI's ``init`` against the running dev cluster.
 # Idempotent — re-running this against an already-migrated DB prints
 # ``skip ...`` lines and exits 0.  ``ISONIM_REVIEW_PGPORT`` defaults

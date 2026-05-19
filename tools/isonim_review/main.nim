@@ -35,6 +35,7 @@ import ./cmd_init
 import ./cmd_db_health
 import ./cmd_serve
 import ./cmd_capture
+import ./cmd_run_review
 
 const Usage = """
 isonim-review — IsoNim design-review CLI
@@ -67,6 +68,22 @@ Usage:
       in the workspace is clean and pinned.  Stores PNGs under the
       configured store path and writes a row to design_review.captures
       per (preview, viewport).
+
+  isonim-review run-review --run <run_id>
+                           [--agent-backend canned|claude-code]
+                           [--canned-path <md>]
+                           [--agent-name <name>] [--agent-version <ver>]
+                           [--prompt-template <path>]
+                           [--workspace <path>] [--project <path>]
+                           [--config <path>]
+                           [--dry-run [--dry-run-out <path>]]
+      (REV-M6) Drive a review against a completed capture run.
+      Resolves the brief at the run's manifest pin via `git show`,
+      assembles the reviewer prompt, invokes the configured agent
+      backend (canned for CI, claude-code for production), and
+      persists the result via design_review.record_agent_report +
+      design_review.finish_run.  Idempotent on
+      (run_id, agent_name, agent_version).
 
   isonim-review --help
       Print this message.
@@ -202,6 +219,27 @@ proc dispatchCapture(rest: seq[string]): int =
   let project   = parseSubArgs(rest, "project")
   cmdCapture(cfg, briefId, viewport, bridgeUrl, workspace, project)
 
+proc dispatchRunReview(rest: seq[string]): int =
+  let configPath = parseSubArgs(rest, "config")
+  let cfg =
+    try: loadConfig(configPath)
+    except TomlParseError as e:
+      stderr.writeLine("isonim-review: " & e.msg)
+      quit(2)
+  let runId        = parseSubArgs(rest, "run")
+  let agentBackend = parseSubArgs(rest, "agent-backend")
+  let cannedPath   = parseSubArgs(rest, "canned-path")
+  let agentName    = parseSubArgs(rest, "agent-name")
+  let agentVersion = parseSubArgs(rest, "agent-version")
+  let promptTpl    = parseSubArgs(rest, "prompt-template")
+  let workspace    = parseSubArgs(rest, "workspace")
+  let project      = parseSubArgs(rest, "project")
+  let dryRunOut    = parseSubArgs(rest, "dry-run-out")
+  let dryRun       = hasFlag(rest, "dry-run") or dryRunOut.len > 0
+  cmdRunReview(cfg, runId, agentBackend, cannedPath, agentName,
+               agentVersion, promptTpl, workspace, project,
+               dryRunOut, dryRun)
+
 # --------------------------------------------------------------------------
 # Top-level dispatch
 # --------------------------------------------------------------------------
@@ -235,6 +273,8 @@ proc main(): int =
     return dispatchServe(rawArgs[1 .. ^1])
   of "capture":
     return dispatchCapture(rawArgs[1 .. ^1])
+  of "run-review":
+    return dispatchRunReview(rawArgs[1 .. ^1])
   else:
     stderr.write(fmt"isonim-review: unknown command '{rawArgs[0]}'" & "\n")
     stderr.write(Usage)

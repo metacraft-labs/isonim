@@ -209,14 +209,14 @@ proc decodePreviewId*(s: string): tuple[storyRef: StoryRef; backend: PreviewBack
 # and ``>`` (folded). Brief frontmatter never uses those.
 
 type
-  YamlNodeKind = enum
+  YamlNodeKind* = enum
     ynkScalar, ynkSequence, ynkMapping
-  YamlNode = ref object
-    case kind: YamlNodeKind
-    of ynkScalar: scalar: string
-    of ynkSequence: items: seq[YamlNode]
+  YamlNode* = ref object
+    case kind*: YamlNodeKind
+    of ynkScalar: scalar*: string
+    of ynkSequence: items*: seq[YamlNode]
     of ynkMapping:
-      pairs: seq[(string, YamlNode)]   ## preserve order
+      pairs*: seq[(string, YamlNode)]   ## preserve order
 
 proc newScalar(s: string): YamlNode =
   YamlNode(kind: ynkScalar, scalar: s)
@@ -225,13 +225,13 @@ proc newSequence(): YamlNode =
 proc newMapping(): YamlNode =
   YamlNode(kind: ynkMapping)
 
-proc getKey(m: YamlNode; key: string): YamlNode =
+proc getKey*(m: YamlNode; key: string): YamlNode =
   if m == nil or m.kind != ynkMapping: return nil
   for (k, v) in m.pairs:
     if k == key: return v
   return nil
 
-proc hasKey(m: YamlNode; key: string): bool =
+proc hasKey*(m: YamlNode; key: string): bool =
   m.getKey(key) != nil
 
 proc addPair(m: YamlNode; key: string; v: YamlNode) =
@@ -381,6 +381,34 @@ proc indentOf(line: string): int =
   while result < line.len and line[result] == ' ':
     inc result
 
+proc findKeyTerminator(body: string): int =
+  ## Locate the ``:`` that ends a block-mapping key.  A leading
+  ## double-quoted segment shields colons inside the key.  Returns the
+  ## index of the terminator ``:`` (the one followed by space or
+  ## end-of-string), or ``-1`` if not found.
+  var i = 0
+  if i < body.len and body[i] == '"':
+    inc i
+    while i < body.len and body[i] != '"':
+      if body[i] == '\\' and i + 1 < body.len:
+        inc i, 2
+      else:
+        inc i
+    if i < body.len: inc i      # consume closing "
+  # Now scan for ``:`` (followed by space or EOL) outside flow brackets.
+  var depth = 0
+  while i < body.len:
+    let ch = body[i]
+    if ch == '[' or ch == '{':
+      inc depth
+    elif ch == ']' or ch == '}':
+      if depth > 0: dec depth
+    elif depth == 0 and ch == ':':
+      if i + 1 == body.len or body[i + 1] in {' ', '\t'}:
+        return i
+    inc i
+  return -1
+
 proc isBlank(line: string): bool =
   for ch in line:
     if ch != ' ' and ch != '\t': return false
@@ -510,7 +538,7 @@ proc parseBlock(lines: seq[string]; startIdx: int; indent: int;
       let body = line[li .. ^1]
       if body.startsWith("- "):
         break
-      let colonIdx = body.find(':')
+      let colonIdx = findKeyTerminator(body)
       if colonIdx < 0:
         # Lone scalar in a mapping context — treat as ill-formed YAML
         # and stop here.
@@ -556,7 +584,7 @@ proc parseBlock(lines: seq[string]; startIdx: int; indent: int;
     outIdx = i
     return
 
-proc parseYaml(buf: string): YamlNode =
+proc parseYaml*(buf: string): YamlNode =
   var lines: seq[string] = @[]
   for ln in buf.splitLines:
     lines.add(ln)
@@ -767,7 +795,7 @@ proc decodeRelatedBriefs(node: YamlNode; path: string): seq[string] =
   for item in node.items:
     result.add(expectScalar(item, "relatedBriefs[]", path))
 
-proc splitFrontmatter(buf: string; path: string):
+proc splitFrontmatter*(buf: string; path: string):
     tuple[front: string; body: string] =
   ## Split a brief file into its YAML frontmatter and markdown body.
   ## Returns ``("", buf)`` if no frontmatter delimiter is present.
