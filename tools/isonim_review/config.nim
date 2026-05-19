@@ -57,11 +57,20 @@ type
   WorkspaceConfig* = object
     root*: string
 
+  BackendConfig* = object
+    binaryDir*: string
+      ## Optional directory holding ``isonim-examples-<backend>``
+      ## launcher binaries.  Empty means "fall back to env +
+      ## ``~/.isonim/backends/`` + ``<workspace>/isonim-examples/build/
+      ## backends/``" — see
+      ## ``isonim/editor/design_review/backend_launcher.resolveBackendBinary``.
+
   ReviewConfig* = object
     db*: DbConfig
     server*: ServerConfig
     store*: StoreConfig
     workspace*: WorkspaceConfig
+    backend*: BackendConfig
     ## Path the loader actually read TOML from (empty if defaults only).
     configPath*: string
 
@@ -113,6 +122,9 @@ proc defaults*(): ReviewConfig =
     ),
     workspace: WorkspaceConfig(
       root: expandTilde(DefaultWorkspaceRoot),
+    ),
+    backend: BackendConfig(
+      binaryDir: "",
     ),
     configPath: "",
   )
@@ -266,6 +278,12 @@ proc applyToml(cfg: var ReviewConfig; content: string) =
         if v.kind == tvkString: cfg.workspace.root = expandTilde(v.s)
       else:
         stderr.writeLine("isonim-review config: unknown key [workspace]." & key)
+    of "backend":
+      case key
+      of "binary_dir":
+        if v.kind == tvkString: cfg.backend.binaryDir = expandTilde(v.s)
+      else:
+        stderr.writeLine("isonim-review config: unknown key [backend]." & key)
     else:
       stderr.writeLine("isonim-review config: unknown section [" &
         section & "]")

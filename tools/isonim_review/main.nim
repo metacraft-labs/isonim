@@ -64,11 +64,21 @@ Usage:
   isonim-review capture --brief <briefId> [--viewport <label>]
                         [--bridge <url>] [--workspace <path>]
                         [--project <path>] [--config <path>]
+                        [--backend-binary-dir <path>]
+                        [--backends <web,tui,...>]
       (REV-M5) Drive a full capture sweep against the
       isonim-render-serve bridge.  Refuses to run unless every repo
       in the workspace is clean and pinned.  Stores PNGs under the
       configured store path and writes a row to design_review.captures
       per (preview, viewport).
+      When --bridge is supplied the pipeline talks to that single
+      WebSocket URL for every backend (the original REV-M5 contract,
+      still used by the fake-bridge regression suite).  When --bridge
+      is omitted the pipeline spawns a per-backend launcher binary
+      (`isonim-examples-<backend>`) for each (preview, backend) tuple;
+      --backend-binary-dir (or [backend].binary_dir in TOML, or
+      $ISONIM_REVIEW_BACKEND_BIN_DIR) selects the search directory.
+      --backends limits the sweep to the listed comma-separated set.
 
   isonim-review run-review --run <run_id>
                            [--agent-backend canned|claude-code]
@@ -226,6 +236,19 @@ proc dispatchServe(rest: seq[string]): int =
   let (cfg, migDir) = resolveConfigAndDir(rest)
   cmdServe(cfg, migDir)
 
+proc hasNamedFlag(args: seq[string]; expectedFlag: string): bool =
+  ## True iff ``--<expectedFlag>`` or ``--<expectedFlag>=...`` appears
+  ## in ``args``.  Distinct from ``hasFlag`` above (which only matches
+  ## the bare form): the capture dispatcher needs to know whether the
+  ## user gave us a ``--bridge`` *at all*, so an explicit empty value
+  ## still counts as "supplied".
+  for a in args:
+    if a == "--" & expectedFlag:
+      return true
+    if a.startsWith("--" & expectedFlag & "="):
+      return true
+  false
+
 proc dispatchCapture(rest: seq[string]): int =
   let configPath = parseSubArgs(rest, "config")
   let cfg =
@@ -233,12 +256,23 @@ proc dispatchCapture(rest: seq[string]): int =
     except TomlParseError as e:
       stderr.writeLine("isonim-review: " & e.msg)
       quit(2)
-  let briefId   = parseSubArgs(rest, "brief")
-  let viewport  = parseSubArgs(rest, "viewport")
-  let bridgeUrl = parseSubArgs(rest, "bridge")
-  let workspace = parseSubArgs(rest, "workspace")
-  let project   = parseSubArgs(rest, "project")
-  cmdCapture(cfg, briefId, viewport, bridgeUrl, workspace, project)
+  let briefId         = parseSubArgs(rest, "brief")
+  let viewport        = parseSubArgs(rest, "viewport")
+  let bridgeUrl       = parseSubArgs(rest, "bridge")
+  let bridgeProvided  = hasNamedFlag(rest, "bridge")
+  let workspace       = parseSubArgs(rest, "workspace")
+  let project         = parseSubArgs(rest, "project")
+  let backendBinDir   = parseSubArgs(rest, "backend-binary-dir")
+  let backends        = parseSubArgs(rest, "backends")
+  # ``cmd_capture`` treats an empty ``bridgeUrl`` as "use the launcher
+  # path".  Preserve the original "--bridge with empty value" sentinel
+  # by tagging it as the default fixed bridge so the legacy contract
+  # still works (REV-M5 tests pass --bridge explicitly).
+  let effectiveBridge =
+    if bridgeProvided and bridgeUrl.len == 0: DefaultBridgeUrl
+    else: bridgeUrl
+  cmdCapture(cfg, briefId, viewport, effectiveBridge, workspace, project,
+             backendBinDir, backends)
 
 proc dispatchLayouts(rest: seq[string]): int =
   if rest.len == 0:

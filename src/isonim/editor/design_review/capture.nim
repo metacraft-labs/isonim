@@ -33,6 +33,7 @@ import ./clean_tree
 import ./manifest_hash
 import ./capture_store
 import ./bridge_client
+import ./backend_launcher
 import ./db
 import isonim/editor/types
 
@@ -58,6 +59,13 @@ type
 
   CaptureOptions* = object
     bridgeUrl*: string
+      ## *Legacy / fake-bridge mode.*  When non-empty, the orchestrator
+      ## skips ``backend_launcher`` entirely and points
+      ## ``captureViaBridge`` at this URL for every (preview, backend)
+      ## tuple.  The REV-M5 fake-bridge unit tests and the existing
+      ## ``test-design-review-capture`` target rely on this path.  When
+      ## empty, the orchestrator spawns a per-(preview, backend) launcher
+      ## via the lookup rules in ``backend_launcher.resolveBackendBinary``.
     briefIndex*: proc(briefId: string): Option[Brief] {.gcsafe.}
       ## Brief resolver — the CLI normally injects a closure backed
       ## by ``buildBriefIndex`` against the project's ``briefs/``
@@ -66,6 +74,16 @@ type
     viewportFilter*: string
       ## When non-empty: capture only viewports whose ``label``
       ## matches.  Otherwise every viewport in the brief is captured.
+    backendBinaryDir*: string
+      ## Optional explicit directory for per-backend launcher binaries
+      ## (``isonim-examples-<backend>``).  Honoured when ``bridgeUrl``
+      ## is empty.  Falls back to ``$ISONIM_REVIEW_BACKEND_BIN_DIR``,
+      ## ``~/.isonim/backends/``, and ``<workspaceRoot>/isonim-examples/
+      ## build/backends/`` in that order — see
+      ## ``backend_launcher.resolveBackendBinary``.
+    backendFilter*: seq[PreviewBackend]
+      ## When non-empty: capture only previews whose backend is in
+      ## this list.  Otherwise every backend in the brief is captured.
 
 # ---------------------------------------------------------------------------
 # Reporter helper
@@ -122,6 +140,24 @@ proc finishCaptures*(db: ReviewDb; runId: string) =
     fmt"SELECT design_review.finish_captures('{escRun}'::uuid)")
 
 # ---------------------------------------------------------------------------
+# Launcher routing
+# ---------------------------------------------------------------------------
+
+proc componentForStoryRef*(storyRef: StoryRef): string =
+  ## Map a brief's ``storyRef.group`` onto the launcher's ``--demo``
+  ## argument.  The isonim-examples launchers accept ``task`` or
+  ## ``settings`` (per ``editor/backends/common.nim``); the brief
+  ## storyRef.group typically reads ``"Task App"`` or ``"Settings App"``.
+  ## Unknown groups default to ``"task"`` — that's the launcher's own
+  ## default and the catch-all that keeps a smoke test working when a
+  ## brief invents a new story group.
+  let g = storyRef.group.toLowerAscii()
+  if g.contains("settings"):
+    "settings"
+  else:
+    "task"
+
+# ---------------------------------------------------------------------------
 # Top-level orchestration
 # ---------------------------------------------------------------------------
 
@@ -154,15 +190,24 @@ proc runCapture*(briefId: string; workspaceRoot, bridgeUrl, storePath: string;
     if opts.viewportFilter.len == 0 or vp.label == opts.viewportFilter:
       viewports.add vp
 
+  proc backendAllowed(b: PreviewBackend): bool =
+    if opts.backendFilter.len == 0:
+      return true
+    for f in opts.backendFilter:
+      if f == b: return true
+    false
+
   var sweep: seq[tuple[storyRef: StoryRef; backend: PreviewBackend;
                        viewport: BriefViewport]]
   for cov in brief.coversPreviews:
     for backend in cov.backends:
+      if not backendAllowed(backend): continue
       for vp in viewports:
         sweep.add (storyRef: cov.storyRef, backend: backend, viewport: vp)
 
   var done = 0
   let total = sweep.len
+  let useLauncher = bridgeUrl.len == 0
 
   for item in sweep:
     let previewId = canonicalPreviewId(item.storyRef, item.backend)
@@ -170,24 +215,57 @@ proc runCapture*(briefId: string; workspaceRoot, bridgeUrl, storePath: string;
       kind: cekCapturingPreview, runId: runId,
       previewId: previewId,
       capturesDone: done, capturesTotal: total))
-    let res = captureViaBridge(
-      bridgeUrl = bridgeUrl,
-      storyRef = item.storyRef,
-      backend = item.backend,
-      viewportWidth = item.viewport.width,
-      viewportHeight = item.viewport.height,
-      timeoutMs = 30_000)
-    let stored = store.put(res.pngBytes)
-    discard recordCapture(db, runId, previewId,
-                          previewBackendToString(item.backend),
-                          item.viewport.label,
-                          stored.sha256, stored.path,
-                          res.width, res.height)
-    inc done
-    fire(reporter, CaptureProgressEvent(
-      kind: cekCaptureRecorded, runId: runId,
-      previewId: previewId,
-      capturesDone: done, capturesTotal: total))
+
+    var effectiveUrl = bridgeUrl
+    var launcher: BackendLauncher = nil
+    if useLauncher:
+      let binary = resolveBackendBinary(
+        backend = item.backend,
+        overrideDir = opts.backendBinaryDir,
+        workspaceRoot = workspaceRoot)
+      if binary.len == 0:
+        # Skip the capture: the reviewer agent will see fewer rows
+        # for this backend, which is the spec'd fallback when a
+        # launcher is missing on the host (e.g. ios on linux).  The
+        # CLI exits non-zero only when *zero* captures succeeded,
+        # so a missing-launcher skip is recoverable.
+        inc done
+        fire(reporter, CaptureProgressEvent(
+          kind: cekCaptureRecorded, runId: runId,
+          previewId: previewId,
+          capturesDone: done, capturesTotal: total))
+        continue
+      let spec = LauncherSpec(
+        backend: item.backend,
+        binaryPath: binary,
+        component: componentForStoryRef(item.storyRef),
+        width: item.viewport.width,
+        height: item.viewport.height)
+      launcher = launchBackend(spec)
+      effectiveUrl = launcher.bridgeUrl
+
+    try:
+      let res = captureViaBridge(
+        bridgeUrl = effectiveUrl,
+        storyRef = item.storyRef,
+        backend = item.backend,
+        viewportWidth = item.viewport.width,
+        viewportHeight = item.viewport.height,
+        timeoutMs = 30_000)
+      let stored = store.put(res.pngBytes)
+      discard recordCapture(db, runId, previewId,
+                            previewBackendToString(item.backend),
+                            item.viewport.label,
+                            stored.sha256, stored.path,
+                            res.width, res.height)
+      inc done
+      fire(reporter, CaptureProgressEvent(
+        kind: cekCaptureRecorded, runId: runId,
+        previewId: previewId,
+        capturesDone: done, capturesTotal: total))
+    finally:
+      if launcher != nil:
+        launcher.shutdown()
 
   fire(reporter, CaptureProgressEvent(
     kind: cekFinishingRun, runId: runId,

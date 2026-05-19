@@ -129,3 +129,6 @@ tests/test_no_dangling_references_to_old_brief_path
 tests/e2e_full_pipeline_round_trip_two_runs_visible_in_gallery
 tests/e2e_full_pipeline_run_through_task_app_brief
 tests/e2e_pipeline_refuses_dirty_workspace
+# REV-M5 follow-up real-backend launcher test binaries
+tests/test_design_review_backend_launcher
+tests/e2e_design_review_capture_web_real_bridge

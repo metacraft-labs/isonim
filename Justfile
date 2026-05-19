@@ -155,6 +155,19 @@ test-design-review-capture: isonim-review-build
     nim c -r --path:. --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off tests/test_design_review_record_capture_idempotent.nim
     nim c -r --path:. --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off tests/e2e_design_review_capture_fullsweep.nim
 
+# REV-M5 (follow-up): exercise the per-backend launcher path against
+# the real `isonim-examples-web` binary.  Runs the unit tests for
+# `backend_launcher` (port allocation, spawn, shutdown idempotency,
+# binary lookup) plus the end-to-end test that drives `isonim-review
+# capture --backends web` against a real PgFixture + real launcher.
+#
+# Requires the sibling repo's web launcher binary to exist at
+# `../isonim-examples/build/backends/isonim-examples-web`.  Rebuild
+# via `direnv exec ~/metacraft/isonim-examples just build-backends`.
+test-design-review-real-backend: isonim-review-build
+    nim c -r --path:. --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off tests/test_design_review_backend_launcher.nim
+    nim c -r --path:. --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off tests/e2e_design_review_capture_web_real_bridge.nim
+
 # REV-M5: convenience target — drive a capture against the running
 # dev cluster + a user-spawned `isonim-render-serve` bridge.  The
 # default bridge URL matches the milestone document.
