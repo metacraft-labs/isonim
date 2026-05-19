@@ -67,6 +67,11 @@ proc kindToJson(k: BriefKind): string =
   of bkAccessibility: "accessibility"
   of bkCopy:          "copy"
   of bkChrome:        "chrome"
+  of bkComponent:     "component"
+  of bkFoundation:    "foundation"
+  of bkPattern:       "pattern"
+  of bkVectorSymbol:  "vectorsymbol"
+  of bkGuideline:     "guideline"
 
 proc briefToJson(b: Brief): JsonNode =
   result = newJObject()
@@ -165,6 +170,11 @@ proc briefKindFromName(s: string): BriefKind =
   of "accessibility": bkAccessibility
   of "copy": bkCopy
   of "chrome": bkChrome
+  of "component": bkComponent
+  of "foundation": bkFoundation
+  of "pattern": bkPattern
+  of "vectorsymbol": bkVectorSymbol
+  of "guideline": bkGuideline
   else: bkRender
 
 proc storyRefFromJson(node: JsonNode): StoryRef =

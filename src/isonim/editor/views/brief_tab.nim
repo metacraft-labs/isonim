@@ -58,6 +58,11 @@ proc kindLabel*(k: BriefKind): string =
   of bkAccessibility: "accessibility"
   of bkCopy:          "copy"
   of bkChrome:        "chrome"
+  of bkComponent:     "component"
+  of bkFoundation:    "foundation"
+  of bkPattern:       "pattern"
+  of bkVectorSymbol:  "vectorsymbol"
+  of bkGuideline:     "guideline"
 
 proc availableBriefsFor*(index: BriefIndex; story: Option[StoryRef];
                         backend: PreviewBackend): seq[Brief] =

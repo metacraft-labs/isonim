@@ -42,6 +42,11 @@ proc briefKindFromName(s: string): BriefKind =
   of "accessibility": bkAccessibility
   of "copy": bkCopy
   of "chrome": bkChrome
+  of "component": bkComponent
+  of "foundation": bkFoundation
+  of "pattern": bkPattern
+  of "vectorsymbol": bkVectorSymbol
+  of "guideline": bkGuideline
   else: bkRender
 
 proc storyRefFromJson(node: JsonNode): StoryRef =

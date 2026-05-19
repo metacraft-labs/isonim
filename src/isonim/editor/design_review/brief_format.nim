@@ -31,7 +31,14 @@ export types.StoryRef, types.StoryKind, types.PreviewBackend
 
 type
   BriefKind* = enum
-    bkRender, bkInteraction, bkAccessibility, bkCopy, bkChrome
+    bkRender, bkInteraction, bkAccessibility, bkCopy, bkChrome,
+    bkComponent, bkFoundation, bkPattern, bkVectorSymbol, bkGuideline
+      ## ``bkComponent`` … ``bkGuideline`` were added post-REV-M10 so the
+      ## design-review database can carry starter briefs for every story
+      ## kind in ``stories.nim``. The directory-vs-kind validation
+      ## (``parseBrief``) treats each new kind the same way it treats the
+      ## original five — the brief must live in a directory named after
+      ## the kind (``briefs/component/foo.md`` etc.).
 
   BriefViewport* = object
     width*, height*: int
@@ -616,6 +623,11 @@ proc parseBriefKind(s: string; path: string): BriefKind =
   of "accessibility": bkAccessibility
   of "copy":          bkCopy
   of "chrome":        bkChrome
+  of "component":     bkComponent
+  of "foundation":    bkFoundation
+  of "pattern":       bkPattern
+  of "vectorsymbol", "vector_symbol", "vector-symbol": bkVectorSymbol
+  of "guideline":     bkGuideline
   else:
     var e = newException(BriefParseError,
                          fmt"unknown brief kind '{s}' in {path}")
@@ -889,7 +901,9 @@ proc parseBrief*(filePath: string): Brief =
   if dirKind.len > 0 and dirKind != $kindStr.toLowerAscii().strip():
     # The directory may itself be one of the legal kinds; otherwise
     # the brief is allowed to live anywhere (e.g. flat fixtures dir).
-    const Known = ["render", "interaction", "accessibility", "copy", "chrome"]
+    const Known = ["render", "interaction", "accessibility", "copy", "chrome",
+                   "component", "foundation", "pattern", "vectorsymbol",
+                   "guideline"]
     if dirKind in Known:
       var e = newException(BriefKindMismatchError,
                            fmt"kind '{kindStr}' does not match directory '{dirKind}' in {extractFilename(filePath)}")
@@ -953,7 +967,12 @@ proc `$`*(b: Brief): string =
     of bkInteraction: "interaction"
     of bkAccessibility: "accessibility"
     of bkCopy: "copy"
-    of bkChrome: "chrome")
+    of bkChrome: "chrome"
+    of bkComponent: "component"
+    of bkFoundation: "foundation"
+    of bkPattern: "pattern"
+    of bkVectorSymbol: "vectorsymbol"
+    of bkGuideline: "guideline")
   result.add("\n")
   result.add("title: " & b.title & "\n")
   result.add("coversPreviews:\n")
