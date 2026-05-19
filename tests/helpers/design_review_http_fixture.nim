@@ -157,6 +157,22 @@ proc httpGet*(f: ServeFixture; path: string):
    contentType: ct,
    cacheControl: cc)
 
+proc httpPost*(f: ServeFixture; path, body: string):
+    tuple[code: int; body: string; contentType: string] =
+  ## Minimal POST wrapper — REV-M8 layout endpoints take JSON bodies.
+  let client = newHttpClient(timeout = 5000)
+  defer: client.close()
+  let headers = newHttpHeaders([("Content-Type", "application/json")])
+  let resp = client.request(f.baseUrl & path, httpMethod = HttpPost,
+                            body = body, headers = headers)
+  let respBody = resp.body
+  let ct = if resp.headers.hasKey("Content-Type"):
+             $resp.headers["Content-Type"]
+           else: ""
+  (code: parseInt(resp.status.split(' ')[0]),
+   body: respBody,
+   contentType: ct)
+
 # --- DB seed helpers -------------------------------------------------------
 
 proc seedRunInDb*(connStr, briefId: string; manifestHash = "h"): string =

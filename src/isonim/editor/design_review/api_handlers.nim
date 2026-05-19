@@ -78,6 +78,8 @@ proc respondJson*(req: Request; code: HttpCode; body: JsonNode) {.async, gcsafe.
     ("Content-Type", "application/json"),
     ("Cache-Control", "no-store"),
     ("Access-Control-Allow-Origin", "*"),
+    ("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
+    ("Access-Control-Allow-Headers", "Content-Type"),
   ])
   await req.respond(code, $body, headers)
 
@@ -94,8 +96,28 @@ proc respondPng*(req: Request; pngBody: string) {.async, gcsafe.} =
     ("Cache-Control", "immutable, max-age=31536000"),
     ("Content-Length", $pngBody.len),
     ("Access-Control-Allow-Origin", "*"),
+    ("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
+    ("Access-Control-Allow-Headers", "Content-Type"),
   ])
   await req.respond(Http200, pngBody, headers)
+
+proc respondCorsPreflight*(req: Request) {.async, gcsafe.} =
+  ## CORS preflight response — Chromium fires an ``OPTIONS`` before any
+  ## ``POST`` with ``Content-Type: application/json`` because that
+  ## header isn't on the CORS-safelisted list.  The save-layout +
+  ## promote-layout routes are both POSTs; without this the editor's
+  ## fetch calls fail with "TypeError: Failed to fetch" before the
+  ## actual request lands.  Empty body, 204 No Content, full allow
+  ## headers so Chromium accepts the follow-up request.
+  let headers = newHttpHeaders([
+    ("Access-Control-Allow-Origin", "*"),
+    ("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
+    ("Access-Control-Allow-Headers", "Content-Type"),
+    ("Access-Control-Max-Age", "600"),
+    ("Cache-Control", "no-store"),
+    ("Content-Length", "0"),
+  ])
+  await req.respond(Http204, "", headers)
 
 # ---------------------------------------------------------------------------
 # SQL helpers.  Numeric inputs are parsed in Nim before interpolation

@@ -86,7 +86,8 @@ proc runEndToEnd() =
     try:
       let v = conn.getValue(sql"""
         SELECT count(*) FROM public.schema_migrations""")
-      return parseInt(v) >= 3
+      # REV-M8 added migration 004 (``fetch_layout``).
+      return parseInt(v) >= 4
     except DbError:
       return false
   let migrateDeadline = epochTime() + 60.0
@@ -120,6 +121,7 @@ proc runEndToEnd() =
   check ("apply 001" in outText) or ("skip 001" in outText)
   check ("apply 002" in outText) or ("skip 002" in outText)
   check ("apply 003" in outText) or ("skip 003" in outText)
+  check ("apply 004" in outText) or ("skip 004" in outText)
 
   # Post-condition: schema_migrations contains every version we ship.
   let conn = open("", "", "",
@@ -128,7 +130,8 @@ proc runEndToEnd() =
   let countStr = conn.getValue(sql"""
     SELECT count(*) FROM public.schema_migrations""")
   conn.close()
-  check parseInt(countStr) == 3
+  # REV-M8 added migration 004 (``fetch_layout``).
+  check parseInt(countStr) == 4
 
   let downCmd = "process-compose down --config " & ComposeFile.quoteShell &
       " --unix-socket " & sock &

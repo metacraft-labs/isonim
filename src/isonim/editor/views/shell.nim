@@ -18,6 +18,7 @@ import isonim/editor/views/page_preview
 import isonim/editor/views/vector_editor
 import isonim/editor/views/chat_panel
 import isonim/editor/views/preview_pane as preview_pane_view
+import isonim/editor/views/design_review_mount as design_review_mount_view
 import isonim/editor/design_review/brief_index
 import isonim/editor/design_review/brief_index_static
 
@@ -2211,6 +2212,13 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
   tiltHorizontal(modeCol.root, "Preview mode")
   r.appendChild(toolbar, modeCol.root)
 
+  # REV-M8 — mount the design-review 🕘 history button at the right
+  # end of the chrome bar.  The button stays invisible (its
+  # ``data-history-visible`` attr stays "false") until the editor's
+  # ``briefHasHistory`` poll returns true, so a fresh project or an
+  # offline editor doesn't sprout a useless control.
+  design_review_mount_view.mountHistoryButtonForEditor[R, E](r, toolbar, vm)
+
   toolbar
 
 proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
@@ -2301,6 +2309,13 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
     preview_pane_view.mountBriefTabIntoPreviewPane[R, E](
       r, centerColumn, briefTabVMFor(vm), previewPaneActiveTabFor(vm))
   r.appendChild(centerColumn, viewStack)
+
+  # REV-M8 — mount the gallery overlay host below the view stack so the
+  # 🕘 button can flip it open without disturbing the chrome bar or the
+  # preview surface above it.  The host is data-hidden until both
+  # ``briefHasHistory`` and ``galleryHostState == ghsOpen`` are true.
+  discard design_review_mount_view.mountGalleryHostForEditor[R, E](
+    r, centerColumn, vm)
 
   # Mount order is the on-screen order (flex row, left to right):
   #   [sidebar | center column (chrome bar + view stack) | inspector chat]

@@ -36,6 +36,7 @@ import ./cmd_db_health
 import ./cmd_serve
 import ./cmd_capture
 import ./cmd_run_review
+import ./cmd_layouts
 
 const Usage = """
 isonim-review — IsoNim design-review CLI
@@ -84,6 +85,26 @@ Usage:
       persists the result via design_review.record_agent_report +
       design_review.finish_run.  Idempotent on
       (run_id, agent_name, agent_version).
+
+  isonim-review layouts ls --brief <id> [--user <id>] [--json]
+                              [--config <path>]
+      (REV-M8) List gallery layouts for the brief.  Workspace-scope
+      rows are always included; user-scope rows are included when
+      --user <id> matches their owner.
+
+  isonim-review layouts save --brief <id> --name <name>
+                              --layout <path-to-json>
+                              [--scope user|workspace] [--user <id>]
+                              [--layout-id <uuid>] [--expected-version <n>]
+                              [--config <path>]
+      (REV-M8) Insert or update a layout row.  --layout points at
+      a file whose content becomes the layout JSONB.  Returns the
+      new row's JSON on stdout.
+
+  isonim-review layouts promote --layout-id <uuid> --actor <name>
+                                 [--config <path>]
+      (REV-M8) Promote a user-scope layout into a new workspace-
+      scope row.  Prints the new layout id on stdout.
 
   isonim-review --help
       Print this message.
@@ -219,6 +240,49 @@ proc dispatchCapture(rest: seq[string]): int =
   let project   = parseSubArgs(rest, "project")
   cmdCapture(cfg, briefId, viewport, bridgeUrl, workspace, project)
 
+proc dispatchLayouts(rest: seq[string]): int =
+  if rest.len == 0:
+    stderr.write("isonim-review layouts: missing sub-subcommand (ls / save / promote)\n")
+    return 2
+  let sub = rest[0]
+  let tail = if rest.len > 1: rest[1 .. ^1] else: @[]
+  let configPath = parseSubArgs(tail, "config")
+  let cfg =
+    try: loadConfig(configPath)
+    except TomlParseError as e:
+      stderr.writeLine("isonim-review: " & e.msg)
+      quit(2)
+  case sub
+  of "ls":
+    let briefId = parseSubArgs(tail, "brief")
+    let userId  = parseSubArgs(tail, "user")
+    let asJson  = hasFlag(tail, "json")
+    return cmdLayoutsLs(cfg, briefId, userId, asJson)
+  of "save":
+    let briefId = parseSubArgs(tail, "brief")
+    let name    = parseSubArgs(tail, "name")
+    let layoutPath = parseSubArgs(tail, "layout")
+    let scope   = parseSubArgs(tail, "scope")
+    let userId  = parseSubArgs(tail, "user")
+    let layoutId = parseSubArgs(tail, "layout-id")
+    let expV    = parseSubArgs(tail, "expected-version")
+    let (expVal, hasExp) =
+      if expV.len == 0: (0, false)
+      else:
+        try: (parseInt(expV), true)
+        except ValueError:
+          stderr.writeLine("isonim-review layouts save: --expected-version must be an integer")
+          quit(2)
+    return cmdLayoutsSave(cfg, briefId, name, layoutPath, scope, userId,
+                          layoutId, expVal, hasExp)
+  of "promote":
+    let layoutId = parseSubArgs(tail, "layout-id")
+    let actor    = parseSubArgs(tail, "actor")
+    return cmdLayoutsPromote(cfg, layoutId, actor)
+  else:
+    stderr.write("isonim-review layouts: unknown sub-subcommand: " & sub & "\n")
+    return 2
+
 proc dispatchRunReview(rest: seq[string]): int =
   let configPath = parseSubArgs(rest, "config")
   let cfg =
@@ -275,6 +339,8 @@ proc main(): int =
     return dispatchCapture(rawArgs[1 .. ^1])
   of "run-review":
     return dispatchRunReview(rawArgs[1 .. ^1])
+  of "layouts":
+    return dispatchLayouts(rawArgs[1 .. ^1])
   else:
     stderr.write(fmt"isonim-review: unknown command '{rawArgs[0]}'" & "\n")
     stderr.write(Usage)

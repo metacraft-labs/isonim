@@ -146,3 +146,47 @@ suite "REV-M7 gallery VM":
         "data-design-review-gallery-overlay") == "true"
       check root.attributes.getOrDefault("data-gallery-mode") == "grid"
       dispose()
+
+  test "test_gallery_view_renders_conflict_dialog_when_vm_signals":
+    ## REV-M8 — the first review caught that the conflict dialog was
+    ## only rendered in the e2e harness, not in the production
+    ## ``gallery_overlay.nim``.  This test seals the gap: after
+    ## ``markConflict`` writes to ``vm.conflict``, the mounted gallery
+    ## must contain a ``[data-design-review-conflict-dialog="true"]``
+    ## descendant with ``data-conflict-visible="true"``.  Reload and
+    ## dismiss handlers must also be wired so the user can clear the
+    ## conflict from the production UI (not just the harness).
+    createRoot do (dispose: proc()):
+      let vm = createGalleryVM("render.x")
+      vm.tiles.val = @[mkTile("capA", "runA", "p", "complete")]
+      let r = MockRenderer()
+      let parent = createElement(r, "div")
+      mountGalleryOverlay[MockRenderer, MockNode](r, parent, vm)
+      proc findByAttr(node: MockNode; key, value: string): MockNode =
+        if node.attributes.getOrDefault(key) == value:
+          return node
+        for child in node.children:
+          let hit = findByAttr(child, key, value)
+          if hit != nil: return hit
+        nil
+      let dialog = findByAttr(parent.children[0],
+                              "data-design-review-conflict-dialog", "true")
+      check dialog != nil
+      # Initially hidden — VM has no conflict.
+      check dialog.attributes.getOrDefault("data-conflict-visible") == "false"
+      # Drive the conflict state and re-check.
+      vm.markConflict("layout-abc", "{\"version\":1,\"entries\":[]}")
+      check dialog.attributes.getOrDefault("data-conflict-visible") == "true"
+      # Dismiss flips it back.
+      vm.dismissConflict()
+      check dialog.attributes.getOrDefault("data-conflict-visible") == "false"
+      # The dialog houses Reload + Dismiss affordances (the e2e
+      # confirmed the harness version mentions "reload"; the
+      # production view must too).
+      let reload = findByAttr(parent.children[0],
+                              "data-design-review-conflict-reload", "true")
+      check reload != nil
+      let dismiss = findByAttr(parent.children[0],
+                               "data-design-review-conflict-dismiss", "true")
+      check dismiss != nil
+      dispose()

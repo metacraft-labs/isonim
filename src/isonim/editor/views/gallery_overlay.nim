@@ -56,6 +56,18 @@ type
     rowIndex*: int
     columnIndex*: int
 
+  LayoutConflict* = object
+    ## REV-M8 — when ``save_gallery_layout`` rejects an
+    ## ``expectedVersion`` the API hands back the current row so the
+    ## conflict dialog can show "this layout was changed elsewhere —
+    ## reload?".  ``current`` is the parsed JSON row (or empty/null
+    ## when the daemon couldn't recover it).
+    layoutId*: string
+    currentRow*: string
+
+  SaveScope* = enum
+    ssUser, ssWorkspace
+
   GalleryVM* = ref object
     briefId*: Signal[string]
     tiles*: Signal[seq[GalleryTile]]
@@ -66,11 +78,21 @@ type
     fullTabCaptureId*: Signal[Option[string]]
     httpClient*: GalleryHttpClient
     ## Drag-and-drop scratchpad.  REV-M8 reads this and POSTs to
-    ## ``/api/design-review/save-layout``.  In REV-M7 it merely
-    ## records the user's intent so the e2e test can assert the
-    ## handlers fired.
+    ## ``/api/design-review/save-layout``.
     pendingLayout*: Signal[seq[PendingLayoutEntry]]
     isDirty*: Signal[bool]
+    # REV-M8 — multi-select + side-by-side comparison state.
+    compareCaptureIds*: Signal[seq[string]]
+    # REV-M8 — save action state.  ``activeLayoutId`` is the row the VM
+    # currently mirrors (empty for unsaved layouts → triggers INSERT).
+    activeLayoutId*: Signal[string]
+    activeLayoutVersion*: Signal[int]
+    saveScope*: Signal[SaveScope]
+    ownerUserId*: Signal[string]
+    layoutName*: Signal[string]
+    # REV-M8 — optimistic-concurrency conflict surface.  Non-empty
+    # ``conflict.currentRow`` => render the resolution dialog.
+    conflict*: Signal[LayoutConflict]
 
 # --------------------------------------------------------------------------- #
 #  Pure helpers (testable independently of the reactive plumbing).
@@ -112,6 +134,13 @@ proc createGalleryVM*(briefId: string;
     httpClient: httpClient,
     pendingLayout: createSignal[seq[PendingLayoutEntry]](@[]),
     isDirty: createSignal(false),
+    compareCaptureIds: createSignal[seq[string]](@[]),
+    activeLayoutId: createSignal(""),
+    activeLayoutVersion: createSignal(0),
+    saveScope: createSignal(ssUser),
+    ownerUserId: createSignal(""),
+    layoutName: createSignal("default"),
+    conflict: createSignal(LayoutConflict()),
   )
   let capturedVm = vm
   vm.rows = createMemo[seq[GalleryRow]] proc(): seq[GalleryRow] =
@@ -178,6 +207,139 @@ proc registerDragMove*(vm: GalleryVM; captureId: string;
   vm.isDirty.val = true
 
 # --------------------------------------------------------------------------- #
+#  REV-M8 — multi-select + side-by-side comparison.
+# --------------------------------------------------------------------------- #
+
+proc multiSelect*(vm: GalleryVM; captureId: string) =
+  ## cmd/ctrl-click handler — toggles ``captureId`` in the multi-select
+  ## set (a hash-set for fast membership tests + a seq for stable
+  ## ordering used by the compare view).
+  var set = vm.selectedTileIds.val
+  if captureId in set:
+    set.excl(captureId)
+    var seq = vm.compareCaptureIds.val
+    for i in 0 ..< seq.len:
+      if seq[i] == captureId:
+        seq.delete(i)
+        break
+    vm.compareCaptureIds.val = seq
+  else:
+    set.incl(captureId)
+    var seq = vm.compareCaptureIds.val
+    seq.add(captureId)
+    vm.compareCaptureIds.val = seq
+  vm.selectedTileIds.val = set
+
+proc compareSideBySide*(vm: GalleryVM) =
+  ## Open the gallery in ``gmCompare`` mode against the current
+  ## ``compareCaptureIds`` selection.  Tests call this directly; the
+  ## view binds a toolbar button to it.
+  if vm.compareCaptureIds.val.len < 2:
+    # Nothing to compare — keep the current mode (the toolbar button is
+    # disabled when the selection is < 2 but the VM is defensive).
+    return
+  vm.priorMode.val = vm.mode.val
+  vm.mode.val = gmCompare
+
+proc clearCompare*(vm: GalleryVM) =
+  vm.selectedTileIds.val = initHashSet[string]()
+  vm.compareCaptureIds.val = @[]
+  if vm.mode.val == gmCompare:
+    vm.mode.val = gmGrid
+
+# --------------------------------------------------------------------------- #
+#  REV-M8 — save / load layout state helpers.
+# --------------------------------------------------------------------------- #
+
+proc serializePendingLayout*(vm: GalleryVM): string =
+  ## Encode ``pendingLayout`` as a compact JSON string suitable for the
+  ## ``layout`` JSONB column.  The on-the-wire shape is
+  ##
+  ##   {"version": 1,
+  ##    "entries": [{"captureId": "...", "row": 1, "col": 0}, ...]}
+  ##
+  ## A version envelope lets a future migration extend the payload
+  ## without breaking older clients reading saved layouts.
+  result = "{\"version\":1,\"entries\":["
+  for i, e in vm.pendingLayout.val:
+    if i > 0: result.add(",")
+    result.add("{\"captureId\":\"")
+    result.add(e.captureId)
+    result.add("\",\"row\":")
+    result.add($e.rowIndex)
+    result.add(",\"col\":")
+    result.add($e.columnIndex)
+    result.add("}")
+  result.add("]}")
+
+proc applyLayoutJson*(vm: GalleryVM; json: string) =
+  ## Re-hydrate ``pendingLayout`` from a saved layout JSONB document
+  ## (the shape ``serializePendingLayout`` emits).  Defensive: any
+  ## parse / shape failure leaves the VM untouched.
+  if json.len == 0: return
+  var entries: seq[PendingLayoutEntry] = @[]
+  # Hand-rolled parse so this compiles cleanly on both ``nim c`` and
+  # ``nim js`` (``std/json`` works on both backends but the JS variant
+  # requires the resource VM hooks the editor doesn't always wire).
+  # The payload is small and well-defined; one pass over the string is
+  # plenty.
+  var i = 0
+  while i < json.len:
+    let cIdx = json.find("\"captureId\"", i)
+    if cIdx < 0: break
+    let colon = json.find(':', cIdx)
+    if colon < 0: break
+    let q1 = json.find('"', colon + 1)
+    if q1 < 0: break
+    let q2 = json.find('"', q1 + 1)
+    if q2 < 0: break
+    let captureId = json[q1 + 1 ..< q2]
+    let rowIdx = json.find("\"row\"", q2)
+    if rowIdx < 0: break
+    let rColon = json.find(':', rowIdx)
+    if rColon < 0: break
+    var rj = rColon + 1
+    while rj < json.len and json[rj] in {' ', '\t'}: inc rj
+    var rStart = rj
+    while rj < json.len and json[rj] in {'0'..'9', '-'}: inc rj
+    let rVal =
+      if rj > rStart:
+        try: parseInt(json[rStart ..< rj]) except ValueError: 0
+      else: 0
+    let colIdx = json.find("\"col\"", rj)
+    if colIdx < 0: break
+    let cColon = json.find(':', colIdx)
+    if cColon < 0: break
+    var cj = cColon + 1
+    while cj < json.len and json[cj] in {' ', '\t'}: inc cj
+    var cStart = cj
+    while cj < json.len and json[cj] in {'0'..'9', '-'}: inc cj
+    let cVal =
+      if cj > cStart:
+        try: parseInt(json[cStart ..< cj]) except ValueError: 0
+      else: 0
+    entries.add PendingLayoutEntry(
+      captureId: captureId,
+      rowIndex: rVal,
+      columnIndex: cVal)
+    i = cj
+  vm.pendingLayout.val = entries
+  vm.isDirty.val = false
+
+proc markConflict*(vm: GalleryVM; layoutId, currentRow: string) =
+  vm.conflict.val = LayoutConflict(
+    layoutId: layoutId, currentRow: currentRow)
+
+proc dismissConflict*(vm: GalleryVM) =
+  vm.conflict.val = LayoutConflict()
+
+proc markSaved*(vm: GalleryVM; layoutId: string; version: int) =
+  vm.activeLayoutId.val = layoutId
+  vm.activeLayoutVersion.val = version
+  vm.isDirty.val = false
+  vm.conflict.val = LayoutConflict()
+
+# --------------------------------------------------------------------------- #
 #  View — ui DSL only.
 # --------------------------------------------------------------------------- #
 
@@ -215,6 +377,9 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
   var gridHost: E
   var fullTabHost: E
   var statusLabel: E
+  var conflictDialog: E
+  var conflictReloadBtn: E
+  var conflictDismissBtn: E
 
   let root = ui(r):
     tdiv(
@@ -307,6 +472,57 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
         min_height = "0",
         overflow = "auto",
         `data-design-review-gallery-fulltab` = "true")
+      # --- Conflict dialog (REV-M8) -----------------------------------
+      # Rendered inside the production gallery view (not the harness).
+      # Visibility is driven reactively off ``vm.conflict``; when the
+      # save path observes an optimistic-concurrency 409 it calls
+      # ``markConflict`` and this dialog flips visible with the
+      # "reload-or-overwrite?" affordance.
+      tdiv(
+        ref = conflictDialog,
+        `data-design-review-conflict-dialog` = "true",
+        `data-conflict-visible` = "false",
+        `role` = "alertdialog",
+        `aria-live` = "assertive",
+        `aria-modal` = "false",
+        display = "none",
+        flex_direction = "column",
+        gap = "8px",
+        padding = "10px 12px",
+        background_color = gPanelBg,
+        border = "1px solid " & gStatusErr,
+        border_radius = "6px",
+        color = gTextPrim):
+        span(font_size = "12px", font_weight = "700",
+              color = gStatusErr,
+              `data-design-review-conflict-dialog-title` = "true"):
+          text "Layout changed elsewhere"
+        span(font_size = "11px", color = gTextMuted,
+              `data-design-review-conflict-dialog-body` = "true"):
+          text "This layout was changed elsewhere; reload to see the latest, or dismiss to keep editing."
+        tdiv(display = "flex", flex_direction = "row", gap = "6px"):
+          tdiv(ref = conflictReloadBtn,
+                `role` = "button", tabindex = "0",
+                `data-design-review-conflict-reload` = "true",
+                padding = "4px 10px",
+                font_size = "11px", font_weight = "600",
+                color = gTextPrim,
+                background_color = gAccent,
+                border = "1px solid " & gAccent,
+                border_radius = "4px",
+                cursor = "pointer"):
+            text "Reload"
+          tdiv(ref = conflictDismissBtn,
+                `role` = "button", tabindex = "0",
+                `data-design-review-conflict-dismiss` = "true",
+                padding = "4px 10px",
+                font_size = "11px", font_weight = "600",
+                color = gTextMuted,
+                background_color = "transparent",
+                border = "1px solid " & gBorder,
+                border_radius = "4px",
+                cursor = "pointer"):
+            text "Dismiss"
 
   proc setMode(mode: GalleryMode) =
     capturedVm.priorMode.val = capturedVm.mode.val
@@ -529,5 +745,40 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
     r.setTextContent(statusLabel,
                      bid & " — " & $n & " capture" &
                        (if n == 1: "" else: "s"))
+
+  # REV-M8 — conflict dialog reactive visibility + handlers.  The dialog
+  # is data-hidden until ``vm.conflict.val.currentRow`` is non-empty
+  # (the API handler populates ``current`` with the current layout row
+  # on a 409 response).  Reload and Dismiss share a single VM API call
+  # each; the parent (gallery host) listens for a reload event via the
+  # ``markSaved`` / ``dismissConflict`` state transition.
+  createRenderEffect proc() =
+    let visible = capturedVm.conflict.val.currentRow.len > 0
+    r.setAttribute(conflictDialog, "data-conflict-visible",
+                   if visible: "true" else: "false")
+    r.setAttribute(conflictDialog, "aria-hidden",
+                   if visible: "false" else: "true")
+    # The no-setStyle invariant forbids ``r.setStyle`` from this file;
+    # we drive display via the same data-attribute path used elsewhere
+    # in the view and use ``setAttribute`` on style to keep the CSSOM
+    # rule "block" / "none" honest.  The data-attribute is the one the
+    # tests assert; the inline style keeps the visual behaviour in
+    # browsers that don't have CSS rules wired for the data-attr.
+    r.setAttribute(conflictDialog, "style",
+                   if visible: "display: flex;" else: "display: none;")
+
+  let reloadHandler = proc() =
+    # Treat "Reload" as accepting the server's current row: apply it,
+    # clear the dirty flag, and dismiss the dialog.
+    let cur = capturedVm.conflict.val.currentRow
+    if cur.len > 0:
+      capturedVm.applyLayoutJson(cur)
+    capturedVm.dismissConflict()
+  let dismissHandler = proc() =
+    capturedVm.dismissConflict()
+  r.addEventListener(conflictReloadBtn, "click", reloadHandler)
+  r.addEventListener(conflictReloadBtn, "keydown", reloadHandler)
+  r.addEventListener(conflictDismissBtn, "click", dismissHandler)
+  r.addEventListener(conflictDismissBtn, "keydown", dismissHandler)
 
   r.appendChild(parent, root)

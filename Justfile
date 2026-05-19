@@ -331,6 +331,39 @@ test-design-review-gallery: isonim-review-build
         tests/test_design_review_api_brief_has_history.nim
     node --test tests/e2e_design_review_gallery_overlay.mjs
 
+# REV-M8: Layout-persistence API + CLI + drag/multi-select VM tests.
+test-design-review-layouts: isonim-review-build
+    nim c -r --path:src --path:. --path:../nim-everywhere/src --hints:off \
+        tests/test_design_review_gallery_drag_rearrange_vm.nim
+    nim c -r --path:src --path:. --path:../nim-everywhere/src --hints:off \
+        tests/test_design_review_gallery_side_by_side_vm.nim
+    nim c -r --path:. --path:src --path:vendor/db_connector/src \
+        --path:../nim-everywhere/src --hints:off \
+        tests/test_design_review_api_save_layout.nim
+    nim c -r --path:. --path:src --path:vendor/db_connector/src \
+        --path:../nim-everywhere/src --hints:off \
+        tests/test_design_review_api_promote_layout.nim
+    nim c -r --path:. --path:src --path:vendor/db_connector/src \
+        --path:../nim-everywhere/src --hints:off \
+        tests/test_design_review_api_list_layouts.nim
+    nim c -r --path:. --path:src --path:vendor/db_connector/src \
+        --path:../nim-everywhere/src --path:../isonim-render-serve/src \
+        --hints:off \
+        tests/test_design_review_gallery_fetch_on_open.nim
+    node --test tests/e2e_design_review_gallery_save_layout.mjs
+    node --test tests/e2e_design_review_gallery_promote_layout.mjs
+    node --test tests/e2e_design_review_gallery_conflict.mjs
+    node --test tests/e2e_design_review_gallery_side_by_side.mjs
+
+# REV-M8: Production-mount (real editor bundle + daemon discovery) tests.
+test-design-review-gallery-production: isonim-review-build editor-build
+    nim c -r --path:src --path:. --path:../nim-everywhere/src --hints:off \
+        tests/test_design_review_daemon_discovery.nim
+    nim c -r --path:src --path:. --path:../nim-everywhere/src \
+        --path:../isonim-render-serve/src --hints:off \
+        tests/test_design_review_brief_has_history_signal.nim
+    node --test tests/e2e_design_review_history_button_in_real_editor.mjs
+
 # Build and serve the editor
 editor-serve: editor-build
     @echo "Serving editor on http://localhost:8090"

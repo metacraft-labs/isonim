@@ -40,7 +40,7 @@ suite "REV-M4 isonim-review init":
   test "test_cli_init_applies_migrations_from_empty_db":
     ## Fresh cluster with no migrations applied → cmdInit reports
     ## ``applied N`` and ``schema_migrations`` contains every migration
-    ## file we ship (REV-M3's 001+002 plus REV-M7's 003).
+    ## file we ship (REV-M3's 001+002, REV-M7's 003, REV-M8's 004).
     let f = newPgFixture(applyMigrations = false)
     defer: f.shutdown()
 
@@ -52,11 +52,12 @@ suite "REV-M4 isonim-review init":
     let outText = readFile(tmpLog)
     removeFile(tmpLog)
     check rc == 0
-    check countMigrations(f) == 3
+    check countMigrations(f) == 4
     check "apply 001" in outText
     check "apply 002" in outText
     check "apply 003" in outText
-    check "applied 3 migration(s)" in outText
+    check "apply 004" in outText
+    check "applied 4 migration(s)" in outText
 
   test "test_cli_init_is_noop_on_already_migrated":
     ## Second run against the same cluster: every migration is
@@ -133,7 +134,10 @@ suite "REV-M4 isonim-review init":
       let c = connectMigrator(f)
       defer: c.close()
       parseInt(c.getValue(sql"SELECT count(*) FROM public.schema_migrations"))
-    check after == 2  # migrations 2 and 3 remain (1 was DELETEd above)
+    # Migrations 2, 3, 4 remain (1 was DELETEd above).  REV-M8 added
+    # migration 004 (``fetch_layout``); the dirty-state guard counts
+    # whatever rows survive the DELETE.
+    check after == 3
 
   test "test_cli_init_refuses_modified_migration_file":
     ## Apply, copy a migration to a scratch dir, mutate one byte,
@@ -163,6 +167,9 @@ suite "REV-M4 isonim-review init":
     copyFile(
       MigDir / "003_design_review_fetch_capture.sql",
       scratch / "003_design_review_fetch_capture.sql")
+    copyFile(
+      MigDir / "004_design_review_fetch_layout.sql",
+      scratch / "004_design_review_fetch_layout.sql")
     let altered = scratch / "001_design_review_schema.sql"
     var body = readFile(altered)
     body.add "\n-- drift marker\n"
@@ -194,10 +201,12 @@ suite "REV-M4 isonim-review init":
     check "migration 1" in outText
 
     # All rows still present — no partial reapplication.
+    # REV-M8 added migration 004 (``fetch_layout``); the schema now
+    # tracks four migration rows.
     let after = block:
       let c = connectMigrator(f)
       defer: c.close()
       parseInt(c.getValue(sql"SELECT count(*) FROM public.schema_migrations"))
-    check after == 3
+    check after == 4
 
     removeDir(scratch)

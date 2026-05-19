@@ -32,6 +32,7 @@ import ./config
 import ./cmd_db_health
 
 import isonim/editor/design_review/api_handlers
+import isonim/editor/design_review/api_handlers_layouts
 import isonim/editor/design_review/capture_store
 import isonim/editor/design_review/db as dr_db
 
@@ -139,6 +140,13 @@ proc stripQuery(path: string): string =
 
 proc dispatch(srv: ReviewServer; req: Request) {.async, gcsafe.} =
   let path = stripQuery(req.url.path)
+  # CORS preflight — Chromium fires an OPTIONS before any POST with
+  # ``Content-Type: application/json``.  Handle it uniformly for every
+  # ``/api/design-review/*`` route so the per-handler logic stays clean.
+  if req.reqMethod == HttpOptions and
+     path.startsWith("/api/design-review/"):
+    await respondCorsPreflight(req)
+    return
   if path == "/health":
     await healthHandler(srv, req)
     return
@@ -216,6 +224,13 @@ proc mountDesignReviewRoutes*(srv: ReviewServer) =
                       makeGetCapturePng(db, store))
   srv.registerHandler("/api/design-review/brief-has-history",
                       makeBriefHasHistory(db))
+  # REV-M8 — layout persistence.
+  srv.registerHandler("/api/design-review/save-layout",
+                      makeSaveLayout(db))
+  srv.registerHandler("/api/design-review/promote-layout",
+                      makePromoteLayout(db))
+  srv.registerHandler("/api/design-review/list-layouts",
+                      makeListLayouts(db))
 
 proc cmdServe*(cfg: ReviewConfig; migDir: string = ""): int =
   ## CLI entrypoint.  Returns 0 on a clean shutdown.

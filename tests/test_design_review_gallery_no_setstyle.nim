@@ -11,6 +11,8 @@ const
   RepoRoot = currentSourcePath().parentDir().parentDir()
   GalleryPath = RepoRoot / "src/isonim/editor/views/gallery_overlay.nim"
   PreviewChromePath = RepoRoot / "src/isonim/editor/views/preview_chrome.nim"
+  DesignReviewMountPath =
+    RepoRoot / "src/isonim/editor/views/design_review_mount.nim"
 
 type
   LexerState = enum
@@ -147,4 +149,22 @@ suite "REV-M7 gallery view dogfooding":
     let hits = scanForRawCreateElement(PreviewChromePath)
     if hits.len > 0:
       echo "raw createElement found in preview_chrome: ", hits
+    check hits.len == 0
+
+  test "design_review_mount_path_does_not_use_setstyle":
+    # REV-M8 mount glue: ``design_review_mount.nim`` extends the same
+    # no-setStyle invariant that REV-M2's brief-tab views and REV-M7's
+    # gallery + preview-chrome views obey.  The mount is the load-
+    # bearing path the production editor uses to reach the gallery —
+    # if it grew setStyle calls the dogfooding promise would silently
+    # erode.
+    let hits = scanForToken(DesignReviewMountPath, "setStyle")
+    if hits.len > 0:
+      echo "setStyle found at byte offsets in design_review_mount: ", hits
+    check hits.len == 0
+
+  test "design_review_mount_does_not_use_raw_create_element":
+    let hits = scanForRawCreateElement(DesignReviewMountPath)
+    if hits.len > 0:
+      echo "raw createElement found in design_review_mount: ", hits
     check hits.len == 0
