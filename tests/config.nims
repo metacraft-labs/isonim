@@ -22,3 +22,15 @@ switch("path", "$projectDir/../../isonim-render-serve/src")
 # ``github.com/nim-lang/db_connector`` mirrored into ``vendor/`` so the
 # build is fully hermetic.
 switch("path", "$projectDir/../vendor/db_connector/src")
+
+# Phase B: vendored ``chronicles`` + its transitive deps so the daemon
+# and CLI can emit structured logs without bringing the segfault-prone
+# ``nimble install chronicles`` step into the build path.  See the
+# isonim/CLAUDE.md Phase B notes for the vendoring rationale.
+switch("path", "$projectDir/../vendor/chronicles")
+switch("path", "$projectDir/../vendor/serialization")
+switch("path", "$projectDir/../vendor/json_serialization")
+switch("define", "nimOldCaseObjects")
+switch("define", "chronicles_sinks=textlines[stderr]")
+switch("define", "chronicles_runtime_filtering=on")
+switch("define", "chronicles_log_level=TRACE")

@@ -65,12 +65,28 @@ type
       ## backends/``" — see
       ## ``isonim/editor/design_review/backend_launcher.resolveBackendBinary``.
 
+  AgentConfig* = object
+    ## Phase B — the daemon's ACP backend configuration.
+    ##
+    ##   * ``command`` overrides the agent binary on PATH (defaults
+    ##     to ``claude-agent-acp`` / ``claude-code-acp``).
+    ##   * ``model`` and ``maxTokens`` are advisory hints the daemon
+    ##     passes through to the agent on session creation.
+    ##   * ``defaultDaemonUrl`` is the URL the CLI's ``chat`` subcommand
+    ##     uses when no ``--daemon`` flag is supplied.
+    command*: string
+    extraArgs*: seq[string]
+    model*: string
+    maxTokens*: int
+    defaultDaemonUrl*: string
+
   ReviewConfig* = object
     db*: DbConfig
     server*: ServerConfig
     store*: StoreConfig
     workspace*: WorkspaceConfig
     backend*: BackendConfig
+    agent*: AgentConfig
     ## Path the loader actually read TOML from (empty if defaults only).
     configPath*: string
 
@@ -125,6 +141,13 @@ proc defaults*(): ReviewConfig =
     ),
     backend: BackendConfig(
       binaryDir: "",
+    ),
+    agent: AgentConfig(
+      command: "",
+      extraArgs: @[],
+      model: "",
+      maxTokens: 0,
+      defaultDaemonUrl: "",
     ),
     configPath: "",
   )
@@ -284,6 +307,18 @@ proc applyToml(cfg: var ReviewConfig; content: string) =
         if v.kind == tvkString: cfg.backend.binaryDir = expandTilde(v.s)
       else:
         stderr.writeLine("isonim-review config: unknown key [backend]." & key)
+    of "agent":
+      case key
+      of "command":
+        if v.kind == tvkString: cfg.agent.command = v.s
+      of "model":
+        if v.kind == tvkString: cfg.agent.model = v.s
+      of "max_tokens":
+        if v.kind == tvkInt: cfg.agent.maxTokens = v.i
+      of "default_daemon_url":
+        if v.kind == tvkString: cfg.agent.defaultDaemonUrl = v.s
+      else:
+        stderr.writeLine("isonim-review config: unknown key [agent]." & key)
     else:
       stderr.writeLine("isonim-review config: unknown section [" &
         section & "]")
@@ -363,6 +398,14 @@ proc loadConfig*(explicitPath: string = ""): ReviewConfig =
   let envPgHost = getEnv("ISONIM_REVIEW_PGHOST")
   if envPgHost.len > 0 and envUrl.len == 0:
     result.db.host = envPgHost
+
+proc daemonBaseUrl*(cfg: ReviewConfig): string =
+  ## URL the CLI's ``chat`` subcommand defaults to.  Honors an explicit
+  ## ``[agent].default_daemon_url`` from TOML; otherwise derives the URL
+  ## from ``[server]``.  Used by ``cmd_chat`` and by ``daemonBackend``.
+  if cfg.agent.defaultDaemonUrl.len > 0:
+    return cfg.agent.defaultDaemonUrl
+  "http://" & cfg.server.bindAddr & ":" & $cfg.server.port
 
 proc connectionString*(cfg: ReviewConfig; role: string = ""): string =
   ## Builds the libpq URL to feed ``open()`` with.  ``role`` selects

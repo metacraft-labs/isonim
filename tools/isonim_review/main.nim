@@ -29,6 +29,7 @@ import std/[os, strutils, strformat, tables]
 
 import isonim/editor/design_review/brief_format
 import isonim/editor/design_review/brief_index
+import isonim/editor/design_review/log_setup
 
 import ./config
 import ./cmd_init
@@ -37,6 +38,7 @@ import ./cmd_serve
 import ./cmd_capture
 import ./cmd_run_review
 import ./cmd_layouts
+import ./cmd_chat
 
 const Usage = """
 isonim-review — IsoNim design-review CLI
@@ -115,6 +117,19 @@ Usage:
                                  [--config <path>]
       (REV-M8) Promote a user-scope layout into a new workspace-
       scope row.  Prints the new layout id on stdout.
+
+  isonim-review chat [--session <id>] [--no-stream] [--interactive]
+                      [--daemon <url>] [<prompt>]
+      (Phase B) Drive the daemon's /api/agent/* endpoints from the CLI.
+      One-shot: a single positional <prompt> is sent and the agent's
+      reply is written to stdout.  --interactive enters a REPL loop
+      that reuses the same session id across prompts.  Pass --no-stream
+      to suppress live text on stdout (useful in scripts that only
+      care about exit codes).
+
+  isonim-review --log-level <level>
+      Set the chronicles runtime log level for any subcommand.
+      Valid levels: trace, debug, info (default), warn, error, none.
 
   isonim-review --help
       Print this message.
@@ -234,7 +249,8 @@ proc dispatchDbHealth(rest: seq[string]): int =
 
 proc dispatchServe(rest: seq[string]): int =
   let (cfg, migDir) = resolveConfigAndDir(rest)
-  cmdServe(cfg, migDir)
+  let agentRoutesOnly = hasFlag(rest, "agent-routes-only")
+  cmdServe(cfg, migDir, agentRoutesOnly)
 
 proc hasNamedFlag(args: seq[string]; expectedFlag: string): bool =
   ## True iff ``--<expectedFlag>`` or ``--<expectedFlag>=...`` appears
@@ -317,6 +333,42 @@ proc dispatchLayouts(rest: seq[string]): int =
     stderr.write("isonim-review layouts: unknown sub-subcommand: " & sub & "\n")
     return 2
 
+proc dispatchChat(rest: seq[string]): int =
+  ## Phase B — ``isonim-review chat``.
+  let configPath = parseSubArgs(rest, "config")
+  let cfg =
+    try: loadConfig(configPath)
+    except TomlParseError as e:
+      stderr.writeLine("isonim-review: " & e.msg)
+      quit(2)
+  var opts = ChatOptions(streamOutput: true)
+  opts.daemonUrl = parseSubArgs(rest, "daemon")
+  opts.sessionId = parseSubArgs(rest, "session")
+  opts.interactive = hasFlag(rest, "interactive")
+  if hasFlag(rest, "no-stream"):
+    opts.streamOutput = false
+  # Collect the positional prompt — every arg that does not start with
+  # ``--`` and is not the value of a recognised ``--flag value`` pair.
+  var positionals: seq[string] = @[]
+  var i = 0
+  while i < rest.len:
+    let a = rest[i]
+    if a.startsWith("--"):
+      # Skip the value of ``--flag value`` (but not ``--flag=value``).
+      if not a.contains('='):
+        if a in ["--interactive", "--no-stream"]:
+          inc i
+          continue
+        if i + 1 < rest.len and not rest[i + 1].startsWith("--"):
+          inc i, 2
+          continue
+      inc i
+      continue
+    positionals.add a
+    inc i
+  opts.promptText = positionals.join(" ")
+  return cmdChat(cfg, opts)
+
 proc dispatchRunReview(rest: seq[string]): int =
   let configPath = parseSubArgs(rest, "config")
   let cfg =
@@ -342,10 +394,43 @@ proc dispatchRunReview(rest: seq[string]): int =
 # Top-level dispatch
 # --------------------------------------------------------------------------
 
+proc extractGlobalFlags(args: var seq[string]):
+    tuple[logLevel: string] =
+  ## Strip recognised global flags from ``args`` in place and return the
+  ## parsed values.  Subcommand dispatchers receive a copy that no
+  ## longer contains the global flags, so they don't need to know
+  ## about ``--log-level``.
+  var kept: seq[string] = @[]
+  var i = 0
+  while i < args.len:
+    let a = args[i]
+    if a == "--log-level":
+      if i + 1 < args.len:
+        result.logLevel = args[i + 1]
+        inc i, 2
+        continue
+      else:
+        inc i
+        continue
+    if a.startsWith("--log-level="):
+      result.logLevel = a[("--log-level=").len .. ^1]
+      inc i
+      continue
+    kept.add a
+    inc i
+  args = kept
+
 proc main(): int =
   var rawArgs: seq[string] = @[]
   for i in 1 .. paramCount():
     rawArgs.add(paramStr(i))
+
+  let globals = extractGlobalFlags(rawArgs)
+  try:
+    configureLogging(globals.logLevel)
+  except InvalidLogLevelError as e:
+    stderr.writeLine("isonim-review: " & e.msg)
+    return 2
 
   if rawArgs.len == 0 or rawArgs[0] in ["--help", "-h"]:
     echo Usage
@@ -375,6 +460,8 @@ proc main(): int =
     return dispatchRunReview(rawArgs[1 .. ^1])
   of "layouts":
     return dispatchLayouts(rawArgs[1 .. ^1])
+  of "chat":
+    return dispatchChat(rawArgs[1 .. ^1])
   else:
     stderr.write(fmt"isonim-review: unknown command '{rawArgs[0]}'" & "\n")
     stderr.write(Usage)

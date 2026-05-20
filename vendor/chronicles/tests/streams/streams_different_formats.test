@@ -1,0 +1,14 @@
+program="../multiple_streams"
+chronicles_streams="foo[textlines],bar[json[file]]"
+chronicles_colors=None
+chronicles_timestamps=None
+chronicles_thread_ids=None
+chronicles_line_endings=Posix
+[Output]
+stdout="""INF logging to foo                            
+INF logging to foo                            
+"""
+bar.log="""{"lvl":"INF","msg":"dynamic scope starts","reqId":10,"userId":20}
+{"lvl":"INF","msg":"dynamic scope ends","reqId":10,"userId":20}
+{"lvl":"WRN","msg":"about to exit main"}
+"""

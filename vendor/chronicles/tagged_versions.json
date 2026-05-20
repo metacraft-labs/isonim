@@ -1,0 +1,58 @@
+{
+  "maxTaggedVersions": 4,
+  "versions": [
+    {
+      "name": "chronicles",
+      "version": {
+        "version": "0.12.2"
+      },
+      "requires": [
+        "nim >= 2.0.16",
+        "faststreams >= 0.3.0",
+        "serialization",
+        "json_serialization",
+        "testutils"
+      ],
+      "isRoot": false
+    },
+    {
+      "name": "chronicles",
+      "version": {
+        "version": "0.12.1"
+      },
+      "requires": [
+        "nim >= 2.0.16",
+        "faststreams >= 0.3.0",
+        "serialization",
+        "json_serialization",
+        "testutils"
+      ],
+      "isRoot": false
+    },
+    {
+      "name": "chronicles",
+      "version": {
+        "version": "0.12.0"
+      },
+      "requires": [
+        "nim >= 2.0.16",
+        "faststreams >= 0.3.0",
+        "serialization",
+        "json_serialization",
+        "testutils"
+      ],
+      "isRoot": false
+    },
+    {
+      "name": "chronicles",
+      "version": {
+        "version": "0.11.0"
+      },
+      "requires": [
+        "nim >= 2.0.16",
+        "json_serialization"
+      ],
+      "isRoot": false
+    }
+  ]
+}

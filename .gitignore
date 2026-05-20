@@ -132,3 +132,7 @@ tests/e2e_pipeline_refuses_dirty_workspace
 # REV-M5 follow-up real-backend launcher test binaries
 tests/test_design_review_backend_launcher
 tests/e2e_design_review_capture_web_real_bridge
+# Phase B chat / agent-route test binaries
+tests/test_design_review_cli_chat
+tests/test_design_review_daemon_agent_routes
+tests/e2e_design_review_chat_real_acp

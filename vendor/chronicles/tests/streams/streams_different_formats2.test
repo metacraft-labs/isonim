@@ -1,0 +1,21 @@
+program="../multiple_streams"
+chronicles_streams="foo[textlines],bar[textblocks[file]]"
+chronicles_colors=None
+chronicles_timestamps=None
+chronicles_thread_ids=None
+chronicles_line_endings=Posix
+[Output]
+stdout="""INF logging to foo                            
+INF logging to foo                            
+"""
+bar.log="""INF dynamic scope starts
+  reqId: 10
+  userId: 20
+
+INF dynamic scope ends
+  reqId: 10
+  userId: 20
+
+WRN about to exit main
+
+"""

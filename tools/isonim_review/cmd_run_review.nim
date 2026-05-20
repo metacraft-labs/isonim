@@ -63,10 +63,20 @@ proc cmdRunReview*(cfg: ReviewConfig;
       stderr.writeLine("isonim-review run-review: --canned-path <path> required when --agent-backend canned")
       return 2
     backend = cannedBackend(cannedPath)
+  of "daemon":
+    let url = daemonBaseUrl(cfg)
+    backend = daemonBackend(url)
   of "claude-code":
-    backend = claudeCodeBackend()
+    # Phase B: ``claude-code`` is now an alias for ``daemon`` — the
+    # subprocess path stays available via ``--agent-backend
+    # claude-code-subprocess`` for ops that need to bypass the daemon.
+    let url = daemonBaseUrl(cfg)
+    backend = daemonBackend(url)
+  of "claude-code-subprocess":
+    backend = legacyClaudeCodeSubprocessBackend()
   else:
-    stderr.writeLine("isonim-review run-review: --agent-backend must be 'canned' or 'claude-code'")
+    stderr.writeLine("isonim-review run-review: --agent-backend must be one of " &
+      "'canned', 'daemon', 'claude-code', 'claude-code-subprocess'")
     return 2
 
   let connStr = connectionString(cfg, role = "app")

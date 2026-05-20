@@ -23,14 +23,19 @@
 ## ``cannedBackend`` (reads a fixture file verbatim — used by every
 ## CI test so the agent invocation is deterministic).
 
-import std/[json, os, osproc, sequtils, streams, strformat, strutils]
+import std/[httpclient, json, os, osproc, sequtils, streams, strformat,
+            strutils]
 
 import db_connector/db_postgres
 
 import ./brief_format
 import ./brief_at_revision
+import ./log_setup
 import ./reviewer_output
 import ./db
+
+logScope:
+  topics = "agent"
 
 type
   AgentBackend* = proc(prompt: string; pngPaths: seq[string]): string {.gcsafe.}
@@ -53,16 +58,20 @@ type
 #  Backends.
 # --------------------------------------------------------------------------- #
 
-proc claudeCodeBackend*(): AgentBackend =
+proc legacyClaudeCodeSubprocessBackend*(): AgentBackend
+    {.deprecated: "prefer daemonBackend(daemonUrl) — Phase B routed claude-code through the daemon's /api/agent/* endpoints".} =
   ## Spawn whatever ``claude-code`` binary is on PATH.  Feeds the
   ## prompt as a positional arg and every PNG path as ``--image
-  ## <path>``.  Simple enough for now — REV-M11+ can sharpen it
-  ## (streaming, retries, etc.).
+  ## <path>``.  Kept as a fallback for callers that explicitly want to
+  ## bypass the daemon (e.g. an offline CI box).  Phase B made
+  ## ``daemonBackend`` the default; this proc only stays because removing
+  ## it would break ``run-review --agent-backend claude-code`` users
+  ## who haven't migrated yet.
   result = proc(prompt: string; pngPaths: seq[string]): string {.gcsafe.} =
     let bin = findExe("claude-code")
     if bin.len == 0:
       raise newException(AgentDispatchError,
-        "claudeCodeBackend: 'claude-code' not on PATH; install or use --agent-backend canned")
+        "legacyClaudeCodeSubprocessBackend: 'claude-code' not on PATH; install or use --agent-backend daemon|canned")
     var args: seq[string] = @[]
     for p in pngPaths:
       args.add "--image"
@@ -74,8 +83,97 @@ proc claudeCodeBackend*(): AgentBackend =
     let exitCode = p.waitForExit()
     if exitCode != 0:
       raise newException(AgentDispatchError,
-        "claudeCodeBackend: claude-code failed (" & $exitCode & ")")
+        "legacyClaudeCodeSubprocessBackend: claude-code failed (" & $exitCode & ")")
     return stdoutRead
+
+proc claudeCodeBackend*(): AgentBackend
+    {.deprecated: "renamed to legacyClaudeCodeSubprocessBackend; prefer daemonBackend(daemonUrl)".} =
+  legacyClaudeCodeSubprocessBackend()
+
+proc daemonBackend*(daemonUrl: string;
+                    sessionId = ""): AgentBackend =
+  ## Phase B — route reviewer prompts through the editor daemon.
+  ##
+  ## The returned backend POSTs the prompt at
+  ## ``<daemonUrl>/api/agent/prompts`` and consumes the SSE stream until
+  ## ``event: end``.  All ``agent_message_chunk`` text payloads are
+  ## concatenated into one string and returned — REV-M6's reviewer
+  ## pipeline still expects one whole markdown blob, not a stream.
+  ##
+  ## When ``sessionId`` is empty the backend mints a fresh session via
+  ## ``POST /api/agent/sessions`` first; otherwise the caller's session
+  ## id is reused (useful for stateful reviewer flows).
+  ##
+  ## PNG attachments are not yet wired into the protocol — Phase B
+  ## ships a text-only contract.  REV-M11 will extend the body shape.
+  let url = daemonUrl
+  let pinnedSession = sessionId
+  result = proc(prompt: string; pngPaths: seq[string]):
+      string {.gcsafe.} =
+    var resolvedSession = pinnedSession
+    let httpClient = newHttpClient(timeout = 60_000)
+    defer: httpClient.close()
+    if resolvedSession.len == 0:
+      let headers = newHttpHeaders([("Content-Type", "application/json")])
+      let resp = httpClient.request(url & "/api/agent/sessions",
+                                    httpMethod = HttpPost,
+                                    body = "{}", headers = headers)
+      let status = parseInt(resp.status.split(' ')[0])
+      if status != 200:
+        raise newException(AgentDispatchError,
+          "daemonBackend: POST /api/agent/sessions returned " &
+          $status & ": " & resp.body)
+      resolvedSession = parseJson(resp.body){"sessionId"}.getStr("")
+      if resolvedSession.len == 0:
+        raise newException(AgentDispatchError,
+          "daemonBackend: daemon returned empty sessionId; body=" &
+          resp.body)
+    let body = $(%* {
+      "sessionId": resolvedSession,
+      "messages": [{
+        "role": "user",
+        "content": [{"type": "text", "text": prompt}],
+      }],
+    })
+    let headers = newHttpHeaders([
+      ("Content-Type", "application/json"),
+      ("Accept", "text/event-stream"),
+    ])
+    let resp = httpClient.request(url & "/api/agent/prompts",
+                                  httpMethod = HttpPost,
+                                  body = body, headers = headers)
+    let status = parseInt(resp.status.split(' ')[0])
+    if status != 200:
+      raise newException(AgentDispatchError,
+        "daemonBackend: POST /api/agent/prompts returned " &
+        $status & ": " & resp.body)
+    var collected = ""
+    for rawEvent in resp.body.split("\n\n"):
+      if rawEvent.len == 0: continue
+      var eventType = "session/update"
+      var dataPayload = ""
+      for line in rawEvent.split('\n'):
+        if line.startsWith("event:"):
+          eventType = line[6 .. ^1].strip()
+        elif line.startsWith("data:"):
+          if dataPayload.len > 0: dataPayload.add "\n"
+          dataPayload.add line[5 .. ^1].strip(leading = true,
+                                              trailing = false)
+      if eventType == "end" or eventType == "error":
+        continue
+      if dataPayload.len == 0: continue
+      try:
+        let node = parseJson(dataPayload)
+        let update = node{"update"}
+        if update{"sessionUpdate"}.getStr("") == "agent_message_chunk":
+          let content = update{"content"}
+          if content != nil and content{"type"}.getStr("") == "text":
+            collected.add content{"text"}.getStr("")
+      except JsonParsingError:
+        debug "daemonBackend: skipping malformed SSE data frame"
+    info "daemonBackend collected reply", session = resolvedSession,
+      bytes = collected.len
+    return collected
 
 proc cannedBackend*(outputPath: string): AgentBackend =
   ## Fixture backend: returns ``outputPath``'s contents verbatim,

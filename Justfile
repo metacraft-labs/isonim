@@ -121,7 +121,24 @@ test-web:
 # build hermetic against the vendored copy under ``vendor/``.
 isonim-review-build:
     mkdir -p build/bin
-    nim c -d:release --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off --out:build/bin/isonim-review tools/isonim_review/main.nim
+    nim c -d:release \
+        --path:src \
+        --path:vendor/db_connector/src \
+        --path:vendor/chronicles \
+        --path:vendor/serialization \
+        --path:vendor/json_serialization \
+        --path:../isonim-render-serve/src \
+        --path:../nim-everywhere/src \
+        --path:../nim-faststreams \
+        --path:../nim-stew \
+        --path:../nim-acp/src \
+        --path:../nim-agent-harbor/src \
+        --path:../nim-agents/src \
+        -d:nimOldCaseObjects \
+        -d:chronicles_sinks=textlines[stderr] \
+        -d:chronicles_runtime_filtering=on \
+        -d:chronicles_log_level=TRACE \
+        --hints:off --out:build/bin/isonim-review tools/isonim_review/main.nim
     @echo "Built: build/bin/isonim-review"
 
 # Run REV-M1's design-review unit + integration tests.
@@ -185,6 +202,67 @@ test-design-review-run-review: isonim-review-build
     nim c -r --path:. --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off tests/test_design_review_brief_at_revision.nim
     nim c -r --path:. --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off tests/test_design_review_agent_dispatch.nim
     nim c -r --path:. --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off tests/e2e_design_review_run_review.nim
+
+# Phase B — convenience target: drive the chat subcommand against a
+# locally-running daemon.  Defaults to the canned-output fake ACP agent
+# so a stray ``just isonim-review-chat`` doesn't burn Anthropic credit.
+isonim-review-chat prompt='hi' daemon='http://127.0.0.1:8113': isonim-review-build fake-acp-agent-build
+    #!/usr/bin/env bash
+    set -e
+    export ISONIM_ACP_AGENT_CMD="${ISONIM_ACP_AGENT_CMD:-$PWD/build/bin/fake-acp-agent}"
+    ./build/bin/isonim-review --log-level=debug chat --daemon='{{daemon}}' '{{prompt}}'
+
+# Phase B — build the deterministic ACP fake server used by the chat /
+# agent-routes tests.  Independent of the main binary so a Phase B
+# test failure doesn't require a full ``isonim-review`` rebuild.
+fake-acp-agent-build:
+    mkdir -p build/bin
+    nim c -d:release --hints:off -o:build/bin/fake-acp-agent \
+        tests/helpers/fake_acp_agent.nim
+    @echo "Built: build/bin/fake-acp-agent"
+
+# Phase B — run every chat / agent-route test.  No PG required;
+# ``isonim-review serve --agent-routes-only`` is used throughout.
+test-design-review-chat: isonim-review-build fake-acp-agent-build
+    nim c -r --path:. --path:src \
+        --path:vendor/db_connector/src --path:vendor/chronicles \
+        --path:vendor/serialization --path:vendor/json_serialization \
+        --path:../nim-faststreams --path:../nim-stew \
+        --path:../nim-acp/src --path:../nim-agent-harbor/src \
+        --path:../nim-agents/src \
+        -d:nimOldCaseObjects \
+        -d:chronicles_sinks=textlines[stderr] \
+        -d:chronicles_runtime_filtering=on \
+        -d:chronicles_log_level=TRACE \
+        --hints:off tests/test_design_review_daemon_agent_routes.nim
+    nim c -r --path:. --path:src \
+        --path:vendor/db_connector/src --path:vendor/chronicles \
+        --path:vendor/serialization --path:vendor/json_serialization \
+        --path:../nim-faststreams --path:../nim-stew \
+        --path:../nim-acp/src --path:../nim-agent-harbor/src \
+        --path:../nim-agents/src \
+        -d:nimOldCaseObjects \
+        -d:chronicles_sinks=textlines[stderr] \
+        -d:chronicles_runtime_filtering=on \
+        -d:chronicles_log_level=TRACE \
+        --hints:off tests/test_design_review_cli_chat.nim
+
+# Phase B — optional smoke that requires a real ``claude-agent-acp``
+# binary on PATH and Anthropic credentials configured.  Runs in CI
+# only when the dev shell + secrets are present; locally it skips
+# itself when either prerequisite is missing.
+test-design-review-chat-real-acp: isonim-review-build
+    nim c -r --path:. --path:src \
+        --path:vendor/db_connector/src --path:vendor/chronicles \
+        --path:vendor/serialization --path:vendor/json_serialization \
+        --path:../nim-faststreams --path:../nim-stew \
+        --path:../nim-acp/src --path:../nim-agent-harbor/src \
+        --path:../nim-agents/src \
+        -d:nimOldCaseObjects \
+        -d:chronicles_sinks=textlines[stderr] \
+        -d:chronicles_runtime_filtering=on \
+        -d:chronicles_log_level=TRACE \
+        --hints:off tests/e2e_design_review_chat_real_acp.nim
 
 # REV-M6: convenience target — invoke `isonim-review run-review` against
 # the running dev cluster.  Defaults to the canned backend so a typo in

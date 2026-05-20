@@ -26,15 +26,21 @@
 ## the next request boundary.  No fancy connection drain — this is a
 ## stub.
 
-import std/[asyncdispatch, asynchttpserver, json, os, posix, strutils, tables]
+import std/[asyncdispatch, asynchttpserver, json, os, posix, strutils,
+            tables, times]
 
 import ./config
 import ./cmd_db_health
 
+import isonim/editor/design_review/agent_routes
 import isonim/editor/design_review/api_handlers
 import isonim/editor/design_review/api_handlers_layouts
 import isonim/editor/design_review/capture_store
 import isonim/editor/design_review/db as dr_db
+import isonim/editor/design_review/log_setup
+
+logScope:
+  topics = "daemon"
 
 type
   HandlerProc* = proc (req: Request): Future[void] {.async, gcsafe.}
@@ -48,6 +54,7 @@ type
     port*: int
     stopRequested*: bool
     onLifecycle*: proc(message: string) {.gcsafe.}
+    agentRegistry*: AgentRegistry
 
 # ----- Lifecycle signal handling -------------------------------------------
 
@@ -89,6 +96,7 @@ proc newReviewServer*(cfg: ReviewConfig; migDir: string = ""): ReviewServer =
     port: cfg.server.port,
     stopRequested: false,
     onLifecycle: nil,
+    agentRegistry: newAgentRegistry(),
   )
 
 proc registerHandler*(srv: ReviewServer; route: string; handler: HandlerProc) =
@@ -140,23 +148,37 @@ proc stripQuery(path: string): string =
 
 proc dispatch(srv: ReviewServer; req: Request) {.async, gcsafe.} =
   let path = stripQuery(req.url.path)
+  let startedAt = epochTime()
+  info "http request", topics = "http",
+    httpMethod = $req.reqMethod, path = path
   # CORS preflight — Chromium fires an OPTIONS before any POST with
   # ``Content-Type: application/json``.  Handle it uniformly for every
   # ``/api/design-review/*`` route so the per-handler logic stays clean.
   if req.reqMethod == HttpOptions and
-     path.startsWith("/api/design-review/"):
+     (path.startsWith("/api/design-review/") or
+      path.startsWith("/api/agent/")):
     await respondCorsPreflight(req)
+    info "http response", topics = "http", path = path, status = 204,
+      durationMs = int((epochTime() - startedAt) * 1000)
     return
   if path == "/health":
     await healthHandler(srv, req)
+    info "http response", topics = "http", path = path, status = 200,
+      durationMs = int((epochTime() - startedAt) * 1000)
     return
   if srv.handlers.hasKey(path):
     await srv.handlers[path](req)
+    info "http response", topics = "http", path = path,
+      durationMs = int((epochTime() - startedAt) * 1000)
     return
   if path.startsWith("/api/design-review/"):
     await notImplementedHandler(req)
+    info "http response", topics = "http", path = path, status = 501,
+      durationMs = int((epochTime() - startedAt) * 1000)
     return
   await notFoundHandler(req)
+  info "http response", topics = "http", path = path, status = 404,
+    durationMs = int((epochTime() - startedAt) * 1000)
 
 # ----- Run loop ------------------------------------------------------------
 
@@ -232,17 +254,46 @@ proc mountDesignReviewRoutes*(srv: ReviewServer) =
   srv.registerHandler("/api/design-review/list-layouts",
                       makeListLayouts(db))
 
-proc cmdServe*(cfg: ReviewConfig; migDir: string = ""): int =
+proc mountAgentRoutes*(srv: ReviewServer) =
+  ## Phase B — wire the ``/api/agent/*`` endpoints against ``srv``.  Each
+  ## handler bridges an HTTP call to the cached :type:`AgentRegistry`,
+  ## which holds the live ACP transports.
+  srv.registerHandler(AgentSessionsRoute,
+                      makeSessionsHandler(srv.agentRegistry))
+  srv.registerHandler(AgentPromptsRoute,
+                      makePromptsHandler(srv.agentRegistry))
+  srv.registerHandler(AgentCancelRoute,
+                      makeCancelHandler(srv.agentRegistry))
+  info "agent routes mounted", topics = "daemon",
+    sessions = AgentSessionsRoute, prompts = AgentPromptsRoute,
+    cancel = AgentCancelRoute
+
+proc cmdServe*(cfg: ReviewConfig; migDir: string = "";
+               agentRoutesOnly = false): int =
   ## CLI entrypoint.  Returns 0 on a clean shutdown.
+  ##
+  ## ``agentRoutesOnly`` skips ``mountDesignReviewRoutes`` (which opens
+  ## a Postgres connection) so Phase B agent-route tests can spin up
+  ## the daemon without a PG cluster.  Production callers always
+  ## leave it ``false`` — the editor needs design-review APIs too.
   let srv = newReviewServer(cfg, migDir)
-  try:
-    mountDesignReviewRoutes(srv)
-  except CatchableError as e:
-    stderr.writeLine("isonim-review serve: route mount failed: " & e.msg)
-    return 2
+  if not agentRoutesOnly:
+    try:
+      mountDesignReviewRoutes(srv)
+    except CatchableError as e:
+      error "route mount failed", reason = e.msg
+      stderr.writeLine("isonim-review serve: route mount failed: " & e.msg)
+      return 2
+  else:
+    warn "design-review routes skipped (agentRoutesOnly=true)"
+  mountAgentRoutes(srv)
+  info "daemon starting", bindAddr = srv.bindAddr, port = srv.port,
+    agentRoutesOnly = agentRoutesOnly
   try:
     runReviewServer(srv)
+    info "daemon stopped"
     return 0
   except OSError as e:
+    error "daemon bind failed", reason = e.msg
     stderr.writeLine("isonim-review serve: bind/listen failed: " & e.msg)
     return 2
