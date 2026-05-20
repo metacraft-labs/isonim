@@ -56,8 +56,29 @@ proc statefor(vm: EditorVM): PreviewPaneState =
       storySig.val = none[StoryRef]()
   createRenderEffect proc() =
     backendSig.val = capturedVm.platform.val
+  let briefVm = createBriefTabVM(builtInBriefIndex(), storySig, backendSig)
+  # Phase C: wire the "Review this preview" button to the AI sidebar.
+  # The dispatcher fills the chat input, dispatches sendAgentPrompt,
+  # and pulls the chat panel open so the user sees the streaming
+  # response.
+  let chatCaptured = vm
+  briefVm.reviewDispatcher = proc(prompt: string) {.closure.} =
+    chatCaptured.chat.inputText.val = prompt
+    discard chatCaptured.sendAgentPrompt()
+  # The button is disabled when the daemon is unreachable so the
+  # user gets a clear "start the daemon" hint instead of a silent
+  # request that goes nowhere.
+  createRenderEffect proc() =
+    let state = chatCaptured.chat.connectionState.val
+    if state == "failed":
+      briefVm.reviewButtonEnabled.val = false
+      briefVm.reviewButtonTooltip.val =
+        "daemon unavailable - start `isonim-review serve`"
+    else:
+      briefVm.reviewButtonEnabled.val = true
+      briefVm.reviewButtonTooltip.val = ""
   let state = PreviewPaneState(
-    briefVm: createBriefTabVM(builtInBriefIndex(), storySig, backendSig),
+    briefVm: briefVm,
     activeStorySignal: storySig,
     activeBackendSignal: backendSig,
     activeTab: createSignal(pptPreview))

@@ -36,6 +36,13 @@ type
     value*: string
     kind*: BriefChipKind
 
+  ReviewPromptDispatcher* = proc(prompt: string) {.closure.}
+    ## Closure invoked when the "Review this preview" button is
+    ## clicked.  Wired by the consumer (the editor shell) to a real
+    ## ``AgentChatVM.sendAgentPrompt`` invocation; left ``nil`` when
+    ## the consumer doesn't want to surface the button (eg. in the
+    ## VM-level tests).
+
   BriefTabVM* = ref object
     index*: BriefIndex
     activeStory*: Signal[Option[StoryRef]]
@@ -46,6 +53,14 @@ type
     activeBrief*: Memo[Option[Brief]]
     rendered*: Memo[string]
     chips*: Memo[seq[BriefChip]]
+    ## Phase C: agent-driven review hook.  See ``ReviewPromptDispatcher``.
+    reviewDispatcher*: ReviewPromptDispatcher
+    reviewButtonEnabled*: Signal[bool]
+    reviewButtonTooltip*: Signal[string]
+    lastSubmittedReviewPrompt*: Signal[string]
+      ## Test hook: the last prompt the button emitted, so VM tests
+      ## can assert on its contents without round-tripping through the
+      ## daemon.
 
 # --------------------------------------------------------------------------- #
 #  Pure helpers (testable independently of the reactive plumbing).
@@ -106,6 +121,40 @@ proc renderBriefBody*(b: Brief): string =
   ## ``test_brief_tab_vm_strips_frontmatter_from_body`` assertion.
   renderMarkdown(stripFrontmatterBody(b))
 
+proc buildReviewPrompt*(b: Brief; story: StoryRef;
+                        backend: PreviewBackend;
+                        latestCaptureSha = ""): string =
+  ## Compose the context-loaded prompt for the "Review this preview"
+  ## button.  The shape matches the spec:
+  ##
+  ##   "Review the preview I'm currently looking at.
+  ##    Brief: <bodyMarkdown>.
+  ##    Story: <storyRef>.
+  ##    Captured at: <sha>.
+  ##    Score per the rubric in the brief."
+  ##
+  ## Kept as a pure proc so VM-level tests can call it directly.
+  let storyRef = canonicalPreviewId(story, backend)
+  let body = stripFrontmatterBody(b)
+  var rubric = ""
+  for d in b.scoringDimensions:
+    rubric.add("- " & d.label & " (weight " &
+               formatFloat(d.weight, ffDecimal, 2) & ")\n")
+  result = "Review the preview I'm currently looking at."
+  result.add "\n\n## Brief\n\n"
+  result.add body
+  result.add "\n\n## Story\n\n"
+  result.add storyRef
+  if latestCaptureSha.len > 0:
+    result.add "\n\n## Captured at\n\n"
+    result.add latestCaptureSha
+  result.add "\n\n## Scoring\n\n"
+  if rubric.len > 0:
+    result.add rubric
+  else:
+    result.add "Score per the rubric in the brief.\n"
+  result.add "\nScore per the rubric in the brief."
+
 # --------------------------------------------------------------------------- #
 #  Constructor — wires the signal graph.
 # --------------------------------------------------------------------------- #
@@ -119,7 +168,10 @@ proc createBriefTabVM*(index: BriefIndex;
     activeBackend: activeBackend,
     briefTabVisible: createSignal(false),
     availableBriefs: createSignal[seq[Brief]](@[]),
-    activeBriefIndex: createSignal(0)
+    activeBriefIndex: createSignal(0),
+    reviewButtonEnabled: createSignal(true),
+    reviewButtonTooltip: createSignal(""),
+    lastSubmittedReviewPrompt: createSignal("")
   )
 
   # ``availableBriefs`` is recomputed whenever the active story or
@@ -192,6 +244,25 @@ proc previewIdFromActive(vm: BriefTabVM): string =
     return ""
   canonicalPreviewId(story.get, vm.activeBackend.val)
 
+proc submitReviewPrompt*(vm: BriefTabVM): bool {.discardable.} =
+  ## Build the context-loaded review prompt and dispatch it through
+  ## ``vm.reviewDispatcher``.  Returns ``false`` when there is no
+  ## active brief or no dispatcher wired.  The composed prompt is
+  ## cached in ``vm.lastSubmittedReviewPrompt`` so tests can assert
+  ## on its contents.
+  let active = vm.activeBrief.val
+  if active.isNone:
+    return false
+  let story = vm.activeStory.val
+  if story.isNone:
+    return false
+  let prompt = buildReviewPrompt(active.get, story.get, vm.activeBackend.val)
+  vm.lastSubmittedReviewPrompt.val = prompt
+  if vm.reviewDispatcher == nil:
+    return false
+  vm.reviewDispatcher(prompt)
+  true
+
 proc mountBriefTab*[R, E](r: R; parent: E; vm: BriefTabVM) =
   ## Mount the brief tab DOM under ``parent``. The brief tab is a
   ## self-contained block with its own header, sub-tab strip (for
@@ -204,6 +275,8 @@ proc mountBriefTab*[R, E](r: R; parent: E; vm: BriefTabVM) =
   var emptyHost: E
   var previewIdValueNode: E
   var copyButtonNode: E
+  var reviewButtonNode: E
+  var reviewActionsHost: E
 
   let root = ui(r):
     tdiv(
@@ -251,6 +324,27 @@ proc mountBriefTab*[R, E](r: R; parent: E; vm: BriefTabVM) =
         font_size = "13px", line_height = "1.55",
         color = brTabTextPrimary,
         `data-design-review-brief-body` = "true")
+      # --- Review-this-preview actions (Phase C) ----------------------
+      tdiv(
+        ref = reviewActionsHost,
+        display = "flex", flex_direction = "row",
+        align_items = "center", justify_content = "flex-end",
+        gap = "8px", padding = "4px 0px",
+        `data-design-review-brief-actions` = "true"):
+        tdiv(
+          ref = reviewButtonNode,
+          `role` = "button", tabindex = "0",
+          `aria-label` = "Review this preview",
+          `data-design-review-review-button` = "true",
+          padding = "6px 12px",
+          font_size = "11px", font_weight = "700",
+          text_transform = "uppercase", letter_spacing = "0.4px",
+          color = brTabTextPrimary,
+          background_color = brTabAccent,
+          border = "1px solid " & brTabAccent,
+          border_radius = "4px",
+          cursor = "pointer"):
+          text "Review this preview"
       # --- Empty-state container --------------------------------------
       tdiv(
         ref = emptyHost,
@@ -410,5 +504,28 @@ proc mountBriefTab*[R, E](r: R; parent: E; vm: BriefTabVM) =
       discard id
   r.addEventListener(copyButtonNode, "click", copyHandler)
   r.addEventListener(copyButtonNode, "keydown", copyHandler)
+
+  # --- Review-this-preview button (Phase C) -----------------------------
+  let reviewHandler = proc() =
+    if not capturedVm.reviewButtonEnabled.val: return
+    discard submitReviewPrompt(capturedVm)
+  r.addEventListener(reviewButtonNode, "click", reviewHandler)
+  r.addEventListener(reviewButtonNode, "keydown", reviewHandler)
+
+  # Reactive: hide the button when no brief is active; toggle disabled
+  # styling when the daemon is unreachable.
+  createRenderEffect proc() =
+    let active = capturedVm.activeBrief.val
+    let visible = active.isSome
+    let enabled = capturedVm.reviewButtonEnabled.val
+    r.setAttribute(reviewActionsHost, "data-design-review-visible",
+                   if visible: "true" else: "false")
+    r.setAttribute(reviewButtonNode, "data-design-review-enabled",
+                   if enabled: "true" else: "false")
+    r.setAttribute(reviewButtonNode, "aria-disabled",
+                   if enabled: "false" else: "true")
+    let tooltip = capturedVm.reviewButtonTooltip.val
+    if tooltip.len > 0:
+      r.setAttribute(reviewButtonNode, "title", tooltip)
 
   r.appendChild(parent, root)

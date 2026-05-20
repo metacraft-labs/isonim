@@ -413,7 +413,7 @@ editor-bake-briefs:
 # fresh build-time snapshot of the project's brief index.
 editor-build: editor-bake-briefs
     mkdir -p build/editor
-    nim js --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src -o:build/editor/editor.js src/isonim/editor/main.nim
+    nim js --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/editor/editor.js src/isonim/editor/main.nim
     cp src/isonim/editor/index.html build/editor/index.html
     cp node_modules/fabric/dist/index.min.js build/editor/fabric.min.js
     cp node_modules/paper/dist/paper-core.min.js build/editor/paper-core.min.js
@@ -426,6 +426,32 @@ test-design-review-brief-tab:
         tests/test_design_review_brief_tab_vm.nim
     nim c -r --path:src --path:. --path:../nim-everywhere/src --hints:off \
         tests/test_design_review_brief_tab_no_setstyle.nim
+
+# Phase C — Editor AI sidebar wired to the daemon's /api/agent/*.
+# Runs the VM-level adapter tests, the JS-side compile smoke, and the
+# real-browser e2e harness that drives the daemon + editor bundle
+# through Playwright.
+test-design-review-editor-chat: isonim-review-build fake-acp-agent-build editor-build
+    nim c -r --path:. --path:src \
+        --path:vendor/db_connector/src --path:vendor/chronicles \
+        --path:vendor/serialization --path:vendor/json_serialization \
+        --path:../nim-faststreams --path:../nim-stew \
+        --path:../nim-acp/src --path:../nim-agent-harbor/src \
+        --path:../nim-agents/src --path:../nim-everywhere/src \
+        --path:../isonim-render-serve/src \
+        -d:nimOldCaseObjects --hints:off \
+        tests/test_design_review_editor_agent_adapter_vm.nim
+    nim js --compileOnly --path:. --path:src \
+        --path:vendor/db_connector/src --path:vendor/chronicles \
+        --path:vendor/serialization --path:vendor/json_serialization \
+        --path:../nim-faststreams --path:../nim-stew \
+        --path:../nim-acp/src --path:../nim-agent-harbor/src \
+        --path:../nim-agents/src --path:../nim-everywhere/src \
+        --path:../isonim-render-serve/src \
+        -d:nimOldCaseObjects --hints:off \
+        tests/test_design_review_browser_agent_client_compiles.nim
+    NODE_PATH=tests/browser/node_modules \
+        node --test tests/e2e_design_review_editor_chat.mjs
 
 # REV-M7: Run every REV-M7 gallery + API test.
 #

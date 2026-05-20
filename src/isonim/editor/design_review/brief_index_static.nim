@@ -9,8 +9,3642 @@ import isonim/editor/design_review/brief_index
 import isonim/editor/types
 
 const BUILT_IN_BRIEF_INDEX_JSON*: string = """{
-  "briefs": [],
-  "byPreview": {},
+  "briefs": [
+    {
+      "briefId": "chrome.canvas-preview-edit-mode",
+      "schemaVersion": 1,
+      "kind": "chrome",
+      "title": "Canvas Preview — Edit mode with handles visible",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/chrome/canvas-preview-edit-mode.md",
+      "bodyMarkdown": "\n\n## What You're Reviewing\n\nThe canvas preview surface in **Edit mode** — the M-EVP-10\nacceptance criterion that switching to `emEdit` via the chrome bar\nmode chip paints **8 selection handles** at the selected element's\ncorners + edge midpoints. View / Comment modes hide them.\n\nThe screenshot tool drives the editor to this state by:\n\n1. Same boot path as `canvas-preview-tui.md`: enable test mode,\n   open editor, select a TaskList story, switch backend to TUI,\n   wait for the first frame + the manifest.\n2. Compute the centre point of the second TaskRow manifest entry\n   and click it (paints the selection outline + breadcrumb).\n3. Click the `[data-preview-mode=\"edit\"]:not([data-preview-mode-\n   disabled=\"true\"])` chip in the chrome bar.\n4. Wait for exactly 8 `[data-canvas-selection-handle=\"true\"]`\n   elements to be present and visible.\n\nCaptured by `editor-screenshot.mjs` view `canvas-preview-edit-mode`\nat viewports `wide` and `laptop`: files\n`screenshots/canvas-preview-edit-mode-wide.png` and\n`screenshots/canvas-preview-edit-mode-laptop.png`.\n\n## Design Goals\n\n- Edit mode adds the **handle layer** without changing any other\n  affordance — hover label, selection outline, breadcrumb still\n  visible.\n- Handles read as drag affordances: 8 small squares in the accent\n  colour positioned at the selection outline's 4 corners + 4 edge\n  midpoints.\n- The 8 handles do not visually drown out the underlying TUI\n  raster.\n\n## Color Expectations\n\n- Handle background: accent (same as selection outline).\n- Handle border: 1 px solid lighter accent (or `bgBase`) to give a\n  ring on the corner glyph.\n- Handle size: between 6 px and 10 px square; consistent across\n  the 8 markers.\n\n## What is Expected on the Screenshot\n\n### Chrome state\n\n- `[data-preview-backend=\"tui\"]` chip active (accent highlight).\n- `[data-preview-mode=\"edit\"]` chip active; `[data-preview-mode=\n  \"view\"]` and `[data-preview-mode=\"comment\"]` not active.\n\n### Canvas + overlays (carried over from canvas-preview-tui)\n\n- Canvas with `data-canvas-active=\"true\"` painting real TUI\n  raster.\n- `[data-canvas-selection-outline=\"true\"]` visible at the selected\n  TaskRow's bounds, with `data-element-id=\"<id>\"` matching the\n  manifest entry.\n- `[data-canvas-selection-breadcrumb=\"true\"]` visible with the\n  selected entry's `componentPath`.\n- `[data-canvas-hover-label=\"true\"]` MAY be visible if the cursor\n  is still hovering the same entry, OR MAY have cleared if the\n  mode-chip click moved the cursor off the canvas. Either is\n  acceptable; the brief is about the handles.\n\n### Handle group (the load-bearing M-EVP-10 acceptance)\n\n- Exactly **eight** `[data-canvas-selection-handle=\"true\"]`\n  markers visible.\n- Each handle carries a `data-handle-position` attribute whose\n  values, collected across the 8 handles, equal the set\n  `{ nw, n, ne, e, se, s, sw, w }`.\n- Handles surround the selection outline at:\n  - 4 corners (`nw`, `ne`, `se`, `sw`).\n  - 4 edge midpoints (`n`, `e`, `s`, `w`).\n- Each handle is centred on its target coordinate (handle box\n  visually straddles the outline edge, not flush inside or fully\n  outside).\n\n### Negative expectations\n\n- No more than 8 handles.\n- No fewer than 8 handles.\n- Handles must not appear if Edit chip is NOT active (sanity:\n  re-asserted by the `canvas-preview-tui.md` brief).\n\n## What to Evaluate\n\n1. **Exactly 8 handles** — count them in the screenshot.\n2. **Handle positions** — verify each handle sits at the expected\n   corner / midpoint of the selection outline.\n3. **Accent consistency** — handle fill colour matches the\n   selection outline and the active backend chip.\n4. **Visual readability** — handles do not overlap each other; do\n   not occlude the underlying TaskRow content; are not hidden\n   behind the breadcrumb or hover label.\n5. **Mode chip visual** — the Edit chip in the chrome bar is\n   clearly the active one (accent highlight, `aria-pressed=\n   \"true\"`).\n6. **No regression** — selection outline + breadcrumb still\n   present.\n\n## How to Report\n\n- Keep under 250 words.\n- **First line:** `Expected elements: present (handles=8)` OR\n  `Expected elements: missing-<X>` / `replaced-by-<Y>`.\n- Lead with one-sentence aesthetic impression.\n- Explicitly state the handle count you see in the screenshot.\n- List specific issues with handle positions if any look\n  misplaced.\n- End with **1–2 highest-priority fixes**.\n- Rate 1–10. Wrong handle count = ≤ 3/10; otherwise normal\n  calibration.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [
+        "chrome.canvas-preview-tui",
+        "chrome.canvas-preview-vector-dblclick-open"
+      ],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Task App / TaskList",
+            "name": "Two Active",
+            "kind": "skComponent",
+            "index": 1
+          },
+          "backends": [
+            "tui"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1920,
+          "height": 1080,
+          "label": "wide"
+        },
+        {
+          "width": 1440,
+          "height": 900,
+          "label": "laptop"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "chrome",
+          "label": "Editor Chrome",
+          "weight": 1.0,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "chrome.canvas-preview-tui",
+      "schemaVersion": 1,
+      "kind": "chrome",
+      "title": "Canvas Preview — real TUI pixels + M-EVP-10 affordances",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/chrome/canvas-preview-tui.md",
+      "bodyMarkdown": "\n\n## What You're Reviewing\n\nThe non-Web preview canvas mounted via RS-M11 Pattern A: real TUI\nlauncher pixels streamed over WebSocket and painted into a\n`<canvas>` element inside the component-detail view. The screenshot\ncaptures the canvas mid-interaction so the M-EVP-10 affordances\n(hover label, selection outline, breadcrumb) are all visible at\nonce.\n\nThe screenshot tool drives the editor to this state by:\n\n1. Setting `window.__isonimTestMode = true` before the editor boots\n   (gates the test-mode mirrors used by the screenshot tool to\n   identify manifest entries — the visible affordances themselves\n   are user-facing and not gated).\n2. Opening the editor.\n3. Expanding the `Task App / TaskList` group and selecting one of\n   its stories (e.g. `Two Active`).\n4. Clicking the `[data-preview-backend=\"tui\"]` chip in the chrome\n   bar. The component-detail view switches from the Web iframe to\n   the canvas; `attachBridgeClient` connects to the running TUI\n   launcher on its bridge port.\n5. Waiting for the first non-empty canvas frame AND for the\n   `element-tree` manifest mirror at `window.__isonimManifest`.\n6. Picking the second `TaskRow` manifest entry, computing its\n   center, hovering at that point, then clicking. This paints the\n   hover label, selection outline, and breadcrumb simultaneously.\n\nCaptured by `editor-screenshot.mjs` view `canvas-preview-tui` at\nviewports `wide` and `laptop`: files\n`screenshots/canvas-preview-tui-wide.png` and\n`screenshots/canvas-preview-tui-laptop.png`.\n\n## Design Goals\n\n- Real TUI raster fills the canvas — distinct **monospaced ASCII**\n  appearance, no rounded corners, no drop shadows.\n- The four M-EVP-10 affordances coexist without visual conflict.\n- Selection outline + handles use the editor accent colour\n  consistently.\n- Hover label is unobtrusive but unambiguous; it follows the\n  cursor / hovered entry's bounding box and shows the entry's\n  `componentPath`.\n\n## Color Expectations\n\n- Canvas TUI raster: high-contrast monochrome (white-on-black or\n  green-on-black) with ASCII box-drawing characters.\n- Hover label background: `bgSidebar` with a hairline `border` and\n  `textSecondary` text.\n- Selection outline: 2 px accent-coloured border around the\n  hovered entry's bounds, scaled into CSS pixel space.\n- Breadcrumb: muted background with `textPrimary` for the path\n  segments.\n\n## What is Expected on the Screenshot\n\n### Canvas + chrome state\n\n- The chrome bar's `[data-preview-backend=\"tui\"]` chip is active\n  (accent highlight + `aria-pressed=\"true\"`).\n- The mode chip `[data-preview-mode=\"view\"]` is active (no Edit\n  mode in this brief — handles are captured separately by\n  `canvas-preview-edit-mode.md`).\n- A `<canvas>` element with `data-canvas-active=\"true\"` is visible\n  filling the centre column body.\n- The canvas paints real, non-empty TUI raster pixels (visible\n  glyphs / ASCII text for the selected story; e.g. task rows).\n- The canvas's `width` / `height` match the manifest's\n  `surfaceWidth` / `surfaceHeight`.\n\n### Overlay affordances\n\n- `[data-canvas-overlay=\"true\"]` overlay wrapper present (the\n  pointer-events-none container).\n- `[data-canvas-hover-label=\"true\"]` element visible: text equals\n  the hovered entry's `componentPath` (a value like\n  `task_app/views/TaskRow#1`).\n- `[data-canvas-selection-outline=\"true\"]` element visible at the\n  hovered/clicked entry's bounds. The outline carries\n  `data-element-id=\"<elementId>\"` matching the manifest entry's\n  `id`. Outline left/top/width/height correspond to the entry's\n  bounds scaled by `canvas.clientWidth / canvas.width`\n  (1 px tolerance per the M-EVP-10 spec).\n- `[data-canvas-selection-breadcrumb=\"true\"]` element visible with\n  text equal to the selected entry's `componentPath`.\n\n### Negative expectations\n\n- `[data-canvas-selection-handle=\"true\"]` elements are HIDDEN\n  (mode is View, not Edit).\n- No iframe is visible in the centre column (TUI backend → canvas\n  path, not Web iframe).\n\n## What to Evaluate\n\n1. **TUI pixel fidelity** — does the canvas read as a real TUI\n   raster (monospace, ASCII, no rounded corners)? Or as a\n   placeholder / stub?\n2. **Overlay coexistence** — hover label + selection outline +\n   breadcrumb visible simultaneously without occluding the\n   underlying TUI content.\n3. **Outline accuracy** — the selection outline visually matches\n   the TUI row it represents (its top/left/width/height align with\n   the rendered text row).\n4. **Hover label placement** — does it follow the hovered entry's\n   top-right corner? Is it readable against the canvas\n   background?\n5. **Breadcrumb placement** — fixed-position panel below or above\n   the canvas; text matches the entry's `componentPath`; does not\n   compete visually with the hover label.\n6. **Accent usage** — selection outline accent matches the chrome\n   bar's active backend chip (single accent across editor).\n7. **No edit handles** — handles must not appear in View mode.\n\n## How to Report\n\n- Keep under 250 words.\n- **First line:** `Expected elements: present` OR\n  `Expected elements: missing-<X>` / `replaced-by-<Y>`.\n- Lead with one-sentence aesthetic impression.\n- Confirm each of the four affordances explicitly: hover label,\n  selection outline, breadcrumb, AND that **no handles** are\n  visible.\n- Quote the `componentPath` shown in the hover label /\n  breadcrumb so the reader can verify it matches a real manifest\n  entry (e.g. `task_app/views/TaskRow#1`).\n- List specific issues with selectors.\n- End with **1–2 highest-priority fixes**.\n- Rate 1–10. If the canvas is empty or shows iframe content, that's\n  ≤ 3/10 regardless of other polish.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [
+        "chrome.canvas-preview-edit-mode",
+        "chrome.canvas-preview-vector-dblclick-open"
+      ],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Task App / TaskList",
+            "name": "Two Active",
+            "kind": "skComponent",
+            "index": 1
+          },
+          "backends": [
+            "tui"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1920,
+          "height": 1080,
+          "label": "wide"
+        },
+        {
+          "width": 1440,
+          "height": 900,
+          "label": "laptop"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "chrome",
+          "label": "Editor Chrome",
+          "weight": 1.0,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "chrome.canvas-preview-vector-dblclick-open",
+      "schemaVersion": 1,
+      "kind": "chrome",
+      "title": "Vector Editor Opened via Canvas Dblclick (M-EVP-11)",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/chrome/canvas-preview-vector-dblclick-open.md",
+      "bodyMarkdown": "\n\n## What You're Reviewing\n\nThe state of the editor **immediately after** a double-click on a\ncanvas vector-symbol entry. M-EVP-11 closes the M-EVP-8 TODO: the\ncanvas JS shim's `dblclick` handler hit-tests the manifest, sees\n`kind == \"vector-symbol\"`, looks up the matching `skVectorSymbol`\nstory (`task_app/views/TaskCheckIcon` → `Task App / Vector\nSymbols / Task Check Icon`), and calls\n`vm.openVectorEditor(story)`. The screenshot captures the editor\nwith the vector editor mounted and the dblclick'd target\nidentified.\n\nThe screenshot tool drives the editor to this state by:\n\n1. Setting `window.__isonimTestMode = true`.\n2. Opening the editor; navigating to a Task App / TaskList story\n   so the summary bar (containing the seeded `TaskCheckIcon`\n   vector-symbol leaf) is rendered.\n3. Clicking the `[data-preview-backend=\"tui\"]` chip in the chrome\n   bar to mount the canvas + bridge client.\n4. Waiting for the first non-empty canvas frame AND for the\n   `element-tree` manifest to land at `window.__isonimManifest`.\n5. Finding the manifest entry with\n   `componentPath == \"task_app/views/TaskCheckIcon\"` and\n   `kind == \"vector-symbol\"`, computing its centre.\n6. Issuing `page.mouse.dblclick(x, y)` at that point.\n7. Waiting until `window.__isonimEditorActiveView ===\n   \"evVectorEditor\"` AND\n   `window.__isonimVectorEditorTarget === \"task_app/views/\n   TaskCheckIcon\"`.\n\nCaptured by `editor-screenshot.mjs` view\n`canvas-preview-vector-dblclick-open` at viewports `wide` and\n`laptop`: files\n`screenshots/canvas-preview-vector-dblclick-open-wide.png` and\n`screenshots/canvas-preview-vector-dblclick-open-laptop.png`.\n\n## Design Goals\n\n- The vector editor mounts cleanly — same surface\n  `vector-editor-empty.md` / `vector-editor-with-symbol.md` describe.\n- The vector editor must show the correct target — the **Task\n  Check Icon** symbol, NOT a different vector story.\n- Transition feels intentional: no flicker artefact, no leftover\n  canvas overlay residue from the previous TUI canvas view.\n\n## Color Expectations\n\n- Same colour palette as the other vector-editor briefs (dark\n  panel surfaces, accent for active tool, etc.).\n\n## What is Expected on the Screenshot\n\n### Vector editor mounted\n\n- The shell chrome bar is **hidden** for the `evVectorEditor`\n  view (`shell.nim` sets `display: none` on `chromeBarEl`).\n- The vector editor's own toolbar is visible:\n  - `[data-vector-editor-toolbar=\"true\"]` row at the top.\n  - `[data-vector-editor-back=\"true\"]` back button (visible only\n    while `evVectorEditor` is active).\n  - Title text `Vector Editor`.\n  - Boolean op buttons (`union`, `subtract`, `intersect`,\n    `exclude`).\n  - Save button.\n\n### Correct target\n\n- The target identifier is the **TaskCheckIcon** vector symbol.\n  Verify via `window.__isonimVectorEditorTarget` test-mode mirror\n  (set to `task_app/views/TaskCheckIcon`).\n- In the layers panel below the canvas, the seeded layer rows\n  appear (the default `Circle / Rectangle / Line` set may render\n  initially if the symbol has not been edited).\n- In the properties panel's Accessibility section, the placeholder\n  `Title` text reads `Check icon` and `Description` reads\n  `Indicates completion` (these are the static placeholders from\n  the empty-state brief and confirm the vector editor surface\n  mounted cleanly).\n\n### Sidebar selection\n\n- The sidebar's Foundations section is expanded; the\n  `Task App / Vector Symbols` group is expanded; the\n  `Task Check Icon` story row is selected (accent-tinted\n  background + accent left border).\n\n### Negative expectations\n\n- No `<canvas data-canvas-active=\"true\">` visible anywhere — the\n  view switched away from the component-detail canvas.\n- No iframe visible — `evVectorEditor` does not render the Web\n  iframe.\n- No `[data-canvas-overlay=\"true\"]` overlay residue.\n- The `[data-vector-editor-usage-split=\"true\"]` usage panel may\n  or may not be visible depending on whether the dblclicked\n  symbol has tracked usages; if visible it should be in **split**\n  mode (≤ 3 usages — the seeded workspace exposes only one\n  natural usage of TaskCheckIcon).\n\n## What to Evaluate\n\n1. **Correct target mounted** — does the vector editor show the\n   Task Check Icon symbol, or a different / placeholder symbol?\n2. **Clean transition** — no visual artefacts left over from the\n   prior TUI canvas state.\n3. **Sidebar selection consistency** — the Foundations section\n   expansion + Task Check Icon highlight match the vector editor\n   target.\n4. **Toolbar polish** — back button + title + boolean ops +\n   Save form a clean header without crowding.\n5. **Tool palette + properties + layers all rendered** — same\n   visual baseline as `vector-editor-empty.md`.\n6. **Usage panel** — if visible, it shows the natural usage\n   (`Task App / TaskList / *`); should not be in carousel mode\n   (only one natural usage).\n\n## How to Report\n\n- Keep under 250 words.\n- **First line:** `Expected elements: present\n  (target=TaskCheckIcon)` OR\n  `Expected elements: missing-<X>` / `wrong-target-<Y>`.\n- Lead with one-sentence aesthetic impression.\n- Quote the target string visible (via `window.__isonim\n  VectorEditorTarget` or via sidebar highlight) so the reader can\n  verify it equals `task_app/views/TaskCheckIcon` or its sidebar\n  display form `Task Check Icon`.\n- List specific issues with selectors.\n- End with **1–2 highest-priority fixes**.\n- Rate 1–10. Wrong target = ≤ 3/10; otherwise normal calibration.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [
+        "chrome.canvas-preview-tui",
+        "chrome.canvas-preview-edit-mode"
+      ],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Task App / Vector Symbols",
+            "name": "Task Check Icon",
+            "kind": "skVectorSymbol",
+            "index": 0
+          },
+          "backends": [
+            "tui"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1920,
+          "height": 1080,
+          "label": "wide"
+        },
+        {
+          "width": 1440,
+          "height": 900,
+          "label": "laptop"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "chrome",
+          "label": "Editor Chrome",
+          "weight": 1.0,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "chrome.shell-laptop",
+      "schemaVersion": 1,
+      "kind": "chrome",
+      "title": "Editor Shell — laptop viewport",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/chrome/shell-laptop.md",
+      "bodyMarkdown": "\n\n## What You're Reviewing\n\nThe default editor landing surface at **1440 × 900** — the laptop\nviewport. Same content as `shell-wide.md`; this brief focuses on the\ndensity-sensitive aspects that the wider 1920 viewport hides.\n\nCaptured by `editor-screenshot.mjs` view `shell` at viewport\n`laptop`: file `screenshots/shell-laptop.png`.\n\n## Design Goals\n\n- **Three-panel shell** stays visible (sidebar + centre + inspector).\n  No panel collapses at this viewport.\n- All chrome chips remain on a **single row** in the chrome bar; chip\n  clusters should not wrap if at all avoidable.\n- Sidebar quick-nav strip stays in **one horizontal row** of five\n  icons. Icons may shrink slightly but must remain visually distinct\n  and have ≥ 24 × 24 px hit targets.\n- Inspector keeps tab labels visible even if its inner content reflows.\n- 4 / 8 px spacing rhythm preserved; no element looks cramped.\n\n## Color Expectations\n\nIdentical to `shell-wide.md` — dark theme, single accent, muted\ngreys for inactive chips and disabled categories.\n\n## What is Expected on the Screenshot\n\n**Verify presence before evaluating aesthetics.**\n\n### Sidebar (left column)\n\n- `[data-sidebar-search=\"true\"]` input at the top with\n  `Search stories…` placeholder, visible without horizontal scroll.\n- One `[data-sidebar-quicknav=\"true\"]` strip directly below the\n  search; **five icons** in one row, all visible without horizontal\n  scroll.\n- Five sections in canonical order (User Journeys / Pages /\n  Components / Foundations / Guidelines).\n- Section headers retain the uppercase 10 px label + chevron at the\n  right; no truncation of section labels.\n\n### Centre column\n\n- Exactly one `[data-preview-chrome-bar=\"true\"]` toolbar at the top.\n- Three toolbar clusters (`backend`, `viewport`, `mode`) all on a\n  single row.\n- All six backend chips visible; the active backend (default Web)\n  highlighted with the accent.\n- All three mode chips visible (View / Comment / Edit); active mode\n  (View by default) highlighted.\n- NO view-switcher; NO left/right edge strips.\n- Below the chrome bar: empty-state preview or storyboard\n  mini-previews.\n\n### Right column\n\n- Inspector panel visible; may be narrower than at wide viewport.\n- 1 px hairline border between the inspector and the centre column.\n\n### Density measurements\n\n- Chrome bar height ≤ 64 px; chip cluster gap in [12, 16] px.\n- Sidebar width in [220, 280] px range at this viewport.\n- Inspector width in [200, 300] px range.\n\n## What to Evaluate\n\n1. **Density** — every chip + label fits without truncation or\n   wrapping.\n2. **Alignment** — chip clusters horizontally centred within their\n   cluster boxes; sidebar indent step consistent.\n3. **Spacing** — 4 / 8 px rhythm preserved; no cluster collapses\n   chips together.\n4. **Typography** — readable at this density; secondary text not\n   undersized to fit.\n5. **Hairline borders** — still visible at 1× scale; not lost.\n6. **Quick-nav strip vs. search input** — appropriately separated by\n   the section divider; not crammed against each other.\n\n## How to Report\n\n- Keep under 250 words.\n- **First line:** `Expected elements: present` OR\n  `Expected elements: missing-<X>` / `replaced-by-<Y>`.\n- Lead with one-sentence aesthetic impression.\n- List specific issues with locations (selector or coordinate).\n- End with **1–2 highest-priority fixes**.\n- Rate 1–10 with the calibration scale.\n- Call out any wrapping / overflow that wide viewport wouldn't reveal.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [
+        "chrome.shell-wide",
+        "chrome.shell-narrow"
+      ],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Task App / Pages",
+            "name": "Inbox",
+            "kind": "skPage",
+            "index": 0
+          },
+          "backends": [
+            "web"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1440,
+          "height": 900,
+          "label": "laptop"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "chrome",
+          "label": "Editor Chrome",
+          "weight": 1.0,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "chrome.shell-narrow",
+      "schemaVersion": 1,
+      "kind": "chrome",
+      "title": "Editor Shell — narrow viewport",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/chrome/shell-narrow.md",
+      "bodyMarkdown": "\n\n## What You're Reviewing\n\nThe editor shell at the **narrow viewport** (375 × 812). This is\nthe most demanding density case for the shell.\n\nCaptured by `editor-screenshot.mjs` view `shell` at viewport\n`narrow`: file `screenshots/shell-narrow.png`.\n\n## Design Goals\n\n- Some panels MAY collapse behind a toggle at this viewport (per the\n  existing brief's responsive notes) — this is acceptable as long as\n  the active panel is usable and the chrome bar's essential chips\n  are reachable.\n- Sidebar quick-nav strip must still be visible OR demonstrably\n  reachable through a toggle / accordion.\n- Chrome bar chip clusters may wrap onto two rows; if so, the wrap\n  must align cleanly (no orphan single chips).\n- No horizontal scroll on the root viewport.\n\n## What is Expected on the Screenshot\n\n### Editor chrome present\n\n- The editor sidebar (or its collapsed toggle affordance) is mounted.\n- The centre column shows either the empty-state landing or the\n  storyboard mini-previews.\n- A single `[data-preview-chrome-bar=\"true\"]` toolbar (may wrap onto\n  two rows). It is NOT replaced by an inner per-view toolbar.\n- NO `[data-preview-view-switcher]` anywhere.\n\n### Sidebar (when visible)\n\n- If shown, the `[data-sidebar-search=\"true\"]` input is present and\n  not truncated.\n- If shown, the `[data-sidebar-quicknav=\"true\"]` strip exposes\n  exactly five icons (one per `data-category-kind`). Icons may\n  shrink to ≥ 20 × 20 px hit targets.\n\n### Centre column\n\n- Chrome bar present with at least the **backend** and **mode**\n  clusters reachable (viewport cluster may collapse into a dropdown\n  / overflow menu at this size).\n- Active backend chip highlighted with accent.\n\n### Inspector\n\n- May be collapsed behind a tab / drawer toggle; if collapsed, that\n  toggle must be visible (e.g. a small chevron or labelled button).\n- If shown inline, must not push the centre column off-screen.\n\n### Negative expectations\n\n- No element extends past the viewport's right edge.\n- No element overlaps another (chrome bar chips, sidebar entries,\n  inspector tabs).\n\n## What to Evaluate\n\n1. **Layout adaptation** — does the editor make sensible compromises\n   (collapsing the right panel, wrapping the chrome bar) or does it\n   look broken (squashed, clipped, overlapping)?\n2. **Hit targets** — every interactive element ≥ 20 × 20 px.\n3. **Type legibility** — body text not < 11 px; secondary text not\n   < 10 px.\n4. **Chrome bar** — single toolbar (possibly multi-row) carrying the\n   surviving clusters; no per-view inner toolbar appears here either.\n5. **Density** — no chip cluster wraps a single orphan chip onto a\n   new row; if a cluster wraps, the wrap is balanced.\n\n## How to Report\n\n- Keep under 200 words.\n- **First line:** `Expected elements: present` OR\n  `Expected elements: missing-<X>` / `replaced-by-<Y>`.\n- Lead with one-sentence aesthetic impression.\n- Call out any clipping / horizontal scroll / overlap as the first\n  finding if present.\n- End with **1–2 highest-priority fixes**.\n- Rate 1–10. Narrow-viewport tolerance: rate 8/10 even if the\n  inspector is hidden behind a toggle, as long as nothing is broken\n  and the active surface is usable.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [
+        "chrome.shell-wide",
+        "chrome.shell-laptop"
+      ],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Task App / Pages",
+            "name": "Inbox",
+            "kind": "skPage",
+            "index": 0
+          },
+          "backends": [
+            "web"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 375,
+          "height": 812,
+          "label": "narrow"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "chrome",
+          "label": "Editor Chrome",
+          "weight": 1.0,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "chrome.shell-wide",
+      "schemaVersion": 1,
+      "kind": "chrome",
+      "title": "Editor Shell — wide viewport",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/chrome/shell-wide.md",
+      "bodyMarkdown": "\n\n## What You're Reviewing\n\nThe default editor landing surface at **1920 × 1080** with **no story\nselected**. This is the IsoNim Examples Editor's chrome bar — the\nsingle top toolbar above the three-panel layout introduced by\nM-EVP-6 (one chrome bar, no per-view inner toolbars) and refined by\nM-EVP-7 (no view-switcher) and M-EVP-9 (sidebar quick-nav strip).\n\nCaptured by `editor-screenshot.mjs` view `shell` at viewport `wide`:\nfile `screenshots/shell-wide.png`.\n\n## Design Goals\n\n- **Dark theme**, tool-app aesthetic in the league of VS Code / Linear\n  / Figma's dark mode.\n- **Three-panel shell**: left sidebar (story tree) — centre preview —\n  right inspector. Single 1 px hairline borders, no heavy dividers.\n- **Single top chrome bar** above the centre column. NO inner toolbar\n  inside the view body (M-EVP-6 acceptance).\n- **No left-edge or right-edge chip strips.** All chrome chips\n  (backend / viewport / mode) live in the single top bar.\n- **Sidebar quick-nav strip** directly below the search input: five\n  category icons in a single horizontal row.\n- **No view-switcher** anywhere in the shell (M-EVP-7 acceptance).\n- 4 / 8 px spacing rhythm; nothing cramped, nothing wasting space at\n  this viewport.\n- Type hierarchy: section heading (uppercase 10 px) > story label\n  (12 px) > body (11 px) > metadata (10 px muted). Single sans-serif.\n\n## Color Expectations\n\n- Canvas background: deep dark gray (`#0f0f14` … `#1a1a2e`).\n- Panel surfaces: one step lighter (`#1d1d28` … `#22232e`).\n- Borders / dividers: subtle gray (`#2a2b36` … `#34353f`).\n- Primary text: near-white; secondary: muted gray; accent: a single\n  vibrant colour (purple / indigo / teal) used sparingly.\n- Empty-state preview: a quiet card or muted hint copy — NOT a\n  hard-coded placeholder rectangle.\n\n## What is Expected on the Screenshot\n\n**The reviewer must verify these elements are present BEFORE evaluating\naesthetics.** If anything expected is missing or replaced by a\nplaceholder, report that as the first finding and rate ≤ 4/10\nregardless of polish.\n\n### Sidebar (left column)\n\n- One `input[data-sidebar-search=\"true\"]` search box at the top with\n  the placeholder `Search stories…`.\n- Exactly one `[data-sidebar-quicknav=\"true\"]` strip directly below\n  the search input.\n- Quick-nav strip contains exactly **five icon buttons**, one each\n  with `data-category-kind` ∈ `{ skFoundation, skComponent, skPage,\n  skFlow, skGuideline }`. The buttons must read left-to-right in that\n  order. Each icon is a small geometric glyph (◇, ◻, □, ▷, ○).\n- Below the strip: five collapsible sections in this order — **User\n  Journeys, Pages, Components, Foundations, Guidelines**. Each\n  section has a section header with an uppercase 10 px label and a\n  chevron at the right.\n- Default expansion (per `defaultSidebarSections`): User Journeys\n  expanded, Pages expanded, Components expanded, Foundations\n  expanded, Guidelines collapsed.\n- Sections expose the two demo projects: **Task App** groups\n  (`TaskRow`, `TaskList`, `Settings App / Group`, etc.) under\n  Components; **`Task App / Vector Symbols`** (containing `Task Check\n  Icon`) appears under Foundations.\n\n### Centre column\n\n- Exactly **one** `[data-preview-chrome-bar=\"true\"]` toolbar at the\n  top of the centre column.\n- Toolbar exposes **exactly three chip clusters**:\n  - `[data-toolbar-cluster=\"backend\"]` — six chips with\n    `data-preview-backend` ∈ `{ web, tui, gpui, freya, cocoa,\n    android }`. On macOS, `cocoa` is available; `android` is\n    available only when the Android launcher built. Unavailable\n    backends carry `data-preview-backend-available=\"false\"` and\n    appear greyed.\n  - `[data-toolbar-cluster=\"viewport\"]` — viewport chips for the\n    selected backend (Desktop / Laptop / Tablet / Phone or TUI cell\n    viewports).\n  - `[data-toolbar-cluster=\"mode\"]` — exactly three chips with\n    `data-preview-mode` ∈ `{ view, comment, edit }` labelled **View\n    / Comment / Edit**.\n- **NO** `[data-preview-view-switcher]` element anywhere (M-EVP-7).\n- **NO** `[data-preview-left-edge]` or `[data-preview-right-edge]`\n  vertical strip elements visible.\n- Below the chrome bar: an empty-state preview surface (the\n  storyboard mini-preview tiles, or the default landing card). No\n  inner 44 px toolbar inside this body (M-EVP-6 acceptance).\n\n### Right column (inspector)\n\n- A right-hand inspector panel with tab labels (Properties / Styles /\n  AI chat or equivalent). May start collapsed showing only tab\n  labels at this viewport.\n- Hairline 1 px border between the inspector and the centre column.\n\n### Spacing + measurements\n\n- Chrome bar height ≤ 64 px; gap between toolbar clusters in\n  [12, 16] px (M-EVP-3 invariant — re-verified in M-EVP-9 regression).\n- Sidebar width in [240, 320] px range.\n- Inspector width in [220, 340] px range when expanded.\n\n## What to Evaluate\n\nAfter confirming presence of every expected element above, evaluate:\n\n1. **Alignment** — sidebar items left-aligned on a consistent indent\n   step (4 / 8 / 16 px); chrome bar chip clusters horizontally\n   centred within their cluster boxes.\n2. **Spacing** — 4 / 8 px rhythm; chip gaps consistent; section\n   headers breathing room ≥ 6 px above and below.\n3. **Color harmony** — single accent colour used sparingly; no\n   competing accents; greyed-out chips clearly distinguishable from\n   active ones without looking broken.\n4. **Typography** — section headers vs story labels vs body have a\n   clear three-tier hierarchy.\n5. **Visual weight** — centre column is the focal point; the chrome\n   bar supports it without competing.\n6. **Quick-nav strip** — five icons are well-spaced, hit-targets\n   feel ≥ 24 × 24 px, do not look cramped against the search input.\n7. **Professional polish** — does it look shipping-grade (Linear /\n   Notion) or prototype?\n\n## How to Report\n\n- Keep under 250 words.\n- **First line:** `Expected elements: present` OR\n  `Expected elements: missing-<X>` / `replaced-by-<Y>`.\n- If any expected element is missing or wrong, report it as the first\n  finding and rate ≤ 4/10 regardless of polish elsewhere.\n- Otherwise, lead with a one-sentence overall aesthetic impression.\n- List specific issues as bullet points with locations\n  (e.g. \"quick-nav strip: gap between icons is 2 px, should be 6 px\").\n- End with **1–2 highest-priority fixes** the implementer should\n  do first.\n- Rate 1–10 (calibration: 1-3 = broken, 4-5 = functional rough,\n  6-7 = good with minor issues, 8-9 = near-shipping, 10 = perfect).\n- Be direct and specific.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [
+        "chrome.shell-laptop",
+        "chrome.shell-narrow"
+      ],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Task App / Pages",
+            "name": "Inbox",
+            "kind": "skPage",
+            "index": 0
+          },
+          "backends": [
+            "web"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1920,
+          "height": 1080,
+          "label": "wide"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "chrome",
+          "label": "Editor Chrome",
+          "weight": 1.0,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "chrome.sidebar-quick-nav",
+      "schemaVersion": 1,
+      "kind": "chrome",
+      "title": "Sidebar Quick-Nav Strip + Search + Empty Category",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/chrome/sidebar-quick-nav.md",
+      "bodyMarkdown": "\n\n## What You're Reviewing\n\nThe post-M-EVP-9 sidebar header: the search input + the five-icon\nquick-navigation strip. This brief focuses specifically on the\nsidebar interactions:\n\n- The five icons in the strip with one selected (active).\n- The real-time search filter narrowing the visible tree.\n- An empty category (the Guidelines / User Journeys icon, whichever\n  has zero stories in the demo workspace) appearing disabled.\n\nThe screenshot captures the **sidebar after** the screenshot tool:\n\n1. Types `spacing` into the search field, waits for the tree to\n   filter (only the Foundations / Spacing & Radii story should\n   remain visible), then clears the search.\n2. Clicks the Components quick-nav icon — its `aria-pressed` flips\n   to `true` and the active-category styling becomes visible.\n3. Leaves the search empty so the active-category visual is the\n   focal point.\n\nCaptured by `editor-screenshot.mjs` view `sidebar-quick-nav` at\nviewport `laptop`: file `screenshots/sidebar-quick-nav-laptop.png`.\nA `wide` variant is also captured for completeness:\n`screenshots/sidebar-quick-nav-wide.png`.\n\n## Design Goals\n\n- The quick-nav strip should feel like a visual index across the\n  five canonical design-system categories — not a generic toolbar.\n- Active category: clearly differentiated background colour /\n  accent border. Disabled categories: clearly muted (≥ 40 % opacity\n  drop OR a grey colour shift), with a `not-allowed` cursor on\n  hover (verify in DOM if not on screenshot).\n- Empty-category visual must be unambiguous: a reviewer should be\n  able to tell at a glance that the disabled icon is non-clickable.\n- Search input + quick-nav strip form a visually unified header;\n  hairline divider beneath them separates the header from the\n  story tree body.\n\n## Color Expectations\n\n- Strip background: same as sidebar surface OR one shade lighter.\n- Active icon: accent colour fill OR accent-bordered chip; the\n  active state must use the same accent the chrome bar's backend\n  chip uses (single accent across the editor).\n- Disabled icon: muted grey, low contrast (~ 30–40 % opacity of the\n  base icon colour).\n- 1 px `borderFaint` hairline beneath the strip separating it from\n  the story tree.\n\n## What is Expected on the Screenshot\n\n### Strip header (top of sidebar)\n\n- Exactly one `[data-sidebar-search=\"true\"]` input above the strip\n  with the placeholder `Search stories…`. The input must be empty\n  (the screenshot setup clears the search after the typed-then-\n  cleared probe).\n- Exactly one `[data-sidebar-quicknav=\"true\"]` strip below the\n  search.\n- The strip contains exactly **five icons**. In document order\n  left-to-right, their `data-category-kind` attributes must be:\n  `skFoundation`, `skComponent`, `skPage`, `skFlow`, `skGuideline`.\n- Each icon carries `role=\"button\"` and an `aria-label` of\n  `Focus <Label> category` (`Foundations`, `Components`, `Pages`,\n  `User Journeys`, `Guidelines`).\n\n### Active category\n\n- The **Components** icon (data-category-kind=\"skComponent\") must\n  appear visually active: `aria-pressed=\"true\"` and a distinct\n  background / border colour relative to its peers.\n- The Components section in the story tree below is **expanded**\n  (chevron pointing down); other sections are collapsed by the\n  active-category handler.\n\n### Disabled category\n\n- At least one quick-nav icon corresponds to a category with zero\n  stories in the demo workspace and must carry\n  `aria-disabled=\"true\"`, `tabindex=\"-1\"`, and visibly reduced\n  opacity (estimate ≤ 50 %).\n- For the seeded demo workspace (`task_app` + `settings_app`) the\n  most likely empty category is **User Journeys** (skFlow) — verify\n  by inspecting `aria-disabled` directly.\n\n### Story tree body\n\n- The Components section is expanded showing groups like `TaskRow`\n  and `TaskList` underneath.\n- Other sections appear collapsed (chevron pointing right) per the\n  active-category-selects-and-collapses-siblings behaviour.\n\n## What to Evaluate\n\n1. **Active-state visual clarity** — can you tell at a glance which\n   category is active without reading the DOM?\n2. **Disabled-state clarity** — is the disabled icon unambiguous,\n   or does it look like an inactive-but-clickable peer?\n3. **Hit-target spacing** — icons should be ≥ 24 × 24 px with\n   ≥ 4 px gap between adjacent icons.\n4. **Alignment** — five icons evenly distributed across the strip\n   width (`justify-content: space-around`); first / last icon not\n   flush against the panel edge.\n5. **Search input + strip cohesion** — does the search + strip\n   read as one header unit, or do they feel like two stacked\n   panels?\n6. **Section behaviour** — does the Components section's expanded\n   state line up with the active-category selection? Are other\n   sections clearly collapsed?\n7. **Typography / iconography** — five icons share the same visual\n   weight and stroke thickness; no icon looks heavier or lighter\n   than the rest.\n\n## How to Report\n\n- Keep under 250 words.\n- **First line:** `Expected elements: present` OR\n  `Expected elements: missing-<X>` / `replaced-by-<Y>`.\n- Lead with one-sentence aesthetic impression.\n- List specific issues with selectors / data-category-kind values.\n- End with **1–2 highest-priority fixes**.\n- Rate 1–10.\n- Call out specifically whether the **active** and **disabled**\n  states are visually unambiguous — that is the M-EVP-9\n  load-bearing affordance.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [
+        "chrome.shell-wide",
+        "chrome.shell-laptop"
+      ],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Task App / Pages",
+            "name": "Inbox",
+            "kind": "skPage",
+            "index": 0
+          },
+          "backends": [
+            "web"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1440,
+          "height": 900,
+          "label": "laptop"
+        },
+        {
+          "width": 1920,
+          "height": 1080,
+          "label": "wide"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "chrome",
+          "label": "Editor Chrome",
+          "weight": 1.0,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "chrome.story-selected-laptop",
+      "schemaVersion": 1,
+      "kind": "chrome",
+      "title": "Story Selected — laptop viewport",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/chrome/story-selected-laptop.md",
+      "bodyMarkdown": "\n\n## What You're Reviewing\n\nSame selection as `story-selected-wide.md` (`Settings App / Group /\nAppearance`, Web backend, View mode) at the **1440 × 900** laptop\nviewport. This brief focuses on density-sensitive behaviour the\nwider 1920 viewport hides.\n\nCaptured by `editor-screenshot.mjs` view `story-selected` at\nviewport `laptop`: file `screenshots/story-selected-laptop.png`.\n\n## Design Goals\n\n- Same three-panel layout as wide; no panel collapses at this\n  viewport.\n- Chrome bar chip clusters remain on a single row.\n- Sidebar quick-nav strip stays in a single row of five icons.\n- Inspector panel narrower than at wide but still shows tab labels.\n\n## What is Expected on the Screenshot\n\n### Sidebar\n\n- All five quick-nav icons on a single row.\n- Components section expanded; **Settings App / Group** expanded\n  with the **Appearance** story row selected and visibly accented.\n- Section labels not truncated; story names may truncate with\n  ellipsis if necessary but the selected row must show its name in\n  full.\n\n### Centre column\n\n- Exactly one `[data-preview-chrome-bar=\"true\"]` toolbar.\n- Three toolbar clusters on a single row.\n- Web backend chip `[data-preview-backend=\"web\"]` is active.\n- Mode chip `[data-preview-mode=\"view\"]` is active.\n- Iframe renders the Appearance group with:\n  - \"Appearance\" header + short description.\n  - Dark mode toggle, Font size input, Theme choice (Default /\n    Solarized / Solar / Mono).\n\n### Inspector\n\n- Visible on the right with tab labels readable.\n- Narrower than at wide viewport — accept ≥ 200 px width.\n\n### Negative expectations\n\n- No horizontal scroll on any panel.\n- No chrome bar cluster wrapping at this viewport.\n- No view-switcher; no edge strips.\n\n## What to Evaluate\n\n1. **Density holds** — every chrome bar chip + cluster gap fits on\n   one row.\n2. **Iframe demo legibility** — the Appearance controls are clearly\n   readable at this scale; the toggle, input, and choice widget all\n   have ≥ 28 px hit targets.\n3. **Sidebar selection cue** — accent border + tinted background\n   on the `Appearance` row still unambiguous.\n4. **Panel proportions** — sidebar ≤ 280 px, inspector ≤ 280 px,\n   centre column ≥ 800 px. Adjust expectations if the editor\n   chooses other reasonable values — flag only if the centre column\n   feels squeezed.\n5. **No truncation regressions** — chip labels not truncated; mode\n   chips show full `View / Comment / Edit` text.\n\n## How to Report\n\n- Keep under 200 words.\n- **First line:** `Expected elements: present` OR\n  `Expected elements: missing-<X>` / `replaced-by-<Y>`.\n- Lead with one-sentence aesthetic impression.\n- Call out any density failure (wrapped chip cluster, truncated\n  story name, hidden inspector tabs) as the first finding.\n- End with **1–2 highest-priority fixes**.\n- Rate 1–10. Laptop is the canonical professional-use viewport; be\n  strict about density and legibility.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [
+        "chrome.story-selected-wide"
+      ],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Settings App / Group",
+            "name": "Appearance",
+            "kind": "skComponent",
+            "index": 0
+          },
+          "backends": [
+            "web"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1440,
+          "height": 900,
+          "label": "laptop"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "chrome",
+          "label": "Editor Chrome",
+          "weight": 1.0,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "chrome.story-selected-wide",
+      "schemaVersion": 1,
+      "kind": "chrome",
+      "title": "Story Selected — wide viewport",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/chrome/story-selected-wide.md",
+      "bodyMarkdown": "\n\n## What You're Reviewing\n\nThe editor at **1920 × 1080** after clicking through\n`Settings App / Group` → `Appearance` in the sidebar. Default\nbackend is **Web**, default mode is **View**. This brief verifies\nthe post-M-EVP-6/7/9 chrome bar density at the wide viewport with\na story actively rendered in the preview iframe.\n\nCaptured by `editor-screenshot.mjs` view `story-selected` at\nviewport `wide`: file `screenshots/story-selected-wide.png`.\n\n## Design Goals\n\n- Sidebar's selected `Appearance` row is highlighted with the\n  accent colour border + tinted background (M-EVP-4 invariant).\n- Preview iframe renders the **Appearance settings group** through\n  the Web backend — visible as a group header, three controls\n  (Dark mode toggle / Font size / Theme choice), and demo polish\n  reading like a real settings panel.\n- Preview pane is the visual centre of the screenshot — chrome bar\n  supports it, sidebar + inspector frame it.\n- Single chrome bar (M-EVP-6) with three clusters (M-EVP-7); no\n  inner per-view toolbar inside the centre column body.\n\n## Color Expectations\n\n- Selected sidebar row: accent-tinted background and a 2-3 px\n  left border in the accent colour.\n- Iframe content: the Appearance demo's own colour scheme — should\n  read as a polished settings UI, not raw HTML.\n- Chrome bar's Web chip highlighted with the accent.\n\n## What is Expected on the Screenshot\n\n### Sidebar (left column)\n\n- `[data-sidebar-search=\"true\"]` input + `[data-sidebar-quicknav=\n  \"true\"]` strip at the top with five icons.\n- Components section expanded; **Settings App / Group** group\n  expanded.\n- The story row with `aria-label=\"Select story Settings App /\n  Group / Appearance\"` is **selected** — its row carries the M-EVP-4\n  accent marker (accent left border + tinted background).\n\n### Centre column\n\n- Exactly one `[data-preview-chrome-bar=\"true\"]` toolbar above the\n  preview iframe.\n- Three toolbar clusters present: `data-toolbar-cluster=\"backend\"`,\n  `data-toolbar-cluster=\"viewport\"`, `data-toolbar-cluster=\"mode\"`.\n- The backend chip with `data-preview-backend=\"web\"` carries\n  `aria-pressed=\"true\"` and the accent highlight.\n- The mode chip with `data-preview-mode=\"view\"` is the active mode.\n- Iframe with `body[data-backend=\"pbWeb\"]` and a main element\n  whose `data-story` attribute equals `Settings App /\n  Group/Appearance`.\n- Iframe content shows:\n  - A group header reading **Appearance** with a short subtitle /\n    description.\n  - At least three controls: a **Dark mode** toggle, a **Font size**\n    input, and a **Theme** choice (Default / Solarized / Solar /\n    Mono).\n  - Each control has a left-side label and a right-aligned widget\n    on a clear grid.\n- NO inner per-view toolbar inside the centre column body\n  (M-EVP-6 invariant).\n- NO view-switcher anywhere (M-EVP-7).\n\n### Right column\n\n- Inspector panel shows properties / styles for the selected story.\n- Hairline border between inspector and centre column.\n\n## What to Evaluate\n\n1. **Sidebar selection cue** — accent border + tinted background\n   on the `Appearance` row is unambiguous; selection visual is\n   load-bearing and must read at a glance.\n2. **Iframe demo polish** — does the Appearance settings group\n   look like a showcase example (Polaris / Material 3 / Linear) or\n   raw boilerplate? The demos are the editor's reason for existing.\n3. **Chrome bar density at wide** — clusters have ≥ 12 px gap\n   between them; no cluster looks crowded.\n4. **Focal hierarchy** — preview iframe dominates the screenshot;\n   chrome + sidebar + inspector frame it without competing.\n5. **Spacing** — 4 / 8 px rhythm across sidebar entries and chrome\n   chips.\n6. **Alignment** — preview iframe horizontally aligned with the\n   chrome bar above; no off-by-1 misalignment on the left edge.\n\n## How to Report\n\n- Keep under 250 words.\n- **First line:** `Expected elements: present` OR\n  `Expected elements: missing-<X>` / `replaced-by-<Y>`.\n- Lead with one-sentence aesthetic impression.\n- List specific issues with locations.\n- End with **1–2 highest-priority fixes**.\n- Rate 1–10.\n- Call out specifically whether the **Appearance demo** itself looks\n  like a polished design-system example.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [
+        "chrome.story-selected-laptop"
+      ],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Settings App / Group",
+            "name": "Appearance",
+            "kind": "skComponent",
+            "index": 0
+          },
+          "backends": [
+            "web"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1920,
+          "height": 1080,
+          "label": "wide"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "chrome",
+          "label": "Editor Chrome",
+          "weight": 1.0,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "chrome.vector-editor-carousel",
+      "schemaVersion": 1,
+      "kind": "chrome",
+      "title": "Vector Editor with Symbol — carousel usage-context",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/chrome/vector-editor-carousel.md",
+      "bodyMarkdown": "\n\n## What You're Reviewing\n\nThe vector editor with the **carousel usage-context** companion\npanel visible — the M-EVP-8 carousel variant that engages when the\ntarget symbol has **more than 3 usages** across the workspace.\nOnly the active usage is shown; Prev / Next buttons and dot\nindicators expose the rest.\n\nThe screenshot tool drives the editor to this state by:\n\n1. Opening the editor.\n2. Navigating to the `Task Check Icon` vector symbol.\n3. Using the test-mode hook (`window.__isonimTestMode = true`) to\n   seed the editor with **5 synthetic usages** (since the demo\n   workspace currently exposes only one natural usage). The seed\n   path is implemented via the same `vm.vectorEditorUsages.val =\n   …` path the editor uses internally.\n4. Asserting `vm.vectorEditorUsages.val.len > 3`.\n5. Optionally clicking the 3rd dot indicator so the carousel shows\n   an interior index (`data-vector-usage-index = \"2\"`) — proves\n   that **both** Prev and Next are enabled (no boundary-disabled\n   state).\n\nCaptured by `editor-screenshot.mjs` view `vector-editor-carousel`\nat viewports `wide` and `laptop`: files\n`screenshots/vector-editor-carousel-wide.png` and\n`screenshots/vector-editor-carousel-laptop.png`.\n\n## Design Goals\n\n- Same split layout as `vector-editor-with-symbol.md` — canvas\n  left, usage panel right.\n- The usage panel renders **one** card (the active usage) plus a\n  Prev / dots / Next control row.\n- Dot indicators read like a slideshow paginator: small circles,\n  the active dot in the accent colour, inactive in `borderFaint`.\n- Prev / Next buttons clearly affordant; disabled (boundary) state\n  uses `opacity: 0.4` and `aria-disabled=\"true\"`.\n\n## Color Expectations\n\n- Active dot: accent (same accent the chrome bar uses).\n- Inactive dot: `borderFaint` gray.\n- Prev / Next button: `bgSurface` background, `border` border,\n  `textSecondary` text colour.\n- Disabled Prev / Next: `opacity: 0.4`.\n\n## What is Expected on the Screenshot\n\n### Vector editor surface\n\n- All of the elements in `vector-editor-with-symbol.md` apply\n  (split layout, canvas, properties, layers, usage panel header).\n\n### Carousel variant markers\n\n- `[data-vector-usage-layout=\"carousel\"]` panel is `display: flex`\n  (visible).\n- `[data-vector-usage-layout=\"split\"]` stacked panel is\n  `display: none` (hidden).\n- `[data-vector-usage-carousel=\"true\"]` panel exposes\n  `data-vector-usage-index=\"2\"` (the screenshot setup advances to\n  the 3rd usage, zero-indexed).\n\n### Carousel content\n\n- Exactly **one** active card inside\n  `[data-vector-usage-carousel-content=\"true\"]`:\n  - `data-vector-usage=\"true\"`\n  - `data-vector-usage-label` matches the active usage's\n    `group / story` string.\n  - The card shows the usage's label + a minimal preview tile.\n\n### Carousel controls\n\n- A `[data-vector-usage-prev=\"true\"]` button on the left with\n  `aria-label=\"Previous vector usage\"` and text `‹ Prev`.\n- A `[data-vector-usage-next=\"true\"]` button on the right with\n  `aria-label=\"Next vector usage\"` and text `Next ›`.\n- A `[data-vector-usage-dots=\"true\"]` row in the middle containing\n  exactly **5 dot indicators** (one per seeded usage).\n- Each dot is a `[data-vector-usage-dot]` 8 × 8 px circle.\n  `aria-current=\"true\"` marks the **third** dot\n  (`data-vector-usage-dot=\"2\"`).\n- The third dot's background is the accent colour; the other four\n  dots use `borderFaint`.\n\n### Boundary-state expectations\n\n- At index 2 of 5, both Prev and Next are **enabled** —\n  `aria-disabled=\"false\"` and full opacity. (If the screenshot is\n  ever re-shot at index 0 or 4, the relevant button must flip to\n  `aria-disabled=\"true\"` and opacity 0.4 — call that out if you\n  see a regression.)\n\n### Negative expectations\n\n- No stacked cards visible (the split layout is hidden).\n- Exactly one usage card in the carousel content area; not 2 or 5.\n\n## What to Evaluate\n\n1. **Carousel readability** — can you tell at a glance which usage\n   is active among the 5 seeded usages?\n2. **Dot affordance** — dots are clearly clickable (verify\n   `cursor: pointer` in DOM); the active dot is unambiguously\n   distinct.\n3. **Prev / Next button balance** — left/right symmetry; same\n   width; same colour.\n4. **Carousel content card** — same visual weight as a stacked\n   card in `vector-editor-with-symbol.md`. The user should not\n   perceive a layout shift switching between split and carousel.\n5. **Spacing** — 8 px gap between Prev / dots / Next; 6 px gap\n   between adjacent dots.\n6. **Accent usage** — the active dot's accent colour matches the\n   chrome bar's active backend chip (single editor accent).\n\n## How to Report\n\n- Keep under 250 words.\n- **First line:** `Expected elements: present` OR\n  `Expected elements: missing-<X>` / `replaced-by-<Y>`.\n- Lead with one-sentence aesthetic impression.\n- Specifically count the dot indicators and confirm exactly 5 are\n  visible.\n- Confirm the active dot is the **third** (zero-indexed = 2).\n- List specific issues with selectors.\n- End with **1–2 highest-priority fixes**.\n- Rate 1–10.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [
+        "chrome.vector-editor-empty",
+        "chrome.vector-editor-with-symbol"
+      ],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Task App / Vector Symbols",
+            "name": "Task Check Icon",
+            "kind": "skVectorSymbol",
+            "index": 0
+          },
+          "backends": [
+            "web"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1920,
+          "height": 1080,
+          "label": "wide"
+        },
+        {
+          "width": 1440,
+          "height": 900,
+          "label": "laptop"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "chrome",
+          "label": "Editor Chrome",
+          "weight": 1.0,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "chrome.vector-editor-empty",
+      "schemaVersion": 1,
+      "kind": "chrome",
+      "title": "Vector Editor — empty target",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/chrome/vector-editor-empty.md",
+      "bodyMarkdown": "\n\n## What You're Reviewing\n\nThe IsoNim Vector Editor mounted with **no usage context** — i.e.\n`vm.vectorEditorTarget` is set to a symbol that has zero usages\nacross the workspace. In this state the M-EVP-8 usage-context\ncompanion panel is **hidden**; the canvas, tool palette, properties\npanel, and layers panel fill the centre column.\n\nThis brief catches the visual baseline of the vector editor — the\ncanvas affordance the user lands on when they open a brand-new\nvector symbol that has not yet been placed anywhere.\n\nThe screenshot tool drives the editor to this state by:\n\n1. Opening the editor.\n2. Expanding the Foundations section.\n3. Expanding the `Task App / Vector Symbols` group.\n4. Selecting the `Task Check Icon` story.\n5. Asserting the active view is `evVectorEditor` AND\n   `vm.vectorEditorUsages.val.len == 0` (or driving an explicit\n   empty-target case via the test-mode hook).\n\nCaptured by `editor-screenshot.mjs` view `vector-editor-empty` at\nviewports `wide` and `laptop`: files\n`screenshots/vector-editor-empty-wide.png` and\n`screenshots/vector-editor-empty-laptop.png`.\n\n## Design Goals\n\n- The vector editor's chrome (title + boolean ops + Save + Export\n  SVG) lives in its **own top toolbar** (shell chrome bar is hidden\n  for `evVectorEditor` by `shell.nim`).\n- Tool palette runs vertically on the left; properties panel sits\n  vertically on the right; layers panel sits below the canvas.\n- 16 × 16 px grid background on the canvas surface; rulers along\n  the top + left edges.\n- Single accent colour for the active tool / selected layer.\n- Spacing on a 4 / 8 px rhythm; nothing cramped.\n\n## Color Expectations\n\n- Canvas surface: `bgBase` (deep gray) with subtle\n  `borderFaint`-coloured grid lines every 16 px.\n- Tool palette / properties / layers: `bgSidebar` surface, hairline\n  borders between sections.\n- Active tool button: accent background; inactive: transparent.\n- Save button: shows pending vs saved state via\n  `data-vector-source-stage`.\n\n## What is Expected on the Screenshot\n\n### Top toolbar\n\n- One `[data-vector-editor-toolbar=\"true\"]` row at the top of the\n  vector editor surface.\n- A `[data-vector-editor-back=\"true\"]` back button with\n  `aria-label=\"Close vector editor\"` on the left.\n- A title node reading `Vector Editor`.\n- Boolean op buttons in document order: `union`, `subtract`,\n  `intersect`, `exclude` — each with `data-vector-action=\"<op>\"`.\n- A Save button with `aria-label=\"Save vector source edits\"`.\n\n### Tool palette (left column)\n\n- A vertical column of tool buttons with `aria-label=\"Select <Tool>\n  vector tool\"`. At minimum the palette exposes: Select, Move, Pen,\n  Rectangle, Ellipse, Line, Text (or the canonical\n  `vectorTools()` set).\n- The Select tool is active by default — its button carries the\n  accent background.\n- Below the tools: a \"Toggle vector grid\" toggle (`aria-label=\n  \"Toggle vector grid\"`) and a \"Toggle vector snap\" toggle\n  (`aria-label=\"Toggle vector snap\"`).\n\n### Canvas (centre)\n\n- A scrollable canvas area with the 16 × 16 px grid background.\n- A `[data-vector-adapter=\"fabric\"]` host element of size\n  720 × 420 px centred on the grid.\n- Rulers along the top (20 px) and left (20 px).\n- A row of 20 named action buttons above the canvas with\n  `data-vector-action` ∈ `{ import-sample, zoom-in, zoom-out,\n  pan-right, set-fill, set-stroke, duplicate, delete, group,\n  ungroup, transform-selection, move-segment, path-insert,\n  path-delete-node, path-convert-smooth, path-handle-drag,\n  path-nudge-right, path-undo, path-redo, export }`.\n\n### Layers panel (below canvas)\n\n- A `Layers` header (uppercase 10 px).\n- Three demo layer rows: `Circle`, `Rectangle`, `Line`, each with\n  `aria-label=\"Select vector layer <Name>\"`.\n- The first layer is selected by default (accent tinted background).\n\n### Properties panel (right column)\n\n- A 220 px-wide column with sections in this order:\n  - **Transform** — five rows (X / Y / W / H / R) with monospaced\n    values.\n  - **Fill** — colour swatch + label `No fill`.\n  - **Stroke** — accent-coloured swatch + width / cap / join rows.\n  - **Accessibility** — Title + Description text fields with\n    italic placeholder text (`Check icon` / `Indicates\n    completion`).\n\n### Usage-context panel (right of canvas)\n\n- The `[data-vector-editor-usage-split=\"true\"]` panel is **hidden**\n  (`display: none`) because `vm.vectorEditorUsages.val.len == 0`.\n- Neither `[data-vector-usage-layout=\"split\"]` nor\n  `[data-vector-usage-layout=\"carousel\"]` should be visible.\n\n## What to Evaluate\n\n1. **Three-column balance** — tool palette (left) + canvas + props\n   (right) + layers (bottom) feel proportioned. Canvas dominates.\n2. **Active-tool affordance** — the active tool's accent background\n   is clearly distinct from inactive peers.\n3. **Grid + rulers** — visible without overwhelming the canvas\n   content area.\n4. **Boolean op row + action row** — the two rows of buttons above\n   the canvas should not look like one wall of buttons; group them\n   visually (or separate them with whitespace / a divider).\n5. **Spacing** — 4 / 8 px rhythm across the palette, properties\n   sections, and layers panel.\n6. **No usage panel** — the right-side usage column must NOT show;\n   if any usage-context UI is visible, that's a regression of the\n   empty-state behaviour.\n\n## How to Report\n\n- Keep under 250 words.\n- **First line:** `Expected elements: present` OR\n  `Expected elements: missing-<X>` / `replaced-by-<Y>`.\n- Lead with one-sentence aesthetic impression.\n- List specific issues with selectors / data-vector-action names.\n- End with **1–2 highest-priority fixes**.\n- Rate 1–10.\n- Call out specifically whether the **action-row + boolean-op row**\n  feel like one wall or two grouped clusters.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [
+        "chrome.vector-editor-with-symbol",
+        "chrome.vector-editor-carousel"
+      ],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Task App / Vector Symbols",
+            "name": "Task Check Icon",
+            "kind": "skVectorSymbol",
+            "index": 0
+          },
+          "backends": [
+            "web"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1920,
+          "height": 1080,
+          "label": "wide"
+        },
+        {
+          "width": 1440,
+          "height": 900,
+          "label": "laptop"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "chrome",
+          "label": "Editor Chrome",
+          "weight": 1.0,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "chrome.vector-editor-with-symbol",
+      "schemaVersion": 1,
+      "kind": "chrome",
+      "title": "Vector Editor with Symbol — split usage-context",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/chrome/vector-editor-with-symbol.md",
+      "bodyMarkdown": "\n\n## What You're Reviewing\n\nThe vector editor with the **stacked usage-context** companion\npanel visible — the M-EVP-8 split variant. This brief covers the\ncase when the target symbol has **≤ 3 usages** across the\nworkspace: the right-side panel renders each usage as a stacked\npreview card. (More than 3 usages flips to the carousel variant,\ncovered by `vector-editor-carousel.md`.)\n\nThe screenshot tool drives the editor to this state by:\n\n1. Opening the editor.\n2. Navigating to the `Task Filter Icon` vector symbol (Foundations\n   → `Task App / Vector Symbols` → `Task Filter Icon`).\n3. Asserting `vm.vectorEditorUsages.val.len` is in `[1, 3]`.\n4. If the demo workspace exposes more than 3 usages, the tool\n   manipulates the test-mode hook to force a 2-usage subset (so\n   this brief always reflects the split variant). Otherwise the\n   natural seed is used.\n\nCaptured by `editor-screenshot.mjs` view `vector-editor-with-symbol`\nat viewports `wide` and `laptop`: files\n`screenshots/vector-editor-with-symbol-wide.png` and\n`screenshots/vector-editor-with-symbol-laptop.png`.\n\n## Design Goals\n\n- The centre column splits into `[ canvas | usage-context ]`. The\n  canvas takes the larger share (flex 1.5 vs flex 1 in\n  `vector_editor.nim`).\n- Usage panel renders as a vertical stack of cards; each card shows\n  the usage's component path + a minimal preview.\n- Usage previews are **read-only** — `pointer-events: none` keeps\n  hover / selection from bubbling into the main editor canvas.\n- Section header reads `USAGE CONTEXT` in uppercase 11 px /\n  600-weight / muted colour.\n\n## Color Expectations\n\n- Usage panel background: `bgSidebar` (one shade lighter than\n  canvas).\n- Card surfaces: `bgCard` with `border` (1 px solid muted gray).\n- 1 px `borderFaint` between the panel header and the stacked cards.\n- No accent colour on cards (they are non-interactive preview-only).\n\n## What is Expected on the Screenshot\n\n### Vector editor surface\n\n- All of the elements in `vector-editor-empty.md` continue to apply\n  (top toolbar, tool palette, canvas, properties, layers).\n- The canvas area is narrower than the empty case because the\n  usage-context panel claims a chunk of the centre column.\n\n### Split layout markers\n\n- `[data-vector-editor-split=\"true\"]` flex row at the top of the\n  centre column (the existing root).\n- `[data-vector-editor-canvas-split=\"true\"]` div on the left\n  (`flex: 1.5`) holding the vector editor's `mainArea`.\n- `[data-vector-editor-usage-split=\"true\"]` div on the right\n  (`flex: 1`), `display: flex` (visible).\n\n### Stacked variant (≤ 3 usages)\n\n- `[data-vector-usage-layout=\"split\"]` panel is `display: flex`\n  (visible).\n- `[data-vector-usage-layout=\"carousel\"]` panel is `display: none`\n  (hidden).\n- Exactly **N usage cards** (with N ∈ [1, 3]) rendered as direct\n  children of the split panel, each carrying:\n  - `data-vector-usage=\"true\"`\n  - `data-vector-usage-label=\"<group>/<story-name>\"`\n  - `data-vector-usage-story=\"<group>/<story-name>\"`\n- Each card shows a small uppercase 10 px label (the\n  `group / story` line) at the top and a minimal preview area\n  (`min-height: 80px`) below.\n\n### Negative expectations\n\n- `[data-vector-usage-carousel=\"true\"]` carousel panel must not be\n  visible.\n- No Prev/Next buttons or dot indicators are shown.\n- Usage cards must not visibly respond to hover (`pointer-events:\n  none`).\n\n## What to Evaluate\n\n1. **Split proportion** — canvas (`flex: 1.5`) is the dominant\n   area; usage panel (`flex: 1`) supports without competing.\n2. **Card stack rhythm** — 10 px gap between cards; 10 / 12 px\n   padding inside each; minimal but consistent.\n3. **Section header clarity** — `USAGE CONTEXT` reads as a panel\n   header, not a card label.\n4. **Card visual weight** — each card looks like a tile preview,\n   not a button. The reviewer should not be tempted to click a\n   card.\n5. **Canvas legibility** — even at the reduced width, the canvas\n   grid + 720 × 420 fabric host remain clear; no clipping.\n6. **Spacing parity** — usage panel's 10 / 12 px padding rhythm\n   matches the properties panel's 12 px section padding.\n\n## How to Report\n\n- Keep under 250 words.\n- **First line:** `Expected elements: present` OR\n  `Expected elements: missing-<X>` / `replaced-by-<Y>`.\n- Lead with one-sentence aesthetic impression.\n- Specifically count the usage cards in the screenshot and confirm\n  it matches the [1, 3] expectation.\n- List specific issues with `data-vector-usage-label` values where\n  relevant.\n- End with **1–2 highest-priority fixes**.\n- Rate 1–10.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [
+        "chrome.vector-editor-empty",
+        "chrome.vector-editor-carousel"
+      ],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Task App / Vector Symbols",
+            "name": "Task Filter Icon",
+            "kind": "skVectorSymbol",
+            "index": 1
+          },
+          "backends": [
+            "web"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1920,
+          "height": 1080,
+          "label": "wide"
+        },
+        {
+          "width": 1440,
+          "height": 900,
+          "label": "laptop"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "chrome",
+          "label": "Editor Chrome",
+          "weight": 1.0,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "component.choice-item-alternate",
+      "schemaVersion": 1,
+      "kind": "component",
+      "title": "Settings App / ChoiceItem — Alternate",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/component/choice-item-alternate.md",
+      "bodyMarkdown": "\n# Settings App / ChoiceItem — Alternate\n\n> **Status:** Starter brief. Refine the bullets below as you learn what matters most for this story.\n\n## What you're reviewing\n\nA choice setting row with the second option (Solarized) selected.\nThis exercises the active-pill shift away from the leading edge\nto the middle position.\n\n## What to watch for\n\n- Solarized pill carries the accent fill at the middle position.\n- Default + Dracula pills inactive; they match each other exactly.\n- The active pill's left and right neighbours have symmetric\n  visual weight (no perceived crowding on either side).\n- Pill widths remain equivalent; the active state did not visibly\n  resize the Solarized pill.\n- Selection change from Default to Solarized should look like a\n  pure horizontal shift of the accent fill — nothing else moved.\n\n## Cross-backend expectations\n\nAll seven backends. On a dropdown-style native control, the popup\nshows Solarized as the displayed value.\n\n## Scoring rubric\n\n- **Visual Polish (9/10)**: pill rhythm intact at the middle\n  position.\n- **State Clarity**: middle-selection is unambiguous.\n- **Accessibility**: contrast unchanged from the default sibling.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Settings App / ChoiceItem",
+            "name": "Alternate",
+            "kind": "skComponent",
+            "index": 1
+          },
+          "backends": [
+            "web",
+            "tui",
+            "gpui",
+            "freya",
+            "cocoa",
+            "android",
+            "ios"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1080,
+          "height": 720,
+          "label": "tablet"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "visual",
+          "label": "Visual Polish",
+          "weight": 0.4,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "states",
+          "label": "State Clarity",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "accessibility",
+          "label": "Accessibility",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "component.choice-item-default",
+      "schemaVersion": 1,
+      "kind": "component",
+      "title": "Settings App / ChoiceItem — Default",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/component/choice-item-default.md",
+      "bodyMarkdown": "\n# Settings App / ChoiceItem — Default\n\n> **Status:** Starter brief. Refine the bullets below as you learn what matters most for this story.\n\n## What you're reviewing\n\nA choice (enum) setting row with the first option selected. The\ncomponent is rendered as a pill-segmented control on web (three\npills with the first carrying the accent fill) or a dropdown on\nnative backends. The seeded story is theme = Default.\n\n## What to watch for\n\n- The Default pill carries the accent fill; Solarized and Dracula\n  pills are inactive.\n- Pill widths are equivalent; longest label (Solarized) sets the\n  minimum.\n- On native backends, the dropdown / popup button displays Default\n  as the current value; the chevron / disclosure is on the\n  trailing edge.\n- Label and hint typography matches the toggle and stepper rows.\n- Row height matches sibling rows.\n\n## Cross-backend expectations\n\nAll seven backends. The pill segmented control on web differs from\nthe cocoa NSPopUpButton, the ios UISegmentedControl, and the\nandroid dropdown menu; information equivalence is the contract.\n\n## Scoring rubric\n\n- **Visual Polish (9/10)**: choice control reads as shipping.\n- **State Clarity**: active option is immediate.\n- **Accessibility**: standard contrast and hit-area floor.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Settings App / ChoiceItem",
+            "name": "Default",
+            "kind": "skComponent",
+            "index": 0
+          },
+          "backends": [
+            "web",
+            "tui",
+            "gpui",
+            "freya",
+            "cocoa",
+            "android",
+            "ios"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1080,
+          "height": 720,
+          "label": "tablet"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "visual",
+          "label": "Visual Polish",
+          "weight": 0.4,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "states",
+          "label": "State Clarity",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "accessibility",
+          "label": "Accessibility",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "component.filter-bar-active-selected",
+      "schemaVersion": 1,
+      "kind": "component",
+      "title": "Task App / FilterBar — Active Selected",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/component/filter-bar-active-selected.md",
+      "bodyMarkdown": "\n# Task App / FilterBar — Active Selected\n\n> **Status:** Starter brief. Refine the \"What to watch for\" list as you learn what matters for this story.\n\n## What you're reviewing\n\nThe filter bar with **Active** as the selected pill. The Active pill\ncarries the accent fill; All + Completed pills are inactive.\n\n## What to watch for\n\n- Active pill receives the accent fill; the inactive pills (All,\n  Completed) match each other exactly (same border / text colour /\n  background).\n- Pill order is stable: All → Active → Completed (no reorder when\n  the selection moves).\n- The visual gap between pills did not change versus\n  `filter-bar-all-selected` — only the active pill shifted.\n- Active pill text contrast remains ≥4.5:1 against the accent.\n- Hover / pressed states (if rendered) on the inactive pills do not\n  visually compete with the accent fill of the active pill.\n\n## Cross-backend expectations\n\nAll seven backends. Same idiom variability as the All-selected\nsibling brief.\n\n## Scoring rubric\n\n- **Visual Polish (9/10)**: indistinguishable from a shipping\n  segmented control. **(5/10)**: one pill looks misstyled.\n- **State Clarity**: selection is unambiguous.\n- **Accessibility**: contrast ratios preserved across the\n  position-shift.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Task App / FilterBar",
+            "name": "Active Selected",
+            "kind": "skComponent",
+            "index": 1
+          },
+          "backends": [
+            "web",
+            "tui",
+            "gpui",
+            "freya",
+            "cocoa",
+            "android",
+            "ios"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1080,
+          "height": 720,
+          "label": "tablet"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "visual",
+          "label": "Visual Polish",
+          "weight": 0.4,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "states",
+          "label": "State Clarity",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "accessibility",
+          "label": "Accessibility",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "component.filter-bar-all-selected",
+      "schemaVersion": 1,
+      "kind": "component",
+      "title": "Task App / FilterBar — All Selected",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/component/filter-bar-all-selected.md",
+      "bodyMarkdown": "\n# Task App / FilterBar — All Selected\n\n> **Status:** Starter brief. Refine the \"What to watch for\" list as you learn what matters for this story.\n\n## What you're reviewing\n\nThe filter bar in its default state: three pills — **All**, **Active**,\n**Completed** — with **All** as the active selection (accent fill).\nCaptured on a transparent / neutral background so the pill states\nread clearly.\n\n## What to watch for\n\n- All pill: accent `#7c7aed` background, white text, no border or\n  border matching the fill.\n- Active / Completed pills: muted neutral text (`#A0A2B0`), subtle\n  border or transparent background, no accent fill.\n- Pill widths feel equivalent — minimum width ~80 px in the web\n  reference so labels don't visibly jump as selection changes.\n- Gap between pills is consistent (~6 px on web).\n- Pills sit on a shared baseline; no vertical drift.\n\n## Cross-backend expectations\n\nThe TUI compositor emits `\\x1b[38;2;124;122;237m` truecolor for the\nactive pill; on cocoa the active pill is the system tint; on ios a\n`UISegmentedControl` with selected segment; on android Material's\n`SingleChoiceSegmentedButtonRow`.\n\n## Scoring rubric\n\n- **Visual Polish (9/10)**: pill treatment is shipping-grade\n  segmented-control quality. **(5/10)**: visibly off-palette or\n  default-styled. **(2/10)**: pills are misaligned or unreadable.\n- **State Clarity**: the active pill is unambiguous; no risk of\n  reading two pills as active.\n- **Accessibility**: active-pill text on accent fill meets contrast\n  ≥4.5:1 (white on `#7c7aed` is ~5.0:1).\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Task App / FilterBar",
+            "name": "All Selected",
+            "kind": "skComponent",
+            "index": 0
+          },
+          "backends": [
+            "web",
+            "tui",
+            "gpui",
+            "freya",
+            "cocoa",
+            "android",
+            "ios"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1080,
+          "height": 720,
+          "label": "tablet"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "visual",
+          "label": "Visual Polish",
+          "weight": 0.4,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "states",
+          "label": "State Clarity",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "accessibility",
+          "label": "Accessibility",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "component.filter-bar-completed-selected",
+      "schemaVersion": 1,
+      "kind": "component",
+      "title": "Task App / FilterBar — Completed Selected",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/component/filter-bar-completed-selected.md",
+      "bodyMarkdown": "\n# Task App / FilterBar — Completed Selected\n\n> **Status:** Starter brief. Refine the \"What to watch for\" list as you learn what matters for this story.\n\n## What you're reviewing\n\nThe filter bar with **Completed** as the selected pill. Completed\ncarries the accent fill; All + Active are inactive.\n\n## What to watch for\n\n- Completed pill: accent fill, white text. The word \"Completed\" is\n  the longest of the three labels — verify no clipping at minimum\n  pill width.\n- All + Active pills inactive, matching each other.\n- Pill order remains All → Active → Completed.\n- The active pill rests at the trailing edge of the cluster — verify\n  no extra trailing padding that makes the bar look unbalanced.\n\n## Cross-backend expectations\n\nAll seven backends. On narrow TUI cells the longer \"Completed\"\nlabel may force a different layout; document any single-line vs\nwrapped behaviour.\n\n## Scoring rubric\n\n- **Visual Polish (9/10)**: clipping-free, shipping-grade segmented\n  control. **(5/10)**: visible clipping or misalignment.\n- **State Clarity**: selection is unambiguous.\n- **Accessibility**: same contrast bar as the sibling briefs.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Task App / FilterBar",
+            "name": "Completed Selected",
+            "kind": "skComponent",
+            "index": 2
+          },
+          "backends": [
+            "web",
+            "tui",
+            "gpui",
+            "freya",
+            "cocoa",
+            "android",
+            "ios"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1080,
+          "height": 720,
+          "label": "tablet"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "visual",
+          "label": "Visual Polish",
+          "weight": 0.4,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "states",
+          "label": "State Clarity",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "accessibility",
+          "label": "Accessibility",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "component.number-item-clamped",
+      "schemaVersion": 1,
+      "kind": "component",
+      "title": "Settings App / NumberItem — Clamped",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/component/number-item-clamped.md",
+      "bodyMarkdown": "\n# Settings App / NumberItem — Clamped\n\n> **Status:** Starter brief. Refine the bullets below as you learn what matters most for this story.\n\n## What you're reviewing\n\nA bounded-integer setting after the user attempted to decrement\nbelow the minimum; the value snapped to 10 (the floor). The\nstepper readout shows 10 and the minus button is disabled.\n\n## What to watch for\n\n- Minus button is visibly disabled: lower opacity (around 0.4),\n  no hover affordance, may carry a disabled-cursor.\n- The clamped readout (10) is rendered identically to the default\n  readout in font / size / weight — only the surrounding state\n  changed.\n- Plus button remains enabled.\n- No error / shake animation should be triggered by a clamp —\n  this is a graceful boundary state, not an error.\n- If a min/max hint is rendered anywhere, verify the wording is\n  not alarmist (no \"Error\" copy).\n\n## Cross-backend expectations\n\nAll seven backends. Disabled-state styling differs per platform:\ncocoa greys NSStepper segments; ios UIStepper has built-in\ndisabled visuals; android Material disabled is a 38% opacity.\n\n## Scoring rubric\n\n- **Visual Polish (9/10)**: clamp state feels intentional, not\n  broken.\n- **State Clarity**: disabled minus is unambiguous; value is\n  correct.\n- **Accessibility**: disabled state still passes 3 to 1 contrast\n  for the readout.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Settings App / NumberItem",
+            "name": "Clamped",
+            "kind": "skComponent",
+            "index": 1
+          },
+          "backends": [
+            "web",
+            "tui",
+            "gpui",
+            "freya",
+            "cocoa",
+            "android",
+            "ios"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1080,
+          "height": 720,
+          "label": "tablet"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "visual",
+          "label": "Visual Polish",
+          "weight": 0.4,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "states",
+          "label": "State Clarity",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "accessibility",
+          "label": "Accessibility",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "component.number-item-default",
+      "schemaVersion": 1,
+      "kind": "component",
+      "title": "Settings App / NumberItem — Default",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/component/number-item-default.md",
+      "bodyMarkdown": "\n# Settings App / NumberItem — Default\n\n> **Status:** Starter brief. Refine the bullets below as you learn what matters most for this story.\n\n## What you're reviewing\n\nA bounded-integer setting row at its initial seed value (font_size\n= 14). The stepper shows minus, the numeric readout (14), and\nplus, with both buttons enabled.\n\n## What to watch for\n\n- Numeric readout uses tabular-nums or a fixed-width font so the\n  digit does not wobble.\n- Both stepper buttons are in the enabled state: same opacity,\n  same hover affordance class.\n- Unit suffix (pt) is part of the readout where applicable.\n- Stepper height matches the toggle and segmented controls in\n  neighbouring rows.\n- Minus / plus buttons read as two distinct controls — not a\n  shared widget that toggles.\n\n## Cross-backend expectations\n\nAll seven backends. On cocoa expect NSStepper or a +/- button\npair; on android Material number-input style; on ios UIStepper.\n\n## Scoring rubric\n\n- **Visual Polish (9/10)**: shipping-grade stepper.\n- **State Clarity**: value, unit, and direction all unambiguous.\n- **Accessibility**: standard hit-area floor; numeric value not\n  rendered as a placeholder.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Settings App / NumberItem",
+            "name": "Default",
+            "kind": "skComponent",
+            "index": 0
+          },
+          "backends": [
+            "web",
+            "tui",
+            "gpui",
+            "freya",
+            "cocoa",
+            "android",
+            "ios"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1080,
+          "height": 720,
+          "label": "tablet"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "visual",
+          "label": "Visual Polish",
+          "weight": 0.4,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "states",
+          "label": "State Clarity",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "accessibility",
+          "label": "Accessibility",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "component.settings-group-editor",
+      "schemaVersion": 1,
+      "kind": "component",
+      "title": "Settings App / Group — Editor",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/component/settings-group-editor.md",
+      "bodyMarkdown": "\n# Settings App / Group — Editor\n\n> **Status:** Starter brief. Refine the bullets below as you learn what matters most for this story.\n\n## What you're reviewing\n\nThe Editor settings group rendered as a single component: header\n(\"EDITOR\" uppercase label) followed by three rows — Insert spaces\nfor tabs toggle, Tab width stepper, Line endings segmented choice.\n\n## What to watch for\n\n- Group header treatment is consistent with Appearance and\n  Notifications siblings: uppercase 11px label, 0.08em letter\n  spacing, muted color.\n- Three rows in declared order; no horizontal jitter from row to\n  row.\n- Tab width stepper readout is \"4\" with no doubled-up value\n  artifact (the \"4 4\" regression).\n- Line endings segmented control: LF active, CRLF and CR inactive.\n- The group reads as a discrete card, not an unbounded list of\n  rows.\n\n## Cross-backend expectations\n\nAll seven backends. The settings catalog drives all values from the\nsame VM; idiom variability is the only difference.\n\n## Scoring rubric\n\n- **Visual Polish (9/10)**: group header, row rhythm, and control\n  treatments all read as shipping. **(5/10)**: one control looks\n  unstyled.\n- **State Clarity**: active states on the toggle and the LF pill\n  are unambiguous.\n- **Accessibility**: header text contrast and control hit areas\n  meet the standard bars.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Settings App / Group",
+            "name": "Editor",
+            "kind": "skComponent",
+            "index": 1
+          },
+          "backends": [
+            "web",
+            "tui",
+            "gpui",
+            "freya",
+            "cocoa",
+            "android",
+            "ios"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1080,
+          "height": 720,
+          "label": "tablet"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "visual",
+          "label": "Visual Polish",
+          "weight": 0.4,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "states",
+          "label": "State Clarity",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "accessibility",
+          "label": "Accessibility",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "component.settings-group-notifications",
+      "schemaVersion": 1,
+      "kind": "component",
+      "title": "Settings App / Group — Notifications",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/component/settings-group-notifications.md",
+      "bodyMarkdown": "\n# Settings App / Group — Notifications\n\n> **Status:** Starter brief. Refine the bullets below as you learn what matters most for this story.\n\n## What you're reviewing\n\nThe Notifications settings group: header plus three rows — Play\nsounds toggle (on), Show badges toggle (off), Poll interval stepper\n(default 5 s, displayed as \"5 s\" via the humanised formatter).\n\n## What to watch for\n\n- Two toggles in different positions (one on, one off) — verify\n  the on/off difference is immediate to read.\n- Poll interval readout uses the humanised format (\"5 s\" not\n  \"5000 ms\"); but the underlying catalog value is in ms.\n- The toggle thumb travel for the on state aligns with the\n  Appearance group's Dark mode toggle exactly (same thumb size,\n  travel distance, color).\n- Hint copy under each title is muted and clipped consistently.\n- Group header NOTIFICATIONS matches the Appearance and Editor\n  group headers byte-for-byte in styling.\n\n## Cross-backend expectations\n\nAll seven backends. The humanised display formatter is a shared\nhelper; verify each backend exposes the same display string.\n\n## Scoring rubric\n\n- **Visual Polish (9/10)**: matches the other two groups perfectly\n  in rhythm and treatment. **(5/10)**: a single inconsistency vs\n  Appearance/Editor.\n- **State Clarity**: on vs off on the two toggles is unambiguous;\n  the stepper readout is unambiguous.\n- **Accessibility**: hit-areas meet the standard bar.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Settings App / Group",
+            "name": "Notifications",
+            "kind": "skComponent",
+            "index": 2
+          },
+          "backends": [
+            "web",
+            "tui",
+            "gpui",
+            "freya",
+            "cocoa",
+            "android",
+            "ios"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1080,
+          "height": 720,
+          "label": "tablet"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "visual",
+          "label": "Visual Polish",
+          "weight": 0.4,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "states",
+          "label": "State Clarity",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "accessibility",
+          "label": "Accessibility",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "component.summary-bar-active-only",
+      "schemaVersion": 1,
+      "kind": "component",
+      "title": "Task App / SummaryBar — Active Only",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/component/summary-bar-active-only.md",
+      "bodyMarkdown": "\n# Task App / SummaryBar — Active Only\n\n> **Status:** Starter brief. Refine the bullets below as you learn what matters most for this story.\n\n## What you're reviewing\n\nThe summary bar with only active tasks present (`1 item left` or\nbackend-native equivalent). The **Clear completed** affordance is\nNOT shown because zero completed tasks exist.\n\n## What to watch for\n\n- The Clear-completed control is absent (not greyed, not 0-width).\n- Active-count text is left-aligned; right edge keeps the same\n  alignment as the With-Completed sibling brief.\n- Singular vs plural agreement: `1 item` not `1 items`.\n- Top hairline border above the summary stays intact.\n- Muted neutral text colour, consistent with summary copy across\n  other backends.\n\n## Cross-backend expectations\n\nAll seven backends. Count phrasing matches the seeded VM exactly.\n\n## Scoring rubric\n\n- **Visual Polish (9/10)**: the absence of Clear-completed feels\n  intentional. **(5/10)**: bar feels half-empty. **(2/10)**: layout\n  collapses without that affordance.\n- **State Clarity**: count is correct and unambiguous.\n- **Accessibility**: summary text contrast at least 4.5 to 1.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Task App / SummaryBar",
+            "name": "Active Only",
+            "kind": "skComponent",
+            "index": 0
+          },
+          "backends": [
+            "web",
+            "tui",
+            "gpui",
+            "freya",
+            "cocoa",
+            "android",
+            "ios"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1080,
+          "height": 720,
+          "label": "tablet"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "visual",
+          "label": "Visual Polish",
+          "weight": 0.4,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "states",
+          "label": "State Clarity",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "accessibility",
+          "label": "Accessibility",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "component.summary-bar-with-completed",
+      "schemaVersion": 1,
+      "kind": "component",
+      "title": "Task App / SummaryBar — With Completed",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/component/summary-bar-with-completed.md",
+      "bodyMarkdown": "\n# Task App / SummaryBar — With Completed\n\n> **Status:** Starter brief. Refine the bullets below as you learn what matters most for this story.\n\n## What you're reviewing\n\nThe summary bar with at least one completed task present. The\n**Clear completed** affordance is **enabled and visible** at the\ntrailing edge.\n\n## What to watch for\n\n- Clear completed control is rendered as a text-button or link with\n  the accent colour (`#7c7aed`) — not a primary CTA button (it must\n  feel like a tertiary action).\n- Left side shows the active count (e.g. `1 item left`); the\n  middle separator (web uses `·` middot) keeps the two phrases\n  balanced.\n- Hover / pressed state on Clear completed: subtle underline or\n  background tint, not a full-button highlight.\n- The summary bar's height matches the Active-Only sibling brief\n  exactly — no vertical jump when Clear completed appears.\n- Trailing edge of the bar aligns with the trailing edge of the\n  task rows above.\n\n## Cross-backend expectations\n\nAll seven backends. On TUI the affordance reads as a single\nunderlined or coloured text command.\n\n## Scoring rubric\n\n- **Visual Polish (9/10)**: tertiary CTA treatment is correct.\n  **(5/10)**: Clear completed reads as the primary CTA (visually\n  competing with Add Task). **(2/10)**: missing or unclickable.\n- **State Clarity**: counts and CTA are immediately readable.\n- **Accessibility**: link contrast meets 4.5 to 1.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Task App / SummaryBar",
+            "name": "With Completed",
+            "kind": "skComponent",
+            "index": 1
+          },
+          "backends": [
+            "web",
+            "tui",
+            "gpui",
+            "freya",
+            "cocoa",
+            "android",
+            "ios"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1080,
+          "height": 720,
+          "label": "tablet"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "visual",
+          "label": "Visual Polish",
+          "weight": 0.4,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "states",
+          "label": "State Clarity",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "accessibility",
+          "label": "Accessibility",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "component.task-input-empty",
+      "schemaVersion": 1,
+      "kind": "component",
+      "title": "Task App / TaskInput — Empty",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/component/task-input-empty.md",
+      "bodyMarkdown": "\n# Task App / TaskInput — Empty\n\n> **Status:** Starter brief. Refine the \"What to watch for\" list as you learn what matters for this story.\n\n## What you're reviewing\n\nThe task-input component in its **empty** resting state: no draft\ntext typed, placeholder copy (`New task… (press Enter to add)`)\nvisible, and the accompanying **Add Task** primary button at the\ntrailing edge.\n\n## What to watch for\n\n- Placeholder colour is a muted neutral (`#A0A2B0` family) — readable\n  but visibly secondary to a typed value would be.\n- Placeholder copy alignment is left-aligned, vertically centred.\n- The leading `+` glyph (or backend-equivalent icon) is balanced with\n  the placeholder text — no excessive gap, no overlap.\n- The trailing **Add Task** button is in its primary-CTA treatment:\n  accent `#7c7aed` fill, white text, sufficient padding.\n- The component's outer border / background combination yields a\n  visibly elevated card (not a floating bare `<input>`).\n- No focus ring in the empty state (component is unfocused here).\n\n## Cross-backend expectations\n\nComponent-level brief; all seven backends participate to verify\ncross-renderer parity. Idiom differs: cocoa = `NSTextField` with\ntrailing `NSButton`; android = Material `OutlinedTextField` +\nfilled button; ios = `UITextField` + tinted `UIButton`.\n\n## Scoring rubric\n\n- **Visual Polish (9/10)**: card composition, button treatment, and\n  placeholder copy all read as production-grade. **(5/10)**: one\n  element clearly amateur — e.g. UA-default button. **(2/10)**: the\n  component looks unstyled or broken.\n- **State Clarity**: empty state is unambiguous and the affordances\n  (input vs submit) are visually distinct.\n- **Accessibility**: placeholder contrast against background meets\n  ≥4.5:1; button hit area ≥ 24×24 px on touch backends.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Task App / TaskInput",
+            "name": "Empty",
+            "kind": "skComponent",
+            "index": 0
+          },
+          "backends": [
+            "web",
+            "tui",
+            "gpui",
+            "freya",
+            "cocoa",
+            "android",
+            "ios"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1080,
+          "height": 720,
+          "label": "tablet"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "visual",
+          "label": "Visual Polish",
+          "weight": 0.4,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "states",
+          "label": "State Clarity",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "accessibility",
+          "label": "Accessibility",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "component.task-input-with-draft",
+      "schemaVersion": 1,
+      "kind": "component",
+      "title": "Task App / TaskInput — With Draft",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/component/task-input-with-draft.md",
+      "bodyMarkdown": "\n# Task App / TaskInput — With Draft\n\n> **Status:** Starter brief. Refine the \"What to watch for\" list as you learn what matters for this story.\n\n## What you're reviewing\n\nThe task-input component with draft text `buy milk` typed and\n**not yet submitted**. The placeholder is gone, draft text occupies\nthe input, and the **Add Task** button should be in its enabled\nstate (some backends may also use a brighter accent to signal that\nEnter / click will commit).\n\n## What to watch for\n\n- Draft text colour is the primary-text colour (near-white\n  `#E8E9F0`), distinctly brighter than the placeholder used in the\n  Empty story.\n- Caret is visible inside the draft (still or animated capture).\n- The Add Task button is in an **enabled** state — should not be\n  greyed out simply because the input previously had no value.\n- Draft text byte-content matches `buy milk` exactly (no autocaps,\n  no trailing-space variants).\n- No focus ring artifacts overlapping the typed text.\n\n## Cross-backend expectations\n\nAll seven backends. The biggest variability is the caret rendering\n(blink rate, colour) and how each backend handles input baseline\nwhen the leading `+` glyph is present.\n\n## Scoring rubric\n\n- **Visual Polish (9/10)**: typed text is crisp, the button reads\n  as primary-and-enabled. **(5/10)**: typed text legible but caret\n  / button states are ambiguous. **(2/10)**: typed text overlaps\n  glyphs or is unreadable.\n- **State Clarity**: difference from the Empty story is immediate\n  (draft visible, button enabled).\n- **Accessibility**: typed text contrast ≥7:1; caret high-contrast.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Task App / TaskInput",
+            "name": "With Draft",
+            "kind": "skComponent",
+            "index": 1
+          },
+          "backends": [
+            "web",
+            "tui",
+            "gpui",
+            "freya",
+            "cocoa",
+            "android",
+            "ios"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1080,
+          "height": 720,
+          "label": "tablet"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "visual",
+          "label": "Visual Polish",
+          "weight": 0.4,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "states",
+          "label": "State Clarity",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "accessibility",
+          "label": "Accessibility",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "component.task-list-empty",
+      "schemaVersion": 1,
+      "kind": "component",
+      "title": "Task App / TaskList — Empty",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/component/task-list-empty.md",
+      "bodyMarkdown": "\n# Task App / TaskList — Empty\n\n> **Status:** Starter brief. Refine the \"What to watch for\" list as you learn what matters for this story.\n\n## What you're reviewing\n\nThe task list component in its **empty** state: no rows, friendly\nempty-state copy. The reusable `Task Check Icon` vector symbol\nappears as an illustrative glyph alongside the empty copy.\n\n## What to watch for\n\n- Empty-state copy is friendly and actionable — not \"No data\" or a\n  bare ellipsis. Something like \"No tasks yet — type one above\" is\n  the target.\n- The illustrative glyph (`Task Check Icon`) sits comfortably with\n  the copy; not so large that it visually dominates, not so small\n  that it reads as a decoration mistake.\n- Vertical centring of the empty state within the available list\n  area — not pinned to the top edge.\n- Colour palette: copy uses muted neutral, glyph uses tertiary\n  accent (de-saturated indigo or muted neutral).\n- No empty placeholder rectangles or skeleton rows.\n\n## Cross-backend expectations\n\nAll seven backends. On TUI the glyph degrades to an ASCII / Unicode\ncharacter; on every native backend the SVG-style symbol renders\nthrough the matching `usesVectorSymbols` registration.\n\n## Scoring rubric\n\n- **Visual Polish (9/10)**: empty state reads as intentional UX\n  design. **(5/10)**: functional but feels like a fallback.\n  **(2/10)**: empty state looks broken or missing.\n- **State Clarity**: a reviewer can immediately tell this is empty\n  state, not a loading state.\n- **Accessibility**: copy contrast meets ≥4.5:1; glyph is decorative\n  (not focus-stealing).\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Task App / TaskList",
+            "name": "Empty",
+            "kind": "skComponent",
+            "index": 0
+          },
+          "backends": [
+            "web",
+            "tui",
+            "gpui",
+            "freya",
+            "cocoa",
+            "android",
+            "ios"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1080,
+          "height": 720,
+          "label": "tablet"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "visual",
+          "label": "Visual Polish",
+          "weight": 0.4,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "states",
+          "label": "State Clarity",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "accessibility",
+          "label": "Accessibility",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "component.task-list-mixed-completion",
+      "schemaVersion": 1,
+      "kind": "component",
+      "title": "Task App / TaskList — Mixed Completion",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/component/task-list-mixed-completion.md",
+      "bodyMarkdown": "\n# Task App / TaskList — Mixed Completion\n\n> **Status:** Starter brief. Refine the \"What to watch for\" list as you learn what matters for this story.\n\n## What you're reviewing\n\nThe task list with **one active row + one completed row** in\ninsertion order. This is the canonical \"before clear-completed\"\nstate that exercises both row treatments side-by-side.\n\n## What to watch for\n\n- Active row: empty checkbox, primary-text name, no strikethrough.\n- Completed row: filled checkbox (accent fill), muted name with\n  strikethrough applied. Strikethrough should be subtle (1 px line\n  weight in the name's colour), not heavy.\n- Row order is insertion order; the completed row does NOT reorder\n  to the bottom.\n- Sort affordance (`Task Sort Icon`) — verify the glyph is visible\n  and not clipped, since both rows are listed via the same renderer.\n- Row-to-row vertical gap is consistent — same gap before, between,\n  and after the rows.\n- Remove affordance (`×` glyph) renders on both rows.\n\n## Cross-backend expectations\n\nAll seven backends. Verify the strikethrough effect translates: TUI\nmay use a Unicode strikethrough combining char or ANSI SGR\n`\\x1b[9m`; cocoa uses `NSAttributedString` strikethrough; android\nuses `paintFlags |= STRIKE_THRU_TEXT_FLAG`.\n\n## Scoring rubric\n\n- **Visual Polish (9/10)**: both row states are visibly distinct\n  and shipping-quality. **(5/10)**: one state visibly amateur (e.g.\n  no strikethrough on completed). **(2/10)**: rows look identical.\n- **State Clarity**: active vs completed is unambiguous from row\n  styling alone.\n- **Accessibility**: muted text + strikethrough on the completed\n  row still meets ≥3:1 contrast (lowered floor since text is\n  decorative-with-strikethrough).\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Task App / TaskList",
+            "name": "Mixed Completion",
+            "kind": "skComponent",
+            "index": 2
+          },
+          "backends": [
+            "web",
+            "tui",
+            "gpui",
+            "freya",
+            "cocoa",
+            "android",
+            "ios"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1080,
+          "height": 720,
+          "label": "tablet"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "visual",
+          "label": "Visual Polish",
+          "weight": 0.4,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "states",
+          "label": "State Clarity",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "accessibility",
+          "label": "Accessibility",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "component.toggle-item-off",
+      "schemaVersion": 1,
+      "kind": "component",
+      "title": "Settings App / ToggleItem — Off",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/component/toggle-item-off.md",
+      "bodyMarkdown": "\n# Settings App / ToggleItem — Off\n\n> **Status:** Starter brief. Refine the bullets below as you learn what matters most for this story.\n\n## What you're reviewing\n\nA single toggle item in the off position: label on the left, hint\ncopy below the label, switch widget on the right with the thumb at\nthe leading edge and the track in its neutral / muted state.\n\n## What to watch for\n\n- Switch track in the off state is a muted neutral (web reference\n  uses `#2A2C3A`); the accent indigo is NOT applied.\n- Thumb is fully at the leading edge — no halfway / indeterminate\n  position.\n- Label and hint typography hierarchy: title at 13px medium-weight,\n  hint at 11px muted.\n- Row height matches the on-state sibling brief exactly (no\n  vertical jitter when the state changes).\n- Hit area for the switch is large enough on touch backends (at\n  least 44 by 44 pixel target on iOS).\n\n## Cross-backend expectations\n\nAll seven backends. Switch idiom varies: web is a CSS pill; cocoa\nNSSwitch; ios UISwitch; android Material switch; TUI uses an ASCII\nindicator like `[ ]`.\n\n## Scoring rubric\n\n- **Visual Polish (9/10)**: switch reads as a shipping platform\n  control. **(5/10)**: switch looks unstyled or off-palette.\n- **State Clarity**: off state is unambiguous and distinct from\n  the on sibling brief.\n- **Accessibility**: 4.5 to 1 contrast on label and hint; hit area\n  meets the platform bar.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Settings App / ToggleItem",
+            "name": "Off",
+            "kind": "skComponent",
+            "index": 0
+          },
+          "backends": [
+            "web",
+            "tui",
+            "gpui",
+            "freya",
+            "cocoa",
+            "android",
+            "ios"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1080,
+          "height": 720,
+          "label": "tablet"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "visual",
+          "label": "Visual Polish",
+          "weight": 0.4,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "states",
+          "label": "State Clarity",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "accessibility",
+          "label": "Accessibility",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "component.toggle-item-on",
+      "schemaVersion": 1,
+      "kind": "component",
+      "title": "Settings App / ToggleItem — On",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/component/toggle-item-on.md",
+      "bodyMarkdown": "\n# Settings App / ToggleItem — On\n\n> **Status:** Starter brief. Refine the bullets below as you learn what matters most for this story.\n\n## What you're reviewing\n\nA toggle item in the on position: switch track filled with the\naccent indigo, thumb fully at the trailing edge. Same label / hint\ntypography as the off sibling.\n\n## What to watch for\n\n- Track fill is the accent indigo `#7c7aed` (not pure white, not\n  navy).\n- Thumb fully translated to the trailing edge; no halfway state.\n- Track-to-thumb contrast keeps the thumb visible against the\n  accent fill.\n- Pressed / hover state if rendered: subtle tint, not a full\n  brightening of the track.\n- Same row height as the off sibling.\n\n## Cross-backend expectations\n\nAll seven backends. The cocoa NSSwitch on-state may use the system\naccent (not necessarily IsoNim indigo) — document the gap if it\ndeviates noticeably.\n\n## Scoring rubric\n\n- **Visual Polish (9/10)**: shipping-grade on state.\n- **State Clarity**: on vs off is immediate.\n- **Accessibility**: thumb-on-accent contrast at least 3 to 1.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Settings App / ToggleItem",
+            "name": "On",
+            "kind": "skComponent",
+            "index": 1
+          },
+          "backends": [
+            "web",
+            "tui",
+            "gpui",
+            "freya",
+            "cocoa",
+            "android",
+            "ios"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1080,
+          "height": 720,
+          "label": "tablet"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "visual",
+          "label": "Visual Polish",
+          "weight": 0.4,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "states",
+          "label": "State Clarity",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "accessibility",
+          "label": "Accessibility",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "foundation.settings-app-control-states",
+      "schemaVersion": 1,
+      "kind": "foundation",
+      "title": "Settings App / Foundations — Control States",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/foundation/settings-app-control-states.md",
+      "bodyMarkdown": "\n# Settings App / Foundations — Control States\n\n> **Status:** Starter brief. Refine the bullets below as you learn what matters most for this story.\n\n## What you're reviewing\n\nThe tonal palette for control states: default, hover, pressed,\ndisabled. Each state should be rendered against the same shared\ncontrol idiom (a pill or a toggle) so the tonal shift is\nisolated.\n\n## What to watch for\n\n- Four states rendered in a horizontal strip: default, hover,\n  pressed, disabled.\n- Each state labelled with its token name.\n- Tonal shift between states is monotonic: hover slightly\n  brighter than default; pressed slightly darker than default;\n  disabled visibly muted (around 40 percent opacity).\n- Accent indigo `#7c7aed` participates correctly in the hover\n  / pressed states (it should brighten under hover, not shift\n  to teal).\n- Disabled state retains a hint of structure (border or 1 px\n  outline) so it does not vanish.\n\n## Cross-backend expectations\n\nFoundation; web canonical. Native backends use their platform\nripple / highlight system.\n\n## Scoring rubric\n\n- **Token Consistency**: the four states are visibly different\n  from each other and consistently applied across all controls.\n- **Documentation**: each state has a name and a pixel\n  characterisation.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Settings App / Foundations",
+            "name": "Control States",
+            "kind": "skFoundation",
+            "index": 1
+          },
+          "backends": [
+            "web"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 800,
+          "height": 600,
+          "label": "default"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "consistency",
+          "label": "Token Consistency",
+          "weight": 0.5,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "documentation",
+          "label": "Documentation",
+          "weight": 0.5,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "foundation.settings-app-item-density",
+      "schemaVersion": 1,
+      "kind": "foundation",
+      "title": "Settings App / Foundations — Item Density",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/foundation/settings-app-item-density.md",
+      "bodyMarkdown": "\n# Settings App / Foundations — Item Density\n\n> **Status:** Starter brief. Refine the bullets below as you learn what matters most for this story.\n\n## What you're reviewing\n\nThe row-height and label-control alignment rhythm of settings\nitems: how tall each row is, where the title sits relative to\nthe hint, and where the trailing control aligns vertically.\n\n## What to watch for\n\n- A row-height token documented (web reference is approximately\n  56-64 px including 10 px vertical padding on each side).\n- Label-stack measurements: title-to-hint vertical gap (around\n  2 px), title-to-control horizontal gap (around 16 px).\n- Trailing control vertical alignment: centred against the label\n  stack, not against the title baseline alone.\n- Hairline divider treatment between rows is documented (1 px\n  border-bottom).\n- Density variants if any (compact vs comfortable) — document if\n  none.\n\n## Cross-backend expectations\n\nFoundation; web. Native backends approximate the same rhythm via\ntheir default list-cell sizes (cocoa 44 px, ios 44 px, android\n56 dp).\n\n## Scoring rubric\n\n- **Token Consistency**: documented row metrics match the\n  Appearance and Editor group rows in pixels.\n- **Documentation**: gaps and alignment lines are called out with\n  pixel values, not adjectives.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Settings App / Foundations",
+            "name": "Item Density",
+            "kind": "skFoundation",
+            "index": 0
+          },
+          "backends": [
+            "web"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 800,
+          "height": 600,
+          "label": "default"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "consistency",
+          "label": "Token Consistency",
+          "weight": 0.5,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "documentation",
+          "label": "Documentation",
+          "weight": 0.5,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "foundation.task-app-spacing",
+      "schemaVersion": 1,
+      "kind": "foundation",
+      "title": "Task App / Foundations — Spacing",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/foundation/task-app-spacing.md",
+      "bodyMarkdown": "\n# Task App / Foundations — Spacing\n\n> **Status:** Starter brief. Refine the bullets below as you learn what matters most for this story.\n\n## What you're reviewing\n\nThe spacing token catalog used by the task app: padding and gap\nvalues on the 4-pixel rhythm. Expected scale: 4, 8, 12, 16, 24,\n32, 48 px.\n\n## What to watch for\n\n- Each token rendered at native pixel-perfect spacing, not\n  rounded to the nearest 5 px.\n- Tokens labelled with their numeric value and a usage example\n  (where the token is consumed).\n- Visual differentiation between adjacent tokens is obvious — 8\n  vs 12 should not look identical at preview-pane scale.\n- Dark-mode contrast: the spacing-block backgrounds remain\n  distinguishable from the surrounding canvas.\n- Tokens listed in ascending order; no gaps in the scale (8 then\n  16 with no 12 between would be a finding).\n\n## Cross-backend expectations\n\nFoundation-style story; rendered on the canonical web backend.\nOther backends consume the same token values via the shared\ncatalog.\n\n## Scoring rubric\n\n- **Token Consistency (9/10)**: every used spacing token in the\n  task app appears in this catalog and at the correct value.\n  **(5/10)**: a couple of off-by-rhythm exceptions documented.\n  **(2/10)**: tokens disagree with their consumers.\n- **Documentation**: each token's label is unambiguous and the\n  usage example is concrete.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Task App / Foundations",
+            "name": "Spacing",
+            "kind": "skFoundation",
+            "index": 0
+          },
+          "backends": [
+            "web"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 800,
+          "height": 600,
+          "label": "default"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "consistency",
+          "label": "Token Consistency",
+          "weight": 0.5,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "documentation",
+          "label": "Documentation",
+          "weight": 0.5,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "foundation.task-app-typography",
+      "schemaVersion": 1,
+      "kind": "foundation",
+      "title": "Task App / Foundations — Typography",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/foundation/task-app-typography.md",
+      "bodyMarkdown": "\n# Task App / Foundations — Typography\n\n> **Status:** Starter brief. Refine the bullets below as you learn what matters most for this story.\n\n## What you're reviewing\n\nThe type-style catalog for the task app: body, label, and\nplaceholder type styles with size, weight, line-height, and\ncolour annotations.\n\n## What to watch for\n\n- Three styles documented in a stack: Body (14 px regular near-\n  white), Label (13 px medium), Placeholder (13 px muted).\n- Each style has a real sample sentence using it, not lorem\n  ipsum.\n- Line-height ratios documented (typically 1.4 for body, 1.5 for\n  hint copy).\n- Hierarchy visible at a glance: body is the heaviest; placeholder\n  is the lightest.\n- Single sans-serif family used across the stack (system stack\n  acceptable).\n\n## Cross-backend expectations\n\nFoundation; rendered on web. Other backends substitute the closest\nnative equivalent (monospace on TUI, San Francisco on cocoa /\nios, Roboto on android).\n\n## Scoring rubric\n\n- **Token Consistency**: each documented style matches a real\n  consumer (task name, hint copy, etc.) in pixels.\n- **Documentation**: style attributes are listed with values;\n  sample copy is meaningful.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Task App / Foundations",
+            "name": "Typography",
+            "kind": "skFoundation",
+            "index": 1
+          },
+          "backends": [
+            "web"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 800,
+          "height": 600,
+          "label": "default"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "consistency",
+          "label": "Token Consistency",
+          "weight": 0.5,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "documentation",
+          "label": "Documentation",
+          "weight": 0.5,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "guideline.cross-renderer-parity",
+      "schemaVersion": 1,
+      "kind": "guideline",
+      "title": "Guidelines — Cross-renderer parity",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/guideline/cross-renderer-parity.md",
+      "bodyMarkdown": "\n# Guidelines — Cross-renderer parity\n\n> **Status:** Starter brief. Refine the bullets below as you learn what matters most for this story.\n\n## What you're reviewing\n\nThe cross-renderer parity guideline: every demo component must\nround-trip on TUI, web, GPUI, Freya, Cocoa, Android, and iOS.\nInformation equivalence is the contract; visual identity is not\nrequired.\n\n## What to watch for\n\n- Guideline copy lays out the rule in one sentence at the top.\n- Examples of \"information equivalence\" are concrete (the\n  filter pill exists on all backends; on TUI it is `[All]\n  Active Completed`, on web it is a pill cluster).\n- Examples of \"visual identity not required\" call out specific\n  expected differences (cocoa NSSwitch vs Material switch).\n- A short \"How to check\" list points reviewers at the render\n  briefs that exercise the rule.\n- The guideline page is concise (under 300 words of body copy).\n\n## Cross-backend expectations\n\nDoc-style story; rendered on web only.\n\n## Scoring rubric\n\n- **Clarity (9/10)**: the rule is unambiguous after one read.\n  **(5/10)**: the rule requires interpretation.\n- **Actionability**: a reviewer can apply the rule to a new\n  story without ambiguity.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Guidelines",
+            "name": "Cross-renderer parity",
+            "kind": "skGuideline",
+            "index": 0
+          },
+          "backends": [
+            "web"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 800,
+          "height": 600,
+          "label": "default"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "clarity",
+          "label": "Clarity",
+          "weight": 0.5,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "actionability",
+          "label": "Actionability",
+          "weight": 0.5,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "guideline.layer-separation",
+      "schemaVersion": 1,
+      "kind": "guideline",
+      "title": "Guidelines — Layer separation",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/guideline/layer-separation.md",
+      "bodyMarkdown": "\n# Guidelines — Layer separation\n\n> **Status:** Starter brief. Refine the bullets below as you learn what matters most for this story.\n\n## What you're reviewing\n\nThe layer-separation guideline: a Layer-1 leaf (per-platform\nwidget) must never be imported from `core/`. Core contains the\nshared view model and view template; leaves are imported only by\nthe per-platform composition root.\n\n## What to watch for\n\n- One-sentence statement of the rule at the top.\n- A short, concrete violation example (a TUI widget imported from\n  `task_app/core/views.nim`) with a marked X next to it.\n- A short concrete correct example (the same leaf consumed via\n  the `Leaves` bundle parameter) with a marked tick next to it.\n- A \"how to verify\" instruction: `grep -r 'from .leaves' core/`\n  must yield zero hits.\n- The guideline cross-references the cross-platform architecture\n  spec so a reader can dig further.\n\n## Cross-backend expectations\n\nDoc-style; web only.\n\n## Scoring rubric\n\n- **Clarity (9/10)**: the rule is unambiguous after one read.\n- **Actionability**: a reviewer can identify a violation in a\n  diff in under 10 seconds.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Guidelines",
+            "name": "Layer separation",
+            "kind": "skGuideline",
+            "index": 1
+          },
+          "backends": [
+            "web"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 800,
+          "height": 600,
+          "label": "default"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "clarity",
+          "label": "Clarity",
+          "weight": 0.5,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "actionability",
+          "label": "Actionability",
+          "weight": 0.5,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "interaction.add-task-clears-completed",
+      "schemaVersion": 1,
+      "kind": "interaction",
+      "title": "Add Task Flow — Clears completed tasks",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/interaction/add-task-clears-completed.md",
+      "bodyMarkdown": "\n# Add Task Flow — Clears completed tasks\n\n> **Status:** Starter brief. Refine the \"What to watch for\" list as you learn what matters for this story.\n\n## What you're reviewing\n\nFinal flow step: user clicks the **Clear completed** affordance in\nthe summary bar to remove all completed rows. The preview shows the\npost-clear state: completed rows gone, summary bar count updated,\nand the clear-completed button hidden (no completed tasks remain).\n\n## What to watch for\n\n- The clear-completed control was visible before the action and is\n  now hidden / disabled — it should only appear when at least one\n  completed task exists.\n- Completed rows removed from the list with no leftover ghost rows\n  or 0-height placeholders.\n- The summary's `N completed` count went to 0 and the secondary\n  affordance retracts cleanly.\n- If captured mid-animation: rows should slide / fade out (not just\n  pop out instantly), under ~300 ms.\n- No accidental removal of active tasks — verify the remaining row\n  count matches the pre-action active count exactly.\n\n## Cross-backend expectations\n\nThe Clear-completed affordance is rendered as a text-button on web /\ngpui / freya, a small text command on TUI, and an icon-button or\ntext affordance on cocoa / android / ios. Information equivalence:\nall backends must show this affordance disappear after the click.\n\n## Scoring rubric\n\n- **Step Clarity (9/10)**: a reviewer can tell what action just\n  happened from the still image. **(5/10)**: requires the\n  description to interpret. **(2/10)**: state is indistinguishable\n  from an empty list that never had completed tasks.\n- **Action Feedback**: button hover / pressed state, removal\n  transition smoothness.\n- **Responsiveness**: clear-completed should not block on a network\n  call; expect immediate UI update.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Add Task Flow",
+            "name": "Clears completed tasks",
+            "kind": "skFlow",
+            "index": 3
+          },
+          "backends": [
+            "web",
+            "tui",
+            "gpui",
+            "freya",
+            "cocoa",
+            "android",
+            "ios"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1080,
+          "height": 720,
+          "label": "tablet"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "clarity",
+          "label": "Step Clarity",
+          "weight": 0.4,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "feedback",
+          "label": "Action Feedback",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "responsiveness",
+          "label": "Responsiveness",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "interaction.add-task-presses-enter",
+      "schemaVersion": 1,
+      "kind": "interaction",
+      "title": "Add Task Flow — Presses Enter to add",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/interaction/add-task-presses-enter.md",
+      "bodyMarkdown": "\n# Add Task Flow — Presses Enter to add\n\n> **Status:** Starter brief. Refine the \"What to watch for\" list as you learn what matters for this story.\n\n## What you're reviewing\n\nThe commit step in the Add Task flow: the user has typed a task name\nand presses Enter (or taps the Add button). The preview captures the\nmoment immediately after commit, when the list now contains one\nactive row and the input has reset to its empty state.\n\n## What to watch for\n\n- The task row that just got added appears in the list — verify it\n  is the bottommost row (insertion-order sort) and that it carries\n  the correct typed name.\n- The input has cleared back to its placeholder; no draft text\n  lingers between commits.\n- The summary bar count incremented by one (\"1 active\" / \"1 task\n  remaining\").\n- Commit affordance: was there a visible flash, slide, or fade as\n  the row appeared? (Animated captures only; still images note the\n  resting state.)\n- No double-insert (two identical rows from a single Enter press).\n\n## Cross-backend expectations\n\nAll seven backends must reflect the same VM state after the Enter\nkeypress. On TUI the row should be a single line with the task name;\non cocoa / ios / android the native list-row appearance applies.\n\n## Scoring rubric\n\n- **Step Clarity (9/10)**: list visibly grew by exactly one row and\n  the summary bar count matches. **(5/10)**: row appeared but\n  summary is stale. **(2/10)**: no observable state change.\n- **Commit Feedback**: was there any visual cue that Enter was\n  acknowledged (input clear, focus retention, brief highlight on\n  new row)?\n- **Responsiveness**: time from keypress to first visible change\n  should feel sub-100 ms. On still captures this is the absence of\n  loading spinners or pending-state UI.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Add Task Flow",
+            "name": "Presses Enter to add",
+            "kind": "skFlow",
+            "index": 1
+          },
+          "backends": [
+            "web",
+            "tui",
+            "gpui",
+            "freya",
+            "cocoa",
+            "android",
+            "ios"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1080,
+          "height": 720,
+          "label": "tablet"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "clarity",
+          "label": "Step Clarity",
+          "weight": 0.4,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "feedback",
+          "label": "Commit Feedback",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "responsiveness",
+          "label": "Responsiveness",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "interaction.add-task-toggles-complete",
+      "schemaVersion": 1,
+      "kind": "interaction",
+      "title": "Add Task Flow — Toggles the task complete",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/interaction/add-task-toggles-complete.md",
+      "bodyMarkdown": "\n# Add Task Flow — Toggles the task complete\n\n> **Status:** Starter brief. Refine the \"What to watch for\" list as you learn what matters for this story.\n\n## What you're reviewing\n\nFlow step where the user toggles a task row to the completed state.\nThe preview shows the row immediately after the checkbox flip:\ncheckmark filled, task name strikethrough applied, and the summary\nbar count updated to reflect one fewer active task.\n\n## What to watch for\n\n- Tap-target visibility: the checkbox / toggle widget has a hit area\n  of at least 24×24 px on touch backends, and a clearly distinct\n  pressed state on hover-capable backends.\n- Transition timing: animated captures should show the strikethrough\n  + checkmark fade in under 250 ms. No jarring 0 ms or sluggish\n  500 ms+ transitions.\n- The accent indigo (`#7c7aed`) fills the checked checkbox on web /\n  gpui / freya; on cocoa it's the system tint; on android Material\n  checkmark style; on ios the native `UISwitch` / circular check.\n- List ordering after the toggle: the completed row stays in place\n  (insertion order) — it should NOT reorder to the bottom unless the\n  filter changes.\n- Summary bar updated counts in lock-step with the toggle.\n\n## Cross-backend expectations\n\nCross-renderer parity matters here because the toggle widget is the\nmost idiom-divergent control across backends. Information equivalence\n(checked vs unchecked state visible at a glance) is non-negotiable;\nvisual treatment varies per platform.\n\n## Scoring rubric\n\n- **Step Clarity (9/10)**: at a glance you can name which row was\n  toggled and what state it's in. **(5/10)**: state is readable but\n  requires scrutiny. **(2/10)**: state is ambiguous or unreadable at\n  preview scale.\n- **Toggle Feedback**: strikethrough rendering, checkmark contrast,\n  pressed-state affordance.\n- **Responsiveness**: the toggle should not require a re-render of\n  the whole list (no visible flicker outside the toggled row).\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Add Task Flow",
+            "name": "Toggles the task complete",
+            "kind": "skFlow",
+            "index": 2
+          },
+          "backends": [
+            "web",
+            "tui",
+            "gpui",
+            "freya",
+            "cocoa",
+            "android",
+            "ios"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1080,
+          "height": 720,
+          "label": "tablet"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "clarity",
+          "label": "Step Clarity",
+          "weight": 0.4,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "feedback",
+          "label": "Toggle Feedback",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "responsiveness",
+          "label": "Responsiveness",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "interaction.add-task-types-name",
+      "schemaVersion": 1,
+      "kind": "interaction",
+      "title": "Add Task Flow — Types a task name",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/interaction/add-task-types-name.md",
+      "bodyMarkdown": "\n# Add Task Flow — Types a task name\n\n> **Status:** Starter brief. Refine the \"What to watch for\" list as you learn what matters for this story.\n\n## What you're reviewing\n\nThe opening step of the **Add Task** user journey: the task-app input\ngains focus and the user types the literal string `pick up groceries`.\nThe preview captures the input at full focus with the typed draft\nvisible.\n\n## What to watch for\n\n- Caret position is clearly visible inside the input (no clipped\n  caret, no zero-width caret in TUI).\n- The placeholder copy (`New task…`) has disappeared once typing\n  starts — no double-up of placeholder + draft text.\n- Focus ring or border treatment on the input is visibly distinct\n  from the unfocused state in the rest of the editor chrome.\n- The accent colour (`#7c7aed`) is used for the focus indicator, not\n  a competing hue.\n- Tab order: focus arriving at the input should not steal scroll\n  position from the surrounding task list.\n\n## Cross-backend expectations\n\nThis flow runs against every backend (web, tui, gpui, freya, cocoa,\nandroid, ios). Each renders the input through its native idiom — an\nHTML `<input>` for web, a cell-grid prompt for TUI, an `NSTextField`\nfor cocoa, a Material `EditText` for android, a `UITextField` for\nios. Information content stays identical; idiom differs.\n\n## Scoring rubric\n\n- **Step Clarity (9/10)**: a reviewer can instantly tell the user is\n  in the middle of typing a task. **(5/10)**: ambiguous — could be\n  hovering or selecting. **(2/10)**: it is unclear which control is\n  focused at all.\n- **Input Feedback**: caret blink rate, draft text legibility,\n  focus-ring contrast against panel background.\n- **Responsiveness**: in animated captures, does the draft text\n  appear within one frame of the keystroke? (For still captures,\n  score based on whether the input visibly responds to having focus.)\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Add Task Flow",
+            "name": "Types a task name",
+            "kind": "skFlow",
+            "index": 0
+          },
+          "backends": [
+            "web",
+            "tui",
+            "gpui",
+            "freya",
+            "cocoa",
+            "android",
+            "ios"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1080,
+          "height": 720,
+          "label": "tablet"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "clarity",
+          "label": "Step Clarity",
+          "weight": 0.4,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "feedback",
+          "label": "Input Feedback",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "responsiveness",
+          "label": "Responsiveness",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "interaction.toggle-setting-adjusts-font-size",
+      "schemaVersion": 1,
+      "kind": "interaction",
+      "title": "Toggle Setting Flow — Adjusts font size",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/interaction/toggle-setting-adjusts-font-size.md",
+      "bodyMarkdown": "\n# Toggle Setting Flow — Adjusts font size\n\n> **Status:** Starter brief. Refine the \"What to watch for\" list as you learn what matters for this story.\n\n## What you're reviewing\n\nUser uses the **Font size** stepper (`[-] N [+]`) to attempt going\nbelow the minimum (clamped) and then reaches `18 pt`. The preview\ncaptures the stepper at a representative value with clamp behaviour\ndemonstrated: the minus button should be disabled / visibly inert\nwhen at the floor.\n\n## What to watch for\n\n- Stepper readout shows the units (`pt`) — not a bare integer that\n  could be mistaken for \"18\" of something unspecified.\n- Disabled / inert state for the minus button at min: lower opacity,\n  no hover affordance, or visibly greyed out.\n- Numeric font: tabular-nums or fixed-width digits so the value\n  doesn't jump horizontally as digits change (`9` vs `10`).\n- The `+` button has a hover / pressed state distinct from the `-`\n  button.\n- Stepper alignment with adjacent rows (dark-mode toggle, theme\n  choice) — the stepper height should match the toggle / pill row\n  height so the rhythm is preserved.\n\n## Cross-backend expectations\n\nThe web preview uses the in-document `.stepper` style; cocoa /\nandroid / ios should use native stepper widgets (`NSStepper`,\nMaterial `+/-` buttons, iOS `UIStepper`). TUI shows `[-] 18 pt [+]`\nas a plain text row.\n\n## Scoring rubric\n\n- **Step Clarity (9/10)**: value, unit, and direction (which arrow\n  goes up) are all unambiguous. **(5/10)**: value is readable but\n  unit or direction is ambiguous. **(2/10)**: stepper is unreadable\n  or misaligned.\n- **Stepper Feedback**: button visual treatment, value transition\n  smoothness.\n- **Clamp Behaviour**: disabled-state styling when at min/max\n  boundary is visibly distinct.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Toggle Setting Flow",
+            "name": "Adjusts font size",
+            "kind": "skFlow",
+            "index": 2
+          },
+          "backends": [
+            "web",
+            "tui",
+            "gpui",
+            "freya",
+            "cocoa",
+            "android",
+            "ios"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1080,
+          "height": 720,
+          "label": "tablet"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "clarity",
+          "label": "Step Clarity",
+          "weight": 0.4,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "feedback",
+          "label": "Stepper Feedback",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "responsiveness",
+          "label": "Clamp Behaviour",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "interaction.toggle-setting-opens-appearance",
+      "schemaVersion": 1,
+      "kind": "interaction",
+      "title": "Toggle Setting Flow — Opens Appearance group",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/interaction/toggle-setting-opens-appearance.md",
+      "bodyMarkdown": "\n# Toggle Setting Flow — Opens Appearance group\n\n> **Status:** Starter brief. Refine the \"What to watch for\" list as you learn what matters for this story.\n\n## What you're reviewing\n\nOpening step of the settings flow: user selects the **Appearance**\nsection from the settings sidebar (or accordion header on TUI /\nAndroid card). The preview captures the Appearance group expanded,\nshowing dark mode toggle, theme choice, and font size stepper.\n\n## What to watch for\n\n- The Appearance sidebar entry / accordion header is visibly active\n  (accent border, filled background, or expanded chevron) — clearly\n  distinct from the inactive Editor / Notifications entries.\n- The Appearance content area is fully populated: dark mode toggle,\n  theme choice (Default / Solarized / Dracula), font size stepper.\n- No flash of empty content while the section is being expanded.\n- Sibling sections (Editor / Notifications) are collapsed or\n  de-emphasised — the focal point is Appearance.\n- On Freya the layout is a stacked card; on TUI it's an expanded\n  accordion section; on web it's a sidebar selection + content\n  swap. All show the same three items.\n\n## Cross-backend expectations\n\nThe settings catalog is shared (`buildDemoSettingsCatalog`), so all\nbackends MUST render the same three Appearance items (`dark_mode`,\n`theme`, `font_size`) in the same order.\n\n## Scoring rubric\n\n- **Step Clarity (9/10)**: a reviewer can name the section and read\n  every item label. **(5/10)**: section is visible but item labels\n  are cramped or cropped. **(2/10)**: section is unclear or content\n  area is empty.\n- **Navigation Feedback**: how visibly the Appearance entry\n  signals its active state.\n- **Responsiveness**: no loading spinners; settings should be\n  instantaneous from the local catalog.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Toggle Setting Flow",
+            "name": "Opens Appearance group",
+            "kind": "skFlow",
+            "index": 0
+          },
+          "backends": [
+            "web",
+            "tui",
+            "gpui",
+            "freya",
+            "cocoa",
+            "android",
+            "ios"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1080,
+          "height": 720,
+          "label": "tablet"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "clarity",
+          "label": "Step Clarity",
+          "weight": 0.4,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "feedback",
+          "label": "Navigation Feedback",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "responsiveness",
+          "label": "Responsiveness",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "interaction.toggle-setting-toggles-dark-mode",
+      "schemaVersion": 1,
+      "kind": "interaction",
+      "title": "Toggle Setting Flow — Toggles dark mode",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/interaction/toggle-setting-toggles-dark-mode.md",
+      "bodyMarkdown": "\n# Toggle Setting Flow — Toggles dark mode\n\n> **Status:** Starter brief. Refine the \"What to watch for\" list as you learn what matters for this story.\n\n## What you're reviewing\n\nUser flips the **Dark mode** switch in the Appearance group. The\npreview captures the toggle in its new state (off → on or on → off),\nand — if the preview pane participates in the theme — the surrounding\nchrome re-renders in the corresponding theme.\n\n## What to watch for\n\n- The switch widget shows its new state unambiguously: the thumb has\n  travelled fully to the active side, the track colour is filled\n  with the accent indigo (or native equivalent on cocoa / ios /\n  android).\n- If the preview re-renders the theme: every panel surface flipped\n  to the new palette consistently — no half-themed regions.\n- Switch label (\"Dark mode\") and hint copy (\"Use the system\n  preference at startup, then remember the choice\") remain readable\n  at preview-pane scale.\n- No layout reflow during the toggle: row height should be stable.\n- Animation: thumb slide should be sub-200 ms, eased (not linear).\n\n## Cross-backend expectations\n\nNative switch idiom varies: web is a styled `div.toggle`; cocoa\nuses `NSSwitch`; ios uses `UISwitch`; android uses the Material\nswitch; TUI uses `[on]` / `[ ]` or `[x]` markers. The semantic\nstate (on / off) must be readable across all of them.\n\n## Scoring rubric\n\n- **Step Clarity (9/10)**: the switch state is unambiguous in the\n  still image. **(5/10)**: state requires close inspection.\n  **(2/10)**: the switch is unreadable or mis-aligned.\n- **Toggle Feedback**: thumb travel, track colour transition,\n  pressed state visibility.\n- **Responsiveness**: in animated captures, no perceptible lag\n  between click and thumb movement.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Toggle Setting Flow",
+            "name": "Toggles dark mode",
+            "kind": "skFlow",
+            "index": 1
+          },
+          "backends": [
+            "web",
+            "tui",
+            "gpui",
+            "freya",
+            "cocoa",
+            "android",
+            "ios"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1080,
+          "height": 720,
+          "label": "tablet"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "clarity",
+          "label": "Step Clarity",
+          "weight": 0.4,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "feedback",
+          "label": "Toggle Feedback",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "responsiveness",
+          "label": "Responsiveness",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "pattern.form-with-inline-error",
+      "schemaVersion": 1,
+      "kind": "pattern",
+      "title": "Patterns — Form With Inline Error",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/pattern/form-with-inline-error.md",
+      "bodyMarkdown": "\n# Patterns — Form With Inline Error\n\n> **Status:** Starter brief. Refine the bullets below as you learn what matters most for this story.\n\n## What you're reviewing\n\nA form-input pattern where validation has failed and the inline\nerror message renders directly underneath the input. The pattern\nis a cross-app shared composition; both the task input and the\nsettings number item could reuse it.\n\n## What to watch for\n\n- Error message colour is a clear danger / error tint (not the\n  brand indigo) — a desaturated red around #E5484D is typical;\n  must not be a pure red `#FF0000`.\n- The input itself carries an error treatment: a red border, a\n  red focus ring, or a small leading icon.\n- Error copy is one short line, sentence-case, ends without a\n  period (microcopy norm).\n- Spacing between input and error message: 4 to 6 px.\n- Tab / focus order: after submitting, focus should land on the\n  errored input (announce in description if the still capture\n  cannot show this).\n\n## Cross-backend expectations\n\nAll seven backends. Error-state idiom varies: cocoa has\nNSAttributedString in red; ios `UILabel` red; android Material\nhelper-text style; TUI uses an ANSI red SGR.\n\n## Scoring rubric\n\n- **Visual Polish (9/10)**: error state reads as intentional,\n  not destructive.\n- **Reusability**: the pattern should slot into any input\n  (TaskInput, NumberItem) without retooling.\n- **Clarity**: error copy and treatment are immediately legible.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Patterns",
+            "name": "Form With Inline Error",
+            "kind": "skPattern",
+            "index": 0
+          },
+          "backends": [
+            "web",
+            "tui",
+            "gpui",
+            "freya",
+            "cocoa",
+            "android",
+            "ios"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1080,
+          "height": 720,
+          "label": "tablet"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "visual",
+          "label": "Visual Polish",
+          "weight": 0.4,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "reusability",
+          "label": "Reusability",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "clarity",
+          "label": "Clarity",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "pattern.list-with-empty-state",
+      "schemaVersion": 1,
+      "kind": "pattern",
+      "title": "Patterns — List With Empty State",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/pattern/list-with-empty-state.md",
+      "bodyMarkdown": "\n# Patterns — List With Empty State\n\n> **Status:** Starter brief. Refine the bullets below as you learn what matters most for this story.\n\n## What you're reviewing\n\nA reusable empty-state pattern for any list or grid: illustrative\nglyph, headline, secondary copy, and a primary CTA pointing to\nthe action that would populate the list.\n\n## What to watch for\n\n- Glyph size is balanced with the copy — not gigantic, not a\n  pinprick.\n- Glyph stroke / color is a desaturated accent (the indigo at\n  about 40 percent opacity) so it does not steal focus from the\n  CTA.\n- Vertical centring within the available list area; not pinned to\n  the top.\n- Headline plus secondary copy follows a clear 2-tier hierarchy.\n- Primary CTA uses the accent fill; sentence-case label.\n- No empty-state-looks-like-loading ambiguity (no spinner, no\n  skeleton bars).\n\n## Cross-backend expectations\n\nAll seven backends. TUI renders the glyph as a small ASCII /\nUnicode character; native backends use the SVG-style symbol.\n\n## Scoring rubric\n\n- **Visual Polish (9/10)**: empty-state reads as intentional UX\n  design.\n- **Reusability**: pattern slots into TaskList, SettingsGroup, or\n  any future list without refactoring.\n- **Clarity**: a glance tells the reviewer what to do next.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Patterns",
+            "name": "List With Empty State",
+            "kind": "skPattern",
+            "index": 1
+          },
+          "backends": [
+            "web",
+            "tui",
+            "gpui",
+            "freya",
+            "cocoa",
+            "android",
+            "ios"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1080,
+          "height": 720,
+          "label": "tablet"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "visual",
+          "label": "Visual Polish",
+          "weight": 0.4,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "reusability",
+          "label": "Reusability",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "clarity",
+          "label": "Clarity",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "pattern.segmented-control",
+      "schemaVersion": 1,
+      "kind": "pattern",
+      "title": "Patterns — Segmented Control",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/pattern/segmented-control.md",
+      "bodyMarkdown": "\n# Patterns — Segmented Control\n\n> **Status:** Starter brief. Refine the bullets below as you learn what matters most for this story.\n\n## What you're reviewing\n\nA radio-style group rendered as horizontally adjacent pills with\none active selection. This is the shared pattern used by both the\ntask-app filter bar and the settings-app choice item.\n\n## What to watch for\n\n- All pills have equal width — the longest label sets the minimum.\n- Active pill carries the accent fill; inactive pills are visibly\n  inactive but not greyed-out (they remain interactive).\n- Pill cluster has a 1-px hairline border or a subtle background\n  to read as a single segmented control, not three separate\n  buttons.\n- Spacing between pills is consistent (0 px overlap or a small\n  internal gap; pick one and stay consistent).\n- Focus / keyboard navigation: visible focus ring on whichever\n  pill has focus, even when it is not the active one.\n\n## Cross-backend expectations\n\nAll seven backends. The pattern is the canonical reference for\nboth FilterBar and ChoiceItem; verify both consumers use it\nconsistently.\n\n## Scoring rubric\n\n- **Visual Polish (9/10)**: shipping-grade segmented control.\n- **Reusability**: drop-in replacement for any radio-style group.\n- **Clarity**: active selection is unambiguous; inactive options\n  are clearly interactive.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Patterns",
+            "name": "Segmented Control",
+            "kind": "skPattern",
+            "index": 2
+          },
+          "backends": [
+            "web",
+            "tui",
+            "gpui",
+            "freya",
+            "cocoa",
+            "android",
+            "ios"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1080,
+          "height": 720,
+          "label": "tablet"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "visual",
+          "label": "Visual Polish",
+          "weight": 0.4,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "reusability",
+          "label": "Reusability",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "clarity",
+          "label": "Clarity",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "render.settings-app",
+      "schemaVersion": 1,
+      "kind": "render",
+      "title": "Settings App — cross-backend visual review",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/render/settings-app.md",
+      "bodyMarkdown": "\n\n## What You're Reviewing\n\nThe **Settings App** demo is one of two showcase apps in IsoNim's\neditor. You are reviewing **full-editor screenshots** of the IsoNim\nExamples editor with the Settings App demo selected — one PNG per\nbackend, with the same `SettingsVM` + `buildDemoSettingsCatalog()`\nstate rendered through each renderer in the editor's preview pane.\n\nEach PNG is the full 1920×1080 editor viewport: left sidebar with the\nstory tree, top chrome bar (backend / viewport / mode chips), the\npreview pane (showing the demo rendered through that backend), and\nthe right-side inspector panel.\n\nThe bundle filenames are\n`screenshots/render/settings-app-<backend>.png` where `<backend>` is\none of: `web`, `tui`, `gpui`, `freya`, `cocoa`, `android`, `ios`.\n\n**Two design surfaces are being reviewed in the same images**:\n\n1. **The IsoNim editor's chrome itself** (sidebar / chrome bar /\n   inspector) — this is constant across the 7 cells of this brief but\n   you should still critique it. Both the editor design and the app\n   inside it can be improved by fix agents.\n2. **The Settings App demo as rendered through each backend** in the\n   preview pane — this is what varies between the 7 cells.\n\nScore and report on both dimensions independently. A weak editor\nchrome should not pull down a strong app score and vice versa.\n\n## Editor Chrome Design (Constant Across All Cells)\n\nThe editor chrome should look like a professional design-system /\nstorybook tool — comparable to VS Code, Figma, Storybook dark mode,\nLinear, or the Material 3 docs site.\n\n- **Dark theme**, deep dark gray canvas (`#0f0f14` … `#1a1a2e`), one\n  step lighter panel surfaces (`#1d1d28` … `#22232e`).\n- **Three-panel layout**, edge-to-edge (NO global top bar above the\n  panels):\n  - **Left sidebar** — story browser. A search input at top, then a\n    quick-nav strip of icons (Foundations / Components / Pages /\n    User Journeys / Guidelines), then five collapsible sections\n    holding the seed workspace's stories. **The Settings App story\n    must be visible and highlighted** with the accent color in\n    every cell of this brief (since the brief covers the Settings\n    App component); the other stories should be reachable but de-\n    emphasised.\n  - **Centre preview pane** — a single top toolbar\n    `[data-preview-chrome-bar]` with three chip clusters in this\n    order:\n    1. **Backend chips**: Web / TUI / GPUI / Freya / Cocoa /\n       Android / iOS — seven chips. The chip matching this cell's\n       backend must be **visibly active** (accent background or\n       border). Unavailable backends (e.g. Cocoa / iOS / Android\n       on Linux) are greyed.\n    2. **Viewport chips**: Desktop / Laptop / Tablet / Phone (or\n       TUI cell viewports when TUI is selected).\n    3. **Mode chips**: exactly three — View / Comment / Edit.\n    Below the toolbar: the preview canvas, containing the live\n    demo render.\n  - **Right inspector** — properties / styles / AI-chat tabs. May\n    start collapsed; should not visually dominate.\n- **Subtle 1 px hairline borders** between panels (mid-gray, not\n  heavy lines). 4 px / 8 px spacing rhythm.\n- **Typography hierarchy** — page title > section heading > story\n  label > body > metadata. Single sans-serif family (system stack\n  or Inter-like).\n- **Single accent color** (`#7c7aed` indigo) used sparingly: active\n  backend chip, selected story, focused inputs, primary CTAs. Never\n  overused.\n- **The preview pane is the focal point** — nothing else should\n  visually dominate. Sidebar and inspector frame it without\n  competing.\n\n## Preview-Pane Content (Varies Per Backend) — Information Equivalence\n\nInside the editor's preview pane, the catalog has three groups:\n**Appearance**, **Editor**, **Notifications**. Each group has three items totalling **nine\ncontrols of three kinds** (toggle, choice, number). Different backends\ndisplay the catalog differently (accordion / sidebar / two-column /\ncard stack) — the per-backend section below documents what is\nacceptable. The information that MUST be conveyed (in one frame or\ndiscoverable from one foregrounded state) is:\n\n1. **All three group labels are visible or reachable in one click**:\n   \"Appearance\", \"Editor\", \"Notifications\".\n2. **The active / foregrounded group's items are fully rendered with\n   labels AND control widgets**. For the default capture (with\n   \"Appearance\" foregrounded) that means:\n   - `Dark mode` — toggle, default OFF.\n   - `Theme` — choice with options `Default / Solarized / Dracula`,\n     currently `Default`.\n   - `Font size` — number, range 10-32, default 14, suffix `pt`.\n3. **Each item shows its description text** when one is present in\n   the catalog (e.g. \"Use the dark colour palette.\").\n4. **Control widgets are functional-looking and aligned**: toggles\n   look toggleable, the choice control looks selectable, the number\n   shows the current value with a clear suffix and a way to increment\n   / decrement (spinner buttons, slider, or text input).\n\nFor backends that show ALL groups at once (Freya card stack, web\nsidebar+pane, GPUI two-column), the OTHER groups' headers must also\nbe visible. For backends that show only the active group (TUI\naccordion, native single-pane), the other groups must be **navigable**\n— their labels must be readable in the navigation chrome.\n\n## Design Intent\n\n- **Dark theme**, IsoNim accent `#7c7aed` (vivid indigo). Group\n  surfaces are cards (`#1d1d28`) on a deep canvas (`#0f0f14`).\n  Primary text near-white (`#e8e9f0`), descriptions / secondary text\n  muted (`#a0a2b0`).\n- **Hierarchical grouping**: group header (h2-ish) >> item label >>\n  description >> control. Inter-item spacing roughly twice the\n  intra-item spacing.\n- **Accent moments**: the active toggle, the selected choice, the\n  current numeric value, and the focused group header.\n- **Settings should feel like a settings page in a modern app** —\n  System Preferences (macOS), Settings (iOS / Android), VS Code\n  preferences pane. Not a raw `<form>` dump.\n\n## Per-Backend Native-Idiom Expectations\n\nCross-backend consistency does NOT mean visual identity. Score against\nthe brief *as expressed through the backend's native conventions*.\n\n- **Web** — HTML in iframe. Expect: sidebar of group labels on the\n  left, the active group's items in the right pane. Each item is a\n  styled row with label / description / control. Dark palette,\n  accent on the active group + active toggle.\n- **TUI** — `xterm.js` cell grid. Expect: an accordion (one group\n  open at a time); the active group's three items rendered with\n  ASCII / Unicode for toggle `[x]` / `[ ]`, choice `< Default >` (or\n  similar), number `font_size: 14pt [-][+]`. Other group labels\n  must be visible above/below the open accordion section.\n- **GPUI** — Zed Rust UI. Expect: two-column layout — left column\n  lists groups, right column shows the active group's items as\n  stacked rows. GPUI's renderer drops `border` / `font-size`, so\n  emphasis comes from `background` + `color` contrast.\n- **Freya** — Skia raster, card stack. Expect: each of the three\n  groups rendered as its own vertically stacked card, all visible\n  at once on screen. Inside each card: group header, then items.\n  This is the only backend that shows ALL items simultaneously.\n- **Cocoa** — AppKit on macOS. Expect: native `NSToolbar`-style\n  group switcher OR a side list, with `NSSwitch` toggles, `NSPopUp`\n  for choices, `NSStepper` + `NSTextField` for numbers. Mac users\n  should recognise this as System Settings.\n- **Android** — real device. Expect: Material 3 `Preference` rows —\n  ListItem with title + summary, `MaterialSwitch` for toggles,\n  Material spinner / dialog for choices, Material text input with\n  stepper for numbers. Device status bar visible at top is not a\n  defect.\n- **iOS** — real iPhone via Stream app. Expect: UIKit settings\n  conventions — grouped table view with section headers\n  (\"Appearance\" / \"Editor\" / \"Notifications\"), `UISwitch` toggles,\n  disclosure-arrow rows for choices, segmented controls or stepper\n  for numbers. Dynamic Island / status bar at top is not a defect.\n\n## Preview-Pane Render Quality (Pixel-Level)\n\nIndependent of content + idiom, the rendered backend frame must look\n**production-ready in the preview pane at its captured scale**. The\nscreenshot tool captures the full 1920×1080 editor; the preview pane\ninside it is a smaller rectangle (~800×500 typical). The launcher\nproduces its native-resolution pixels (e.g. 800×600 for desktop\nbackends, 1170×2532 for the iPhone) and the editor's `<canvas>`\nscales those pixels to fit the preview rect via CSS.\n\n**Check each cell against the following pixel-level dimensions.** Any\nfailure here caps the score even if Content + Idiom are flawless.\n\n1. **Aspect ratio preserved** — the demo's UI is NOT horizontally or\n   vertically stretched. UISwitch pills are oval (not deformed\n   circles); cards are rectangular at their intended proportions;\n   text characters keep their native width-to-height ratio. If\n   aspect is wrong: score ≤ 6.\n\n2. **Letterbox/pillarbox handling** — when the backend's aspect ratio\n   doesn't match the preview rect (always the case for the iPhone\n   portrait frame in a wider preview), the canvas should letterbox\n   cleanly with the bands visually framed (visible border / shadow\n   separating demo content from pane chrome). If the letterbox bands\n   blend invisibly into the surrounding pane so the demo's edges are\n   ambiguous: -1.\n\n3. **Scaling artifacts** — text and UI edges should be crisp at the\n   capture resolution. Watch for:\n   - Bilinear blur (looks \"soft\", description text hard to read)\n   - Nearest-neighbour jaggies (visible staircase on diagonals)\n   - Halos around high-contrast edges (especially around accent-\n     filled segmented control selection pills)\n   - Moiré patterns in repeated elements\n   Heavy downscale ratios (e.g. iPhone 5× downscale) need extra\n   scrutiny. If the demo is hard to read because of scaling blur or\n   jaggies: -2.\n\n4. **Color fidelity to the brief palette**:\n   - Accent indigo should be in the ballpark of `#7c7aed` (medium-\n     bright violet-blue). NOT pink, NOT teal, NOT washed-out gray.\n     Compare against the editor chrome's own accent — if the demo's\n     accent looks materially different, -1.\n   - Backgrounds should be deep dark (`#0f0f14` to `#22232e`),\n     NOT muddy brown, NOT navy blue, NOT pure black.\n   - Primary text near-white (`#e8e9f0` to `#ffffff`).\n   - Muted/secondary text should be visibly dimmer than primary —\n     the description / caption tier should READ as secondary.\n\n5. **Sub-pixel alignment** — controls on the same row share a\n   baseline; toggle pills on different rows align to a consistent\n   trailing edge; segmented control pills are clamped to their\n   cell boundaries (the selection pill width must equal\n   `bounds.width / segmentCount`, not bleed past one cell). If\n   elements look \"almost aligned but not quite\": -1.\n\n6. **Anti-aliasing quality** — vector elements (UISwitch pills,\n   segmented control rounded corners, stepper buttons) have smooth\n   curves at the capture resolution; text glyph edges are\n   subpixel-rendered or properly anti-aliased. Crispiness should\n   be at the level of a real production iOS / Android / Web app\n   screenshot, not a rough \"renderer test\" image.\n\n7. **No stretched UI controls** — UISwitch pills aren't deformed\n   ovals; segmented control cells aren't stretched; stepper\n   buttons keep their circular/rounded shape. The launcher's\n   native render should look the same proportionally as it does\n   at full resolution.\n\n## Cross-Backend Consistency Contract\n\n- **Information equivalence is non-negotiable.** Every required item\n  in the *Required Content* checklist must be conveyed in every\n  backend's frame (either inline or via clearly visible navigation\n  to the foregrounded group).\n- **Visual identity is NOT required.** Don't penalise iOS for using\n  a grouped `UITableView`, TUI for using ASCII, or Freya for\n  showing all groups at once when other backends show only the\n  active one.\n- **Catalog values must be byte-identical** across all backends —\n  same group labels, same item labels, same default values, same\n  choice options. They come from the same `buildDemoSettingsCatalog`\n  via the same VM.\n- **The accent color should rhyme** across backends — active\n  toggle, selected group, focused control should all use the\n  IsoNim indigo or its closest native-palette analog.\n\n## Scoring Rubric (Absolute 1-10, two scores per cell)\n\nScore each backend's cell against TWO independent dimensions. The\ntarget is **10/10 on both** across every cell.\n\n### Editor Chrome score\n\nHow the editor itself looks in this screenshot (sidebar, chrome bar,\ninspector, story highlight, backend-chip active state, accent usage).\nSince the chrome is constant across the 7 cells of this brief, your\nchrome score may be similar across cells; differences are only:\nwhich backend chip is highlighted, and whether the preview pane is\nsized appropriately for that backend's content.\n\n### App Rendering score\n\nHow the Settings App demo looks rendered through this specific\nbackend inside the preview pane.\n\nBoth scores use the same scale:\n\n- **10** — Production-ready showcase settings page. All required\n  items present, perfect composition, native-idiomatic widgets,\n  accent usage spot-on, hierarchical typography crisp, three-group\n  navigation immediately obvious, **AND the rendered pixels are\n  crisp at preview-pane scale: correct aspect ratio, palette-true\n  colors, no visible blur, segmented-control pill bounds clamped\n  to one cell, sub-pixel alignment intact**. Could ship as a\n  Polaris / Material 3 / iOS Settings reference.\n- **9** — Excellent. One minor polish miss OR one mild render-\n  quality nit (e.g. slight blur from downscale). Content perfect.\n- **7-8** — Solid content / native widgets but render quality is\n  visibly imperfect: noticeable bilinear blur, slightly off-palette\n  colors, sub-pixel alignment drift, OR descriptions blend into\n  labels, accent missing.\n- **5-6** — Functional but rough. Content present but render or\n  composition is visibly compromised: stretched widgets, wrong\n  colors, poor alignment, generic default-styles look. The image\n  would NOT be confused with a real production Settings screen.\n- **4 or below** — Missing items, unreadable controls, unnavigable\n  groups, OR the render is so distorted/blurry that it fails the\n  \"production app screenshot\" bar entirely. Triggers immediate\n  fix before re-scoring.\n\n**Important: a cell can only score 10/10 if it passes BOTH the\nContent/Idiom checks AND every dimension of the Preview-Pane Render\nQuality section above.** Don't grade content perfection in isolation\n— the user judges these PNGs the way they'd judge a real product\nscreenshot in a design-system gallery.\n\n## Reviewer Methodology (READ BEFORE SCORING)\n\nThis is a strict review aimed at world-class design quality. Score\nhonestly — past rounds drifted to leniency and missed real defects.\n\n**Anti-cheat rules**:\n\n1. **Flake detection first**. Before scoring any cell, confirm the\n   rendered content is the **Settings App** (Appearance / Editor /\n   Notifications groups with Dark mode / Theme / Font size /\n   Insert spaces / Tab width / Line endings / Play sounds / Show\n   badges / Poll interval), NOT the Task App (\"New task\" input,\n   \"Add Task\" button, \"All / Active / Completed\" filter, \"Buy\n   groceries / Walk the dog / Ship EX-M14\" task list). If you see\n   Task content in a Settings cell: score **1/10**, label it\n   `WRONG-DEMO FLAKE`, do not bother scoring render quality.\n\n2. **Empty-pane check**. If the preview pane is blank / mostly the\n   editor canvas background with no demo content: score **1/10**,\n   label it `EMPTY PANE — DEMO NOT RENDERING`.\n\n3. **Per-dimension annotation**. Comment on EVERY Render Quality\n   dimension (aspect, letterbox, scaling, color, alignment, AA,\n   segmented-pill bounds, stretching) for every cell — even when\n   the dimension passes. No omissions. A dimension that you don't\n   mention is treated as a missed check.\n\n4. **World-class anchor**. For each backend, hold the cell against\n   a concrete production Settings UI reference and score by the\n   visible gap:\n   - Web → compare to GitHub Settings, Stripe Dashboard, Notion\n     preferences.\n   - TUI → compare to neovim's `:checkhealth` or a Textual settings\n     example.\n   - GPUI → compare to Zed's settings panel.\n   - Freya → compare to Material 3 Settings dark theme.\n   - Cocoa → compare to macOS System Settings.\n   - Android → compare to Material 3 Preferences template.\n   - iOS → compare to Apple's Settings app.\n   If the gap is \"obvious\" to a senior designer: max **6/10**.\n   If the gap is \"small but visible\": max **8/10**.\n   If a senior designer would ship it as-is in a production gallery:\n   **10/10**. If you can't confidently say \"ship it\": NOT 10.\n\n5. **One-strike rule on Render Quality**. Any single Render Quality\n   dimension failure caps the cell at **8/10** even if every other\n   dimension is perfect. Two failures cap at **6/10**.\n\n6. **Accent-fidelity check**. The accent indigo must be visibly\n   `#7c7aed`-family. If the \"accent\" on a segmented-control\n   selection / active toggle / focused state is white (no fill),\n   pale lavender, navy, or any shade noticeably different from\n   `#7c7aed`: that is an accent failure, NOT a stylistic choice.\n   -1 minimum.\n\n7. **Counterfactual test for 10/10**: write the sentence \"A senior\n   designer at Linear / Apple / Vercel would ship this cell as a\n   production showcase image\" out loud. If you hesitate on any\n   word, the cell is NOT 10/10. Drop to the highest score you can\n   confidently assert.\n\n8. **No anchoring to prior scores**. Previous reviewer rounds gave\n   inflated scores. Treat this as a fresh review.\n\n9. **MANDATORY native-resolution crop before scoring text content**.\n   The captured PNG is 1920×1080 but most reviewer image tools\n   display it as a small thumbnail where small text anti-aliases\n   into illegible / wrong-glyph readings. Past rounds had a real\n   reviewer call the cocoa task summary \"0 of 0 remaining\" when the\n   actual rendered text was \"3 of 3 remaining\" — only a\n   thumbnail-scale anti-aliasing artifact.\n\n   **Before scoring any text-based content (item labels,\n   descriptions, segmented choice options, stepper digits, \"Default\"\n   pill text)**, crop the relevant region at native resolution using\n   `sips`:\n\n   ```sh\n   # General form: sips -c <height> <width> --cropOffset <x> <y> <src> --out <dst>\n   # IMPORTANT: keep every crop UNDER 2000 px on EACH axis. Tools that\n   # consume the cropped PNG will reject larger images. Tight regional\n   # crops (≤ 1500×900) are the right size for verifying a single row /\n   # widget / chip cluster.\n   #\n   # Example — crop the Theme segmented control region in settings-app-gpui\n   sips -c 80 600 --cropOffset 600 200 \\\n     /Users/zahary/metacraft/isonim-examples/screenshots/render/settings-app-gpui.png \\\n     --out /tmp/settings-app-gpui-theme.png\n   ```\n\n   Then `Read` the cropped file. This shows the actual pixels at\n   the resolution a designer would see them in the editor preview\n   pane (not the 5× downscaled thumbnail your tool may default to).\n\n   If after cropping the text is STILL illegible / accent still\n   reads wrong / segmented pill still missing, that's a real\n   render-quality defect — flag it. Conversely, if a thumbnail\n   reading like \"white selection pill\" turns out to be a saturated\n   indigo at native crop, DO NOT penalize the cell. Use crops\n   liberally; better one extra `sips` call than a misread.\n\n## How to Report\n\nBegin with an **Editor Chrome** section that applies to all 7 cells\nof this brief (since the chrome is constant):\n\n- **Editor Chrome score** (1-10).\n- **Findings on the editor itself** — bulleted list of concrete issues\n  visible in the chrome (sidebar, chrome bar, inspector, story-\n  highlight, backend-chip cluster). Mention any backend chip that\n  doesn't show its active state correctly in its cell.\n- **Quickest path to chrome 10/10** — one or two targeted edits a\n  fix agent should make (paths in `~/metacraft/isonim/src/isonim/\n  editor/` if you can guess them; otherwise component name).\n\nThen one section per backend, in this order: web, tui, gpui, freya,\ncocoa, android, ios. Each section must include:\n\n- **App Rendering score** (1-10).\n- **Required-content check** — ✓ / ✗ for each of the 4 items in the\n  *Preview-Pane Content* checklist, plus a note on how the other\n  (non-active) groups are reachable.\n- **Findings on the app rendering** — bulleted list of concrete\n  issues in the preview pane. Concrete: \"the Font size number\n  widget has no visible spinner buttons; users can't tell it's\n  editable\". **Explicitly comment on each Render Quality\n  dimension** (aspect ratio, letterbox, scaling artifacts, color\n  fidelity, sub-pixel alignment, anti-aliasing, segmented-control\n  pill bounds, widget stretching). If a dimension looks fine, say\n  \"render: aspect ✓, colors ✓, etc.\"; don't omit.\n- **Quickest path to app 10/10** — one or two targeted edits\n  (paths in `~/metacraft/isonim-examples/settings_app/<backend>/\n  leaves.nim` if you can guess them; otherwise component name).\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [
+        "render.task-app"
+      ],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Settings App / Pages",
+            "name": "Preferences",
+            "kind": "skPage",
+            "index": 0
+          },
+          "backends": [
+            "web",
+            "tui",
+            "gpui",
+            "freya",
+            "cocoa",
+            "android",
+            "ios"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1920,
+          "height": 1080,
+          "label": "wide"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "chrome",
+          "label": "Editor Chrome",
+          "weight": 0.4,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "rendering",
+          "label": "App Rendering",
+          "weight": 0.6,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "render.settings-app-appearance",
+      "schemaVersion": 1,
+      "kind": "render",
+      "title": "Settings App / Pages — Appearance Group",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/render/settings-app-appearance.md",
+      "bodyMarkdown": "\n# Settings App / Pages — Appearance Group\n\n> **Status:** Starter brief. Refine the \"What to watch for\" list as you learn what matters for this story.\n\n## What you're reviewing\n\nThe **Appearance** single-group page of the settings app: a focused\npreview of one group rather than the full Preferences screen. Shows\nthree rows — **Dark mode** toggle, **Theme** segmented choice\n(Default / Solarized / Dracula), **Font size** stepper (default\n14 pt). Captured per backend at 1920×1080.\n\n## What to watch for\n\n- Exactly three rows in the order Dark mode → Theme → Font size.\n- Theme segmented control: Default is the active pill (accent\n  fill); Solarized + Dracula are inactive (muted neutral).\n- Font size stepper readout includes the unit (`pt` or equivalent\n  per backend idiom).\n- Single-group framing: no Editor / Notifications groups bleeding\n  into the pane — they should be either absent or visibly\n  de-emphasised in a sidebar.\n- Row-label / row-hint typography hierarchy: title weight visibly\n  heavier than hint, hint muted to ~`#9CA0B0` family.\n\n## Cross-backend expectations\n\nEvery backend renders the same three items in the same order.\nIdiom differs: native cocoa `NSPopUpButton` vs web pill-segmented\ncontrol vs Android Material dropdown vs ios `UISegmentedControl`.\nInformation equivalence is non-negotiable.\n\n## Scoring rubric\n\n- **Editor Chrome score**: same scale as `render.settings-app`.\n- **App Rendering score**: 10/10 requires all three rows present,\n  correct active selections, and the render-quality dimensions from\n  `render.settings-app` all pass.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [
+        "render.settings-app",
+        "render.settings-app-editor"
+      ],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Settings App / Pages",
+            "name": "Appearance Group",
+            "kind": "skPage",
+            "index": 1
+          },
+          "backends": [
+            "web",
+            "tui",
+            "gpui",
+            "freya",
+            "cocoa",
+            "android",
+            "ios"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1920,
+          "height": 1080,
+          "label": "wide"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "chrome",
+          "label": "Editor Chrome",
+          "weight": 0.4,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "rendering",
+          "label": "App Rendering",
+          "weight": 0.6,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "render.settings-app-editor",
+      "schemaVersion": 1,
+      "kind": "render",
+      "title": "Settings App / Pages — Editor Group",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/render/settings-app-editor.md",
+      "bodyMarkdown": "\n# Settings App / Pages — Editor Group\n\n> **Status:** Starter brief. Refine the \"What to watch for\" list as you learn what matters for this story.\n\n## What you're reviewing\n\nThe **Editor** single-group page of the settings app, captured per\nbackend at 1920×1080. Shows three rows: **Insert spaces for tabs**\ntoggle (on), **Tab width** stepper (default 4), **Line endings**\nsegmented choice (LF / CRLF / CR; LF active).\n\n## What to watch for\n\n- Three rows in the order Insert spaces for tabs → Tab width →\n  Line endings.\n- Tab-width stepper readout is `4` (or the equivalent integer) —\n  watch for the \"4 4\" doubling regression flagged in the catalog\n  comments. The bare `<input class=\"number\">` rendering must be\n  replaced with the explicit `[-] N [+]` stepper.\n- Line endings choice shows three options; LF is the selected pill.\n- \"Insert spaces for tabs\" toggle is in the on position.\n- All three control idioms (toggle / stepper / segmented) are\n  visibly distinct from each other and consistent with the\n  Appearance group's idioms.\n\n## Cross-backend expectations\n\nEditor settings are the same across backends; native idiom varies.\nOn TUI, the line-endings pill collapses to `[*LF] CRLF CR`; on\ncocoa the segmented control is `NSSegmentedControl`; etc.\n\n## Scoring rubric\n\n- **Editor Chrome score**: same scale as `render.settings-app`.\n- **App Rendering score**: 10/10 requires correct values + state\n  + render-quality.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [
+        "render.settings-app",
+        "render.settings-app-appearance"
+      ],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Settings App / Pages",
+            "name": "Editor Group",
+            "kind": "skPage",
+            "index": 2
+          },
+          "backends": [
+            "web",
+            "tui",
+            "gpui",
+            "freya",
+            "cocoa",
+            "android",
+            "ios"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1920,
+          "height": 1080,
+          "label": "wide"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "chrome",
+          "label": "Editor Chrome",
+          "weight": 0.4,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "rendering",
+          "label": "App Rendering",
+          "weight": 0.6,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "render.task-app",
+      "schemaVersion": 1,
+      "kind": "render",
+      "title": "Task App — cross-backend visual review",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/render/task-app.md",
+      "bodyMarkdown": "\n\n## What You're Reviewing\n\nThe **Task App** demo is one of two showcase apps in IsoNim's editor.\nYou are reviewing **full-editor screenshots** of the IsoNim Examples\neditor with the Task App demo selected — one PNG per backend, with\nthe same `TaskAppVM` state rendered through each renderer in the\neditor's preview pane.\n\nEach PNG is the full 1920×1080 editor viewport: left sidebar with the\nstory tree, top chrome bar (backend / viewport / mode chips), the\npreview pane (showing the demo rendered through that backend), and\nthe right-side inspector panel.\n\nThe bundle filenames are\n`screenshots/render/task-app-<backend>.png` where `<backend>` is one\nof: `web`, `tui`, `gpui`, `freya`, `cocoa`, `android`, `ios`.\n\n**Two design surfaces are being reviewed in the same images**:\n\n1. **The IsoNim editor's chrome itself** (sidebar / chrome bar /\n   inspector) — this is constant across the 7 cells of this brief but\n   you should still critique it. Both the editor design and the app\n   inside it can be improved by fix agents.\n2. **The Task App demo as rendered through each backend** in the\n   preview pane — this is what varies between the 7 cells.\n\nScore and report on both dimensions independently. A weak editor\nchrome should not pull down a strong app score and vice versa.\n\n## Editor Chrome Design (Constant Across All Cells)\n\nThe editor chrome should look like a professional design-system /\nstorybook tool — comparable to VS Code, Figma, Storybook dark mode,\nLinear, or the Material 3 docs site.\n\n- **Dark theme**, deep dark gray canvas (`#0f0f14` … `#1a1a2e`), one\n  step lighter panel surfaces (`#1d1d28` … `#22232e`).\n- **Three-panel layout**, edge-to-edge (NO global top bar above the\n  panels):\n  - **Left sidebar** — story browser. A search input at top, then a\n    quick-nav strip of icons (Foundations / Components / Pages /\n    User Journeys / Guidelines), then five collapsible sections\n    holding the seed workspace's stories. **The Task App story\n    must be visible and highlighted** with the accent color in\n    every cell of this brief (since the brief covers the Task App\n    component); the other stories should be reachable but de-\n    emphasised.\n  - **Centre preview pane** — a single top toolbar\n    `[data-preview-chrome-bar]` with three chip clusters in this\n    order:\n    1. **Backend chips**: Web / TUI / GPUI / Freya / Cocoa /\n       Android / iOS — seven chips. The chip matching this cell's\n       backend must be **visibly active** (accent background or\n       border). Unavailable backends (e.g. Cocoa / iOS / Android\n       on Linux) are greyed.\n    2. **Viewport chips**: Desktop / Laptop / Tablet / Phone (or\n       TUI cell viewports when TUI is selected).\n    3. **Mode chips**: exactly three — View / Comment / Edit.\n    Below the toolbar: the preview canvas, containing the live\n    demo render.\n  - **Right inspector** — properties / styles / AI-chat tabs. May\n    start collapsed; should not visually dominate.\n- **Subtle 1 px hairline borders** between panels (mid-gray, not\n  heavy lines). 4 px / 8 px spacing rhythm.\n- **Typography hierarchy** — page title > section heading > story\n  label > body > metadata. Single sans-serif family (system stack\n  or Inter-like).\n- **Single accent color** (`#7c7aed` indigo) used sparingly: active\n  backend chip, selected story, focused inputs, primary CTAs. Never\n  overused.\n- **The preview pane is the focal point** — nothing else should\n  visually dominate. Sidebar and inspector frame it without\n  competing.\n\n## Preview-Pane Content (Varies Per Backend) — Information Equivalence\n\nInside the editor's preview pane, every backend's image MUST show all\nof the following. **If any item is missing or unreadable, score that\nbackend's App Rendering ≤ 4/10 and report the missing item as the\nfirst finding.**\n\n1. **Three seeded sample tasks**, in this order:\n   - \"Buy groceries\"\n   - \"Walk the dog\"\n   - \"Ship EX-M14\"\n2. **A toggle / completion control** beside each task (a checkbox, an\n   ASCII `[ ]` marker, an iOS-style switch, an Android Material\n   checkbox — whichever idiom the backend uses).\n3. **A remove control** beside each task — a button, `×` glyph, or\n   delete affordance. (TUI may use a row indicator instead of a per-\n   task button if cell budget is tight; document if you accept this.)\n4. **A \"New task…\" text input** with a placeholder hint AND an\n   accompanying **\"Add Task\" submit control**.\n5. **A filter selector** with three options: **All / Active /\n   Completed**. The active option must be visually distinguishable\n   from the inactive options.\n6. **A summary bar** showing the active/completed count (e.g. \"3\n   active · 0 completed\" or \"3 tasks remaining\").\n\n## Design Intent\n\n- **Dark theme** with the IsoNim accent token `#7c7aed` (a vivid\n  indigo). Backgrounds in the `#0f0f14` → `#22232e` range; cards one\n  step lighter than the canvas; primary text near-white\n  (`#e8e9f0`), secondary text muted gray (`#a0a2b0`).\n- **Card-style rows**: each task should feel like a discrete row card\n  with comfortable inner padding, not a tight HTML `<li>`. The\n  three task rows together form a vertically stacked column.\n- **Single clear focal point**: the task list should dominate the\n  pane. The input and filter chrome live above; the summary lives\n  below.\n- **Hierarchical typography**: input placeholder and summary use a\n  lighter weight than task names. The accent color highlights the\n  active filter and primary CTA only — never overused.\n- **8-px rhythm**: gaps and padding fall on multiples of 4 px (4 / 8 /\n  12 / 16). Nothing cramped (`< 4 px`) or loose (`> 24 px` between\n  related items).\n\n## Per-Backend Native-Idiom Expectations\n\nCross-backend consistency does NOT mean visual identity — each backend\nmust look natural in its own platform's idiom. Score against the brief\n*as expressed through the backend's native conventions*, not against\nthe Web reference. The information content must match; the look-and-\nfeel will and should differ.\n\n- **Web** — HTML/CSS in an iframe. Expect: rendered DOM with the dark\n  palette, accent buttons, semantic markup. The closest to a \"design-\n  system reference\" baseline.\n- **TUI** — monospace cell grid rendered through `xterm.js`. Expect:\n  ASCII or Unicode box-drawing for borders, `[ ]` / `[x]` for\n  toggles, terminal-native color (256-color or true-color palette\n  approximating the brand colors). Information must be readable in\n  ~80 cols × ~24 rows.\n- **GPUI** — Zed's Rust UI toolkit, headless raster. Expect: flat\n  surfaces, sharp pixel edges, rounded corners (`border-radius`),\n  the dark palette with `#7c7aed` accent on the active filter and\n  Add button. GPUI's renderer ignores `border` / `font-weight` so\n  emphasis comes from background + color contrast.\n- **Freya** — Skia-rendered, web-inspired layout. Expect: similar to\n  Web visually but rasterised; rounded controls; gradients optional\n  but discouraged for the showcase.\n- **TUI** — terminal renderer streaming a cell grid into xterm.js\n  inside the editor preview pane.\n  - **Known-clear accent**: the active filter (`<All>` /\n    `<Active>` / `<Completed>`) is painted in 24-bit-truecolor\n    `#7c7aed` (the IsoNim brand indigo) via a `\\x1b[38;2;124;122;237m`\n    SGR sequence emitted by `compositor.parseColorOrDefault`'s\n    `ckRgb` branch. The leaves emit the literal `#7c7aed` (verified\n    in `task_app/tui/leaves.nim` lines 247-249) and the compositor\n    fans that through to xterm.js with `allowProposedApi: true`. At\n    the editor's preview scale the desaturated indigo can read as\n    \"muted blue-violet\"; if it reads as TEAL (`#06989a`) that is a\n    real regression — check that the compositor build is fresh.\n    Otherwise treat it as the intended brand accent.\n- **Cocoa** — AppKit running in-process on macOS. Expect: native Mac\n  controls (`NSButton`, `NSTextField`, `NSTableView`) honouring the\n  system Aqua / dark-mode appearance. Mac users should recognise\n  this as a Mac app. The IsoNim accent appears as the tinted\n  selection color.\n  - **Known-clear cells (do NOT flag as missing)**: the Cocoa task\n    pane always includes an **Add Task** primary button in the input\n    row (top), a per-row **remove glyph** at the trailing edge of\n    every task row (Unicode `⨯` U+2A2F, painted in a muted neutral\n    `#a0a2b0`), and a per-row **NSSwitch toggle** at the leading\n    edge. The remove glyph is intentionally low-contrast (muted\n    neutral, not red) so it doesn't compete with the indigo Add CTA\n    — this is the Wave-S polish, not a missing affordance. If you\n    can't see the trailing `⨯` at the captured scale, that's a\n    legibility critique (suggest higher contrast) not a \"missing\n    element\" critique. Source: `task_app/cocoa/leaves.nim`\n    `renderTaskRow` line 343 (`<button class=\"remove\">` with text\n    `⨯`) and `taskInput` line 219 (`<button type=\"submit\">Add\n    Task</button>`).\n- **Android** — real device framebuffer via `adb exec-out screencap`.\n  Expect: Material 3 components (`Material You` palette tuned to the\n  IsoNim accent), Material checkboxes, FAB-shaped Add button is\n  acceptable. Status bar / system chrome at the top is part of the\n  framebuffer — not a defect.\n- **iOS** — real iPhone framebuffer via Wi-Fi from the IsoNim Stream\n  app. Expect: UIKit controls (`UISwitch` for toggles, `UIButton`\n  with `.tinted` style for Add, large title at the top is\n  acceptable). System status bar / Dynamic Island visible at the\n  top — part of the framebuffer, not a defect.\n\n## Preview-Pane Render Quality (Pixel-Level)\n\nIndependent of content + idiom, the rendered backend frame must look\n**production-ready in the preview pane at its captured scale**. The\nscreenshot tool captures the full 1920×1080 editor; the preview pane\ninside it is a smaller rectangle (~800×500 typical). The launcher\nproduces its native-resolution pixels (e.g. 800×600 for desktop\nbackends, 1170×2532 for the iPhone) and the editor's `<canvas>`\nscales those pixels to fit the preview rect via CSS.\n\n**Check each cell against the following pixel-level dimensions.** Any\nfailure here caps the score even if Content + Idiom are flawless.\n\n1. **Aspect ratio preserved** — the demo's UI is NOT horizontally or\n   vertically stretched. Circles look round (not oval); square cards\n   look square (not stretched into rectangles); text characters keep\n   their native width-to-height ratio. If aspect is wrong: score ≤ 6.\n\n2. **Letterbox/pillarbox handling** — when the backend's aspect ratio\n   doesn't match the preview rect (always the case for the iPhone\n   portrait frame in a wider preview), the canvas should letterbox\n   cleanly with the bands visually framed (visible border / shadow\n   separating demo content from pane chrome). If the letterbox bands\n   blend invisibly into the surrounding pane so the demo's edges are\n   ambiguous: -1.\n\n3. **Scaling artifacts** — text and UI edges should be crisp at the\n   capture resolution. Watch for:\n   - Bilinear blur (looks \"soft\", text hard to read at preview scale)\n   - Nearest-neighbour jaggies (visible staircase on diagonals)\n   - Halos around high-contrast edges\n   - Moiré patterns in repeated elements\n   Heavy downscale ratios (e.g. iPhone 5× downscale) need extra\n   scrutiny. If the demo is hard to read because of scaling blur or\n   jaggies: -2.\n\n4. **Color fidelity to the brief palette**:\n   - Accent indigo should be in the ballpark of `#7c7aed` (medium-\n     bright violet-blue). NOT pink, NOT teal, NOT washed-out gray.\n     Compare visually against the editor chrome's own accent — if\n     the demo's accent looks materially different from the chrome's,\n     -1.\n   - Backgrounds should be deep dark (`#0f0f14` to `#22232e`),\n     NOT muddy brown, NOT navy blue, NOT pure black.\n   - Primary text near-white (`#e8e9f0` to `#ffffff`),\n     NOT mid-gray, NOT yellow-tinted, NOT pure off-white that\n     blends into the surface.\n\n5. **Sub-pixel alignment** — controls on the same row share a\n   baseline; cards in a vertical stack share a left edge; toggle/\n   text/remove glyphs in a row don't visibly drift up/down by 1-2\n   pixels. If elements look \"almost aligned but not quite\": -1.\n\n6. **Anti-aliasing quality** — vector elements (buttons, rounded\n   chips, pill toggles) have smooth curves at the capture\n   resolution; text glyph edges are subpixel-rendered or properly\n   anti-aliased. Crispiness should be at the level of a real\n   production iOS / Android / Web app screenshot, not a rough\n   \"renderer test\" image.\n\n7. **No stretched UI controls** — buttons aren't visually wider\n   than their content margin allows; toggles aren't deformed ovals;\n   chips don't have stretched corner radii. The launcher's native\n   render should look the same proportionally as it does at full\n   resolution.\n\n## Cross-Backend Consistency Contract\n\n- **Information equivalence is non-negotiable.** Every required item\n  in the *Required Content* checklist must be present in every\n  backend's frame. Information missing in one backend but present in\n  others is a hard finding.\n- **Visual identity is NOT required.** A reviewer should NOT mark\n  down TUI for being ASCII, iOS for using a `UISwitch` instead of a\n  CSS checkbox, or Android for showing the system status bar. Each\n  backend should look natural in its native idiom.\n- **Accent usage should rhyme.** The active filter, the primary Add\n  CTA, and the focused-state markers should all use the same accent\n  (`#7c7aed` or its closest native-palette analog).\n- **The seeded task names must be byte-identical** across all\n  backends (they come from the same VM via the same seed function).\n- **The order must match**: \"Buy groceries\" → \"Walk the dog\" → \"Ship\n  EX-M14\" (the VM is sorted by insertion order).\n\n## Scoring Rubric (Absolute 1-10, two scores per cell)\n\nScore each backend's cell against TWO independent dimensions. The\ntarget is **10/10 on both** across every cell.\n\n### Editor Chrome score\n\nHow the editor itself looks in this screenshot (sidebar, chrome bar,\ninspector, story highlight, backend-chip active state, accent usage).\nSince the chrome is constant across the 7 cells of this brief, your\nchrome score may be similar across cells; differences are only:\nwhich backend chip is highlighted, and whether the preview pane is\nsized appropriately for that backend's content.\n\n### App Rendering score\n\nHow the Task App demo looks rendered through this specific backend\ninside the preview pane.\n\nBoth scores use the same scale:\n\n- **10** — Production-ready showcase. Every required element\n  present, perfectly composed, native-idiomatic, accent usage\n  spot-on, typography hierarchy crisp, spacing balanced, **AND\n  the rendered pixels are crisp at preview-pane scale: correct\n  aspect ratio, palette-true colors, no visible blur, no\n  alignment drift, no stretched controls**. Could ship as a\n  design-system example.\n- **9** — Excellent. One minor polish issue OR one mild render-\n  quality nit (e.g. slight blur from aggressive downscale).\n  Content perfect.\n- **7-8** — Solid content / native idiom but render quality is\n  visibly imperfect: noticeable bilinear blur, slightly off-palette\n  colors, sub-pixel alignment drift, OR a polish gap (typography\n  hierarchy muted, spacing rhythm off, accent missing or overused).\n- **5-6** — Functional but rough. Content present but render or\n  composition is visibly compromised: stretched UI, wrong colors,\n  poor alignment, generic default-styles look. The image would NOT\n  be confused with a real production app screenshot.\n- **4 or below** — One or more required items missing, unreadable,\n  replaced by a placeholder, OR the render is so distorted/blurry\n  that it fails the \"production app screenshot\" bar entirely.\n  Triggers an immediate fix before re-scoring.\n\n**Important: a cell can only score 10/10 if it passes BOTH the\nContent/Idiom checks AND every dimension of the Preview-Pane Render\nQuality section above.** Don't grade content perfection in isolation\n— the user judges these PNGs the way they'd judge a real product\nscreenshot in a design-system gallery.\n\n## Reviewer Methodology (READ BEFORE SCORING)\n\nThis is a strict review aimed at world-class design quality. Score\nhonestly — past rounds drifted to leniency and missed real defects.\n\n**Anti-cheat rules**:\n\n1. **Flake detection first**. Before scoring any cell, confirm the\n   rendered content is the **Task App** (input + Add Task + filter\n   chips + 3 seeded tasks + summary), NOT the Settings App\n   (Appearance / Editor / Notifications groups). If you see Settings\n   content in a Task cell: score **1/10**, label it\n   `WRONG-DEMO FLAKE`, do not bother scoring render quality.\n\n2. **Empty-pane check**. If the preview pane is blank / mostly the\n   editor canvas background with no demo content: score **1/10**,\n   label it `EMPTY PANE — DEMO NOT RENDERING`.\n\n3. **Per-dimension annotation**. Comment on EVERY Render Quality\n   dimension (aspect, letterbox, scaling, color, alignment, AA,\n   stretching) for every cell — even when the dimension passes. No\n   omissions. A dimension that you don't mention is treated as a\n   missed check.\n\n4. **World-class anchor**. For each backend, hold the cell against a\n   concrete production app reference and score by the visible gap:\n   - Web → compare to Linear, Polaris docs, Storybook dark mode.\n   - TUI → compare to lazygit, gitui, Textual sample apps.\n   - GPUI → compare to Zed's UI / Linear's panel chrome.\n   - Freya → compare to a published Freya demo or Material 3 dark.\n   - Cocoa → compare to macOS Reminders app or Linear macOS.\n   - Android → compare to Material 3 Tasks template apps.\n   - iOS → compare to Apple's stock Reminders app.\n   If the gap is \"obvious\" to a senior designer: max **6/10**.\n   If the gap is \"small but visible\": max **8/10**.\n   If a senior designer would ship it as-is in a production gallery:\n   **10/10**. If you can't confidently say \"ship it\": NOT 10.\n\n5. **One-strike rule on Render Quality**. Any single Render Quality\n   dimension failure (e.g. visible stretching, off-palette accent,\n   blurred text) caps the cell at **8/10** even if every other\n   dimension is perfect. Two failures cap at **6/10**.\n\n6. **Accent-fidelity check**. The accent indigo must be visibly\n   `#7c7aed`-family. If the \"accent\" on a chip / CTA / active state\n   is white (no fill), pale lavender, navy, or any shade noticeably\n   different from `#7c7aed`: that is an accent failure, NOT a\n   stylistic choice. -1 minimum.\n\n7. **Counterfactual test for 10/10**: write the sentence \"A senior\n   designer at Linear / Apple / Vercel would ship this cell as a\n   production showcase image\" out loud. If you hesitate on any\n   word, the cell is NOT 10/10. Drop to the highest score you can\n   confidently assert.\n\n8. **No anchoring to prior scores**. Previous reviewer rounds gave\n   inflated scores. Treat this as a fresh review.\n\n9. **MANDATORY native-resolution crop before scoring text content**.\n   The captured PNG is 1920×1080 but most reviewer image tools\n   display it as a small thumbnail where small text anti-aliases\n   into illegible / wrong-glyph readings. Past rounds had a real\n   reviewer call the cocoa task summary \"0 of 0 remaining\" when\n   the actual rendered text was \"3 of 3 remaining\" — only a\n   thumbnail-scale anti-aliasing artifact.\n\n   **Before scoring any text-based content (summary counts,\n   filter labels, item descriptions, stepper digits, segmented\n   choice text)**, crop the relevant region at native resolution\n   using `sips`:\n\n   ```sh\n   # General form: sips -c <height> <width> --cropOffset <x> <y> <src> --out <dst>\n   # IMPORTANT: keep every crop UNDER 2000 px on EACH axis. Tools that\n   # consume the cropped PNG will reject larger images. Tight regional\n   # crops (≤ 1500×900) are the right size for verifying a single row /\n   # widget / chip cluster.\n   #\n   # Example — crop the summary footer of the cocoa task cell\n   # (1920×1080 capture, summary region is roughly the bottom-third of\n   # the preview pane which itself sits at x≈100, y≈80, w≈1080, h≈720).\n   sips -c 60 400 --cropOffset 120 700 \\\n     /Users/zahary/metacraft/isonim-examples/screenshots/render/task-app-cocoa.png \\\n     --out /tmp/task-app-cocoa-summary.png\n   ```\n\n   Then `Read` the cropped file with the image-aware Read tool.\n   This shows you the actual pixels at the resolution the user\n   sees them in the editor preview pane (not the 5× downscaled\n   thumbnail your tool may default to).\n\n   If after cropping the text is STILL illegible, that is a real\n   render-quality defect — flag it. Conversely, if you see \"X of Y\"\n   at thumbnail scale but native crop reveals it's correct, DO NOT\n   penalize the cell — the underlying rendering is fine. Use crops\n   liberally; better one extra `sips` call than a misread.\n\n## How to Report\n\nBegin with an **Editor Chrome** section that applies to all 7 cells\nof this brief (since the chrome is constant):\n\n- **Editor Chrome score** (1-10).\n- **Findings on the editor itself** — bulleted list of concrete issues\n  visible in the chrome (sidebar, chrome bar, inspector, story-\n  highlight, backend-chip cluster). Mention any backend chip that\n  doesn't show its active state correctly in its cell.\n- **Quickest path to chrome 10/10** — one or two targeted edits a\n  fix agent should make (paths in `~/metacraft/isonim/src/isonim/\n  editor/` if you can guess them; otherwise component name).\n\nThen one section per backend, in this order: web, tui, gpui, freya,\ncocoa, android, ios. Each section must include:\n\n- **App Rendering score** (1-10).\n- **Required-content check** — ✓ / ✗ for each of the 6 items in the\n  *Preview-Pane Content* checklist.\n- **Findings on the app rendering** — bulleted list of specific\n  issues in the preview pane. Be concrete: not \"spacing feels off\"\n  but \"the input row's bottom margin is roughly 4 px while the row\n  gap between task cards is 10 px — pick one rhythm\". **Explicitly\n  comment on each Render Quality dimension** (aspect ratio,\n  letterbox, scaling artifacts, color fidelity, sub-pixel\n  alignment, anti-aliasing, control stretching). If a dimension\n  looks fine, say \"render: aspect ✓, colors ✓, etc.\"; don't omit.\n- **Quickest path to app 10/10** — one or two targeted edits\n  (paths in `~/metacraft/isonim-examples/task_app/<backend>/\n  leaves.nim` if you can guess them; otherwise component name).\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [
+        "render.settings-app"
+      ],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Task App / Pages",
+            "name": "Inbox",
+            "kind": "skPage",
+            "index": 0
+          },
+          "backends": [
+            "web",
+            "tui",
+            "gpui",
+            "freya",
+            "cocoa",
+            "android",
+            "ios"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1920,
+          "height": 1080,
+          "label": "wide"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "chrome",
+          "label": "Editor Chrome",
+          "weight": 0.4,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "rendering",
+          "label": "App Rendering",
+          "weight": 0.6,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "render.task-app-completed",
+      "schemaVersion": 1,
+      "kind": "render",
+      "title": "Task App / Pages — Completed",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/render/task-app-completed.md",
+      "bodyMarkdown": "\n# Task App / Pages — Completed\n\n> **Status:** Starter brief. Refine the \"What to watch for\" list as you learn what matters for this story.\n\n## What you're reviewing\n\nThe **Completed** page of the task app: the filter is set to\n**Completed** and the list shows only completed rows along with the\n**Clear completed** affordance. Captured per backend at 1920×1080.\n\n## What to watch for\n\n- The **Completed** filter chip is the selected pill (accent fill).\n- Every visible row is in the completed state: checkmark filled,\n  strikethrough on the task name, muted text colour.\n- The **Clear completed** affordance is visible and primary — this\n  is the page's main CTA.\n- Summary bar shows `0 active` (or the equivalent native phrasing).\n- If no completed tasks exist in the seeded state: the empty-state\n  copy is friendly and references the completed filter explicitly\n  (not the generic \"no tasks\").\n- Cross-backend information equivalence: the set of completed tasks\n  is byte-identical across backends.\n\n## Cross-backend expectations\n\nThis is the **Completed-filter** sibling of `render.task-app`. All\nseven backends participate. Apply the full render-quality rubric\nfrom `render.task-app`.\n\n## Scoring rubric\n\n- **Editor Chrome score**: same scale as `render.task-app`.\n- **App Rendering score**: 10/10 requires every required-content\n  item plus all render-quality dimensions pass. The Clear-completed\n  CTA is **required content** for this page — flag as missing if\n  absent.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [
+        "render.task-app",
+        "render.task-app-today"
+      ],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Task App / Pages",
+            "name": "Completed",
+            "kind": "skPage",
+            "index": 2
+          },
+          "backends": [
+            "web",
+            "tui",
+            "gpui",
+            "freya",
+            "cocoa",
+            "android",
+            "ios"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1920,
+          "height": 1080,
+          "label": "wide"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "chrome",
+          "label": "Editor Chrome",
+          "weight": 0.4,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "rendering",
+          "label": "App Rendering",
+          "weight": 0.6,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "render.task-app-today",
+      "schemaVersion": 1,
+      "kind": "render",
+      "title": "Task App / Pages — Today",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/render/task-app-today.md",
+      "bodyMarkdown": "\n# Task App / Pages — Today\n\n> **Status:** Starter brief. Refine the \"What to watch for\" list as you learn what matters for this story.\n\n## What you're reviewing\n\nThe **Today** page of the task app: the filter is set to **Active**\nand the list shows a single in-progress task. The preview captures\nthe full 1920×1080 editor with this story selected — sidebar +\nchrome bar + preview pane + inspector all visible — once per backend.\n\n## What to watch for\n\n- The **Active** filter chip is the selected pill in the filter bar\n  (accent fill, distinct from All / Completed).\n- Exactly one active task row visible in the list — no completed\n  rows, no empty-state copy.\n- Summary bar reflects `1 active` and zero completed (the\n  clear-completed affordance should be absent).\n- Cross-backend information equivalence: the same single seeded\n  active task name appears on every backend.\n- Backend chip in the chrome bar matches the cell's backend (web /\n  tui / gpui / freya / cocoa / android / ios).\n- All Render Quality dimensions from `render.task-app` apply:\n  aspect, letterbox, scaling, colors, alignment, AA, no stretching.\n\n## Cross-backend expectations\n\nThis brief is the **Active-filter** twin of `render.task-app`\n(which captures the `Inbox` All-filter page). All seven backends\nparticipate. Use the same anti-cheat methodology as `render.task-app`:\nflake detection, empty-pane check, per-dimension annotation, world-\nclass anchor references.\n\n## Scoring rubric\n\n- **Editor Chrome score**: same scale as `render.task-app` —\n  evaluate the constant chrome (sidebar, chrome bar, inspector,\n  story highlight).\n- **App Rendering score**: production-ready showcase of the\n  Active-filter Task App rendered through this specific backend.\n  10/10 requires all required-content + render-quality dimensions\n  pass.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [
+        "render.task-app",
+        "render.task-app-completed"
+      ],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Task App / Pages",
+            "name": "Today",
+            "kind": "skPage",
+            "index": 1
+          },
+          "backends": [
+            "web",
+            "tui",
+            "gpui",
+            "freya",
+            "cocoa",
+            "android",
+            "ios"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 1920,
+          "height": 1080,
+          "label": "wide"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "chrome",
+          "label": "Editor Chrome",
+          "weight": 0.4,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "rendering",
+          "label": "App Rendering",
+          "weight": 0.6,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "vectorsymbol.empty-glyph",
+      "schemaVersion": 1,
+      "kind": "vectorsymbol",
+      "title": "Task App / Vector Symbols — Empty Glyph",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/vectorsymbol/empty-glyph.md",
+      "bodyMarkdown": "\n# Task App / Vector Symbols — Empty Glyph\n\n> **Status:** Starter brief. Refine the bullets below as you learn what matters most for this story.\n\n## What you're reviewing\n\nA reserved glyph with no current usages. The story acts as a\nvisual-review baseline for the vector editor's empty usage-panel\nstate. Designers can experiment here without disturbing the\nshipping icons.\n\n## What to watch for\n\n- The glyph is intentional — even though it has no usages, it\n  should look complete (not a placeholder cross or \"TODO\" shape).\n- Stroke weight and visual weight are aligned with the rest of\n  the catalog (Task Check Icon, Task Filter Icon, Task Sort\n  Icon).\n- The vector editor's right-side usage panel renders an\n  empty-state message (\"No usages of this glyph\") clearly when\n  this symbol is opened.\n\n## Cross-backend expectations\n\nWeb canonical. This glyph is used to drive the\n`vector-editor-empty` chrome brief (the editor screenshot test);\nthat brief covers the editor's empty-panel state, while this\nbrief covers the glyph itself as a designable object.\n\n## Scoring rubric\n\n- **Glyph Clarity (9/10)**: the glyph is a coherent shape, not\n  noise. **(5/10)**: shape is ambiguous but recognisable as\n  intentional. **(2/10)**: looks like an artifact.\n- **Scalability**: legible at 12 px to 32 px.\n- **Brand Fit**: matches the catalog's stroke and weight.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Task App / Vector Symbols",
+            "name": "Empty Glyph",
+            "kind": "skVectorSymbol",
+            "index": 3
+          },
+          "backends": [
+            "web"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 800,
+          "height": 600,
+          "label": "default"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "clarity",
+          "label": "Glyph Clarity",
+          "weight": 0.4,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "scalability",
+          "label": "Scalability",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "brand_fit",
+          "label": "Brand Fit",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    },
+    {
+      "briefId": "vectorsymbol.task-sort-icon",
+      "schemaVersion": 1,
+      "kind": "vectorsymbol",
+      "title": "Task App / Vector Symbols — Task Sort Icon",
+      "sourceFile": "/Users/zahary/metacraft/isonim-examples/briefs/vectorsymbol/task-sort-icon.md",
+      "bodyMarkdown": "\n# Task App / Vector Symbols — Task Sort Icon\n\n> **Status:** Starter brief. Refine the bullets below as you learn what matters most for this story.\n\n## What you're reviewing\n\nThe reusable sort glyph used by the task-list sort affordance.\nConceptually two arrows (up and down) stacked or side-by-side; the\nglyph stands in for \"rearrange / order\" actions.\n\n## What to watch for\n\n- Stroke weight is uniform; arrow heads have matching angle and\n  length.\n- Glyph is balanced inside its viewBox — no off-centre crowding.\n- At 16-px render size the arrows are still distinguishable from\n  each other (no merged double-arrow blob).\n- Optical centring: if the glyph is composed of two arrows of\n  different visual weight, ensure the bounding box is shifted to\n  compensate so the glyph reads as centred.\n- Stroke colour is a muted neutral by default; the glyph never\n  ships with a hard-coded accent fill.\n\n## Cross-backend expectations\n\nSVG-shaped on every backend; rendered on the canonical web\nbackend here. Vector editor opens this story on canvas double-\nclick for any leaf that resolves to TaskSortIcon.\n\n## Scoring rubric\n\n- **Glyph Clarity (9/10)**: instantly readable as a sort /\n  rearrange affordance. **(5/10)**: requires context.\n  **(2/10)**: reads as something else entirely.\n- **Scalability**: legible from 12 px up to 32 px.\n- **Brand Fit**: stroke weight matches Task Check Icon and\n  Task Filter Icon siblings.\n",
+      "reviewerSchemaVersion": 1,
+      "relatedBriefs": [],
+      "coversPreviews": [
+        {
+          "storyRef": {
+            "group": "Task App / Vector Symbols",
+            "name": "Task Sort Icon",
+            "kind": "skVectorSymbol",
+            "index": 2
+          },
+          "backends": [
+            "web"
+          ]
+        }
+      ],
+      "captureViewports": [
+        {
+          "width": 800,
+          "height": 600,
+          "label": "default"
+        }
+      ],
+      "scoringDimensions": [
+        {
+          "id": "clarity",
+          "label": "Glyph Clarity",
+          "weight": 0.4,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "scalability",
+          "label": "Scalability",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        },
+        {
+          "id": "brand_fit",
+          "label": "Brand Fit",
+          "weight": 0.3,
+          "scaleMin": 1,
+          "scaleMax": 10
+        }
+      ],
+      "extra": {}
+    }
+  ],
+  "byPreview": {
+    "Add Task Flow/Clears completed tasks:flow#3@android": [
+      "interaction.add-task-clears-completed"
+    ],
+    "Add Task Flow/Clears completed tasks:flow#3@cocoa": [
+      "interaction.add-task-clears-completed"
+    ],
+    "Add Task Flow/Clears completed tasks:flow#3@freya": [
+      "interaction.add-task-clears-completed"
+    ],
+    "Add Task Flow/Clears completed tasks:flow#3@gpui": [
+      "interaction.add-task-clears-completed"
+    ],
+    "Add Task Flow/Clears completed tasks:flow#3@ios": [
+      "interaction.add-task-clears-completed"
+    ],
+    "Add Task Flow/Clears completed tasks:flow#3@tui": [
+      "interaction.add-task-clears-completed"
+    ],
+    "Add Task Flow/Clears completed tasks:flow#3@web": [
+      "interaction.add-task-clears-completed"
+    ],
+    "Add Task Flow/Presses Enter to add:flow#1@android": [
+      "interaction.add-task-presses-enter"
+    ],
+    "Add Task Flow/Presses Enter to add:flow#1@cocoa": [
+      "interaction.add-task-presses-enter"
+    ],
+    "Add Task Flow/Presses Enter to add:flow#1@freya": [
+      "interaction.add-task-presses-enter"
+    ],
+    "Add Task Flow/Presses Enter to add:flow#1@gpui": [
+      "interaction.add-task-presses-enter"
+    ],
+    "Add Task Flow/Presses Enter to add:flow#1@ios": [
+      "interaction.add-task-presses-enter"
+    ],
+    "Add Task Flow/Presses Enter to add:flow#1@tui": [
+      "interaction.add-task-presses-enter"
+    ],
+    "Add Task Flow/Presses Enter to add:flow#1@web": [
+      "interaction.add-task-presses-enter"
+    ],
+    "Add Task Flow/Toggles the task complete:flow#2@android": [
+      "interaction.add-task-toggles-complete"
+    ],
+    "Add Task Flow/Toggles the task complete:flow#2@cocoa": [
+      "interaction.add-task-toggles-complete"
+    ],
+    "Add Task Flow/Toggles the task complete:flow#2@freya": [
+      "interaction.add-task-toggles-complete"
+    ],
+    "Add Task Flow/Toggles the task complete:flow#2@gpui": [
+      "interaction.add-task-toggles-complete"
+    ],
+    "Add Task Flow/Toggles the task complete:flow#2@ios": [
+      "interaction.add-task-toggles-complete"
+    ],
+    "Add Task Flow/Toggles the task complete:flow#2@tui": [
+      "interaction.add-task-toggles-complete"
+    ],
+    "Add Task Flow/Toggles the task complete:flow#2@web": [
+      "interaction.add-task-toggles-complete"
+    ],
+    "Add Task Flow/Types a task name:flow#0@android": [
+      "interaction.add-task-types-name"
+    ],
+    "Add Task Flow/Types a task name:flow#0@cocoa": [
+      "interaction.add-task-types-name"
+    ],
+    "Add Task Flow/Types a task name:flow#0@freya": [
+      "interaction.add-task-types-name"
+    ],
+    "Add Task Flow/Types a task name:flow#0@gpui": [
+      "interaction.add-task-types-name"
+    ],
+    "Add Task Flow/Types a task name:flow#0@ios": [
+      "interaction.add-task-types-name"
+    ],
+    "Add Task Flow/Types a task name:flow#0@tui": [
+      "interaction.add-task-types-name"
+    ],
+    "Add Task Flow/Types a task name:flow#0@web": [
+      "interaction.add-task-types-name"
+    ],
+    "Guidelines/Cross-renderer parity:guideline#0@web": [
+      "guideline.cross-renderer-parity"
+    ],
+    "Guidelines/Layer separation:guideline#1@web": [
+      "guideline.layer-separation"
+    ],
+    "Patterns/Form With Inline Error:pattern#0@android": [
+      "pattern.form-with-inline-error"
+    ],
+    "Patterns/Form With Inline Error:pattern#0@cocoa": [
+      "pattern.form-with-inline-error"
+    ],
+    "Patterns/Form With Inline Error:pattern#0@freya": [
+      "pattern.form-with-inline-error"
+    ],
+    "Patterns/Form With Inline Error:pattern#0@gpui": [
+      "pattern.form-with-inline-error"
+    ],
+    "Patterns/Form With Inline Error:pattern#0@ios": [
+      "pattern.form-with-inline-error"
+    ],
+    "Patterns/Form With Inline Error:pattern#0@tui": [
+      "pattern.form-with-inline-error"
+    ],
+    "Patterns/Form With Inline Error:pattern#0@web": [
+      "pattern.form-with-inline-error"
+    ],
+    "Patterns/List With Empty State:pattern#1@android": [
+      "pattern.list-with-empty-state"
+    ],
+    "Patterns/List With Empty State:pattern#1@cocoa": [
+      "pattern.list-with-empty-state"
+    ],
+    "Patterns/List With Empty State:pattern#1@freya": [
+      "pattern.list-with-empty-state"
+    ],
+    "Patterns/List With Empty State:pattern#1@gpui": [
+      "pattern.list-with-empty-state"
+    ],
+    "Patterns/List With Empty State:pattern#1@ios": [
+      "pattern.list-with-empty-state"
+    ],
+    "Patterns/List With Empty State:pattern#1@tui": [
+      "pattern.list-with-empty-state"
+    ],
+    "Patterns/List With Empty State:pattern#1@web": [
+      "pattern.list-with-empty-state"
+    ],
+    "Patterns/Segmented Control:pattern#2@android": [
+      "pattern.segmented-control"
+    ],
+    "Patterns/Segmented Control:pattern#2@cocoa": [
+      "pattern.segmented-control"
+    ],
+    "Patterns/Segmented Control:pattern#2@freya": [
+      "pattern.segmented-control"
+    ],
+    "Patterns/Segmented Control:pattern#2@gpui": [
+      "pattern.segmented-control"
+    ],
+    "Patterns/Segmented Control:pattern#2@ios": [
+      "pattern.segmented-control"
+    ],
+    "Patterns/Segmented Control:pattern#2@tui": [
+      "pattern.segmented-control"
+    ],
+    "Patterns/Segmented Control:pattern#2@web": [
+      "pattern.segmented-control"
+    ],
+    "Settings App %2F ChoiceItem/Alternate:component#1@android": [
+      "component.choice-item-alternate"
+    ],
+    "Settings App %2F ChoiceItem/Alternate:component#1@cocoa": [
+      "component.choice-item-alternate"
+    ],
+    "Settings App %2F ChoiceItem/Alternate:component#1@freya": [
+      "component.choice-item-alternate"
+    ],
+    "Settings App %2F ChoiceItem/Alternate:component#1@gpui": [
+      "component.choice-item-alternate"
+    ],
+    "Settings App %2F ChoiceItem/Alternate:component#1@ios": [
+      "component.choice-item-alternate"
+    ],
+    "Settings App %2F ChoiceItem/Alternate:component#1@tui": [
+      "component.choice-item-alternate"
+    ],
+    "Settings App %2F ChoiceItem/Alternate:component#1@web": [
+      "component.choice-item-alternate"
+    ],
+    "Settings App %2F ChoiceItem/Default:component#0@android": [
+      "component.choice-item-default"
+    ],
+    "Settings App %2F ChoiceItem/Default:component#0@cocoa": [
+      "component.choice-item-default"
+    ],
+    "Settings App %2F ChoiceItem/Default:component#0@freya": [
+      "component.choice-item-default"
+    ],
+    "Settings App %2F ChoiceItem/Default:component#0@gpui": [
+      "component.choice-item-default"
+    ],
+    "Settings App %2F ChoiceItem/Default:component#0@ios": [
+      "component.choice-item-default"
+    ],
+    "Settings App %2F ChoiceItem/Default:component#0@tui": [
+      "component.choice-item-default"
+    ],
+    "Settings App %2F ChoiceItem/Default:component#0@web": [
+      "component.choice-item-default"
+    ],
+    "Settings App %2F Foundations/Control States:foundation#1@web": [
+      "foundation.settings-app-control-states"
+    ],
+    "Settings App %2F Foundations/Item Density:foundation#0@web": [
+      "foundation.settings-app-item-density"
+    ],
+    "Settings App %2F Group/Appearance:component#0@web": [
+      "chrome.story-selected-laptop",
+      "chrome.story-selected-wide"
+    ],
+    "Settings App %2F Group/Editor:component#1@android": [
+      "component.settings-group-editor"
+    ],
+    "Settings App %2F Group/Editor:component#1@cocoa": [
+      "component.settings-group-editor"
+    ],
+    "Settings App %2F Group/Editor:component#1@freya": [
+      "component.settings-group-editor"
+    ],
+    "Settings App %2F Group/Editor:component#1@gpui": [
+      "component.settings-group-editor"
+    ],
+    "Settings App %2F Group/Editor:component#1@ios": [
+      "component.settings-group-editor"
+    ],
+    "Settings App %2F Group/Editor:component#1@tui": [
+      "component.settings-group-editor"
+    ],
+    "Settings App %2F Group/Editor:component#1@web": [
+      "component.settings-group-editor"
+    ],
+    "Settings App %2F Group/Notifications:component#2@android": [
+      "component.settings-group-notifications"
+    ],
+    "Settings App %2F Group/Notifications:component#2@cocoa": [
+      "component.settings-group-notifications"
+    ],
+    "Settings App %2F Group/Notifications:component#2@freya": [
+      "component.settings-group-notifications"
+    ],
+    "Settings App %2F Group/Notifications:component#2@gpui": [
+      "component.settings-group-notifications"
+    ],
+    "Settings App %2F Group/Notifications:component#2@ios": [
+      "component.settings-group-notifications"
+    ],
+    "Settings App %2F Group/Notifications:component#2@tui": [
+      "component.settings-group-notifications"
+    ],
+    "Settings App %2F Group/Notifications:component#2@web": [
+      "component.settings-group-notifications"
+    ],
+    "Settings App %2F NumberItem/Clamped:component#1@android": [
+      "component.number-item-clamped"
+    ],
+    "Settings App %2F NumberItem/Clamped:component#1@cocoa": [
+      "component.number-item-clamped"
+    ],
+    "Settings App %2F NumberItem/Clamped:component#1@freya": [
+      "component.number-item-clamped"
+    ],
+    "Settings App %2F NumberItem/Clamped:component#1@gpui": [
+      "component.number-item-clamped"
+    ],
+    "Settings App %2F NumberItem/Clamped:component#1@ios": [
+      "component.number-item-clamped"
+    ],
+    "Settings App %2F NumberItem/Clamped:component#1@tui": [
+      "component.number-item-clamped"
+    ],
+    "Settings App %2F NumberItem/Clamped:component#1@web": [
+      "component.number-item-clamped"
+    ],
+    "Settings App %2F NumberItem/Default:component#0@android": [
+      "component.number-item-default"
+    ],
+    "Settings App %2F NumberItem/Default:component#0@cocoa": [
+      "component.number-item-default"
+    ],
+    "Settings App %2F NumberItem/Default:component#0@freya": [
+      "component.number-item-default"
+    ],
+    "Settings App %2F NumberItem/Default:component#0@gpui": [
+      "component.number-item-default"
+    ],
+    "Settings App %2F NumberItem/Default:component#0@ios": [
+      "component.number-item-default"
+    ],
+    "Settings App %2F NumberItem/Default:component#0@tui": [
+      "component.number-item-default"
+    ],
+    "Settings App %2F NumberItem/Default:component#0@web": [
+      "component.number-item-default"
+    ],
+    "Settings App %2F Pages/Appearance Group:page#1@android": [
+      "render.settings-app-appearance"
+    ],
+    "Settings App %2F Pages/Appearance Group:page#1@cocoa": [
+      "render.settings-app-appearance"
+    ],
+    "Settings App %2F Pages/Appearance Group:page#1@freya": [
+      "render.settings-app-appearance"
+    ],
+    "Settings App %2F Pages/Appearance Group:page#1@gpui": [
+      "render.settings-app-appearance"
+    ],
+    "Settings App %2F Pages/Appearance Group:page#1@ios": [
+      "render.settings-app-appearance"
+    ],
+    "Settings App %2F Pages/Appearance Group:page#1@tui": [
+      "render.settings-app-appearance"
+    ],
+    "Settings App %2F Pages/Appearance Group:page#1@web": [
+      "render.settings-app-appearance"
+    ],
+    "Settings App %2F Pages/Editor Group:page#2@android": [
+      "render.settings-app-editor"
+    ],
+    "Settings App %2F Pages/Editor Group:page#2@cocoa": [
+      "render.settings-app-editor"
+    ],
+    "Settings App %2F Pages/Editor Group:page#2@freya": [
+      "render.settings-app-editor"
+    ],
+    "Settings App %2F Pages/Editor Group:page#2@gpui": [
+      "render.settings-app-editor"
+    ],
+    "Settings App %2F Pages/Editor Group:page#2@ios": [
+      "render.settings-app-editor"
+    ],
+    "Settings App %2F Pages/Editor Group:page#2@tui": [
+      "render.settings-app-editor"
+    ],
+    "Settings App %2F Pages/Editor Group:page#2@web": [
+      "render.settings-app-editor"
+    ],
+    "Settings App %2F Pages/Preferences:page#0@android": [
+      "render.settings-app"
+    ],
+    "Settings App %2F Pages/Preferences:page#0@cocoa": [
+      "render.settings-app"
+    ],
+    "Settings App %2F Pages/Preferences:page#0@freya": [
+      "render.settings-app"
+    ],
+    "Settings App %2F Pages/Preferences:page#0@gpui": [
+      "render.settings-app"
+    ],
+    "Settings App %2F Pages/Preferences:page#0@ios": [
+      "render.settings-app"
+    ],
+    "Settings App %2F Pages/Preferences:page#0@tui": [
+      "render.settings-app"
+    ],
+    "Settings App %2F Pages/Preferences:page#0@web": [
+      "render.settings-app"
+    ],
+    "Settings App %2F ToggleItem/Off:component#0@android": [
+      "component.toggle-item-off"
+    ],
+    "Settings App %2F ToggleItem/Off:component#0@cocoa": [
+      "component.toggle-item-off"
+    ],
+    "Settings App %2F ToggleItem/Off:component#0@freya": [
+      "component.toggle-item-off"
+    ],
+    "Settings App %2F ToggleItem/Off:component#0@gpui": [
+      "component.toggle-item-off"
+    ],
+    "Settings App %2F ToggleItem/Off:component#0@ios": [
+      "component.toggle-item-off"
+    ],
+    "Settings App %2F ToggleItem/Off:component#0@tui": [
+      "component.toggle-item-off"
+    ],
+    "Settings App %2F ToggleItem/Off:component#0@web": [
+      "component.toggle-item-off"
+    ],
+    "Settings App %2F ToggleItem/On:component#1@android": [
+      "component.toggle-item-on"
+    ],
+    "Settings App %2F ToggleItem/On:component#1@cocoa": [
+      "component.toggle-item-on"
+    ],
+    "Settings App %2F ToggleItem/On:component#1@freya": [
+      "component.toggle-item-on"
+    ],
+    "Settings App %2F ToggleItem/On:component#1@gpui": [
+      "component.toggle-item-on"
+    ],
+    "Settings App %2F ToggleItem/On:component#1@ios": [
+      "component.toggle-item-on"
+    ],
+    "Settings App %2F ToggleItem/On:component#1@tui": [
+      "component.toggle-item-on"
+    ],
+    "Settings App %2F ToggleItem/On:component#1@web": [
+      "component.toggle-item-on"
+    ],
+    "Task App %2F FilterBar/Active Selected:component#1@android": [
+      "component.filter-bar-active-selected"
+    ],
+    "Task App %2F FilterBar/Active Selected:component#1@cocoa": [
+      "component.filter-bar-active-selected"
+    ],
+    "Task App %2F FilterBar/Active Selected:component#1@freya": [
+      "component.filter-bar-active-selected"
+    ],
+    "Task App %2F FilterBar/Active Selected:component#1@gpui": [
+      "component.filter-bar-active-selected"
+    ],
+    "Task App %2F FilterBar/Active Selected:component#1@ios": [
+      "component.filter-bar-active-selected"
+    ],
+    "Task App %2F FilterBar/Active Selected:component#1@tui": [
+      "component.filter-bar-active-selected"
+    ],
+    "Task App %2F FilterBar/Active Selected:component#1@web": [
+      "component.filter-bar-active-selected"
+    ],
+    "Task App %2F FilterBar/All Selected:component#0@android": [
+      "component.filter-bar-all-selected"
+    ],
+    "Task App %2F FilterBar/All Selected:component#0@cocoa": [
+      "component.filter-bar-all-selected"
+    ],
+    "Task App %2F FilterBar/All Selected:component#0@freya": [
+      "component.filter-bar-all-selected"
+    ],
+    "Task App %2F FilterBar/All Selected:component#0@gpui": [
+      "component.filter-bar-all-selected"
+    ],
+    "Task App %2F FilterBar/All Selected:component#0@ios": [
+      "component.filter-bar-all-selected"
+    ],
+    "Task App %2F FilterBar/All Selected:component#0@tui": [
+      "component.filter-bar-all-selected"
+    ],
+    "Task App %2F FilterBar/All Selected:component#0@web": [
+      "component.filter-bar-all-selected"
+    ],
+    "Task App %2F FilterBar/Completed Selected:component#2@android": [
+      "component.filter-bar-completed-selected"
+    ],
+    "Task App %2F FilterBar/Completed Selected:component#2@cocoa": [
+      "component.filter-bar-completed-selected"
+    ],
+    "Task App %2F FilterBar/Completed Selected:component#2@freya": [
+      "component.filter-bar-completed-selected"
+    ],
+    "Task App %2F FilterBar/Completed Selected:component#2@gpui": [
+      "component.filter-bar-completed-selected"
+    ],
+    "Task App %2F FilterBar/Completed Selected:component#2@ios": [
+      "component.filter-bar-completed-selected"
+    ],
+    "Task App %2F FilterBar/Completed Selected:component#2@tui": [
+      "component.filter-bar-completed-selected"
+    ],
+    "Task App %2F FilterBar/Completed Selected:component#2@web": [
+      "component.filter-bar-completed-selected"
+    ],
+    "Task App %2F Foundations/Spacing:foundation#0@web": [
+      "foundation.task-app-spacing"
+    ],
+    "Task App %2F Foundations/Typography:foundation#1@web": [
+      "foundation.task-app-typography"
+    ],
+    "Task App %2F Pages/Completed:page#2@android": [
+      "render.task-app-completed"
+    ],
+    "Task App %2F Pages/Completed:page#2@cocoa": [
+      "render.task-app-completed"
+    ],
+    "Task App %2F Pages/Completed:page#2@freya": [
+      "render.task-app-completed"
+    ],
+    "Task App %2F Pages/Completed:page#2@gpui": [
+      "render.task-app-completed"
+    ],
+    "Task App %2F Pages/Completed:page#2@ios": [
+      "render.task-app-completed"
+    ],
+    "Task App %2F Pages/Completed:page#2@tui": [
+      "render.task-app-completed"
+    ],
+    "Task App %2F Pages/Completed:page#2@web": [
+      "render.task-app-completed"
+    ],
+    "Task App %2F Pages/Inbox:page#0@android": [
+      "render.task-app"
+    ],
+    "Task App %2F Pages/Inbox:page#0@cocoa": [
+      "render.task-app"
+    ],
+    "Task App %2F Pages/Inbox:page#0@freya": [
+      "render.task-app"
+    ],
+    "Task App %2F Pages/Inbox:page#0@gpui": [
+      "render.task-app"
+    ],
+    "Task App %2F Pages/Inbox:page#0@ios": [
+      "render.task-app"
+    ],
+    "Task App %2F Pages/Inbox:page#0@tui": [
+      "render.task-app"
+    ],
+    "Task App %2F Pages/Inbox:page#0@web": [
+      "chrome.shell-laptop",
+      "chrome.shell-narrow",
+      "chrome.shell-wide",
+      "chrome.sidebar-quick-nav",
+      "render.task-app"
+    ],
+    "Task App %2F Pages/Today:page#1@android": [
+      "render.task-app-today"
+    ],
+    "Task App %2F Pages/Today:page#1@cocoa": [
+      "render.task-app-today"
+    ],
+    "Task App %2F Pages/Today:page#1@freya": [
+      "render.task-app-today"
+    ],
+    "Task App %2F Pages/Today:page#1@gpui": [
+      "render.task-app-today"
+    ],
+    "Task App %2F Pages/Today:page#1@ios": [
+      "render.task-app-today"
+    ],
+    "Task App %2F Pages/Today:page#1@tui": [
+      "render.task-app-today"
+    ],
+    "Task App %2F Pages/Today:page#1@web": [
+      "render.task-app-today"
+    ],
+    "Task App %2F SummaryBar/Active Only:component#0@android": [
+      "component.summary-bar-active-only"
+    ],
+    "Task App %2F SummaryBar/Active Only:component#0@cocoa": [
+      "component.summary-bar-active-only"
+    ],
+    "Task App %2F SummaryBar/Active Only:component#0@freya": [
+      "component.summary-bar-active-only"
+    ],
+    "Task App %2F SummaryBar/Active Only:component#0@gpui": [
+      "component.summary-bar-active-only"
+    ],
+    "Task App %2F SummaryBar/Active Only:component#0@ios": [
+      "component.summary-bar-active-only"
+    ],
+    "Task App %2F SummaryBar/Active Only:component#0@tui": [
+      "component.summary-bar-active-only"
+    ],
+    "Task App %2F SummaryBar/Active Only:component#0@web": [
+      "component.summary-bar-active-only"
+    ],
+    "Task App %2F SummaryBar/With Completed:component#1@android": [
+      "component.summary-bar-with-completed"
+    ],
+    "Task App %2F SummaryBar/With Completed:component#1@cocoa": [
+      "component.summary-bar-with-completed"
+    ],
+    "Task App %2F SummaryBar/With Completed:component#1@freya": [
+      "component.summary-bar-with-completed"
+    ],
+    "Task App %2F SummaryBar/With Completed:component#1@gpui": [
+      "component.summary-bar-with-completed"
+    ],
+    "Task App %2F SummaryBar/With Completed:component#1@ios": [
+      "component.summary-bar-with-completed"
+    ],
+    "Task App %2F SummaryBar/With Completed:component#1@tui": [
+      "component.summary-bar-with-completed"
+    ],
+    "Task App %2F SummaryBar/With Completed:component#1@web": [
+      "component.summary-bar-with-completed"
+    ],
+    "Task App %2F TaskInput/Empty:component#0@android": [
+      "component.task-input-empty"
+    ],
+    "Task App %2F TaskInput/Empty:component#0@cocoa": [
+      "component.task-input-empty"
+    ],
+    "Task App %2F TaskInput/Empty:component#0@freya": [
+      "component.task-input-empty"
+    ],
+    "Task App %2F TaskInput/Empty:component#0@gpui": [
+      "component.task-input-empty"
+    ],
+    "Task App %2F TaskInput/Empty:component#0@ios": [
+      "component.task-input-empty"
+    ],
+    "Task App %2F TaskInput/Empty:component#0@tui": [
+      "component.task-input-empty"
+    ],
+    "Task App %2F TaskInput/Empty:component#0@web": [
+      "component.task-input-empty"
+    ],
+    "Task App %2F TaskInput/With Draft:component#1@android": [
+      "component.task-input-with-draft"
+    ],
+    "Task App %2F TaskInput/With Draft:component#1@cocoa": [
+      "component.task-input-with-draft"
+    ],
+    "Task App %2F TaskInput/With Draft:component#1@freya": [
+      "component.task-input-with-draft"
+    ],
+    "Task App %2F TaskInput/With Draft:component#1@gpui": [
+      "component.task-input-with-draft"
+    ],
+    "Task App %2F TaskInput/With Draft:component#1@ios": [
+      "component.task-input-with-draft"
+    ],
+    "Task App %2F TaskInput/With Draft:component#1@tui": [
+      "component.task-input-with-draft"
+    ],
+    "Task App %2F TaskInput/With Draft:component#1@web": [
+      "component.task-input-with-draft"
+    ],
+    "Task App %2F TaskList/Empty:component#0@android": [
+      "component.task-list-empty"
+    ],
+    "Task App %2F TaskList/Empty:component#0@cocoa": [
+      "component.task-list-empty"
+    ],
+    "Task App %2F TaskList/Empty:component#0@freya": [
+      "component.task-list-empty"
+    ],
+    "Task App %2F TaskList/Empty:component#0@gpui": [
+      "component.task-list-empty"
+    ],
+    "Task App %2F TaskList/Empty:component#0@ios": [
+      "component.task-list-empty"
+    ],
+    "Task App %2F TaskList/Empty:component#0@tui": [
+      "component.task-list-empty"
+    ],
+    "Task App %2F TaskList/Empty:component#0@web": [
+      "component.task-list-empty"
+    ],
+    "Task App %2F TaskList/Mixed Completion:component#2@android": [
+      "component.task-list-mixed-completion"
+    ],
+    "Task App %2F TaskList/Mixed Completion:component#2@cocoa": [
+      "component.task-list-mixed-completion"
+    ],
+    "Task App %2F TaskList/Mixed Completion:component#2@freya": [
+      "component.task-list-mixed-completion"
+    ],
+    "Task App %2F TaskList/Mixed Completion:component#2@gpui": [
+      "component.task-list-mixed-completion"
+    ],
+    "Task App %2F TaskList/Mixed Completion:component#2@ios": [
+      "component.task-list-mixed-completion"
+    ],
+    "Task App %2F TaskList/Mixed Completion:component#2@tui": [
+      "component.task-list-mixed-completion"
+    ],
+    "Task App %2F TaskList/Mixed Completion:component#2@web": [
+      "component.task-list-mixed-completion"
+    ],
+    "Task App %2F TaskList/Two Active:component#1@tui": [
+      "chrome.canvas-preview-edit-mode",
+      "chrome.canvas-preview-tui"
+    ],
+    "Task App %2F Vector Symbols/Empty Glyph:vectorsymbol#3@web": [
+      "vectorsymbol.empty-glyph"
+    ],
+    "Task App %2F Vector Symbols/Task Check Icon:vectorsymbol#0@tui": [
+      "chrome.canvas-preview-vector-dblclick-open"
+    ],
+    "Task App %2F Vector Symbols/Task Check Icon:vectorsymbol#0@web": [
+      "chrome.vector-editor-carousel",
+      "chrome.vector-editor-empty"
+    ],
+    "Task App %2F Vector Symbols/Task Filter Icon:vectorsymbol#1@web": [
+      "chrome.vector-editor-with-symbol"
+    ],
+    "Task App %2F Vector Symbols/Task Sort Icon:vectorsymbol#2@web": [
+      "vectorsymbol.task-sort-icon"
+    ],
+    "Toggle Setting Flow/Adjusts font size:flow#2@android": [
+      "interaction.toggle-setting-adjusts-font-size"
+    ],
+    "Toggle Setting Flow/Adjusts font size:flow#2@cocoa": [
+      "interaction.toggle-setting-adjusts-font-size"
+    ],
+    "Toggle Setting Flow/Adjusts font size:flow#2@freya": [
+      "interaction.toggle-setting-adjusts-font-size"
+    ],
+    "Toggle Setting Flow/Adjusts font size:flow#2@gpui": [
+      "interaction.toggle-setting-adjusts-font-size"
+    ],
+    "Toggle Setting Flow/Adjusts font size:flow#2@ios": [
+      "interaction.toggle-setting-adjusts-font-size"
+    ],
+    "Toggle Setting Flow/Adjusts font size:flow#2@tui": [
+      "interaction.toggle-setting-adjusts-font-size"
+    ],
+    "Toggle Setting Flow/Adjusts font size:flow#2@web": [
+      "interaction.toggle-setting-adjusts-font-size"
+    ],
+    "Toggle Setting Flow/Opens Appearance group:flow#0@android": [
+      "interaction.toggle-setting-opens-appearance"
+    ],
+    "Toggle Setting Flow/Opens Appearance group:flow#0@cocoa": [
+      "interaction.toggle-setting-opens-appearance"
+    ],
+    "Toggle Setting Flow/Opens Appearance group:flow#0@freya": [
+      "interaction.toggle-setting-opens-appearance"
+    ],
+    "Toggle Setting Flow/Opens Appearance group:flow#0@gpui": [
+      "interaction.toggle-setting-opens-appearance"
+    ],
+    "Toggle Setting Flow/Opens Appearance group:flow#0@ios": [
+      "interaction.toggle-setting-opens-appearance"
+    ],
+    "Toggle Setting Flow/Opens Appearance group:flow#0@tui": [
+      "interaction.toggle-setting-opens-appearance"
+    ],
+    "Toggle Setting Flow/Opens Appearance group:flow#0@web": [
+      "interaction.toggle-setting-opens-appearance"
+    ],
+    "Toggle Setting Flow/Toggles dark mode:flow#1@android": [
+      "interaction.toggle-setting-toggles-dark-mode"
+    ],
+    "Toggle Setting Flow/Toggles dark mode:flow#1@cocoa": [
+      "interaction.toggle-setting-toggles-dark-mode"
+    ],
+    "Toggle Setting Flow/Toggles dark mode:flow#1@freya": [
+      "interaction.toggle-setting-toggles-dark-mode"
+    ],
+    "Toggle Setting Flow/Toggles dark mode:flow#1@gpui": [
+      "interaction.toggle-setting-toggles-dark-mode"
+    ],
+    "Toggle Setting Flow/Toggles dark mode:flow#1@ios": [
+      "interaction.toggle-setting-toggles-dark-mode"
+    ],
+    "Toggle Setting Flow/Toggles dark mode:flow#1@tui": [
+      "interaction.toggle-setting-toggles-dark-mode"
+    ],
+    "Toggle Setting Flow/Toggles dark mode:flow#1@web": [
+      "interaction.toggle-setting-toggles-dark-mode"
+    ]
+  },
   "errors": []
 }"""
 proc storyKindFromName(s: string): StoryKind =

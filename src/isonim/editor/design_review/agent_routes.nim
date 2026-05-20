@@ -240,11 +240,19 @@ proc isTextChunk*(update: SessionUpdate): bool =
 proc sseHeaderBlock(): string =
   ## Headers + a blank line — the prelude every SSE response sends
   ## before the first event.
+  ##
+  ## CORS: the editor sidebar fetches from a different origin
+  ## (editor on :8090, daemon on :8113), so the SSE response must
+  ## carry ``Access-Control-Allow-Origin`` or Chromium will reject
+  ## the body before the first ``data:`` frame is dispatched.
   result = "HTTP/1.1 200 OK\c\L"
   result.add "Content-Type: " & SseContentType & "\c\L"
   result.add "Cache-Control: no-store\c\L"
   result.add "Connection: close\c\L"
   result.add "X-Accel-Buffering: no\c\L"
+  result.add "Access-Control-Allow-Origin: *\c\L"
+  result.add "Access-Control-Allow-Methods: GET, POST, OPTIONS\c\L"
+  result.add "Access-Control-Allow-Headers: Content-Type\c\L"
   result.add "\c\L"
 
 proc encodeSseEvent*(eventType, data: string): string =
@@ -262,9 +270,18 @@ proc encodeSseEvent*(eventType, data: string): string =
 
 proc respondJson*(req: Request; code: HttpCode; body: string)
     {.async, gcsafe.} =
+  ## CORS: the editor sidebar fetches across origins
+  ## (editor on :8090, daemon on :8113), so every JSON response must
+  ## carry ``Access-Control-Allow-Origin`` or the browser will block
+  ## the body even though the preflight succeeded.  Mirrors the
+  ## headers already on ``api_handlers.respondJson`` for the
+  ## ``/api/design-review/*`` routes.
   let headers = newHttpHeaders([
     ("Content-Type", "application/json"),
     ("Cache-Control", "no-store"),
+    ("Access-Control-Allow-Origin", "*"),
+    ("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
+    ("Access-Control-Allow-Headers", "Content-Type"),
   ])
   await req.respond(code, body, headers)
 

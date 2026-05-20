@@ -136,3 +136,8 @@ tests/e2e_design_review_capture_web_real_bridge
 tests/test_design_review_cli_chat
 tests/test_design_review_daemon_agent_routes
 tests/e2e_design_review_chat_real_acp
+# Phase C editor agent adapter test binaries
+tests/test_design_review_editor_agent_adapter_vm
+tests/test_design_review_browser_agent_client_compiles
+tests/test_design_review_config_agent_backend
+tests/e2e_design_review_chat_real_codex_acp

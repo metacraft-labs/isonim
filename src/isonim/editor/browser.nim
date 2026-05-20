@@ -14,6 +14,7 @@ import isonim/editor/types
 import isonim/editor/viewmodels
 import isonim/editor/workspace
 import isonim/editor/views/shell
+import isonim/editor/design_review/editor_agent_adapter
 
 var
   routeSyncScheduled = false
@@ -628,6 +629,13 @@ proc mountEditor*(workspace: EditorWorkspace;
   createRoot proc(dispose: proc()) =
     let vm = createEditorVM(workspace)
     mounted = vm
+    # Phase C: install the daemon-driven agent adapter on top of any
+    # workspace-supplied placeholder.  The chat panel and the brief
+    # tab's "Review this preview" button both drive the daemon's
+    # ``/api/agent/*`` routes via the resolved base URL.  This is the
+    # production wiring; VM tests inject a fake client via
+    # ``configureAgentAdaptersWithClient`` instead.
+    discard configureDaemonAgentAdapters(vm.chat)
     vm.setTelemetryOverlayVisible(editorDebugEnabled())
     if useHashRoute:
       installEditorHistorySync(vm)
