@@ -1,23 +1,28 @@
-## CMP-M2 — ``isonim-review campaign`` subcommand.
+## CMP-M2 / CMP-M6 — ``isonim-review campaign`` subcommand.
 ##
 ## Drives the daemon's ``/api/campaign/*`` endpoints from the command
-## line.  Six sub-subcommands:
+## line.  Sub-subcommands:
 ##
 ##   * ``start --doc <path>``    — open the campaign doc, validate
 ##     brief references, POST ``/api/campaign/start``, stream the SSE
 ##     response.  Stdout receives the orchestrator's text chunks;
-##     lifecycle events land on stderr.
+##     lifecycle events land on stderr.  This is the ONLY way to
+##     drive a campaign turn in the single-turn (CMP-M6) model — the
+##     orchestrator drives any further work itself inside this single
+##     ACP turn.
 ##   * ``list   [--status]``     — GET ``/api/campaign/list`` and pretty-
 ##     print a table.
 ##   * ``show   <id>``           — GET ``/api/campaign/fetch`` and pretty-
 ##     print the campaign row + most-recent events.
 ##   * ``tail   <id> [--follow]``— GET ``/api/campaign/events`` once (or
 ##     in a polling loop with ``--follow``) and stream events to stdout.
-##   * ``tick   <id>``           — POST ``/api/campaign/tick`` and stream
-##     the SSE response (same shape as ``start`` but without opening a
-##     new session).
 ##   * ``stop   <id>``           — POST ``/api/campaign/stop``; prints
 ##     the new status on stdout.
+##   * ``inject <id> <text>``    — POST ``/api/campaign/inject``.  In the
+##     single-turn model, the queued text is observable via the ACP
+##     queue but NOT delivered to a running turn.
+##   * ``edit-doc <id>``         — open the campaign doc in ``$EDITOR``
+##     and POST ``/api/campaign/refresh-doc``.
 ##
 ## Output discipline mirrors ``isonim-review chat``: agent text →
 ## stdout, lifecycle/chronicles → stderr.
@@ -61,11 +66,6 @@ type
     campaignId*: string
     follow*:    bool
     intervalMs*: int
-
-  CampaignTickOptions* = object
-    daemonUrl*: string
-    campaignId*: string
-    noTail*: bool
 
   CampaignStopOptions* = object
     daemonUrl*: string
@@ -496,47 +496,6 @@ proc cmdCampaignTail*(cfg: ReviewConfig; opts: CampaignTailOptions): int =
     if not opts.follow:
       return 0
     sleep(max(50, opts.intervalMs))
-
-# --------------------------------------------------------------------------
-# Subcommand: tick
-# --------------------------------------------------------------------------
-
-proc cmdCampaignTick*(cfg: ReviewConfig; opts: CampaignTickOptions): int =
-  let baseUrl =
-    if opts.daemonUrl.len > 0: opts.daemonUrl
-    else: daemonBaseUrl(cfg)
-  if opts.campaignId.len == 0:
-    stderr.writeLine "isonim-review campaign tick: <campaign_id> required"
-    return 2
-  let body = $(%* {"campaignId": opts.campaignId})
-  if opts.noTail:
-    # Tick streams via SSE just like start.  In ``--no-tail`` mode we
-    # consume the stream silently (no stdout writes) so the only
-    # output for scripts is the exit code.
-    var cid = opts.campaignId
-    var stopReason: string
-    var sawText = false
-    try:
-      streamCampaignSse(baseUrl, "/api/campaign/tick", body,
-                        cid, stopReason, sawText, writeText = false)
-    except IOError as e:
-      stderr.writeLine "isonim-review campaign tick: " & e.msg
-      return 5
-    return 0
-  var cid, stopReason: string
-  var sawText = false
-  cid = opts.campaignId
-  try:
-    streamCampaignSse(baseUrl, "/api/campaign/tick", body,
-                      cid, stopReason, sawText)
-  except IOError as e:
-    stderr.writeLine "isonim-review campaign tick: " & e.msg
-    return 5
-  if sawText:
-    stdout.write "\n"
-    flushFile(stdout)
-  stderr.writeLine "round complete (stopReason=" & stopReason & ")"
-  return 0
 
 # --------------------------------------------------------------------------
 # Subcommand: stop

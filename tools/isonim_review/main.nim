@@ -159,11 +159,6 @@ Usage:
       Print the campaign's event log.  --follow polls for new events
       every --interval-ms milliseconds (default 1500).
 
-  isonim-review campaign tick <campaign_id> [--no-tail]
-                              [--daemon <url>] [--config <path>]
-      Send a continuation prompt to the campaign's bound ACP session
-      and stream the SSE response.
-
   isonim-review campaign stop <campaign_id> [--reason "..."]
                               [--daemon <url>] [--config <path>]
       Cancel the campaign's bound ACP session, transition it to
@@ -507,7 +502,7 @@ proc dispatchCampaign(rest: seq[string]): int =
   ## owns its own option parsing here so the dispatch stays flat.
   if rest.len == 0:
     stderr.write("isonim-review campaign: missing sub-subcommand " &
-      "(start / list / show / tail / tick / stop / inject / edit-doc)\n")
+      "(start / list / show / tail / stop / inject / edit-doc)\n")
     return 2
   let sub = rest[0]
   let tail = if rest.len > 1: rest[1 .. ^1] else: @[]
@@ -569,15 +564,6 @@ proc dispatchCampaign(rest: seq[string]): int =
     if ivStr.len > 0:
       try: opts.intervalMs = parseInt(ivStr) except ValueError: discard
     return cmdCampaignTail(cfg, opts)
-  of "tick":
-    var opts = CampaignTickOptions(daemonUrl: daemonUrl)
-    for a in tail:
-      if not a.startsWith("--") and opts.campaignId.len == 0:
-        opts.campaignId = a
-    let idFlag = parseSubArgs(tail, "id")
-    if idFlag.len > 0: opts.campaignId = idFlag
-    opts.noTail = hasFlag(tail, "no-tail")
-    return cmdCampaignTick(cfg, opts)
   of "stop":
     var opts = CampaignStopOptions(daemonUrl: daemonUrl)
     for a in tail:

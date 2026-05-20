@@ -131,34 +131,24 @@ type
       ##   * Env:  ``ISONIM_AGENT_HTTP_TIMEOUT_MS=<int>``
       ##   * CLI:  ``run-review --agent-http-timeout-ms=<int>``
     campaignIdleTimeoutMs*: int
-      ## CMP-M2.1 — per-frame idle silence budget on the stdio-ACP
-      ## transport for campaign sessions.  Default 900_000 ms (15 min):
-      ## the campaign orchestrator legitimately stays silent across
-      ## long sub-agent dispatches before emitting its next
-      ## ``session/update`` frame, and the default 5-minute idle cap
-      ## used by chat / one-shot sessions ended round 2 of the CMP-M2
-      ## experiment with ``stopReason: error`` after the orchestrator
-      ## paused for ~5 minutes mid-tool-call.  Operator overrides:
+      ## CMP-M6 — per-frame idle silence budget on the stdio-ACP
+      ## transport for campaign sessions.  Default 3_600_000 ms (60 min):
+      ## a campaign orchestrator running as one long-lived agent turn
+      ## can legitimately stay silent across long sub-tasks (capture +
+      ## review + fix verification can each take many minutes), and a
+      ## tighter idle cap aborts otherwise-healthy campaigns.
+      ## Operator overrides:
       ##   * TOML: ``[agent].campaign_idle_timeout_ms = <int>``
       ##   * Env:  ``ISONIM_CAMPAIGN_IDLE_TIMEOUT_MS=<int>``
-    campaignAutoTickDelayMs*: int
-      ## CMP-M2.1 — delay (ms) between a ``round_complete`` whose
-      ## ORCHESTRATOR_STATUS marker carries ``reason=tick_ready`` and
-      ## the daemon's auto-scheduled follow-up tick.  Default 2_000 ms:
-      ## small enough that the campaign drives forward briskly,
-      ## large enough that tests / operators can still observe the
-      ## ``round_complete`` row before the next ``round_started``
-      ## lands.  Operator overrides:
-      ##   * TOML: ``[agent].campaign_auto_tick_delay_ms = <int>``
-      ##   * Env:  ``ISONIM_CAMPAIGN_AUTOTICK_DELAY_MS=<int>``
-    campaignAutoTickDisabled*: bool
-      ## CMP-M2.1 — test hook.  When true, the daemon parses the
-      ## ORCHESTRATOR_STATUS marker and records the parsed fields on
-      ## the ``round_complete`` event but does NOT schedule the
-      ## follow-up tick.  Used by ``test_round_counter_increments``
-      ## which drives explicit ``campaign tick`` calls and would
-      ## otherwise race the auto-tick.  Operator overrides:
-      ##   * Env:  ``ISONIM_CAMPAIGN_AUTOTICK_DISABLED=1``
+    campaignHardDeadlineMs*: int
+      ## CMP-M6 — hard wall-clock cap on a campaign's single ACP turn.
+      ## Default 14_400_000 ms (4 hours): even a long campaign should
+      ## not consume more than half a working day before the daemon
+      ## stops it; if a campaign reaches this cap without setting a
+      ## terminal status the daemon transitions it to ``failed`` with
+      ## reason ``"hard deadline exceeded"``.  Operator overrides:
+      ##   * TOML: ``[agent].campaign_hard_deadline_ms = <int>``
+      ##   * Env:  ``ISONIM_CAMPAIGN_HARD_DEADLINE_MS=<int>``
     assistantPromptPath*: string
       ## CMP-M5 — absolute path to the AI Assistant system prompt
       ## file that the daemon prepends to every chat session via the
@@ -211,13 +201,12 @@ const
     ## flag (model preference lives in ``~/.claude/settings.json`` and
     ## in the in-session ``session/set_model`` call), so we leave the
     ## default empty and let the binary pick its own.
-  DefaultCampaignIdleTimeoutMs* = 900_000
-    ## CMP-M2.1 — 15-minute idle cap for campaign ACP sessions.  See
+  DefaultCampaignIdleTimeoutMs* = 3_600_000
+    ## CMP-M6 — 60-minute idle cap for campaign ACP sessions.  See
     ## :type:`AgentConfig.campaignIdleTimeoutMs` for the rationale.
-  DefaultCampaignAutoTickDelayMs* = 2_000
-    ## CMP-M2.1 — 2-second pause between ``round_complete`` and the
-    ## auto-scheduled follow-up tick.  See
-    ## :type:`AgentConfig.campaignAutoTickDelayMs`.
+  DefaultCampaignHardDeadlineMs* = 14_400_000
+    ## CMP-M6 — 4-hour wall-clock cap on a single campaign turn.  See
+    ## :type:`AgentConfig.campaignHardDeadlineMs`.
   DefaultAssistantPromptRelPath* = "isonim/prompts/ai-assistant.md"
     ## CMP-M5 — relative path under the workspace root that resolves
     ## to the AI Assistant system prompt when
@@ -290,8 +279,7 @@ proc defaults*(): ReviewConfig =
       claude: ClaudeAgentConfig(model: DefaultClaudeModel),
       httpTimeoutMs: DefaultAgentHttpTimeoutMs,
       campaignIdleTimeoutMs: DefaultCampaignIdleTimeoutMs,
-      campaignAutoTickDelayMs: DefaultCampaignAutoTickDelayMs,
-      campaignAutoTickDisabled: false,
+      campaignHardDeadlineMs: DefaultCampaignHardDeadlineMs,
       assistantPromptPath: "",
       primerEnabled: DefaultPrimerEnabled,
     ),
@@ -509,8 +497,8 @@ proc applyToml(cfg: var ReviewConfig; content: string) =
         if v.kind == tvkInt: cfg.agent.httpTimeoutMs = v.i
       of "campaign_idle_timeout_ms":
         if v.kind == tvkInt: cfg.agent.campaignIdleTimeoutMs = v.i
-      of "campaign_auto_tick_delay_ms":
-        if v.kind == tvkInt: cfg.agent.campaignAutoTickDelayMs = v.i
+      of "campaign_hard_deadline_ms":
+        if v.kind == tvkInt: cfg.agent.campaignHardDeadlineMs = v.i
       of "assistant_prompt_path":
         if v.kind == tvkString: cfg.agent.assistantPromptPath = expandTilde(v.s)
       of "primer_enabled":
@@ -672,7 +660,7 @@ proc loadConfig*(explicitPath: string = ""): ReviewConfig =
       stderr.writeLine("isonim-review config: ignored ISONIM_AGENT_HTTP_TIMEOUT_MS=\"" &
         envHttpTimeout & "\" (expected positive integer ms)")
 
-  # CMP-M2.1 — campaign-session idle timeout env override.  Wins over
+  # CMP-M6 — campaign-session idle timeout env override.  Wins over
   # TOML.  Empty / non-numeric values are ignored with a stderr note
   # so the operator notices the misconfiguration.
   let envCampaignIdle = getEnv("ISONIM_CAMPAIGN_IDLE_TIMEOUT_MS")
@@ -684,20 +672,15 @@ proc loadConfig*(explicitPath: string = ""): ReviewConfig =
       stderr.writeLine("isonim-review config: ignored ISONIM_CAMPAIGN_IDLE_TIMEOUT_MS=\"" &
         envCampaignIdle & "\" (expected positive integer ms)")
 
-  # CMP-M2.1 — campaign auto-tick delay env override.  Wins over TOML.
-  let envCampaignAutoTick = getEnv("ISONIM_CAMPAIGN_AUTOTICK_DELAY_MS")
-  if envCampaignAutoTick.len > 0:
+  # CMP-M6 — campaign hard-deadline env override.  Wins over TOML.
+  let envCampaignDeadline = getEnv("ISONIM_CAMPAIGN_HARD_DEADLINE_MS")
+  if envCampaignDeadline.len > 0:
     var n: int
-    if parseInt(envCampaignAutoTick, n, 0) > 0 and n >= 0:
-      result.agent.campaignAutoTickDelayMs = n
+    if parseInt(envCampaignDeadline, n, 0) > 0 and n > 0:
+      result.agent.campaignHardDeadlineMs = n
     else:
-      stderr.writeLine("isonim-review config: ignored ISONIM_CAMPAIGN_AUTOTICK_DELAY_MS=\"" &
-        envCampaignAutoTick & "\" (expected non-negative integer ms)")
-
-  # CMP-M2.1 — test hook to disable auto-tick scheduling.
-  let envAutoTickDisabled = getEnv("ISONIM_CAMPAIGN_AUTOTICK_DISABLED")
-  if envAutoTickDisabled.len > 0 and envAutoTickDisabled != "0":
-    result.agent.campaignAutoTickDisabled = true
+      stderr.writeLine("isonim-review config: ignored ISONIM_CAMPAIGN_HARD_DEADLINE_MS=\"" &
+        envCampaignDeadline & "\" (expected positive integer ms)")
 
   # CMP-M5 — AI Assistant primer config env overrides.  Wins over TOML.
   let envAssistantPath = getEnv("ISONIM_ASSISTANT_PROMPT_PATH")

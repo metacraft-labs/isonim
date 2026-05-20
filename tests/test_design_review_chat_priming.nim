@@ -14,6 +14,8 @@
 
 import std/[json, os, strutils, times, unittest]
 
+import db_connector/db_postgres
+
 import helpers/agent_routes_fixture
 import helpers/campaign_routes_fixture
   # for the regression test that confirms campaign sessions don't
@@ -165,35 +167,32 @@ test "test_chat_session_primer_includes_active_campaigns":
   ## This test uses the full campaign fixture (real Postgres) so we can
   ## seed an ``active`` campaign row, then open a chat session and
   ## confirm the campaignId reaches the primer prompt body.
+  ##
+  ## CMP-M6: ``/api/campaign/start`` now runs the orchestrator as a
+  ## single ACP turn and the post-turn fallback transitions the
+  ## campaign out of ``active`` (to ``failed`` when the fixture doc
+  ## doesn't set a terminal status) before this request returns.  To
+  ## keep the primer assertion deterministic against the new model
+  ## we seed the row directly via the ``start_campaign`` SECURITY-
+  ## DEFINER routine — bypassing the ACP turn entirely so the
+  ## campaign stays ``active`` for the duration of the test.
   let f = startCampaignDaemon()
   defer: f.shutdown()
-  # The campaign fixture's promptDir doubles as the daemon's
-  # workspace root; primer config knobs land via the TOML the fixture
-  # wrote.  We start a campaign through ``/api/campaign/start`` so the
-  # active-campaign row exists before we open the chat session.
   let docPath = f.promptDir / "campaigns" / "cmp-m5-chat.md"
   createDir(docPath.parentDir)
   let docBody = "---\ncampaignId: cmp-m5-chat\n---\n# Probe campaign\n"
   writeFile(docPath, docBody)
-  let startBody = $(%* {
-    "docPath": docPath,
-    "docSha": "fakesha",
-    "briefRefs": ["render.probe"],
-    "body": docBody,
-    "manifestHash": "local",
-    "startedBy": "test",
-  })
-  let (sCode, sBody) = f.campaignPost("/api/campaign/start", startBody)
-  # Even if the SSE stream's status is non-200 due to ACP idiosyncrasies,
-  # the campaign row should still land (``start_campaign`` writes before
-  # the first agent prompt).  Tolerate non-200 codes so the test focuses
-  # on the primer assertion.
-  discard sCode
-  discard sBody
+  # Seed directly via the SQL routine to leave the campaign ``active``.
+  let db = connectMigrator(f)
+  defer: db.close()
+  let stmt = "SELECT design_review.start_campaign(" &
+    "'" & docPath.replace("'", "''") & "', " &
+    "'fakesha', " &
+    "ARRAY['render.probe']::text[], " &
+    "NULL, 3, 'local', 'claude', NULL, 'test')::text"
+  let campaignId = db.getValue(sql(stmt))
+  check campaignId.len > 0
   check countCampaigns(f) >= 1
-  let campaignsAfterStart = fetchCampaignByDoc(f, docPath)
-  check campaignsAfterStart.len >= 1
-  let campaignId = campaignsAfterStart[0][0]
   # Now open a chat session via /api/agent/sessions.  The campaign
   # fixture's daemon mounts both agent + campaign routes.
   let (cCode, cBody) = f.campaignPost("/api/agent/sessions",

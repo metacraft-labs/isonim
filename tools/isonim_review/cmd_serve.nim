@@ -316,8 +316,7 @@ proc mountDesignReviewRoutes*(srv: ReviewServer) =
   srv.campaignRegistry = newCampaignRegistry(srv.agentRegistry, db,
                                              resolvedPromptPath,
                                              idleTimeoutMs = srv.cfg.agent.campaignIdleTimeoutMs,
-                                             autoTickDelayMs = srv.cfg.agent.campaignAutoTickDelayMs,
-                                             autoTickDisabled = srv.cfg.agent.campaignAutoTickDisabled)
+                                             hardDeadlineMs = srv.cfg.agent.campaignHardDeadlineMs)
   srv.registerHandler(CampaignStartRoute,
                       makeStartHandler(srv.campaignRegistry))
   srv.registerHandler(CampaignTickRoute,
