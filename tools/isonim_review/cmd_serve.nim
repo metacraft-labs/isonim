@@ -29,6 +29,8 @@
 import std/[asyncdispatch, asynchttpserver, json, os, posix, strutils,
             tables, times]
 
+import nim_agents
+
 import ./config
 import ./cmd_db_health
 
@@ -92,6 +94,24 @@ proc newReviewServer*(cfg: ReviewConfig; migDir: string = ""): ReviewServer =
     if migDir.len > 0: migDir
     else: getCurrentDir() / "db" / "migrations"
   let backend = agentBackendKind(cfg)
+  # Follow-up 2 — per-backend model selection.  Compose the daemon's
+  # ``[agent].extra_args`` (legacy, free-form) with the per-backend
+  # model-flag tail returned by :proc:`codexExtraArgs` /
+  # :proc:`claudeExtraArgs`.  The model flag goes *after* legacy extra
+  # args so an operator who already added ``-c model=...`` by hand in
+  # ``[agent].args`` keeps their value (last ``-c key=value`` wins in
+  # codex-acp's argv parser).
+  var resolvedExtraArgs = cfg.agent.extraArgs
+  var resolvedModel = ""
+  case backend
+  of aakCodex:
+    resolvedExtraArgs.add codexExtraArgs(cfg)
+    resolvedModel = cfg.agent.codex.model
+  of aakClaude:
+    resolvedExtraArgs.add claudeExtraArgs(cfg)
+    resolvedModel = cfg.agent.claude.model
+  of aakCustom:
+    discard
   result = ReviewServer(
     cfg: cfg,
     migDir: dir,
@@ -102,13 +122,14 @@ proc newReviewServer*(cfg: ReviewConfig; migDir: string = ""): ReviewServer =
     stopRequested: false,
     onLifecycle: nil,
     agentRegistry: newAgentRegistry(
-      extraArgs = cfg.agent.extraArgs,
+      extraArgs = resolvedExtraArgs,
       backend = backend,
       customCmd = cfg.agent.command,
       customArgs = cfg.agent.args),
   )
   info "review server constructed", agentBackend = $backend,
-    customCmd = cfg.agent.command
+    customCmd = cfg.agent.command, model = resolvedModel,
+    extraArgs = resolvedExtraArgs
 
 proc registerHandler*(srv: ReviewServer; route: string; handler: HandlerProc) =
   ## Mount ``handler`` at the *exact* path ``route``.  REV-M7 will use

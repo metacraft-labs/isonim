@@ -39,6 +39,7 @@ import ./cmd_capture
 import ./cmd_run_review
 import ./cmd_layouts
 import ./cmd_chat
+import ./cmd_seed_run
 
 const Usage = """
 isonim-review — IsoNim design-review CLI
@@ -82,6 +83,20 @@ Usage:
       $ISONIM_REVIEW_BACKEND_BIN_DIR) selects the search directory.
       --backends limits the sweep to the listed comma-separated set.
 
+  isonim-review seed-run --brief <briefId>
+                          --capture <backend>=<path> [--capture ...]
+                          [--viewport <label>]
+                          [--manifest-hash-tag <tag>]
+                          [--workspace <path>] [--project <path>]
+                          [--config <path>]
+      (Follow-up 3) Ingest pre-existing PNG screenshots into the
+      design-review pipeline without going through the clean-tree
+      gate.  Each --capture pair binds one PNG file to the brief's
+      coverage entry for the named backend; the run is tagged with
+      a ``seeded:<tag>`` manifest hash so ``run-review`` knows to
+      read the brief from the working tree.  CAVEAT: seeded runs are
+      not reproducible from source — prefer ``capture`` when you can.
+
   isonim-review run-review --run <run_id>
                            [--agent-backend canned|claude-code]
                            [--acp-backend claude|codex|custom]
@@ -90,6 +105,7 @@ Usage:
                            [--prompt-template <path>]
                            [--workspace <path>] [--project <path>]
                            [--config <path>]
+                           [--agent-http-timeout-ms <int>]
                            [--dry-run [--dry-run-out <path>]]
       (REV-M6) Drive a review against a completed capture run.
       Resolves the brief at the run's manifest pin via `git show`,
@@ -176,6 +192,11 @@ proc applyAgentBackendOverride(cfg: var ReviewConfig; rest: seq[string]) =
   ## Overrides ``[agent].backend`` in memory and re-runs
   ## :proc:`validateAgentConfig` so a typo on the CLI is caught here
   ## rather than at session spawn time.
+  ##
+  ## Follow-up 2 — also honour ``--codex-model=<name>`` and
+  ## ``--claude-model=<name>``.  These win over both TOML and env
+  ## overrides so an operator can pin a specific model per-invocation
+  ## without rewriting their config.
   var override = parseSubArgs(rest, "acp-backend")
   if override.len == 0:
     let agentBackendFlag = parseSubArgs(rest, "agent-backend")
@@ -186,14 +207,20 @@ proc applyAgentBackendOverride(cfg: var ReviewConfig; rest: seq[string]) =
         ["claude", "codex", "custom",
          "claude-code-acp", "claude-agent-acp", "codex-acp"]:
       override = agentBackendFlag
-  if override.len == 0:
-    return
-  cfg.agent.backend = override
-  try:
-    validateAgentConfig(cfg)
-  except AgentConfigError as e:
-    stderr.writeLine("isonim-review: " & e.msg)
-    quit(2)
+  if override.len > 0:
+    cfg.agent.backend = override
+    try:
+      validateAgentConfig(cfg)
+    except AgentConfigError as e:
+      stderr.writeLine("isonim-review: " & e.msg)
+      quit(2)
+
+  let codexModelFlag = parseSubArgs(rest, "codex-model")
+  if codexModelFlag.len > 0:
+    cfg.agent.codex.model = codexModelFlag
+  let claudeModelFlag = parseSubArgs(rest, "claude-model")
+  if claudeModelFlag.len > 0:
+    cfg.agent.claude.model = claudeModelFlag
 
 # --------------------------------------------------------------------------
 # REV-M1: briefs check
@@ -419,6 +446,53 @@ proc dispatchChat(rest: seq[string]): int =
   opts.promptText = positionals.join(" ")
   return cmdChat(cfg, opts)
 
+proc dispatchSeedRun(rest: seq[string]): int =
+  ## Follow-up 3 — parse ``--brief``, repeated ``--capture <be>=<p>``,
+  ## ``--viewport``, ``--manifest-hash-tag``, ``--workspace``,
+  ## ``--project``, and forward to :proc:`cmdSeedRun`.  ``--capture``
+  ## is repeated (not comma-separated) so PNG paths with commas in
+  ## them survive parsing.
+  let configPath = parseSubArgs(rest, "config")
+  var cfg =
+    try: loadConfig(configPath)
+    except TomlParseError as e:
+      stderr.writeLine("isonim-review: " & e.msg)
+      quit(2)
+    except AgentConfigError as e:
+      stderr.writeLine("isonim-review: " & e.msg)
+      quit(2)
+  applyAgentBackendOverride(cfg, rest)
+  var opts = SeedRunOptions()
+  opts.briefId = parseSubArgs(rest, "brief")
+  opts.viewportLabel = parseSubArgs(rest, "viewport")
+  opts.manifestHashTag = parseSubArgs(rest, "manifest-hash-tag")
+  opts.workspaceRoot = parseSubArgs(rest, "workspace")
+  opts.projectPath = parseSubArgs(rest, "project")
+  # Collect every ``--capture be=path`` (or ``--capture=be=path``).
+  var i = 0
+  while i < rest.len:
+    let a = rest[i]
+    var raw = ""
+    if a == "--capture":
+      if i + 1 < rest.len:
+        raw = rest[i + 1]
+        inc i, 2
+      else:
+        stderr.writeLine("isonim-review seed-run: --capture missing value")
+        return 2
+    elif a.startsWith("--capture="):
+      raw = a[("--capture=").len .. ^1]
+      inc i
+    else:
+      inc i
+      continue
+    let eq = raw.find('=')
+    if eq <= 0 or eq == raw.high:
+      stderr.writeLine("isonim-review seed-run: --capture expects '<backend>=<path>', got: " & raw)
+      return 2
+    opts.captures.add (backend: raw[0 ..< eq], path: raw[eq + 1 .. ^1])
+  return cmdSeedRun(cfg, opts)
+
 proc dispatchRunReview(rest: seq[string]): int =
   let configPath = parseSubArgs(rest, "config")
   var cfg =
@@ -440,6 +514,21 @@ proc dispatchRunReview(rest: seq[string]): int =
   let project      = parseSubArgs(rest, "project")
   let dryRunOut    = parseSubArgs(rest, "dry-run-out")
   let dryRun       = hasFlag(rest, "dry-run") or dryRunOut.len > 0
+  # Follow-up — ``--agent-http-timeout-ms`` overrides the CLI's HTTP
+  # read budget for the daemon SSE POST.  Wins over TOML and env.
+  let httpTimeoutFlag = parseSubArgs(rest, "agent-http-timeout-ms")
+  if httpTimeoutFlag.len > 0:
+    var n = 0
+    try:
+      n = parseInt(httpTimeoutFlag)
+    except ValueError:
+      n = 0
+    if n > 0:
+      cfg.agent.httpTimeoutMs = n
+    else:
+      stderr.writeLine("isonim-review run-review: --agent-http-timeout-ms expects positive integer ms, got: " &
+        httpTimeoutFlag)
+      return 2
   cmdRunReview(cfg, runId, agentBackend, cannedPath, agentName,
                agentVersion, promptTpl, workspace, project,
                dryRunOut, dryRun)
@@ -510,6 +599,8 @@ proc main(): int =
     return dispatchServe(rawArgs[1 .. ^1])
   of "capture":
     return dispatchCapture(rawArgs[1 .. ^1])
+  of "seed-run":
+    return dispatchSeedRun(rawArgs[1 .. ^1])
   of "run-review":
     return dispatchRunReview(rawArgs[1 .. ^1])
   of "layouts":

@@ -142,3 +142,4 @@ tests/test_design_review_editor_agent_adapter_vm
 tests/test_design_review_browser_agent_client_compiles
 tests/test_design_review_config_agent_backend
 tests/e2e_design_review_chat_real_codex_acp
+tests/test_design_review_cli_seed_run

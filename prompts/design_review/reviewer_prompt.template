@@ -4,6 +4,20 @@ You are reviewing a round of design captures for an IsoNim brief.  Your
 job is to score the captures against the brief, surface every defect
 worth fixing, and emit a single reviewer-output markdown file.
 
+## Operating mode — non-interactive review
+
+**Do not call any tools.**  Do not invoke shell, file-read, file-write,
+crop, browser, or any other tool that would suspend your turn for
+approval.  The captures are already attached to this prompt as inline
+image content blocks — review them directly from the conversation
+context, the way you would inspect any image a user pastes.
+
+**Your entire response must be the reviewer markdown file**, starting
+with the literal characters `---` on the first line.  No preamble, no
+"I'll analyse the captures now ...", no shell/tool calls, no asking
+for permission.  Anything emitted before the first `---` is treated as
+parser garbage and rejects the report.
+
 ## Brief content (resolved at the run's manifest pin)
 
 $brief

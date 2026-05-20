@@ -158,6 +158,7 @@ test-design-review-cli: isonim-review-build
     nim c -r --path:. --path:src --path:vendor/db_connector/src tests/test_design_review_cli_serve_smoke.nim
     nim c -r --path:. --path:src --path:vendor/db_connector/src tests/e2e_design_review_cli_init.nim
     nim c -r --path:. --path:src --path:vendor/db_connector/src tests/e2e_design_review_cli_serve_lifecycle.nim
+    nim c -r --path:. --path:src --path:vendor/db_connector/src --path:vendor/chronicles --path:vendor/serialization --path:vendor/json_serialization --path:../nim-faststreams --path:../nim-stew --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -d:nimOldCaseObjects --hints:off tests/test_design_review_cli_seed_run.nim
 
 # REV-M5: run every REV-M5 capture-pipeline test.  Unit tests boot
 # fake WebSocket servers + ephemeral git workspaces; the idempotency

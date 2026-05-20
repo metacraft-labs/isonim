@@ -158,3 +158,173 @@ test "test_agent_route_returns_503_when_backend_unavailable":
   let node = parseJson(body)
   check node{"error"}.getStr("") == "agent_backend_unavailable"
   check node{"reason"}.getStr("").contains("missing-acp-binary")
+
+# --------------------------------------------------------------------------- #
+#  Follow-up 5 — PNG image-content-block bundling in /api/agent/prompts.      #
+# --------------------------------------------------------------------------- #
+
+# Minimal valid PNG (1x1 RGBA, identical signature to the one used in
+# tests/test_design_review_cli_seed_run.nim).  We need a real PNG
+# signature here because the daemon validates the header before
+# trusting the bytes.
+const PngOnePx = [
+  byte(0x89), byte(0x50), byte(0x4E), byte(0x47),
+  byte(0x0D), byte(0x0A), byte(0x1A), byte(0x0A),
+  byte(0x00), byte(0x00), byte(0x00), byte(0x0D),
+  byte('I'), byte('H'), byte('D'), byte('R'),
+  byte(0x00), byte(0x00), byte(0x00), byte(0x01),
+  byte(0x00), byte(0x00), byte(0x00), byte(0x01),
+  byte(0x08), byte(0x06), byte(0x00), byte(0x00), byte(0x00),
+  byte(0x1F), byte(0x15), byte(0xC4), byte(0x89),
+  byte(0x00), byte(0x00), byte(0x00), byte(0x10),
+  byte('I'), byte('D'), byte('A'), byte('T'),
+  byte(0x78), byte(0x01), byte(0x01), byte(0x05), byte(0x00),
+  byte(0xFA), byte(0xFF), byte(0x00), byte(0xFF), byte(0x00),
+  byte(0x00), byte(0xFF), byte(0x00), byte(0x09), byte(0x00),
+  byte(0x04),
+  byte(0x00), byte(0x00), byte(0x00), byte(0x00),
+  byte(0x00), byte(0x00), byte(0x00), byte(0x00),
+  byte('I'), byte('E'), byte('N'), byte('D'),
+  byte(0xAE), byte(0x42), byte(0x60), byte(0x82),
+]
+
+proc writeFixturePng(path: string; tag: byte) =
+  ## Materialise a tiny but valid PNG at ``path``.  ``tag`` mutates one
+  ## byte in the IDAT payload so concurrent tests with different
+  ## fixtures produce distinct sha256s — useful when extending to
+  ## content-addressed storage later.
+  var bytes = newSeq[byte](PngOnePx.len)
+  for i in 0 ..< PngOnePx.len: bytes[i] = PngOnePx[i]
+  bytes[44] = tag
+  var asStr = newString(bytes.len)
+  for i in 0 ..< bytes.len: asStr[i] = char(bytes[i])
+  writeFile(path, asStr)
+
+proc lastContentLogEntry(path: string): JsonNode =
+  ## Each daemon ``/api/agent/prompts`` invocation appends one JSON
+  ## summary line to ``$FAKE_ACP_CONTENT_LOG``.  We read the file and
+  ## return the parsed last non-empty line so tests can assert on the
+  ## inbound prompt shape directly.
+  if not fileExists(path):
+    return nil
+  let raw = readFile(path)
+  var last = ""
+  for line in raw.splitLines():
+    let s = line.strip()
+    if s.len > 0: last = s
+  if last.len == 0: return nil
+  parseJson(last)
+
+test "test_prompt_with_pngs_forwards_image_blocks":
+  ## REGRESSION — the daemon must convert ``pngPaths`` entries into
+  ## ACP image content blocks, NOT drop them.  Previously the handler
+  ## only forwarded the text block (promptBlocks=1) which left
+  ## reviewers blind to the captures.
+  let f = startAgentDaemon()
+  defer: f.shutdown()
+  let png1 = getTempDir() / "agent_routes_img_1.png"
+  let png2 = getTempDir() / "agent_routes_img_2.png"
+  defer:
+    try: removeFile(png1) except OSError: discard
+    try: removeFile(png2) except OSError: discard
+  writeFixturePng(png1, byte(0x11))
+  writeFixturePng(png2, byte(0x22))
+
+  let (sCode, sBody) = f.agentPost("/api/agent/sessions", "{}")
+  check sCode == 200
+  let sessionId = parseJson(sBody){"sessionId"}.getStr("")
+  check sessionId.len > 0
+
+  let promptBody = $(%* {
+    "sessionId": sessionId,
+    "messages": [{
+      "role": "user",
+      "content": [{"type": "text", "text": "review these"}],
+    }],
+    "pngPaths": [png1, png2],
+  })
+  let (pCode, raw) = rawPostStream(f.baseUrl, "/api/agent/prompts",
+                                    promptBody)
+  check pCode == 200
+  check raw.contains("event: end")
+
+  # The daemon writes a JSON summary of the inbound content blocks to
+  # $FAKE_ACP_CONTENT_LOG.  Wait briefly (the handler logs synchronously
+  # before kicking off the prompt worker, but file I/O can lag a few
+  # ms behind the SSE prelude under load).
+  let deadline = epochTime() + 2.0
+  var entry: JsonNode = nil
+  while epochTime() < deadline:
+    entry = lastContentLogEntry(f.contentLog)
+    if entry != nil and entry{"sessionId"}.getStr("") == sessionId:
+      break
+    sleep(50)
+  check entry != nil
+  check entry["sessionId"].getStr == sessionId
+  check entry["promptBlocks"].getInt == 3
+  check entry["textBlocks"].getInt == 1
+  check entry["imageBlocks"].getInt == 2
+  let blocks = entry["blocks"]
+  check blocks.kind == JArray
+  check blocks.len == 3
+  check blocks[0]["type"].getStr == "text"
+  check blocks[1]["type"].getStr == "image"
+  check blocks[1]["mimeType"].getStr == "image/png"
+  check blocks[1]["dataLen"].getInt > 0
+  check blocks[2]["type"].getStr == "image"
+  check blocks[2]["mimeType"].getStr == "image/png"
+  check blocks[2]["dataLen"].getInt > 0
+
+test "test_prompt_with_missing_png_returns_400":
+  ## REGRESSION — bad pngPaths entries must be reported with HTTP 400
+  ## and a body that names the offending path, not silently dropped.
+  let f = startAgentDaemon()
+  defer: f.shutdown()
+  let (sCode, sBody) = f.agentPost("/api/agent/sessions", "{}")
+  check sCode == 200
+  let sessionId = parseJson(sBody){"sessionId"}.getStr("")
+
+  let missingPath = getTempDir() / "does-not-exist-png-fixture.png"
+  try: removeFile(missingPath) except OSError: discard
+  let promptBody = $(%* {
+    "sessionId": sessionId,
+    "messages": [{
+      "role": "user",
+      "content": [{"type": "text", "text": "hi"}],
+    }],
+    "pngPaths": [missingPath],
+  })
+  let (code, body) = f.agentPost("/api/agent/prompts", promptBody)
+  check code == 400
+  let node = parseJson(body)
+  check node{"error"}.getStr("") == "bad_png_attachment"
+  check node{"path"}.getStr("") == missingPath
+  check node{"reason"}.getStr("").contains(missingPath)
+
+test "test_prompt_with_non_png_returns_400":
+  ## A text file masquerading as a PNG must be caught by the signature
+  ## check before it reaches the ACP transport.
+  let f = startAgentDaemon()
+  defer: f.shutdown()
+  let (sCode, sBody) = f.agentPost("/api/agent/sessions", "{}")
+  check sCode == 200
+  let sessionId = parseJson(sBody){"sessionId"}.getStr("")
+
+  let fakePng = getTempDir() / "fake-not-actually-a-png.png"
+  writeFile(fakePng, "this is plainly not a PNG, sorry!\n")
+  defer:
+    try: removeFile(fakePng) except OSError: discard
+  let promptBody = $(%* {
+    "sessionId": sessionId,
+    "messages": [{
+      "role": "user",
+      "content": [{"type": "text", "text": "hi"}],
+    }],
+    "pngPaths": [fakePng],
+  })
+  let (code, body) = f.agentPost("/api/agent/prompts", promptBody)
+  check code == 400
+  let node = parseJson(body)
+  check node{"error"}.getStr("") == "bad_png_attachment"
+  check node{"path"}.getStr("") == fakePng
+  check node{"reason"}.getStr("").contains("not a valid PNG")

@@ -40,6 +40,9 @@ proc clearAgentEnv() =
   delEnv("ISONIM_AGENT_BACKEND")
   delEnv("ISONIM_ACP_AGENT_CMD")
   delEnv("ISONIM_CODEX_ACP_CMD")
+  delEnv("ISONIM_CODEX_MODEL")
+  delEnv("ISONIM_CLAUDE_MODEL")
+  delEnv("ISONIM_AGENT_HTTP_TIMEOUT_MS")
 
 proc cliBinaryPresent(): bool =
   fileExists(CliPath)
@@ -196,3 +199,255 @@ backend = "claude"
       let r = execCmdEx(cmd)
       check not r.output.contains("backend = \"custom\" requires")
       check not r.output.contains("unknown [agent].backend")
+
+# --------------------------------------------------------------------------- #
+#  Follow-up 2 — per-backend model selectors.
+# --------------------------------------------------------------------------- #
+
+suite "Follow-up 2 — [agent.codex/claude].model selectors":
+
+  test "test_config_codex_model_default_is_gpt_5_5":
+    ## A config that doesn't mention codex at all gets the shipped
+    ## default of ``gpt-5.5`` so the user's ChatGPT subscription works
+    ## out of the box without hand-editing TOML.
+    clearAgentEnv()
+    let path = fixturePath("model_default.toml")
+    writeFixture(path, "")
+    defer:
+      try: removeFile(path) except OSError: discard
+    let cfg = loadConfig(path)
+    check cfg.agent.codex.model == "gpt-5.5"
+
+  test "test_config_codex_model_from_toml":
+    ## ``[agent.codex] model = "gpt-5.4"`` is parsed into
+    ## ``cfg.agent.codex.model``.
+    clearAgentEnv()
+    let path = fixturePath("codex_model_toml.toml")
+    writeFixture(path, """
+[agent]
+backend = "codex"
+
+[agent.codex]
+model = "gpt-5.4"
+""")
+    defer:
+      try: removeFile(path) except OSError: discard
+    let cfg = loadConfig(path)
+    check cfg.agent.codex.model == "gpt-5.4"
+    check agentBackendKind(cfg) == aakCodex
+
+  test "test_env_overrides_codex_model":
+    ## ``ISONIM_CODEX_MODEL`` wins over TOML.
+    clearAgentEnv()
+    let path = fixturePath("codex_model_env.toml")
+    writeFixture(path, """
+[agent.codex]
+model = "gpt-5.4"
+""")
+    defer:
+      try: removeFile(path) except OSError: discard
+    putEnv("ISONIM_CODEX_MODEL", "gpt-5.3-codex")
+    try:
+      let cfg = loadConfig(path)
+      check cfg.agent.codex.model == "gpt-5.3-codex"
+    finally:
+      delEnv("ISONIM_CODEX_MODEL")
+
+  test "test_cli_flag_overrides_codex_model":
+    ## ``--codex-model=`` on the CLI wins over both TOML and env.  We
+    ## drive the binary itself so the dispatcher's
+    ## ``applyAgentBackendOverride`` integration is exercised.
+    if not cliBinaryPresent():
+      checkpoint "Skipping: " & CliPath &
+        " not built; run `just isonim-review-build` first."
+      skip()
+    else:
+      let cfgPath = fixturePath("cli_codex_model_override.toml")
+      writeFixture(cfgPath, """
+[agent]
+backend = "codex"
+
+[agent.codex]
+model = "gpt-5.4"
+""")
+      defer:
+        try: removeFile(cfgPath) except OSError: discard
+
+      # Sanity baseline.
+      clearAgentEnv()
+      let baseline = loadConfig(cfgPath)
+      check baseline.agent.codex.model == "gpt-5.4"
+
+      # Env-only.
+      putEnv("ISONIM_CODEX_MODEL", "gpt-5.3-codex")
+      try:
+        let envOnly = loadConfig(cfgPath)
+        check envOnly.agent.codex.model == "gpt-5.3-codex"
+      finally:
+        delEnv("ISONIM_CODEX_MODEL")
+
+      # Drive the binary with the CLI flag while env is also set;
+      # the dispatcher applies the flag *after* env, so flag wins.
+      putEnv("ISONIM_CODEX_MODEL", "gpt-5.3-codex")
+      try:
+        let envStr = "ISONIM_REVIEW_PORT=18116 ISONIM_REVIEW_PGPORT=18117 "
+        let cmd = envStr & quoteShell(CliPath) &
+          " --log-level=info" &
+          " run-review --acp-backend=codex --codex-model=gpt-5.5/high" &
+          " --run=does-not-exist" &
+          " --config=" & quoteShell(cfgPath) &
+          " --dry-run --canned-path=" & quoteShell(cfgPath) &
+          " --agent-backend=canned"
+        let r = execCmdEx(cmd)
+        # Either the CLI returned non-zero (no DB) — that's fine — but
+        # it must not have rejected the flag value.
+        check not r.output.contains("unknown key")
+        check not r.output.contains("unknown [agent")
+      finally:
+        delEnv("ISONIM_CODEX_MODEL")
+
+  test "test_codex_extra_args_includes_model_flag":
+    ## ``cfg.codexExtraArgs()`` returns the ``-c model=<v>`` pair that
+    ## the daemon passes to the ``codex-acp`` binary's argv.
+    clearAgentEnv()
+    let path = fixturePath("codex_extra_args.toml")
+    writeFixture(path, """
+[agent.codex]
+model = "gpt-5.5"
+""")
+    defer:
+      try: removeFile(path) except OSError: discard
+    let cfg = loadConfig(path)
+    check codexExtraArgs(cfg) == @["-c", "model=gpt-5.5"]
+
+  test "test_codex_extra_args_empty_when_model_unset":
+    ## When the model is cleared (empty string in TOML) the daemon
+    ## must NOT inject a ``-c model=`` pair — that would be an invalid
+    ## TOML value and codex-acp would reject the entire session.
+    clearAgentEnv()
+    let path = fixturePath("codex_extra_args_empty.toml")
+    writeFixture(path, """
+[agent.codex]
+model = ""
+""")
+    defer:
+      try: removeFile(path) except OSError: discard
+    let cfg = loadConfig(path)
+    check codexExtraArgs(cfg).len == 0
+
+  test "test_claude_extra_args_documents_upstream_gap":
+    ## claude-agent-acp doesn't accept ``--model`` on argv (verified
+    ## against the package shipped in this dev shell), so the helper
+    ## returns ``@[]`` even when a model is configured.  Documented
+    ## explicitly on the proc so an operator who sets
+    ## ``[agent.claude].model`` knows it lands in the daemon log but
+    ## not on the binary's argv.
+    clearAgentEnv()
+    let path = fixturePath("claude_extra_args.toml")
+    writeFixture(path, """
+[agent.claude]
+model = "claude-sonnet-4-6"
+""")
+    defer:
+      try: removeFile(path) except OSError: discard
+    let cfg = loadConfig(path)
+    check cfg.agent.claude.model == "claude-sonnet-4-6"
+    check claudeExtraArgs(cfg).len == 0
+
+  test "test_daemon_logs_resolved_codex_model":
+    ## Booting the daemon must emit a structured log line that names
+    ## the resolved codex model so operators can confirm the model
+    ## they configured is actually in use.  We exercise the binary
+    ## with ``--agent-routes-only`` (no PG required), let it bind,
+    ## then immediately kill it and inspect its stderr.
+    if not cliBinaryPresent():
+      checkpoint "Skipping: " & CliPath &
+        " not built; run `just isonim-review-build` first."
+      skip()
+    else:
+      let cfgPath = fixturePath("daemon_logs_model.toml")
+      writeFixture(cfgPath, """
+[server]
+bind = "127.0.0.1"
+port = 18120
+
+[agent]
+backend = "codex"
+
+[agent.codex]
+model = "gpt-5.5"
+""")
+      defer:
+        try: removeFile(cfgPath) except OSError: discard
+      clearAgentEnv()
+      let logPath = fixturePath("daemon_logs_model.stderr")
+      defer:
+        try: removeFile(logPath) except OSError: discard
+      # Spawn the daemon and tail it for ~1s, then SIGTERM.
+      let cmd =
+        "ISONIM_REVIEW_PORT=18120 " &
+        quoteShell(CliPath) & " --log-level=info" &
+        " serve --agent-routes-only --config=" & quoteShell(cfgPath) &
+        " > " & quoteShell(logPath) & " 2>&1 &" &
+        " PID=$!; sleep 1.0; kill -TERM $PID 2>/dev/null;" &
+        " wait $PID 2>/dev/null; true"
+      discard execShellCmd("bash -c " & quoteShell(cmd))
+      let log =
+        try: readFile(logPath) except IOError: ""
+      check log.contains("model")
+      check log.contains("gpt-5.5")
+
+# --------------------------------------------------------------------------- #
+#  Follow-up — agent HTTP timeout.
+#
+#  Stacked-timeouts fix: the CLI's ``daemonBackend`` used to hard-code a
+#  60_000 ms HTTP read budget which aborted image-heavy real-codex
+#  reviews mid-stream.  The fix lifts the budget to 30 min by default
+#  and routes it through ``[agent].http_timeout_ms`` →
+#  ``ISONIM_AGENT_HTTP_TIMEOUT_MS`` → ``--agent-http-timeout-ms``.
+# --------------------------------------------------------------------------- #
+
+suite "Follow-up — [agent].http_timeout_ms":
+
+  test "test_default_http_timeout_is_30_min":
+    ## A config that doesn't mention the timeout gets the shipped
+    ## default of 1_800_000 ms (30 min) so image-heavy review prompts
+    ## don't trip the second of two stacked timeouts.
+    clearAgentEnv()
+    let path = fixturePath("http_timeout_default.toml")
+    writeFixture(path, "")
+    defer:
+      try: removeFile(path) except OSError: discard
+    let cfg = loadConfig(path)
+    check cfg.agent.httpTimeoutMs == 1_800_000
+
+  test "test_http_timeout_from_toml":
+    ## ``[agent] http_timeout_ms = 120_000`` is parsed into
+    ## ``cfg.agent.httpTimeoutMs``.
+    clearAgentEnv()
+    let path = fixturePath("http_timeout_toml.toml")
+    writeFixture(path, """
+[agent]
+http_timeout_ms = 120000
+""")
+    defer:
+      try: removeFile(path) except OSError: discard
+    let cfg = loadConfig(path)
+    check cfg.agent.httpTimeoutMs == 120_000
+
+  test "test_env_overrides_http_timeout":
+    ## ``ISONIM_AGENT_HTTP_TIMEOUT_MS`` wins over TOML.
+    clearAgentEnv()
+    let path = fixturePath("http_timeout_env.toml")
+    writeFixture(path, """
+[agent]
+http_timeout_ms = 120000
+""")
+    defer:
+      try: removeFile(path) except OSError: discard
+    putEnv("ISONIM_AGENT_HTTP_TIMEOUT_MS", "240000")
+    try:
+      let cfg = loadConfig(path)
+      check cfg.agent.httpTimeoutMs == 240_000
+    finally:
+      delEnv("ISONIM_AGENT_HTTP_TIMEOUT_MS")

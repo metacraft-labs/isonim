@@ -17,6 +17,7 @@ type
     port*: int
     baseUrl*: string
     cancelFile*: string
+    contentLog*: string
 
 proc pickFreePort*(): int =
   ## Bind a temporary listener to find a free port, then close it.
@@ -48,6 +49,9 @@ proc startAgentDaemon*(extraEnv: openArray[(string, string)] = @[]):
   let cancelFile = getTempDir() / "fake_acp_cancel_" &
                    $((int(epochTime() * 1000)) mod 1_000_000) & ".log"
   env["FAKE_ACP_CANCEL_FILE"] = cancelFile
+  let contentLog = getTempDir() / "fake_acp_content_" &
+                   $((int(epochTime() * 1000)) mod 1_000_000) & ".log"
+  env["FAKE_ACP_CONTENT_LOG"] = contentLog
 
   let proc1 = startProcess(CliPath,
     args = @["serve", "--agent-routes-only"],
@@ -79,7 +83,7 @@ proc startAgentDaemon*(extraEnv: openArray[(string, string)] = @[]):
     raise newException(IOError,
       "agent_routes_fixture: daemon failed to bind on " & baseUrl)
   AgentRoutesFixture(proc1: proc1, port: port, baseUrl: baseUrl,
-                     cancelFile: cancelFile)
+                     cancelFile: cancelFile, contentLog: contentLog)
 
 proc shutdown*(f: AgentRoutesFixture) =
   if f == nil or f.proc1 == nil: return
@@ -96,6 +100,7 @@ proc shutdown*(f: AgentRoutesFixture) =
   f.proc1.close()
   f.proc1 = nil
   try: removeFile(f.cancelFile) except OSError: discard
+  try: removeFile(f.contentLog) except OSError: discard
 
 proc agentPost*(f: AgentRoutesFixture; path, body: string;
                 timeoutMs = 10_000):

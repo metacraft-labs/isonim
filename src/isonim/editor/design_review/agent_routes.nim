@@ -22,7 +22,7 @@
 ## sends ``session/cancel`` to the agent and reaps the session entry.
 ## See the ``test_post_cancel_signals_agent`` test for verification.
 
-import std/[asyncdispatch, asyncnet, asynchttpserver, json, locks,
+import std/[asyncdispatch, asyncnet, asynchttpserver, base64, json, locks,
             options, os, strutils, tables]
 
 import nim_acp
@@ -179,13 +179,67 @@ proc capabilityJson*(c: AgentCapabilities): JsonNode =
     },
   }
 
+type
+  PngAttachmentError* = object of CatchableError
+    ## Raised by :proc:`parsePromptFromBody` when a ``pngPaths`` entry
+    ## cannot be read or doesn't carry a valid PNG signature.  The
+    ## handler maps this into an HTTP 400 with the offending path in
+    ## the response body so the CLI caller can surface it directly.
+    path*: string
+
+const PngSignature = "\x89PNG\r\n\x1A\n"
+
+proc loadPngAsContentBlock(path: string): ContentBlock =
+  ## Read ``path`` and wrap it as an ACP ``image`` content block with
+  ## base64-encoded payload and ``image/png`` mime type.  Raises
+  ## :type:`PngAttachmentError` if the file is missing or doesn't
+  ## start with the canonical PNG 8-byte signature — the daemon and
+  ## CLI run on the same host so missing paths almost always mean a
+  ## bug in the caller, not a transient FS issue.
+  if not fileExists(path):
+    var e = newException(PngAttachmentError,
+      "could not read PNG " & path & ": file does not exist")
+    e.path = path
+    raise e
+  var bytes = ""
+  try:
+    bytes = readFile(path)
+  except IOError as ioe:
+    var e = newException(PngAttachmentError,
+      "could not read PNG " & path & ": " & ioe.msg)
+    e.path = path
+    raise e
+  if bytes.len < PngSignature.len or
+     bytes[0 ..< PngSignature.len] != PngSignature:
+    var e = newException(PngAttachmentError,
+      "could not read PNG " & path & ": not a valid PNG (bad signature)")
+    e.path = path
+    raise e
+  result = ContentBlock(
+    kind: cbImage,
+    mimeType: "image/png",
+    data: base64.encode(bytes))
+
 proc parsePromptFromBody*(body: string):
     tuple[sessionId: string; prompt: seq[ContentBlock]] =
   ## Body shape:
-  ##   {"sessionId": "...", "messages": [{"role":"user","content":[...]}]}
+  ##   {"sessionId": "...",
+  ##    "messages": [{"role":"user","content":[...]}],
+  ##    "pngPaths": ["/abs/...", ...]}
+  ##
   ## We accept ``messages[].content[]`` items of the form
-  ## ``{"type":"text", "text": "..."}`` and ignore anything else for
-  ## Phase B; richer payloads land with REV-M11+.
+  ## ``{"type":"text", "text": "..."}`` for the text part.  When
+  ## ``pngPaths`` is present each path is read off the local
+  ## filesystem, base64-encoded, and appended as an ACP ``image``
+  ## content block — these flow through ``sendPromptStreaming`` to the
+  ## ACP agent as proper multimodal attachments instead of dropping
+  ## out as they did in Phase B's text-only contract.
+  ##
+  ## Raises :type:`PngAttachmentError` when a ``pngPaths`` entry can't
+  ## be read or doesn't carry a valid PNG signature.  The handler
+  ## maps this onto an HTTP 400 so the CLI surface gets a clear
+  ## diagnosis instead of a stalled agent that quietly received only
+  ## the text block.
   let node = parseJson(body)
   result.sessionId = node{"sessionId"}.getStr("")
   let messages = node{"messages"}
@@ -200,6 +254,12 @@ proc parsePromptFromBody*(body: string):
         result.prompt.add textBlock(item{"text"}.getStr(""))
   if result.prompt.len == 0 and node.hasKey("text"):
     result.prompt.add textBlock(node["text"].getStr(""))
+  let pngPaths = node{"pngPaths"}
+  if pngPaths != nil and pngPaths.kind == JArray:
+    for entry in pngPaths.items:
+      let path = entry.getStr("")
+      if path.len == 0: continue
+      result.prompt.add loadPngAsContentBlock(path)
 
 proc sessionUpdateJson*(update: SessionUpdate): JsonNode =
   ## Encode an ACP ``SessionUpdate`` back into JSON for the SSE wire
@@ -396,12 +456,24 @@ proc handlePrompts*(reg: AgentRegistry; req: Request)
     await respondJson(req, Http405,
       $(%* {"error": "method_not_allowed"}))
     return
-  let (sessionId, prompt) =
-    try: parsePromptFromBody(req.body)
-    except JsonParsingError:
-      await respondJson(req, Http400,
-        $(%* {"error": "invalid_json"}))
-      return
+  var sessionId: string
+  var prompt: seq[ContentBlock]
+  try:
+    let parsed = parsePromptFromBody(req.body)
+    sessionId = parsed.sessionId
+    prompt = parsed.prompt
+  except JsonParsingError:
+    await respondJson(req, Http400,
+      $(%* {"error": "invalid_json"}))
+    return
+  except PngAttachmentError as pe:
+    warn "agent prompt rejected: bad png attachment",
+      path = pe.path, reason = pe.msg
+    await respondJson(req, Http400,
+      $(%* {"error": "bad_png_attachment",
+            "path": pe.path,
+            "reason": pe.msg}))
+    return
   if sessionId.len == 0:
     await respondJson(req, Http400,
       $(%* {"error": "missing_sessionId"}))
@@ -417,8 +489,45 @@ proc handlePrompts*(reg: AgentRegistry; req: Request)
     return
   var state = stateOpt.get
 
+  var textBlocks = 0
+  var imageBlocks = 0
+  for b in prompt:
+    case b.kind
+    of cbText: inc textBlocks
+    of cbImage: inc imageBlocks
+    else: discard
   info "agent prompt submitted", sessionId = sessionId,
-    promptBlocks = prompt.len
+    promptBlocks = prompt.len,
+    textBlocks = textBlocks,
+    imageBlocks = imageBlocks
+
+  # Test hook: when ``$FAKE_ACP_CONTENT_LOG`` is set, append a JSON
+  # summary of the inbound prompt's content blocks so test fixtures
+  # can assert image bundling without inspecting ACP transport bytes.
+  let contentLog = getEnv("FAKE_ACP_CONTENT_LOG")
+  if contentLog.len > 0:
+    var summary = %* {
+      "sessionId": sessionId,
+      "promptBlocks": prompt.len,
+      "textBlocks": textBlocks,
+      "imageBlocks": imageBlocks,
+      "blocks": newJArray(),
+    }
+    for b in prompt:
+      var entry = %* {"type": $b.kind}
+      case b.kind
+      of cbText:
+        entry["textLen"] = %b.text.len
+      of cbImage, cbAudio, cbResource:
+        entry["mimeType"] = %b.mimeType
+        entry["dataLen"] = %b.data.len
+      summary["blocks"].add entry
+    try:
+      let f = open(contentLog, fmAppend)
+      defer: f.close()
+      f.write($summary & "\n")
+    except IOError:
+      discard
   let prelude = sseHeaderBlock()
   if not await sendSseLine(req.client, prelude):
     info "agent SSE client disconnected before prelude",

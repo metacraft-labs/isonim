@@ -65,13 +65,13 @@ proc cmdRunReview*(cfg: ReviewConfig;
     backend = cannedBackend(cannedPath)
   of "daemon":
     let url = daemonBaseUrl(cfg)
-    backend = daemonBackend(url)
+    backend = daemonBackend(url, httpTimeoutMs = cfg.agent.httpTimeoutMs)
   of "claude-code":
     # Phase B: ``claude-code`` is now an alias for ``daemon`` — the
     # subprocess path stays available via ``--agent-backend
     # claude-code-subprocess`` for ops that need to bypass the daemon.
     let url = daemonBaseUrl(cfg)
-    backend = daemonBackend(url)
+    backend = daemonBackend(url, httpTimeoutMs = cfg.agent.httpTimeoutMs)
   of "claude-code-subprocess":
     backend = legacyClaudeCodeSubprocessBackend()
   else:

@@ -39,6 +39,17 @@ type
     ## Catch-all for non-NotFound failure modes (manifest mismatch,
     ## git invocation failure, etc.).
 
+const SeededManifestHashPrefix* = "seeded:"
+  ## Follow-up 3 — sentinel that marks runs ingested via
+  ## ``isonim-review seed-run`` (no manifest pin, just pre-existing
+  ## PNGs).  When the prefix is seen, :proc:`briefAtRevision` falls
+  ## back to reading the brief from the working tree instead of
+  ## ``git show``-ing it at a manifest pin.  Documented limitation:
+  ## brief edits between seeding and review WILL affect the review
+  ## output — the seeded flow trades reproducibility for the ability
+  ## to drive a review against historical screenshots that pre-date
+  ## the design-review milestone.
+
 # --------------------------------------------------------------------------- #
 #  Manifest XML walk (similar shape to clean_tree's, but we keep the
 #  data we need: name + path + revision per repo).
@@ -154,19 +165,69 @@ proc runGitShow(repoPath, pin, relPath: string):
 #  Public API.
 # --------------------------------------------------------------------------- #
 
+proc isSeededManifestHash*(manifestHash: string): bool =
+  ## Follow-up 3 — true iff ``manifestHash`` carries the
+  ## :const:`SeededManifestHashPrefix` sentinel.  Callers use this to
+  ## branch into the working-tree fallback path of
+  ## :proc:`briefAtRevision`.
+  manifestHash.startsWith(SeededManifestHashPrefix)
+
+proc briefFromWorkingTree(workspaceRoot, briefId: string): string =
+  ## Walk every git repo under ``workspaceRoot`` (mirrors the manifest
+  ## walk for non-seeded runs) and return the first matching brief
+  ## body found *in the working tree*.  Used by :proc:`briefAtRevision`
+  ## when ``manifestHash`` is a ``seeded:`` sentinel.
+  ##
+  ## *Limitation.*  Brief edits between ``seed-run`` and
+  ## ``run-review`` flow into the review.  This is the explicit
+  ## tradeoff documented on :const:`SeededManifestHashPrefix`.
+  let relPath = briefIdToRelativePath(briefId)
+  # Sweep the manifest's project list first (preserves locator ordering
+  # with the non-seeded path), then fall back to a top-level workspace
+  # scan in case the workspace isn't ``repo``-managed.
+  var xmlBytes: string
+  let projects = collectManifestProjects(workspaceRoot, xmlBytes)
+  for proj in projects:
+    let candidate = workspaceRoot / proj.path / relPath
+    if fileExists(candidate):
+      return readFile(candidate)
+  # Plain workspace fallback — scan immediate subdirectories of
+  # ``workspaceRoot`` for a matching brief.  This is what makes the
+  # seeded flow work in fresh test fixtures that don't include a
+  # ``.repo/manifest.xml`` at all.
+  for kind, sub in walkDir(workspaceRoot):
+    if kind != pcDir: continue
+    let candidate = sub / relPath
+    if fileExists(candidate):
+      return readFile(candidate)
+  # Last resort: the brief might sit directly under ``workspaceRoot``.
+  let direct = workspaceRoot / relPath
+  if fileExists(direct):
+    return readFile(direct)
+  raise newException(BriefNotFoundAtRevisionError,
+    "briefAtRevision (seeded): brief '" & briefId & "' (" & relPath &
+    ") not found under working tree at " & workspaceRoot)
+
 proc briefAtRevision*(workspaceRoot, manifestHash, briefId: string): string =
   ## Resolve the brief markdown body at the captured manifest pin.
   ##
   ## Sequence:
-  ##   1. Re-read the workspace's manifest XML and validate that the
+  ##   1. **Follow-up 3 — seeded-run shortcut.**  When ``manifestHash``
+  ##      starts with ``seeded:`` the run was ingested via
+  ##      ``isonim-review seed-run`` from historical PNGs and has no
+  ##      manifest pin to validate against.  Fall back to reading the
+  ##      brief from the working tree (:proc:`briefFromWorkingTree`).
+  ##      Caveat: edits between seed-run and run-review flow into the
+  ##      review.
+  ##   2. Re-read the workspace's manifest XML and validate that the
   ##      recomputed hash matches ``manifestHash``.  Mismatch raises
   ##      ``BriefAtRevisionError`` — the workspace's manifest has
   ##      shifted since the run was captured (the user has to check
   ##      out the original manifest snapshot to reproduce the review).
-  ##   2. Walk every project recorded in the manifest; for each, run
+  ##   3. Walk every project recorded in the manifest; for each, run
   ##      ``git show <revision>:<briefs/<kind>/<slug>.md>``.  Return
   ##      the first successful result.
-  ##   3. If no project contains the brief at its pinned revision,
+  ##   4. If no project contains the brief at its pinned revision,
   ##      raise ``BriefNotFoundAtRevisionError``.
   if briefId.len == 0:
     raise newException(BriefAtRevisionError,
@@ -174,6 +235,9 @@ proc briefAtRevision*(workspaceRoot, manifestHash, briefId: string): string =
   if manifestHash.len == 0:
     raise newException(BriefAtRevisionError,
       "briefAtRevision: manifestHash must be non-empty")
+
+  if isSeededManifestHash(manifestHash):
+    return briefFromWorkingTree(workspaceRoot, briefId)
 
   var xmlBytes: string
   let projects = collectManifestProjects(workspaceRoot, xmlBytes)

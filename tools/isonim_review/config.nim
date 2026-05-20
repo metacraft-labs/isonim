@@ -67,6 +67,23 @@ type
       ## backends/``" — see
       ## ``isonim/editor/design_review/backend_launcher.resolveBackendBinary``.
 
+  CodexAgentConfig* = object
+    ## Follow-up 2 — per-backend Codex knobs.  Today only ``model``
+    ## (which is the ChatGPT-subscription–scoped model name like
+    ## ``"gpt-5.5"``).  The daemon turns this into ``codex-acp -c
+    ## model=<name>`` automatically.
+    model*: string
+
+  ClaudeAgentConfig* = object
+    ## Follow-up 2 — per-backend Claude knobs.  ``model`` is currently
+    ## informational: ``claude-agent-acp`` reads its model preference
+    ## from ``~/.claude/settings.json`` and from the in-session
+    ## ``session/set_model`` ACP call, not from a CLI flag.  The daemon
+    ## therefore records the configured model but cannot pass it as
+    ## a binary argv; ``claudeExtraArgs`` returns ``@[]`` until the
+    ## upstream binary grows a ``--model`` flag.
+    model*: string
+
   AgentConfig* = object
     ## Phase B — the daemon's ACP backend configuration.
     ##
@@ -86,6 +103,10 @@ type
     ##     passes through to the agent on session creation.
     ##   * ``defaultDaemonUrl`` is the URL the CLI's ``chat`` subcommand
     ##     uses when no ``--daemon`` flag is supplied.
+    ##   * ``codex`` / ``claude`` carry the per-backend model selectors
+    ##     introduced by follow-up 2.  See :proc:`codexExtraArgs` and
+    ##     :proc:`claudeExtraArgs` for how they reach the spawned ACP
+    ##     binary's argv.
     backend*: string
     command*: string
     args*: seq[string]
@@ -93,6 +114,22 @@ type
     model*: string
     maxTokens*: int
     defaultDaemonUrl*: string
+    codex*: CodexAgentConfig
+    claude*: ClaudeAgentConfig
+    httpTimeoutMs*: int
+      ## Follow-up — HTTP read timeout (ms) the CLI's
+      ## :proc:`daemonBackend` applies when POSTing the reviewer prompt
+      ## to the daemon's ``/api/agent/prompts`` SSE endpoint.  The
+      ## request legitimately blocks for the *whole* agent turn — 60 s
+      ## to 5+ minutes for image-heavy review prompts — so the
+      ## historical hard-coded 60_000 ms here was the second of two
+      ## stacked timeouts that killed real-codex reviews mid-stream.
+      ## Default :const:`DefaultAgentHttpTimeoutMs` (30 min) matches the
+      ## nim-acp transport's wall-clock cap so the CLI and the daemon's
+      ## ACP layer fail at the same overall budget.  Operator overrides:
+      ##   * TOML: ``[agent].http_timeout_ms = <int>``
+      ##   * Env:  ``ISONIM_AGENT_HTTP_TIMEOUT_MS=<int>``
+      ##   * CLI:  ``run-review --agent-http-timeout-ms=<int>``
 
   ReviewConfig* = object
     db*: DbConfig
@@ -114,6 +151,26 @@ const
   DefaultServerPort* = 8113
   DefaultStorePath* = "~/.isonim/review-store"
   DefaultWorkspaceRoot* = "~/metacraft"
+  DefaultCodexModel* = "gpt-5.5"
+    ## Follow-up 2 — the codex-acp default the user's ChatGPT
+    ## subscription is expected to have access to.  The upstream
+    ## ``codex-acp`` binary defaults to ``gpt-5.2-codex`` which most
+    ## subscriptions don't carry, so we ship a saner default and let
+    ## the operator override via TOML, env, or CLI flag.
+  DefaultClaudeModel* = ""
+    ## Follow-up 2 — claude-agent-acp doesn't accept a CLI ``--model``
+    ## flag (model preference lives in ``~/.claude/settings.json`` and
+    ## in the in-session ``session/set_model`` call), so we leave the
+    ## default empty and let the binary pick its own.
+  DefaultAgentHttpTimeoutMs* = 1_800_000
+    ## Follow-up — 30 minute HTTP timeout for the CLI ➝ daemon
+    ## ``/api/agent/prompts`` SSE POST.  Matches the nim-acp transport's
+    ## :const:`DefaultNativeStdioHardDeadlineMs` so the two layers cap
+    ## at the same wall-clock budget.  The previous hard-coded 60_000
+    ## ms in ``agent_dispatch.nim`` aborted real-codex image reviews
+    ## around 124 s wall-clock (60 s read timeout × two POSTs);
+    ## image-heavy review prompts legitimately need minutes of agent
+    ## first-byte latency.
 
 proc defaultConfigPath*(): string =
   ## ``~/.isonim/config.toml`` — the on-disk location every CLI command
@@ -164,6 +221,9 @@ proc defaults*(): ReviewConfig =
       model: "",
       maxTokens: 0,
       defaultDaemonUrl: "",
+      codex: CodexAgentConfig(model: DefaultCodexModel),
+      claude: ClaudeAgentConfig(model: DefaultClaudeModel),
+      httpTimeoutMs: DefaultAgentHttpTimeoutMs,
     ),
     configPath: "",
   )
@@ -375,8 +435,22 @@ proc applyToml(cfg: var ReviewConfig; content: string) =
         if v.kind == tvkInt: cfg.agent.maxTokens = v.i
       of "default_daemon_url":
         if v.kind == tvkString: cfg.agent.defaultDaemonUrl = v.s
+      of "http_timeout_ms":
+        if v.kind == tvkInt: cfg.agent.httpTimeoutMs = v.i
       else:
         stderr.writeLine("isonim-review config: unknown key [agent]." & key)
+    of "agent.codex":
+      case key
+      of "model":
+        if v.kind == tvkString: cfg.agent.codex.model = v.s
+      else:
+        stderr.writeLine("isonim-review config: unknown key [agent.codex]." & key)
+    of "agent.claude":
+      case key
+      of "model":
+        if v.kind == tvkString: cfg.agent.claude.model = v.s
+      else:
+        stderr.writeLine("isonim-review config: unknown key [agent.claude]." & key)
     else:
       stderr.writeLine("isonim-review config: unknown section [" &
         section & "]")
@@ -498,9 +572,55 @@ proc loadConfig*(explicitPath: string = ""): ReviewConfig =
   if envBackend.len > 0:
     result.agent.backend = envBackend
 
+  # Follow-up 2 — per-backend model env overrides.  These win over
+  # TOML but lose to ``--codex-model=`` / ``--claude-model=`` on the
+  # CLI (the dispatcher applies the flag last).
+  let envCodexModel = getEnv("ISONIM_CODEX_MODEL")
+  if envCodexModel.len > 0:
+    result.agent.codex.model = envCodexModel
+  let envClaudeModel = getEnv("ISONIM_CLAUDE_MODEL")
+  if envClaudeModel.len > 0:
+    result.agent.claude.model = envClaudeModel
+
+  # Follow-up — HTTP timeout env override.  Wins over TOML; loses to
+  # ``run-review --agent-http-timeout-ms=`` (the dispatcher applies the
+  # flag last).
+  let envHttpTimeout = getEnv("ISONIM_AGENT_HTTP_TIMEOUT_MS")
+  if envHttpTimeout.len > 0:
+    var n: int
+    if parseInt(envHttpTimeout, n, 0) > 0 and n > 0:
+      result.agent.httpTimeoutMs = n
+    else:
+      stderr.writeLine("isonim-review config: ignored ISONIM_AGENT_HTTP_TIMEOUT_MS=\"" &
+        envHttpTimeout & "\" (expected positive integer ms)")
+
   # Validate the [agent] section at load time so the operator sees a
   # clear error instead of an opaque spawn failure later.
   validateAgentConfig(result)
+
+proc codexExtraArgs*(cfg: ReviewConfig): seq[string] =
+  ## Follow-up 2 — translate ``[agent.codex].model`` into the ``-c
+  ## model=<value>`` flag pair the ``codex-acp`` binary accepts on its
+  ## CLI.  Returns ``@[]`` when no model is set so callers can blindly
+  ## concatenate the result without dragging in a default the user
+  ## explicitly cleared.
+  if cfg.agent.codex.model.len == 0:
+    return @[]
+  @["-c", "model=" & cfg.agent.codex.model]
+
+proc claudeExtraArgs*(cfg: ReviewConfig): seq[string] =
+  ## Follow-up 2 — ``claude-agent-acp`` does NOT accept a CLI
+  ## ``--model`` flag (verified against the v0.21.0 package shipped in
+  ## this dev shell — it reads model preference from
+  ## ``~/.claude/settings.json`` and from the in-session
+  ## ``session/set_model`` ACP call).  We therefore return ``@[]``
+  ## even when ``[agent.claude].model`` is set — the model is recorded
+  ## in the config (and surfaced in the daemon log line) but cannot
+  ## be passed on the binary's argv until upstream grows a flag.
+  ##
+  ## When the upstream binary adds CLI support, return e.g.
+  ## ``@["--model", cfg.agent.claude.model]`` here.
+  @[]
 
 proc daemonBaseUrl*(cfg: ReviewConfig): string =
   ## URL the CLI's ``chat`` subcommand defaults to.  Honors an explicit

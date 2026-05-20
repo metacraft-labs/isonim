@@ -90,8 +90,19 @@ proc claudeCodeBackend*(): AgentBackend
     {.deprecated: "renamed to legacyClaudeCodeSubprocessBackend; prefer daemonBackend(daemonUrl)".} =
   legacyClaudeCodeSubprocessBackend()
 
+const DefaultDaemonBackendHttpTimeoutMs* = 1_800_000
+  ## Default HTTP read timeout (ms) for :proc:`daemonBackend` when the
+  ## caller doesn't override it.  Matches the nim-acp transport's
+  ## ``DefaultNativeStdioHardDeadlineMs`` so the CLI ➝ daemon HTTP layer
+  ## and the daemon ➝ ACP agent stdio layer fail at the same overall
+  ## wall-clock budget (30 min).  See follow-up: the historical
+  ## hard-coded 60_000 ms here was the second of two stacked timeouts
+  ## that killed image-heavy real-codex reviews mid-stream.
+
 proc daemonBackend*(daemonUrl: string;
-                    sessionId = ""): AgentBackend =
+                    sessionId = "";
+                    httpTimeoutMs: int = DefaultDaemonBackendHttpTimeoutMs):
+                      AgentBackend =
   ## Phase B — route reviewer prompts through the editor daemon.
   ##
   ## The returned backend POSTs the prompt at
@@ -104,14 +115,26 @@ proc daemonBackend*(daemonUrl: string;
   ## ``POST /api/agent/sessions`` first; otherwise the caller's session
   ## id is reused (useful for stateful reviewer flows).
   ##
-  ## PNG attachments are not yet wired into the protocol — Phase B
-  ## ships a text-only contract.  REV-M11 will extend the body shape.
+  ## ``httpTimeoutMs`` bounds the per-request read budget.  Default is
+  ## :const:`DefaultDaemonBackendHttpTimeoutMs` (30 min), matching the
+  ## nim-acp transport's hard wall-clock cap so the two layers fail at
+  ## the same overall budget instead of stacking two short timeouts
+  ## that abort legitimate image-heavy review prompts before the agent
+  ## emits its first byte.
+  ##
+  ## PNG attachments ride alongside the text prompt as a ``pngPaths``
+  ## array of absolute filesystem paths.  The daemon (which runs on the
+  ## same host) reads each file, base64-encodes the bytes, and forwards
+  ## them as ACP ``image`` content blocks.  Sending paths rather than
+  ## inline base64 keeps HTTP request bodies lean even when a review
+  ## carries 7+ PNG attachments (~1.7 MB encoded).
   let url = daemonUrl
   let pinnedSession = sessionId
+  let timeout = httpTimeoutMs
   result = proc(prompt: string; pngPaths: seq[string]):
       string {.gcsafe.} =
     var resolvedSession = pinnedSession
-    let httpClient = newHttpClient(timeout = 60_000)
+    let httpClient = newHttpClient(timeout = timeout)
     defer: httpClient.close()
     if resolvedSession.len == 0:
       let headers = newHttpHeaders([("Content-Type", "application/json")])
@@ -128,12 +151,16 @@ proc daemonBackend*(daemonUrl: string;
         raise newException(AgentDispatchError,
           "daemonBackend: daemon returned empty sessionId; body=" &
           resp.body)
+    var pngPathsJson = newJArray()
+    for p in pngPaths:
+      pngPathsJson.add(%p)
     let body = $(%* {
       "sessionId": resolvedSession,
       "messages": [{
         "role": "user",
         "content": [{"type": "text", "text": prompt}],
       }],
+      "pngPaths": pngPathsJson,
     })
     let headers = newHttpHeaders([
       ("Content-Type", "application/json"),
