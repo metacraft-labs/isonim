@@ -84,6 +84,7 @@ Usage:
 
   isonim-review run-review --run <run_id>
                            [--agent-backend canned|claude-code]
+                           [--acp-backend claude|codex|custom]
                            [--canned-path <md>]
                            [--agent-name <name>] [--agent-version <ver>]
                            [--prompt-template <path>]
@@ -119,13 +120,19 @@ Usage:
       scope row.  Prints the new layout id on stdout.
 
   isonim-review chat [--session <id>] [--no-stream] [--interactive]
-                      [--daemon <url>] [<prompt>]
+                      [--daemon <url>] [--agent-backend claude|codex|custom]
+                      [<prompt>]
       (Phase B) Drive the daemon's /api/agent/* endpoints from the CLI.
       One-shot: a single positional <prompt> is sent and the agent's
       reply is written to stdout.  --interactive enters a REPL loop
       that reuses the same session id across prompts.  Pass --no-stream
       to suppress live text on stdout (useful in scripts that only
-      care about exit codes).
+      care about exit codes).  --agent-backend overrides the
+      [agent].backend setting from config (claude = claude-agent-acp,
+      codex = codex-acp, custom = the binary named in [agent].command).
+      The synonym --acp-backend is also accepted; for ``run-review``
+      use --acp-backend to avoid colliding with the reviewer-pipeline
+      selector.
 
   isonim-review --log-level <level>
       Set the chronicles runtime log level for any subcommand.
@@ -160,6 +167,33 @@ proc hasFlag(args: seq[string]; flag: string): bool =
     if a == "--" & flag:
       return true
   false
+
+proc applyAgentBackendOverride(cfg: var ReviewConfig; rest: seq[string]) =
+  ## Honour ``--agent-backend=claude|codex|custom`` (and the synonym
+  ## ``--acp-backend=...`` — used on ``run-review`` where the bare
+  ## ``--agent-backend`` already selects the reviewer pipeline,
+  ## canned vs daemon vs claude-code) on subcommands that take config.
+  ## Overrides ``[agent].backend`` in memory and re-runs
+  ## :proc:`validateAgentConfig` so a typo on the CLI is caught here
+  ## rather than at session spawn time.
+  var override = parseSubArgs(rest, "acp-backend")
+  if override.len == 0:
+    let agentBackendFlag = parseSubArgs(rest, "agent-backend")
+    # Only treat ``--agent-backend`` as the ACP selector when the value
+    # is one of the recognised ACP kinds; otherwise it belongs to
+    # ``run-review``'s reviewer-pipeline selector.
+    if agentBackendFlag.toLowerAscii() in
+        ["claude", "codex", "custom",
+         "claude-code-acp", "claude-agent-acp", "codex-acp"]:
+      override = agentBackendFlag
+  if override.len == 0:
+    return
+  cfg.agent.backend = override
+  try:
+    validateAgentConfig(cfg)
+  except AgentConfigError as e:
+    stderr.writeLine("isonim-review: " & e.msg)
+    quit(2)
 
 # --------------------------------------------------------------------------
 # REV-M1: briefs check
@@ -228,11 +262,15 @@ proc resolveConfigAndDir(rest: seq[string]):
     tuple[cfg: ReviewConfig; migDir: string] =
   let configPath = parseSubArgs(rest, "config")
   let migDirFlag = parseSubArgs(rest, "migrations")
-  let cfg =
+  var cfg =
     try: loadConfig(configPath)
     except TomlParseError as e:
       stderr.writeLine("isonim-review: " & e.msg)
       quit(2)
+    except AgentConfigError as e:
+      stderr.writeLine("isonim-review: " & e.msg)
+      quit(2)
+  applyAgentBackendOverride(cfg, rest)
   let migDir =
     if migDirFlag.len > 0: migDirFlag
     else: getCurrentDir() / "db" / "migrations"
@@ -267,11 +305,15 @@ proc hasNamedFlag(args: seq[string]; expectedFlag: string): bool =
 
 proc dispatchCapture(rest: seq[string]): int =
   let configPath = parseSubArgs(rest, "config")
-  let cfg =
+  var cfg =
     try: loadConfig(configPath)
     except TomlParseError as e:
       stderr.writeLine("isonim-review: " & e.msg)
       quit(2)
+    except AgentConfigError as e:
+      stderr.writeLine("isonim-review: " & e.msg)
+      quit(2)
+  applyAgentBackendOverride(cfg, rest)
   let briefId         = parseSubArgs(rest, "brief")
   let viewport        = parseSubArgs(rest, "viewport")
   let bridgeUrl       = parseSubArgs(rest, "bridge")
@@ -297,11 +339,15 @@ proc dispatchLayouts(rest: seq[string]): int =
   let sub = rest[0]
   let tail = if rest.len > 1: rest[1 .. ^1] else: @[]
   let configPath = parseSubArgs(tail, "config")
-  let cfg =
+  var cfg =
     try: loadConfig(configPath)
     except TomlParseError as e:
       stderr.writeLine("isonim-review: " & e.msg)
       quit(2)
+    except AgentConfigError as e:
+      stderr.writeLine("isonim-review: " & e.msg)
+      quit(2)
+  applyAgentBackendOverride(cfg, tail)
   case sub
   of "ls":
     let briefId = parseSubArgs(tail, "brief")
@@ -336,11 +382,15 @@ proc dispatchLayouts(rest: seq[string]): int =
 proc dispatchChat(rest: seq[string]): int =
   ## Phase B — ``isonim-review chat``.
   let configPath = parseSubArgs(rest, "config")
-  let cfg =
+  var cfg =
     try: loadConfig(configPath)
     except TomlParseError as e:
       stderr.writeLine("isonim-review: " & e.msg)
       quit(2)
+    except AgentConfigError as e:
+      stderr.writeLine("isonim-review: " & e.msg)
+      quit(2)
+  applyAgentBackendOverride(cfg, rest)
   var opts = ChatOptions(streamOutput: true)
   opts.daemonUrl = parseSubArgs(rest, "daemon")
   opts.sessionId = parseSubArgs(rest, "session")
@@ -371,11 +421,15 @@ proc dispatchChat(rest: seq[string]): int =
 
 proc dispatchRunReview(rest: seq[string]): int =
   let configPath = parseSubArgs(rest, "config")
-  let cfg =
+  var cfg =
     try: loadConfig(configPath)
     except TomlParseError as e:
       stderr.writeLine("isonim-review: " & e.msg)
       quit(2)
+    except AgentConfigError as e:
+      stderr.writeLine("isonim-review: " & e.msg)
+      quit(2)
+  applyAgentBackendOverride(cfg, rest)
   let runId        = parseSubArgs(rest, "run")
   let agentBackend = parseSubArgs(rest, "agent-backend")
   let cannedPath   = parseSubArgs(rest, "canned-path")

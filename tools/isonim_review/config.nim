@@ -35,6 +35,8 @@
 
 import std/[os, parseutils, strutils]
 
+import nim_agents
+
 type
   DbConfig* = object
     host*: string
@@ -68,13 +70,25 @@ type
   AgentConfig* = object
     ## Phase B — the daemon's ACP backend configuration.
     ##
+    ##   * ``backend`` selects between the supported ACP servers
+    ##     (``"claude"``, ``"codex"``, ``"custom"``); the resolved
+    ##     :type:`AcpAgentKind` value is exposed via
+    ##     :proc:`agentBackendKind`.  Default: ``"claude"`` (no
+    ##     behaviour change for existing users).
     ##   * ``command`` overrides the agent binary on PATH (defaults
-    ##     to ``claude-agent-acp`` / ``claude-code-acp``).
+    ##     to ``claude-agent-acp`` / ``claude-code-acp`` for the
+    ##     ``"claude"`` backend, ``codex-acp`` for ``"codex"``).  For
+    ##     ``backend = "custom"`` it is *mandatory* and points at the
+    ##     stdio-ACP binary to spawn.
+    ##   * ``args`` is the custom backend's argv tail; ignored for
+    ##     ``"claude"`` and ``"codex"``.
     ##   * ``model`` and ``maxTokens`` are advisory hints the daemon
     ##     passes through to the agent on session creation.
     ##   * ``defaultDaemonUrl`` is the URL the CLI's ``chat`` subcommand
     ##     uses when no ``--daemon`` flag is supplied.
+    backend*: string
     command*: string
+    args*: seq[string]
     extraArgs*: seq[string]
     model*: string
     maxTokens*: int
@@ -143,7 +157,9 @@ proc defaults*(): ReviewConfig =
       binaryDir: "",
     ),
     agent: AgentConfig(
+      backend: "claude",
       command: "",
+      args: @[],
       extraArgs: @[],
       model: "",
       maxTokens: 0,
@@ -167,12 +183,13 @@ proc defaults*(): ReviewConfig =
 # ---------------------------------------------------------------------------
 
 type
-  TomlValueKind = enum tvkString, tvkInt, tvkBool
+  TomlValueKind = enum tvkString, tvkInt, tvkBool, tvkStringArray
   TomlValue = object
     case kind: TomlValueKind
     of tvkString: s: string
     of tvkInt: i: int
     of tvkBool: b: bool
+    of tvkStringArray: arr: seq[string]
 
   TomlParseError* = object of CatchableError
 
@@ -204,6 +221,40 @@ proc parseStringLiteral(s: string; lineNo: int): string =
       result.add ch
       inc i
 
+proc parseStringArray(raw: string; lineNo: int): seq[string] =
+  ## Parse ``[ "a", "b" ]`` — only string elements supported. Trailing
+  ## commas allowed. Whitespace between commas/items ignored.
+  if raw.len < 2 or raw[0] != '[' or raw[^1] != ']':
+    raise newException(TomlParseError,
+      "line " & $lineNo & ": expected ``[ ... ]`` array, got: " & raw)
+  let inner = raw[1 .. ^2].strip()
+  if inner.len == 0:
+    return @[]
+  var i = 0
+  while i < inner.len:
+    # Skip whitespace and commas between items.
+    while i < inner.len and inner[i] in {' ', '\t', ','}:
+      inc i
+    if i >= inner.len:
+      break
+    if inner[i] != '"':
+      raise newException(TomlParseError,
+        "line " & $lineNo & ": array elements must be quoted strings")
+    # Find the matching closing quote, honouring backslash escapes.
+    var j = i + 1
+    while j < inner.len:
+      if inner[j] == '\\' and j + 1 < inner.len:
+        inc j, 2
+        continue
+      if inner[j] == '"':
+        break
+      inc j
+    if j >= inner.len:
+      raise newException(TomlParseError,
+        "line " & $lineNo & ": unterminated string in array")
+    result.add parseStringLiteral(inner[i .. j], lineNo)
+    i = j + 1
+
 proc parseTomlValue(raw: string; lineNo: int): TomlValue =
   ## Parse the right-hand side of a ``key = value`` line.  ``raw`` is
   ## already stripped of surrounding whitespace and trailing comment.
@@ -212,6 +263,9 @@ proc parseTomlValue(raw: string; lineNo: int): TomlValue =
       "line " & $lineNo & ": empty value")
   if raw[0] == '"':
     return TomlValue(kind: tvkString, s: parseStringLiteral(raw, lineNo))
+  if raw[0] == '[':
+    return TomlValue(kind: tvkStringArray,
+                     arr: parseStringArray(raw, lineNo))
   if raw == "true":
     return TomlValue(kind: tvkBool, b: true)
   if raw == "false":
@@ -221,7 +275,7 @@ proc parseTomlValue(raw: string; lineNo: int): TomlValue =
   let consumed = parseInt(raw, i, 0)
   if consumed != raw.len:
     raise newException(TomlParseError,
-      "line " & $lineNo & ": unsupported value (only string, int, bool): " & raw)
+      "line " & $lineNo & ": unsupported value (only string, int, bool, string array): " & raw)
   TomlValue(kind: tvkInt, i: i)
 
 proc stripTrailingComment(s: string): string =
@@ -309,8 +363,12 @@ proc applyToml(cfg: var ReviewConfig; content: string) =
         stderr.writeLine("isonim-review config: unknown key [backend]." & key)
     of "agent":
       case key
+      of "backend":
+        if v.kind == tvkString: cfg.agent.backend = v.s
       of "command":
         if v.kind == tvkString: cfg.agent.command = v.s
+      of "args":
+        if v.kind == tvkStringArray: cfg.agent.args = v.arr
       of "model":
         if v.kind == tvkString: cfg.agent.model = v.s
       of "max_tokens":
@@ -322,6 +380,38 @@ proc applyToml(cfg: var ReviewConfig; content: string) =
     else:
       stderr.writeLine("isonim-review config: unknown section [" &
         section & "]")
+
+type
+  AgentConfigError* = object of CatchableError
+    ## Raised when the ``[agent]`` section is internally inconsistent
+    ## (unknown backend, ``backend = "custom"`` without ``command``,
+    ## etc.).
+
+proc agentBackendKind*(cfg: ReviewConfig): AcpAgentKind =
+  ## Resolve ``[agent].backend`` to the typed :type:`AcpAgentKind`.
+  ## An unknown / typo'd value raises :type:`AgentConfigError` so the
+  ## operator sees the misconfiguration at load time rather than
+  ## later when the daemon tries to spawn the wrong binary.
+  case cfg.agent.backend.toLowerAscii()
+  of "", "claude", "claude-code", "claude-code-acp", "claude-agent-acp":
+    aakClaude
+  of "codex", "codex-acp":
+    aakCodex
+  of "custom":
+    aakCustom
+  else:
+    raise newException(AgentConfigError,
+      "isonim-review config: unknown [agent].backend = \"" &
+      cfg.agent.backend & "\" (expected one of: claude, codex, custom)")
+
+proc validateAgentConfig*(cfg: ReviewConfig) =
+  ## Cross-check the ``[agent]`` keys for consistency. Called from
+  ## :proc:`loadConfig` so the failure surfaces at config load.
+  let kind = agentBackendKind(cfg)
+  if kind == aakCustom and cfg.agent.command.len == 0:
+    raise newException(AgentConfigError,
+      "isonim-review config: [agent].backend = \"custom\" requires " &
+      "[agent].command to point at the stdio-ACP binary to spawn")
 
 proc parsePortFromUrl(url: string): int =
   ## Pull the ``:PORT`` segment out of a libpq URL.  Returns 0 if not
@@ -398,6 +488,19 @@ proc loadConfig*(explicitPath: string = ""): ReviewConfig =
   let envPgHost = getEnv("ISONIM_REVIEW_PGHOST")
   if envPgHost.len > 0 and envUrl.len == 0:
     result.db.host = envPgHost
+
+  # ``ISONIM_AGENT_BACKEND`` is the env-level CLI override used by
+  # automation that doesn't want to write a TOML file (notably the
+  # smoke targets in this repo's Justfile).  Setting it to a known
+  # value here keeps ``agentBackendKind(cfg)`` and the CLI flag in
+  # sync.
+  let envBackend = getEnv("ISONIM_AGENT_BACKEND")
+  if envBackend.len > 0:
+    result.agent.backend = envBackend
+
+  # Validate the [agent] section at load time so the operator sees a
+  # clear error instead of an opaque spawn failure later.
+  validateAgentConfig(result)
 
 proc daemonBaseUrl*(cfg: ReviewConfig): string =
   ## URL the CLI's ``chat`` subcommand defaults to.  Honors an explicit

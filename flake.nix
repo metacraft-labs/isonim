@@ -58,6 +58,12 @@
               # ``claude-code-acp`` (legacy/expected name) and
               # ``claude-agent-acp`` (current upstream name) on $PATH.
               claudeCodeAcp
+              # Codex-backed ACP adapter — sibling backend selectable
+              # via ``[agent].backend = "codex"`` in the review config
+              # (or the ``--agent-backend=codex`` CLI flag). Lives on
+              # PATH alongside claude-agent-acp so users can switch
+              # without re-entering the shell.
+              codex-acp
             ])
             # ``chromium`` and ``chromedriver`` only build on Linux in
             # nixpkgs; Darwin users supply system Chrome / a Homebrew

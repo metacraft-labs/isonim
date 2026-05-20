@@ -264,6 +264,38 @@ test-design-review-chat-real-acp: isonim-review-build
         -d:chronicles_log_level=TRACE \
         --hints:off tests/e2e_design_review_chat_real_acp.nim
 
+# Phase C — optional smoke that requires a real ``codex-acp`` binary
+# on PATH (now exposed by the dev shell) and OpenAI / ChatGPT auth
+# configured.  Skips cleanly when either prerequisite is missing.
+test-design-review-chat-real-codex-acp: isonim-review-build
+    nim c -r --path:. --path:src \
+        --path:vendor/db_connector/src --path:vendor/chronicles \
+        --path:vendor/serialization --path:vendor/json_serialization \
+        --path:../nim-faststreams --path:../nim-stew \
+        --path:../nim-acp/src --path:../nim-agent-harbor/src \
+        --path:../nim-agents/src \
+        -d:nimOldCaseObjects \
+        -d:chronicles_sinks=textlines[stderr] \
+        -d:chronicles_runtime_filtering=on \
+        -d:chronicles_log_level=TRACE \
+        --hints:off tests/e2e_design_review_chat_real_codex_acp.nim
+
+# Phase C — unit tests for the ``[agent].backend`` selector. No
+# binaries needed (the CLI-driven test skips when the binary isn't
+# built yet, but ``just isonim-review-build`` resolves that too).
+test-design-review-config-agent-backend: isonim-review-build
+    nim c -r --path:. --path:src \
+        --path:vendor/db_connector/src --path:vendor/chronicles \
+        --path:vendor/serialization --path:vendor/json_serialization \
+        --path:../nim-faststreams --path:../nim-stew \
+        --path:../nim-acp/src --path:../nim-agent-harbor/src \
+        --path:../nim-agents/src \
+        -d:nimOldCaseObjects \
+        -d:chronicles_sinks=textlines[stderr] \
+        -d:chronicles_runtime_filtering=on \
+        -d:chronicles_log_level=TRACE \
+        --hints:off tests/test_design_review_config_agent_backend.nim
+
 # REV-M6: convenience target — invoke `isonim-review run-review` against
 # the running dev cluster.  Defaults to the canned backend so a typo in
 # `claude-code` doesn't kick off a real model call.

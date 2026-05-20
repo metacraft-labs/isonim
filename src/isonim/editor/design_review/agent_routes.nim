@@ -46,8 +46,17 @@ type
     ## reconcile against the agent's view — if the agent forgets a
     ## session, the next ``POST /api/agent/prompts`` will get an ACP
     ## error and we surface it to the caller untouched.
+    ##
+    ## ``backend`` / ``customCmd`` / ``customArgs`` capture the ACP
+    ## server selection.  They are populated from the ``[agent]``
+    ## TOML section (and the ``--agent-backend`` CLI flag) at daemon
+    ## startup.  ``extraArgs`` stays for callers that just need to
+    ## pass per-session argv tail to ``claude-agent-acp``.
     lock: Lock
     sessions: Table[string, AgentSessionState]
+    backend*: AcpAgentKind
+    customCmd*: string
+    customArgs*: seq[string]
     extraArgs: seq[string]
 
   AgentBackendUnavailableError* = object of CatchableError
@@ -62,11 +71,28 @@ const
 #  Registry helpers.                                                          #
 # --------------------------------------------------------------------------- #
 
-proc newAgentRegistry*(extraArgs: seq[string] = @[]): AgentRegistry =
+proc newAgentRegistry*(extraArgs: seq[string] = @[];
+    backend: AcpAgentKind = aakClaude;
+    customCmd: string = "";
+    customArgs: seq[string] = @[]): AgentRegistry =
+  ## Allocate an empty session cache. The defaults match the
+  ## pre-Phase-C contract (claude-agent-acp without explicit args)
+  ## so existing callers keep working untouched.
   result = AgentRegistry(
     sessions: initTable[string, AgentSessionState](),
+    backend: backend,
+    customCmd: customCmd,
+    customArgs: customArgs,
     extraArgs: extraArgs)
   initLock(result.lock)
+  case backend
+  of aakClaude:
+    info "agent registry initialised", backend = "claude"
+  of aakCodex:
+    info "agent registry initialised", backend = "codex"
+  of aakCustom:
+    info "agent registry initialised", backend = "custom",
+      cmd = customCmd
 
 proc release*(reg: AgentRegistry; sessionId: string) =
   acquire(reg.lock)
@@ -100,8 +126,10 @@ proc storeSession(reg: AgentRegistry; state: AgentSessionState) =
 proc createAcpSession*(reg: AgentRegistry; cwd = ""):
     AgentSessionState {.gcsafe.} =
   ## Spawn the ACP agent, run ``initialize`` + ``session/new`` and stash
-  ## the resulting :type:`AgentClient` in the registry.  Raises
-  ## :type:`AgentBackendUnavailableError` when ``fromClaudeCodeAcp``
+  ## the resulting :type:`AgentClient` in the registry.  The agent
+  ## selection comes from ``reg.backend`` (set by the daemon from
+  ## ``[agent].backend`` / ``--agent-backend``).  Raises
+  ## :type:`AgentBackendUnavailableError` when the chosen factory
   ## fails because the binary isn't on PATH.
   ##
   ## Marked ``gcsafe`` because the surrounding asynchttpserver dispatch
@@ -111,9 +139,11 @@ proc createAcpSession*(reg: AgentRegistry; cwd = ""):
   {.gcsafe.}:
     var client: AgentClient
     try:
-      client = fromClaudeCodeAcp(reg.extraArgs)
+      client = fromAcpAgent(reg.backend, reg.extraArgs,
+                           cmd = reg.customCmd, args = reg.customArgs)
     except AcpError as e:
-      error "agent backend unavailable", reason = e.msg
+      error "agent backend unavailable", reason = e.msg,
+        backend = $reg.backend
       raise newException(AgentBackendUnavailableError, e.msg)
     let initResp = client.acp.initialize(InitializeRequest(
       protocolVersion: 1,

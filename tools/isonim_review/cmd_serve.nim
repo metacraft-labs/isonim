@@ -84,9 +84,14 @@ proc newReviewServer*(cfg: ReviewConfig; migDir: string = ""): ReviewServer =
   ## Build (do not start) a server bound to the configured address.
   ## REV-M7 will call ``registerHandler`` between ``new`` and ``run``
   ## to wire its routes in.
+  ##
+  ## Phase C — the ACP backend kind is derived from ``[agent].backend``
+  ## (validated by :proc:`loadConfig`) so the registry knows which
+  ## stdio server to spawn when a session is requested.
   let dir =
     if migDir.len > 0: migDir
     else: getCurrentDir() / "db" / "migrations"
+  let backend = agentBackendKind(cfg)
   result = ReviewServer(
     cfg: cfg,
     migDir: dir,
@@ -96,8 +101,14 @@ proc newReviewServer*(cfg: ReviewConfig; migDir: string = ""): ReviewServer =
     port: cfg.server.port,
     stopRequested: false,
     onLifecycle: nil,
-    agentRegistry: newAgentRegistry(),
+    agentRegistry: newAgentRegistry(
+      extraArgs = cfg.agent.extraArgs,
+      backend = backend,
+      customCmd = cfg.agent.command,
+      customArgs = cfg.agent.args),
   )
+  info "review server constructed", agentBackend = $backend,
+    customCmd = cfg.agent.command
 
 proc registerHandler*(srv: ReviewServer; route: string; handler: HandlerProc) =
   ## Mount ``handler`` at the *exact* path ``route``.  REV-M7 will use
