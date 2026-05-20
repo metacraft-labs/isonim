@@ -123,14 +123,21 @@ proc storeSession(reg: AgentRegistry; state: AgentSessionState) =
 #  Session creation.                                                          #
 # --------------------------------------------------------------------------- #
 
-proc createAcpSession*(reg: AgentRegistry; cwd = ""):
-    AgentSessionState {.gcsafe.} =
+proc createAcpSession*(reg: AgentRegistry; cwd = "";
+    idleTimeoutMs: int = -1): AgentSessionState {.gcsafe.} =
   ## Spawn the ACP agent, run ``initialize`` + ``session/new`` and stash
   ## the resulting :type:`AgentClient` in the registry.  The agent
   ## selection comes from ``reg.backend`` (set by the daemon from
   ## ``[agent].backend`` / ``--agent-backend``).  Raises
   ## :type:`AgentBackendUnavailableError` when the chosen factory
   ## fails because the binary isn't on PATH.
+  ##
+  ## ``idleTimeoutMs`` overrides the default per-frame idle silence
+  ## budget on the spawned stdio-ACP transport.  Pass a negative value
+  ## to keep ``nim-agents``' built-in default (5 min for chat / one-shot
+  ## prompts); campaign sessions pass a larger value (default 15 min)
+  ## because the orchestrator legitimately stays silent across long
+  ## sub-agent dispatches before emitting its next ``session/update``.
   ##
   ## Marked ``gcsafe`` because the surrounding asynchttpserver dispatch
   ## requires it; the nim-acp transport's indirect-call methods are
@@ -139,8 +146,13 @@ proc createAcpSession*(reg: AgentRegistry; cwd = ""):
   {.gcsafe.}:
     var client: AgentClient
     try:
-      client = fromAcpAgent(reg.backend, reg.extraArgs,
-                           cmd = reg.customCmd, args = reg.customArgs)
+      if idleTimeoutMs > 0:
+        client = fromAcpAgent(reg.backend, reg.extraArgs,
+                             cmd = reg.customCmd, args = reg.customArgs,
+                             idleTimeoutMs = idleTimeoutMs)
+      else:
+        client = fromAcpAgent(reg.backend, reg.extraArgs,
+                             cmd = reg.customCmd, args = reg.customArgs)
     except AcpError as e:
       error "agent backend unavailable", reason = e.msg,
         backend = $reg.backend

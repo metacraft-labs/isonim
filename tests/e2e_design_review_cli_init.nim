@@ -131,8 +131,9 @@ proc runEndToEnd() =
     SELECT count(*) FROM public.schema_migrations""")
   conn.close()
   # REV-M8 added migration 004 (``fetch_layout``); CMP-M2 added 005 +
-  # 006 (campaigns + campaign routines).
-  check parseInt(countStr) == 6
+  # 006 (campaigns + campaign routines); CMP-M2.1 added 007 (round
+  # counter routines).
+  check parseInt(countStr) == 7
 
   let downCmd = "process-compose down --config " & ComposeFile.quoteShell &
       " --unix-socket " & sock &

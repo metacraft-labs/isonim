@@ -303,7 +303,10 @@ proc mountDesignReviewRoutes*(srv: ReviewServer) =
     if fileExists(promptPath): promptPath
     else: getCurrentDir() / OrchestratorPromptRelPath
   srv.campaignRegistry = newCampaignRegistry(srv.agentRegistry, db,
-                                             resolvedPromptPath)
+                                             resolvedPromptPath,
+                                             idleTimeoutMs = srv.cfg.agent.campaignIdleTimeoutMs,
+                                             autoTickDelayMs = srv.cfg.agent.campaignAutoTickDelayMs,
+                                             autoTickDisabled = srv.cfg.agent.campaignAutoTickDisabled)
   srv.registerHandler(CampaignStartRoute,
                       makeStartHandler(srv.campaignRegistry))
   srv.registerHandler(CampaignTickRoute,
