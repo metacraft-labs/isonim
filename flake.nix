@@ -15,24 +15,61 @@
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        pkgs = import nixpkgs { inherit system; };
+        # ``claude-code-acp`` (now upstream-renamed to ``claude-agent-acp``)
+        # depends on the unfree ``claude-code`` package; we therefore opt
+        # in to unfree just for this dev shell.
+        pkgs = import nixpkgs {
+          inherit system;
+          config.allowUnfree = true;
+        };
+        # Expose the binary under both the legacy ``claude-code-acp`` name
+        # (which our Nim transport prefers via ``findExe``) and the new
+        # ``claude-agent-acp`` name.
+        claudeCodeAcp =
+          pkgs.runCommand "claude-code-acp-compat"
+            {
+              nativeBuildInputs = [ pkgs.makeWrapper ];
+            }
+            ''
+              mkdir -p $out/bin
+              for bin in ${pkgs.claude-agent-acp}/bin/*; do
+                ln -s "$bin" "$out/bin/$(basename "$bin")"
+              done
+              if [ ! -e $out/bin/claude-code-acp ]; then
+                ln -s ${pkgs.claude-agent-acp}/bin/claude-agent-acp $out/bin/claude-code-acp
+              fi
+            '';
       in
       {
         devShells.default = pkgs.mkShell {
-          packages = with pkgs; [
-            nim
-            nimble
-            nodejs
-            just
-            chromium
-            chromedriver
-            # REV-M3: userspace PostgreSQL substrate.  ``postgresql_16``
-            # provides ``initdb``, ``postgres``, ``psql``, ``pg_isready``,
-            # ``pg_dump``, ``pg_restore`` on $PATH.  ``process-compose``
-            # orchestrates the local dev cluster (see process-compose.yaml).
-            postgresql_16
-            process-compose
-          ];
+          packages =
+            (with pkgs; [
+              nim
+              nimble
+              nodejs
+              just
+              # REV-M3: userspace PostgreSQL substrate.  ``postgresql_16``
+              # provides ``initdb``, ``postgres``, ``psql``, ``pg_isready``,
+              # ``pg_dump``, ``pg_restore`` on $PATH.  ``process-compose``
+              # orchestrates the local dev cluster (see process-compose.yaml).
+              postgresql_16
+              process-compose
+              # Phase A: ACP-speaking Claude Code adapter. Exposes both
+              # ``claude-code-acp`` (legacy/expected name) and
+              # ``claude-agent-acp`` (current upstream name) on $PATH.
+              claudeCodeAcp
+            ])
+            # ``chromium`` and ``chromedriver`` only build on Linux in
+            # nixpkgs; Darwin users supply system Chrome / a Homebrew
+            # chromedriver. Gate them here so ``nix develop`` works on
+            # macOS too.
+            ++ pkgs.lib.optionals pkgs.stdenv.isLinux (
+              with pkgs;
+              [
+                chromium
+                chromedriver
+              ]
+            );
 
           shellHook = ''
             echo "IsoNim dev shell — nim $(nim --version 2>&1 | head -1), node $(node --version)"
