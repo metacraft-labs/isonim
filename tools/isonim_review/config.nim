@@ -159,6 +159,26 @@ type
       ## which drives explicit ``campaign tick`` calls and would
       ## otherwise race the auto-tick.  Operator overrides:
       ##   * Env:  ``ISONIM_CAMPAIGN_AUTOTICK_DISABLED=1``
+    assistantPromptPath*: string
+      ## CMP-M5 — absolute path to the AI Assistant system prompt
+      ## file that the daemon prepends to every chat session via the
+      ## "primer" round-trip on ``POST /api/agent/sessions``.  When
+      ## empty (the default) the daemon resolves it to
+      ## ``<workspace>/isonim/prompts/ai-assistant.md``.  When the
+      ## resolved file doesn't exist the daemon logs a warning and
+      ## falls back to a tiny built-in placeholder — chat sessions
+      ## stay functional even on broken installs.  Operator overrides:
+      ##   * TOML: ``[agent].assistant_prompt_path = "<abs path>"``
+      ##   * Env:  ``ISONIM_ASSISTANT_PROMPT_PATH=<abs path>``
+    primerEnabled*: bool
+      ## CMP-M5 — when true (default) every chat ACP session created
+      ## via ``POST /api/agent/sessions`` is primed with the AI
+      ## Assistant system prompt + project context before the
+      ## sessionId is returned to the caller.  Set to false to skip
+      ## the primer round-trip — useful for CLI-only callers and
+      ## tests that want to drive a raw agent.  Operator overrides:
+      ##   * TOML: ``[agent].primer_enabled = true|false``
+      ##   * Env:  ``ISONIM_ASSISTANT_PRIMER_ENABLED=0|1``
 
   ReviewConfig* = object
     db*: DbConfig
@@ -198,6 +218,15 @@ const
     ## CMP-M2.1 — 2-second pause between ``round_complete`` and the
     ## auto-scheduled follow-up tick.  See
     ## :type:`AgentConfig.campaignAutoTickDelayMs`.
+  DefaultAssistantPromptRelPath* = "isonim/prompts/ai-assistant.md"
+    ## CMP-M5 — relative path under the workspace root that resolves
+    ## to the AI Assistant system prompt when
+    ## ``[agent].assistant_prompt_path`` is empty.  Mirrors how
+    ## ``OrchestratorPromptRelPath`` works for the campaign side.
+  DefaultPrimerEnabled* = true
+    ## CMP-M5 — the daemon primes new chat sessions by default; set
+    ## ``[agent].primer_enabled = false`` (or ``ISONIM_ASSISTANT_PRIMER_ENABLED=0``)
+    ## to opt back into the raw-agent behaviour.
   DefaultAgentHttpTimeoutMs* = 1_800_000
     ## Follow-up — 30 minute HTTP timeout for the CLI ➝ daemon
     ## ``/api/agent/prompts`` SSE POST.  Matches the nim-acp transport's
@@ -263,6 +292,8 @@ proc defaults*(): ReviewConfig =
       campaignIdleTimeoutMs: DefaultCampaignIdleTimeoutMs,
       campaignAutoTickDelayMs: DefaultCampaignAutoTickDelayMs,
       campaignAutoTickDisabled: false,
+      assistantPromptPath: "",
+      primerEnabled: DefaultPrimerEnabled,
     ),
     configPath: "",
   )
@@ -480,6 +511,10 @@ proc applyToml(cfg: var ReviewConfig; content: string) =
         if v.kind == tvkInt: cfg.agent.campaignIdleTimeoutMs = v.i
       of "campaign_auto_tick_delay_ms":
         if v.kind == tvkInt: cfg.agent.campaignAutoTickDelayMs = v.i
+      of "assistant_prompt_path":
+        if v.kind == tvkString: cfg.agent.assistantPromptPath = expandTilde(v.s)
+      of "primer_enabled":
+        if v.kind == tvkBool: cfg.agent.primerEnabled = v.b
       else:
         stderr.writeLine("isonim-review config: unknown key [agent]." & key)
     of "agent.codex":
@@ -664,6 +699,15 @@ proc loadConfig*(explicitPath: string = ""): ReviewConfig =
   if envAutoTickDisabled.len > 0 and envAutoTickDisabled != "0":
     result.agent.campaignAutoTickDisabled = true
 
+  # CMP-M5 — AI Assistant primer config env overrides.  Wins over TOML.
+  let envAssistantPath = getEnv("ISONIM_ASSISTANT_PROMPT_PATH")
+  if envAssistantPath.len > 0:
+    result.agent.assistantPromptPath = expandTilde(envAssistantPath)
+  let envPrimerEnabled = getEnv("ISONIM_ASSISTANT_PRIMER_ENABLED")
+  if envPrimerEnabled.len > 0:
+    result.agent.primerEnabled = envPrimerEnabled != "0" and
+                                  envPrimerEnabled.toLowerAscii() != "false"
+
   # Validate the [agent] section at load time so the operator sees a
   # clear error instead of an opaque spawn failure later.
   validateAgentConfig(result)
@@ -691,6 +735,19 @@ proc claudeExtraArgs*(cfg: ReviewConfig): seq[string] =
   ## When the upstream binary adds CLI support, return e.g.
   ## ``@["--model", cfg.agent.claude.model]`` here.
   @[]
+
+proc resolveAssistantPromptPath*(cfg: ReviewConfig): string =
+  ## CMP-M5 — resolve the absolute path the daemon should read the
+  ## AI Assistant system prompt from.  Honours an explicit
+  ## ``[agent].assistant_prompt_path`` first, then falls back to
+  ## ``<workspace>/`` & ``DefaultAssistantPromptRelPath`` so an
+  ## operator with a populated ``[workspace].root`` gets the prompt
+  ## for free without extra TOML.
+  if cfg.agent.assistantPromptPath.len > 0:
+    return cfg.agent.assistantPromptPath
+  if cfg.workspace.root.len > 0:
+    return cfg.workspace.root / DefaultAssistantPromptRelPath
+  ""
 
 proc daemonBaseUrl*(cfg: ReviewConfig): string =
   ## URL the CLI's ``chat`` subcommand defaults to.  Honors an explicit

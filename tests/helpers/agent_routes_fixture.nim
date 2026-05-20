@@ -28,8 +28,8 @@ proc pickFreePort*(): int =
   let (_, p) = s.getLocalAddr()
   return int(p)
 
-proc startAgentDaemon*(extraEnv: openArray[(string, string)] = @[]):
-    AgentRoutesFixture =
+proc startAgentDaemon*(extraEnv: openArray[(string, string)] = @[];
+                        configPath: string = ""): AgentRoutesFixture =
   if not fileExists(CliPath):
     raise newException(IOError,
       "agent_routes_fixture: missing " & CliPath &
@@ -53,8 +53,12 @@ proc startAgentDaemon*(extraEnv: openArray[(string, string)] = @[]):
                    $((int(epochTime() * 1000)) mod 1_000_000) & ".log"
   env["FAKE_ACP_CONTENT_LOG"] = contentLog
 
+  var args: seq[string] = @["serve", "--agent-routes-only"]
+  if configPath.len > 0:
+    args.add "--config"
+    args.add configPath
   let proc1 = startProcess(CliPath,
-    args = @["serve", "--agent-routes-only"],
+    args = args,
     env = env,
     options = {poUsePath, poStdErrToStdOut})
 
@@ -111,3 +115,46 @@ proc agentPost*(f: AgentRoutesFixture; path, body: string;
   let resp = client.request(f.baseUrl & path, httpMethod = HttpPost,
                             body = body, headers = headers)
   (code: parseInt(resp.status.split(' ')[0]), body: resp.body)
+
+import std/json as agentRoutesFixtureJson
+
+proc readContentLogEntries*(f: AgentRoutesFixture): seq[agentRoutesFixtureJson.JsonNode] =
+  ## CMP-M5 — read the fixture's content log so chat-priming tests can
+  ## inspect the primer prompt body the daemon shipped to the fake-ACP.
+  if f == nil or f.contentLog.len == 0: return @[]
+  if not fileExists(f.contentLog): return @[]
+  let raw = readFile(f.contentLog)
+  for line in raw.splitLines():
+    let s = line.strip()
+    if s.len == 0: continue
+    try:
+      result.add agentRoutesFixtureJson.parseJson(s)
+    except agentRoutesFixtureJson.JsonParsingError:
+      discard
+
+proc primerEntries*(f: AgentRoutesFixture): seq[agentRoutesFixtureJson.JsonNode] =
+  ## CMP-M5 — filter the content log down to primer entries (those
+  ## written by ``logPrimerPrompt``).
+  for e in readContentLogEntries(f):
+    if e == nil: continue
+    if e{"source"}.getStr("") == "primer":
+      result.add e
+
+proc latestPrimerPromptText*(f: AgentRoutesFixture): string =
+  ## CMP-M5 — return the ``promptText`` field of the most recent primer
+  ## entry, or ``""`` when none exists.
+  let entries = primerEntries(f)
+  if entries.len == 0: return ""
+  entries[^1]{"promptText"}.getStr("")
+
+proc countPrompts*(f: AgentRoutesFixture; sessionId: string = ""): int =
+  ## CMP-M5 — count the ``session/prompt`` entries the fake-ACP
+  ## recorded.  Filter by ``sessionId`` when non-empty.  Used by
+  ## ``test_chat_session_primer_is_one_turn`` to assert the primer
+  ## counts as exactly one round-trip.
+  for e in readContentLogEntries(f):
+    if e == nil: continue
+    if e{"source"}.getStr("") != "fake_acp": continue
+    if sessionId.len > 0 and e{"sessionId"}.getStr("") != sessionId:
+      continue
+    inc result

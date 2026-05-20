@@ -114,6 +114,7 @@ proc newReviewServer*(cfg: ReviewConfig; migDir: string = ""): ReviewServer =
     resolvedModel = cfg.agent.claude.model
   of aakCustom:
     discard
+  let resolvedAssistantPath = resolveAssistantPromptPath(cfg)
   result = ReviewServer(
     cfg: cfg,
     migDir: dir,
@@ -127,11 +128,16 @@ proc newReviewServer*(cfg: ReviewConfig; migDir: string = ""): ReviewServer =
       extraArgs = resolvedExtraArgs,
       backend = backend,
       customCmd = cfg.agent.command,
-      customArgs = cfg.agent.args),
+      customArgs = cfg.agent.args,
+      assistantPromptPath = resolvedAssistantPath,
+      primerEnabled = cfg.agent.primerEnabled,
+      workspaceRoot = cfg.workspace.root),
   )
   info "review server constructed", agentBackend = $backend,
     customCmd = cfg.agent.command, model = resolvedModel,
-    extraArgs = resolvedExtraArgs
+    extraArgs = resolvedExtraArgs,
+    assistantPromptPath = resolvedAssistantPath,
+    primerEnabled = cfg.agent.primerEnabled
 
 proc registerHandler*(srv: ReviewServer; route: string; handler: HandlerProc) =
   ## Mount ``handler`` at the *exact* path ``route``.  REV-M7 will use
@@ -266,6 +272,11 @@ proc mountDesignReviewRoutes*(srv: ReviewServer) =
   ## handle scoped to the configured store path; both live for the
   ## process lifetime — the daemon is the only user.
   let db = openReviewDb(env = true)
+  # CMP-M5 — let the agent registry's primer query
+  # ``design_review.list_campaigns`` so chat sessions land with an
+  # up-to-date "Active campaigns" block.  Setter is a no-op when the
+  # daemon is started with ``--agent-routes-only`` (no DB available).
+  srv.agentRegistry.attachDb(db)
   let store =
     if srv.cfg.store.path.len > 0:
       try: newCaptureStore(srv.cfg.store.path)

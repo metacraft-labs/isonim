@@ -258,6 +258,17 @@ test-design-review-chat: isonim-review-build fake-acp-agent-build
         -d:chronicles_runtime_filtering=on \
         -d:chronicles_log_level=TRACE \
         --hints:off tests/test_design_review_streaming_sse.nim
+    nim c -r --path:. --path:src \
+        --path:vendor/db_connector/src --path:vendor/chronicles \
+        --path:vendor/serialization --path:vendor/json_serialization \
+        --path:../nim-faststreams --path:../nim-stew \
+        --path:../nim-acp/src --path:../nim-agent-harbor/src \
+        --path:../nim-agents/src \
+        -d:nimOldCaseObjects \
+        -d:chronicles_sinks=textlines[stderr] \
+        -d:chronicles_runtime_filtering=on \
+        -d:chronicles_log_level=TRACE \
+        --hints:off tests/test_design_review_chat_priming.nim
 
 # Phase B — optional smoke that requires a real ``claude-agent-acp``
 # binary on PATH and Anthropic credentials configured.  Runs in CI

@@ -23,12 +23,17 @@
 ## See the ``test_post_cancel_signals_agent`` test for verification.
 
 import std/[asyncdispatch, asyncnet, asynchttpserver, base64, json, locks,
-            options, os, strutils, tables]
+            options, os, strutils, tables, times]
+
+import db_connector/db_postgres
 
 import nim_acp
 import nim_agents
 
 import ./log_setup
+import ./brief_format
+import ./brief_index
+import ./db as dr_db
 
 logScope:
   topics = "agent"
@@ -58,6 +63,17 @@ type
     customCmd*: string
     customArgs*: seq[string]
     extraArgs: seq[string]
+    ## CMP-M5 — AI Assistant primer knobs.  ``assistantPromptPath`` is
+    ## the absolute path the daemon reads for the system prompt;
+    ## ``primerEnabled`` toggles the primer round-trip on session
+    ## creation.  ``workspaceRoot`` is the fallback project root used
+    ## when ``POST /api/agent/sessions`` doesn't carry ``projectRoot``.
+    ## ``db`` is optional — when nil the primer simply skips the
+    ## active-campaigns section.
+    assistantPromptPath*: string
+    primerEnabled*: bool
+    workspaceRoot*: string
+    db*: ReviewDb
 
   AgentBackendUnavailableError* = object of CatchableError
 
@@ -74,16 +90,33 @@ const
 proc newAgentRegistry*(extraArgs: seq[string] = @[];
     backend: AcpAgentKind = aakClaude;
     customCmd: string = "";
-    customArgs: seq[string] = @[]): AgentRegistry =
+    customArgs: seq[string] = @[];
+    assistantPromptPath: string = "";
+    primerEnabled: bool = true;
+    workspaceRoot: string = "";
+    db: ReviewDb = nil): AgentRegistry =
   ## Allocate an empty session cache. The defaults match the
   ## pre-Phase-C contract (claude-agent-acp without explicit args)
   ## so existing callers keep working untouched.
+  ##
+  ## CMP-M5 — additional optional parameters configure the primer
+  ## round-trip on session creation.  ``primerEnabled = false`` makes
+  ## :proc:`handleSessions` skip the primer entirely (back to
+  ## pre-CMP-M5 behaviour); ``assistantPromptPath`` overrides the
+  ## file the primer's first block is read from; ``workspaceRoot``
+  ## is the fallback project root when the request body doesn't
+  ## carry ``projectRoot``; ``db`` is used to pull the active
+  ## campaigns block (nil → skip that section).
   result = AgentRegistry(
     sessions: initTable[string, AgentSessionState](),
     backend: backend,
     customCmd: customCmd,
     customArgs: customArgs,
-    extraArgs: extraArgs)
+    extraArgs: extraArgs,
+    assistantPromptPath: assistantPromptPath,
+    primerEnabled: primerEnabled,
+    workspaceRoot: workspaceRoot,
+    db: db)
   initLock(result.lock)
   case backend
   of aakClaude:
@@ -93,6 +126,15 @@ proc newAgentRegistry*(extraArgs: seq[string] = @[];
   of aakCustom:
     info "agent registry initialised", backend = "custom",
       cmd = customCmd
+
+proc attachDb*(reg: AgentRegistry; db: ReviewDb) =
+  ## CMP-M5 — late-bind the design-review DB handle onto the agent
+  ## registry.  Called by ``mountDesignReviewRoutes`` after it opens
+  ## the long-lived ``ReviewDb`` connection.  When set, the primer's
+  ## "Active campaigns" section is populated from
+  ## ``design_review.list_campaigns('active', 50, 0)``; when nil the
+  ## primer simply omits the section.
+  reg.db = db
 
 proc release*(reg: AgentRegistry; sessionId: string) =
   acquire(reg.lock)
@@ -171,6 +213,291 @@ proc createAcpSession*(reg: AgentRegistry; cwd = "";
     reg.storeSession(result)
     info "agent session created", sessionId = session.id,
       cwd = resolvedCwd
+
+# --------------------------------------------------------------------------- #
+#  CMP-M5 — AI Assistant primer assembly.                                     #
+#                                                                              #
+#  Every chat session opened via ``POST /api/agent/sessions`` gets a single   #
+#  "primer" ``session/prompt`` immediately after ``session/new``.  The primer #
+#  carries the AI Assistant system prompt (from                                #
+#  ``isonim/prompts/ai-assistant.md``) plus a project-context block built      #
+#  from four sources:                                                          #
+#    1. Project root (CWD-style absolute path).                                #
+#    2. ``AGENTS.md`` (or ``CLAUDE.md``) at the project root, truncated to    #
+#       :const:`MaxAgentsMdBytes` (head + middle ellipsis + tail).            #
+#    3. Brief index summary from ``<projectRoot>/briefs/``.                   #
+#    4. Active campaigns from ``design_review.list_campaigns('active', ...)``. #
+#                                                                              #
+#  The primer round-trip is invisible to callers — :proc:`handleSessions`     #
+#  drains the agent's acknowledgement before returning the sessionId.         #
+# --------------------------------------------------------------------------- #
+
+const
+  MaxAgentsMdBytes* = 4_096
+    ## Cap on the AGENTS.md/CLAUDE.md body included in the primer.
+    ## Longer files are head+tail truncated with an ellipsis marker so
+    ## the system prompt still fits inside the agent's context budget.
+  PrimerHeadKeepBytes* = 2_048
+  PrimerTailKeepBytes* = 2_048
+  PrimerTruncMarker* = "\n\n[…truncated…]\n\n"
+  FallbackAssistantPrompt* = "You are a coding assistant.  No special " &
+    "IsoNim Assistant context could be loaded — operate as a vanilla " &
+    "coding assistant for the user's current project."
+    ## CMP-M5 — emergency prompt used when the configured
+    ## ``[agent].assistant_prompt_path`` file is missing or unreadable.
+    ## The daemon logs a warning and keeps the chat session alive.
+  PrimerInstruction* = "INSTRUCTION:\n" &
+    "Acknowledge briefly that you've received your system context and " &
+    "are ready to help.  Do not produce a long preamble.\n"
+  PrimerIdleTimeoutMs* = 30_000
+    ## Cap on how long :proc:`handleSessions` waits for the primer
+    ## acknowledgement before logging a warning and returning the
+    ## sessionId anyway.  Subsequent user prompts still work; the
+    ## acknowledgement may simply arrive a little late.
+
+proc readAssistantPromptBody*(path: string): string =
+  ## CMP-M5 — read the AI Assistant system prompt off disk.  Returns
+  ## the verbatim body on success; ``""`` when the file is missing or
+  ## unreadable (the caller substitutes :const:`FallbackAssistantPrompt`).
+  if path.len == 0:
+    return ""
+  if not fileExists(path):
+    return ""
+  try:
+    return readFile(path)
+  except IOError as e:
+    warn "assistant prompt unreadable", path = path, reason = e.msg
+    return ""
+  except OSError as e:
+    warn "assistant prompt unreadable", path = path, reason = e.msg
+    return ""
+
+proc truncateAgentsMd*(body: string): string =
+  ## Apply the head/tail truncation rule for the AGENTS.md block.
+  if body.len <= MaxAgentsMdBytes:
+    return body
+  result = body[0 ..< PrimerHeadKeepBytes]
+  result.add PrimerTruncMarker
+  result.add body[body.len - PrimerTailKeepBytes .. ^1]
+
+proc readAgentsMd*(projectRoot: string): tuple[present: bool; body: string] =
+  ## CMP-M5 — return the contents of ``AGENTS.md`` (preferred) or
+  ## ``CLAUDE.md`` at ``projectRoot``, truncated to
+  ## :const:`MaxAgentsMdBytes`.  ``present=false`` when neither file
+  ## exists.
+  if projectRoot.len == 0:
+    return (present: false, body: "")
+  for name in ["AGENTS.md", "CLAUDE.md"]:
+    let p = projectRoot / name
+    if fileExists(p):
+      try:
+        let raw = readFile(p)
+        return (present: true, body: truncateAgentsMd(raw))
+      except IOError as e:
+        debug "AGENTS.md unreadable", path = p, reason = e.msg
+      except OSError as e:
+        debug "AGENTS.md unreadable", path = p, reason = e.msg
+  (present: false, body: "")
+
+proc renderBriefIndexSummary*(projectRoot: string): string =
+  ## CMP-M5 — one line per brief: ``<briefId> — <coversPreviews count>
+  ## previews × <backends count> backends — <title>``.  Returns an
+  ## empty string when the project has no ``briefs/`` directory.
+  if projectRoot.len == 0:
+    return ""
+  let briefsDir = projectRoot / "briefs"
+  if not dirExists(briefsDir):
+    return ""
+  let idx = try: buildBriefIndex(briefsDir)
+            except CatchableError as e:
+              debug "brief index build failed", projectRoot = projectRoot,
+                reason = e.msg
+              return ""
+  if idx == nil or idx.byBriefId.len == 0:
+    return ""
+  for briefId, brief in idx.byBriefId.pairs:
+    var beCount = 0
+    for cov in brief.coversPreviews:
+      beCount += cov.backends.len
+    result.add "- " & briefId & " — " &
+      $brief.coversPreviews.len & " previews × " &
+      $beCount & " backends"
+    if brief.title.len > 0:
+      result.add " — " & brief.title
+    result.add "\n"
+
+proc renderActiveCampaigns*(reg: AgentRegistry): string =
+  ## CMP-M5 — one line per active campaign:
+  ##   ``<campaignId> — <briefRefs> — round=<latest>``
+  ## Returns empty when no DB handle is attached or no campaigns
+  ## exist.  Database errors are swallowed (logged at debug) — the
+  ## primer is best-effort.
+  if reg == nil or reg.db == nil:
+    return ""
+  try:
+    reg.db.asApp()
+    let stmt = "SELECT design_review.list_campaigns('active', 50, 0)::text"
+    let rows = reg.db.conn.getAllRows(sql(stmt))
+    for row in rows:
+      if row.len == 0 or row[0].len == 0: continue
+      var node: JsonNode
+      try: node = parseJson(row[0])
+      except JsonParsingError: continue
+      let campaignId = node{"campaign_id"}.getStr("")
+      if campaignId.len == 0: continue
+      var briefRefs = ""
+      let refs = node{"brief_refs"}
+      if refs != nil and refs.kind == JArray:
+        var parts: seq[string]
+        for it in refs.items:
+          parts.add it.getStr("")
+        briefRefs = parts.join(", ")
+      var latestRound = 0
+      try:
+        let r = reg.db.conn.getValue(sql(
+          "SELECT design_review.count_campaign_round_complete('" &
+          campaignId.replace("'", "''") & "'::uuid)::text"))
+        if r.len > 0:
+          try: latestRound = parseInt(r)
+          except ValueError: discard
+      except CatchableError as e:
+        debug "active campaign: round count failed",
+          campaignId = campaignId, reason = e.msg
+      result.add "- " & campaignId
+      if briefRefs.len > 0:
+        result.add " — " & briefRefs
+      result.add " — round=" & $latestRound & "\n"
+  except CatchableError as e:
+    debug "active campaign listing failed", reason = e.msg
+    return ""
+
+proc assemblePrimerPrompt*(assistantPrompt, projectRoot: string;
+    agentsMdPresent: bool; agentsMdBody: string;
+    briefIndexSummary: string;
+    activeCampaigns: string): string =
+  ## CMP-M5 — build the composite first-turn prompt for a freshly-opened
+  ## chat ACP session.  The format mirrors the campaign orchestrator's
+  ## first-prompt layout so the agent sees a familiar shape.
+  let promptBody =
+    if assistantPrompt.len > 0: assistantPrompt
+    else: FallbackAssistantPrompt
+  result = "SYSTEM CONTEXT — IsoNim AI Assistant prompt:\n\n"
+  result.add promptBody
+  if not promptBody.endsWith("\n"):
+    result.add "\n"
+  result.add "\nPROJECT CONTEXT:\n\n"
+  result.add "Project root: "
+  if projectRoot.len > 0:
+    result.add projectRoot
+  else:
+    result.add "(unknown)"
+  result.add "\n\n"
+  result.add "AGENTS.md (if present): "
+  if agentsMdPresent:
+    result.add "\n"
+    result.add agentsMdBody
+    if not agentsMdBody.endsWith("\n"):
+      result.add "\n"
+  else:
+    result.add "(none)\n"
+  result.add "\nBrief index (loaded from <project>/briefs/):\n"
+  if briefIndexSummary.len > 0:
+    result.add briefIndexSummary
+  else:
+    result.add "(none — no briefs/ directory or no readable briefs)\n"
+  result.add "\nActive campaigns:\n"
+  if activeCampaigns.len > 0:
+    result.add activeCampaigns
+  else:
+    result.add "(none active)\n"
+  result.add "\nCLI tools available (invoke via shell):\n"
+  result.add "- `isonim-review campaign list / show <id> / start --doc <path> / inject <id> <text> / edit-doc <id> / tail <id> / stop <id>`\n"
+  result.add "- `isonim-review run-review --run <id> --acp-backend codex`\n"
+  result.add "- `isonim-review seed-run --brief <id> --capture <be>=<path>...`\n"
+  result.add "- `isonim-review capture --brief <id>` (requires clean workspace)\n"
+  result.add "- `isonim-review briefs check --project <path>`\n"
+  result.add "- `isonim-review db-health [--json]`\n\n"
+  result.add PrimerInstruction
+
+proc logPrimerPrompt*(sessionId, promptText: string) =
+  ## CMP-M5 test hook — when ``$FAKE_ACP_CONTENT_LOG`` is set, append
+  ## the primer prompt text as a JSON-summary line so the test fixtures
+  ## (which already inspect this log for the prompt routes) can assert
+  ## the primer's body shape.  Mirrors :proc:`logCampaignPrompt` in
+  ## ``campaign_routes.nim``.
+  let contentLog = getEnv("FAKE_ACP_CONTENT_LOG")
+  if contentLog.len == 0: return
+  let summary = %* {
+    "source": "primer",
+    "sessionId": sessionId,
+    "promptText": promptText,
+    "promptLen": promptText.len,
+  }
+  try:
+    let f = open(contentLog, fmAppend)
+    defer: f.close()
+    f.write($summary & "\n")
+  except IOError:
+    discard
+
+proc primeAcpSession*(reg: AgentRegistry; state: AgentSessionState;
+                      projectRoot: string) {.gcsafe.} =
+  ## CMP-M5 — send the AI Assistant primer prompt on the freshly-opened
+  ## ACP session and drain the agent's acknowledgement.  Runs
+  ## synchronously inside :proc:`handleSessions`; the caller blocks on
+  ## the primer round-trip before returning the sessionId.  Capped at
+  ## :const:`PrimerIdleTimeoutMs` of wall-clock time — if the agent
+  ## takes longer the daemon logs a warning and proceeds; subsequent
+  ## user prompts on the same session still work, the ACK simply
+  ## arrives late and is dropped (the SSE consumer hasn't connected
+  ## yet).
+  {.gcsafe.}:
+    let resolvedRoot =
+      if projectRoot.len > 0: projectRoot
+      elif reg.workspaceRoot.len > 0: reg.workspaceRoot
+      else: getCurrentDir()
+    let assistantPath =
+      if reg.assistantPromptPath.len > 0: reg.assistantPromptPath
+      else: ""
+    let assistantBody = readAssistantPromptBody(assistantPath)
+    if assistantPath.len > 0 and assistantBody.len == 0:
+      warn "assistant prompt missing — using built-in fallback",
+        path = assistantPath
+    let agentsMd = readAgentsMd(resolvedRoot)
+    let briefSummary = renderBriefIndexSummary(resolvedRoot)
+    let campaigns = renderActiveCampaigns(reg)
+    let primer = assemblePrimerPrompt(assistantBody, resolvedRoot,
+      agentsMd.present, agentsMd.body, briefSummary, campaigns)
+    info "agent session primer assembled", sessionId = state.sessionId,
+      projectRoot = resolvedRoot, primerBytes = primer.len,
+      assistantPromptLen = assistantBody.len,
+      agentsMdPresent = agentsMd.present,
+      briefSummaryLen = briefSummary.len,
+      campaignsLen = campaigns.len
+    logPrimerPrompt(state.sessionId, primer)
+    var client = state.client
+    let startedAt = epochTime()
+    let onEvent: AgentEventCallback = proc(ev: AgentEvent) {.gcsafe.} =
+      discard
+    try:
+      let turn = sendPromptStreaming(client,
+        AgentSession(id: state.sessionId, backend: abkAcp),
+        @[textBlock(primer)], onEvent)
+      info "agent session primer complete",
+        sessionId = state.sessionId,
+        stopReason = $turn.stopReason,
+        elapsedMs = int((epochTime() - startedAt) * 1000)
+    except CatchableError as e:
+      warn "agent session primer failed (continuing)",
+        sessionId = state.sessionId, reason = e.msg,
+        elapsedMs = int((epochTime() - startedAt) * 1000)
+    # Drain any residual updates buffered while the primer was in flight
+    # so the first user-prompt SSE stream doesn't replay the primer's
+    # acknowledgement frames.
+    try:
+      discard client.acp.drainUpdates()
+    except CatchableError:
+      discard
 
 # --------------------------------------------------------------------------- #
 #  JSON shapes the routes serialise to / from.                                #
@@ -368,21 +695,34 @@ proc respondBackendUnavailable*(req: Request; reason: string)
 proc handleSessions*(reg: AgentRegistry; req: Request)
     {.async, gcsafe.} =
   ## ``POST /api/agent/sessions`` handler.
+  ##
+  ## CMP-M5 — when ``reg.primerEnabled`` is true, the handler primes
+  ## the freshly-opened ACP session with the AI Assistant system
+  ## prompt + project-context block before returning the sessionId.
+  ## The request body may carry ``projectRoot`` to override the
+  ## daemon's workspace-root fallback.
   if req.reqMethod != HttpPost:
     await respondJson(req, Http405,
       $(%* {"error": "method_not_allowed"}))
     return
   var cwd = ""
+  var projectRoot = ""
   if req.body.len > 0:
     try:
       let node = parseJson(req.body)
       cwd = node{"cwd"}.getStr("")
+      projectRoot = node{"projectRoot"}.getStr("")
     except JsonParsingError:
       await respondJson(req, Http400,
         $(%* {"error": "invalid_json"}))
       return
   try:
     let state = createAcpSession(reg, cwd)
+    if reg.primerEnabled:
+      primeAcpSession(reg, state, projectRoot)
+    else:
+      debug "agent session primer skipped (primerEnabled=false)",
+        sessionId = state.sessionId
     let body = $(%* {
       "sessionId": state.sessionId,
       "agentCapabilities": capabilityJson(state.capabilities),
