@@ -202,18 +202,28 @@ proc writeFixturePng(path: string; tag: byte) =
 
 proc lastContentLogEntry(path: string): JsonNode =
   ## Each daemon ``/api/agent/prompts`` invocation appends one JSON
-  ## summary line to ``$FAKE_ACP_CONTENT_LOG``.  We read the file and
-  ## return the parsed last non-empty line so tests can assert on the
-  ## inbound prompt shape directly.
+  ## summary line to ``$FAKE_ACP_CONTENT_LOG`` (the daemon-side hook).
+  ## CMP-M4 added a second writer — the fake-ACP stub itself appends a
+  ## line per ``session/prompt`` so campaign-route tests can inspect
+  ## the agent's view of the inbound prompt body.  This helper returns
+  ## the last DAEMON-shaped entry (i.e. the one carrying
+  ## ``promptBlocks``); fake-ACP lines (which carry ``source=fake_acp``)
+  ## are ignored.
   if not fileExists(path):
     return nil
   let raw = readFile(path)
-  var last = ""
+  var last: JsonNode = nil
   for line in raw.splitLines():
     let s = line.strip()
-    if s.len > 0: last = s
-  if last.len == 0: return nil
-  parseJson(last)
+    if s.len == 0: continue
+    var node: JsonNode
+    try: node = parseJson(s)
+    except JsonParsingError: continue
+    if node == nil: continue
+    if node{"source"}.getStr("") == "fake_acp": continue
+    if not node.hasKey("promptBlocks"): continue
+    last = node
+  return last
 
 test "test_prompt_with_pngs_forwards_image_blocks":
   ## REGRESSION — the daemon must convert ``pngPaths`` entries into

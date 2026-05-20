@@ -41,7 +41,7 @@ suite "REV-M4 isonim-review init":
     ## Fresh cluster with no migrations applied → cmdInit reports
     ## ``applied N`` and ``schema_migrations`` contains every migration
     ## file we ship (REV-M3's 001+002, REV-M7's 003, REV-M8's 004,
-    ## CMP-M2's 005+006, CMP-M2.1's 007).
+    ## CMP-M2's 005+006, CMP-M2.1's 007, CMP-M4's 008).
     let f = newPgFixture(applyMigrations = false)
     defer: f.shutdown()
 
@@ -53,7 +53,7 @@ suite "REV-M4 isonim-review init":
     let outText = readFile(tmpLog)
     removeFile(tmpLog)
     check rc == 0
-    check countMigrations(f) == 7
+    check countMigrations(f) == 8
     check "apply 001" in outText
     check "apply 002" in outText
     check "apply 003" in outText
@@ -61,7 +61,8 @@ suite "REV-M4 isonim-review init":
     check "apply 005" in outText
     check "apply 006" in outText
     check "apply 007" in outText
-    check "applied 7 migration(s)" in outText
+    check "apply 008" in outText
+    check "applied 8 migration(s)" in outText
 
   test "test_cli_init_is_noop_on_already_migrated":
     ## Second run against the same cluster: every migration is
@@ -138,12 +139,13 @@ suite "REV-M4 isonim-review init":
       let c = connectMigrator(f)
       defer: c.close()
       parseInt(c.getValue(sql"SELECT count(*) FROM public.schema_migrations"))
-    # Migrations 2..7 remain (1 was DELETEd above).  REV-M8
+    # Migrations 2..8 remain (1 was DELETEd above).  REV-M8
     # added migration 004 (``fetch_layout``); CMP-M2 added migrations
     # 005 + 006 (campaigns + campaign routines); CMP-M2.1 added
-    # migration 007 (``next_campaign_round``).  The dirty-state guard
-    # counts whatever rows survive the DELETE.
-    check after == 6
+    # migration 007 (``next_campaign_round``); CMP-M4 added migration
+    # 008 (``update_campaign_doc_sha``).  The dirty-state guard counts
+    # whatever rows survive the DELETE.
+    check after == 7
 
   test "test_cli_init_refuses_modified_migration_file":
     ## Apply, copy a migration to a scratch dir, mutate one byte,
@@ -185,6 +187,9 @@ suite "REV-M4 isonim-review init":
     copyFile(
       MigDir / "007_design_review_campaign_round_counter.sql",
       scratch / "007_design_review_campaign_round_counter.sql")
+    copyFile(
+      MigDir / "008_design_review_campaign_doc_refresh.sql",
+      scratch / "008_design_review_campaign_doc_refresh.sql")
     let altered = scratch / "001_design_review_schema.sql"
     var body = readFile(altered)
     body.add "\n-- drift marker\n"
@@ -218,12 +223,13 @@ suite "REV-M4 isonim-review init":
     # All rows still present — no partial reapplication.
     # REV-M8 added migration 004 (``fetch_layout``); CMP-M2 added
     # migrations 005 + 006 (campaigns + campaign routines); CMP-M2.1
-    # added migration 007 (``next_campaign_round``).  The schema now
-    # tracks seven migration rows.
+    # added migration 007 (``next_campaign_round``); CMP-M4 added
+    # migration 008 (``update_campaign_doc_sha``).  The schema now
+    # tracks eight migration rows.
     let after = block:
       let c = connectMigrator(f)
       defer: c.close()
       parseInt(c.getValue(sql"SELECT count(*) FROM public.schema_migrations"))
-    check after == 7
+    check after == 8
 
     removeDir(scratch)

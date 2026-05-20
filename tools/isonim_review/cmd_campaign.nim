@@ -72,6 +72,19 @@ type
     campaignId*: string
     reason*:    string
 
+  CampaignInjectOptions* = object
+    daemonUrl*: string
+    campaignId*: string
+    text*:        string
+    messageFile*: string
+    fromStdin*:   bool
+
+  CampaignEditDocOptions* = object
+    daemonUrl*: string
+    campaignId*: string
+    editor*:    string
+    noEdit*:    bool
+
 # --------------------------------------------------------------------------
 # Helpers — doc hashing and brief resolution.
 # --------------------------------------------------------------------------
@@ -542,4 +555,150 @@ proc cmdCampaignStop*(cfg: ReviewConfig; opts: CampaignStopOptions): int =
     stderr.writeLine "isonim-review campaign stop: " & $code & " " & respBody
     return 5
   echo respBody
+  return 0
+
+# --------------------------------------------------------------------------
+# Subcommand: inject  (CMP-M4)
+# --------------------------------------------------------------------------
+
+proc cmdCampaignInject*(cfg: ReviewConfig; opts: CampaignInjectOptions): int =
+  ## CMP-M4 — push an operator-injection text into a running campaign.
+  ##
+  ## The text can come from any of three sources (mutually exclusive):
+  ## positional args (concatenated with spaces), ``--message-file
+  ## <path>``, or ``--stdin``.  At least one must produce a non-empty
+  ## string.  Posts to ``/api/campaign/inject`` and on 202 prints
+  ## ``injection queued (event_id=<id>)`` on stderr.
+  let baseUrl =
+    if opts.daemonUrl.len > 0: opts.daemonUrl
+    else: daemonBaseUrl(cfg)
+  if opts.campaignId.len == 0:
+    stderr.writeLine "isonim-review campaign inject: <campaign_id> required"
+    return 2
+
+  # Resolve the text from one of the three sources.  Multiple sources
+  # being non-empty is a usage error (the operator likely typo'd —
+  # better to fail loudly than to silently use the first non-empty
+  # source).
+  var sources = 0
+  var text = ""
+  if opts.text.len > 0:
+    inc sources
+    text = opts.text
+  if opts.messageFile.len > 0:
+    inc sources
+    if not fileExists(opts.messageFile):
+      stderr.writeLine "isonim-review campaign inject: --message-file not found: " &
+        opts.messageFile
+      return 2
+    text =
+      try: readFile(opts.messageFile)
+      except IOError as e:
+        stderr.writeLine "isonim-review campaign inject: cannot read --message-file " &
+          opts.messageFile & ": " & e.msg
+        return 2
+  if opts.fromStdin:
+    inc sources
+    text = stdin.readAll()
+  if sources == 0:
+    stderr.writeLine "isonim-review campaign inject: provide positional <prompt>, " &
+      "--message-file <path>, or --stdin"
+    return 2
+  if sources > 1:
+    stderr.writeLine "isonim-review campaign inject: pick exactly one of positional " &
+      "<prompt>, --message-file, --stdin"
+    return 2
+  if text.strip().len == 0:
+    stderr.writeLine "isonim-review campaign inject: text is empty"
+    return 2
+
+  let body = $(%* {"campaignId": opts.campaignId, "text": text})
+  let (code, respBody) = httpPostJson(baseUrl, "/api/campaign/inject", body)
+  if code != 202 and code != 200:
+    stderr.writeLine "isonim-review campaign inject: " & $code & " " & respBody
+    return 5
+  var eventId = ""
+  try:
+    let node = parseJson(respBody)
+    eventId = node{"eventId"}.getStr("")
+  except JsonParsingError: discard
+  if eventId.len > 0:
+    stderr.writeLine "injection queued (event_id=" & eventId & ")"
+  else:
+    stderr.writeLine "injection queued"
+  return 0
+
+# --------------------------------------------------------------------------
+# Subcommand: edit-doc  (CMP-M4)
+# --------------------------------------------------------------------------
+
+proc cmdCampaignEditDoc*(cfg: ReviewConfig; opts: CampaignEditDocOptions):
+    int =
+  ## CMP-M4 — open the campaign doc in the user's editor (or just
+  ## refresh the daemon's view of the on-disk content when ``--no-edit``
+  ## is set), then POST ``/api/campaign/refresh-doc`` so the daemon's
+  ## next tick sees the new SHA + body.
+  let baseUrl =
+    if opts.daemonUrl.len > 0: opts.daemonUrl
+    else: daemonBaseUrl(cfg)
+  if opts.campaignId.len == 0:
+    stderr.writeLine "isonim-review campaign edit-doc: <campaign_id> required"
+    return 2
+
+  # 1) Look up the doc_path via /api/campaign/fetch.
+  let q = "?campaignId=" & opts.campaignId & "&eventLimit=1"
+  let (code, body) = httpGet(baseUrl, "/api/campaign/fetch" & q)
+  if code == 404:
+    stderr.writeLine "isonim-review campaign edit-doc: not found: " & opts.campaignId
+    return 4
+  if code != 200:
+    stderr.writeLine "isonim-review campaign edit-doc: fetch failed " &
+      $code & " " & body
+    return 5
+  var node: JsonNode
+  try: node = parseJson(body)
+  except JsonParsingError as e:
+    stderr.writeLine "isonim-review campaign edit-doc: bad JSON from fetch: " & e.msg
+    return 5
+  let docPath = node{"doc_path"}.getStr("")
+  if docPath.len == 0:
+    stderr.writeLine "isonim-review campaign edit-doc: no doc_path on campaign row"
+    return 5
+  if not fileExists(docPath):
+    stderr.writeLine "isonim-review campaign edit-doc: doc missing on disk: " & docPath
+    return 4
+
+  # 2) Spawn $EDITOR (unless --no-edit).  We deliberately use a shell
+  # invocation so terminal-based editors (vi, nano, hx, emacs -nw) get
+  # a proper tty.
+  if not opts.noEdit:
+    var editorCmd = opts.editor
+    if editorCmd.len == 0:
+      editorCmd = getEnv("EDITOR", "vi")
+    let rc = execShellCmd(editorCmd & " " & quoteShell(docPath))
+    if rc != 0:
+      stderr.writeLine "isonim-review campaign edit-doc: editor exited non-zero (" &
+        $rc & ")"
+      return 5
+
+  # 3) POST /api/campaign/refresh-doc to bump the SHA + emit the
+  # doc_refreshed event.
+  let refreshBody = $(%* {"campaignId": opts.campaignId})
+  let (rCode, rBody) = httpPostJson(baseUrl, "/api/campaign/refresh-doc",
+                                    refreshBody)
+  if rCode != 200:
+    stderr.writeLine "isonim-review campaign edit-doc: refresh failed " &
+      $rCode & " " & rBody
+    return 5
+  var oldSha, newSha = ""
+  var contentChanged = false
+  try:
+    let rNode = parseJson(rBody)
+    oldSha = rNode{"oldSha"}.getStr("")
+    newSha = rNode{"newSha"}.getStr("")
+    contentChanged = rNode{"contentChanged"}.getBool(false)
+  except JsonParsingError: discard
+  stderr.writeLine "doc refreshed (oldSha=" & oldSha &
+    " newSha=" & newSha &
+    ", contentChanged=" & $contentChanged & ")"
   return 0

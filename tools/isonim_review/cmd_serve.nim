@@ -319,6 +319,10 @@ proc mountDesignReviewRoutes*(srv: ReviewServer) =
                       makeFetchHandler(srv.campaignRegistry))
   srv.registerHandler(CampaignEventsRoute,
                       makeEventsHandler(srv.campaignRegistry))
+  srv.registerHandler(CampaignInjectRoute,
+                      makeInjectHandler(srv.campaignRegistry))
+  srv.registerHandler(CampaignRefreshDocRoute,
+                      makeRefreshDocHandler(srv.campaignRegistry))
   info "campaign routes mounted", topics = "daemon",
     promptPath = resolvedPromptPath
 

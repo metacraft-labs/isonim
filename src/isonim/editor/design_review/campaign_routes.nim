@@ -31,13 +31,15 @@
 ## with a campaign-only dependency.
 
 import std/[asyncdispatch, asyncnet, asynchttpserver, json, locks,
-            options, os, parseutils, strutils, tables, times, uri]
+            options, os, osproc, parseutils, streams, strutils,
+            tables, times, uri]
 
 import db_connector/db_postgres
 import nim_acp
 import nim_agents
 
 import ./agent_routes
+import ./campaign_format
 import ./db as dr_db
 import ./log_setup
 
@@ -51,6 +53,8 @@ const
   CampaignListRoute*  = "/api/campaign/list"
   CampaignFetchRoute* = "/api/campaign/fetch"
   CampaignEventsRoute* = "/api/campaign/events"
+  CampaignInjectRoute* = "/api/campaign/inject"
+  CampaignRefreshDocRoute* = "/api/campaign/refresh-doc"
 
   OrchestratorPromptRelPath* = "prompts/campaign-orchestrator.md"
 
@@ -72,6 +76,15 @@ type
     autoTickGen: Table[string, int]   ## bumped on stop/escalation to cancel
                                       ## any pending scheduleAutoTick that
                                       ## hasn't fired yet
+    # CMP-M4 — per-campaign pending operator-injection event id queue.
+    # ``injectionEventIds[cid]`` is the ordered list of ``campaign_events``
+    # uuids written by ``handleInject`` whose corresponding ACP-queued
+    # text is still waiting to be folded into the next tick prompt.  The
+    # tick path drains both ACP texts and these ids atomically (under
+    # ``lock``) and, after a successful prompt-send, calls
+    # ``acknowledge_campaign_events`` with the LAST entry of the drained
+    # list as the upto bound.
+    injectionEventIds: Table[string, seq[string]]
     agents: AgentRegistry
     db: ReviewDb
     promptPath*: string
@@ -111,6 +124,7 @@ proc newCampaignRegistry*(agents: AgentRegistry; db: ReviewDb;
     sessions: initTable[string, string](),
     consecutiveErrors: initTable[string, int](),
     autoTickGen: initTable[string, int](),
+    injectionEventIds: initTable[string, seq[string]](),
     agents: agents,
     db: db,
     promptPath: promptPath,
@@ -205,6 +219,64 @@ proc resetConsecutiveErrors*(reg: CampaignRegistry; campaignId: string) =
   acquire(reg.lock)
   try:
     reg.consecutiveErrors[campaignId] = 0
+  finally:
+    release(reg.lock)
+
+proc appendInjectionEventId*(reg: CampaignRegistry;
+                              campaignId, eventId: string) =
+  ## CMP-M4 — push ``eventId`` onto the per-campaign pending-injection
+  ## list.  Called by ``handleInject`` after the ``note`` event has been
+  ## recorded but before the ACP-queue text has been drained.
+  acquire(reg.lock)
+  try:
+    if not reg.injectionEventIds.hasKey(campaignId):
+      reg.injectionEventIds[campaignId] = @[]
+    reg.injectionEventIds[campaignId].add eventId
+  finally:
+    release(reg.lock)
+
+proc takePendingInjectionEventIds*(reg: CampaignRegistry;
+                                    campaignId: string): seq[string] =
+  ## Atomically drain and return the pending-injection event-id list for
+  ## ``campaignId`` (FIFO).  Returns ``@[]`` when no entries exist.
+  acquire(reg.lock)
+  try:
+    if reg.injectionEventIds.hasKey(campaignId):
+      result = reg.injectionEventIds[campaignId]
+      reg.injectionEventIds[campaignId] = @[]
+    else:
+      result = @[]
+  finally:
+    release(reg.lock)
+
+proc restorePendingInjectionEventIds*(reg: CampaignRegistry;
+                                       campaignId: string;
+                                       eventIds: seq[string]) =
+  ## Re-queue ``eventIds`` at the FRONT of the per-campaign pending list.
+  ## Used by the tick path when the prompt-send fails after the ACP queue
+  ## was drained — we put the texts back in the ACP queue AND the event
+  ## ids back here so the next tick replays the same injections in the
+  ## same order.
+  if eventIds.len == 0: return
+  acquire(reg.lock)
+  try:
+    if not reg.injectionEventIds.hasKey(campaignId):
+      reg.injectionEventIds[campaignId] = @[]
+    reg.injectionEventIds[campaignId] =
+      eventIds & reg.injectionEventIds[campaignId]
+  finally:
+    release(reg.lock)
+
+proc peekPendingInjectionEventIds*(reg: CampaignRegistry;
+                                    campaignId: string): seq[string] =
+  ## Test/debug-only read-only inspection of the pending-injection ids
+  ## queue for ``campaignId``.
+  acquire(reg.lock)
+  try:
+    if reg.injectionEventIds.hasKey(campaignId):
+      result = reg.injectionEventIds[campaignId]
+    else:
+      result = @[]
   finally:
     release(reg.lock)
 
@@ -354,6 +426,103 @@ proc dbCampaignStatus(reg: CampaignRegistry; campaignId: string): string =
   if fetched == nil: return ""
   return fetched{"status"}.getStr("")
 
+proc dbCampaignDocPath(reg: CampaignRegistry; campaignId: string): string =
+  ## CMP-M4 — read ``campaigns.doc_path`` so the tick path can re-read
+  ## the campaign doc body from disk every turn (the operator may edit
+  ## the file at any point — re-reading is the cost of live-edit
+  ## friendliness).
+  let fetched = dbFetchCampaign(reg, campaignId, 1)
+  if fetched == nil: return ""
+  return fetched{"doc_path"}.getStr("")
+
+proc dbCampaignAcpSessionId(reg: CampaignRegistry;
+    campaignId: string): string =
+  ## CMP-M4 — read ``campaigns.acp_session_id``.  The inject route uses
+  ## this to verify that a campaign has an active session: even if the
+  ## in-memory ``reg.sessions`` map says yes, the row's
+  ## ``acp_session_id`` is the source of truth for "the campaign was
+  ## ever started" and "this isn't a stopped/escalated campaign".
+  let fetched = dbFetchCampaign(reg, campaignId, 1)
+  if fetched == nil: return ""
+  return fetched{"acp_session_id"}.getStr("")
+
+proc readCampaignDocBody*(reg: CampaignRegistry; campaignId: string): string =
+  ## CMP-M4 — re-read the campaign doc off disk and return its
+  ## ``bodyMarkdown`` (the frontmatter is stripped via
+  ## ``parseCampaignDoc``).  Falls back to the raw bytes if the doc
+  ## fails to parse — the next round still gets the operator's edit
+  ## even if it broke the frontmatter; the orchestrator can flag the
+  ## breakage in its response.
+  ##
+  ## *Perf note.* Each tick re-reads + re-parses the doc.  For a
+  ## kilobyte-sized markdown file this is sub-millisecond; the
+  ## operator-edit-friendly behaviour is worth the cost.  If campaign
+  ## docs ever grow into the MB range we'd want a content-hash short-
+  ## circuit (compare disk SHA against the registry-cached SHA and
+  ## skip the parse if unchanged), but at MD-document scale that's
+  ## premature optimisation.
+  let docPath = dbCampaignDocPath(reg, campaignId)
+  if docPath.len == 0 or not fileExists(docPath):
+    return ""
+  let raw =
+    try: readFile(docPath)
+    except IOError as e:
+      warn "campaign doc re-read failed",
+        campaignId = campaignId, path = docPath, reason = e.msg
+      return ""
+  result = raw
+
+proc readCampaignDocBodyParsed*(reg: CampaignRegistry;
+    campaignId: string): string {.gcsafe.} =
+  ## Variant of :proc:`readCampaignDocBody` that runs the raw bytes
+  ## through ``parseCampaignDoc`` to strip the YAML frontmatter, so the
+  ## tick prompt only carries the human-readable body.  Falls back to
+  ## the raw bytes on parse failure (see the note in
+  ## :proc:`readCampaignDocBody`).
+  {.cast(gcsafe).}:
+    let docPath = dbCampaignDocPath(reg, campaignId)
+    if docPath.len == 0 or not fileExists(docPath):
+      return ""
+    let raw =
+      try: readFile(docPath)
+      except IOError as e:
+        warn "campaign doc re-read failed",
+          campaignId = campaignId, path = docPath, reason = e.msg
+        return ""
+    try:
+      let parsed = parseCampaignDoc(docPath, raw)
+      return parsed.bodyMarkdown
+    except CampaignDocParseError as e:
+      warn "campaign doc parse failed during tick — passing raw bytes",
+        campaignId = campaignId, path = docPath, reason = e.msg
+      return raw
+
+proc dbAcknowledgeEvents(reg: CampaignRegistry;
+    campaignId, uptoEventId: string): int =
+  ## CMP-M4 — call the SECURITY-DEFINER routine
+  ## ``design_review.acknowledge_campaign_events`` and return the number
+  ## of rows it flipped to ``acknowledged = TRUE``.
+  reg.db.asApp()
+  let stmt = "SELECT design_review.acknowledge_campaign_events('" &
+    escSql(campaignId) & "'::uuid, '" & escSql(uptoEventId) &
+    "'::uuid)::text"
+  let raw = reg.db.conn.getValue(sql(stmt))
+  if raw.len == 0: return 0
+  try:
+    return parseInt(raw)
+  except ValueError:
+    return 0
+
+proc dbUpdateDocSha(reg: CampaignRegistry;
+    campaignId, newSha: string): string =
+  ## CMP-M4 — call ``design_review.update_campaign_doc_sha`` (migration
+  ## 008) and return the previous ``doc_sha`` so the route handler can
+  ## decide whether content actually changed.
+  reg.db.asApp()
+  let stmt = "SELECT design_review.update_campaign_doc_sha('" &
+    escSql(campaignId) & "'::uuid, '" & escSql(newSha) & "')::text"
+  return reg.db.conn.getValue(sql(stmt))
+
 proc dbRecentEvents(reg: CampaignRegistry;
     campaignId, since: string; limit: int): JsonNode =
   reg.db.asApp()
@@ -416,11 +585,60 @@ proc assembleFirstPrompt*(orchestratorPrompt: string;
   result.add "Sub-agent dispatch is not yet wired; produce a plan, do not attempt to dispatch.\n"
 
 proc assembleTickPrompt*(round: int): string =
-  ## Continuation prompt for ``campaign tick``.
+  ## Continuation prompt for ``campaign tick`` (legacy / no-injection
+  ## variant kept for tests that exercise the marker parser without
+  ## also exercising the operator-injection plumbing).
   result = "INSTRUCTION:\n"
   result.add "Continue with round " & $round & ". Re-read the campaign doc and the latest agent report,\n"
   result.add "produce an updated plan for what to address next. Output as structured markdown.\n"
   result.add "Sub-agent dispatch is not yet wired; produce a plan, do not attempt to dispatch.\n"
+
+proc assembleTickPromptWithInjections*(campaignId: string; round: int;
+    injections: seq[string]; docBody: string): string =
+  ## CMP-M4 — composite tick prompt that folds two operator-intervention
+  ## surfaces into a single user message:
+  ##
+  ##   1. **Operator injections** (``handleInject``):  zero or more
+  ##      free-form text blocks the user (or AI Assistant) queued via
+  ##      ``POST /api/campaign/inject`` since the previous turn.  Each
+  ##      lands as one block separated by ``---``.  The orchestrator's
+  ##      prompt (see ``prompts/campaign-orchestrator.md`` § L) teaches
+  ##      it to acknowledge and act on these.
+  ##   2. **Current campaign doc** (``handleRefreshDoc`` OR an in-place
+  ##      edit the daemon picks up at tick time):  the entire body of
+  ##      the doc as it exists on disk RIGHT NOW.  This is the
+  ##      authoritative state-of-record — the orchestrator must treat
+  ##      the rest of its working memory as advisory if it disagrees
+  ##      with what the doc says.
+  ##
+  ## The shape is intentionally close to the start-prompt's section
+  ## headers so the orchestrator sees a familiar layout.  We do NOT
+  ## re-embed the briefs on every tick — those don't change inside a
+  ## single campaign and were already loaded at start time; embedding
+  ## them on every continuation would balloon the token budget.
+  result = ""
+  if injections.len > 0:
+    result.add "## OPERATOR INJECTION (received since previous turn)\n\n"
+    for i, text in injections:
+      if i > 0:
+        result.add "\n---\n\n"
+      result.add text
+      if not text.endsWith("\n"):
+        result.add "\n"
+    result.add "\n"
+  result.add "## CAMPAIGN DOCUMENT (current revision)\n\n"
+  if docBody.len > 0:
+    result.add docBody
+    if not docBody.endsWith("\n"):
+      result.add "\n"
+  else:
+    result.add "(campaign document body unavailable on disk)\n"
+  result.add "\n## CONTINUE ROUND\n\n"
+  result.add "You are continuing campaign " & campaignId & " round " &
+    $round & ". The campaign doc above\n"
+  result.add "is the authoritative current state. Apply any operator " &
+    "injections from\n"
+  result.add "this turn before proceeding with the round's planned work.\n"
 
 # ---------------------------------------------------------------------------
 # ORCHESTRATOR_STATUS marker parser.
@@ -656,6 +874,29 @@ type
     status*: OrchestratorStatus   ## parsed marker (present=false on miss)
     eventId*: string              ## the round_complete row's event_id
 
+proc logCampaignPrompt(campaignId, sessionId, promptText: string;
+                       source: string) =
+  ## CMP-M4 test hook — when ``$FAKE_ACP_CONTENT_LOG`` is set, append one
+  ## JSON-summary line per outgoing campaign prompt so tests can assert
+  ## the prompt body actually contains the operator-injection block and
+  ## the current campaign-doc body.  Mirrors the shape the agent_routes
+  ## handler writes.
+  let contentLog = getEnv("FAKE_ACP_CONTENT_LOG")
+  if contentLog.len == 0: return
+  let summary = %* {
+    "campaignId": campaignId,
+    "sessionId":  sessionId,
+    "source":     source,
+    "promptText": promptText,
+    "promptLen":  promptText.len,
+  }
+  try:
+    let f = open(contentLog, fmAppend)
+    defer: f.close()
+    f.write($summary & "\n")
+  except IOError:
+    discard
+
 proc streamPromptToSocket(reg: CampaignRegistry;
     sessionId, campaignId, eventKindOnDone, promptText: string;
     extraPayload: JsonNode;
@@ -678,6 +919,7 @@ proc streamPromptToSocket(reg: CampaignRegistry;
     return result
   var state = stateOpt.get
   let prompt = @[textBlock(promptText)]
+  logCampaignPrompt(campaignId, sessionId, promptText, "stream")
 
   # Streaming buffer.
   type StreamBuf = ref object
@@ -842,6 +1084,7 @@ proc runPromptHeadless(reg: CampaignRegistry;
     return result
   var state = stateOpt.get
   let prompt = @[textBlock(promptText)]
+  logCampaignPrompt(campaignId, sessionId, promptText, "headless")
 
   type StreamBuf = ref object
     lock: Lock
@@ -943,6 +1186,44 @@ proc applyOrchestratorStatusAfterRound*(reg: CampaignRegistry;
     campaignId: string; res: StreamPromptResult):
     Future[void] {.async, gcsafe.}
 
+proc drainCampaignSessionInjections(reg: CampaignRegistry;
+    campaignId, sessionId: string): seq[string] {.gcsafe.} =
+  ## CMP-M4 — drain the per-session ACP injection queue and return the
+  ## texts in FIFO order.  ``@[]`` when the underlying client has none
+  ## or the session has gone away.  Always-safe (the queue is a no-op
+  ## on JS and lock-protected on native; an absent session yields an
+  ## empty list).
+  {.gcsafe.}:
+    let stateOpt = reg.agents.getState(sessionId)
+    if not stateOpt.isSome: return @[]
+    var s = stateOpt.get
+    try:
+      return takeQueuedInjections(s.client, sessionId)
+    except CatchableError as e:
+      warn "drain injections failed",
+        campaignId = campaignId, sessionId = sessionId, reason = e.msg
+      return @[]
+
+proc reinjectCampaignSession(reg: CampaignRegistry;
+    campaignId, sessionId: string; texts: seq[string]) {.gcsafe.} =
+  ## CMP-M4 — restore ``texts`` to the front of the per-session ACP
+  ## queue when the tick prompt-send failed after we drained.  The ACP
+  ## queue exposes append-only ``injectPrompt`` — there is no
+  ## "prepend" method — so we re-queue in order.  In practice this is
+  ## still FIFO because a concurrent ``handleInject`` between drain and
+  ## reinject is exceptional (the daemon holds at most one tick in
+  ## flight per campaign).
+  {.gcsafe.}:
+    let stateOpt = reg.agents.getState(sessionId)
+    if not stateOpt.isSome: return
+    var s = stateOpt.get
+    for text in texts:
+      try:
+        injectPrompt(s.client, sessionId, text)
+      except CatchableError as e:
+        warn "reinject after failed tick prompt-send failed",
+          campaignId = campaignId, sessionId = sessionId, reason = e.msg
+
 proc runAutoTickOnce(reg: CampaignRegistry; campaignId: string;
                      expectedGen: int): Future[void] {.async, gcsafe.} =
   ## Body of one auto-tick: claim the round number, write the
@@ -986,11 +1267,32 @@ proc runAutoTickOnce(reg: CampaignRegistry; campaignId: string;
       campaignId = campaignId, reason = e.msg
     return
 
+  # CMP-M4 — drain operator-injection queue + re-read doc body before
+  # building the auto-tick prompt; same shape as the manual ``tick``
+  # path so injections submitted between rounds get folded into the
+  # very next continuation regardless of whether it was operator- or
+  # auto-driven.
+  let injectionTexts = drainCampaignSessionInjections(reg, campaignId, sessionId)
+  let injectionEventIds = reg.takePendingInjectionEventIds(campaignId)
+  let docBody = readCampaignDocBodyParsed(reg, campaignId)
+
   let extra = %* {"campaignId": campaignId, "round": round,
                   "source": "auto_tick"}
-  let promptText = assembleTickPrompt(round)
+  let promptText = assembleTickPromptWithInjections(
+    campaignId, round, injectionTexts, docBody)
   let res = await runPromptHeadless(reg, sessionId, campaignId,
     "round_complete", promptText, extra)
+
+  if res.isError:
+    reinjectCampaignSession(reg, campaignId, sessionId, injectionTexts)
+    reg.restorePendingInjectionEventIds(campaignId, injectionEventIds)
+  elif injectionEventIds.len > 0:
+    let upto = injectionEventIds[injectionEventIds.high]
+    try:
+      discard dbAcknowledgeEvents(reg, campaignId, upto)
+    except DbError as e:
+      warn "auto-tick: ack injection events failed",
+        campaignId = campaignId, reason = e.msg
 
   # Apply the marker — recursively or terminally.
   await applyOrchestratorStatusAfterRound(reg, campaignId, res)
@@ -1279,13 +1581,56 @@ proc handleTick*(reg: CampaignRegistry; req: Request) {.async, gcsafe.} =
       $(%* {"error": "db_error", "reason": e.msg}))
     return
 
+  # CMP-M4 — drain the operator-intervention surfaces atomically before
+  # assembling the prompt: ACP-queue texts + tracked event-id list.  If
+  # the prompt-send fails we re-queue both so the next tick replays the
+  # injections in their original order.
+  let injectionTexts = drainCampaignSessionInjections(reg, campaignId, sessionId)
+  let injectionEventIds = reg.takePendingInjectionEventIds(campaignId)
+  let docBody = readCampaignDocBodyParsed(reg, campaignId)
+  info "handleTick: drained injections", campaignId = campaignId,
+    textsCount = injectionTexts.len,
+    eventIdsCount = injectionEventIds.len,
+    sessionId = sessionId
+
   let prelude = cmpSseHeader()
   if not await trySend(req.client, prelude):
+    # The HTTP socket died before we could even send the SSE prelude.
+    # Re-queue the drained injections — the next tick is going to want
+    # them, and an interrupted prompt-send must not silently lose user
+    # text.
+    reinjectCampaignSession(reg, campaignId, sessionId, injectionTexts)
+    reg.restorePendingInjectionEventIds(campaignId, injectionEventIds)
     return
-  let promptText = assembleTickPrompt(round)
+  let promptText = assembleTickPromptWithInjections(
+    campaignId, round, injectionTexts, docBody)
   let res = await streamPromptToSocket(reg, sessionId, campaignId,
     "round_complete", promptText, extra, req.client)
   try: req.client.close() except CatchableError: discard
+
+  if res.isError:
+    # Prompt-send failed past the prelude.  Re-queue so the next tick
+    # picks up the same injections — we already published a
+    # ``round_started`` row carrying ``round``, but the orchestrator
+    # never saw the injection block, so treating it as consumed would
+    # silently lose operator intent.
+    reinjectCampaignSession(reg, campaignId, sessionId, injectionTexts)
+    reg.restorePendingInjectionEventIds(campaignId, injectionEventIds)
+  elif injectionEventIds.len > 0:
+    # Successful tick → ack the drained operator-injection events up to
+    # the last one.  ``acknowledge_campaign_events`` flips every
+    # ``acknowledged=FALSE`` row whose ``occurred_at`` is at or before
+    # the anchor event's ``occurred_at``, so passing the last (newest)
+    # id catches every injection in the drained batch.
+    let upto = injectionEventIds[injectionEventIds.high]
+    try:
+      let n = dbAcknowledgeEvents(reg, campaignId, upto)
+      info "campaign tick: ack rows flipped", campaignId = campaignId,
+        uptoEventId = upto, flipped = n
+    except DbError as e:
+      warn "campaign tick: ack injection events failed",
+        campaignId = campaignId, reason = e.msg
+
   await applyOrchestratorStatusAfterRound(reg, campaignId, res)
 
 proc handleStop*(reg: CampaignRegistry; req: Request) {.async, gcsafe.} =
@@ -1405,6 +1750,199 @@ proc handleFetch*(reg: CampaignRegistry; req: Request) {.async, gcsafe.} =
       await respondJson(req, Http500,
         $(%* {"error": "db_error", "reason": msg}))
 
+proc sha256OfStringShellOut(s: string): string =
+  ## Stream ``s`` through ``shasum -a 256`` / ``sha256sum`` and return
+  ## the lowercase-hex digest.  Mirrors the pattern used by
+  ## :proc:`manifest_hash.sha256Hex` so refreshed doc shas have the same
+  ## format as the doc_sha the CLI's ``campaign start`` writes
+  ## (``isonim-review campaign start`` uses ``shasum -a 256`` over the
+  ## file bytes).
+  let exe = findExe("shasum")
+  let cmd =
+    if exe.len > 0: "shasum -a 256"
+    else: "sha256sum"
+  let parts = cmd.split()
+  let p = startProcess(parts[0], args = parts[1 .. ^1],
+                       options = {poUsePath, poStdErrToStdOut})
+  defer: p.close()
+  let stdin = p.inputStream
+  stdin.write(s)
+  stdin.close()
+  let output = p.outputStream.readAll()
+  let code = p.waitForExit()
+  if code != 0:
+    raise newException(IOError,
+      "sha256OfStringShellOut: " & cmd & " failed (" & $code & "): " & output)
+  let words = output.splitWhitespace()
+  if words.len == 0:
+    raise newException(IOError,
+      "sha256OfStringShellOut: " & cmd & " returned empty output")
+  words[0].toLowerAscii()
+
+proc handleInject*(reg: CampaignRegistry; req: Request) {.async, gcsafe.} =
+  ## CMP-M4 — POST /api/campaign/inject {campaignId, text}
+  ##
+  ## Push an operator-injection text onto the per-session ACP queue
+  ## via the AgentClient wrapper, append a ``note`` event tagged
+  ## ``kind=operator_injection`` so the audit log keeps the user's
+  ## intent durable, and register the event id with the in-memory
+  ## per-campaign pending-injection list so the next tick can ack it
+  ## after a successful prompt-send.
+  ##
+  ## 202 Accepted on success with ``{campaignId, status, queuedAt}``.
+  ## 404 ``no_active_session`` when the campaign doesn't have a live
+  ## session bound (stopped/escalated/converged campaigns, or the
+  ## daemon was restarted since the campaign was last active).
+  if req.reqMethod != HttpPost:
+    await respondJson(req, Http405,
+      $(%* {"error": "method_not_allowed"}))
+    return
+  var campaignId = ""
+  var text = ""
+  try:
+    let node = parseJson(req.body)
+    campaignId = node{"campaignId"}.getStr("")
+    text = node{"text"}.getStr("")
+  except JsonParsingError:
+    await respondJson(req, Http400, $(%* {"error": "invalid_json"}))
+    return
+  if campaignId.len == 0:
+    await respondJson(req, Http400, $(%* {"error": "missing_campaignId"}))
+    return
+  if text.strip().len == 0:
+    await respondJson(req, Http400, $(%* {"error": "missing_text"}))
+    return
+
+  let sessionId = reg.lookupSession(campaignId)
+  let dbSession =
+    try: dbCampaignAcpSessionId(reg, campaignId)
+    except DbError: ""
+  if sessionId.len == 0 or dbSession.len == 0:
+    await respondJson(req, Http404,
+      $(%* {"error": "no_active_session", "campaignId": campaignId}))
+    return
+
+  # Push onto the ACP queue.  The ``AgentClient`` injection closure was
+  # wired by ``newAcpClient`` at session creation time (see
+  # ``nim-acp/src/nim_acp/client.nim::newAcpClient``); ``injectPrompt``
+  # is the public surface in ``nim-agents``.
+  let stateOpt = reg.agents.getState(sessionId)
+  if not stateOpt.isSome:
+    await respondJson(req, Http404,
+      $(%* {"error": "no_active_session", "campaignId": campaignId}))
+    return
+  var state = stateOpt.get
+  try:
+    {.gcsafe.}:
+      injectPrompt(state.client, sessionId, text)
+  except CatchableError as e:
+    error "campaign inject: injectPrompt failed",
+      campaignId = campaignId, reason = e.msg
+    await respondJson(req, Http500,
+      $(%* {"error": "inject_failed", "reason": e.msg}))
+    return
+
+  # Record the operator's intent in the event log so the audit trail
+  # captures it before we return.  ``acknowledged`` stays FALSE until
+  # the next round's tick prompt actually drains and folds it in.
+  var eventId = ""
+  let payload = %* {"kind": "operator_injection", "text": text}
+  try:
+    eventId = dbRecordEvent(reg, campaignId, "note", payload)
+  except DbError as e:
+    error "campaign inject: note event insert failed",
+      campaignId = campaignId, reason = e.msg
+    await respondJson(req, Http500,
+      $(%* {"error": "db_error", "reason": e.msg}))
+    return
+  reg.appendInjectionEventId(campaignId, eventId)
+  info "handleInject: queued",
+    campaignId = campaignId, eventId = eventId,
+    sessionId = sessionId
+
+  let queuedAt = $now()
+  let respBody = %* {"campaignId": campaignId, "status": "queued",
+                     "queuedAt": queuedAt, "eventId": eventId}
+  await respondJson(req, Http202, $respBody)
+
+proc handleRefreshDoc*(reg: CampaignRegistry; req: Request)
+    {.async, gcsafe.} =
+  ## CMP-M4 — POST /api/campaign/refresh-doc {campaignId}
+  ##
+  ## Re-read the campaign doc from disk (path from ``campaigns.doc_path``),
+  ## hash the new bytes, call ``update_campaign_doc_sha`` to update the
+  ## row, and append a ``note`` event tagged ``kind=doc_refreshed``.
+  ## Returns ``{campaignId, oldSha, newSha, contentChanged}``.
+  ##
+  ## The doc body itself flows into the next tick's prompt via
+  ## :proc:`readCampaignDocBodyParsed`, not this route — this route is
+  ## the bookkeeping side (so the audit log records the SHA bump and
+  ## the orchestrator's tick prompt knows when the operator edited the
+  ## file).
+  if req.reqMethod != HttpPost:
+    await respondJson(req, Http405,
+      $(%* {"error": "method_not_allowed"}))
+    return
+  var campaignId = ""
+  try:
+    let node = parseJson(req.body)
+    campaignId = node{"campaignId"}.getStr("")
+  except JsonParsingError:
+    await respondJson(req, Http400, $(%* {"error": "invalid_json"}))
+    return
+  if campaignId.len == 0:
+    await respondJson(req, Http400, $(%* {"error": "missing_campaignId"}))
+    return
+
+  let docPath = dbCampaignDocPath(reg, campaignId)
+  if docPath.len == 0:
+    await respondJson(req, Http404,
+      $(%* {"error": "campaign_not_found", "campaignId": campaignId}))
+    return
+  if not fileExists(docPath):
+    await respondJson(req, Http400,
+      $(%* {"error": "doc_missing_on_disk",
+            "campaignId": campaignId, "docPath": docPath}))
+    return
+
+  let raw =
+    try: readFile(docPath)
+    except IOError as e:
+      await respondJson(req, Http500,
+        $(%* {"error": "doc_read_failed", "reason": e.msg}))
+      return
+  var newSha = ""
+  try:
+    newSha = sha256OfStringShellOut(raw)
+  except IOError as e:
+    await respondJson(req, Http500,
+      $(%* {"error": "sha256_failed", "reason": e.msg}))
+    return
+
+  var oldSha = ""
+  try:
+    oldSha = dbUpdateDocSha(reg, campaignId, newSha)
+  except DbError as e:
+    error "campaign refresh-doc: update_campaign_doc_sha failed",
+      campaignId = campaignId, reason = e.msg
+    await respondJson(req, Http500,
+      $(%* {"error": "db_error", "reason": e.msg}))
+    return
+  let changed = (oldSha != newSha)
+
+  let evtPayload = %* {"kind": "doc_refreshed",
+                       "oldSha": oldSha, "newSha": newSha,
+                       "contentChanged": changed}
+  try:
+    discard dbRecordEvent(reg, campaignId, "note", evtPayload)
+  except DbError as e:
+    warn "campaign refresh-doc: note event insert failed (non-fatal)",
+      campaignId = campaignId, reason = e.msg
+
+  let respBody = %* {"campaignId": campaignId, "oldSha": oldSha,
+                     "newSha": newSha, "contentChanged": changed}
+  await respondJson(req, Http200, $respBody)
+
 proc handleEvents*(reg: CampaignRegistry; req: Request) {.async, gcsafe.} =
   if req.reqMethod != HttpGet:
     await respondJson(req, Http405,
@@ -1467,3 +2005,11 @@ proc makeFetchHandler*(reg: CampaignRegistry): CampaignHandlerProc =
 proc makeEventsHandler*(reg: CampaignRegistry): CampaignHandlerProc =
   result = proc(req: Request): Future[void] {.async, gcsafe.} =
     await handleEvents(reg, req)
+
+proc makeInjectHandler*(reg: CampaignRegistry): CampaignHandlerProc =
+  result = proc(req: Request): Future[void] {.async, gcsafe.} =
+    await handleInject(reg, req)
+
+proc makeRefreshDocHandler*(reg: CampaignRegistry): CampaignHandlerProc =
+  result = proc(req: Request): Future[void] {.async, gcsafe.} =
+    await handleRefreshDoc(reg, req)

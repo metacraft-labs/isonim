@@ -161,6 +161,15 @@ proc main() =
   let streamDelayMs =
     try: max(0, parseInt(getEnv("FAKE_ACP_STREAM_DELAY_MS", "0")))
     except ValueError: 0
+  # CMP-M4 test hook — force ``stopReason="error"`` on the Nth (1-indexed)
+  # session/prompt so the daemon's atomic-drain rollback path can be
+  # exercised deterministically.  Value of 0 (the default) disables the
+  # knob entirely.  When the trigger fires the agent stays alive so the
+  # caller can issue a subsequent prompt and observe the restored queue.
+  let stopReasonErrorAt =
+    try: max(0, parseInt(getEnv("FAKE_ACP_STOP_REASON_ERROR_AT", "0")))
+    except ValueError: 0
+  var promptCounter = 0
 
   # Spawn the stdin reader so ``session/cancel`` is observable even
   # while the main thread is mid-prompt emitting streamed chunks.
@@ -205,6 +214,37 @@ proc main() =
     of "session/prompt":
       let params = node{"params"}
       let sid = params{"sessionId"}.getStr(nextSessionId)
+      inc promptCounter
+      # CMP-M4 test hook — when ``$FAKE_ACP_CONTENT_LOG`` is set, append
+      # one JSON-summary line per inbound prompt so tests can assert the
+      # exact text the daemon sent (in particular: that operator
+      # injections + the current campaign-doc body landed in the tick
+      # prompt's content blocks).  Format matches the campaign_routes
+      # daemon-side hook so consumers can dedupe on ``sessionId`` +
+      # ``promptText``.
+      let contentLog = getEnv("FAKE_ACP_CONTENT_LOG")
+      if contentLog.len > 0:
+        var concatText = ""
+        var textBlocks = 0
+        let promptArr = params{"prompt"}
+        if promptArr != nil and promptArr.kind == JArray:
+          for b in promptArr.items:
+            if b{"type"}.getStr("") == "text":
+              concatText.add b{"text"}.getStr("")
+              inc textBlocks
+        let summary = %* {
+          "source":     "fake_acp",
+          "sessionId":  sid,
+          "textBlocks": textBlocks,
+          "promptText": concatText,
+          "promptLen":  concatText.len,
+        }
+        try:
+          let f = open(contentLog, fmAppend)
+          defer: f.close()
+          f.write($summary & "\n")
+        except IOError:
+          discard
       # Drain any stale cancel state from the previous turn so we
       # don't short-circuit this prompt with leftover state.
       discard consumeCancel()
@@ -214,7 +254,16 @@ proc main() =
           sleep(20)
           if inbox.cancelRequested.load():
             break
-      if consumeCancel():
+      if stopReasonErrorAt > 0 and promptCounter == stopReasonErrorAt:
+        # Force the error path: the daemon's ``streamPromptToSocket``
+        # observes ``stopReason="error"`` and falls into the rollback
+        # branch (reinject ACP queue + restore pending event ids).  We
+        # do NOT emit any session/update frames first because that would
+        # change the stream-buffer shape the daemon writes to the SSE
+        # socket; the goal here is the error-after-prelude case.
+        emitResponse(idNode, %*{"sessionId": sid,
+                                "stopReason": "error"})
+      elif consumeCancel():
         emitResponse(idNode, %*{"sessionId": sid,
                                 "stopReason": "cancelled"})
       else:

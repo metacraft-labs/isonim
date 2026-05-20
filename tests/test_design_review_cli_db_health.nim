@@ -45,9 +45,10 @@ suite "REV-M4 isonim-review db-health":
     check rep.schemaVersionCurrent
     # REV-M8 added migration 004 (``fetch_layout``); CMP-M2 added
     # migrations 005 + 006 (campaigns + campaign routines); CMP-M2.1
-    # added migration 007 (``next_campaign_round``); db-health now
-    # reports schema version 7 after a fresh ``init``.
-    check rep.schemaVersion == 7
+    # added migration 007 (``next_campaign_round``); CMP-M4 added
+    # migration 008 (``update_campaign_doc_sha``); db-health now
+    # reports schema version 8 after a fresh ``init``.
+    check rep.schemaVersion == 8
     check rep.pendingMigrations.len == 0
 
     # JSON projection contains the documented keys.
@@ -56,7 +57,7 @@ suite "REV-M4 isonim-review db-health":
     check j["app_role_reachable"].getBool
     check j["migrator_role_reachable"].getBool
     check j["schema_version_current"].getBool
-    check j["schema_version"].getInt == 7
+    check j["schema_version"].getInt == 8
 
   test "test_cli_db_health_distinguishes_app_vs_migrator":
     ## Revoke the routine the app-role probe calls; db-health must
@@ -120,12 +121,15 @@ suite "REV-M4 isonim-review db-health":
     copyFile(
       MigDir / "007_design_review_campaign_round_counter.sql",
       scratch / "007_design_review_campaign_round_counter.sql")
-    # Inject an unapplied version-8 migration so the scratch dir
+    copyFile(
+      MigDir / "008_design_review_campaign_doc_refresh.sql",
+      scratch / "008_design_review_campaign_doc_refresh.sql")
+    # Inject an unapplied version-9 migration so the scratch dir
     # drifts ahead of the cluster's installed state by exactly one
     # version.  CMP-M2 bumped the baseline from 4 → 6; CMP-M2.1
-    # bumped it again to 7.
+    # bumped it again to 7; CMP-M4 bumped to 8.
     writeFile(
-      scratch / "008_dummy.sql",
+      scratch / "009_dummy.sql",
       "-- placeholder migration not yet applied\n" &
         "SELECT 1;\n")
     defer: removeDir(scratch)
@@ -133,9 +137,9 @@ suite "REV-M4 isonim-review db-health":
     let rep = collectHealth(cfg, scratch)
     check rep.postgresReachable
     check not rep.schemaVersionCurrent
-    check 8 in rep.pendingMigrations
-    # Schema version is still the highest applied (7), not 8.
-    check rep.schemaVersion == 7
+    check 9 in rep.pendingMigrations
+    # Schema version is still the highest applied (8), not 9.
+    check rep.schemaVersion == 8
 
   test "test_cli_db_health_detects_postgres_down":
     ## Aim at a port that nothing's listening on.  db-health must

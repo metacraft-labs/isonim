@@ -30,6 +30,7 @@ type
     port*: int
     baseUrl*: string
     promptDir*: string
+    contentLog*: string
 
 proc pickFreePort*(): int =
   let s = newSocket()
@@ -81,6 +82,12 @@ proc startCampaignDaemon*(extraEnv: openArray[(string, string)] = @[]):
   env["ISONIM_REVIEW_PGPORT"] = $pg.port
   env["ISONIM_REVIEW_PGHOST"] = "127.0.0.1"
   env["ISONIM_REVIEW_WORKSPACE"] = promptRoot
+  # CMP-M4 — per-fixture content-log file so prompt-inspection tests
+  # (``test_tick_prompt_includes_operator_injections`` etc.) can assert
+  # the exact body the daemon shipped to the agent.
+  let contentLog = getTempDir() / "cmp_m4_content_" &
+                   $((int(epochTime() * 1000)) mod 1_000_000) & ".log"
+  env["FAKE_ACP_CONTENT_LOG"] = contentLog
   for kv in extraEnv:
     env[kv[0]] = kv[1]
 
@@ -123,7 +130,7 @@ proc startCampaignDaemon*(extraEnv: openArray[(string, string)] = @[]):
     raise newException(IOError,
       "campaign_routes_fixture: daemon failed to bind on " & baseUrl)
   CampaignFixture(daemon: daemon, pg: pg, port: port, baseUrl: baseUrl,
-                  promptDir: promptRoot)
+                  promptDir: promptRoot, contentLog: contentLog)
 
 proc shutdown*(f: CampaignFixture) =
   if f == nil: return
@@ -144,6 +151,7 @@ proc shutdown*(f: CampaignFixture) =
     f.pg.shutdown()
     f.pg = nil
   try: removeDir(f.promptDir) except OSError: discard
+  try: removeFile(f.contentLog) except OSError: discard
 
 proc campaignPost*(f: CampaignFixture; path, body: string;
                    timeoutMs = 30_000):
@@ -236,3 +244,54 @@ proc eventsForCampaign*(f: CampaignFixture; campaignId: string):
       WHERE campaign_id = ?::uuid
       ORDER BY occurred_at ASC""", campaignId):
     result.add (kind: row[0], payload: row[1])
+
+proc eventsForCampaignWithIds*(f: CampaignFixture; campaignId: string):
+    seq[tuple[eventId, kind, payload: string; acknowledged: bool]] =
+  ## CMP-M4 — extended introspection that also returns event ids +
+  ## the ``acknowledged`` flag so tests can verify the inject ack flow.
+  let db = connectMigrator(f)
+  defer: db.close()
+  for row in db.fastRows(sql"""
+      SELECT event_id::text, event_kind, payload::text, acknowledged::text
+      FROM design_review.campaign_events
+      WHERE campaign_id = ?::uuid
+      ORDER BY occurred_at ASC""", campaignId):
+    # Postgres ``bool::text`` returns ``'true'``/``'false'`` (full
+    # spelling), not ``'t'``/``'f'`` — accept either to stay robust
+    # against future libpq formatting changes.
+    let ackedStr = row[3]
+    let acked = ackedStr == "t" or ackedStr == "true" or
+                ackedStr == "TRUE" or ackedStr == "T"
+    result.add (eventId: row[0], kind: row[1], payload: row[2],
+                acknowledged: acked)
+
+import std/json as fixtureJson
+
+proc readContentLogEntries*(f: CampaignFixture): seq[JsonNode] =
+  ## CMP-M4 — read all JSON-summary lines from the fixture's content
+  ## log.  Each line is one inbound ``session/prompt`` the fake-ACP
+  ## received.  Returns an empty seq if the log file is missing.
+  if f.contentLog.len == 0 or not fileExists(f.contentLog):
+    return @[]
+  let raw = readFile(f.contentLog)
+  for line in raw.splitLines():
+    let s = line.strip()
+    if s.len == 0: continue
+    try:
+      result.add fixtureJson.parseJson(s)
+    except fixtureJson.JsonParsingError:
+      discard
+
+proc latestPromptTextFromLog*(f: CampaignFixture;
+                              sessionId: string = ""): string =
+  ## Convenience: return the ``promptText`` field of the LAST inbound
+  ## prompt the fake-ACP recorded (optionally filtered by sessionId).
+  ## Empty string when no matching entry exists.
+  let entries = readContentLogEntries(f)
+  for i in countdown(entries.high, 0):
+    let e = entries[i]
+    if e == nil: continue
+    if sessionId.len > 0 and e{"sessionId"}.getStr("") != sessionId:
+      continue
+    return e{"promptText"}.getStr("")
+  return ""

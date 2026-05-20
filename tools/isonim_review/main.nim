@@ -169,6 +169,27 @@ Usage:
       Cancel the campaign's bound ACP session, transition it to
       ``stopped``, and emit a stopped event.
 
+  isonim-review campaign inject <campaign_id> [<prompt>...]
+                                 [--message-file <path>] [--stdin]
+                                 [--daemon <url>] [--config <path>]
+      (CMP-M4) Push an operator-injection message into a running
+      campaign.  Provide exactly one source for the text: positional
+      args (joined with spaces), ``--message-file <path>``, or
+      ``--stdin``.  The daemon queues the text on the campaign's ACP
+      session; the next tick prompt prepends an ``OPERATOR INJECTION``
+      block.  Exits 0 on success and prints ``injection queued
+      (event_id=<id>)`` on stderr.
+
+  isonim-review campaign edit-doc <campaign_id> [--editor <cmd>]
+                                   [--no-edit]
+                                   [--daemon <url>] [--config <path>]
+      (CMP-M4) Open the campaign doc in ``$EDITOR`` (or ``--editor
+      <cmd>``) interactively, then POST ``/api/campaign/refresh-doc``
+      so the daemon picks up the new SHA.  ``--no-edit`` skips the
+      editor invocation — useful when an external process has already
+      edited the file and you just want the daemon to refresh its
+      view.
+
   isonim-review chat [--session <id>] [--no-stream] [--interactive]
                       [--daemon <url>] [--agent-backend claude|codex|custom]
                       [<prompt>]
@@ -486,7 +507,7 @@ proc dispatchCampaign(rest: seq[string]): int =
   ## owns its own option parsing here so the dispatch stays flat.
   if rest.len == 0:
     stderr.write("isonim-review campaign: missing sub-subcommand " &
-      "(start / list / show / tail / tick / stop)\n")
+      "(start / list / show / tail / tick / stop / inject / edit-doc)\n")
     return 2
   let sub = rest[0]
   let tail = if rest.len > 1: rest[1 .. ^1] else: @[]
@@ -566,6 +587,50 @@ proc dispatchCampaign(rest: seq[string]): int =
     if idFlag.len > 0: opts.campaignId = idFlag
     opts.reason = parseSubArgs(tail, "reason")
     return cmdCampaignStop(cfg, opts)
+  of "inject":
+    # CMP-M4 — positional <campaign_id> followed by an optional
+    # positional prompt (joined with spaces).  Flags: --message-file,
+    # --stdin, --daemon, --config.
+    var opts = CampaignInjectOptions(daemonUrl: daemonUrl)
+    var positionals: seq[string] = @[]
+    var i = 0
+    while i < tail.len:
+      let a = tail[i]
+      if a.startsWith("--"):
+        if a == "--stdin":
+          opts.fromStdin = true
+          inc i
+          continue
+        # ``--key value`` skip the value too unless the key uses ``=``.
+        if not a.contains('='):
+          if a in ["--no-tail", "--follow", "--stdin"]:
+            inc i
+            continue
+          if i + 1 < tail.len and not tail[i + 1].startsWith("--"):
+            inc i, 2
+            continue
+        inc i
+        continue
+      positionals.add a
+      inc i
+    if positionals.len > 0:
+      opts.campaignId = positionals[0]
+      if positionals.len > 1:
+        opts.text = positionals[1 .. ^1].join(" ")
+    let idFlag = parseSubArgs(tail, "id")
+    if idFlag.len > 0: opts.campaignId = idFlag
+    opts.messageFile = parseSubArgs(tail, "message-file")
+    return cmdCampaignInject(cfg, opts)
+  of "edit-doc":
+    var opts = CampaignEditDocOptions(daemonUrl: daemonUrl)
+    for a in tail:
+      if not a.startsWith("--") and opts.campaignId.len == 0:
+        opts.campaignId = a
+    let idFlag = parseSubArgs(tail, "id")
+    if idFlag.len > 0: opts.campaignId = idFlag
+    opts.editor = parseSubArgs(tail, "editor")
+    opts.noEdit = hasFlag(tail, "no-edit")
+    return cmdCampaignEditDoc(cfg, opts)
   else:
     stderr.writeLine "isonim-review campaign: unknown sub-subcommand: " & sub
     return 2

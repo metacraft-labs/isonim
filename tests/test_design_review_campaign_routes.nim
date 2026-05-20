@@ -582,6 +582,374 @@ test "test_consecutive_error_count_resets_on_non_error":
   check reg.recordErrorRound(cid, false) == 0
   check reg.recordErrorRound(cid, true) == 1
 
+# ---------------------------------------------------------------------------
+# CMP-M4 — operator-intervention surfaces: /api/campaign/inject and
+# /api/campaign/refresh-doc plus the tick-prompt drain + ack behaviour.
+# ---------------------------------------------------------------------------
+
+proc writeDocFixture(docPath, body: string) =
+  ## Write a campaign-doc body to ``docPath`` (creating intermediate
+  ## directories).  Used by the refresh-doc / tick-prompt tests so we
+  ## can mutate the on-disk content between rounds and verify the
+  ## daemon picks up the change.
+  createDir(docPath.parentDir)
+  writeFile(docPath, body)
+
+proc waitForContentLogEntry(f: CampaignFixture; sessionId, needle: string;
+                             timeoutSec: float = 6.0): bool =
+  ## Poll the fixture's content log until an entry whose ``promptText``
+  ## contains ``needle`` lands for ``sessionId``.  The fake-ACP appends
+  ## the entries synchronously inside its prompt handler before
+  ## emitting any ``session/update`` frames; the only race here is the
+  ## file-system flush between the agent's stdin reader thread and the
+  ## test's stat()/read().
+  let deadline = epochTime() + timeoutSec
+  while epochTime() < deadline:
+    let entries = readContentLogEntries(f)
+    for e in entries:
+      if e == nil: continue
+      if e{"sessionId"}.getStr("") != sessionId: continue
+      if needle in e{"promptText"}.getStr(""):
+        return true
+    sleep(80)
+  false
+
+test "test_inject_route_queues_injection_and_records_note_event":
+  ## Start a campaign + POST /api/campaign/inject with a free-form
+  ## text.  Verify the AcpClient's per-session queue now has 1 entry
+  ## (via peekQueuedInjections) and a ``note`` event with
+  ## kind=operator_injection landed on the audit trail.
+  let f = startCampaignDaemon(@[("FAKE_ACP_STREAM_CHUNKS", "1")])
+  defer: f.shutdown()
+  let docPath = "/tmp/cmp-m4-fixture/campaigns/inject-queue.md"
+  writeDocFixture(docPath, FixtureCampaignDoc)
+  let body = startBody(docPath, "sha-inject-queue-1", FixtureBriefBody)
+  let (s, _) = rawPostStream(f.baseUrl, "/api/campaign/start", body)
+  check s == 200
+  let rows = fetchCampaignByDoc(f, docPath)
+  let campaignId = rows[0][0]
+  let beforeInject = countEvents(f, campaignId, "note")
+
+  let injectBody = $(%* {"campaignId": campaignId,
+                         "text": "fix the android stretching first"})
+  let (iCode, iResp) = campaignPost(f, "/api/campaign/inject", injectBody)
+  check iCode == 202
+  let iJson = parseJson(iResp)
+  check iJson{"status"}.getStr("") == "queued"
+  check iJson{"campaignId"}.getStr("") == campaignId
+  check iJson{"eventId"}.getStr("").len > 0
+
+  # A ``note`` event tagged kind=operator_injection landed.
+  let evts = eventsForCampaignWithIds(f, campaignId)
+  var sawInjectNote = false
+  for e in evts:
+    if e.kind == "note":
+      let p = parseJson(e.payload)
+      if p{"kind"}.getStr("") == "operator_injection":
+        sawInjectNote = true
+        check p{"text"}.getStr("") == "fix the android stretching first"
+        # acknowledged stays false until the next tick drains it.
+        check not e.acknowledged
+  check sawInjectNote
+  check countEvents(f, campaignId, "note") == beforeInject + 1
+
+test "test_inject_route_404_on_no_active_session":
+  ## Campaign transitioned to ``stopped`` no longer has an entry in
+  ## the in-memory ``CampaignRegistry.sessions`` map → POST /inject
+  ## must return 404 with ``no_active_session``.
+  let f = startCampaignDaemon()
+  defer: f.shutdown()
+  let docPath = "/tmp/cmp-m4-fixture/campaigns/inject-stopped.md"
+  writeDocFixture(docPath, FixtureCampaignDoc)
+  let body = startBody(docPath, "sha-inject-stopped", FixtureBriefBody)
+  let (s, _) = rawPostStream(f.baseUrl, "/api/campaign/start", body)
+  check s == 200
+  let rows = fetchCampaignByDoc(f, docPath)
+  let campaignId = rows[0][0]
+  # Drive the campaign to terminal state.
+  let (stopCode, _) = campaignPost(f, "/api/campaign/stop",
+    $(%* {"campaignId": campaignId, "reason": "cmp-m4 test"}))
+  check stopCode == 200
+
+  let injectBody = $(%* {"campaignId": campaignId,
+                         "text": "this should be rejected"})
+  let (iCode, iResp) = campaignPost(f, "/api/campaign/inject", injectBody)
+  check iCode == 404
+  let iJson = parseJson(iResp)
+  check iJson{"error"}.getStr("") == "no_active_session"
+
+test "test_refresh_doc_route_updates_sha_and_records_event":
+  ## Mutate the campaign doc on disk, then POST /refresh-doc.  Verify
+  ## ``campaigns.doc_sha`` flipped to the new SHA and a ``note`` event
+  ## with kind=doc_refreshed landed.
+  let f = startCampaignDaemon(@[("FAKE_ACP_STREAM_CHUNKS", "1")])
+  defer: f.shutdown()
+  let docPath = "/tmp/cmp-m4-fixture/campaigns/refresh-doc.md"
+  writeDocFixture(docPath, FixtureCampaignDoc)
+  let body = startBody(docPath, "sha-refresh-doc-1", FixtureBriefBody)
+  let (s, _) = rawPostStream(f.baseUrl, "/api/campaign/start", body)
+  check s == 200
+  let rows = fetchCampaignByDoc(f, docPath)
+  let campaignId = rows[0][0]
+  let originalSha = rows[0][6]
+
+  # Mutate the doc on disk so refresh observes a change.
+  let mutated = FixtureCampaignDoc & "\n## Operator amendment\n\n" &
+    "- The user added a new line at " & $epochTime() & ".\n"
+  writeFile(docPath, mutated)
+
+  let refreshBody = $(%* {"campaignId": campaignId})
+  let (rCode, rResp) = campaignPost(f, "/api/campaign/refresh-doc",
+                                    refreshBody)
+  check rCode == 200
+  let rJson = parseJson(rResp)
+  check rJson{"campaignId"}.getStr("") == campaignId
+  check rJson{"contentChanged"}.getBool(false)
+  let oldSha = rJson{"oldSha"}.getStr("")
+  let newSha = rJson{"newSha"}.getStr("")
+  check oldSha == originalSha
+  check newSha != originalSha
+  check newSha.len == 64   # sha256 hex
+
+  # ``campaigns.doc_sha`` was actually updated.
+  let after = fetchCampaignByDoc(f, docPath)
+  check after.len == 1
+  check after[0][6] == newSha
+
+  # The ``note`` event landed with kind=doc_refreshed.
+  let evts = eventsForCampaign(f, campaignId)
+  var sawRefresh = false
+  for e in evts:
+    if e.kind == "note":
+      let p = parseJson(e.payload)
+      if p{"kind"}.getStr("") == "doc_refreshed":
+        sawRefresh = true
+        check p{"oldSha"}.getStr("") == oldSha
+        check p{"newSha"}.getStr("") == newSha
+        check p{"contentChanged"}.getBool(false)
+  check sawRefresh
+
+test "test_tick_prompt_includes_operator_injections":
+  ## Inject two messages, then drive an explicit tick.  Intercept the
+  ## prompt body the daemon shipped to the agent via the fake-ACP
+  ## ``$FAKE_ACP_CONTENT_LOG`` hook and assert both injections appear
+  ## in the ``## OPERATOR INJECTION`` section.
+  let f = startCampaignDaemon(@[
+    ("FAKE_ACP_STREAM_CHUNKS", "1"),
+    ("ISONIM_CAMPAIGN_AUTOTICK_DISABLED", "1"),
+  ])
+  defer: f.shutdown()
+  let docPath = "/tmp/cmp-m4-fixture/campaigns/tick-injections.md"
+  writeDocFixture(docPath, FixtureCampaignDoc)
+  let body = startBody(docPath, "sha-tick-injections", FixtureBriefBody)
+  let (s, _) = rawPostStream(f.baseUrl, "/api/campaign/start", body)
+  check s == 200
+  let rows = fetchCampaignByDoc(f, docPath)
+  let campaignId = rows[0][0]
+  let sessionId = block:
+    let fetched = parseJson(campaignGet(f,
+      "/api/campaign/fetch?campaignId=" & campaignId & "&eventLimit=1").body)
+    fetched{"acp_session_id"}.getStr("")
+  check sessionId.len > 0
+
+  for text in @["redirect 1: focus android", "redirect 2: defer web nits"]:
+    let (iCode, _) = campaignPost(f, "/api/campaign/inject",
+      $(%* {"campaignId": campaignId, "text": text}))
+    check iCode == 202
+
+  let (tCode, _) = rawPostStream(f.baseUrl, "/api/campaign/tick",
+    $(%* {"campaignId": campaignId}))
+  check tCode == 200
+
+  # The tick prompt the daemon shipped contains BOTH injections in
+  # FIFO order, separated by ``---``, under the OPERATOR INJECTION
+  # header.
+  check waitForContentLogEntry(f, sessionId, "## OPERATOR INJECTION")
+  let prompt = latestPromptTextFromLog(f, sessionId)
+  check "## OPERATOR INJECTION (received since previous turn)" in prompt
+  check "redirect 1: focus android" in prompt
+  check "redirect 2: defer web nits" in prompt
+  check "---" in prompt
+  # The "redirect 1" block must precede the "redirect 2" block.
+  check prompt.find("redirect 1: focus android") <
+        prompt.find("redirect 2: defer web nits")
+
+test "test_tick_prompt_includes_current_campaign_doc":
+  ## Modify the campaign doc on disk between start and tick (without
+  ## calling refresh-doc — the tick path re-reads the file every
+  ## time).  Assert the new body lands in the tick prompt's
+  ## ``## CAMPAIGN DOCUMENT`` section.
+  let f = startCampaignDaemon(@[
+    ("FAKE_ACP_STREAM_CHUNKS", "1"),
+    ("ISONIM_CAMPAIGN_AUTOTICK_DISABLED", "1"),
+  ])
+  defer: f.shutdown()
+  let docPath = "/tmp/cmp-m4-fixture/campaigns/tick-doc.md"
+  writeDocFixture(docPath, FixtureCampaignDoc)
+  let body = startBody(docPath, "sha-tick-doc", FixtureBriefBody)
+  let (s, _) = rawPostStream(f.baseUrl, "/api/campaign/start", body)
+  check s == 200
+  let rows = fetchCampaignByDoc(f, docPath)
+  let campaignId = rows[0][0]
+  let sessionId = block:
+    let fetched = parseJson(campaignGet(f,
+      "/api/campaign/fetch?campaignId=" & campaignId & "&eventLimit=1").body)
+    fetched{"acp_session_id"}.getStr("")
+
+  # Mutate the doc on disk — append a distinct paragraph the tick
+  # prompt must echo back.
+  let marker = "OPERATOR_NEW_SECTION_" & $((int(epochTime() * 1000)) mod 1_000_000)
+  let mutated = FixtureCampaignDoc & "\n## " & marker & "\n\n" &
+    "Body of the new section.\n"
+  writeFile(docPath, mutated)
+
+  let (tCode, _) = rawPostStream(f.baseUrl, "/api/campaign/tick",
+    $(%* {"campaignId": campaignId}))
+  check tCode == 200
+  check waitForContentLogEntry(f, sessionId, marker)
+  let prompt = latestPromptTextFromLog(f, sessionId)
+  check "## CAMPAIGN DOCUMENT (current revision)" in prompt
+  check marker in prompt
+
+test "test_tick_acknowledges_drained_injections":
+  ## Inject, tick, then assert the corresponding ``note`` event has
+  ## ``acknowledged = TRUE`` and the per-campaign pending list is
+  ## empty.
+  let f = startCampaignDaemon(@[
+    ("FAKE_ACP_STREAM_CHUNKS", "1"),
+    ("ISONIM_CAMPAIGN_AUTOTICK_DISABLED", "1"),
+  ])
+  defer: f.shutdown()
+  let docPath = "/tmp/cmp-m4-fixture/campaigns/tick-ack.md"
+  writeDocFixture(docPath, FixtureCampaignDoc)
+  let body = startBody(docPath, "sha-tick-ack", FixtureBriefBody)
+  let (s, _) = rawPostStream(f.baseUrl, "/api/campaign/start", body)
+  check s == 200
+  let rows = fetchCampaignByDoc(f, docPath)
+  let campaignId = rows[0][0]
+
+  let (iCode, iResp) = campaignPost(f, "/api/campaign/inject",
+    $(%* {"campaignId": campaignId, "text": "acknowledge me"}))
+  check iCode == 202
+  let injectedEventId = parseJson(iResp){"eventId"}.getStr("")
+  check injectedEventId.len > 0
+
+  let (tCode, _) = rawPostStream(f.baseUrl, "/api/campaign/tick",
+    $(%* {"campaignId": campaignId}))
+  check tCode == 200
+
+  # The pending list must be empty post-tick: ``acknowledge_campaign_events``
+  # flipped the row, and the in-memory list was drained by handleTick.
+  # The ack call lives AFTER the SSE socket close, so we poll briefly
+  # to absorb the small async gap between ``rawPostStream`` returning
+  # and the daemon's post-stream coroutine running the ack.
+  proc waitAcked(): bool =
+    let deadline = epochTime() + 5.0
+    while epochTime() < deadline:
+      for e in eventsForCampaignWithIds(f, campaignId):
+        if e.eventId == injectedEventId and e.acknowledged:
+          return true
+      sleep(80)
+    false
+  check waitAcked()
+
+test "test_tick_failure_restores_drained_injections":
+  ## CMP-M4 — when the tick prompt-send fails past the prelude
+  ## (fake-ACP returns ``stopReason="error"`` for the second prompt),
+  ## the daemon must:
+  ##   1. NOT acknowledge the operator-injection events that were
+  ##      drained in this tick — they stay ``acknowledged=false``.
+  ##   2. Restore the per-session ACP queue + the pending event-id list
+  ##      so the next tick replays the same injections in the same
+  ##      order.
+  ##
+  ## We exercise both surfaces:
+  ##   * ``FAKE_ACP_STOP_REASON_ERROR_AT=2`` — the second inbound
+  ##     ``session/prompt`` returns ``stopReason="error"``.  The first
+  ##     is the start prompt (succeeds, ``end_turn``).  The second is
+  ##     the failing tick.  The third is the recovery tick.
+  ##   * After the failing tick, the recovery tick's prompt body MUST
+  ##     contain both injections in their original order.
+  let f = startCampaignDaemon(@[
+    ("FAKE_ACP_STREAM_CHUNKS", "1"),
+    ("ISONIM_CAMPAIGN_AUTOTICK_DISABLED", "1"),
+    ("FAKE_ACP_STOP_REASON_ERROR_AT", "2"),
+  ])
+  defer: f.shutdown()
+  let docPath = "/tmp/cmp-m4-fixture/campaigns/tick-failure-restore.md"
+  writeDocFixture(docPath, FixtureCampaignDoc)
+  let body = startBody(docPath, "sha-tick-failure-restore", FixtureBriefBody)
+  let (s, _) = rawPostStream(f.baseUrl, "/api/campaign/start", body)
+  check s == 200
+  let rows = fetchCampaignByDoc(f, docPath)
+  let campaignId = rows[0][0]
+  let sessionId = block:
+    let fetched = parseJson(campaignGet(f,
+      "/api/campaign/fetch?campaignId=" & campaignId & "&eventLimit=1").body)
+    fetched{"acp_session_id"}.getStr("")
+  check sessionId.len > 0
+
+  let injectTexts = @[
+    "restore-test 1: prioritise blocker A",
+    "restore-test 2: also defer nit B",
+  ]
+  var injectedIds: seq[string] = @[]
+  for text in injectTexts:
+    let (iCode, iResp) = campaignPost(f, "/api/campaign/inject",
+      $(%* {"campaignId": campaignId, "text": text}))
+    check iCode == 202
+    injectedIds.add parseJson(iResp){"eventId"}.getStr("")
+  check injectedIds.len == 2
+  for id in injectedIds: check id.len > 0
+
+  # Failing tick — this is the 2nd ``session/prompt`` the fake-ACP sees
+  # so it replies ``stopReason="error"``.  The SSE socket itself still
+  # returns 200 (prelude landed); the failure is in the prompt response.
+  let (tCode, _) = rawPostStream(f.baseUrl, "/api/campaign/tick",
+    $(%* {"campaignId": campaignId}))
+  check tCode == 200
+
+  # The drained operator-injection events must NOT be acknowledged —
+  # the rollback path keeps them queued for the next tick.  Poll a few
+  # times to absorb the async gap between ``rawPostStream`` returning
+  # and ``applyOrchestratorStatusAfterRound`` finishing.
+  proc countAcknowledgedInjects(): int =
+    var n = 0
+    for e in eventsForCampaignWithIds(f, campaignId):
+      if e.eventId in injectedIds and e.acknowledged: inc n
+    n
+  # Wait long enough that an ack would have happened if the rollback
+  # was broken (5s — much longer than the per-tick async gap on a
+  # loaded test box).
+  let deadline = epochTime() + 5.0
+  while epochTime() < deadline:
+    if countAcknowledgedInjects() > 0: break
+    sleep(80)
+  check countAcknowledgedInjects() == 0
+
+  # The recovery tick (3rd prompt → end_turn) must see BOTH injections
+  # again in their original order — proving both the ACP queue and the
+  # pending-event-id list were restored.
+  let (tCode2, _) = rawPostStream(f.baseUrl, "/api/campaign/tick",
+    $(%* {"campaignId": campaignId}))
+  check tCode2 == 200
+  check waitForContentLogEntry(f, sessionId, injectTexts[1])
+  let prompt = latestPromptTextFromLog(f, sessionId)
+  check "## OPERATOR INJECTION (received since previous turn)" in prompt
+  check injectTexts[0] in prompt
+  check injectTexts[1] in prompt
+  check prompt.find(injectTexts[0]) < prompt.find(injectTexts[1])
+
+  # And now they ARE acknowledged — recovery tick drained them
+  # successfully and acked the last event id.
+  proc waitAllAcked(): bool =
+    let d = epochTime() + 5.0
+    while epochTime() < d:
+      if countAcknowledgedInjects() == 2: return true
+      sleep(80)
+    false
+  check waitAllAcked()
+
 test "test_stop_transitions_status_and_closes_session":
   let f = startCampaignDaemon()
   defer: f.shutdown()

@@ -168,6 +168,164 @@ test "test_cli_campaign_tick_advances_round":
       check payload{"round"}.getInt(0) >= 1
   check sawRoundStarted
 
+proc invokeCliWithStdin(baseUrl: string;
+                        args: openArray[string];
+                        stdinPayload: string):
+    tuple[exitCode: int; outText, errText: string] =
+  ## Same shape as :proc:`invokeCli` but feeds ``stdinPayload`` to the
+  ## subprocess's stdin via shell redirection from a temp file.  Used by
+  ## the ``--stdin`` CLI tests.
+  let outPath = getTempDir() / ("cli_campaign_stdout_" &
+                $((int(epochTime() * 1000)) mod 1_000_000))
+  let errPath = getTempDir() / ("cli_campaign_stderr_" &
+                $((int(epochTime() * 1000)) mod 1_000_000))
+  let stdinPath = getTempDir() / ("cli_campaign_stdin_" &
+                $((int(epochTime() * 1000)) mod 1_000_000))
+  writeFile(stdinPath, stdinPayload)
+  defer:
+    try: removeFile(outPath) except OSError: discard
+    try: removeFile(errPath) except OSError: discard
+    try: removeFile(stdinPath) except OSError: discard
+  let parts = @[CliPath, "campaign"] & @args & @["--daemon=" & baseUrl]
+  let cmd = parts.join(" ") &
+    " < " & quoteShell(stdinPath) &
+    " > " & quoteShell(outPath) & " 2> " & quoteShell(errPath)
+  let exitCode = execShellCmd(cmd)
+  let outText =
+    if fileExists(outPath): readFile(outPath) else: ""
+  let errText =
+    if fileExists(errPath): readFile(errPath) else: ""
+  (exitCode, outText, errText)
+
+# ---------------------------------------------------------------------------
+# CMP-M4 — ``isonim-review campaign inject`` + ``campaign edit-doc``.
+# ---------------------------------------------------------------------------
+
+test "test_cli_campaign_inject_with_positional_text":
+  ## ``isonim-review campaign inject <id> "hello operator"`` → 0,
+  ## ``note`` event with the expected text lands.
+  let f = startCampaignDaemon()
+  defer: f.shutdown()
+  let fx = writeFixtures()
+  defer: removeDir(fx.projectDir)
+  let (sExit, sOut, _) = invokeCli(f.baseUrl,
+    ["start", "--doc", fx.campaignPath, "--no-tail"])
+  check sExit == 0
+  let campaignId = sOut.strip()
+
+  let (iExit, _, iErr) = invokeCli(f.baseUrl,
+    ["inject", campaignId, "hello operator"])
+  check iExit == 0
+  check iErr.contains("injection queued")
+
+  var sawText = ""
+  for e in eventsForCampaign(f, campaignId):
+    if e.kind == "note":
+      let p = parseJson(e.payload)
+      if p{"kind"}.getStr("") == "operator_injection":
+        sawText = p{"text"}.getStr("")
+  check sawText == "hello operator"
+
+test "test_cli_campaign_inject_with_message_file":
+  ## ``--message-file`` reads the text off disk verbatim (newlines and
+  ## all).
+  let f = startCampaignDaemon()
+  defer: f.shutdown()
+  let fx = writeFixtures()
+  defer: removeDir(fx.projectDir)
+  let (sExit, sOut, _) = invokeCli(f.baseUrl,
+    ["start", "--doc", fx.campaignPath, "--no-tail"])
+  check sExit == 0
+  let campaignId = sOut.strip()
+
+  let msgPath = getTempDir() / ("cli_inject_msg_" &
+                $((int(epochTime() * 1000)) mod 1_000_000) & ".txt")
+  let payload = "multi-line message\nwith two lines\n"
+  writeFile(msgPath, payload)
+  defer:
+    try: removeFile(msgPath) except OSError: discard
+
+  let (iExit, _, iErr) = invokeCli(f.baseUrl,
+    ["inject", campaignId, "--message-file", msgPath])
+  check iExit == 0
+  check iErr.contains("injection queued")
+
+  var sawText = ""
+  for e in eventsForCampaign(f, campaignId):
+    if e.kind == "note":
+      let p = parseJson(e.payload)
+      if p{"kind"}.getStr("") == "operator_injection":
+        sawText = p{"text"}.getStr("")
+  check sawText == payload
+
+test "test_cli_campaign_inject_with_stdin":
+  ## ``--stdin`` reads text from stdin.
+  let f = startCampaignDaemon()
+  defer: f.shutdown()
+  let fx = writeFixtures()
+  defer: removeDir(fx.projectDir)
+  let (sExit, sOut, _) = invokeCli(f.baseUrl,
+    ["start", "--doc", fx.campaignPath, "--no-tail"])
+  check sExit == 0
+  let campaignId = sOut.strip()
+
+  let payload = "stdin-piped operator inject"
+  let (iExit, _, iErr) = invokeCliWithStdin(f.baseUrl,
+    ["inject", campaignId, "--stdin"], payload)
+  check iExit == 0
+  check iErr.contains("injection queued")
+
+  var sawText = ""
+  for e in eventsForCampaign(f, campaignId):
+    if e.kind == "note":
+      let p = parseJson(e.payload)
+      if p{"kind"}.getStr("") == "operator_injection":
+        sawText = p{"text"}.getStr("")
+  check sawText == payload
+
+test "test_cli_campaign_edit_doc_refreshes_sha":
+  ## ``campaign edit-doc <id> --no-edit`` after mutating the on-disk
+  ## doc: doc_sha updates, a doc_refreshed note event lands.
+  let f = startCampaignDaemon()
+  defer: f.shutdown()
+  let fx = writeFixtures()
+  defer: removeDir(fx.projectDir)
+  let (sExit, sOut, _) = invokeCli(f.baseUrl,
+    ["start", "--doc", fx.campaignPath, "--no-tail"])
+  check sExit == 0
+  let campaignId = sOut.strip()
+
+  let beforeRows = fetchCampaignByDoc(f, fx.campaignPath.absolutePath())
+  let beforeSha = beforeRows[0][6]
+
+  # Mutate the doc on disk.
+  let original = readFile(fx.campaignPath)
+  writeFile(fx.campaignPath,
+    original & "\n## CLI edit-doc test\n\n- Added marker " &
+    $epochTime() & "\n")
+
+  let (eExit, _, eErr) = invokeCli(f.baseUrl,
+    ["edit-doc", campaignId, "--no-edit"])
+  check eExit == 0
+  check eErr.contains("doc refreshed")
+  check eErr.contains("contentChanged=true")
+
+  let afterRows = fetchCampaignByDoc(f, fx.campaignPath.absolutePath())
+  check afterRows.len == 1
+  check afterRows[0][6] != beforeSha
+  check afterRows[0][6].len == 64
+
+  var sawRefresh = false
+  for e in eventsForCampaign(f, campaignId):
+    if e.kind == "note":
+      let p = parseJson(e.payload)
+      if p{"kind"}.getStr("") == "doc_refreshed":
+        sawRefresh = true
+        check p{"contentChanged"}.getBool(false)
+        check p{"oldSha"}.getStr("") == beforeSha
+        check p{"newSha"}.getStr("") == afterRows[0][6]
+  check sawRefresh
+
 test "test_cli_campaign_stop_marks_status":
   let f = startCampaignDaemon()
   defer: f.shutdown()

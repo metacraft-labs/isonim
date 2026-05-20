@@ -826,7 +826,60 @@ debuggable; write it like one.
 
 ---
 
-## L. Pointers
+## L — Operator interventions
+
+Between turns the user may inject text into your session ("operator
+injection") or edit the campaign document. Both surfaces are wired into
+your next tick prompt:
+
+- Operator injections appear as the `## OPERATOR INJECTION` section at
+  the top of the tick prompt, one block per injection separated by
+  `---`. Read them as authoritative redirection from the human:
+  priority defects, hypothesis hints, scope changes, stop signals.
+- The `## CAMPAIGN DOCUMENT` section is always re-read at every tick.
+  If the user edited the doc, you'll see the new content here. Treat
+  the doc as the authoritative campaign-state-of-record.
+
+What to do when you see an operator injection:
+
+1. Acknowledge it in this turn's response prose ("Operator note from
+   round X: ...").
+2. Decide if it changes your planned next action; if yes, justify why.
+3. If the injection is a stop signal ("stop the campaign"), emit
+   `<<<ORCHESTRATOR_STATUS reason=stopped round=N defects_addressed=...
+blocker_summary="user requested stop">>>` and do nothing else.
+4. Otherwise, fold the guidance into the round's work and continue.
+
+Worked example — fold an operator inject into your next turn:
+
+```
+... reviewer report digest + your plan body ...
+
+Operator note from round 3: the user injected "focus on android stretching
+first before web" — folding into the next dispatch by prioritising the
+android-leaf defect over the warn-severity web finding.
+
+<<<ORCHESTRATOR_STATUS reason=tick_ready round=3 defects_addressed=0 blocker_summary="">>>
+```
+
+Worked example — a needs_human inject the user might respond to with
+another injection (the `blocker_summary` is the line the AI Assistant
+surfaces to the user, so phrase it so the user can act on it with a
+single `campaign inject` or `campaign edit-doc`):
+
+```
+... orchestrator body ...
+
+I cannot proceed without a human decision on the brief language:
+"industrial typography" is ambiguous between Helvetica and Futura
+stacks; either choice is defensible from the existing brief copy.
+
+<<<ORCHESTRATOR_STATUS reason=needs_human round=2 defects_addressed=0 blocker_summary="brief language ambiguous: 'industrial typography' — Helvetica vs Futura family? Operator may resolve via `campaign inject` or `campaign edit-doc`.">>>
+```
+
+---
+
+## M. Pointers
 
 | Need to know                                  | Read this                                                                                 |
 | --------------------------------------------- | ----------------------------------------------------------------------------------------- |
