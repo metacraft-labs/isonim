@@ -386,12 +386,12 @@ proc handlePrompts*(reg: AgentRegistry; req: Request)
     {.async, gcsafe.} =
   ## ``POST /api/agent/prompts`` handler.  Emits the SSE stream.
   ##
-  ## Phase B uses the synchronous nim-acp client: ``sendPrompt`` blocks
-  ## until the ACP server returns its ``stopReason``.  Between the
-  ## response and the close we drain any session/update notifications
-  ## the ACP server pushed during the turn (the transport buffers them)
-  ## and forward each as one SSE event.  REV-M11 will switch to an
-  ## async ACP client for true incremental streaming.
+  ## Progressive delivery: ``sendPromptStreaming`` invokes a synchronous
+  ## per-frame callback as each ``session/update`` arrives from the ACP
+  ## child.  The callback enqueues the encoded SSE bytes onto a buffer
+  ## the async dispatch loop drains while waiting for the prompt
+  ## response.  Notifications received before the response therefore
+  ## reach the SSE client immediately, not at end-of-turn.
   if req.reqMethod != HttpPost:
     await respondJson(req, Http405,
       $(%* {"error": "method_not_allowed"}))
@@ -430,26 +430,129 @@ proc handlePrompts*(reg: AgentRegistry; req: Request)
     cancelSession(reg, sessionId)
     return
 
+  # Streaming bridge between the synchronous ACP reader thread (which
+  # invokes the callback inline) and the async HTTP socket writer.  The
+  # callback runs inside ``sendPrompt`` which we drive on a worker
+  # thread; the main async loop polls the buffer between sleeps and
+  # writes each pending frame to the socket as soon as it lands.
+  type StreamBuffer = ref object
+    lock: Lock
+    frames: seq[string]
+  let streamBuf = new StreamBuffer
+  initLock(streamBuf.lock)
+  defer: deinitLock(streamBuf.lock)
+  proc pushFrame(frame: string) {.gcsafe.} =
+    {.cast(gcsafe).}:
+      acquire(streamBuf.lock)
+      streamBuf.frames.add frame
+      release(streamBuf.lock)
+  proc popFrames(): seq[string] {.gcsafe.} =
+    {.cast(gcsafe).}:
+      acquire(streamBuf.lock)
+      result = streamBuf.frames
+      streamBuf.frames = @[]
+      release(streamBuf.lock)
+
   var stopReason = "error"
   var promptError = ""
+  var promptDone = false
   var promptResp: PromptResponse
-  {.gcsafe.}:
-    try:
-      promptResp = state.client.acp.sendPrompt(
-        PromptRequest(sessionId: sessionId, prompt: prompt))
-      stopReason = $promptResp.stopReason
-    except AcpError as e:
-      promptError = e.msg
-      error "agent prompt failed", sessionId = sessionId, reason = e.msg
-    except CatchableError as e:
-      promptError = e.msg
-      error "agent prompt error", sessionId = sessionId, reason = e.msg
 
-  # Post-turn drain: emit every notification the ACP server pushed
-  # during the turn.
-  if not await emitUpdates(reg, sessionId, req.client):
-    cancelSession(reg, sessionId)
-    return
+  type PromptArgs = ref object
+    sessionId: string
+    prompt: seq[ContentBlock]
+    client: AgentClient
+    response: PromptResponse
+    error: string
+    done: bool
+    callback: AgentEventCallback
+
+  let onEvent: AgentEventCallback = proc(ev: AgentEvent) {.gcsafe.} =
+    {.cast(gcsafe).}:
+      # When we have the raw JSON straight from the ACP transport, send
+      # it verbatim — it already matches the SSE wire schema the editor
+      # expects (mirrors :proc:`sessionUpdateJson`'s preferred branch).
+      var payload: JsonNode
+      if ev.raw != nil:
+        payload = ev.raw
+      else:
+        payload = %* {
+          "sessionId": ev.sessionId,
+          "update": {
+            "sessionUpdate": $ev.kind,
+            "content": {"type": "text", "text": ev.text},
+            "toolCallId": ev.toolCallId,
+            "title": ev.toolName,
+            "status": ev.status,
+          },
+        }
+      let frame = encodeSseEvent("session/update", $payload)
+      debug "agent.streaming.chunk", sessionId = ev.sessionId,
+        kind = $ev.kind, bytes = frame.len
+      pushFrame(frame)
+
+  proc runPrompt(args: PromptArgs) {.thread, gcsafe.} =
+    {.cast(gcsafe).}:
+      try:
+        var client = args.client
+        let turn = sendPromptStreaming(client,
+          AgentSession(id: args.sessionId, backend: abkAcp),
+          args.prompt, args.callback)
+        args.response = PromptResponse(sessionId: args.sessionId,
+                                       stopReason: turn.stopReason)
+      except CatchableError as e:
+        args.error = e.msg
+      args.done = true
+
+  var args = PromptArgs(sessionId: sessionId, prompt: prompt,
+                        client: state.client, callback: onEvent)
+  var worker: Thread[PromptArgs]
+  createThread(worker, runPrompt, args)
+
+  # Async pump: while the worker is running, periodically flush any
+  # frames the callback enqueued onto the SSE socket.
+  while not args.done:
+    let pending = popFrames()
+    var disconnected = false
+    for frame in pending:
+      if not await sendSseLine(req.client, frame):
+        disconnected = true
+        break
+    if disconnected:
+      # Surface a cancel to the agent so the ACP child can wind down,
+      # then wait for the worker to finish — we still need to join the
+      # thread or the daemon leaks resources.
+      cancelSession(reg, sessionId)
+      joinThread(worker)
+      return
+    await sleepAsync(10)
+
+  joinThread(worker)
+  promptDone = true
+  promptResp = args.response
+  if args.error.len > 0:
+    promptError = args.error
+    error "agent prompt failed", sessionId = sessionId, reason = promptError
+  else:
+    stopReason = $promptResp.stopReason
+
+  # Final flush — any frames that arrived right before the response.
+  let trailing = popFrames()
+  for frame in trailing:
+    if not await sendSseLine(req.client, frame):
+      cancelSession(reg, sessionId)
+      return
+
+  # Clear the ACP transport's drain buffer — the streaming callback
+  # already forwarded each notification to the SSE socket, so we MUST
+  # NOT re-emit them via :proc:`drainUpdates` (that would duplicate
+  # every chunk).  We still need to drain so the buffer doesn't grow
+  # unboundedly across turns; just discard the result.
+  {.gcsafe.}:
+    let stOpt = reg.getState(sessionId)
+    if stOpt.isSome:
+      var s = stOpt.get
+      discard s.client.acp.drainUpdates()
 
   if promptError.len > 0:
     let errEvent = encodeSseEvent("error",
@@ -457,11 +560,14 @@ proc handlePrompts*(reg: AgentRegistry; req: Request)
     discard await sendSseLine(req.client, errEvent)
   let endEvent = encodeSseEvent("end", $(%* {"stopReason": stopReason}))
   discard await sendSseLine(req.client, endEvent)
+  debug "agent.streaming.complete", sessionId = sessionId,
+    stopReason = stopReason
   info "agent prompt complete", sessionId = sessionId,
     stopReason = stopReason
   # Close the connection — we replied with ``Connection: close`` so the
   # client should not be expecting another request on this socket.
   try: req.client.close() except CatchableError: discard
+  discard promptDone
 
 # --------------------------------------------------------------------------- #
 #  Mount helpers — the daemon binds these handlers via registerHandler.       #

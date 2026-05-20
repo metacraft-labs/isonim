@@ -279,7 +279,8 @@ proc runOnePrompt(opts: ChatOptions; sessionId: string): int =
   var sawText = false
   let textCb = proc(chunk: string) =
     sawText = true
-    debug "agent text chunk", sessionId = sessionId, bytes = chunk.len
+    debug "cli.chunk", sessionId = sessionId, bytes = chunk.len,
+      preview = (if chunk.len > 40: chunk[0 ..< 40] & "…" else: chunk)
     if opts.streamOutput:
       stdout.write chunk
       flushFile(stdout)
