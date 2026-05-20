@@ -228,7 +228,8 @@ proc reset*(f: PgFixture) =
   runPsql(binDir, f.port, "isonim_design_review",
           "TRUNCATE TABLE design_review.audit_events, " &
           "design_review.agent_reports, design_review.captures, " &
-          "design_review.gallery_layouts, design_review.runs CASCADE",
+          "design_review.gallery_layouts, design_review.runs, " &
+          "design_review.campaign_events, design_review.campaigns CASCADE",
           role = "design_review_migrator")
 
 proc shutdown*(f: PgFixture) =

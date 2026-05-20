@@ -52,12 +52,14 @@ suite "REV-M4 isonim-review init":
     let outText = readFile(tmpLog)
     removeFile(tmpLog)
     check rc == 0
-    check countMigrations(f) == 4
+    check countMigrations(f) == 6
     check "apply 001" in outText
     check "apply 002" in outText
     check "apply 003" in outText
     check "apply 004" in outText
-    check "applied 4 migration(s)" in outText
+    check "apply 005" in outText
+    check "apply 006" in outText
+    check "applied 6 migration(s)" in outText
 
   test "test_cli_init_is_noop_on_already_migrated":
     ## Second run against the same cluster: every migration is
@@ -134,10 +136,11 @@ suite "REV-M4 isonim-review init":
       let c = connectMigrator(f)
       defer: c.close()
       parseInt(c.getValue(sql"SELECT count(*) FROM public.schema_migrations"))
-    # Migrations 2, 3, 4 remain (1 was DELETEd above).  REV-M8 added
-    # migration 004 (``fetch_layout``); the dirty-state guard counts
-    # whatever rows survive the DELETE.
-    check after == 3
+    # Migrations 2, 3, 4, 5, 6 remain (1 was DELETEd above).  REV-M8
+    # added migration 004 (``fetch_layout``); CMP-M2 added migrations
+    # 005 + 006 (campaigns + campaign routines).  The dirty-state guard
+    # counts whatever rows survive the DELETE.
+    check after == 5
 
   test "test_cli_init_refuses_modified_migration_file":
     ## Apply, copy a migration to a scratch dir, mutate one byte,
@@ -170,6 +173,12 @@ suite "REV-M4 isonim-review init":
     copyFile(
       MigDir / "004_design_review_fetch_layout.sql",
       scratch / "004_design_review_fetch_layout.sql")
+    copyFile(
+      MigDir / "005_design_review_campaigns.sql",
+      scratch / "005_design_review_campaigns.sql")
+    copyFile(
+      MigDir / "006_design_review_campaign_routines.sql",
+      scratch / "006_design_review_campaign_routines.sql")
     let altered = scratch / "001_design_review_schema.sql"
     var body = readFile(altered)
     body.add "\n-- drift marker\n"
@@ -201,12 +210,13 @@ suite "REV-M4 isonim-review init":
     check "migration 1" in outText
 
     # All rows still present — no partial reapplication.
-    # REV-M8 added migration 004 (``fetch_layout``); the schema now
-    # tracks four migration rows.
+    # REV-M8 added migration 004 (``fetch_layout``); CMP-M2 added
+    # migrations 005 + 006 (campaigns + campaign routines).  The schema
+    # now tracks six migration rows.
     let after = block:
       let c = connectMigrator(f)
       defer: c.close()
       parseInt(c.getValue(sql"SELECT count(*) FROM public.schema_migrations"))
-    check after == 4
+    check after == 6
 
     removeDir(scratch)

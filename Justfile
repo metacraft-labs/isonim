@@ -645,6 +645,44 @@ test-design-review-acceptance: isonim-review-build
         --path:../isonim-render-serve/src --path:../nim-everywhere/src \
         --hints:off tests/e2e_pipeline_refuses_dirty_workspace.nim
 
+# CMP-M2: Run the campaign storage + route + CLI + e2e tests.  The
+# route + CLI + e2e tests spawn a real ``isonim-review serve`` daemon
+# against an ephemeral PgFixture and a fake-ACP backend.
+test-design-review-campaigns: isonim-review-build fake-acp-agent-build
+    nim c -r --path:. --path:src \
+        --path:vendor/db_connector/src --path:vendor/chronicles \
+        --path:vendor/serialization --path:vendor/json_serialization \
+        --path:../nim-faststreams --path:../nim-stew \
+        --path:../nim-acp/src --path:../nim-agent-harbor/src \
+        --path:../nim-agents/src \
+        -d:nimOldCaseObjects \
+        -d:chronicles_sinks=textlines[stderr] \
+        -d:chronicles_runtime_filtering=on \
+        -d:chronicles_log_level=TRACE \
+        --hints:off tests/test_design_review_campaign_routes.nim
+    nim c -r --path:. --path:src \
+        --path:vendor/db_connector/src --path:vendor/chronicles \
+        --path:vendor/serialization --path:vendor/json_serialization \
+        --path:../nim-faststreams --path:../nim-stew \
+        --path:../nim-acp/src --path:../nim-agent-harbor/src \
+        --path:../nim-agents/src \
+        -d:nimOldCaseObjects \
+        -d:chronicles_sinks=textlines[stderr] \
+        -d:chronicles_runtime_filtering=on \
+        -d:chronicles_log_level=TRACE \
+        --hints:off tests/test_design_review_cli_campaign.nim
+    nim c -r --path:. --path:src \
+        --path:vendor/db_connector/src --path:vendor/chronicles \
+        --path:vendor/serialization --path:vendor/json_serialization \
+        --path:../nim-faststreams --path:../nim-stew \
+        --path:../nim-acp/src --path:../nim-agent-harbor/src \
+        --path:../nim-agents/src \
+        -d:nimOldCaseObjects \
+        -d:chronicles_sinks=textlines[stderr] \
+        -d:chronicles_runtime_filtering=on \
+        -d:chronicles_log_level=TRACE \
+        --hints:off tests/e2e_campaign_start_and_tick.nim
+
 # REV-M9: Run every bench-threshold test.  These tests run the benchmark
 # with abbreviated fixtures (--iterations:200) and assert that the
 # documented thresholds are satisfied.  They use the same PG cluster as

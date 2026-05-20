@@ -39,6 +39,7 @@ import ./cmd_capture
 import ./cmd_run_review
 import ./cmd_layouts
 import ./cmd_chat
+import ./cmd_campaign
 import ./cmd_seed_run
 
 const Usage = """
@@ -134,6 +135,39 @@ Usage:
                                  [--config <path>]
       (REV-M8) Promote a user-scope layout into a new workspace-
       scope row.  Prints the new layout id on stdout.
+
+  isonim-review campaign start --doc <path> [--backend claude|codex|custom]
+                                [--no-tail] [--daemon <url>] [--briefs-dir <path>]
+                                [--config <path>]
+      (CMP-M2) Start a design campaign from the given campaign doc.
+      Resolves brief refs from the on-disk project, opens an ACP session,
+      POSTs /api/campaign/start to the daemon, and streams the agent's
+      first-round response on stdout.  --no-tail prints just the new
+      campaign id and exits without streaming.
+
+  isonim-review campaign list [--status <status>] [--limit N] [--offset N]
+                              [--daemon <url>] [--config <path>]
+      List campaigns visible in the design-review database, optionally
+      filtered by status (pending|active|converged|escalated|stopped|failed).
+
+  isonim-review campaign show <campaign_id> [--event-limit N]
+                              [--daemon <url>] [--config <path>]
+      Pretty-print a campaign row + its last N events (default 20).
+
+  isonim-review campaign tail <campaign_id> [--follow] [--interval-ms N]
+                              [--daemon <url>] [--config <path>]
+      Print the campaign's event log.  --follow polls for new events
+      every --interval-ms milliseconds (default 1500).
+
+  isonim-review campaign tick <campaign_id> [--no-tail]
+                              [--daemon <url>] [--config <path>]
+      Send a continuation prompt to the campaign's bound ACP session
+      and stream the SSE response.
+
+  isonim-review campaign stop <campaign_id> [--reason "..."]
+                              [--daemon <url>] [--config <path>]
+      Cancel the campaign's bound ACP session, transition it to
+      ``stopped``, and emit a stopped event.
 
   isonim-review chat [--session <id>] [--no-stream] [--interactive]
                       [--daemon <url>] [--agent-backend claude|codex|custom]
@@ -446,6 +480,96 @@ proc dispatchChat(rest: seq[string]): int =
   opts.promptText = positionals.join(" ")
   return cmdChat(cfg, opts)
 
+proc dispatchCampaign(rest: seq[string]): int =
+  ## CMP-M2 — ``isonim-review campaign ...``.  Six sub-subcommands plus
+  ## the standard ``--config``/``--daemon`` overrides.  Each sub command
+  ## owns its own option parsing here so the dispatch stays flat.
+  if rest.len == 0:
+    stderr.write("isonim-review campaign: missing sub-subcommand " &
+      "(start / list / show / tail / tick / stop)\n")
+    return 2
+  let sub = rest[0]
+  let tail = if rest.len > 1: rest[1 .. ^1] else: @[]
+  let configPath = parseSubArgs(tail, "config")
+  var cfg =
+    try: loadConfig(configPath)
+    except TomlParseError as e:
+      stderr.writeLine("isonim-review: " & e.msg)
+      quit(2)
+    except AgentConfigError as e:
+      stderr.writeLine("isonim-review: " & e.msg)
+      quit(2)
+  applyAgentBackendOverride(cfg, tail)
+  let daemonUrl = parseSubArgs(tail, "daemon")
+  case sub
+  of "start":
+    var opts = CampaignStartOptions(daemonUrl: daemonUrl)
+    opts.docPath = parseSubArgs(tail, "doc")
+    opts.backend = parseSubArgs(tail, "backend")
+    opts.noTail = hasFlag(tail, "no-tail")
+    opts.briefsDir = parseSubArgs(tail, "briefs-dir")
+    opts.projectDir = parseSubArgs(tail, "project")
+    opts.startedBy = parseSubArgs(tail, "started-by")
+    if opts.docPath.len == 0:
+      stderr.writeLine "isonim-review campaign start: --doc <path> required"
+      return 2
+    return cmdCampaignStart(cfg, opts)
+  of "list":
+    var opts = CampaignListOptions(daemonUrl: daemonUrl, limit: 50, offset: 0)
+    opts.status = parseSubArgs(tail, "status")
+    let limStr = parseSubArgs(tail, "limit")
+    if limStr.len > 0:
+      try: opts.limit = parseInt(limStr) except ValueError: discard
+    let offStr = parseSubArgs(tail, "offset")
+    if offStr.len > 0:
+      try: opts.offset = parseInt(offStr) except ValueError: discard
+    return cmdCampaignList(cfg, opts)
+  of "show":
+    var opts = CampaignShowOptions(daemonUrl: daemonUrl, eventLimit: 20)
+    # Accept either positional <id> or --id=<id>.
+    for a in tail:
+      if not a.startsWith("--") and opts.campaignId.len == 0:
+        opts.campaignId = a
+    let idFlag = parseSubArgs(tail, "id")
+    if idFlag.len > 0: opts.campaignId = idFlag
+    let elStr = parseSubArgs(tail, "event-limit")
+    if elStr.len > 0:
+      try: opts.eventLimit = parseInt(elStr) except ValueError: discard
+    return cmdCampaignShow(cfg, opts)
+  of "tail":
+    var opts = CampaignTailOptions(daemonUrl: daemonUrl, intervalMs: 1500)
+    for a in tail:
+      if not a.startsWith("--") and opts.campaignId.len == 0:
+        opts.campaignId = a
+    let idFlag = parseSubArgs(tail, "id")
+    if idFlag.len > 0: opts.campaignId = idFlag
+    opts.follow = hasFlag(tail, "follow")
+    let ivStr = parseSubArgs(tail, "interval-ms")
+    if ivStr.len > 0:
+      try: opts.intervalMs = parseInt(ivStr) except ValueError: discard
+    return cmdCampaignTail(cfg, opts)
+  of "tick":
+    var opts = CampaignTickOptions(daemonUrl: daemonUrl)
+    for a in tail:
+      if not a.startsWith("--") and opts.campaignId.len == 0:
+        opts.campaignId = a
+    let idFlag = parseSubArgs(tail, "id")
+    if idFlag.len > 0: opts.campaignId = idFlag
+    opts.noTail = hasFlag(tail, "no-tail")
+    return cmdCampaignTick(cfg, opts)
+  of "stop":
+    var opts = CampaignStopOptions(daemonUrl: daemonUrl)
+    for a in tail:
+      if not a.startsWith("--") and opts.campaignId.len == 0:
+        opts.campaignId = a
+    let idFlag = parseSubArgs(tail, "id")
+    if idFlag.len > 0: opts.campaignId = idFlag
+    opts.reason = parseSubArgs(tail, "reason")
+    return cmdCampaignStop(cfg, opts)
+  else:
+    stderr.writeLine "isonim-review campaign: unknown sub-subcommand: " & sub
+    return 2
+
 proc dispatchSeedRun(rest: seq[string]): int =
   ## Follow-up 3 — parse ``--brief``, repeated ``--capture <be>=<p>``,
   ## ``--viewport``, ``--manifest-hash-tag``, ``--workspace``,
@@ -607,6 +731,8 @@ proc main(): int =
     return dispatchLayouts(rawArgs[1 .. ^1])
   of "chat":
     return dispatchChat(rawArgs[1 .. ^1])
+  of "campaign":
+    return dispatchCampaign(rawArgs[1 .. ^1])
   else:
     stderr.write(fmt"isonim-review: unknown command '{rawArgs[0]}'" & "\n")
     stderr.write(Usage)

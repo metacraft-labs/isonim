@@ -143,3 +143,7 @@ tests/test_design_review_browser_agent_client_compiles
 tests/test_design_review_config_agent_backend
 tests/e2e_design_review_chat_real_codex_acp
 tests/test_design_review_cli_seed_run
+# CMP-M2 campaign test binaries
+tests/test_design_review_campaign_routes
+tests/test_design_review_cli_campaign
+tests/e2e_campaign_start_and_tick

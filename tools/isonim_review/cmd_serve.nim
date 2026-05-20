@@ -37,6 +37,7 @@ import ./cmd_db_health
 import isonim/editor/design_review/agent_routes
 import isonim/editor/design_review/api_handlers
 import isonim/editor/design_review/api_handlers_layouts
+import isonim/editor/design_review/campaign_routes
 import isonim/editor/design_review/capture_store
 import isonim/editor/design_review/db as dr_db
 import isonim/editor/design_review/log_setup
@@ -57,6 +58,7 @@ type
     stopRequested*: bool
     onLifecycle*: proc(message: string) {.gcsafe.}
     agentRegistry*: AgentRegistry
+    campaignRegistry*: CampaignRegistry
 
 # ----- Lifecycle signal handling -------------------------------------------
 
@@ -188,7 +190,8 @@ proc dispatch(srv: ReviewServer; req: Request) {.async, gcsafe.} =
   # ``/api/design-review/*`` route so the per-handler logic stays clean.
   if req.reqMethod == HttpOptions and
      (path.startsWith("/api/design-review/") or
-      path.startsWith("/api/agent/")):
+      path.startsWith("/api/agent/") or
+      path.startsWith("/api/campaign/")):
     await respondCorsPreflight(req)
     info "http response", topics = "http", path = path, status = 204,
       durationMs = int((epochTime() - startedAt) * 1000)
@@ -285,6 +288,36 @@ proc mountDesignReviewRoutes*(srv: ReviewServer) =
                       makePromoteLayout(db))
   srv.registerHandler("/api/design-review/list-layouts",
                       makeListLayouts(db))
+
+  # CMP-M2 — campaign storage + start/tick/stop handlers.  Re-uses the
+  # ``ReviewDb`` connection (the campaign routines live in the same
+  # schema) and binds to the daemon's :type:`AgentRegistry` so a
+  # ``campaign start`` opens an ACP session against the same backend
+  # that powers ``/api/agent/*``.
+  let promptPath =
+    if srv.cfg.workspace.root.len > 0:
+      srv.cfg.workspace.root / "isonim" / OrchestratorPromptRelPath
+    else:
+      getCurrentDir() / OrchestratorPromptRelPath
+  let resolvedPromptPath =
+    if fileExists(promptPath): promptPath
+    else: getCurrentDir() / OrchestratorPromptRelPath
+  srv.campaignRegistry = newCampaignRegistry(srv.agentRegistry, db,
+                                             resolvedPromptPath)
+  srv.registerHandler(CampaignStartRoute,
+                      makeStartHandler(srv.campaignRegistry))
+  srv.registerHandler(CampaignTickRoute,
+                      makeTickHandler(srv.campaignRegistry))
+  srv.registerHandler(CampaignStopRoute,
+                      makeStopHandler(srv.campaignRegistry))
+  srv.registerHandler(CampaignListRoute,
+                      makeListHandler(srv.campaignRegistry))
+  srv.registerHandler(CampaignFetchRoute,
+                      makeFetchHandler(srv.campaignRegistry))
+  srv.registerHandler(CampaignEventsRoute,
+                      makeEventsHandler(srv.campaignRegistry))
+  info "campaign routes mounted", topics = "daemon",
+    promptPath = resolvedPromptPath
 
 proc mountAgentRoutes*(srv: ReviewServer) =
   ## Phase B — wire the ``/api/agent/*`` endpoints against ``srv``.  Each

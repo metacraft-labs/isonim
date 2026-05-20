@@ -10,7 +10,9 @@ import db_connector/db_postgres
 import helpers/design_review_pg_fixture
 
 const ExpectedTables = [
-  "agent_reports", "audit_events", "captures", "gallery_layouts", "runs"]
+  "agent_reports", "audit_events",
+  "campaign_events", "campaigns",
+  "captures", "gallery_layouts", "runs"]
 
 const ExpectedIndexes = [
   "idx_audit_kind_time",

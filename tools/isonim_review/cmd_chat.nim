@@ -36,15 +36,15 @@ type
     streamOutput*: bool
     promptText*: string
 
-  SseEvent = object
-    eventType: string
-    data: string
+  SseEvent* = object
+    eventType*: string
+    data*: string
 
 # --------------------------------------------------------------------------- #
 #  Low-level SSE reader.                                                       #
 # --------------------------------------------------------------------------- #
 
-proc readHttpHeader(sock: Socket): tuple[status: int; body: string] =
+proc readHttpHeader*(sock: Socket): tuple[status: int; body: string] =
   ## Read until ``\r\n\r\n``.  Returns the status line int + any body
   ## bytes that were read past the headers (rare for SSE but possible
   ## when the daemon writes the prelude + first event in one go).
@@ -69,7 +69,7 @@ proc readHttpHeader(sock: Socket): tuple[status: int; body: string] =
     else: 0
   return (statusCode, "")
 
-proc readSseEvent(sock: Socket): tuple[event: SseEvent; eof: bool] =
+proc readSseEvent*(sock: Socket): tuple[event: SseEvent; eof: bool] =
   ## Read one SSE event — fields separated by blank line.  Returns
   ## ``eof = true`` when the peer closes the connection cleanly between
   ## events.
@@ -144,7 +144,7 @@ proc cancelSession*(daemonUrl, sessionId: string) =
 #  SSE prompt round-trip.                                                      #
 # --------------------------------------------------------------------------- #
 
-proc parseUrl(url: string): tuple[host: string; port: int; path: string] =
+proc parseUrl*(url: string): tuple[host: string; port: int; path: string] =
   ## Tiny URL parser for ``http://host[:port]/path``.  Avoids the
   ## ``std/uri`` import (which doesn't expose enough port-default logic
   ## without further plumbing).
