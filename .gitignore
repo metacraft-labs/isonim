@@ -147,3 +147,4 @@ tests/test_design_review_cli_seed_run
 tests/test_design_review_campaign_routes
 tests/test_design_review_cli_campaign
 tests/e2e_campaign_start_and_tick
+tests/test_design_review_chat_priming
