@@ -510,6 +510,26 @@ proc daemonBaseUrl*(cfg: ReviewConfig): string =
     return cfg.agent.defaultDaemonUrl
   "http://" & cfg.server.bindAddr & ":" & $cfg.server.port
 
+proc spliceUserIntoUrl(url, user: string): string =
+  ## Replace (or insert) the ``user[:pw]@`` segment of a libpq URL.  The
+  ## host/port/database segments of ``url`` are preserved verbatim so
+  ## tests that configure a TOML ``[db].url`` against an ephemeral
+  ## ``PgFixture`` survive ``ISONIM_REVIEW_PGPORT`` poisoning from the
+  ## surrounding dev shell.
+  let schemeEnd = url.find("://")
+  if schemeEnd < 0:
+    # Not a wire URL — fall through to a manually-built URL by the
+    # caller.  Returning ``""`` signals "URL splice not applicable".
+    return ""
+  let scheme = url[0 ..< schemeEnd + 3]
+  var rest = url[schemeEnd + 3 .. ^1]
+  let at = rest.rfind('@')
+  if at >= 0:
+    rest = rest[at + 1 .. ^1]
+  if user.len > 0:
+    return scheme & user & "@" & rest
+  scheme & rest
+
 proc connectionString*(cfg: ReviewConfig; role: string = ""): string =
   ## Builds the libpq URL to feed ``open()`` with.  ``role`` selects
   ## which Postgres user to authenticate as:
@@ -520,7 +540,12 @@ proc connectionString*(cfg: ReviewConfig; role: string = ""): string =
   ##   * ``"migrator"`` — log in as ``cfg.db.migratorUser``.
   ##
   ## If ``cfg.db.url`` is set we honour it verbatim *unless* a role was
-  ## requested, in which case we splice the user in.
+  ## requested, in which case we splice the user in but keep the
+  ## explicit host/port/database from the URL.  This matters when the
+  ## surrounding dev shell exports ``ISONIM_REVIEW_PGPORT`` (env
+  ## overrides bump ``cfg.db.port`` for convenience) but the operator
+  ## or a test wrote an explicit TOML ``[db].url`` pointing at a
+  ## different cluster: the URL host/port must win.
   if cfg.db.url.len > 0 and role.len == 0:
     return cfg.db.url
   let user =
@@ -528,6 +553,10 @@ proc connectionString*(cfg: ReviewConfig; role: string = ""): string =
     of "app": cfg.db.appUser
     of "migrator": cfg.db.migratorUser
     else: ""
+  if cfg.db.url.len > 0:
+    let spliced = spliceUserIntoUrl(cfg.db.url, user)
+    if spliced.len > 0:
+      return spliced
   let userPart =
     if user.len > 0: user & "@" else: ""
   "postgres://" & userPart & cfg.db.host & ":" & $cfg.db.port &

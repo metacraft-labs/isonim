@@ -84,6 +84,57 @@ port = 8113
     let cfg = loadConfig("")
     check cfg.server.port == 8200
 
+  test "test_url_in_config_resists_pgport_env_override_when_role_requested":
+    ## Regression guard for the latent REV-M4 bug fixed in connectionString:
+    ## when the TOML carries an explicit ``[db].url`` *and* a role is
+    ## requested, the URL's host/port/database must win over the
+    ## ``ISONIM_REVIEW_PGPORT`` env override.  Before the fix the env
+    ## bumped ``cfg.db.port`` to 5533 and the role-branch fell through to
+    ## a hand-built URL aimed at the dev cluster, causing the three
+    ## design-review e2es (capture-fullsweep, run-review, full-pipeline)
+    ## to silently write against the wrong DB.
+    let tomlPath = FixtureDir / "config_url_with_role.toml"
+    writeTomlFixture(tomlPath, """
+[db]
+url = "postgres://127.0.0.1:9999/ephemeral_fixture"
+host = "127.0.0.1"
+port = 9999
+database = "ephemeral_fixture"
+app_user = "design_review_app"
+migrator_user = "design_review_migrator"
+
+[server]
+bind = "127.0.0.1"
+port = 8113
+""")
+    defer:
+      try: removeFile(tomlPath)
+      except OSError: discard
+
+    delEnv("ISONIM_REVIEW_DB")
+    delEnv("ISONIM_REVIEW_PORT")
+    delEnv("ISONIM_REVIEW_PGHOST")
+    putEnv("ISONIM_REVIEW_PGPORT", "5533")
+    defer: delEnv("ISONIM_REVIEW_PGPORT")
+
+    let cfg = loadConfig(tomlPath)
+    # Sanity: env override did its (documented) thing to ``cfg.db.port``.
+    check cfg.db.port == 5533
+    # But the role-branch must splice the user into the TOML URL and
+    # keep its host/port/database — *not* fall back to ``cfg.db.{host,
+    # port, database}`` which the env has poisoned.
+    let appConn = cfg.connectionString("app")
+    check ":9999/ephemeral_fixture" in appConn
+    check "design_review_app@" in appConn
+    check ":5533" notin appConn
+    let migratorConn = cfg.connectionString("migrator")
+    check ":9999/ephemeral_fixture" in migratorConn
+    check "design_review_migrator@" in migratorConn
+    check ":5533" notin migratorConn
+    # And the no-role path still honours the URL verbatim.
+    let raw = cfg.connectionString()
+    check raw == "postgres://127.0.0.1:9999/ephemeral_fixture"
+
   test "test_cli_briefs_check_still_works":
     ## Regression guard for REV-M1.  Adding the M4 subcommands must
     ## not break ``briefs check``.  We spawn the built binary against
