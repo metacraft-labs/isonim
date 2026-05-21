@@ -213,6 +213,20 @@ proc processChildren(rendererSym, parentSym: NimNode; body: NimNode;
     let child = body[i]
     case child.kind
     of nnkCall, nnkCommand:
+      # GOTCHA: if the call's name doesn't match a recognized DSL element,
+      # ``processNode`` returns nil and the call is silently dropped here.
+      # This is intentional for cases like nested ``ui()`` calls that
+      # build their own subtrees and append directly; but it is a
+      # frequent surprise for "bare proc call as a ``ui()`` block child"
+      # or "bare proc call as a ``for``-loop body inside ``ui()``" where
+      # the author expects the call to execute and emit DOM rows.
+      #
+      # If you want a proc call to run inside a ``ui()`` block without
+      # producing a DSL element, append its result explicitly via
+      # ``r.appendChild(parent, myProc(...))`` OUTSIDE the ``ui()`` block,
+      # or refactor the proc into an element-returning helper that the
+      # DSL macro can recognise. See the deep-review unified-diff hunk
+      # renderer in codetracer for a worked example.
       let childNode = processNode(rendererSym, child, stmts)
       if childNode != nil:
         stmts.add(newCall(newDotExpr(rendererSym, ident"appendChild"),

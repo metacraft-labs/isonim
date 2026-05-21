@@ -218,6 +218,53 @@ IsoNim is layered so each concern is isolated:
 7. **Layout engine** (`layout/`) -- Yoga flexbox for cross-platform positioning
 8. **Theme system** (`theming/`) -- branded, native, and adaptive theme modes
 
+## DSL Gotchas
+
+### Bare proc calls inside `ui()` blocks can be silently dropped
+
+The DSL macro recognises an `nnkCall` / `nnkCommand` node as a DSL
+element only when the call's name matches a known HTML tag, void
+element, or registered component. Any other call (a regular Nim proc
+that returns a `MenuNode`, builds a subtree, etc.) is passed to
+`processNode`, which returns `nil` — and the call is **dropped**.
+
+This is the intended behaviour for nested `ui()` calls that build their
+own subtrees and append directly, but it is a frequent surprise for:
+
+- **Bare proc call as a `ui()` block child** -- the call vanishes from
+  the generated code; the proc never runs.
+- **Bare proc call as a `for`-loop body inside `ui()`** -- every
+  iteration drops its call; the loop produces no DOM rows. Surfaced
+  in practice by the codetracer deep-review unified-diff renderer,
+  where `for hunk in file.hunks: renderHunk(...)` silently produced
+  zero rows until the workaround was applied.
+
+**Workarounds:**
+
+1. Append the result explicitly via the renderer API **outside** the
+   `ui()` block:
+
+   ```nim
+   var root: typeof(r.createElement("div"))
+   let node = ui(r):
+     tdiv(ref = root, class = "container"): discard
+   # Iterate outside the ui block — bare proc calls here are real Nim.
+   for hunk in file.hunks:
+     r.appendChild(root, renderHunkSubtree(r, hunk))
+   ```
+
+2. Refactor the helper into a template that expands into recognised
+   DSL elements at the call site, so the DSL macro sees them directly
+   rather than as a bare call.
+
+3. If the call returns a `MenuNode` / element value, capture it into a
+   `let` outside `ui()` and reference the binding inside.
+
+See `dsl/ui.nim:processChildren` (the `nnkCall` / `nnkCommand` arm) for
+the drop site with an inline reminder; the worked example lives in
+`codetracer/src/frontend/viewmodel/views/isonim_deepreview_view.nim`
+near `renderUnifiedHunkImpl`.
+
 ## Project Structure
 
 ```
