@@ -1,5 +1,7 @@
 # Reviewer Prompt — IsoNim Design Review
 
+Prompt version: review-prompt@v2
+
 You are reviewing a round of design captures for an IsoNim brief.  Your
 job is to score the captures against the brief, surface every defect
 worth fixing, and emit a single reviewer-output markdown file.
@@ -52,6 +54,15 @@ $scoring_rubric
   the score even if content is perfect.
 - **Accent usage should rhyme.**  Active states, primary CTAs, and
   focused markers should use the same accent token across previews.
+- **Actionability is required for every non-nit defect.**  Any
+  `blocker` or `warn` defect must include a `prescription:` field
+  that states the smallest concrete change that would resolve it.
+  Use measurable values: pixel sizes, gap units, hex colors, font
+  sizes/weights, alignment rules, aspect-ratio/scaling settings, or
+  node-tree/layout changes.  Do not stop at qualitative phrasing like
+  "make it crisper", "more native", "less cramped", or "improve
+  hierarchy"; translate that critique into implementation-ready
+  instructions.
 
 ### Severity
 
@@ -92,6 +103,7 @@ previews:
         summary: <one-sentence finding>
         severity: blocker | warn | nit
         evidence: <capture path + optional bbox / coords>
+        prescription: <required for blocker/warn; concrete px/hex/spacing/font/layout fix>
 notes: |
   Free-form summary mirrored from the body below.
 ---
@@ -104,3 +116,8 @@ inline links like [stretched-aspect](#preview-id-stretched-aspect).
 
 The frontmatter ends at the second `---` line; everything after that
 is the rendered body the editor shows.
+
+For every `blocker` or `warn` defect, repeat the same `prescription:`
+in the prose body directly under the defect discussion.  If you cannot
+name a concrete prescription, lower confidence in the finding and make
+it a `nit`; do not emit vague `blocker` or `warn` defects.

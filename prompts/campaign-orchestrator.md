@@ -74,6 +74,19 @@ containing the following sections, in this order:
    `## Current state` and `## History` sections are your working
    memory across turns (a previous turn of this same campaign may
    have populated them; treat them as authoritative if present).
+
+   **Important consistency rule.** The frontmatter `status:` field
+   is _always_ authoritative over any narrative in the body. If
+   `status:` is `pending` or `active` but the body contains
+   phrasing like "Terminal state for this turn: ..." or
+   "The campaign is escalated/converged" or scores marked as
+   "Final", treat the body as **stale carry-over from a prior
+   turn that was reset**, not as a verdict for the current turn.
+   Drive a fresh review and improve from there. Do **not**
+   "synchronise" the frontmatter to the body — that path zeros
+   out the campaign with no work done and is one of the costliest
+   failure modes observed historically.
+
 3. **The brief(s)** — every `briefId` listed in the doc's
    `briefRefs`. The rubric, the required content, the
    cross-backend consistency contract, and the scoring methodology
@@ -148,6 +161,61 @@ isonim-review run-review --run <run_id>
 This establishes the baseline. Record the baseline scores in the
 doc's `## History` and proceed to the next iteration.
 
+### D1a. A specific backend cannot be evaluated in this environment
+
+(Missing device/emulator, missing capture tool, broken native bridge,
+unreachable launcher, etc. — a per-backend obstacle that is NOT a
+defect in the design under review.)
+
+→ **Action**: document the blocker against that backend in
+`## Current state`, remove it from the working set for this turn,
+and **continue iterating against the remaining backends**.
+
+**Before declaring a cell blocked, exhaust the cheap diagnoses.** The
+most common false-positive "blocker" is a wrong dev shell: a launcher
+binary that links to a per-renderer shim dylib (e.g. a Rust crate's
+`.dylib` / `.so` for GPUI / Freya / etc.) needs to be spawned inside
+the dev shell that owns those dylibs — usually the _consuming
+project's_ dev shell, not the orchestrator's daemon project. If a
+launcher fails with `could not load: <name>.dylib` (or the equivalent
+`dlopen` error on Linux), the first thing to try is re-running the
+SAME launcher invocation inside the consuming project's dev shell
+(typically `direnv exec <consumer-project-root> <launcher-invocation>`
+on this codebase). The consuming project's `.envrc` is where
+`LD_LIBRARY_PATH` / `DYLD_FALLBACK_LIBRARY_PATH` is extended to point
+at the renderer-shim build dir. Only after that fix has been tried
+should you label the cell blocked.
+
+Similarly for tooling shipped by the consuming project (e.g. Node
+scripts under `<consumer>/tools/...`): run them through the consuming
+project's dev shell, even when they internally spawn binaries that
+live in the orchestrator's project. Without that, the spawned child
+inherits a shell where `LD_LIBRARY_PATH` is the daemon project's
+narrower version and any renderer-shim dlopen fails.
+
+Do **not** terminate the campaign just because one backend cannot be
+captured. One blocked cell is not a campaign-level escalation; the
+campaign still has value while the unblocked cells improve. The
+correct terminal status when only one or two backends are blocked
+and the rest converge is `converged` for the achievable set, with
+the blocked backends called out in the summary. Reserve
+`needs_human` for situations where the campaign as a whole cannot
+proceed without an operator decision (e.g. an ambiguous brief
+requirement, a contested defect interpretation).
+
+**Hard rule before setting any terminal status**: list the cells
+in `## Current state` with their current scores and current open
+defects. For every cell that is (a) NOT blocked by an environment
+issue per the rules above AND (b) below `targetScore`, you MUST
+have either landed a verified fix this turn that closed a defect
+OR documented the specific brief/reviewer issue that prevents
+further fixes (e.g. "no defects remain in the report; reviewer
+says the cell is at 8 but the brief's targetScore is 9, and the
+remaining gap is subjective polish"). It is NOT acceptable to
+exit with cells at 6 or 7, no environment blocker on them, and
+"additional design work needed" as the explanation — additional
+design work IS what this campaign is. Keep iterating.
+
 ### D2. A blocker-severity defect ID appeared in 3+ consecutive iterations
 
 (Pattern #1 from the universal principles: recurring defect =
@@ -173,9 +241,20 @@ Once the investigation lands a confirmed root cause, the next
 iteration dispatches the fix with the root cause pointer in its
 prompt.
 
-### D3. Per-cell scores oscillating ±0.2 across 3+ iterations without new defects
+### D3. Score plateau across 2+ reviews of the same cell
 
-(Pattern #2: reviewer calibration drift.)
+(Pattern #2: reviewer calibration drift. Subtler than "same
+defect three times" — the score stays put while the defect
+_description_ shifts, masking the plateau as progress.)
+
+This rule fires when **either** condition is met:
+
+1. The same defect ID appears in 3+ consecutive reviews of the
+   cell without a fix in between.
+2. The per-cell score is identical (e.g. stuck at 6) across 2+
+   consecutive reviews even though **different** defect IDs were
+   surfaced and partially addressed each round. Score-without-
+   defect-stability is the same plateau wearing different masks.
 
 → **Action**: refine the **reviewer prompt** or the **brief**,
 not the code.
@@ -193,6 +272,76 @@ Diagnose first:
 Bump the reviewer prompt's version (`review-prompt@v3 →
 v4`) so the calibration change is detectable in
 `agent_reports.agent_version`.
+
+### D3a. Subjective-qualitative defect ("soft", "cramped", "not native enough")
+
+When a defect description is purely qualitative ("soft", "dim",
+"cramped", "not native enough", "off-feel", etc.) without
+concrete pixel-, color-, or spacing-level prescriptions, the
+orchestrator cannot land an effective fix — every iteration the
+code change is a guess, and the reviewer re-grades the guess
+against the same vague rubric. This is the root cause of cells
+that idle at scores 6–7 for many iterations.
+
+→ **Action**: tighten the **reviewer prompt** to require, for
+every non-nit defect, a "concrete prescription" line stating
+what change _in pixels, hex values, font sizes, gap units, or
+node-tree adjustments_ would resolve it. Example:
+
+```
+- id: gpui-soft-dim-rendering
+  summary: text + control surfaces render with low contrast and soft edges
+  severity: warn
+  evidence: <path> bbox=(48,210,720,260)
+  prescription: |
+    Primary task labels currently render at ~#9aa0a6 on a
+    #1f2024 background (ratio ~3.4:1).  Lift to #e8eaed
+    (ratio ~12.5:1) and switch the body font from the
+    default sans to system-ui medium 13px.  The summary
+    pill background is currently the same #2a2c30 as the
+    card; lift to #3a3d44 with a 1px #4a4e58 inner stroke
+    so it reads as an interactive chip.
+```
+
+If two consecutive reviews of the same cell return a defect
+without a `prescription` line — or with a prescription as vague
+as "make it crisper" — bump the reviewer prompt to v+1 with
+the prescription requirement spelled out in the template, then
+re-run the review against the same captures (no code changes)
+to confirm the new prompt elicits actionable defects.
+
+**Prescriptions are setup, not the deliverable.** Getting
+prescriptions on the report does NOT satisfy any exit gate.
+After the re-review lands actionable prescriptions, your next
+job is to IMPLEMENT them — edit code, re-capture, re-review,
+verify the score moved. A campaign with prescriptions on file
+but unchanged scores is the same as a campaign with vague
+defects — neither moves the brief forward. The deliverable is
+the score lift on the recaptured PNG, not the prescription
+text in the report.
+
+### D3b. A prescription requires touching code outside the per-backend leaf
+
+(E.g. the prescription says "render the GPUI framebuffer at
+native preview size" — that lives in the launcher/adapter, not
+the leaf. Or "16px row padding grid with checkbox x=16,
+label x=44" — that may require a layout-bridge change in
+`isonim-render-serve` rather than a per-leaf width constant.)
+
+→ **Action**: take the change. Cross-repo edits to
+`isonim-render-serve` adapters, `isonim/src/isonim/...` renderer
+code, launcher binaries, or the bridge protocol are explicitly
+in scope when a prescription requires them. You have shell +
+file edit tools across the whole workspace; use them.
+
+Do NOT exit citing "this needs a renderer change". The
+campaign authorises whatever code path is required to get the
+captured pixels matching the prescription. Make the change in
+the smallest scope that lands the pixel-level outcome, run the
+relevant tests (`just test-c` / per-backend suites / browser
+tests for affected views), and verify against the recaptured
+PNG. One verified cross-repo fix is worth a hundred declined
+ones.
 
 ### D4. The reviewer's previously-blocker defect is now `warn`-only without a fix
 
@@ -291,14 +440,18 @@ manifest hash if available, otherwise from the working tree.
 The reviewer often suggests file paths in its "Quickest path to X
 10/10" sections. **Take those, and add your own.** You know:
 
-- The four-layer architecture: a per-backend render defect lives
-  in `<demo>/<backend>/leaves.nim`; a state-shape defect lives in
+- The four-layer architecture (when the consuming project follows
+  it): a per-backend render defect lives in
+  `<demo>/<backend>/leaves.nim`; a state-shape defect lives in
   `<demo>/core/vm.nim`; a layout defect lives in
-  `<demo>/core/views.nim`.
-- The launcher binaries: per-backend launcher under
-  `isonim-examples/build/backends/isonim-examples-<backend>`. If
-  the defect is in the capture path (resampling, downscaling),
-  it's the launcher or the bridge, not the leaves.
+  `<demo>/core/views.nim`. The exact `<demo>` directory and the
+  set of `<backend>` names vary by project — discover them by
+  reading the campaign doc's `scopeBackends` and the project's
+  on-disk layout, not by assuming a fixed list.
+- The launcher binaries: typically `<project>/build/backends/...`
+  with one launcher per backend. If the defect is in the capture
+  path (resampling, downscaling), it's the launcher or the bridge,
+  not the leaves.
 - The streaming bridge:
   `isonim/src/isonim/editor/design_review/bridge_client.nim` and
   the bridge protocol freeze (`isonim-render-stream.status.org`).
@@ -393,11 +546,18 @@ environment differs — open an investigation.
 
 ### F2. Run the real-environment test suite for the touched module
 
-| Touched module                               | Verification suite                                               |
+The mapping below is illustrative; actual `just` targets vary by
+project. Look at the project's `Justfile` and `tests/` layout to
+pick the right suite. The principle holds across projects: changes
+to shared core code run the core suite; per-backend changes run
+that backend's suite plus an end-to-end capture against the
+launcher.
+
+| Touched module class                         | Verification suite                                               |
 | -------------------------------------------- | ---------------------------------------------------------------- |
-| `<demo>/core/vm.nim`                         | `just test-c` and the demo-specific async test                   |
-| `<demo>/core/views.nim`                      | Affected platform suites (`just test-tui`, etc.)                 |
-| `<demo>/<backend>/leaves.nim`                | `just test-<backend>` + e2e capture against the launcher         |
+| Shared `<demo>/core/vm.nim`                  | `just test-c` and the demo-specific async test                   |
+| Shared `<demo>/core/views.nim`               | Affected per-backend suites                                      |
+| Per-backend `<demo>/<backend>/leaves.nim`    | `just test-<backend>` + e2e capture against that backend         |
 | `isonim/src/isonim/editor/...`               | `just test-editor` + browser tests for affected views            |
 | `isonim/src/isonim/editor/design_review/...` | `just test-design-review` against the process-compose PG cluster |
 
@@ -562,6 +722,16 @@ You do **not** have:
 
 ## J. Convergence and exit (status-via-doc protocol)
 
+Before considering any terminal status: re-read §D1a's "hard
+rule" — every non-blocked cell below `targetScore` needs an
+explicit explanation, and "additional design work needed" is
+not such an explanation. If you have remaining wall-clock budget
+(default 4 hours, you can verify via the daemon's `campaign
+show <id>`) and there are non-blocked cells still below
+`targetScore` with open defects, KEEP WORKING. Hitting that
+hard rule before exit is the single most important discipline
+for this campaign type.
+
 When you believe the campaign is done — converged, escalated,
 blocked on a human, or gracefully stopped short — BEFORE ending
 your turn you MUST:
@@ -599,14 +769,18 @@ ending.
 All of the following hold:
 
 - For every `briefId` in `briefRefs`, every preview in
-  `coversPreviews × scopeBackends` has `parsed_scores.previews.
-<id>.scores` meeting the brief's per-dimension minimums and the
-  campaign's `targetScore` overall.
-- No `severity: blocker` defects remain in any preview.
+  `coversPreviews × (scopeBackends \ blockedBackends)` has
+  `parsed_scores.previews.<id>.scores` meeting the brief's
+  per-dimension minimums and the campaign's `targetScore` overall.
+  `blockedBackends` are those documented as unevaluable in this
+  environment per §D1a (e.g. no device/emulator available).
+- No `severity: blocker` defects remain in any evaluable preview.
 - No regressions in the last two consecutive iterations.
 
 Set `status: converged`, `finishedAt`, summary to
-`## Current state` and `## History`. End your turn.
+`## Current state` and `## History`. Call out the blocked
+backends explicitly so a later turn (in an environment that can
+evaluate them) can pick them up.
 
 ### Exit on iteration cap
 
