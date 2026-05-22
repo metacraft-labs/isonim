@@ -74,6 +74,11 @@ tests/test_editor_choice_group_vm
 tests/test_editor_choice_group_no_setstyle
 # TBAR-M3: top-bar surface toggle VM test
 tests/test_editor_surface_toggle_vm
+# TBAR-M4/M5/M5b: spec pane + save-brief + vendor-dist tests
+tests/test_editor_spec_pane_vm
+tests/test_editor_spec_pane_edit_vm
+tests/test_editor_vendor_dist_check
+tests/test_design_review_save_brief_route
 tests/e2e_design_review_pg_process_compose
 tests/test_design_review_brief_format
 tests/test_design_review_brief_index
