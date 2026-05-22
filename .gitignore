@@ -79,6 +79,9 @@ tests/test_editor_spec_pane_vm
 tests/test_editor_spec_pane_edit_vm
 tests/test_editor_vendor_dist_check
 tests/test_design_review_save_brief_route
+# TBAR-M6: spec comment + browser test helper
+tests/test_editor_spec_comment_vm
+tests/browser/helpers/spawn_pg_for_browser_test
 tests/e2e_design_review_pg_process_compose
 tests/test_design_review_brief_format
 tests/test_design_review_brief_index
