@@ -19,6 +19,9 @@
 ## refreshed.  The dev-shell carries ``prefetch-yarn-deps``; run
 ## ``prefetch-yarn-deps yarn.lock`` and paste the resulting SRI / nix
 ## hash here.
+##
+## For the full bump-a-dependency workflow (and the recipe for adding
+## a brand-new JS library), see ``../docs/upgrading-js-dependencies.md``.
 
 {
   lib,
