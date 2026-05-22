@@ -71,6 +71,8 @@ when not defined(js):
 when defined(js):
   import std/jsffi
   import std/dom
+  import std/jsconsole
+  import isonim/editor/vendor/xterm as xterm_lib
 
 import isonim/core/[signals, computation]
 import isonim/editor/types
@@ -1238,10 +1240,12 @@ when defined(js):
     TuiTerminalHandle* = ref object
       ## Opaque handle for an attached RS-M13 TUI terminal. Holds the
       ## live WebSocket, the host DIV element, and the JS-side
-      ## xterm.js ``Terminal`` instance.
+      ## xterm.js ``Terminal`` instance.  The terminal handle is a
+      ## typed ``XtermTerminalHandle`` from ``vendor/xterm.nim``; the
+      ## consumer constructs and tears it down via the FFI surface.
       socket*: JsObject
       host*: Element
-      term*: JsObject
+      term*: xterm_lib.XtermTerminalHandle
       url*: string
 
   proc attachTuiTerminalClient*(vm: StreamingPreviewVM; host: Element;
@@ -1256,7 +1260,7 @@ when defined(js):
     ## translate cell coordinates to manifest hits via the editor's
     ## ``clickCanvas`` / ``hoverCanvas`` callbacks.
     var socket: JsObject
-    var term: JsObject
+    var term: xterm_lib.XtermTerminalHandle
     let dispatchMeta = proc(body: cstring) =
       vm.dispatchMetaPacket($body)
     let onClick = proc(x: int; y: int) =
@@ -1322,82 +1326,93 @@ when defined(js):
             }
           } catch (_) {}
         """].}
+    if host == nil or bridgeUrl.len == 0:
+      return nil
+    if not xterm_lib.isAvailable():
+      console.error(cstring(
+        "attachTuiTerminalClient: XtermTerminal undefined; xterm.js bundle missing"))
+      return nil
+    # The host is the *dedicated* terminal mount point — a sibling of
+    # the canvas inside the preview-pane wrapper (see `ensureTuiHost`
+    # in canvas_mount.nim). xterm.js's `.terminal` element fills its
+    # parent on its own; we deliberately keep `display: block` and
+    # explicit `box-sizing: border-box` on the host so no flex / grid
+    # layout leaks back into the wider editor chrome (sidebar,
+    # chrome-bar, inspector) — round-2 reviewer feedback under
+    # M-EVP-14 traced an editor-chrome scale regression to a prior
+    # `display:flex; align-items:center; justify-content:center;`
+    # applied here, where xterm's internal layout interacted with
+    # ResizeObserver to repeatedly re-fit and visibly compress the
+    # surrounding shell.
+    host.setAttribute("data-tui-terminal", "true")
+    host.style.display = "block".cstring
+    host.style.boxSizing = "border-box".cstring
+    let curPos = host.style.position
+    if curPos.isNil or curPos.len == 0:
+      host.style.position = "absolute".cstring
+    host.style.overflow = "hidden".cstring
+    # Compute an initial font size that fits the cols x rows grid in
+    # the host area using approximate monospace metrics (char width
+    # ~= 0.6 * fontSize, line height ~= 1.18 * fontSize for SF Mono
+    # / Menlo). M-EVP-14 round-8: the previous hardMax=12 clamp made
+    # the terminal box mount at ~38 % of the preview pane width even
+    # on a 1500-px-wide pane; the strict reviewer read that as a
+    # tiny TUI box floating in empty editor canvas (with the rest
+    # of the pane left as the bare wrapper background). The
+    # geometric solve already guarantees the cols x rows grid fits
+    # the host; the cap was redundant. Drop it so the TUI actually
+    # fills the preview pane. Floor at 12 so very small panes still
+    # render a legible cell — see M-EVP-14 Wave-X (X-3 fix) note
+    # below.
+    proc pickFontSize(): int =
+      let w = host.clientWidth
+      let h = host.clientHeight
+      if w <= 0 or h <= 0:
+        return 14
+      let fw = w.float / (cols.float * 0.6)
+      let fh = h.float / (rows.float * 1.18)
+      var fs = int(min(fw, fh))
+      # M-EVP-14 Wave-X (X-3 fix): floor at 12 instead of 8 so the
+      # TUI never paints as the unreadable "tiny rectangle in the
+      # upper-left corner" reviewers flagged. At cols=100 / rows=30
+      # a 12-px font needs ~720 × 425 px to fit; if the host has not
+      # resolved its size yet we'd rather paint the grid slightly
+      # overflowing than render a thumbnail-scale TUI. The
+      # ResizeObserver below downsizes back if the host is later
+      # measured smaller (with min still respecting the 12-px floor).
+      if fs < 12: fs = 12
+      fs
+    let initialFontSize = pickFontSize()
+    let opts = xterm_lib.newOptions()
+    xterm_lib.setCols(opts, cols)
+    xterm_lib.setRows(opts, rows)
+    xterm_lib.setScrollback(opts, 0)
+    xterm_lib.setAllowProposedApi(opts, true)
+    xterm_lib.setFontFamily(opts,
+      "ui-monospace, SFMono-Regular, Menlo, monospace".cstring)
+    xterm_lib.setFontSize(opts, initialFontSize)
+    xterm_lib.setTheme(opts, "#0a101e".cstring, "#e2e8f0".cstring)
+    xterm_lib.setDisableStdin(opts, true)
+    xterm_lib.setCursorBlink(opts, false)
+    xterm_lib.setCursorStyle(opts, "block".cstring)
+    xterm_lib.setConvertEol(opts, false)
+    term = xterm_lib.newTerminal(xterm_lib.XtermTerminal, opts)
+    # ``vendor/xterm.open`` takes ``JsObject`` for ``host`` so this
+    # consumer can pass a ``std/dom.Element`` without dragging a
+    # second DOM-API binding into scope.  At runtime both Nim DOM
+    # bindings are the same JS object.
+    try:
+      xterm_lib.open(term, cast[JsObject](host))
+    except:
+      console.error(cstring("term.open failed"))
+    # M-EVP-14 round-7: belt-and-braces image-rendering hint on
+    # xterm.js's canvases. Round-8 lifted the pickFontSize cap so
+    # the TUI fills the preview pane at native resolution and the
+    # canvas is not bilinear-scaled in steady state; we keep the
+    # pixelated cascade as a guard against future code paths that
+    # resize the host without re-fitting the font.
     {.emit: ["""
-      (function (host, url, cols, rows, dispatchMeta, onClick, onHover, onWsOpen) {
-        if (!host || !url) return null;
-        if (typeof window.Terminal === 'undefined') {
-          console.error('attachTuiTerminalClient: window.Terminal undefined; xterm.js bundle missing');
-          return null;
-        }
-        host.setAttribute('data-tui-terminal', 'true');
-        // The host is the *dedicated* terminal mount point — a sibling of
-        // the canvas inside the preview-pane wrapper (see `ensureTuiHost`
-        // in canvas_mount.nim). xterm.js's `.terminal` element fills its
-        // parent on its own; we deliberately keep `display: block` and
-        // explicit `box-sizing: border-box` on the host so no flex / grid
-        // layout leaks back into the wider editor chrome (sidebar,
-        // chrome-bar, inspector) — round-2 reviewer feedback under
-        // M-EVP-14 traced an editor-chrome scale regression to a prior
-        // `display:flex; align-items:center; justify-content:center;`
-        // applied here, where xterm's internal layout interacted with
-        // ResizeObserver to repeatedly re-fit and visibly compress the
-        // surrounding shell.
-        host.style.display = 'block';
-        host.style.boxSizing = 'border-box';
-        host.style.position = host.style.position || 'absolute';
-        host.style.overflow = 'hidden';
-        // Compute an initial font size that fits the cols x rows grid
-        // in the host area using approximate monospace metrics (char
-        // width ~= 0.6 * fontSize, line height ~= 1.18 * fontSize for
-        // SF Mono / Menlo). M-EVP-14 round-8: the previous hardMax=12
-        // clamp made the terminal box mount at ~38 % of the preview
-        // pane width even on a 1500-px-wide pane; the strict reviewer
-        // read that as a tiny TUI box floating in empty editor canvas
-        // (with the rest of the pane left as the bare wrapper
-        // background). The geometric solve already guarantees the
-        // 80x24 grid fits the host; the cap was redundant. Drop it so
-        // the TUI actually fills the preview pane. Keep a floor of
-        // 8 px so very small panes still get a legible cell.
-        function pickFontSize() {
-          var w = host.clientWidth || host.getBoundingClientRect().width || 0;
-          var h = host.clientHeight || host.getBoundingClientRect().height || 0;
-          if (w <= 0 || h <= 0) return 14;
-          var fw = w / (cols * 0.6);
-          var fh = h / (rows * 1.18);
-          var fs = Math.floor(Math.min(fw, fh));
-          // M-EVP-14 Wave-X (X-3 fix): floor at 12 instead of 8 so the
-          // TUI never paints as the unreadable "tiny rectangle in the
-          // upper-left corner" reviewers flagged. At cols=100 / rows=30
-          // a 12-px font needs ~720 × 425 px to fit; if the host has not
-          // resolved its size yet we'd rather paint the grid slightly
-          // overflowing than render a thumbnail-scale TUI. The
-          // ResizeObserver below downsizes back if the host is later
-          // measured smaller (with min still respecting the 12-px floor).
-          if (fs < 12) fs = 12;
-          return fs;
-        }
-        var initialFontSize = pickFontSize();
-        var term = new window.Terminal({
-          cols: cols, rows: rows,
-          scrollback: 0,
-          allowProposedApi: true,
-          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-          fontSize: initialFontSize,
-          theme: { background: '#0a101e', foreground: '#e2e8f0' },
-          disableStdin: true,
-          cursorBlink: false,
-          cursorStyle: 'block',
-          convertEol: false,
-        });
-        try { term.open(host); } catch (e) {
-          console.error('term.open failed', e);
-        }
-        // M-EVP-14 round-7: belt-and-braces image-rendering hint on
-        // xterm.js's canvases. Round-8 lifted the pickFontSize cap so
-        // the TUI fills the preview pane at native resolution and the
-        // canvas is not bilinear-scaled in steady state; we keep the
-        // pixelated cascade as a guard against future code paths that
-        // resize the host without re-fitting the font.
+      (function (host, url, cols, rows, dispatchMeta, onClick, onHover, onWsOpen, term, initialFontSize) {
         try {
           if (!document.getElementById('__isonim-tui-pixelated-style')) {
             var styleEl = document.createElement('style');
@@ -1448,13 +1463,24 @@ when defined(js):
         } catch (_) {}
         // Install a ResizeObserver so the terminal refits when the
         // preview pane (or the editor viewport) is resized. Tracks the
-        // last applied font size so we skip no-op refits.
+        // last applied font size so we skip no-op refits. The pixel-
+        // sizing math mirrors the ``pickFontSize`` Nim proc above.
         var lastFontSize = initialFontSize;
         var refitPending = false;
+        function pickFontSizeJs() {
+          var w = host.clientWidth || host.getBoundingClientRect().width || 0;
+          var h = host.clientHeight || host.getBoundingClientRect().height || 0;
+          if (w <= 0 || h <= 0) return 14;
+          var fw = w / (cols * 0.6);
+          var fh = h / (rows * 1.18);
+          var fs = Math.floor(Math.min(fw, fh));
+          if (fs < 12) fs = 12;
+          return fs;
+        }
         function refit() {
           refitPending = false;
           try {
-            var fs = pickFontSize();
+            var fs = pickFontSizeJs();
             if (fs !== lastFontSize) {
               term.options.fontSize = fs;
               lastFontSize = fs;
@@ -1572,9 +1598,9 @@ when defined(js):
         ws.__isonimTuiResizeObs = resizeObs;
         ws.__isonimTuiPixelatedObs = pixelatedObs;
         """, socket, """ = ws;
-        """, term, """ = term;
       })(""", host, ", ", bridgeUrl.cstring, ", ", cols, ", ", rows, ", ",
-       dispatchMeta, ", ", onClick, ", ", onHover, ", ", onWsOpen, """);
+       dispatchMeta, ", ", onClick, ", ", onHover, ", ", onWsOpen, ", ",
+       cast[JsObject](term), ", ", initialFontSize, """);
     """].}
     TuiTerminalHandle(socket: socket, host: host, term: term,
                       url: bridgeUrl)
@@ -1643,10 +1669,14 @@ when defined(js):
   proc detachTuiTerminalClient*(handle: TuiTerminalHandle) =
     if handle == nil: return
     var sock = handle.socket
-    var term = handle.term
     let host = handle.host
+    # WS teardown stays in JS: it needs to walk the JS-installed
+    # ``__isonimTuiHandlers`` / ``__isonimTuiResizeObs`` /
+    # ``__isonimTuiPixelatedObs`` fields that the attach path stashed
+    # on the socket.  xterm teardown + host-attribute cleanup move to
+    # the typed FFI surface below.
     {.emit: ["""
-      (function (ws, term, host) {
+      (function (ws, host) {
         if (ws) {
           try {
             if (ws.__isonimTuiHandlers && host) {
@@ -1670,13 +1700,14 @@ when defined(js):
           } catch (_) {}
           try { ws.close(); } catch (_) {}
         }
-        if (term) {
-          try { term.dispose(); } catch (_) {}
-        }
-        if (host) {
-          try { host.removeAttribute('data-tui-terminal'); } catch (_) {}
-        }
-      })(""", sock, ", ", term, ", ", host, ");"].}
+      })(""", sock, ", ", host, ");"].}
+    if not handle.term.isNil:
+      try:
+        xterm_lib.dispose(handle.term)
+      except:
+        discard
+    if host != nil:
+      host.removeAttribute("data-tui-terminal")
     handle.socket = nil
     handle.term = nil
     handle.host = nil

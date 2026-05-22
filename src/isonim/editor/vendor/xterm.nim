@@ -2,19 +2,15 @@
 ##
 ## FFI binding for the ``xterm`` (xterm.js) JS library.  The bundle's
 ## entry script (``isonim/nix/entry-xterm.mjs``) assigns the
-## ``Terminal`` constructor to ``globalThis.XtermTerminal`` and (for
-## backwards compat with the existing ``streaming_preview.nim``
-## ``{.emit.}`` block) aliases it as ``window.Terminal``.
+## ``Terminal`` constructor to ``globalThis.XtermTerminal``.
 ##
-## The new spec-pane code does not consume xterm directly — this
-## module exists so the per-library FFI surface is complete and so
-## future callers (the streaming-preview consumer, the TUI preview
-## chrome) can migrate off the legacy ``window.Terminal`` global to a
-## typed binding.
+## The streaming-preview TUI consumer (``streaming_preview.nim``)
+## migrated off the legacy ``window.Terminal`` global to this typed
+## binding; the ``entry-xterm.mjs`` legacy alias was dropped in the
+## same change.
 
 when defined(js):
   import std/jsffi
-  import isonim/web/dom_api
 
   type
     XtermNamespace* = JsObject
@@ -43,13 +39,24 @@ when defined(js):
   proc setFontSize*(opts: XtermOptions; size: int) {.importjs: "#.fontSize = #".}
   proc setDisableStdin*(opts: XtermOptions; disabled: bool) {.importjs: "#.disableStdin = #".}
   proc setCursorBlink*(opts: XtermOptions; blink: bool) {.importjs: "#.cursorBlink = #".}
+  proc setCursorStyle*(opts: XtermOptions; style: cstring) {.importjs: "#.cursorStyle = #".}
   proc setConvertEol*(opts: XtermOptions; convert: bool) {.importjs: "#.convertEol = #".}
+  proc setAllowProposedApi*(opts: XtermOptions; allow: bool)
+    {.importjs: "#.allowProposedApi = #".}
+  proc setTheme*(opts: XtermOptions; background, foreground: cstring)
+    {.importjs: "#.theme = { background: #, foreground: # }".}
 
   proc newTerminal*(ns: XtermNamespace; opts: XtermOptions): XtermTerminalHandle
     {.importjs: "(new #.Terminal(#))".}
 
-  proc open*(term: XtermTerminalHandle; host: Element)
+  proc open*(term: XtermTerminalHandle; host: JsObject)
     {.importjs: "#.open(#)".}
+    ## ``host`` is a DOM ``Element``.  The parameter is typed as
+    ## ``JsObject`` so consumers can pass either an
+    ## ``isonim/web/dom_api.Element`` or a ``std/dom.Element`` via a
+    ## ``cast[JsObject](...)`` — both resolve to the same JS object at
+    ## runtime.  This mirrors how ``vendor/tiptap.setElement`` is
+    ## typed.
 
   proc write*(term: XtermTerminalHandle; data: cstring)
     {.importjs: "#.write(#)".}
@@ -62,7 +69,9 @@ else:
     XtermNamespace* = ref object
     XtermTerminalHandle* = ref object
     XtermOptions* = ref object
-    Element* = ref object
+    JsObject* = ref object
+      ## Inert native stub mirroring the JS-target ``JsObject`` so the
+      ## shared ``open`` proc signature compiles under both targets.
 
   var XtermTerminal*: XtermNamespace
 
@@ -75,9 +84,12 @@ else:
   proc setFontSize*(opts: XtermOptions; size: int) = discard
   proc setDisableStdin*(opts: XtermOptions; disabled: bool) = discard
   proc setCursorBlink*(opts: XtermOptions; blink: bool) = discard
+  proc setCursorStyle*(opts: XtermOptions; style: cstring) = discard
   proc setConvertEol*(opts: XtermOptions; convert: bool) = discard
+  proc setAllowProposedApi*(opts: XtermOptions; allow: bool) = discard
+  proc setTheme*(opts: XtermOptions; background, foreground: cstring) = discard
   proc newTerminal*(ns: XtermNamespace;
                     opts: XtermOptions): XtermTerminalHandle = XtermTerminalHandle()
-  proc open*(term: XtermTerminalHandle; host: Element) = discard
+  proc open*(term: XtermTerminalHandle; host: JsObject) = discard
   proc write*(term: XtermTerminalHandle; data: cstring) = discard
   proc dispose*(term: XtermTerminalHandle) = discard
