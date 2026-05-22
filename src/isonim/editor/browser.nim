@@ -10,6 +10,7 @@ import std/[dom, strutils]
 
 import isonim/core/[computation, owner, signals]
 import isonim/editor/dom_renderer
+import isonim/editor/streaming_preview
 import isonim/editor/types
 import isonim/editor/viewmodels
 import isonim/editor/workspace
@@ -628,6 +629,17 @@ proc mountEditor*(workspace: EditorWorkspace;
   var mounted: EditorVM
   createRoot proc(dispose: proc()) =
     let vm = createEditorVM(workspace)
+    when defined(js):
+      # RS-M11 Pattern A: the JS bundle needs the streaming-preview
+      # VM so the non-Web canvas can route F/M/I packets and surface
+      # manifest selections back to the sidebar. createEditorVM
+      # leaves the field nil per the M57 headless contract; the
+      # JS mount path opts in here.  Web stays the default backend;
+      # the chip click flips `vm.platform` AND
+      # `streamingPreview.selectedBackend`.
+      vm.streamingPreview = newStreamingPreviewVM(initial = pbWeb,
+        available = @[pbWeb, pbTui, pbGpui, pbFreya, pbCocoa,
+                      pbAndroid, pbIos])
     mounted = vm
     # Phase C: install the daemon-driven agent adapter on top of any
     # workspace-supplied placeholder.  The chat panel and the brief
