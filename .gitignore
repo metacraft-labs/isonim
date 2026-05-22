@@ -72,6 +72,8 @@ tests/test_design_review_list_history_e2e
 # TBAR-M2: ChoiceGroup widget tests
 tests/test_editor_choice_group_vm
 tests/test_editor_choice_group_no_setstyle
+# TBAR-M3: top-bar surface toggle VM test
+tests/test_editor_surface_toggle_vm
 tests/e2e_design_review_pg_process_compose
 tests/test_design_review_brief_format
 tests/test_design_review_brief_index
