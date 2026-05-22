@@ -24,7 +24,7 @@
 ##     host below the preview pane and conditionally instantiates
 ##     the gallery overlay on first open.
 
-import std/[options, strutils]
+import std/[options, strutils, tables]
 
 import isonim/core/[signals, computation]
 import isonim/dsl/ui
@@ -32,6 +32,8 @@ import isonim/dsl/ui
 import isonim/editor/types
 import isonim/editor/viewmodels
 import isonim/editor/design_review/brief_format
+import isonim/editor/design_review/brief_index
+import isonim/editor/design_review/brief_index_static
 import isonim/editor/design_review/daemon_discovery
 import isonim/editor/design_review/editor_http_client
 import isonim/editor/views/preview_chrome
@@ -58,17 +60,47 @@ proc previewIdFor*(story: StoryRef; backend: PreviewBackend): string =
     return ""
   result = canonicalPreviewId(story, backend)
 
-proc resolveBriefId*(story: StoryRef): string =
-  ## REV-M2's index lookup keyed off ``StoryRef``; REV-M8 reuses the
-  ## same projection.  An empty result means "no covered brief" — the
-  ## history button stays hidden.
+proc resolveBriefId*(story: StoryRef; backend: PreviewBackend): string =
+  ## Resolve the canonical briefId for the gallery / history-button
+  ## flow against the active (story, backend) pair.
+  ##
+  ## Earlier revisions hand-rolled a briefId from
+  ## ``story.group + "/" + story.name``, which produced values like
+  ## ``"task-app-/-pages/inbox"`` for a story whose actual briefId
+  ## (declared in the brief's YAML frontmatter and used as the FK in
+  ## ``design_review.runs``) is ``"render.task-app"``.  The result was a
+  ## history button that mounted, hit the daemon, but always saw an
+  ## empty array — the URL's briefId didn't match anything in the DB.
+  ##
+  ## TBAR-M1 fixes that by routing the lookup through the same
+  ## ``BriefIndex.byPreview`` map the brief-tab uses
+  ## (``availableBriefsFor``).  The brief baked into the JS bundle by
+  ## ``brief_index_static.builtInBriefIndex`` knows the real briefId
+  ## from each brief's YAML frontmatter.
+  ##
+  ## When more than one brief covers ``(story, backend)``, prefer
+  ## briefs of kind ``bkRender`` (the gallery is a visual-review
+  ## artefact, and only render briefs trigger captures via the
+  ## ``isonim-review capture`` CLI).  Fall back to the first listed
+  ## briefId otherwise.
   if story.name.len == 0: return ""
-  # The brief id derived from the story group + name follows REV-M2's
-  # canonicalisation.  We keep this terse here; a future refactor can
-  # share the canonical-brief-id helper from REV-M2 once the import
-  # cycle is resolved.
-  result = story.group.toLowerAscii.replace(" ", "-") & "/" &
-           story.name.toLowerAscii.replace(" ", "-")
+  let idx = builtInBriefIndex()
+  if idx == nil or idx.empty():
+    return ""
+  let previewId = canonicalPreviewId(story, backend)
+  if previewId notin idx.byPreview:
+    return ""
+  let candidates = idx.byPreview[previewId]
+  # First pass: prefer a render-kind brief.
+  for id in candidates:
+    if id in idx.byBriefId:
+      if idx.byBriefId[id].kind == bkRender:
+        return id
+  # Fallback: first brief that resolves.
+  for id in candidates:
+    if id in idx.byBriefId:
+      return id
+  ""
 
 proc ensureDesignReviewState*(vm: EditorVM): DesignReviewState =
   for (k, v) in states:
@@ -98,7 +130,7 @@ proc ensureDesignReviewState*(vm: EditorVM): DesignReviewState =
   createRenderEffect proc() =
     let story = capturedVm.selectedStory.val
     let backend = capturedVm.platform.val
-    let bid = resolveBriefId(story)
+    let bid = resolveBriefId(story, backend)
     capturedState.briefId.val = bid
     capturedState.galleryVm.briefId.val = bid
     discard previewIdFor(story, backend)
