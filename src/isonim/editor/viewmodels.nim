@@ -1651,8 +1651,9 @@ proc selectStory*(editor: EditorVM; story: StoryRef): bool {.discardable.} =
   # render effect.
   let storyId = storyIdFor(story)
   let kindWire = storyKindWire(story.kind)
-  editor.streamingPreview.publishSelectStory(story.group, story.name,
-                                              kindWire, storyId)
+  if editor.streamingPreview != nil:
+    editor.streamingPreview.publishSelectStory(story.group, story.name,
+                                                kindWire, storyId)
   true
 
 proc computeVectorEditorUsages*(editor: EditorVM; symbolName: string):
@@ -2545,6 +2546,7 @@ proc setEditMode*(editor: EditorVM; mode: EditMode) =
   # would unmount the canvas + handles. The auto-switch only applies
   # to the Web/iframe path where the canvas overlay is not painted.
   let canvasActive =
+    editor.streamingPreview != nil and
     editor.streamingPreview.selectedBackend.val != pbWeb
   if mode in {emComment, emEdit} and editor.activeView.val in {evComponentDetail,
       evPagePreview} and not canvasActive:
@@ -3188,7 +3190,7 @@ proc editInspectorProperty*(editor: EditorVM;
     let scopeKind =
       if request.scope == pesShared: msSharedScope
       else: msLocalScope
-    if target.len > 0:
+    if target.len > 0 and editor.streamingPreview != nil:
       editor.streamingPreview.publishApplyMutation(
         target, request.property, valueLiteral, scopeKind)
     let acceptedRecord = result.record
@@ -9920,18 +9922,14 @@ proc createEditorVM*(): EditorVM =
   let review = createReviewResultsVM()
   let preview = createProjectPreviewVM(selectedStory, platform)
   let flowPlayer = createFlowPlayerVM()
-  # RS-M11 Pattern A: the editor's bundle needs the streaming-preview
-  # VM so the non-Web canvas can route F/M/I packets and surface manifest
-  # selections back to the sidebar. Web stays the default backend; the
-  # chip click flips `vm.platform` AND `streamingPreview.selectedBackend`.
-  # Under `nim js` `detectAvailableBackends()` only returns Web + TUI
-  # because none of the `defined(linux)/macosx/...` guards apply to the
-  # JS host. Surface every backend so the edge-strip chips appear; the
-  # launcher availability is enforced by the bridge port table — chip
-  # clicks for unreachable backends simply yield no WebSocket.
-  let streamingPreview = newStreamingPreviewVM(initial = pbWeb,
-    available = @[pbWeb, pbTui, pbGpui, pbFreya, pbCocoa, pbAndroid,
-                  pbIos])
+  # M57 contract: ``streamingPreview`` is documented as an optional
+  # handle (see the type doc on ``EditorVM.streamingPreview``). The
+  # default constructor leaves it nil so headless tests observe the
+  # documented "no streaming-preview attached" baseline. Consumers
+  # that need the streaming-preview VM (the JS bundle's canvas mount,
+  # the chrome-layout tests, the RS-M11 Pattern A bridge client, etc.)
+  # assign ``vm.streamingPreview = newStreamingPreviewVM(...)`` after
+  # ``createEditorVM`` returns.
 
   let hasSelection = createMemo[bool](proc(): bool =
     selectedStory.val.name.len > 0
@@ -9978,5 +9976,5 @@ proc createEditorVM*(): EditorVM =
     review: review,
     preview: preview,
     flowPlayer: flowPlayer,
-    streamingPreview: streamingPreview,
+    streamingPreview: nil,
     hasSelection: hasSelection)
