@@ -67,6 +67,11 @@ tests/test_design_review_pg_schema
 tests/test_design_review_pg_routines
 tests/test_design_review_pg_roles
 tests/smoke_design_review_pg_dump_restore
+# TBAR-M1: list-history e2e against real daemon
+tests/test_design_review_list_history_e2e
+# TBAR-M2: ChoiceGroup widget tests
+tests/test_editor_choice_group_vm
+tests/test_editor_choice_group_no_setstyle
 tests/e2e_design_review_pg_process_compose
 tests/test_design_review_brief_format
 tests/test_design_review_brief_index
