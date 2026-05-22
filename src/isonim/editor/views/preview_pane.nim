@@ -188,3 +188,5 @@ proc mountBriefTabIntoPreviewPane*[R, E](r: R; container: E;
                    if briefVisible: "covered" else: "uncovered")
     r.setAttribute(briefHost, "data-brief-host-visible",
                    if tab == pptBrief: "true" else: "false")
+    r.setStyle(briefHost, "display",
+               if tab == pptBrief and briefVisible: "flex" else: "none")

@@ -225,7 +225,7 @@ proc applyCanvasFitStyle*[R, E](r: R; mount: CanvasMount[E];
     r.setStyle(mount.wrapper, "display", "flex")
     r.setStyle(mount.wrapper, "align-items", "center")
     r.setStyle(mount.wrapper, "justify-content", "center")
-    r.setStyle(mount.wrapper, "border", "1px solid rgba(148,163,184,.45)")
+    r.setStyle(mount.wrapper, "border", "1px solid #303244")
     r.setStyle(mount.wrapper, "border-radius", "6px")
     r.setStyle(mount.wrapper, "box-shadow",
                "0 0 0 1px rgba(15,23,42,.6), " &
@@ -679,7 +679,11 @@ when defined(js):
     {.emit: ["""
       (function (host, visible) {
         if (!host) return;
-        host.style.display = visible ? 'block' : 'none';
+        host.style.display = visible ? 'flex' : 'none';
+        if (visible) {
+          host.style.alignItems = 'center';
+          host.style.justifyContent = 'center';
+        }
       })(""", host, ", ", visible, ");"].}
 
   proc setCanvasHidden(canvas: Element; hidden: bool) =
