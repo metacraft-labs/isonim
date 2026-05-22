@@ -1,0 +1,90 @@
+## Vendored TipTap + marked — pinned for TBAR-M4.
+##
+## TipTap v3 is the current stable line of the TipTap rich-text
+## framework (a thin wrapper around ProseMirror). This vendor bundle
+## combines the TipTap core ``Editor`` plus the StarterKit (the
+## standard collection of headings / lists / code / paragraph nodes
+## the editor needs to render briefs) with the ``marked`` markdown
+## parser, so the editor can accept a markdown string and mount a
+## read-only TipTap editor on top of the rendered HTML.
+##
+## TipTap does NOT ship a pre-built UMD bundle on npm — the package
+## ships ESM + CommonJS only. To honour the editor's vendored
+## ``<script>``-tag loading pattern we produce the UMD by bundling
+## the npm packages once with esbuild and committing the resulting
+## file. The bundling step is a one-off described in the
+## "Reproduction" section below; ``editor-build`` does NOT depend on
+## npm or node at build time.
+##
+## Source packages (pinned via npm registry):
+##
+##   Package: @tiptap/core
+##   Version: 3.23.6
+##   Tarball: https://registry.npmjs.org/@tiptap/core/-/core-3.23.6.tgz
+##
+##   Package: @tiptap/starter-kit
+##   Version: 3.23.6
+##   Tarball: https://registry.npmjs.org/@tiptap/starter-kit/-/starter-kit-3.23.6.tgz
+##
+##   Package: @tiptap/pm
+##   Version: 3.23.6
+##   Tarball: https://registry.npmjs.org/@tiptap/pm/-/pm-3.23.6.tgz
+##   Note: pulled in transitively by @tiptap/core, vendored inside
+##   the bundle.
+##
+##   Package: marked
+##   Version: 18.0.4
+##   Tarball: https://registry.npmjs.org/marked/-/marked-18.0.4.tgz
+##
+## License: MIT for all three packages
+## (https://github.com/ueberdosis/tiptap/blob/main/LICENSE,
+##  https://github.com/markedjs/marked/blob/master/LICENSE.md).
+##
+## Files (SHA-256):
+##
+##   isonim-tiptap.umd.min.js  669bf0f58cf67a33073cf38e3c880edb9c7cd3f48c1d92e29f4afb091951ce23  402801 bytes
+##   entry.js                  (source of truth for the reproduction step; not loaded by the editor)
+##
+## The vendoring procedure (reproducible from a clean shell):
+##
+##   tmpdir=$(mktemp -d)
+##   cd "$tmpdir"
+##   npm init -y
+##   npm install @tiptap/core@3.23.6 @tiptap/starter-kit@3.23.6 marked@18.0.4
+##   npm install --save-dev esbuild
+##   cp <repo>/isonim/src/isonim/editor/vendor/tiptap/entry.js entry.js
+##   ./node_modules/.bin/esbuild entry.js \
+##     --bundle --minify --format=iife \
+##     --global-name=IsoNimTipTapWrapper \
+##     --outfile=isonim-tiptap.umd.min.js
+##   cp isonim-tiptap.umd.min.js \
+##     <repo>/isonim/src/isonim/editor/vendor/tiptap/isonim-tiptap.umd.min.js
+##   shasum -a 256 <repo>/isonim/src/isonim/editor/vendor/tiptap/isonim-tiptap.umd.min.js
+##
+## The shasums above MUST match. If they don't, npm has shipped a
+## different tarball under the same version tag (this happens when
+## someone re-publishes a unique build); pin to a different patch
+## version after auditing the diff and bump this manifest.
+##
+## NO runtime npm dependency. The editor bundle copies the UMD file
+## into `build/editor/vendor/tiptap/` (see the
+## `isonim-examples/Justfile` `editor-build` recipe) and the editor
+## HTML page loads it via `<script src="vendor/tiptap/isonim-tiptap.umd.min.js">`
+## before the Nim-emitted `editor.js`.
+##
+## The bundle attaches a single global, ``window.IsoNimTipTap``, with
+## the following shape (see `entry.js` for the canonical source):
+##
+##   window.IsoNimTipTap = {
+##     version: "tiptap-2.x + marked-18.x (vendored)",
+##     Editor,                 // @tiptap/core
+##     StarterKit,             // @tiptap/starter-kit
+##     marked,                 // marked
+##     mountViewer(container, markdown), // read-only mount
+##     unmount(container),
+##     isEditableContainer(container) -> bool
+##   }
+##
+## The TBAR-M4 spec-pane mount consumes ``IsoNimTipTap.mountViewer``;
+## the Playwright probe asserts ``window.IsoNimTipTap`` is defined
+## after page load.

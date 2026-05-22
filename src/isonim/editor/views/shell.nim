@@ -23,6 +23,7 @@ import isonim/editor/views/widgets as editor_widgets
 import isonim/editor/design_review/brief_format
 import isonim/editor/design_review/brief_index
 import isonim/editor/design_review/brief_index_static
+import isonim/editor/views/spec_pane as spec_pane_view
 
 # ---------------------------------------------------------------------------
 # Theme tokens
@@ -2353,32 +2354,30 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
           flex_direction = "column",
           `data-preview-view-stack` = "true")
 
-  # TBAR-M3: Spec-pane placeholder slot. Renders inside the center
-  # column when ``surfaceSig.val == sSpec``. The body is the active
-  # brief's raw markdown body fed from the built-in brief index — read
-  # only in this milestone; TBAR-M4 replaces this with a TipTap-backed
-  # viewer.
+  # TBAR-M4: Spec-pane mount. Renders inside the center column when
+  # ``surfaceSig.val == sSpec``. The body is the active brief's
+  # markdown rendered through the vendored TipTap editor (read-only).
+  # When the vendor UMD failed to load the spec_pane mount falls back
+  # to a setTextContent of the raw markdown so the user still sees the
+  # brief body (rather than a hard crash) — see ``spec_pane.nim``.
+  #
+  # The outer ``specPaneEl`` keeps the TBAR-M3 ``data-test-id``
+  # selector + the ``display: none/flex`` reactive toggle below so the
+  # surface-switch e2e test contract is preserved.
   let specPaneEl = ui(r):
     tdiv(`data-preview-spec-pane` = "true",
          `data-test-id` = "spec-pane",
          display = "none", flex = "1", min_width = "0", min_height = "0",
          flex_direction = "column",
-         padding = "16px 20px",
-         overflow_y = "auto",
          background_color = bgPreview)
-  var specBodyNode: E
-  discard ui(r):
-    tdiv(`data-spec-pane-body` = "true",
-         display = "block",
-         font_family = "ui-monospace, SFMono-Regular, Menlo, monospace",
-         font_size = "12px",
-         line_height = "1.6",
-         color = textPrimary,
-         white_space = "pre-wrap",
-         ref = specBodyNode):
-      text ""
-  r.appendChild(specPaneEl, specBodyNode)
-  # Reactively fill the spec body with the active brief's markdown.
+  let specPaneVm = spec_pane_view.createSpecPaneVM("")
+  spec_pane_view.mountSpecPane[R, E](r, specPaneEl, specPaneVm)
+  # Reactively feed the active brief's markdown into the spec pane VM.
+  # ``resolveBriefId`` follows the active story + selected backend.
+  # We prepend the brief's ``title`` as an H1 so the rendered TipTap
+  # surface carries the canonical title heading even when the brief
+  # body itself only starts at H2 (the render briefs follow that
+  # pattern; the title field carries the H1 text).
   block:
     let capturedVm = vm
     createRenderEffect proc() =
@@ -2389,10 +2388,15 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
       if bid.len > 0:
         let idx = builtInBriefIndex()
         if idx != nil and bid in idx.byBriefId:
-          body = idx.byBriefId[bid].bodyMarkdown
+          let b = idx.byBriefId[bid]
+          if b.title.len > 0:
+            body.add "# "
+            body.add b.title
+            body.add "\n\n"
+          body.add b.bodyMarkdown
       if body.len == 0:
-        body = "No brief available for the selected story."
-      r.setTextContent(specBodyNode, body)
+        body = "# Spec\n\nNo brief available for the selected story."
+      specPaneVm.setMarkdown(body)
 
   # Default: storyboard visible, everything else hidden
   r.setStyle(componentDetailEl, "display", "none")
