@@ -25,6 +25,8 @@ import isonim/editor/design_review/brief_index
 import isonim/editor/design_review/brief_index_static
 import isonim/editor/design_review/editor_http_client as editor_http_client
 import isonim/editor/views/spec_pane as spec_pane_view
+import isonim/editor/views/spec_comment_popover as spec_comment_popover_view
+import isonim/editor/views/spec_comment_chat as spec_comment_chat_view
 
 # ---------------------------------------------------------------------------
 # Theme tokens
@@ -2534,13 +2536,32 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
   #   [sidebar | center column (chrome bar + view stack) | inspector chat]
   r.appendChild(shell, sidebarEl)
   r.appendChild(shell, centerColumn)
+  # TBAR-M6: one-shot signal flipped on by a successful Spec-Comment
+  # submission.  When in Spec surface this overrides the TBAR-M3
+  # surface-based hide so the user can see the AI Assistant respond
+  # to their selection comment.  Cleared when the user flips back to
+  # Preview (the TBAR-M3 invariant — "Spec surface has no
+  # property/AI panel by default" — is preserved for the surface
+  # switch e2e test which never submits a comment).
+  let chatOpenedForSpecComment = createSignal(false)
+  block:
+    let capturedVm = vm
+    let capturedChatFlag = chatOpenedForSpecComment
+    createRenderEffect proc() =
+      if capturedVm.surfaceSig.val == sPreview:
+        if capturedChatFlag.val:
+          capturedChatFlag.val = false
   # TBAR-M3: the right-side property/AI-assistant panel is mounted
   # reactively. When ``surfaceSig`` flips to ``sSpec`` the panel is
   # physically removed from the shell row so its slot collapses (no
   # orphan wrapper div remains). The ``manualEditMode`` carve-out
   # (Edit mode on the live preview hides the AI panel) is preserved.
+  # TBAR-M6 extends the predicate with the spec-comment override so a
+  # successful Comment submission opens (and keeps open) the chat
+  # sidebar even while the user is on the Spec surface.
   block:
     let capturedVm = vm
+    let capturedChatFlag = chatOpenedForSpecComment
     var mounted = false
     proc shouldMount(): bool =
       let view = capturedVm.activeView.val
@@ -2548,7 +2569,11 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
       let surface = capturedVm.surfaceSig.val
       let manualEditMode =
         view == evComponentEdit and capturedVm.editMode.val == emEdit
-      surface == sPreview and panels.inspector and not manualEditMode
+      let previewWantsChat =
+        surface == sPreview and panels.inspector and not manualEditMode
+      let specWantsChat =
+        surface == sSpec and capturedChatFlag.val and not manualEditMode
+      previewWantsChat or specWantsChat
     createRenderEffect proc() =
       let want = shouldMount()
       if want and not mounted:
@@ -2557,6 +2582,24 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
       elif not want and mounted:
         r.removeChild(shell, chatEl)
         mounted = false
+  # TBAR-M6: mount the Spec Comment popover at shellRoot so its
+  # absolute-positioned overlay layers above the spec pane without
+  # parent clipping.  Submission routes through
+  # ``submitSpecComment`` (which sets the chat input + dispatches
+  # ``sendAgentPrompt``) and flips ``chatOpenedForSpecComment`` so
+  # the predicate above pulls the chat panel into the shell row.
+  let specCommentSubmit: CommentSubmitProc =
+    proc(draft: CommentDraft;
+         cb: proc(success: bool; reason: string)) {.closure.} =
+      let bid = designReviewState.briefId.val
+      spec_comment_chat_view.submitSpecComment(vm, bid, draft,
+        proc(success: bool; reason: string) =
+          if success:
+            chatOpenedForSpecComment.val = true
+          if cb != nil:
+            cb(success, reason))
+  spec_comment_popover_view.mountCommentPopover[R, E](
+    r, shellRoot, specPaneVm.commentPopover, specCommentSubmit)
   r.appendChild(shellRoot, shell)
   r.appendChild(shellRoot, renderCommandPalette[R, E](r, vm))
   r.appendChild(shellRoot, renderTelemetryOverlay[R, E](r, vm))

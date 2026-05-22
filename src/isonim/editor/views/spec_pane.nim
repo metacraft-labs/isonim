@@ -35,11 +35,24 @@
 ## modules (``vendor/tiptap.nim``, ``vendor/tiptap_starter_kit.nim``,
 ## ``vendor/tiptap_markdown.nim``).
 
+import std/options
+
 import isonim/core/[signals, computation]
 import isonim/dsl/ui
 import isonim/editor/vendor/tiptap as tiptap_lib
 import isonim/editor/vendor/tiptap_starter_kit as tiptap_starter
 import isonim/editor/vendor/tiptap_markdown as tiptap_md
+import isonim/editor/views/spec_comment_popover as spec_comment_popover_view
+
+export spec_comment_popover_view.CommentDraft
+export spec_comment_popover_view.CommentPopoverVM
+export spec_comment_popover_view.CommentSubmitProc
+export spec_comment_popover_view.createCommentPopoverVM
+export spec_comment_popover_view.beginComment
+export spec_comment_popover_view.updateUserComment
+export spec_comment_popover_view.cancel
+export spec_comment_popover_view.submit
+export spec_comment_popover_view.mountCommentPopover
 
 when defined(js):
   import std/jsffi
@@ -71,7 +84,7 @@ when defined(js):
 
 type
   SpecPaneMode* = enum
-    ## TBAR-M4 wires View; TBAR-M5 wires Edit; Comment is TBAR-M6.
+    ## TBAR-M4 wires View; TBAR-M5 wires Edit; TBAR-M6 wires Comment.
     spmView
     spmComment
     spmEdit
@@ -101,18 +114,30 @@ type
       ## refreshes the body after a story switch).  ``onUpdate``
       ## callbacks fired during a synthetic write must NOT flip
       ## ``dirty`` to true.
+    commentPopover*: CommentPopoverVM
+      ## TBAR-M6 — companion popover VM used while the pane is in
+      ## ``spmComment`` mode.  ``mountSpecPane`` reads the active
+      ## TipTap selection on every ``selectionUpdate`` event and feeds
+      ## it into this VM via :proc:`beginComment` / :proc:`cancel`.
+      ## Lives on the SpecPaneVM rather than alongside the mount so
+      ## headless tests can drive the selection-capture state machine
+      ## without booting TipTap.  The shell owns the mount step that
+      ## actually renders the popover.
 
 proc createSpecPaneVM*(initialMarkdown: string = ""): SpecPaneVM =
   ## Build a fresh VM. Defaults to ``spmView`` mode and the supplied
   ## markdown body (empty string when the caller doesn't yet have a
   ## brief). The initial markdown also seeds ``lastSavedMarkdown`` so
-  ## ``dirty`` starts at ``false``.
+  ## ``dirty`` starts at ``false``.  The companion :type:`CommentPopoverVM`
+  ## is constructed eagerly so tests + mounts can subscribe to it
+  ## without checking ``nil``.
   SpecPaneVM(
     mode: createSignal(spmView),
     markdown: createSignal(initialMarkdown),
     lastSavedMarkdown: createSignal(initialMarkdown),
     dirty: createSignal(false),
     loading: false,
+    commentPopover: createCommentPopoverVM(),
   )
 
 proc recomputeDirty(vm: SpecPaneVM) =
@@ -136,7 +161,37 @@ proc setMarkdown*(vm: SpecPaneVM; markdown: string) =
 proc setMode*(vm: SpecPaneVM; mode: SpecPaneMode) =
   ## Replace the active mode. The signal is reactive so the spec-pane
   ## mount can listen and toggle TipTap's editable flag accordingly.
+  ## TBAR-M6 — leaving Comment mode discards any active draft so a
+  ## subsequent re-entry starts clean.
+  let prev = vm.mode.val
   vm.mode.val = mode
+  if prev == spmComment and mode != spmComment:
+    if vm.commentPopover != nil:
+      vm.commentPopover.cancel()
+
+proc captureCommentSelection*(vm: SpecPaneVM;
+                              selection: TipTapSelection;
+                              rect: TipTapSelectionRect) =
+  ## TBAR-M6 — VM-level entry point the mount calls on every TipTap
+  ## ``selectionUpdate`` event while in :enum:`spmComment` mode.  When
+  ## the selection is non-empty it opens (or replaces) the draft
+  ## anchored to ``rect``; an empty selection dismisses any active
+  ## draft (so de-selecting the passage hides the popover).  Exposed
+  ## publicly so the headless VM test can drive the state machine
+  ## without booting TipTap.
+  if vm.commentPopover == nil:
+    return
+  if vm.mode.val != spmComment:
+    return
+  if selection.isEmpty or selection.text.len == 0:
+    # If the user is mid-compose, keep the draft alive so a stray
+    # caret-only event doesn't dismiss them — only clear when no
+    # draft is active yet or the draft has no user comment yet.
+    let draftOpt = vm.commentPopover.draft.val
+    if draftOpt.isNone or draftOpt.get.userComment.len == 0:
+      vm.commentPopover.cancel()
+    return
+  vm.commentPopover.beginComment(selection.text, rect)
 
 proc enterEdit*(vm: SpecPaneVM) =
   ## TBAR-M5 — flip the pane into Edit mode. The mount's editable-
@@ -367,6 +422,19 @@ proc mountSpecPane*[R, E](r: R; parent: E; vm: SpecPaneVM;
       r.setAttribute(hostNode, "data-tiptap-mounted", "true")
       r.setAttribute(hostNode, "data-tiptap-editable",
         if capturedVm.mode.val == spmEdit: "true" else: "false")
+      # TBAR-M6 — subscribe to TipTap selection changes so Comment
+      # mode can anchor a popover to the active text selection.  The
+      # handler reads the latest selection + bounding rect on every
+      # event and routes them through ``captureCommentSelection``,
+      # which drops the event when the pane is not in Comment mode.
+      let selectionVm = capturedVm
+      let selectionEditor = capturedVm.editor
+      tiptap_lib.onSelectionUpdate(selectionEditor, proc() =
+        if selectionVm.editor.isNil:
+          return
+        let sel = tiptap_lib.getSelection(selectionEditor)
+        let rect = tiptap_lib.getSelectionRect(selectionEditor)
+        selectionVm.captureCommentSelection(sel, rect))
 
     createRenderEffect proc() =
       bootstrapEditor()

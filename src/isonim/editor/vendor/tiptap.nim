@@ -20,6 +20,30 @@
 ## the headless-VM test pipeline can compile against the same imports
 ## without a JS runtime.
 
+type
+  TipTapSelectionRect* = object
+    ## TBAR-M6 — viewport coordinates of the bounding rect that wraps
+    ## the active text selection inside a TipTap instance.  Produced by
+    ## :proc:`getSelectionRect` (JS) / synthesised by tests on the
+    ## native build.  The four fields mirror the ``DOMRect`` shape
+    ## TipTap returns via ``view.coordsAtPos``: ``left/top`` is the
+    ## top-left of the rect (in CSS pixels relative to the viewport),
+    ## ``right/bottom`` the bottom-right.  The Comment popover anchors
+    ## itself to ``(left + window.scrollX, top + window.scrollY)``.
+    left*: float
+    top*: float
+    right*: float
+    bottom*: float
+
+  TipTapSelection* = object
+    ## TBAR-M6 — snapshot of the active TipTap selection.  ``text`` is
+    ## the textual content of the selection (``''`` when ``isEmpty``);
+    ## ``isEmpty`` is true when the selection is a caret rather than a
+    ## range.  The Comment popover consults ``isEmpty`` to decide
+    ## whether to anchor; an empty selection dismisses the popover.
+    text*: string
+    isEmpty*: bool
+
 when defined(js):
   import std/jsffi
 
@@ -95,6 +119,56 @@ when defined(js):
     ## string is parsed as markdown; otherwise it's interpreted as
     ## HTML.
 
+  # ------------------------------------------------------------------- #
+  # TBAR-M6 selection-capture surface.  These procs are pure
+  # ``{.importjs.}`` bindings — no ``{.emit.}`` blocks — that read the
+  # active ProseMirror selection out of a live TipTap instance.  They
+  # are consumed by ``views/spec_pane.nim`` when the surface is in
+  # ``spmComment`` mode.
+  # ------------------------------------------------------------------- #
+
+  proc getSelectionText*(editor: TipTapEditor): cstring
+    {.importjs: """(function(e){var s=e.view.state.selection;return e.state.doc.textBetween(s.from,s.to,"\n");})(#)""".}
+    ## Return the textual content covered by the active selection.
+    ## Empty string when the selection is a caret.
+
+  proc isSelectionEmpty*(editor: TipTapEditor): bool
+    {.importjs: "(!!#.view.state.selection.empty)".}
+    ## True when the active selection is a caret (no range).
+
+  proc getSelection*(editor: TipTapEditor): TipTapSelection =
+    ## Convenience composite: read both ``text`` and ``isEmpty`` in one
+    ## hop.  Wraps the two atomic procs above so consumers don't need
+    ## to JS-dereference twice.
+    result.text = $getSelectionText(editor)
+    result.isEmpty = isSelectionEmpty(editor)
+
+  proc selectionRectLeft(editor: TipTapEditor): float
+    {.importjs: "(function(e){var v=e.view,s=v.state.selection,a=v.coordsAtPos(s.from),b=v.coordsAtPos(s.to);return Math.min(a.left,b.left);})(#)".}
+  proc selectionRectTop(editor: TipTapEditor): float
+    {.importjs: "(function(e){var v=e.view,s=v.state.selection,a=v.coordsAtPos(s.from),b=v.coordsAtPos(s.to);return Math.min(a.top,b.top);})(#)".}
+  proc selectionRectRight(editor: TipTapEditor): float
+    {.importjs: "(function(e){var v=e.view,s=v.state.selection,a=v.coordsAtPos(s.from),b=v.coordsAtPos(s.to);return Math.max(a.right,b.right);})(#)".}
+  proc selectionRectBottom(editor: TipTapEditor): float
+    {.importjs: "(function(e){var v=e.view,s=v.state.selection,a=v.coordsAtPos(s.from),b=v.coordsAtPos(s.to);return Math.max(a.bottom,b.bottom);})(#)".}
+
+  proc getSelectionRect*(editor: TipTapEditor): TipTapSelectionRect =
+    ## Return the bounding rect (in viewport coordinates) of the
+    ## active selection.  Wraps the four scalar getters above so the
+    ## consumer side keeps a clean ``TipTapSelectionRect`` value.
+    result.left = selectionRectLeft(editor)
+    result.top = selectionRectTop(editor)
+    result.right = selectionRectRight(editor)
+    result.bottom = selectionRectBottom(editor)
+
+  proc onSelectionUpdate*(editor: TipTapEditor;
+                          handler: proc()) {.importjs: "#.on('selectionUpdate', #)".}
+    ## Subscribe ``handler`` to TipTap's ``selectionUpdate`` event.
+    ## The handler reads back ``getSelection`` / ``getSelectionRect``
+    ## on demand — keeping the JS-side payload simple and the type
+    ## surface narrow.  Fires synchronously after every selection
+    ## change inside the editor.
+
 else:
   ## Native-target stub surface.  The spec-pane VM tests compile this
   ## module without ever calling into the runtime, so we keep the
@@ -123,3 +197,10 @@ else:
   proc isEditable*(editor: TipTapEditor): bool = false
   proc replaceContent*(editor: TipTapEditor;
                        content: cstring; parseMd: bool) = discard
+  proc getSelectionText*(editor: TipTapEditor): cstring = ""
+  proc isSelectionEmpty*(editor: TipTapEditor): bool = true
+  proc getSelection*(editor: TipTapEditor): TipTapSelection =
+    TipTapSelection(text: "", isEmpty: true)
+  proc getSelectionRect*(editor: TipTapEditor): TipTapSelectionRect =
+    TipTapSelectionRect()
+  proc onSelectionUpdate*(editor: TipTapEditor; handler: proc()) = discard
