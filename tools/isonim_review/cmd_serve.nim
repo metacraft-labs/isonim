@@ -36,6 +36,7 @@ import ./cmd_db_health
 
 import isonim/editor/design_review/agent_routes
 import isonim/editor/design_review/api_handlers
+import isonim/editor/design_review/api_handlers_briefs
 import isonim/editor/design_review/api_handlers_layouts
 import isonim/editor/design_review/campaign_routes
 import isonim/editor/design_review/capture_store
@@ -299,6 +300,16 @@ proc mountDesignReviewRoutes*(srv: ReviewServer) =
                       makePromoteLayout(db))
   srv.registerHandler("/api/design-review/list-layouts",
                       makeListLayouts(db))
+
+  # TBAR-M5 — brief save-back to disk.  The handler owns its own
+  # in-process ``BriefIndex`` (lazy-loaded from the workspace root)
+  # because the design-review database doesn't carry the brief body
+  # — only the parsed briefId is referenced from runs/captures.  The
+  # handler writes the markdown verbatim and re-parses just that one
+  # brief on success; it never makes a git commit.
+  let briefStore = newDaemonBriefStore(srv.cfg.workspace.root)
+  srv.registerHandler("/api/design-review/save-brief",
+                      makeSaveBrief(briefStore, srv.cfg.workspace.root))
 
   # CMP-M2 — campaign storage + start/tick/stop handlers.  Re-uses the
   # ``ReviewDb`` connection (the campaign routines live in the same

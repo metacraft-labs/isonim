@@ -216,3 +216,48 @@ proc postSaveLayout*(client: EditorHttpClient; bodyJson: string;
 proc postPromoteLayout*(client: EditorHttpClient; bodyJson: string;
                        cb: HttpCallback) =
   httpPost(client, "/api/design-review/promote-layout", bodyJson, cb)
+
+# ---------------------------------------------------------------------------
+# TBAR-M5 — save-brief helper.  Mirrors the existing GET / POST helpers
+# above: same-origin POST to ``/api/design-review/save-brief`` with a
+# JSON body carrying ``briefId`` + ``markdown``.  The daemon writes the
+# markdown to disk at the brief's ``sourceFile`` (refusing paths outside
+# the configured workspace root) and returns
+# ``{briefId, path, bytesWritten}`` on success.
+# ---------------------------------------------------------------------------
+
+proc jsonStringEscape*(s: string): string =
+  ## Minimal JSON string escape — only the chars JSON requires to be
+  ## escaped (``"``, ``\``, control chars).  We hand-roll this instead
+  ## of pulling in ``std/json`` because the JS backend would otherwise
+  ## drag the whole ``std/json`` module into the editor bundle just to
+  ## build one POST body.
+  result = newStringOfCap(s.len + 16)
+  for ch in s:
+    case ch
+    of '"': result.add "\\\""
+    of '\\': result.add "\\\\"
+    of '\b': result.add "\\b"
+    of '\f': result.add "\\f"
+    of '\n': result.add "\\n"
+    of '\r': result.add "\\r"
+    of '\t': result.add "\\t"
+    else:
+      let o = ord(ch)
+      if o < 0x20:
+        const hexChars = "0123456789abcdef"
+        result.add "\\u00"
+        result.add hexChars[(o shr 4) and 0xF]
+        result.add hexChars[o and 0xF]
+      else:
+        result.add ch
+
+proc saveBrief*(client: EditorHttpClient; briefId, markdown: string;
+                cb: HttpCallback) =
+  if briefId.len == 0:
+    cb(HttpCallbackResult(kind: hcError, body: "empty briefId",
+                          statusCode: 0))
+    return
+  let bodyJson = "{\"briefId\":\"" & jsonStringEscape(briefId) &
+                 "\",\"markdown\":\"" & jsonStringEscape(markdown) & "\"}"
+  httpPost(client, "/api/design-review/save-brief", bodyJson, cb)

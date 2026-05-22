@@ -23,6 +23,7 @@ import isonim/editor/views/widgets as editor_widgets
 import isonim/editor/design_review/brief_format
 import isonim/editor/design_review/brief_index
 import isonim/editor/design_review/brief_index_static
+import isonim/editor/design_review/editor_http_client as editor_http_client
 import isonim/editor/views/spec_pane as spec_pane_view
 
 # ---------------------------------------------------------------------------
@@ -2371,7 +2372,40 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
          flex_direction = "column",
          background_color = bgPreview)
   let specPaneVm = spec_pane_view.createSpecPaneVM("")
-  spec_pane_view.mountSpecPane[R, E](r, specPaneEl, specPaneVm)
+  # TBAR-M5: wire the Save/Cancel callbacks the mount delivers. Save
+  # POSTs the current markdown to /api/design-review/save-brief via
+  # the editor's HTTP client (the daemon writes to disk + re-parses
+  # the brief). Cancel reverts to the last-saved body.
+  let designReviewState = ensureDesignReviewState(vm)
+  let specPaneCallbacks = SpecPaneMountCallbacks(
+    onSaveRequested: proc(markdown: string) {.closure.} =
+      let bid = designReviewState.briefId.val
+      let client = designReviewState.httpClient
+      if bid.len == 0 or client == nil:
+        return
+      let saver: SaveBriefHttpProc = proc(briefId, body: string;
+                                          cb: proc(success: bool;
+                                                   payload: string)) =
+        editor_http_client.saveBrief(client, briefId, body, proc(res: HttpCallbackResult) =
+          cb(res.kind == hcOk, res.body))
+      saveEdits(specPaneVm, bid, markdown, saver, proc(success: bool) =
+        if success:
+          # Keep the shell's editMode triplet in sync with the
+          # spec-pane mode so the user sees the View chip light up
+          # after a successful save.  The shell's mode-mirror effect
+          # would otherwise reset the pane mode back to ``spmEdit``
+          # on the next pass (it tracks ``editMode``, not
+          # ``spmMode``).
+          vm.setEditMode(emView)
+          specPaneVm.setMode(spmView)),
+    onCancelRequested: proc() {.closure.} =
+      # Same direction as the save success path: tell the shell's
+      # ``editMode`` triplet to flip to View so the mirror effect
+      # doesn't snap the pane back to Edit on the next tick.
+      vm.setEditMode(emView)
+      cancelEdits(specPaneVm),
+  )
+  spec_pane_view.mountSpecPane[R, E](r, specPaneEl, specPaneVm, specPaneCallbacks)
   # Reactively feed the active brief's markdown into the spec pane VM.
   # ``resolveBriefId`` follows the active story + selected backend.
   # We prepend the brief's ``title`` as an H1 so the rendered TipTap
@@ -2380,6 +2414,8 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
   # pattern; the title field carries the H1 text).
   block:
     let capturedVm = vm
+    var lastBody = ""
+    var lastBriefId = ""
     createRenderEffect proc() =
       let story = capturedVm.selectedStory.val
       let backend = capturedVm.platform.val
@@ -2396,7 +2432,40 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
           body.add b.bodyMarkdown
       if body.len == 0:
         body = "# Spec\n\nNo brief available for the selected story."
-      specPaneVm.setMarkdown(body)
+      # TBAR-M5: a brief-body change from outside (e.g. story switch)
+      # is a fresh saved-state baseline. Use markSaved so ``dirty``
+      # stays false and any prior unsaved edits are discarded.
+      #
+      # Guard against re-firing on identical inputs: this effect
+      # tracks ``selectedStory`` + ``platform`` (both reactive); if
+      # neither the resolved briefId nor the assembled body actually
+      # changed across runs, suppress the ``markSaved`` write so an
+      # in-progress Edit-mode session doesn't get its ``dirty`` flag
+      # silently reset by a redundant re-evaluation.
+      if bid == lastBriefId and body == lastBody:
+        return
+      lastBody = body
+      lastBriefId = bid
+      specPaneVm.markSaved(body)
+
+  # TBAR-M5: when surface is Spec, mirror the View/Comment/Edit
+  # mode triplet onto the spec pane's mode signal. In Preview mode
+  # the triplet keeps its existing meaning (preview chrome); the
+  # spec pane reacts only when surface == sSpec.
+  block:
+    let capturedVm = vm
+    let capturedSpecVm = specPaneVm
+    createRenderEffect proc() =
+      if capturedVm.surfaceSig.val != sSpec:
+        return
+      let em = capturedVm.editMode.val
+      let target =
+        case em
+        of emView: spmView
+        of emComment: spmComment
+        of emEdit: spmEdit
+      if capturedSpecVm.mode.val != target:
+        capturedSpecVm.setMode(target)
 
   # Default: storyboard visible, everything else hidden
   r.setStyle(componentDetailEl, "display", "none")
