@@ -12,6 +12,7 @@ import std/[json, os, osproc, posix, strtabs, strutils, times]
 import std/httpclient
 
 import ./design_review_pg_fixture
+import ./daemon_ready_handshake
 import tools/isonim_review/cmd_init
 import tools/isonim_review/config
 
@@ -25,11 +26,17 @@ type
   ServeFixture* = ref object
     pg*: PgFixture
     proc1*: Process
+    drainer*: DaemonStderrDrainer
     port*: int
     storePath*: string
     baseUrl*: string
 
-proc pickFreeTcpPort*(): int =
+proc pickFreeTcpPort*(): int {.deprecated:
+    "prefer ISONIM_REVIEW_PORT=0 + waitForReady — see " &
+    "tests/helpers/daemon_ready_handshake.nim".} =
+  ## Kept for API compatibility; the fixture itself no longer uses
+  ## this — it lets the daemon pick the port via ``Port(0)`` and
+  ## reads the actual port back from the daemon's READY handshake.
   let curl = findExe("curl")
   if curl.len == 0:
     raise newException(IOError, "design_review_http_fixture: curl not on PATH")
@@ -69,13 +76,16 @@ proc startServeAndSeed*(): ServeFixture =
                   $((int(epochTime() * 1000)) mod 1_000_000)
   createDir(storeDir)
 
-  let httpPort = pickFreeTcpPort()
+  # ISONIM_REVIEW_PORT=0 → daemon picks any free port via Port(0)
+  # and reports the OS-assigned port back via the ``READY <port>``
+  # stderr line (see daemon_ready_handshake.nim).  Replaces the
+  # previous TOCTOU port-probe + curl-poll pattern.
   var environ = newStringTable(modeCaseSensitive)
   for kv in envPairs():
     environ[kv.key] = kv.value
   environ["ISONIM_REVIEW_PGHOST"] = "127.0.0.1"
   environ["ISONIM_REVIEW_PGPORT"] = $pg.port
-  environ["ISONIM_REVIEW_PORT"] = $httpPort
+  environ["ISONIM_REVIEW_PORT"] = "0"
 
   # Write a config file the daemon reads so cfg.store.path is set to
   # our ephemeral store dir (env doesn't override it; only the TOML
@@ -84,31 +94,26 @@ proc startServeAndSeed*(): ServeFixture =
                 $((int(epochTime() * 1000)) mod 1_000_000) & ".toml"
   writeFile(cfgPath, "[store]\npath = \"" & storeDir & "\"\n")
 
+  # ``poUsePath`` only — stderr stays its own pipe for the READY
+  # drainer.
   let p = startProcess(CliPath,
     args = @["serve", "--migrations", MigDir, "--config", cfgPath],
     env = environ,
-    options = {poUsePath, poStdErrToStdOut})
+    options = {poUsePath})
 
-  # Wait for the daemon to bind.
-  let curl = findExe("curl")
-  var ok = false
-  let deadline = epochTime() + 10.0
-  while epochTime() < deadline:
-    let r = execCmdEx(curl & " -s --max-time 1 -w '|%{http_code}' " &
-        "http://127.0.0.1:" & $httpPort & "/health")
-    if r.exitCode == 0 and r.output.contains("|200"):
-      ok = true
-      break
-    sleep(150)
-  if not ok:
-    discard kill(p.processID.Pid, SIGKILL)
+  let drainer = startStderrDrainer(p)
+  var httpPort: int
+  try:
+    httpPort = waitForReady(drainer, timeoutSecs = 15.0)
+  except IOError as e:
+    drainer.shutdown()
+    try: discard kill(p.processID.Pid, SIGKILL)
+    except: discard
     p.close()
-    raise newException(IOError,
-      "design_review_http_fixture: daemon failed to boot on port " &
-        $httpPort)
+    raise newException(IOError, "design_review_http_fixture: " & e.msg)
 
   ServeFixture(
-    pg: pg, proc1: p, port: httpPort,
+    pg: pg, proc1: p, drainer: drainer, port: httpPort,
     storePath: storeDir,
     baseUrl: "http://127.0.0.1:" & $httpPort,
   )
@@ -128,6 +133,9 @@ proc shutdown*(f: ServeFixture) =
     discard f.proc1.waitForExit()
     f.proc1.close()
     f.proc1 = nil
+  if f.drainer != nil:
+    f.drainer.shutdown()
+    f.drainer = nil
   if f.pg != nil:
     f.pg.shutdown()
     f.pg = nil

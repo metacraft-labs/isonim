@@ -7,6 +7,8 @@
 import std/[net, os, osproc, posix, strtabs, strutils, times]
 import std/httpclient
 
+import ./daemon_ready_handshake
+
 const RepoRoot* = currentSourcePath().parentDir().parentDir().parentDir()
 const CliPath* = RepoRoot / "build" / "bin" / "isonim-review"
 const FakeAcpPath* = RepoRoot / "build" / "bin" / "fake-acp-agent"
@@ -14,13 +16,18 @@ const FakeAcpPath* = RepoRoot / "build" / "bin" / "fake-acp-agent"
 type
   AgentRoutesFixture* = ref object
     proc1*: Process
+    drainer*: DaemonStderrDrainer
     port*: int
     baseUrl*: string
     cancelFile*: string
     contentLog*: string
 
-proc pickFreePort*(): int =
-  ## Bind a temporary listener to find a free port, then close it.
+proc pickFreePort*(): int {.deprecated:
+    "prefer ISONIM_REVIEW_PORT=0 + waitForReady — see " &
+    "tests/helpers/daemon_ready_handshake.nim".} =
+  ## Retained only for API compatibility with any external caller.
+  ## The fixture itself no longer uses this — it lets the daemon pick
+  ## the port and reports it back via the READY handshake.
   let s = newSocket()
   defer:
     try: s.close() except CatchableError: discard
@@ -38,12 +45,15 @@ proc startAgentDaemon*(extraEnv: openArray[(string, string)] = @[];
     raise newException(IOError,
       "agent_routes_fixture: missing " & FakeAcpPath &
       " — run `just fake-acp-agent-build` first")
-  let port = pickFreePort()
+  # ISONIM_REVIEW_PORT=0 → daemon picks any free port via Port(0) and
+  # reports the actual port back via the ``READY <port>`` stderr line
+  # (see daemon_ready_handshake.nim).  Eliminates the TOCTOU race the
+  # pre-pick pattern suffered from.
   var env = newStringTable(modeCaseSensitive)
   for kv in envPairs():
     env[kv.key] = kv.value
   env["ISONIM_ACP_AGENT_CMD"] = FakeAcpPath
-  env["ISONIM_REVIEW_PORT"] = $port
+  env["ISONIM_REVIEW_PORT"] = "0"
   for kv in extraEnv:
     env[kv[0]] = kv[1]
   let cancelFile = getTempDir() / "fake_acp_cancel_" &
@@ -57,37 +67,28 @@ proc startAgentDaemon*(extraEnv: openArray[(string, string)] = @[];
   if configPath.len > 0:
     args.add "--config"
     args.add configPath
+  # ``poUsePath`` only — stderr must stay independently readable so
+  # the drainer can pull READY off it.
   let proc1 = startProcess(CliPath,
     args = args,
     env = env,
-    options = {poUsePath, poStdErrToStdOut})
+    options = {poUsePath})
 
-  let curl = findExe("curl")
-  if curl.len == 0:
-    raise newException(IOError,
-      "agent_routes_fixture: curl required for readiness probe")
-
-  let baseUrl = "http://127.0.0.1:" & $port
-  let deadline = epochTime() + 10.0
-  var ready = false
-  while epochTime() < deadline:
-    # ``/health`` is unimplemented when --agent-routes-only is set (the
-    # DB probes can't run without a PG), but the listener will respond
-    # with 503 once it's bound.  We accept any HTTP status as "ready".
-    let r = execCmdEx(curl & " -s -o /dev/null --max-time 0.5 -w '%{http_code}' " &
-                      baseUrl & "/health")
-    if r.exitCode == 0 and r.output.len > 0 and r.output != "000":
-      ready = true
-      break
-    sleep(80)
-  if not ready:
+  let drainer = startStderrDrainer(proc1)
+  var port: int
+  try:
+    port = waitForReady(drainer, timeoutSecs = 15.0)
+  except IOError as e:
+    drainer.shutdown()
     try: discard kill(proc1.processID.Pid, SIGKILL)
     except: discard
     proc1.close()
-    raise newException(IOError,
-      "agent_routes_fixture: daemon failed to bind on " & baseUrl)
-  AgentRoutesFixture(proc1: proc1, port: port, baseUrl: baseUrl,
-                     cancelFile: cancelFile, contentLog: contentLog)
+    raise newException(IOError, "agent_routes_fixture: " & e.msg)
+
+  let baseUrl = "http://127.0.0.1:" & $port
+  AgentRoutesFixture(proc1: proc1, drainer: drainer, port: port,
+                     baseUrl: baseUrl, cancelFile: cancelFile,
+                     contentLog: contentLog)
 
 proc shutdown*(f: AgentRoutesFixture) =
   if f == nil or f.proc1 == nil: return
@@ -103,6 +104,9 @@ proc shutdown*(f: AgentRoutesFixture) =
   discard f.proc1.waitForExit()
   f.proc1.close()
   f.proc1 = nil
+  if f.drainer != nil:
+    f.drainer.shutdown()
+    f.drainer = nil
   try: removeFile(f.cancelFile) except OSError: discard
   try: removeFile(f.contentLog) except OSError: discard
 

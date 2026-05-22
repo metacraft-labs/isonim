@@ -18,6 +18,7 @@ import std/[net, os, osproc, posix, strtabs, strutils, times]
 import std/httpclient
 
 import ./design_review_pg_fixture
+import ./daemon_ready_handshake
 
 const RepoRoot* = currentSourcePath().parentDir().parentDir().parentDir()
 const CliPath* = RepoRoot / "build" / "bin" / "isonim-review"
@@ -26,13 +27,20 @@ const FakeAcpPath* = RepoRoot / "build" / "bin" / "fake-acp-agent"
 type
   CampaignFixture* = ref object
     daemon*: Process
+    drainer*: DaemonStderrDrainer
     pg*: PgFixture
     port*: int
     baseUrl*: string
     promptDir*: string
     contentLog*: string
 
-proc pickFreePort*(): int =
+proc pickFreePort*(): int {.deprecated:
+    "prefer ISONIM_REVIEW_PORT=0 + waitForReady — the TOCTOU pattern " &
+    "this implements is what caused the flake the helper was retired " &
+    "to fix".} =
+  ## Retained only to keep API compatibility with external callers
+  ## that may have copied the pattern.  Not used by the fixtures
+  ## themselves any more.
   let s = newSocket()
   defer:
     try: s.close() except CatchableError: discard
@@ -72,12 +80,16 @@ proc startCampaignDaemon*(extraEnv: openArray[(string, string)] = @[]):
   createDir(promptRoot)
   discard writePromptFixture(promptRoot)
 
-  let port = pickFreePort()
+  # ISONIM_REVIEW_PORT=0 → daemon picks any free port via Port(0) and
+  # reports the OS-assigned value back via the ``READY <port>`` line
+  # on stderr.  This replaces the previous TOCTOU pattern where the
+  # fixture pre-picked a port that another process could steal before
+  # the daemon's own bind happened.
   var env = newStringTable(modeCaseSensitive)
   for kv in envPairs():
     env[kv.key] = kv.value
   env["ISONIM_ACP_AGENT_CMD"] = FakeAcpPath
-  env["ISONIM_REVIEW_PORT"] = $port
+  env["ISONIM_REVIEW_PORT"] = "0"
   env["ISONIM_REVIEW_DB"] = pg.connectionString
   env["ISONIM_REVIEW_PGPORT"] = $pg.port
   env["ISONIM_REVIEW_PGHOST"] = "127.0.0.1"
@@ -99,38 +111,33 @@ proc startCampaignDaemon*(extraEnv: openArray[(string, string)] = @[]):
   writeFile(configPath,
     "[workspace]\nroot = \"" & promptRoot & "\"\n")
 
+  # ``poUsePath`` only — stderr stays as its own pipe so the drainer
+  # thread can read READY without stdout interleaving.  (Previously
+  # this used ``poStdErrToStdOut`` to merge them; the merge is no
+  # longer compatible with the handshake.)
   let daemon = startProcess(CliPath,
     args = @["serve", "--config", configPath,
              "--migrations", RepoRoot / "db" / "migrations"],
     env = env,
-    options = {poUsePath, poStdErrToStdOut})
+    options = {poUsePath})
 
-  let curl = findExe("curl")
-  if curl.len == 0:
-    raise newException(IOError,
-      "campaign_routes_fixture: curl required for readiness probe")
-
-  let baseUrl = "http://127.0.0.1:" & $port
-  let deadline = epochTime() + 15.0
-  var ready = false
-  while epochTime() < deadline:
-    let r = execCmdEx(curl & " -s -o /dev/null --max-time 0.5 -w '%{http_code}' " &
-                      baseUrl & "/health")
-    if r.exitCode == 0 and r.output.len > 0 and r.output != "000":
-      ready = true
-      break
-    if not daemon.running():
-      break
-    sleep(120)
-  if not ready:
+  let drainer = startStderrDrainer(daemon)
+  var port: int
+  try:
+    port = waitForReady(drainer, timeoutSecs = 15.0)
+  except IOError as e:
+    drainer.shutdown()
     try: discard kill(daemon.processID.Pid, SIGKILL)
     except: discard
     daemon.close()
     pg.shutdown()
     raise newException(IOError,
-      "campaign_routes_fixture: daemon failed to bind on " & baseUrl)
-  CampaignFixture(daemon: daemon, pg: pg, port: port, baseUrl: baseUrl,
-                  promptDir: promptRoot, contentLog: contentLog)
+      "campaign_routes_fixture: " & e.msg)
+
+  let baseUrl = "http://127.0.0.1:" & $port
+  CampaignFixture(daemon: daemon, drainer: drainer, pg: pg, port: port,
+                  baseUrl: baseUrl, promptDir: promptRoot,
+                  contentLog: contentLog)
 
 proc shutdown*(f: CampaignFixture) =
   if f == nil: return
@@ -147,6 +154,9 @@ proc shutdown*(f: CampaignFixture) =
     discard f.daemon.waitForExit()
     f.daemon.close()
     f.daemon = nil
+  if f.drainer != nil:
+    f.drainer.shutdown()
+    f.drainer = nil
   if f.pg != nil:
     f.pg.shutdown()
     f.pg = nil

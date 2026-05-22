@@ -224,10 +224,47 @@ proc dispatch(srv: ReviewServer; req: Request) {.async, gcsafe.} =
 
 # ----- Run loop ------------------------------------------------------------
 
+proc acceptLoop(srv: ReviewServer;
+                cb: proc (req: Request): Future[void] {.closure, gcsafe.})
+                {.async.} =
+  ## Re-implementation of ``AsyncHttpServer.serve`` minus the ``listen``
+  ## call (we listen explicitly in ``runReviewServer`` so we can resolve
+  ## the OS-assigned port for the test-fixture READY handshake before
+  ## any client can connect).  Uses the public ``acceptRequest`` helper
+  ## so we don't depend on private ``processClient`` symbols.
+  while true:
+    if srv.server.shouldAcceptRequest():
+      await srv.server.acceptRequest(cb)
+    else:
+      poll()
+
 proc runReviewServer*(srv: ReviewServer) =
   ## Start the server and block until SIGTERM / SIGINT.  This is the
   ## entrypoint invoked from the ``serve`` subcommand.
+  ##
+  ## Bind / listen happens *before* the ``listening on ...`` line is
+  ## emitted so the line is only printed once the socket is genuinely
+  ## reachable.  Immediately after a successful ``listen`` we also
+  ## print a ``READY <port>`` line to stderr — this is the
+  ## test-fixture handshake (see
+  ## ``tests/helpers/campaign_routes_fixture.nim`` etc.) and replaces
+  ## the previous TOCTOU port-pick + curl-poll pattern.  Production
+  ## callers never parse the READY line; it is informational and
+  ## always emitted (the cost is one ``writeLine`` per process boot).
   installSignalHandlers()
+
+  # Bind & listen up-front so we can resolve the actual port the OS
+  # assigned (when the operator passes ``ISONIM_REVIEW_PORT=0``,
+  # ``srv.port`` is 0 here and ``getPort`` returns the chosen port).
+  srv.server.listen(Port(srv.port), srv.bindAddr)
+  srv.port = int(srv.server.getPort())
+
+  # READY handshake for test fixtures — must be the first stderr line
+  # of the form ``READY <port>``.  Goes to stderr so it doesn't
+  # collide with the editor's stdout JSON protocols.
+  stderr.writeLine("READY " & $srv.port)
+  stderr.flushFile()
+
   if srv.onLifecycle != nil:
     srv.onLifecycle("isonim-review serve: listening on http://" &
       srv.bindAddr & ":" & $srv.port)
@@ -246,7 +283,7 @@ proc runReviewServer*(srv: ReviewServer) =
       except CatchableError:
         discard
 
-  asyncCheck srv.server.serve(Port(srv.port), cb, address = srv.bindAddr)
+  asyncCheck acceptLoop(srv, cb)
 
   # Poll the global stop flag on the same async loop the server runs
   # on.  We don't block on accept() so SIGTERM gets serviced within
