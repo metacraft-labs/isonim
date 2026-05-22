@@ -3,7 +3,7 @@
 ## Fully dogfoods IsoNim: all elements via ui macro with if/for/case.
 ## Only uses manual setStyle for reactive effects (createRenderEffect).
 
-import std/[options, strutils]
+import std/[options, strutils, tables]
 
 import isonim/core/[signals, computation]
 import isonim/dsl/ui
@@ -19,6 +19,8 @@ import isonim/editor/views/vector_editor
 import isonim/editor/views/chat_panel
 import isonim/editor/views/preview_pane as preview_pane_view
 import isonim/editor/views/design_review_mount as design_review_mount_view
+import isonim/editor/views/widgets as editor_widgets
+import isonim/editor/design_review/brief_format
 import isonim/editor/design_review/brief_index
 import isonim/editor/design_review/brief_index_static
 
@@ -2169,27 +2171,114 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
   r.appendChild(toolbar, backendCol.root)
   r.appendChild(toolbar, clusterDivider())
 
-  let viewportThunk = proc(): seq[CompactChoiceOption] =
-    buildViewportOptions(capturedVm)
-  let viewportVisibleLimitThunk = proc(): int =
-    pinnedViewports(capturedVm.platform.val).len
-  let viewportOnChipMounted = proc(node: E; option: CompactChoiceOption;
-      index: int) =
-    let vp = viewportFromChipOption(option)
-    r.bindViewportChip(node, capturedVm, vp)
-  let viewportCol = renderCompactChoiceColumn[R, E](r,
-    ariaLabel = "Preview screen size",
-    optionsThunk = viewportThunk,
-    visibleLimitThunk = viewportVisibleLimitThunk,
-    chipWidth = "44px",
-    chipHeight = "24px",
-    dataAttrs = @[
-      ("data-edge-strip", "viewport"),
-      ("data-preview-edge-group", "viewport"),
-      ("data-toolbar-cluster", "viewport")],
-    onChipMounted = viewportOnChipMounted)
-  tiltHorizontal(viewportCol.root, "Preview screen size")
-  r.appendChild(toolbar, viewportCol.root)
+  # TBAR-M3: Preview / Spec top-bar surface switch. Placed between the
+  # backend cluster and the screen-size selector so the user reads the
+  # surface decision (preview workspace vs brief markdown) before the
+  # secondary layout knobs. Uses the segmented variant of the
+  # ChoiceGroup widget delivered by TBAR-M2.
+  let surfaceWrapper = ui(r):
+    tdiv(`data-toolbar-cluster` = "surface",
+         `data-preview-surface-switch` = "true",
+         display = "inline-flex", align_items = "center")
+  let surfaceVm = createSegmentedChoiceVM(
+    @["Preview", "Spec"],
+    initialIndex = (if capturedVm.surfaceSig.val == sPreview: 0 else: 1))
+  r.mountSegmentedChoice(surfaceWrapper, surfaceVm, proc(i: int) {.closure.} =
+    capturedVm.setSurface(if i == 0: sPreview else: sSpec))
+  # Keep the segmented control in sync with external writes to
+  # ``surfaceSig`` (e.g. tests that flip the signal directly). This
+  # effect tracks ONLY ``surfaceSig`` — reading ``activeIndex`` via
+  # ``.val`` here would create a feedback loop with the segmented
+  # mount's own click handler (which sets ``activeIndex`` then
+  # dispatches ``onChange``). We read the bare ``value`` field
+  # directly to skip ``trackRead``.
+  block:
+    let syncVm = surfaceVm
+    createRenderEffect proc() =
+      let target = if capturedVm.surfaceSig.val == sPreview: 0 else: 1
+      if syncVm.activeIndex.value != target:
+        syncVm.activate(target)
+  r.appendChild(toolbar, surfaceWrapper)
+  r.appendChild(toolbar, clusterDivider())
+
+  # TBAR-M3: screen-size chevron-popup selector. Replaces the legacy
+  # viewport chip-set in the chrome bar. The chevron's option list is
+  # the union of the per-backend pinned + popup viewports so every
+  # viewport reachable today through the old chip strip stays
+  # reachable. Re-builds when the platform flips (the rebuild lives
+  # inside a ``createRenderEffect`` so the option list, active label,
+  # and selection stay coherent).
+  proc viewportOptionList(backend: PreviewBackend): seq[PreviewViewport] =
+    result = @[]
+    for vp in pinnedViewports(backend):
+      result.add vp
+    for vp in popupViewports(backend):
+      result.add vp
+  proc viewportLabelList(backend: PreviewBackend): seq[string] =
+    result = @[]
+    for vp in viewportOptionList(backend):
+      result.add vp.label
+  let initialBackend = capturedVm.platform.val
+  let initialVps = viewportOptionList(initialBackend)
+  var initialIndex = 0
+  block:
+    let active = capturedVm.viewport.val
+    for i, vp in initialVps:
+      if viewportsEqual(active, vp):
+        initialIndex = i
+        break
+  let viewportChevronWrapper = ui(r):
+    tdiv(`data-edge-strip` = "viewport",
+         `data-toolbar-cluster` = "viewport",
+         `data-preview-edge-group` = "viewport",
+         `data-preview-viewport-chevron` = "true",
+         display = "inline-flex", align_items = "center")
+  var viewportChevronVm = createChevronChoiceVM(
+    viewportLabelList(initialBackend), initialIndex = initialIndex)
+  var viewportChoices = initialVps
+  r.mountChevronChoice(viewportChevronWrapper, viewportChevronVm,
+    proc(i: int) {.closure.} =
+      if i >= 0 and i < viewportChoices.len:
+        capturedVm.changeViewport(viewportChoices[i]))
+  # Reactively rebuild the chevron options when the backend flips OR
+  # when an external write to ``viewport`` moves the active index.
+  # IMPORTANT: this effect must NOT track ``viewportChevronVm
+  # .activeIndex`` — the chevron mount sets that index then dispatches
+  # ``onChange``, so a tracking read here would create a feedback loop
+  # (the effect would re-fire mid-click, snap the index back to the
+  # currently-active viewport, and ``onChange`` would never see a
+  # transition). We read the bare ``value`` field directly to skip
+  # ``trackRead``.
+  createRenderEffect proc() =
+    let backend = capturedVm.platform.val
+    let active = capturedVm.viewport.val
+    let labels = viewportLabelList(backend)
+    if labels != viewportChevronVm.labels:
+      # Re-mount the chevron with a fresh VM matching the new label
+      # list. The DOM under ``viewportChevronWrapper`` is removed first
+      # so the new mount paints into a clean host. This is the same
+      # pattern ``renderCompactChoiceColumn`` uses internally when its
+      # option list churns.
+      r.clearChildren(viewportChevronWrapper)
+      viewportChoices = viewportOptionList(backend)
+      var idx = 0
+      for i, vp in viewportChoices:
+        if viewportsEqual(active, vp):
+          idx = i
+          break
+      viewportChevronVm = createChevronChoiceVM(labels, initialIndex = idx)
+      r.mountChevronChoice(viewportChevronWrapper, viewportChevronVm,
+        proc(i: int) {.closure.} =
+          if i >= 0 and i < viewportChoices.len:
+            capturedVm.changeViewport(viewportChoices[i]))
+    else:
+      viewportChoices = viewportOptionList(backend)
+      for i, vp in viewportChoices:
+        if viewportsEqual(active, vp):
+          if viewportChevronVm.activeIndex.value != i:
+            viewportChevronVm.activate(i)
+          break
+  r.appendChild(toolbar, viewportChevronWrapper)
   r.appendChild(toolbar, clusterDivider())
 
   let modeThunk = proc(): seq[CompactChoiceOption] =
@@ -2246,6 +2335,10 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
   let foundationsEl = renderFoundationsPage[R, E](r, vm)
   let vectorEditorEl = renderVectorEditor[R, E](r, vm)
   let chatEl = renderChatPanel[R, E](r, vm) # ever-present on all views
+  # TBAR-M3: stable selector for the right-side property/AI-assistant
+  # panel so the browser-level surface-switch test can assert
+  # mount/unmount without relying on the renderer-specific class name.
+  r.setAttribute(chatEl, "data-test-id", "property-panel")
 
   # Center column wraps the shared preview chrome bar + the view stack
   # so the toolbar sits above every view. Replaces the previous
@@ -2260,6 +2353,47 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
           flex_direction = "column",
           `data-preview-view-stack` = "true")
 
+  # TBAR-M3: Spec-pane placeholder slot. Renders inside the center
+  # column when ``surfaceSig.val == sSpec``. The body is the active
+  # brief's raw markdown body fed from the built-in brief index — read
+  # only in this milestone; TBAR-M4 replaces this with a TipTap-backed
+  # viewer.
+  let specPaneEl = ui(r):
+    tdiv(`data-preview-spec-pane` = "true",
+         `data-test-id` = "spec-pane",
+         display = "none", flex = "1", min_width = "0", min_height = "0",
+         flex_direction = "column",
+         padding = "16px 20px",
+         overflow_y = "auto",
+         background_color = bgPreview)
+  var specBodyNode: E
+  discard ui(r):
+    tdiv(`data-spec-pane-body` = "true",
+         display = "block",
+         font_family = "ui-monospace, SFMono-Regular, Menlo, monospace",
+         font_size = "12px",
+         line_height = "1.6",
+         color = textPrimary,
+         white_space = "pre-wrap",
+         ref = specBodyNode):
+      text ""
+  r.appendChild(specPaneEl, specBodyNode)
+  # Reactively fill the spec body with the active brief's markdown.
+  block:
+    let capturedVm = vm
+    createRenderEffect proc() =
+      let story = capturedVm.selectedStory.val
+      let backend = capturedVm.platform.val
+      let bid = design_review_mount_view.resolveBriefId(story, backend)
+      var body = ""
+      if bid.len > 0:
+        let idx = builtInBriefIndex()
+        if idx != nil and bid in idx.byBriefId:
+          body = idx.byBriefId[bid].bodyMarkdown
+      if body.len == 0:
+        body = "No brief available for the selected story."
+      r.setTextContent(specBodyNode, body)
+
   # Default: storyboard visible, everything else hidden
   r.setStyle(componentDetailEl, "display", "none")
   r.setStyle(componentEditEl, "display", "none")
@@ -2271,17 +2405,19 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
   createRenderEffect proc() =
     let view = vm.activeView.val
     let panels = vm.panels.val
-    r.setStyle(storyboardEl, "display", if view ==
+    let surface = vm.surfaceSig.val
+    let preview = surface == sPreview
+    r.setStyle(storyboardEl, "display", if preview and view ==
         evStoryboard: "flex" else: "none")
-    r.setStyle(componentDetailEl, "display", if view ==
+    r.setStyle(componentDetailEl, "display", if preview and view ==
         evComponentDetail: "flex" else: "none")
-    r.setStyle(componentEditEl, "display", if view ==
+    r.setStyle(componentEditEl, "display", if preview and view ==
         evComponentEdit: "flex" else: "none")
-    r.setStyle(pagePreviewEl, "display", if view ==
+    r.setStyle(pagePreviewEl, "display", if preview and view ==
         evPagePreview: "flex" else: "none")
-    r.setStyle(foundationsEl, "display", if view ==
+    r.setStyle(foundationsEl, "display", if preview and view ==
         evFoundationsPage: "flex" else: "none")
-    r.setStyle(vectorEditorEl, "display", if view ==
+    r.setStyle(vectorEditorEl, "display", if preview and view ==
         evVectorEditor: "flex" else: "none")
     r.setStyle(sidebarEl, "display", if panels.sidebar and view !=
         evVectorEditor: "flex" else: "none")
@@ -2289,9 +2425,9 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
     # shared chrome bar so the vector-editor toolbar isn't doubled up.
     r.setStyle(chromeBarEl, "display",
       if view == evVectorEditor: "none" else: "flex")
-    let manualEditMode = view == evComponentEdit and vm.editMode.val == emEdit
-    r.setStyle(chatEl, "display",
-      if panels.inspector and not manualEditMode: "flex" else: "none")
+    # TBAR-M3: spec-pane swaps in when surface is sSpec.
+    r.setStyle(specPaneEl, "display",
+      if not preview: "flex" else: "none")
 
   r.appendChild(viewStack, storyboardEl)
   r.appendChild(viewStack, componentDetailEl)
@@ -2309,6 +2445,10 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
     preview_pane_view.mountBriefTabIntoPreviewPane[R, E](
       r, centerColumn, briefTabVMFor(vm), previewPaneActiveTabFor(vm))
   r.appendChild(centerColumn, viewStack)
+  # TBAR-M3: spec-pane placeholder sits inside the center column
+  # alongside the view stack — display swaps between them via the
+  # reactive effect above.
+  r.appendChild(centerColumn, specPaneEl)
 
   # REV-M8 — mount the gallery overlay host below the view stack so the
   # 🕘 button can flip it open without disturbing the chrome bar or the
@@ -2321,7 +2461,29 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
   #   [sidebar | center column (chrome bar + view stack) | inspector chat]
   r.appendChild(shell, sidebarEl)
   r.appendChild(shell, centerColumn)
-  r.appendChild(shell, chatEl) # inspector / AI chat
+  # TBAR-M3: the right-side property/AI-assistant panel is mounted
+  # reactively. When ``surfaceSig`` flips to ``sSpec`` the panel is
+  # physically removed from the shell row so its slot collapses (no
+  # orphan wrapper div remains). The ``manualEditMode`` carve-out
+  # (Edit mode on the live preview hides the AI panel) is preserved.
+  block:
+    let capturedVm = vm
+    var mounted = false
+    proc shouldMount(): bool =
+      let view = capturedVm.activeView.val
+      let panels = capturedVm.panels.val
+      let surface = capturedVm.surfaceSig.val
+      let manualEditMode =
+        view == evComponentEdit and capturedVm.editMode.val == emEdit
+      surface == sPreview and panels.inspector and not manualEditMode
+    createRenderEffect proc() =
+      let want = shouldMount()
+      if want and not mounted:
+        r.appendChild(shell, chatEl)
+        mounted = true
+      elif not want and mounted:
+        r.removeChild(shell, chatEl)
+        mounted = false
   r.appendChild(shellRoot, shell)
   r.appendChild(shellRoot, renderCommandPalette[R, E](r, vm))
   r.appendChild(shellRoot, renderTelemetryOverlay[R, E](r, vm))

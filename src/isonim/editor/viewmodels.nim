@@ -181,6 +181,11 @@ type
       ## [0, usages.len - 1]; never wraps.
     selectedStory*: Signal[StoryRef]
     editMode*: Signal[EditMode]
+    surfaceSig*: Signal[Surface]
+      ## TBAR-M3: top-bar surface toggle. ``sPreview`` (the default)
+      ## shows the live preview workspace + property inspector;
+      ## ``sSpec`` shows the brief markdown viewer and hides the
+      ## right-side property panel.
     panels*: Signal[PanelVisibility]
     rightPanelWidth*: Signal[int]
     platform*: Signal[Platform]
@@ -2202,6 +2207,20 @@ proc changeViewport*(editor: EditorVM; viewport: PreviewViewport) =
   ## updates the signal so the iframe / streaming bridge picks the new
   ## extent on its next render.
   editor.viewport.val = viewport
+
+proc setSurface*(editor: EditorVM; surface: Surface) =
+  ## TBAR-M3: flip the editor's top-bar surface. The shell's reactive
+  ## effects observe ``surfaceSig`` and gate the property-inspector
+  ## mount + the spec-pane placeholder mount.
+  editor.surfaceSig.val = surface
+
+proc isPreviewOnlyControlsVisible*(editor: EditorVM): bool =
+  ## TBAR-M3 predicate: returns true when the right-side property
+  ## inspector should be mounted. The inspector is only meaningful for
+  ## the live preview, so it unmounts when the user is in the Spec
+  ## surface. Public so the headless VM test can exercise the
+  ## predicate against the same surface signal the shell observes.
+  editor.surfaceSig.val == sPreview
 
 func importVectorDocumentSvg*(symbol: VectorSymbol; svg: string): VectorDocument
 func diagnoseUnsupportedVectorSvgFeatures*(svg: string;
@@ -9860,6 +9879,10 @@ proc createEditorVM*(): EditorVM =
   let vectorEditorUsageIndex = createSignal(0)
   let selectedStory = createSignal(StoryRef())
   let editMode = createSignal(emView)
+  # TBAR-M3: surface defaults to ``sPreview``. The top-bar segmented
+  # widget in shell.nim is wired to flip this signal between
+  # ``sPreview`` and ``sSpec``.
+  let surfaceSig = createSignal(sPreview)
   let panels = createSignal(PanelVisibility(sidebar: true, inspector: true))
   # M-EVP-14 Wave Chrome CR-3: default AI inspector width 260 → 220 so
   # the right rail sits at ~11.5 % of a 1920-wide viewport (down from
@@ -9922,6 +9945,7 @@ proc createEditorVM*(): EditorVM =
     vectorEditorUsageIndex: vectorEditorUsageIndex,
     selectedStory: selectedStory,
     editMode: editMode,
+    surfaceSig: surfaceSig,
     panels: panels,
     rightPanelWidth: rightPanelWidth,
     platform: platform,

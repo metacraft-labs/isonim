@@ -848,31 +848,34 @@ suite "M-EVP-3 preview chrome bar density":
       check paddingRightPx >= 12
       dispose()
 
-  test "toolbar contains exactly the three chip clusters tagged for visual separation":
+  test "toolbar contains exactly the four chip clusters tagged for visual separation":
     createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createEditorVM()
       let bar = renderPreviewChromeBar[MockRenderer, MockNode](r, vm)
 
-      # M-EVP-7: each of the three remaining clusters must be a direct
-      # child of the toolbar and carry a stable `data-toolbar-cluster`
-      # attribute so future layout changes can address them without
-      # depending on the rendering order. The test additionally
-      # verifies the order matches the v5 left-to-right reading:
-      # backend → viewport → mode. The view-switcher cluster is gone
-      # because the sidebar drives the active view.
+      # M-EVP-7 + TBAR-M3: each cluster must be a direct child of the
+      # toolbar and carry a stable `data-toolbar-cluster` attribute so
+      # future layout changes can address them without depending on the
+      # rendering order. The test additionally verifies the order
+      # matches the left-to-right reading: backend → surface → viewport
+      # → mode. The view-switcher cluster is gone because the sidebar
+      # drives the active view. TBAR-M3 added the surface cluster
+      # (Preview / Spec segmented control) between backend and
+      # viewport.
       let clusterAttr = "data-toolbar-cluster"
       check findAllByAttr(bar, clusterAttr, "view-switcher").len == 0
       let clusters = findAllByAttr(bar, clusterAttr, "backend") &
+        findAllByAttr(bar, clusterAttr, "surface") &
         findAllByAttr(bar, clusterAttr, "viewport") &
         findAllByAttr(bar, clusterAttr, "mode")
-      check clusters.len == 3
+      check clusters.len == 4
 
       # Every cluster must be a direct child of the toolbar — if a
       # future refactor nests them inside an intermediate wrapper the
       # flex `gap` no longer applies between them, so this is the
       # invariant the visual separation rests on.
-      let clusterKinds = @["backend", "viewport", "mode"]
+      let clusterKinds = @["backend", "surface", "viewport", "mode"]
       var directChildClusters: seq[string] = @[]
       for child in bar.children:
         let kind = child.attributes.getOrDefault(clusterAttr)

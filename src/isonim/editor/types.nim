@@ -69,6 +69,22 @@ type
     emComment ## Click-to-select — comments are gathered for the AI assistant
     emEdit ## Click-to-select — inspector populates on click
 
+  # --- Editor surface (TBAR-M3) ---
+  Surface* = enum
+    ## Top-bar surface toggle introduced in TBAR-M3. The editor switches
+    ## between the live preview workspace and the per-brief markdown
+    ## spec pane via the segmented control in the top toolbar.
+    ##
+    ##   * ``sPreview`` — the default surface. Shows the preview canvas
+    ##     plus the right-side property/AI-assistant panel.
+    ##   * ``sSpec`` — read-only brief markdown view in this milestone
+    ##     (TBAR-M4 replaces the placeholder with a TipTap-backed
+    ##     renderer). The right-side property panel is hidden while
+    ##     this surface is active so brief reading stays distraction
+    ##     free.
+    sPreview
+    sSpec
+
   EditorCommandKind* = enum
     eckEdit
     eckComment
