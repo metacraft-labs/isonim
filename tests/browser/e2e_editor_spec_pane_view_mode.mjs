@@ -58,14 +58,11 @@ function buildEditor() {
   if (!existsSync(join(editorBuildDir, "index.html"))) {
     throw new Error("index.html was not produced by `just editor-build`");
   }
-  if (
-    !existsSync(
-      join(editorBuildDir, "vendor", "tiptap", "isonim-tiptap.umd.min.js"),
-    )
-  ) {
-    throw new Error(
-      "vendor/tiptap/isonim-tiptap.umd.min.js was not copied by editor-build",
-    );
+  if (!existsSync(join(editorBuildDir, "vendor", "tiptap.umd.js"))) {
+    throw new Error("vendor/tiptap.umd.js was not copied by editor-build");
+  }
+  if (!existsSync(join(editorBuildDir, "vendor", "xterm.umd.js"))) {
+    throw new Error("vendor/xterm.umd.js was not copied by editor-build");
   }
 }
 
@@ -169,17 +166,26 @@ test.after(async () => {
 test("e2e_spec_pane_tiptap_bundle_loads", async () => {
   const { ctx, page } = await openEditor();
   try {
+    // TBAR-M5b: each library exposes a named globalThis namespace
+    // assigned by the bundle's entry script (see
+    // ``isonim/nix/entry-tiptap.mjs``).  The per-library Nim FFI
+    // modules (``vendor/tiptap.nim`` etc.) import these via
+    // ``{.importc, nodecl.}``.
     const ready = await page.evaluate(() => {
       return (
         typeof window !== "undefined" &&
-        !!window.IsoNimTipTap &&
-        typeof window.IsoNimTipTap.mountViewer === "function"
+        !!globalThis.TipTap &&
+        !!globalThis.TipTap.Editor &&
+        !!globalThis.TipTapStarterKit &&
+        !!globalThis.TipTapStarterKit.StarterKit &&
+        !!globalThis.TipTapMarkdown &&
+        !!globalThis.TipTapMarkdown.Markdown
       );
     });
     assert.equal(
       ready,
       true,
-      "window.IsoNimTipTap is defined and exposes mountViewer",
+      "globalThis.TipTap / TipTapStarterKit / TipTapMarkdown are all defined",
     );
   } finally {
     await ctx.close();

@@ -1,29 +1,73 @@
-## TBAR-M4 / TBAR-M5 — Spec pane: TipTap-backed renderer for the
-## active brief's markdown body, plus an Edit mode that lets the user
-## modify the markdown and save it back to disk.
+## TBAR-M4 / TBAR-M5 / TBAR-M5b — Spec pane: TipTap-backed renderer
+## for the active brief's markdown body, plus an Edit mode that lets
+## the user modify the markdown and save it back to disk.
 ##
-## ``SpecPaneVM`` carries the surface state. TBAR-M5 adds:
-##   * ``dirty`` — Signal[bool], true when the markdown body differs
-##     from the last saved value.
-##   * ``lastSavedMarkdown`` — Signal[string], the body we'd revert to
-##     on Cancel; updated by a successful save.
-##   * ``enterEdit`` / ``saveEdits`` / ``cancelEdits`` procs.
+## ``SpecPaneVM`` carries the surface state:
 ##
-## Edit-mode strategy (per the TBAR-M5 milestone brief): we keep
-## TipTap as the View-mode renderer and overlay a plain ``<textarea>``
-## for Edit mode. This sidesteps the lossy TipTap→markdown round-trip
-## by storing what the user typed verbatim. The textarea is created /
-## hidden by ``setTipTapEditable`` in ``vendor/tiptap_shim.nim``;
-## ``getTipTapMarkdown`` returns the textarea's current value.
+##   * ``mode``               — Signal[SpecPaneMode] (view/comment/edit).
+##   * ``markdown``           — Signal[string] mirroring the editor body.
+##   * ``lastSavedMarkdown``  — Signal[string], value Cancel reverts to.
+##   * ``dirty``              — Signal[bool], true when the body differs
+##                              from the last-saved snapshot.
+##   * ``editor``             — JS-only handle to the live TipTap
+##                              ``Editor`` instance (set by the mount;
+##                              ``destroy()``ed on re-mount).  The
+##                              native build keeps an inert
+##                              placeholder field so the test pipeline
+##                              compiles.
 ##
-## Dogfood: the wrapper structure is built via the ``ui:`` DSL. The
+## TBAR-M5b strategy change: TBAR-M5 used a ``<textarea>`` overlay
+## (Option 3 / verbatim-typed bytes) to side-step the lossy
+## TipTap→markdown round-trip.  TBAR-M5b switches to a real TipTap
+## editable instance: ``tiptap-markdown`` is now part of the bundle
+## and provides a lossless serialiser, so Edit mode flips
+## ``editor.setEditable(true)`` on the existing instance + extracts
+## markdown via ``Markdown.getMarkdown(editor)`` on Save.  ``onUpdate``
+## wired through ``TipTapEditorOptions`` drives the ``dirty`` signal;
+## a ``loading`` guard suppresses dirty when the brief-switching code
+## path writes synthetic content via ``setContent``.
+##
+## Dogfood: the wrapper structure is built via the ``ui:`` DSL.  The
 ## TipTap mount itself touches container contents imperatively — that
 ## is the documented bridge to the foreign JS library and lives
-## inside ``mountTipTapViewer`` (which wraps a vendored UMD).
+## inside this module's reactive effect that calls ``newEditor`` /
+## ``replaceContent`` / ``setEditable`` against the per-library FFI
+## modules (``vendor/tiptap.nim``, ``vendor/tiptap_starter_kit.nim``,
+## ``vendor/tiptap_markdown.nim``).
 
 import isonim/core/[signals, computation]
 import isonim/dsl/ui
-import isonim/editor/vendor/tiptap_shim
+import isonim/editor/vendor/tiptap as tiptap_lib
+import isonim/editor/vendor/tiptap_starter_kit as tiptap_starter
+import isonim/editor/vendor/tiptap_markdown as tiptap_md
+
+when defined(js):
+  import std/jsffi
+
+  # ------------------------------------------------------------------- #
+  # Local FFI helper: assemble the TipTap extensions array depending on
+  # which optional extension globals are available.  Kept here (rather
+  # than in a vendor/* FFI module) because it's an application-side
+  # composition step — the per-library modules expose the constructors;
+  # this helper picks which combination to install based on runtime
+  # availability checks.  ``{.importjs.}`` makes the body a typed
+  # binding rather than a ``{.emit.}`` block.
+  # ------------------------------------------------------------------- #
+  proc buildExtensionsArray(hasStarter, hasMarkdown: bool): JsObject
+    {.importjs: """(function(s, m) {
+      var out = [];
+      if (s) { out.push(globalThis.TipTapStarterKit.StarterKit); }
+      if (m) { out.push(globalThis.TipTapMarkdown.Markdown); }
+      return out;
+    })(#, #)""".}
+
+  # Expose the live TipTap editor instance on ``window`` for the
+  # TBAR-M5b browser e2e tests.  Production code never reads this
+  # — it exists solely so the Playwright suite can drive
+  # ``editor.commands.setContent`` + ``storage.markdown.getMarkdown``
+  # without poking at the internal handle.
+  proc stashSpecPaneEditor(editor: TipTapEditor)
+    {.importjs: "(typeof window !== 'undefined' ? (window.__isonimSpecPaneEditor = #) : undefined)".}
 
 type
   SpecPaneMode* = enum
@@ -45,6 +89,18 @@ type
       ## Kept as an explicit signal (rather than a memo) so the Save
       ## button's visibility is reactive without forcing every
       ## subscriber to re-derive from two signals.
+    editor*: tiptap_lib.TipTapEditor
+      ## TBAR-M5b — JS-only handle to the live TipTap Editor instance.
+      ## ``mountSpecPane`` populates it on first reactive run; the
+      ## mount tears down the previous instance via ``destroy`` before
+      ## creating a new one.  The native build keeps an inert
+      ## placeholder so the headless VM tests compile.
+    loading*: bool
+      ## TBAR-M5b — guard flag set while a synthetic ``setContent`` /
+      ## ``markSaved`` write is in flight (e.g. when the brief lookup
+      ## refreshes the body after a story switch).  ``onUpdate``
+      ## callbacks fired during a synthetic write must NOT flip
+      ## ``dirty`` to true.
 
 proc createSpecPaneVM*(initialMarkdown: string = ""): SpecPaneVM =
   ## Build a fresh VM. Defaults to ``spmView`` mode and the supplied
@@ -56,6 +112,7 @@ proc createSpecPaneVM*(initialMarkdown: string = ""): SpecPaneVM =
     markdown: createSignal(initialMarkdown),
     lastSavedMarkdown: createSignal(initialMarkdown),
     dirty: createSignal(false),
+    loading: false,
   )
 
 proc recomputeDirty(vm: SpecPaneVM) =
@@ -84,8 +141,9 @@ proc setMode*(vm: SpecPaneVM; mode: SpecPaneMode) =
 proc enterEdit*(vm: SpecPaneVM) =
   ## TBAR-M5 — flip the pane into Edit mode. The mount's editable-
   ## sync effect picks up the mode change and calls
-  ## ``setTipTapEditable(host, true)``. ``dirty`` stays false until
-  ## the user types something (the mount listens for textarea input).
+  ## ``tiptap.setEditable(editor, true)``. ``dirty`` stays false until
+  ## the user types something (TipTap's ``onUpdate`` callback flips
+  ## the flag).
   vm.mode.val = spmEdit
 
 proc cancelEdits*(vm: SpecPaneVM) =
@@ -108,10 +166,10 @@ proc markSaved*(vm: SpecPaneVM; markdown: string) =
 
 proc markDirty*(vm: SpecPaneVM) =
   ## TBAR-M5 — set ``dirty`` to true unconditionally.  Used by the
-  ## mount when it observes a textarea ``input`` event (we don't yet
-  ## know the new markdown value at that moment; the spec-pane just
-  ## flips the flag and the next save reads the textarea's current
-  ## content).
+  ## TipTap ``onUpdate`` callback when the user mutates the editor
+  ## body (TBAR-M5b switched from textarea overlay to a real TipTap
+  ## editable instance, so this hook is now what's invoked by the JS
+  ## bundle's update event).
   vm.dirty.val = true
 
 # --------------------------------------------------------------------------- #
@@ -158,10 +216,25 @@ type
     ## TBAR-M5 — callbacks the shell supplies to the spec-pane mount.
     ## ``onSave`` runs when the user clicks the Save button; the
     ## mount has already pulled the current markdown body from the
-    ## textarea via ``getTipTapMarkdown``.  ``onCancel`` runs on the
-    ## Cancel button; the mount routes it through ``cancelEdits``.
+    ## TipTap editor via ``tiptap_md.getMarkdown``.  ``onCancel``
+    ## runs on the Cancel button; the mount routes it through
+    ## ``cancelEdits``.
     onSaveRequested*: proc(markdown: string) {.closure.}
     onCancelRequested*: proc() {.closure.}
+
+proc destroyEditor*(vm: SpecPaneVM) =
+  ## TBAR-M5b — tear down the live TipTap editor instance held by
+  ## the VM.  Safe to call when no editor is attached.  Exposed
+  ## publicly so the shell can dispose of an editor when the
+  ## spec-pane host is unmounted (and so tests can simulate the
+  ## destroy half of the re-mount lifecycle).
+  when defined(js):
+    let ed = vm.editor
+    if not ed.isNil:
+      tiptap_lib.destroy(ed)
+    vm.editor = nil
+  else:
+    discard
 
 proc mountSpecPane*[R, E](r: R; parent: E; vm: SpecPaneVM;
                           callbacks: SpecPaneMountCallbacks = nil) =
@@ -173,19 +246,22 @@ proc mountSpecPane*[R, E](r: R; parent: E; vm: SpecPaneVM;
   ##   2. An inner host ``tdiv`` flagged ``data-spec-pane-tiptap-host
   ##      ="true"`` where the TipTap editor mounts. ProseMirror /
   ##      TipTap own the host's children.
-  ##   3. A ``createRenderEffect`` that calls
-  ##      ``mountTipTapViewer(host, vm.markdown.val)`` on every
-  ##      change. The shim destroys the previous Editor first so
-  ##      we don't leak ProseMirror state.
-  ##   4. A second ``createRenderEffect`` syncs the mode signal onto a
-  ##      ``data-spec-pane-mode`` attribute so downstream views can
-  ##      react to the active mode without subscribing to the
-  ##      VM directly.
-  ##   5. TBAR-M5: a third effect calls ``setTipTapEditable`` when the
-  ##      mode signal changes — Edit mode swaps in the textarea
-  ##      overlay; View / Comment modes restore the read-only TipTap
-  ##      surface.
-  ##   6. TBAR-M5: a Save / Cancel button row, visible only when
+  ##   3. TBAR-M5b: a one-time effect builds the TipTap editor via
+  ##      ``vendor/tiptap.newEditor`` + ``StarterKit`` + ``Markdown``
+  ##      extensions and stores the instance on ``vm.editor``.  The
+  ##      ``onUpdate`` callback configured on the editor flips
+  ##      ``vm.dirty`` to true unless ``vm.loading`` is set.
+  ##   4. A markdown-sync effect calls
+  ##      ``tiptap.replaceContent(editor, body, parseMd=true)`` when
+  ##      ``vm.markdown.val`` changes, guarded by ``vm.loading=true``
+  ##      so the resulting ``onUpdate`` callback doesn't mark the
+  ##      pane dirty.
+  ##   5. A mode-mirror effect syncs ``vm.mode.val`` onto a
+  ##      ``data-spec-pane-mode`` attribute.
+  ##   6. An editable-state effect calls
+  ##      ``tiptap.setEditable(editor, mode == spmEdit)`` + writes a
+  ##      ``data-tiptap-editable="true|false"`` attribute on the host.
+  ##   7. A Save / Cancel button row, visible only when
   ##      ``mode == spmEdit and dirty``.
   let capturedVm = vm
   let capturedCallbacks = callbacks
@@ -242,36 +318,97 @@ proc mountSpecPane*[R, E](r: R; parent: E; vm: SpecPaneVM;
           font_size = "13px"):
           text("Save")
 
-  # Reactive content driver. ``markdown`` is the only input today.
-  # TBAR-M5: we explicitly do NOT track ``mode.val`` here — the
-  # editable-state effect below handles mode flips by calling
-  # ``setTipTapEditable`` (a textarea overlay swap, not a re-mount).
-  # Re-mounting TipTap on every mode flip would have two bad
-  # consequences: (a) the View-mode ``mountViewer`` call resets
-  # ``data-tiptap-editable`` to ``"false"`` and would race with the
-  # editable effect's ``setAttribute('data-tiptap-editable', 'true')``;
-  # (b) any user-typed textarea content (Edit mode) would be
-  # destroyed when the editor re-mounts.
-  createRenderEffect proc() =
-    let body = capturedVm.markdown.val
-    when defined(js):
-      # Foreign-JS bridge: imperatively swap the TipTap content. The
-      # shim deduplicates per-container so this is also safe to call
-      # repeatedly with the same body.
-      if isTipTapAvailable():
-        mountTipTapViewer(cast[Element](hostNode), body)
-      else:
-        # Fallback path: the vendor UMD didn't load. Render the raw
-        # markdown body via setTextContent so the user still sees the
-        # brief content rather than a blank pane. This keeps the dev
-        # loop forgiving when ``build/editor/vendor/tiptap/`` is
-        # missing.
+  # ------------------------------------------------------------------- #
+  # One-time editor bootstrap: build the TipTap instance the first
+  # time the mount runs.  Subsequent mode/markdown effects mutate the
+  # live instance (no re-mount on every signal change — that would
+  # destroy in-flight user input).
+  # ------------------------------------------------------------------- #
+  when defined(js):
+    proc bootstrapEditor() =
+      if not capturedVm.editor.isNil:
+        return
+      if not tiptap_lib.isAvailable():
+        # Fallback path: the bundle didn't load.  Render the raw
+        # markdown body as text content so the user still sees the
+        # brief in a degraded dev build.
         r.setAttribute(hostNode, "data-tiptap-mounted", "false")
-        r.setTextContent(hostNode, body)
-    else:
-      # Native build: there is no DOM; just keep the attribute in
-      # sync so headless tests can assert behaviour without depending
-      # on the browser pipeline.
+        r.setTextContent(hostNode, capturedVm.markdown.val)
+        return
+      let opts = tiptap_lib.newEditorOptions()
+      tiptap_lib.setElement(opts, cast[JsObject](hostNode))
+      # Extensions: StarterKit + Markdown (the latter teaches
+      # setContent(md, true) to parse markdown + attaches
+      # ``storage.markdown.getMarkdown()`` for serialisation).  We
+      # build the extensions array via the JS ``Array`` constructor
+      # rather than {.emit.} so the TBAR-M5b "no inline JS in
+      # application code" guard stays clean — the per-library FFI
+      # modules expose the constructors, this code wires them up.
+      let exts = buildExtensionsArray(
+        tiptap_starter.isAvailable(),
+        tiptap_md.isAvailable(),
+      )
+      tiptap_lib.setExtensions(opts, exts)
+      tiptap_lib.setContentOption(opts, capturedVm.markdown.val.cstring)
+      tiptap_lib.setEditableOption(opts, capturedVm.mode.val == spmEdit)
+      let dirtyVm = capturedVm
+      let onUpdate = proc(payload: JsObject) =
+        if dirtyVm.loading:
+          return
+        dirtyVm.markDirty()
+      tiptap_lib.setOnUpdate(opts, onUpdate)
+      capturedVm.editor = tiptap_lib.newEditor(tiptap_lib.TipTap, opts)
+      # Expose the editor handle on window for the TBAR-M5b e2e
+      # tests so they can drive ``editor.commands.setContent`` /
+      # ``Markdown.getMarkdown`` without poking at internals.  Gated
+      # to test environments via the existing ``__isonimTestMode``
+      # flag the editor already toggles for other test hooks.
+      stashSpecPaneEditor(capturedVm.editor)
+      r.setAttribute(hostNode, "data-tiptap-mounted", "true")
+      r.setAttribute(hostNode, "data-tiptap-editable",
+        if capturedVm.mode.val == spmEdit: "true" else: "false")
+
+    createRenderEffect proc() =
+      bootstrapEditor()
+
+    # Markdown-sync effect: on body change, replace the editor
+    # content via the Markdown extension's parser.  Guarded by
+    # ``loading = true`` so the resulting onUpdate callback does NOT
+    # flip dirty.  Body == lastSaved is the common case (brief switch
+    # / initial load); a divergence here means the shell pushed a new
+    # body without going through saveEdits, which we treat as a fresh
+    # baseline.
+    var lastSyncedBody = ""
+    var initialSync = false
+    createRenderEffect proc() =
+      let body = capturedVm.markdown.val
+      if initialSync and body == lastSyncedBody:
+        return
+      initialSync = true
+      lastSyncedBody = body
+      if capturedVm.editor.isNil:
+        return
+      capturedVm.loading = true
+      try:
+        tiptap_lib.replaceContent(capturedVm.editor, body.cstring, true)
+      finally:
+        capturedVm.loading = false
+
+    # Editable-state mirror: flip TipTap's editable flag + reflect
+    # it on the host as ``data-tiptap-editable``.
+    createRenderEffect proc() =
+      let isEdit = capturedVm.mode.val == spmEdit
+      if not capturedVm.editor.isNil:
+        tiptap_lib.setEditable(capturedVm.editor, isEdit)
+      r.setAttribute(hostNode, "data-tiptap-editable",
+        if isEdit: "true" else: "false")
+
+  else:
+    # Native build: there is no DOM; just keep the attribute in sync
+    # so headless tests can assert behaviour without depending on
+    # the browser pipeline.
+    createRenderEffect proc() =
+      discard capturedVm.markdown.val
       r.setAttribute(hostNode, "data-tiptap-mounted", "false")
 
   # Mode mirror — exposes the active mode as a DOM attribute so the
@@ -286,19 +423,6 @@ proc mountSpecPane*[R, E](r: R; parent: E; vm: SpecPaneVM;
       of spmEdit: "edit"
     r.setAttribute(root, "data-spec-pane-mode", label)
 
-  # TBAR-M5: editability sync.  When the mode flips to Edit the shim
-  # swaps in the textarea overlay; flipping back to View / Comment
-  # hides it.  ``isTipTapAvailable`` gating means a fallback build
-  # (no vendor UMD) silently degrades to a plain markdown <pre>
-  # rendering without crashing the editor.
-  createRenderEffect proc() =
-    let mode = capturedVm.mode.val
-    when defined(js):
-      if isTipTapAvailable():
-        setTipTapEditable(cast[Element](hostNode), mode == spmEdit)
-    else:
-      setTipTapEditable(cast[Element](hostNode), mode == spmEdit)
-
   # TBAR-M5: Save/Cancel button row visibility.  Visible only when
   # ``mode == spmEdit and dirty == true``.  Reading both signals
   # subscribes the effect to either changing.
@@ -309,41 +433,22 @@ proc mountSpecPane*[R, E](r: R; parent: E; vm: SpecPaneVM;
       if isEdit and isDirty: "flex" else: "none")
 
   # TBAR-M5: click handlers.  Save pulls the latest markdown body
-  # from the textarea (the source of truth in Edit mode) and routes
-  # it to the supplied callback; Cancel routes to the callback (the
-  # caller wires ``cancelEdits`` there).
+  # from the editor via the Markdown extension and routes it to the
+  # supplied callback; Cancel routes to the callback (the caller
+  # wires ``cancelEdits`` there).
   when defined(js):
     proc onSaveClick() =
       let cb = capturedCallbacks
       if cb == nil or cb.onSaveRequested == nil: return
-      let md = getTipTapMarkdown(cast[Element](hostNode))
-      cb.onSaveRequested(md)
+      var md: cstring = ""
+      if not capturedVm.editor.isNil and tiptap_md.isAvailable():
+        md = tiptap_md.getMarkdown(capturedVm.editor)
+      cb.onSaveRequested($md)
     proc onCancelClick() =
       let cb = capturedCallbacks
       if cb == nil or cb.onCancelRequested == nil: return
       cb.onCancelRequested()
     r.addEventListener(saveBtn, "click", onSaveClick)
     r.addEventListener(cancelBtn, "click", onCancelClick)
-
-    # TBAR-M5: hook a textarea-input listener so typing flips
-    # ``dirty`` to true.  The shim's ``setTipTapEditable`` attaches
-    # a JS-side ``input`` listener on the textarea that dispatches a
-    # bubbling ``isonim-spec-dirty`` CustomEvent on the host; the
-    # Nim closure ``onSpecDirty`` consumes it via the renderer's
-    # ``input`` overload (CustomEvent names go through the same
-    # ``addEventListener`` plumbing).
-    let dirtyVm = capturedVm
-    proc onSpecDirty() =
-      dirtyVm.markDirty()
-    r.addEventListener(hostNode, "isonim-spec-dirty", onSpecDirty)
-    # Also dispatch the synthetic event manually whenever the
-    # browser's native ``input`` event fires on a textarea inside
-    # the host — Playwright-driven dispatchEvent calls land here
-    # first in some browsers, so the dirty signal survives even if
-    # the shim's listener hasn't been wired yet (e.g. because the
-    # initial mount in View mode never created the textarea).
-    proc onAnyInput() =
-      dirtyVm.markDirty()
-    r.addEventListener(hostNode, "input", onAnyInput)
 
   r.appendChild(parent, root)

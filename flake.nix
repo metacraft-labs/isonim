@@ -47,6 +47,21 @@
               nim
               nimble
               nodejs
+              # TBAR-M5b: yarn 1 manages the editor's runtime JS deps
+              # (``@tiptap/core``, ``@tiptap/starter-kit``, ``tiptap-markdown``,
+              # ``xterm``).  The editor-vendor Nix derivation calls
+              # ``yarn install --offline`` against ``fetchYarnDeps`` to
+              # produce the UMD bundles consumed by ``editor-build``.
+              yarn
+              # TBAR-M5b: esbuild bundles the per-library entry scripts
+              # into UMD ``globalThis``-attaching bundles. Available
+              # for use both inside the Nix derivation and from the dev
+              # shell when debugging the bundling step.
+              esbuild
+              # TBAR-M5b: pre-fetch yarn deps for the Nix derivation
+              # via ``prefetch-yarn-deps`` (used to compute the
+              # ``fetchYarnDeps`` hash when ``yarn.lock`` changes).
+              prefetch-yarn-deps
               just
               # REV-M3: userspace PostgreSQL substrate.  ``postgresql_16``
               # provides ``initdb``, ``postgres``, ``psql``, ``pg_isready``,
@@ -87,6 +102,13 @@
         };
 
         packages.nginx-module = pkgs.callPackage ./nix/nginx-module.nix { };
+
+        # TBAR-M5b: vendored UMD bundles for the editor's TipTap + xterm
+        # runtime deps.  Output: ``$out/{tiptap,xterm}.umd.js`` +
+        # ``$out/MANIFEST.txt``.  Consumed by the ``editor-build`` recipe
+        # in ``isonim-examples/Justfile`` via ``nix build --print-out-paths
+        # ~/metacraft/isonim#editor-vendor`` + ``cp -L``.
+        packages.editor-vendor = pkgs.callPackage ./nix/editor-vendor.nix { };
       }
     );
 }
