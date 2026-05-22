@@ -897,6 +897,12 @@ proc handleStart*(reg: CampaignRegistry; req: Request) {.async, gcsafe.} =
     "round_complete", firstPrompt, extra, req.client)
   try: req.client.close() except CatchableError: discard
   await applyCampaignDocStatusAfterTurn(reg, campaignId, res)
+  # CMP-M7 — the single-turn model ends the campaign here; tear down
+  # the ACP transport so we don't leak one codex-acp child per turn.
+  # ``shutdownAndRelease`` is idempotent and safe to call even if the
+  # session was already evicted elsewhere.
+  reg.dropSession(campaignId)
+  reg.agents.shutdownAndRelease(sessionId)
 
 proc handleTick*(reg: CampaignRegistry; req: Request) {.async, gcsafe.} =
   ## CMP-M6 — the single-turn model has no daemon-driven tick concept.
@@ -929,7 +935,10 @@ proc handleStop*(reg: CampaignRegistry; req: Request) {.async, gcsafe.} =
 
   let sessionId = reg.lookupSession(campaignId)
   if sessionId.len > 0:
-    # Best-effort: cancel + drop the ACP session.
+    # Best-effort: cancel + shut down the ACP transport.  ``cancel``
+    # is the ACP-level signal so the agent sees the stop politely;
+    # ``shutdownAndRelease`` then terminates the spawned stdio child
+    # so we don't leak a codex-acp process per stopped campaign.
     {.gcsafe.}:
       let stateOpt = reg.agents.getState(sessionId)
       if stateOpt.isSome:
@@ -939,7 +948,7 @@ proc handleStop*(reg: CampaignRegistry; req: Request) {.async, gcsafe.} =
         except CatchableError as e:
           warn "campaign stop: acp.cancel failed",
             sessionId = sessionId, reason = e.msg
-      reg.agents.release(sessionId)
+      reg.agents.shutdownAndRelease(sessionId)
       reg.dropSession(campaignId)
   try:
     dbTransition(reg, campaignId, "stopped", reason)

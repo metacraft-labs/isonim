@@ -159,6 +159,45 @@ test "test_start_campaign_persists_row_and_started_event":
   check sawStarted
   check sawRoundComplete
 
+test "test_start_campaign_reopens_terminal_row":
+  ## CMP-M7: a campaign that reached a terminal status (e.g. ``failed``
+  ## because the doc never set a terminal status, or ``stopped`` because
+  ## the operator called ``campaign stop``) should NOT stay terminal
+  ## across a re-issued ``campaign start`` against the same doc.  The
+  ## migration-009 ``start_campaign`` resets the row to ``active`` on
+  ## restart, clears ``finished_at`` / ``status_reason``, and appends a
+  ## ``restarted`` event.  The ``started`` event from the original
+  ## insert stays — it's the immutable record of the campaign's first
+  ## birth — so the audit trail preserves the full history rather
+  ## than overwriting it.
+  let f = startCampaignDaemon()
+  defer: f.shutdown()
+  let docPath = "/tmp/cmp-m6-fixture/campaigns/reopen-terminal.md"
+  writeDocFixture(docPath, FixtureCampaignDoc)
+  let body = startBodyDefault(docPath, "sha-reopen-terminal", FixtureBriefBody)
+  let (s1, _) = rawPostStream(f.baseUrl, "/api/campaign/start", body)
+  check s1 == 200
+  # First turn ends with a doc that never set a terminal status, so
+  # the post-turn fallback transitions to ``failed``.
+  check waitForCampaignStatus(f, docPath, "failed")
+  # Restart the same doc — the row should come back to ``active`` and
+  # a ``restarted`` event should land.
+  let (s2, _) = rawPostStream(f.baseUrl, "/api/campaign/start", body)
+  check s2 == 200
+  let rows = fetchCampaignByDoc(f, docPath)
+  check rows.len == 1
+  let campaignId = rows[0][0]
+  let events = eventsForCampaign(f, campaignId)
+  var startedCount = 0
+  var restartedCount = 0
+  for e in events:
+    case e.kind
+    of "started":   inc startedCount
+    of "restarted": inc restartedCount
+    else: discard
+  check startedCount == 1
+  check restartedCount >= 1
+
 test "test_start_campaign_idempotent_on_doc_sha":
   let f = startCampaignDaemon()
   defer: f.shutdown()
@@ -563,17 +602,17 @@ test "test_campaign_hard_deadline_default_4_hours":
 # (with the inject-doesn't-interrupt limitation documented below).
 # ---------------------------------------------------------------------------
 
-test "test_inject_route_queues_injection_and_records_note_event":
-  ## Start a campaign + POST /api/campaign/inject with a free-form
-  ## text.  Verify the AcpClient's per-session queue now has 1 entry
-  ## and a ``note`` event with kind=operator_injection landed on the
-  ## audit trail.  We inject DURING the running turn (the start
-  ## returns once the turn ends — the test fixture's fake-ACP returns
-  ## end_turn fast — so we must inject between sending the request
-  ## body and waiting for the response).  Easier: drive start to
-  ## completion, then inject before the post-turn transition fires.
-  ## The route checks session-bound state, not campaign status, so
-  ## the queue-and-note recording works.
+test "test_inject_after_turn_end_returns_404":
+  ## CMP-M7: the session is torn down (and its ACP child terminated)
+  ## as soon as the agent turn ends.  Any inject issued AFTER the
+  ## campaign's ``/api/campaign/start`` stream has returned therefore
+  ## hits a session-less campaign and the route responds 404
+  ## ``no_active_session`` — matching the behaviour for a campaign
+  ## that has been explicitly stopped.  This is the post-CMP-M7
+  ## contract: inject is only useful while the turn is in flight
+  ## (which our fake-ACP fixture exits too fast to exercise), so the
+  ## route's job is to be honest about session lifetime rather than
+  ## to pretend at queueing for a turn that no longer exists.
   let f = startCampaignDaemon(@[("FAKE_ACP_STREAM_CHUNKS", "1")])
   defer: f.shutdown()
   let docPath = "/tmp/cmp-m6-fixture/campaigns/inject-queue.md"
@@ -583,33 +622,13 @@ test "test_inject_route_queues_injection_and_records_note_event":
   check s == 200
   let rows = fetchCampaignByDoc(f, docPath)
   let campaignId = rows[0][0]
-  let beforeInject = countEvents(f, campaignId, "note")
 
   let injectBody = $(%* {"campaignId": campaignId,
                          "text": "fix the android stretching first"})
   let (iCode, iResp) = campaignPost(f, "/api/campaign/inject", injectBody)
-  # The CMP-M6 session binding persists past the turn end until
-  # ``campaign stop`` explicitly drops it.  The inject should land.
-  check iCode == 202
+  check iCode == 404
   let iJson = parseJson(iResp)
-  check iJson{"status"}.getStr("") == "queued"
-  check iJson{"campaignId"}.getStr("") == campaignId
-  check iJson{"eventId"}.getStr("").len > 0
-
-  # A ``note`` event tagged kind=operator_injection landed.
-  let evts = eventsForCampaignWithIds(f, campaignId)
-  var sawInjectNote = false
-  for e in evts:
-    if e.kind == "note":
-      let p = parseJson(e.payload)
-      if p{"kind"}.getStr("") == "operator_injection":
-        sawInjectNote = true
-        check p{"text"}.getStr("") == "fix the android stretching first"
-        # acknowledged stays false — the single-turn model never
-        # drains it on behalf of a running turn.
-        check not e.acknowledged
-  check sawInjectNote
-  check countEvents(f, campaignId, "note") == beforeInject + 1
+  check iJson{"error"}.getStr("") == "no_active_session"
 
 test "test_inject_route_404_on_no_active_session":
   ## A campaign transitioned to terminal (no entry in the in-memory
@@ -634,44 +653,27 @@ test "test_inject_route_404_on_no_active_session":
   let iJson = parseJson(iResp)
   check iJson{"error"}.getStr("") == "no_active_session"
 
-test "test_inject_queues_to_session_but_does_not_interrupt":
-  ## CMP-M6: inject DURING a running turn queues the text on the per-
-  ## session ACP queue but does NOT interrupt the turn.  In the
-  ## single-turn model the queued texts are observable via the
-  ## ``CampaignRegistry`` peek helper but the daemon never folds them
-  ## into a continuation prompt (there is no continuation prompt).
-  ## The campaign turn proceeds and ends naturally.
-  ##
-  ## We exercise the peek surface against the in-process registry to
-  ## prove the event-id queue accumulates the injection.  This is the
-  ## behaviour that earlier tick tests asserted; now we just assert
-  ## the queue persists past the turn.
+test "test_inject_after_turn_end_does_not_record_event":
+  ## CMP-M7 corollary: when inject hits 404 after turn-end, no
+  ## ``note`` row is written.  This guards against a regression where
+  ## the route records the event before the session lookup (which
+  ## would leave a dangling unread injection on a campaign whose
+  ## session is gone).
   let f = startCampaignDaemon()
   defer: f.shutdown()
-  let docPath = "/tmp/cmp-m6-fixture/campaigns/inject-no-interrupt.md"
+  let docPath = "/tmp/cmp-m6-fixture/campaigns/inject-no-event.md"
   writeDocFixture(docPath, FixtureCampaignDoc)
-  let body = startBodyDefault(docPath, "sha-inject-no-interrupt", FixtureBriefBody)
+  let body = startBodyDefault(docPath, "sha-inject-no-event", FixtureBriefBody)
   let (s, _) = rawPostStream(f.baseUrl, "/api/campaign/start", body)
   check s == 200
   let rows = fetchCampaignByDoc(f, docPath)
   let campaignId = rows[0][0]
+  let beforeInject = countEvents(f, campaignId, "note")
 
-  let (iCode, iResp) = campaignPost(f, "/api/campaign/inject",
-    $(%* {"campaignId": campaignId, "text": "no-interrupt test"}))
-  check iCode == 202
-  let eventId = parseJson(iResp){"eventId"}.getStr("")
-  check eventId.len > 0
-
-  # The inject's ``note`` event row was written but its
-  # ``acknowledged`` flag stays FALSE — no continuation turn drains
-  # it.  This is the documented single-turn limitation.
-  let evts = eventsForCampaignWithIds(f, campaignId)
-  var sawUnacked = false
-  for e in evts:
-    if e.eventId == eventId:
-      check not e.acknowledged
-      sawUnacked = true
-  check sawUnacked
+  let (iCode, _) = campaignPost(f, "/api/campaign/inject",
+    $(%* {"campaignId": campaignId, "text": "no-event test"}))
+  check iCode == 404
+  check countEvents(f, campaignId, "note") == beforeInject
 
 test "test_refresh_doc_route_updates_sha_and_records_event":
   ## Mutate the campaign doc on disk, then POST /refresh-doc.  Verify

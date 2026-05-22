@@ -144,6 +144,36 @@ proc release*(reg: AgentRegistry; sessionId: string) =
   finally:
     release(reg.lock)
 
+proc shutdownAndRelease*(reg: AgentRegistry; sessionId: string) =
+  ## CMP-M7 — take a session out of the registry AND terminate its
+  ## ACP transport (including the spawned stdio child).  Used by the
+  ## campaign route after a turn ends and by the chat route when the
+  ## SSE client explicitly closes the session.  Without this the
+  ## daemon leaks one ACP child per session: ``release`` alone only
+  ## drops the registry entry, leaving the child alive in the
+  ## background because its closures keep the transport pinned.
+  var state: AgentSessionState
+  var found = false
+  acquire(reg.lock)
+  try:
+    if reg.sessions.hasKey(sessionId):
+      state = reg.sessions[sessionId]
+      reg.sessions.del(sessionId)
+      found = true
+  finally:
+    release(reg.lock)
+  if found:
+    info "agent client shutdown begin", sessionId = sessionId
+    try:
+      shutdown(state.client)
+      info "agent client shutdown end", sessionId = sessionId
+    except CatchableError as e:
+      warn "agent client shutdown raised",
+        sessionId = sessionId, reason = e.msg
+  else:
+    info "agent client shutdown skipped (not in registry)",
+      sessionId = sessionId
+
 proc getState*(reg: AgentRegistry; sessionId: string): Option[AgentSessionState] =
   acquire(reg.lock)
   try:
