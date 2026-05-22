@@ -98,22 +98,46 @@ echo "code block"
 ```
 """
 
-proc seedFixtureBrief(workspaceRoot: string): string =
+proc seedFixtureBrief(workspaceRoot: string;
+                      body: string = FixtureBriefBody): string =
   ## Drop one brief at ``<workspaceRoot>/briefs/render/fixture-task.md``
   ## so the daemon's in-process BriefIndex picks it up on first load.
   let briefsDir = workspaceRoot / "briefs" / "render"
   createDir(briefsDir)
   let path = briefsDir / "fixture-task.md"
-  writeFile(path, FixtureBriefBody)
+  writeFile(path, body)
   path
 
-proc startSaveBriefFixture(workspaceUnderRoot = false): SaveBriefFixture =
+proc startSaveBriefFixture(workspaceUnderRoot = false;
+                           enableDiagRoutes = false;
+                           initialBriefBody = FixtureBriefBody;
+                           symlinkEscape = false): SaveBriefFixture =
   ## ``workspaceUnderRoot`` — when true, set ``workspace.root`` to a
   ## *subdirectory* of the temp dir AND expose the parent's briefs/
   ## tree via ``ISONIM_REVIEW_EXTRA_BRIEFS_DIRS`` so the daemon
   ## locates the brief in its index but its sourceFile is outside the
   ## configured ``workspace.root`` — the 403 ``outside_workspace``
   ## path under test.
+  ##
+  ## ``enableDiagRoutes`` — when true, set
+  ## ``ISONIM_REVIEW_ENABLE_DIAG_ROUTES=1`` so the daemon's
+  ## ``/api/design-review/_test/brief-index`` route returns the
+  ## in-memory index instead of a 404.  Used by the byPreview
+  ## refresh test.
+  ##
+  ## ``initialBriefBody`` — override the seeded brief body (default
+  ## ``FixtureBriefBody``).  Lets the byPreview test seed a brief
+  ## with a known initial ``coversPreviews`` shape.
+  ##
+  ## ``symlinkEscape`` — when true, place the brief at
+  ## ``<tempRoot>/outside/escape.md`` (outside the workspace), then
+  ## create ``<workspaceRoot>/briefs/escape`` as a symlink to
+  ## ``<tempRoot>/outside`` and add the symlinked path to
+  ## ``ISONIM_REVIEW_EXTRA_BRIEFS_DIRS``.  The daemon discovers the
+  ## brief via the symlinked path (its ``sourceFile`` lexically lies
+  ## inside ``workspace.root``) but the realpath of the brief is
+  ## outside the workspace — exercises the symlink-resolving
+  ## containment check.
   if not fileExists(CliPath):
     raise newException(IOError,
       "save_brief_route: build/bin/isonim-review missing — " &
@@ -124,20 +148,44 @@ proc startSaveBriefFixture(workspaceUnderRoot = false): SaveBriefFixture =
                   $((int(epochTime() * 1000)) mod 1_000_000)
   createDir(tempRoot)
 
-  # The brief always lands in the temp root's ``briefs/render/`` dir.
-  let briefPath = seedFixtureBrief(tempRoot)
+  var briefPath: string
+  var workspaceRoot: string
+  var extraBriefsDirs: string
 
-  let workspaceRoot =
-    if workspaceUnderRoot:
-      let nested = tempRoot / "nested-workspace"
-      createDir(nested)
-      nested
-    else:
-      tempRoot
-  let extraBriefsDirs =
-    if workspaceUnderRoot:
-      tempRoot / "briefs"
-    else: ""
+  if symlinkEscape:
+    # ``<tempRoot>/workspace`` is the configured workspace root.
+    # ``<tempRoot>/outside`` lives outside it on disk.  The brief
+    # file is at ``<tempRoot>/outside/escape.md``.  We create the
+    # symlink ``<tempRoot>/workspace/briefs/escape`` → outside, so
+    # the lexical brief path under the symlink lies inside the
+    # workspace.  Only realpath-aware canonicalisation can reject
+    # it.
+    workspaceRoot = tempRoot / "workspace"
+    createDir(workspaceRoot / "briefs")
+    let outsideDir = tempRoot / "outside"
+    createDir(outsideDir)
+    let realBrief = outsideDir / "escape.md"
+    writeFile(realBrief, initialBriefBody)
+    let symlinkPath = workspaceRoot / "briefs" / "escape"
+    createSymlink(outsideDir, symlinkPath)
+    # The handler will see this as the brief's ``sourceFile`` —
+    # lexically inside the workspace, but realpath points out.
+    briefPath = symlinkPath / "escape.md"
+    extraBriefsDirs = symlinkPath
+  else:
+    # The brief always lands in the temp root's ``briefs/render/`` dir.
+    briefPath = seedFixtureBrief(tempRoot, initialBriefBody)
+    workspaceRoot =
+      if workspaceUnderRoot:
+        let nested = tempRoot / "nested-workspace"
+        createDir(nested)
+        nested
+      else:
+        tempRoot
+    extraBriefsDirs =
+      if workspaceUnderRoot:
+        tempRoot / "briefs"
+      else: ""
 
   let storeDir = tempRoot / "store"
   createDir(storeDir)
@@ -151,6 +199,8 @@ proc startSaveBriefFixture(workspaceUnderRoot = false): SaveBriefFixture =
   environ["ISONIM_REVIEW_PORT"] = $httpPort
   if extraBriefsDirs.len > 0:
     environ["ISONIM_REVIEW_EXTRA_BRIEFS_DIRS"] = extraBriefsDirs
+  if enableDiagRoutes:
+    environ["ISONIM_REVIEW_ENABLE_DIAG_ROUTES"] = "1"
 
   let cfgPath = tempRoot / "isonim-review.toml"
   writeFile(cfgPath,
@@ -226,6 +276,13 @@ proc httpPostFixture(baseUrl, path, body: string):
   let headers = newHttpHeaders([("Content-Type", "application/json")])
   let resp = client.request(baseUrl & path, httpMethod = HttpPost,
                             body = body, headers = headers)
+  (code: parseInt(resp.status.split(' ')[0]), body: resp.body)
+
+proc httpGetFixture(baseUrl, path: string):
+    tuple[code: int; body: string] =
+  let client = newHttpClient(timeout = 5000)
+  defer: client.close()
+  let resp = client.request(baseUrl & path, httpMethod = HttpGet)
   (code: parseInt(resp.status.split(' ')[0]), body: resp.body)
 
 # ---------------------------------------------------------------------------
@@ -332,6 +389,157 @@ suite "TBAR-M5 save-brief route":
     check body["error"].getStr == "outside_workspace"
     # File on disk is unchanged — the brief still carries the original
     # body, not the malicious payload.
+    let onDisk = readFile(f.briefPath)
+    check onDisk == FixtureBriefBody
+
+  test "test_save_brief_refreshes_byPreview_index":
+    ## Verifies bug fix: ``reparseBrief`` must refresh ``byPreview``
+    ## (the inverted ``previewId → briefId`` map) in lockstep with
+    ## ``byBriefId`` after a save that changes ``coversPreviews``.
+    ## Without this, the editor's history button would resolve the
+    ## wrong briefId for the active story until daemon restart.
+    ##
+    ## We exercise the lifecycle in three saves:
+    ##   1. Initial body covers ``(storyA, web)`` only.
+    ##   2. Save adds storyB ⇒ both ``(storyA, web)`` and
+    ##      ``(storyB, web)`` resolve to the brief.
+    ##   3. Save drops storyA ⇒ ``(storyA, web)`` no longer resolves;
+    ##      ``(storyB, web)`` still does.
+    const InitialBody = """---
+briefId: render.fixture-task
+schemaVersion: 1
+kind: render
+title: Fixture Task Brief
+coversPreviews:
+  - storyRef: { group: "Fixture", name: "StoryA", kind: page, index: 0 }
+    backends: [web]
+captureViewports:
+  - { width: 1920, height: 1080, label: "wide" }
+reviewerSchemaVersion: 1
+scoringDimensions:
+  - { id: "fidelity", label: "Fidelity", weight: 1.0, scale: { min: 1, max: 10 } }
+---
+
+# Initial body
+"""
+    const BodyAB = """---
+briefId: render.fixture-task
+schemaVersion: 1
+kind: render
+title: Fixture Task Brief
+coversPreviews:
+  - storyRef: { group: "Fixture", name: "StoryA", kind: page, index: 0 }
+    backends: [web]
+  - storyRef: { group: "Fixture", name: "StoryB", kind: page, index: 0 }
+    backends: [web]
+captureViewports:
+  - { width: 1920, height: 1080, label: "wide" }
+reviewerSchemaVersion: 1
+scoringDimensions:
+  - { id: "fidelity", label: "Fidelity", weight: 1.0, scale: { min: 1, max: 10 } }
+---
+
+# Two stories
+"""
+    const BodyBOnly = """---
+briefId: render.fixture-task
+schemaVersion: 1
+kind: render
+title: Fixture Task Brief
+coversPreviews:
+  - storyRef: { group: "Fixture", name: "StoryB", kind: page, index: 0 }
+    backends: [web]
+captureViewports:
+  - { width: 1920, height: 1080, label: "wide" }
+reviewerSchemaVersion: 1
+scoringDimensions:
+  - { id: "fidelity", label: "Fidelity", weight: 1.0, scale: { min: 1, max: 10 } }
+---
+
+# Only StoryB
+"""
+    # canonicalPreviewId for the seeded shapes — the encoder leaves
+    # spaces / letters untouched and only escapes ``/``, ``@``, ``#``,
+    # ``%`` (none of which appear in the StoryA / StoryB story refs
+    # below), so the canonical form is literal.
+    const PreviewA = "Fixture/StoryA:page#0@web"
+    const PreviewB = "Fixture/StoryB:page#0@web"
+
+    let f = startSaveBriefFixture(enableDiagRoutes = true,
+                                  initialBriefBody = InitialBody)
+    defer: f.shutdown()
+
+    # ``byPreview`` lookups go through a test-only diagnostic route
+    # the daemon exposes when ``ISONIM_REVIEW_ENABLE_DIAG_ROUTES=1``.
+    # The route returns ``{byBriefId: [ids], byPreview: {pid: [ids]}}``
+    # — strictly read-only.
+    proc indexDump(): JsonNode =
+      # The diag handler triggers ``ensureLoaded`` itself, so a single
+      # GET is enough.  Returns ``{byBriefId: [...], byPreview: {...}}``.
+      let r = httpGetFixture(f.baseUrl,
+                             "/api/design-review/_test/brief-index")
+      check r.code == 200
+      parseJson(r.body)
+
+    proc previewResolvesTo(dump: JsonNode; previewId, briefId: string): bool =
+      if not dump.hasKey("byPreview"): return false
+      let by = dump["byPreview"]
+      if not by.hasKey(previewId): return false
+      for entry in by[previewId]:
+        if entry.getStr == briefId: return true
+      false
+
+    # 1. Initial state — only ``(StoryA, web)`` resolves.
+    let d0 = indexDump()
+    check previewResolvesTo(d0, PreviewA, "render.fixture-task")
+    check not previewResolvesTo(d0, PreviewB, "render.fixture-task")
+
+    # 2. Save with StoryA + StoryB ⇒ both resolve.
+    let r1 = httpPostFixture(f.baseUrl, "/api/design-review/save-brief",
+                              $(%* {
+                                "briefId": "render.fixture-task",
+                                "markdown": BodyAB,
+                              }))
+    check r1.code == 200
+    let d1 = indexDump()
+    check previewResolvesTo(d1, PreviewA, "render.fixture-task")
+    check previewResolvesTo(d1, PreviewB, "render.fixture-task")
+
+    # 3. Save dropping StoryA ⇒ only StoryB resolves.
+    let r2 = httpPostFixture(f.baseUrl, "/api/design-review/save-brief",
+                              $(%* {
+                                "briefId": "render.fixture-task",
+                                "markdown": BodyBOnly,
+                              }))
+    check r2.code == 200
+    let d2 = indexDump()
+    check not previewResolvesTo(d2, PreviewA, "render.fixture-task")
+    check previewResolvesTo(d2, PreviewB, "render.fixture-task")
+
+  test "test_save_brief_rejects_symlink_traversal":
+    ## Verifies bug fix: ``isInsideDir`` / ``canonicalize`` must
+    ## resolve symlinks before the containment check, so a brief
+    ## whose lexical path lies inside ``workspace.root`` but whose
+    ## realpath points outside cannot be written through.
+    ##
+    ## Setup: ``<workspace>/briefs/escape`` is a symlink to
+    ## ``<tempRoot>/outside``.  A brief at
+    ## ``<tempRoot>/outside/escape.md`` is discovered via the
+    ## symlinked path — its ``sourceFile`` LEXICALLY looks
+    ## ``inside`` the workspace, but realpath says ``outside``.
+    ## The guard must respond 403 ``outside_workspace``.
+    let f = startSaveBriefFixture(symlinkEscape = true)
+    defer: f.shutdown()
+    let payload = $(%* {
+      "briefId": "render.fixture-task",
+      "markdown": "should be rejected",
+    })
+    let resp = httpPostFixture(f.baseUrl, "/api/design-review/save-brief",
+                                payload)
+    check resp.code == 403
+    let body = parseJson(resp.body)
+    check body["error"].getStr == "outside_workspace"
+    # File on disk is unchanged.
     let onDisk = readFile(f.briefPath)
     check onDisk == FixtureBriefBody
 

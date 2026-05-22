@@ -347,6 +347,11 @@ proc mountDesignReviewRoutes*(srv: ReviewServer) =
   let briefStore = newDaemonBriefStore(srv.cfg.workspace.root)
   srv.registerHandler("/api/design-review/save-brief",
                       makeSaveBrief(briefStore, srv.cfg.workspace.root))
+  # Test-only diagnostic — gated inside the handler by an env var so
+  # registering the route in production is a no-op.  Lets the
+  # save-brief tests observe ``byPreview`` refreshes.
+  srv.registerHandler("/api/design-review/_test/brief-index",
+                      makeBriefIndexDiag(briefStore))
 
   # CMP-M2 — campaign storage + start/tick/stop handlers.  Re-uses the
   # ``ReviewDb`` connection (the campaign routines live in the same

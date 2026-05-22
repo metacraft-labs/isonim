@@ -158,6 +158,16 @@ proc reparseBrief*(store: DaemonBriefStore; filePath: string) {.gcsafe.} =
   ## a full sweep.  Failures are recorded in ``index.errors`` but
   ## never raised — the write already succeeded.
   ##
+  ## The refresh covers BOTH inverted maps:
+  ##
+  ## * ``byBriefId[<id>]`` — the row keyed by the parsed brief's id.
+  ## * ``byPreview[<previewId>]`` — every ``(storyRef, backend)`` the
+  ##   brief lists under ``coversPreviews``.  Without this second
+  ##   sweep, a save that adds/removes a story or backend would leave
+  ##   ``byPreview`` pointing at the brief's pre-save shape until
+  ##   daemon restart, and the editor's history button would resolve
+  ##   the wrong briefId for the active story.
+  ##
   ## ``parseBrief`` is flagged as ``GcUnsafe2`` upstream (the YAML
   ## subset parser uses a mutually-recursive callgraph that the
   ## stdlib's GC-safety checker can't statically clear).  The
@@ -190,14 +200,86 @@ proc reparseBrief*(store: DaemonBriefStore; filePath: string) {.gcsafe.} =
           store.index.byBriefId.del id
         store.index.byBriefId[parsed.briefId] = parsed
 
+        # Refresh ``byPreview``.  We don't know which previewIds the
+        # brief covered BEFORE this save, so we sweep every key and
+        # drop any list entry that references the brief's old or new
+        # id (the old-id path matters when a save renames the brief).
+        # Then we re-add the entries for the brief's current shape —
+        # mirroring the per-brief shape that ``buildBriefIndex`` in
+        # ``brief_index.nim`` produces during a full sweep.
+        let touchedIds = @[parsed.briefId] & idsToDrop
+        var emptiedKeys: seq[string] = @[]
+        for previewId, briefIds in store.index.byPreview.mpairs:
+          var filtered: seq[string] = @[]
+          for bid in briefIds:
+            if bid notin touchedIds:
+              filtered.add bid
+          if filtered.len == 0:
+            emptiedKeys.add previewId
+          else:
+            store.index.byPreview[previewId] = filtered
+        for k in emptiedKeys:
+          store.index.byPreview.del k
+        for cov in parsed.coversPreviews:
+          for be in cov.backends:
+            let previewId = canonicalPreviewId(cov.storyRef, be)
+            if previewId notin store.index.byPreview:
+              store.index.byPreview[previewId] = @[]
+            var lst = store.index.byPreview[previewId]
+            if parsed.briefId notin lst:
+              lst.add parsed.briefId
+              store.index.byPreview[previewId] = lst
+
 # ---------------------------------------------------------------------------
 # Path containment helper.  Both sides are canonicalised so a symlink
 # or ``..`` traversal cannot escape ``root``.
 # ---------------------------------------------------------------------------
 
+proc canonicalizeParent(lexical: string): string =
+  ## Walk ``lexical`` upward until we find a path component that
+  ## exists on disk, ``expandFilename`` its canonical form (which
+  ## resolves any symlinks in the existing prefix), then re-join the
+  ## non-existing tail.  Used by ``canonicalize`` when the target
+  ## path doesn't exist yet (e.g. a brand-new brief whose file is
+  ## about to be created), so the containment check still rejects
+  ## paths whose existing parent resolves outside the workspace.
+  ##
+  ## If no ancestor exists (only possible for an empty / root path),
+  ## fall back to the lexical form unchanged.
+  var head = lexical
+  var tail = ""
+  while head.len > 0:
+    if fileExists(head) or dirExists(head):
+      try:
+        let resolved = expandFilename(head)
+        if tail.len == 0: return resolved
+        return resolved / tail
+      except OSError:
+        # ``expandFilename`` only fails when the path no longer
+        # exists by the time we resolve it; fall through and walk
+        # one more level up.
+        discard
+    let (parent, name) = splitPath(head)
+    if name.len == 0 or parent == head:
+      break
+    tail = if tail.len == 0: name else: name / tail
+    head = parent
+  result = lexical
+
 proc canonicalize(path: string): string =
   if path.len == 0: return ""
-  result = normalizedPath(absolutePath(path))
+  # ``absolutePath`` + ``normalizedPath`` produces the lexical
+  # (no-symlinks-followed) absolute path.  We then resolve symlinks
+  # via ``expandFilename`` so a brief whose path traverses a symlink
+  # that escapes the workspace can no longer bypass ``isInsideDir``.
+  let lexical = normalizedPath(absolutePath(path))
+  try:
+    return expandFilename(lexical)
+  except OSError:
+    # File doesn't exist yet (e.g. a brand-new brief being written
+    # for the first time).  Resolve as far up the path as we can —
+    # any symlink in the existing prefix still gets followed.
+    return canonicalizeParent(lexical)
 
 proc isInsideDir*(child, root: string): bool =
   ## True when ``child`` resolves to a path inside ``root`` (or equal
@@ -306,3 +388,40 @@ proc makeSaveBrief*(store: DaemonBriefStore;
   let capturedRoot = workspaceRoot
   result = proc (req: Request): Future[void] {.async, gcsafe.} =
     await saveBriefHandler(capturedStore, capturedRoot, req)
+
+# ---------------------------------------------------------------------------
+# Test-only diagnostic route — exposes a JSON dump of the in-process
+# BriefIndex (``byBriefId`` ids + ``byPreview``).  Used by the
+# save-brief route's tests to verify that the ``byPreview`` inverted
+# map is refreshed in sync with ``byBriefId`` after a save.
+#
+# Gated behind ``ISONIM_REVIEW_ENABLE_DIAG_ROUTES`` so production
+# daemons never expose it.  No write surface — strictly read-only.
+# ---------------------------------------------------------------------------
+
+proc briefIndexDiagHandler*(store: DaemonBriefStore;
+                            req: Request) {.async, gcsafe.} =
+  if getEnv("ISONIM_REVIEW_ENABLE_DIAG_ROUTES").len == 0:
+    await respondError(req, Http404, "not_found")
+    return
+  ensureLoaded(store)
+  var briefIds = newJArray()
+  var byPreview = newJObject()
+  {.cast(gcsafe).}:
+    withLock store.lock:
+      for id in store.index.byBriefId.keys:
+        briefIds.add %id
+      for previewId, ids in store.index.byPreview.pairs:
+        var arr = newJArray()
+        for id in ids: arr.add %id
+        byPreview[previewId] = arr
+  let resp = %* {
+    "byBriefId": briefIds,
+    "byPreview": byPreview,
+  }
+  await respondJson(req, Http200, resp)
+
+proc makeBriefIndexDiag*(store: DaemonBriefStore): HandlerProcRaw =
+  let capturedStore = store
+  result = proc (req: Request): Future[void] {.async, gcsafe.} =
+    await briefIndexDiagHandler(capturedStore, req)
