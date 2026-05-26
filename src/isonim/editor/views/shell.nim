@@ -3,7 +3,7 @@
 ## Fully dogfoods IsoNim: all elements via ui macro with if/for/case.
 ## Only uses manual setStyle for reactive effects (createRenderEffect).
 
-import std/[options, strutils, tables]
+import std/[options, sets, strutils, tables]
 
 import isonim/core/[signals, computation]
 import isonim/dsl/ui
@@ -17,8 +17,8 @@ import isonim/editor/views/foundations_page
 import isonim/editor/views/page_preview
 import isonim/editor/views/vector_editor
 import isonim/editor/views/chat_panel
-import isonim/editor/views/preview_pane as preview_pane_view
 import isonim/editor/views/design_review_mount as design_review_mount_view
+import isonim/editor/views/review_preview_button
 import isonim/editor/views/widgets as editor_widgets
 import isonim/editor/design_review/brief_format
 import isonim/editor/design_review/brief_index
@@ -2128,58 +2128,91 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
 
   let capturedVm = vm
 
-  # Reuse `renderCompactChoiceColumn` (which already has the M58
-  # reactive chip-set rebuild logic) and override its CSS to flow
-  # horizontally. This keeps M58's per-backend viewport pinned-set
-  # reactivity intact without duplicating the rebuild machinery.
-  ## M-EVP-14: the column variant ships its primary strip inside a
-  ## bordered, dark, rounded container (the M57 edge-strip affordance).
-  ## When the cluster lives in the chrome bar each chip should read as
-  ## its own pill — NOT as a segment of a single filled bar — so we
-  ## strip the container's background + border, force a transparent
-  ## surface, and add a 4px inter-chip gap so the pills don't kiss.
-  proc tiltHorizontal(root: E; ariaLabel: string) =
-    r.setStyle(root, "flex-direction", "row")
-    r.setStyle(root, "align-items", "center")
-    r.setStyle(root, "width", "auto")
-    r.setStyle(root, "min-width", "0")
-    r.setStyle(root, "background-color", "transparent")
-    r.setStyle(root, "border", "none")
-    r.setStyle(root, "border-radius", "0")
-    r.setStyle(root, "gap", "4px")
-    r.setAttribute(root, "aria-orientation", "horizontal")
+  # CHRM-M2: backend cluster now uses the ChoiceGroup segmented widget
+  # with the per-option ``disabledIndices`` signal driving the
+  # streaming-preview availability check + the transparent container
+  # variant so the pills sit directly on the chrome-bar surface
+  # without the bespoke ``tiltHorizontal`` setStyle workaround.
+  let backendOrder = backendsForLeftEdge()
+  let backendShortLabels = backendShortLabelsForLeftEdge()
+  var backendLabelSeq: seq[string] = @[]
+  for s in backendShortLabels: backendLabelSeq.add s
 
-  let backendThunk = proc(): seq[CompactChoiceOption] =
-    buildBackendOptions(capturedVm)
-  let backendOnChipMounted = proc(node: E; option: CompactChoiceOption;
-      index: int) =
-    var backendId = ""
-    for (key, value) in option.dataAttrs:
-      if key == "data-preview-backend":
-        backendId = value
+  let backendWrapper = ui(r):
+    tdiv(`data-edge-strip` = "backend",
+         `data-preview-edge-group` = "backend",
+         `data-toolbar-cluster` = "backend",
+         display = "inline-flex", align_items = "center",
+         `aria-label` = "Preview backend")
+
+  var backendInitialIndex = 0
+  block:
+    let current = capturedVm.platform.val
+    for i in 0 ..< backendOrder.len:
+      if backendOrder[i] == current:
+        backendInitialIndex = i
         break
-    let b = backendFromId(backendId)
-    r.bindBackendChip(node, capturedVm, b)
-  let backendCol = renderCompactChoiceColumn[R, E](r,
-    ariaLabel = "Preview backend",
-    optionsThunk = backendThunk,
-    visibleLimit = 7,
-    chipWidth = "44px",
-    chipHeight = "26px",
-    dataAttrs = @[
-      ("data-edge-strip", "backend"),
-      ("data-preview-edge-group", "backend"),
-      ("data-toolbar-cluster", "backend")],
-    onChipMounted = backendOnChipMounted)
-  tiltHorizontal(backendCol.root, "Preview backend")
-  r.appendChild(toolbar, backendCol.root)
+  let backendVm = createSegmentedChoiceVM(
+    backendLabelSeq, initialIndex = backendInitialIndex)
+
+  proc computeBackendDisabled(): HashSet[int] =
+    result = initHashSet[int]()
+    if capturedVm.streamingPreview == nil:
+      return
+    for i in 0 ..< backendOrder.len:
+      if not capturedVm.streamingPreview.backendIsAvailable(backendOrder[i]):
+        result.incl i
+  backendVm.setDisabledIndices(computeBackendDisabled())
+
+  r.mountSegmentedChoice(backendWrapper, backendVm,
+    proc(i: int) {.closure.} =
+      if i < 0 or i >= backendOrder.len:
+        return
+      let target = backendOrder[i]
+      if capturedVm.streamingPreview != nil and
+          target in capturedVm.streamingPreview.availableBackends.val:
+        selectBackend(capturedVm.streamingPreview, target)
+      capturedVm.changePlatform(target),
+    variant = cgvTransparent)
+
+  # Mirror external writes to ``vm.platform`` onto the segmented
+  # control. Same ``.value``-not-``.val`` precaution as the Surface
+  # cluster — reading ``.val`` here would feedback-loop with the
+  # mount's click handler. Also refresh the disabled set when
+  # ``availableBackends`` flips.
+  block:
+    let syncVm = backendVm
+    createRenderEffect proc() =
+      let current = capturedVm.platform.val
+      var target = 0
+      for i in 0 ..< backendOrder.len:
+        if backendOrder[i] == current:
+          target = i
+          break
+      if syncVm.activeIndex.value != target:
+        syncVm.activate(target)
+    createRenderEffect proc() =
+      if capturedVm.streamingPreview == nil:
+        syncVm.setDisabledIndices(initHashSet[int]())
+        return
+      let available = capturedVm.streamingPreview.availableBackends.val
+      var disabled = initHashSet[int]()
+      for i in 0 ..< backendOrder.len:
+        if backendOrder[i] notin available:
+          disabled.incl i
+      syncVm.setDisabledIndices(disabled)
+
+  r.appendChild(toolbar, backendWrapper)
   r.appendChild(toolbar, clusterDivider())
 
   # TBAR-M3: Preview / Spec top-bar surface switch. Placed between the
   # backend cluster and the screen-size selector so the user reads the
   # surface decision (preview workspace vs brief markdown) before the
   # secondary layout knobs. Uses the segmented variant of the
-  # ChoiceGroup widget delivered by TBAR-M2.
+  # ChoiceGroup widget delivered by TBAR-M2. CHRM-M2: the chrome-bar
+  # consumer now requests the ``cgvTransparent`` container variant so
+  # the surface pills sit on the toolbar surface without their own
+  # filled backdrop.
   let surfaceWrapper = ui(r):
     tdiv(`data-toolbar-cluster` = "surface",
          `data-preview-surface-switch` = "true",
@@ -2188,7 +2221,8 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
     @["Preview", "Spec"],
     initialIndex = (if capturedVm.surfaceSig.val == sPreview: 0 else: 1))
   r.mountSegmentedChoice(surfaceWrapper, surfaceVm, proc(i: int) {.closure.} =
-    capturedVm.setSurface(if i == 0: sPreview else: sSpec))
+    capturedVm.setSurface(if i == 0: sPreview else: sSpec),
+    variant = cgvTransparent)
   # Keep the segmented control in sync with external writes to
   # ``surfaceSig`` (e.g. tests that flip the signal directly). This
   # effect tracks ONLY ``surfaceSig`` — reading ``activeIndex`` via
@@ -2243,7 +2277,8 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
   r.mountChevronChoice(viewportChevronWrapper, viewportChevronVm,
     proc(i: int) {.closure.} =
       if i >= 0 and i < viewportChoices.len:
-        capturedVm.changeViewport(viewportChoices[i]))
+        capturedVm.changeViewport(viewportChoices[i]),
+    variant = cgvTransparent)
   # Reactively rebuild the chevron options when the backend flips OR
   # when an external write to ``viewport`` moves the active index.
   # IMPORTANT: this effect must NOT track ``viewportChevronVm
@@ -2274,7 +2309,8 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
       r.mountChevronChoice(viewportChevronWrapper, viewportChevronVm,
         proc(i: int) {.closure.} =
           if i >= 0 and i < viewportChoices.len:
-            capturedVm.changeViewport(viewportChoices[i]))
+            capturedVm.changeViewport(viewportChoices[i]),
+        variant = cgvTransparent)
     else:
       viewportChoices = viewportOptionList(backend)
       for i, vp in viewportChoices:
@@ -2285,25 +2321,73 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
   r.appendChild(toolbar, viewportChevronWrapper)
   r.appendChild(toolbar, clusterDivider())
 
-  let modeThunk = proc(): seq[CompactChoiceOption] =
-    buildModeOptions(capturedVm)
-  let modeOnChipMounted = proc(node: E; option: CompactChoiceOption;
-      index: int) =
-    let mode = modeFromChipOption(option)
-    r.bindModeChip(node, capturedVm, mode)
-  let modeCol = renderCompactChoiceColumn[R, E](r,
-    ariaLabel = "Preview mode",
-    optionsThunk = modeThunk,
-    visibleLimit = 3,
-    chipWidth = "60px",
-    chipHeight = "26px",
-    dataAttrs = @[
-      ("data-edge-strip", "mode"),
-      ("data-preview-edge-group", "mode"),
-      ("data-toolbar-cluster", "mode")],
-    onChipMounted = modeOnChipMounted)
-  tiltHorizontal(modeCol.root, "Preview mode")
-  r.appendChild(toolbar, modeCol.root)
+  # CHRM-M2: mode cluster now uses the ChoiceGroup segmented widget +
+  # the per-option ``disabledIndices`` signal driven by
+  # ``vm.evaluateCommand``. The reactive mirror that flips
+  # ``SpecPaneVM.mode`` from ``editMode + surface == sSpec`` (below)
+  # is unchanged.
+  const modeOrder = [emView, emComment, emEdit]
+  const modeLabels = @["View", "Comment", "Edit"]
+
+  let modeWrapper = ui(r):
+    tdiv(`data-edge-strip` = "mode",
+         `data-preview-edge-group` = "mode",
+         `data-toolbar-cluster` = "mode",
+         display = "inline-flex", align_items = "center",
+         `aria-label` = "Preview mode")
+
+  var modeInitialIndex = 0
+  block:
+    let active = capturedVm.editMode.val
+    for i in 0 ..< modeOrder.len:
+      if modeOrder[i] == active:
+        modeInitialIndex = i
+        break
+  let modeVm = createSegmentedChoiceVM(modeLabels,
+                                       initialIndex = modeInitialIndex)
+
+  proc commandForMode(m: EditMode): EditorCommandKind =
+    case m
+    of emView: eckInspect
+    of emComment: eckComment
+    of emEdit: eckEdit
+
+  proc computeModeDisabled(): HashSet[int] =
+    result = initHashSet[int]()
+    for i in 0 ..< modeOrder.len:
+      let state = capturedVm.evaluateCommand(commandForMode(modeOrder[i]))
+      if state.status == ecsDisabled:
+        result.incl i
+  modeVm.setDisabledIndices(computeModeDisabled())
+
+  r.mountSegmentedChoice(modeWrapper, modeVm, proc(i: int) {.closure.} =
+    if i < 0 or i >= modeOrder.len:
+      return
+    discard capturedVm.runEditorCommand(commandForMode(modeOrder[i])),
+    variant = cgvTransparent)
+
+  block:
+    let syncVm = modeVm
+    createRenderEffect proc() =
+      let current = capturedVm.editMode.val
+      var target = 0
+      for i in 0 ..< modeOrder.len:
+        if modeOrder[i] == current:
+          target = i
+          break
+      if syncVm.activeIndex.value != target:
+        syncVm.activate(target)
+    createRenderEffect proc() =
+      syncVm.setDisabledIndices(computeModeDisabled())
+
+  r.appendChild(toolbar, modeWrapper)
+
+  # CHRM-M2: "Review this preview" — preserved from the deleted in-pane
+  # row. Mounted in the trailing-edge slot grouped immediately before
+  # the 🕘 history button. The button is hidden when no brief covers the
+  # active story (mirrors the previous mount-site guard
+  # ``builtInBriefIndex().empty()``).
+  mountReviewPreviewButton[R, E](r, toolbar, vm)
 
   # REV-M8 — mount the design-review 🕘 history button at the right
   # end of the chrome bar.  The button stays invisible (its
@@ -2512,13 +2596,12 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
   r.appendChild(viewStack, vectorEditorEl)
   r.appendChild(centerColumn, chromeBarEl)
 
-  # REV-M2: mount the design-review brief tab strip into the center
-  # column when the editor was compiled with a non-empty baked-in
-  # brief index. Empty index → no strip (preserves legacy behaviour
-  # for tests + builds without any briefs configured).
-  if not builtInBriefIndex().empty():
-    preview_pane_view.mountBriefTabIntoPreviewPane[R, E](
-      r, centerColumn, briefTabVMFor(vm), previewPaneActiveTabFor(vm))
+  # CHRM-M2: the legacy in-pane Preview/Brief tab strip is gone. The
+  # chrome-bar Surface switch covers the Preview ⇄ Spec axis and the
+  # TipTap-backed spec pane renders the brief body; the only
+  # load-bearing affordance the strip carried — the
+  # "Review this preview" button — is now mounted in the chrome bar's
+  # trailing-edge slot before the 🕘 history button.
   r.appendChild(centerColumn, viewStack)
   # TBAR-M3: spec-pane placeholder sits inside the center column
   # alongside the view stack — display swaps between them via the

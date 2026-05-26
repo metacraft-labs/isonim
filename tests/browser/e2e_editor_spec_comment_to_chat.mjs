@@ -411,11 +411,12 @@ async function switchToSpec(page) {
 
 async function clickCommentMode(page) {
   // The View / Comment / Edit chip group lives in the chrome bar's
-  // ``mode`` toolbar cluster (TBAR-M3).  The Comment chip is
-  // identified by its ``data-preview-mode="comment"`` attribute.
+  // ``mode`` toolbar cluster. CHRM-M2 migrated the cluster to the
+  // ChoiceGroup widget, so the pill is addressed positionally:
+  // Comment is index 1.
   await page.evaluate(() => {
     const chip = document.querySelector(
-      '[data-edge-strip="mode"] [data-preview-mode="comment"]',
+      '[data-toolbar-cluster="mode"] [data-choice-group-pill="1"]',
     );
     if (!chip) throw new Error("comment chip not found");
     chip.click();

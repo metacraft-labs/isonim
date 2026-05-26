@@ -16,7 +16,7 @@
 ## test path), and assert the resulting attribute / structure
 ## invariants.
 
-import std/[tables, unittest]
+import std/[sets, tables, unittest]
 
 import isonim/core/[signals, computation, owner]
 import isonim/testing/mock_dom
@@ -291,4 +291,109 @@ suite "TBAR-M2 chevron choice VM":
       let trigger = findByAttr(root, "data-choice-group-trigger", "true")
       check trigger != nil
       check trigger.attributes.getOrDefault("aria-expanded") == "true"
+      dispose()
+
+# --------------------------------------------------------------------------- #
+#  CHRM-M2 — per-option disabled flag + transparent container variant.
+# --------------------------------------------------------------------------- #
+
+suite "CHRM-M2 ChoiceGroup extensions":
+
+  test "segmented disabled option mirrors aria-disabled":
+    createRoot do (dispose: proc()):
+      let vm = createSegmentedChoiceVM(@["A", "B", "C"], initialIndex = 0)
+      let (r, root) = mkRoot()
+      r.mountSegmentedChoice(root, vm, proc(i: int) {.closure.} = discard)
+      # Disable index 1 reactively after mount; the render effect must
+      # flip the pill's aria-disabled attribute.
+      vm.setDisabledIndices(toHashSet([1]))
+      let pillB = findByAttr(root, "data-choice-group-pill", "1")
+      check pillB != nil
+      check pillB.attributes.getOrDefault("aria-disabled") == "true"
+      let pillA = findByAttr(root, "data-choice-group-pill", "0")
+      check pillA.attributes.getOrDefault("aria-disabled") == "false"
+      dispose()
+
+  test "segmented disabled option click is a no-op":
+    createRoot do (dispose: proc()):
+      var observed: seq[int] = @[]
+      let vm = createSegmentedChoiceVM(@["A", "B", "C"], initialIndex = 0)
+      let (r, root) = mkRoot()
+      r.mountSegmentedChoice(root, vm, proc(i: int) {.closure.} =
+        observed.add i)
+      vm.setDisabledIndices(toHashSet([1]))
+      let pillB = findByAttr(root, "data-choice-group-pill", "1")
+      check pillB != nil
+      fireEvent(pillB, "click")
+      # Disabled clicks do not flip the active index and do not fire
+      # the onChange callback.
+      check vm.activeIndex.val == 0
+      check observed.len == 0
+      # Re-enabling the index lets the next click through.
+      vm.setDisabledIndices(initHashSet[int]())
+      fireEvent(pillB, "click")
+      check vm.activeIndex.val == 1
+      check observed == @[1]
+      dispose()
+
+  test "vm.activate refuses to land on a disabled index":
+    createRoot do (dispose: proc()):
+      let vm = createSegmentedChoiceVM(@["A", "B"], initialIndex = 0)
+      vm.setDisabledIndices(toHashSet([1]))
+      vm.activate(1)
+      check vm.activeIndex.val == 0
+      vm.setDisabledIndices(initHashSet[int]())
+      vm.activate(1)
+      check vm.activeIndex.val == 1
+      dispose()
+
+  test "segmented transparent variant exposes the data-choice-group-variant attr":
+    createRoot do (dispose: proc()):
+      let vm = createSegmentedChoiceVM(@["A", "B"])
+      let (r, root) = mkRoot()
+      r.mountSegmentedChoice(root, vm, proc(i: int) {.closure.} = discard,
+                             variant = cgvTransparent)
+      let group = findByAttr(root, "data-choice-group", "segmented")
+      check group != nil
+      check group.attributes.getOrDefault("data-choice-group-variant") ==
+        "transparent"
+      dispose()
+
+  test "segmented filled variant is the default":
+    createRoot do (dispose: proc()):
+      let vm = createSegmentedChoiceVM(@["A", "B"])
+      let (r, root) = mkRoot()
+      r.mountSegmentedChoice(root, vm, proc(i: int) {.closure.} = discard)
+      let group = findByAttr(root, "data-choice-group", "segmented")
+      check group != nil
+      check group.attributes.getOrDefault("data-choice-group-variant") ==
+        "filled"
+      dispose()
+
+  test "chevron transparent variant exposes the data-choice-group-variant attr":
+    createRoot do (dispose: proc()):
+      let vm = createChevronChoiceVM(@["A", "B", "C"])
+      let (r, root) = mkRoot()
+      r.mountChevronChoice(root, vm, proc(i: int) {.closure.} = discard,
+                           variant = cgvTransparent)
+      let group = findByAttr(root, "data-choice-group", "chevron")
+      check group != nil
+      check group.attributes.getOrDefault("data-choice-group-variant") ==
+        "transparent"
+      dispose()
+
+  test "chevron disabled option click is a no-op":
+    createRoot do (dispose: proc()):
+      var observed: seq[int] = @[]
+      let vm = createChevronChoiceVM(@["A", "B", "C"], initialIndex = 0)
+      let (r, root) = mkRoot()
+      r.mountChevronChoice(root, vm,
+        proc(i: int) {.closure.} = observed.add i)
+      vm.setDisabledIndices(toHashSet([2]))
+      let optC = findByAttr(root, "data-choice-group-option", "2")
+      check optC != nil
+      check optC.attributes.getOrDefault("aria-disabled") == "true"
+      fireEvent(optC, "click")
+      check vm.activeIndex.val == 0
+      check observed.len == 0
       dispose()

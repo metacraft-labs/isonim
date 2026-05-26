@@ -410,9 +410,11 @@ async function switchToSpec(page) {
 }
 
 async function clickEditMode(page) {
+  // CHRM-M2: mode cluster is now a ChoiceGroup segmented control;
+  // pills are addressed positionally — Edit is index 2.
   await page.evaluate(() => {
     const chip = document.querySelector(
-      '[data-edge-strip="mode"] [data-preview-mode="edit"]',
+      '[data-toolbar-cluster="mode"] [data-choice-group-pill="2"]',
     );
     if (!chip) throw new Error("edit chip not found");
     chip.click();
@@ -420,9 +422,10 @@ async function clickEditMode(page) {
 }
 
 async function clickViewMode(page) {
+  // CHRM-M2: View is index 0 in the mode cluster.
   await page.evaluate(() => {
     const chip = document.querySelector(
-      '[data-edge-strip="mode"] [data-preview-mode="view"]',
+      '[data-toolbar-cluster="mode"] [data-choice-group-pill="0"]',
     );
     if (!chip) throw new Error("view chip not found");
     chip.click();

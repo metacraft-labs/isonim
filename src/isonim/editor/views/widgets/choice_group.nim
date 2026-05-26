@@ -36,6 +36,8 @@
 ## headless tests exercise the VM directly via ``activate`` /
 ## ``togglePopup`` / ``closePopup``.
 
+import std/sets
+
 import isonim/core/signals
 import isonim/core/computation
 import isonim/dsl/ui
@@ -45,6 +47,20 @@ type
     cgvSegmented   ## Row of pill buttons; one active.
     cgvChevron     ## Single pill + chevron, popup menu.
 
+  ChoiceGroupContainerVariant* = enum
+    ## CHRM-M2: the chrome-bar Backend + Mode clusters strip the
+    ## widget's container background so each pill reads as its own
+    ## affordance rather than a segment of one filled bar. ``cgvFilled``
+    ## keeps the canonical TBAR-M2 rounded-pill chrome (background +
+    ## border on the container). ``cgvTransparent`` drops the container
+    ## chrome so the pills sit directly on the surrounding surface; the
+    ## inter-pill gap widens to compensate. The Surface (segmented) and
+    ## Viewport (chevron) clusters use ``cgvTransparent`` in the chrome
+    ## bar today — passing the variant declaratively here replaces the
+    ## old ``tiltHorizontal`` imperative setStyle hack.
+    cgvFilled        ## Default — bordered, rounded container.
+    cgvTransparent   ## No container chrome; pills sit on parent surface.
+
   ChoiceGroupVM* = ref object
     ## Reactive ViewModel shared by both variants.
     ##
@@ -53,10 +69,19 @@ type
     ## by index. ``activeIndex`` and ``popupOpen`` are reactive
     ## signals: writes through ``activate`` / ``togglePopup`` /
     ## ``closePopup`` propagate via the reactive graph.
+    ##
+    ## ``disabledIndices`` (CHRM-M2) is a reactive set of indices whose
+    ## options the mount renders as visually disabled (reduced opacity,
+    ## ``aria-disabled="true"``, ``cursor: not-allowed``). Clicks on a
+    ## disabled option short-circuit before ``activeIndex`` is mutated
+    ## and ``onChange`` does not fire. Writes to the signal propagate
+    ## through the reactive graph so the chrome bar's per-backend
+    ## availability flag can flip indices in/out at runtime.
     variant*: ChoiceGroupVariant
     labels*: seq[string]
     activeIndex*: Signal[int]
     popupOpen*: Signal[bool]
+    disabledIndices*: Signal[HashSet[int]]
 
 # --------------------------------------------------------------------------- #
 #  Constructors + state helpers.
@@ -83,6 +108,7 @@ proc createSegmentedChoiceVM*(labels: seq[string];
     labels: @labels,
     activeIndex: createSignal(clampInitialIndex(labels, initialIndex)),
     popupOpen: createSignal(false),
+    disabledIndices: createSignal(initHashSet[int]()),
   )
 
 proc createChevronChoiceVM*(labels: seq[string];
@@ -93,7 +119,22 @@ proc createChevronChoiceVM*(labels: seq[string];
     labels: @labels,
     activeIndex: createSignal(clampInitialIndex(labels, initialIndex)),
     popupOpen: createSignal(false),
+    disabledIndices: createSignal(initHashSet[int]()),
   )
+
+proc isDisabled*(vm: ChoiceGroupVM; index: int): bool =
+  ## CHRM-M2 helper — guards against ``nil`` signal references in case
+  ## a VM is hand-constructed without the field initialized.
+  if vm == nil or vm.disabledIndices == nil:
+    return false
+  index in vm.disabledIndices.val
+
+proc setDisabledIndices*(vm: ChoiceGroupVM; indices: HashSet[int]) =
+  ## CHRM-M2 — reactive write of the disabled set. Mount-side render
+  ## effects react to this change and update ARIA + visual state.
+  if vm == nil or vm.disabledIndices == nil:
+    return
+  vm.disabledIndices.val = indices
 
 proc activate*(vm: ChoiceGroupVM; index: int) =
   ## Set the active index. Out-of-range indices are a no-op (the VM
@@ -102,7 +143,14 @@ proc activate*(vm: ChoiceGroupVM; index: int) =
   ## equality short-circuits, so subscribers (and ``onChange`` from the
   ## mount) do not re-fire. For the chevron variant, a successful
   ## activation also closes the popup.
+  ##
+  ## CHRM-M2: a disabled index is also a no-op — the mount's click
+  ## handler also guards, but the VM-level guard means that programmatic
+  ## ``activate`` calls (e.g. tests, keyboard navigation) respect
+  ## disability too.
   if index < 0 or index >= vm.labels.len:
+    return
+  if vm.isDisabled(index):
     return
   vm.activeIndex.val = index
   if vm.variant == cgvChevron and vm.popupOpen.val:
@@ -140,7 +188,9 @@ const
 # --------------------------------------------------------------------------- #
 
 proc mountSegmentedChoice*[R, E](r: R; parent: E; vm: ChoiceGroupVM;
-                                  onChange: proc(i: int) {.closure.}) =
+                                  onChange: proc(i: int) {.closure.};
+                                  variant: ChoiceGroupContainerVariant =
+                                    cgvFilled) =
   ## Mount the segmented pill row into ``parent``. The mount body
   ## structure:
   ##
@@ -155,25 +205,45 @@ proc mountSegmentedChoice*[R, E](r: R; parent: E; vm: ChoiceGroupVM;
   ##   4. ``onChange`` fires only when the active index actually moves
   ##      — re-activating the same index is a no-op.
   ##   5. ``appendChild(parent, root)``.
+  ##
+  ## ``variant`` (CHRM-M2) picks the container chrome: ``cgvFilled``
+  ## keeps the TBAR-M2 rounded-pill backdrop, ``cgvTransparent`` strips
+  ## the backdrop + widens the inter-pill gap so the pills can sit
+  ## directly on a chrome-bar surface without the bespoke
+  ## ``tiltHorizontal`` setStyle workaround.
   let capturedVm = vm
   let capturedOnChange = onChange
   let labels = vm.labels
 
   var pills: seq[E] = @[]
 
+  let containerBg =
+    if variant == cgvTransparent: "transparent" else: cgGroupBg
+  let containerBorder =
+    if variant == cgvTransparent: "none" else: "1px solid " & cgBorder
+  let containerRadius =
+    if variant == cgvTransparent: "0" else: "8px"
+  let containerGap =
+    if variant == cgvTransparent: "4px" else: "2px"
+  let containerPadding =
+    if variant == cgvTransparent: "0" else: "2px"
+  let variantAttr =
+    if variant == cgvTransparent: "transparent" else: "filled"
+
   let root = ui(r):
     tdiv(
       `role` = "group",
       `aria-label` = "Choice group",
       `data-choice-group` = "segmented",
+      `data-choice-group-variant` = variantAttr,
       display = "inline-flex",
       flex_direction = "row",
       align_items = "center",
-      gap = "2px",
-      padding = "2px",
-      background_color = cgGroupBg,
-      border = "1px solid " & cgBorder,
-      border_radius = "8px",
+      gap = containerGap,
+      padding = containerPadding,
+      background_color = containerBg,
+      border = containerBorder,
+      border_radius = containerRadius,
       user_select = "none")
 
   for i in 0 ..< labels.len:
@@ -207,6 +277,9 @@ proc mountSegmentedChoice*[R, E](r: R; parent: E; vm: ChoiceGroupVM;
       r.appendChild(root, pillNode)
 
   proc selectIndex(i: int) =
+    # CHRM-M2: disabled options refuse the click before the VM mutates.
+    if capturedVm.isDisabled(i):
+      return
     let prev = capturedVm.activeIndex.val
     capturedVm.activate(i)
     let now = capturedVm.activeIndex.val
@@ -226,13 +299,23 @@ proc mountSegmentedChoice*[R, E](r: R; parent: E; vm: ChoiceGroupVM;
   # reactive effect.
   createRenderEffect proc() =
     let active = capturedVm.activeIndex.val
+    let disabled =
+      if capturedVm.disabledIndices == nil: initHashSet[int]()
+      else: capturedVm.disabledIndices.val
     for i in 0 ..< pills.len:
       let isActive = (i == active)
+      let isDisabled = i in disabled
       r.setAttribute(pills[i], "aria-pressed",
                      if isActive: "true" else: "false")
+      r.setAttribute(pills[i], "aria-disabled",
+                     if isDisabled: "true" else: "false")
       r.setAttribute(pills[i], "data-active",
                      if isActive: "true" else: "false")
-      let inline =
+      r.setAttribute(pills[i], "data-choice-group-disabled",
+                     if isDisabled: "true" else: "false")
+      r.setAttribute(pills[i], "tabindex",
+                     if isDisabled: "-1" else: "0")
+      var inline =
         if isActive:
           "background-color: " & cgPillBgOn &
             "; color: " & cgTextOn &
@@ -241,6 +324,10 @@ proc mountSegmentedChoice*[R, E](r: R; parent: E; vm: ChoiceGroupVM;
           "background-color: " & cgPillBg &
             "; color: " & cgTextDim &
             "; border-color: transparent;"
+      if isDisabled:
+        inline.add " opacity: 0.35; cursor: not-allowed;"
+      else:
+        inline.add " opacity: 1; cursor: pointer;"
       r.setAttribute(pills[i], "style", inline)
 
   r.appendChild(parent, root)
@@ -250,7 +337,9 @@ proc mountSegmentedChoice*[R, E](r: R; parent: E; vm: ChoiceGroupVM;
 # --------------------------------------------------------------------------- #
 
 proc mountChevronChoice*[R, E](r: R; parent: E; vm: ChoiceGroupVM;
-                                onChange: proc(i: int) {.closure.}) =
+                                onChange: proc(i: int) {.closure.};
+                                variant: ChoiceGroupContainerVariant =
+                                  cgvFilled) =
   ## Mount the chevron + popup combo into ``parent``. The mount body
   ## structure:
   ##
@@ -279,9 +368,18 @@ proc mountChevronChoice*[R, E](r: R; parent: E; vm: ChoiceGroupVM;
   var popupNode: E
   var optionNodes: seq[E] = @[]
 
+  let triggerBg =
+    if variant == cgvTransparent: "transparent" else: cgGroupBg
+  let triggerBorder =
+    if variant == cgvTransparent: "1px solid rgba(255,255,255,0.08)"
+    else: "1px solid " & cgBorder
+  let variantAttr =
+    if variant == cgvTransparent: "transparent" else: "filled"
+
   let root = ui(r):
     tdiv(
       `data-choice-group` = "chevron",
+      `data-choice-group-variant` = variantAttr,
       display = "inline-block",
       position = "relative",
       user_select = "none"):
@@ -302,8 +400,8 @@ proc mountChevronChoice*[R, E](r: R; parent: E; vm: ChoiceGroupVM;
         font_weight = "500",
         line_height = "1",
         color = cgTextPrim,
-        background_color = cgGroupBg,
-        border = "1px solid " & cgBorder,
+        background_color = triggerBg,
+        border = triggerBorder,
         border_radius = "6px",
         cursor = "pointer",
         white_space = "nowrap"):
@@ -377,6 +475,9 @@ proc mountChevronChoice*[R, E](r: R; parent: E; vm: ChoiceGroupVM;
       r.appendChild(popupNode, optNode)
 
   proc selectIndex(i: int) =
+    # CHRM-M2: disabled options refuse the click.
+    if capturedVm.isDisabled(i):
+      return
     let prev = capturedVm.activeIndex.val
     capturedVm.activate(i)
     let now = capturedVm.activeIndex.val
@@ -425,21 +526,34 @@ proc mountChevronChoice*[R, E](r: R; parent: E; vm: ChoiceGroupVM;
                    else: "display: none;")
 
   # Reactive active-label binding — updates trigger text + per-option
-  # ``aria-selected``.
+  # ``aria-selected``. CHRM-M2 also surfaces ``aria-disabled`` +
+  # reduced-opacity styling for disabled options.
   createRenderEffect proc() =
     let active = capturedVm.activeIndex.val
     let safe =
       if active >= 0 and active < labels.len: active
       else: -1
+    let disabled =
+      if capturedVm.disabledIndices == nil: initHashSet[int]()
+      else: capturedVm.disabledIndices.val
     if safe >= 0:
       r.setTextContent(triggerLabelNode, labels[safe])
     else:
       r.setTextContent(triggerLabelNode, "")
     for i in 0 ..< optionNodes.len:
+      let isDisabled = i in disabled
       r.setAttribute(optionNodes[i], "aria-selected",
                      if i == safe: "true" else: "false")
+      r.setAttribute(optionNodes[i], "aria-disabled",
+                     if isDisabled: "true" else: "false")
       r.setAttribute(optionNodes[i], "data-active",
                      if i == safe: "true" else: "false")
+      r.setAttribute(optionNodes[i], "data-choice-group-disabled",
+                     if isDisabled: "true" else: "false")
+      let optStyle =
+        if isDisabled: "opacity: 0.35; cursor: not-allowed;"
+        else: "opacity: 1; cursor: pointer;"
+      r.setAttribute(optionNodes[i], "style", optStyle)
 
   when defined(js):
     # Browser-side keyboard navigation + outside-click dismissal.

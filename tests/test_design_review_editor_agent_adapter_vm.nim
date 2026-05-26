@@ -28,12 +28,11 @@ import nim_agents
 import isonim/core/[signals, owner]
 import isonim/viewmodel
 import isonim/editor/design_review/brief_format
-import isonim/editor/design_review/brief_index
 import isonim/editor/design_review/browser_agent_client
 import isonim/editor/design_review/editor_agent_adapter
+import isonim/editor/design_review/review_prompt
 import isonim/editor/types
 import isonim/editor/viewmodels
-import isonim/editor/views/brief_tab
 
 # --------------------------------------------------------------------------- #
 #  Helpers.
@@ -164,35 +163,25 @@ suite "Phase C editor agent adapter VM":
       brief.extra = initTable[string, string]()
       brief.sourceFile = "<test>"
 
-      var idx = BriefIndex(
-        byBriefId: initOrderedTable[string, Brief](),
-        byPreview: initOrderedTable[string, seq[string]](),
-        errors: @[])
-      idx.byBriefId[brief.briefId] = brief
-      idx.byPreview[canonicalPreviewId(storyRef, pbWeb)] = @[brief.briefId]
-
-      let activeStory = createSignal[Option[StoryRef]](some(storyRef))
-      let activeBackend = createSignal(pbWeb)
-      let bvm = createBriefTabVM(idx, activeStory, activeBackend)
-
-      # Wire the brief-tab review button to the chat adapter — same
-      # path ``preview_pane.nim`` uses in production.
-      let chatRef = chat
-      bvm.reviewDispatcher = proc(prompt: string) {.closure.} =
-        chatRef.inputText.val = prompt
-        chatRef.addUserMessage(prompt)
-        discard chatRef.promptAdapter(prompt, AgentPromptContext())
-
-      check submitReviewPrompt(bvm) == true
-
-      let composed = bvm.lastSubmittedReviewPrompt.val
+      # CHRM-M2: the in-pane "Review this preview" button was moved to
+      # the chrome-bar trailing-edge slot. The pure prompt-composition
+      # helper lives in ``design_review/review_prompt.nim`` so this
+      # adapter-level test can target the composed prompt without
+      # mounting the chrome bar.
+      let composed = buildReviewPrompt(brief, storyRef, pbWeb)
       check "Review the preview" in composed
       check "Pay attention to focus order" in composed
       check "Task App" in composed
       check "Editor Chrome" in composed
 
-      # The adapter must have dispatched the prompt — the user
-      # message lands on the chat transcript.
+      # Dispatch path: the production button writes the prompt onto
+      # ``chat.inputText`` then calls ``sendAgentPrompt`` (which
+      # internally adds the user message + routes through
+      # ``promptAdapter``). We exercise the same wires here.
+      chat.inputText.val = composed
+      chat.addUserMessage(composed)
+      check chat.promptAdapter(composed, AgentPromptContext()) == true
+
       var sawUser = false
       for msg in chat.messages.val:
         if msg.kind == cmkUser and "Review the preview" in msg.text:

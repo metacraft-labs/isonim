@@ -643,11 +643,13 @@ suite "Editor Shell Views (M2)":
       vm.activeView.val = evComponentDetail
       vm.editMode.val = emView
 
-      # M-EVP-6: the per-view inner toolbar's "Open selected component in
-      # edit mode" button is gone. The canonical chrome bar's mode chip
-      # row drives the same eckEdit command.
+      # CHRM-M2: the chrome-bar mode cluster is now a ChoiceGroup
+      # segmented control; pills are addressed positionally
+      # (View=0, Comment=1, Edit=2).
       let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
-      let editChip = findByAttr(shell, "data-preview-mode", "edit")
+      let modeCluster = findByAttr(shell, "data-toolbar-cluster", "mode")
+      check modeCluster != nil
+      let editChip = findByAttr(modeCluster, "data-choice-group-pill", "2")
       check editChip != nil
       check editChip.attributes["role"] == "button"
 
@@ -663,26 +665,42 @@ suite "Editor Shell Views (M2)":
       let vm = createEditorVM()
       vm.sidebar.groups.val = buildStoryboard()
 
-      # M-EVP-6: per-view inner toolbars (component detail "Edit" button
-      # and page preview view/edit/comment toggle) are gone. The
-      # canonical chrome bar's mode chips drive the same eckEdit /
-      # eckInspect / eckComment commands. The shell hosts the chrome
-      # bar, so chips are addressed against the shell root.
+      # CHRM-M2: per-view inner toolbars (component detail "Edit"
+      # button and page preview view/edit/comment toggle) are gone.
+      # The canonical chrome bar's mode cluster — now a ChoiceGroup
+      # segmented control — drives the same eckEdit / eckInspect /
+      # eckComment commands. Pills are addressed positionally
+      # (View=0, Comment=1, Edit=2) under the
+      # ``[data-toolbar-cluster="mode"]`` root.
+      proc modePill(root: MockNode; idx: int): MockNode =
+        let cluster = findByAttr(root, "data-toolbar-cluster", "mode")
+        if cluster == nil:
+          return nil
+        findByAttr(cluster, "data-choice-group-pill", $idx)
+
       let disabledShell = renderEditorShell[MockRenderer, MockNode](r, vm)
-      let disabledEditChip = findByAttr(disabledShell,
-        "data-preview-mode", "edit")
+      let disabledEditChip = modePill(disabledShell, 2)
       check disabledEditChip != nil
       check disabledEditChip.attributes["aria-disabled"] == "true"
       disabledEditChip.fireEvent("click")
       check vm.editMode.val == emView
-      check vm.commandState(eckEdit).status == ecsFailed
-      check vm.commandState(eckEdit).diagnostic.contains("Select a story")
+      # CHRM-M2: the ChoiceGroup mount short-circuits disabled clicks at
+      # the widget layer (before the command is invoked), so the
+      # command state stays at its evaluated ``ecsDisabled`` reading
+      # rather than transitioning to ``ecsFailed`` after a refused
+      # execution.
+      check vm.commandState(eckEdit).status == ecsDisabled
+      # The disabled state's reason still calls out the missing story
+      # selection — the diagnostic surfaces in the chip's tooltip
+      # / a11y label and in any caller that calls evaluateCommand
+      # directly.
+      check vm.evaluateCommand(eckEdit).diagnostic.contains("Select a story")
 
       check vm.selectStory(StoryRef(group: "TaskRow", name: "Active task",
         kind: skComponent, index: 0))
       vm.activeView.val = evComponentDetail
       let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
-      let editChip = findByAttr(shell, "data-preview-mode", "edit")
+      let editChip = modePill(shell, 2)
       check editChip != nil
       check editChip.attributes["aria-disabled"] == "false"
       editChip.fireEvent("click")
@@ -691,8 +709,8 @@ suite "Editor Shell Views (M2)":
       check vm.activeView.val == evComponentEdit
 
       let pageShell = renderEditorShell[MockRenderer, MockNode](r, vm)
-      let viewChip = findByAttr(pageShell, "data-preview-mode", "view")
-      let editChip2 = findByAttr(pageShell, "data-preview-mode", "edit")
+      let viewChip = modePill(pageShell, 0)
+      let editChip2 = modePill(pageShell, 2)
       check viewChip != nil
       check editChip2 != nil
       viewChip.fireEvent("click")

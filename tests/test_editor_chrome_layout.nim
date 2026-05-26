@@ -915,6 +915,137 @@ suite "M-EVP-3 preview chrome bar density":
       dispose()
 
 # ---------------------------------------------------------------------------
+# CHRM-M2: every chrome-bar cluster uses the ChoiceGroup widget family.
+# ---------------------------------------------------------------------------
+
+suite "CHRM-M2 chrome-bar cluster unification":
+
+  test "every cluster's root carries a ChoiceGroup widget marker":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      let bar = renderPreviewChromeBar[MockRenderer, MockNode](r, vm)
+
+      let clusterAttr = "data-toolbar-cluster"
+      # Each of the four clusters wraps either a segmented or chevron
+      # ChoiceGroup mount. After CHRM-M2 the canonical widget marker
+      # ``data-choice-group`` lives on the mount's root somewhere
+      # within the cluster wrapper.
+      for kind in ["backend", "surface", "viewport", "mode"]:
+        let cluster = findByAttr(bar, clusterAttr, kind)
+        check cluster != nil
+        let segmented = findByAttr(cluster, "data-choice-group", "segmented")
+        let chevron = findByAttr(cluster, "data-choice-group", "chevron")
+        check (segmented != nil or chevron != nil)
+
+      # The viewport cluster is the only chevron cluster after CHRM-M2;
+      # all others are segmented.
+      check findByAttr(
+        findByAttr(bar, clusterAttr, "viewport"),
+        "data-choice-group", "chevron") != nil
+      for kind in ["backend", "surface", "mode"]:
+        check findByAttr(
+          findByAttr(bar, clusterAttr, kind),
+          "data-choice-group", "segmented") != nil
+      dispose()
+
+  test "chrome-bar clusters use the transparent ChoiceGroup container variant":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      let bar = renderPreviewChromeBar[MockRenderer, MockNode](r, vm)
+
+      # All four clusters request ``cgvTransparent`` so the chrome bar
+      # no longer relies on the old ``tiltHorizontal`` setStyle hack to
+      # strip the container backdrop.
+      let clusterAttr = "data-toolbar-cluster"
+      for kind in ["backend", "surface", "viewport", "mode"]:
+        let cluster = findByAttr(bar, clusterAttr, kind)
+        check cluster != nil
+        let group = findByAttr(cluster, "data-choice-group-variant",
+                               "transparent")
+        check group != nil
+      dispose()
+
+  test "backend cluster disables backends marked unavailable by the streaming VM":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.streamingPreview = newStreamingPreviewVM(
+        initial = pbWeb, available = @[pbWeb, pbGpui])
+
+      let bar = renderPreviewChromeBar[MockRenderer, MockNode](r, vm)
+      let backendCluster = findByAttr(bar, "data-toolbar-cluster", "backend")
+      check backendCluster != nil
+
+      # The pill at the position of an unavailable backend carries
+      # ``aria-disabled="true"`` and refuses clicks. ``pbCocoa`` is at
+      # index 4 in the canonical order.
+      let cocoaPill = findByAttr(backendCluster, "data-choice-group-pill", "4")
+      check cocoaPill != nil
+      check cocoaPill.attributes.getOrDefault("aria-disabled") == "true"
+      let beforePlatform = vm.platform.val
+      cocoaPill.fireEvent("click")
+      check vm.platform.val == beforePlatform
+
+      # An available backend's pill stays enabled and routes the click
+      # through to ``vm.platform``.
+      let gpuiPill = findByAttr(backendCluster, "data-choice-group-pill", "2")
+      check gpuiPill != nil
+      check gpuiPill.attributes.getOrDefault("aria-disabled") == "false"
+      gpuiPill.fireEvent("click")
+      check vm.platform.val == pbGpui
+      dispose()
+
+  test "mode cluster disables modes whose command is currently disabled":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      # Without a selected story, the View/Comment/Edit commands all
+      # report ``ecsDisabled`` (per ``commandRequirementFailure``), so
+      # every pill should be marked disabled.
+      let bar = renderPreviewChromeBar[MockRenderer, MockNode](r, vm)
+      let modeCluster = findByAttr(bar, "data-toolbar-cluster", "mode")
+      check modeCluster != nil
+      for i in 0 .. 2:
+        let pill = findByAttr(modeCluster, "data-choice-group-pill", $i)
+        check pill != nil
+        check pill.attributes.getOrDefault("aria-disabled") == "true"
+
+      # Selecting a story unlocks the View/Comment/Edit triplet.
+      vm.selectedStory.val = StoryRef(group: "Components", name: "Sample",
+        kind: skComponent, index: 0)
+      let bar2 = renderPreviewChromeBar[MockRenderer, MockNode](r, vm)
+      let modeCluster2 = findByAttr(bar2, "data-toolbar-cluster", "mode")
+      for i in 0 .. 2:
+        let pill = findByAttr(modeCluster2, "data-choice-group-pill", $i)
+        check pill != nil
+        check pill.attributes.getOrDefault("aria-disabled") == "false"
+
+      # Clicking Comment (index 1) routes through ``runEditorCommand``
+      # and flips ``vm.editMode``.
+      let commentPill = findByAttr(modeCluster2,
+                                   "data-choice-group-pill", "1")
+      commentPill.fireEvent("click")
+      check vm.editMode.val == emComment
+      dispose()
+
+  test "trailing-edge slot exposes the Review-this-preview button when a brief covers the story":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      let bar = renderPreviewChromeBar[MockRenderer, MockNode](r, vm)
+      # The button is mounted into the chrome bar regardless of brief
+      # coverage; its ``data-review-button-visible`` attribute reflects
+      # the coverage check so the layout slot stays stable and the
+      # downstream e2e selector can find the node.
+      let reviewButton = findByAttr(bar, "data-chrome-action",
+                                    "review-preview")
+      check reviewButton != nil
+      check reviewButton.attributes.getOrDefault("role") == "button"
+      dispose()
+
+# ---------------------------------------------------------------------------
 # M-EVP-4: Sidebar story-row selection state — indigo accent marker.
 # ---------------------------------------------------------------------------
 
@@ -1325,7 +1456,16 @@ suite "M-EVP-6 single top bar":
         dispose()
 
   test "chrome bar still highlights the active backend after dropping inner bars":
-    for backend in [pbWeb, pbTui, pbGpui, pbFreya, pbCocoa, pbAndroid]:
+    # CHRM-M2: chrome-bar backend cluster is now a ChoiceGroup segmented
+    # control. Pills are addressed by their positional ``data-choice-
+    # group-pill="<index>"`` attribute, not by the legacy
+    # ``data-preview-backend`` marker (which the legacy
+    # ``renderPreviewPane`` proc still emits, but not the production
+    # ``renderPreviewChromeBar``). The pill index aligns with
+    # ``backendsForLeftEdge()`` — same order
+    # ``[pbWeb, pbTui, pbGpui, pbFreya, pbCocoa, pbAndroid]``.
+    const backendOrder = [pbWeb, pbTui, pbGpui, pbFreya, pbCocoa, pbAndroid]
+    for backend in backendOrder:
       createRoot do (dispose: proc()):
         let r = MockRenderer()
         let vm = createEditorVM()
@@ -1336,12 +1476,15 @@ suite "M-EVP-6 single top bar":
         check chromeBars.len == 1
         let bar = chromeBars[0]
 
-        # Locate the backend pill group; reuse the M57 markers the
-        # existing chrome-bar tests rely on.
-        let backendStrip = findByAttr(bar, "data-edge-strip", "backend")
+        let backendStrip = findByAttr(bar, "data-toolbar-cluster", "backend")
         check backendStrip != nil
+        var activeIndex = 0
+        for i in 0 ..< backendOrder.len:
+          if backendOrder[i] == backend:
+            activeIndex = i
+            break
         let activePill = findByAttr(backendStrip,
-          "data-preview-backend", backendId(backend))
+          "data-choice-group-pill", $activeIndex)
         check activePill != nil
         check activePill.attributes.getOrDefault("aria-pressed") == "true"
         dispose()
