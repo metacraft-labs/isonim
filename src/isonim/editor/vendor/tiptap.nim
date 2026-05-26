@@ -169,6 +169,97 @@ when defined(js):
     ## surface narrow.  Fires synchronously after every selection
     ## change inside the editor.
 
+  proc onTransaction*(editor: TipTapEditor;
+                      handler: proc()) {.importjs: "#.on('transaction', #)".}
+    ## CHRM-M4 — subscribe to TipTap's ``transaction`` event.  Fires
+    ## after every document mutation (typing, command execution,
+    ## input rules, undo/redo); used by the formatting toolbar to
+    ## refresh canUndo / canRedo affordances even when the selection
+    ## did not move (e.g. after a chained command lands).
+
+  # ------------------------------------------------------------------- #
+  # CHRM-M4 — formatting-command bindings used by the spec-pane
+  # toolbar.  Each command goes through TipTap's ``chain().focus()``
+  # pipeline (focus + run the toggle) so the editor regains focus
+  # after the toolbar click and the input-rule plugin sees a fresh
+  # selection state.  Pure ``{.importjs.}`` — no ``{.emit.}`` blocks.
+  # ------------------------------------------------------------------- #
+
+  proc toggleBold*(editor: TipTapEditor)
+    {.importjs: "#.chain().focus().toggleBold().run()".}
+  proc toggleItalic*(editor: TipTapEditor)
+    {.importjs: "#.chain().focus().toggleItalic().run()".}
+  proc toggleStrike*(editor: TipTapEditor)
+    {.importjs: "#.chain().focus().toggleStrike().run()".}
+  proc toggleCode*(editor: TipTapEditor)
+    {.importjs: "#.chain().focus().toggleCode().run()".}
+  proc toggleHeading*(editor: TipTapEditor; level: int)
+    {.importjs: "#.chain().focus().toggleHeading({level: #}).run()".}
+    ## ``level`` accepts 1, 2, 3 (the headings StarterKit configures by
+    ## default).  Calling with a level that matches the current node
+    ## toggles the heading off (back to paragraph), per TipTap's
+    ## documented behaviour.
+
+  proc setParagraph*(editor: TipTapEditor)
+    {.importjs: "#.chain().focus().setParagraph().run()".}
+    ## Force the current block back to a plain paragraph — used by
+    ## the heading dropdown's "Paragraph" entry.
+
+  proc toggleBulletList*(editor: TipTapEditor)
+    {.importjs: "#.chain().focus().toggleBulletList().run()".}
+  proc toggleOrderedList*(editor: TipTapEditor)
+    {.importjs: "#.chain().focus().toggleOrderedList().run()".}
+  proc toggleBlockquote*(editor: TipTapEditor)
+    {.importjs: "#.chain().focus().toggleBlockquote().run()".}
+  proc toggleCodeBlock*(editor: TipTapEditor)
+    {.importjs: "#.chain().focus().toggleCodeBlock().run()".}
+  proc setHorizontalRule*(editor: TipTapEditor)
+    {.importjs: "#.chain().focus().setHorizontalRule().run()".}
+  proc undo*(editor: TipTapEditor)
+    {.importjs: "#.chain().focus().undo().run()".}
+  proc redo*(editor: TipTapEditor)
+    {.importjs: "#.chain().focus().redo().run()".}
+
+  proc setLink*(editor: TipTapEditor; href: cstring)
+    {.importjs: "#.chain().focus().extendMarkRange('link').setLink({href: #}).run()".}
+    ## CHRM-M4 — apply a link mark to the active selection (or extend
+    ## the existing link if the caret is inside one).  Requires the
+    ## ``@tiptap/extension-link`` extension to be installed in the
+    ## editor's extensions array; otherwise the chained ``setLink``
+    ## throws.  The consuming toolbar guards the call with
+    ## ``tiptap_link.isAvailable()`` on startup.
+
+  proc unsetLink*(editor: TipTapEditor)
+    {.importjs: "#.chain().focus().extendMarkRange('link').unsetLink().run()".}
+    ## Strip the link mark from the active selection / mark range.
+
+  # ------------------------------------------------------------------- #
+  # CHRM-M4 — active-state + can-execute query bindings.  These read
+  # the editor's ProseMirror state and return primitives the toolbar
+  # mirrors onto button ``aria-pressed`` + ``disabled`` attributes.
+  # ------------------------------------------------------------------- #
+
+  proc isActive*(editor: TipTapEditor; name: cstring): bool
+    {.importjs: "(!!#.isActive(#))".}
+    ## Returns true when the named mark / node is active at the
+    ## current selection.  ``name`` is the TipTap mark / node name
+    ## (``"bold"``, ``"italic"``, ``"strike"``, ``"code"``,
+    ## ``"link"``, ``"bulletList"``, ``"orderedList"``,
+    ## ``"blockquote"``, ``"codeBlock"``).
+
+  proc isActiveHeading*(editor: TipTapEditor; level: int): bool
+    {.importjs: "(!!#.isActive('heading', {level: #}))".}
+    ## Returns true when the current block is a heading at the given
+    ## level.  ``level`` is 1, 2, or 3.
+
+  proc canUndo*(editor: TipTapEditor): bool
+    {.importjs: "(!!#.can().undo())".}
+    ## True when the history stack has an entry to undo.
+
+  proc canRedo*(editor: TipTapEditor): bool
+    {.importjs: "(!!#.can().redo())".}
+    ## True when the history stack has an entry to redo.
+
 else:
   ## Native-target stub surface.  The spec-pane VM tests compile this
   ## module without ever calling into the runtime, so we keep the
@@ -204,3 +295,23 @@ else:
   proc getSelectionRect*(editor: TipTapEditor): TipTapSelectionRect =
     TipTapSelectionRect()
   proc onSelectionUpdate*(editor: TipTapEditor; handler: proc()) = discard
+  proc onTransaction*(editor: TipTapEditor; handler: proc()) = discard
+  proc toggleBold*(editor: TipTapEditor) = discard
+  proc toggleItalic*(editor: TipTapEditor) = discard
+  proc toggleStrike*(editor: TipTapEditor) = discard
+  proc toggleCode*(editor: TipTapEditor) = discard
+  proc toggleHeading*(editor: TipTapEditor; level: int) = discard
+  proc setParagraph*(editor: TipTapEditor) = discard
+  proc toggleBulletList*(editor: TipTapEditor) = discard
+  proc toggleOrderedList*(editor: TipTapEditor) = discard
+  proc toggleBlockquote*(editor: TipTapEditor) = discard
+  proc toggleCodeBlock*(editor: TipTapEditor) = discard
+  proc setHorizontalRule*(editor: TipTapEditor) = discard
+  proc undo*(editor: TipTapEditor) = discard
+  proc redo*(editor: TipTapEditor) = discard
+  proc setLink*(editor: TipTapEditor; href: cstring) = discard
+  proc unsetLink*(editor: TipTapEditor) = discard
+  proc isActive*(editor: TipTapEditor; name: cstring): bool = false
+  proc isActiveHeading*(editor: TipTapEditor; level: int): bool = false
+  proc canUndo*(editor: TipTapEditor): bool = false
+  proc canRedo*(editor: TipTapEditor): bool = false

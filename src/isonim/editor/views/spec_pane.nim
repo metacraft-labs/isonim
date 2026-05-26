@@ -42,7 +42,9 @@ import isonim/dsl/ui
 import isonim/editor/vendor/tiptap as tiptap_lib
 import isonim/editor/vendor/tiptap_starter_kit as tiptap_starter
 import isonim/editor/vendor/tiptap_markdown as tiptap_md
+import isonim/editor/vendor/tiptap_link as tiptap_link
 import isonim/editor/views/spec_comment_popover as spec_comment_popover_view
+import isonim/editor/views/spec_editor_toolbar as spec_editor_toolbar_view
 
 export spec_comment_popover_view.CommentDraft
 export spec_comment_popover_view.CommentPopoverVM
@@ -53,6 +55,22 @@ export spec_comment_popover_view.updateUserComment
 export spec_comment_popover_view.cancel
 export spec_comment_popover_view.submit
 export spec_comment_popover_view.mountCommentPopover
+
+export spec_editor_toolbar_view.SpecEditorToolbarVM
+export spec_editor_toolbar_view.FormattingMark
+export spec_editor_toolbar_view.BlockKind
+export spec_editor_toolbar_view.createSpecEditorToolbarVM
+export spec_editor_toolbar_view.setActiveMarks
+export spec_editor_toolbar_view.setActiveBlockKind
+export spec_editor_toolbar_view.setCanUndo
+export spec_editor_toolbar_view.setCanRedo
+export spec_editor_toolbar_view.openLinkDraft
+export spec_editor_toolbar_view.closeLinkDraft
+export spec_editor_toolbar_view.collectActiveMarks
+export spec_editor_toolbar_view.currentBlockKind
+export spec_editor_toolbar_view.mountSpecEditorToolbar
+export spec_editor_toolbar_view.subscribeToEditor
+export spec_editor_toolbar_view.EditorLookup
 
 when defined(js):
   import std/jsffi
@@ -66,13 +84,14 @@ when defined(js):
   # availability checks.  ``{.importjs.}`` makes the body a typed
   # binding rather than a ``{.emit.}`` block.
   # ------------------------------------------------------------------- #
-  proc buildExtensionsArray(hasStarter, hasMarkdown: bool): JsObject
-    {.importjs: """(function(s, m) {
+  proc buildExtensionsArray(hasStarter, hasMarkdown, hasLink: bool): JsObject
+    {.importjs: """(function(s, m, l) {
       var out = [];
       if (s) { out.push(globalThis.TipTapStarterKit.StarterKit); }
       if (m) { out.push(globalThis.TipTapMarkdown.Markdown); }
+      if (l) { out.push(globalThis.TipTapLink.Link.configure({openOnClick: false, autolink: true})); }
       return out;
-    })(#, #)""".}
+    })(#, #, #)""".}
 
   # Expose the live TipTap editor instance on ``window`` for the
   # TBAR-M5b browser e2e tests.  Production code never reads this
@@ -123,6 +142,13 @@ type
       ## headless tests can drive the selection-capture state machine
       ## without booting TipTap.  The shell owns the mount step that
       ## actually renders the popover.
+    toolbar*: SpecEditorToolbarVM
+      ## CHRM-M4 — companion VM for the spec-pane formatting toolbar
+      ## that mounts above the TipTap editable host in Edit mode.
+      ## The mount keeps this in sync with the live editor via
+      ## ``onSelectionUpdate`` + ``onTransaction`` subscriptions.
+      ## Constructed eagerly so tests can subscribe to its signals
+      ## without booting the mount.
 
 proc createSpecPaneVM*(initialMarkdown: string = ""): SpecPaneVM =
   ## Build a fresh VM. Defaults to ``spmView`` mode and the supplied
@@ -138,6 +164,7 @@ proc createSpecPaneVM*(initialMarkdown: string = ""): SpecPaneVM =
     dirty: createSignal(false),
     loading: false,
     commentPopover: createCommentPopoverVM(),
+    toolbar: createSpecEditorToolbarVM(),
   )
 
 proc recomputeDirty(vm: SpecPaneVM) =
@@ -324,6 +351,7 @@ proc mountSpecPane*[R, E](r: R; parent: E; vm: SpecPaneVM;
   var saveBtn: E
   var cancelBtn: E
   var buttonRow: E
+  var toolbarHost: E
   let root = ui(r):
     tdiv(
       `data-spec-pane-tiptap` = "true",
@@ -334,6 +362,10 @@ proc mountSpecPane*[R, E](r: R; parent: E; vm: SpecPaneVM;
       min_height = "0",
       padding = "16px 20px",
       overflow_y = "auto"):
+      tdiv(
+        ref = toolbarHost,
+        `data-spec-pane-toolbar-host` = "true",
+        display = "none")
       tdiv(
         ref = hostNode,
         `data-spec-pane-tiptap-host` = "true",
@@ -402,6 +434,7 @@ proc mountSpecPane*[R, E](r: R; parent: E; vm: SpecPaneVM;
       let exts = buildExtensionsArray(
         tiptap_starter.isAvailable(),
         tiptap_md.isAvailable(),
+        tiptap_link.isAvailable(),
       )
       tiptap_lib.setExtensions(opts, exts)
       tiptap_lib.setContentOption(opts, capturedVm.markdown.val.cstring)
@@ -436,8 +469,27 @@ proc mountSpecPane*[R, E](r: R; parent: E; vm: SpecPaneVM;
         let rect = tiptap_lib.getSelectionRect(selectionEditor)
         selectionVm.captureCommentSelection(sel, rect))
 
+      # CHRM-M4 — once the editor exists, subscribe the toolbar VM to
+      # its selection / transaction events so active-state indicators
+      # mirror the live cursor.  The toolbar DOM itself is mounted
+      # outside this reactive effect (see below) so its inner
+      # ``createRenderEffect`` blocks aren't disposed when the outer
+      # effect re-runs.
+      spec_editor_toolbar_view.subscribeToEditor(capturedVm.toolbar,
+                                                  capturedVm.editor)
+
     createRenderEffect proc() =
       bootstrapEditor()
+
+    # CHRM-M4 — mount the formatting toolbar synchronously (outside
+    # the bootstrap reactive effect) so its own child
+    # ``createRenderEffect`` blocks survive every re-run of the
+    # bootstrap path.  The mount carries the VM + a lookup closure
+    # the click dispatchers read lazily — a click that lands before
+    # the editor exists is a no-op rather than a crash.
+    let editorLookup = proc(): tiptap_lib.TipTapEditor = capturedVm.editor
+    spec_editor_toolbar_view.mountSpecEditorToolbar[R, E](
+      r, toolbarHost, capturedVm.toolbar, editorLookup)
 
     # Markdown-sync effect: on body change, replace the editor
     # content via the Markdown extension's parser.  Guarded by
@@ -499,6 +551,16 @@ proc mountSpecPane*[R, E](r: R; parent: E; vm: SpecPaneVM;
     let isDirty = capturedVm.dirty.val
     r.setStyle(buttonRow, "display",
       if isEdit and isDirty: "flex" else: "none")
+
+  # CHRM-M4: formatting toolbar host visibility — visible only in
+  # Edit mode.  The toolbar VM is always mounted (so subscribers wire
+  # up the editor's selection-update events) but its host collapses
+  # in View / Comment mode so it doesn't bleed into the reading
+  # surfaces.
+  createRenderEffect proc() =
+    let isEdit = capturedVm.mode.val == spmEdit
+    r.setStyle(toolbarHost, "display",
+      if isEdit: "block" else: "none")
 
   # TBAR-M5: click handlers.  Save pulls the latest markdown body
   # from the editor via the Markdown extension and routes it to the

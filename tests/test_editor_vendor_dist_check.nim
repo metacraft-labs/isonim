@@ -112,9 +112,14 @@ suite "TBAR-M5b editor-vendor dist check":
     let xterm = readFile(outPath / "xterm.umd.js")
     # The per-library FFI modules pick up the bundle's exports via
     # ``globalThis.TipTap`` / ``TipTapStarterKit`` / ``TipTapMarkdown``
-    # / ``XtermTerminal``.  Grep the minified output for the
-    # property-access strings the IIFE writes.
+    # / ``TipTapLink`` / ``XtermTerminal``.  Grep the minified output
+    # for the property-access strings the IIFE writes.
     check tiptap.contains("globalThis.TipTap")
     check tiptap.contains("TipTapStarterKit")
     check tiptap.contains("TipTapMarkdown")
+    # CHRM-M4: ``@tiptap/extension-link`` is now part of the TipTap
+    # bundle so the spec-pane formatting toolbar's Link button has a
+    # ``setLink`` / ``unsetLink`` command surface and the ``link``
+    # mark resolves for ``isActive('link')`` queries.
+    check tiptap.contains("TipTapLink")
     check xterm.contains("globalThis.XtermTerminal")

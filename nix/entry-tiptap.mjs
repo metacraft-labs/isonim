@@ -15,6 +15,7 @@
 import { Editor } from "@tiptap/core";
 import { StarterKit } from "@tiptap/starter-kit";
 import { Markdown } from "tiptap-markdown";
+import { Link } from "@tiptap/extension-link";
 
 // Each global is a small namespace object. Keeping a single named
 // global per logical library matches the per-library FFI module
@@ -25,3 +26,11 @@ import { Markdown } from "tiptap-markdown";
 globalThis.TipTap = { Editor };
 globalThis.TipTapStarterKit = { StarterKit };
 globalThis.TipTapMarkdown = { Markdown };
+// CHRM-M4: ``@tiptap/extension-link`` is vendored here to back the
+// formatting toolbar's Link button (Ctrl/Cmd+K).  The package is a
+// transitive dep of ``@tiptap/starter-kit`` so the offline-cache hash
+// did not change when it was pinned as a direct dependency, but we
+// add it to the StarterKit-installed extension set explicitly here
+// so the editor instance recognises ``setLink`` / ``unsetLink``
+// commands and the ``link`` mark for ``isActive('link')`` queries.
+globalThis.TipTapLink = { Link };
