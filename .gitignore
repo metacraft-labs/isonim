@@ -85,6 +85,8 @@ tests/browser/helpers/spawn_pg_for_browser_test
 # CHRM-M2 + CHRM-M4: chrome polish + TipTap toolbar
 tests/test_editor_in_pane_mode_row_removed
 tests/test_editor_spec_toolbar_vm
+# CHRM-M5: documentHtml-non-Web invariant test
+tests/test_editor_no_document_html_for_non_web
 tests/e2e_design_review_pg_process_compose
 tests/test_design_review_brief_format
 tests/test_design_review_brief_index
