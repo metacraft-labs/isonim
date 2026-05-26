@@ -2587,6 +2587,22 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
     # TBAR-M3: spec-pane swaps in when surface is sSpec.
     r.setStyle(specPaneEl, "display",
       if not preview: "flex" else: "none")
+    # CHRM-M3 Wave A: the viewStack (which hosts the per-preview
+    # surfaces — storyboard, component detail, page preview, etc.) is
+    # itself a flex=1 child of centerColumn. When surface flips to
+    # sSpec every CHILD of viewStack is set to display:none above —
+    # but the viewStack ITSELF stays display:flex and keeps its
+    # flex=1, so it splits the centre column's vertical budget evenly
+    # with specPaneEl. Result: the spec pane only gets ~half of the
+    # available height (rootClientHeight ≈ 505 px on a 1080 viewport),
+    # the brief content scrolls inside a too-short pane, and the
+    # CHRM-M4 toolbar sits halfway down the visible column. Collapse
+    # the empty viewStack when surface is Spec so specPaneEl gets the
+    # full flex:1 budget. This is a single setStyle inside the
+    # existing createRenderEffect — no new effects introduced, no
+    # setStyle outside a render effect.
+    r.setStyle(viewStack, "display",
+      if preview: "flex" else: "none")
 
   r.appendChild(viewStack, storyboardEl)
   r.appendChild(viewStack, componentDetailEl)
