@@ -4459,7 +4459,8 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
           width = "100%",
           height = "480",
           border = "0",
-          background_color = "#FFFFFF")
+          background_color = "#FFFFFF",
+          `data-component-edit-frame` = "true")
 
   let inspectorPanel = renderInspector[R, E](r, vm, projectFrame)
   r.appendChild(container, preview)
@@ -4471,14 +4472,27 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
     let previewState = vm.preview.current.val
     let reloadGeneration = vm.livePreviewReloadGeneration.val
     let metadata = previewState.metadata
-    let previewDocument = componentEditPreviewDocument(previewState,
-      vm.inspector.selectedElement.val)
+    # CHRM-M5b: the editable preview iframe is an HTML-only surface
+    # (the editor injects an HTML selection bridge into the project
+    # documentHtml via `editablePreviewDocument`). The HTML iframe
+    # is meaningful only for the Web backend; for every non-Web
+    # backend it would misrepresent the actual rendered output,
+    # mirroring the CHRM-M5 invariant locked in for page_preview /
+    # foundations_page / component_detail. Non-Web blanks the
+    # srcdoc; the canvas-mounted editing surface lives in the
+    # detail view (component_detail.nim) — the editable variant
+    # is intentionally Web-only for now.
     let nextSrcdoc =
-      if vm.editMode.val == emView:
-        previewDocument & "\n<!-- isonim-reload:" & $reloadGeneration & " -->"
+      if vm.platform.val != pbWeb:
+        ""
       else:
-        editablePreviewDocument(previewDocument, metadata, vm.editMode.val) &
-          "\n<!-- isonim-reload:" & $reloadGeneration & " -->"
+        let previewDocument = componentEditPreviewDocument(previewState,
+          vm.inspector.selectedElement.val)
+        if vm.editMode.val == emView:
+          previewDocument & "\n<!-- isonim-reload:" & $reloadGeneration & " -->"
+        else:
+          editablePreviewDocument(previewDocument, metadata, vm.editMode.val) &
+            "\n<!-- isonim-reload:" & $reloadGeneration & " -->"
     var srcdocChanged = false
     if nextSrcdoc != lastSrcdoc:
       lastSrcdoc = nextSrcdoc

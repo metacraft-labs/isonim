@@ -122,9 +122,18 @@ proc renderProjectMiniPreview[R, E](r: R; vm: EditorVM; story: StoryRef;
   ## the initial preview once to decide whether to show the iframe or
   ## the placeholder card; subsequent backend-chip clicks reuse the same
   ## iframe via the reactive effect below.
+  ##
+  ## CHRM-M5b: the iframe-srcdoc/documentHtml path is Web-only. For
+  ## non-Web backends a flow-card thumbnail showing HTML-with-CSS
+  ## misrepresents what the actual backend renders (e.g. a TUI
+  ## backend draws character cells, not an HTML body). The
+  ## thumbnails fall through to the project-neutral mini preview
+  ## (`renderGenericMiniPreview`) instead, matching the CHRM-M5
+  ## invariant locked in across the page/foundations/component
+  ## detail views.
   let capturedStory = story
   let initialPreview = vm.preview.hook(capturedStory, vm.platform.val)
-  if initialPreview.documentHtml.len == 0:
+  if vm.platform.val != pbWeb or initialPreview.documentHtml.len == 0:
     return renderGenericMiniPreview[R, E](r, label)
 
   let frame = ui(r):
@@ -144,8 +153,13 @@ proc renderProjectMiniPreview[R, E](r: R; vm: EditorVM; story: StoryRef;
   var lastSrcdoc = ""
   createRenderEffect proc() =
     let preview = vm.preview.hook(capturedStory, vm.platform.val)
+    # CHRM-M5b: srcdoc only repaints while the active backend is
+    # Web. A backend-chip flip to non-Web blanks the srcdoc; the
+    # storyboard rebuilds the card via the platform-gated branch
+    # above on the next render pass.
     let nextSrcdoc =
-      if preview.documentHtml.len > 0: preview.documentHtml
+      if vm.platform.val == pbWeb and preview.documentHtml.len > 0:
+        preview.documentHtml
       else: ""
     if nextSrcdoc != lastSrcdoc:
       r.setAttribute(frame, "srcdoc", nextSrcdoc)

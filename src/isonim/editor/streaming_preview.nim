@@ -5,19 +5,22 @@
 ## `Front-Ends/IsoNim/isonim-render-stream.status.org` in the
 ## cross-project specs repo).
 ## The editor's preview pane (`views/page_preview.nim`,
-## `views/foundations_page.nim`, `views/component_detail.nim`)
-## renders the Web composition root via an iframe with `srcdoc`
-## populated by the project's ``ProjectPreviewHook.documentHtml``.
-## For every native back-end that doesn't run in the browser (TUI /
-## GPUI / Freya / Cocoa / Android) the preview switches to
+## `views/foundations_page.nim`, `views/component_detail.nim`,
+## `views/storyboard.nim`, `views/component_edit.nim`) renders the
+## Web composition root via an iframe with `srcdoc` populated by
+## the project's ``ProjectPreviewHook.documentHtml``. For every
+## native back-end that doesn't run in the browser (TUI / GPUI /
+## Freya / Cocoa / Android) the preview switches to
 ## streaming-bridge mode: a child `isonim-render-serve`-style
 ## process runs the user's compiled app, captures frames, and
 ## streams F/M/I packets over a WebSocket; the preview pane mounts
 ## a `<canvas>` that connects to `ws://127.0.0.1:<port>/`. As of
-## CHRM-M5 the iframe-srcdoc path is Web-only — non-Web backends
-## always use the canvas (or the fallback empty-state panel when
-## the launcher isn't running). No more HTML-themed iframe fallback
-## for non-Web previews.
+## CHRM-M5 (extended by CHRM-M5b to cover the storyboard
+## flow-card thumbnails and the editable component view) the
+## iframe-srcdoc / ``documentHtml`` path is Web-only across every
+## editor view — non-Web backends always use the canvas (or the
+## fallback empty-state panel when the launcher isn't running).
+## No more HTML-themed iframe fallback for non-Web previews.
 ##
 ## *Status (RS-M7 scope-down).* The editor's `ProjectPreviewVM`
 ## still serves HTML payloads; native back-end pipelines are M55+

@@ -12,6 +12,12 @@
 ##   * ``views/foundations_page.nim``
 ##   * ``views/component_detail.nim``
 ##
+## CHRM-M5b extends the same gate to the two remaining consumers
+## the original audit missed:
+##
+##   * ``views/storyboard.nim`` — the flow-card thumbnails
+##   * ``views/component_edit.nim`` — the editable preview iframe
+##
 ## The ``ProjectPreview.documentHtml`` field itself is preserved
 ## because the Web composition root genuinely needs it (Web has no
 ## streaming launcher — the editor itself is HTML, so the
@@ -27,7 +33,9 @@ import isonim/editor/viewmodels
 import isonim/editor/types
 import isonim/editor/views/page_preview
 import isonim/editor/views/component_detail
+import isonim/editor/views/component_edit
 import isonim/editor/views/foundations_page
+import isonim/editor/views/storyboard
 
 proc findByAttr(node: MockNode; name, value: string): MockNode =
   if node.kind == mnkElement and name in node.attributes and
@@ -229,4 +237,138 @@ suite "CHRM-M5 Fix B: documentHtml iframe is Web-only":
       let frame = findByAttr(pane, "data-foundation-project-frame", "true")
       check frame != nil
       check "web-foundation" in frame.attributes.getOrDefault("srcdoc", "")
+      dispose()
+
+  test "storyboard: non-Web backends never render the documentHtml flow-card iframe":
+    # CHRM-M5b: the flow-card thumbnail in the storyboard canvas
+    # previously consumed ``documentHtml`` regardless of backend,
+    # so a TUI / GPUI / Freya / Cocoa / Android session would
+    # display HTML-themed thumbnails. The platform gate routes
+    # every non-Web backend to ``renderGenericMiniPreview``
+    # (project-neutral mini snapshot); no ``data-flow-mini-preview``
+    # iframe is created at all.
+    createRoot do (dispose: proc()):
+      for backend in [pbTui, pbGpui, pbFreya, pbCocoa, pbAndroid]:
+        let r = MockRenderer()
+        let vm = createEditorVM()
+        let flowStory = StoryRef(group: "Flows", name: "Onboarding",
+          kind: skFlow, index: 0)
+        vm.sidebar.groups.val = @[
+          StoryGroup(name: "Flows", kind: skFlow, expanded: true,
+            items: @[StoryItem(name: "Open app", kind: skFlow,
+              group: "Flows")])
+        ]
+        vm.preview.hook = proc(story: StoryRef;
+            platform: Platform): ProjectPreview =
+          ProjectPreview(
+            status: ppsRendered,
+            story: story,
+            title: story.group & " / " & story.name,
+            bodyText: "Flow body",
+            documentHtml: "<main data-testid=\"flow-html\">Step</main>")
+        discard vm.selectStory(flowStory)
+        vm.platform.val = backend
+
+        let pane = renderStoryboardCanvas[MockRenderer, MockNode](r, vm)
+        let frame = findByAttr(pane, "data-flow-mini-preview", "true")
+        # For non-Web backends the flow-card thumbnail never builds
+        # the HTML iframe — the storyboard returns the
+        # project-neutral mini preview instead, so the
+        # ``data-flow-mini-preview`` iframe is absent from the tree.
+        check frame == nil
+      dispose()
+
+  test "storyboard: pbWeb still mounts documentHtml into the flow-card iframe":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      let flowStory = StoryRef(group: "Flows", name: "Onboarding",
+        kind: skFlow, index: 0)
+      vm.sidebar.groups.val = @[
+        StoryGroup(name: "Flows", kind: skFlow, expanded: true,
+          items: @[StoryItem(name: "Open app", kind: skFlow,
+            group: "Flows")])
+      ]
+      vm.preview.hook = proc(story: StoryRef;
+          platform: Platform): ProjectPreview =
+        ProjectPreview(
+          status: ppsRendered,
+          story: story,
+          title: "Web Flow",
+          bodyText: "Web flow body",
+          documentHtml: "<main data-testid=\"web-flow\">Step</main>")
+      discard vm.selectStory(flowStory)
+      vm.platform.val = pbWeb
+
+      let pane = renderStoryboardCanvas[MockRenderer, MockNode](r, vm)
+      let frame = findByAttr(pane, "data-flow-mini-preview", "true")
+      check frame != nil
+      check "web-flow" in frame.attributes.getOrDefault("srcdoc", "")
+      dispose()
+
+  test "component_edit: non-Web backends never write documentHtml into the editable iframe srcdoc":
+    # CHRM-M5b: the editable component view's iframe is an HTML
+    # selection-bridge surface — the editor injects bridge JS into
+    # the project ``documentHtml`` so users can click elements to
+    # select them. For non-Web backends the HTML surface
+    # misrepresents what the actual backend renders, and the
+    # canvas-mounted live-stream lives in the detail view. Gate
+    # the srcdoc on Web; non-Web blanks it.
+    createRoot do (dispose: proc()):
+      for backend in [pbTui, pbGpui, pbFreya, pbCocoa, pbAndroid]:
+        for mode in [emView, emEdit]:
+          let r = MockRenderer()
+          let vm = createEditorVM()
+          let story = StoryRef(group: "Components", name: "Real Button",
+            kind: skComponent, index: 0)
+          vm.sidebar.groups.val = @[
+            StoryGroup(name: "Components", kind: skComponent, expanded: true,
+              items: @[StoryItem(name: story.name, kind: story.kind,
+                group: story.group)])
+          ]
+          vm.preview.hook = proc(story: StoryRef;
+              platform: Platform): ProjectPreview =
+            ProjectPreview(
+              status: ppsRendered,
+              story: story,
+              title: story.group & " / " & story.name,
+              bodyText: "Editable component body",
+              documentHtml: "<main data-testid=\"edit-html\"><body>x</body></main>")
+          discard vm.selectStory(story)
+          vm.platform.val = backend
+          vm.editMode.val = mode
+
+          let pane = renderComponentEditView[MockRenderer, MockNode](r, vm)
+          let frame = findByAttr(pane, "data-component-edit-frame", "true")
+          check frame != nil
+          check frame.attributes.getOrDefault("srcdoc", "") == ""
+      dispose()
+
+  test "component_edit: pbWeb still mounts documentHtml into the editable iframe":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      let story = StoryRef(group: "Components", name: "Real Button",
+        kind: skComponent, index: 0)
+      vm.sidebar.groups.val = @[
+        StoryGroup(name: "Components", kind: skComponent, expanded: true,
+          items: @[StoryItem(name: story.name, kind: story.kind,
+            group: story.group)])
+      ]
+      vm.preview.hook = proc(story: StoryRef;
+          platform: Platform): ProjectPreview =
+        ProjectPreview(
+          status: ppsRendered,
+          story: story,
+          title: "Web Component",
+          bodyText: "Web edit body",
+          documentHtml: "<main data-testid=\"web-edit\"><body>x</body></main>")
+      discard vm.selectStory(story)
+      vm.platform.val = pbWeb
+      vm.editMode.val = emView
+
+      let pane = renderComponentEditView[MockRenderer, MockNode](r, vm)
+      let frame = findByAttr(pane, "data-component-edit-frame", "true")
+      check frame != nil
+      check "web-edit" in frame.attributes.getOrDefault("srcdoc", "")
       dispose()
