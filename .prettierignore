@@ -16,3 +16,9 @@ tools/visual-review-brief.md
 # REV-M4 milestone.  Track and migrate in a dedicated lint pass.
 tools/tailwind-extract.mjs
 tests/e2e_design_review_brief_tab.mjs
+# CHRM-M1: editor chrome audit.  Heavy use of file:line references with
+# embedded underscores inside file names (e.g. brief_tab.nim) interacts
+# badly with prettier's underscore-italics handling and its list-item
+# heuristics.  Layout is load-bearing for downstream CHRM-M2/M3/M4
+# agents reading file:line citations; keep prettier off it.
+docs/chrome-audit-CHRM-M1.md
