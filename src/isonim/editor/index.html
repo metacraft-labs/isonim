@@ -29,7 +29,10 @@
         line-height: 1.6;
         color: #e8e9f0;
         max-width: 760px;
-        margin: 0 auto;
+        /* Wave B: left-align via `margin: 0` instead of
+          `margin: 0 auto`; see isonim-examples/editor/index.html
+          for the canonical rationale. */
+        margin: 0;
         padding-bottom: 32px;
       }
       [data-spec-pane-tiptap-host="true"] .ProseMirror:focus {
@@ -168,6 +171,12 @@
         background: #1d1d28;
         font-weight: 600;
       }
+      /* Wave B: align the CHRM-M4 formatting toolbar with the prose
+        column below it. 760 px max-width matches the ProseMirror. */
+      [data-spec-editor-toolbar="true"] {
+        max-width: 760px;
+      }
+
       [data-spec-pane-tiptap="true"]::-webkit-scrollbar {
         width: 10px;
       }
