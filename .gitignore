@@ -82,6 +82,9 @@ tests/test_design_review_save_brief_route
 # TBAR-M6: spec comment + browser test helper
 tests/test_editor_spec_comment_vm
 tests/browser/helpers/spawn_pg_for_browser_test
+# CHRM-M2 + CHRM-M4: chrome polish + TipTap toolbar
+tests/test_editor_in_pane_mode_row_removed
+tests/test_editor_spec_toolbar_vm
 tests/e2e_design_review_pg_process_compose
 tests/test_design_review_brief_format
 tests/test_design_review_brief_index
