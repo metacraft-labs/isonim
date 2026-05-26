@@ -217,7 +217,14 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
       r.setAttribute(previewFrame, "srcdoc", "")
       r.setStyle(fallbackPanel, "display", "none")
       r.setStyle(previewFrame, "display", "none")
-    elif preview.documentHtml.len > 0:
+    elif vm.platform.val == pbWeb and preview.documentHtml.len > 0:
+      # CHRM-M5 Fix B: ``documentHtml`` is now Web-only. The Web
+      # composition root renders inside the iframe via srcdoc
+      # because there's no streaming launcher for Web (the editor
+      # itself is HTML — see isonim-examples/CLAUDE.md "Try the
+      # editor"). For every non-Web backend the canvas path above
+      # is the live stream; if it's not active the fallback panel
+      # is the empty-state surface (no more HTML-themed iframe).
       r.setAttribute(previewFrame, "srcdoc", preview.documentHtml)
       r.setStyle(fallbackPanel, "display", "none")
       r.setStyle(previewFrame, "display", "block")

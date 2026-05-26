@@ -84,10 +84,17 @@ proc mountHistoryButton*[R, E](r: R; parent: E; vm: HistoryButtonVM;
   createRenderEffect proc() =
     let hasHistory = capturedVm.briefHasHistory.val
     let isOpen = capturedVm.galleryOpen.val
+    # CHRM-M5 Fix D: the button is now always visible — the
+    # ``data-history-visible`` attribute mirrors whether any
+    # captures exist for the active brief (kept for tests +
+    # tooling) but no longer flips ``aria-hidden`` to ``true``.
+    # When no captures exist the overlay surfaces an
+    # empty-state panel ("No captures yet") instead of hiding
+    # the button entirely, which the user perceived as the
+    # button being broken.
     r.setAttribute(button, "data-history-visible",
                    if hasHistory: "true" else: "false")
-    r.setAttribute(button, "aria-hidden",
-                   if hasHistory: "false" else: "true")
+    r.setAttribute(button, "aria-hidden", "false")
     r.setAttribute(button, "aria-pressed",
                    if isOpen: "true" else: "false")
     r.setAttribute(button, "data-gallery-open",

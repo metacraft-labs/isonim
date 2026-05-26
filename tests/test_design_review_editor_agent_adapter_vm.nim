@@ -18,19 +18,19 @@
 ##   * Route ``cancelAgentPrompt`` to ``client.cancel`` with the cached
 ##     session id.
 ##
-## The fifth test wires the brief tab's "Review this preview" button
-## directly against the adapter and asserts the submitted prompt is
-## context-loaded.
+## CHRM-M5 removed the "Review this preview" button + the
+## ``buildReviewPrompt`` helper it used. The
+## ``test_review_this_preview_button_submits_context_loaded_prompt``
+## case that previously exercised that helper was deleted alongside
+## the button.
 
-import std/[unittest, options, tables, strutils, json]
+import std/[unittest, strutils, json]
 
 import nim_agents
 import isonim/core/[signals, owner]
 import isonim/viewmodel
-import isonim/editor/design_review/brief_format
 import isonim/editor/design_review/browser_agent_client
 import isonim/editor/design_review/editor_agent_adapter
-import isonim/editor/design_review/review_prompt
 import isonim/editor/types
 import isonim/editor/viewmodels
 
@@ -138,63 +138,6 @@ suite "Phase C editor agent adapter VM":
         if msg.kind == cmkError and "daemon unreachable" in msg.text:
           seenError = true
       check seenError
-      dispose()
-
-  test "test_review_this_preview_button_submits_context_loaded_prompt":
-    createRoot do (dispose: proc()):
-      let chat = createAgentChatVM()
-      let client = fakeClient()
-      chat.configureAgentAdaptersWithClient(client, absAcp)
-      client.activeSessionId = "sess-review"
-
-      let storyRef = StoryRef(group: "Task App", name: "Inbox",
-        kind: skPage, index: 0)
-      var brief: Brief
-      brief.briefId = "render.task-app"
-      brief.schemaVersion = 1
-      brief.kind = bkRender
-      brief.title = "Task App"
-      brief.coversPreviews = @[
-        BriefPreviewCoverage(storyRef: storyRef, backends: @[pbWeb])]
-      brief.scoringDimensions = @[
-        BriefScoringDimension(id: "chrome", label: "Editor Chrome",
-                              weight: 0.4, scaleMin: 1, scaleMax: 10)]
-      brief.bodyMarkdown = "Pay attention to focus order and contrast."
-      brief.extra = initTable[string, string]()
-      brief.sourceFile = "<test>"
-
-      # CHRM-M2: the in-pane "Review this preview" button was moved to
-      # the chrome-bar trailing-edge slot. The pure prompt-composition
-      # helper lives in ``design_review/review_prompt.nim`` so this
-      # adapter-level test can target the composed prompt without
-      # mounting the chrome bar.
-      let composed = buildReviewPrompt(brief, storyRef, pbWeb)
-      check "Review the preview" in composed
-      check "Pay attention to focus order" in composed
-      check "Task App" in composed
-      check "Editor Chrome" in composed
-
-      # Dispatch path: the production button writes the prompt onto
-      # ``chat.inputText`` then calls ``sendAgentPrompt`` (which
-      # internally adds the user message + routes through
-      # ``promptAdapter``). We exercise the same wires here.
-      chat.inputText.val = composed
-      chat.addUserMessage(composed)
-      check chat.promptAdapter(composed, AgentPromptContext()) == true
-
-      var sawUser = false
-      for msg in chat.messages.val:
-        if msg.kind == cmkUser and "Review the preview" in msg.text:
-          sawUser = true
-      check sawUser
-
-      emitSessionUpdate(client, "Looks good.")
-      emitEnd(client)
-      var sawAgent = false
-      for msg in chat.messages.val:
-        if msg.kind == cmkAgent and "Looks good" in msg.text:
-          sawAgent = true
-      check sawAgent
       dispose()
 
   test "test_agent_event_from_sse_decodes_message_chunk":

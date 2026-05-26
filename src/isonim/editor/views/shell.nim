@@ -18,7 +18,6 @@ import isonim/editor/views/page_preview
 import isonim/editor/views/vector_editor
 import isonim/editor/views/chat_panel
 import isonim/editor/views/design_review_mount as design_review_mount_view
-import isonim/editor/views/review_preview_button
 import isonim/editor/views/widgets as editor_widgets
 import isonim/editor/design_review/brief_format
 import isonim/editor/design_review/brief_index
@@ -2202,17 +2201,21 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
           disabled.incl i
       syncVm.setDisabledIndices(disabled)
 
-  r.appendChild(toolbar, backendWrapper)
-  r.appendChild(toolbar, clusterDivider())
+  # CHRM-M5 Fix A: cluster order is now
+  # ``[surface, backend, viewport, mode]`` — Surface moves to the
+  # leftmost position so the user reads the surface decision
+  # (preview workspace vs brief markdown) before any backend or
+  # layout knob. The clusters are constructed in source order
+  # below for code readability; the ``appendChild`` order at the
+  # bottom of each cluster's block determines the on-screen
+  # left-to-right ordering.
 
-  # TBAR-M3: Preview / Spec top-bar surface switch. Placed between the
-  # backend cluster and the screen-size selector so the user reads the
-  # surface decision (preview workspace vs brief markdown) before the
-  # secondary layout knobs. Uses the segmented variant of the
-  # ChoiceGroup widget delivered by TBAR-M2. CHRM-M2: the chrome-bar
-  # consumer now requests the ``cgvTransparent`` container variant so
-  # the surface pills sit on the toolbar surface without their own
-  # filled backdrop.
+  # TBAR-M3 / CHRM-M5: Preview / Spec top-bar surface switch.
+  # Leftmost cluster after CHRM-M5. Uses the segmented variant of
+  # the ChoiceGroup widget delivered by TBAR-M2. CHRM-M2: the
+  # chrome-bar consumer now requests the ``cgvTransparent``
+  # container variant so the surface pills sit on the toolbar
+  # surface without their own filled backdrop.
   let surfaceWrapper = ui(r):
     tdiv(`data-toolbar-cluster` = "surface",
          `data-preview-surface-switch` = "true",
@@ -2237,6 +2240,15 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
       if syncVm.activeIndex.value != target:
         syncVm.activate(target)
   r.appendChild(toolbar, surfaceWrapper)
+  r.appendChild(toolbar, clusterDivider())
+
+  # CHRM-M5 Fix A: backend cluster appended AFTER the surface
+  # cluster so the on-screen order reads
+  # ``[surface, backend, viewport, mode]``. The cluster itself
+  # was constructed above (alongside its reactive effects) for
+  # code readability; only the mount-into-toolbar step happens
+  # here.
+  r.appendChild(toolbar, backendWrapper)
   r.appendChild(toolbar, clusterDivider())
 
   # TBAR-M3: screen-size chevron-popup selector. Replaces the legacy
@@ -2382,18 +2394,11 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
 
   r.appendChild(toolbar, modeWrapper)
 
-  # CHRM-M2: "Review this preview" — preserved from the deleted in-pane
-  # row. Mounted in the trailing-edge slot grouped immediately before
-  # the 🕘 history button. The button is hidden when no brief covers the
-  # active story (mirrors the previous mount-site guard
-  # ``builtInBriefIndex().empty()``).
-  mountReviewPreviewButton[R, E](r, toolbar, vm)
-
   # REV-M8 — mount the design-review 🕘 history button at the right
-  # end of the chrome bar.  The button stays invisible (its
-  # ``data-history-visible`` attr stays "false") until the editor's
-  # ``briefHasHistory`` poll returns true, so a fresh project or an
-  # offline editor doesn't sprout a useless control.
+  # end of the chrome bar. CHRM-M5: the button stays VISIBLE for
+  # any brief; the gallery overlay's own empty state surfaces
+  # "No captures yet" when ``briefHasHistory`` is false, which
+  # is a better UX than a button that disappears.
   design_review_mount_view.mountHistoryButtonForEditor[R, E](r, toolbar, vm)
 
   toolbar

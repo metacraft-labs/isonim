@@ -854,19 +854,20 @@ suite "M-EVP-3 preview chrome bar density":
       let vm = createEditorVM()
       let bar = renderPreviewChromeBar[MockRenderer, MockNode](r, vm)
 
-      # M-EVP-7 + TBAR-M3: each cluster must be a direct child of the
-      # toolbar and carry a stable `data-toolbar-cluster` attribute so
-      # future layout changes can address them without depending on the
-      # rendering order. The test additionally verifies the order
-      # matches the left-to-right reading: backend → surface → viewport
-      # → mode. The view-switcher cluster is gone because the sidebar
-      # drives the active view. TBAR-M3 added the surface cluster
-      # (Preview / Spec segmented control) between backend and
-      # viewport.
+      # M-EVP-7 + TBAR-M3 + CHRM-M5: each cluster must be a direct
+      # child of the toolbar and carry a stable
+      # `data-toolbar-cluster` attribute so future layout changes
+      # can address them without depending on the rendering order.
+      # The test additionally verifies the order matches the
+      # left-to-right reading: surface → backend → viewport →
+      # mode. CHRM-M5 reordered Surface to the leftmost position
+      # so the user reads the surface decision (preview workspace
+      # vs brief markdown) first; the view-switcher cluster is
+      # gone because the sidebar drives the active view.
       let clusterAttr = "data-toolbar-cluster"
       check findAllByAttr(bar, clusterAttr, "view-switcher").len == 0
-      let clusters = findAllByAttr(bar, clusterAttr, "backend") &
-        findAllByAttr(bar, clusterAttr, "surface") &
+      let clusters = findAllByAttr(bar, clusterAttr, "surface") &
+        findAllByAttr(bar, clusterAttr, "backend") &
         findAllByAttr(bar, clusterAttr, "viewport") &
         findAllByAttr(bar, clusterAttr, "mode")
       check clusters.len == 4
@@ -875,7 +876,7 @@ suite "M-EVP-3 preview chrome bar density":
       # future refactor nests them inside an intermediate wrapper the
       # flex `gap` no longer applies between them, so this is the
       # invariant the visual separation rests on.
-      let clusterKinds = @["backend", "surface", "viewport", "mode"]
+      let clusterKinds = @["surface", "backend", "viewport", "mode"]
       var directChildClusters: seq[string] = @[]
       for child in bar.children:
         let kind = child.attributes.getOrDefault(clusterAttr)
@@ -1028,21 +1029,6 @@ suite "CHRM-M2 chrome-bar cluster unification":
                                    "data-choice-group-pill", "1")
       commentPill.fireEvent("click")
       check vm.editMode.val == emComment
-      dispose()
-
-  test "trailing-edge slot exposes the Review-this-preview button when a brief covers the story":
-    createRoot do (dispose: proc()):
-      let r = MockRenderer()
-      let vm = createEditorVM()
-      let bar = renderPreviewChromeBar[MockRenderer, MockNode](r, vm)
-      # The button is mounted into the chrome bar regardless of brief
-      # coverage; its ``data-review-button-visible`` attribute reflects
-      # the coverage check so the layout slot stays stable and the
-      # downstream e2e selector can find the node.
-      let reviewButton = findByAttr(bar, "data-chrome-action",
-                                    "review-preview")
-      check reviewButton != nil
-      check reviewButton.attributes.getOrDefault("role") == "button"
       dispose()
 
 # ---------------------------------------------------------------------------

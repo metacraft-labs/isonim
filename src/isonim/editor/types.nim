@@ -2027,6 +2027,18 @@ type
     title*: string
     bodyText*: string
     documentHtml*: string
+      ## Web-only after CHRM-M5. The Web composition root has no
+      ## streaming launcher — the editor itself is HTML, so the
+      ## per-backend ``documentHtml`` from the project's preview
+      ## hook is mounted in-iframe via srcdoc. Every non-Web
+      ## backend (TUI / GPUI / Freya / Cocoa / Android) hits the
+      ## canvas path instead, which streams real demo frames from
+      ## the launcher process. Producers may still emit
+      ## ``documentHtml`` for non-Web backends (the value is
+      ## carried through to flow-card thumbnails in
+      ## ``views/storyboard.nim``) but the main preview pane
+      ## consumers (``page_preview``, ``foundations_page``,
+      ## ``component_detail``) ignore it for non-Web.
     metadata*: StoryRenderMetadata
     variantMutations*: seq[PreviewVariantMutation]
 

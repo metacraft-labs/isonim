@@ -70,18 +70,17 @@ suite "CHRM-M2 in-pane mode-toggle row removed":
       check findByAttr(shell, "data-preview-pane-tab", "brief") == nil
       dispose()
 
-  test "Review this preview button replaces the strip's review affordance":
+  test "no review-preview button after CHRM-M5":
     createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createEditorVM()
       vm.sidebar.groups.val = buildStoryboard()
       let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
 
-      # The trailing-edge slot button is mounted regardless of brief
-      # coverage so the layout doesn't shift when the active brief
-      # appears / disappears; visibility is driven by the
-      # ``data-review-button-visible`` attribute.
+      # CHRM-M5 deleted the "Review this preview" button: the
+      # campaign workflow + AI Assistant chat sidebar cover the
+      # same affordance, and the user reported the button as
+      # confusing. The DOM marker must be absent.
       let btn = findByAttr(shell, "data-chrome-action", "review-preview")
-      check btn != nil
-      check btn.attributes.getOrDefault("role") == "button"
+      check btn == nil
       dispose()

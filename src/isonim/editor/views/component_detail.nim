@@ -845,9 +845,9 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
         "Component preview"
     # M-EVP-1: widen the gate so backend switching also reaches `skGuideline`
     # stories (and any other kind that `viewmodels.viewForStory` routes to
-    # `evComponentDetail`). The gate now keys off "the project supplied a
-    # documentHtml" rather than a kind allow-list, so any chip click that
-    # produces fresh HTML repaints the iframe.
+    # `evComponentDetail`). The gate keys off "the project supplied a
+    # documentHtml" so any chip click that produces fresh HTML repaints
+    # the iframe (Web) or the canvas (non-Web via the launcher).
     let showProject = preview.documentHtml.len > 0 and
       story.kind in {skComponent, skPattern, skGuideline}
     # RS-M11: when the selected backend is non-Web, the canvas takes
@@ -866,8 +866,17 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
     r.setAttribute(projectFrame, "title", "Component preview " & title)
     r.setAttribute(projectFrame, "height", "1")
     let reloadGeneration = vm.livePreviewReloadGeneration.val
+    # CHRM-M5 Fix B: explicitly gate the iframe-srcdoc path on
+    # ``platform == pbWeb``. Pre-CHRM-M5 this branch fired
+    # whenever ``not useCanvas`` and ``showProject`` held, which
+    # already collapsed to Web in practice (``useCanvas`` is
+    # ``showProject and platform != pbWeb``). The explicit gate
+    # documents the post-CHRM-M5 invariant that the
+    # ``documentHtml`` srcdoc path is Web-only — every non-Web
+    # backend uses the canvas live stream above; if the canvas
+    # isn't active the section stays hidden via ``showProject``.
     let nextProjectSrcdoc =
-      if showProject and not useCanvas:
+      if showProject and vm.platform.val == pbWeb:
         preview.documentHtml & "\n<!-- isonim-reload:" & $reloadGeneration &
           " -->"
       else:

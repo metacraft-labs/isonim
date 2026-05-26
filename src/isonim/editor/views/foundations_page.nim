@@ -155,8 +155,16 @@ proc renderFoundationsPage*[R, E](r: R; vm: EditorVM): E =
     let preview = vm.preview.current.val
     let isFoundationStory = story.kind == skFoundation
     let useCanvas = isFoundationStory and vm.platform.val != pbWeb
+    # CHRM-M5 Fix B: the iframe (``documentHtml``) path is now
+    # Web-only — Web has no streaming launcher because the editor
+    # itself is HTML, so the per-backend ``documentHtml`` from the
+    # project's preview hook is mounted in-iframe via srcdoc. Every
+    # non-Web backend uses the canvas above (live render stream);
+    # the iframe HTML fallback for non-Web was removed because the
+    # user reported the chrome bar occasionally flipping back to
+    # CSS-themed HTML rendering after live captures were active.
     let showIframe = isFoundationStory and (not useCanvas) and
-      preview.documentHtml.len > 0
+      vm.platform.val == pbWeb and preview.documentHtml.len > 0
     # The section is visible when either the iframe path or the
     # canvas path has something to show.
     let showFoundationProject = showIframe or useCanvas

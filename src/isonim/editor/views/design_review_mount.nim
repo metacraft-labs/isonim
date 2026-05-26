@@ -370,10 +370,25 @@ proc mountHistoryButtonForEditor*[R, E](r: R; parent: E; vm: EditorVM) =
   mountHistoryButton[R, E](r, parent, st.historyVm, onActivate)
 
 proc mountGalleryHostForEditor*[R, E](r: R; parent: E; vm: EditorVM): E =
-  ## Build the gallery overlay host: a positioned ``div`` that holds the
-  ## ``mountGalleryOverlay`` output and toggles its ``data-gallery-host-
-  ## visible`` attribute reactively.  Returns the host node so callers
-  ## can position it in their layout.
+  ## Build the gallery overlay host: a positioned ``div`` that holds
+  ## the ``mountGalleryOverlay`` output and toggles its
+  ## ``data-gallery-host-visible`` attribute reactively. Returns the
+  ## host node so callers can position it in their layout.
+  ##
+  ## CHRM-M5 Fix D: the host's visibility is now driven by
+  ## ``galleryHostState == ghsOpen`` alone — the previous
+  ## ``open and briefHasHistory`` AND gate hid the overlay entirely
+  ## when no captures existed for the active brief, so the user
+  ## perceived the 🕘 button as broken (the click toggled
+  ## ``data-gallery-host-open`` but the host stayed
+  ## ``display: none``). The gallery overlay already renders an
+  ## empty-state "No captures yet" panel
+  ## (``gallery_overlay.nim:636``), so we just surface that panel
+  ## when the user clicks the button regardless of whether any
+  ## captures exist for the current brief. ``briefHasHistory`` is
+  ## still polled (it gates the 🕘 button's own visual
+  ## ``data-history-visible`` attribute) but no longer acts as a
+  ## second on-screen kill switch on the overlay.
   let st = ensureDesignReviewState(vm)
   startGalleryFetchOnOpen(st)
   let capturedState = st
@@ -393,13 +408,18 @@ proc mountGalleryHostForEditor*[R, E](r: R; parent: E; vm: EditorVM): E =
   mountGalleryOverlay[R, E](r, host, st.galleryVm)
   createRenderEffect proc() =
     let open = capturedState.galleryHostState.val == ghsOpen
-    let hasHistory = capturedState.briefHasHistory.val
-    let visible = open and hasHistory
+    let visible = open
     r.setAttribute(host, "data-gallery-host-visible",
                    if visible: "true" else: "false")
     r.setAttribute(host, "data-gallery-host-open",
                    if open: "true" else: "false")
     r.setAttribute(host, "aria-hidden",
                    if visible: "false" else: "true")
+    # CHRM-M5 Fix D: drive the inline display style too so the
+    # overlay actually renders on-screen when the user opens it.
+    # Previously only the data-attribute flipped; ``display:none``
+    # from the initial inline style stuck, making the overlay a
+    # zero-size element under the chrome bar.
+    r.setStyle(host, "display", if visible: "flex" else: "none")
   r.appendChild(parent, host)
   host
