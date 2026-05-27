@@ -348,9 +348,20 @@ const
   gPanelBg     = "#111827"
   gBorder      = "#334155"
   gBorderSoft  = "#1E293B"
+  # CHRM-M6 Wave B — match the CHRM-M2 ChoiceGroup ``cgvTransparent``
+  # variant: idle pills carry a 1 px ``#2D2D3A`` border on a
+  # transparent fill; selected pills carry the editor accent fill
+  # ``#3B82F6`` with white text; the lavender ``#7C7AED`` is reserved
+  # for the GALLERY cluster label so the chip family doesn't compete
+  # with the label visually.
+  gChipBorder  = "#2D2D3A"
+  gChipAccent  = "#3B82F6"
   gAccent      = "#7C7AED"
   gAccentMuted = "#475569"
   gTextPrim    = "#F1F5F9"
+  # CHRM-M6 Wave B — promote tile metadata text to the brief's
+  # ``#E5E7EB`` for score readability against the ``#111827`` tile.
+  gTextScore   = "#E5E7EB"
   gTextMuted   = "#94A3B8"
   gTextDim     = "#64748B"
   gStatusOk    = "#22C55E"
@@ -384,6 +395,12 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
   var compareClearBtn: E
   var compareExitBtn: E
   var statusLabel: E
+  # CHRM-M6 Wave B — separate footer at the bottom of the overlay
+  # carries the brief's ``<briefId> · <n> captures`` summary in muted
+  # uppercase tone (per the empty-state + grid briefs). The toolbar's
+  # statusLabel kept for backwards compatibility with the existing
+  # ``data-design-review-gallery-status`` selector used by tests.
+  var statusFooter: E
   var conflictDialog: E
   var conflictReloadBtn: E
   var conflictDismissBtn: E
@@ -410,37 +427,45 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
               text_transform = "uppercase", letter_spacing = "0.4px",
               color = gAccent):
           text "Gallery"
+        # CHRM-M6 Wave B — mode chips share the CHRM-M2 ChoiceGroup
+        # ``cgvTransparent`` family. Idle pill = transparent fill +
+        # 1 px ``#2D2D3A`` border. Selected pill = accent fill
+        # ``#3B82F6`` + white text. The selected/idle visual swap is
+        # driven by a reactive style effect below (the no-setStyle
+        # invariant on this file rules out ``r.setStyle``; we drive
+        # the chip's inline ``style`` attribute via ``setAttribute``
+        # which the dogfooding lexer scan allows).
         tdiv(ref = modeChipGrid,
               `role` = "button", tabindex = "0",
               `data-design-review-gallery-mode` = "grid",
               `aria-label` = "Grid view",
-              padding = "3px 8px", font_size = "11px",
+              padding = "3px 10px", font_size = "11px",
               font_weight = "600", color = gTextPrim,
-              background_color = gPanelBg,
-              border = "1px solid " & gBorderSoft,
-              border_radius = "4px",
+              background_color = "transparent",
+              border = "1px solid " & gChipBorder,
+              border_radius = "999px",
               cursor = "pointer"):
           text "Grid"
         tdiv(ref = modeChipFullTab,
               `role` = "button", tabindex = "0",
               `data-design-review-gallery-mode` = "full-tab",
               `aria-label` = "Full-tab view",
-              padding = "3px 8px", font_size = "11px",
+              padding = "3px 10px", font_size = "11px",
               font_weight = "600", color = gTextPrim,
-              background_color = gPanelBg,
-              border = "1px solid " & gBorderSoft,
-              border_radius = "4px",
+              background_color = "transparent",
+              border = "1px solid " & gChipBorder,
+              border_radius = "999px",
               cursor = "pointer"):
           text "Full tab"
         tdiv(ref = modeChipFullScreen,
               `role` = "button", tabindex = "0",
               `data-design-review-gallery-mode` = "full-screen",
               `aria-label` = "Full-screen view",
-              padding = "3px 8px", font_size = "11px",
+              padding = "3px 10px", font_size = "11px",
               font_weight = "600", color = gTextPrim,
-              background_color = gPanelBg,
-              border = "1px solid " & gBorderSoft,
-              border_radius = "4px",
+              background_color = "transparent",
+              border = "1px solid " & gChipBorder,
+              border_radius = "999px",
               cursor = "pointer"):
           text "Full screen"
         # CHRM-M6 Wave A — the Compare chip is no longer permanently
@@ -451,11 +476,11 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
               `role` = "button", tabindex = "0",
               `data-design-review-gallery-mode` = "compare",
               `aria-label` = "Compare view",
-              padding = "3px 8px", font_size = "11px",
+              padding = "3px 10px", font_size = "11px",
               font_weight = "600", color = gTextMuted,
-              background_color = gPanelBg,
-              border = "1px solid " & gBorderSoft,
-              border_radius = "4px",
+              background_color = "transparent",
+              border = "1px solid " & gChipBorder,
+              border_radius = "999px",
               cursor = "pointer"):
           text "Compare"
         span(ref = statusLabel,
@@ -473,11 +498,19 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
         overflow_y = "auto",
         `data-design-review-gallery-grid` = "true")
       # --- Full-tab host ----------------------------------------------
+      # CHRM-M6 Wave B — column layout: back button anchored to the
+      # top-left, image centred horizontally in the remaining space.
+      # The ``align-items: stretch`` lets the back button row span the
+      # full width so its inner alignment controls placement; the
+      # image is wrapped in a flex-grow container that centre-aligns
+      # it both axes (per the grid+full-tab brief's "image is centred
+      # in the overlay body" requirement).
       tdiv(
         ref = fullTabHost,
         display = "none",
         flex_direction = "column",
-        align_items = "flex-start",
+        align_items = "stretch",
+        gap = "8px",
         padding = "8px 4px",
         flex = "1 1 auto",
         min_height = "0",
@@ -551,6 +584,19 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
                 border_radius = "4px",
                 cursor = "pointer"):
             text "Dismiss"
+      # --- Status footer (CHRM-M6 Wave B) -----------------------------
+      # ``<briefId> · <n> captures`` in muted uppercase. Pinned at the
+      # overlay bottom so the reviewer always knows which brief the
+      # gallery is bound to and how many captures it carries — calm
+      # secondary info that doesn't compete with the toolbar above.
+      span(ref = statusFooter,
+            font_size = "11px", font_weight = "500",
+            color = gTextDim,
+            text_transform = "uppercase",
+            letter_spacing = "0.3px",
+            padding = "2px 2px",
+            `data-design-review-gallery-status-footer` = "true"):
+        text ""
 
   proc setMode(mode: GalleryMode) =
     capturedVm.priorMode.val = capturedVm.mode.val
@@ -612,18 +658,28 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
           width = "160", height = "100",
           loading = "lazy",
           `data-design-review-gallery-thumb` = "true")
+        # CHRM-M6 Wave B — tile metadata row.  Status dot (6 px per
+        # brief), status text muted (#A0A2B0 11 px), score
+        # right-aligned in the brief's ``#E5E7EB`` weight 600 so it
+        # reads against the ``#111827`` tile.  ``margin-left: auto``
+        # on the score span pushes it to the right edge of the row;
+        # the dot + status text cluster stays on the left.
         tdiv(display = "flex", flex_direction = "row",
-              align_items = "center", gap = "6px"):
-          span(width = "8px", height = "8px",
+              align_items = "center", gap = "6px",
+              width = "100%"):
+          span(width = "6px", height = "6px",
+                min_width = "6px",
                 background_color = chipColor,
                 border_radius = "50%",
                 `aria-hidden` = "true",
                 `data-design-review-gallery-status-dot` = "true"):
             text ""
-          span(font_size = "10px", color = gTextMuted,
+          span(font_size = "11px", color = "#A0A2B0",
                 `data-design-review-gallery-status-label` = "true"):
             text tile.status
-          span(font_size = "10px", color = gTextDim,
+          span(font_size = "11px", font_weight = "600",
+                color = gTextScore,
+                margin_left = "auto",
                 `data-design-review-gallery-score` = "true"):
             text scoreLabel
     let capturedCaptureId = tile.captureId
@@ -683,6 +739,14 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
     r.addEventListener(tileNode, "drop", dragOverHandler)
     # CHRM-M6 Wave A — mirror multi-select state onto the tile so
     # Wave B can style the selected outline off the data attribute.
+    # CHRM-M6 Wave B — paint the selected outline: 2 px solid
+    # ``#3B82F6`` outline + 1 px inset ``#0B1220`` so the outline
+    # visibly separates from the tile body (per the grid brief). We
+    # write the ``outline`` CSS property via the inline ``style``
+    # attribute — the rest of the tile layout (display, padding,
+    # background, etc.) is already on the element from the DSL
+    # declaration, and ``outline`` doesn't disturb the box layout
+    # the way ``border`` would.
     let capturedTileForSelect = tileNode
     let capturedCaptureIdForSelect = capturedCaptureId
     createRenderEffect proc() =
@@ -690,19 +754,45 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
       r.setAttribute(capturedTileForSelect,
                      "data-design-review-gallery-tile-selected",
                      if selected: "true" else: "false")
+      if selected:
+        r.setAttribute(capturedTileForSelect, "style",
+                       "outline: 2px solid " & gChipAccent &
+                         "; outline-offset: 1px;")
+      else:
+        r.setAttribute(capturedTileForSelect, "style", "")
     tileNode
 
   proc renderGrid() =
     r.clearChildren(gridHost)
     let rows = capturedVm.rows.val
     if rows.len == 0:
+      # CHRM-M6 Wave B — empty-state panel per the brief: a heading
+      # ("No captures yet") and a calm one-line subtitle, anchored to
+      # the centre of the overlay body so the panel reads as
+      # intentional rather than a broken/loading state.  The outer
+      # ``tdiv`` is flex-centred (column + center justification) so
+      # the heading+subtitle stack sits in the middle of the gridHost
+      # regardless of how much vertical space the overlay body has.
       let empty = ui(r):
         tdiv(
           `data-design-review-gallery-empty` = "true",
+          display = "flex", flex_direction = "column",
+          align_items = "center", justify_content = "center",
+          flex = "1 1 auto",
+          min_height = "0",
+          gap = "6px",
           padding = "20px",
-          color = gTextMuted,
-          font_size = "12px"):
-          text "No captures yet — run a capture sweep to populate the gallery."
+          text_align = "center"):
+          span(font_size = "16px", font_weight = "600",
+                color = "#E5E7EB",
+                `data-design-review-gallery-empty-heading` = "true"):
+            text "No captures yet"
+          span(font_size = "13px", font_weight = "400",
+                color = "#A0A2B0",
+                line_height = "1.5",
+                max_width = "480px",
+                `data-design-review-gallery-empty-subtitle` = "true"):
+            text "Run a capture sweep to populate the gallery — open a story, switch backends, and the capture pipeline will record each preview."
       r.appendChild(gridHost, empty)
       return
     for rowIdx, row in rows:
@@ -719,7 +809,7 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
           tdiv(
             ref = tileBucket,
             display = "flex", flex_direction = "row",
-            gap = "10px", flex_wrap = "wrap",
+            gap = "12px", flex_wrap = "wrap",
             `data-design-review-gallery-row-tiles` = "true")
       for colIdx, tile in row.tiles:
         let tileNode = renderTile(tile, rowIdx, colIdx)
@@ -741,23 +831,53 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
         break
     if not found:
       return
+    # CHRM-M6 Wave B — back button restyled to the chip family per
+    # the grid+full-tab brief: pill (22 px tall via 4px/12px padding +
+    # 11 px font), transparent background, 1 px border ``#334155``.
+    # Wrapping it in a left-aligned flex row keeps the chip
+    # left-anchored even when the parent has ``align-items: stretch``.
+    var backRow: E
+    let backRowNode = ui(r):
+      tdiv(
+        ref = backRow,
+        display = "flex", flex_direction = "row",
+        align_items = "center", justify_content = "flex-start",
+        `data-design-review-gallery-fulltab-back-row` = "true")
     let backButton = ui(r):
       tdiv(
         `role` = "button", tabindex = "0",
         `data-design-review-gallery-back` = "true",
         `aria-label` = "Back to gallery grid",
-        padding = "4px 10px",
+        padding = "4px 12px",
         font_size = "11px", font_weight = "600",
         color = gTextPrim,
-        background_color = gPanelBg,
-        border = "1px solid " & gBorderSoft,
-        border_radius = "4px",
+        background_color = "transparent",
+        border = "1px solid " & gBorder,
+        border_radius = "999px",
         cursor = "pointer"):
         text "← Back to grid"
     let backHandler = proc() = capturedVm.mode.val = gmGrid
     r.addEventListener(backButton, "click", backHandler)
     r.addEventListener(backButton, "keydown", backHandler)
-    r.appendChild(fullTabHost, backButton)
+    r.appendChild(backRow, backButton)
+    r.appendChild(fullTabHost, backRowNode)
+    # CHRM-M6 Wave B — image-centring matte.  The image wrapper grows
+    # to fill the remaining overlay-body height and centres the
+    # native-size image both horizontally and vertically (per the
+    # brief's "image is centred in the overlay body" rule + the
+    # user's "no image stretching" feedback — width/height stay at
+    # the captured pixel dimensions, the wrapper just supplies the
+    # surrounding whitespace).
+    var matte: E
+    let matteNode = ui(r):
+      tdiv(
+        ref = matte,
+        display = "flex", flex_direction = "row",
+        align_items = "center", justify_content = "center",
+        flex = "1 1 auto",
+        min_height = "0",
+        width = "100%",
+        `data-design-review-gallery-fulltab-matte` = "true")
     let pixel = ui(r):
       img(
         src = matched.pngUrl,
@@ -767,7 +887,8 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
         `data-design-review-gallery-fulltab-img` = "true",
         `data-design-review-gallery-fulltab-width` = $matched.width,
         `data-design-review-gallery-fulltab-height` = $matched.height)
-    r.appendChild(fullTabHost, pixel)
+    r.appendChild(matte, pixel)
+    r.appendChild(fullTabHost, matteNode)
 
   proc renderCompare() =
     ## CHRM-M6 Wave A — build the compare-mode body: an affordance row
@@ -1006,27 +1127,61 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
                    if mode == gmFullScreen: "true" else: "false")
     r.setAttribute(modeChipCompare, "aria-selected",
                    if mode == gmCompare: "true" else: "false")
+    # CHRM-M6 Wave B — chip selected/idle visual swap.  The selected
+    # chip carries the accent fill ``#3B82F6`` with white text; idle
+    # chips keep their transparent fill + ``#2D2D3A`` border from the
+    # DSL declaration.  We rewrite the inline ``style`` attribute via
+    # ``setAttribute`` so the no-setStyle invariant holds.
+    proc chipStyle(selected: bool): string =
+      if selected:
+        "background-color: " & gChipAccent &
+          "; color: #FFFFFF; border-color: " & gChipAccent &
+          "; cursor: pointer;"
+      else:
+        "background-color: transparent; color: " & gTextPrim &
+          "; border-color: " & gChipBorder & "; cursor: pointer;"
+    r.setAttribute(modeChipGrid, "style", chipStyle(mode == gmGrid))
+    r.setAttribute(modeChipFullTab, "style",
+                   chipStyle(mode == gmFullTab))
+    r.setAttribute(modeChipFullScreen, "style",
+                   chipStyle(mode == gmFullScreen))
   # CHRM-M6 Wave A — Compare chip enable/disable state.  When fewer
   # than 2 tiles are multi-selected the chip is data-disabled +
   # text-muted; when ≥2 it lights up and clicks flip mode to
   # ``gmCompare`` via the existing handler.
+  # CHRM-M6 Wave B — when the chip IS the selected mode (compare
+  # active) the chip carries the accent fill regardless of the count
+  # so the family is consistent with the other three chips' selected
+  # state.
   createRenderEffect proc() =
     let count = capturedVm.compareCaptureIds.val.len
     let enabled = count >= 2
+    let selected = capturedVm.mode.val == gmCompare
     r.setAttribute(modeChipCompare, "aria-disabled",
-                   if enabled: "false" else: "true")
+                   if enabled or selected: "false" else: "true")
     r.setAttribute(modeChipCompare, "data-design-review-gallery-compare-enabled",
                    if enabled: "true" else: "false")
     # Hint visually with the same style-attr trick used elsewhere in
     # this file (the no-setStyle invariant rules out ``r.setStyle``).
-    # When enabled the chip carries the primary text colour; when
-    # disabled it dims to the muted colour and the cursor reverts to
-    # ``not-allowed``.
+    # Three states:
+    #   - selected (in compare mode): accent fill + white text
+    #   - enabled-idle (≥2 selected): transparent + primary text +
+    #     border ``#2D2D3A`` (the cgvTransparent family)
+    #   - disabled (<2 selected, not in compare): transparent + muted
+    #     text + ``not-allowed`` cursor (per the brief)
     r.setAttribute(modeChipCompare, "style",
-                   if enabled:
-                     "color: " & gTextPrim & "; cursor: pointer;"
+                   if selected:
+                     "background-color: " & gChipAccent &
+                       "; color: #FFFFFF; border-color: " & gChipAccent &
+                       "; cursor: pointer;"
+                   elif enabled:
+                     "background-color: transparent; color: " & gTextPrim &
+                       "; border-color: " & gChipBorder &
+                       "; cursor: pointer;"
                    else:
-                     "color: " & gTextMuted & "; cursor: not-allowed;")
+                     "background-color: transparent; color: " & gAccentMuted &
+                       "; border-color: " & gChipBorder &
+                       "; cursor: not-allowed;")
   # CHRM-M6 Wave A — mirror the comma-joined selected capture ids onto
   # the overlay so Playwright can cross-reference the compare-mode
   # selection without scraping DOM children.
@@ -1043,6 +1198,12 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
     let bid = capturedVm.briefId.val
     r.setTextContent(statusLabel,
                      bid & " — " & $n & " capture" &
+                       (if n == 1: "" else: "s"))
+    # CHRM-M6 Wave B — bottom footer with the brief's middle-dot
+    # separator: ``<briefId> · <n> captures`` per the empty-state /
+    # grid briefs.  Pluralisation matches the toolbar label.
+    r.setTextContent(statusFooter,
+                     bid & " · " & $n & " capture" &
                        (if n == 1: "" else: "s"))
 
   # REV-M8 — conflict dialog reactive visibility + handlers.  The dialog

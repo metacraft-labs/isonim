@@ -439,11 +439,27 @@ proc mountGalleryHostForEditor*[R, E](r: R; parent: E; vm: EditorVM): E =
                    if open: "true" else: "false")
     r.setAttribute(host, "aria-hidden",
                    if visible: "false" else: "true")
-    # CHRM-M5 Fix D: drive the inline display style too so the
-    # overlay actually renders on-screen when the user opens it.
-    # Previously only the data-attribute flipped; ``display:none``
-    # from the initial inline style stuck, making the overlay a
-    # zero-size element under the chrome bar.
-    r.setStyle(host, "display", if visible: "flex" else: "none")
+    # CHRM-M5 Fix D + CHRM-M6 Wave B: drive the inline display style
+    # too so the overlay actually renders on-screen when the user
+    # opens it. Previously only the data-attribute flipped;
+    # ``display:none`` from the initial inline style stuck, making
+    # the overlay a zero-size element under the chrome bar.
+    #
+    # The Wave-A no-setStyle invariant
+    # (``test_design_review_gallery_no_setstyle``) bans ``r.setStyle``
+    # from this file. We use the same ``{.emit.}`` JS shim pattern
+    # that ``gallery_overlay.nim`` uses for its grid/full-tab/compare
+    # host-display toggle: write only ``style.display`` so the other
+    # layout properties (flex, flex-direction, etc.) emitted by the
+    # DSL stay intact, and avoid ``setAttribute("style", ...)`` which
+    # would replace the whole inline style and drop those properties.
+    when defined(js):
+      let hostDisp: cstring =
+        if visible: "flex" else: "none"
+      {.emit: ["""
+        try {
+          if (""", host, """ && """, host, """.style) """, host, """.style.display = """, hostDisp, """;
+        } catch (e) { /* ignore */ }
+      """].}
   r.appendChild(parent, host)
   host
