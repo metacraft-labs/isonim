@@ -192,16 +192,24 @@ proc closePopup*(vm: ChoiceGroupVM) =
 # --------------------------------------------------------------------------- #
 
 const
-  # Container chrome (used only by ``cgvFilled``).
+  # Container chrome — the segmented-control "trough" that hosts the
+  # pills. This is the canonical settings_app ChoiceItem look (see
+  # isonim-examples/settings_app/gpui/leaves.nim::choiceLeaf): a dark
+  # filled container with 2px padding around inset pills. Used by
+  # BOTH ``cgvFilled`` and ``cgvTransparent`` — the chrome bar
+  # clusters all render as ChoiceItem-style segmented controls.
   cgGroupBg     = "#15151c"
   cgGroupBorder = "#2d2d3a"
 
-  # Pill chrome — matches filterBar exactly.
-  cgPillBg        = "transparent"
-  cgPillBgOn      = "#3B82F6"  # indigo accent
-  cgPillBorder    = "#2d2d3a"  # inactive subtle outline (ColorChipBorder)
-  cgPillBorderOn  = "#3B82F6"  # active outline matches fill
-  cgPillBorderDis = "#1F2937"  # disabled outline — even quieter
+  # Pill chrome — matches settings_app ChoiceItem (GPUI choiceLeaf).
+  # Inactive segments carry a subtle fill (#22232e) — visibly lighter
+  # than the trough (#15151c) so the cluster reads as a row of pills,
+  # not a flat trough. Active uses the demo's accent (#7c7aed).
+  cgPillBg        = "#22232e"  # inactive subtle fill against the trough
+  cgPillBgOn      = "#7c7aed"  # active accent (matches GPUI choiceLeaf)
+  cgPillBorder    = "transparent"  # nested in the trough, no extra outline
+  cgPillBorderOn  = "#7c7aed"  # active outline matches fill
+  cgPillBorderDis = "transparent"
   cgTextDim       = "#A0A2B0"  # inactive muted (readable, not greyed)
   cgTextOn        = "#FFFFFF"  # active text
   cgTextPrim      = "#F1F5F9"  # primary (chevron trigger label)
@@ -263,24 +271,19 @@ proc mountSegmentedChoice*[R, E](r: R; parent: E; vm: ChoiceGroupVM;
 
   var pills: seq[E] = @[]
 
-  # CHRM-M6 Wave B: container chrome differs between variants, but the
-  # pill chrome below is IDENTICAL for both. ``cgvTransparent`` is the
-  # chrome-bar variant — the pills sit directly on the toolbar surface,
-  # so the container has no background / border / padding. ``cgvFilled``
-  # adds a 1 px hairline + 2 px inner padding around the pill row so the
-  # whole cluster reads as one bordered segmented control (the
-  # in-story / gallery look). Gap between pills is the filterBar's 6 px
-  # in both variants — equal pill widths + a small gap give the
-  # canonical filterBar rhythm.
-  let containerBg =
-    if variant == cgvTransparent: "transparent" else: cgGroupBg
+  # Both variants now render as settings_app ChoiceItem (GPUI choiceLeaf)
+  # segmented controls: a dark trough with inset pills. ``cgvTransparent``
+  # variant drops the outer border (so multiple clusters on a chrome bar
+  # don't add up to a heavy 1px-border grid); ``cgvFilled`` keeps the
+  # 1px hairline for standalone in-story usage. The trough fill and
+  # 2px inner padding are present in both — that's what gives the
+  # cluster its ChoiceItem reading.
+  let containerBg = cgGroupBg
   let containerBorder =
     if variant == cgvTransparent: "none" else: "1px solid " & cgGroupBorder
-  let containerRadius =
-    if variant == cgvTransparent: "0" else: "8px"
-  let containerGap = "6px"  # filterBar gap
-  let containerPadding =
-    if variant == cgvTransparent: "0" else: "2px"
+  let containerRadius = "6px"  # matches ChoiceItem trough radius
+  let containerGap = "4px"     # matches GPUI choiceLeaf segment gap
+  let containerPadding = "2px"
   let variantAttr =
     if variant == cgvTransparent: "transparent" else: "filled"
 
