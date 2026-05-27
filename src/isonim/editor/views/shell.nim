@@ -1601,21 +1601,76 @@ proc renderPreviewPane*[R, E](r: R; vm: EditorVM): E =
   pane
 
 proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
-  ## Right panel: property inspector + agent chat.
-  ## Fully inline except for tab active-state styling.
-  result = ui(r):
-    tdiv(class = "editor-inspector",
-          display = "flex", flex_direction = "column",
-          # M-EVP-14 Wave Chrome CR-3: narrowed inspector default
-          # (280 → 220 px) and floor (240 → 200 px) so the right rail
-          # stops competing with the preview pane for visual focus.
-          width = "220px", min_width = "200px", max_width = "420px",
-          height = "100%",
-          background_color = bgSidebar,
-          border_left = "1px solid " & borderStrong,
-          overflow_x = "hidden"):
+  ## Right sidebar — a SINGLE tabbed panel that hosts both the manual
+  ## property inspector ("Manual" tab) and the AI assistant chat panel
+  ## ("Assistant" tab). The user toggles between them at the top of the
+  ## sidebar; both tabs are always available regardless of mode or
+  ## story selection.
+  ##
+  ## Structure:
+  ##   right-panel container (220–420 px width, full height)
+  ##   ├── top tab bar (Manual / Assistant)
+  ##   └── tab content (reactive on ``vm.rightSidebarTab.val``)
+  ##       ├── Manual tab — 12 sub-section tabs + property editor /
+  ##       │   "Select an element to inspect" empty state.
+  ##       └── Assistant tab — ``renderChatPanel`` content sized to
+  ##           fill the remaining sidebar height.
+  ##
+  ## The ``data-test-id="property-panel"`` attribute is stamped on the
+  ## sidebar root so e2e tests resolve the sidebar regardless of which
+  ## tab is active.
+  let manualTabBtn = ui(r):
+    tdiv(`role` = "tab", tabindex = "0",
+         `data-sidebar-tab` = "manual",
+         `aria-label` = "Switch right sidebar to Manual edits",
+         onclick = proc() = vm.setRightSidebarTab(rstManual),
+         onkeydown = proc() = vm.setRightSidebarTab(rstManual),
+         display = "flex", align_items = "center", justify_content = "center",
+         padding = "6px 16px", border_radius = "6px",
+         font_size = "12px", font_weight = "500",
+         cursor = "pointer", white_space = "nowrap",
+         transition = "background-color 0.12s, color 0.12s"):
+      text "Manual"
+  let assistantTabBtn = ui(r):
+    tdiv(`role` = "tab", tabindex = "0",
+         `data-sidebar-tab` = "assistant",
+         `aria-label` = "Switch right sidebar to AI Assistant",
+         onclick = proc() = vm.setRightSidebarTab(rstAssistant),
+         onkeydown = proc() = vm.setRightSidebarTab(rstAssistant),
+         display = "flex", align_items = "center", justify_content = "center",
+         padding = "6px 16px", border_radius = "6px",
+         font_size = "12px", font_weight = "500",
+         cursor = "pointer", white_space = "nowrap",
+         transition = "background-color 0.12s, color 0.12s"):
+      text "Assistant"
+  block:
+    let captManual = manualTabBtn
+    let captAssistant = assistantTabBtn
+    createRenderEffect proc() =
+      let tab = vm.rightSidebarTab.val
+      let manualActive = tab == rstManual
+      let assistantActive = tab == rstAssistant
+      r.setAttribute(captManual, "aria-selected",
+        if manualActive: "true" else: "false")
+      r.setStyle(captManual, "background-color",
+        if manualActive: accent else: "transparent")
+      r.setStyle(captManual, "color",
+        if manualActive: textPrimary else: textMuted)
+      r.setAttribute(captAssistant, "aria-selected",
+        if assistantActive: "true" else: "false")
+      r.setStyle(captAssistant, "background-color",
+        if assistantActive: accent else: "transparent")
+      r.setStyle(captAssistant, "color",
+        if assistantActive: textPrimary else: textMuted)
 
-      # Section tabs
+  # Manual tab body — the inspector (12 sub-section tabs + property
+  # editor / empty state).
+  let manualBody = ui(r):
+    tdiv(`data-sidebar-tab-panel` = "manual",
+         display = "flex", flex_direction = "column",
+         flex = "1", min_height = "0", overflow_x = "hidden"):
+
+      # 12 inspector sub-section tabs (Layout / Size / Space / …).
       tdiv(class = "editor-tabbar",
             display = "flex", align_items = "stretch",
             height = "36px", min_height = "36px",
@@ -1697,52 +1752,62 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
           span(font_size = "11px", color = textDim, margin_top = "4px"):
             text "Click any element in the preview"
 
-      # Agent chat area
-      tdiv(display = "flex", flex_direction = "column",
-            height = "160px", min_height = "160px",
-            border_top = "1px solid " & borderStrong,
-            background_color = bgSidebar):
+  # Assistant tab body — wraps ``renderChatPanel`` so the chat panel
+  # fills the remaining sidebar height beneath the tab bar. The chat
+  # panel renders its own outer container with width/height styling;
+  # we let the chat panel manage its sizing via ``bindRightPanelWidth``
+  # while the wrapper provides the flex slot.
+  let chatPanelEl = renderChatPanel[R, E](r, vm)
+  let assistantBody = ui(r):
+    tdiv(`data-sidebar-tab-panel` = "assistant",
+         display = "flex", flex_direction = "column",
+         flex = "1", min_height = "0", min_width = "0",
+         overflow_x = "hidden")
+  r.appendChild(assistantBody, chatPanelEl)
 
-        # Chat header
-        tdiv(display = "flex", align_items = "center", gap = "8px",
-              padding = "10px 12px",
-              border_bottom = "1px solid " & borderFaint):
-          span(font_size = "13px"):
-            text "\xE2\x9C\xA8"
-          span(font_size = "11px", font_weight = "600",
-                color = textSecondary, text_transform = "uppercase",
-                letter_spacing = "0.5px"):
-            text "AI Assistant"
+  # Top-level tab bar (Manual / Assistant). Distinct from the
+  # 12-sub-section bar that lives inside the Manual body.
+  var tabBar: E
+  let tabBarEl = ui(r):
+    tdiv(ref = tabBar,
+         `data-sidebar-tab-bar` = "true",
+         `role` = "tablist",
+         display = "flex", align_items = "center", gap = "4px",
+         padding = "8px 10px",
+         border_bottom = "1px solid " & border,
+         min_height = "44px")
+  r.appendChild(tabBar, manualTabBtn)
+  r.appendChild(tabBar, assistantTabBtn)
 
-        # Chat messages area
-        tdiv(flex = "1", overflow_y = "auto", padding = "12px"):
-          tdiv(display = "flex", align_items = "center",
-                justify_content = "center", height = "100%"):
-            span(font_size = "12px", color = textDim, font_style = "italic"):
-              text "Ask the AI to modify components\xE2\x80\xA6"
+  result = ui(r):
+    tdiv(class = "editor-inspector",
+          `data-test-id` = "property-panel",
+          display = "flex", flex_direction = "column",
+          # M-EVP-14 Wave Chrome CR-3: narrowed inspector default
+          # (280 → 220 px) and floor (240 → 200 px) so the right rail
+          # stops competing with the preview pane for visual focus.
+          width = "220px", min_width = "200px", max_width = "420px",
+          height = "100%",
+          background_color = bgSidebar,
+          border_left = "1px solid " & borderStrong,
+          overflow_x = "hidden")
 
-        # Chat input row
-        tdiv(display = "flex", align_items = "center", gap = "8px",
-              padding = "8px 12px 12px 12px"):
-          input(class = "editor-input",
-                flex = "1", height = "34px",
-                background_color = bgSurface,
-                border = "1px solid " & border,
-                border_radius = "8px", padding = "0 12px",
-                font_size = "13px", color = textPrimary,
-                outline = "none",
-                placeholder = "Ask the AI\xE2\x80\xA6")
-          tdiv(display = "flex", align_items = "center",
-                `role` = "button", tabindex = "0",
-                `aria-label` = "Send chat prompt",
-                onclick = proc() = discard vm.sendAgentPrompt(),
-                onkeydown = proc() = discard vm.sendAgentPrompt(),
-                justify_content = "center",
-                width = "34px", height = "34px",
-                border_radius = "8px", font_size = "16px", font_weight = "700",
-                background_color = accent, color = textPrimary,
-                cursor = "pointer", transition = "background-color 0.15s"):
-            text "\xE2\x86\x91"
+  let sidebarRoot = result
+  r.appendChild(sidebarRoot, tabBarEl)
+  r.appendChild(sidebarRoot, manualBody)
+  r.appendChild(sidebarRoot, assistantBody)
+
+  # Reactively swap visibility of the two tab bodies.
+  block:
+    let captManual = manualBody
+    let captAssistant = assistantBody
+    createRenderEffect proc() =
+      let tab = vm.rightSidebarTab.val
+      r.setStyle(captManual, "display",
+        if tab == rstManual: "flex" else: "none")
+      r.setStyle(captAssistant, "display",
+        if tab == rstAssistant: "flex" else: "none")
+
   r.bindRightPanelWidth(result, vm)
 
 proc renderCommandPalette[R, E](r: R; vm: EditorVM): E =
@@ -2472,11 +2537,15 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
   let pagePreviewEl = renderPagePreview[R, E](r, vm)
   let foundationsEl = renderFoundationsPage[R, E](r, vm)
   let vectorEditorEl = renderVectorEditor[R, E](r, vm)
-  let chatEl = renderChatPanel[R, E](r, vm) # ever-present on all views
-  # TBAR-M3: stable selector for the right-side property/AI-assistant
-  # panel so the browser-level surface-switch test can assert
-  # mount/unmount without relying on the renderer-specific class name.
-  r.setAttribute(chatEl, "data-test-id", "property-panel")
+  # Right sidebar — a SINGLE tabbed panel hosting both the manual
+  # property inspector and the AI assistant chat. Per the user's
+  # restructure, the AI assistant is no longer a separate column; it
+  # is a tab inside the right sidebar so logically related editing
+  # affordances (manual property edits + AI-driven changes) live
+  # together. The ``data-test-id="property-panel"`` attribute is
+  # stamped inside ``renderInspectorPanel`` on the sidebar root so
+  # the existing e2e tests still resolve it.
+  let inspectorEl = renderInspectorPanel[R, E](r, vm)
 
   # Center column wraps the shared preview chrome bar + the view stack
   # so the toolbar sits above every view. Replaces the previous
@@ -2808,26 +2877,24 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
           r.setTextContent(captSubtitle, subtitle)
 
   # Mount order is the on-screen order (flex row, left to right):
-  #   [sidebar | center column (chrome bar + view stack) | inspector chat]
+  #   [sidebar | center column (chrome bar + view stack) | tabbed right sidebar]
   r.appendChild(shell, sidebarEl)
   r.appendChild(shell, centerColumn)
-  # AIVS-NSO — AI sidebar visibility contract:
-  # The AI Assistant is the user's single point of contact (see the
-  # IsoNim editor spec § "AI Assistant & Design Campaigns").  It must
-  # remain mounted across every surface (Preview/Spec) and every mode
-  # (View/Comment/Edit) so the user can keep talking to the assistant
-  # while iterating on the brief or selecting an item in the
-  # workspace.  The only carve-out left is the ``panels.inspector``
-  # toggle — clicking the Toggle inspector button in the status bar
-  # still collapses the right rail entirely (and re-opening restores
-  # it).
-  #
-  # This replaces the prior TBAR-M3 invariant ("Spec surface has no
-  # property/AI panel by default") and the ``manualEditMode`` carve-
-  # out that hid the chat panel during component Edit mode.  The
-  # center-column overlay below carries the "select an item / switch
-  # to preview" call-to-action so the user always sees an actionable
-  # next step instead of an empty rail.
+  # Right sidebar visibility contract:
+  # The right sidebar is a SINGLE tabbed panel that hosts both the
+  # manual property inspector ("Manual" tab) and the AI assistant
+  # chat ("Assistant" tab). The user toggles between the two at the
+  # top of the sidebar — logically the sidebar is "the editing
+  # surface": you can edit by hand (Manual) or by messaging the
+  # assistant (Assistant). Both tabs are ALWAYS available regardless
+  # of surface (Preview/Spec), mode (View/Comment/Edit), or whether a
+  # story is selected; this preserves the AIVS-NSO invariant that the
+  # AI Assistant is the user's single point of contact and remains
+  # reachable across every workspace state. The only carve-out is the
+  # ``panels.inspector`` toggle — the status-bar Toggle inspector
+  # button still collapses the right rail entirely (re-opening
+  # restores it). The Spec-comment one-shot signal still pulls the
+  # sidebar back into view when a brief comment is submitted.
   let chatOpenedForSpecComment = createSignal(false)
   block:
     let capturedVm = vm
@@ -2844,10 +2911,10 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
     createRenderEffect proc() =
       let want = shouldMount()
       if want and not mounted:
-        r.appendChild(shell, chatEl)
+        r.appendChild(shell, inspectorEl)
         mounted = true
       elif not want and mounted:
-        r.removeChild(shell, chatEl)
+        r.removeChild(shell, inspectorEl)
         mounted = false
   # TBAR-M6: mount the Spec Comment popover at shellRoot so its
   # absolute-positioned overlay layers above the spec pane without
@@ -2863,6 +2930,10 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
         proc(success: bool; reason: string) =
           if success:
             chatOpenedForSpecComment.val = true
+            # Surface the Assistant tab in the right sidebar so the
+            # comment-to-chat flow lands the user on the chat panel
+            # rather than the manual property inspector.
+            vm.setRightSidebarTab(rstAssistant)
           if cb != nil:
             cb(success, reason))
   spec_comment_popover_view.mountCommentPopover[R, E](

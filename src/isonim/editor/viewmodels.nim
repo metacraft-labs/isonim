@@ -188,6 +188,12 @@ type
       ## right-side property panel.
     panels*: Signal[PanelVisibility]
     rightPanelWidth*: Signal[int]
+    rightSidebarTab*: Signal[RightSidebarTab]
+      ## Right-sidebar top-level tab selection. The sidebar is a
+      ## single panel that hosts two tabs — ``rstManual`` (the
+      ## property inspector with its 12 sub-sections) and
+      ## ``rstAssistant`` (the AI chat panel). Defaults to
+      ## ``rstManual``; persistence is per-session only.
     platform*: Signal[Platform]
     viewport*: Signal[PreviewViewport]
     workspacePermissions*: Signal[EditorWorkspacePermissions]
@@ -1844,6 +1850,13 @@ proc togglePanel*(editor: EditorVM; panel: EditorPanel) =
   of epInspector:
     editor.panels.val = PanelVisibility(sidebar: current.sidebar,
                                         inspector: not current.inspector)
+
+proc setRightSidebarTab*(editor: EditorVM; tab: RightSidebarTab) =
+  ## Switch the right sidebar's top-level tab between Manual
+  ## (inspector) and Assistant (chat). Both tabs are always
+  ## available; this writes the active selection.
+  if editor.rightSidebarTab.val != tab:
+    editor.rightSidebarTab.val = tab
 
 func clampRightPanelWidth*(width: int): int =
   # M-EVP-14 Wave Chrome CR-3: lowered the minimum from 240 → 200 so the
@@ -9891,6 +9904,10 @@ proc createEditorVM*(): EditorVM =
   # ~13.5 %) and the preview pane gets ~40 px more focal width. Users
   # can still widen via the resize affordance up to 420 px.
   let rightPanelWidth = createSignal(220)
+  # Right-sidebar top-level tab — Manual (inspector) vs Assistant
+  # (chat). Defaults to Manual; the user toggles between them at
+  # the top of the sidebar. Both tabs are always available.
+  let rightSidebarTab = createSignal(rstManual)
   let platform = createSignal(pbWeb)
   let viewport = createSignal(defaultViewport(pbWeb))
   let workspacePermissions = createSignal(defaultWorkspacePermissions())
@@ -9946,6 +9963,7 @@ proc createEditorVM*(): EditorVM =
     surfaceSig: surfaceSig,
     panels: panels,
     rightPanelWidth: rightPanelWidth,
+    rightSidebarTab: rightSidebarTab,
     platform: platform,
     viewport: viewport,
     workspacePermissions: workspacePermissions,

@@ -2066,6 +2066,16 @@ type
     sidebar*: bool
     inspector*: bool
 
+  # --- Right sidebar tab selection ---
+  # The right sidebar is a single panel that hosts two top-level
+  # tabs: the manual property inspector (with its 12 sub-sections)
+  # and the AI assistant chat panel. The user toggles between them
+  # at the top of the sidebar. Both are always available regardless
+  # of mode / story selection.
+  RightSidebarTab* = enum
+    rstManual          ## inspector / property editor (manual edits)
+    rstAssistant       ## AI assistant chat panel
+
   InspectorControlSlot* = enum
     icsLabel
     icsScrubValue

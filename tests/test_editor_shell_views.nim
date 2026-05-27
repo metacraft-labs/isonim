@@ -147,19 +147,31 @@ suite "Editor Shell Views (M2)":
       dispose()
 
   test "test_inspector_renders_all_sections":
-    ## Inspector shows section tabs and content area
+    ## Inspector renders inside the Manual tab of the tabbed right
+    ## sidebar. Sidebar root structure: [top-tab-bar (Manual/Assistant),
+    ## manualBody, assistantBody]. The Manual body's first child is the
+    ## 12-section sub-tab bar.
     createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createEditorVM()
 
       let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
 
-      # Should have tabs, content, and chat section
+      # Sidebar root: top tab bar + Manual body + Assistant body.
       check panel.children.len >= 3
 
-      # Tabs should expose every inspector section.
-      let tabs = panel.children[0]
-      check tabs.children.len == 12
+      # Top-level tab bar carries the two sidebar tabs.
+      let topTabBar = panel.children[0]
+      check topTabBar.children.len == 2
+      check findByAttr(topTabBar, "data-sidebar-tab", "manual") != nil
+      check findByAttr(topTabBar, "data-sidebar-tab", "assistant") != nil
+
+      # Manual body's first child is the 12-section sub-tab bar.
+      let manualBody = panel.children[1]
+      check manualBody.attributes.getOrDefault("data-sidebar-tab-panel") ==
+        "manual"
+      let sectionTabs = manualBody.children[0]
+      check sectionTabs.children.len == 12
 
       dispose()
 
@@ -261,16 +273,29 @@ suite "Editor Shell Views (M2)":
     # (they use Tailwind scale like p-4, not p-16px)
 
   test "test_chat_section_has_input":
-    ## Agent chat area has input bar and send button
+    ## The AI chat lives inside the right sidebar's Assistant tab.
+    ## Sidebar root: [top-tab-bar, manualBody, assistantBody]; the
+    ## Assistant body wraps the chat panel returned by
+    ## ``renderChatPanel``.
     createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createEditorVM()
 
       let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
 
-      # Chat section is the last child
-      let chatSection = panel.children[^1]
-      check chatSection.children.len >= 2 # header + input row
+      # Assistant body is the last child of the sidebar root.
+      let assistantBody = panel.children[^1]
+      check assistantBody.attributes.getOrDefault(
+        "data-sidebar-tab-panel") == "assistant"
+      # It wraps the chat panel — which carries header + messages +
+      # input area, so the assistant tree exposes at least the agent
+      # prompt input.
+      let promptInput = findByAttr(assistantBody, "aria-label",
+        "Agent prompt")
+      check promptInput != nil
+      let sendBtn = findByAttr(assistantBody, "aria-label",
+        "Send agent prompt")
+      check sendBtn != nil
 
       dispose()
 
