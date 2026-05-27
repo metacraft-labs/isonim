@@ -37,6 +37,22 @@ type
   GalleryMode* = enum
     gmGrid, gmFullTab, gmFullScreen, gmCompare
 
+  GalleryDefect* = object
+    ## One reviewer-agent finding parsed out of
+    ## ``parsed_scores.previews[<previewId>].defects[]``.  Surfaced in
+    ## the per-tile detail panel when the user clicks the score chip.
+    id*: string         ## stable defect id (e.g. ``"ios-overscaled-content"``)
+    summary*: string    ## human-readable defect description
+    evidence*: string   ## optional file path / URL pointing at the screenshot
+    severity*: string   ## ``"ok"``, ``"warn"``, ``"fail"``, etc.
+
+  GalleryScoreDimension* = object
+    ## One per-dimension entry from
+    ## ``parsed_scores.previews[<previewId>].scores`` — e.g.
+    ## ``{"chrome": 8, "rendering": 6}`` parses into two entries.
+    name*: string
+    score*: float
+
   GalleryTile* = object
     captureId*: string
     runId*: string
@@ -45,6 +61,13 @@ type
     status*: string
     pngUrl*: string  ## /api/design-review/get-capture-png?id=<capture_id>
     width*, height*: int
+    # User-requested follow-up — real agent scores + defects, parsed
+    # out of ``parsed_scores.previews[<previewId>]`` and projected onto
+    # the tile so the score chip can render the real value and a click
+    # can open the detail panel populated with the agent's findings.
+    scoreStatus*: string                 ## ``"ok"`` / ``"warn"`` / ``"fail"``
+    scoreBreakdown*: seq[GalleryScoreDimension]
+    defects*: seq[GalleryDefect]
 
   GalleryRow* = object
     previewId*: string
@@ -106,6 +129,22 @@ type
     # REV-M8 — optimistic-concurrency conflict surface.  Non-empty
     # ``conflict.currentRow`` => render the resolution dialog.
     conflict*: Signal[LayoutConflict]
+    # User-requested follow-up — filter the visible grid by the
+    # preview-id the editor is currently navigated to.  When non-empty
+    # the gallery only shows tiles whose ``previewId == currentPreviewId``;
+    # when empty (default) the grid shows every tile in ``tiles`` so the
+    # historical "open everything" behaviour is preserved for tests that
+    # don't drive a current-preview filter.
+    #
+    # Filter key decision: preview-id ONLY (not preview-id + viewport).
+    # The preview-id already encodes (story, backend); the viewport
+    # label is a sub-axis the user expects to see compared on the same
+    # row when they're reviewing "this story on this backend".
+    currentPreviewId*: Signal[string]
+    # User-requested follow-up — when non-empty, the detail panel is
+    # surfaced for the matching capture.  Clicking a tile's score chip
+    # sets this; the close chip clears it.
+    selectedDetailCaptureId*: Signal[string]
 
 # --------------------------------------------------------------------------- #
 #  Pure helpers (testable independently of the reactive plumbing).
@@ -237,6 +276,8 @@ proc createGalleryVM*(briefId: string;
     ownerUserId: createSignal(""),
     layoutName: createSignal("default"),
     conflict: createSignal(LayoutConflict()),
+    currentPreviewId: createSignal(""),
+    selectedDetailCaptureId: createSignal(""),
   )
   let capturedVm = vm
   # REV-M8 follow-up — ``effectiveTiles`` overlays the drag-reorder
@@ -245,8 +286,25 @@ proc createGalleryVM*(briefId: string;
   # immediately, before any server round-trip.  ``markSaved`` /
   # ``applyLayoutJson`` continue to mutate ``pendingLayout`` directly;
   # this memo re-evaluates against the new state automatically.
+  #
+  # User-requested follow-up — when ``currentPreviewId`` is non-empty
+  # the memo filters the canonical tiles down to only the tiles
+  # matching that preview-id BEFORE applying the pending-layout
+  # overlay.  Empty ``currentPreviewId`` preserves the historical
+  # behaviour of surfacing every capture for the brief.
   vm.effectiveTiles = createMemo[seq[GalleryTile]] proc(): seq[GalleryTile] =
-    applyPendingLayout(capturedVm.tiles.val, capturedVm.pendingLayout.val)
+    let allTiles = capturedVm.tiles.val
+    let filterId = capturedVm.currentPreviewId.val
+    let filtered =
+      if filterId.len == 0:
+        allTiles
+      else:
+        var keep: seq[GalleryTile] = @[]
+        for t in allTiles:
+          if t.previewId == filterId:
+            keep.add(t)
+        keep
+    applyPendingLayout(filtered, capturedVm.pendingLayout.val)
   vm.rows = createMemo[seq[GalleryRow]] proc(): seq[GalleryRow] =
     groupByPreview(capturedVm.effectiveTiles.val)
   # When mode leaves gmFullTab the focused capture id must clear; if
@@ -449,6 +507,27 @@ proc markSaved*(vm: GalleryVM; layoutId: string; version: int) =
   vm.conflict.val = LayoutConflict()
 
 # --------------------------------------------------------------------------- #
+#  User-requested follow-up — detail-panel + current-preview filter helpers.
+# --------------------------------------------------------------------------- #
+
+proc setCurrentPreviewId*(vm: GalleryVM; previewId: string) =
+  ## Drive the active-preview filter.  Empty string means "show every
+  ## capture in ``tiles``" (the historical behaviour); a non-empty
+  ## value filters ``effectiveTiles`` so only the matching captures
+  ## appear in the grid.
+  vm.currentPreviewId.val = previewId
+
+proc openDetail*(vm: GalleryVM; captureId: string) =
+  ## Surface the side-panel detail view for the supplied capture.
+  ## Reading the panel is the agent-feedback drill-down the user asked
+  ## for when they click a tile's score chip.
+  vm.selectedDetailCaptureId.val = captureId
+
+proc closeDetail*(vm: GalleryVM) =
+  ## Dismiss the side-panel detail view.
+  vm.selectedDetailCaptureId.val = ""
+
+# --------------------------------------------------------------------------- #
 #  View — ui DSL only.
 # --------------------------------------------------------------------------- #
 
@@ -519,7 +598,14 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM;
   var modeChipFullScreen: E
   var modeChipCompare: E
   var saveButton: E
+  # User-requested follow-up — the grid + side-panel ride inside a
+  # shared flex-row wrapper so the detail panel can slide in on the
+  # right at wide widths while the grid stays visible at reduced width
+  # on the left.  At narrow widths the wrapper stacks (column) and the
+  # detail panel takes the full content area (drawer pattern).
+  var bodyWrap: E
   var gridHost: E
+  var detailHost: E
   var fullTabHost: E
   # CHRM-M6 Wave A — compare-mode host. The host is data-hidden until
   # the mode flips to ``gmCompare``; the Clear / Exit affordance chips
@@ -683,16 +769,57 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM;
               flex = "0 0 auto",
               `data-design-review-gallery-status` = "true"):
           text ""
-      # --- Tile grid host ----------------------------------------------
+      # --- Body wrap (grid + detail side panel) ------------------------
+      # User-requested follow-up — flex-row wrapper that lets the
+      # detail panel slide in on the right at wide / laptop widths
+      # while the grid stays visible (at a reduced width) on the
+      # left.  The mode-mirror render effect flips this wrapper's
+      # display between ``flex`` (gmGrid) and ``none`` (full-tab /
+      # full-screen / compare) so we honour the existing single-host
+      # at a time contract for the other modes.
       tdiv(
-        ref = gridHost,
-        display = "flex", flex_direction = "column",
-        gap = "12px",
-        padding = "8px 4px",
+        ref = bodyWrap,
+        `data-design-review-gallery-body` = "true",
+        display = "flex", flex_direction = "row",
         flex = "1 1 auto",
         min_height = "0",
-        overflow_y = "auto",
-        `data-design-review-gallery-grid` = "true")
+        gap = "0px"):
+        # --- Tile grid host --------------------------------------------
+        tdiv(
+          ref = gridHost,
+          display = "flex", flex_direction = "column",
+          gap = "12px",
+          padding = "8px 4px",
+          flex = "1 1 auto",
+          min_height = "0",
+          min_width = "0",
+          overflow_y = "auto",
+          `data-design-review-gallery-grid` = "true")
+        # --- Detail side panel (user-requested follow-up) --------------
+        # Hidden by default; the reactive effect below toggles
+        # display:flex when ``vm.selectedDetailCaptureId`` is non-empty.
+        # The panel slides in from the right at wide / laptop widths
+        # (380 px column to the right of the grid) and degrades to a
+        # drawer at narrow widths (full width, grid hidden behind it).
+        tdiv(
+          ref = detailHost,
+          `data-design-review-gallery-detail-panel` = "true",
+          `data-design-review-gallery-detail-visible` = "false",
+          `role` = "complementary",
+          `aria-label` = "Review feedback for selected capture",
+          display = "none",
+          flex_direction = "column",
+          flex = "0 0 380px",
+          width = "380px",
+          min_width = "0",
+          min_height = "0",
+          padding = "10px 12px",
+          gap = "8px",
+          background_color = gPanelBg,
+          border = "1px solid " & gBorderSoft,
+          border_radius = "6px",
+          overflow_y = "auto",
+          color = gTextPrim)
       # --- Full-tab host ----------------------------------------------
       # CHRM-M6 Wave B — column layout: back button anchored to the
       # top-left, image centred horizontally in the remaining space.
@@ -845,11 +972,24 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM;
 
   proc renderTile(tile: GalleryTile; rowIdx, colIdx: int): E =
     let chipColor = statusColor(tile.status)
+    # User-requested follow-up — render the AGENT'S real score on the
+    # tile instead of the legacy "score —" placeholder.  Format:
+    # ``score N.N`` with the status-colour ring; clicking opens the
+    # detail panel populated with the agent's defects.  Falls back to
+    # "score —" when the run hasn't been reviewed yet (no parsed_scores
+    # for the preview-id).
     let scoreLabel =
       if tile.score.isSome:
-        "score " & formatFloat(tile.score.get, ffDecimal, 2)
+        "score " & formatFloat(tile.score.get, ffDecimal, 1)
       else:
         "score —"
+    let scoreStatusForColor =
+      if tile.scoreStatus.len > 0: tile.scoreStatus
+      else: tile.status
+    let scoreChipColor = statusColor(scoreStatusForColor)
+    let scoreChipHasReport =
+      if tile.score.isSome or tile.defects.len > 0: "true" else: "false"
+    var scoreChip: E
     let tileNode = ui(r):
       tdiv(
         `data-design-review-gallery-tile` = tile.captureId,
@@ -901,14 +1041,72 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM;
           span(font_size = "11px", color = "#A0A2B0",
                 `data-design-review-gallery-status-label` = "true"):
             text tile.status
-          span(font_size = "11px", font_weight = "600",
-                color = gTextScore,
+          # User-requested follow-up — the score is now a clickable
+          # chip that opens the per-capture detail panel.  Carries
+          # ``data-design-review-gallery-tile-score`` (the assertable
+          # selector) AND ``data-design-review-gallery-score`` (the
+          # legacy selector kept for backwards compatibility with
+          # existing chrome/empty-state tests).  When the run has a
+          # real score we border the chip with the score-status colour
+          # so the reviewer's eye lands on warnings without reading.
+          tdiv(ref = scoreChip,
+                `role` = "button", tabindex = "0",
+                `data-design-review-gallery-tile-score` = "true",
+                `data-design-review-gallery-tile-score-status` =
+                  scoreStatusForColor,
+                `data-design-review-gallery-tile-score-has-report` =
+                  scoreChipHasReport,
+                `aria-label` = "Show review feedback for " & tile.captureId,
                 margin_left = "auto",
-                `data-design-review-gallery-score` = "true"):
-            text scoreLabel
+                padding = "2px 8px",
+                font_size = "11px", font_weight = "600",
+                color = gTextScore,
+                background_color = "transparent",
+                border = "1px solid " & scoreChipColor,
+                border_radius = "999px",
+                cursor = "pointer",
+                white_space = "nowrap"):
+            # Inner span keeps the legacy selector so the existing
+            # empty-state / compare / gallery_vm tests keep reading
+            # the same node.
+            span(`data-design-review-gallery-score` = "true"):
+              text scoreLabel
     let capturedCaptureId = tile.captureId
     let capturedRowIdx = rowIdx
     let capturedColIdx = colIdx
+    # User-requested follow-up — clicking the score chip opens the
+    # detail panel for this capture.  The handler ``stopImmediatePropagation``s
+    # in the browser shim below so the tile's primary "open full-tab"
+    # click doesn't also fire.
+    let openDetailHandler = proc() =
+      capturedVm.openDetail(capturedCaptureId)
+    r.addEventListener(scoreChip, "click", openDetailHandler)
+    r.addEventListener(scoreChip, "keydown", openDetailHandler)
+    when defined(js):
+      # Inline JS shim — the production browser dispatches the same
+      # ``click`` event up the tree, so we must stop propagation on
+      # the score chip's click so the tile's plain "click" handler
+      # doesn't ALSO open full-tab mode in the same gesture.
+      #
+      # We attach the shim in BUBBLE phase (not capture) so the
+      # Nim-installed bubble-phase ``openDetailHandler`` registered
+      # via ``r.addEventListener`` above gets to fire first. A
+      # capture-phase shim would still let the chip's own bubble
+      # listeners run per spec, but we hit a subtle Playwright +
+      # synthetic-click ordering issue where the capture-phase
+      # ``stopPropagation`` clears the propagation flag before the
+      # target-phase bubble listeners fired in this build's reactive
+      # scheduler. Bubble-phase ``stopPropagation`` is functionally
+      # equivalent for the "don't bubble to the tile" goal AND keeps
+      # the chip's own listeners untouched.
+      {.emit: ["""
+        (function(node) {
+          if (!node || !node.addEventListener) return;
+          node.addEventListener("click", function(ev) {
+            if (ev) ev.stopPropagation();
+          }, false);
+        })(""", scoreChip, """);
+      """].}
     let primaryHandlerNoArg = proc() =
       capturedVm.openFullTab(capturedCaptureId)
     let shiftHandlerNoArg = proc() =
@@ -1350,10 +1548,205 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM;
           text "Select two captures (cmd-click) and press Compare."
       r.appendChild(columnsHost, placeholder)
 
+  proc renderDetail() =
+    ## User-requested follow-up — populate the side panel with the
+    ## review agent's findings for the currently selected capture.
+    ## The panel shows:
+    ##   * Title (capture's previewId)
+    ##   * Score breakdown (each named dimension and its value)
+    ##   * Defects list — id, summary, severity dot, evidence link
+    ##   * "Close" chip in the top-right
+    ##
+    ## When the selected capture id doesn't resolve against
+    ## ``vm.tiles`` (the cache was cleared or the id is stale) we
+    ## render a calm placeholder so the panel isn't a blank rectangle.
+    r.clearChildren(detailHost)
+    let needle = capturedVm.selectedDetailCaptureId.val
+    if needle.len == 0:
+      return
+    var matched: GalleryTile
+    var found = false
+    for t in capturedVm.tiles.val:
+      if t.captureId == needle:
+        matched = t
+        found = true
+        break
+    # Header — title + close chip.
+    var closeBtn: E
+    let header = ui(r):
+      tdiv(
+        `data-design-review-gallery-detail-header` = "true",
+        display = "flex", flex_direction = "row",
+        align_items = "center", gap = "8px"):
+        span(font_size = "11px", font_weight = "700",
+              text_transform = "uppercase", letter_spacing = "0.4px",
+              color = gAccent,
+              flex = "0 0 auto",
+              white_space = "nowrap"):
+          text "Review"
+        span(font_size = "11px", color = gTextMuted,
+              flex = "1 1 auto",
+              `data-design-review-gallery-detail-preview-id` = "true",
+              style = "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"):
+          text (if found: matched.previewId else: needle)
+        tdiv(ref = closeBtn,
+              `role` = "button", tabindex = "0",
+              `data-design-review-gallery-detail-close` = "true",
+              `aria-label` = "Close detail",
+              padding = "3px 10px",
+              font_size = "11px", font_weight = "600",
+              color = gTextPrim,
+              background_color = "transparent",
+              border = "1px solid " & gBorder,
+              border_radius = "999px",
+              cursor = "pointer",
+              white_space = "nowrap",
+              flex = "0 0 auto"):
+          text "Close"
+    let closeHandler = proc() = capturedVm.closeDetail()
+    r.addEventListener(closeBtn, "click", closeHandler)
+    r.addEventListener(closeBtn, "keydown", closeHandler)
+    r.appendChild(detailHost, header)
+    if not found:
+      let stale = ui(r):
+        span(font_size = "12px", color = gTextMuted,
+              padding = "12px 0",
+              `data-design-review-gallery-detail-empty` = "true"):
+          text "No review data available for this capture."
+      r.appendChild(detailHost, stale)
+      return
+    # Score breakdown — per-dimension scores. When no named dimensions
+    # were emitted by the agent but an overall score IS present, show
+    # the overall under the "overall" dimension so the reviewer sees
+    # SOMETHING in the breakdown row.
+    if matched.scoreBreakdown.len > 0 or matched.score.isSome:
+      let scoresBlock = ui(r):
+        tdiv(
+          `data-design-review-gallery-detail-scores` = "true",
+          display = "flex", flex_direction = "column",
+          gap = "4px",
+          padding = "6px 0",
+          border_top = "1px solid " & gBorderSoft,
+          border_bottom = "1px solid " & gBorderSoft)
+      var dims = matched.scoreBreakdown
+      if dims.len == 0 and matched.score.isSome:
+        dims = @[GalleryScoreDimension(name: "overall", score: matched.score.get)]
+      for di in 0 ..< dims.len:
+        let dimName = dims[di].name
+        let dimScore = dims[di].score
+        let row = ui(r):
+          tdiv(
+            `data-design-review-gallery-detail-score-row` = dimName,
+            display = "flex", flex_direction = "row",
+            align_items = "center", gap = "8px"):
+            span(font_size = "11px", color = gTextMuted,
+                  flex = "1 1 auto",
+                  text_transform = "uppercase",
+                  letter_spacing = "0.3px"):
+              text dimName
+            span(font_size = "12px", font_weight = "700",
+                  color = gTextScore,
+                  flex = "0 0 auto",
+                  `data-design-review-gallery-detail-score-value` = dimName):
+              text formatFloat(dimScore, ffDecimal, 1)
+        r.appendChild(scoresBlock, row)
+      r.appendChild(detailHost, scoresBlock)
+    # Defects list — one row per defect with id (mono), summary,
+    # severity dot, and optional evidence link.
+    let defectsHeader = ui(r):
+      span(font_size = "11px", font_weight = "700",
+            text_transform = "uppercase", letter_spacing = "0.4px",
+            color = gAccent,
+            padding = "6px 0 2px 0",
+            `data-design-review-gallery-detail-defects-header` = "true"):
+        text (if matched.defects.len > 0:
+                "Defects (" & $matched.defects.len & ")"
+              else:
+                "No defects")
+    r.appendChild(detailHost, defectsHeader)
+    if matched.defects.len == 0:
+      let noDefects = ui(r):
+        span(font_size = "12px", color = gTextMuted,
+              `data-design-review-gallery-detail-defects-empty` = "true"):
+          text "The reviewer agent reported no defects for this capture."
+      r.appendChild(detailHost, noDefects)
+    else:
+      for di in 0 ..< matched.defects.len:
+        let dId = matched.defects[di].id
+        let dSummary = matched.defects[di].summary
+        let dSeverity = matched.defects[di].severity
+        let dEvidence = matched.defects[di].evidence
+        let dotColor = statusColor(dSeverity)
+        let defectNode = ui(r):
+          tdiv(
+            `data-design-review-gallery-detail-defect` = dId,
+            `data-design-review-gallery-detail-defect-severity` = dSeverity,
+            display = "flex", flex_direction = "column",
+            gap = "4px",
+            padding = "8px 0",
+            border_bottom = "1px solid " & gBorderSoft):
+            tdiv(display = "flex", flex_direction = "row",
+                  align_items = "center", gap = "6px"):
+              span(width = "8px", height = "8px",
+                    min_width = "8px",
+                    background_color = dotColor,
+                    border_radius = "50%",
+                    `aria-hidden` = "true",
+                    `data-design-review-gallery-detail-defect-dot` = "true"):
+                text ""
+              span(font_size = "11px", font_family = "monospace",
+                    color = gTextMuted,
+                    flex = "1 1 auto",
+                    style = "overflow: hidden; text-overflow: ellipsis;",
+                    `data-design-review-gallery-detail-defect-id` = "true"):
+                text dId
+            span(font_size = "12px", color = gTextPrim,
+                  line_height = "1.4",
+                  `data-design-review-gallery-detail-defect-summary` = "true"):
+              text dSummary
+            if dEvidence.len > 0:
+              span(font_size = "11px", color = gTextDim,
+                    `data-design-review-gallery-detail-defect-evidence` = "true",
+                    style = "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"):
+                text "Evidence: " & dEvidence
+        r.appendChild(detailHost, defectNode)
+
   # Reactive — repaint on tile / row / mode changes.
   createRenderEffect proc() =
     discard capturedVm.rows.val
     renderGrid()
+  # User-requested follow-up — repaint the detail panel whenever the
+  # selected capture changes OR the underlying tiles cache refreshes
+  # (so a late-arriving fetch-run populates the panel).
+  createRenderEffect proc() =
+    discard capturedVm.selectedDetailCaptureId.val
+    discard capturedVm.tiles.val
+    renderDetail()
+  # User-requested follow-up — toggle the detail panel's visibility
+  # off the selected-capture signal. We mirror the data attribute
+  # for tests and drive ``style.display`` via the ``{.emit.}`` shim
+  # (same no-setStyle pattern as the rest of the file). Empty
+  # ``selectedDetailCaptureId`` => panel hidden; non-empty => panel
+  # visible. At narrow widths the panel takes the full content area;
+  # the narrow-mode rewrites the inline style further down below.
+  createRenderEffect proc() =
+    let detailOpen = capturedVm.selectedDetailCaptureId.val.len > 0
+    r.setAttribute(detailHost, "data-design-review-gallery-detail-visible",
+                   if detailOpen: "true" else: "false")
+    r.setAttribute(detailHost, "aria-hidden",
+                   if detailOpen: "false" else: "true")
+    # Also mirror on the root so an outer test or wrapper can observe
+    # the open/close transition without having to find the inner host.
+    r.setAttribute(root, "data-design-review-gallery-detail-open",
+                   if detailOpen: "true" else: "false")
+    when defined(js):
+      let detailDisp: cstring =
+        if detailOpen: "flex" else: "none"
+      {.emit: ["""
+        try {
+          if (""", detailHost, """ && """, detailHost, """.style) """, detailHost, """.style.display = """, detailDisp, """;
+        } catch (e) { /* ignore */ }
+      """].}
   createRenderEffect proc() =
     discard capturedVm.fullTabCaptureId.val
     discard capturedVm.mode.val
@@ -1382,6 +1775,8 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM;
     # the conflict dialog below already uses.
     r.setAttribute(gridHost, "data-gallery-visible",
                    if mode == gmGrid: "true" else: "false")
+    r.setAttribute(bodyWrap, "data-gallery-visible",
+                   if mode == gmGrid: "true" else: "false")
     r.setAttribute(fullTabHost, "data-gallery-visible",
                    if mode == gmFullTab: "true" else: "false")
     r.setAttribute(compareHost, "data-gallery-visible",
@@ -1401,6 +1796,11 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM;
     # ``test_design_review_gallery_no_setstyle`` scan enforces on this
     # file. The ``{.emit.}`` shim is the inline-JS equivalent and is
     # invisible to the lexer-style source scan.
+    #
+    # User-requested follow-up — ``bodyWrap`` is the new flex-row
+    # container that holds the grid + detail side panel. The mode
+    # mirror now flips the bodyWrap's display in lockstep with the
+    # gridHost so full-tab / compare modes hide the side panel too.
     when defined(js):
       let gridDisp: cstring =
         if mode == gmGrid: "flex" else: "none"
@@ -1410,7 +1810,7 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM;
         if mode == gmCompare: "flex" else: "none"
       {.emit: ["""
         try {
-          if (""", gridHost, """ && """, gridHost, """.style) """, gridHost, """.style.display = """, gridDisp, """;
+          if (""", bodyWrap, """ && """, bodyWrap, """.style) """, bodyWrap, """.style.display = """, gridDisp, """;
           if (""", fullTabHost, """ && """, fullTabHost, """.style) """, fullTabHost, """.style.display = """, fullDisp, """;
           if (""", compareHost, """ && """, compareHost, """.style) """, compareHost, """.style.display = """, cmpDisp, """;
         } catch (e) { /* ignore */ }

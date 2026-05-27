@@ -57,10 +57,18 @@ test.before(async () => {
   // Seed 4 captures across two device classes so the gallery groups
   // them into a single previewId row (the dragging happens within the
   // row — same previewId per the harness story binding).
+  //
+  // ``storyId`` is the canonical preview-id the editor's
+  // ``canonicalPreviewId(story, backend)`` will project the active
+  // (Task App / Pages / Inbox, web) story onto — so the gallery's
+  // filter-by-current-preview keeps these captures visible after the
+  // history button opens the overlay. (Pre-filter the test used
+  // ``p/inbox:page#0@web``; the filter would have dropped every tile.)
+  const previewId = "Task App %2F Pages/Inbox:page#0@web";
   const captures = [];
   for (let i = 0; i < 4; i++) {
     captures.push({
-      storyId: "p/inbox:page#0@web",
+      storyId: previewId,
       platform: "web",
       deviceClass: i % 2 === 0 ? "desktop" : "mobile",
       width: 320,

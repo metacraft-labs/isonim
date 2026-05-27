@@ -45,10 +45,14 @@ test.before(async () => {
   });
   // Seed 6 captures sharing a single preview so the grid renders a
   // single row with 6 tiles (compact and predictable for the test).
+  // ``storyId`` matches the canonical preview-id the editor will use
+  // when the Task App / Pages / Inbox @ web story is selected so the
+  // gallery's filter-by-current-preview keeps these captures visible.
+  const previewId = "Task App %2F Pages/Inbox:page#0@web";
   const captures = [];
   for (let i = 0; i < 6; i++) {
     captures.push({
-      storyId: "p/inbox:page#0@web",
+      storyId: previewId,
       platform: "web",
       deviceClass: i % 2 === 0 ? "desktop" : "mobile",
       width: 320,

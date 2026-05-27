@@ -49,18 +49,23 @@ test.before(async () => {
     editorBuild: EDITOR_BUILD,
   });
   // Seed 2 captures for the canonical ``render.task-app`` brief BEFORE
-  // the browser loads. The captures share a preview_id so they end up
-  // in the same row in the grid; the gallery still renders 2 tiles.
+  // the browser loads. The captures share a preview_id (the canonical
+  // form for the Task App / Pages / Inbox @ web story the test
+  // navigates to) so they end up in the same row in the grid AND the
+  // user-requested gallery filter ("only the preview I navigated to")
+  // surfaces both tiles. Encoding follows ``brief_format.encodePreviewSegment``:
+  // spaces stay literal, ``/`` → ``%2F``.
+  const inboxWebPreviewId = "Task App %2F Pages/Inbox:page#0@web";
   await harness.seedCaptures("render.task-app", [
     {
-      storyId: "p/inbox:page#0@web",
+      storyId: inboxWebPreviewId,
       platform: "web",
       deviceClass: "desktop",
       width: 320,
       height: 240,
     },
     {
-      storyId: "p/inbox:page#0@web",
+      storyId: inboxWebPreviewId,
       platform: "web",
       deviceClass: "mobile",
       width: 200,

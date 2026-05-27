@@ -151,6 +151,24 @@ proc ensureDesignReviewState*(vm: EditorVM): DesignReviewState =
   createRenderEffect proc() =
     capturedState.historyVm.briefHasHistory.val =
       capturedState.briefHasHistory.val
+  # User-requested follow-up — project the editor's active preview
+  # (the (story, backend) the user is navigated to) onto the gallery
+  # VM so the grid filters to that specific preview when the history
+  # button is clicked.  Driven reactively so navigating to a
+  # different story / backend WHILE the gallery is open re-filters in
+  # place.  When the gallery is closed the filter still tracks the
+  # active preview so the next open is already aligned.
+  createRenderEffect proc() =
+    let story = capturedVm.selectedStory.val
+    let backend = capturedVm.platform.val
+    capturedState.galleryVm.currentPreviewId.val =
+      previewIdFor(story, backend)
+  # User-requested follow-up — drop the detail-panel selection when
+  # the gallery host closes so re-opening doesn't surface a stale
+  # detail view for a capture the user is no longer thinking about.
+  createRenderEffect proc() =
+    if capturedState.galleryHostState.val == ghsClosed:
+      capturedState.galleryVm.selectedDetailCaptureId.val = ""
   st
 
 # ---------------------------------------------------------------------------
@@ -248,6 +266,248 @@ iterator jsonCaptureBlobsFromRun(runBody: string): string =
             start = -1
         inc i
 
+# ---------------------------------------------------------------------------
+# User-requested follow-up — parse ``parsed_scores.previews[<previewId>]``
+# out of the run body so per-tile real scores + defects surface in the
+# gallery.  The format the daemon emits is documented in
+# ``reviewer_output.nim`` and inspected via the README brief:
+#
+#   "parsed_scores": {
+#     "previews": {
+#       "<previewId>": {
+#         "scores": { "<dimension>": <float>, ... },
+#         "status": "ok" | "warn" | "fail",
+#         "defects": [ { "id": "...", "summary": "...",
+#                        "evidence": "...", "severity": "..." }, ... ]
+#       },
+#       ...
+#     },
+#     "overall": { "score": <float>, "status": "..." }
+#   }
+#
+# We hand-roll the parse against the same constraints as the rest of
+# this file — std/json is avoided so the JS bundle stays compact AND
+# the JS resource VM hooks aren't always wired.
+# ---------------------------------------------------------------------------
+
+proc findBalancedObject(s: string; startAt: int): tuple[lo, hi: int] =
+  ## Find the next ``{`` at or after ``startAt`` and return ``(lo, hi)``
+  ## where ``lo`` is the opening brace index and ``hi`` is the matching
+  ## closing brace index. Returns ``(-1, -1)`` when no balanced object
+  ## is present. Tolerates string contents (escaped quotes, etc.).
+  result = (-1, -1)
+  var i = startAt
+  while i < s.len and s[i] != '{': inc i
+  if i >= s.len: return
+  let lo = i
+  var depth = 0
+  var inStr = false
+  while i < s.len:
+    let ch = s[i]
+    if inStr:
+      if ch == '\\' and i + 1 < s.len:
+        inc i, 2
+        continue
+      if ch == '"': inStr = false
+    else:
+      if ch == '"': inStr = true
+      elif ch == '{': inc depth
+      elif ch == '}':
+        dec depth
+        if depth == 0:
+          return (lo, i)
+    inc i
+
+proc findBalancedArray(s: string; startAt: int): tuple[lo, hi: int] =
+  ## Same as ``findBalancedObject`` but for ``[ ... ]``.  Used to slice
+  ## the ``defects`` array out of a preview entry.
+  result = (-1, -1)
+  var i = startAt
+  while i < s.len and s[i] != '[': inc i
+  if i >= s.len: return
+  let lo = i
+  var depth = 0
+  var inStr = false
+  while i < s.len:
+    let ch = s[i]
+    if inStr:
+      if ch == '\\' and i + 1 < s.len:
+        inc i, 2
+        continue
+      if ch == '"': inStr = false
+    else:
+      if ch == '"': inStr = true
+      elif ch == '[': inc depth
+      elif ch == ']':
+        dec depth
+        if depth == 0:
+          return (lo, i)
+    inc i
+
+proc parsedScoresBlob(runBody: string): string =
+  ## Return the JSON substring for the first report's ``parsed_scores``
+  ## object.  Empty string when the run carries no reports (the
+  ## common case before the reviewer agent has landed).
+  let key = "\"parsed_scores\""
+  let k = runBody.find(key)
+  if k < 0: return ""
+  let colon = runBody.find(':', k + key.len)
+  if colon < 0: return ""
+  let (lo, hi) = findBalancedObject(runBody, colon + 1)
+  if lo < 0: return ""
+  runBody[lo .. hi]
+
+proc previewEntryBlob(parsedScores: string; previewId: string): string =
+  ## Locate the ``parsed_scores.previews[<previewId>]`` object and
+  ## return its JSON substring.  Returns empty string when the
+  ## previewId isn't present.
+  ##
+  ## We anchor the search inside the ``"previews": { ... }`` block so
+  ## a defect-id that happens to share its key with a previewId can't
+  ## confuse the match.
+  if parsedScores.len == 0 or previewId.len == 0: return ""
+  let previewsKey = "\"previews\""
+  let pk = parsedScores.find(previewsKey)
+  if pk < 0: return ""
+  let pColon = parsedScores.find(':', pk + previewsKey.len)
+  if pColon < 0: return ""
+  let (pLo, pHi) = findBalancedObject(parsedScores, pColon + 1)
+  if pLo < 0: return ""
+  let previewsObj = parsedScores[pLo .. pHi]
+  # Find the ``"<previewId>":`` key inside the previews object. The
+  # key may appear escaped (e.g. ``%2F`` for ``/`` in story segments
+  # — already encoded by ``canonicalPreviewId`` before it's stored).
+  # We search for the canonical form literally.
+  let keyNeedle = "\"" & previewId & "\""
+  let kIdx = previewsObj.find(keyNeedle)
+  if kIdx < 0: return ""
+  let kColon = previewsObj.find(':', kIdx + keyNeedle.len)
+  if kColon < 0: return ""
+  let (eLo, eHi) = findBalancedObject(previewsObj, kColon + 1)
+  if eLo < 0: return ""
+  previewsObj[eLo .. eHi]
+
+proc jsonFloatField(json: string; key: string; startAt = 0): float =
+  ## Parse a JSON ``"<key>": <number>`` field as a float; 0 on miss.
+  let needle = "\"" & key & "\""
+  let kIdx = json.find(needle, startAt)
+  if kIdx < 0: return 0
+  let colon = json.find(':', kIdx + needle.len)
+  if colon < 0: return 0
+  var i = colon + 1
+  while i < json.len and json[i] in {' ', '\t', '\n', '\r'}: inc i
+  var s = ""
+  while i < json.len and json[i] in {'0'..'9', '-', '.', 'e', 'E', '+'}:
+    s.add(json[i])
+    inc i
+  if s.len == 0: return 0
+  try: parseFloat(s) except ValueError: 0.0
+
+proc scoreDimensionsFromPreview(previewBlob: string): seq[GalleryScoreDimension] =
+  ## Walk ``previewBlob.scores`` and return one
+  ## ``GalleryScoreDimension`` per ``"<name>": <float>`` pair.  Tolerant
+  ## of missing ``scores`` (returns empty seq).
+  result = @[]
+  let scoresKey = "\"scores\""
+  let sk = previewBlob.find(scoresKey)
+  if sk < 0: return
+  let sColon = previewBlob.find(':', sk + scoresKey.len)
+  if sColon < 0: return
+  let (sLo, sHi) = findBalancedObject(previewBlob, sColon + 1)
+  if sLo < 0: return
+  let scoresObj = previewBlob[sLo .. sHi]
+  # Walk key:value pairs inside the scores object. Each key is a
+  # quoted string; the value is a JSON number.
+  var i = 1  # skip opening brace
+  while i < scoresObj.len:
+    # Find next opening quote.
+    while i < scoresObj.len and scoresObj[i] != '"': inc i
+    if i >= scoresObj.len: break
+    inc i
+    var name = ""
+    while i < scoresObj.len and scoresObj[i] != '"':
+      if scoresObj[i] == '\\' and i + 1 < scoresObj.len: inc i
+      name.add(scoresObj[i])
+      inc i
+    if i >= scoresObj.len: break
+    inc i  # past closing quote
+    # Skip colon + whitespace.
+    while i < scoresObj.len and scoresObj[i] in {' ', '\t', '\n', '\r', ':'}:
+      inc i
+    var numStr = ""
+    while i < scoresObj.len and scoresObj[i] in {'0'..'9', '-', '.', 'e', 'E', '+'}:
+      numStr.add(scoresObj[i])
+      inc i
+    if name.len > 0 and numStr.len > 0:
+      let f = (try: parseFloat(numStr) except ValueError: 0.0)
+      result.add GalleryScoreDimension(name: name, score: f)
+
+proc defectsFromPreview(previewBlob: string): seq[GalleryDefect] =
+  ## Walk ``previewBlob.defects[]`` and return one ``GalleryDefect``
+  ## per element. Each defect is an object with id / summary /
+  ## evidence / severity string fields.  Tolerant of missing
+  ## ``defects`` (returns empty seq).
+  result = @[]
+  let defectsKey = "\"defects\""
+  let dk = previewBlob.find(defectsKey)
+  if dk < 0: return
+  let dColon = previewBlob.find(':', dk + defectsKey.len)
+  if dColon < 0: return
+  let (dLo, dHi) = findBalancedArray(previewBlob, dColon + 1)
+  if dLo < 0: return
+  let defectsArr = previewBlob[dLo .. dHi]
+  # Walk the array and find every balanced object inside.
+  var i = 1  # start at 1 inside the local slice (past opening ``[``)
+  while i < defectsArr.len:
+    while i < defectsArr.len and defectsArr[i] != '{': inc i
+    if i >= defectsArr.len: break
+    let (oLo, oHi) = findBalancedObject(defectsArr, i)
+    if oLo < 0: break
+    let obj = defectsArr[oLo .. oHi]
+    result.add GalleryDefect(
+      id: jsonStringField(obj, "id"),
+      summary: jsonStringField(obj, "summary"),
+      evidence: jsonStringField(obj, "evidence"),
+      severity: jsonStringField(obj, "severity"))
+    i = oHi + 1
+
+proc agentReviewForPreview(runBody, previewId: string):
+    tuple[score: Option[float]; status: string;
+          breakdown: seq[GalleryScoreDimension];
+          defects: seq[GalleryDefect]] =
+  ## Project the reviewer-agent feedback for ``previewId`` out of the
+  ## run body. Empty result when no parsed_scores entry exists for the
+  ## preview — i.e. the run was captured but never reviewed, OR the
+  ## review covered a different preview.
+  result.score = none[float]()
+  result.status = ""
+  result.breakdown = @[]
+  result.defects = @[]
+  let parsedScores = parsedScoresBlob(runBody)
+  if parsedScores.len == 0: return
+  let entry = previewEntryBlob(parsedScores, previewId)
+  if entry.len == 0: return
+  result.breakdown = scoreDimensionsFromPreview(entry)
+  result.defects = defectsFromPreview(entry)
+  result.status = jsonStringField(entry, "status")
+  # The "chrome" dimension is the canonical headline score for the
+  # gallery (the preview-chrome review surface). Fall back to the
+  # average of all dimensions when no "chrome" entry is present so
+  # tiles without a per-axis chrome score still show something
+  # meaningful instead of "score —".
+  if result.breakdown.len > 0:
+    var picked = false
+    for d in result.breakdown:
+      if d.name == "chrome":
+        result.score = some(d.score)
+        picked = true
+        break
+    if not picked:
+      var sum = 0.0
+      for d in result.breakdown:
+        sum += d.score
+      result.score = some(sum / float(result.breakdown.len))
+
 proc galleryTilesFromRun(runBody: string; baseUrl: string = ""): seq[GalleryTile] =
   ## CHRM-M6 Wave A — ``baseUrl`` is the daemon-discovered base URL
   ## (e.g. ``http://127.0.0.1:8113``).  Prepending it keeps the
@@ -277,6 +537,14 @@ proc galleryTilesFromRun(runBody: string; baseUrl: string = ""): seq[GalleryTile
           baseUrl & urlPath
       else:
         urlPath
+    # User-requested follow-up — project the agent's per-preview
+    # feedback (score / breakdown / defects) onto the tile so the
+    # gallery surface can render the real number on the chip AND
+    # open the detail side-panel with the agent's findings.  Tiles
+    # for runs that haven't been reviewed yet (no parsed_scores
+    # entry for this previewId) keep ``score = none`` and an empty
+    # defects list, falling back to the legacy "score —" placeholder.
+    let review = agentReviewForPreview(runBody, previewId)
     result.add GalleryTile(
       captureId: captureId,
       runId: runId,
@@ -285,7 +553,10 @@ proc galleryTilesFromRun(runBody: string; baseUrl: string = ""): seq[GalleryTile
       pngUrl: absUrl,
       width: width,
       height: height,
-      score: none[float](),
+      score: review.score,
+      scoreStatus: review.status,
+      scoreBreakdown: review.breakdown,
+      defects: review.defects,
     )
 
 # ---------------------------------------------------------------------------
