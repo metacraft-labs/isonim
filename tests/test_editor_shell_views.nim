@@ -164,12 +164,15 @@ suite "Editor Shell Views (M2)":
       # future structural additions.
       check panel.children.len >= 3
 
-      # Top-level tab bar carries the two sidebar tabs.
+      # Top-level tab bar carries the two sidebar tabs + the new-chat
+      # "+" button (moved here from the in-Assistant chat tab strip
+      # per user 2026-05-28).
       let topTabBar = findByAttr(panel, "data-sidebar-tab-bar", "true")
       check topTabBar != nil
-      check topTabBar.children.len == 2
+      check topTabBar.children.len == 3
       check findByAttr(topTabBar, "data-sidebar-tab", "manual") != nil
       check findByAttr(topTabBar, "data-sidebar-tab", "assistant") != nil
+      check findByAttr(topTabBar, "data-chat-tab-new", "true") != nil
 
       # Manual body's first child is the 12-section sub-tab bar.
       let manualBody = findByAttr(panel, "data-sidebar-tab-panel", "manual")

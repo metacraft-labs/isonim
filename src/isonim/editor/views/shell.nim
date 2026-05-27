@@ -251,6 +251,10 @@ proc chatNewHandler(vm: EditorVM): proc() =
   let captured = vm
   result = proc() =
     discard captured.createNewChat()
+    # The + button now lives in the top tab bar next to the
+    # Assistant button — clicking it should also activate the
+    # Assistant tab so the user lands on the new chat.
+    captured.setRightSidebarTab(rstAssistant)
 
 proc sectionOpenHandler(vm: EditorVM; section: SidebarSection): proc() =
   let captured = section
@@ -2002,31 +2006,10 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
     discard overflowBtn
 
     # New chat ("+") button — always visible at the right end of the
-    # strip. Adds a chat session and activates it. The button itself
-    # never overflows; the overflow detector reserves space for it
-    # before deciding which tabs to hide.
-    var newChatBtn: E
-    let newChatHandler = chatNewHandler(vm)
-    let newChatBtnEl = ui(r):
-      tdiv(ref = newChatBtn,
-           `role` = "button", tabindex = "0",
-           `data-chat-tab-new` = "true",
-           `aria-label` = "Create new chat",
-           onclick = newChatHandler,
-           onkeydown = newChatHandler,
-           display = "flex", align_items = "center",
-           justify_content = "center",
-           width = "24px", height = "24px",
-           border_radius = "4px",
-           color = textPrimary,
-           background_color = "transparent",
-           cursor = "pointer", flex_shrink = "0",
-           font_size = "16px", font_weight = "700",
-           line_height = "1",
-           transition = "background-color 0.12s"):
-        text "+"
-    r.appendChild(chatTabStrip, newChatBtnEl)
-    discard newChatBtn
+    # The new-chat "+" button used to mount HERE inside the chat
+    # tab strip. Per user 2026-05-28 it moved into the top tab bar
+    # next to the Assistant tab — see the assistantTabBtn block
+    # below.
 
   # Rebuild the chat body — call ``renderChatPanel`` again to bind
   # the active chat's signals. The current ``renderChatPanel`` reads
@@ -2244,6 +2227,30 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
          min_height = "44px")
   r.appendChild(tabBar, manualTabBtn)
   r.appendChild(tabBar, assistantTabBtn)
+
+  # Create-new-chat button. Lives in the top tab bar right next to
+  # the Assistant tab so it's reachable in one click regardless of
+  # which sidebar tab is active. Click also flips the sidebar to
+  # the Assistant tab (see chatNewHandler).
+  let newChatTopBtnHandler = chatNewHandler(vm)
+  let newChatTopBtn = ui(r):
+    tdiv(`role` = "button", tabindex = "0",
+         `data-chat-tab-new` = "true",
+         `aria-label` = "Create new chat",
+         onclick = newChatTopBtnHandler,
+         onkeydown = newChatTopBtnHandler,
+         display = "flex", align_items = "center",
+         justify_content = "center",
+         width = "28px", height = "28px",
+         border_radius = "6px",
+         color = textPrimary,
+         background_color = "transparent",
+         cursor = "pointer", flex_shrink = "0",
+         font_size = "18px", font_weight = "700",
+         line_height = "1",
+         transition = "background-color 0.12s"):
+      text "+"
+  r.appendChild(tabBar, newChatTopBtn)
 
   result = ui(r):
     tdiv(class = "editor-inspector",
