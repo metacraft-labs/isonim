@@ -12,9 +12,12 @@
 //        * Initial surface is Preview, the property panel (right rail)
 //          is mounted, the View/Comment/Edit mode triplet is mounted.
 //        * Clicking the Spec pill in the top-bar segmented control
-//          flips the surface; the property panel UNMOUNTS (DOM is gone,
-//          not just hidden), the View/Comment/Edit triplet remains.
-//        * Clicking Preview flips back; the property panel re-mounts.
+//          flips the surface; per AIVS-NSO the property panel REMAINS
+//          MOUNTED across every surface (the AI Assistant is the
+//          user's single point of contact); the View/Comment/Edit
+//          triplet also remains.
+//        * Clicking Preview flips back; the property panel is still
+//          mounted (it never left).
 //        * Clicking the chevron screen-size trigger opens a listbox
 //          popup with the per-backend viewport labels.
 //        * Selecting a different viewport updates the chevron's active
@@ -170,59 +173,66 @@ test("e2e_topbar_property_panel_mounted_initially", async () => {
   }
 });
 
-test("e2e_topbar_clicking_spec_unmounts_property_panel", async () => {
+test("e2e_topbar_clicking_spec_keeps_property_panel_mounted", async () => {
+  // AIVS-NSO — the AI sidebar is the user's single point of contact
+  // with the assistant (see isonim-editor.md § "AI Assistant & Design
+  // Campaigns").  It must remain mounted across every surface so the
+  // user can keep talking to the assistant while iterating on the
+  // brief.  This test pins the new contract that replaces the old
+  // TBAR-M3 "Spec surface has no property/AI panel by default"
+  // invariant.
   const { ctx, page } = await openEditor();
   try {
     const specPill = await page.$(
       '[data-preview-surface-switch="true"] ' + '[data-choice-group-pill="1"]',
     );
     await specPill.click();
-    // The shell-level reactive effect removes the chat panel from the
-    // DOM when surface flips to sSpec.
-    await page.waitForSelector('[data-test-id="property-panel"]', {
-      state: "detached",
-      timeout: 5000,
-    });
-    const panel = await page.$('[data-test-id="property-panel"]');
-    assert.equal(
-      panel,
-      null,
-      "property panel unmounts from the DOM when surface == sSpec",
-    );
     // The Spec-pane placeholder slot becomes visible.
-    const specPane = await page.$('[data-test-id="spec-pane"]');
-    assert.ok(specPane, "spec-pane element exists");
-    const display = await specPane.evaluate(
-      (el) => getComputedStyle(el).display,
+    await page.waitForFunction(
+      () => {
+        const el = document.querySelector('[data-test-id="spec-pane"]');
+        if (!el) return false;
+        return getComputedStyle(el).display !== "none";
+      },
+      { timeout: 5000 },
     );
-    assert.notEqual(display, "none", "spec-pane is displayed");
+    const panel = await page.$('[data-test-id="property-panel"]');
+    assert.ok(
+      panel,
+      "AI sidebar (data-test-id=property-panel) remains mounted in Spec surface",
+    );
   } finally {
     await ctx.close();
   }
 });
 
-test("e2e_topbar_clicking_preview_remounts_property_panel", async () => {
+test("e2e_topbar_clicking_preview_keeps_property_panel_mounted", async () => {
+  // AIVS-NSO — flipping back to Preview must keep the AI sidebar
+  // mounted (it never left in the first place under the new
+  // contract).
   const { ctx, page } = await openEditor();
   try {
-    // Flip to Spec first, then back to Preview.
     const specPill = await page.$(
       '[data-preview-surface-switch="true"] ' + '[data-choice-group-pill="1"]',
     );
     await specPill.click();
-    await page.waitForSelector('[data-test-id="property-panel"]', {
-      state: "detached",
-      timeout: 5000,
-    });
+    await page.waitForFunction(
+      () => {
+        const el = document.querySelector('[data-test-id="spec-pane"]');
+        if (!el) return false;
+        return getComputedStyle(el).display !== "none";
+      },
+      { timeout: 5000 },
+    );
     const previewPill = await page.$(
       '[data-preview-surface-switch="true"] ' + '[data-choice-group-pill="0"]',
     );
     await previewPill.click();
-    await page.waitForSelector('[data-test-id="property-panel"]', {
-      state: "attached",
-      timeout: 5000,
-    });
     const panel = await page.$('[data-test-id="property-panel"]');
-    assert.ok(panel, "property panel re-mounts when surface flips back");
+    assert.ok(
+      panel,
+      "AI sidebar (data-test-id=property-panel) remains mounted after flipping back to Preview",
+    );
   } finally {
     await ctx.close();
   }
@@ -244,10 +254,14 @@ test("e2e_topbar_view_comment_edit_triplet_present_in_both_surfaces", async () =
       '[data-preview-surface-switch="true"] ' + '[data-choice-group-pill="1"]',
     );
     await specPill.click();
-    await page.waitForSelector('[data-test-id="property-panel"]', {
-      state: "detached",
-      timeout: 5000,
-    });
+    await page.waitForFunction(
+      () => {
+        const el = document.querySelector('[data-test-id="spec-pane"]');
+        if (!el) return false;
+        return getComputedStyle(el).display !== "none";
+      },
+      { timeout: 5000 },
+    );
     const modeClusterSpec = await page.$('[data-toolbar-cluster="mode"]');
     assert.ok(
       modeClusterSpec,

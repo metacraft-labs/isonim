@@ -598,10 +598,14 @@ proc installEditorHistorySync(vm: EditorVM) =
 proc exposeWindowEditorHandle*(vm: EditorVM) =
   ## REV-M2: install a small ``window.__isonimEditor`` helper that the
   ## design-review e2e tests use to drive story selection.  The handle
-  ## exposes exactly one method (``selectStoryByName(group, name)``)
-  ## that constructs a synthetic ``StoryRef`` and feeds it through
-  ## ``EditorVM.selectedStory``.  No other public surface is exposed;
-  ## production consumers must use the regular sidebar affordances.
+  ## exposes ``selectStoryByName(group, name)`` (constructs a synthetic
+  ## ``StoryRef`` and feeds it through ``EditorVM.selectedStory``) and
+  ## AIVS-NSO ``setEditMode(modeIndex)`` (drives ``vm.setEditMode``
+  ## directly so the no-story overlay e2e can exercise the mode-specific
+  ## copy paths even when the mode chip's dispatcher is gated by the
+  ## "select a story first" guard).  No other public surface is
+  ## exposed; production consumers must use the regular sidebar /
+  ## chrome-bar affordances.
   let capturedVm = vm
   proc selectByName(group, name: cstring) =
     let story = StoryRef(
@@ -610,17 +614,32 @@ proc exposeWindowEditorHandle*(vm: EditorVM) =
       kind: skPage,
       index: 0)
     capturedVm.selectedStory.val = story
+  proc setEditModeByIndex(modeIndex: int) =
+    let mode =
+      case modeIndex
+      of 0: emView
+      of 1: emComment
+      of 2: emEdit
+      else: emView
+    capturedVm.setEditMode(mode)
   # Expose as a window-level handle. We install the helper inside an
-  # IIFE so the closure (``selectByName``) is captured by reference
-  # and so the wrapper returns ``true`` regardless of the closure's
-  # internal return value — the e2e test only checks for truthiness.
+  # IIFE so the closures (``selectByName`` / ``setEditModeByIndex``)
+  # are captured by reference and so the wrapper returns ``true``
+  # regardless of the closure's internal return value — the e2e tests
+  # only check for truthiness.
   let cb = selectByName
+  let cbMode = setEditModeByIndex
   {.emit: ["""
     (function () {
       const fn = """, cb, """;
+      const fnMode = """, cbMode, """;
       window.__isonimEditor = window.__isonimEditor || {};
       window.__isonimEditor.selectStoryByName = function (group, name) {
         fn(group, name);
+        return true;
+      };
+      window.__isonimEditor.setEditMode = function (modeIndex) {
+        fnMode(modeIndex | 0);
         return true;
       };
     })();

@@ -2148,6 +2148,14 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
           padding_bottom = "8px", padding_left = "16px",
           background_color = bgToolbar,
           border_bottom = "1px solid " & border,
+          # AIVS-NSO — the chrome bar needs to sit ABOVE the
+          # ``no-story`` overlay (z-index 20) so the user can still
+          # flip the surface back to Preview, change the viewport, or
+          # toggle the mode triplet even while the centre-column
+          # body is grayed out.  ``position: relative`` activates the
+          # z-index; the layout stays in the centerColumn flex flow.
+          position = "relative",
+          z_index = "25",
           `data-preview-toolbar` = "true",
           `data-preview-chrome-bar` = "true")
 
@@ -2477,6 +2485,16 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
   let centerColumn = ui(r):
     tdiv(display = "flex", flex_direction = "column",
           flex = "1", min_width = "0", min_height = "0",
+          # AIVS-NSO: center column is ``position: relative`` so the
+          # "select an item" overlay (mounted below) can absolute-
+          # position itself across the view stack + chrome bar without
+          # spilling into the sidebar / chat column.  The overlay is
+          # the load-bearing carrier for the UX-correctness contract:
+          # when a mode requires a selected story, the centre column
+          # grays out and surfaces an explanatory message — but the AI
+          # sidebar stays mounted so the user can keep talking to the
+          # assistant.
+          position = "relative",
           `data-preview-center-column` = "true")
   let viewStack = ui(r):
     tdiv(display = "flex", flex = "1", min_width = "0", min_height = "0",
@@ -2673,48 +2691,156 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
   discard design_review_mount_view.mountGalleryHostForEditor[R, E](
     r, centerColumn, vm)
 
+  # AIVS-NSO — "Select an item to edit its properties" overlay.
+  #
+  # Several centre-column surfaces are meaningless without a selected
+  # story: the component detail / component edit / page preview /
+  # foundations views all depend on ``vm.selectedStory`` to know what
+  # to render, and the Spec pane (View / Comment / Edit) needs a
+  # brief to display.  Storyboard is the exception — it shows the
+  # whole flow graph regardless of selection — and so is the vector
+  # editor, which only opens via an explicit ``openVectorEditor``
+  # affordance.
+  #
+  # The overlay sits absolute-positioned over the centre column, gated
+  # by a single ``createRenderEffect`` that observes ``selectedStory``,
+  # ``surfaceSig``, ``editMode``, and ``activeView``.  Its message
+  # adapts to the current mode per the user's spec:
+  #   * Spec View / Comment / Edit, no story: "Select an item to view
+  #     its specification."
+  #   * Preview View / Comment / Edit (Component/Page/Foundation
+  #     views) without a story: "Select an item to edit its
+  #     properties."
+  let overlayEl = ui(r):
+    tdiv(`data-no-story-overlay` = "true",
+         `data-test-id` = "no-story-overlay",
+         position = "absolute", top = "0", left = "0",
+         right = "0", bottom = "0",
+         display = "none",
+         align_items = "center", justify_content = "center",
+         flex_direction = "column",
+         gap = "8px", padding = "32px",
+         text_align = "center",
+         background_color = "rgba(11, 18, 32, 0.72)",
+         z_index = "20",
+         pointer_events = "auto")
+  var overlayHeadingEl: E
+  var overlaySubtitleEl: E
+  let overlayHeading = ui(r):
+    span(ref = overlayHeadingEl,
+         font_size = "16px", font_weight = "600",
+         color = "#E5E7EB",
+         `data-no-story-overlay-heading` = "true"):
+      text "Select an item to edit its properties"
+  let overlaySubtitle = ui(r):
+    span(ref = overlaySubtitleEl,
+         font_size = "13px", font_weight = "400",
+         color = "#A0A2B0",
+         line_height = "1.5",
+         max_width = "480px",
+         `data-no-story-overlay-subtitle` = "true"):
+      text "Pick a Page, Component, or Foundation from the sidebar — the editor surface activates once an item is selected."
+  r.appendChild(overlayEl, overlayHeading)
+  r.appendChild(overlayEl, overlaySubtitle)
+  r.appendChild(centerColumn, overlayEl)
+
+  block:
+    let capturedVm = vm
+    let captHeading = overlayHeadingEl
+    let captSubtitle = overlaySubtitleEl
+    # Set backdrop-filter via setStyle so vendor-prefixed values
+    # survive the DSL's CSS-property whitelist (which excludes
+    # ``backdrop-filter`` / ``-webkit-backdrop-filter`` by default).
+    # The setStyle sits inside this createRenderEffect to honour the
+    # "no setStyle outside an effect" rule even though the value is
+    # static.
+    createRenderEffect proc() =
+      r.setStyle(overlayEl, "backdrop-filter", "blur(2px)")
+      r.setStyle(overlayEl, "-webkit-backdrop-filter", "blur(2px)")
+    createRenderEffect proc() =
+      let story = capturedVm.selectedStory.val
+      let view = capturedVm.activeView.val
+      let surface = capturedVm.surfaceSig.val
+      let em = capturedVm.editMode.val
+      # ``vector editor`` is never reached without an explicit
+      # ``openVectorEditor`` affordance so it always has a target;
+      # ``storyboard`` renders the whole flow graph and is the
+      # default landing surface — both are exempt from the no-story
+      # overlay.  The remaining centre-column surfaces all hinge on
+      # ``vm.selectedStory``.
+      let surfaceNeedsStory =
+        surface == sSpec or
+        view in {evComponentDetail, evComponentEdit,
+                 evPagePreview, evFoundationsPage}
+      let noStory = story.name.len == 0
+      let want = surfaceNeedsStory and noStory
+      r.setStyle(overlayEl, "display", if want: "flex" else: "none")
+      if want:
+        # Mode-specific copy.  In Spec surface the call-to-action is
+        # to view / comment / edit the brief; in Preview surface the
+        # message stays consistent with the user's "select an item to
+        # edit its properties" suggestion.
+        if surface == sSpec:
+          let heading =
+            case em
+            of emView: "Select an item to view its specification"
+            of emComment: "Select an item to comment on its specification"
+            of emEdit: "Select an item to edit its specification"
+          let subtitle =
+            "Pick a Page, Component, or Foundation from the sidebar — " &
+            "the spec pane loads the matching brief once an item is " &
+            "selected.  Meanwhile the AI Assistant on the right " &
+            "remains available for general questions."
+          r.setTextContent(captHeading, heading)
+          r.setTextContent(captSubtitle, subtitle)
+        else:
+          let heading =
+            case em
+            of emView: "Select an item to view its preview"
+            of emComment: "Select an item to comment on its preview"
+            of emEdit: "Select an item to edit its properties"
+          let subtitle =
+            "Pick a Page, Component, or Foundation from the sidebar — " &
+            "the editor surface activates once an item is selected. " &
+            "Meanwhile the AI Assistant on the right remains " &
+            "available for general questions."
+          r.setTextContent(captHeading, heading)
+          r.setTextContent(captSubtitle, subtitle)
+
   # Mount order is the on-screen order (flex row, left to right):
   #   [sidebar | center column (chrome bar + view stack) | inspector chat]
   r.appendChild(shell, sidebarEl)
   r.appendChild(shell, centerColumn)
-  # TBAR-M6: one-shot signal flipped on by a successful Spec-Comment
-  # submission.  When in Spec surface this overrides the TBAR-M3
-  # surface-based hide so the user can see the AI Assistant respond
-  # to their selection comment.  Cleared when the user flips back to
-  # Preview (the TBAR-M3 invariant — "Spec surface has no
-  # property/AI panel by default" — is preserved for the surface
-  # switch e2e test which never submits a comment).
+  # AIVS-NSO — AI sidebar visibility contract:
+  # The AI Assistant is the user's single point of contact (see the
+  # IsoNim editor spec § "AI Assistant & Design Campaigns").  It must
+  # remain mounted across every surface (Preview/Spec) and every mode
+  # (View/Comment/Edit) so the user can keep talking to the assistant
+  # while iterating on the brief or selecting an item in the
+  # workspace.  The only carve-out left is the ``panels.inspector``
+  # toggle — clicking the Toggle inspector button in the status bar
+  # still collapses the right rail entirely (and re-opening restores
+  # it).
+  #
+  # This replaces the prior TBAR-M3 invariant ("Spec surface has no
+  # property/AI panel by default") and the ``manualEditMode`` carve-
+  # out that hid the chat panel during component Edit mode.  The
+  # center-column overlay below carries the "select an item / switch
+  # to preview" call-to-action so the user always sees an actionable
+  # next step instead of an empty rail.
   let chatOpenedForSpecComment = createSignal(false)
-  block:
-    let capturedVm = vm
-    let capturedChatFlag = chatOpenedForSpecComment
-    createRenderEffect proc() =
-      if capturedVm.surfaceSig.val == sPreview:
-        if capturedChatFlag.val:
-          capturedChatFlag.val = false
-  # TBAR-M3: the right-side property/AI-assistant panel is mounted
-  # reactively. When ``surfaceSig`` flips to ``sSpec`` the panel is
-  # physically removed from the shell row so its slot collapses (no
-  # orphan wrapper div remains). The ``manualEditMode`` carve-out
-  # (Edit mode on the live preview hides the AI panel) is preserved.
-  # TBAR-M6 extends the predicate with the spec-comment override so a
-  # successful Comment submission opens (and keeps open) the chat
-  # sidebar even while the user is on the Spec surface.
   block:
     let capturedVm = vm
     let capturedChatFlag = chatOpenedForSpecComment
     var mounted = false
     proc shouldMount(): bool =
-      let view = capturedVm.activeView.val
       let panels = capturedVm.panels.val
-      let surface = capturedVm.surfaceSig.val
-      let manualEditMode =
-        view == evComponentEdit and capturedVm.editMode.val == emEdit
-      let previewWantsChat =
-        surface == sPreview and panels.inspector and not manualEditMode
-      let specWantsChat =
-        surface == sSpec and capturedChatFlag.val and not manualEditMode
-      previewWantsChat or specWantsChat
+      # Keep the spec-comment one-shot signal observed so the existing
+      # TBAR-M6 wiring still drains it on surface flips (downstream
+      # code may inspect it); the panel is always wanted when
+      # ``panels.inspector`` is true regardless of its value.
+      discard capturedChatFlag.val
+      panels.inspector
     createRenderEffect proc() =
       let want = shouldMount()
       if want and not mounted:
