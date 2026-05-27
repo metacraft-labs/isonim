@@ -201,14 +201,15 @@ const
   cgGroupBg     = "#15151c"
   cgGroupBorder = "#2d2d3a"
 
-  # Pill chrome — matches settings_app ChoiceItem (GPUI choiceLeaf).
-  # Inactive segments carry a subtle fill (#22232e) — visibly lighter
-  # than the trough (#15151c) so the cluster reads as a row of pills,
-  # not a flat trough. Active uses the demo's accent (#7c7aed).
-  cgPillBg        = "#22232e"  # inactive subtle fill against the trough
-  cgPillBgOn      = "#7c7aed"  # active accent (matches GPUI choiceLeaf)
-  cgPillBorder    = "transparent"  # nested in the trough, no extra outline
-  cgPillBorderOn  = "#7c7aed"  # active outline matches fill
+  # Pill chrome — matches settings_app ChoiceItem.
+  # Demo render: pills sit inside the trough with NO inter-pill gap
+  # and NO inactive fill — inactive pills are just text on the trough
+  # background. Only the active pill carries the indigo accent fill.
+  # The trough itself provides the cluster's visible shape.
+  cgPillBg        = "transparent"  # inactive pills are JUST text
+  cgPillBgOn      = "#7c7aed"      # active accent (settings_app demo)
+  cgPillBorder    = "transparent"  # no individual pill outlines
+  cgPillBorderOn  = "#7c7aed"      # active border matches fill
   cgPillBorderDis = "transparent"
   cgTextDim       = "#A0A2B0"  # inactive muted (readable, not greyed)
   cgTextOn        = "#FFFFFF"  # active text
@@ -282,7 +283,7 @@ proc mountSegmentedChoice*[R, E](r: R; parent: E; vm: ChoiceGroupVM;
   let containerBorder =
     if variant == cgvTransparent: "none" else: "1px solid " & cgGroupBorder
   let containerRadius = "6px"  # matches ChoiceItem trough radius
-  let containerGap = "4px"     # matches GPUI choiceLeaf segment gap
+  let containerGap = "0"       # ChoiceItem pills share edges (no gap)
   let containerPadding = "2px"
   let variantAttr =
     if variant == cgvTransparent: "transparent" else: "filled"
