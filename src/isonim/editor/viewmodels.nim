@@ -141,6 +141,17 @@ type
     promptAdapter*: AgentPromptAdapter
     cancelAdapter*: AgentCancelAdapter
 
+  ChatSession* = ref object
+    ## One Assistant-tab chat. Each session owns its own ``AgentChatVM``
+    ## (messages, proposals, permissions, …). The Assistant tab strip in
+    ## ``shell.nim`` renders one tab per session; the active session is
+    ## selected via ``EditorVM.activeChatId`` and exposed through the
+    ## ``EditorVM.chat`` accessor below for backward compatibility with
+    ## every existing ``vm.chat.*`` call site.
+    id*: string
+    title*: Signal[string]
+    vm*: AgentChatVM
+
   ReviewResultsVM* = ref object of ViewModel
     violations*: Signal[seq[Violation]]
     annotations*: Signal[seq[ReviewAnnotation]]
@@ -221,7 +232,18 @@ type
     vectorEditor*: VectorEditorVM
     foundations*: FoundationEditorVM
     variants*: ComponentVariantEditorVM
-    chat*: AgentChatVM
+    chats*: Signal[seq[ChatSession]]
+      ## Multi-chat support: every Assistant-tab session lives here.
+      ## Initialised with a single ``"New chat"`` session in
+      ## ``createEditorVM``. The active session id is tracked separately
+      ## in ``activeChatId``; the read-only ``chat`` accessor below
+      ## returns the matching ``AgentChatVM`` so existing call sites
+      ## continue to work unchanged.
+    activeChatId*: Signal[string]
+      ## Identifier of the currently active chat session. Used by the
+      ## Assistant-tab strip in ``shell.nim`` to highlight the active
+      ## tab and by the ``chat`` accessor to pick out the right
+      ## ``AgentChatVM``.
     review*: ReviewResultsVM
     preview*: ProjectPreviewVM
     flowPlayer*: FlowPlayerVM
@@ -253,6 +275,124 @@ proc setSectionExpanded*(inspector: InspectorVM; section: InspectorSection;
 proc recordEditorTiming*(editor: EditorVM; kind: EditorPerformanceBudgetKind;
     durationMs: int; detail: string)
 proc detachStyleClass*(editor: EditorVM; property: string): StyleOperationResult {.discardable.}
+proc createAgentChatVM*(): AgentChatVM
+
+# ===========================================================================
+# Multi-chat session helpers (Assistant tab)
+# ===========================================================================
+#
+# ``EditorVM`` no longer carries a single ``chat`` field; it carries an
+# observable list of ``ChatSession`` records in ``chats`` plus the
+# ``activeChatId`` selector. The ``chat`` accessor below returns the
+# ``AgentChatVM`` of the currently-active session so the long-standing
+# ``vm.chat.*`` call pattern keeps working without per-call-site changes.
+
+proc activeChat*(vm: EditorVM): AgentChatVM =
+  ## Resolve the ``AgentChatVM`` for the active chat session. Falls back
+  ## to the first session when ``activeChatId`` is missing, and to a
+  ## freshly-created session when ``chats`` is empty (which should never
+  ## happen in production — ``createEditorVM`` seeds one chat — but is
+  ## safe under test fixtures that mint partially-constructed VMs).
+  let id = vm.activeChatId.val
+  for session in vm.chats.val:
+    if session.id == id:
+      return session.vm
+  if vm.chats.val.len > 0:
+    return vm.chats.val[0].vm
+  result = createAgentChatVM()
+
+proc chat*(vm: EditorVM): AgentChatVM {.inline.} =
+  ## Backwards-compatible accessor: ``vm.chat`` returns the active
+  ## chat's ``AgentChatVM``. Pre-existing call sites
+  ## (``vm.chat.messages``, ``vm.chat.sessionStatus``, …) keep working
+  ## verbatim through this alias.
+  vm.activeChat()
+
+proc defaultChatTitleFor(index: int): string =
+  if index <= 0: "New chat"
+  else: "New chat " & $(index + 1)
+
+proc createChatSession*(id: string; title = ""): ChatSession =
+  ## Build a ``ChatSession`` with a fresh ``AgentChatVM``. ``title``
+  ## defaults to ``"New chat"`` when blank.
+  let displayed =
+    if title.len > 0: title
+    else: "New chat"
+  ChatSession(
+    id: id,
+    title: createSignal(displayed),
+    vm: createAgentChatVM())
+
+proc createNewChat*(vm: EditorVM): string {.discardable.} =
+  ## Append a fresh chat session, activate it, and return its id.
+  ## The session id is the 1-based position of the new session at the
+  ## time of creation prefixed with ``"chat-"`` to keep ids stable for
+  ## tests and DOM attributes. Titles follow the ``"New chat"`` /
+  ## ``"New chat 2"`` / … convention so users can distinguish sessions
+  ## at a glance until they rename them.
+  let nextIndex = vm.chats.val.len
+  let id = "chat-" & $(nextIndex + 1)
+  let title = defaultChatTitleFor(nextIndex)
+  let session = createChatSession(id, title)
+  vm.chats.update proc(prev: seq[ChatSession]): seq[ChatSession] =
+    result = prev
+    result.add session
+  vm.activeChatId.val = id
+  id
+
+proc switchToChat*(vm: EditorVM; id: string): bool {.discardable.} =
+  ## Activate ``id`` when it matches an existing chat session. Returns
+  ## ``true`` on success, ``false`` when no session matches (in which
+  ## case ``activeChatId`` is left untouched).
+  for session in vm.chats.val:
+    if session.id == id:
+      vm.activeChatId.val = id
+      return true
+  false
+
+proc closeChat*(vm: EditorVM; id: string): bool {.discardable.} =
+  ## Remove a chat session by id. The last remaining chat is never
+  ## removed — we guarantee ``vm.chats.val.len >= 1`` at all times so
+  ## ``vm.chat`` always resolves to something. When the active chat is
+  ## closed the previous (or first) remaining chat becomes active.
+  let sessions = vm.chats.val
+  if sessions.len <= 1:
+    return false
+  var targetIdx = -1
+  for i, session in sessions:
+    if session.id == id:
+      targetIdx = i
+      break
+  if targetIdx < 0:
+    return false
+  let wasActive = vm.activeChatId.val == id
+  vm.chats.update proc(prev: seq[ChatSession]): seq[ChatSession] =
+    result = @[]
+    for i, session in prev:
+      if i != targetIdx: result.add session
+  if wasActive:
+    let remaining = vm.chats.val
+    let nextActive =
+      if targetIdx > 0 and targetIdx - 1 < remaining.len:
+        remaining[targetIdx - 1].id
+      elif remaining.len > 0:
+        remaining[0].id
+      else:
+        ""
+    vm.activeChatId.val = nextActive
+  true
+
+proc activeChatSession*(vm: EditorVM): ChatSession =
+  ## Return the active ``ChatSession`` (the wrapper with id + title),
+  ## or ``nil`` when no chats exist. Used by ``shell.nim`` to bind the
+  ## per-tab title display.
+  let id = vm.activeChatId.val
+  for session in vm.chats.val:
+    if session.id == id:
+      return session
+  if vm.chats.val.len > 0:
+    return vm.chats.val[0]
+  nil
 
 func commandLabel*(kind: EditorCommandKind): string =
   case kind
@@ -9935,7 +10075,13 @@ proc createEditorVM*(): EditorVM =
   let vectorEditor = createVectorEditorVM()
   let foundations = createFoundationEditorVM()
   let variants = createComponentVariantEditorVM()
-  let chat = createAgentChatVM()
+  # Multi-chat seed: every EditorVM starts with exactly one
+  # ``"New chat"`` session so the ``vm.chat`` accessor always resolves.
+  # Additional chats are spawned via ``createNewChat`` from the
+  # Assistant-tab "+" button.
+  let firstChat = createChatSession("chat-1", "New chat")
+  let chats = createSignal[seq[ChatSession]](@[firstChat])
+  let activeChatId = createSignal("chat-1")
   let review = createReviewResultsVM()
   let preview = createProjectPreviewVM(selectedStory, platform)
   let flowPlayer = createFlowPlayerVM()
@@ -9990,7 +10136,8 @@ proc createEditorVM*(): EditorVM =
     vectorEditor: vectorEditor,
     foundations: foundations,
     variants: variants,
-    chat: chat,
+    chats: chats,
+    activeChatId: activeChatId,
     review: review,
     preview: preview,
     flowPlayer: flowPlayer,
