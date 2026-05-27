@@ -199,7 +199,13 @@ suite "Editor Shell Views (M2)":
             sourceLine: 44)
         ]))
 
-      let view = renderComponentEditView[MockRenderer, MockNode](r, vm)
+      # The rich inspector content (12 sub-tabs + design-system-impact
+      # panel + dense property rows) used to live as a centre-column
+      # panel inside ``renderComponentEditView``. It now lives in the
+      # right sidebar's Manual tab (``renderInspectorPanel`` inside
+      # ``renderEditorShell``). Render the full shell so the new mount
+      # point is included in the assertion surface.
+      let view = renderEditorShell[MockRenderer, MockNode](r, vm)
       let impact = findByAttr(view, "data-design-system-impact", "true")
       check impact != nil
       check impact.attributes["data-source-scope-impact"] == "true"

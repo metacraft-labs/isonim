@@ -78,6 +78,25 @@ const inspectorSectionNames = [
   "Layout", "Size", "Space", "Pos", "Fill", "Stroke", "Type", "FX", "Trans",
   "Filter", "State", "Source"]
 
+func inspectorSectionAttr(section: InspectorSection): string =
+  ## ``data-inspector-section`` value for the 12 sub-tabs in the Manual
+  ## tab. Tests assert these slugs (``layout``, ``size``, ``spacing``,
+  ## …) so the chosen names match ``sectionFullTitle`` in
+  ## ``component_edit.nim`` lower-cased.
+  case section
+  of isLayout: "layout"
+  of isSize: "size"
+  of isSpacing: "spacing"
+  of isPosition: "position"
+  of isFill: "fill"
+  of isStroke: "stroke"
+  of isTypography: "typography"
+  of isEffects: "effects"
+  of isTransitions: "transitions"
+  of isFilters: "filters"
+  of isState: "state"
+  of isSource: "source"
+
 const sidebarSections = [
   ssUserJourneys, ssPages, ssComponents, ssFoundations, ssGuidelines]
 
@@ -1687,12 +1706,23 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
         of asReady: "ready"
         of asError: "error")
 
-  # Manual tab body — the inspector (12 sub-section tabs + property
-  # editor / empty state).
+  # Manual tab body — the inspector. Structure (per the test contract):
+  #   children[0] = 12-section sub-tab bar (Layout / Size / Space / …)
+  #   children[1..] = header (clipboard / Save / Revert / width / search)
+  #                    + inspector body (per-section content + design-
+  #                    system-impact panel), all populated by
+  #                    ``populateInspectorManualBody`` from
+  #                    ``component_edit.nim``.
+  #
+  # The ``.editor-manual-inspector`` class is preserved here (it used to
+  # live on the centre-column inspector panel; the e2e browser tests
+  # locate the inspector by this class).
   let manualBody = ui(r):
     tdiv(`data-sidebar-tab-panel` = "manual",
+         class = "editor-manual-inspector",
          display = "flex", flex_direction = "column",
-         flex = "1", min_height = "0", overflow_x = "hidden"):
+         flex = "1", min_height = "0", min_width = "0",
+         overflow_x = "hidden"):
 
       # 12 inspector sub-section tabs (Layout / Size / Space / …).
       tdiv(class = "editor-tabbar",
@@ -1707,6 +1737,7 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
           tdiv(display = "flex", align_items = "center",
                 ref = tabNode,
                 `role` = "tab", tabindex = "0",
+                `data-inspector-section` = inspectorSectionAttr(section),
                 `aria-label` = "Show " & name & " inspector section",
                 `aria-selected` = (if vm.isActiveInspectorSection(
                     section): "true" else: "false"),
@@ -1723,58 +1754,18 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
           block:
             r.bindInspectorTabState(tabNode, vm, section)
 
-      # Property content area
-      if vm.inspector.hasElement.val:
-        tdiv(flex = "1", display = "flex", flex_direction = "column",
-              padding = "12px", overflow_y = "auto", gap = "10px"):
-          tdiv(display = "flex", flex_direction = "column", gap = "3px"):
-            span(font_size = "10px", font_weight = "600",
-                  color = textSecondary, text_transform = "uppercase",
-                  letter_spacing = "0.5px"):
-              text "Selection"
-            span(font_size = "12px", color = textPrimary,
-                  font_family = "monospace"):
-              text vm.inspector.selectedElement.val.tag
-            span(font_size = "11px", color = textDim):
-              text vm.inspector.selectedElement.val.sourceFile & ":" &
-                $vm.inspector.selectedElement.val.sourceLine
-
-          for prop in vm.inspector.properties.val:
-            let propName = prop.name
-            let propValue = prop.value
-            var propertyRow: E
-            tdiv(display = "flex", flex_direction = "column", gap = "4px",
-                  ref = propertyRow):
-              label(font_size = "10px", color = textMuted,
-                    text_transform = "uppercase", letter_spacing = "0.4px"):
-                text propName
-            block:
-              let inputNode = ui(r):
-                input(class = "editor-input",
-                      height = "28px",
-                      background_color = bgSurface,
-                      border = "1px solid " & border,
-                      border_radius = "4px", padding = "0 8px",
-                      font_size = "12px", color = textPrimary,
-                      outline = "none")
-              r.setAttribute(inputNode, "aria-label",
-                "Edit inspector property " & propName)
-              r.setInputValue(inputNode, propValue)
-              let editProperty =
-                inspectorPropertyEditHandler[R, E](r, vm, inputNode, propName)
-              r.addEventListener(inputNode, "change", editProperty)
-              r.addEventListener(inputNode, "keydown", editProperty)
-              r.appendChild(propertyRow, inputNode)
-      else:
-        tdiv(flex = "1", display = "flex", flex_direction = "column",
-              align_items = "center", justify_content = "center",
-              padding = "24px 16px", overflow_y = "auto"):
-          tdiv(font_size = "28px", opacity = "0.25", margin_bottom = "8px"):
-            text "\xF0\x9F\x94\x8D"
-          span(font_size = "12px", color = textMuted):
-            text "Select an element to inspect"
-          span(font_size = "11px", color = textDim, margin_top = "4px"):
-            text "Click any element in the preview"
+  # ``populateInspectorManualBody`` takes a ``frame: E`` argument that
+  # the live-preview JS helpers in ``component_edit.nim`` use to talk
+  # to the editable preview iframe. The actual iframe lives inside
+  # ``renderComponentEditView`` (rendered in a different part of the
+  # shell), so the sidebar has no direct reference to it. We pass the
+  # ``manualBody`` itself as a stand-in element: the live-preview
+  # helpers fall back to
+  # ``document.querySelector('iframe[data-component-edit-frame]')``
+  # whenever the passed element doesn't expose a ``contentDocument``,
+  # which is always the case here. This keeps the type signature
+  # satisfied without coupling the sidebar to a specific iframe ref.
+  populateInspectorManualBody[R, E](r, manualBody, vm, manualBody)
 
   # Assistant tab body — wraps ``renderChatPanel`` so the chat panel
   # fills the remaining sidebar height beneath the tab bar. The chat

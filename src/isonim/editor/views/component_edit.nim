@@ -1563,8 +1563,11 @@ proc applyLivePreviewStyle[R, E](r: R; frame: E; propName, value: string) =
   when defined(js):
     {.emit: ["""
       (function () {
-        const frame = """, frame,
+        let frame = """, frame,
         """;
+        if (!frame || !frame.contentDocument) {
+          frame = document.querySelector('iframe[data-component-edit-frame="true"]');
+        }
         if (!frame || !frame.contentDocument) return;
         const selected = Array.from(frame.contentDocument.querySelectorAll('[data-isonim-selected="true"]'));
         if (frame.contentWindow && frame.contentWindow.__isonimSelectedElement) {
@@ -1600,8 +1603,11 @@ proc revertLivePreviewStyles[R, E](r: R; frame: E) =
   when defined(js):
     {.emit: ["""
       (function () {
-        const frame = """, frame,
+        let frame = """, frame,
         """;
+        if (!frame || !frame.contentDocument) {
+          frame = document.querySelector('iframe[data-component-edit-frame="true"]');
+        }
         if (!frame || !frame.contentDocument) return;
         frame.contentDocument.querySelectorAll('[data-isonim-live-edited="true"]').forEach((el) => {
           const originals = el.__isonimOriginalInlineStyles || {};
@@ -1623,8 +1629,11 @@ proc commitLivePreviewStyles[R, E](r: R; frame: E) =
   when defined(js):
     {.emit: ["""
       (function () {
-        const frame = """, frame,
+        let frame = """, frame,
         """;
+        if (!frame || !frame.contentDocument) {
+          frame = document.querySelector('iframe[data-component-edit-frame="true"]');
+        }
         if (!frame || !frame.contentDocument) return;
         frame.contentDocument.querySelectorAll('[data-isonim-live-edited="true"]').forEach((el) => {
           el.__isonimOriginalInlineStyles = {};
@@ -4247,7 +4256,23 @@ proc populateSectionTabs[R, E](r: R; vm: EditorVM; frame, tabs, content: E;
     r.addEventListener(tab, "keydown", activate)
     r.appendChild(tabs, tab)
 
-proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
+proc populateInspectorManualBody*[R, E](r: R; target: E; vm: EditorVM;
+    frame: E) =
+  ## Fills ``target`` (the right-sidebar Manual tab body) with the rich
+  ## inspector content — header (clipboard chip + Save/Revert + width
+  ## controls + search), then the scroll-area with per-section content
+  ## and the design-system-impact panel.
+  ##
+  ## The 12-section sub-tab bar (Layout / Size / Space / …) is owned
+  ## by the caller (``shell.nim``) so the existing sidebar tab markup
+  ## stays as ``target.children[0]`` — this helper appends AFTER the
+  ## tab bar.
+  ##
+  ## ``frame`` is the editable preview iframe. For the sidebar mount
+  ## this is a placeholder element; the live-preview helpers fall back
+  ## to ``document.querySelector('iframe[data-component-edit-frame]')``
+  ## at runtime when the explicit reference doesn't carry a
+  ## ``contentDocument``.
   var saveButton: E
   var revertButton: E
   var narrowButton: E
@@ -4255,109 +4280,103 @@ proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
   var widenButton: E
   var searchInput: E
   let clipboard = StyleClipboard()
-  result = ui(r):
-    tdiv(class = "editor-manual-inspector",
-          width = "320px", min_width = "260px", max_width = "520px",
-          display = "flex", flex_direction = "column",
-          background_color = bgSidebar, overflow_y = "hidden",
-          overflow_x = "hidden",
-          border_left = "1px solid " & border):
-      tdiv(display = "flex", align_items = "center",
-            justify_content = "space-between",
-            height = "32px", min_height = "32px",
-            padding = "0 6px",
-            background_color = bgCard,
-            border_bottom = "1px solid " & border):
-        tdiv(display = "flex", align_items = "center", gap = "2px",
-              background_color = "#0F172A",
-              border = "1px solid " & border,
+  # Header row (Design/Proto/Inspect chip + narrow/reset/widen +
+  # Revert/Save). The width buttons are the same control set the
+  # Assistant tab's chat panel exposes — duplicated here so the
+  # affordance is available from whichever tab the user is currently
+  # looking at (only one tab body is visible at a time, so duplicate
+  # ``data-isonim-focus-id`` markers don't collide in practice).
+  let header = ui(r):
+    tdiv(display = "flex", align_items = "center",
+          justify_content = "space-between",
+          height = "32px", min_height = "32px",
+          padding = "0 6px",
+          background_color = bgCard,
+          border_bottom = "1px solid " & border):
+      tdiv(display = "flex", align_items = "center", gap = "2px",
+            background_color = "#0F172A",
+            border = "1px solid " & border,
+            border_radius = "3px",
+            padding = "1px"):
+        span(padding = "2px 6px",
               border_radius = "3px",
-              padding = "1px"):
-          span(padding = "2px 6px",
-                border_radius = "3px",
-                background_color = accent,
-                color = textPrimary,
-                font_size = "10px",
-                font_weight = "700"):
-            text "Design"
-          span(padding = "2px 6px",
-                color = textDim,
-                font_size = "10px",
-                font_weight = "600"):
-            text "Proto"
-          span(padding = "2px 6px",
-                color = textDim,
-                font_size = "10px",
-                font_weight = "600"):
-            text "Inspect"
-        tdiv(display = "flex", gap = "3px"):
-          tdiv(ref = narrowButton, role = "button", tabindex = "0",
-                `aria-label` = "Narrow right panel",
-                width = "22px", height = "22px",
-                display = "flex", align_items = "center",
-                justify_content = "center",
-                border_radius = "4px",
-                font_size = "10px", cursor = "pointer",
-                background_color = bgSurface, color = textMuted):
-            text "-"
-          tdiv(ref = resetWidthButton, role = "button", tabindex = "0",
-                `aria-label` = "Reset right panel width",
-                width = "22px", height = "22px",
-                display = "flex", align_items = "center",
-                justify_content = "center",
-                border_radius = "4px",
-                font_size = "10px", cursor = "pointer",
-                background_color = bgSurface, color = textMuted):
-            text "1"
-          tdiv(ref = widenButton, role = "button", tabindex = "0",
-                `aria-label` = "Widen right panel",
-                width = "22px", height = "22px",
-                display = "flex", align_items = "center",
-                justify_content = "center",
-                border_radius = "4px",
-                font_size = "10px", cursor = "pointer",
-                background_color = bgSurface, color = textMuted):
-            text "+"
-          tdiv(ref = revertButton, role = "button", tabindex = "0",
-                padding = "3px 6px", border_radius = "4px",
-                font_size = "10px", cursor = "pointer",
-                background_color = bgSurface, color = textMuted):
-            text "Revert"
-          tdiv(ref = saveButton, role = "button", tabindex = "0",
-                padding = "3px 6px", border_radius = "4px",
-                font_size = "10px", font_weight = "600", cursor = "pointer",
-                background_color = accent, color = textPrimary):
-            text "Save"
-      tdiv(display = "grid",
-            grid_template_columns = "minmax(0, 1fr)",
-            align_items = "center",
-            gap = "3px",
-            padding = "5px 6px",
-            border_bottom = "1px solid " & border):
-        input(ref = searchInput,
-              class = "editor-input",
-              height = "22px",
-              background_color = "#0F172A",
-              border = "1px solid " & border,
-              border_radius = "3px",
-              padding = "0 6px",
-              font_size = "11px",
+              background_color = accent,
               color = textPrimary,
-              outline = "none",
-              min_width = "0",
-              `aria-label` = "Search inspector sections",
-              placeholder = "Search")
-  r.bindRightPanelWidth(result, vm)
+              font_size = "10px",
+              font_weight = "700"):
+          text "Design"
+        span(padding = "2px 6px",
+              color = textDim,
+              font_size = "10px",
+              font_weight = "600"):
+          text "Proto"
+        span(padding = "2px 6px",
+              color = textDim,
+              font_size = "10px",
+              font_weight = "600"):
+          text "Inspect"
+      tdiv(display = "flex", gap = "3px", flex_wrap = "wrap",
+            justify_content = "flex-end"):
+        tdiv(ref = narrowButton, role = "button", tabindex = "0",
+              `aria-label` = "Narrow right panel",
+              width = "22px", height = "22px",
+              display = "flex", align_items = "center",
+              justify_content = "center",
+              border_radius = "4px",
+              font_size = "10px", cursor = "pointer",
+              background_color = bgSurface, color = textMuted):
+          text "-"
+        tdiv(ref = resetWidthButton, role = "button", tabindex = "0",
+              `aria-label` = "Reset right panel width",
+              width = "22px", height = "22px",
+              display = "flex", align_items = "center",
+              justify_content = "center",
+              border_radius = "4px",
+              font_size = "10px", cursor = "pointer",
+              background_color = bgSurface, color = textMuted):
+          text "1"
+        tdiv(ref = widenButton, role = "button", tabindex = "0",
+              `aria-label` = "Widen right panel",
+              width = "22px", height = "22px",
+              display = "flex", align_items = "center",
+              justify_content = "center",
+              border_radius = "4px",
+              font_size = "10px", cursor = "pointer",
+              background_color = bgSurface, color = textMuted):
+          text "+"
+        tdiv(ref = revertButton, role = "button", tabindex = "0",
+              padding = "3px 6px", border_radius = "4px",
+              font_size = "10px", cursor = "pointer",
+              background_color = bgSurface, color = textMuted):
+          text "Revert"
+        tdiv(ref = saveButton, role = "button", tabindex = "0",
+              padding = "3px 6px", border_radius = "4px",
+              font_size = "10px", font_weight = "600", cursor = "pointer",
+              background_color = accent, color = textPrimary):
+          text "Save"
+  r.appendChild(target, header)
 
-  let tabs = ui(r):
-    tdiv(class = "editor-tabbar",
-          display = "flex", align_items = "center", gap = "2px",
-          height = "26px", min_height = "26px",
-          padding = "2px 6px",
-          background_color = bgSidebar,
-          border_bottom = "1px solid " & border,
-          overflow_x = "auto", scrollbar_width = "none")
-  r.appendChild(result, tabs)
+  let searchRow = ui(r):
+    tdiv(display = "grid",
+          grid_template_columns = "minmax(0, 1fr)",
+          align_items = "center",
+          gap = "3px",
+          padding = "5px 6px",
+          border_bottom = "1px solid " & border):
+      input(ref = searchInput,
+            class = "editor-input",
+            height = "22px",
+            background_color = "#0F172A",
+            border = "1px solid " & border,
+            border_radius = "3px",
+            padding = "0 6px",
+            font_size = "11px",
+            color = textPrimary,
+            outline = "none",
+            min_width = "0",
+            `aria-label` = "Search inspector sections",
+            placeholder = "Search")
+  r.appendChild(target, searchRow)
 
   r.setAttribute(saveButton, "aria-label", "Save inspector source edits")
   r.setAttribute(revertButton, "aria-label", "Revert inspector source edits")
@@ -4399,25 +4418,25 @@ proc renderInspector[R, E](r: R; vm: EditorVM; frame: E): E =
 
   let inspectorBody = ui(r):
     tdiv(flex = "1", display = "flex", flex_direction = "column",
-          padding = "6px", overflow_y = "auto", gap = "6px")
-  r.appendChild(result, inspectorBody)
+          padding = "6px", overflow_y = "auto", overflow_x = "hidden",
+          gap = "6px", min_width = "0")
+  r.appendChild(target, inspectorBody)
 
   let content = ui(r):
-    tdiv(display = "flex", flex_direction = "column", gap = "6px")
+    tdiv(display = "flex", flex_direction = "column", gap = "6px",
+          min_width = "0")
   r.appendChild(inspectorBody, content)
 
   let impactContent = ui(r):
     tdiv(display = "flex", flex_direction = "column",
-          padding_top = "6px",
+          padding_top = "6px", min_width = "0",
           border_top = "1px solid " & border)
   r.appendChild(inspectorBody, impactContent)
-  r.populateSectionTabs(vm, frame, tabs, content, clipboard)
   r.populateInspectorImpact(vm, frame, impactContent)
 
-  let inspectorRoot = result
+  let inspectorRoot = target
   createRenderEffect proc() =
     discard vm.activeView.val
-    r.populateSectionTabs(vm, frame, tabs, content, clipboard)
     r.populateInspectorImpact(vm, frame, impactContent)
     r.populateInspectorContent(vm, frame, content, clipboard)
     r.restoreInspectorFocus(inspectorRoot, vm)
@@ -4462,9 +4481,13 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
           background_color = "#FFFFFF",
           `data-component-edit-frame` = "true")
 
-  let inspectorPanel = renderInspector[R, E](r, vm, projectFrame)
+  # The rich property inspector now lives in the right sidebar's
+  # Manual tab (``shell.nim``), not as a centre-column panel. The
+  # component-edit view owns only the editable preview iframe; the
+  # ``installPreviewSelectionBridge`` window-event handler still
+  # routes ``isonim-preview-element-selected`` from the iframe into
+  # ``vm.inspector``, which the sidebar inspector reads reactively.
   r.appendChild(container, preview)
-  r.appendChild(container, inspectorPanel)
 
   installPreviewSelectionBridge[R, E](r, projectFrame, vm)
 
@@ -4505,9 +4528,5 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
         lastRestoredSelection):
       lastRestoredSelection = selectedId
       r.restorePreviewSelection(projectFrame, selectedId)
-
-    let editing = vm.editMode.val == emEdit
-    r.setStyle(inspectorPanel, "display",
-      if editing and vm.panels.val.inspector: "flex" else: "none")
 
   container
