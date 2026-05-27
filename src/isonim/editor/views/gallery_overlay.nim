@@ -484,7 +484,8 @@ proc statusColor(status: string): string =
   else: gStatusPend
 
 proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM;
-                                onSave: proc() = nil) =
+                                onSave: proc() = nil;
+                                narrow: Signal[bool] = nil) =
   ## Mount the gallery as a child of ``parent`` (typically the
   ## preview-pane container).  The overlay is a flex column with a
   ## top toolbar (mode chips), a tile-grid container, and a full-tab
@@ -499,9 +500,20 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM;
   ## VM-local ``markSaved`` (empty layoutId / version 0) so the dirty
   ## flag still clears — useful for UI smoke tests that don't care
   ## about the round-trip.
+  ##
+  ## CHRM-M7 polish — ``narrow`` is the design-review narrow-viewport
+  ## signal (``DesignReviewState.narrow``).  When non-nil and true,
+  ## the toolbar lays out as a single-line horizontally-scrollable
+  ## chip strip (no wrap) and the inline status label hides — the
+  ## status footer at the overlay bottom carries the same info.  When
+  ## nil (e.g. headless tests that don't drive a narrow signal) the
+  ## toolbar uses its standard wide/laptop layout.
   let capturedVm = vm
   let capturedOnSave = onSave
+  let capturedNarrow = narrow
 
+  var toolbarRow: E
+  var chipStrip: E
   var modeChipGrid: E
   var modeChipFullTab: E
   var modeChipFullScreen: E
@@ -541,71 +553,109 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM;
       max_height = "100%",
       overflow = "hidden"):
       # --- Toolbar: mode chips + status -------------------------------
-      tdiv(display = "flex", flex_direction = "row", align_items = "center",
+      # CHRM-M7 polish — toolbar carries a ``ref`` so a reactive
+      # narrow-mode effect can rewrite its inline style to switch
+      # between row layout (wide / laptop) and a wrap-to-2-row layout
+      # at narrow widths.  The mode chips live inside a dedicated
+      # ``chipStrip`` wrapper so its overflow behaviour is independent
+      # of the toolbar row's flex behaviour.
+      tdiv(ref = toolbarRow,
+            display = "flex", flex_direction = "row",
+            align_items = "center",
             gap = "8px",
             `data-design-review-gallery-toolbar` = "true",
             `role` = "toolbar",
             `aria-label` = "Gallery view modes"):
         span(font_size = "10px", font_weight = "700",
               text_transform = "uppercase", letter_spacing = "0.4px",
-              color = gAccent):
+              color = gAccent,
+              flex = "0 0 auto",
+              white_space = "nowrap"):
           text "Gallery"
-        # CHRM-M6 Wave B — mode chips share the CHRM-M2 ChoiceGroup
-        # ``cgvTransparent`` family. Idle pill = transparent fill +
-        # 1 px ``#2D2D3A`` border. Selected pill = accent fill
-        # ``#3B82F6`` + white text. The selected/idle visual swap is
-        # driven by a reactive style effect below (the no-setStyle
-        # invariant on this file rules out ``r.setStyle``; we drive
-        # the chip's inline ``style`` attribute via ``setAttribute``
-        # which the dogfooding lexer scan allows).
-        tdiv(ref = modeChipGrid,
-              `role` = "button", tabindex = "0",
-              `data-design-review-gallery-mode` = "grid",
-              `aria-label` = "Grid view",
-              padding = "3px 10px", font_size = "11px",
-              font_weight = "600", color = gTextPrim,
-              background_color = "transparent",
-              border = "1px solid " & gChipBorder,
-              border_radius = "999px",
-              cursor = "pointer"):
-          text "Grid"
-        tdiv(ref = modeChipFullTab,
-              `role` = "button", tabindex = "0",
-              `data-design-review-gallery-mode` = "full-tab",
-              `aria-label` = "Full-tab view",
-              padding = "3px 10px", font_size = "11px",
-              font_weight = "600", color = gTextPrim,
-              background_color = "transparent",
-              border = "1px solid " & gChipBorder,
-              border_radius = "999px",
-              cursor = "pointer"):
-          text "Full tab"
-        tdiv(ref = modeChipFullScreen,
-              `role` = "button", tabindex = "0",
-              `data-design-review-gallery-mode` = "full-screen",
-              `aria-label` = "Full-screen view",
-              padding = "3px 10px", font_size = "11px",
-              font_weight = "600", color = gTextPrim,
-              background_color = "transparent",
-              border = "1px solid " & gChipBorder,
-              border_radius = "999px",
-              cursor = "pointer"):
-          text "Full screen"
-        # CHRM-M6 Wave A — the Compare chip is no longer permanently
-        # disabled.  Its enabled/disabled state, cursor, and text colour
-        # are driven reactively by ``compareCaptureIds.val.len`` below
-        # (the chip lights up when ≥2 captures are multi-selected).
-        tdiv(ref = modeChipCompare,
-              `role` = "button", tabindex = "0",
-              `data-design-review-gallery-mode` = "compare",
-              `aria-label` = "Compare view",
-              padding = "3px 10px", font_size = "11px",
-              font_weight = "600", color = gTextMuted,
-              background_color = "transparent",
-              border = "1px solid " & gChipBorder,
-              border_radius = "999px",
-              cursor = "pointer"):
-          text "Compare"
+        # CHRM-M7 polish — Pattern A. At narrow widths the chip strip
+        # becomes a single-line horizontally-scrollable container
+        # (``flex-wrap: nowrap; overflow-x: auto``) so the four chips
+        # never wrap mid-pill. At wide/laptop the strip is a normal
+        # row with the chips' natural inline-flex layout. Default
+        # (initial) style is the wide/laptop layout; the reactive
+        # effect below rewrites the inline style attribute when
+        # ``narrow`` flips.
+        tdiv(ref = chipStrip,
+              `data-design-review-gallery-chip-strip` = "true",
+              display = "flex", flex_direction = "row",
+              align_items = "center",
+              gap = "6px",
+              flex = "1 1 auto",
+              min_width = "0"):
+          # CHRM-M6 Wave B — mode chips share the CHRM-M2 ChoiceGroup
+          # ``cgvTransparent`` family. Idle pill = transparent fill +
+          # 1 px ``#2D2D3A`` border. Selected pill = accent fill
+          # ``#3B82F6`` + white text. The selected/idle visual swap is
+          # driven by a reactive style effect below (the no-setStyle
+          # invariant on this file rules out ``r.setStyle``; we drive
+          # the chip's inline ``style`` attribute via ``setAttribute``
+          # which the dogfooding lexer scan allows).
+          #
+          # CHRM-M7 polish — every chip carries ``white-space: nowrap``
+          # + ``flex-shrink: 0`` so chip text never wraps mid-pill and
+          # the chips never shrink below their natural width inside
+          # the (potentially scrolling) strip.
+          tdiv(ref = modeChipGrid,
+                `role` = "button", tabindex = "0",
+                `data-design-review-gallery-mode` = "grid",
+                `aria-label` = "Grid view",
+                padding = "3px 10px", font_size = "11px",
+                font_weight = "600", color = gTextPrim,
+                background_color = "transparent",
+                border = "1px solid " & gChipBorder,
+                border_radius = "999px",
+                white_space = "nowrap",
+                flex = "0 0 auto",
+                cursor = "pointer"):
+            text "Grid"
+          tdiv(ref = modeChipFullTab,
+                `role` = "button", tabindex = "0",
+                `data-design-review-gallery-mode` = "full-tab",
+                `aria-label` = "Full-tab view",
+                padding = "3px 10px", font_size = "11px",
+                font_weight = "600", color = gTextPrim,
+                background_color = "transparent",
+                border = "1px solid " & gChipBorder,
+                border_radius = "999px",
+                white_space = "nowrap",
+                flex = "0 0 auto",
+                cursor = "pointer"):
+            text "Full tab"
+          tdiv(ref = modeChipFullScreen,
+                `role` = "button", tabindex = "0",
+                `data-design-review-gallery-mode` = "full-screen",
+                `aria-label` = "Full-screen view",
+                padding = "3px 10px", font_size = "11px",
+                font_weight = "600", color = gTextPrim,
+                background_color = "transparent",
+                border = "1px solid " & gChipBorder,
+                border_radius = "999px",
+                white_space = "nowrap",
+                flex = "0 0 auto",
+                cursor = "pointer"):
+            text "Full screen"
+          # CHRM-M6 Wave A — the Compare chip is no longer permanently
+          # disabled.  Its enabled/disabled state, cursor, and text colour
+          # are driven reactively by ``compareCaptureIds.val.len`` below
+          # (the chip lights up when ≥2 captures are multi-selected).
+          tdiv(ref = modeChipCompare,
+                `role` = "button", tabindex = "0",
+                `data-design-review-gallery-mode` = "compare",
+                `aria-label` = "Compare view",
+                padding = "3px 10px", font_size = "11px",
+                font_weight = "600", color = gTextMuted,
+                background_color = "transparent",
+                border = "1px solid " & gChipBorder,
+                border_radius = "999px",
+                white_space = "nowrap",
+                flex = "0 0 auto",
+                cursor = "pointer"):
+            text "Compare"
         # REV-M8 follow-up — Save layout chip.  Hidden by default
         # (``data-design-review-gallery-save-visible="false"``); the
         # reactive effect below flips it visible when ``isDirty.val``
@@ -623,10 +673,14 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM;
               background_color = gChipAccent,
               border = "1px solid " & gChipAccent,
               border_radius = "999px",
+              white_space = "nowrap",
+              flex = "0 0 auto",
               cursor = "pointer"):
           text "Save layout"
         span(ref = statusLabel,
               font_size = "10px", color = gTextDim,
+              white_space = "nowrap",
+              flex = "0 0 auto",
               `data-design-review-gallery-status` = "true"):
           text ""
       # --- Tile grid host ----------------------------------------------
@@ -1375,14 +1429,29 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM;
     # chips keep their transparent fill + ``#2D2D3A`` border from the
     # DSL declaration.  We rewrite the inline ``style`` attribute via
     # ``setAttribute`` so the no-setStyle invariant holds.
+    #
+    # CHRM-M7 polish — ``setAttribute("style", ...)`` REPLACES the
+    # whole inline-style attribute (browsers don't merge), so the
+    # layout properties (padding, border-radius, font, display,
+    # white-space, flex-shrink) emitted by the DSL would be wiped out
+    # on first paint and the chip text could wrap mid-pill at narrow
+    # widths. We append a shared ``chipLayoutCss`` suffix to every
+    # rewrite so layout always survives the reactive repaint.
+    const chipLayoutCss =
+      "display: inline-flex; align-items: center;" &
+      " padding: 3px 10px; font-size: 11px; font-weight: 600;" &
+      " border-radius: 999px; border-width: 1px;" &
+      " border-style: solid; white-space: nowrap;" &
+      " flex: 0 0 auto;"
     proc chipStyle(selected: bool): string =
       if selected:
         "background-color: " & gChipAccent &
           "; color: #FFFFFF; border-color: " & gChipAccent &
-          "; cursor: pointer;"
+          "; cursor: pointer; " & chipLayoutCss
       else:
         "background-color: transparent; color: " & gTextPrim &
-          "; border-color: " & gChipBorder & "; cursor: pointer;"
+          "; border-color: " & gChipBorder &
+          "; cursor: pointer; " & chipLayoutCss
     r.setAttribute(modeChipGrid, "style", chipStyle(mode == gmGrid))
     r.setAttribute(modeChipFullTab, "style",
                    chipStyle(mode == gmFullTab))
@@ -1412,19 +1481,28 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM;
     #     border ``#2D2D3A`` (the cgvTransparent family)
     #   - disabled (<2 selected, not in compare): transparent + muted
     #     text + ``not-allowed`` cursor (per the brief)
+    # CHRM-M7 polish — keep the same ``chipLayoutCss`` suffix as the
+    # other chips so the inline style rewrite preserves the chip's
+    # layout (padding, font, white-space: nowrap, flex-shrink: 0).
+    const chipLayoutCssCompare =
+      "display: inline-flex; align-items: center;" &
+      " padding: 3px 10px; font-size: 11px; font-weight: 600;" &
+      " border-radius: 999px; border-width: 1px;" &
+      " border-style: solid; white-space: nowrap;" &
+      " flex: 0 0 auto;"
     r.setAttribute(modeChipCompare, "style",
                    if selected:
                      "background-color: " & gChipAccent &
                        "; color: #FFFFFF; border-color: " & gChipAccent &
-                       "; cursor: pointer;"
+                       "; cursor: pointer; " & chipLayoutCssCompare
                    elif enabled:
                      "background-color: transparent; color: " & gTextPrim &
                        "; border-color: " & gChipBorder &
-                       "; cursor: pointer;"
+                       "; cursor: pointer; " & chipLayoutCssCompare
                    else:
                      "background-color: transparent; color: " & gAccentMuted &
                        "; border-color: " & gChipBorder &
-                       "; cursor: not-allowed;")
+                       "; cursor: not-allowed; " & chipLayoutCssCompare)
   # CHRM-M6 Wave A — mirror the comma-joined selected capture ids onto
   # the overlay so Playwright can cross-reference the compare-mode
   # selection without scraping DOM children.
@@ -1487,17 +1565,28 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM;
     # Inline style: the chip is only renderable when dirty (or in the
     # immediate post-save flash window).  No-setStyle invariant: we use
     # ``setAttribute("style", ...)`` like the conflict dialog above.
+    # CHRM-M7 polish — share the chip layout suffix so the save
+    # button matches the mode chip family (padding, font, pill
+    # radius, nowrap) when visible. The "hidden" branch keeps the
+    # plain ``display: none`` shortcut since no layout properties
+    # need to survive while the chip is offscreen.
+    const chipLayoutCssSave =
+      "display: inline-flex; align-items: center;" &
+      " padding: 3px 10px; font-size: 11px; font-weight: 600;" &
+      " border-radius: 999px; border-width: 1px;" &
+      " border-style: solid; white-space: nowrap;" &
+      " flex: 0 0 auto;"
     r.setAttribute(saveButton, "style",
                    if dirty:
                      "background-color: " & gChipAccent &
                        "; color: #FFFFFF; border-color: " & gChipAccent &
-                       "; cursor: pointer; display: inline-flex;"
+                       "; cursor: pointer; " & chipLayoutCssSave
                    elif savedEdge:
                      # Subdued green tone to read as "saved"; still
                      # visible so the e2e can assert the transition.
                      "background-color: " & gStatusOk &
                        "; color: #FFFFFF; border-color: " & gStatusOk &
-                       "; cursor: default; display: inline-flex;"
+                       "; cursor: default; " & chipLayoutCssSave
                    else:
                      "display: none;")
     r.setAttribute(saveButton, "data-saved",
@@ -1540,6 +1629,65 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM;
   r.addEventListener(conflictReloadBtn, "keydown", reloadHandler)
   r.addEventListener(conflictDismissBtn, "click", dismissHandler)
   r.addEventListener(conflictDismissBtn, "keydown", dismissHandler)
+
+  # CHRM-M7 polish — narrow-viewport toolbar layout swap (Pattern A).
+  # When ``narrow`` is non-nil and true:
+  #   * chip strip becomes a single-line horizontally-scrollable
+  #     container so the four chips never wrap mid-pill;
+  #   * inline status label hides (the bottom status footer already
+  #     shows ``<briefId> · <n> captures``).
+  # When narrow is nil (e.g. mock-renderer tests with no narrow signal)
+  # or false, the toolbar keeps its standard wide/laptop layout.
+  #
+  # Driven via the no-setStyle ``setAttribute("style", ...)`` path the
+  # rest of this file already uses for reactive style swaps. The
+  # ``data-narrow`` attribute on the toolbar gives tests a stable hook
+  # if they ever need to assert the layout swap.
+  if capturedNarrow != nil:
+    let narrowSig = capturedNarrow
+    createRenderEffect proc() =
+      let isNarrow = narrowSig.val
+      r.setAttribute(toolbarRow, "data-narrow",
+                     if isNarrow: "true" else: "false")
+      if isNarrow:
+        # Toolbar wraps onto two rows: GALLERY label + chip strip on
+        # row 1, save button on row 2 if visible. Status label hidden
+        # — the footer carries the same info.
+        #
+        # Reserve a 44 px right strip so the drawer's close chip
+        # (positioned: absolute; top: 10px; right: 10px; 32×32 px)
+        # doesn't visually overlap the rightmost mode chip in the
+        # horizontally-scrolling strip.
+        r.setAttribute(toolbarRow, "style",
+                       "display: flex; flex-direction: row;" &
+                       " align-items: center; gap: 8px;" &
+                       " flex-wrap: wrap; padding-right: 44px;")
+        # Chip strip: single-line, horizontally scrollable.
+        r.setAttribute(chipStrip, "style",
+                       "display: flex; flex-direction: row;" &
+                       " align-items: center; gap: 4px;" &
+                       " flex: 1 1 auto; min-width: 0;" &
+                       " flex-wrap: nowrap; overflow-x: auto;" &
+                       " overflow-y: hidden;" &
+                       " scrollbar-width: thin;" &
+                       " scrollbar-color: #475569 transparent;" &
+                       " -webkit-overflow-scrolling: touch;" &
+                       " padding: 2px 2px;")
+        # Hide the inline status label — the status footer below the
+        # body already shows ``<briefId> · <n> captures``.
+        r.setAttribute(statusLabel, "style", "display: none;")
+      else:
+        # Wide / laptop — restore the default toolbar layout.
+        r.setAttribute(toolbarRow, "style",
+                       "display: flex; flex-direction: row;" &
+                       " align-items: center; gap: 8px;")
+        r.setAttribute(chipStrip, "style",
+                       "display: flex; flex-direction: row;" &
+                       " align-items: center; gap: 6px;" &
+                       " flex: 1 1 auto; min-width: 0;")
+        r.setAttribute(statusLabel, "style",
+                       "display: inline; white-space: nowrap;" &
+                       " flex: 0 0 auto;")
 
   r.appendChild(parent, root)
 

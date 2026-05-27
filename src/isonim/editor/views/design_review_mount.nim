@@ -427,6 +427,14 @@ proc mountSidebarHistoryButtonForEditor*[R, E](r: R; parent: E; vm: EditorVM) =
   startBriefHasHistoryPolling(st)
   let capturedState = st
   let capturedVm = st.historyVm
+  # CHRM-M7 polish — 44 × 44 px minimum hit area per iOS HIG / Android
+  # Material guidance. The button only renders at narrow widths (the
+  # ``editor-sidebar-history-narrow`` slot is ``display: none`` at
+  # wide/laptop via ``browser.nim``'s media query) so the larger
+  # touch target doesn't disturb the chrome-bar history button used
+  # by mouse on wide. The button's visual centre stays the 🕘 glyph;
+  # the extra dimension translates to a more generous tap area
+  # without changing the chip shape.
   let button = ui(r):
     tdiv(
       `role` = "button",
@@ -437,14 +445,16 @@ proc mountSidebarHistoryButtonForEditor*[R, E](r: R; parent: E; vm: EditorVM) =
       display = "inline-flex",
       align_items = "center",
       justify_content = "center",
-      width = "26px",
-      height = "26px",
+      width = "44px",
+      height = "44px",
+      min_width = "44px",
+      min_height = "44px",
       padding = "0",
-      font_size = "14px",
+      font_size = "18px",
       color = "#F1F5F9",
       background_color = "#0F172A",
       border = "1px solid #334155",
-      border_radius = "4px",
+      border_radius = "6px",
       cursor = "pointer",
       user_select = "none"):
       text "\u{1F558}"
@@ -568,7 +578,10 @@ proc mountGalleryHostForEditor*[R, E](r: R; parent: E; vm: EditorVM): E =
   r.appendChild(host, closeChip)
   # Mount the gallery overlay once into the host; toggle visibility via
   # the data-attribute path that gallery_overlay.nim already uses.
-  mountGalleryOverlay[R, E](r, host, st.galleryVm)
+  # CHRM-M7 polish — thread the narrow-viewport signal through so the
+  # gallery toolbar can swap to a single-line horizontally-scrollable
+  # chip strip at ≤768 px (Pattern A in the polish wave brief).
+  mountGalleryOverlay[R, E](r, host, st.galleryVm, narrow = st.narrow)
   # CHRM-M7 — re-parenting bookkeeping. When the viewport flips to
   # narrow AND the gallery is open, detach the host from its inline
   # parent (the centre column) and attach it to ``document.body`` so
