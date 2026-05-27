@@ -1,43 +1,33 @@
-// CHRM-M6 Phase D.3 — Playwright e2e: gallery drag-and-drop pipeline
-// is wired without errors on the live editor.
+// REV-M8 follow-up — Playwright e2e: gallery drag-and-drop now
+// visibly reorders tiles in the DOM, surfaces a dirty mirror on the
+// overlay, and renders a Save layout chip that fires the save action.
 //
-// IMPORTANT — architectural scope note:
+// Architectural context (post-follow-up):
 //
-// The gallery overlay (gallery_overlay.nim) attaches ``dragover`` and
-// ``drop`` listeners to each tile that call ``registerDragMove`` on
-// the VM (L731-L736). That call:
+// The gallery's row-rendering memo derives from ``effectiveTiles``
+// (NOT ``tiles``). ``effectiveTiles`` is a memo that overlays
+// ``pendingLayout`` on the canonical tile cache — so a drop, which
+// pushes a ``PendingLayoutEntry`` into ``pendingLayout``, also
+// invalidates ``effectiveTiles`` → ``rows`` → the grid repaints with
+// the dragged tile at its target position. The original ``tiles.val``
+// is untouched (any server round-trip works against the real data).
 //
-//   * Appends to (or updates an entry in) ``vm.pendingLayout`` — a
-//     Signal[seq[PendingLayoutEntry]].
-//   * Flips ``vm.isDirty.val = true``.
+// In addition, the overlay surfaces:
 //
-// NEITHER ``pendingLayout`` NOR ``isDirty`` are surfaced to the DOM
-// in the current gallery_overlay.nim (see gallery_overlay.nim L17-19:
-// "REV-M7 only delivers view-only behaviour. Drag handlers update
-// ``pendingLayout`` but never persist — REV-M8 wires the save path.").
+//   * ``data-design-review-gallery-dirty`` on the root, mirroring
+//     ``vm.isDirty.val``.
+//   * A reactive save chip
+//     (``[data-design-review-gallery-save-button="true"]``) whose
+//     ``data-design-review-gallery-save-visible`` flag mirrors
+//     ``isDirty``. Clicking it calls the caller-supplied ``onSave``
+//     callback (or falls back to ``vm.markSaved`` when no callback
+//     was wired). On success the chip carries ``data-saved="true"``
+//     briefly so the e2e can observe the transition.
 //
-// Additionally, the grid only re-renders when ``rows.val`` changes
-// (driven by ``tiles.val``); the drop handler never mutates either,
-// so the rendered tiles' ``data-design-review-gallery-row`` /
-// ``data-design-review-gallery-col`` attributes are STABLE after a
-// drop. The VM-level reorder semantics (record + replace by
-// captureId) are covered exhaustively by
-// ``tests/test_design_review_gallery_drag_rearrange_vm.nim``.
-//
-// What we CAN verify at the DOM/e2e level:
-//
-//   1. Tiles are ``draggable="true"`` per their DSL declaration so
-//      native HTML5 drag is available.
-//   2. Dispatching ``dragstart`` + ``dragover`` + ``drop`` synthetic
-//      events on tiles does not raise a page error and the tile DOM
-//      stays consistent (count + capture-id attributes unchanged —
-//      the documented contract for REV-M7).
-//
-// The Plan agent's note about a save affordance
-// (``data-design-review-isdirty="true"``) was speculative — no such
-// attribute exists in gallery_overlay.nim today. Case 3 (save
-// affordance) is dropped per the implementer's instruction:
-// "if no such affordance exists, drop case 3 and document why".
+// This file used to assert the inverse "REV-M7 contract: drop records
+// pendingLayout but does not re-render". That assertion is now
+// inverted: a drop MUST visibly reorder, MUST flip dirty, MUST surface
+// the save chip.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -64,8 +54,11 @@ test.before(async () => {
     editorPort: PAGE_PORT,
     editorBuild: EDITOR_BUILD,
   });
+  // Seed 4 captures across two device classes so the gallery groups
+  // them into a single previewId row (the dragging happens within the
+  // row — same previewId per the harness story binding).
   const captures = [];
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < 4; i++) {
     captures.push({
       storyId: "p/inbox:page#0@web",
       platform: "web",
@@ -168,7 +161,7 @@ test("gallery tiles are draggable per the DSL declaration", async () => {
     });
     assert.ok(
       draggableInfo.length >= 2,
-      `expected ≥2 tiles to assert draggable; got ${draggableInfo.length}`,
+      `expected >=2 tiles to assert draggable; got ${draggableInfo.length}`,
     );
     for (const info of draggableInfo) {
       assert.equal(
@@ -182,7 +175,7 @@ test("gallery tiles are draggable per the DSL declaration", async () => {
   }
 });
 
-test("synthetic dragstart + dragover + drop fires without page errors and DOM stays consistent", async () => {
+test("synthetic dragstart + dragover + drop fires without page errors and tile count stays stable", async () => {
   const b = await ensureBrowser();
   const ctx = await b.newContext({ viewport: { width: 1440, height: 900 } });
   const page = await ctx.newPage();
@@ -194,34 +187,20 @@ test("synthetic dragstart + dragover + drop fires without page errors and DOM st
       const tiles = Array.from(
         document.querySelectorAll("[data-design-review-gallery-tile]"),
       );
-      return tiles.map((t) => ({
-        captureId: t.getAttribute("data-design-review-gallery-tile"),
-        row: t.getAttribute("data-design-review-gallery-row"),
-        col: t.getAttribute("data-design-review-gallery-col"),
-      }));
+      return tiles.map((t) =>
+        t.getAttribute("data-design-review-gallery-tile"),
+      );
     });
     assert.ok(
       before.length >= 2,
-      `expected ≥2 tiles for drag scenario; got ${before.length}`,
+      `expected >=2 tiles for drag scenario; got ${before.length}`,
     );
-    // Dispatch a synthetic drag sequence: dragstart on tile A,
-    // dragover on tile B (with a constructed DataTransfer for
-    // realism), and drop on tile B. The gallery_overlay.nim handlers
-    // bind ``dragover`` + ``drop`` to ``registerDragMove`` — the
-    // event payload itself is unused beyond the bound captureId,
-    // rowIdx, colIdx baked into the closure at render time.
     await page.evaluate(() => {
       const tiles = Array.from(
         document.querySelectorAll("[data-design-review-gallery-tile]"),
       );
       const src = tiles[0];
       const dst = tiles[1];
-      // ``DataTransfer`` may not be constructible in every browser
-      // context; the gallery's handler closure never reads
-      // ``ev.dataTransfer`` so an empty object on a generic Event
-      // works just as well. We use the spec-correct
-      // ``new DragEvent`` constructor where available and fall back
-      // to a plain Event otherwise.
       function dispatchDragEvent(target, type) {
         let ev;
         try {
@@ -236,31 +215,22 @@ test("synthetic dragstart + dragover + drop fires without page errors and DOM st
       dispatchDragEvent(dst, "drop");
     });
     await page.waitForTimeout(200);
-    // Tile count must be stable.
-    const after = await page.evaluate(() => {
+    // Tile count must be stable — the reorder shifts positions but
+    // never adds/removes tiles.
+    const afterIds = await page.evaluate(() => {
       const tiles = Array.from(
         document.querySelectorAll("[data-design-review-gallery-tile]"),
       );
-      return tiles.map((t) => ({
-        captureId: t.getAttribute("data-design-review-gallery-tile"),
-        row: t.getAttribute("data-design-review-gallery-row"),
-        col: t.getAttribute("data-design-review-gallery-col"),
-      }));
+      return tiles.map((t) =>
+        t.getAttribute("data-design-review-gallery-tile"),
+      );
     });
     assert.equal(
-      after.length,
+      afterIds.length,
       before.length,
       "tile count must be stable across a drag sequence " +
-        `(before=${before.length}, after=${after.length})`,
+        `(before=${before.length}, after=${afterIds.length})`,
     );
-    // Each tile's captureId persists (no tile destroyed or replaced).
-    for (let i = 0; i < before.length; i++) {
-      assert.equal(
-        after[i].captureId,
-        before[i].captureId,
-        `tile at index ${i} captureId changed (${before[i].captureId} → ${after[i].captureId})`,
-      );
-    }
     // No JS errors during the drag pipeline.
     assert.equal(
       errors.length,
@@ -273,19 +243,19 @@ test("synthetic dragstart + dragover + drop fires without page errors and DOM st
   }
 });
 
-test("drop handler does not alter rendered tile row/col attrs (REV-M7 contract: pendingLayout only)", async () => {
-  // This case enforces the architectural contract: a drop records
-  // intent into ``vm.pendingLayout`` (off-DOM) but does NOT trigger a
-  // re-render of the grid. The rendered tiles' position attributes
-  // therefore stay where ``groupByPreview`` placed them. If a future
-  // milestone wires REV-M8's persistence + reapplication, this test
-  // will surface that change and force the assertion to be rewritten
-  // alongside the new behaviour.
+test("drop visibly reorders the dragged tile and flips data-design-review-gallery-dirty=true", async () => {
+  // REV-M8 follow-up — replaces the prior "REV-M7 contract: drop
+  // records pendingLayout but does NOT re-render" assertion. The grid
+  // now derives from ``effectiveTiles`` (a memo that overlays
+  // pendingLayout on tiles), so a drop visibly repositions the tile
+  // AND surfaces a dirty mirror + save chip.
   const b = await ensureBrowser();
   const ctx = await b.newContext({ viewport: { width: 1440, height: 900 } });
   const page = await ctx.newPage();
   try {
     await openGalleryWithCaptures(page);
+    // Capture the pre-drag layout: ordered list of (captureId, row, col)
+    // for each tile.
     const before = await page.evaluate(() => {
       return Array.from(
         document.querySelectorAll("[data-design-review-gallery-tile]"),
@@ -295,12 +265,35 @@ test("drop handler does not alter rendered tile row/col attrs (REV-M7 contract: 
         col: t.getAttribute("data-design-review-gallery-col"),
       }));
     });
+    assert.ok(
+      before.length >= 2,
+      `need >=2 tiles for drag; got ${before.length}`,
+    );
+    // Confirm the overlay starts NOT dirty.
+    const initialDirty = await page.evaluate(() =>
+      document
+        .querySelector('[data-design-review-gallery-overlay="true"]')
+        ?.getAttribute("data-design-review-gallery-dirty"),
+    );
+    assert.equal(
+      initialDirty,
+      "false",
+      "overlay must start with data-design-review-gallery-dirty=false",
+    );
+    // Drag tile[0] onto tile[1]'s position. The gallery's handlers
+    // bind ``dragover`` + ``drop`` to ``registerDragMove(captureId,
+    // rowIdx, colIdx)`` — the rowIdx + colIdx are baked at render
+    // time, so the drop on tile[1] records tile[0]->target=(row1,
+    // col1). After the memo recomputes, tile[0] sits where tile[1]
+    // was; tile[1] shifts left.
+    const srcCaptureId = before[0].captureId;
+    const dstCaptureId = before[1].captureId;
+    const dstRowBefore = before[1].row;
+    const dstColBefore = before[1].col;
     await page.evaluate(() => {
       const tiles = Array.from(
         document.querySelectorAll("[data-design-review-gallery-tile]"),
       );
-      if (tiles.length < 2) return;
-      const dst = tiles[1];
       function ev(type) {
         try {
           return new DragEvent(type, { bubbles: true, cancelable: true });
@@ -309,10 +302,12 @@ test("drop handler does not alter rendered tile row/col attrs (REV-M7 contract: 
         }
       }
       tiles[0].dispatchEvent(ev("dragstart"));
-      dst.dispatchEvent(ev("dragover"));
-      dst.dispatchEvent(ev("drop"));
+      tiles[1].dispatchEvent(ev("dragover"));
+      tiles[1].dispatchEvent(ev("drop"));
     });
     await page.waitForTimeout(200);
+    // After the drop, the source tile must carry the destination's
+    // pre-drag row/col (we dropped it ONTO the destination's slot).
     const after = await page.evaluate(() => {
       return Array.from(
         document.querySelectorAll("[data-design-review-gallery-tile]"),
@@ -322,26 +317,169 @@ test("drop handler does not alter rendered tile row/col attrs (REV-M7 contract: 
         col: t.getAttribute("data-design-review-gallery-col"),
       }));
     });
-    assert.equal(after.length, before.length, "tile count stable");
-    for (let i = 0; i < before.length; i++) {
-      assert.equal(
-        after[i].captureId,
-        before[i].captureId,
-        `tile[${i}] captureId stable`,
+    const srcAfter = after.find((t) => t.captureId === srcCaptureId);
+    assert.ok(srcAfter, `dragged tile ${srcCaptureId} missing post-drop`);
+    assert.equal(
+      srcAfter.row,
+      dstRowBefore,
+      `dragged tile ${srcCaptureId} must adopt destination's row ` +
+        `(${dstRowBefore}); got ${srcAfter.row}`,
+    );
+    assert.equal(
+      srcAfter.col,
+      dstColBefore,
+      `dragged tile ${srcCaptureId} must adopt destination's col ` +
+        `(${dstColBefore}); got ${srcAfter.col}`,
+    );
+    // The destination tile MUST still exist (drop is a reorder, not
+    // a replace) and its row/col must have shifted off the original.
+    const dstAfter = after.find((t) => t.captureId === dstCaptureId);
+    assert.ok(dstAfter, `destination tile ${dstCaptureId} missing post-drop`);
+    // dst's new col must differ from its before-col (it was displaced
+    // when src landed on it).  Row may also differ — both checked.
+    const dstMoved =
+      dstAfter.col !== dstColBefore || dstAfter.row !== dstRowBefore;
+    assert.ok(
+      dstMoved,
+      `destination tile ${dstCaptureId} must have moved after the ` +
+        `drop landed on its slot (before row=${dstRowBefore}, col=${dstColBefore}; ` +
+        `after row=${dstAfter.row}, col=${dstAfter.col})`,
+    );
+    // Dirty mirror is now "true".
+    const dirtyAfter = await page.evaluate(() =>
+      document
+        .querySelector('[data-design-review-gallery-overlay="true"]')
+        ?.getAttribute("data-design-review-gallery-dirty"),
+    );
+    assert.equal(
+      dirtyAfter,
+      "true",
+      "overlay must carry data-design-review-gallery-dirty=true after drop",
+    );
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("save chip surfaces when dirty, clicking it clears dirty and flashes data-saved=true", async () => {
+  // REV-M8 follow-up — the third leg of the visible-reorder pipeline:
+  // a Save layout chip becomes visible reactively when isDirty=true,
+  // and clicking it (1) fires the save action and (2) flips the chip
+  // to a brief "saved" state that the e2e can latch onto.
+  const b = await ensureBrowser();
+  const ctx = await b.newContext({ viewport: { width: 1440, height: 900 } });
+  const page = await ctx.newPage();
+  try {
+    await openGalleryWithCaptures(page);
+    // Save chip MUST exist in the DOM (rendered up front; visibility
+    // is controlled by data-design-review-gallery-save-visible).
+    const initialChip = await page.evaluate(() => {
+      const chip = document.querySelector(
+        '[data-design-review-gallery-save-button="true"]',
       );
-      assert.equal(
-        after[i].row,
-        before[i].row,
-        `tile[${i}] data-design-review-gallery-row must be unchanged ` +
-          `(REV-M7 contract: drop records pendingLayout but does not re-render)`,
+      if (!chip) return null;
+      return {
+        visible: chip.getAttribute("data-design-review-gallery-save-visible"),
+        saved: chip.getAttribute("data-saved"),
+        display: window.getComputedStyle(chip).display,
+      };
+    });
+    assert.ok(
+      initialChip,
+      "save chip [data-design-review-gallery-save-button='true'] must be in the DOM",
+    );
+    assert.equal(
+      initialChip.visible,
+      "false",
+      "save chip must start hidden (data-design-review-gallery-save-visible=false)",
+    );
+    assert.equal(
+      initialChip.display,
+      "none",
+      "save chip must start with computed display:none",
+    );
+    // Trigger a drag-drop to flip dirty.
+    await page.evaluate(() => {
+      const tiles = Array.from(
+        document.querySelectorAll("[data-design-review-gallery-tile]"),
       );
-      assert.equal(
-        after[i].col,
-        before[i].col,
-        `tile[${i}] data-design-review-gallery-col must be unchanged ` +
-          `(REV-M7 contract: drop records pendingLayout but does not re-render)`,
+      function ev(type) {
+        try {
+          return new DragEvent(type, { bubbles: true, cancelable: true });
+        } catch {
+          return new Event(type, { bubbles: true, cancelable: true });
+        }
+      }
+      tiles[0].dispatchEvent(ev("dragstart"));
+      tiles[1].dispatchEvent(ev("dragover"));
+      tiles[1].dispatchEvent(ev("drop"));
+    });
+    await page.waitForTimeout(200);
+    const dirtyChip = await page.evaluate(() => {
+      const chip = document.querySelector(
+        '[data-design-review-gallery-save-button="true"]',
       );
-    }
+      return {
+        visible: chip.getAttribute("data-design-review-gallery-save-visible"),
+        saved: chip.getAttribute("data-saved"),
+        display: window.getComputedStyle(chip).display,
+      };
+    });
+    assert.equal(
+      dirtyChip.visible,
+      "true",
+      "save chip must surface (data-design-review-gallery-save-visible=true) after drop",
+    );
+    assert.notEqual(
+      dirtyChip.display,
+      "none",
+      "save chip must be visible (display != none) after drop",
+    );
+    assert.equal(
+      dirtyChip.saved,
+      "false",
+      "data-saved must be false while the user is still dirty",
+    );
+    // Click the chip — fires the save action.
+    await page.evaluate(() => {
+      const chip = document.querySelector(
+        '[data-design-review-gallery-save-button="true"]',
+      );
+      chip.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await page.waitForTimeout(200);
+    // Post-click: overlay's dirty mirror flips back to false AND the
+    // chip records the saved-edge with data-saved=true.
+    const post = await page.evaluate(() => {
+      const overlay = document.querySelector(
+        '[data-design-review-gallery-overlay="true"]',
+      );
+      const chip = document.querySelector(
+        '[data-design-review-gallery-save-button="true"]',
+      );
+      return {
+        dirty: overlay?.getAttribute("data-design-review-gallery-dirty"),
+        chipVisible: chip?.getAttribute(
+          "data-design-review-gallery-save-visible",
+        ),
+        chipSaved: chip?.getAttribute("data-saved"),
+      };
+    });
+    assert.equal(
+      post.dirty,
+      "false",
+      "data-design-review-gallery-dirty must flip back to false after save",
+    );
+    assert.equal(
+      post.chipVisible,
+      "false",
+      "save chip must hide (data-design-review-gallery-save-visible=false) after save",
+    );
+    assert.equal(
+      post.chipSaved,
+      "true",
+      "save chip must show data-saved=true briefly after a successful save",
+    );
   } finally {
     await ctx.close();
   }

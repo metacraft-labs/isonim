@@ -1,4 +1,4 @@
-## REV-M7 — gallery overlay view + ViewModel.
+## REV-M7 / REV-M8 — gallery overlay view + ViewModel.
 ##
 ## The gallery is a tile grid that surfaces every prior capture for the
 ## brief currently open in the preview pane.  Three view modes:
@@ -13,8 +13,15 @@
 ##                        the mode so REV-M7's tests can assert it
 ##                        toggles correctly).
 ##
-## REV-M7 only delivers view-only behaviour.  Drag handlers update
-## ``pendingLayout`` but never persist — REV-M8 wires the save path.
+## REV-M8 follow-up — visible drag-rearrange.  The original REV-M8
+## landed the VM-level drag scratchpad (``pendingLayout`` + ``isDirty``)
+## and the server-side save endpoint, but the grid kept rendering
+## directly off ``tiles`` and never reflected the pending reorder in
+## the DOM.  This follow-up wires ``effectiveTiles`` (a memo that
+## overlays ``pendingLayout`` on ``tiles``) into ``rows`` so a drop
+## visibly repositions the dragged tile, AND surfaces a Save layout
+## button + ``data-design-review-gallery-dirty`` mirror so the dirty
+## state is observable from the DOM.
 ##
 ## All view code uses the ``ui:`` DSL exclusively.  The
 ## ``test_design_review_gallery_no_setstyle`` lexer scan asserts no
@@ -71,6 +78,12 @@ type
   GalleryVM* = ref object
     briefId*: Signal[string]
     tiles*: Signal[seq[GalleryTile]]
+    ## REV-M8 follow-up — ``effectiveTiles`` overlays ``pendingLayout``
+    ## on ``tiles`` so the grid visibly reflects a drag-reorder before
+    ## the server round-trip completes.  ``rows`` derives from
+    ## ``effectiveTiles`` (not ``tiles``); when ``pendingLayout`` is
+    ## empty ``effectiveTiles == tiles`` and ``rows`` is unchanged.
+    effectiveTiles*: Memo[seq[GalleryTile]]
     rows*: Memo[seq[GalleryRow]]
     selectedTileIds*: Signal[HashSet[string]]
     mode*: Signal[GalleryMode]
@@ -97,6 +110,89 @@ type
 # --------------------------------------------------------------------------- #
 #  Pure helpers (testable independently of the reactive plumbing).
 # --------------------------------------------------------------------------- #
+
+proc applyPendingLayout*(tiles: seq[GalleryTile];
+                        pending: seq[PendingLayoutEntry]): seq[GalleryTile] =
+  ## REV-M8 follow-up — overlay ``pending`` on top of ``tiles`` to
+  ## produce a reordered tile sequence the grid can render.  Semantics:
+  ##
+  ##   1. Group ``tiles`` by ``previewId`` (preserving first-appearance
+  ##      order of rows) to derive the current row buckets.
+  ##   2. For each ``pending`` entry (in pending-list order):
+  ##        a. Find the tile by ``captureId`` and remove it from its
+  ##           current row bucket.
+  ##        b. Resolve the target row by index.  ``rowIndex`` clamps to
+  ##           ``[0, rows.len)``; out-of-range targets fall back to the
+  ##           tile's original row so a stale drop position never drops
+  ##           the tile off the visible grid.
+  ##        c. Insert the tile at ``columnIndex`` within the target row
+  ##           (clamped to ``[0, row.len]`` — len allows append).
+  ##   3. Flatten the row buckets back into a tile seq, preserving the
+  ##      original row order so ``groupByPreview`` reproduces the same
+  ##      visual grouping downstream.
+  ##
+  ## When ``pending`` is empty (the common case before any drag) the
+  ## result equals ``tiles`` so ``rows.val`` is byte-stable.
+  if pending.len == 0:
+    return tiles
+  # Row buckets keyed by previewId, plus the row order (so the result
+  # can be flattened back in the same visual sequence ``groupByPreview``
+  # would yield).
+  var rowOrder = newSeq[string]()
+  var buckets = initTable[string, seq[GalleryTile]]()
+  for t in tiles:
+    if t.previewId notin buckets:
+      buckets[t.previewId] = @[]
+      rowOrder.add(t.previewId)
+    var bucket = buckets[t.previewId]
+    bucket.add(t)
+    buckets[t.previewId] = bucket
+  for entry in pending:
+    # Locate the tile by captureId across all buckets.
+    var foundIn = ""
+    var foundIdx = -1
+    var found: GalleryTile
+    for previewId, bucket in buckets:
+      for i in 0 ..< bucket.len:
+        if bucket[i].captureId == entry.captureId:
+          foundIn = previewId
+          foundIdx = i
+          found = bucket[i]
+          break
+      if foundIdx >= 0: break
+    if foundIdx < 0:
+      # Stale pendingLayout entry (tile no longer in the cache); skip.
+      continue
+    # Remove from the current bucket.
+    var srcBucket = buckets[foundIn]
+    srcBucket.delete(foundIdx)
+    buckets[foundIn] = srcBucket
+    # Resolve target row.  rowIndex is the *visual* row index; map it
+    # onto ``rowOrder``.  Out-of-range falls back to the original row so
+    # the tile is never lost.
+    var targetPreview = foundIn
+    if entry.rowIndex >= 0 and entry.rowIndex < rowOrder.len:
+      targetPreview = rowOrder[entry.rowIndex]
+    # When the drop crosses into a different row, project the tile's
+    # ``previewId`` onto the target row so ``groupByPreview`` re-buckets
+    # it visually into the destination.  This is a projection over
+    # ``effectiveTiles`` only — the canonical ``tiles.val`` (and hence
+    # any subsequent server round-trip) keeps the tile's true previewId
+    # intact; we never mutate the source cache.
+    if targetPreview != foundIn:
+      found.previewId = targetPreview
+    # Insert at the target column (clamped).
+    var dstBucket = buckets[targetPreview]
+    var col = entry.columnIndex
+    if col < 0: col = 0
+    if col > dstBucket.len: col = dstBucket.len
+    dstBucket.insert(found, col)
+    buckets[targetPreview] = dstBucket
+  # Flatten rows back to a tile seq in the original row order.
+  result = @[]
+  for previewId in rowOrder:
+    for t in buckets[previewId]:
+      result.add(t)
 
 proc groupByPreview*(tiles: seq[GalleryTile]): seq[GalleryRow] =
   ## Bucket the tile list by ``previewId`` preserving the input order
@@ -143,8 +239,16 @@ proc createGalleryVM*(briefId: string;
     conflict: createSignal(LayoutConflict()),
   )
   let capturedVm = vm
+  # REV-M8 follow-up — ``effectiveTiles`` overlays the drag-reorder
+  # scratchpad on the canonical tiles list.  ``rows`` derives from
+  # ``effectiveTiles`` so a drop visibly repositions the dragged tile
+  # immediately, before any server round-trip.  ``markSaved`` /
+  # ``applyLayoutJson`` continue to mutate ``pendingLayout`` directly;
+  # this memo re-evaluates against the new state automatically.
+  vm.effectiveTiles = createMemo[seq[GalleryTile]] proc(): seq[GalleryTile] =
+    applyPendingLayout(capturedVm.tiles.val, capturedVm.pendingLayout.val)
   vm.rows = createMemo[seq[GalleryRow]] proc(): seq[GalleryRow] =
-    groupByPreview(capturedVm.tiles.val)
+    groupByPreview(capturedVm.effectiveTiles.val)
   # When mode leaves gmFullTab the focused capture id must clear; if
   # the spec changes to keep it persistent across mode switches the
   # full-tab tests will catch the regression.
@@ -184,10 +288,15 @@ proc toggleSelect*(vm: GalleryVM; captureId: string) =
 
 proc registerDragMove*(vm: GalleryVM; captureId: string;
                        rowIndex, columnIndex: int) =
-  ## Drag-and-drop scratchpad write.  REV-M7 does not persist this —
-  ## REV-M8 owns the save endpoint.  We record the intent + flip the
-  ## ``isDirty`` flag so REV-M8's UI affordances can light up the
-  ## save button reactively.
+  ## Drag-and-drop scratchpad write.  Called from the view's drop
+  ## handler with the SOURCE captureId (tracked across the drag via a
+  ## dragstart-set shared ref) and the DESTINATION tile's (rowIdx,
+  ## columnIdx).  The result is: "the tile with this captureId wants
+  ## to be placed at this row/col next render".  ``applyPendingLayout``
+  ## (the memo backing ``effectiveTiles`` → ``rows``) consumes this so
+  ## the grid visibly reorders before any server round-trip.  The
+  ## ``isDirty`` flag flips so the save-chip affordance reactively
+  ## surfaces.
   var entries = vm.pendingLayout.val
   var replaced = false
   for i, e in entries:
@@ -374,17 +483,30 @@ proc statusColor(status: string): string =
   of "capture_failed", "review_failed", "failed": gStatusErr
   else: gStatusPend
 
-proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
+proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM;
+                                onSave: proc() = nil) =
   ## Mount the gallery as a child of ``parent`` (typically the
   ## preview-pane container).  The overlay is a flex column with a
   ## top toolbar (mode chips), a tile-grid container, and a full-tab
   ## host that swaps in when mode = gmFullTab.
+  ##
+  ## ``onSave`` is invoked when the user clicks the Save layout chip
+  ## (rendered reactively when ``vm.isDirty.val == true``).  The
+  ## production caller wires this to a POST against
+  ## ``/api/design-review/save-layout`` and calls ``vm.markSaved`` /
+  ## ``vm.markConflict`` from the response callback.  Tests pass in a
+  ## fake handler.  When ``onSave`` is nil the chip falls back to a
+  ## VM-local ``markSaved`` (empty layoutId / version 0) so the dirty
+  ## flag still clears — useful for UI smoke tests that don't care
+  ## about the round-trip.
   let capturedVm = vm
+  let capturedOnSave = onSave
 
   var modeChipGrid: E
   var modeChipFullTab: E
   var modeChipFullScreen: E
   var modeChipCompare: E
+  var saveButton: E
   var gridHost: E
   var fullTabHost: E
   # CHRM-M6 Wave A — compare-mode host. The host is data-hidden until
@@ -405,6 +527,10 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
   let root = ui(r):
     tdiv(
       `data-design-review-gallery-overlay` = "true",
+      # REV-M8 follow-up — dirty mirror.  Default "false"; reactive
+      # effect lifts it to "true" when ``vm.isDirty`` flips after a
+      # drag-reorder, and back to "false" after ``markSaved``.
+      `data-design-review-gallery-dirty` = "false",
       display = "flex", flex_direction = "column",
       gap = "10px", padding = "12px 14px",
       background_color = gBg,
@@ -480,6 +606,25 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
               border_radius = "999px",
               cursor = "pointer"):
           text "Compare"
+        # REV-M8 follow-up — Save layout chip.  Hidden by default
+        # (``data-design-review-gallery-save-visible="false"``); the
+        # reactive effect below flips it visible when ``isDirty.val``
+        # is true.  After a successful save the chip carries
+        # ``data-saved="true"`` briefly so Playwright can observe the
+        # transition without racing the dirty-flag flip.
+        tdiv(ref = saveButton,
+              `role` = "button", tabindex = "0",
+              `data-design-review-gallery-save-button` = "true",
+              `data-design-review-gallery-save-visible` = "false",
+              `data-saved` = "false",
+              `aria-label` = "Save layout",
+              padding = "3px 10px", font_size = "11px",
+              font_weight = "600", color = "#FFFFFF",
+              background_color = gChipAccent,
+              border = "1px solid " & gChipAccent,
+              border_radius = "999px",
+              cursor = "pointer"):
+          text "Save layout"
         span(ref = statusLabel,
               font_size = "10px", color = gTextDim,
               `data-design-review-gallery-status` = "true"):
@@ -616,6 +761,34 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
   r.addEventListener(modeChipCompare, "keydown", proc() =
     capturedVm.compareSideBySide())
 
+  # REV-M8 follow-up — Save layout chip handler.  When the caller
+  # supplied an ``onSave`` callback (production: posts to
+  # ``/api/design-review/save-layout`` and dispatches markSaved /
+  # markConflict from the response), invoke it; otherwise fall back to
+  # a VM-local ``markSaved`` so the dirty flag still clears.  The brief
+  # "saved" state flash is driven by the reactive effect below — we
+  # only need to fire the save action here.
+  let savePressHandler = proc() =
+    if not capturedVm.isDirty.val:
+      return
+    if capturedOnSave != nil:
+      capturedOnSave()
+    else:
+      capturedVm.markSaved("", 0)
+  r.addEventListener(saveButton, "click", savePressHandler)
+  r.addEventListener(saveButton, "keydown", savePressHandler)
+
+  # REV-M8 follow-up — shared drag-source tracker.  ``dragstart`` on
+  # any tile writes its captureId here; ``drop`` on any (possibly
+  # different) tile reads it so the drop handler knows which tile is
+  # being moved.  Without this, the prior REV-M7 binding called
+  # ``registerDragMove(DESTINATION_captureId, dst_row, dst_col)`` on
+  # drop — i.e. it recorded that the *destination* tile should move to
+  # its OWN position, a no-op.  The pendingLayout always reflected the
+  # last-hovered tile rather than the dragged tile.
+  let dragSourceId = new(string)
+  dragSourceId[] = ""
+
   proc renderTile(tile: GalleryTile; rowIdx, colIdx: int): E =
     let chipColor = statusColor(tile.status)
     let scoreLabel =
@@ -728,12 +901,51 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
         })(""", tileNode, """);
       """].}
       discard payload
-    # Drag-and-drop: REV-M7 only records to pendingLayout.
-    let dragOverHandler = proc() =
-      capturedVm.registerDragMove(capturedCaptureId,
-                                  capturedRowIdx, capturedColIdx)
-    r.addEventListener(tileNode, "dragover", dragOverHandler)
-    r.addEventListener(tileNode, "drop", dragOverHandler)
+    # REV-M8 follow-up — drag-and-drop bindings.  Three event types:
+    #
+    #   * ``dragstart`` on this tile — record this tile's captureId as
+    #     the drag source.  The drop handler (on a possibly different
+    #     tile) reads the recorded id to know which tile is being
+    #     moved.  Without this, the drop handler had no source identity
+    #     and was effectively a no-op.
+    #   * ``dragover`` — no-op for the VM (the visible drop preview is
+    #     a future polish item).  Browsers REQUIRE the ``dragover``
+    #     handler to ``preventDefault`` for the drop event to fire;
+    #     the inline JS shim below handles that without requiring a
+    #     full ``MockEvent`` payload here.
+    #   * ``drop`` — read the source id from the shared ref, fall back
+    #     to this tile's captureId if no source was recorded (so VM-
+    #     level synthetic drops without a preceding dragstart still
+    #     drive ``registerDragMove`` on the dropped-on tile).  Pass
+    #     this tile's (rowIdx, colIdx) as the target.
+    let capturedDragSource = dragSourceId
+    let dragStartHandler = proc() =
+      capturedDragSource[] = capturedCaptureId
+    let dropHandler = proc() =
+      let src =
+        if capturedDragSource[].len > 0: capturedDragSource[]
+        else: capturedCaptureId
+      capturedVm.registerDragMove(src, capturedRowIdx, capturedColIdx)
+      # Reset the source after a drop so a subsequent unrelated drop
+      # doesn't reuse a stale id.
+      capturedDragSource[] = ""
+    r.addEventListener(tileNode, "dragstart", dragStartHandler)
+    r.addEventListener(tileNode, "drop", dropHandler)
+    when defined(js):
+      # Browser path: the standard HTML5 drag-and-drop API requires
+      # ``preventDefault`` on the ``dragover`` event for the
+      # subsequent ``drop`` to fire.  We use the ``{.emit.}`` inline-JS
+      # shim (same pattern as the multi-select shift/meta detection
+      # above) to avoid wiring a heavier MockEvent-aware handler that
+      # would need a separate test path.
+      {.emit: ["""
+        (function(node) {
+          if (!node || !node.addEventListener) return;
+          node.addEventListener("dragover", function(ev) {
+            if (ev && ev.preventDefault) ev.preventDefault();
+          });
+        })(""", tileNode, """);
+      """].}
     # CHRM-M6 Wave A — mirror multi-select state onto the tile so
     # Wave B can style the selected outline off the data attribute.
     # CHRM-M6 Wave C — paint the selected outline per the grid brief:
@@ -1236,6 +1448,63 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
     r.setTextContent(statusFooter,
                      bid & " · " & $n & " capture" &
                        (if n == 1: "" else: "s"))
+
+  # REV-M8 follow-up — dirty mirror + save-chip visibility + "saved"
+  # flash.  Three intertwined pieces of state collapsed into a single
+  # render effect (they all read ``isDirty`` + an internal "just saved"
+  # latch derived from ``activeLayoutVersion`` changes).
+  #
+  # Behaviour:
+  #   * dirty=true  → root data-dirty="true",  save chip visible,
+  #                   data-saved="false".
+  #   * dirty=false → root data-dirty="false", save chip hidden, AND
+  #                   if a save just landed (we observe
+  #                   activeLayoutVersion increment OR isDirty
+  #                   transitioning true→false), the chip carries
+  #                   data-saved="true" briefly so the e2e can assert
+  #                   the success transition without racing the chip's
+  #                   visibility flip.
+  #
+  # The "brief" duration is owned by the next dirty→true edge or by a
+  # subsequent render — kept implementation-light so we don't pull in
+  # timers (the e2e reads the attribute immediately after the click).
+  var lastDirty = false
+  var lastVersion = -1
+  createRenderEffect proc() =
+    let dirty = capturedVm.isDirty.val
+    let version = capturedVm.activeLayoutVersion.val
+    # Detect a save-completion edge: dirty went true→false in this
+    # evaluation OR activeLayoutVersion bumped.
+    let savedEdge =
+      (lastDirty and not dirty) or
+      (lastVersion >= 0 and version != lastVersion and not dirty)
+    lastDirty = dirty
+    lastVersion = version
+    r.setAttribute(root, "data-design-review-gallery-dirty",
+                   if dirty: "true" else: "false")
+    r.setAttribute(saveButton, "data-design-review-gallery-save-visible",
+                   if dirty: "true" else: "false")
+    # Inline style: the chip is only renderable when dirty (or in the
+    # immediate post-save flash window).  No-setStyle invariant: we use
+    # ``setAttribute("style", ...)`` like the conflict dialog above.
+    r.setAttribute(saveButton, "style",
+                   if dirty:
+                     "background-color: " & gChipAccent &
+                       "; color: #FFFFFF; border-color: " & gChipAccent &
+                       "; cursor: pointer; display: inline-flex;"
+                   elif savedEdge:
+                     # Subdued green tone to read as "saved"; still
+                     # visible so the e2e can assert the transition.
+                     "background-color: " & gStatusOk &
+                       "; color: #FFFFFF; border-color: " & gStatusOk &
+                       "; cursor: default; display: inline-flex;"
+                   else:
+                     "display: none;")
+    r.setAttribute(saveButton, "data-saved",
+                   if savedEdge: "true" else: "false")
+    # Save button text mirrors state so a sighted user sees the result.
+    r.setTextContent(saveButton,
+                     if savedEdge: "Saved" else: "Save layout")
 
   # REV-M8 — conflict dialog reactive visibility + handlers.  The dialog
   # is data-hidden until ``vm.conflict.val.currentRow`` is non-empty

@@ -147,6 +147,71 @@ suite "REV-M7 gallery VM":
       check root.attributes.getOrDefault("data-gallery-mode") == "grid"
       dispose()
 
+  test "test_gallery_view_mirrors_dirty_state_and_renders_save_button":
+    ## REV-M8 follow-up — when ``vm.isDirty`` flips true (driven by a
+    ## drag-reorder via ``registerDragMove``), the overlay surfaces:
+    ##
+    ##   * ``data-design-review-gallery-dirty="true"`` on the root.
+    ##   * A visible Save layout chip with
+    ##     ``data-design-review-gallery-save-visible="true"``.
+    ##
+    ## After the user clicks the chip (which fires the ``onSave``
+    ## callback the caller supplied, or falls back to ``vm.markSaved``),
+    ## the dirty mirror flips back to false AND the chip carries
+    ## ``data-saved="true"`` briefly so an e2e can observe the success
+    ## transition.
+    createRoot do (dispose: proc()):
+      let vm = createGalleryVM("render.x")
+      vm.tiles.val = @[
+        mkTile("capA", "runA", "p/a:page#0@web", "complete"),
+        mkTile("capB", "runB", "p/a:page#0@web", "complete"),
+      ]
+      let r = MockRenderer()
+      let parent = createElement(r, "div")
+      var savePressed = false
+      let onSave = proc() =
+        savePressed = true
+        vm.markSaved("layout-fake", 1)
+      mountGalleryOverlay[MockRenderer, MockNode](
+        r, parent, vm, onSave = onSave)
+      let root = parent.children[0]
+      # Dirty mirror starts at "false".
+      check root.attributes.getOrDefault(
+        "data-design-review-gallery-dirty") == "false"
+      proc findByAttr(node: MockNode; key, value: string): MockNode =
+        if node.attributes.getOrDefault(key) == value:
+          return node
+        for child in node.children:
+          let hit = findByAttr(child, key, value)
+          if hit != nil: return hit
+        nil
+      let saveBtn = findByAttr(root,
+                               "data-design-review-gallery-save-button",
+                               "true")
+      check saveBtn != nil
+      # Save button hidden when not dirty.
+      check saveBtn.attributes.getOrDefault(
+        "data-design-review-gallery-save-visible") == "false"
+      # Flip dirty by registering a drag move.
+      vm.registerDragMove("capA", 0, 1)
+      check root.attributes.getOrDefault(
+        "data-design-review-gallery-dirty") == "true"
+      check saveBtn.attributes.getOrDefault(
+        "data-design-review-gallery-save-visible") == "true"
+      check saveBtn.attributes.getOrDefault("data-saved") == "false"
+      # Fire the save click via the registered handler.  MockRenderer
+      # dispatches "click" listeners synchronously; the callback we
+      # passed marks the VM saved.
+      fireEvent(saveBtn, "click")
+      check savePressed
+      check root.attributes.getOrDefault(
+        "data-design-review-gallery-dirty") == "false"
+      check saveBtn.attributes.getOrDefault(
+        "data-design-review-gallery-save-visible") == "false"
+      # Saved-edge flash: the chip records the successful transition.
+      check saveBtn.attributes.getOrDefault("data-saved") == "true"
+      dispose()
+
   test "test_gallery_view_renders_conflict_dialog_when_vm_signals":
     ## REV-M8 — the first review caught that the conflict dialog was
     ## only rendered in the e2e harness, not in the production
