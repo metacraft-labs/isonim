@@ -739,14 +739,16 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
     r.addEventListener(tileNode, "drop", dragOverHandler)
     # CHRM-M6 Wave A — mirror multi-select state onto the tile so
     # Wave B can style the selected outline off the data attribute.
-    # CHRM-M6 Wave B — paint the selected outline: 2 px solid
-    # ``#3B82F6`` outline + 1 px inset ``#0B1220`` so the outline
-    # visibly separates from the tile body (per the grid brief). We
-    # write the ``outline`` CSS property via the inline ``style``
-    # attribute — the rest of the tile layout (display, padding,
-    # background, etc.) is already on the element from the DSL
-    # declaration, and ``outline`` doesn't disturb the box layout
-    # the way ``border`` would.
+    # CHRM-M6 Wave C — paint the selected outline per the grid brief:
+    # 2 px solid ``#3B82F6`` outline + 1 px inset ``#0B1220``
+    # ``box-shadow`` so the outline visibly separates from the tile
+    # body. ``outline-offset: -1px`` keeps the outline flush against
+    # the tile edge; the inset shadow draws a 1 px ring inside that
+    # picks up the overlay background colour for the separator effect.
+    # We also drive the hover transition + cursor ring via the same
+    # style write so a stale hover state can't override the selected
+    # outline (the inline JS hover shim below clears its own writes on
+    # mouseleave but never touches outline/box-shadow).
     let capturedTileForSelect = tileNode
     let capturedCaptureIdForSelect = capturedCaptureId
     createRenderEffect proc() =
@@ -757,9 +759,36 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
       if selected:
         r.setAttribute(capturedTileForSelect, "style",
                        "outline: 2px solid " & gChipAccent &
-                         "; outline-offset: 1px;")
+                         "; outline-offset: -1px;" &
+                         " box-shadow: inset 0 0 0 1px " & gBg & ";" &
+                         " transition: background-color 120ms ease-out," &
+                         " border-color 120ms ease-out;")
       else:
-        r.setAttribute(capturedTileForSelect, "style", "")
+        r.setAttribute(capturedTileForSelect, "style",
+                       "outline: none; box-shadow: none;" &
+                         " transition: background-color 120ms ease-out," &
+                         " border-color 120ms ease-out;")
+    # CHRM-M6 Wave C — tile hover affordance per the grid+full-tab
+    # brief: background steps from ``#111827`` to ``#162033``, border
+    # from ``#1F2937`` to ``#334155``, 120 ms ease-out transition.
+    # The transition is already on the element (set by the selected/
+    # idle render effect above). On mouseleave we restore the DSL
+    # defaults; mouseenter/leave never write outline or box-shadow so
+    # they coexist cleanly with the selected-state render effect.
+    when defined(js):
+      {.emit: ["""
+        (function(node) {
+          if (!node || !node.addEventListener) return;
+          node.addEventListener("mouseenter", function() {
+            this.style.backgroundColor = "#162033";
+            this.style.borderColor = "#334155";
+          });
+          node.addEventListener("mouseleave", function() {
+            this.style.backgroundColor = "#111827";
+            this.style.borderColor = "#1F2937";
+          });
+        })(""", tileNode, """);
+      """].}
     tileNode
 
   proc renderGrid() =
@@ -1031,12 +1060,17 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
     if captures.len >= 2:
       # 1 px vertical hairline divider between the two columns; full
       # vertical extent of the compare body per the brief.
+      # CHRM-M6 Wave C — ``cursor: col-resize`` on hover hints at the
+      # future resize affordance (the optional Wave C item from the
+      # gallery-compare brief). No actual resize behaviour is wired —
+      # the cursor is purely a hint that future drag will be possible.
       let divider = ui(r):
         tdiv(
           `data-design-review-gallery-compare-divider` = "true",
           width = "1px",
           align_self = "stretch",
-          background_color = "#2D2D3A")
+          background_color = "#2D2D3A",
+          cursor = "col-resize")
       r.appendChild(columnsHost, divider)
       let rightCol = renderColumn(captures[1], 1)
       r.appendChild(columnsHost, rightCol)
@@ -1242,3 +1276,34 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
   r.addEventListener(conflictDismissBtn, "keydown", dismissHandler)
 
   r.appendChild(parent, root)
+
+  # CHRM-M6 Wave C — keyboard focus ring on tiles. Tiles already
+  # carry ``tabindex="0"`` from their DSL declaration (renderTile
+  # above). The ``:focus-visible`` pseudo-class fires for keyboard
+  # focus but suppresses on mouse click, so the ring is unobtrusive
+  # during pointer interaction. We use ``#60A5FA`` (softer accent)
+  # so the focus ring is distinct from the selected-state outline
+  # (``#3B82F6``). The style block is injected once per gallery
+  # mount; the unique id guard prevents duplicate rules when the
+  # overlay is re-mounted across mode flips. ``setStyle`` violations
+  # don't apply here — we inject a stylesheet, not write inline.
+  when defined(js):
+    {.emit: """
+      (function() {
+        var styleId = "design-review-gallery-focus-ring";
+        if (document.getElementById(styleId)) return;
+        var s = document.createElement("style");
+        s.id = styleId;
+        s.textContent = [
+          "[data-design-review-gallery-tile]:focus-visible {",
+          "  outline: 2px solid #60A5FA;",
+          "  outline-offset: -1px;",
+          "  box-shadow: inset 0 0 0 1px #0B1220;",
+          "}",
+          "[data-design-review-gallery-tile]:focus:not(:focus-visible) {",
+          "  outline: none;",
+          "}"
+        ].join("\n");
+        document.head.appendChild(s);
+      })();
+    """.}
