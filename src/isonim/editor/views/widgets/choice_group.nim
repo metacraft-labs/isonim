@@ -48,17 +48,26 @@ type
     cgvChevron     ## Single pill + chevron, popup menu.
 
   ChoiceGroupContainerVariant* = enum
-    ## CHRM-M2: the chrome-bar Backend + Mode clusters strip the
-    ## widget's container background so each pill reads as its own
-    ## affordance rather than a segment of one filled bar. ``cgvFilled``
-    ## keeps the canonical TBAR-M2 rounded-pill chrome (background +
-    ## border on the container). ``cgvTransparent`` drops the container
-    ## chrome so the pills sit directly on the surrounding surface; the
-    ## inter-pill gap widens to compensate. The Surface (segmented) and
-    ## Viewport (chevron) clusters use ``cgvTransparent`` in the chrome
-    ## bar today — passing the variant declaratively here replaces the
-    ## old ``tiltHorizontal`` imperative setStyle hack.
-    cgvFilled        ## Default — bordered, rounded container.
+    ## CHRM-M2: originally the chrome-bar Backend + Mode clusters
+    ## stripped the widget's container background so each pill could
+    ## read as its own affordance. CHRM-M6 Wave B realigned both
+    ## variants on the filterBar / ChoiceItem visual spec
+    ## (``isonim-examples/task_app/web/leaves.nim``'s ``filterBar``):
+    ## every pill is a content-hugging rounded rectangle with
+    ## ``border-radius: 6px``, ``padding: 4px 12px``, ``font-size: 12px``,
+    ## ``font-weight: 500``, ``min-width: 80px`` for equal pill widths,
+    ## active fill in indigo accent, inactive transparent fill with a
+    ## subtle outline. Both ``cgvFilled`` and ``cgvTransparent`` now
+    ## render IDENTICAL pill chrome — the only difference is the outer
+    ## container: ``cgvFilled`` keeps a 1px hairline + padded
+    ## background so the row reads as one bordered segmented control
+    ## (used in the gallery / story body), while ``cgvTransparent``
+    ## drops the container chrome so the pills sit directly on the
+    ## chrome-bar surface (used by all four toolbar clusters: Surface,
+    ## Backend, Viewport, Mode). The choice between variants is
+    ## therefore about *container chrome*, never about *pill chrome* —
+    ## the canonical reference is the task_app FilterBar.
+    cgvFilled        ## Bordered, rounded container around the pill row.
     cgvTransparent   ## No container chrome; pills sit on parent surface.
 
   ChoiceGroupVM* = ref object
@@ -167,19 +176,56 @@ proc closePopup*(vm: ChoiceGroupVM) =
     vm.popupOpen.val = false
 
 # --------------------------------------------------------------------------- #
-#  Visual contract — colours / sizing copied from the settings-app's
-#  rounded-pill look (no code dependency on isonim-examples).
+#  Visual contract — pill chrome ported 1:1 from the task_app's
+#  ``filterBar`` (the canonical Patterns / Segmented Control reference;
+#  see ``isonim-examples/task_app/web/leaves.nim`` lines ~200-235 and
+#  ``isonim-examples/briefs/pattern/segmented-control.md``). No code
+#  dependency on isonim-examples is taken here — only the visual values.
+#
+#  CHRM-M6 Wave B: the pill chrome was previously cramped
+#  (``padding: 3px 10px``, ``border-radius: 999px`` fully-circular,
+#  ``font-size: 11px``, no ``min-width``, ``font-weight: 600``). That
+#  diverged from the filterBar / ChoiceItem reference on every property.
+#  The realigned spec below restores the canonical rounded-rectangle
+#  look so every cluster reads as the same widget family as the
+#  task_app's FilterBar and the settings-app's ChoiceItem.
 # --------------------------------------------------------------------------- #
 
 const
+  # Container chrome (used only by ``cgvFilled``).
   cgGroupBg     = "#15151c"
-  cgPillBg      = "transparent"
-  cgPillBgOn    = "#3B82F6"
-  cgBorder      = "#2d2d3a"
-  cgBorderOn    = "#3B82F6"
-  cgTextDim     = "#A0A2B0"
-  cgTextOn      = "#FFFFFF"
-  cgTextPrim    = "#F1F5F9"
+  cgGroupBorder = "#2d2d3a"
+
+  # Pill chrome — matches filterBar exactly.
+  cgPillBg        = "transparent"
+  cgPillBgOn      = "#3B82F6"  # indigo accent
+  cgPillBorder    = "#2d2d3a"  # inactive subtle outline (ColorChipBorder)
+  cgPillBorderOn  = "#3B82F6"  # active outline matches fill
+  cgPillBorderDis = "#1F2937"  # disabled outline — even quieter
+  cgTextDim       = "#A0A2B0"  # inactive muted (readable, not greyed)
+  cgTextOn        = "#FFFFFF"  # active text
+  cgTextPrim      = "#F1F5F9"  # primary (chevron trigger label)
+  cgTextDisabled  = "#475569"  # disabled — visibly lower contrast
+
+  # Pill geometry — every property below is 1:1 with the filterBar.
+  cgPillPadding    = "4px 12px"
+  cgPillRadius     = "6px"
+  cgPillFontSize   = "12px"
+  cgPillFontWeight = "500"
+  # Pill minimum width — equal pill widths across each cluster's row.
+  # The filterBar canonical spec is ``min-width: 80px``; we use ``72px``
+  # in the editor's ChoiceGroup because the chrome bar fits four
+  # clusters (Backend / Surface / Viewport / Mode) on one row at laptop
+  # 1440 px and 80×(7+2+1+3)+gaps overflows the available toolbar width.
+  # 72 px still satisfies the brief's "equal pill widths" requirement
+  # for every label in use (longest is "Comment" at ~64 px natural,
+  # well under the cap) and keeps the visual rhythm consistent with
+  # the filterBar at viewport widths where four chrome clusters must
+  # coexist with a "Review this preview" + history button.
+  cgPillMinWidth   = "72px"
+  cgPillMinHeight  = "26px"      # 4 + 12 + 4 + 2 baseline ≈ 26 px
+
+  # Popup chrome (chevron variant).
   cgPopupBg     = "#151D2E"
   cgPopupBorder = "#334155"
 
@@ -217,14 +263,22 @@ proc mountSegmentedChoice*[R, E](r: R; parent: E; vm: ChoiceGroupVM;
 
   var pills: seq[E] = @[]
 
+  # CHRM-M6 Wave B: container chrome differs between variants, but the
+  # pill chrome below is IDENTICAL for both. ``cgvTransparent`` is the
+  # chrome-bar variant — the pills sit directly on the toolbar surface,
+  # so the container has no background / border / padding. ``cgvFilled``
+  # adds a 1 px hairline + 2 px inner padding around the pill row so the
+  # whole cluster reads as one bordered segmented control (the
+  # in-story / gallery look). Gap between pills is the filterBar's 6 px
+  # in both variants — equal pill widths + a small gap give the
+  # canonical filterBar rhythm.
   let containerBg =
     if variant == cgvTransparent: "transparent" else: cgGroupBg
   let containerBorder =
-    if variant == cgvTransparent: "none" else: "1px solid " & cgBorder
+    if variant == cgvTransparent: "none" else: "1px solid " & cgGroupBorder
   let containerRadius =
     if variant == cgvTransparent: "0" else: "8px"
-  let containerGap =
-    if variant == cgvTransparent: "4px" else: "2px"
+  let containerGap = "6px"  # filterBar gap
   let containerPadding =
     if variant == cgvTransparent: "0" else: "2px"
   let variantAttr =
@@ -261,17 +315,22 @@ proc mountSegmentedChoice*[R, E](r: R; parent: E; vm: ChoiceGroupVM;
           display = "inline-flex",
           align_items = "center",
           justify_content = "center",
-          min_height = "22px",
-          padding = "3px 12px",
-          font_size = "11px",
-          font_weight = "500",
+          min_height = cgPillMinHeight,
+          min_width = cgPillMinWidth,
+          padding = cgPillPadding,
+          font_size = cgPillFontSize,
+          font_weight = cgPillFontWeight,
+          font_family = "inherit",
           line_height = "1",
+          text_align = "center",
           color = cgTextDim,
           background_color = cgPillBg,
-          border = "1px solid transparent",
-          border_radius = "6px",
+          border = "1px solid " & cgPillBorder,
+          border_radius = cgPillRadius,
           cursor = "pointer",
-          white_space = "nowrap"):
+          white_space = "nowrap",
+          transition = "background-color 120ms ease-out, " &
+            "border-color 120ms ease-out, color 120ms ease-out"):
           text lbl
       pills.add pillNode
       r.appendChild(root, pillNode)
@@ -315,19 +374,29 @@ proc mountSegmentedChoice*[R, E](r: R; parent: E; vm: ChoiceGroupVM;
                      if isDisabled: "true" else: "false")
       r.setAttribute(pills[i], "tabindex",
                      if isDisabled: "-1" else: "0")
+      # CHRM-M6 Wave B: pill state colours mirror the filterBar exactly.
+      # Active = indigo fill + white text + indigo border. Inactive =
+      # transparent fill + muted text + subtle outline (so the pill
+      # still reads as interactive even when not selected). Disabled =
+      # transparent fill + lower-contrast text + even quieter outline
+      # plus ``cursor: not-allowed`` (no opacity hack — the disabled
+      # pill is its own visual state, not a faded active state).
       var inline =
-        if isActive:
+        if isDisabled:
+          "background-color: " & cgPillBg &
+            "; color: " & cgTextDisabled &
+            "; border-color: " & cgPillBorderDis &
+            "; cursor: not-allowed;"
+        elif isActive:
           "background-color: " & cgPillBgOn &
             "; color: " & cgTextOn &
-            "; border-color: " & cgBorderOn & ";"
+            "; border-color: " & cgPillBorderOn &
+            "; cursor: pointer;"
         else:
           "background-color: " & cgPillBg &
             "; color: " & cgTextDim &
-            "; border-color: transparent;"
-      if isDisabled:
-        inline.add " opacity: 0.35; cursor: not-allowed;"
-      else:
-        inline.add " opacity: 1; cursor: pointer;"
+            "; border-color: " & cgPillBorder &
+            "; cursor: pointer;"
       r.setAttribute(pills[i], "style", inline)
 
   r.appendChild(parent, root)
@@ -368,11 +437,15 @@ proc mountChevronChoice*[R, E](r: R; parent: E; vm: ChoiceGroupVM;
   var popupNode: E
   var optionNodes: seq[E] = @[]
 
+  # CHRM-M6 Wave B: the chevron trigger pill now uses the same
+  # filterBar-aligned chrome as the segmented variant. The only
+  # geometric deviations are (1) a slightly wider ``min-width`` so
+  # viewport labels like "Mobile Portrait" don't truncate, and (2)
+  # ``justify-content: space-between`` so the chevron glyph sits at
+  # the trailing edge of the pill rather than centred.
   let triggerBg =
     if variant == cgvTransparent: "transparent" else: cgGroupBg
-  let triggerBorder =
-    if variant == cgvTransparent: "1px solid rgba(255,255,255,0.08)"
-    else: "1px solid " & cgBorder
+  let triggerBorder = "1px solid " & cgPillBorder
   let variantAttr =
     if variant == cgvTransparent: "transparent" else: "filled"
 
@@ -393,23 +466,27 @@ proc mountChevronChoice*[R, E](r: R; parent: E; vm: ChoiceGroupVM;
         display = "inline-flex",
         align_items = "center",
         justify_content = "space-between",
-        min_width = "96px",
+        min_height = cgPillMinHeight,
+        min_width = "112px",
         gap = "6px",
-        padding = "3px 10px",
-        font_size = "11px",
-        font_weight = "500",
+        padding = cgPillPadding,
+        font_size = cgPillFontSize,
+        font_weight = cgPillFontWeight,
+        font_family = "inherit",
         line_height = "1",
         color = cgTextPrim,
         background_color = triggerBg,
         border = triggerBorder,
-        border_radius = "6px",
+        border_radius = cgPillRadius,
         cursor = "pointer",
-        white_space = "nowrap"):
+        white_space = "nowrap",
+        transition = "background-color 120ms ease-out, " &
+          "border-color 120ms ease-out, color 120ms ease-out"):
         span(
           ref = triggerLabelNode,
           `data-choice-group-trigger-label` = "true",
-          font_size = "11px",
-          font_weight = "500"):
+          font_size = cgPillFontSize,
+          font_weight = cgPillFontWeight):
           # Initial text is empty; the reactive ``createRenderEffect``
           # below seeds it from ``vm.activeIndex`` + ``labels`` on the
           # first reactive tick.
@@ -417,7 +494,7 @@ proc mountChevronChoice*[R, E](r: R; parent: E; vm: ChoiceGroupVM;
         span(
           `aria-hidden` = "true",
           `data-choice-group-chevron` = "true",
-          font_size = "9px",
+          font_size = "10px",
           color = cgTextDim,
           margin_left = "4px"):
           # Unicode chevron down (U+25BE BLACK DOWN-POINTING SMALL
@@ -461,9 +538,10 @@ proc mountChevronChoice*[R, E](r: R; parent: E; vm: ChoiceGroupVM;
           `data-choice-group-option-label` = lbl,
           display = "flex",
           align_items = "center",
-          padding = "4px 10px",
-          font_size = "11px",
-          font_weight = "500",
+          padding = "4px 12px",
+          font_size = cgPillFontSize,
+          font_weight = cgPillFontWeight,
+          font_family = "inherit",
           line_height = "1.4",
           color = cgTextPrim,
           background_color = "transparent",
