@@ -192,13 +192,12 @@ proc closePopup*(vm: ChoiceGroupVM) =
 # --------------------------------------------------------------------------- #
 
 const
-  # Container chrome — the segmented-control "trough" that hosts the
-  # pills. This is the canonical settings_app ChoiceItem look (see
-  # isonim-examples/settings_app/gpui/leaves.nim::choiceLeaf): a dark
-  # filled container with 2px padding around inset pills. Used by
-  # BOTH ``cgvFilled`` and ``cgvTransparent`` — the chrome bar
-  # clusters all render as ChoiceItem-style segmented controls.
-  cgGroupBg     = "#15151c"
+  # Container chrome — the segmented-control "strip" that hosts the
+  # pills. Visibly LIGHTER than the surrounding chrome (bgToolbar
+  # = #16171F) so the strip reads as a distinct surface. The active
+  # pill sits inset with breathing room on all sides — the user
+  # should clearly see the pill is INSIDE the strip, not edge-to-edge.
+  cgGroupBg     = "#22232e"  # lifted from bgToolbar so the strip is seen
   cgGroupBorder = "#2d2d3a"
 
   # Pill chrome — matches settings_app ChoiceItem.
@@ -217,8 +216,8 @@ const
   cgTextDisabled  = "#475569"  # disabled — visibly lower contrast
 
   # Pill geometry — every property below is 1:1 with the filterBar.
-  cgPillPadding    = "4px 12px"
-  cgPillRadius     = "6px"
+  cgPillPadding    = "3px 12px"
+  cgPillRadius     = "4px"  # smaller than the strip radius — nested look
   cgPillFontSize   = "12px"
   cgPillFontWeight = "500"
   # Pill minimum width — equal pill widths across each cluster's row.
@@ -282,9 +281,9 @@ proc mountSegmentedChoice*[R, E](r: R; parent: E; vm: ChoiceGroupVM;
   let containerBg = cgGroupBg
   let containerBorder =
     if variant == cgvTransparent: "none" else: "1px solid " & cgGroupBorder
-  let containerRadius = "6px"  # matches ChoiceItem trough radius
-  let containerGap = "0"       # ChoiceItem pills share edges (no gap)
-  let containerPadding = "2px"
+  let containerRadius = "6px"  # strip outer radius
+  let containerGap = "2px"     # tiny gap between pills (visible separation inside the strip)
+  let containerPadding = "3px" # breathing room around pills inside the strip
   let variantAttr =
     if variant == cgvTransparent: "transparent" else: "filled"
 
