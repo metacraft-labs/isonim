@@ -127,22 +127,20 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
     of asReady: green
     of asError: gold
 
+  # The chat panel is now always embedded inside the right sidebar's
+  # Assistant tab body (shell.nim::assistantBody). The tab body
+  # provides width / border / background; the chat panel only renders
+  # content. Filling its parent via flex:1 (instead of an absolute
+  # height: 100%) ensures the messagesArea + reviewLoopArea + compose
+  # form span the full available height when the sidebar is tall.
   let panel = ui(r):
     tdiv(
       class = "editor-chat",
-      # M-EVP-14 Wave Chrome CR-3: AI chat panel default 260 → 220 px,
-      # min 240 → 200 px. Matches `rightPanelWidth` defaults in
-      # viewmodels.nim and the inspector panel in shell.nim so the
-      # reviewer-flagged right-rail dominance is resolved consistently
-      # across both right-side panels (chat + inspector).
-      width = "220px",
-      min_width = "200px",
-      max_width = "420px",
       display = "flex",
       flex_direction = "column",
-      height = "100%",
-      background_color = bgSidebar,
-      border_left = "1px solid " & border,
+      flex = "1",
+      min_height = "0",
+      width = "100%",
       overflow_x = "hidden")
   r.bindRightPanelWidth(panel, vm)
 
@@ -253,12 +251,13 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   # with the preview pane.
   let messagesArea = ui(r):
     tdiv(
-      max_height = "560px",
+      flex = "1",
+      min_height = "0",
       overflow_y = "auto",
-      padding = "8px 10px 6px 10px",
+      padding = "10px 10px 6px 10px",
       display = "flex",
       flex_direction = "column",
-      gap = "6px")
+      gap = "8px")
 
   if messages.len == 0:
     let empty = ui(r):
