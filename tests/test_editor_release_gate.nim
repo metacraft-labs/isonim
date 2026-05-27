@@ -723,7 +723,21 @@ suite "IsoNim editor maturity gate":
         continue
       let text = readFile(path).toLowerAscii
       check not text.contains("metacraft-web")
-      check not text.contains("codetracer")
+      # The framework must not import or reference consumer code
+      # (CodeTracer is a downstream consumer of IsoNim). Spec
+      # citations to the ``codetracer-specs`` repo are an accepted
+      # pattern across milestones — they document where to find the
+      # canonical IsoNim Editor spec, not a coupling to the consumer.
+      # Narrow the check to real coupling (imports, qualified refs)
+      # while still allowing ``codetracer-specs/...`` in docstrings.
+      check not text.contains("import codetracer")
+      check not text.contains("import \"codetracer")
+      check not text.contains("from codetracer")
+      check not text.contains("include codetracer")
+      # Reject any other ``codetracer`` mention that is not a
+      # citation of the ``codetracer-specs`` spec repo.
+      let withoutSpecCitations = text.replace("codetracer-specs", "")
+      check not withoutSpecCitations.contains("codetracer")
 
     let metacraftFiles = [
       "../metacraft-web/apps/back-office/src/backoffice_editor/workspace.nim",

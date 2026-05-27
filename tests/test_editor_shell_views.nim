@@ -64,12 +64,17 @@ suite "Editor Shell Views (M2)":
       let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
 
       # Shell mounts the main editor row, command palette, telemetry overlay,
-      # status bar, and (M-EVP-8) a hidden ``data-shell-escape-key`` node
-      # that the ESC handler binds to.
-      check shell.children.len == 5
+      # status bar, (M-EVP-8) a hidden ``data-shell-escape-key`` node that
+      # the ESC handler binds to, and (TBAR-M6) the absolutely positioned
+      # ``data-spec-comment-popover`` overlay that the Spec-pane Comment
+      # mode anchors to a TipTap selection.
+      check shell.children.len == 6
       check findByAttr(shell, "data-shell-escape-key", "true") != nil
+      check findByAttr(shell, "data-spec-comment-popover", "true") != nil
       # Editor row children: sidebar, center column, chat panel.
-      check shell.children[0].children.len == 3
+      let editorRow = findByAttr(shell, "data-shell-row", "true")
+      check editorRow != nil
+      check editorRow.children.len == 3
       check findByAttr(shell, "data-preview-center-column", "true") != nil
       check findByAttr(shell, "data-preview-chrome-bar", "true") != nil
       check findByAttr(shell, "data-preview-view-stack", "true") != nil

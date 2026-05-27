@@ -31,8 +31,16 @@ suite "REV-M8 briefHasHistory signal":
       let vm = createEditorVM()
       let st = ensureDesignReviewState(vm)
       check st.briefId.val.len == 0
-      let s = StoryRef(group: "Render", name: "Task App", kind: skPage,
-                       index: 0)
+      # TBAR-M1: ``resolveBriefId`` projects the (story, backend) pair
+      # through ``builtInBriefIndex().byPreview`` rather than hand-
+      # rolling ``story.group + "/" + story.name``. We use the
+      # canonical story the bundled ``render.task-app`` brief covers
+      # (``briefs/render/task-app.md``: ``storyRef: { group:
+      # "Task App / Pages", name: "Inbox", kind: page, index: 0 }``)
+      # so the lookup resolves to the real briefId baked into the
+      # static index.
+      let s = StoryRef(group: "Task App / Pages", name: "Inbox",
+                       kind: skPage, index: 0)
       vm.selectedStory.val = s
       # The reactive effect runs synchronously when the signal is
       # written under the same root.

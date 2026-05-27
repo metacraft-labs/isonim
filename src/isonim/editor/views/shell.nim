@@ -2453,7 +2453,8 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
           font_size = "14px", background_color = bgBase,
           color = textPrimary, overflow = "hidden")
   let shell = ui(r):
-    tdiv(display = "flex", flex = "1", min_height = "0",
+    tdiv(`data-shell-row` = "true",
+          display = "flex", flex = "1", min_height = "0",
           width = "100%", overflow = "hidden")
 
   let sidebarEl = renderSidebar[R, E](r, vm)
