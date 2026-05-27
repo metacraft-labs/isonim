@@ -387,13 +387,10 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
   var modeChipCompare: E
   var gridHost: E
   var fullTabHost: E
-  # CHRM-M6 Wave A — compare-mode host + the two affordance chips at
-  # the top of the compare body.  The host is data-hidden until the
-  # mode flips to ``gmCompare``; the affordance chips clear the
-  # selection or exit compare mode while preserving selection.
+  # CHRM-M6 Wave A — compare-mode host. The host is data-hidden until
+  # the mode flips to ``gmCompare``; the Clear / Exit affordance chips
+  # are locally scoped inside ``renderCompare``.
   var compareHost: E
-  var compareClearBtn: E
-  var compareExitBtn: E
   var statusLabel: E
   # CHRM-M6 Wave B — separate footer at the bottom of the overlay
   # carries the brief's ``<briefId> · <n> captures`` summary in muted
