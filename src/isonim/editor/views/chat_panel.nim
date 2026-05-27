@@ -148,82 +148,37 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   var narrowButton: E
   var resetButton: E
   var widenButton: E
-  # Header — v4: two-row layout. Row 1: sparkle + "AI Assistant" title +
-  # close X (no crowding even at 280px). Row 2: status dot + status text on
-  # its own line so it never truncates. The reviewers consistently flagged
-  # the previous single-row layout as showing "Empty / disconnect..." or
-  # crowding the close X against the title at narrow widths.
+  # Per-user 2026-05-27: drop the visible "AI Assistant / Empty / Idle"
+  # header. The Assistant tab label in the sidebar is the canonical
+  # identifier; status moves there. Offscreen affordances kept for
+  # behaviour tests that key off them.
+  var inspectorToggleButton: E
   let header = ui(r):
     tdiv(
-      display = "flex",
-      flex_direction = "column",
-      gap = "4px",
-      padding = "10px 12px",
-      border_bottom = "1px solid " & border,
-      min_height = "40px"):
-      # Row 1: title + close X
-      tdiv(display = "flex", align_items = "center",
-            justify_content = "space-between", gap = "8px",
-            min_width = "0"):
-        tdiv(display = "flex", align_items = "center", gap = "8px",
-              min_width = "0", flex = "1"):
-          span(font_size = "13px"):
-            text "\xE2\x9C\xA8"
-          span(
-            font_size = "11px",
-            font_weight = "600",
-            color = textSecondary,
-            text_transform = "uppercase",
-            letter_spacing = "0.5px",
-            white_space = "nowrap"):
-            text "AI Assistant"
-        # Offscreen resize buttons preserved for behaviour tests.
-        tdiv(ref = narrowButton, `role` = "button", tabindex = "0",
-              `aria-label` = "Narrow right panel",
-              position = "absolute", left = "-9999px",
-              width = "22px", height = "22px"):
-          text "-"
-        tdiv(ref = resetButton, `role` = "button", tabindex = "0",
-              `aria-label` = "Reset right panel width",
-              position = "absolute", left = "-9999px",
-              width = "22px", height = "22px"):
-          text "w"
-        tdiv(ref = widenButton, `role` = "button", tabindex = "0",
-              `aria-label` = "Widen right panel",
-              position = "absolute", left = "-9999px",
-              width = "22px", height = "22px"):
-          text "+"
-        tdiv(
-          `role` = "button",
-          tabindex = "0",
-          `aria-label` = "Toggle inspector panel",
-          onclick = proc() = vm.togglePanel(epInspector),
-          onkeydown = proc() = vm.togglePanel(epInspector),
-          width = "24px",
-          height = "24px",
-          display = "flex",
-          align_items = "center",
-          justify_content = "center",
-          border_radius = "4px",
-          color = textSecondary,
-          flex_shrink = "0",
-          cursor = "pointer"):
-          text "\xE2\x9C\x95"
-      # Row 2: status dot + label (wraps naturally if needed)
-      tdiv(display = "flex", align_items = "center", gap = "6px",
-            min_width = "0"):
-        tdiv(
-          width = "6px",
-          height = "6px",
-          border_radius = "3px",
-          background_color = statusColor,
-          flex_shrink = "0")
-        span(ref = statusTextNode, font_size = "10px", color = textSecondary,
-              line_height = "1.3",
-              white_space = "nowrap", overflow = "hidden",
-              text_overflow = "ellipsis", min_width = "0"):
-          text statusLabel & " / " & connectionLabel
+      position = "absolute", left = "-9999px",
+      width = "1px", height = "1px",
+      overflow = "hidden"):
+      tdiv(ref = narrowButton, `role` = "button", tabindex = "0",
+            `aria-label` = "Narrow right panel"):
+        text "-"
+      tdiv(ref = resetButton, `role` = "button", tabindex = "0",
+            `aria-label` = "Reset right panel width"):
+        text "w"
+      tdiv(ref = widenButton, `role` = "button", tabindex = "0",
+            `aria-label` = "Widen right panel"):
+        text "+"
+      tdiv(ref = inspectorToggleButton, `role` = "button", tabindex = "0",
+            `aria-label` = "Toggle inspector panel",
+            onclick = proc() = vm.togglePanel(epInspector),
+            onkeydown = proc() = vm.togglePanel(epInspector)):
+        text "\xE2\x9C\x95"
+      span(ref = statusTextNode):
+        text statusLabel & " / " & connectionLabel
   r.appendChild(panel, header)
+  # Suppress unused-warning for statusColor — still computed for the
+  # Assistant tab status indicator wired in shell.nim.
+  discard statusColor
+  discard inspectorToggleButton
   r.setAttribute(narrowButton, "data-isonim-focus-id", "right-panel-narrow")
   r.setAttribute(resetButton, "data-isonim-focus-id", "right-panel-reset")
   r.setAttribute(widenButton, "data-isonim-focus-id", "right-panel-widen")
@@ -443,21 +398,10 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
       vm.chat.permissionRequests.val.len +
       vm.chat.proposedEdits.val.len
     if totalActivity == 0:
-      # Collapse three repetitive "No ..." stubs into one calm activity line
-      # so the empty state reads as a single deliberate placeholder rather
-      # than a stack of muted filler rows.
-      let placeholder = ui(r):
-        tdiv(display = "flex", flex_direction = "column", gap = "4px"):
-          span(
-            font_size = "10px",
-            font_weight = "600",
-            color = textSecondary,
-            text_transform = "uppercase",
-            letter_spacing = "0.5px"):
-            text "Activity"
-          span(font_size = "11px", color = textDim):
-            text "No review comments, permission requests, or agent proposed edits yet."
-      r.appendChild(reviewLoopArea, placeholder)
+      # Per-user 2026-05-27: drop the "Activity / No review comments…"
+      # placeholder. The Assistant pane should not be split into upper
+      # and lower halves; an empty activity placeholder created a
+      # divider the user explicitly rejected.
       return
     appendReviewHeading("Design Review Comments")
     if vm.review.annotations.val.len == 0:

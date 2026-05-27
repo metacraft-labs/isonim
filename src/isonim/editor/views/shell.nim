@@ -7,6 +7,7 @@ import std/[options, sets, strutils, tables]
 
 import isonim/core/[signals, computation]
 import isonim/dsl/ui
+import isonim/viewmodel  # AsyncState (asIdle/asLoading/asReady/asError)
 import isonim/editor/viewmodels
 import isonim/editor/types
 import isonim/editor/views/choice_row
@@ -1631,6 +1632,7 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
          cursor = "pointer", white_space = "nowrap",
          transition = "background-color 0.12s, color 0.12s"):
       text "Manual"
+  var assistantStatusDot: E
   let assistantTabBtn = ui(r):
     tdiv(`role` = "tab", tabindex = "0",
          `data-sidebar-tab` = "assistant",
@@ -1638,14 +1640,21 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
          onclick = proc() = vm.setRightSidebarTab(rstAssistant),
          onkeydown = proc() = vm.setRightSidebarTab(rstAssistant),
          display = "flex", align_items = "center", justify_content = "center",
+         gap = "6px",
          padding = "6px 16px", border_radius = "6px",
          font_size = "12px", font_weight = "500",
          cursor = "pointer", white_space = "nowrap",
          transition = "background-color 0.12s, color 0.12s"):
+      tdiv(ref = assistantStatusDot,
+           `data-sidebar-assistant-status-dot` = "true",
+           width = "6px", height = "6px", border_radius = "3px",
+           background_color = "#A0A2B0",
+           flex_shrink = "0")
       text "Assistant"
   block:
     let captManual = manualTabBtn
     let captAssistant = assistantTabBtn
+    let captStatusDot = assistantStatusDot
     createRenderEffect proc() =
       let tab = vm.rightSidebarTab.val
       let manualActive = tab == rstManual
@@ -1662,6 +1671,21 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
         if assistantActive: accent else: "transparent")
       r.setStyle(captAssistant, "color",
         if assistantActive: textPrimary else: textMuted)
+    # Status dot on the Assistant tab tracks chat session state.
+    createRenderEffect proc() =
+      let state = vm.chat.sessionStatus.val
+      let color = case state
+        of asIdle: "#A0A2B0"   # muted
+        of asLoading: "#F59E0B"  # gold
+        of asReady: "#22C55E"    # green
+        of asError: "#EF4444"    # red
+      r.setStyle(captStatusDot, "background-color", color)
+      r.setAttribute(captStatusDot, "data-sidebar-assistant-status",
+        case state
+        of asIdle: "idle"
+        of asLoading: "loading"
+        of asReady: "ready"
+        of asError: "error")
 
   # Manual tab body — the inspector (12 sub-section tabs + property
   # editor / empty state).
