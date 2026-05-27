@@ -4462,12 +4462,9 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
           background_color = "#FFFFFF",
           `data-component-edit-frame` = "true")
 
-  # The inspector with Layout/Size/Space/etc tabs now lives in the
-  # right sidebar's Manual tab (shell.nim::renderInspectorPanel).
-  # Keeping a duplicate copy in the centre column made the editor
-  # render the same tabs twice and pulled "editing" affordances out
-  # of the sidebar where the user expects them.
+  let inspectorPanel = renderInspector[R, E](r, vm, projectFrame)
   r.appendChild(container, preview)
+  r.appendChild(container, inspectorPanel)
 
   installPreviewSelectionBridge[R, E](r, projectFrame, vm)
 
@@ -4509,8 +4506,8 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
       lastRestoredSelection = selectedId
       r.restorePreviewSelection(projectFrame, selectedId)
 
-    # inspectorPanel no longer mounted in the centre column —
-    # visibility is governed by the sidebar's Manual tab state.
-    discard vm.editMode.val
+    let editing = vm.editMode.val == emEdit
+    r.setStyle(inspectorPanel, "display",
+      if editing and vm.panels.val.inspector: "flex" else: "none")
 
   container
