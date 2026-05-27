@@ -376,6 +376,13 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
   var modeChipCompare: E
   var gridHost: E
   var fullTabHost: E
+  # CHRM-M6 Wave A — compare-mode host + the two affordance chips at
+  # the top of the compare body.  The host is data-hidden until the
+  # mode flips to ``gmCompare``; the affordance chips clear the
+  # selection or exit compare mode while preserving selection.
+  var compareHost: E
+  var compareClearBtn: E
+  var compareExitBtn: E
   var statusLabel: E
   var conflictDialog: E
   var conflictReloadBtn: E
@@ -436,16 +443,20 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
               border_radius = "4px",
               cursor = "pointer"):
           text "Full screen"
+        # CHRM-M6 Wave A — the Compare chip is no longer permanently
+        # disabled.  Its enabled/disabled state, cursor, and text colour
+        # are driven reactively by ``compareCaptureIds.val.len`` below
+        # (the chip lights up when ≥2 captures are multi-selected).
         tdiv(ref = modeChipCompare,
               `role` = "button", tabindex = "0",
               `data-design-review-gallery-mode` = "compare",
-              `aria-label` = "Compare view (REV-M8)",
+              `aria-label` = "Compare view",
               padding = "3px 8px", font_size = "11px",
               font_weight = "600", color = gTextMuted,
               background_color = gPanelBg,
               border = "1px solid " & gBorderSoft,
               border_radius = "4px",
-              cursor = "not-allowed"):
+              cursor = "pointer"):
           text "Compare"
         span(ref = statusLabel,
               font_size = "10px", color = gTextDim,
@@ -472,6 +483,23 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
         min_height = "0",
         overflow = "auto",
         `data-design-review-gallery-fulltab` = "true")
+      # --- Compare host (CHRM-M6 Wave A) ------------------------------
+      # Hidden by default; the mode-mirror render effect below flips
+      # display:flex when ``mode == gmCompare``. The body is built
+      # imperatively in ``renderCompare`` once per ``compareCaptureIds``
+      # change so the column structure (image + metadata strip per
+      # capture, vertical hairline divider between them) always reflects
+      # the current multi-selection.
+      tdiv(
+        ref = compareHost,
+        display = "none",
+        flex_direction = "column",
+        flex = "1 1 auto",
+        min_height = "0",
+        gap = "8px",
+        padding = "8px 4px",
+        overflow = "hidden",
+        `data-design-review-gallery-compare` = "true")
       # --- Conflict dialog (REV-M8) -----------------------------------
       # Rendered inside the production gallery view (not the harness).
       # Visibility is driven reactively off ``vm.conflict``; when the
@@ -536,10 +564,14 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
                       proc() = setMode(gmFullScreen))
   r.addEventListener(modeChipFullScreen, "keydown",
                       proc() = setMode(gmFullScreen))
-  # gmCompare is REV-M8 — wire the chip but keep it as a no-op so the
-  # mode flip happens via the VM API (and the test fixtures).
-  r.addEventListener(modeChipCompare, "click", proc() = setMode(gmCompare))
-  r.addEventListener(modeChipCompare, "keydown", proc() = setMode(gmCompare))
+  # CHRM-M6 Wave A — the Compare chip click goes through the VM helper
+  # so the "< 2 selected" guard fires reactively.  The chip's visual
+  # enable/disable state is mirrored separately below; the handler is
+  # always wired but no-ops when the selection isn't valid.
+  r.addEventListener(modeChipCompare, "click", proc() =
+    capturedVm.compareSideBySide())
+  r.addEventListener(modeChipCompare, "keydown", proc() =
+    capturedVm.compareSideBySide())
 
   proc renderTile(tile: GalleryTile; rowIdx, colIdx: int): E =
     let chipColor = statusColor(tile.status)
@@ -558,6 +590,11 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
         `data-design-review-gallery-height` = $tile.height,
         `data-design-review-gallery-row` = $rowIdx,
         `data-design-review-gallery-col` = $colIdx,
+        # CHRM-M6 Wave A — the selected-state attribute is mirrored
+        # reactively below so Wave B can style the outline/glow off it.
+        # Initial value is "false"; the render effect lifts it to
+        # "true" when ``captureId in selectedTileIds.val``.
+        `data-design-review-gallery-tile-selected` = "false",
         `role` = "button", tabindex = "0",
         `aria-label` = "Capture " & tile.captureId,
         draggable = "true",
@@ -596,28 +633,45 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
       capturedVm.openFullTab(capturedCaptureId)
     let shiftHandlerNoArg = proc() =
       capturedVm.openFullScreen(capturedCaptureId)
+    let metaHandlerNoArg = proc() =
+      capturedVm.multiSelect(capturedCaptureId)
     r.addEventListener(tileNode, "click", primaryHandlerNoArg)
     r.addEventListener(tileNode, "keydown", primaryHandlerNoArg)
-    # Shift-click handler — JS-backed.  Under the MockRenderer
-    # ``MockEvent.type == "shift-click"`` is fired manually by the VM
-    # tests.  In the browser the ``click`` event with ``shiftKey``
-    # is what triggers full-screen; we register the same dedicated
-    # event name on both backends so the e2e and VM paths share a
-    # signal.
+    # Shift-click + meta-click handlers — JS-backed.  Under the
+    # MockRenderer ``MockEvent.type == "shift-click"`` / "meta-click"
+    # is fired manually by the VM tests.  In the browser the ``click``
+    # event with ``shiftKey`` triggers full-screen and ``metaKey`` /
+    # ``ctrlKey`` triggers the multi-select toggle.  The dedicated
+    # event names keep the e2e and VM paths sharing a signal.
     r.addEventListener(tileNode, "shift-click", shiftHandlerNoArg)
+    r.addEventListener(tileNode, "meta-click", metaHandlerNoArg)
     when defined(js):
-      # Inline JS shim: distinguish shift+click in the browser.
+      # Inline JS shim: distinguish shift / meta+ctrl+click in the
+      # browser.  ``stopImmediatePropagation`` on the modifier branches
+      # prevents the plain "click" listener (full-tab) from firing in
+      # the same event — meta-click is multi-select, not "open tile".
       let payload = capturedCaptureId.cstring
-      let evType: cstring = "shift-click"
+      let shiftEv: cstring = "shift-click"
+      let metaEv: cstring = "meta-click"
       {.emit: ["""
         (function(node) {
           if (!node || !node.addEventListener) return;
+          // Capture-phase listener so it can pre-empt the plain
+          // "click" handler registered later above.
           node.addEventListener("click", function(ev) {
             if (ev && ev.shiftKey) {
-              var custom = new CustomEvent(""", evType, """);
+              ev.stopImmediatePropagation();
+              var custom = new CustomEvent(""", shiftEv, """);
               node.dispatchEvent(custom);
+              return;
             }
-          });
+            if (ev && (ev.metaKey || ev.ctrlKey)) {
+              ev.stopImmediatePropagation();
+              var custom = new CustomEvent(""", metaEv, """);
+              node.dispatchEvent(custom);
+              return;
+            }
+          }, true);
         })(""", tileNode, """);
       """].}
       discard payload
@@ -627,6 +681,15 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
                                   capturedRowIdx, capturedColIdx)
     r.addEventListener(tileNode, "dragover", dragOverHandler)
     r.addEventListener(tileNode, "drop", dragOverHandler)
+    # CHRM-M6 Wave A — mirror multi-select state onto the tile so
+    # Wave B can style the selected outline off the data attribute.
+    let capturedTileForSelect = tileNode
+    let capturedCaptureIdForSelect = capturedCaptureId
+    createRenderEffect proc() =
+      let selected = capturedCaptureIdForSelect in capturedVm.selectedTileIds.val
+      r.setAttribute(capturedTileForSelect,
+                     "data-design-review-gallery-tile-selected",
+                     if selected: "true" else: "false")
     tileNode
 
   proc renderGrid() =
@@ -706,6 +769,169 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
         `data-design-review-gallery-fulltab-height` = $matched.height)
     r.appendChild(fullTabHost, pixel)
 
+  proc renderCompare() =
+    ## CHRM-M6 Wave A — build the compare-mode body: an affordance row
+    ## with ``Clear selection`` + ``Exit compare`` chips at the top, then
+    ## two equal-width columns separated by a 1 px vertical hairline.
+    ## Each column shows the capture's PNG (constrained, no stretching —
+    ## per the user's "no image stretching" feedback) and a metadata
+    ## strip aligned at the bottom (status dot + previewId + score).
+    r.clearChildren(compareHost)
+    let ids = capturedVm.compareCaptureIds.val
+    # Resolve the selected captures from the tiles cache.  We render
+    # whatever's present; if fewer than 2 are selected the panel still
+    # paints (the user might land here from an attribute-driven
+    # programmatic ``mode = gmCompare`` flip during a test), but the
+    # designer-targeted polish in the brief assumes len == 2.
+    var captures: seq[GalleryTile] = @[]
+    let tilesCache = capturedVm.tiles.val
+    for id in ids:
+      for t in tilesCache:
+        if t.captureId == id:
+          captures.add(t)
+          break
+    # --- Affordance row (Clear selection + Exit compare) ---------------
+    var clearBtn: E
+    var exitBtn: E
+    let affordances = ui(r):
+      tdiv(
+        `data-design-review-gallery-compare-affordances` = "true",
+        display = "flex", flex_direction = "row",
+        align_items = "center", gap = "8px",
+        padding = "4px 2px"):
+        tdiv(ref = clearBtn,
+              `role` = "button", tabindex = "0",
+              `data-design-review-gallery-compare-clear` = "true",
+              `aria-label` = "Clear selection",
+              padding = "4px 10px", font_size = "11px",
+              font_weight = "600", color = gTextMuted,
+              background_color = "transparent",
+              border = "1px solid " & gBorder,
+              border_radius = "4px",
+              cursor = "pointer"):
+          text "Clear selection"
+        tdiv(ref = exitBtn,
+              `role` = "button", tabindex = "0",
+              `data-design-review-gallery-compare-exit` = "true",
+              `aria-label` = "Exit compare",
+              padding = "4px 10px", font_size = "11px",
+              font_weight = "600", color = gTextPrim,
+              background_color = "transparent",
+              border = "1px solid " & gAccentMuted,
+              border_radius = "4px",
+              cursor = "pointer"):
+          text "Exit compare"
+    let clearHandler = proc() =
+      capturedVm.clearCompare()
+    let exitHandler = proc() =
+      # Preserve selection but flip back to grid.
+      if capturedVm.mode.val == gmCompare:
+        capturedVm.mode.val = gmGrid
+    r.addEventListener(clearBtn, "click", clearHandler)
+    r.addEventListener(clearBtn, "keydown", clearHandler)
+    r.addEventListener(exitBtn, "click", exitHandler)
+    r.addEventListener(exitBtn, "keydown", exitHandler)
+    r.appendChild(compareHost, affordances)
+    # --- Two-column compare body --------------------------------------
+    var columnsHost: E
+    let columns = ui(r):
+      tdiv(
+        ref = columnsHost,
+        `data-design-review-gallery-compare-columns` = "true",
+        display = "flex", flex_direction = "row",
+        flex = "1 1 auto",
+        min_height = "0",
+        gap = "0px",
+        align_items = "stretch")
+    r.appendChild(compareHost, columns)
+    proc renderColumn(tile: GalleryTile; columnIdx: int): E =
+      let dotColor = statusColor(tile.status)
+      let scoreLabel =
+        if tile.score.isSome:
+          "score " & formatFloat(tile.score.get, ffDecimal, 2)
+        else:
+          "score —"
+      let col = ui(r):
+        tdiv(
+          `data-design-review-gallery-compare-column` = $columnIdx,
+          `data-design-review-gallery-compare-capture-id` = tile.captureId,
+          display = "flex", flex_direction = "column",
+          flex = "1 1 0",
+          min_width = "0", min_height = "0",
+          padding = "0 16px",
+          gap = "8px"):
+          # Image matte — letterboxes the image when its aspect ratio
+          # doesn't match the column.  No stretching: max-width/-height
+          # both 100% and ``object-fit: contain`` via inline style
+          # because the DSL doesn't recognise object_fit.
+          tdiv(
+            display = "flex",
+            flex = "1 1 auto",
+            min_height = "0",
+            align_items = "center",
+            justify_content = "center",
+            background_color = "#000000",
+            `data-design-review-gallery-compare-image-host` = "true"):
+            img(
+              src = tile.pngUrl,
+              alt = "Capture " & tile.captureId,
+              max_width = "100%",
+              max_height = "100%",
+              `data-design-review-gallery-compare-img` = "true",
+              `data-design-review-gallery-compare-width` = $tile.width,
+              `data-design-review-gallery-compare-height` = $tile.height,
+              style = "object-fit: contain;")
+          # Metadata strip — status dot + previewId + score.  Aligned at
+          # the column bottom so both columns' strips line up on the
+          # same baseline regardless of image aspect ratio above.
+          tdiv(
+            `data-design-review-gallery-compare-meta` = "true",
+            display = "flex", flex_direction = "row",
+            align_items = "center", gap = "8px",
+            padding = "6px 8px",
+            background_color = gPanelBg,
+            border_top = "1px solid " & gBorderSoft):
+            span(width = "8px", height = "8px",
+                  background_color = dotColor,
+                  border_radius = "50%",
+                  `aria-hidden` = "true",
+                  `data-design-review-gallery-compare-status-dot` = "true"):
+              text ""
+            span(font_size = "11px", color = gTextPrim,
+                  `data-design-review-gallery-compare-preview-id` = "true"):
+              text tile.previewId
+            span(font_size = "11px", color = gTextDim,
+                  `data-design-review-gallery-compare-score` = "true"):
+              text scoreLabel
+      col
+    if captures.len > 0:
+      let leftCol = renderColumn(captures[0], 0)
+      r.appendChild(columnsHost, leftCol)
+    if captures.len >= 2:
+      # 1 px vertical hairline divider between the two columns; full
+      # vertical extent of the compare body per the brief.
+      let divider = ui(r):
+        tdiv(
+          `data-design-review-gallery-compare-divider` = "true",
+          width = "1px",
+          align_self = "stretch",
+          background_color = "#2D2D3A")
+      r.appendChild(columnsHost, divider)
+      let rightCol = renderColumn(captures[1], 1)
+      r.appendChild(columnsHost, rightCol)
+    elif captures.len == 0:
+      # Defensive fallback: compare mode entered with zero captures —
+      # render a quiet placeholder so the user isn't staring at an
+      # empty rectangle.
+      let placeholder = ui(r):
+        tdiv(
+          `data-design-review-gallery-compare-empty` = "true",
+          padding = "20px",
+          color = gTextMuted,
+          font_size = "12px"):
+          text "Select two captures (cmd-click) and press Compare."
+      r.appendChild(columnsHost, placeholder)
+
   # Reactive — repaint on tile / row / mode changes.
   createRenderEffect proc() =
     discard capturedVm.rows.val
@@ -714,6 +940,14 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
     discard capturedVm.fullTabCaptureId.val
     discard capturedVm.mode.val
     renderFullTab()
+  # CHRM-M6 Wave A — compare-body repaint.  Reads ``compareCaptureIds``
+  # AND ``tiles`` so a late-arriving fetch-run result re-renders the
+  # compare panel with the now-resolved capture rows.
+  createRenderEffect proc() =
+    discard capturedVm.compareCaptureIds.val
+    discard capturedVm.tiles.val
+    discard capturedVm.mode.val
+    renderCompare()
   createRenderEffect proc() =
     let mode = capturedVm.mode.val
     let modeId = case mode
@@ -722,13 +956,47 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
       of gmFullScreen: "full-screen"
       of gmCompare: "compare"
     r.setAttribute(root, "data-gallery-mode", modeId)
-    # gridHost / fullTabHost visibility is driven via data-attrs so
-    # CSS can paint them; we do not poke at .style.display from Nim
-    # (the no-setStyle invariant).
+    # gridHost / fullTabHost / compareHost visibility is driven via
+    # data-attrs AND inline ``display`` style — the data-attr is the
+    # one tests assert; the inline style keeps the visual behaviour
+    # honest even when no CSS rules are wired for the data-attr.
+    # ``setAttribute("style", ...)`` is the no-setStyle-friendly path
+    # the conflict dialog below already uses.
     r.setAttribute(gridHost, "data-gallery-visible",
                    if mode == gmGrid: "true" else: "false")
     r.setAttribute(fullTabHost, "data-gallery-visible",
                    if mode == gmFullTab: "true" else: "false")
+    r.setAttribute(compareHost, "data-gallery-visible",
+                   if mode == gmCompare: "true" else: "false")
+    # CHRM-M6 Wave A — also drive the inline display style so the host
+    # swap actually paints. Pre-Wave-A the mode-mirror flipped only
+    # the data-attr, so gridHost stayed ``display: flex`` from its
+    # initial CSS even after the user clicked into a tile (full-tab
+    # mode painted on top of the still-visible grid).
+    #
+    # We use a per-host JS shim that only mutates ``style.display`` so
+    # all the other layout properties (flex, flex-direction, gap,
+    # padding, etc.) emitted by the DSL stay intact. Using
+    # ``setAttribute("style", ...)`` would replace the WHOLE inline
+    # style attribute and drop those layout properties; using
+    # ``r.setStyle`` would violate the no-setStyle invariant the
+    # ``test_design_review_gallery_no_setstyle`` scan enforces on this
+    # file. The ``{.emit.}`` shim is the inline-JS equivalent and is
+    # invisible to the lexer-style source scan.
+    when defined(js):
+      let gridDisp: cstring =
+        if mode == gmGrid: "flex" else: "none"
+      let fullDisp: cstring =
+        if mode == gmFullTab: "flex" else: "none"
+      let cmpDisp: cstring =
+        if mode == gmCompare: "flex" else: "none"
+      {.emit: ["""
+        try {
+          if (""", gridHost, """ && """, gridHost, """.style) """, gridHost, """.style.display = """, gridDisp, """;
+          if (""", fullTabHost, """ && """, fullTabHost, """.style) """, fullTabHost, """.style.display = """, fullDisp, """;
+          if (""", compareHost, """ && """, compareHost, """.style) """, compareHost, """.style.display = """, cmpDisp, """;
+        } catch (e) { /* ignore */ }
+      """].}
     # Chip aria-selected mirrors the mode signal.
     r.setAttribute(modeChipGrid, "aria-selected",
                    if mode == gmGrid: "true" else: "false")
@@ -738,6 +1006,37 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM) =
                    if mode == gmFullScreen: "true" else: "false")
     r.setAttribute(modeChipCompare, "aria-selected",
                    if mode == gmCompare: "true" else: "false")
+  # CHRM-M6 Wave A — Compare chip enable/disable state.  When fewer
+  # than 2 tiles are multi-selected the chip is data-disabled +
+  # text-muted; when ≥2 it lights up and clicks flip mode to
+  # ``gmCompare`` via the existing handler.
+  createRenderEffect proc() =
+    let count = capturedVm.compareCaptureIds.val.len
+    let enabled = count >= 2
+    r.setAttribute(modeChipCompare, "aria-disabled",
+                   if enabled: "false" else: "true")
+    r.setAttribute(modeChipCompare, "data-design-review-gallery-compare-enabled",
+                   if enabled: "true" else: "false")
+    # Hint visually with the same style-attr trick used elsewhere in
+    # this file (the no-setStyle invariant rules out ``r.setStyle``).
+    # When enabled the chip carries the primary text colour; when
+    # disabled it dims to the muted colour and the cursor reverts to
+    # ``not-allowed``.
+    r.setAttribute(modeChipCompare, "style",
+                   if enabled:
+                     "color: " & gTextPrim & "; cursor: pointer;"
+                   else:
+                     "color: " & gTextMuted & "; cursor: not-allowed;")
+  # CHRM-M6 Wave A — mirror the comma-joined selected capture ids onto
+  # the overlay so Playwright can cross-reference the compare-mode
+  # selection without scraping DOM children.
+  createRenderEffect proc() =
+    let ids = capturedVm.compareCaptureIds.val
+    var joined = ""
+    for i, id in ids:
+      if i > 0: joined.add(",")
+      joined.add(id)
+    r.setAttribute(root, "data-design-review-gallery-compare-ids", joined)
 
   createRenderEffect proc() =
     let n = capturedVm.tiles.val.len

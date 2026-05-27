@@ -235,7 +235,14 @@ iterator jsonCaptureBlobsFromRun(runBody: string): string =
             start = -1
         inc i
 
-proc galleryTilesFromRun(runBody: string): seq[GalleryTile] =
+proc galleryTilesFromRun(runBody: string; baseUrl: string = ""): seq[GalleryTile] =
+  ## CHRM-M6 Wave A — ``baseUrl`` is the daemon-discovered base URL
+  ## (e.g. ``http://127.0.0.1:8113``).  Prepending it keeps the
+  ## ``<img src>`` tags pointing at the daemon when the editor is
+  ## served from a different origin (the typical local-dev setup:
+  ## editor on :8090, daemon on :8113).  An empty ``baseUrl`` falls
+  ## back to the legacy relative path for backwards-compat with the
+  ## existing native unit tests.
   result = @[]
   let runId = jsonStringField(runBody, "run_id")
   let status = jsonStringField(runBody, "status")
@@ -245,12 +252,24 @@ proc galleryTilesFromRun(runBody: string): seq[GalleryTile] =
     let previewId = jsonStringField(cap, "preview_id")
     let width = jsonIntField(cap, "width")
     let height = jsonIntField(cap, "height")
+    let urlPath = "/api/design-review/get-capture-png?id=" & captureId
+    let absUrl =
+      if baseUrl.len > 0:
+        # Defensive: trim trailing slash from baseUrl so we don't
+        # double up the slash when joining with the leading-slash
+        # path.  Matches ``editor_http_client.joinUrl``'s behaviour.
+        if baseUrl[^1] == '/':
+          baseUrl[0 ..< baseUrl.len - 1] & urlPath
+        else:
+          baseUrl & urlPath
+      else:
+        urlPath
     result.add GalleryTile(
       captureId: captureId,
       runId: runId,
       previewId: previewId,
       status: status,
-      pngUrl: "/api/design-review/get-capture-png?id=" & captureId,
+      pngUrl: absUrl,
       width: width,
       height: height,
       score: none[float](),
@@ -294,11 +313,16 @@ proc fetchGalleryTiles*(st: DesignReviewState) =
       if pending != 0: return
       if capturedState.briefId.val != capturedBriefId: return
       capturedState.galleryVm.tiles.val = collected
+    let capturedBaseUrl =
+      if capturedState.httpClient != nil:
+        capturedState.httpClient.baseUrl
+      else:
+        ""
     for i in 0 ..< toFetch:
       let rid = runIds[i]
       proc onRun(rr: HttpCallbackResult) =
         if rr.kind == hcOk:
-          for tile in galleryTilesFromRun(rr.body):
+          for tile in galleryTilesFromRun(rr.body, capturedBaseUrl):
             collected.add(tile)
         dec pending
         finish()

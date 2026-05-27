@@ -59,9 +59,31 @@ proc joinUrl*(baseUrl, path: string): string =
 # ---------------------------------------------------------------------------
 
 when defined(js):
+  # CHRM-M6 Wave A — the JS ``fetch`` response body is a native JS
+  # ``String``, but the Nim ``HttpCallbackResult.body`` field is declared
+  # as ``string`` (the Nim JS representation is an Array of char codes,
+  # NOT a native JS String). Earlier revisions assigned ``out.body``
+  # straight into the result object, which left a native JS String in
+  # the field — every downstream ``strutils.find`` / ``.contains`` then
+  # index-failed inside ``nsuFindStrA`` because ``jsString[i]`` returns
+  # a 1-char string instead of a byte/char code, the bounds check on
+  # the skip-table lookup blows up with ``SyntaxError: Cannot convert
+  # i to a BigInt`` (the error-message construction calls ``BigInt`` on
+  # the offending index char), the catch-handler in the fetch chain
+  # re-invokes the callback with ``kind=hcError``, and the gallery
+  # never sees a real run. Convert the JS String to a Nim string via
+  # ``cstringToNimstr`` (the same helper Nim's own JS-target codegen
+  # uses when crossing this boundary) BEFORE handing the body back to
+  # the caller.
+  proc invokeCb(cb: HttpCallback; kind: HttpCallbackKind;
+                body: cstring; statusCode: int) =
+    var r = HttpCallbackResult(kind: kind, body: $body, statusCode: statusCode)
+    cb(r)
+
   proc getJs(url: string; cb: HttpCallback) =
     let u: cstring = url
     let cb2 = cb
+    let invoke = invokeCb
     {.emit: ["""
       try {
         fetch(""", u, """, { method: 'GET', credentials: 'omit' })
@@ -71,17 +93,17 @@ when defined(js):
             });
           })
           .then(function(out) {
-            var r = { kind: 0, body: out.body, statusCode: out.code };
-            if (out.code === 409) r.kind = 2;
-            else if (out.code >= 200 && out.code < 300) r.kind = 0;
-            else r.kind = 1;
-            """, cb2, """(r);
+            var k = 0;
+            if (out.code === 409) k = 2;
+            else if (out.code >= 200 && out.code < 300) k = 0;
+            else k = 1;
+            """, invoke, """(""", cb2, """, k, out.body, out.code);
           })
           .catch(function(err) {
-            """, cb2, """({ kind: 1, body: String(err), statusCode: 0 });
+            """, invoke, """(""", cb2, """, 1, String(err), 0);
           });
       } catch (e) {
-        """, cb2, """({ kind: 1, body: String(e), statusCode: 0 });
+        """, invoke, """(""", cb2, """, 1, String(e), 0);
       }
     """].}
 
@@ -89,6 +111,7 @@ when defined(js):
     let u: cstring = url
     let b: cstring = body
     let cb2 = cb
+    let invoke = invokeCb
     {.emit: ["""
       try {
         fetch(""", u, """, {
@@ -102,17 +125,17 @@ when defined(js):
             });
           })
           .then(function(out) {
-            var r = { kind: 0, body: out.body, statusCode: out.code };
-            if (out.code === 409) r.kind = 2;
-            else if (out.code >= 200 && out.code < 300) r.kind = 0;
-            else r.kind = 1;
-            """, cb2, """(r);
+            var k = 0;
+            if (out.code === 409) k = 2;
+            else if (out.code >= 200 && out.code < 300) k = 0;
+            else k = 1;
+            """, invoke, """(""", cb2, """, k, out.body, out.code);
           })
           .catch(function(err) {
-            """, cb2, """({ kind: 1, body: String(err), statusCode: 0 });
+            """, invoke, """(""", cb2, """, 1, String(err), 0);
           });
       } catch (e) {
-        """, cb2, """({ kind: 1, body: String(e), statusCode: 0 });
+        """, invoke, """(""", cb2, """, 1, String(e), 0);
       }
     """].}
 

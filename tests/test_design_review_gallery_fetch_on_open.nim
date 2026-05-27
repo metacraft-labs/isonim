@@ -107,7 +107,16 @@ suite "REV-M8 gallery fetch-on-open":
       check t0.previewId.startsWith("p/render.task-app#")
       check t0.width == 320
       check t0.height == 568
-      check t0.pngUrl.startsWith("/api/design-review/get-capture-png?id=")
+      # CHRM-M6 Wave A — the pngUrl is now absolute (daemon baseUrl +
+      # ``/api/design-review/get-capture-png?id=...``) so the browser
+      # ``<img src>`` tags load PNG bytes correctly when the editor and
+      # the daemon live on different origins.  Native callers can pass
+      # an empty baseUrl to galleryTilesFromRun to preserve the legacy
+      # relative shape; the production fetchGalleryTiles uses the
+      # client's baseUrl, which is what this fixture exercises.
+      check t0.pngUrl.startsWith(f.baseUrl)
+      check t0.pngUrl.endsWith("/api/design-review/get-capture-png?id=" &
+                                t0.captureId)
       dispose()
 
   test "test_gallery_fetch_noop_when_brief_empty":
