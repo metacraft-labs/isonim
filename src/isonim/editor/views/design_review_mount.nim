@@ -51,6 +51,15 @@ type
     galleryHostState*: Signal[GalleryHostState]
     httpClient*: EditorHttpClient
     discovery*: DaemonDiscovery
+    # CHRM-M7 — narrow-viewport breakpoint signal.  Driven by a JS
+    # ``window.innerWidth`` probe + resize listener installed by
+    # ``mountGalleryHostForEditor``. ``true`` when the viewport width
+    # is ≤768 px (the threshold the editor's CSS uses to collapse the
+    # centre column to sidebar-only). Drives the gallery host's
+    # mount-mode swap from "inline overlay in the centre column" to
+    # "fixed full-viewport drawer" so the gallery stays reachable on
+    # touch / phone widths.
+    narrow*: Signal[bool]
 
 var states {.threadvar.}: seq[(EditorVM, DesignReviewState)]
 
@@ -122,7 +131,11 @@ proc ensureDesignReviewState*(vm: EditorVM): DesignReviewState =
     briefHasHistory: hasHistorySig,
     galleryHostState: createSignal(ghsClosed),
     httpClient: client,
-    discovery: discovery)
+    discovery: discovery,
+    # CHRM-M7 — initialise the narrow signal optimistically to false;
+    # ``mountGalleryHostForEditor`` installs the JS resize probe that
+    # flips it reactively based on ``window.innerWidth``.
+    narrow: createSignal(false))
   states.add((vm, st))
   # Drive ``briefId`` reactively off the EditorVM's selected story + platform.
   let capturedVm = vm
@@ -393,6 +406,100 @@ proc mountHistoryButtonForEditor*[R, E](r: R; parent: E; vm: EditorVM) =
       else: ghsClosed
   mountHistoryButton[R, E](r, parent, st.historyVm, onActivate)
 
+proc mountSidebarHistoryButtonForEditor*[R, E](r: R; parent: E; vm: EditorVM) =
+  ## CHRM-M7 — narrow-mode sidebar mirror of the chrome-bar 🕘 button.
+  ##
+  ## At narrow viewports (≤768 px) the centre column collapses to
+  ## ``display: none`` via the ``@media (max-width: 768px)`` rule in
+  ## ``browser.nim``, which makes the chrome-bar history button
+  ## unreachable. This mount provides a duplicate affordance in the
+  ## sidebar header that drives the same ``galleryHostState`` signal.
+  ##
+  ## The button intentionally does NOT carry the canonical
+  ## ``data-design-review-history-button="true"`` attribute — only the
+  ## chrome-bar button does, so existing tests / tooling that search
+  ## for that selector continue to resolve to a single (visible at
+  ## wide / laptop) element. The sidebar mirror is found via the
+  ## scoped ``.editor-sidebar-history-narrow [role="button"]`` query
+  ## or the dedicated ``data-design-review-history-button-sidebar``
+  ## attribute the CHRM-M7 e2e test asserts against.
+  let st = ensureDesignReviewState(vm)
+  startBriefHasHistoryPolling(st)
+  let capturedState = st
+  let capturedVm = st.historyVm
+  let button = ui(r):
+    tdiv(
+      `role` = "button",
+      tabindex = "0",
+      `aria-label` = "Open design-review gallery",
+      `data-design-review-history-button-sidebar` = "true",
+      `data-history-visible` = "false",
+      display = "inline-flex",
+      align_items = "center",
+      justify_content = "center",
+      width = "26px",
+      height = "26px",
+      padding = "0",
+      font_size = "14px",
+      color = "#F1F5F9",
+      background_color = "#0F172A",
+      border = "1px solid #334155",
+      border_radius = "4px",
+      cursor = "pointer",
+      user_select = "none"):
+      text "\u{1F558}"
+  proc onActivate() =
+    capturedState.galleryHostState.val =
+      if capturedState.galleryHostState.val == ghsClosed: ghsOpen
+      else: ghsClosed
+    capturedVm.galleryOpen.val = not capturedVm.galleryOpen.val
+  r.addEventListener(button, "click", onActivate)
+  r.addEventListener(button, "keydown", onActivate)
+  # Mirror the chrome-bar button's ``data-history-visible`` /
+  # ``data-gallery-open`` attributes so the sidebar mirror reflects
+  # the same state to css / tooling.
+  createRenderEffect proc() =
+    let hasHistory = capturedVm.briefHasHistory.val
+    let isOpen = capturedState.galleryHostState.val == ghsOpen
+    r.setAttribute(button, "data-history-visible",
+                   if hasHistory: "true" else: "false")
+    r.setAttribute(button, "aria-pressed",
+                   if isOpen: "true" else: "false")
+    r.setAttribute(button, "data-gallery-open",
+                   if isOpen: "true" else: "false")
+  r.appendChild(parent, button)
+
+proc startNarrowViewportProbe*(st: DesignReviewState) =
+  ## CHRM-M7 — install a JS-side ``window.innerWidth`` probe that
+  ## drives ``st.narrow`` reactively. The 768 px threshold matches
+  ## ``browser.nim``'s ``@media (max-width: 768px)`` rule that
+  ## collapses the centre column to sidebar-only. A single resize
+  ## listener is installed per state; the listener is intentionally
+  ## not removed because the editor mounts once per page load.
+  ##
+  ## On non-JS targets (native unit tests via the MockRenderer) the
+  ## probe is a no-op — tests can drive ``st.narrow.val`` directly.
+  let capturedState = st
+  when defined(js):
+    proc setNarrow(value: bool) =
+      capturedState.narrow.val = value
+    let cb = setNarrow
+    {.emit: ["""
+      (function() {
+        var fn = """, cb, """;
+        var apply = function() {
+          try {
+            var w = (typeof window !== 'undefined' && window.innerWidth) || 0;
+            fn(w > 0 && w <= 768);
+          } catch (e) { /* ignore */ }
+        };
+        apply();
+        if (typeof window !== 'undefined' && window.addEventListener) {
+          window.addEventListener('resize', apply);
+        }
+      })();
+    """].}
+
 proc mountGalleryHostForEditor*[R, E](r: R; parent: E; vm: EditorVM): E =
   ## Build the gallery overlay host: a positioned ``div`` that holds
   ## the ``mountGalleryOverlay`` output and toggles its
@@ -415,11 +522,13 @@ proc mountGalleryHostForEditor*[R, E](r: R; parent: E; vm: EditorVM): E =
   ## second on-screen kill switch on the overlay.
   let st = ensureDesignReviewState(vm)
   startGalleryFetchOnOpen(st)
+  startNarrowViewportProbe(st)
   let capturedState = st
   let host = ui(r):
     tdiv(
       `data-design-review-gallery-host` = "true",
       `data-gallery-host-visible` = "false",
+      `data-gallery-mount-mode` = "inline",
       display = "none",
       flex_direction = "column",
       flex = "1 1 auto",
@@ -427,18 +536,65 @@ proc mountGalleryHostForEditor*[R, E](r: R; parent: E; vm: EditorVM): E =
       overflow = "hidden",
       width = "100%",
       `aria-live` = "polite")
+  # CHRM-M7 — close affordance that surfaces only in drawer (narrow)
+  # mode. The chip is appended to the host BEFORE the overlay body
+  # so it floats above the gallery toolbar at the top-right corner.
+  # Wide / laptop modes hide it via the same data-attribute path
+  # used elsewhere in the file. The chip drives the gallery host
+  # state back to ``ghsClosed`` so the drawer dismisses cleanly.
+  let closeChip = ui(r):
+    tdiv(
+      `role` = "button", tabindex = "0",
+      `aria-label` = "Close gallery",
+      `data-design-review-gallery-close` = "true",
+      display = "none",
+      position = "absolute",
+      top = "10px", right = "10px",
+      width = "32px", height = "32px",
+      align_items = "center", justify_content = "center",
+      font_size = "16px", font_weight = "600",
+      color = "#F1F5F9",
+      background_color = "#1E293B",
+      border = "1px solid #334155",
+      border_radius = "16px",
+      cursor = "pointer",
+      z_index = "10",
+      user_select = "none"):
+      text "\xC3\x97"  # × MULTIPLICATION SIGN
+  let onClose = proc() =
+    capturedState.galleryHostState.val = ghsClosed
+  r.addEventListener(closeChip, "click", onClose)
+  r.addEventListener(closeChip, "keydown", onClose)
+  r.appendChild(host, closeChip)
   # Mount the gallery overlay once into the host; toggle visibility via
   # the data-attribute path that gallery_overlay.nim already uses.
   mountGalleryOverlay[R, E](r, host, st.galleryVm)
+  # CHRM-M7 — re-parenting bookkeeping. When the viewport flips to
+  # narrow AND the gallery is open, detach the host from its inline
+  # parent (the centre column) and attach it to ``document.body`` so
+  # ``position: fixed`` can paint over the sidebar. When the viewport
+  # flips back to wide/laptop (or the user closes the gallery while
+  # narrow) we re-parent back to the original ``parent`` so the
+  # inline layout returns to the centre column.
+  var parentedToBody = false
+  let originalParent = parent
   createRenderEffect proc() =
     let open = capturedState.galleryHostState.val == ghsOpen
+    let isNarrow = capturedState.narrow.val
     let visible = open
+    let drawerMode = isNarrow and open
     r.setAttribute(host, "data-gallery-host-visible",
                    if visible: "true" else: "false")
     r.setAttribute(host, "data-gallery-host-open",
                    if open: "true" else: "false")
+    r.setAttribute(host, "data-gallery-mount-mode",
+                   if drawerMode: "drawer" else: "inline")
     r.setAttribute(host, "aria-hidden",
                    if visible: "false" else: "true")
+    # Show the close chip only in drawer mode (narrow + open). Wide
+    # users have ESC + the chrome-bar history button toggle.
+    r.setAttribute(closeChip, "data-design-review-gallery-close-visible",
+                   if drawerMode: "true" else: "false")
     # CHRM-M5 Fix D + CHRM-M6 Wave B: drive the inline display style
     # too so the overlay actually renders on-screen when the user
     # opens it. Previously only the data-attribute flipped;
@@ -453,13 +609,79 @@ proc mountGalleryHostForEditor*[R, E](r: R; parent: E; vm: EditorVM): E =
     # layout properties (flex, flex-direction, etc.) emitted by the
     # DSL stay intact, and avoid ``setAttribute("style", ...)`` which
     # would replace the whole inline style and drop those properties.
+    #
+    # CHRM-M7 extends the shim: in drawer mode we also drive the
+    # ``position``, ``inset``, ``z-index``, and ``border-radius``
+    # properties so the host overlays the whole viewport (minus a
+    # small top inset that leaves the editor's collapsed chrome
+    # visible). In inline mode we clear those fixed-positioning
+    # properties so wide / laptop reviewers see the legacy inline
+    # overlay behaviour unchanged.
     when defined(js):
       let hostDisp: cstring =
         if visible: "flex" else: "none"
+      let drawerPosition: cstring =
+        if drawerMode: "fixed" else: ""
+      let drawerInset: cstring =
+        # 56 px top inset leaves room for the narrow-mode chrome bar
+        # (sidebar header + history button row) so the user retains
+        # a sense of location.
+        if drawerMode: "56px 0 0 0" else: ""
+      let drawerZIndex: cstring =
+        if drawerMode: "9000" else: ""
+      let drawerRadius: cstring =
+        if drawerMode: "0" else: ""
+      let drawerHeight: cstring =
+        if drawerMode: "auto" else: ""
+      let closeDisp: cstring =
+        if drawerMode: "inline-flex" else: "none"
       {.emit: ["""
         try {
-          if (""", host, """ && """, host, """.style) """, host, """.style.display = """, hostDisp, """;
+          if (""", host, """ && """, host, """.style) {
+            """, host, """.style.display = """, hostDisp, """;
+            """, host, """.style.position = """, drawerPosition, """;
+            """, host, """.style.inset = """, drawerInset, """;
+            """, host, """.style.zIndex = """, drawerZIndex, """;
+            """, host, """.style.borderRadius = """, drawerRadius, """;
+            """, host, """.style.height = """, drawerHeight, """;
+          }
+          if (""", closeChip, """ && """, closeChip, """.style) {
+            """, closeChip, """.style.display = """, closeDisp, """;
+          }
         } catch (e) { /* ignore */ }
       """].}
+    # CHRM-M7 — host re-parenting. When the gallery flips into drawer
+    # mode we detach the host from its inline parent (the centre
+    # column, which is ``display: none`` at narrow widths via CSS) and
+    # attach it to ``document.body`` so the fixed-positioned host
+    # paints above the sidebar. When the gallery closes OR the user
+    # widens the viewport back past 768 px, the host returns to its
+    # original inline parent and the close-chip hides.
+    when defined(js):
+      let wantBody = drawerMode
+      if wantBody and not parentedToBody:
+        {.emit: ["""
+          try {
+            if (""", host, """ && """, host, """.parentNode) {
+              """, host, """.parentNode.removeChild(""", host, """);
+            }
+            if (typeof document !== 'undefined' && document.body) {
+              document.body.appendChild(""", host, """);
+            }
+          } catch (e) { /* ignore */ }
+        """].}
+        parentedToBody = true
+      elif not wantBody and parentedToBody:
+        {.emit: ["""
+          try {
+            if (""", host, """ && """, host, """.parentNode) {
+              """, host, """.parentNode.removeChild(""", host, """);
+            }
+            if (""", originalParent, """ && """, originalParent, """.appendChild) {
+              """, originalParent, """.appendChild(""", host, """);
+            }
+          } catch (e) { /* ignore */ }
+        """].}
+        parentedToBody = false
   r.appendChild(parent, host)
   host

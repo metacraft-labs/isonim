@@ -97,8 +97,19 @@ proc injectEditorStyles*() =
       .editor-inspector { display: none !important; }
       .editor-chat { display: none !important; }
       .editor-mobile-toggle { display: flex !important; }
+      /* CHRM-M7 — at narrow widths the chrome-bar history button is
+         unreachable (lives inside .editor-preview which is hidden).
+         The sidebar mirrors the affordance so the gallery stays
+         summonable. The slot is display:none at wide/laptop widths
+         so the duplicate button doesn't render twice; at narrow we
+         flip it to inline-flex so the 🕘 button surfaces alongside
+         the search input. */
+      .editor-sidebar-history-narrow { display: inline-flex !important; }
     }
     .editor-mobile-toggle { display: none; }
+    /* CHRM-M7 — hide the sidebar history slot at wide / laptop widths
+       so the chrome-bar button stays the sole affordance there. */
+    .editor-sidebar-history-narrow { display: none; }
     @media (max-width: 1024px) and (min-width: 769px) {
       .editor-sidebar { width: 220px !important; min-width: 220px !important; }
       .editor-inspector,

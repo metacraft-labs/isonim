@@ -740,22 +740,58 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
 
       # Search input
       var searchInput: E
+      # CHRM-M7 — sidebar header row holds the search input plus a
+      # narrow-only history affordance.  At wide / laptop widths the
+      # chrome-bar's history button (rendered inside the centre
+      # column) is the canonical entry to the gallery; at narrow
+      # widths the centre column collapses (``display: none`` via
+      # ``browser.nim``'s ``@media (max-width: 768px)`` rule) so the
+      # chrome-bar button is unreachable. This sidebar-resident
+      # mirror is shown only at narrow widths (the
+      # ``editor-sidebar-history-narrow`` class is gated on the same
+      # CSS media query) and drives the same gallery host state.
+      var sidebarHistorySlot: E
       tdiv(padding = "8px 10px",
             border_bottom = "1px solid " & borderFaint):
         tdiv(display = "flex", align_items = "center",
-              background_color = bgSurface,
-              border = "1px solid " & border,
-              border_radius = "5px", padding = "0 8px", height = "28px"):
-          span(font_size = "11px", opacity = "0.5", margin_right = "6px"):
-            text "\xF0\x9F\x94\x8D"
-          input(class = "editor-input",
-                ref = searchInput,
-                `data-sidebar-search` = "true",
-                background_color = "transparent", border = "none",
-                font_size = "12px", color = textSecondary,
-                outline = "none", flex = "1",
-                `aria-label` = "Search stories",
-                placeholder = "Search stories\xE2\x80\xA6")
+              gap = "6px"):
+          tdiv(display = "flex", align_items = "center",
+                background_color = bgSurface,
+                border = "1px solid " & border,
+                border_radius = "5px", padding = "0 8px", height = "28px",
+                flex = "1"):
+            span(font_size = "11px", opacity = "0.5", margin_right = "6px"):
+              text "\xF0\x9F\x94\x8D"
+            input(class = "editor-input",
+                  ref = searchInput,
+                  `data-sidebar-search` = "true",
+                  background_color = "transparent", border = "none",
+                  font_size = "12px", color = textSecondary,
+                  outline = "none", flex = "1",
+                  `aria-label` = "Search stories",
+                  placeholder = "Search stories\xE2\x80\xA6")
+          # Narrow-only history-button slot. ``mountHistoryButtonForEditor``
+          # appends the 🕘 button into this slot. The
+          # ``editor-sidebar-history-narrow`` class is gated by the
+          # CSS media query in ``browser.nim``: ``display: none`` at
+          # wide / laptop widths, ``inline-flex`` at narrow widths.
+          # No inline ``display`` here so the class rule wins.
+          tdiv(ref = sidebarHistorySlot,
+                class = "editor-sidebar-history-narrow",
+                `data-sidebar-history-slot` = "true",
+                align_items = "center",
+                justify_content = "center")
+      # CHRM-M7 — mount a sidebar-only history affordance. The button
+      # is in the DOM at all widths but the slot is ``display: none``
+      # by default; the CSS rule injected in ``browser.nim`` flips it
+      # to ``inline-flex`` at narrow widths so the affordance surfaces
+      # only when the chrome-bar button is unreachable. The sidebar
+      # mirror uses a distinct data attribute so existing
+      # ``[data-design-review-history-button="true"]`` selectors
+      # continue to resolve to a single (chrome-bar) element.
+      block:
+        design_review_mount_view.mountSidebarHistoryButtonForEditor[R, E](
+          r, sidebarHistorySlot, vm)
       block:
         let onSearch = searchInputHandler[R, E](r, vm, searchInput)
         r.addEventListener(searchInput, "input", onSearch)
