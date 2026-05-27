@@ -214,80 +214,88 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
       flex_direction = "column",
       gap = "8px")
 
-  if messages.len == 0:
-    let empty = ui(r):
-      tdiv(
-        display = "flex",
-        flex_direction = "column",
-        gap = "8px",
-        padding = "14px",
-        border = "1px dashed " & borderFaint,
-        border_radius = "8px",
-        background_color = bgInput,
-        color = textSecondary):
-        span(font_size = "12px", font_weight = "700", color = textPrimary):
-          text "Ask for design-system changes"
-        span(font_size = "11px", line_height = "1.5", color = textSecondary):
-          text "Use Comment mode to collect review notes, or describe token, variant, typography, spacing, radius, shadow, and state changes here."
-        span(font_size = "11px", line_height = "1.5", color = textDim):
-          text "Manual Edit mode opens the source-backed inspector in this same sidebar space."
-    r.appendChild(messagesArea, empty)
+  # 2026-05-28: intro + suggestions render UNCONDITIONALLY at the top
+  # of messagesArea, not gated on ``messages.len == 0``. The user's
+  # mental model is: help text sits at the top of the scroll area;
+  # when you send chats, the messages append below and the help is
+  # pushed up — eventually scrolling out of view, which feels natural
+  # rather than dramatic (the help "disappears" gradually instead of
+  # blinking out at len == 0 → len == 1). The auto-scroll-to-bottom
+  # reactive effect below ensures the most recent message stays in
+  # view on each new arrival.
+  let empty = ui(r):
+    tdiv(
+      display = "flex",
+      flex_direction = "column",
+      gap = "8px",
+      padding = "14px",
+      border = "1px dashed " & borderFaint,
+      border_radius = "8px",
+      background_color = bgInput,
+      color = textSecondary):
+      span(font_size = "12px", font_weight = "700", color = textPrimary):
+        text "Ask for design-system changes"
+      span(font_size = "11px", line_height = "1.5", color = textSecondary):
+        text "Use Comment mode to collect review notes, or describe token, variant, typography, spacing, radius, shadow, and state changes here."
+      span(font_size = "11px", line_height = "1.5", color = textDim):
+        text "Manual Edit mode opens the source-backed inspector in this same sidebar space."
+  r.appendChild(messagesArea, empty)
 
-    # Suggested prompts: keep the AI side-panel populated even when there
-    # are no messages yet, so the pane doesn't read as 70% dead space at
-    # tall viewports. These are illustrative starting points; they fill the
-    # visual gap between the intro card and the review-loop sections.
-    let suggestionsHeading = ui(r):
+  # Suggested prompts: starting points that surface above the
+  # transcript so the user always has a one-tap entry into the chat
+  # even after a few rounds. They scroll off the top naturally as the
+  # transcript grows.
+  let suggestionsHeading = ui(r):
+    tdiv(
+      display = "flex",
+      align_items = "center",
+      justify_content = "space-between",
+      margin_top = "4px"):
+      span(
+        font_size = "10px",
+        font_weight = "700",
+        color = textSecondary,
+        text_transform = "uppercase",
+        letter_spacing = "0.5px"):
+        text "Suggested prompts"
+      span(font_size = "10px", color = textDim):
+        text "tap to insert"
+  r.appendChild(messagesArea, suggestionsHeading)
+
+  let suggestions = [
+    "Audit the selected component for accessibility regressions",
+    "Suggest a calmer accent token for status badges",
+    "Trace where this padding value is shared across the design system",
+    "Generate a missing variant story for this component"
+  ]
+  for prompt in suggestions:
+    let promptText = $prompt
+    let chip = ui(r):
       tdiv(
+        `role` = "button",
+        tabindex = "0",
+        `aria-label` = "Insert suggested prompt",
         display = "flex",
         align_items = "center",
-        justify_content = "space-between",
-        margin_top = "4px"):
-        span(
-          font_size = "10px",
-          font_weight = "700",
-          color = textSecondary,
-          text_transform = "uppercase",
-          letter_spacing = "0.5px"):
-          text "Suggested prompts"
-        span(font_size = "10px", color = textDim):
-          text "tap to insert"
-    r.appendChild(messagesArea, suggestionsHeading)
-
-    let suggestions = [
-      "Audit the selected component for accessibility regressions",
-      "Suggest a calmer accent token for status badges",
-      "Trace where this padding value is shared across the design system",
-      "Generate a missing variant story for this component"
-    ]
-    for prompt in suggestions:
-      let promptText = $prompt
-      let chip = ui(r):
-        tdiv(
-          `role` = "button",
-          tabindex = "0",
-          `aria-label` = "Insert suggested prompt",
-          display = "flex",
-          align_items = "center",
-          gap = "8px",
-          padding = "8px 10px",
-          border = "1px solid " & borderFaint,
-          border_radius = "6px",
-          background_color = bgInput,
-          cursor = "pointer",
-          transition = "border-color 0.12s, background-color 0.12s"):
-          span(font_size = "11px", color = textDim):
-            text "\xE2\x9C\xA8"
-          span(font_size = "11px", line_height = "1.4",
-                color = textPrimary,
-                white_space = "normal",
-                overflow = "hidden"):
-            text promptText
-      r.addEventListener(chip, "click", proc() =
-        vm.chat.inputText.val = promptText)
-      r.addEventListener(chip, "keydown", proc() =
-        vm.chat.inputText.val = promptText)
-      r.appendChild(messagesArea, chip)
+        gap = "8px",
+        padding = "8px 10px",
+        border = "1px solid " & borderFaint,
+        border_radius = "6px",
+        background_color = bgInput,
+        cursor = "pointer",
+        transition = "border-color 0.12s, background-color 0.12s"):
+        span(font_size = "11px", color = textDim):
+          text "\xE2\x9C\xA8"
+        span(font_size = "11px", line_height = "1.4",
+              color = textPrimary,
+              white_space = "normal",
+              overflow = "hidden"):
+          text promptText
+    r.addEventListener(chip, "click", proc() =
+      vm.chat.inputText.val = promptText)
+    r.addEventListener(chip, "keydown", proc() =
+      vm.chat.inputText.val = promptText)
+    r.appendChild(messagesArea, chip)
 
   for msg in messages:
     let isUser = msg.kind == cmkUser
@@ -328,53 +336,21 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
 
   r.appendChild(panel, messagesArea)
 
+  # 2026-05-28: ``reviewLoopArea`` and ``bottomSpacer`` are now
+  # display-toggled reactively. When the chat is empty AND there is no
+  # review/permission/proposed-edit activity, both are hidden so the
+  # Assistant tab reads as a single column of intro + suggestions
+  # anchored at the top, with the composer pinned at the bottom — no
+  # internal split. As soon as either a message or an activity item
+  # appears, the corresponding section flips on.
   let reviewLoopArea = ui(r):
     tdiv(
+      `data-chat-review-loop-area` = "true",
       padding = "6px 10px",
       border_top = "1px solid " & borderFaint,
-      display = "flex",
+      display = "none",
       flex_direction = "column",
       gap = "6px")
-  # Spacer flex item that absorbs remaining vertical space, pushing the
-  # transcript + composer to the bottom while the empty-state card and
-  # review-loop sections cluster at the top of the pane. A muted centered
-  # "ready" hint makes the negative space read as intentional product space
-  # rather than empty filler at tall viewports.
-  let bottomSpacer = ui(r):
-    tdiv(flex = "1", min_height = "12px",
-          display = "flex", flex_direction = "column",
-          align_items = "stretch",
-          padding = "12px 18px 18px 18px"):
-      # Author the empty band: spacer above + faint horizon rule + spacer
-      # below + placeholder anchored to the composer. The two flex spacers
-      # optically center the rule between the ACTIVITY baseline and the
-      # placeholder cap.
-      tdiv(flex = "1")
-      tdiv(height = "1px",
-            background = "linear-gradient(to right, transparent, " &
-              borderFaint & " 30%, " & borderFaint & " 70%, transparent)")
-      tdiv(flex = "1")
-      tdiv(display = "flex", align_items = "center",
-            justify_content = "center"):
-        tdiv(display = "flex", flex_direction = "column",
-              align_items = "center", gap = "10px",
-              max_width = "240px",
-              text_align = "center"):
-          # Soft radial halo under the placeholder glyph so it doesn't read
-          # as an outline floating on flat slate.
-          tdiv(width = "44px", height = "44px",
-                border_radius = "22px",
-                display = "flex", align_items = "center",
-                justify_content = "center",
-                background = "radial-gradient(circle, rgba(59,130,246,0.10) 0%, rgba(59,130,246,0) 70%)"):
-            span(font_size = "22px", color = textSecondary,
-                  opacity = "0.9"):
-              text "\xE2\x97\x8B"
-          span(font_size = "11px", font_weight = "700", color = textSecondary,
-                letter_spacing = "0.3px"):
-            text "Ready when you are"
-          span(font_size = "10px", line_height = "1.55", color = textDim):
-            text "Pick a suggested prompt above, or describe a token, variant, or layout change to start a session."
   proc appendReviewHeading(label: string) =
     let heading = ui(r):
       span(
@@ -401,8 +377,13 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
       # Per-user 2026-05-27: drop the "Activity / No review comments…"
       # placeholder. The Assistant pane should not be split into upper
       # and lower halves; an empty activity placeholder created a
-      # divider the user explicitly rejected.
+      # divider the user explicitly rejected. 2026-05-28: collapse the
+      # reviewLoopArea entirely (``display: none``) so the border-top
+      # rule above it doesn't paint a separator on an otherwise empty
+      # body.
+      r.setStyle(reviewLoopArea, "display", "none")
       return
+    r.setStyle(reviewLoopArea, "display", "flex")
     appendReviewHeading("Design Review Comments")
     if vm.review.annotations.val.len == 0:
       appendReviewSummary("No review comments")
@@ -660,7 +641,40 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   createRenderEffect proc() =
     syncReviewLoop()
   r.appendChild(panel, reviewLoopArea)
-  r.appendChild(panel, bottomSpacer)
+  # 2026-05-28: bottomSpacer (the "Ready when you are" placeholder
+  # band) is gone. The user explicitly rejected the upper/lower split
+  # it created — an empty chat now shows only intro + suggested
+  # prompts in the messagesArea (flex:1), with the composer pinned at
+  # the bottom. Once messages arrive, the transcript fills naturally.
+
+  # 2026-05-28: auto-scroll to the bottom whenever the active chat's
+  # message list grows. The chat panel is re-mounted from the shell
+  # when the active session changes, so reading the active chat's
+  # message-count signal here tracks the right session.
+  when defined(js):
+    let captMessages = messagesArea
+    let captMsgSignal = vm.chat.messages
+    createRenderEffect proc() =
+      # Track the message-list length so the effect re-fires on every
+      # ``messages.val = newSeq`` mutation. The empty-state intro
+      # + suggestions get pushed off the top as the transcript grows.
+      let total = captMsgSignal.val.len
+      discard total
+      let target = captMessages
+      {.emit: ["""
+        (function (el) {
+          if (!el) return;
+          // Schedule the scroll after the layout flush so we observe
+          // the new message's height.
+          if (typeof requestAnimationFrame === 'function') {
+            requestAnimationFrame(function () {
+              el.scrollTop = el.scrollHeight;
+            });
+          } else {
+            el.scrollTop = el.scrollHeight;
+          }
+        })(""", target, """);
+      """].}
 
   var transcriptTextNode: E
   let transcript = ui(r):

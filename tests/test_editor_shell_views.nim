@@ -157,19 +157,23 @@ suite "Editor Shell Views (M2)":
 
       let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
 
-      # Sidebar root: top tab bar + Manual body + Assistant body.
+      # Sidebar root: resize handle + top tab bar + Manual body + Assistant body.
+      # 2026-05-28: the drag-resize handle joined the sidebar root's
+      # child list; resolve elements by their data attributes rather
+      # than positional indexes so the test stays robust against
+      # future structural additions.
       check panel.children.len >= 3
 
       # Top-level tab bar carries the two sidebar tabs.
-      let topTabBar = panel.children[0]
+      let topTabBar = findByAttr(panel, "data-sidebar-tab-bar", "true")
+      check topTabBar != nil
       check topTabBar.children.len == 2
       check findByAttr(topTabBar, "data-sidebar-tab", "manual") != nil
       check findByAttr(topTabBar, "data-sidebar-tab", "assistant") != nil
 
       # Manual body's first child is the 12-section sub-tab bar.
-      let manualBody = panel.children[1]
-      check manualBody.attributes.getOrDefault("data-sidebar-tab-panel") ==
-        "manual"
+      let manualBody = findByAttr(panel, "data-sidebar-tab-panel", "manual")
+      check manualBody != nil
       let sectionTabs = manualBody.children[0]
       check sectionTabs.children.len == 12
 
@@ -289,10 +293,12 @@ suite "Editor Shell Views (M2)":
 
       let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
 
-      # Assistant body is the last child of the sidebar root.
-      let assistantBody = panel.children[^1]
-      check assistantBody.attributes.getOrDefault(
-        "data-sidebar-tab-panel") == "assistant"
+      # 2026-05-28: resolve the assistant body by its data attribute
+      # rather than by positional index — the resize handle now lives
+      # in the sidebar root's child list too.
+      let assistantBody = findByAttr(panel, "data-sidebar-tab-panel",
+        "assistant")
+      check assistantBody != nil
       # It wraps the chat panel — which carries header + messages +
       # input area, so the assistant tree exposes at least the agent
       # prompt input.

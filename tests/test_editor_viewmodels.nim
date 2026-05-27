@@ -23,10 +23,11 @@ suite "Editor ViewModels (M0)":
       check vm.hasSelection.val == false
       check vm.panels.val.sidebar == true
       check vm.panels.val.inspector == true
-      # M-EVP-14 Wave Chrome CR-3: default right-panel width lowered
-      # from 280 → 220 so the AI inspector rail stops dominating the
-      # editor chrome at thumbnail scale.
-      check vm.rightPanelWidth.val == 220
+      # 2026-05-28: default right-panel width bumped 220 → 320 so the
+      # AI Assistant chat (the right sidebar's default tab landing
+      # surface) has usable width for chat bubbles. Users can narrow
+      # back down via the resize affordance.
+      check vm.rightPanelWidth.val == 320
       check vm.platform.val == pbWeb
       # M57: viewport is now the richer descriptor object.
       check vm.viewport.val.kind == pvkDesktop

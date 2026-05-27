@@ -763,11 +763,24 @@ proc renderStatusBar[R, E](r: R; vm: EditorVM): E =
 proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
   ## Left panel: storyboard navigation tree.
   ## Built entirely with the ui DSL — if/for inside the body.
-  ui(r):
+  ##
+  ## 2026-05-28: drag-resize affordance landed. The sidebar root is now
+  ## ``position: relative`` so a 4 px ``data-resize-handle="left-sidebar"``
+  ## strip can absolute-position itself at the right edge; mousedown on
+  ## the strip drives ``vm.setLeftSidebarWidth`` via the
+  ## ``window.__isonimEditor.setLeftSidebarWidth`` exposure in
+  ## ``browser.nim``. A reactive effect mirrors ``vm.leftSidebarWidth``
+  ## back onto the sidebar's inline ``width`` so headless tests (and
+  ## programmatic callers) can drive the same signal.
+  let capturedVm = vm
+  let sidebar = ui(r):
     tdiv(class = "editor-sidebar",
+          `data-editor-sidebar` = "true",
           display = "flex", flex_direction = "column",
           width = "260px", min_width = "180px", max_width = "420px",
-          resize = "horizontal", height = "100%",
+          height = "100%",
+          position = "relative",
+          flex_shrink = "0",
           background_color = bgSidebar,
           border_right = "1px solid " & borderStrong,
           overflow_y = "auto", overflow_x = "hidden"):
@@ -1131,6 +1144,82 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
           block:
             r.bindSidebarSectionState(sectionHeader, sectionDisclosure,
               sectionBody, vm, section)
+
+  # 2026-05-28: drag-resize handle. A 4 px-wide strip pinned to the
+  # right edge of the sidebar; cursor: col-resize. The JS-side
+  # mousedown/move/up wiring lives in ``installSidebarResizeWiring``
+  # below and calls ``window.__isonimEditor.setLeftSidebarWidth`` which
+  # is exposed in ``browser.nim``. Headless tests drive the same VM
+  # signal directly via ``setLeftSidebarWidth``.
+  let resizeHandle = ui(r):
+    tdiv(`data-resize-handle` = "left-sidebar",
+         `aria-hidden` = "true",
+         position = "absolute",
+         right = "0", top = "0",
+         width = "4px", height = "100%",
+         cursor = "col-resize",
+         background_color = "transparent",
+         z_index = "30")
+  r.appendChild(sidebar, resizeHandle)
+
+  # Reactive width mirror — ``vm.leftSidebarWidth`` is the source of
+  # truth; this effect writes its current value back onto the sidebar's
+  # inline ``width``. This is the same pattern used for the right
+  # panel via ``bindRightPanelWidth``.
+  block:
+    let captSidebar = sidebar
+    createRenderEffect proc() =
+      let w = capturedVm.leftSidebarWidth.val
+      let wpx = $w & "px"
+      r.setStyle(captSidebar, "width", wpx)
+      r.setStyle(captSidebar, "flex-basis", wpx)
+      r.setAttribute(captSidebar, "data-left-sidebar-width", $w)
+
+  when defined(js):
+    # Mousedown on the handle records the starting cursor X + sidebar
+    # width; mousemove computes the delta and pushes the new width
+    # through the ``window.__isonimEditor.setLeftSidebarWidth`` hook
+    # (exposed in ``browser.nim``). Mouseup releases the drag. We
+    # mirror the same body-level cursor / user-select toggles the
+    # right-panel handler uses so dragging across the viewport doesn't
+    # select text.
+    let handleEl = resizeHandle
+    let sidebarEl = sidebar
+    {.emit: ["""
+      (function (handle, sidebar) {
+        if (!handle || !document) return;
+        var startX = 0;
+        var startW = 0;
+        var dragging = false;
+        function endDrag() {
+          if (!dragging) return;
+          dragging = false;
+          document.body.style.cursor = '';
+          document.body.style.userSelect = '';
+        }
+        handle.addEventListener('mousedown', function (e) {
+          dragging = true;
+          startX = e.clientX;
+          startW = sidebar.getBoundingClientRect().width;
+          document.body.style.cursor = 'col-resize';
+          document.body.style.userSelect = 'none';
+          if (e.preventDefault) e.preventDefault();
+        });
+        document.addEventListener('mousemove', function (e) {
+          if (!dragging) return;
+          var delta = e.clientX - startX;
+          var w = Math.max(180, Math.min(420, Math.round(startW + delta)));
+          if (window.__isonimEditor &&
+              window.__isonimEditor.setLeftSidebarWidth) {
+            window.__isonimEditor.setLeftSidebarWidth(w);
+          }
+        });
+        document.addEventListener('mouseup', endDrag);
+        document.addEventListener('mouseleave', endDrag);
+      })(""", handleEl, """, """, sidebarEl, """);
+    """].}
+
+  result = sidebar
 
 proc bindBackendChip[R, E](r: R; chip: E; vm: EditorVM;
     backend: PreviewBackend) =
@@ -2160,19 +2249,82 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
     tdiv(class = "editor-inspector",
           `data-test-id` = "property-panel",
           display = "flex", flex_direction = "column",
-          # M-EVP-14 Wave Chrome CR-3: narrowed inspector default
-          # (280 → 220 px) and floor (240 → 200 px) so the right rail
-          # stops competing with the preview pane for visual focus.
-          width = "220px", min_width = "200px", max_width = "420px",
+          # 2026-05-28: default width bumped to 320 (signal default in
+          # viewmodels.nim); ``bindRightPanelWidth`` overwrites this
+          # static value reactively on first paint. Floor stays at
+          # 200 px so the AI inspector rail can still narrow.
+          width = "320px", min_width = "200px", max_width = "420px",
           height = "100%",
+          position = "relative",
+          flex_shrink = "0",
           background_color = bgSidebar,
           border_left = "1px solid " & borderStrong,
           overflow_x = "hidden")
 
   let sidebarRoot = result
+
+  # 2026-05-28: left-edge drag-resize handle. Symmetrical with the
+  # left sidebar's right-edge handle; drives ``setRightPanelWidth``
+  # via the ``window.__isonimEditor.setRightPanelWidth`` exposure in
+  # ``browser.nim``. The handle is absolutely-positioned on the inner
+  # edge (which is the LEFT edge for the right panel) at z-index 30
+  # so it sits above the tab body content. Appended FIRST so the
+  # tabBar / manualBody / assistantBody remain at the end of the
+  # children list — existing tests rely on ``children[^1]`` resolving
+  # to the assistant body.
+  let rightResizeHandle = ui(r):
+    tdiv(`data-resize-handle` = "right-panel",
+         `aria-hidden` = "true",
+         position = "absolute",
+         left = "0", top = "0",
+         width = "4px", height = "100%",
+         cursor = "col-resize",
+         background_color = "transparent",
+         z_index = "30")
+  r.appendChild(sidebarRoot, rightResizeHandle)
+
   r.appendChild(sidebarRoot, tabBarEl)
   r.appendChild(sidebarRoot, manualBody)
   r.appendChild(sidebarRoot, assistantBody)
+
+  when defined(js):
+    let handleEl = rightResizeHandle
+    let panelEl = sidebarRoot
+    {.emit: ["""
+      (function (handle, panel) {
+        if (!handle || !document) return;
+        var startX = 0;
+        var startW = 0;
+        var dragging = false;
+        function endDrag() {
+          if (!dragging) return;
+          dragging = false;
+          document.body.style.cursor = '';
+          document.body.style.userSelect = '';
+        }
+        handle.addEventListener('mousedown', function (e) {
+          dragging = true;
+          startX = e.clientX;
+          startW = panel.getBoundingClientRect().width;
+          document.body.style.cursor = 'col-resize';
+          document.body.style.userSelect = 'none';
+          if (e.preventDefault) e.preventDefault();
+        });
+        document.addEventListener('mousemove', function (e) {
+          if (!dragging) return;
+          // Right panel grows when the cursor moves LEFT (delta < 0
+          // means user wants a wider panel). Hence subtract.
+          var delta = startX - e.clientX;
+          var w = Math.max(200, Math.min(420, Math.round(startW + delta)));
+          if (window.__isonimEditor &&
+              window.__isonimEditor.setRightPanelWidth) {
+            window.__isonimEditor.setRightPanelWidth(w);
+          }
+        });
+        document.addEventListener('mouseup', endDrag);
+        document.addEventListener('mouseleave', endDrag);
+      })(""", handleEl, """, """, panelEl, """);
+    """].}
 
   # Reactively swap visibility of the two tab bodies.
   block:
@@ -2601,15 +2753,11 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
           `data-preview-toolbar` = "true",
           `data-preview-chrome-bar` = "true")
 
-  # M-EVP-14: a faint 1px vertical hairline sits between the three
-  # clusters so the Backend / Viewport / Mode groups read as clearly
-  # separate segments rather than one long chip strip.
-  proc clusterDivider(): E =
-    ui(r):
-      tdiv(width = "1px", height = "20px", flex = "0 0 1px",
-            background_color = "rgba(255,255,255,0.08)",
-            `aria-hidden` = "true",
-            `data-toolbar-cluster-divider` = "true")
+  # 2026-05-28: cluster dividers removed. Per user, the thin vertical
+  # hairlines between Backend / Viewport / Mode clusters added visual
+  # noise to a chrome bar that was already crowded; the cluster pills
+  # themselves carry enough segmentation. The proc and ``appendChild``
+  # calls were dropped together so no dead code remains.
 
   let capturedVm = vm
 
@@ -2726,7 +2874,6 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
       if syncVm.activeIndex.value != target:
         syncVm.activate(target)
   r.appendChild(toolbar, surfaceWrapper)
-  r.appendChild(toolbar, clusterDivider())
 
   # CHRM-M5 Fix A: backend cluster appended AFTER the surface
   # cluster so the on-screen order reads
@@ -2735,7 +2882,6 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
   # code readability; only the mount-into-toolbar step happens
   # here.
   r.appendChild(toolbar, backendWrapper)
-  r.appendChild(toolbar, clusterDivider())
 
   # TBAR-M3: screen-size chevron-popup selector. Replaces the legacy
   # viewport chip-set in the chrome bar. The chevron's option list is
@@ -2817,7 +2963,6 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
             viewportChevronVm.activate(i)
           break
   r.appendChild(toolbar, viewportChevronWrapper)
-  r.appendChild(toolbar, clusterDivider())
 
   # CHRM-M2: mode cluster now uses the ChoiceGroup segmented widget +
   # the per-option ``disabledIndices`` signal driven by

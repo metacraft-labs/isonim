@@ -216,22 +216,23 @@ const
   cgTextDisabled  = "#475569"  # disabled — visibly lower contrast
 
   # Pill geometry — every property below is 1:1 with the filterBar.
-  cgPillPadding    = "3px 12px"
+  # 2026-05-28: tightened across the board so all four chrome-bar
+  # clusters (Surface / Backend / Viewport / Mode) fit at laptop 1440px
+  # with room to spare and so the bar reads as compact controls rather
+  # than competing with the preview pane. The previous values
+  # (``padding 3px 12px``, ``font-size 12px``, ``min-width 72px``,
+  # ``min-height 26px``) survived from the filterBar reference but were
+  # too generous for the chrome-bar context.
+  cgPillPadding    = "2px 10px"
   cgPillRadius     = "4px"  # smaller than the strip radius — nested look
-  cgPillFontSize   = "12px"
+  cgPillFontSize   = "11px"
   cgPillFontWeight = "500"
   # Pill minimum width — equal pill widths across each cluster's row.
-  # The filterBar canonical spec is ``min-width: 80px``; we use ``72px``
-  # in the editor's ChoiceGroup because the chrome bar fits four
-  # clusters (Backend / Surface / Viewport / Mode) on one row at laptop
-  # 1440 px and 80×(7+2+1+3)+gaps overflows the available toolbar width.
-  # 72 px still satisfies the brief's "equal pill widths" requirement
-  # for every label in use (longest is "Comment" at ~64 px natural,
-  # well under the cap) and keeps the visual rhythm consistent with
-  # the filterBar at viewport widths where four chrome clusters must
-  # coexist with a "Review this preview" + history button.
-  cgPillMinWidth   = "72px"
-  cgPillMinHeight  = "26px"      # 4 + 12 + 4 + 2 baseline ≈ 26 px
+  # 56px hugs short labels (View / Edit / Web) tightly while still
+  # giving "Comment" room to breathe; the visual rhythm stays
+  # consistent across clusters.
+  cgPillMinWidth   = "56px"
+  cgPillMinHeight  = "22px"      # 2 + 10 + 2 + 2 baseline ≈ 22 px
 
   # Popup chrome (chevron variant).
   cgPopupBg     = "#151D2E"
@@ -283,7 +284,7 @@ proc mountSegmentedChoice*[R, E](r: R; parent: E; vm: ChoiceGroupVM;
     if variant == cgvTransparent: "none" else: "1px solid " & cgGroupBorder
   let containerRadius = "6px"  # strip outer radius
   let containerGap = "2px"     # tiny gap between pills (visible separation inside the strip)
-  let containerPadding = "3px" # breathing room around pills inside the strip
+  let containerPadding = "2px" # tighter padding around pills inside the strip
   let variantAttr =
     if variant == cgvTransparent: "transparent" else: "filled"
 

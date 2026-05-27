@@ -198,6 +198,12 @@ type
       ## ``sSpec`` shows the brief markdown viewer and hides the
       ## right-side property panel.
     panels*: Signal[PanelVisibility]
+    leftSidebarWidth*: Signal[int]
+      ## 2026-05-28: drag-resizable left sidebar width. Clamps to
+      ## [180, 420] via ``clampLeftSidebarWidth``. The shell.nim
+      ## resize-handle JS calls ``setLeftSidebarWidth`` with the
+      ## current mouse delta; a reactive effect mirrors the value
+      ## back onto the sidebar element's inline width.
     rightPanelWidth*: Signal[int]
     rightSidebarTab*: Signal[RightSidebarTab]
       ## Right-sidebar top-level tab selection. The sidebar is a
@@ -2011,6 +2017,20 @@ proc setRightPanelWidth*(editor: EditorVM; width: int) =
 
 proc adjustRightPanelWidth*(editor: EditorVM; delta: int) =
   editor.setRightPanelWidth(editor.rightPanelWidth.val + delta)
+
+func clampLeftSidebarWidth*(width: int): int =
+  ## 2026-05-28: matches the [180, 420] clamp the sidebar's inline
+  ## ``min-width``/``max-width`` declared in shell.nim. The JS-side
+  ## resize handle pre-clamps too (so the cursor doesn't run off the
+  ## sidebar edge during a drag), but the VM also clamps so headless
+  ## tests and programmatic callers can't push the signal out of range.
+  max(180, min(420, width))
+
+proc setLeftSidebarWidth*(editor: EditorVM; width: int) =
+  editor.leftSidebarWidth.val = clampLeftSidebarWidth(width)
+
+proc adjustLeftSidebarWidth*(editor: EditorVM; delta: int) =
+  editor.setLeftSidebarWidth(editor.leftSidebarWidth.val + delta)
 
 proc switchInspectorSection*(editor: EditorVM; section: InspectorSection) =
   editor.inspector.activeSection.val = section
@@ -10039,11 +10059,19 @@ proc createEditorVM*(): EditorVM =
   # ``sPreview`` and ``sSpec``.
   let surfaceSig = createSignal(sPreview)
   let panels = createSignal(PanelVisibility(sidebar: true, inspector: true))
-  # M-EVP-14 Wave Chrome CR-3: default AI inspector width 260 → 220 so
-  # the right rail sits at ~11.5 % of a 1920-wide viewport (down from
-  # ~13.5 %) and the preview pane gets ~40 px more focal width. Users
-  # can still widen via the resize affordance up to 420 px.
-  let rightPanelWidth = createSignal(220)
+  # 2026-05-28: left sidebar starts at the historical 260 px (same
+  # value the shell.nim DSL declared as the static ``width`` literal
+  # before the resize affordance landed). Drag-resize updates this
+  # signal; a reactive effect writes the value back to the sidebar's
+  # inline width.
+  let leftSidebarWidth = createSignal(260)
+  # 2026-05-28: default right-panel width bumped 220 → 320. The right
+  # sidebar hosts the AI Assistant chat by default (the chat panel is
+  # the primary surface a user expects to land on), and the prior
+  # 220 px width made chat bubbles cramped to the point of unusability.
+  # Users can still narrow via the resize affordance back down to the
+  # 200 px floor or widen to the 420 px ceiling.
+  let rightPanelWidth = createSignal(320)
   # Right-sidebar top-level tab — Manual (inspector) vs Assistant
   # (chat). Defaults to Manual; the user toggles between them at
   # the top of the sidebar. Both tabs are always available.
@@ -10108,6 +10136,7 @@ proc createEditorVM*(): EditorVM =
     editMode: editMode,
     surfaceSig: surfaceSig,
     panels: panels,
+    leftSidebarWidth: leftSidebarWidth,
     rightPanelWidth: rightPanelWidth,
     rightSidebarTab: rightSidebarTab,
     platform: platform,

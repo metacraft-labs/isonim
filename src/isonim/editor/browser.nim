@@ -622,6 +622,13 @@ proc exposeWindowEditorHandle*(vm: EditorVM) =
       of 2: emEdit
       else: emView
     capturedVm.setEditMode(mode)
+  # 2026-05-28: drag-resize handles for the left sidebar and the right
+  # panel call into these closures so the JS-side mousemove handler
+  # can push the new width back through the VM (which clamps).
+  proc setLeftSidebar(width: int) =
+    capturedVm.setLeftSidebarWidth(width)
+  proc setRightPanel(width: int) =
+    capturedVm.setRightPanelWidth(width)
   # Expose as a window-level handle. We install the helper inside an
   # IIFE so the closures (``selectByName`` / ``setEditModeByIndex``)
   # are captured by reference and so the wrapper returns ``true``
@@ -629,10 +636,14 @@ proc exposeWindowEditorHandle*(vm: EditorVM) =
   # only check for truthiness.
   let cb = selectByName
   let cbMode = setEditModeByIndex
+  let cbLeftWidth = setLeftSidebar
+  let cbRightWidth = setRightPanel
   {.emit: ["""
     (function () {
       const fn = """, cb, """;
       const fnMode = """, cbMode, """;
+      const fnLeftW = """, cbLeftWidth, """;
+      const fnRightW = """, cbRightWidth, """;
       window.__isonimEditor = window.__isonimEditor || {};
       window.__isonimEditor.selectStoryByName = function (group, name) {
         fn(group, name);
@@ -640,6 +651,14 @@ proc exposeWindowEditorHandle*(vm: EditorVM) =
       };
       window.__isonimEditor.setEditMode = function (modeIndex) {
         fnMode(modeIndex | 0);
+        return true;
+      };
+      window.__isonimEditor.setLeftSidebarWidth = function (width) {
+        fnLeftW(width | 0);
+        return true;
+      };
+      window.__isonimEditor.setRightPanelWidth = function (width) {
+        fnRightW(width | 0);
         return true;
       };
     })();
