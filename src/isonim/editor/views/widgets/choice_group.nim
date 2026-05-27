@@ -374,26 +374,44 @@ proc mountSegmentedChoice*[R, E](r: R; parent: E; vm: ChoiceGroupVM;
                      if isDisabled: "true" else: "false")
       r.setAttribute(pills[i], "tabindex",
                      if isDisabled: "-1" else: "0")
-      # CHRM-M6 Wave B: pill state colours mirror the filterBar exactly.
-      # Active = indigo fill + white text + indigo border. Inactive =
-      # transparent fill + muted text + subtle outline (so the pill
-      # still reads as interactive even when not selected). Disabled =
-      # transparent fill + lower-contrast text + even quieter outline
-      # plus ``cursor: not-allowed`` (no opacity hack — the disabled
-      # pill is its own visual state, not a faded active state).
+      # The reactive ``setAttribute("style", ...)`` REPLACES the
+      # entire style attribute (it does not merge with the DSL-declared
+      # properties). So this string must carry the FULL pill chrome
+      # (layout + colors + transition), not just the state-dependent
+      # colors. Without this, the rendered pill loses padding /
+      # border-radius / font-size / min-width on the first paint and
+      # reads as bare text. See user report 2026-05-27.
+      const layoutCss =
+        "display: inline-flex; align-items: center; " &
+        "justify-content: center; " &
+        "padding: " & cgPillPadding & "; " &
+        "min-width: " & cgPillMinWidth & "; " &
+        "min-height: " & cgPillMinHeight & "; " &
+        "border-radius: " & cgPillRadius & "; " &
+        "border-width: 1px; border-style: solid; " &
+        "font-size: " & cgPillFontSize & "; " &
+        "font-weight: " & cgPillFontWeight & "; " &
+        "font-family: inherit; line-height: 1; " &
+        "text-align: center; white-space: nowrap; " &
+        "flex: 0 0 auto; " &
+        "transition: background-color 120ms ease-out, " &
+        "border-color 120ms ease-out, color 120ms ease-out;"
       var inline =
         if isDisabled:
-          "background-color: " & cgPillBg &
+          layoutCss &
+            " background-color: " & cgPillBg &
             "; color: " & cgTextDisabled &
             "; border-color: " & cgPillBorderDis &
             "; cursor: not-allowed;"
         elif isActive:
-          "background-color: " & cgPillBgOn &
+          layoutCss &
+            " background-color: " & cgPillBgOn &
             "; color: " & cgTextOn &
             "; border-color: " & cgPillBorderOn &
             "; cursor: pointer;"
         else:
-          "background-color: " & cgPillBg &
+          layoutCss &
+            " background-color: " & cgPillBg &
             "; color: " & cgTextDim &
             "; border-color: " & cgPillBorder &
             "; cursor: pointer;"
