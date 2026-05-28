@@ -576,12 +576,29 @@ proc bindRightPanelWidth[R, E](r: R; node: E; vm: EditorVM) =
 
 proc statusPanelButton[R, E](r: R; vm: EditorVM; panel: EditorPanel;
     label, glyph: string): E =
+  ## 2026-05-28 icon-coverage expansion: the status-bar sidebar toggles
+  ## now render an inline SVG icon instead of a Unicode arrow glyph.
+  ## The ``glyph`` parameter is repurposed to hold the SVG markup —
+  ## the call sites pass ``currentIconSet().sidebarLeft`` /
+  ## ``sidebarRight``. The button size grows from 24x22 to 26x26 so the
+  ## SVG icon has room to read at the status-bar density (the previous
+  ## arrow glyph was a single text character; the SVG is rendered as
+  ## an 18x18 host inside the button chrome to match the sidebar tab
+  ## bar's icon size).
+  var iconHost: E
   result = ui(r):
-    tdiv(width = "24px", height = "22px", border_radius = "4px",
+    tdiv(width = "26px", height = "26px", border_radius = "4px",
           display = "flex", align_items = "center", justify_content = "center",
-          font_size = "12px", font_weight = "700",
-          cursor = "pointer", transition = "all 0.12s"):
-      text glyph
+          cursor = "pointer", transition = "all 0.12s",
+          flex_shrink = "0"):
+      tdiv(ref = iconHost,
+            `aria-hidden` = "true",
+            display = "flex", align_items = "center",
+            justify_content = "center",
+            width = "18px", height = "18px",
+            line_height = "1",
+            flex_shrink = "0")
+  r.setInnerHtml(iconHost, glyph)
   r.makeButton(result, label)
   r.addEventListener(result, "click", proc() = vm.togglePanel(panel))
   r.addEventListener(result, "keydown", proc() = vm.togglePanel(panel))
@@ -704,12 +721,20 @@ proc renderStatusBar[R, E](r: R; vm: EditorVM): E =
           discard
         span(color = textDim):
           text editorProductName & " v" & editorVersion
+  # 2026-05-28 icon-coverage expansion: the sidebar-toggle buttons in
+  # the status bar now render real SVG icons from the active IconSet
+  # instead of the Unicode arrow glyphs (U+21E4 / U+21E5). Source from
+  # ``currentIconSet()`` so the per-set sidebar artwork follows the
+  # rest of the editor chrome (in-house set today; a future preference
+  # swap repoints every call site through ``currentIconSet`` in lock
+  # step).
+  let iconSet = currentIconSet()
   r.appendChild(leftControls,
     statusPanelButton[R, E](r, vm, epSidebar, "Toggle left sidebar",
-      "\xE2\x87\xA4"))
+      iconSet.sidebarLeft))
   r.appendChild(rightControls,
     statusPanelButton[R, E](r, vm, epInspector, "Toggle right sidebar",
-      "\xE2\x87\xA5"))
+      iconSet.sidebarRight))
   createRenderEffect proc() =
     r.clearChildren(statusBadges)
     let selected = vm.inspector.selectedElement.val
@@ -2614,8 +2639,25 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
       if backendOrder[i] == current:
         backendInitialIndex = i
         break
-  let backendVm = createSegmentedChoiceVM(
-    backendLabelSeq, initialIndex = backendInitialIndex)
+  # 2026-05-28 icon-coverage expansion — Backend cluster pills now
+  # render the per-backend glyph from the active IconSet. The label
+  # text (``Web`` / ``TUI`` / ``GPUI`` / ``Freya`` / ``Cocoa`` /
+  # ``Android`` / ``iOS``) is still surfaced as the pill's tooltip +
+  # screen-reader label via the icon-aware mount. The icon order must
+  # match ``backendOrder`` (pbWeb, pbTui, pbGpui, pbFreya, pbCocoa,
+  # pbAndroid, pbIos).
+  let chromeIcons = currentIconSet()
+  let backendIcons = @[
+    chromeIcons.backendWeb,
+    chromeIcons.backendTui,
+    chromeIcons.backendGpui,
+    chromeIcons.backendFreya,
+    chromeIcons.backendCocoa,
+    chromeIcons.backendAndroid,
+    chromeIcons.backendIos,
+  ]
+  let backendVm = createSegmentedChoiceVMWithIcons(
+    backendLabelSeq, backendIcons, initialIndex = backendInitialIndex)
 
   proc computeBackendDisabled(): HashSet[int] =
     result = initHashSet[int]()
@@ -2683,8 +2725,15 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
     tdiv(`data-toolbar-cluster` = "surface",
          `data-preview-surface-switch` = "true",
          display = "inline-flex", align_items = "center")
-  let surfaceVm = createSegmentedChoiceVM(
+  # 2026-05-28 icon-coverage expansion — Surface cluster pills render
+  # the IconSet's preview / spec glyphs. Label text travels via
+  # ``title`` + ``aria-label`` so existing e2e tests that locate the
+  # pills by ``data-choice-group-pill`` index continue to work
+  # unchanged, and screen-reader / tooltip discoverability is
+  # preserved.
+  let surfaceVm = createSegmentedChoiceVMWithIcons(
     @["Preview", "Spec"],
+    @[chromeIcons.preview, chromeIcons.spec],
     initialIndex = (if capturedVm.surfaceSig.val == sPreview: 0 else: 1))
   r.mountSegmentedChoice(surfaceWrapper, surfaceVm, proc(i: int) {.closure.} =
     capturedVm.setSurface(if i == 0: sPreview else: sSpec),
@@ -2815,7 +2864,12 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
       if modeOrder[i] == active:
         modeInitialIndex = i
         break
-  let modeVm = createSegmentedChoiceVM(modeLabels,
+  # 2026-05-28 icon-coverage expansion — Mode cluster renders the
+  # IconSet's modeView / modeComment / modeEdit glyphs. Order matches
+  # ``modeOrder`` (emView, emComment, emEdit).
+  let modeIcons = @[
+    chromeIcons.modeView, chromeIcons.modeComment, chromeIcons.modeEdit]
+  let modeVm = createSegmentedChoiceVMWithIcons(modeLabels, modeIcons,
                                        initialIndex = modeInitialIndex)
 
   proc commandForMode(m: EditMode): EditorCommandKind =

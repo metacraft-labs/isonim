@@ -86,8 +86,18 @@ type
     ## and ``onChange`` does not fire. Writes to the signal propagate
     ## through the reactive graph so the chrome bar's per-backend
     ## availability flag can flip indices in/out at runtime.
+    ##
+    ## ``icons`` (2026-05-28) is an OPTIONAL parallel sequence of SVG
+    ## markup strings; when present the segmented mount renders each
+    ## pill body as the icon (via ``setInnerHtml``) instead of the
+    ## label text. ``labels`` remain authoritative for ``title=`` and
+    ## ``aria-label`` so the text reading stays reachable to screen
+    ## readers + hover tooltips. An empty ``icons`` sequence (the
+    ## default) keeps the legacy text-only behaviour and every
+    ## existing consumer compatible byte-for-byte.
     variant*: ChoiceGroupVariant
     labels*: seq[string]
+    icons*: seq[string]
     activeIndex*: Signal[int]
     popupOpen*: Signal[bool]
     disabledIndices*: Signal[HashSet[int]]
@@ -112,9 +122,39 @@ proc createSegmentedChoiceVM*(labels: seq[string];
   ## the segmented mount but kept on the type so a single VM can be
   ## handed to either mount and so future composition (segmented inside
   ## a chevron, etc.) doesn't need a second VM type.
+  ##
+  ## ``icons`` defaults to ``@[]`` — text-only pills, matching every
+  ## consumer that landed before the 2026-05-28 icon-coverage expansion.
   ChoiceGroupVM(
     variant: cgvSegmented,
     labels: @labels,
+    icons: @[],
+    activeIndex: createSignal(clampInitialIndex(labels, initialIndex)),
+    popupOpen: createSignal(false),
+    disabledIndices: createSignal(initHashSet[int]()),
+  )
+
+proc createSegmentedChoiceVMWithIcons*(labels: seq[string];
+                                       icons: seq[string];
+                                       initialIndex: int = 0): ChoiceGroupVM =
+  ## 2026-05-28 icon-coverage expansion — segmented VM variant whose
+  ## pill bodies render an inline SVG icon instead of a text label.
+  ## ``labels`` are still required and stay authoritative for ``title=``
+  ## / ``aria-label`` (so every icon-only chip remains reachable as
+  ## tooltip + screen-reader text); ``icons`` must be the same length.
+  ##
+  ## When the lengths mismatch we fall back to the text-only rendering
+  ## (empty icon sequence) — that keeps the widget safe against
+  ## malformed callers and lets tests assert the fallback without
+  ## raising. The chrome-bar consumers in ``shell.nim`` always pass
+  ## matching lengths.
+  let cleaned =
+    if icons.len == labels.len: @icons
+    else: newSeq[string](0)
+  ChoiceGroupVM(
+    variant: cgvSegmented,
+    labels: @labels,
+    icons: cleaned,
     activeIndex: createSignal(clampInitialIndex(labels, initialIndex)),
     popupOpen: createSignal(false),
     disabledIndices: createSignal(initHashSet[int]()),
@@ -126,6 +166,7 @@ proc createChevronChoiceVM*(labels: seq[string];
   ChoiceGroupVM(
     variant: cgvChevron,
     labels: @labels,
+    icons: @[],
     activeIndex: createSignal(clampInitialIndex(labels, initialIndex)),
     popupOpen: createSignal(false),
     disabledIndices: createSignal(initHashSet[int]()),
@@ -232,7 +273,21 @@ const
   # giving "Comment" room to breathe; the visual rhythm stays
   # consistent across clusters.
   cgPillMinWidth   = "56px"
+  # 2026-05-28 icon-coverage expansion — icon-only pills are narrower
+  # since they don't carry text. 32px keeps the pill chrome
+  # comfortably padded around the 18px icon host (8px column gutter
+  # implied by the 10px horizontal padding * 2 minus a 2px
+  # icon-inset).
+  cgPillIconMinWidth = "32px"
   cgPillMinHeight  = "22px"      # 2 + 10 + 2 + 2 baseline ≈ 22 px
+  # Icon host geometry inside an icon-only pill. The host is a square
+  # flex box sized to the sidebar-tab-bar's 18x18 SVG slot so the
+  # chrome-bar chips and sidebar-tab icons share the same visual
+  # grid. The pill chrome's 10px horizontal padding + 2px vertical
+  # padding gives the icon enough breathing room without compressing
+  # the chrome-bar row height (the cluster still respects
+  # cgPillMinHeight).
+  cgPillIconSize     = "18px"
 
   # Popup chrome (chevron variant).
   cgPopupBg     = "#151D2E"
@@ -269,8 +324,21 @@ proc mountSegmentedChoice*[R, E](r: R; parent: E; vm: ChoiceGroupVM;
   let capturedVm = vm
   let capturedOnChange = onChange
   let labels = vm.labels
+  # 2026-05-28 icon-coverage expansion. When the VM carries an
+  # ``icons`` sequence with the same length as ``labels``, render
+  # each pill body as an inline SVG icon host instead of text; the
+  # label text is still surfaced as the pill's ``title`` /
+  # ``aria-label`` so hover tooltips + screen readers can recover
+  # the textual reading. ``useIcons`` is the single gate consulted
+  # by both the pill-construction loop AND the reactive style
+  # binding below (different min-width when icons are present).
+  let useIcons =
+    vm.icons.len > 0 and vm.icons.len == labels.len
+  let pillMinWidth =
+    if useIcons: cgPillIconMinWidth else: cgPillMinWidth
 
   var pills: seq[E] = @[]
+  var iconHosts: seq[E] = @[]
 
   # Both variants now render as settings_app ChoiceItem (GPUI choiceLeaf)
   # segmented controls: a dark trough with inset pills. ``cgvTransparent``
@@ -308,34 +376,82 @@ proc mountSegmentedChoice*[R, E](r: R; parent: E; vm: ChoiceGroupVM;
     closureScope:
       let lbl = labels[i]
       var pillNode: E
-      discard ui(r):
-        tdiv(
-          ref = pillNode,
-          `role` = "button",
-          tabindex = "0",
-          `aria-pressed` = "false",
-          `data-choice-group-pill` = $i,
-          `data-choice-group-label` = lbl,
-          display = "inline-flex",
-          align_items = "center",
-          justify_content = "center",
-          min_height = cgPillMinHeight,
-          min_width = cgPillMinWidth,
-          padding = cgPillPadding,
-          font_size = cgPillFontSize,
-          font_weight = cgPillFontWeight,
-          font_family = "inherit",
-          line_height = "1",
-          text_align = "center",
-          color = cgTextDim,
-          background_color = cgPillBg,
-          border = "1px solid " & cgPillBorder,
-          border_radius = cgPillRadius,
-          cursor = "pointer",
-          white_space = "nowrap",
-          transition = "background-color 120ms ease-out, " &
-            "border-color 120ms ease-out, color 120ms ease-out"):
-          text lbl
+      var iconHost: E
+      if useIcons:
+        # 2026-05-28 — icon-only pill. Label text still travels via
+        # ``title`` + ``aria-label`` (set on the pill itself; the
+        # parent group keeps its own ``aria-label="Choice group"``)
+        # so the rendered chip stays reachable to screen-readers and
+        # surfaces the same text as a native hover tooltip.
+        discard ui(r):
+          tdiv(
+            ref = pillNode,
+            `role` = "button",
+            tabindex = "0",
+            `aria-pressed` = "false",
+            `aria-label` = lbl,
+            title = lbl,
+            `data-choice-group-pill` = $i,
+            `data-choice-group-label` = lbl,
+            `data-choice-group-has-icon` = "true",
+            display = "inline-flex",
+            align_items = "center",
+            justify_content = "center",
+            min_height = cgPillMinHeight,
+            min_width = cgPillIconMinWidth,
+            padding = cgPillPadding,
+            font_size = cgPillFontSize,
+            font_weight = cgPillFontWeight,
+            font_family = "inherit",
+            line_height = "1",
+            text_align = "center",
+            color = cgTextDim,
+            background_color = cgPillBg,
+            border = "1px solid " & cgPillBorder,
+            border_radius = cgPillRadius,
+            cursor = "pointer",
+            white_space = "nowrap",
+            transition = "background-color 120ms ease-out, " &
+              "border-color 120ms ease-out, color 120ms ease-out"):
+            tdiv(ref = iconHost,
+                 `aria-hidden` = "true",
+                 `data-choice-group-pill-icon` = "true",
+                 display = "flex", align_items = "center",
+                 justify_content = "center",
+                 width = cgPillIconSize, height = cgPillIconSize,
+                 line_height = "1",
+                 flex_shrink = "0")
+        r.setInnerHtml(iconHost, capturedVm.icons[i])
+        iconHosts.add iconHost
+      else:
+        discard ui(r):
+          tdiv(
+            ref = pillNode,
+            `role` = "button",
+            tabindex = "0",
+            `aria-pressed` = "false",
+            `data-choice-group-pill` = $i,
+            `data-choice-group-label` = lbl,
+            display = "inline-flex",
+            align_items = "center",
+            justify_content = "center",
+            min_height = cgPillMinHeight,
+            min_width = cgPillMinWidth,
+            padding = cgPillPadding,
+            font_size = cgPillFontSize,
+            font_weight = cgPillFontWeight,
+            font_family = "inherit",
+            line_height = "1",
+            text_align = "center",
+            color = cgTextDim,
+            background_color = cgPillBg,
+            border = "1px solid " & cgPillBorder,
+            border_radius = cgPillRadius,
+            cursor = "pointer",
+            white_space = "nowrap",
+            transition = "background-color 120ms ease-out, " &
+              "border-color 120ms ease-out, color 120ms ease-out"):
+            text lbl
       pills.add pillNode
       r.appendChild(root, pillNode)
 
@@ -385,11 +501,14 @@ proc mountSegmentedChoice*[R, E](r: R; parent: E; vm: ChoiceGroupVM;
       # colors. Without this, the rendered pill loses padding /
       # border-radius / font-size / min-width on the first paint and
       # reads as bare text. See user report 2026-05-27.
-      const layoutCss =
+      # 2026-05-28 — icon-only pills carry a narrower ``min-width``
+      # (``cgPillIconMinWidth`` = 32 px) so the row stays compact
+      # without empty trailing space around the SVG.
+      let layoutCss =
         "display: inline-flex; align-items: center; " &
         "justify-content: center; " &
         "padding: " & cgPillPadding & "; " &
-        "min-width: " & cgPillMinWidth & "; " &
+        "min-width: " & pillMinWidth & "; " &
         "min-height: " & cgPillMinHeight & "; " &
         "border-radius: " & cgPillRadius & "; " &
         "border-width: 1px; border-style: solid; " &
