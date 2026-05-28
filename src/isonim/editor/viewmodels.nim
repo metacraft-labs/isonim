@@ -272,15 +272,13 @@ type
       ## tab and by the ``chat`` accessor to pick out the right
       ## ``AgentChatVM``.
     aiDrawerOpen*: Signal[bool]
-      ## Phase F: visibility of the AI assistant slide-out drawer
-      ## (``renderAiDrawer`` in ``shell.nim``).  The drawer overlays
-      ## the inspector at z-index 80 and is driven by the per-chat
-      ## robot icons in the chrome bar — clicking a robot opens the
-      ## drawer for that session; clicking the active robot a second
-      ## time, hitting ESC, or clicking outside closes it.  The state
-      ## (open / closed + active chat id) is persisted to
-      ## ``localStorage`` on the browser via a ``when defined(js)``
-      ## shim in ``createEditorVM``.
+      ## DEPRECATED Phase I/J (2026-05-28) — the AI assistant slide-
+      ## out drawer was demolished. Chat sessions now live in the
+      ## right-sidebar AI assistant panel (mounted by
+      ## ``renderAiAssistantPanel`` in ``shell.nim`` when the active
+      ## mode is NOT ``emEdit``). The signal is kept as a no-op shim
+      ## so the chat-tabs VM tests and any downstream consumer that
+      ## still references it keep compiling; no renderer observes it.
     review*: ReviewResultsVM
     preview*: ProjectPreviewVM
     flowPlayer*: FlowPlayerVM
@@ -2832,6 +2830,19 @@ proc sendAgentPrompt*(editor: EditorVM): bool {.discardable.}
 
 proc setEditMode*(editor: EditorVM; mode: EditMode) =
   editor.editMode.val = mode
+  # Phase I/J/L (2026-05-28): the mode strip now carries Spec as a
+  # fourth option in front of View/Comment/Edit. Picking Spec couples
+  # ``surfaceSig`` to ``sSpec`` so the existing centre-column mounting
+  # logic flips to the spec pane; picking any of the other three modes
+  # restores the preview surface. This keeps ``surfaceSig`` as the
+  # authoritative signal driving the spec-pane mount + the display
+  # gating while the visible control is unified into the mode strip.
+  if mode == emSpec:
+    if editor.surfaceSig.val != sSpec:
+      editor.surfaceSig.val = sSpec
+  else:
+    if editor.surfaceSig.val != sPreview:
+      editor.surfaceSig.val = sPreview
   # M-EVP-12 fix-cycle 2: when the canvas-preview path is active
   # (Pattern A: any non-Web preview backend), the chrome bar Edit
   # chip toggles the M-EVP-10 overlay handles *in place* on the
@@ -8031,6 +8042,79 @@ proc resolveReviewAnnotation*(review: ReviewResultsVM; id: string): bool {.
 proc dismissReviewAnnotation*(review: ReviewResultsVM; id: string): bool {.
     discardable.} =
   review.setReviewAnnotationState(id, ransDismissed)
+
+proc addReviewAnnotationAtAnchor*(editor: EditorVM; anchorX, anchorY: float;
+    selector = ""; ancestry = ""; text = ""; source = "user"): string {.
+    discardable.} =
+  ## Phase K — Notion-style click-to-place anchor.  Drops a new
+  ## ``ReviewAnnotation`` at the supplied preview-canvas-relative
+  ## coordinates and returns the fresh annotation's id so the caller
+  ## can immediately open the thread popover for it.  The annotation
+  ## starts in ``ransOpen`` state with an empty ``text`` so the first
+  ## reply submitted through :proc:`addCommentToAnnotation` becomes
+  ## the canonical first comment of the thread.
+  let element = editor.inspector.selectedElement.val
+  var annotation = ReviewAnnotation(
+    id: reviewAnnotationId(editor.review.annotations.val.len),
+    text: text,
+    selectedElement: element,
+    elementId: element.fallbackElementId(),
+    elementSourceKey: element.sourceKey,
+    domPath: element.domPath,
+    selector: selector,
+    ancestry: ancestry,
+    viewport: ReviewViewportContext(
+      platform: editor.platform.val,
+      viewport: editor.viewport.val,
+      width: previewViewportWidth(editor.viewport.val),
+      height: previewViewportHeight(editor.viewport.val),
+      zoom: 1.0),
+    ownership: ownershipContext(editor.designSystemSchema.val, element),
+    source: source,
+    severity: rasInfo,
+    suggestedScope: pesLocal,
+    sourceScopeChoices:
+      if element.properties.len > 0: editor.sourceScopeChoices(element.properties[0])
+      else: @[],
+    includedInPrompt: true,
+    state: ransOpen,
+    anchorX: anchorX,
+    anchorY: anchorY,
+    comments: @[])
+  if annotation.elementId.len == 0:
+    annotation.elementId = selector
+  if annotation.elementSourceKey.len == 0:
+    annotation.elementSourceKey = annotation.ownership.schemaKey
+  editor.review.annotations.update proc(prev: seq[ReviewAnnotation]): seq[
+      ReviewAnnotation] =
+    result = prev
+    result.add annotation
+  annotation.id
+
+proc addCommentToAnnotation*(review: ReviewResultsVM; id, text: string;
+    author = "user"; timestamp = 0.0): bool {.discardable.} =
+  ## Phase K — append a reply to a comment-thread annotation.  When
+  ## the annotation's primary ``text`` slot is empty (i.e. this is
+  ## the first comment authored after :proc:`addReviewAnnotationAtAnchor`
+  ## opened the thread) the new text becomes the canonical first
+  ## comment; subsequent calls push into ``comments``.  Returns true
+  ## when the annotation was found.
+  let trimmed = text.strip()
+  if trimmed.len == 0:
+    return false
+  var found = false
+  review.annotations.update proc(prev: seq[ReviewAnnotation]): seq[
+      ReviewAnnotation] =
+    result = prev
+    for annotation in result.mitems:
+      if annotation.id == id:
+        if annotation.text.len == 0:
+          annotation.text = trimmed
+        else:
+          annotation.comments.add ReviewComment(
+            author: author, text: trimmed, timestamp: timestamp)
+        found = true
+  found
 
 proc addAgentEditProposal*(chat: AgentChatVM; proposal: AgentEditProposal): string =
   var next = proposal

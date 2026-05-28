@@ -331,6 +331,13 @@ proc editModeHandler(vm: EditorVM; mode: EditMode): proc() =
   let captured = mode
   result = proc() =
     case captured
+    of emSpec:
+      # Phase L (2026-05-28): selecting Spec drives the surfaceSig +
+      # editMode coupling via setEditMode. There is no dedicated
+      # ``eckSpec`` command; the mode strip flips editMode directly
+      # so the spec pane mounts and the AI assistant takes the
+      # sidebar.
+      vm.setEditMode(emSpec)
     of emView:
       discard vm.runEditorCommand(eckInspect)
     of emComment:
@@ -744,6 +751,7 @@ proc renderStatusBar[R, E](r: R; vm: EditorVM): E =
     r.clearChildren(statusBadges)
     let selected = vm.inspector.selectedElement.val
     let mode = case vm.editMode.val
+      of emSpec: "Spec"
       of emView: "View"
       of emComment: "Comment"
       of emEdit: "Edit"
@@ -1381,7 +1389,13 @@ proc bindModeChip[R, E](r: R; chip: E; vm: EditorVM;
   ## on every invocation; deferring to the VM avoids the stale-capture
   ## class of bug that motivated this fix.
   let captured = mode
+  # Phase I (2026-05-28): ``emSpec`` doesn't map to a dedicated editor
+  # command — the mode-strip click handler routes Spec through
+  # ``setEditMode`` directly. ``eckInspect`` is harmless here because
+  # the enabled-state computation falls back to the "is a story
+  # selected" requirement that all four modes share.
   let command = case mode
+    of emSpec: eckInspect
     of emView: eckInspect
     of emComment: eckComment
     of emEdit: eckEdit
@@ -1537,6 +1551,9 @@ proc buildModeOptions(vm: EditorVM): seq[CompactChoiceOption] =
     let mode = modes[i]
     let captured = mode
     let command = case mode
+      of emSpec: eckInspect  # Legacy renderPreviewPane: emSpec never
+                             # appears in ``modes``, but the case must
+                             # cover it now that EditMode includes it.
       of emView: eckInspect
       of emComment: eckComment
       of emEdit: eckEdit
@@ -2294,6 +2311,7 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
   result = ui(r):
     tdiv(class = "editor-inspector",
           `data-test-id` = "property-panel",
+          `data-sidebar-content` = "inspector",
           display = "flex", flex_direction = "column",
           # 2026-05-28: default width bumped to 320 (signal default in
           # viewmodels.nim); ``bindRightPanelWidth`` overwrites this
@@ -2914,55 +2932,15 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
           disabled.incl i
       syncVm.setDisabledIndices(disabled)
 
-  # CHRM-M5 Fix A: cluster order is now
-  # ``[surface, backend, viewport, mode]`` — Surface moves to the
-  # leftmost position so the user reads the surface decision
-  # (preview workspace vs brief markdown) before any backend or
-  # layout knob. The clusters are constructed in source order
-  # below for code readability; the ``appendChild`` order at the
-  # bottom of each cluster's block determines the on-screen
-  # left-to-right ordering.
+  # Phase I (2026-05-28): the Surface (Preview / Spec) cluster is
+  # removed. ``surfaceSig`` is now coupled to ``editMode`` via
+  # ``setEditMode`` — selecting ``emSpec`` flips the signal to
+  # ``sSpec`` and selecting any other mode restores ``sPreview``.
+  # The on-screen cluster order is now ``[backend, viewport, mode]``
+  # with Spec folded into the Mode cluster.
 
-  # TBAR-M3 / CHRM-M5: Preview / Spec top-bar surface switch.
-  # Leftmost cluster after CHRM-M5. Uses the segmented variant of
-  # the ChoiceGroup widget delivered by TBAR-M2. CHRM-M2: the
-  # chrome-bar consumer now requests the ``cgvTransparent``
-  # container variant so the surface pills sit on the toolbar
-  # surface without their own filled backdrop.
-  let surfaceWrapper = ui(r):
-    tdiv(`data-toolbar-cluster` = "surface",
-         `data-preview-surface-switch` = "true",
-         display = "inline-flex", align_items = "center")
-  # 2026-05-28 icon-coverage expansion — Surface cluster pills render
-  # the IconSet's preview / spec glyphs. Label text travels via
-  # ``title`` + ``aria-label`` so existing e2e tests that locate the
-  # pills by ``data-choice-group-pill`` index continue to work
-  # unchanged, and screen-reader / tooltip discoverability is
-  # preserved.
-  let surfaceVm = createSegmentedChoiceVMWithIcons(
-    @["Preview", "Spec"],
-    @[chromeIcons.preview, chromeIcons.spec],
-    initialIndex = (if capturedVm.surfaceSig.val == sPreview: 0 else: 1))
-  r.mountSegmentedChoice(surfaceWrapper, surfaceVm, proc(i: int) {.closure.} =
-    capturedVm.setSurface(if i == 0: sPreview else: sSpec),
-    variant = cgvTransparent)
-  # Keep the segmented control in sync with external writes to
-  # ``surfaceSig`` (e.g. tests that flip the signal directly). This
-  # effect tracks ONLY ``surfaceSig`` — reading ``activeIndex`` via
-  # ``.val`` here would create a feedback loop with the segmented
-  # mount's own click handler (which sets ``activeIndex`` then
-  # dispatches ``onChange``). We read the bare ``value`` field
-  # directly to skip ``trackRead``.
-  block:
-    let syncVm = surfaceVm
-    createRenderEffect proc() =
-      let target = if capturedVm.surfaceSig.val == sPreview: 0 else: 1
-      if syncVm.activeIndex.value != target:
-        syncVm.activate(target)
-  r.appendChild(toolbar, surfaceWrapper)
-
-  # CHRM-M5 Fix A: backend cluster appended AFTER the surface
-  # cluster so the on-screen order reads
+  # CHRM-M5 Fix A: backend cluster appended AFTER the (now removed)
+  # surface cluster so the on-screen order reads
   # ``[surface, backend, viewport, mode]``. The cluster itself
   # was constructed above (alongside its reactive effects) for
   # code readability; only the mount-into-toolbar step happens
@@ -3050,13 +3028,16 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
           break
   r.appendChild(toolbar, viewportChevronWrapper)
 
-  # CHRM-M2: mode cluster now uses the ChoiceGroup segmented widget +
-  # the per-option ``disabledIndices`` signal driven by
-  # ``vm.evaluateCommand``. The reactive mirror that flips
-  # ``SpecPaneVM.mode`` from ``editMode + surface == sSpec`` (below)
-  # is unchanged.
-  const modeOrder = [emView, emComment, emEdit]
-  const modeLabels = @["View", "Comment", "Edit"]
+  # Phase I (2026-05-28): the Surface (Preview / Spec) cluster is
+  # gone; the Mode cluster now carries four options — Spec / View /
+  # Comment / Edit — with ``emSpec`` in front. Picking ``emSpec``
+  # couples ``surfaceSig`` to ``sSpec`` via ``setEditMode`` so the
+  # existing centre-column mounting logic flips to the spec pane;
+  # picking View/Comment/Edit restores ``sPreview``. The reactive
+  # mirror that flips ``SpecPaneVM.mode`` from ``editMode + surface
+  # == sSpec`` (below) is unchanged.
+  const modeOrder = [emSpec, emView, emComment, emEdit]
+  const modeLabels = @["Spec", "View", "Comment", "Edit"]
 
   let modeWrapper = ui(r):
     tdiv(`data-edge-strip` = "mode",
@@ -3072,16 +3053,29 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
       if modeOrder[i] == active:
         modeInitialIndex = i
         break
-  # 2026-05-28 icon-coverage expansion — Mode cluster renders the
-  # IconSet's modeView / modeComment / modeEdit glyphs. Order matches
-  # ``modeOrder`` (emView, emComment, emEdit).
+  # Phase I (2026-05-28) icon set — Mode cluster renders the
+  # IconSet's spec / modeView / modeComment / modeEdit glyphs in
+  # ``modeOrder``. The Spec pill reuses the document-text glyph
+  # the demolished Surface cluster used so users still read it as
+  # "the brief".
   let modeIcons = @[
+    chromeIcons.spec,
     chromeIcons.modeView, chromeIcons.modeComment, chromeIcons.modeEdit]
   let modeVm = createSegmentedChoiceVMWithIcons(modeLabels, modeIcons,
                                        initialIndex = modeInitialIndex)
 
   proc commandForMode(m: EditMode): EditorCommandKind =
+    # Phase I (2026-05-28): ``emSpec`` is NOT gated by a story
+    # selection — the demolished Surface (Preview/Spec) cluster was
+    # always enabled and the no-story overlay surfaced an
+    # explanatory message when no story was selected. To preserve
+    # that contract, emSpec maps onto ``eckOpenCommandPalette``,
+    # which ``commandRequirementFailure`` short-circuits to always-
+    # available. The remaining modes (View/Comment/Edit) keep their
+    # legacy "needs a story selection" gate via ``eckInspect`` /
+    # ``eckComment`` / ``eckEdit``.
     case m
+    of emSpec: eckOpenCommandPalette
     of emView: eckInspect
     of emComment: eckComment
     of emEdit: eckEdit
@@ -3097,7 +3091,13 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
   r.mountSegmentedChoice(modeWrapper, modeVm, proc(i: int) {.closure.} =
     if i < 0 or i >= modeOrder.len:
       return
-    discard capturedVm.runEditorCommand(commandForMode(modeOrder[i])),
+    let mode = modeOrder[i]
+    # Phase L: Spec doesn't route through ``runEditorCommand`` — flip
+    # ``editMode`` directly so ``setEditMode`` mirrors ``surfaceSig``.
+    if mode == emSpec:
+      capturedVm.setEditMode(emSpec)
+    else:
+      discard capturedVm.runEditorCommand(commandForMode(mode)),
     variant = cgvTransparent)
 
   block:
@@ -3123,133 +3123,305 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
   # is a better UX than a button that disappears.
   design_review_mount_view.mountHistoryButtonForEditor[R, E](r, toolbar, vm)
 
-  # Phase F — per-chat robot strip + trailing "+" button.
-  #
-  # The chrome bar's right-edge slot used to end at the 🕘 history
-  # button. Phase F appends the AI-assistant chat strip after it: one
-  # 28×28 robot button per ``ChatSession`` in ``vm.chats``, plus a
-  # trailing "+" button to spawn fresh chats. The strip uses
-  # ``overflow-x: auto`` so many concurrent chats fall behind a
-  # native horizontal scrollbar rather than being hidden in a
-  # chevron popup.  Clicking a robot toggles the AI drawer for that
-  # session (see ``vm.toggleAiDrawer``); the active robot reflects
-  # both ``aiDrawerOpen`` and ``activeChatId`` so the indigo accent
-  # only lights up when the drawer is actually showing that chat.
-  let chromeChatStrip = ui(r):
-    tdiv(`data-chrome-chat-strip` = "true",
-         `role` = "tablist",
-         `aria-label` = "AI chat sessions",
-         display = "inline-flex", align_items = "center",
-         gap = "4px",
-         margin_left = "8px",
-         max_width = "260px",
-         overflow_x = "auto",
-         overflow_y = "hidden",
-         flex_shrink = "0")
-  r.appendChild(toolbar, chromeChatStrip)
+  # Phase I (2026-05-28): the per-chat robot strip + trailing "+"
+  # button are removed from the chrome bar. Chat sessions now live
+  # entirely inside the AI assistant sidebar (Phase J — see
+  # ``renderAiAssistantPanel`` below), which renders a traditional
+  # tab strip at the top with the chat content beneath it. The
+  # legacy chrome-bar AI affordances (and the slide-out drawer they
+  # opened) are gone.
 
-  let chromeNewChatBtn = ui(r):
-    tdiv(`data-chrome-chat-new` = "true",
+  toolbar
+
+proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
+  ## Phase J (2026-05-28) — AI assistant right-sidebar panel.
+  ##
+  ## Mounted as the right sidebar's content whenever the active
+  ## editing mode is NOT ``emEdit`` (Spec / View / Comment all
+  ## surface the assistant). The layout is a traditional tab strip
+  ## at the top — one tab per ``ChatSession`` in ``vm.chats``, an
+  ## overflow chevron (``▾``) that opens a dropdown listing every
+  ## session, and a trailing ``+`` button that creates a new
+  ## session. Below the tab strip the existing ``renderChatPanel``
+  ## renders the active chat's transcript + composer;
+  ## ``renderChatPanel`` reads ``vm.activeChat()`` so clicking a tab
+  ## automatically swaps the visible content.
+  ##
+  ## Width tracks ``vm.rightPanelWidth`` (same signal the inspector
+  ## uses) so the inspector and AI assistant occupy the same
+  ## horizontal slot.
+  let capturedVm = vm
+
+  var tabStripEl: E
+  var tabListEl: E
+  var overflowBtn: E
+  var overflowDropdown: E
+  var newChatBtn: E
+  var chatContentHost: E
+  result = ui(r):
+    tdiv(class = "editor-ai-assistant",
+         `data-test-id` = "property-panel",
+         `data-sidebar-content` = "ai-assistant",
+         display = "flex", flex_direction = "column",
+         width = "320px", min_width = "200px", max_width = "420px",
+         height = "100%",
+         position = "relative",
+         flex_shrink = "0",
+         background_color = bgSidebar,
+         border_left = "1px solid " & borderStrong,
+         overflow_x = "hidden"):
+      # Tab strip row — tabs + overflow chevron + plus button.
+      tdiv(ref = tabStripEl,
+           `data-ai-assistant-tab-strip` = "true",
+           `role` = "tablist",
+           `aria-label` = "AI chat sessions",
+           display = "flex",
+           align_items = "stretch",
+           min_height = "36px",
+           height = "36px",
+           padding_left = "4px",
+           padding_right = "4px",
+           background_color = bgSidebar,
+           border_bottom = "1px solid " & borderFaint,
+           flex_shrink = "0",
+           overflow = "hidden"):
+        # Sub-container that hosts the per-session tabs. Kept
+        # separate from the chevron + plus controls so the rebuild
+        # closure can ``clearChildren`` only the tab area without
+        # losing the right-edge controls (which carry click
+        # listeners that would have to be re-wired on every rebuild
+        # otherwise).
+        tdiv(ref = tabListEl,
+             `data-ai-assistant-tab-list` = "true",
+             display = "flex",
+             align_items = "stretch",
+             flex = "1",
+             min_width = "0",
+             overflow = "hidden"):
+          discard
+      # Chat content host — ``renderChatPanel`` mounts inside.
+      tdiv(ref = chatContentHost,
+           `data-ai-assistant-content` = "true",
+           display = "flex", flex_direction = "column",
+           flex = "1", min_height = "0", min_width = "0",
+           overflow = "hidden"):
+        discard
+  let panelRoot = result
+
+  # Mount the existing chat panel inside the content host. The chat
+  # panel reads ``vm.activeChat()`` so switching tabs (which flips
+  # ``activeChatId``) automatically swaps the visible chat content.
+  let chatPanel = renderChatPanel[R, E](r, vm)
+  r.appendChild(chatContentHost, chatPanel)
+
+  # Width binding — mirror the inspector's bindRightPanelWidth so
+  # both right-sidebar surfaces occupy the same horizontal slot.
+  r.bindRightPanelWidth(panelRoot, vm)
+
+  # Left-edge drag-resize handle. Symmetrical with the inspector's
+  # handle (same data-resize-handle="right-panel" id so the same JS
+  # mousemove shim wires both surfaces).
+  let aiResizeHandle = ui(r):
+    tdiv(`data-resize-handle` = "right-panel",
+         `aria-hidden` = "true",
+         position = "absolute",
+         left = "0", top = "0",
+         width = "4px", height = "100%",
+         cursor = "col-resize",
+         background_color = "transparent",
+         z_index = "30")
+  r.appendChild(panelRoot, aiResizeHandle)
+  when defined(js):
+    let handleEl = aiResizeHandle
+    let panelEl = panelRoot
+    {.emit: ["""
+      (function (handle, panel) {
+        if (!handle || !document) return;
+        var startX = 0;
+        var startW = 0;
+        var dragging = false;
+        function endDrag() {
+          if (!dragging) return;
+          dragging = false;
+          document.body.style.cursor = '';
+          document.body.style.userSelect = '';
+        }
+        handle.addEventListener('mousedown', function (e) {
+          dragging = true;
+          startX = e.clientX;
+          startW = panel.getBoundingClientRect().width;
+          document.body.style.cursor = 'col-resize';
+          document.body.style.userSelect = 'none';
+          if (e.preventDefault) e.preventDefault();
+        });
+        document.addEventListener('mousemove', function (e) {
+          if (!dragging) return;
+          var delta = startX - e.clientX;
+          var w = Math.max(200, Math.min(420, Math.round(startW + delta)));
+          if (window.__isonimEditor &&
+              window.__isonimEditor.setRightPanelWidth) {
+            window.__isonimEditor.setRightPanelWidth(w);
+          }
+        });
+        document.addEventListener('mouseup', endDrag);
+        document.addEventListener('mouseleave', endDrag);
+      })(""", handleEl, """, """, panelEl, """);
+    """].}
+
+  # Overflow-dropdown open signal.
+  let dropdownOpen = createSignal(false)
+
+  # Overflow chevron — appears at the right edge of the tab strip
+  # when the strip cannot fit every tab. Anchored to the right end
+  # so it sits BEFORE the "+" button.
+  let overflowEl = ui(r):
+    tdiv(ref = overflowBtn,
+         `data-ai-assistant-overflow` = "true",
+         `role` = "button", tabindex = "0",
+         title = "Show all chat sessions",
+         `aria-label` = "Show all chat sessions",
+         `aria-haspopup` = "listbox",
+         `aria-expanded` = "false",
+         display = "none",
+         align_items = "center", justify_content = "center",
+         width = "28px", min_width = "28px",
+         margin = "4px 2px",
+         border_radius = "4px",
+         color = textMuted,
+         cursor = "pointer", flex_shrink = "0",
+         font_size = "12px", line_height = "1",
+         background_color = "transparent"):
+      text "\xE2\x96\xBE"  # ▾
+  r.appendChild(tabStripEl, overflowEl)
+
+  # Trailing "+" button.
+  let newChatEl = ui(r):
+    tdiv(ref = newChatBtn,
+         `data-ai-assistant-new-chat` = "true",
          `role` = "button", tabindex = "0",
          title = "Create new chat",
          `aria-label` = "Create new chat",
          display = "flex", align_items = "center",
          justify_content = "center",
-         width = "28px", height = "28px",
-         border_radius = "6px",
+         width = "28px", min_width = "28px",
+         margin = "4px 2px 4px 2px",
+         border_radius = "4px",
          color = textMuted,
          cursor = "pointer", flex_shrink = "0",
-         margin_left = "2px",
-         transition = "background-color 0.12s, color 0.12s")
-  let chromeNewChatIconHost = ui(r):
-    tdiv(`aria-hidden` = "true",
-         display = "flex", align_items = "center",
-         justify_content = "center",
-         width = "18px", height = "18px",
-         line_height = "1",
-         flex_shrink = "0")
-  r.setInnerHtml(chromeNewChatIconHost, plusSvg)
-  r.appendChild(chromeNewChatBtn, chromeNewChatIconHost)
+         font_size = "16px", line_height = "1",
+         font_weight = "600",
+         background_color = "transparent"):
+      text "+"
+  r.appendChild(tabStripEl, newChatEl)
   block:
-    let capturedVm = vm
-    let newClick = proc() =
-      let id = capturedVm.createNewChat()
-      capturedVm.openAiDrawer(id)
-    r.addEventListener(chromeNewChatBtn, "click", newClick)
-    r.addEventListener(chromeNewChatBtn, "keydown", newClick)
-  r.appendChild(toolbar, chromeNewChatBtn)
+    let cvm = capturedVm
+    let newClick = proc() = discard cvm.createNewChat()
+    r.addEventListener(newChatBtn, "click", newClick)
+    r.addEventListener(newChatBtn, "keydown", newClick)
 
-  # Rebuild the robot row whenever ``chats``, ``activeChatId`` or
-  # ``aiDrawerOpen`` flips.  The row is small (≤ a few dozen robots
-  # in practice) so a full rebuild is cheaper than partial diffing
-  # and keeps the DOM in lockstep with the VM signals.  Per-session
-  # status-dot effects are registered inside the rebuild so they
-  # tear down with the row.
+  # Overflow dropdown.
+  let dropdownEl = ui(r):
+    tdiv(ref = overflowDropdown,
+         `data-ai-assistant-overflow-dropdown` = "true",
+         `role` = "listbox",
+         `aria-label` = "All chat sessions",
+         position = "absolute",
+         top = "36px", right = "8px",
+         min_width = "180px", max_width = "240px",
+         max_height = "320px",
+         overflow_y = "auto",
+         background_color = bgSidebar,
+         border = "1px solid " & borderStrong,
+         border_radius = "6px",
+         box_shadow = "0 12px 32px -12px rgba(0, 0, 0, 0.45)",
+         z_index = "40",
+         display = "none",
+         padding = "4px"):
+      discard
+  r.appendChild(panelRoot, dropdownEl)
   block:
-    let capturedVm = vm
-    let strip = chromeChatStrip
-    # Helper that takes the session id by VALUE and returns a fresh
-    # closure.  The naked ``let capturedId = sessionId`` form used
-    # inline ends up sharing a single stack slot across the for-loop
-    # iterations (the closure captures by reference, so every robot
-    # would fire ``toggleAiDrawer`` with the LAST session id seen).
-    # The helper proc bottoms out the capture so each robot's
-    # listener fires with its own id.
-    proc robotClickHandler(vm: EditorVM; sessionId: string): proc() =
+    let dropdown = overflowDropdown
+    let overflowCapture = overflowBtn
+    let openSig = dropdownOpen
+    createRenderEffect proc() =
+      let open = openSig.val
+      r.setStyle(dropdown, "display", if open: "block" else: "none")
+      r.setAttribute(overflowCapture, "aria-expanded",
+        if open: "true" else: "false")
+
+  block:
+    let openSig = dropdownOpen
+    let toggleHandler = proc() = openSig.val = not openSig.val
+    r.addEventListener(overflowBtn, "click", toggleHandler)
+    r.addEventListener(overflowBtn, "keydown", toggleHandler)
+
+  # Tab strip rebuild: reactive on ``chats`` + ``activeChatId``.
+  block:
+    let cvm = capturedVm
+    let tabList = tabListEl
+    let dropdown = overflowDropdown
+    let openSig = dropdownOpen
+
+    proc tabClickHandler(vm: EditorVM; sessionId: string): proc() =
+      result = proc() = discard vm.switchToChat(sessionId)
+
+    proc dropdownEntryClick(vm: EditorVM; sessionId: string;
+        openSig: Signal[bool]): proc() =
       result = proc() =
-        vm.toggleAiDrawer(sessionId)
-    proc renderChromeChatStrip() =
-      r.clearChildren(strip)
-      let sessions = capturedVm.chats.val
-      let activeId = capturedVm.activeChatId.val
-      let drawerOpen = capturedVm.aiDrawerOpen.val
+        discard vm.switchToChat(sessionId)
+        openSig.val = false
+
+    proc renderTabStrip() =
+      r.clearChildren(tabList)
+      r.clearChildren(dropdown)
+
+      let sessions = cvm.chats.val
+      let activeId = cvm.activeChatId.val
+
       for session in sessions:
         let sessionId = session.id
         let title = session.title.val
-        let isActive = drawerOpen and sessionId == activeId
-        var iconHost: E
+        let isActive = sessionId == activeId
+        var labelHost: E
         var statusDot: E
-        let robotEl = ui(r):
+        let tabEl = ui(r):
           tdiv(`role` = "tab", tabindex = "0",
-               `data-chat-tab` = sessionId,
+               `data-ai-assistant-tab` = sessionId,
                `aria-selected` = (if isActive: "true" else: "false"),
                title = title,
-               `aria-label` = title,
-               position = "relative",
-               display = "flex", align_items = "center",
-               justify_content = "center",
-               width = "28px", height = "28px",
-               border_radius = "6px",
+               display = "inline-flex",
+               align_items = "center",
+               gap = "6px",
+               padding_left = "10px", padding_right = "10px",
+               margin = "4px 2px",
+               border_radius = "4px",
                background_color = (if isActive: accent else: "transparent"),
                color = (if isActive: "#FFFFFF" else: textMuted),
                cursor = "pointer", flex_shrink = "0",
+               font_size = "12px",
+               white_space = "nowrap",
+               max_width = "140px",
+               overflow = "hidden",
+               text_overflow = "ellipsis",
                transition = "background-color 0.12s, color 0.12s"):
-            tdiv(ref = iconHost,
-                 `aria-hidden` = "true",
-                 display = "flex", align_items = "center",
-                 justify_content = "center",
-                 width = "18px", height = "18px",
-                 line_height = "1",
-                 flex_shrink = "0")
             tdiv(ref = statusDot,
-                 `data-chat-status-dot` = "true",
-                 position = "absolute",
-                 right = "1px", bottom = "1px",
-                 width = "8px", height = "8px",
-                 border_radius = "4px",
-                 border = "1px solid " & bgToolbar,
+                 `data-ai-assistant-tab-status-dot` = "true",
+                 width = "6px", height = "6px",
+                 border_radius = "3px",
+                 flex_shrink = "0",
                  background_color = "#A0A2B0")
-        r.setInnerHtml(iconHost, robotSvg)
-        # Per-session click → toggle drawer.  We route through a
-        # helper proc that captures the session id by VALUE so the
-        # right chat fires even when the strip is rebuilt under us
-        # (the prior plain ``let capturedId = sessionId`` form shared
-        # a single stack slot across iterations and stranded every
-        # robot with the LAST session id seen).
-        let robotClick = robotClickHandler(capturedVm, sessionId)
-        r.addEventListener(robotEl, "click", robotClick)
-        r.addEventListener(robotEl, "keydown", robotClick)
-        # Status dot reactive on the per-session ``sessionStatus``.
+            span(ref = labelHost,
+                 `data-ai-assistant-tab-label` = "true",
+                 overflow = "hidden",
+                 text_overflow = "ellipsis",
+                 white_space = "nowrap"):
+              text title
+        r.appendChild(tabList, tabEl)
+        discard labelHost
+
+        let click = tabClickHandler(cvm, sessionId)
+        r.addEventListener(tabEl, "click", click)
+        r.addEventListener(tabEl, "keydown", click)
         block:
           let dot = statusDot
           let chatVm = session.vm
@@ -3261,141 +3433,114 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
               of asReady: "#22C55E"
               of asError: "#EF4444"
             r.setStyle(dot, "background-color", color)
-            r.setAttribute(dot, "data-chat-status",
+            r.setAttribute(dot, "data-ai-assistant-tab-status",
               case state
               of asIdle: "idle"
               of asLoading: "loading"
               of asReady: "ready"
               of asError: "error")
-        r.appendChild(strip, robotEl)
+
+        # Dropdown entry mirrors the tab for this session.
+        var dotEntryHost: E
+        let entryEl = ui(r):
+          tdiv(`role` = "option",
+               tabindex = "0",
+               `data-ai-assistant-overflow-entry` = sessionId,
+               `aria-selected` = (if isActive: "true" else: "false"),
+               display = "flex",
+               align_items = "center",
+               gap = "8px",
+               padding = "8px 10px",
+               border_radius = "4px",
+               cursor = "pointer",
+               color = (if isActive: textPrimary else: textSecondary),
+               background_color = (if isActive: accentSoft else: "transparent"),
+               font_size = "12px",
+               white_space = "nowrap",
+               overflow = "hidden",
+               text_overflow = "ellipsis"):
+            tdiv(ref = dotEntryHost,
+                 width = "6px", height = "6px",
+                 border_radius = "3px",
+                 flex_shrink = "0",
+                 background_color = "#A0A2B0")
+            span(overflow = "hidden",
+                 text_overflow = "ellipsis",
+                 white_space = "nowrap"):
+              text title
+        r.appendChild(dropdown, entryEl)
+        let entryClick = dropdownEntryClick(cvm, sessionId, openSig)
+        r.addEventListener(entryEl, "click", entryClick)
+        r.addEventListener(entryEl, "keydown", entryClick)
+        block:
+          let dot = dotEntryHost
+          let chatVm = session.vm
+          createRenderEffect proc() =
+            let state = chatVm.sessionStatus.val
+            let color = case state
+              of asIdle: "#A0A2B0"
+              of asLoading: "#F59E0B"
+              of asReady: "#22C55E"
+              of asError: "#EF4444"
+            r.setStyle(dot, "background-color", color)
+
     createRenderEffect proc() =
-      discard capturedVm.chats.val
-      discard capturedVm.activeChatId.val
-      discard capturedVm.aiDrawerOpen.val
-      renderChromeChatStrip()
+      discard cvm.chats.val
+      discard cvm.activeChatId.val
+      renderTabStrip()
 
-  toolbar
+    # Overflow detection — reveal the chevron when the tab list's
+    # scrollWidth exceeds its clientWidth.
+    when defined(js):
+      let listJs = tabList
+      let overflowJs = overflowBtn
+      createRenderEffect proc() =
+        discard cvm.chats.val
+        {.emit: ["""
+          (function (list, btn) {
+            if (!list || !btn) return;
+            setTimeout(function () {
+              var overflowing = list.scrollWidth > list.clientWidth;
+              btn.style.display = overflowing ? 'flex' : 'none';
+            }, 0);
+          })(""", listJs, """, """, overflowJs, """);
+        """].}
 
-proc renderAiDrawer*[R, E](r: R; vm: EditorVM): E =
-  ## Phase F — AI assistant slide-out drawer.
-  ##
-  ## A right-edge fixed-positioned panel that mounts
-  ## ``renderChatPanel`` for the currently-active chat.  Width tracks
-  ## ``vm.rightPanelWidth`` (the same signal the inspector uses) so
-  ## both rails read as a single column even though they are
-  ## independently mounted.  Visibility is driven by
-  ## ``vm.aiDrawerOpen``: when false the root is ``display: none`` so
-  ## the editor surface stays focused on the inspector.
-  ##
-  ## Z-index 80 layers the drawer above the inspector (z-index 30 on
-  ## its resize handle) and below the command palette (z-index 50 +
-  ## ``position: fixed``; effectively a modal layer).  The drawer is
-  ## itself ``position: fixed`` with ``top: 44px`` so the chrome bar
-  ## stays reachable while the drawer is open.
-  var closeBtn: E
-  var body: E
-  result = ui(r):
-    tdiv(`data-ai-drawer` = "true",
-          `data-ai-drawer-open` = "false",
-          position = "fixed",
-          top = "44px", right = "0", bottom = "0",
-          display = "none",
-          flex_direction = "column",
-          background_color = bgSidebar,
-          border_left = "1px solid " & borderStrong,
-          box_shadow = "-12px 0 32px -16px rgba(0, 0, 0, 0.45)",
-          z_index = "80",
-          width = "320px", min_width = "200px", max_width = "420px",
-          overflow = "hidden"):
-      tdiv(`data-ai-drawer-header` = "true",
-           display = "flex", align_items = "center",
-           justify_content = "flex-end",
-           min_height = "32px",
-           padding_top = "6px", padding_right = "8px",
-           padding_bottom = "6px", padding_left = "12px",
-           border_bottom = "1px solid " & border):
-        tdiv(ref = closeBtn,
-             `data-ai-drawer-close` = "true",
-             `role` = "button", tabindex = "0",
-             title = "Close AI drawer",
-             `aria-label` = "Close AI drawer",
-             display = "flex", align_items = "center",
-             justify_content = "center",
-             width = "24px", height = "24px",
-             border_radius = "4px",
-             color = textMuted,
-             font_size = "14px", line_height = "1",
-             cursor = "pointer"):
-          text "\xE2\x9C\x95"  # ✕
-      tdiv(ref = body,
-           `data-ai-drawer-body` = "true",
-           display = "flex", flex_direction = "column",
-           flex = "1", min_height = "0", min_width = "0",
-           overflow_x = "hidden")
-
-  let drawer = result
-  let bodyEl = body
-  # Mount the chat panel inside the drawer body.  ``renderChatPanel``
-  # reads ``vm.activeChat()`` so it automatically reflects the chat
-  # the robot row last activated; no internal tab strip is rendered.
-  let chatPanel = renderChatPanel[R, E](r, vm)
-  r.appendChild(bodyEl, chatPanel)
-
-  # Close button + ESC handling + click-outside handling are all
-  # wired below.  ``aiDrawerOpen`` is the load-bearing signal.
-  let capturedVm = vm
-  r.addEventListener(closeBtn, "click", proc() =
-    capturedVm.closeAiDrawer())
-  r.addEventListener(closeBtn, "keydown", proc() =
-    capturedVm.closeAiDrawer())
-
-  # Width binding — mirror the inspector's ``bindRightPanelWidth`` so
-  # the drawer and the inspector occupy the same horizontal slot
-  # (the drawer overlays the inspector when open).
-  block:
-    let drawerCapture = drawer
-    createRenderEffect proc() =
-      let width = $capturedVm.rightPanelWidth.val & "px"
-      r.setStyle(drawerCapture, "width", width)
-
-  # Visibility binding.
-  block:
-    let drawerCapture = drawer
-    createRenderEffect proc() =
-      let open = capturedVm.aiDrawerOpen.val
-      r.setStyle(drawerCapture, "display", if open: "flex" else: "none")
-      r.setAttribute(drawerCapture, "data-ai-drawer-open",
-        if open: "true" else: "false")
-
+  # Click-outside / ESC closes the overflow dropdown when open.
   when defined(js):
-    let drawerJs = drawer
+    let panelJs = panelRoot
+    let dropdownJs = overflowDropdown
     {.emit: ["""
-      (function (drawer) {
-        if (!drawer || drawer.__isonimAiDrawerReady) return;
-        drawer.__isonimAiDrawerReady = true;
-        // ESC closes the drawer when it's open.
-        document.addEventListener('keydown', function (event) {
-          if (event.key !== 'Escape') return;
-          if (drawer.getAttribute('data-ai-drawer-open') !== 'true') return;
-          var btn = drawer.querySelector('[data-ai-drawer-close="true"]');
-          if (btn) btn.click();
-        });
-        // Click-outside closes the drawer.  Robot buttons in the
-        // chrome bar are excluded so a click on a robot can still
-        // switch chats / toggle the drawer without an immediate
-        // close fighting the toggle.
+      (function (panel, dropdown) {
+        if (!panel || !dropdown) return;
+        if (panel.__isonimAiAssistantReady) return;
+        panel.__isonimAiAssistantReady = true;
         document.addEventListener('mousedown', function (event) {
-          if (drawer.getAttribute('data-ai-drawer-open') !== 'true') return;
+          if (dropdown.style.display === 'none') return;
           var target = event.target;
           if (!target) return;
-          if (drawer.contains(target)) return;
-          if (target.closest && target.closest('[data-chat-tab]')) return;
-          if (target.closest && target.closest('[data-chrome-chat-new="true"]')) return;
-          var btn = drawer.querySelector('[data-ai-drawer-close="true"]');
-          if (btn) btn.click();
+          if (dropdown.contains(target)) return;
+          var trigger = panel.querySelector(
+            '[data-ai-assistant-overflow="true"]');
+          if (trigger && trigger.contains(target)) return;
+          dropdown.style.display = 'none';
+          if (trigger) trigger.setAttribute('aria-expanded', 'false');
         });
-      })(""", drawerJs, """);
+        document.addEventListener('keydown', function (event) {
+          if (event.key !== 'Escape') return;
+          if (dropdown.style.display === 'none') return;
+          dropdown.style.display = 'none';
+          var trigger = panel.querySelector(
+            '[data-ai-assistant-overflow="true"]');
+          if (trigger) trigger.setAttribute('aria-expanded', 'false');
+        });
+      })(""", panelJs, """, """, dropdownJs, """);
     """].}
+
+  # TODO(spec): wire title summarization once agent emits summary
+  # signal — the per-spec future-work item. Today titles default to
+  # "New chat" / "New chat 2" / ... via ``createChatSession``.
+  discard panelRoot
 
 proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
   ## Top-level editor layout: [sidebar | center column | inspector chat] +
@@ -3430,7 +3575,15 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
   # together. The ``data-test-id="property-panel"`` attribute is
   # stamped inside ``renderInspectorPanel`` on the sidebar root so
   # the existing e2e tests still resolve it.
+  #
+  # Phase J (2026-05-28) — the right sidebar is mode-driven now: the
+  # Inspector mounts when ``vm.editMode.val == emEdit`` and the AI
+  # assistant mounts in every other mode (Spec / View / Comment). The
+  # two surfaces are mutually-exclusive; the ``data-test-id`` is
+  # carried by BOTH so existing e2e selectors keep working, and a
+  # ``data-sidebar-content`` attribute distinguishes which one is up.
   let inspectorEl = renderInspectorPanel[R, E](r, vm)
+  let aiAssistantEl = renderAiAssistantPanel[R, E](r, vm)
 
   # Center column wraps the shared preview chrome bar + the view stack
   # so the toolbar sits above every view. Replaces the previous
@@ -3559,8 +3712,16 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
       if capturedVm.surfaceSig.val != sSpec:
         return
       let em = capturedVm.editMode.val
+      # Phase L (2026-05-28): ``emSpec`` is the user-facing
+      # selection that puts the spec editor into its editable state —
+      # there is no separate "Spec View" mode. Map ``emSpec`` directly
+      # to ``spmEdit`` so the TipTap surface mounts editable. The
+      # legacy View/Comment/Edit triplet still flips ``spmMode`` for
+      # back-compatibility with the existing save/cancel flow that
+      # programmatically calls ``setEditMode(emView)``.
       let target =
         case em
+        of emSpec: spmEdit
         of emView: spmView
         of emComment: spmComment
         of emEdit: spmEdit
@@ -3644,6 +3805,18 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
   # ``briefHasHistory`` and ``galleryHostState == ghsOpen`` are true.
   discard design_review_mount_view.mountGalleryHostForEditor[R, E](
     r, centerColumn, vm)
+
+  # Phase K — Notion-style inline comment overlay.  Mounts on the
+  # centre column so the absolute-positioned overlay layer covers the
+  # active preview surface (page / component / foundations) without
+  # leaking into the chrome bar or right sidebar.  The widget's mode
+  # reactivity gates ``display`` on ``vm.editMode == emComment``; the
+  # underlay only catches pointer events while Comment mode is active
+  # so View / Edit interactions on the preview iframe / canvas remain
+  # unaffected.  Anchor data is preserved across mode switches because
+  # it lives in ``vm.review.annotations`` — the existing
+  # design-review pipeline (REV-M5+) consumes the same signal.
+  discard mountCommentOverlay[R, E](r, centerColumn, vm)
 
   # AIVS-NSO — "Select an item to edit its properties" overlay.
   #
@@ -3735,8 +3908,15 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
         # message stays consistent with the user's "select an item to
         # edit its properties" suggestion.
         if surface == sSpec:
+          # Phase L: ``emSpec`` is the canonical "spec-editor"
+          # selection (the spec is always editable when surface is
+          # Spec). When the user is still on one of the legacy
+          # View/Comment/Edit modes WHILE the surface is Spec (e.g. a
+          # programmatic ``setEditMode`` from the save-success path)
+          # the matching read-only / comment copy still applies.
           let heading =
             case em
+            of emSpec: "Select an item to edit its specification"
             of emView: "Select an item to view its specification"
             of emComment: "Select an item to comment on its specification"
             of emEdit: "Select an item to edit its specification"
@@ -3750,6 +3930,7 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
         else:
           let heading =
             case em
+            of emSpec: "Select an item to edit its specification"
             of emView: "Select an item to view its preview"
             of emComment: "Select an item to comment on its preview"
             of emEdit: "Select an item to edit its properties"
@@ -3765,42 +3946,65 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
   #   [sidebar | center column (chrome bar + view stack) | tabbed right sidebar]
   r.appendChild(shell, sidebarEl)
   r.appendChild(shell, centerColumn)
-  # Right sidebar visibility contract:
-  # The right sidebar is a SINGLE tabbed panel that hosts both the
-  # manual property inspector ("Manual" tab) and the AI assistant
-  # chat ("Assistant" tab). The user toggles between the two at the
-  # top of the sidebar — logically the sidebar is "the editing
-  # surface": you can edit by hand (Manual) or by messaging the
-  # assistant (Assistant). Both tabs are ALWAYS available regardless
-  # of surface (Preview/Spec), mode (View/Comment/Edit), or whether a
-  # story is selected; this preserves the AIVS-NSO invariant that the
-  # AI Assistant is the user's single point of contact and remains
-  # reachable across every workspace state. The only carve-out is the
-  # ``panels.inspector`` toggle — the status-bar Toggle inspector
-  # button still collapses the right rail entirely (re-opening
-  # restores it). The Spec-comment one-shot signal still pulls the
-  # sidebar back into view when a brief comment is submitted.
+  # Phase J (2026-05-28) — Mode-driven right sidebar.
+  #
+  # The right sidebar's content is driven by the active editing mode:
+  #
+  #   * ``emEdit``        → ``inspectorEl`` (the section-based inspector)
+  #   * ``emSpec`` / ``emView`` / ``emComment`` → ``aiAssistantEl``
+  #
+  # The two surfaces are mutually-exclusive: only one is in the DOM at
+  # a time so the AIVS-NSO invariant ("AI Assistant always reachable")
+  # is preserved while the Inspector takes over when the user is
+  # actively editing properties. Both surfaces carry
+  # ``data-test-id="property-panel"`` so existing e2e selectors keep
+  # working; the new ``data-sidebar-content`` attribute distinguishes
+  # which one is currently mounted.
+  #
+  # ``panels.inspector`` (the status-bar Toggle inspector button) is
+  # honoured for both surfaces — flipping the panel off collapses the
+  # whole right rail regardless of mode. The spec-comment one-shot
+  # signal still pulls the sidebar back into view when a brief
+  # comment is submitted; today that path also activates Comment mode
+  # so the assistant surface is what appears.
   let chatOpenedForSpecComment = createSignal(false)
   block:
     let capturedVm = vm
     let capturedChatFlag = chatOpenedForSpecComment
-    var mounted = false
-    proc shouldMount(): bool =
+    # Mounted-state tracking: at most one of (inspector, aiAssistant)
+    # is in the shell at any time.
+    var mountedKind = ""  # "" | "inspector" | "ai-assistant"
+    proc desiredKind(): string =
       let panels = capturedVm.panels.val
-      # Keep the spec-comment one-shot signal observed so the existing
-      # TBAR-M6 wiring still drains it on surface flips (downstream
-      # code may inspect it); the panel is always wanted when
-      # ``panels.inspector`` is true regardless of its value.
+      # Observe the one-shot signal so the TBAR-M6 spec-comment
+      # handoff still pulls the sidebar back into view.
       discard capturedChatFlag.val
-      panels.inspector
+      if not panels.inspector:
+        return ""
+      if capturedVm.editMode.val == emEdit:
+        "inspector"
+      else:
+        "ai-assistant"
     createRenderEffect proc() =
-      let want = shouldMount()
-      if want and not mounted:
-        r.appendChild(shell, inspectorEl)
-        mounted = true
-      elif not want and mounted:
+      let want = desiredKind()
+      if want == mountedKind:
+        return
+      # Unmount the previous surface first.
+      case mountedKind
+      of "inspector":
         r.removeChild(shell, inspectorEl)
-        mounted = false
+      of "ai-assistant":
+        r.removeChild(shell, aiAssistantEl)
+      else: discard
+      # Mount the new surface (or none, when ``panels.inspector`` is
+      # false).
+      case want
+      of "inspector":
+        r.appendChild(shell, inspectorEl)
+      of "ai-assistant":
+        r.appendChild(shell, aiAssistantEl)
+      else: discard
+      mountedKind = want
   # TBAR-M6: mount the Spec Comment popover at shellRoot so its
   # absolute-positioned overlay layers above the spec pane without
   # parent clipping.  Submission routes through
@@ -3815,12 +4019,15 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
         proc(success: bool; reason: string) =
           if success:
             chatOpenedForSpecComment.val = true
-            # Phase F: open the AI drawer to the currently-active
-            # chat so the comment-to-chat handoff surfaces the
-            # transcript the spec_comment_chat_view just routed the
-            # comment into.  Empty string lets ``openAiDrawer``
-            # preserve the existing active chat.
-            vm.openAiDrawer(vm.activeChatId.val)
+            # Phase J (2026-05-28): the AI assistant lives in the
+            # right sidebar now (no slide-out drawer). The comment-
+            # to-chat handoff surfaces the transcript by ensuring the
+            # editor is NOT in Edit mode — emComment is the natural
+            # landing because the user just authored a comment — so
+            # the assistant sidebar is the visible surface. The
+            # existing active chat is preserved (no chat switch).
+            if vm.editMode.val == emEdit:
+              vm.setEditMode(emComment)
           if cb != nil:
             cb(success, reason))
   spec_comment_popover_view.mountCommentPopover[R, E](
@@ -3857,11 +4064,10 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
     variableInlineEditorState)
 
   r.appendChild(shellRoot, shell)
-  # Phase F — AI assistant slide-out drawer.  Mounted at the shell
-  # root (NOT inside the editor row) so its ``position: fixed`` slot
-  # overlays the inspector without disturbing flex layout.  The
-  # drawer body hosts ``renderChatPanel`` for the active chat.
-  r.appendChild(shellRoot, renderAiDrawer[R, E](r, vm))
+  # Phase I/J (2026-05-28): the AI assistant slide-out drawer is
+  # removed. Chat sessions live inside the right-sidebar AI assistant
+  # panel (``renderAiAssistantPanel``), which is mounted via the
+  # mode-driven sidebar swap above instead of as a fixed overlay.
   r.appendChild(shellRoot, renderCommandPalette[R, E](r, vm))
   r.appendChild(shellRoot, renderTelemetryOverlay[R, E](r, vm))
   r.appendChild(shellRoot, renderStatusBar[R, E](r, vm))

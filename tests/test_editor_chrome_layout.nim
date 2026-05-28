@@ -848,7 +848,7 @@ suite "M-EVP-3 preview chrome bar density":
       check paddingRightPx >= 12
       dispose()
 
-  test "toolbar contains exactly the four chip clusters tagged for visual separation":
+  test "toolbar contains exactly the three chip clusters tagged for visual separation":
     createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createEditorVM()
@@ -858,25 +858,29 @@ suite "M-EVP-3 preview chrome bar density":
       # child of the toolbar and carry a stable
       # `data-toolbar-cluster` attribute so future layout changes
       # can address them without depending on the rendering order.
-      # The test additionally verifies the order matches the
-      # left-to-right reading: surface → backend → viewport →
-      # mode. CHRM-M5 reordered Surface to the leftmost position
-      # so the user reads the surface decision (preview workspace
-      # vs brief markdown) first; the view-switcher cluster is
-      # gone because the sidebar drives the active view.
+      #
+      # Phase I (2026-05-28): the Surface (Preview/Spec) cluster is
+      # removed. The Spec selection folds into the Mode cluster as a
+      # fourth option in front of View/Comment/Edit, and the visible
+      # cluster order is now [backend, viewport, mode]. The view-
+      # switcher cluster is gone because the sidebar drives the
+      # active view.
       let clusterAttr = "data-toolbar-cluster"
       check findAllByAttr(bar, clusterAttr, "view-switcher").len == 0
-      let clusters = findAllByAttr(bar, clusterAttr, "surface") &
-        findAllByAttr(bar, clusterAttr, "backend") &
+      # Negative assertion: the Surface cluster is gone.
+      check findAllByAttr(bar, clusterAttr, "surface").len == 0
+      check findAllByAttr(bar,
+        "data-preview-surface-switch", "true").len == 0
+      let clusters = findAllByAttr(bar, clusterAttr, "backend") &
         findAllByAttr(bar, clusterAttr, "viewport") &
         findAllByAttr(bar, clusterAttr, "mode")
-      check clusters.len == 4
+      check clusters.len == 3
 
       # Every cluster must be a direct child of the toolbar — if a
       # future refactor nests them inside an intermediate wrapper the
       # flex `gap` no longer applies between them, so this is the
       # invariant the visual separation rests on.
-      let clusterKinds = @["surface", "backend", "viewport", "mode"]
+      let clusterKinds = @["backend", "viewport", "mode"]
       var directChildClusters: seq[string] = @[]
       for child in bar.children:
         let kind = child.attributes.getOrDefault(clusterAttr)
@@ -928,11 +932,12 @@ suite "CHRM-M2 chrome-bar cluster unification":
       let bar = renderPreviewChromeBar[MockRenderer, MockNode](r, vm)
 
       let clusterAttr = "data-toolbar-cluster"
-      # Each of the four clusters wraps either a segmented or chevron
-      # ChoiceGroup mount. After CHRM-M2 the canonical widget marker
-      # ``data-choice-group`` lives on the mount's root somewhere
-      # within the cluster wrapper.
-      for kind in ["backend", "surface", "viewport", "mode"]:
+      # Each of the three clusters wraps either a segmented or
+      # chevron ChoiceGroup mount. After Phase I the Surface cluster
+      # is gone; the canonical widget marker ``data-choice-group``
+      # lives on the mount's root somewhere within the cluster
+      # wrapper.
+      for kind in ["backend", "viewport", "mode"]:
         let cluster = findByAttr(bar, clusterAttr, kind)
         check cluster != nil
         let segmented = findByAttr(cluster, "data-choice-group", "segmented")
@@ -940,11 +945,11 @@ suite "CHRM-M2 chrome-bar cluster unification":
         check (segmented != nil or chevron != nil)
 
       # The viewport cluster is the only chevron cluster after CHRM-M2;
-      # all others are segmented.
+      # the backend and mode clusters are segmented.
       check findByAttr(
         findByAttr(bar, clusterAttr, "viewport"),
         "data-choice-group", "chevron") != nil
-      for kind in ["backend", "surface", "mode"]:
+      for kind in ["backend", "mode"]:
         check findByAttr(
           findByAttr(bar, clusterAttr, kind),
           "data-choice-group", "segmented") != nil
@@ -956,11 +961,12 @@ suite "CHRM-M2 chrome-bar cluster unification":
       let vm = createEditorVM()
       let bar = renderPreviewChromeBar[MockRenderer, MockNode](r, vm)
 
-      # All four clusters request ``cgvTransparent`` so the chrome bar
-      # no longer relies on the old ``tiltHorizontal`` setStyle hack to
-      # strip the container backdrop.
+      # All three clusters request ``cgvTransparent`` so the chrome
+      # bar no longer relies on the old ``tiltHorizontal`` setStyle
+      # hack to strip the container backdrop. Phase I removed the
+      # Surface cluster.
       let clusterAttr = "data-toolbar-cluster"
-      for kind in ["backend", "surface", "viewport", "mode"]:
+      for kind in ["backend", "viewport", "mode"]:
         let cluster = findByAttr(bar, clusterAttr, kind)
         check cluster != nil
         let group = findByAttr(cluster, "data-choice-group-variant",
@@ -1002,33 +1008,86 @@ suite "CHRM-M2 chrome-bar cluster unification":
     createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createEditorVM()
-      # Without a selected story, the View/Comment/Edit commands all
-      # report ``ecsDisabled`` (per ``commandRequirementFailure``), so
-      # every pill should be marked disabled.
+      # Phase I (2026-05-28): the mode cluster carries four options —
+      # Spec / View / Comment / Edit. Without a selected story the
+      # legacy View/Comment/Edit triplet is disabled (the
+      # "needs a story selection" gate of ``commandRequirementFailure``),
+      # but the Spec pill is ALWAYS enabled — the demolished Surface
+      # cluster was never story-gated, and the no-story overlay
+      # surfaces an explanatory message when the user picks Spec
+      # without a story.
       let bar = renderPreviewChromeBar[MockRenderer, MockNode](r, vm)
       let modeCluster = findByAttr(bar, "data-toolbar-cluster", "mode")
       check modeCluster != nil
-      for i in 0 .. 2:
+      # Spec pill (index 0) is enabled even without a story.
+      let specPill = findByAttr(modeCluster, "data-choice-group-pill", "0")
+      check specPill != nil
+      check specPill.attributes.getOrDefault("aria-disabled") == "false"
+      # View / Comment / Edit pills (indices 1..3) are disabled.
+      for i in 1 .. 3:
         let pill = findByAttr(modeCluster, "data-choice-group-pill", $i)
         check pill != nil
         check pill.attributes.getOrDefault("aria-disabled") == "true"
 
-      # Selecting a story unlocks the View/Comment/Edit triplet.
+      # Selecting a story unlocks Spec / View / Comment / Edit.
       vm.selectedStory.val = StoryRef(group: "Components", name: "Sample",
         kind: skComponent, index: 0)
       let bar2 = renderPreviewChromeBar[MockRenderer, MockNode](r, vm)
       let modeCluster2 = findByAttr(bar2, "data-toolbar-cluster", "mode")
-      for i in 0 .. 2:
+      for i in 0 .. 3:
         let pill = findByAttr(modeCluster2, "data-choice-group-pill", $i)
         check pill != nil
         check pill.attributes.getOrDefault("aria-disabled") == "false"
 
-      # Clicking Comment (index 1) routes through ``runEditorCommand``
-      # and flips ``vm.editMode``.
+      # Clicking Comment (index 2) routes through ``runEditorCommand``
+      # and flips ``vm.editMode``. (Phase I reordered the pills so
+      # index 0 is Spec, 1 is View, 2 is Comment, 3 is Edit.)
       let commentPill = findByAttr(modeCluster2,
-                                   "data-choice-group-pill", "1")
+                                   "data-choice-group-pill", "2")
       commentPill.fireEvent("click")
       check vm.editMode.val == emComment
+
+      # Clicking Spec (index 0) flips editMode AND couples surfaceSig
+      # to sSpec — Phase L wiring.
+      let bar3 = renderPreviewChromeBar[MockRenderer, MockNode](r, vm)
+      let modeCluster3 = findByAttr(bar3, "data-toolbar-cluster", "mode")
+      let specPillCluster3 = findByAttr(modeCluster3,
+                                "data-choice-group-pill", "0")
+      check specPillCluster3 != nil
+      specPillCluster3.fireEvent("click")
+      check vm.editMode.val == emSpec
+      check vm.surfaceSig.val == sSpec
+
+      # Clicking Edit (index 3) restores sPreview.
+      let bar4 = renderPreviewChromeBar[MockRenderer, MockNode](r, vm)
+      let modeCluster4 = findByAttr(bar4, "data-toolbar-cluster", "mode")
+      let editPill = findByAttr(modeCluster4,
+                                "data-choice-group-pill", "3")
+      check editPill != nil
+      editPill.fireEvent("click")
+      check vm.editMode.val == emEdit
+      check vm.surfaceSig.val == sPreview
+      dispose()
+
+  test "mode cluster exposes four options (Spec / View / Comment / Edit)":
+    ## Phase I (2026-05-28): the Mode cluster gained a Spec option in
+    ## front of View / Comment / Edit. The cluster now exposes four
+    ## ``data-choice-group-pill`` indices (0..3) in
+    ## ``modeOrder = [emSpec, emView, emComment, emEdit]``.
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.selectedStory.val = StoryRef(group: "Components", name: "Sample",
+        kind: skComponent, index: 0)
+      let bar = renderPreviewChromeBar[MockRenderer, MockNode](r, vm)
+      let modeCluster = findByAttr(bar, "data-toolbar-cluster", "mode")
+      check modeCluster != nil
+      for i in 0 .. 3:
+        let pill = findByAttr(modeCluster, "data-choice-group-pill", $i)
+        check pill != nil
+      # Negative assertion: there's no fifth pill (i.e. the cluster
+      # is exactly four wide).
+      check findByAttr(modeCluster, "data-choice-group-pill", "4") == nil
       dispose()
 
 # ---------------------------------------------------------------------------

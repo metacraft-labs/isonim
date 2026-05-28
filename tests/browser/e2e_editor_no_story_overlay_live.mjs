@@ -104,35 +104,46 @@ async function openEditor() {
   const ctx = await b.newContext();
   const page = await ctx.newPage();
   await page.goto(`http://127.0.0.1:${PAGE_PORT}/index.html`);
-  await page.waitForSelector('[data-preview-surface-switch="true"]', {
+  // Phase I (2026-05-28): the Surface (Preview/Spec) cluster is
+  // gone; selection is folded into the Mode cluster as a fourth
+  // option ([Spec, View, Comment, Edit]). Wait for the chrome bar
+  // and the mode cluster instead.
+  await page.waitForSelector('[data-preview-chrome-bar="true"]', {
     timeout: 10000,
   });
-  await page.waitForSelector('[data-preview-chrome-bar="true"]', {
+  await page.waitForSelector('[data-toolbar-cluster="mode"]', {
     timeout: 10000,
   });
   return { ctx, page };
 }
 
 async function clickSurfacePill(page, index) {
-  // 0 = Preview, 1 = Spec.
+  // Phase I (2026-05-28): the Surface switch was folded into the
+  // Mode cluster. Map the legacy callers (0 = Preview → View, 1 =
+  // Spec) onto the new mode pill indices (Spec = 0, View = 1).
+  const modeIndex = index === 1 ? 0 : 1;
   await page.evaluate((i) => {
-    const pill = document.querySelector(
-      `[data-preview-surface-switch="true"] [data-choice-group-pill="${i}"]`,
+    const chip = document.querySelector(
+      `[data-toolbar-cluster="mode"] [data-choice-group-pill="${i}"]`,
     );
-    if (!pill) throw new Error(`surface pill index ${i} not found`);
-    pill.click();
-  }, index);
+    if (!chip) throw new Error(`mode pill index ${i} not found`);
+    chip.click();
+  }, modeIndex);
 }
 
 async function clickModePill(page, index) {
-  // 0 = View, 1 = Comment, 2 = Edit.
+  // Phase I (2026-05-28): the mode cluster carries four options —
+  // Spec / View / Comment / Edit. Legacy callers that pass
+  // 0 = View / 1 = Comment / 2 = Edit are shifted to 1/2/3 so the
+  // existing test code keeps targeting the same modes.
+  const shifted = index + 1;
   await page.evaluate((i) => {
     const chip = document.querySelector(
       `[data-toolbar-cluster="mode"] [data-choice-group-pill="${i}"]`,
     );
     if (!chip) throw new Error(`mode chip index ${i} not found`);
     chip.click();
-  }, index);
+  }, shifted);
 }
 
 async function selectTaskAppStory(page) {
@@ -282,104 +293,9 @@ test("e2e_no_story_overlay_visible_in_spec_view_mode", async () => {
   }
 });
 
-test("e2e_no_story_overlay_visible_in_spec_edit_mode", async () => {
-  // The mode chips' click dispatcher (``runEditorCommand``) refuses
-  // to flip ``editMode`` when ``vm.selectedStory.val.isEmptyStory ==
-  // true``: per ``commandRequirementFailure`` the View / Comment /
-  // Edit commands all surface "Select a story before using …".  So
-  // clicking the Edit chip without a story leaves ``editMode == emView``
-  // and the overlay heading correctly reads "view its specification".
-  // To exercise the Edit-mode copy path we drive ``vm.setEditMode``
-  // directly via the editor's test hook — same path the chip would
-  // take after a story is selected.
-  const { ctx, page } = await openEditor();
-  try {
-    await clickSurfacePill(page, 1); // Spec
-    await page.waitForFunction(
-      () => {
-        const el = document.querySelector('[data-test-id="spec-pane"]');
-        return el && getComputedStyle(el).display !== "none";
-      },
-      { timeout: 5000 },
-    );
-    // Drive setEditMode directly because the chip-dispatch guard
-    // refuses to fire without a selected story.
-    await page.evaluate(() => {
-      window.__isonimEditor.setEditMode(2); // emEdit (View=0, Comment=1, Edit=2)
-    });
-    await page.waitForFunction(
-      () => {
-        const el = document.querySelector(
-          '[data-no-story-overlay-heading="true"]',
-        );
-        return el && (el.textContent || "").toLowerCase().includes("edit");
-      },
-      { timeout: 5000 },
-    );
-    assert.equal(
-      await overlayVisible(page),
-      true,
-      "no-story overlay visible in Spec + Edit mode",
-    );
-    const heading = await overlayHeading(page);
-    assert.ok(
-      heading && heading.toLowerCase().includes("edit"),
-      `overlay heading mentions "edit"; got: ${heading}`,
-    );
-    assert.equal(
-      await aiSidebarMounted(page),
-      true,
-      "AI sidebar still mounted alongside overlay (Spec + Edit)",
-    );
-  } finally {
-    await ctx.close();
-  }
-});
+test.skip("e2e_no_story_overlay_visible_in_spec_edit_mode: OBSOLETE — Phase I/L unified Spec into the mode strip; Spec IS the editable spec state, with no separate Spec+Edit sub-mode", () => {});
 
-test("e2e_no_story_overlay_visible_in_spec_comment_mode", async () => {
-  // See e2e_no_story_overlay_visible_in_spec_edit_mode for why we
-  // drive setEditMode directly.
-  const { ctx, page } = await openEditor();
-  try {
-    await clickSurfacePill(page, 1); // Spec
-    await page.waitForFunction(
-      () => {
-        const el = document.querySelector('[data-test-id="spec-pane"]');
-        return el && getComputedStyle(el).display !== "none";
-      },
-      { timeout: 5000 },
-    );
-    await page.evaluate(() => {
-      window.__isonimEditor.setEditMode(1); // emComment
-    });
-    await page.waitForFunction(
-      () => {
-        const el = document.querySelector(
-          '[data-no-story-overlay-heading="true"]',
-        );
-        return el && (el.textContent || "").toLowerCase().includes("comment");
-      },
-      { timeout: 5000 },
-    );
-    assert.equal(
-      await overlayVisible(page),
-      true,
-      "no-story overlay visible in Spec + Comment mode",
-    );
-    const heading = await overlayHeading(page);
-    assert.ok(
-      heading && heading.toLowerCase().includes("comment"),
-      `overlay heading mentions "comment"; got: ${heading}`,
-    );
-    assert.equal(
-      await aiSidebarMounted(page),
-      true,
-      "AI sidebar still mounted alongside overlay (Spec + Comment)",
-    );
-  } finally {
-    await ctx.close();
-  }
-});
+test.skip("e2e_no_story_overlay_visible_in_spec_comment_mode: OBSOLETE — Phase I/L unified Spec into the mode strip; Spec+Comment combination no longer exists (the spec is brief content best edited inline)", () => {});
 
 // ---------------------------------------------------------------------------
 // Preview mode storyboard does NOT show the overlay
@@ -392,14 +308,17 @@ test("e2e_no_story_overlay_hidden_in_preview_storyboard", async () => {
   // NOT show on top of it.
   const { ctx, page } = await openEditor();
   try {
-    // Confirm we are on Preview surface + storyboard view.
-    const previewActive = await page.evaluate(() => {
+    // Phase I (2026-05-28): the surface decision is now expressed
+    // by the mode pill — View (index 1 in modeOrder = [Spec, View,
+    // Comment, Edit]) is the default. Confirm View is active on
+    // load.
+    const viewActive = await page.evaluate(() => {
       const pill = document.querySelector(
-        '[data-preview-surface-switch="true"] [data-choice-group-pill="0"]',
+        '[data-toolbar-cluster="mode"] [data-choice-group-pill="1"]',
       );
       return pill && pill.getAttribute("aria-pressed") === "true";
     });
-    assert.equal(previewActive, true, "Preview surface is active on load");
+    assert.equal(viewActive, true, "View mode is active on load");
     // Overlay must be hidden.
     const visible = await overlayVisible(page);
     assert.equal(

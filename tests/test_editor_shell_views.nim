@@ -67,21 +67,35 @@ suite "Editor Shell Views (M2)":
       # status bar, (M-EVP-8) a hidden ``data-shell-escape-key`` node that
       # the ESC handler binds to, (TBAR-M6) the absolutely positioned
       # ``data-spec-comment-popover`` overlay that the Spec-pane Comment
-      # mode anchors to a TipTap selection, (Phase F) the
-      # ``data-ai-drawer`` slide-out drawer that hosts the chat panel,
-      # and (Phase E.3 + E.4, 2026-05-28) the absolutely positioned
-      # ``data-variable-picker`` + ``data-variable-inline-editor``
-      # overlays — single instances reused across every property row.
-      check shell.children.len == 9
+      # mode anchors to a TipTap selection, and (Phase E.3 + E.4,
+      # 2026-05-28) the absolutely positioned ``data-variable-picker``
+      # + ``data-variable-inline-editor`` overlays — single instances
+      # reused across every property row.
+      #
+      # Phase I/J (2026-05-28): the ``data-ai-drawer`` slide-out drawer
+      # is gone — chat sessions now live in the right-sidebar AI
+      # assistant panel mounted by ``renderAiAssistantPanel``.
+      check shell.children.len == 8
       check findByAttr(shell, "data-shell-escape-key", "true") != nil
       check findByAttr(shell, "data-spec-comment-popover", "true") != nil
-      check findByAttr(shell, "data-ai-drawer", "true") != nil
+      # Negative assertion: the drawer is gone.
+      check findByAttr(shell, "data-ai-drawer", "true") == nil
       check findByAttr(shell, "data-variable-picker", "true") != nil
       check findByAttr(shell, "data-variable-inline-editor", "true") != nil
-      # Editor row children: sidebar, center column, chat panel.
+      # Editor row children: sidebar, center column, sidebar content
+      # (AI assistant in the default View mode after createEditorVM).
       let editorRow = findByAttr(shell, "data-shell-row", "true")
       check editorRow != nil
       check editorRow.children.len == 3
+      # Phase J: the right-sidebar surface in the default View mode is
+      # the AI assistant panel. ``data-test-id="property-panel"`` still
+      # resolves it via the shared selector; ``data-sidebar-content``
+      # distinguishes which surface is mounted.
+      let sidebarContent = findByAttr(shell, "data-test-id",
+        "property-panel")
+      check sidebarContent != nil
+      check sidebarContent.attributes.getOrDefault(
+        "data-sidebar-content") == "ai-assistant"
       check findByAttr(shell, "data-preview-center-column", "true") != nil
       check findByAttr(shell, "data-preview-chrome-bar", "true") != nil
       check findByAttr(shell, "data-preview-view-stack", "true") != nil
@@ -95,6 +109,50 @@ suite "Editor Shell Views (M2)":
       check findByAttr(shell, "data-foundations-page", "true") != nil
       check findByAttr(shell, "data-editor-command-palette", "true") != nil
       check findByAttr(shell, "data-editor-telemetry-overlay", "true") != nil
+      dispose()
+
+  test "Phase J right sidebar swaps content between Inspector and AI assistant":
+    ## Phase J (2026-05-28): the right sidebar's content is driven by
+    ## the active editing mode. ``emEdit`` mounts the Inspector
+    ## (``data-sidebar-content="inspector"``); every other mode
+    ## (``emSpec`` / ``emView`` / ``emComment``) mounts the AI
+    ## assistant (``data-sidebar-content="ai-assistant"``). The two
+    ## surfaces are mutually-exclusive; ``data-test-id="property-panel"``
+    ## stays on whichever is currently mounted so existing e2e
+    ## selectors keep working.
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
+
+      proc activeSidebarContent(): string =
+        let panel = findByAttr(shell, "data-test-id", "property-panel")
+        if panel == nil: return ""
+        panel.attributes.getOrDefault("data-sidebar-content")
+
+      # Default ``emView`` → AI assistant.
+      check vm.editMode.val == emView
+      check activeSidebarContent() == "ai-assistant"
+
+      # Flip to Edit → Inspector.
+      vm.setEditMode(emEdit)
+      check activeSidebarContent() == "inspector"
+
+      # Flip to Comment → AI assistant.
+      vm.setEditMode(emComment)
+      check activeSidebarContent() == "ai-assistant"
+
+      # Flip to Spec → AI assistant + surfaceSig couples to sSpec
+      # (Phase L: spec mode is the canonical spec-editor selection).
+      vm.setEditMode(emSpec)
+      check activeSidebarContent() == "ai-assistant"
+      check vm.surfaceSig.val == sSpec
+
+      # Flip back to Edit → Inspector + surface restored to sPreview.
+      vm.setEditMode(emEdit)
+      check activeSidebarContent() == "inspector"
+      check vm.surfaceSig.val == sPreview
+
       dispose()
 
   test "test_sidebar_renders_groups":
@@ -171,6 +229,12 @@ suite "Editor Shell Views (M2)":
 
       # Sidebar root still carries ``data-test-id="property-panel"``.
       check panel.attributes.getOrDefault("data-test-id") == "property-panel"
+      # Phase J (2026-05-28): inspector mount carries
+      # ``data-sidebar-content="inspector"`` so the mode-driven swap
+      # in ``renderEditorShell`` is distinguishable from the AI
+      # assistant mount (``"ai-assistant"``).
+      check panel.attributes.getOrDefault("data-sidebar-content") ==
+        "inspector"
 
       # The 12 section placeholders mount inside a single scrollable
       # column. The list element carries
@@ -822,13 +886,14 @@ suite "Editor Shell Views (M2)":
       vm.activeView.val = evComponentDetail
       vm.editMode.val = emView
 
-      # CHRM-M2: the chrome-bar mode cluster is now a ChoiceGroup
-      # segmented control; pills are addressed positionally
-      # (View=0, Comment=1, Edit=2).
+      # CHRM-M2 + Phase I (2026-05-28): the chrome-bar mode cluster
+      # is a ChoiceGroup segmented control; pills are addressed
+      # positionally. Phase I extended the cluster from three to
+      # four options: Spec=0, View=1, Comment=2, Edit=3.
       let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
       let modeCluster = findByAttr(shell, "data-toolbar-cluster", "mode")
       check modeCluster != nil
-      let editChip = findByAttr(modeCluster, "data-choice-group-pill", "2")
+      let editChip = findByAttr(modeCluster, "data-choice-group-pill", "3")
       check editChip != nil
       check editChip.attributes["role"] == "button"
 
@@ -848,14 +913,17 @@ suite "Editor Shell Views (M2)":
       # button and page preview view/edit/comment toggle) are gone.
       # The canonical chrome bar's mode cluster — now a ChoiceGroup
       # segmented control — drives the same eckEdit / eckInspect /
-      # eckComment commands. Pills are addressed positionally
-      # (View=0, Comment=1, Edit=2) under the
-      # ``[data-toolbar-cluster="mode"]`` root.
+      # eckComment commands. Phase I (2026-05-28): the cluster
+      # carries four pills (Spec=0, View=1, Comment=2, Edit=3)
+      # under the ``[data-toolbar-cluster="mode"]`` root. Callers
+      # that pass legacy 0/1/2 (View/Comment/Edit) are shifted to
+      # 1/2/3 so the existing assertions keep targeting the same
+      # editor commands.
       proc modePill(root: MockNode; idx: int): MockNode =
         let cluster = findByAttr(root, "data-toolbar-cluster", "mode")
         if cluster == nil:
           return nil
-        findByAttr(cluster, "data-choice-group-pill", $idx)
+        findByAttr(cluster, "data-choice-group-pill", $(idx + 1))
 
       let disabledShell = renderEditorShell[MockRenderer, MockNode](r, vm)
       let disabledEditChip = modePill(disabledShell, 2)

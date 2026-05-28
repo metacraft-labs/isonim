@@ -56,3 +56,6 @@ export section_state
 
 import isonim/editor/views/widgets/section_export
 export section_export
+
+import isonim/editor/views/widgets/comment_overlay
+export comment_overlay

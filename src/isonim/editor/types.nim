@@ -65,6 +65,10 @@ type
 
   # --- Edit mode ---
   EditMode* = enum
+    emSpec ## Spec mode (Phase I/J/L, 2026-05-28). Centre column shows
+           ## the spec editor (TipTap, editable); right sidebar shows
+           ## the AI assistant. ``setEditMode`` couples ``surfaceSig``
+           ## to ``sSpec`` when ``emSpec`` is selected.
     emView ## Normal view — component interactions work
     emComment ## Click-to-select — comments are gathered for the AI assistant
     emEdit ## Click-to-select — inspector populates on click
@@ -1079,6 +1083,15 @@ type
     ransResolved
     ransDismissed
 
+  ReviewComment* = object
+    ## Phase K — a single reply attached to a comment-thread
+    ## ``ReviewAnnotation``. The annotation's primary ``text`` field
+    ## holds the first comment (so back-compat is preserved); replies
+    ## land in ``comments``.
+    author*: string
+    text*: string
+    timestamp*: float
+
   ReviewViewportContext* = object
     platform*: Platform
     viewport*: PreviewViewport
@@ -1119,6 +1132,16 @@ type
     sourceScopeChoices*: seq[SourceScopeChoice]
     includedInPrompt*: bool
     state*: ReviewAnnotationState
+    anchorX*: float
+      ## Phase K — Notion-style inline overlay coordinates relative to
+      ## the preview canvas (pixels). Zero is a sentinel meaning "no
+      ## anchor placement" so legacy annotations created without an
+      ## anchor click still round-trip cleanly.
+    anchorY*: float
+    comments*: seq[ReviewComment]
+      ## Phase K — replies on the thread popover. The annotation's
+      ## ``text`` field carries the first comment; subsequent replies
+      ## append here.
 
   AgentDiagnosticSnapshot* = object
     source*: string

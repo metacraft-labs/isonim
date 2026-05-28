@@ -331,12 +331,14 @@ func viewportFromSlug(slug: string; fallback: PreviewViewport): PreviewViewport 
 
 func editModeSlug(mode: EditMode): string =
   case mode
+  of emSpec: "spec"
   of emView: "view"
   of emComment: "comment"
   of emEdit: "edit"
 
 func editModeFromSlug(slug: string; fallback: EditMode): EditMode =
   case slug.normalize
+  of "spec", "specification": emSpec
   of "view": emView
   of "comment", "comments", "review": emComment
   of "edit": emEdit
@@ -680,11 +682,16 @@ proc exposeWindowEditorHandle*(vm: EditorVM) =
       index: 0)
     capturedVm.selectedStory.val = story
   proc setEditModeByIndex(modeIndex: int) =
+    # Phase I (2026-05-28): the mode strip now carries four options —
+    # Spec / View / Comment / Edit. Index 0 is Spec; the prior
+    # 0/1/2 → View/Comment/Edit mapping shifts to 1/2/3. Out-of-range
+    # values fall back to emView (the historical default).
     let mode =
       case modeIndex
-      of 0: emView
-      of 1: emComment
-      of 2: emEdit
+      of 0: emSpec
+      of 1: emView
+      of 2: emComment
+      of 3: emEdit
       else: emView
     capturedVm.setEditMode(mode)
   # 2026-05-28: drag-resize handles for the left sidebar and the right

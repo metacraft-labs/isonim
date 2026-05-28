@@ -994,6 +994,7 @@ proc editablePreviewDocument(documentHtml: string;
     .replace("__ISONIM_SOURCE__", metadata.sourceFile.jsString)
     .replace("__ISONIM_LINE__", $max(metadata.sourceLine, 1))
     .replace("__ISONIM_MODE__", (case mode
+      of emSpec: "spec"
       of emView: "view"
       of emComment: "comment"
       of emEdit: "edit"))
