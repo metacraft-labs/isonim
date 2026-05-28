@@ -18,6 +18,7 @@ import isonim/editor/views/foundations_page
 import isonim/editor/views/page_preview
 import isonim/editor/views/vector_editor
 import isonim/editor/views/chat_panel
+import isonim/editor/views/icons
 import isonim/editor/views/design_review_mount as design_review_mount_view
 import isonim/editor/views/widgets as editor_widgets
 import isonim/editor/design_review/brief_format
@@ -239,13 +240,20 @@ proc sectionToggleHandler(vm: EditorVM; section: SidebarSection): proc() =
     vm.sidebar.toggleSection(captured)
 
 proc chatSwitchHandler(vm: EditorVM; sessionId: string): proc() =
-  ## Capture-per-tab handler for the chat-tab strip. Each tab's
-  ## ``onclick`` / ``onkeydown`` calls back here with its own session
-  ## id so the right chat activates even when the strip is rebuilt
-  ## by the surrounding render effect.
+  ## Capture-per-tab handler for the robot buttons in the top tab
+  ## bar. Each robot's ``onclick`` / ``onkeydown`` calls back here
+  ## with its own session id so the right chat activates even when
+  ## the row is rebuilt by the surrounding render effect.
+  ##
+  ## A robot click both switches the active chat AND flips the
+  ## right sidebar to the Assistant surface — the robots ARE the
+  ## chat tabs now (the prior "Assistant" text tab is gone), so a
+  ## click must do double duty.
   let captured = sessionId
+  let capturedVm = vm
   result = proc() =
-    discard vm.switchToChat(captured)
+    discard capturedVm.switchToChat(captured)
+    capturedVm.setRightSidebarTab(rstAssistant)
 
 proc chatNewHandler(vm: EditorVM): proc() =
   let captured = vm
@@ -1746,72 +1754,42 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
   ## The ``data-test-id="property-panel"`` attribute is stamped on the
   ## sidebar root so e2e tests resolve the sidebar regardless of which
   ## tab is active.
+  # Manual ("wrench") button — the only fixed-position icon in the top
+  # tab bar. The Assistant text tab from prior iterations is gone:
+  # per-chat robot icons (rendered into the tab bar below) cover that
+  # role now. Clicking the wrench flips the sidebar to the Manual tab.
+  var manualIconHost: E
   let manualTabBtn = ui(r):
     tdiv(`role` = "tab", tabindex = "0",
          `data-sidebar-tab` = "manual",
-         `aria-label` = "Switch right sidebar to Manual edits",
+         title = "Manual edits",
+         `aria-label` = "Manual edits",
          onclick = proc() = vm.setRightSidebarTab(rstManual),
          onkeydown = proc() = vm.setRightSidebarTab(rstManual),
          display = "flex", align_items = "center", justify_content = "center",
-         padding = "6px 16px", border_radius = "6px",
-         font_size = "12px", font_weight = "500",
-         cursor = "pointer", white_space = "nowrap",
+         width = "28px", height = "28px",
+         border_radius = "6px",
+         cursor = "pointer", flex_shrink = "0",
          transition = "background-color 0.12s, color 0.12s"):
-      text "Manual"
-  var assistantStatusDot: E
-  let assistantTabBtn = ui(r):
-    tdiv(`role` = "tab", tabindex = "0",
-         `data-sidebar-tab` = "assistant",
-         `aria-label` = "Switch right sidebar to AI Assistant",
-         onclick = proc() = vm.setRightSidebarTab(rstAssistant),
-         onkeydown = proc() = vm.setRightSidebarTab(rstAssistant),
-         display = "flex", align_items = "center", justify_content = "center",
-         gap = "6px",
-         padding = "6px 16px", border_radius = "6px",
-         font_size = "12px", font_weight = "500",
-         cursor = "pointer", white_space = "nowrap",
-         transition = "background-color 0.12s, color 0.12s"):
-      tdiv(ref = assistantStatusDot,
-           `data-sidebar-assistant-status-dot` = "true",
-           width = "6px", height = "6px", border_radius = "3px",
-           background_color = "#A0A2B0",
+      tdiv(ref = manualIconHost,
+           `aria-hidden` = "true",
+           display = "flex", align_items = "center",
+           justify_content = "center",
+           width = "18px", height = "18px",
+           line_height = "1",
            flex_shrink = "0")
-      text "Assistant"
+  r.setInnerHtml(manualIconHost, wrenchSvg)
   block:
     let captManual = manualTabBtn
-    let captAssistant = assistantTabBtn
-    let captStatusDot = assistantStatusDot
     createRenderEffect proc() =
       let tab = vm.rightSidebarTab.val
       let manualActive = tab == rstManual
-      let assistantActive = tab == rstAssistant
       r.setAttribute(captManual, "aria-selected",
         if manualActive: "true" else: "false")
       r.setStyle(captManual, "background-color",
         if manualActive: accent else: "transparent")
       r.setStyle(captManual, "color",
         if manualActive: textPrimary else: textMuted)
-      r.setAttribute(captAssistant, "aria-selected",
-        if assistantActive: "true" else: "false")
-      r.setStyle(captAssistant, "background-color",
-        if assistantActive: accent else: "transparent")
-      r.setStyle(captAssistant, "color",
-        if assistantActive: textPrimary else: textMuted)
-    # Status dot on the Assistant tab tracks chat session state.
-    createRenderEffect proc() =
-      let state = vm.chat.sessionStatus.val
-      let color = case state
-        of asIdle: "#A0A2B0"   # muted
-        of asLoading: "#F59E0B"  # gold
-        of asReady: "#22C55E"    # green
-        of asError: "#EF4444"    # red
-      r.setStyle(captStatusDot, "background-color", color)
-      r.setAttribute(captStatusDot, "data-sidebar-assistant-status",
-        case state
-        of asIdle: "idle"
-        of asLoading: "loading"
-        of asReady: "ready"
-        of asError: "error")
 
   # Manual tab body — the inspector. Structure (per the test contract):
   #   children[0] = 12-section sub-tab bar (Layout / Size / Space / …)
@@ -1886,27 +1864,17 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
   # that surfaces hidden chats when the strip can't fit everything
   # inline. The active chat is highlighted with the indigo accent fill
   # (same colour as the Manual / Assistant tabs above).
+  # Assistant body — simply hosts the live chat panel for the active
+  # session. The prior in-body chat-tab strip (one labelled tab per
+  # session + overflow chevron popup) was removed on 2026-05-28: per
+  # user direction, the top tab bar now holds one robot-icon button
+  # per chat (alongside the wrench), so an extra strip here would be
+  # redundant. Per-chat surfacing happens entirely in the top bar.
   let assistantBody = ui(r):
     tdiv(`data-sidebar-tab-panel` = "assistant",
          display = "flex", flex_direction = "column",
          flex = "1", min_height = "0", min_width = "0",
          overflow_x = "hidden")
-
-  # Chat tab strip — horizontal flex row with chat tabs, optional
-  # overflow chevron, and the new-chat ("+") button. The strip itself
-  # never scrolls; an overflow-detection effect (registered below)
-  # hides tabs that don't fit and surfaces them in a dropdown.
-  var chatTabStrip: E
-  let chatTabStripEl = ui(r):
-    tdiv(ref = chatTabStrip,
-         `data-chat-tab-strip` = "true",
-         `role` = "tablist",
-         display = "flex", align_items = "center", gap = "4px",
-         padding = "4px 8px",
-         border_bottom = "1px solid " & border,
-         min_height = "36px",
-         overflow = "hidden")
-  r.appendChild(assistantBody, chatTabStripEl)
 
   # Chat body container — holds the live ``renderChatPanel`` output.
   # Re-mounted whenever ``activeChatId`` changes so the per-chat
@@ -1921,96 +1889,6 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
          overflow_x = "hidden")
   r.appendChild(assistantBody, chatBodyEl)
 
-  # Overflow dropdown — populated lazily by JS when the chat strip
-  # measures overflow. The dropdown is anchored absolutely under the
-  # chevron-down button; rendering at the assistant-body level keeps
-  # the popup outside the chat-tab strip's ``overflow:hidden`` clip.
-  var chatTabOverflowPopup: E
-  let chatTabOverflowPopupEl = ui(r):
-    tdiv(ref = chatTabOverflowPopup,
-         `data-chat-tab-overflow-popup` = "true",
-         `role` = "listbox",
-         position = "absolute",
-         display = "none",
-         flex_direction = "column", gap = "2px",
-         padding = "4px",
-         background_color = bgSidebar,
-         border = "1px solid " & border,
-         border_radius = "6px",
-         box_shadow = "0 6px 18px -8px rgba(0,0,0,0.6)",
-         z_index = "20",
-         max_height = "240px", overflow_y = "auto",
-         min_width = "160px")
-  r.appendChild(assistantBody, chatTabOverflowPopupEl)
-
-  # Rebuild the chat strip whenever the list of chats or the active
-  # id changes. The strip is small (one node per chat + 2 trailing
-  # buttons) so a full rebuild on change is cheap and keeps the DOM
-  # in lock-step with ``vm.chats``.
-  proc renderChatStrip() =
-    r.clearChildren(chatTabStrip)
-    let sessions = vm.chats.val
-    let activeId = vm.activeChatId.val
-    for session in sessions:
-      let sessionId = session.id
-      let isActive = sessionId == activeId
-      let title = session.title.val
-      let switch = chatSwitchHandler(vm, sessionId)
-      var tabNode: E
-      let tabEl = ui(r):
-        tdiv(ref = tabNode,
-             `role` = "tab", tabindex = "0",
-             `data-chat-tab` = sessionId,
-             `aria-selected` = (if isActive: "true" else: "false"),
-             `aria-label` = "Switch to chat " & title,
-             onclick = switch,
-             onkeydown = switch,
-             display = "flex", align_items = "center",
-             gap = "6px",
-             padding = "4px 10px",
-             border_radius = "4px",
-             font_size = "11px", font_weight = "500",
-             color = (if isActive: textPrimary else: textMuted),
-             background_color = (if isActive: accent else: "transparent"),
-             cursor = "pointer", white_space = "nowrap",
-             flex_shrink = "0",
-             max_width = "140px", overflow = "hidden",
-             text_overflow = "ellipsis",
-             transition = "background-color 0.12s, color 0.12s"):
-          text title
-      r.appendChild(chatTabStrip, tabEl)
-      discard tabNode
-
-    # Overflow chevron-down button. Hidden by default; the
-    # overflow-detection JS toggles its display when one or more
-    # tabs are hidden. Always inserted after the chat tabs and
-    # before the "+" button so the visual order is stable.
-    var overflowBtn: E
-    let overflowBtnEl = ui(r):
-      tdiv(ref = overflowBtn,
-           `role` = "button", tabindex = "0",
-           `data-chat-tab-overflow` = "true",
-           `aria-label` = "Show hidden chats",
-           `aria-haspopup` = "listbox",
-           `aria-expanded` = "false",
-           display = "none",
-           align_items = "center", justify_content = "center",
-           width = "24px", height = "24px",
-           border_radius = "4px",
-           color = textMuted,
-           cursor = "pointer", flex_shrink = "0",
-           font_size = "12px", line_height = "1",
-           transition = "color 0.12s, background-color 0.12s"):
-        text "\xE2\x96\xBE" # ▾ (small chevron-down)
-    r.appendChild(chatTabStrip, overflowBtnEl)
-    discard overflowBtn
-
-    # New chat ("+") button — always visible at the right end of the
-    # The new-chat "+" button used to mount HERE inside the chat
-    # tab strip. Per user 2026-05-28 it moved into the top tab bar
-    # next to the Assistant tab — see the assistantTabBtn block
-    # below.
-
   # Rebuild the chat body — call ``renderChatPanel`` again to bind
   # the active chat's signals. The current ``renderChatPanel`` reads
   # the active chat's state via ``vm.chat`` (the alias proc), so
@@ -2022,200 +1900,17 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
     r.appendChild(chatBodyContainer, chatPanel)
 
   block:
-    let captStrip = chatTabStrip
-    discard captStrip
-    createRenderEffect proc() =
-      # Touching ``chats.val`` + ``activeChatId.val`` keeps the strip
-      # reactive across both list changes and active-id flips. The
-      # render effect runs synchronously on creation, so the strip
-      # is materialised before we return from ``renderInspectorPanel``.
-      discard vm.chats.val
-      discard vm.activeChatId.val
-      renderChatStrip()
-  block:
     createRenderEffect proc() =
       discard vm.activeChatId.val
       renderChatBody()
 
-  # Overflow detection — when the chat tab strip is wider than its
-  # container, hide the right-most inactive tabs (active tab is
-  # always kept visible) and surface the hidden ones through the
-  # ``data-chat-tab-overflow-popup`` dropdown. The script wires up
-  # ResizeObserver + MutationObserver so the layout reconciles on
-  # sidebar width change and on chat-strip rebuilds (new/removed
-  # chats, active-tab flips). Pure presentation logic; the chat
-  # state itself stays in the VM.
-  when defined(js):
-    let chatTabStripRef = chatTabStrip
-    let chatTabOverflowPopupRef = chatTabOverflowPopup
-    let assistantBodyRef = assistantBody
-    {.emit: ["""
-      (function () {
-        const strip = """, chatTabStripRef, """;
-        const popup = """, chatTabOverflowPopupRef, """;
-        const host = """, assistantBodyRef, """;
-        if (!strip || !popup || !host || strip.__isonimChatStripReady) return;
-        strip.__isonimChatStripReady = true;
-
-        function tabs() {
-          return Array.from(
-            strip.querySelectorAll('[data-chat-tab]'));
-        }
-        function newBtn() {
-          return strip.querySelector('[data-chat-tab-new="true"]');
-        }
-        function overflowBtn() {
-          return strip.querySelector(
-            '[data-chat-tab-overflow="true"]');
-        }
-
-        function closePopup() {
-          popup.style.display = 'none';
-          const btn = overflowBtn();
-          if (btn) btn.setAttribute('aria-expanded', 'false');
-        }
-
-        function openPopup(hiddenIds) {
-          while (popup.firstChild) popup.removeChild(popup.firstChild);
-          const activeId = strip.querySelector(
-            '[data-chat-tab][aria-selected="true"]');
-          const activeIdStr = activeId
-            ? activeId.getAttribute('data-chat-tab')
-            : '';
-          const allTabs = tabs();
-          // Build the listbox: every chat (visible + hidden) is an
-          // entry so the user can switch to any chat regardless of
-          // overflow.
-          const seen = {};
-          allTabs.forEach((t) => {
-            const id = t.getAttribute('data-chat-tab');
-            if (!id || seen[id]) return;
-            seen[id] = true;
-            const item = document.createElement('div');
-            item.setAttribute('role', 'option');
-            item.setAttribute('data-chat-tab-overflow-item', id);
-            item.setAttribute('tabindex', '0');
-            const isActive = id === activeIdStr;
-            item.setAttribute('aria-selected', isActive ? 'true' : 'false');
-            item.textContent = t.textContent;
-            item.style.padding = '6px 10px';
-            item.style.borderRadius = '4px';
-            item.style.fontSize = '11px';
-            item.style.color = isActive ? '#ECEDF3' : '#9CA0B0';
-            item.style.background = isActive ? '#7C7AED' : 'transparent';
-            item.style.cursor = 'pointer';
-            item.style.whiteSpace = 'nowrap';
-            item.addEventListener('click', () => {
-              t.click();
-              closePopup();
-            });
-            item.addEventListener('keydown', (ev) => {
-              if (ev.key === 'Enter' || ev.key === ' ') {
-                ev.preventDefault();
-                t.click();
-                closePopup();
-              }
-            });
-            popup.appendChild(item);
-          });
-          // Anchor the popup under the chevron button. Position
-          // relative to the host (Assistant body); the popup is a
-          // direct child of the host.
-          const btn = overflowBtn();
-          if (btn) {
-            const btnRect = btn.getBoundingClientRect();
-            const hostRect = host.getBoundingClientRect();
-            popup.style.top = (btnRect.bottom - hostRect.top + 4) + 'px';
-            popup.style.left = Math.max(
-              4,
-              btnRect.left - hostRect.left - 120) + 'px';
-            btn.setAttribute('aria-expanded', 'true');
-          }
-          popup.style.display = 'flex';
-        }
-
-        function reconcile() {
-          const items = tabs();
-          // Reset all tabs to visible before measuring.
-          items.forEach((t) => {
-            t.style.display = '';
-            t.removeAttribute('data-chat-tab-hidden');
-          });
-          const overflow = overflowBtn();
-          if (overflow) overflow.style.display = 'none';
-          // Force layout so scrollWidth is accurate.
-          if (strip.scrollWidth <= strip.clientWidth + 1) {
-            return; // everything fits — nothing to hide
-          }
-          // Identify the active tab — never hidden.
-          const activeIdx = items.findIndex(
-            (t) => t.getAttribute('aria-selected') === 'true');
-          const protect = activeIdx;
-          // Hide from the right-most non-active tab inward until the
-          // strip fits (taking the overflow button into account).
-          if (overflow) overflow.style.display = 'flex';
-          for (let i = items.length - 1; i >= 0; i--) {
-            if (i === protect) continue;
-            if (strip.scrollWidth <= strip.clientWidth + 1) break;
-            items[i].style.display = 'none';
-            items[i].setAttribute('data-chat-tab-hidden', 'true');
-          }
-          // If, after hiding everything-non-active, the active tab
-          // still doesn't fit (very narrow sidebar), let CSS clip
-          // the label via the existing text-overflow: ellipsis.
-        }
-
-        // Toggle the overflow popup on chevron click.
-        strip.addEventListener('click', (ev) => {
-          const btn = ev.target && ev.target.closest
-            ? ev.target.closest('[data-chat-tab-overflow="true"]')
-            : null;
-          if (!btn) return;
-          if (popup.style.display === 'flex') {
-            closePopup();
-          } else {
-            const hiddenIds = tabs()
-              .filter((t) => t.getAttribute('data-chat-tab-hidden') === 'true')
-              .map((t) => t.getAttribute('data-chat-tab'));
-            openPopup(hiddenIds);
-          }
-        });
-
-        // Close the popup on outside click / Escape.
-        document.addEventListener('click', (ev) => {
-          if (!popup) return;
-          if (popup.style.display !== 'flex') return;
-          if (popup.contains(ev.target)) return;
-          const btn = overflowBtn();
-          if (btn && btn.contains(ev.target)) return;
-          closePopup();
-        }, true);
-        document.addEventListener('keydown', (ev) => {
-          if (ev.key === 'Escape' && popup.style.display === 'flex') {
-            closePopup();
-          }
-        });
-
-        // Reconcile on strip mutations (chat list changes / active
-        // flips) and on container resize.
-        const mo = new MutationObserver(() => {
-          closePopup();
-          reconcile();
-        });
-        mo.observe(strip, { childList: true, subtree: true,
-          attributes: true,
-          attributeFilter: ['aria-selected', 'data-chat-tab'] });
-        const ro = (typeof ResizeObserver !== 'undefined')
-          ? new ResizeObserver(() => reconcile())
-          : null;
-        if (ro) ro.observe(strip);
-        // Initial pass.
-        reconcile();
-      })();
-    """].}
-
-  # Top-level tab bar (Manual / Assistant). Distinct from the
-  # 12-sub-section bar that lives inside the Manual body.
+  # Top-level tab bar — wrench (Manual) + one robot icon per chat
+  # session + trailing "+" button to create a new chat. This bar
+  # replaces the prior two-text-tab layout (Manual / Assistant). The
+  # bar scrolls horizontally when too many robots are open; the
+  # previous chevron-overflow dropdown is gone (native scroll is
+  # simpler and matches the user's mental model of "robots sit in a
+  # row next to the wrench").
   var tabBar: E
   let tabBarEl = ui(r):
     tdiv(ref = tabBar,
@@ -2224,18 +1919,23 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
          display = "flex", align_items = "center", gap = "4px",
          padding = "8px 10px",
          border_bottom = "1px solid " & border,
-         min_height = "44px")
+         min_height = "44px",
+         overflow_x = "auto",
+         overflow_y = "hidden",
+         scrollbar_width = "thin")
   r.appendChild(tabBar, manualTabBtn)
-  r.appendChild(tabBar, assistantTabBtn)
 
-  # Create-new-chat button. Lives in the top tab bar right next to
-  # the Assistant tab so it's reachable in one click regardless of
-  # which sidebar tab is active. Click also flips the sidebar to
-  # the Assistant tab (see chatNewHandler).
+  # Create-new-chat ("+") button — sits at the trailing edge of the
+  # top tab bar, after the last robot icon (the dynamic robot
+  # rebuild below ensures it stays last). Click creates a new chat
+  # AND flips the sidebar to the Assistant tab (see
+  # ``chatNewHandler``).
   let newChatTopBtnHandler = chatNewHandler(vm)
+  var newChatIconHost: E
   let newChatTopBtn = ui(r):
     tdiv(`role` = "button", tabindex = "0",
          `data-chat-tab-new` = "true",
+         title = "Create new chat",
          `aria-label` = "Create new chat",
          onclick = newChatTopBtnHandler,
          onkeydown = newChatTopBtnHandler,
@@ -2243,14 +1943,136 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
          justify_content = "center",
          width = "28px", height = "28px",
          border_radius = "6px",
-         color = textPrimary,
+         color = textMuted,
          background_color = "transparent",
          cursor = "pointer", flex_shrink = "0",
-         font_size = "18px", font_weight = "700",
          line_height = "1",
-         transition = "background-color 0.12s"):
-      text "+"
+         transition = "background-color 0.12s, color 0.12s"):
+      tdiv(ref = newChatIconHost,
+           `aria-hidden` = "true",
+           display = "flex", align_items = "center",
+           justify_content = "center",
+           width = "16px", height = "16px",
+           line_height = "1",
+           flex_shrink = "0")
+  r.setInnerHtml(newChatIconHost, plusSvg)
   r.appendChild(tabBar, newChatTopBtn)
+
+  # Robot tab strip — one robot icon per ``ChatSession``. Rebuilt
+  # reactively on ``vm.chats`` / ``vm.activeChatId`` change. Each
+  # robot button carries a status-dot overlay that tracks its chat's
+  # ``sessionStatus`` signal. The robots are inserted BEFORE the
+  # "+" button so the new-chat affordance always sits at the end of
+  # the row regardless of how many robots are present.
+  proc renderRobotRow() =
+    # Remove existing robot buttons (any tab-bar child carrying
+    # ``data-chat-tab``). The renderer protocol exposes
+    # ``firstChild`` / ``nextSibling`` / ``getAttribute`` uniformly
+    # across the mock and DOM backends, so a linear scan works on
+    # both. The robot count is small (one per chat) — overhead is
+    # negligible.
+    var existing: seq[E] = @[]
+    var cursor = r.firstChild(tabBar)
+    while cursor != nil:
+      let nxt = r.nextSibling(cursor)
+      if r.getAttribute(cursor, "data-chat-tab").len > 0:
+        existing.add cursor
+      cursor = nxt
+    for node in existing:
+      r.removeChild(tabBar, node)
+
+    let sessions = vm.chats.val
+    let activeId = vm.activeChatId.val
+    for session in sessions:
+      let sessionId = session.id
+      let isActive = sessionId == activeId
+      let titleStr = session.title.val
+      let switch = chatSwitchHandler(vm, sessionId)
+      let chatVm = session.vm
+      var robotBtnRef: E
+      var iconHostRef: E
+      var statusDotRef: E
+      let robotBtn = ui(r):
+        tdiv(ref = robotBtnRef,
+             `role` = "tab", tabindex = "0",
+             `data-chat-tab` = sessionId,
+             `aria-selected` = (if isActive: "true" else: "false"),
+             title = titleStr,
+             `aria-label` = titleStr,
+             onclick = switch,
+             onkeydown = switch,
+             position = "relative",
+             display = "flex", align_items = "center",
+             justify_content = "center",
+             width = "28px", height = "28px",
+             border_radius = "6px",
+             cursor = "pointer", flex_shrink = "0",
+             color = (if isActive: textPrimary else: textMuted),
+             background_color = (if isActive: accent else: "transparent"),
+             transition = "background-color 0.12s, color 0.12s"):
+          tdiv(ref = iconHostRef,
+               `aria-hidden` = "true",
+               display = "flex", align_items = "center",
+               justify_content = "center",
+               width = "18px", height = "18px",
+               line_height = "1",
+               flex_shrink = "0")
+          # Status dot overlay — sits at the bottom-right corner of
+          # the robot button with a 2 px halo so it reads as a
+          # separate badge even against the active accent fill.
+          tdiv(ref = statusDotRef,
+               `data-sidebar-assistant-status-dot` = "true",
+               `data-chat-status` = "idle",
+               position = "absolute",
+               right = "-2px", bottom = "-2px",
+               width = "8px", height = "8px",
+               border_radius = "4px",
+               border = "2px solid " & bgSidebar,
+               background_color = "#A0A2B0",
+               flex_shrink = "0")
+      r.setInnerHtml(iconHostRef, robotSvg)
+      # Insert before the "+" button so robots stay in front of it.
+      r.insertBefore(tabBar, robotBtn, newChatTopBtn)
+      # Per-robot reactive bindings: title tooltip + status dot
+      # colour each follow their own signals. Captures keep the
+      # individual ``robotBtnRef`` / ``statusDotRef`` paired with the
+      # right session even as the row gets rebuilt on chat list
+      # changes.
+      block:
+        let captBtn = robotBtnRef
+        let captTitle = session.title
+        createRenderEffect proc() =
+          let t = captTitle.val
+          r.setAttribute(captBtn, "title", t)
+          r.setAttribute(captBtn, "aria-label", t)
+      block:
+        let captDot = statusDotRef
+        let captStatus = chatVm.sessionStatus
+        createRenderEffect proc() =
+          let state = captStatus.val
+          let color = case state
+            of asIdle: "#A0A2B0"   # muted
+            of asLoading: "#F59E0B"  # gold
+            of asReady: "#22C55E"    # green
+            of asError: "#EF4444"    # red
+          r.setStyle(captDot, "background-color", color)
+          r.setAttribute(captDot, "data-chat-status",
+            case state
+            of asIdle: "idle"
+            of asLoading: "loading"
+            of asReady: "ready"
+            of asError: "error")
+
+  block:
+    createRenderEffect proc() =
+      # Touching ``chats.val`` + ``activeChatId.val`` keeps the
+      # robot row reactive across both list changes and active-id
+      # flips. The render effect runs synchronously on creation, so
+      # robots materialise before we return from
+      # ``renderInspectorPanel``.
+      discard vm.chats.val
+      discard vm.activeChatId.val
+      renderRobotRow()
 
   result = ui(r):
     tdiv(class = "editor-inspector",

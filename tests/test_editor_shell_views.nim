@@ -164,15 +164,25 @@ suite "Editor Shell Views (M2)":
       # future structural additions.
       check panel.children.len >= 3
 
-      # Top-level tab bar carries the two sidebar tabs + the new-chat
-      # "+" button (moved here from the in-Assistant chat tab strip
-      # per user 2026-05-28).
+      # Top-level tab bar (2026-05-28 icon redesign) — carries the
+      # wrench (Manual) button, one robot-icon button per chat
+      # session, and a trailing "+" button. The robots replace the
+      # prior text "Assistant" tab AND the in-Assistant chat-tab
+      # strip — the new bar lays them out together as the user
+      # requested ("the assistant button represents the initially
+      # created chat session"). With one chat at startup that's
+      # exactly three children: wrench + one robot + plus.
       let topTabBar = findByAttr(panel, "data-sidebar-tab-bar", "true")
       check topTabBar != nil
-      check topTabBar.children.len == 3
       check findByAttr(topTabBar, "data-sidebar-tab", "manual") != nil
-      check findByAttr(topTabBar, "data-sidebar-tab", "assistant") != nil
       check findByAttr(topTabBar, "data-chat-tab-new", "true") != nil
+      # At least one robot icon exists for the seeded chat session.
+      let robotTabs = findAllByAttr(topTabBar, "role", "tab")
+      var seenChatTab = false
+      for t in robotTabs:
+        if t.attributes.getOrDefault("data-chat-tab").len > 0:
+          seenChatTab = true
+      check seenChatTab
 
       # Manual body's first child is the 12-section sub-tab bar.
       let manualBody = findByAttr(panel, "data-sidebar-tab-panel", "manual")

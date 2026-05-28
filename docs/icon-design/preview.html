@@ -1,0 +1,204 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>IsoNim Editor icon iteration</title>
+    <style>
+      :root {
+        --bg-editor: #0d0e14; /* editor void bg */
+        --bg-toolbar: #16171f; /* chrome bar bg */
+        --bg-sidebar: #111827; /* sidebar bg */
+        --bg-strip: #22232e; /* ChoiceItem strip bg */
+        --accent: #7c7aed; /* active fill */
+        --text-primary: #f1f5f9;
+        --text-muted: #a0a2b0;
+        --status-ready: #22c55e;
+        --status-loading: #f59e0b;
+        --status-idle: #a0a2b0;
+        --status-error: #ef4444;
+      }
+      body {
+        background: var(--bg-toolbar);
+        color: var(--text-primary);
+        font-family: -apple-system, sans-serif;
+        padding: 24px;
+        margin: 0;
+      }
+      h2 {
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.5px;
+        text-transform: uppercase;
+        color: var(--text-muted);
+        margin: 24px 0 8px 0;
+      }
+      .row {
+        display: flex;
+        gap: 20px;
+        align-items: center;
+        padding: 12px;
+        background: var(--bg-sidebar);
+        border-radius: 8px;
+        margin-bottom: 12px;
+      }
+      .cell {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+      }
+      .cell .lbl {
+        font-size: 10px;
+        color: var(--text-muted);
+      }
+
+      /* Sidebar tab button — mirrors the actual button geometry */
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 28px;
+        height: 28px;
+        border-radius: 6px;
+        background: transparent;
+        color: var(--text-muted);
+        cursor: pointer;
+        position: relative;
+        transition:
+          background 0.12s,
+          color 0.12s;
+      }
+      .btn:hover {
+        background: rgba(255, 255, 255, 0.06);
+        color: var(--text-primary);
+      }
+      .btn.active {
+        background: var(--accent);
+        color: var(--text-primary);
+      }
+      .btn svg {
+        width: 18px;
+        height: 18px;
+        display: block;
+      }
+
+      /* Status dot overlay — bottom-right of robot */
+      .status-dot {
+        position: absolute;
+        right: 1px;
+        bottom: 1px;
+        width: 8px;
+        height: 8px;
+        border-radius: 4px;
+        background: var(--status-ready);
+        border: 2px solid var(--bg-sidebar); /* halo against tab bg */
+        box-sizing: content-box;
+      }
+
+      .tabbar-mock {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 8px 10px;
+        background: var(--bg-sidebar);
+        border-radius: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <h2>Final layout mock — the right sidebar's top tab bar</h2>
+    <div class="row">
+      <div class="tabbar-mock">
+        <div class="btn" title="Manual edits">__WRENCH__</div>
+        <div class="btn active" title="New chat">
+          __ROBOT__
+          <div class="status-dot" style="background: var(--status-ready)"></div>
+        </div>
+        <div class="btn" title="New chat 2">
+          __ROBOT__
+          <div
+            class="status-dot"
+            style="background: var(--status-loading)"
+          ></div>
+        </div>
+        <div class="btn" title="New chat 3">
+          __ROBOT__
+          <div class="status-dot" style="background: var(--status-idle)"></div>
+        </div>
+        <div class="btn" title="Create new chat">__PLUS__</div>
+      </div>
+    </div>
+
+    <h2>Icons at 18px (the canonical render size)</h2>
+    <div class="row">
+      <div class="cell">
+        <div class="btn">__WRENCH__</div>
+        <span class="lbl">wrench</span>
+      </div>
+      <div class="cell">
+        <div class="btn">__ROBOT__</div>
+        <span class="lbl">robot</span>
+      </div>
+      <div class="cell">
+        <div class="btn">__PLUS__</div>
+        <span class="lbl">plus</span>
+      </div>
+    </div>
+
+    <h2>Icons at 24px (zoom for detail review)</h2>
+    <div class="row" style="--icon-size: 24px">
+      <div class="cell">
+        <div class="btn" style="width: 36px; height: 36px">
+          <span style="width: 24px; height: 24px; display: block"
+            >__WRENCH__</span
+          >
+        </div>
+        <span class="lbl">wrench</span>
+      </div>
+      <div class="cell">
+        <div class="btn" style="width: 36px; height: 36px">
+          <span style="width: 24px; height: 24px; display: block"
+            >__ROBOT__</span
+          >
+        </div>
+        <span class="lbl">robot</span>
+      </div>
+      <div class="cell">
+        <div class="btn" style="width: 36px; height: 36px">
+          <span style="width: 24px; height: 24px; display: block"
+            >__PLUS__</span
+          >
+        </div>
+        <span class="lbl">plus</span>
+      </div>
+    </div>
+
+    <h2>Icons at 48px (silhouette check)</h2>
+    <div class="row">
+      <div class="cell">
+        <span style="width: 48px; height: 48px; display: block">__WRENCH__</span
+        ><span class="lbl">wrench</span>
+      </div>
+      <div class="cell">
+        <span style="width: 48px; height: 48px; display: block">__ROBOT__</span
+        ><span class="lbl">robot</span>
+      </div>
+      <div class="cell">
+        <span style="width: 48px; height: 48px; display: block">__PLUS__</span
+        ><span class="lbl">plus</span>
+      </div>
+    </div>
+
+    <h2>Active state — same icon inverted</h2>
+    <div class="row">
+      <div class="cell">
+        <div class="btn active">__WRENCH__</div>
+        <span class="lbl">manual active</span>
+      </div>
+      <div class="cell">
+        <div class="btn active">__ROBOT__</div>
+        <span class="lbl">chat active</span>
+      </div>
+    </div>
+  </body>
+</html>

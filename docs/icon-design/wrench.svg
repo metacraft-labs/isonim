@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="100%" height="100%" fill="currentColor">
+  <!-- Lucide-style wrench, traced as a filled silhouette so it reads as a
+       solid tool shape rather than an outline. The head is a closed ring
+       with a U-notch carved out (the "open-end" affordance that says
+       "wrench" not "magnifying glass" at small sizes). Handle angles down
+       to the bottom-right. -->
+  <path d="M16.43 4.42a4.5 4.5 0 0 0-5.84 5.84L3.5 17.36a2 2 0 1 0 2.83 2.83l7.1-7.1a4.5 4.5 0 0 0 5.84-5.84l-2.46 2.46-2.83-2.83 2.45-2.46zM5.91 17.36l-.71.71.71-.71z"/>
+</svg>

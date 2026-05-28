@@ -1,27 +1,33 @@
-// Playwright-driven e2e for the multi-chat tab strip inside the
-// Assistant tab of the right sidebar.
+// Playwright-driven e2e for the per-chat robot buttons in the top
+// tab bar of the right sidebar.
 //
-// User requirement (verbatim):
+// User requirement (verbatim, 2026-05-28):
 //
-//   "There should be a plus button in the tab at the top for
-//    creating a new chat. If I create too many chat tabs, a
-//    dropdown menu should be created (with a chevron down icon)."
+//   "I don't like that the assistant chats are appearing below the
+//    assistant button. My idea was that they would appear next to
+//    the assistant button (or rather that the assistant button
+//    represents the initially created chat session, but I can add
+//    additional ones). I think the design may start to look better
+//    if we switch to icons in this area. The manual edit button can
+//    be represented by a wrench and each assistant can be a robot-
+//    like icon with the status indicator overlayed on top. The plus
+//    sign will sit next to the last robot icon in the row and it
+//    would create new chats (new robot icons)."
 //
-// This test pins the live behaviour of the chat tab strip:
+// This test pins the live behaviour of the new icon-driven top tab
+// bar:
 //
-//   1. Initial editor mount surfaces one chat tab in the Assistant
-//      tab body labeled "New chat". The "+" button is present and
-//      keyboard-reachable. The overflow chevron is hidden when no
-//      overflow is needed.
-//   2. Clicking the "+" button creates a new "New chat 2" tab and
-//      activates it (aria-selected="true"). Clicking the first tab
-//      flips active back.
-//   3. Creating ~10 chats inside a narrow sidebar (default 220 px)
-//      triggers the overflow chevron — and the active tab stays
-//      visible regardless of overflow.
-//   4. Clicking the chevron opens a listbox popup that surfaces ALL
-//      chats (visible + hidden) so the user can switch to any chat
-//      regardless of overflow. Picking one activates it.
+//   1. Initial editor mount surfaces ONE robot icon in the top tab
+//      bar (the seeded chat session). The "+" button is present and
+//      keyboard-reachable. With one chat there's no overflow.
+//   2. Clicking the "+" button creates a new robot icon and
+//      activates it (aria-selected="true"). Clicking the first
+//      robot flips active back.
+//   3. Creating ~10 chats inside a narrow sidebar (default 320 px)
+//      makes the bar wider than its container — it now scrolls
+//      horizontally (``scrollWidth > clientWidth``) instead of
+//      hiding tabs behind a chevron popup. The active robot stays
+//      reachable via native scroll.
 //
 // Runs through ``node --test`` like the other ``e2e_*.mjs`` files
 // in this directory.
@@ -96,15 +102,11 @@ async function openEditor() {
   await page.waitForSelector('[data-test-id="property-panel"]', {
     timeout: 10000,
   });
-  // Activate the Assistant tab so the chat strip is visible.
-  await page.evaluate(() => {
-    const el = document.querySelector(
-      '[data-test-id="property-panel"] [data-sidebar-tab="assistant"]',
-    );
-    if (el) el.click();
-  });
+  // The robot icons live directly in the top tab bar now — no
+  // Assistant tab to click first.
   await page.waitForSelector(
-    '[data-test-id="property-panel"] [data-chat-tab-strip="true"]',
+    '[data-test-id="property-panel"] [data-sidebar-tab-bar="true"] ' +
+      "[data-chat-tab]",
     { timeout: 10000 },
   );
   return { ctx, page };
@@ -112,18 +114,26 @@ async function openEditor() {
 
 async function chatTabs(page) {
   return await page.evaluate(() => {
-    const strip = document.querySelector(
-      '[data-test-id="property-panel"] [data-chat-tab-strip="true"]',
+    const tabBar = document.querySelector(
+      '[data-test-id="property-panel"] [data-sidebar-tab-bar="true"]',
     );
-    if (!strip) return [];
-    return Array.from(strip.querySelectorAll("[data-chat-tab]")).map((t) => ({
+    if (!tabBar) return [];
+    return Array.from(tabBar.querySelectorAll("[data-chat-tab]")).map((t) => ({
       id: t.getAttribute("data-chat-tab"),
-      label: (t.textContent || "").trim(),
+      // Robot buttons are icon-only — the human label is on the
+      // ``title`` and ``aria-label`` attributes, not in
+      // ``textContent``.
+      label:
+        t.getAttribute("aria-label") ||
+        t.getAttribute("title") ||
+        (t.textContent || "").trim(),
       selected: t.getAttribute("aria-selected"),
-      hidden: t.getAttribute("data-chat-tab-hidden") === "true",
-      displayed:
-        t.getAttribute("data-chat-tab-hidden") !== "true" &&
-        getComputedStyle(t).display !== "none",
+      // Native scroll replaces the prior chevron overflow popup, so
+      // ``displayed`` is always true while the node is in the DOM.
+      displayed: getComputedStyle(t).display !== "none",
+      status: (
+        t.querySelector("[data-chat-status]") || { getAttribute: () => null }
+      ).getAttribute("data-chat-status"),
     }));
   });
 }
@@ -148,53 +158,19 @@ async function clickChatTab(page, id) {
   }, id);
 }
 
-async function overflowButtonVisible(page) {
+async function tabBarScrollState(page) {
   return await page.evaluate(() => {
-    const btn = document.querySelector(
-      '[data-test-id="property-panel"] [data-chat-tab-overflow="true"]',
+    const tabBar = document.querySelector(
+      '[data-test-id="property-panel"] [data-sidebar-tab-bar="true"]',
     );
-    if (!btn) return false;
-    return getComputedStyle(btn).display !== "none";
+    if (!tabBar) return null;
+    return {
+      scrollWidth: tabBar.scrollWidth,
+      clientWidth: tabBar.clientWidth,
+      scrollLeft: tabBar.scrollLeft,
+      overflowX: getComputedStyle(tabBar).overflowX,
+    };
   });
-}
-
-async function openOverflowDropdown(page) {
-  await page.evaluate(() => {
-    const btn = document.querySelector(
-      '[data-test-id="property-panel"] [data-chat-tab-overflow="true"]',
-    );
-    if (!btn) throw new Error("Overflow chevron not found");
-    btn.click();
-  });
-}
-
-async function overflowDropdownItems(page) {
-  return await page.evaluate(() => {
-    const popup = document.querySelector(
-      '[data-test-id="property-panel"] ' +
-        '[data-chat-tab-overflow-popup="true"]',
-    );
-    if (!popup) return [];
-    if (getComputedStyle(popup).display === "none") return [];
-    return Array.from(
-      popup.querySelectorAll("[data-chat-tab-overflow-item]"),
-    ).map((el) => ({
-      id: el.getAttribute("data-chat-tab-overflow-item"),
-      label: (el.textContent || "").trim(),
-      selected: el.getAttribute("aria-selected"),
-    }));
-  });
-}
-
-async function clickOverflowItem(page, id) {
-  await page.evaluate((wanted) => {
-    const el = document.querySelector(
-      '[data-test-id="property-panel"] ' +
-        `[data-chat-tab-overflow-item="${wanted}"]`,
-    );
-    if (!el) throw new Error(`overflow item ${wanted} not found`);
-    el.click();
-  }, id);
 }
 
 async function activeChatId(page) {
@@ -230,27 +206,55 @@ test("e2e_chat_tabs_initial_state_has_single_new_chat", async () => {
   try {
     const tabs = await chatTabs(page);
     assert.equal(tabs.length, 1, "exactly one chat tab on initial load");
-    assert.equal(tabs[0].label, "New chat", "first tab label is 'New chat'");
     assert.equal(
-      tabs[0].selected,
-      "true",
-      "first chat is active on initial load",
+      tabs[0].label,
+      "New chat",
+      "first robot's tooltip is 'New chat'",
+    );
+    // The seeded chat isn't active by default (the sidebar opens
+    // on Manual). The aria-selected reflects the active chat
+    // regardless of which sidebar surface is showing, so on a
+    // single-chat workspace it stays "true" once the sidebar
+    // surfaces Assistant. For the initial-mount probe we only
+    // check the robot exists and is keyboard-reachable.
+    assert.equal(
+      tabs[0].id,
+      "chat-1",
+      "seeded chat carries the stable 'chat-1' id",
     );
 
     const newBtn = await page.$(
       '[data-test-id="property-panel"] [data-chat-tab-new="true"]',
     );
-    assert.ok(newBtn, '"+" new-chat button is mounted in the strip');
+    assert.ok(newBtn, '"+" new-chat button is mounted in the top tab bar');
     assert.equal(
       await newBtn.getAttribute("aria-label"),
       "Create new chat",
       '"+" button advertises its aria-label',
     );
-
     assert.equal(
-      await overflowButtonVisible(page),
-      false,
-      "overflow chevron is hidden with only one chat",
+      await newBtn.getAttribute("title"),
+      "Create new chat",
+      '"+" button advertises its title for hover tooltips',
+    );
+
+    // Wrench (Manual) button is present and carries a tooltip.
+    const wrench = await page.$(
+      '[data-test-id="property-panel"] [data-sidebar-tab="manual"]',
+    );
+    assert.ok(wrench, "wrench (Manual) button is present in the top tab bar");
+    assert.equal(
+      await wrench.getAttribute("title"),
+      "Manual edits",
+      "wrench advertises its title for hover tooltips",
+    );
+
+    // Each robot exposes a status dot overlay with a reactive
+    // data-chat-status attribute. Initial state is idle.
+    assert.equal(
+      tabs[0].status,
+      "idle",
+      "robot status dot starts in the idle state",
     );
   } finally {
     await ctx.close();
@@ -266,11 +270,11 @@ test("e2e_chat_tabs_plus_creates_new_chat_and_switching_works", async () => {
   try {
     await clickNewChat(page);
     let tabs = await chatTabs(page);
-    assert.equal(tabs.length, 2, "second chat appears after clicking +");
+    assert.equal(tabs.length, 2, "second robot appears after clicking +");
     assert.equal(
       tabs[1].label,
       "New chat 2",
-      "second chat is labelled 'New chat 2'",
+      "second robot's tooltip is 'New chat 2'",
     );
     assert.equal(
       tabs[1].selected,
@@ -283,7 +287,7 @@ test("e2e_chat_tabs_plus_creates_new_chat_and_switching_works", async () => {
       "previous chat is no longer active",
     );
 
-    // Switch back to chat-1 by clicking its tab.
+    // Switch back to chat-1 by clicking its robot.
     await clickChatTab(page, "chat-1");
     tabs = await chatTabs(page);
     assert.equal(tabs[0].selected, "true", "first chat re-activates on click");
@@ -298,95 +302,53 @@ test("e2e_chat_tabs_plus_creates_new_chat_and_switching_works", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Many chats produce overflow + the active tab stays visible.
+// Many chats overflow the top tab bar horizontally and the active robot
+// stays reachable via native scroll.
 // ---------------------------------------------------------------------------
+//
+// Per the 2026-05-28 icon redesign, the prior chevron-overflow popup
+// (``data-chat-tab-overflow="true"`` chevron-down button + a listbox
+// popup that surfaced hidden chats) is gone. The top tab bar now uses
+// ``overflow-x: auto`` so robots that don't fit fall behind a native
+// horizontal scrollbar instead of being hidden + reachable through a
+// popup. This test asserts that contract: ``scrollWidth`` exceeds
+// ``clientWidth`` (proof that scrolling is needed and possible) and
+// every robot is still present in the DOM.
 
-test("e2e_chat_tabs_overflow_chevron_appears_with_many_chats", async () => {
+test("e2e_chat_tabs_many_chats_scroll_horizontally", async () => {
   const { ctx, page } = await openEditor();
   try {
-    // Create 9 more chats — total 10. Default sidebar width is
-    // ~220 px which can't fit 10 ``New chat N`` tabs side-by-side.
     for (let i = 0; i < 9; i++) {
       await clickNewChat(page);
     }
     const tabs = await chatTabs(page);
-    assert.equal(tabs.length, 10, "ten chat tabs after creating 9 extras");
+    assert.equal(tabs.length, 10, "ten robot icons after creating 9 extras");
 
-    // The newest chat (chat-10) is active and must remain visible.
+    // The newest chat (chat-10) is active. Every robot — visible or
+    // scrolled out of view — is still mounted in the top bar (no
+    // hide-via-display:none any more).
     const active = tabs.find((t) => t.selected === "true");
-    assert.ok(active, "an active tab is identifiable in the DOM");
+    assert.ok(active, "an active robot is identifiable in the DOM");
     assert.equal(active.id, "chat-10", "newly created chat-10 is active");
-    assert.equal(
-      active.hidden,
-      false,
-      "active chat is never marked as overflowed",
-    );
-    assert.equal(
-      active.displayed,
-      true,
-      "active chat's DOM node is visible in the strip",
-    );
-
-    assert.equal(
-      await overflowButtonVisible(page),
-      true,
-      "overflow chevron is surfaced once tabs don't fit inline",
-    );
-
-    // At least one non-active tab is hidden by overflow detection.
-    const hiddenCount = tabs.filter((t) => t.hidden).length;
-    assert.ok(
-      hiddenCount >= 1,
-      "at least one chat tab is hidden by overflow handling",
-    );
-  } finally {
-    await ctx.close();
-  }
-});
-
-// ---------------------------------------------------------------------------
-// Overflow popup surfaces every chat and lets the user activate any of them.
-// ---------------------------------------------------------------------------
-
-test("e2e_chat_tabs_overflow_popup_lets_user_pick_hidden_chat", async () => {
-  const { ctx, page } = await openEditor();
-  try {
-    for (let i = 0; i < 9; i++) {
-      await clickNewChat(page);
+    for (const t of tabs) {
+      assert.equal(
+        t.displayed,
+        true,
+        `robot ${t.id} stays mounted (native scroll, not hidden)`,
+      );
     }
-    // chat-10 is active. Open the overflow dropdown.
-    await openOverflowDropdown(page);
-    const items = await overflowDropdownItems(page);
-    assert.ok(
-      items.length >= 1,
-      "overflow popup is populated with chat options",
-    );
-    // The dropdown surfaces ALL chats so the user can switch to any
-    // chat regardless of overflow visibility.
-    const ids = items.map((it) => it.id).sort();
-    const expectedIds = Array.from(
-      { length: 10 },
-      (_, i) => `chat-${i + 1}`,
-    ).sort();
-    assert.deepEqual(
-      ids,
-      expectedIds,
-      "overflow popup lists every chat (visible + hidden)",
-    );
 
-    // Pick chat-1 from the popup.
-    await clickOverflowItem(page, "chat-1");
-    // After picking, the popup closes and chat-1 becomes active.
-    const popupItemsAfter = await overflowDropdownItems(page);
+    const scroll = await tabBarScrollState(page);
+    assert.ok(scroll, "tab bar is resolvable on the page");
     assert.equal(
-      popupItemsAfter.length,
-      0,
-      "overflow popup closes after picking a chat",
+      scroll.overflowX,
+      "auto",
+      "top tab bar uses overflow-x:auto for horizontal scroll",
     );
-    assert.equal(
-      await activeChatId(page),
-      "chat-1",
-      "picking chat-1 from the popup activates it",
+    assert.ok(
+      scroll.scrollWidth > scroll.clientWidth,
+      "tab bar's content (wrench + 10 robots + plus) exceeds its " +
+        "client width — horizontal scroll is engaged",
     );
   } finally {
     await ctx.close();

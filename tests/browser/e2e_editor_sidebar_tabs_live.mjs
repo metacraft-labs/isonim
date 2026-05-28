@@ -10,21 +10,29 @@
 //    content. You can do it either manually or by messaging the
 //    assistant."
 //
+// 2026-05-28 icon redesign: the top tab bar now holds a wrench
+// (Manual) button + one robot icon per chat session + a trailing "+"
+// button. The prior text "Assistant" tab is gone — robots represent
+// individual chat sessions and clicking one both activates that chat
+// AND flips the sidebar to the Assistant surface. So "the Assistant
+// tab" is now any ``[data-chat-tab]`` robot in the top bar.
+//
 // This test pins the contract that replaces the prior AIVS-NSO
 // "AI sidebar is its own column" design:
 //
 //   1. On initial load the right sidebar (``data-test-id="property-
-//      panel"``) is mounted with the Manual tab active by default
-//      and the 12 inspector sub-section tabs visible.
-//   2. Clicking the Assistant tab marks it ``aria-selected="true"``
-//      and surfaces the chat composer (the Agent prompt input).
-//   3. Clicking the Manual tab brings the 12-section sub-tab bar
-//      back. Both tabs remain present (no mode-dependent gating).
+//      panel"``) is mounted with the Manual tab (wrench) active by
+//      default and the 12 inspector sub-section tabs visible.
+//   2. Clicking a robot icon marks it ``aria-selected="true"``,
+//      flips the sidebar to the Assistant surface, and surfaces the
+//      chat composer (the Agent prompt input).
+//   3. Clicking the wrench brings the 12-section sub-tab bar back.
+//      Both surfaces remain reachable (no mode-dependent gating).
 //   4. Switching tabs does NOT unmount the sidebar root — the
 //      ``[data-test-id="property-panel"]`` selector keeps resolving
 //      across tab flips.
-//   5. Both tabs are always available even after flipping surface
-//      (Preview ↔ Spec) without a story selected.
+//   5. Wrench + at least one robot are always available even after
+//      flipping surface (Preview ↔ Spec) without a story selected.
 //
 // Runs via ``node --test`` (same pattern as the rest of
 // ``tests/browser/e2e_*.mjs``).
@@ -108,11 +116,29 @@ async function openEditor() {
 
 async function tabSelected(page, tabName) {
   return await page.evaluate((name) => {
-    const el = document.querySelector(
-      `[data-test-id="property-panel"] [data-sidebar-tab="${name}"]`,
+    if (name === "manual") {
+      const el = document.querySelector(
+        `[data-test-id="property-panel"] [data-sidebar-tab="manual"]`,
+      );
+      return el ? el.getAttribute("aria-selected") : null;
+    }
+    // "assistant" — the prior text Assistant tab is gone. The
+    // sidebar is on the Assistant surface when any robot icon in
+    // the top bar carries ``aria-selected="true"`` AND the
+    // Assistant body is the visible panel. We approximate the
+    // boolean by reading the visible-panel state: if any robot is
+    // aria-selected, return "true"; otherwise "false".
+    const robotSelected = document.querySelector(
+      `[data-test-id="property-panel"] ` +
+        `[data-chat-tab][aria-selected="true"]`,
     );
-    if (!el) return null;
-    return el.getAttribute("aria-selected");
+    const assistantPanel = document.querySelector(
+      `[data-test-id="property-panel"] ` +
+        `[data-sidebar-tab-panel="assistant"]`,
+    );
+    if (!assistantPanel) return null;
+    const visible = getComputedStyle(assistantPanel).display !== "none";
+    return robotSelected && visible ? "true" : "false";
   }, tabName);
 }
 
@@ -128,11 +154,29 @@ async function tabPanelVisible(page, tabName) {
 
 async function clickTab(page, tabName) {
   await page.evaluate((name) => {
-    const el = document.querySelector(
-      `[data-test-id="property-panel"] [data-sidebar-tab="${name}"]`,
+    if (name === "manual") {
+      const el = document.querySelector(
+        `[data-test-id="property-panel"] [data-sidebar-tab="manual"]`,
+      );
+      if (!el) throw new Error("manual wrench button not found");
+      el.click();
+      return;
+    }
+    // "assistant" — clicking any robot activates the Assistant
+    // surface. Prefer the already-active robot when present so the
+    // user's selected chat stays selected; fall back to the first
+    // robot otherwise.
+    const active = document.querySelector(
+      `[data-test-id="property-panel"] ` +
+        `[data-chat-tab][aria-selected="true"]`,
     );
-    if (!el) throw new Error(`sidebar tab ${name} not found`);
-    el.click();
+    const robot =
+      active ||
+      document.querySelector(`[data-test-id="property-panel"] [data-chat-tab]`);
+    if (!robot) {
+      throw new Error("no robot icon found in the top tab bar");
+    }
+    robot.click();
   }, tabName);
 }
 
@@ -345,19 +389,29 @@ test("e2e_sidebar_root_stays_mounted_across_tab_switches", async () => {
 test("e2e_sidebar_both_tabs_present_across_surface_flips", async () => {
   const { ctx, page } = await openEditor();
   try {
-    // Both tabs visible in Preview surface (initial).
-    const previewTabs = await page.$$eval(
-      '[data-test-id="property-panel"] [data-sidebar-tab]',
-      (els) =>
-        els.map((el) => el.getAttribute("data-sidebar-tab")).filter(Boolean),
+    // 2026-05-28 icon redesign: the top tab bar carries one wrench
+    // button (Manual) + one robot per chat session. "Both tabs
+    // present" now means "wrench present AND at least one robot
+    // present" — the two surfaces (Manual / Assistant) the user
+    // can switch between.
+    const previewSurfaces = await page.evaluate(() => {
+      const panel = document.querySelector('[data-test-id="property-panel"]');
+      if (!panel) return null;
+      return {
+        wrench: !!panel.querySelector('[data-sidebar-tab="manual"]'),
+        robots: panel.querySelectorAll("[data-chat-tab]").length,
+      };
+    });
+    assert.ok(
+      previewSurfaces && previewSurfaces.wrench,
+      "wrench (Manual) button present in Preview surface",
     );
-    assert.deepEqual(
-      previewTabs.sort(),
-      ["assistant", "manual"],
-      "Manual + Assistant tabs both present in Preview surface",
+    assert.ok(
+      previewSurfaces.robots >= 1,
+      "at least one robot (Assistant) button present in Preview surface",
     );
 
-    // Flip to Spec surface — sidebar tabs must still both render
+    // Flip to Spec surface — both surfaces must still render
     // regardless of whether a story is selected.
     await clickSurfacePill(page, 1);
     await page.waitForFunction(
@@ -367,22 +421,29 @@ test("e2e_sidebar_both_tabs_present_across_surface_flips", async () => {
       },
       { timeout: 5000 },
     );
-    const specTabs = await page.$$eval(
-      '[data-test-id="property-panel"] [data-sidebar-tab]',
-      (els) =>
-        els.map((el) => el.getAttribute("data-sidebar-tab")).filter(Boolean),
+    const specSurfaces = await page.evaluate(() => {
+      const panel = document.querySelector('[data-test-id="property-panel"]');
+      if (!panel) return null;
+      return {
+        wrench: !!panel.querySelector('[data-sidebar-tab="manual"]'),
+        robots: panel.querySelectorAll("[data-chat-tab]").length,
+      };
+    });
+    assert.ok(
+      specSurfaces && specSurfaces.wrench,
+      "wrench (Manual) button present in Spec surface",
     );
-    assert.deepEqual(
-      specTabs.sort(),
-      ["assistant", "manual"],
-      "Manual + Assistant tabs both present in Spec surface (no story selected)",
+    assert.ok(
+      specSurfaces.robots >= 1,
+      "at least one robot (Assistant) button present in Spec surface " +
+        "(no story selected)",
     );
-    // Tab toggling still works on the Spec surface.
+    // Surface toggling still works on the Spec surface.
     await clickTab(page, "assistant");
     assert.equal(
       await tabSelected(page, "assistant"),
       "true",
-      "Assistant tab is selectable on the Spec surface without a story",
+      "Assistant surface is selectable on the Spec surface without a story",
     );
   } finally {
     await ctx.close();
