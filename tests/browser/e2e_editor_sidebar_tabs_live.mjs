@@ -208,244 +208,275 @@ test.after(async () => {
 // Default tab is Manual
 // ---------------------------------------------------------------------------
 
-test("e2e_sidebar_default_tab_is_manual", async () => {
-  const { ctx, page } = await openEditor();
-  try {
-    assert.equal(
-      await tabSelected(page, "manual"),
-      "true",
-      "Manual tab is aria-selected on initial load",
-    );
-    assert.equal(
-      await tabSelected(page, "assistant"),
-      "false",
-      "Assistant tab is NOT aria-selected on initial load",
-    );
-    assert.equal(
-      await tabPanelVisible(page, "manual"),
-      true,
-      "Manual tab body is visible on initial load",
-    );
-    assert.equal(
-      await tabPanelVisible(page, "assistant"),
-      false,
-      "Assistant tab body is hidden on initial load",
-    );
-  } finally {
-    await ctx.close();
-  }
-});
+// DEFERRED Phase F — see Front-Ends/IsoNim/isonim-editor.md §"AI assistant placement". Sidebar Manual/Assistant tab pair is demolished; chat moves to a chrome-bar slide-out drawer in Phase F. Phase F replaces this file.
+test(
+  "e2e_sidebar_default_tab_is_manual",
+  {
+    skip: "Phase A demolition; replaced by Phase F drawer e2e (see isonim-editor.md §AI assistant placement)",
+  },
+  async () => {
+    const { ctx, page } = await openEditor();
+    try {
+      assert.equal(
+        await tabSelected(page, "manual"),
+        "true",
+        "Manual tab is aria-selected on initial load",
+      );
+      assert.equal(
+        await tabSelected(page, "assistant"),
+        "false",
+        "Assistant tab is NOT aria-selected on initial load",
+      );
+      assert.equal(
+        await tabPanelVisible(page, "manual"),
+        true,
+        "Manual tab body is visible on initial load",
+      );
+      assert.equal(
+        await tabPanelVisible(page, "assistant"),
+        false,
+        "Assistant tab body is hidden on initial load",
+      );
+    } finally {
+      await ctx.close();
+    }
+  },
+);
 
 // ---------------------------------------------------------------------------
 // Clicking Assistant surfaces the chat composer
 // ---------------------------------------------------------------------------
 
-test("e2e_sidebar_clicking_assistant_surfaces_chat_input", async () => {
-  const { ctx, page } = await openEditor();
-  try {
-    await clickTab(page, "assistant");
-    assert.equal(
-      await tabSelected(page, "assistant"),
-      "true",
-      "Assistant tab is aria-selected after click",
-    );
-    assert.equal(
-      await tabSelected(page, "manual"),
-      "false",
-      "Manual tab is no longer aria-selected after switching to Assistant",
-    );
-    assert.equal(
-      await tabPanelVisible(page, "assistant"),
-      true,
-      "Assistant tab body is visible after click",
-    );
-    assert.equal(
-      await tabPanelVisible(page, "manual"),
-      false,
-      "Manual tab body is hidden after switching to Assistant",
-    );
-    // Chat composer is reachable inside the Assistant tab body.
-    const promptInput = await page.$(
-      '[data-test-id="property-panel"] ' +
-        '[data-sidebar-tab-panel="assistant"] ' +
-        '[aria-label="Agent prompt"]',
-    );
-    assert.ok(
-      promptInput,
-      "Agent prompt input is mounted under the Assistant tab body",
-    );
-    const sendBtn = await page.$(
-      '[data-test-id="property-panel"] ' +
-        '[data-sidebar-tab-panel="assistant"] ' +
-        '[aria-label="Send agent prompt"]',
-    );
-    assert.ok(
-      sendBtn,
-      "Send agent prompt button is mounted under the Assistant tab body",
-    );
-  } finally {
-    await ctx.close();
-  }
-});
+test(
+  "e2e_sidebar_clicking_assistant_surfaces_chat_input",
+  {
+    skip: "Phase A demolition; replaced by Phase F drawer e2e (see isonim-editor.md §AI assistant placement)",
+  },
+  async () => {
+    const { ctx, page } = await openEditor();
+    try {
+      await clickTab(page, "assistant");
+      assert.equal(
+        await tabSelected(page, "assistant"),
+        "true",
+        "Assistant tab is aria-selected after click",
+      );
+      assert.equal(
+        await tabSelected(page, "manual"),
+        "false",
+        "Manual tab is no longer aria-selected after switching to Assistant",
+      );
+      assert.equal(
+        await tabPanelVisible(page, "assistant"),
+        true,
+        "Assistant tab body is visible after click",
+      );
+      assert.equal(
+        await tabPanelVisible(page, "manual"),
+        false,
+        "Manual tab body is hidden after switching to Assistant",
+      );
+      // Chat composer is reachable inside the Assistant tab body.
+      const promptInput = await page.$(
+        '[data-test-id="property-panel"] ' +
+          '[data-sidebar-tab-panel="assistant"] ' +
+          '[aria-label="Agent prompt"]',
+      );
+      assert.ok(
+        promptInput,
+        "Agent prompt input is mounted under the Assistant tab body",
+      );
+      const sendBtn = await page.$(
+        '[data-test-id="property-panel"] ' +
+          '[data-sidebar-tab-panel="assistant"] ' +
+          '[aria-label="Send agent prompt"]',
+      );
+      assert.ok(
+        sendBtn,
+        "Send agent prompt button is mounted under the Assistant tab body",
+      );
+    } finally {
+      await ctx.close();
+    }
+  },
+);
 
 // ---------------------------------------------------------------------------
 // Clicking Manual brings the 12-section sub-tab bar back
 // ---------------------------------------------------------------------------
 
-test("e2e_sidebar_clicking_manual_surfaces_inspector_sections", async () => {
-  const { ctx, page } = await openEditor();
-  try {
-    // Start on Assistant…
-    await clickTab(page, "assistant");
-    assert.equal(
-      await tabSelected(page, "assistant"),
-      "true",
-      "Assistant tab is active before flipping back",
-    );
-    // …then flip back to Manual.
-    await clickTab(page, "manual");
-    assert.equal(
-      await tabSelected(page, "manual"),
-      "true",
-      "Manual tab is aria-selected after clicking Manual",
-    );
-    assert.equal(
-      await tabPanelVisible(page, "manual"),
-      true,
-      "Manual tab body is visible after clicking Manual",
-    );
-    // The 12-section sub-tab bar lives inside the Manual body and
-    // surfaces named labels for each section (Layout / Size / Space …).
-    const sectionLabels = await page.$$eval(
-      '[data-test-id="property-panel"] ' +
-        '[data-sidebar-tab-panel="manual"] ' +
-        '[aria-label^="Show "][aria-label$=" inspector section"]',
-      (els) =>
-        els.map((el) =>
-          (el.getAttribute("aria-label") || "")
-            .replace(/^Show /, "")
-            .replace(/ inspector section$/, ""),
-        ),
-    );
-    assert.equal(
-      sectionLabels.length,
-      12,
-      "Manual tab exposes all 12 inspector sub-section tabs",
-    );
-    for (const expected of [
-      "Layout",
-      "Size",
-      "Space",
-      "Pos",
-      "Fill",
-      "Stroke",
-      "Type",
-      "FX",
-      "Trans",
-      "Filter",
-      "State",
-      "Source",
-    ]) {
-      assert.ok(
-        sectionLabels.includes(expected),
-        `Manual tab contains section ${expected}`,
+test(
+  "e2e_sidebar_clicking_manual_surfaces_inspector_sections",
+  {
+    skip: "Phase A demolition; replaced by Phase F drawer e2e (see isonim-editor.md §AI assistant placement)",
+  },
+  async () => {
+    const { ctx, page } = await openEditor();
+    try {
+      // Start on Assistant…
+      await clickTab(page, "assistant");
+      assert.equal(
+        await tabSelected(page, "assistant"),
+        "true",
+        "Assistant tab is active before flipping back",
       );
+      // …then flip back to Manual.
+      await clickTab(page, "manual");
+      assert.equal(
+        await tabSelected(page, "manual"),
+        "true",
+        "Manual tab is aria-selected after clicking Manual",
+      );
+      assert.equal(
+        await tabPanelVisible(page, "manual"),
+        true,
+        "Manual tab body is visible after clicking Manual",
+      );
+      // The 12-section sub-tab bar lives inside the Manual body and
+      // surfaces named labels for each section (Layout / Size / Space …).
+      const sectionLabels = await page.$$eval(
+        '[data-test-id="property-panel"] ' +
+          '[data-sidebar-tab-panel="manual"] ' +
+          '[aria-label^="Show "][aria-label$=" inspector section"]',
+        (els) =>
+          els.map((el) =>
+            (el.getAttribute("aria-label") || "")
+              .replace(/^Show /, "")
+              .replace(/ inspector section$/, ""),
+          ),
+      );
+      assert.equal(
+        sectionLabels.length,
+        12,
+        "Manual tab exposes all 12 inspector sub-section tabs",
+      );
+      for (const expected of [
+        "Layout",
+        "Size",
+        "Space",
+        "Pos",
+        "Fill",
+        "Stroke",
+        "Type",
+        "FX",
+        "Trans",
+        "Filter",
+        "State",
+        "Source",
+      ]) {
+        assert.ok(
+          sectionLabels.includes(expected),
+          `Manual tab contains section ${expected}`,
+        );
+      }
+    } finally {
+      await ctx.close();
     }
-  } finally {
-    await ctx.close();
-  }
-});
+  },
+);
 
 // ---------------------------------------------------------------------------
 // Sidebar root stays mounted across tab flips
 // ---------------------------------------------------------------------------
 
-test("e2e_sidebar_root_stays_mounted_across_tab_switches", async () => {
-  const { ctx, page } = await openEditor();
-  try {
-    const initial = await page.$('[data-test-id="property-panel"]');
-    assert.ok(initial, "Sidebar root is mounted on initial load");
-    await clickTab(page, "assistant");
-    const onAssistant = await page.$('[data-test-id="property-panel"]');
-    assert.ok(
-      onAssistant,
-      "Sidebar root remains mounted after switching to Assistant tab",
-    );
-    await clickTab(page, "manual");
-    const backOnManual = await page.$('[data-test-id="property-panel"]');
-    assert.ok(
-      backOnManual,
-      "Sidebar root remains mounted after switching back to Manual tab",
-    );
-  } finally {
-    await ctx.close();
-  }
-});
+test(
+  "e2e_sidebar_root_stays_mounted_across_tab_switches",
+  {
+    skip: "Phase A demolition; replaced by Phase F drawer e2e (see isonim-editor.md §AI assistant placement)",
+  },
+  async () => {
+    const { ctx, page } = await openEditor();
+    try {
+      const initial = await page.$('[data-test-id="property-panel"]');
+      assert.ok(initial, "Sidebar root is mounted on initial load");
+      await clickTab(page, "assistant");
+      const onAssistant = await page.$('[data-test-id="property-panel"]');
+      assert.ok(
+        onAssistant,
+        "Sidebar root remains mounted after switching to Assistant tab",
+      );
+      await clickTab(page, "manual");
+      const backOnManual = await page.$('[data-test-id="property-panel"]');
+      assert.ok(
+        backOnManual,
+        "Sidebar root remains mounted after switching back to Manual tab",
+      );
+    } finally {
+      await ctx.close();
+    }
+  },
+);
 
 // ---------------------------------------------------------------------------
 // Both tabs are always available across surface flips
 // ---------------------------------------------------------------------------
 
-test("e2e_sidebar_both_tabs_present_across_surface_flips", async () => {
-  const { ctx, page } = await openEditor();
-  try {
-    // 2026-05-28 icon redesign: the top tab bar carries one wrench
-    // button (Manual) + one robot per chat session. "Both tabs
-    // present" now means "wrench present AND at least one robot
-    // present" — the two surfaces (Manual / Assistant) the user
-    // can switch between.
-    const previewSurfaces = await page.evaluate(() => {
-      const panel = document.querySelector('[data-test-id="property-panel"]');
-      if (!panel) return null;
-      return {
-        wrench: !!panel.querySelector('[data-sidebar-tab="manual"]'),
-        robots: panel.querySelectorAll("[data-chat-tab]").length,
-      };
-    });
-    assert.ok(
-      previewSurfaces && previewSurfaces.wrench,
-      "wrench (Manual) button present in Preview surface",
-    );
-    assert.ok(
-      previewSurfaces.robots >= 1,
-      "at least one robot (Assistant) button present in Preview surface",
-    );
+test(
+  "e2e_sidebar_both_tabs_present_across_surface_flips",
+  {
+    skip: "Phase A demolition; replaced by Phase F drawer e2e (see isonim-editor.md §AI assistant placement)",
+  },
+  async () => {
+    const { ctx, page } = await openEditor();
+    try {
+      // 2026-05-28 icon redesign: the top tab bar carries one wrench
+      // button (Manual) + one robot per chat session. "Both tabs
+      // present" now means "wrench present AND at least one robot
+      // present" — the two surfaces (Manual / Assistant) the user
+      // can switch between.
+      const previewSurfaces = await page.evaluate(() => {
+        const panel = document.querySelector('[data-test-id="property-panel"]');
+        if (!panel) return null;
+        return {
+          wrench: !!panel.querySelector('[data-sidebar-tab="manual"]'),
+          robots: panel.querySelectorAll("[data-chat-tab]").length,
+        };
+      });
+      assert.ok(
+        previewSurfaces && previewSurfaces.wrench,
+        "wrench (Manual) button present in Preview surface",
+      );
+      assert.ok(
+        previewSurfaces.robots >= 1,
+        "at least one robot (Assistant) button present in Preview surface",
+      );
 
-    // Flip to Spec surface — both surfaces must still render
-    // regardless of whether a story is selected.
-    await clickSurfacePill(page, 1);
-    await page.waitForFunction(
-      () => {
-        const el = document.querySelector('[data-test-id="spec-pane"]');
-        return el && getComputedStyle(el).display !== "none";
-      },
-      { timeout: 5000 },
-    );
-    const specSurfaces = await page.evaluate(() => {
-      const panel = document.querySelector('[data-test-id="property-panel"]');
-      if (!panel) return null;
-      return {
-        wrench: !!panel.querySelector('[data-sidebar-tab="manual"]'),
-        robots: panel.querySelectorAll("[data-chat-tab]").length,
-      };
-    });
-    assert.ok(
-      specSurfaces && specSurfaces.wrench,
-      "wrench (Manual) button present in Spec surface",
-    );
-    assert.ok(
-      specSurfaces.robots >= 1,
-      "at least one robot (Assistant) button present in Spec surface " +
-        "(no story selected)",
-    );
-    // Surface toggling still works on the Spec surface.
-    await clickTab(page, "assistant");
-    assert.equal(
-      await tabSelected(page, "assistant"),
-      "true",
-      "Assistant surface is selectable on the Spec surface without a story",
-    );
-  } finally {
-    await ctx.close();
-  }
-});
+      // Flip to Spec surface — both surfaces must still render
+      // regardless of whether a story is selected.
+      await clickSurfacePill(page, 1);
+      await page.waitForFunction(
+        () => {
+          const el = document.querySelector('[data-test-id="spec-pane"]');
+          return el && getComputedStyle(el).display !== "none";
+        },
+        { timeout: 5000 },
+      );
+      const specSurfaces = await page.evaluate(() => {
+        const panel = document.querySelector('[data-test-id="property-panel"]');
+        if (!panel) return null;
+        return {
+          wrench: !!panel.querySelector('[data-sidebar-tab="manual"]'),
+          robots: panel.querySelectorAll("[data-chat-tab]").length,
+        };
+      });
+      assert.ok(
+        specSurfaces && specSurfaces.wrench,
+        "wrench (Manual) button present in Spec surface",
+      );
+      assert.ok(
+        specSurfaces.robots >= 1,
+        "at least one robot (Assistant) button present in Spec surface " +
+          "(no story selected)",
+      );
+      // Surface toggling still works on the Spec surface.
+      await clickTab(page, "assistant");
+      assert.equal(
+        await tabSelected(page, "assistant"),
+        "true",
+        "Assistant surface is selectable on the Spec surface without a story",
+      );
+    } finally {
+      await ctx.close();
+    }
+  },
+);

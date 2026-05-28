@@ -239,31 +239,6 @@ proc sectionToggleHandler(vm: EditorVM; section: SidebarSection): proc() =
   result = proc() =
     vm.sidebar.toggleSection(captured)
 
-proc chatSwitchHandler(vm: EditorVM; sessionId: string): proc() =
-  ## Capture-per-tab handler for the robot buttons in the top tab
-  ## bar. Each robot's ``onclick`` / ``onkeydown`` calls back here
-  ## with its own session id so the right chat activates even when
-  ## the row is rebuilt by the surrounding render effect.
-  ##
-  ## A robot click both switches the active chat AND flips the
-  ## right sidebar to the Assistant surface — the robots ARE the
-  ## chat tabs now (the prior "Assistant" text tab is gone), so a
-  ## click must do double duty.
-  let captured = sessionId
-  let capturedVm = vm
-  result = proc() =
-    discard capturedVm.switchToChat(captured)
-    capturedVm.setRightSidebarTab(rstAssistant)
-
-proc chatNewHandler(vm: EditorVM): proc() =
-  let captured = vm
-  result = proc() =
-    discard captured.createNewChat()
-    # The + button now lives in the top tab bar next to the
-    # Assistant button — clicking it should also activate the
-    # Assistant tab so the user lands on the new chat.
-    captured.setRightSidebarTab(rstAssistant)
-
 proc sectionOpenHandler(vm: EditorVM; section: SidebarSection): proc() =
   let captured = section
   result = proc() =
@@ -1760,344 +1735,106 @@ proc renderPreviewPane*[R, E](r: R; vm: EditorVM): E =
   # ``pane.children.len``) remain stable.
   pane
 
+const inspectorPlaceholderSections* = [
+  ("position",             "Position"),
+  ("layout",               "Layout"),
+  ("appearance",           "Appearance"),
+  ("fill",                 "Fill"),
+  ("stroke",               "Stroke"),
+  ("effects",              "Effects"),
+  ("typography",           "Typography"),
+  ("selection-colors",     "Selection colors"),
+  ("source",               "Source"),
+  ("component-properties", "Component properties"),
+  ("state",                "State"),
+  ("export",               "Export")
+]
+  ## Phase A — Section-based inspector demolition. The single-column
+  ## scroll surface that replaces the prior 12-sub-tab + Manual/
+  ## Assistant tab pair lists these twelve sections in
+  ## user-decided order. Each entry is ``(slug, displayName)``.
+  ## Phase C wires real expansion state + conditional visibility
+  ## (Typography only when text element, Component properties only
+  ## for instances). Phase G progressively extracts per-section
+  ## content from ``populateInspectorManualBody`` in
+  ## ``component_edit.nim`` into per-section widget files.
+
 proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
-  ## Right sidebar — a SINGLE tabbed panel that hosts both the manual
-  ## property inspector ("Manual" tab) and the AI assistant chat panel
-  ## ("Assistant" tab). The user toggles between them at the top of the
-  ## sidebar; both tabs are always available regardless of mode or
-  ## story selection.
+  ## Right sidebar — a single-column scroll surface of inspector
+  ## section placeholders.
   ##
-  ## Structure:
-  ##   right-panel container (220–420 px width, full height)
-  ##   ├── top tab bar (Manual / Assistant)
-  ##   └── tab content (reactive on ``vm.rightSidebarTab.val``)
-  ##       ├── Manual tab — 12 sub-section tabs + property editor /
-  ##       │   "Select an element to inspect" empty state.
-  ##       └── Assistant tab — ``renderChatPanel`` content sized to
-  ##           fill the remaining sidebar height.
+  ## 2026-05-28 Phase A demolition: the prior Manual/Assistant tab
+  ## pair plus the 12-sub-tab strip were torn out (see
+  ## ``Front-Ends/IsoNim/isonim-editor.md`` §"Property Inspector
+  ## Panel — Section-Based Design"). The sidebar now scrolls a
+  ## single column of section placeholders — the same shape Figma's
+  ## UI3 design panel uses. The AI assistant moved out of the
+  ## sidebar entirely; per-chat robot icons live in the chrome bar
+  ## and open a slide-out drawer (Phase F).
   ##
-  ## The ``data-test-id="property-panel"`` attribute is stamped on the
-  ## sidebar root so e2e tests resolve the sidebar regardless of which
-  ## tab is active.
-  # Manual ("wrench") button — the only fixed-position icon in the top
-  # tab bar. The Assistant text tab from prior iterations is gone:
-  # per-chat robot icons (rendered into the tab bar below) cover that
-  # role now. Clicking the wrench flips the sidebar to the Manual tab.
-  var manualIconHost: E
-  let manualTabBtn = ui(r):
-    tdiv(`role` = "tab", tabindex = "0",
-         `data-sidebar-tab` = "manual",
-         title = "Manual edits",
-         `aria-label` = "Manual edits",
-         onclick = proc() = vm.setRightSidebarTab(rstManual),
-         onkeydown = proc() = vm.setRightSidebarTab(rstManual),
-         display = "flex", align_items = "center", justify_content = "center",
-         width = "28px", height = "28px",
-         border_radius = "6px",
-         cursor = "pointer", flex_shrink = "0",
-         transition = "background-color 0.12s, color 0.12s"):
-      tdiv(ref = manualIconHost,
-           `aria-hidden` = "true",
-           display = "flex", align_items = "center",
-           justify_content = "center",
-           width = "18px", height = "18px",
-           line_height = "1",
-           flex_shrink = "0")
-  r.setInnerHtml(manualIconHost, wrenchSvg)
-  block:
-    let captManual = manualTabBtn
-    createRenderEffect proc() =
-      let tab = vm.rightSidebarTab.val
-      let manualActive = tab == rstManual
-      r.setAttribute(captManual, "aria-selected",
-        if manualActive: "true" else: "false")
-      r.setStyle(captManual, "background-color",
-        if manualActive: accent else: "transparent")
-      r.setStyle(captManual, "color",
-        if manualActive: textPrimary else: textMuted)
+  ## Phase A scope:
+  ##   * Render 12 ``data-inspector-section-row`` placeholders in
+  ##     order, each with a ``data-inspector-section-header`` (bold
+  ##     name + placeholder "+" icon) and an empty
+  ##     ``data-inspector-section-body``.
+  ##   * Keep the sidebar root's ``data-test-id="property-panel"``
+  ##     contract (existing e2e tests resolve the sidebar by it).
+  ##   * Keep the left-edge drag-resize handle.
+  ##   * STOP calling ``populateInspectorManualBody`` — that proc
+  ##     is preserved in ``component_edit.nim`` for Phase G content
+  ##     extraction but no longer mounted here.
+  ##
+  ## All section bodies render as visible (empty) for Phase A.
+  ## Phase C wires the collapsed-by-default behaviour for Stroke /
+  ## Effects / Export, the conditional visibility for Typography /
+  ## Component properties / State / Selection colors, and the
+  ## persisted expansion state.
 
-  # Manual tab body — the inspector. Structure (per the test contract):
-  #   children[0] = 12-section sub-tab bar (Layout / Size / Space / …)
-  #   children[1..] = header (clipboard / Save / Revert / width / search)
-  #                    + inspector body (per-section content + design-
-  #                    system-impact panel), all populated by
-  #                    ``populateInspectorManualBody`` from
-  #                    ``component_edit.nim``.
-  #
-  # The ``.editor-manual-inspector`` class is preserved here (it used to
-  # live on the centre-column inspector panel; the e2e browser tests
-  # locate the inspector by this class).
-  let manualBody = ui(r):
-    tdiv(`data-sidebar-tab-panel` = "manual",
-         class = "editor-manual-inspector",
+  # Section list container — the single scrollable column that the
+  # placeholder rows mount into. Direct child of the sidebar root.
+  var sectionList: E
+  let sectionListEl = ui(r):
+    tdiv(ref = sectionList,
+         `data-inspector-section-list` = "true",
          display = "flex", flex_direction = "column",
          flex = "1", min_height = "0", min_width = "0",
-         overflow_x = "hidden"):
+         overflow_y = "auto", overflow_x = "hidden")
 
-      # 12 inspector sub-section tabs (Layout / Size / Space / …).
-      tdiv(class = "editor-tabbar",
-            display = "flex", align_items = "stretch",
-            height = "36px", min_height = "36px",
-            border_bottom = "1px solid " & border,
-            overflow_x = "auto", scrollbar_width = "none"):
-        for i, name in inspectorSectionNames:
-          let section = inspectorSections[i]
-          let chooseSection = inspectorSectionHandler(vm, section)
-          var tabNode: E
-          tdiv(display = "flex", align_items = "center",
-                ref = tabNode,
-                `role` = "tab", tabindex = "0",
-                `data-inspector-section` = inspectorSectionAttr(section),
-                `aria-label` = "Show " & name & " inspector section",
-                `aria-selected` = (if vm.isActiveInspectorSection(
-                    section): "true" else: "false"),
-                onclick = chooseSection,
-                onkeydown = chooseSection,
-                padding = "0 8px", font_size = "11px", font_weight = "500",
-                cursor = "pointer", white_space = "nowrap",
-                transition = "color 0.15s",
-                color = (if vm.isActiveInspectorSection(
-                    section): accent else: textMuted),
-                box_shadow = (if vm.isActiveInspectorSection(
-                    section): "inset 0 -2px 0 " & accent else: "none")):
-            text name
-          block:
-            r.bindInspectorTabState(tabNode, vm, section)
-
-  # ``populateInspectorManualBody`` takes a ``frame: E`` argument that
-  # the live-preview JS helpers in ``component_edit.nim`` use to talk
-  # to the editable preview iframe. The actual iframe lives inside
-  # ``renderComponentEditView`` (rendered in a different part of the
-  # shell), so the sidebar has no direct reference to it. We pass the
-  # ``manualBody`` itself as a stand-in element: the live-preview
-  # helpers fall back to
-  # ``document.querySelector('iframe[data-component-edit-frame]')``
-  # whenever the passed element doesn't expose a ``contentDocument``,
-  # which is always the case here. This keeps the type signature
-  # satisfied without coupling the sidebar to a specific iframe ref.
-  populateInspectorManualBody[R, E](r, manualBody, vm, manualBody)
-
-  # Assistant tab body — wraps ``renderChatPanel`` so the chat panel
-  # fills the remaining sidebar height beneath the tab bar. The chat
-  # panel renders its own outer container with width/height styling;
-  # we let the chat panel manage its sizing via ``bindRightPanelWidth``
-  # while the wrapper provides the flex slot.
-  #
-  # Multi-chat support: a small chat-tab strip sits at the top of the
-  # Assistant body. One tab per chat session, a trailing "+" button
-  # that creates a new session, and an overflow chevron-down dropdown
-  # that surfaces hidden chats when the strip can't fit everything
-  # inline. The active chat is highlighted with the indigo accent fill
-  # (same colour as the Manual / Assistant tabs above).
-  # Assistant body — simply hosts the live chat panel for the active
-  # session. The prior in-body chat-tab strip (one labelled tab per
-  # session + overflow chevron popup) was removed on 2026-05-28: per
-  # user direction, the top tab bar now holds one robot-icon button
-  # per chat (alongside the wrench), so an extra strip here would be
-  # redundant. Per-chat surfacing happens entirely in the top bar.
-  let assistantBody = ui(r):
-    tdiv(`data-sidebar-tab-panel` = "assistant",
-         display = "flex", flex_direction = "column",
-         flex = "1", min_height = "0", min_width = "0",
-         overflow_x = "hidden")
-
-  # Chat body container — holds the live ``renderChatPanel`` output.
-  # Re-mounted whenever ``activeChatId`` changes so the per-chat
-  # closure state (messagesArea contents, suggested-prompts chips,
-  # transcript text, …) lines up with the active session.
-  var chatBodyContainer: E
-  let chatBodyEl = ui(r):
-    tdiv(ref = chatBodyContainer,
-         `data-chat-body-container` = "true",
-         display = "flex", flex_direction = "column",
-         flex = "1", min_height = "0", min_width = "0",
-         overflow_x = "hidden")
-  r.appendChild(assistantBody, chatBodyEl)
-
-  # Rebuild the chat body — call ``renderChatPanel`` again to bind
-  # the active chat's signals. The current ``renderChatPanel`` reads
-  # the active chat's state via ``vm.chat`` (the alias proc), so
-  # re-mounting on ``activeChatId`` change is sufficient to switch
-  # the rendered transcript / composer / activity to the new chat.
-  proc renderChatBody() =
-    r.clearChildren(chatBodyContainer)
-    let chatPanel = renderChatPanel[R, E](r, vm)
-    r.appendChild(chatBodyContainer, chatPanel)
-
-  block:
-    createRenderEffect proc() =
-      discard vm.activeChatId.val
-      renderChatBody()
-
-  # Top-level tab bar — wrench (Manual) + one robot icon per chat
-  # session + trailing "+" button to create a new chat. This bar
-  # replaces the prior two-text-tab layout (Manual / Assistant). The
-  # bar scrolls horizontally when too many robots are open; the
-  # previous chevron-overflow dropdown is gone (native scroll is
-  # simpler and matches the user's mental model of "robots sit in a
-  # row next to the wrench").
-  var tabBar: E
-  let tabBarEl = ui(r):
-    tdiv(ref = tabBar,
-         `data-sidebar-tab-bar` = "true",
-         `role` = "tablist",
-         display = "flex", align_items = "center", gap = "4px",
-         padding = "8px 10px",
-         border_bottom = "1px solid " & border,
-         min_height = "44px",
-         overflow_x = "auto",
-         overflow_y = "hidden",
-         scrollbar_width = "thin")
-  r.appendChild(tabBar, manualTabBtn)
-
-  # Create-new-chat ("+") button — sits at the trailing edge of the
-  # top tab bar, after the last robot icon (the dynamic robot
-  # rebuild below ensures it stays last). Click creates a new chat
-  # AND flips the sidebar to the Assistant tab (see
-  # ``chatNewHandler``).
-  let newChatTopBtnHandler = chatNewHandler(vm)
-  var newChatIconHost: E
-  let newChatTopBtn = ui(r):
-    tdiv(`role` = "button", tabindex = "0",
-         `data-chat-tab-new` = "true",
-         title = "Create new chat",
-         `aria-label` = "Create new chat",
-         onclick = newChatTopBtnHandler,
-         onkeydown = newChatTopBtnHandler,
-         display = "flex", align_items = "center",
-         justify_content = "center",
-         width = "28px", height = "28px",
-         border_radius = "6px",
-         color = textMuted,
-         background_color = "transparent",
-         cursor = "pointer", flex_shrink = "0",
-         line_height = "1",
-         transition = "background-color 0.12s, color 0.12s"):
-      tdiv(ref = newChatIconHost,
-           `aria-hidden` = "true",
-           display = "flex", align_items = "center",
-           justify_content = "center",
-           width = "16px", height = "16px",
-           line_height = "1",
-           flex_shrink = "0")
-  r.setInnerHtml(newChatIconHost, plusSvg)
-  r.appendChild(tabBar, newChatTopBtn)
-
-  # Robot tab strip — one robot icon per ``ChatSession``. Rebuilt
-  # reactively on ``vm.chats`` / ``vm.activeChatId`` change. Each
-  # robot button carries a status-dot overlay that tracks its chat's
-  # ``sessionStatus`` signal. The robots are inserted BEFORE the
-  # "+" button so the new-chat affordance always sits at the end of
-  # the row regardless of how many robots are present.
-  proc renderRobotRow() =
-    # Remove existing robot buttons (any tab-bar child carrying
-    # ``data-chat-tab``). The renderer protocol exposes
-    # ``firstChild`` / ``nextSibling`` / ``getAttribute`` uniformly
-    # across the mock and DOM backends, so a linear scan works on
-    # both. The robot count is small (one per chat) — overhead is
-    # negligible.
-    var existing: seq[E] = @[]
-    var cursor = r.firstChild(tabBar)
-    while cursor != nil:
-      let nxt = r.nextSibling(cursor)
-      if r.getAttribute(cursor, "data-chat-tab").len > 0:
-        existing.add cursor
-      cursor = nxt
-    for node in existing:
-      r.removeChild(tabBar, node)
-
-    let sessions = vm.chats.val
-    let activeId = vm.activeChatId.val
-    for session in sessions:
-      let sessionId = session.id
-      let isActive = sessionId == activeId
-      let titleStr = session.title.val
-      let switch = chatSwitchHandler(vm, sessionId)
-      let chatVm = session.vm
-      var robotBtnRef: E
-      var iconHostRef: E
-      var statusDotRef: E
-      let robotBtn = ui(r):
-        tdiv(ref = robotBtnRef,
-             `role` = "tab", tabindex = "0",
-             `data-chat-tab` = sessionId,
-             `aria-selected` = (if isActive: "true" else: "false"),
-             title = titleStr,
-             `aria-label` = titleStr,
-             onclick = switch,
-             onkeydown = switch,
-             position = "relative",
+  for (slug, displayName) in inspectorPlaceholderSections:
+    let sectionRow = ui(r):
+      tdiv(`data-inspector-section-row` = slug,
+           display = "flex", flex_direction = "column",
+           border_bottom = "1px solid " & border):
+        # Header: bold section name on the left, placeholder "+" icon
+        # on the right. Phase C wires expansion-state toggling on
+        # header click; Phase A leaves it static.
+        tdiv(`data-inspector-section-header` = slug,
              display = "flex", align_items = "center",
-             justify_content = "center",
-             width = "28px", height = "28px",
-             border_radius = "6px",
-             cursor = "pointer", flex_shrink = "0",
-             color = (if isActive: textPrimary else: textMuted),
-             background_color = (if isActive: accent else: "transparent"),
-             transition = "background-color 0.12s, color 0.12s"):
-          tdiv(ref = iconHostRef,
+             justify_content = "space-between",
+             padding = "10px 12px",
+             font_size = "12px", font_weight = "600",
+             color = textPrimary,
+             cursor = "default"):
+          tdiv(`data-inspector-section-title` = "true"):
+            text displayName
+          # Placeholder "+" affordance — visually quiet, not wired
+          # to anything in Phase A.
+          tdiv(`data-inspector-section-action` = "add",
                `aria-hidden` = "true",
                display = "flex", align_items = "center",
                justify_content = "center",
-               width = "18px", height = "18px",
+               width = "16px", height = "16px",
                line_height = "1",
-               flex_shrink = "0")
-          # Status dot overlay — sits at the bottom-right corner of
-          # the robot button with a 2 px halo so it reads as a
-          # separate badge even against the active accent fill.
-          tdiv(ref = statusDotRef,
-               `data-sidebar-assistant-status-dot` = "true",
-               `data-chat-status` = "idle",
-               position = "absolute",
-               right = "-2px", bottom = "-2px",
-               width = "8px", height = "8px",
-               border_radius = "4px",
-               border = "2px solid " & bgSidebar,
-               background_color = "#A0A2B0",
-               flex_shrink = "0")
-      r.setInnerHtml(iconHostRef, robotSvg)
-      # Insert before the "+" button so robots stay in front of it.
-      r.insertBefore(tabBar, robotBtn, newChatTopBtn)
-      # Per-robot reactive bindings: title tooltip + status dot
-      # colour each follow their own signals. Captures keep the
-      # individual ``robotBtnRef`` / ``statusDotRef`` paired with the
-      # right session even as the row gets rebuilt on chat list
-      # changes.
-      block:
-        let captBtn = robotBtnRef
-        let captTitle = session.title
-        createRenderEffect proc() =
-          let t = captTitle.val
-          r.setAttribute(captBtn, "title", t)
-          r.setAttribute(captBtn, "aria-label", t)
-      block:
-        let captDot = statusDotRef
-        let captStatus = chatVm.sessionStatus
-        createRenderEffect proc() =
-          let state = captStatus.val
-          let color = case state
-            of asIdle: "#A0A2B0"   # muted
-            of asLoading: "#F59E0B"  # gold
-            of asReady: "#22C55E"    # green
-            of asError: "#EF4444"    # red
-          r.setStyle(captDot, "background-color", color)
-          r.setAttribute(captDot, "data-chat-status",
-            case state
-            of asIdle: "idle"
-            of asLoading: "loading"
-            of asReady: "ready"
-            of asError: "error")
-
-  block:
-    createRenderEffect proc() =
-      # Touching ``chats.val`` + ``activeChatId.val`` keeps the
-      # robot row reactive across both list changes and active-id
-      # flips. The render effect runs synchronously on creation, so
-      # robots materialise before we return from
-      # ``renderInspectorPanel``.
-      discard vm.chats.val
-      discard vm.activeChatId.val
-      renderRobotRow()
+               color = textMuted,
+               font_size = "14px", font_weight = "400"):
+            text "+"
+        # Empty body — Phase G fills this from
+        # ``populateInspectorManualBody`` extractions.
+        tdiv(`data-inspector-section-body` = slug,
+             display = "flex", flex_direction = "column",
+             padding = "0 12px 12px 12px",
+             min_height = "0")
+    r.appendChild(sectionList, sectionRow)
 
   result = ui(r):
     tdiv(class = "editor-inspector",
@@ -2122,10 +1859,9 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
   # via the ``window.__isonimEditor.setRightPanelWidth`` exposure in
   # ``browser.nim``. The handle is absolutely-positioned on the inner
   # edge (which is the LEFT edge for the right panel) at z-index 30
-  # so it sits above the tab body content. Appended FIRST so the
-  # tabBar / manualBody / assistantBody remain at the end of the
-  # children list — existing tests rely on ``children[^1]`` resolving
-  # to the assistant body.
+  # so it sits above the section-list content. Appended FIRST so
+  # downstream tests / consumers find the handle reliably regardless
+  # of section-list growth.
   let rightResizeHandle = ui(r):
     tdiv(`data-resize-handle` = "right-panel",
          `aria-hidden` = "true",
@@ -2136,10 +1872,7 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
          background_color = "transparent",
          z_index = "30")
   r.appendChild(sidebarRoot, rightResizeHandle)
-
-  r.appendChild(sidebarRoot, tabBarEl)
-  r.appendChild(sidebarRoot, manualBody)
-  r.appendChild(sidebarRoot, assistantBody)
+  r.appendChild(sidebarRoot, sectionListEl)
 
   when defined(js):
     let handleEl = rightResizeHandle
@@ -2179,17 +1912,6 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
         document.addEventListener('mouseleave', endDrag);
       })(""", handleEl, """, """, panelEl, """);
     """].}
-
-  # Reactively swap visibility of the two tab bodies.
-  block:
-    let captManual = manualBody
-    let captAssistant = assistantBody
-    createRenderEffect proc() =
-      let tab = vm.rightSidebarTab.val
-      r.setStyle(captManual, "display",
-        if tab == rstManual: "flex" else: "none")
-      r.setStyle(captAssistant, "display",
-        if tab == rstAssistant: "flex" else: "none")
 
   r.bindRightPanelWidth(result, vm)
 
@@ -3335,9 +3057,13 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
         proc(success: bool; reason: string) =
           if success:
             chatOpenedForSpecComment.val = true
-            # Surface the Assistant tab in the right sidebar so the
-            # comment-to-chat flow lands the user on the chat panel
-            # rather than the manual property inspector.
+            # DEPRECATED Phase A — replaced by aiDrawerOpen in
+            # Phase F. The Manual/Assistant tab pair is gone; the AI
+            # chat now lives in a chrome-bar-driven slide-out
+            # drawer. This call is a no-op shim
+            # (``setRightSidebarTab`` does nothing) so the
+            # comment-to-chat handoff continues to compile until
+            # Phase F migrates it to ``vm.openAiDrawer(...)``.
             vm.setRightSidebarTab(rstAssistant)
           if cb != nil:
             cb(success, reason))

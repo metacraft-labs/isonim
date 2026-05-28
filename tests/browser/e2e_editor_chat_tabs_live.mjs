@@ -201,105 +201,122 @@ test.after(async () => {
 // Initial mount: one chat, "+" button present, overflow hidden
 // ---------------------------------------------------------------------------
 
-test("e2e_chat_tabs_initial_state_has_single_new_chat", async () => {
-  const { ctx, page } = await openEditor();
-  try {
-    const tabs = await chatTabs(page);
-    assert.equal(tabs.length, 1, "exactly one chat tab on initial load");
-    assert.equal(
-      tabs[0].label,
-      "New chat",
-      "first robot's tooltip is 'New chat'",
-    );
-    // The seeded chat isn't active by default (the sidebar opens
-    // on Manual). The aria-selected reflects the active chat
-    // regardless of which sidebar surface is showing, so on a
-    // single-chat workspace it stays "true" once the sidebar
-    // surfaces Assistant. For the initial-mount probe we only
-    // check the robot exists and is keyboard-reachable.
-    assert.equal(
-      tabs[0].id,
-      "chat-1",
-      "seeded chat carries the stable 'chat-1' id",
-    );
+// DEFERRED Phase F — see Front-Ends/IsoNim/isonim-editor.md §"AI assistant placement". The sidebar chat-tab strip is gone; per-chat robot icons relocate to the chrome bar and drive a slide-out drawer.
+test(
+  "e2e_chat_tabs_initial_state_has_single_new_chat",
+  {
+    skip: "Phase A demolition; replaced by Phase F drawer e2e (see isonim-editor.md §AI assistant placement)",
+  },
+  async () => {
+    const { ctx, page } = await openEditor();
+    try {
+      const tabs = await chatTabs(page);
+      assert.equal(tabs.length, 1, "exactly one chat tab on initial load");
+      assert.equal(
+        tabs[0].label,
+        "New chat",
+        "first robot's tooltip is 'New chat'",
+      );
+      // The seeded chat isn't active by default (the sidebar opens
+      // on Manual). The aria-selected reflects the active chat
+      // regardless of which sidebar surface is showing, so on a
+      // single-chat workspace it stays "true" once the sidebar
+      // surfaces Assistant. For the initial-mount probe we only
+      // check the robot exists and is keyboard-reachable.
+      assert.equal(
+        tabs[0].id,
+        "chat-1",
+        "seeded chat carries the stable 'chat-1' id",
+      );
 
-    const newBtn = await page.$(
-      '[data-test-id="property-panel"] [data-chat-tab-new="true"]',
-    );
-    assert.ok(newBtn, '"+" new-chat button is mounted in the top tab bar');
-    assert.equal(
-      await newBtn.getAttribute("aria-label"),
-      "Create new chat",
-      '"+" button advertises its aria-label',
-    );
-    assert.equal(
-      await newBtn.getAttribute("title"),
-      "Create new chat",
-      '"+" button advertises its title for hover tooltips',
-    );
+      const newBtn = await page.$(
+        '[data-test-id="property-panel"] [data-chat-tab-new="true"]',
+      );
+      assert.ok(newBtn, '"+" new-chat button is mounted in the top tab bar');
+      assert.equal(
+        await newBtn.getAttribute("aria-label"),
+        "Create new chat",
+        '"+" button advertises its aria-label',
+      );
+      assert.equal(
+        await newBtn.getAttribute("title"),
+        "Create new chat",
+        '"+" button advertises its title for hover tooltips',
+      );
 
-    // Wrench (Manual) button is present and carries a tooltip.
-    const wrench = await page.$(
-      '[data-test-id="property-panel"] [data-sidebar-tab="manual"]',
-    );
-    assert.ok(wrench, "wrench (Manual) button is present in the top tab bar");
-    assert.equal(
-      await wrench.getAttribute("title"),
-      "Manual edits",
-      "wrench advertises its title for hover tooltips",
-    );
+      // Wrench (Manual) button is present and carries a tooltip.
+      const wrench = await page.$(
+        '[data-test-id="property-panel"] [data-sidebar-tab="manual"]',
+      );
+      assert.ok(wrench, "wrench (Manual) button is present in the top tab bar");
+      assert.equal(
+        await wrench.getAttribute("title"),
+        "Manual edits",
+        "wrench advertises its title for hover tooltips",
+      );
 
-    // Each robot exposes a status dot overlay with a reactive
-    // data-chat-status attribute. Initial state is idle.
-    assert.equal(
-      tabs[0].status,
-      "idle",
-      "robot status dot starts in the idle state",
-    );
-  } finally {
-    await ctx.close();
-  }
-});
+      // Each robot exposes a status dot overlay with a reactive
+      // data-chat-status attribute. Initial state is idle.
+      assert.equal(
+        tabs[0].status,
+        "idle",
+        "robot status dot starts in the idle state",
+      );
+    } finally {
+      await ctx.close();
+    }
+  },
+);
 
 // ---------------------------------------------------------------------------
 // "+" creates the second chat; clicking the first tab activates it back.
 // ---------------------------------------------------------------------------
 
-test("e2e_chat_tabs_plus_creates_new_chat_and_switching_works", async () => {
-  const { ctx, page } = await openEditor();
-  try {
-    await clickNewChat(page);
-    let tabs = await chatTabs(page);
-    assert.equal(tabs.length, 2, "second robot appears after clicking +");
-    assert.equal(
-      tabs[1].label,
-      "New chat 2",
-      "second robot's tooltip is 'New chat 2'",
-    );
-    assert.equal(
-      tabs[1].selected,
-      "true",
-      "newly created chat is active immediately",
-    );
-    assert.equal(
-      tabs[0].selected,
-      "false",
-      "previous chat is no longer active",
-    );
+test(
+  "e2e_chat_tabs_plus_creates_new_chat_and_switching_works",
+  {
+    skip: "Phase A demolition; replaced by Phase F drawer e2e (see isonim-editor.md §AI assistant placement)",
+  },
+  async () => {
+    const { ctx, page } = await openEditor();
+    try {
+      await clickNewChat(page);
+      let tabs = await chatTabs(page);
+      assert.equal(tabs.length, 2, "second robot appears after clicking +");
+      assert.equal(
+        tabs[1].label,
+        "New chat 2",
+        "second robot's tooltip is 'New chat 2'",
+      );
+      assert.equal(
+        tabs[1].selected,
+        "true",
+        "newly created chat is active immediately",
+      );
+      assert.equal(
+        tabs[0].selected,
+        "false",
+        "previous chat is no longer active",
+      );
 
-    // Switch back to chat-1 by clicking its robot.
-    await clickChatTab(page, "chat-1");
-    tabs = await chatTabs(page);
-    assert.equal(tabs[0].selected, "true", "first chat re-activates on click");
-    assert.equal(
-      tabs[1].selected,
-      "false",
-      "second chat deactivates when first is selected",
-    );
-  } finally {
-    await ctx.close();
-  }
-});
+      // Switch back to chat-1 by clicking its robot.
+      await clickChatTab(page, "chat-1");
+      tabs = await chatTabs(page);
+      assert.equal(
+        tabs[0].selected,
+        "true",
+        "first chat re-activates on click",
+      );
+      assert.equal(
+        tabs[1].selected,
+        "false",
+        "second chat deactivates when first is selected",
+      );
+    } finally {
+      await ctx.close();
+    }
+  },
+);
 
 // ---------------------------------------------------------------------------
 // Many chats overflow the top tab bar horizontally and the active robot
@@ -315,42 +332,48 @@ test("e2e_chat_tabs_plus_creates_new_chat_and_switching_works", async () => {
 // ``clientWidth`` (proof that scrolling is needed and possible) and
 // every robot is still present in the DOM.
 
-test("e2e_chat_tabs_many_chats_scroll_horizontally", async () => {
-  const { ctx, page } = await openEditor();
-  try {
-    for (let i = 0; i < 9; i++) {
-      await clickNewChat(page);
-    }
-    const tabs = await chatTabs(page);
-    assert.equal(tabs.length, 10, "ten robot icons after creating 9 extras");
+test(
+  "e2e_chat_tabs_many_chats_scroll_horizontally",
+  {
+    skip: "Phase A demolition; replaced by Phase F drawer e2e (see isonim-editor.md §AI assistant placement)",
+  },
+  async () => {
+    const { ctx, page } = await openEditor();
+    try {
+      for (let i = 0; i < 9; i++) {
+        await clickNewChat(page);
+      }
+      const tabs = await chatTabs(page);
+      assert.equal(tabs.length, 10, "ten robot icons after creating 9 extras");
 
-    // The newest chat (chat-10) is active. Every robot — visible or
-    // scrolled out of view — is still mounted in the top bar (no
-    // hide-via-display:none any more).
-    const active = tabs.find((t) => t.selected === "true");
-    assert.ok(active, "an active robot is identifiable in the DOM");
-    assert.equal(active.id, "chat-10", "newly created chat-10 is active");
-    for (const t of tabs) {
+      // The newest chat (chat-10) is active. Every robot — visible or
+      // scrolled out of view — is still mounted in the top bar (no
+      // hide-via-display:none any more).
+      const active = tabs.find((t) => t.selected === "true");
+      assert.ok(active, "an active robot is identifiable in the DOM");
+      assert.equal(active.id, "chat-10", "newly created chat-10 is active");
+      for (const t of tabs) {
+        assert.equal(
+          t.displayed,
+          true,
+          `robot ${t.id} stays mounted (native scroll, not hidden)`,
+        );
+      }
+
+      const scroll = await tabBarScrollState(page);
+      assert.ok(scroll, "tab bar is resolvable on the page");
       assert.equal(
-        t.displayed,
-        true,
-        `robot ${t.id} stays mounted (native scroll, not hidden)`,
+        scroll.overflowX,
+        "auto",
+        "top tab bar uses overflow-x:auto for horizontal scroll",
       );
+      assert.ok(
+        scroll.scrollWidth > scroll.clientWidth,
+        "tab bar's content (wrench + 10 robots + plus) exceeds its " +
+          "client width — horizontal scroll is engaged",
+      );
+    } finally {
+      await ctx.close();
     }
-
-    const scroll = await tabBarScrollState(page);
-    assert.ok(scroll, "tab bar is resolvable on the page");
-    assert.equal(
-      scroll.overflowX,
-      "auto",
-      "top tab bar uses overflow-x:auto for horizontal scroll",
-    );
-    assert.ok(
-      scroll.scrollWidth > scroll.clientWidth,
-      "tab bar's content (wrench + 10 robots + plus) exceeds its " +
-        "client width — horizontal scroll is engaged",
-    );
-  } finally {
-    await ctx.close();
-  }
-});
+  },
+);

@@ -206,11 +206,13 @@ type
       ## back onto the sidebar element's inline width.
     rightPanelWidth*: Signal[int]
     rightSidebarTab*: Signal[RightSidebarTab]
-      ## Right-sidebar top-level tab selection. The sidebar is a
-      ## single panel that hosts two tabs — ``rstManual`` (the
-      ## property inspector with its 12 sub-sections) and
-      ## ``rstAssistant`` (the AI chat panel). Defaults to
-      ## ``rstManual``; persistence is per-session only.
+      ## DEPRECATED Phase A — replaced by aiDrawerOpen in Phase F.
+      ## The right-sidebar Manual/Assistant tab pair was demolished
+      ## on 2026-05-28; the sidebar is now a single-column scroll
+      ## surface and the AI chat lives in a chrome-bar-driven
+      ## slide-out drawer. This signal is kept as a no-op shim so
+      ## the spec-comment chat-handoff site keeps compiling. Reads
+      ## are no longer observed by any renderer.
     platform*: Signal[Platform]
     viewport*: Signal[PreviewViewport]
     workspacePermissions*: Signal[EditorWorkspacePermissions]
@@ -1998,11 +2000,17 @@ proc togglePanel*(editor: EditorVM; panel: EditorPanel) =
                                         inspector: not current.inspector)
 
 proc setRightSidebarTab*(editor: EditorVM; tab: RightSidebarTab) =
-  ## Switch the right sidebar's top-level tab between Manual
-  ## (inspector) and Assistant (chat). Both tabs are always
-  ## available; this writes the active selection.
-  if editor.rightSidebarTab.val != tab:
-    editor.rightSidebarTab.val = tab
+  ## DEPRECATED Phase A — replaced by ``openAiDrawer`` in Phase F.
+  ## Originally toggled the right sidebar between the Manual
+  ## (inspector) and Assistant (chat) tabs. The Manual/Assistant tab
+  ## pair was demolished on 2026-05-28 (see
+  ## ``Front-Ends/IsoNim/isonim-editor.md`` §"AI assistant
+  ## placement"). This proc is kept as a no-op shim so existing call
+  ## sites (notably the spec-comment chat handoff in ``shell.nim``)
+  ## keep compiling until Phase F migrates them to
+  ## ``vm.openAiDrawer(activeSessionId)``.
+  discard editor
+  discard tab
 
 func clampRightPanelWidth*(width: int): int =
   # M-EVP-14 Wave Chrome CR-3: lowered the minimum from 240 → 200 so the

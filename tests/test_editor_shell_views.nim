@@ -147,142 +147,91 @@ suite "Editor Shell Views (M2)":
       dispose()
 
   test "test_inspector_renders_all_sections":
-    ## Inspector renders inside the Manual tab of the tabbed right
-    ## sidebar. Sidebar root structure: [top-tab-bar (Manual/Assistant),
-    ## manualBody, assistantBody]. The Manual body's first child is the
-    ## 12-section sub-tab bar.
+    ## Phase A demolition (2026-05-28): the prior Manual/Assistant
+    ## tab pair plus the 12-sub-tab strip are gone. The sidebar
+    ## now renders a single-column scroll surface of section
+    ## placeholders — see ``Front-Ends/IsoNim/isonim-editor.md``
+    ## §"Property Inspector Panel — Section-Based Design".
+    ## Twelve ``data-inspector-section-row`` placeholders appear
+    ## in user-decided order (Position / Layout / Appearance /
+    ## Fill / Stroke / Effects / Typography / Selection colors /
+    ## Source / Component properties / State / Export).
     createRoot do (dispose: proc()):
       let r = MockRenderer()
       let vm = createEditorVM()
 
       let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
 
-      # Sidebar root: resize handle + top tab bar + Manual body + Assistant body.
-      # 2026-05-28: the drag-resize handle joined the sidebar root's
-      # child list; resolve elements by their data attributes rather
-      # than positional indexes so the test stays robust against
-      # future structural additions.
-      check panel.children.len >= 3
+      # Sidebar root still carries ``data-test-id="property-panel"``.
+      check panel.attributes.getOrDefault("data-test-id") == "property-panel"
 
-      # Top-level tab bar (2026-05-28 icon redesign) — carries the
-      # wrench (Manual) button, one robot-icon button per chat
-      # session, and a trailing "+" button. The robots replace the
-      # prior text "Assistant" tab AND the in-Assistant chat-tab
-      # strip — the new bar lays them out together as the user
-      # requested ("the assistant button represents the initially
-      # created chat session"). With one chat at startup that's
-      # exactly three children: wrench + one robot + plus.
-      let topTabBar = findByAttr(panel, "data-sidebar-tab-bar", "true")
-      check topTabBar != nil
-      check findByAttr(topTabBar, "data-sidebar-tab", "manual") != nil
-      check findByAttr(topTabBar, "data-chat-tab-new", "true") != nil
-      # At least one robot icon exists for the seeded chat session.
-      let robotTabs = findAllByAttr(topTabBar, "role", "tab")
-      var seenChatTab = false
-      for t in robotTabs:
-        if t.attributes.getOrDefault("data-chat-tab").len > 0:
-          seenChatTab = true
-      check seenChatTab
+      # The 12 section placeholders mount inside a single scrollable
+      # column. The list element carries
+      # ``data-inspector-section-list="true"`` so Phase C / G can
+      # locate the mount point cheaply.
+      let sectionList = findByAttr(panel, "data-inspector-section-list", "true")
+      check sectionList != nil
 
-      # Manual body's first child is the 12-section sub-tab bar.
-      let manualBody = findByAttr(panel, "data-sidebar-tab-panel", "manual")
-      check manualBody != nil
-      let sectionTabs = manualBody.children[0]
-      check sectionTabs.children.len == 12
+      # 12 ``data-inspector-section-row`` placeholders in order.
+      let expectedSections = [
+        ("position",             "Position"),
+        ("layout",               "Layout"),
+        ("appearance",           "Appearance"),
+        ("fill",                 "Fill"),
+        ("stroke",               "Stroke"),
+        ("effects",              "Effects"),
+        ("typography",           "Typography"),
+        ("selection-colors",     "Selection colors"),
+        ("source",               "Source"),
+        ("component-properties", "Component properties"),
+        ("state",                "State"),
+        ("export",               "Export")
+      ]
+      var sectionRows: seq[MockNode] = @[]
+      for child in sectionList.children:
+        if child.attributes.getOrDefault("data-inspector-section-row").len > 0:
+          sectionRows.add child
+      check sectionRows.len == 12
+
+      # Ordered slug check + header carries the display name + each
+      # row exposes an empty body slot.
+      for i, (slug, displayName) in expectedSections:
+        check sectionRows[i].attributes["data-inspector-section-row"] == slug
+        let header = findByAttr(sectionRows[i],
+          "data-inspector-section-header", slug)
+        check header != nil
+        check header.textContent.contains(displayName)
+        let body = findByAttr(sectionRows[i],
+          "data-inspector-section-body", slug)
+        check body != nil
+
+      # The legacy Manual/Assistant tab bar + 12-sub-tab strip are
+      # GONE. Negative assertions pin the removal so a future
+      # accidental re-mount fails this test.
+      check findByAttr(panel, "data-sidebar-tab-bar", "true") == nil
+      check findByAttr(panel, "data-sidebar-tab", "manual") == nil
+      check findByAttr(panel, "data-sidebar-tab-panel", "manual") == nil
+      check findByAttr(panel, "data-sidebar-tab-panel", "assistant") == nil
+      check findByAttr(panel, "data-inspector-section", "layout") == nil
 
       dispose()
 
   test "component_edit_inspector_explains_and_applies_design_system_scope":
-    createRoot do (dispose: proc()):
-      let r = MockRenderer()
-      let vm = createEditorVM()
-      vm.selectInspectorElement(ElementRef(
-        id: "card-title",
-        tag: "h2",
-        sourceFile: "apps/back-office/src/backoffice_ui/cards.nim",
-        sourceLine: 42,
-        properties: @[
-          PropertyInfo(name: "gap", value: "16px", origin: poThemeToken,
-            originDetail: "spacing token",
-            sourceFile: "apps/back-office/src/backoffice_ui/cards.nim",
-            sourceLine: 43,
-            sharedCount: 5,
-            schemaKey: "semantic.spacing.card-gap",
-            tokenName: "space.card.gap"),
-          PropertyInfo(name: "border-radius", value: "8px",
-            origin: poSetStyle,
-            originDetail: "local radius",
-            sourceFile: "apps/back-office/src/backoffice_ui/cards.nim",
-            sourceLine: 44)
-        ]))
-
-      # The rich inspector content (12 sub-tabs + design-system-impact
-      # panel + dense property rows) used to live as a centre-column
-      # panel inside ``renderComponentEditView``. It now lives in the
-      # right sidebar's Manual tab (``renderInspectorPanel`` inside
-      # ``renderEditorShell``). Render the full shell so the new mount
-      # point is included in the assertion surface.
-      let view = renderEditorShell[MockRenderer, MockNode](r, vm)
-      let impact = findByAttr(view, "data-design-system-impact", "true")
-      check impact != nil
-      check impact.attributes["data-source-scope-impact"] == "true"
-      check impact.attributes["data-design-system-property-count"] == "1"
-      check impact.attributes["data-source-scope-impact-count"] == "1"
-      check view.textContent.contains("Scope impact")
-      check view.textContent.contains("row scope selector")
-      check view.textContent.contains("updates 5 mapped uses")
-      check view.textContent.contains("token space.card.gap")
-      check view.textContent.contains("CSS Layout / Grid / Flex / Constraints")
-      check findByAttr(view, "data-inspector-section", "layout") != nil
-      check findByAttr(view, "data-inspector-section", "size") != nil
-      check findByAttr(view, "data-inspector-section", "spacing") != nil
-      check findByAttr(view, "data-inspector-section", "position") != nil
-      check findByAttr(view, "data-inspector-section", "fill") != nil
-      check findByAttr(view, "data-inspector-section", "stroke") != nil
-      check findByAttr(view, "data-inspector-section", "typography") != nil
-      check findByAttr(view, "data-inspector-section", "effects") != nil
-      check findByAttr(view, "data-inspector-section", "transitions") != nil
-      check findByAttr(view, "data-inspector-section", "filters") != nil
-      check findByAttr(view, "data-inspector-section", "state") != nil
-      check findByAttr(view, "data-inspector-section", "source") != nil
-
-      let denseRows = findAllByAttr(view, "data-inspector-dense-row", "true")
-      check denseRows.len >= 2
-      var gapRow: MockNode
-      for row in denseRows:
-        check row.attributes["data-inspector-row-slots"] ==
-          "label scrub-value unit binding scope reset more"
-        for slot in [
-          "label-scrubber", "value-field", "unit-picker",
-          "binding-indicator", "scope-selector", "reset", "actions"
-        ]:
-          check countByAttr(row, "data-inspector-row-slot", slot) == 1
-        if row.attributes.getOrDefault("data-inspector-property") == "gap" and
-            row.attributes.getOrDefault("data-inspector-property-source-key") ==
-            "semantic.spacing.card-gap":
-          gapRow = row
-      check gapRow != nil
-      let gapInput = findByAttr(gapRow, "aria-label",
-        "Edit inspector property gap")
-      let scopeSelector = findByAttr(gapRow, "aria-label",
-        "Choose source scope for gap")
-      let sharedScope = findByAttr(gapRow, "aria-label",
-        "Apply Shared class source scope for gap")
-      check gapInput != nil
-      check scopeSelector != nil
-      check scopeSelector.attributes["data-inspector-row-slot"] == "scope-selector"
-      check scopeSelector.attributes["data-compact-choice-strip"] == "true"
-      check scopeSelector.attributes["data-source-scope-count"] == "7"
-      check sharedScope != nil
-      check sharedScope.attributes["data-compact-choice-enabled"] == "true"
-      check "click" in sharedScope.eventListeners
-      r.setInputValue(gapInput, "24px")
-      sharedScope.fireEvent("click")
-      check vm.inspector.pendingSourceEdits.val.len == 1
-      check vm.inspector.pendingSourceEdits.val[0].scope == pesShared
-      check vm.inspector.pendingSourceEdits.val[0].sourceScope == sskSharedClass
-      check vm.inspector.selectedElement.val.properties[0].value == "24px"
-      dispose()
+    ## DEFERRED to Phase G — see
+    ## ``Front-Ends/IsoNim/isonim-editor.md`` §"Property Inspector
+    ## Panel — Section-Based Design".
+    ##
+    ## Phase A demolition (2026-05-28) stopped mounting
+    ## ``populateInspectorManualBody`` inside ``renderInspectorPanel``.
+    ## The rich content this test exercises (12-sub-tabs, design-
+    ## system-impact panel, dense property rows, scope selector
+    ## click handling) is preserved in
+    ## ``component_edit.nim::populateInspectorManualBody`` but is
+    ## not wired into the new section-based sidebar yet. Phase G
+    ## progressively extracts that content into per-section widget
+    ## files; this test will be rewritten then to assert against
+    ## the new per-section mount points.
+    skip()
 
   test "test_views_contain_no_hardcoded_values":
     ## View files use Tailwind classes, no hardcoded pixel values in class strings
@@ -296,33 +245,19 @@ suite "Editor Shell Views (M2)":
     # (they use Tailwind scale like p-4, not p-16px)
 
   test "test_chat_section_has_input":
-    ## The AI chat lives inside the right sidebar's Assistant tab.
-    ## Sidebar root: [top-tab-bar, manualBody, assistantBody]; the
-    ## Assistant body wraps the chat panel returned by
-    ## ``renderChatPanel``.
-    createRoot do (dispose: proc()):
-      let r = MockRenderer()
-      let vm = createEditorVM()
-
-      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
-
-      # 2026-05-28: resolve the assistant body by its data attribute
-      # rather than by positional index — the resize handle now lives
-      # in the sidebar root's child list too.
-      let assistantBody = findByAttr(panel, "data-sidebar-tab-panel",
-        "assistant")
-      check assistantBody != nil
-      # It wraps the chat panel — which carries header + messages +
-      # input area, so the assistant tree exposes at least the agent
-      # prompt input.
-      let promptInput = findByAttr(assistantBody, "aria-label",
-        "Agent prompt")
-      check promptInput != nil
-      let sendBtn = findByAttr(assistantBody, "aria-label",
-        "Send agent prompt")
-      check sendBtn != nil
-
-      dispose()
+    ## DEFERRED to Phase F — see
+    ## ``Front-Ends/IsoNim/isonim-editor.md`` §"AI assistant
+    ## placement".
+    ##
+    ## Phase A demolition (2026-05-28) removed the Assistant tab
+    ## body from the right sidebar. The chat panel
+    ## (``renderChatPanel``) is preserved in
+    ## ``chat_panel.nim`` and will be re-mounted inside the
+    ## chrome-bar-driven slide-out drawer in Phase F. The drawer
+    ## then carries the chat composer (Agent prompt + Send) that
+    ## this test asserts on; Phase F rewrites this test to target
+    ## the drawer mount point.
+    skip()
 
   test "editor_shell_mock_renderer_exposes_clickable_controls":
     createRoot do (dispose: proc()):
@@ -378,10 +313,15 @@ suite "Editor Shell Views (M2)":
       journeysToggle.fireEvent("click")
       check journeysToggle.attributes["aria-expanded"] == "false"
 
-      let inspectorToggle = findByAttr(shell, "aria-label", "Toggle inspector panel")
-      check inspectorToggle != nil
-      inspectorToggle.fireEvent("click")
-      check vm.panels.val.inspector == false
+      # Phase A demolition (2026-05-28): the "Toggle inspector panel"
+      # offscreen affordance used to ride inside ``renderChatPanel``,
+      # which Phase A stopped mounting inside the sidebar. The chat
+      # panel (and any incidental affordances it carried) re-mounts
+      # inside the Phase F slide-out drawer. The
+      # ``vm.togglePanel(epInspector)`` contract is unchanged and is
+      # exercised by the chrome-bar tests; Phase F restores or
+      # relocates this offscreen handle.
+      check vm.panels.val.inspector == true
 
       let vector = renderVectorEditor[MockRenderer, MockNode](r, vm)
       let penTool = findByAttr(vector, "aria-label", "Select Pen vector tool")
@@ -413,19 +353,20 @@ suite "Editor Shell Views (M2)":
       check vm.vectorEditor.selectedSymbol.val == 1
       check layer.attributes["aria-selected"] == "true"
 
+      # Phase A demolition (2026-05-28): the inspector's 12 sub-tabs
+      # ("Show Fill inspector section" / …) are gone. The sidebar
+      # now exposes 12 ``data-inspector-section-row`` placeholders
+      # in user-decided order. Phase G wires per-section content +
+      # expansion controls; the underlying
+      # ``vm.inspector.activeSection`` signal contract still drives
+      # which section is active and is exercised here directly via
+      # the VM so Phase G can rebuild the click affordance.
       let inspector = renderInspectorPanel[MockRenderer, MockNode](r, vm)
-      let fillTab = findByAttr(inspector, "aria-label", "Show Fill inspector section")
-      check fillTab != nil
-      check fillTab.attributes["aria-selected"] == "false"
-      fillTab.fireEvent("click")
+      let fillRow = findByAttr(inspector,
+        "data-inspector-section-row", "fill")
+      check fillRow != nil
+      vm.switchInspectorSection(isFill)
       check vm.inspector.activeSection.val == isFill
-      check fillTab.attributes["aria-selected"] == "true"
-      # The active inspector tab carries an inset accent box-shadow.
-      # The token is `accent` (`#7C7AED`); the older `#3B82F6` was a
-      # stale reference to the controls.nim accent that never wired
-      # into the inspector tab binding.
-      check fillTab.styles["box-shadow"].toLowerAscii().contains(
-        accent.toLowerAscii())
 
       let preview = renderPreviewPane[MockRenderer, MockNode](r, vm)
       # M-EVP-7: the view-switcher chip group is gone — the chrome bar

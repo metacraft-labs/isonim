@@ -2067,14 +2067,17 @@ type
     inspector*: bool
 
   # --- Right sidebar tab selection ---
-  # The right sidebar is a single panel that hosts two top-level
-  # tabs: the manual property inspector (with its 12 sub-sections)
-  # and the AI assistant chat panel. The user toggles between them
-  # at the top of the sidebar. Both are always available regardless
-  # of mode / story selection.
+  # DEPRECATED Phase A — replaced by aiDrawerOpen in Phase F.
+  # The right sidebar's Manual/Assistant tab pair was demolished on
+  # 2026-05-28 (see ``Front-Ends/IsoNim/isonim-editor.md`` §"AI
+  # assistant placement"). The sidebar is now a single-column scroll
+  # surface; the AI chat moved to a chrome-bar-driven slide-out
+  # drawer. This enum is retained as a deprecation shim so the
+  # spec-comment chat-handoff site in ``shell.nim`` keeps compiling
+  # until Phase F replaces it with ``vm.openAiDrawer``.
   RightSidebarTab* = enum
-    rstManual          ## inspector / property editor (manual edits)
-    rstAssistant       ## AI assistant chat panel
+    rstManual          ## DEPRECATED Phase A — no longer wired.
+    rstAssistant       ## DEPRECATED Phase A — no longer wired.
 
   InspectorControlSlot* = enum
     icsLabel
