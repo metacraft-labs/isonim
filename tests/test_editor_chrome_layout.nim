@@ -861,32 +861,60 @@ suite "M-EVP-3 preview chrome bar density":
       #
       # Phase I (2026-05-28): the Surface (Preview/Spec) cluster is
       # removed. The Spec selection folds into the Mode cluster as a
-      # fourth option in front of View/Comment/Edit, and the visible
-      # cluster order is now [backend, viewport, mode]. The view-
-      # switcher cluster is gone because the sidebar drives the
-      # active view.
+      # fourth option in front of View/Comment/Edit.
+      #
+      # Phase O (2026-05-29): the History affordance joined the
+      # chip cluster family — it now sits at the LEFT edge as a
+      # ``data-toolbar-cluster="history"`` trough (single
+      # ChoiceItem-style pill inside a transparent trough,
+      # matching Backend / Viewport / Mode). The Mode cluster
+      # docks to the RIGHT edge via ``margin-left: auto``. The
+      # canonical direct-child cluster order is now
+      # ``[history, backend, viewport, mode]``.
       let clusterAttr = "data-toolbar-cluster"
       check findAllByAttr(bar, clusterAttr, "view-switcher").len == 0
       # Negative assertion: the Surface cluster is gone.
       check findAllByAttr(bar, clusterAttr, "surface").len == 0
       check findAllByAttr(bar,
         "data-preview-surface-switch", "true").len == 0
-      let clusters = findAllByAttr(bar, clusterAttr, "backend") &
+      let clusters = findAllByAttr(bar, clusterAttr, "history") &
+        findAllByAttr(bar, clusterAttr, "backend") &
         findAllByAttr(bar, clusterAttr, "viewport") &
         findAllByAttr(bar, clusterAttr, "mode")
-      check clusters.len == 3
+      check clusters.len == 4
 
       # Every cluster must be a direct child of the toolbar — if a
       # future refactor nests them inside an intermediate wrapper the
       # flex `gap` no longer applies between them, so this is the
       # invariant the visual separation rests on.
-      let clusterKinds = @["backend", "viewport", "mode"]
+      let clusterKinds = @["history", "backend", "viewport", "mode"]
       var directChildClusters: seq[string] = @[]
       for child in bar.children:
         let kind = child.attributes.getOrDefault(clusterAttr)
         if kind.len > 0:
           directChildClusters.add kind
       check directChildClusters == clusterKinds
+
+      # The Mode cluster docks to the right edge — its wrapper
+      # carries ``margin-left: auto`` so the leading clusters
+      # stay flush-left while Mode floats to the trailing edge.
+      let modeCluster = findByAttr(bar, clusterAttr, "mode")
+      check modeCluster != nil
+      check modeCluster.styles.getOrDefault("margin-left") == "auto"
+      check modeCluster.attributes.getOrDefault(
+        "data-toolbar-cluster-docked") == "right"
+
+      # The History cluster IS a trough — it carries the
+      # ``data-chrome-history-trough`` marker that pins the
+      # restyled appearance to the same chip family as the rest.
+      let historyTrough = findByAttr(bar,
+        "data-chrome-history-trough", "true")
+      check historyTrough != nil
+      # The history button itself lives inside the trough, keeping
+      # the canonical e2e selectors stable.
+      let historyBtn = findByAttr(historyTrough,
+        "data-design-review-history-button", "true")
+      check historyBtn != nil
       dispose()
 
   test "regression probe: collapsing toolbar gap to 0 invalidates the M-EVP-3 invariant":

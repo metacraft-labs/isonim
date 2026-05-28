@@ -205,7 +205,13 @@ test("e2e_ai_tabs_initial_state_has_one_tab_and_plus_button", async () => {
     const tabs = await tabList(page);
     assert.equal(tabs.length, 1, "exactly one tab on initial mount");
     assert.equal(tabs[0].id, "chat-1");
-    assert.equal(tabs[0].label, "New chat");
+    // Phase P (2026-05-29): the first chat session now uses the
+    // "Make changes with AI" invitation label rather than the
+    // generic "New chat" header — this is the user-visible
+    // contract that distinguishes the first chat from
+    // subsequently-created chats (which still read "New chat" /
+    // "New chat 2" / ...).
+    assert.equal(tabs[0].label, "Make changes with AI");
     assert.equal(tabs[0].selected, "true", "the lone chat is active");
     const plus = await page.$('[data-ai-assistant-new-chat="true"]');
     assert.ok(plus, "the trailing '+' button is mounted");

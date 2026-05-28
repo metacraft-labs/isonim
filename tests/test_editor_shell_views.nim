@@ -1198,3 +1198,167 @@ suite "Editor Shell Views (M2)":
       check ancestor != nil
 
       dispose()
+
+# ---------------------------------------------------------------------------
+# Phase N (2026-05-29) — sidebar header consistency.
+#
+# The three sidebars (left story-tree, right Inspector, right AI
+# assistant) each render a 44 px header row above their content
+# separated by a 1 px ``borderFaint`` (#1F212C) hairline. The
+# ``data-sidebar-header`` attribute tags each header so headless tests
+# can assert the geometry + separator consistency contract from a
+# single test entry-point.
+# ---------------------------------------------------------------------------
+
+suite "Phase N — sidebar header consistency":
+
+  proc assertSidebarHeader(node: MockNode; expectedTag: string) =
+    ## Helper: check a header element carries the canonical 44 px
+    ## height, the ``borderFaint`` bottom separator, and the
+    ## ``bgSidebar`` background.
+    check node != nil
+    check node.attributes.getOrDefault("data-sidebar-header") == expectedTag
+    let height = node.styles.getOrDefault("height")
+    let minHeight = node.styles.getOrDefault("min-height")
+    # At least one of ``height`` / ``min-height`` carries the 44 px
+    # target — both are set in production but the test stays
+    # lenient so future refactors that drop the redundant declaration
+    # don't break the contract.
+    check (height == "44px" or minHeight == "44px")
+    let borderBottom = node.styles.getOrDefault("border-bottom")
+    # ``borderFaint`` is the canonical separator token (#1F212C).
+    check borderBottom.toLowerAscii.contains("#1f212c")
+
+  test "left sidebar header is 44 px tall with a borderFaint separator":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      let sidebar = renderSidebar[MockRenderer, MockNode](r, vm)
+      let header = findByAttr(sidebar, "data-sidebar-header", "left")
+      assertSidebarHeader(header, "left")
+      # The search input still lives inside the header (the
+      # canonical entry point for the sidebar header in Phase N).
+      check findByAttr(header, "data-sidebar-search", "true") != nil
+      dispose()
+
+  test "right Inspector header is 44 px tall with a borderFaint separator":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      # The Inspector header is the Phase B selection header — it
+      # gains the canonical ``data-sidebar-header`` marker in
+      # Phase N.
+      let header = findByAttr(panel, "data-sidebar-header", "right-inspector")
+      assertSidebarHeader(header, "right-inspector")
+      # Selection header still carries its original Phase B marker
+      # so existing tests resolve unchanged.
+      check header.attributes.getOrDefault(
+        "data-inspector-selection-header") == "true"
+      dispose()
+
+  test "right AI assistant header is 44 px tall with a borderFaint separator":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      let panel = renderAiAssistantPanel[MockRenderer, MockNode](r, vm)
+      let header = findByAttr(panel,
+        "data-sidebar-header", "right-ai-assistant")
+      assertSidebarHeader(header, "right-ai-assistant")
+      # The AI tab strip itself IS the header — it keeps the
+      # original ``data-ai-assistant-tab-strip`` marker so
+      # existing e2e selectors resolve unchanged.
+      check header.attributes.getOrDefault(
+        "data-ai-assistant-tab-strip") == "true"
+      dispose()
+
+  test "all three sidebar headers share identical height and separator":
+    ## Cross-sidebar regression — if a future refactor drops the 44
+    ## px height on one sidebar without touching the others, this
+    ## test fails directly on the mismatch rather than the consumer
+    ## having to spot the inconsistency by eye.
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+
+      let leftSidebar = renderSidebar[MockRenderer, MockNode](r, vm)
+      let inspector = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      let aiPanel = renderAiAssistantPanel[MockRenderer, MockNode](r, vm)
+
+      let leftHeader = findByAttr(leftSidebar,
+        "data-sidebar-header", "left")
+      let inspectorHeader = findByAttr(inspector,
+        "data-sidebar-header", "right-inspector")
+      let aiHeader = findByAttr(aiPanel,
+        "data-sidebar-header", "right-ai-assistant")
+      check leftHeader != nil
+      check inspectorHeader != nil
+      check aiHeader != nil
+
+      proc canonicalHeight(node: MockNode): string =
+        let h = node.styles.getOrDefault("height")
+        if h.len > 0: h else: node.styles.getOrDefault("min-height")
+
+      let leftH = canonicalHeight(leftHeader)
+      let inspectorH = canonicalHeight(inspectorHeader)
+      let aiH = canonicalHeight(aiHeader)
+      check leftH == "44px"
+      check inspectorH == "44px"
+      check aiH == "44px"
+      check leftH == inspectorH
+      check leftH == aiH
+
+      proc canonicalSeparator(node: MockNode): string =
+        node.styles.getOrDefault("border-bottom").toLowerAscii
+      let leftSep = canonicalSeparator(leftHeader)
+      let inspectorSep = canonicalSeparator(inspectorHeader)
+      let aiSep = canonicalSeparator(aiHeader)
+      # All three separators reference the ``borderFaint`` token
+      # (#1F212C). The full strings are compared so an accidental
+      # swap to a different border colour fails this assertion.
+      check leftSep == inspectorSep
+      check leftSep == aiSep
+      dispose()
+
+# ---------------------------------------------------------------------------
+# Phase N — left sidebar drag-resize handle present on the sidebar
+# root. The implementation existed before Phase N; this test pins the
+# contract so future refactors don't accidentally drop it while
+# touching the sidebar header.
+# ---------------------------------------------------------------------------
+
+suite "Phase N — left sidebar drag resize":
+
+  test "left sidebar exposes a resize handle on its right edge":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      let sidebar = renderSidebar[MockRenderer, MockNode](r, vm)
+      let handle = findByAttr(sidebar,
+        "data-resize-handle", "left-sidebar")
+      check handle != nil
+      check handle.styles.getOrDefault("cursor") == "col-resize"
+      check handle.styles.getOrDefault("position") == "absolute"
+      # Pinned to the right edge — the cluster of (right=0, top=0,
+      # width=4px) declarations is the canonical handle geometry.
+      check handle.styles.getOrDefault("right") == "0"
+      check handle.styles.getOrDefault("width") == "4px"
+      dispose()
+
+  test "setLeftSidebarWidth updates the leftSidebarWidth signal":
+    ## Headless contract for the resize handle. The JS-side
+    ## ``mousemove`` shim calls ``setLeftSidebarWidth`` via the
+    ## ``window.__isonimEditor`` exposure; headless tests drive the
+    ## same proc directly.
+    createRoot do (dispose: proc()):
+      let vm = createEditorVM()
+      let original = vm.leftSidebarWidth.val
+      vm.setLeftSidebarWidth(original + 40)
+      check vm.leftSidebarWidth.val == original + 40
+      # Clamp to the [180, 420] range — pushing past either bound
+      # snaps to the boundary.
+      vm.setLeftSidebarWidth(10)
+      check vm.leftSidebarWidth.val == 180
+      vm.setLeftSidebarWidth(9_999)
+      check vm.leftSidebarWidth.val == 420
+      dispose()

@@ -35,48 +35,91 @@ proc createHistoryButtonVM*(): HistoryButtonVM =
     galleryOpen: createSignal(false))
 
 const
-  hbBg          = "#0F172A"
-  hbBgActive    = "#1E293B"
-  hbBorder      = "#334155"
-  hbAccent      = "#7C7AED"
-  hbText        = "#F1F5F9"
+  # Phase O (2026-05-29): the History button now joins the chip
+  # cluster family. It renders as a single ChoiceItem-style pill
+  # inside a transparent trough container, matching the Backend /
+  # Viewport / Mode clusters that already use ``cgvTransparent``
+  # ChoiceGroup styling. Colour tokens are pulled from the shared
+  # chip palette (mirrored here so this module stays free of the
+  # ``choice_group`` import) — keep these in sync with
+  # ``views/widgets/choice_group.nim`` constants ``cgGroupBg``,
+  # ``cgPillBgOn``, ``cgPillBorderOn``, ``cgTextOn``, ``cgTextDim``.
+  hbTroughBg      = "#22232e"   # cgGroupBg — strip background
+  hbPillBg        = "transparent"
+  hbPillBgOn      = "#7c7aed"   # cgPillBgOn — active accent fill
+  hbPillBorder    = "transparent"
+  hbPillBorderOn  = "#7c7aed"   # cgPillBorderOn
+  hbTextDim       = "#A0A2B0"   # cgTextDim — inactive label
+  hbTextOn        = "#FFFFFF"   # cgTextOn — active label
+  hbPillRadius    = "4px"
+  hbPillPadding   = "2px"
+  hbPillMinHeight = "22px"
+  hbPillIconWidth = "32px"      # cgPillIconMinWidth — single-pill width
+  hbIconSize      = "18px"      # cgPillIconSize — inner SVG host
 
 proc mountHistoryButton*[R, E](r: R; parent: E; vm: HistoryButtonVM;
                                 onActivate: proc()) =
-  ## Mount the ``🕘`` button into ``parent``.  ``onActivate`` is the
+  ## Mount the history button into ``parent``.  ``onActivate`` is the
   ## click handler that opens the gallery overlay (provided by the
   ## preview-pane glue — REV-M7's gallery is the only consumer at
   ## this milestone).  The button is data-tagged so e2e selectors can
   ## find it without scraping emoji bytes.
+  ##
+  ## Phase O (2026-05-29) — the button is now wrapped in a single-
+  ## pill trough that matches the ``cgvTransparent`` ChoiceGroup
+  ## styling used by Backend / Viewport / Mode. The outer trough
+  ## carries ``data-chrome-history-trough="true"``; the inner pill
+  ## (the actual click target) still carries the legacy
+  ## ``data-design-review-history-button`` /
+  ## ``data-preview-chrome-history-button`` selectors so existing
+  ## tests and tooling resolve unchanged. The pill flips between an
+  ## inactive "dim text" treatment and an accent-filled "active"
+  ## treatment when the gallery overlay is open — same hover/active
+  ## visual contract as the cluster pills.
   let capturedVm = vm
   let capturedOnActivate = onActivate
 
-  let button = ui(r):
+  var button: E
+  let trough = ui(r):
     tdiv(
-      `role` = "button",
-      tabindex = "0",
-      `aria-label` = "Open design-review gallery",
-      `data-preview-chrome-history-button` = "true",
-      `data-design-review-history-button` = "true",
+      `data-chrome-history-trough` = "true",
+      `data-toolbar-cluster` = "history",
       display = "inline-flex",
       align_items = "center",
-      justify_content = "center",
-      width = "26px",
-      height = "26px",
-      padding = "0",
-      margin_left = "6px",
-      font_size = "14px",
-      color = hbText,
-      background_color = hbBg,
-      border = "1px solid " & hbBorder,
-      border_radius = "4px",
-      cursor = "pointer",
-      user_select = "none")
-  # Replace the Unicode clock-face emoji with a proper SVG history
-  # glyph that matches the rest of the in-house icon family (clock
-  # face with a counter-clockwise rewind arrow at top-left). See
-  # docs/icon-design/history.svg.
+      gap = "2px",
+      padding = hbPillPadding,
+      background_color = hbTroughBg,
+      border = "none",
+      border_radius = "6px",
+      user_select = "none"):
+      tdiv(
+        ref = button,
+        `role` = "button",
+        tabindex = "0",
+        `aria-label` = "Open design-review gallery",
+        `data-preview-chrome-history-button` = "true",
+        `data-design-review-history-button` = "true",
+        `data-choice-group-pill` = "0",
+        display = "inline-flex",
+        align_items = "center",
+        justify_content = "center",
+        width = hbPillIconWidth, min_width = hbPillIconWidth,
+        min_height = hbPillMinHeight,
+        padding = "0",
+        font_size = "12px",
+        color = hbTextDim,
+        background_color = hbPillBg,
+        border = "1px solid " & hbPillBorder,
+        border_radius = hbPillRadius,
+        cursor = "pointer",
+        transition = "background-color 120ms ease-out, " &
+          "border-color 120ms ease-out, color 120ms ease-out")
+  # Paint the SVG glyph into the pill via ``setInnerHtml``. The icon
+  # is rendered at ``hbIconSize`` (matching ``cgPillIconSize`` used
+  # by the cluster pills) so the chrome bar reads as a uniform row
+  # of equally-weighted glyphs.
   r.setInnerHtml(button, historySvg)
+  discard hbIconSize  # kept as documentation; the SVG sizes itself
 
   proc activate() =
     capturedVm.galleryOpen.val = not capturedVm.galleryOpen.val
@@ -86,6 +129,12 @@ proc mountHistoryButton*[R, E](r: R; parent: E; vm: HistoryButtonVM;
   r.addEventListener(button, "click", activate)
   r.addEventListener(button, "keydown", activate)
 
+  # Reactive bind — gallery-open flips the pill to the accent fill
+  # treatment (matching the cluster pills' active state). When the
+  # overlay is closed the pill reverts to the muted "inactive"
+  # treatment. Driven entirely through ``setAttribute("style", ...)``
+  # so this stays inside the ``createRenderEffect`` envelope and
+  # respects the no-setStyle-outside-effect rule.
   createRenderEffect proc() =
     let hasHistory = capturedVm.briefHasHistory.val
     let isOpen = capturedVm.galleryOpen.val
@@ -104,5 +153,31 @@ proc mountHistoryButton*[R, E](r: R; parent: E; vm: HistoryButtonVM;
                    if isOpen: "true" else: "false")
     r.setAttribute(button, "data-gallery-open",
                    if isOpen: "true" else: "false")
+    r.setAttribute(button, "data-active",
+                   if isOpen: "true" else: "false")
+    let layoutCss =
+      "display: inline-flex; align-items: center; " &
+      "justify-content: center; " &
+      "width: " & hbPillIconWidth & "; min-width: " & hbPillIconWidth &
+      "; min-height: " & hbPillMinHeight & "; padding: 0; " &
+      "border-radius: " & hbPillRadius & "; " &
+      "border-width: 1px; border-style: solid; " &
+      "font-size: 12px; font-family: inherit; line-height: 1; " &
+      "text-align: center; white-space: nowrap; " &
+      "flex: 0 0 auto; cursor: pointer; " &
+      "transition: background-color 120ms ease-out, " &
+      "border-color 120ms ease-out, color 120ms ease-out;"
+    let inline =
+      if isOpen:
+        layoutCss &
+          " background-color: " & hbPillBgOn &
+          "; color: " & hbTextOn &
+          "; border-color: " & hbPillBorderOn & ";"
+      else:
+        layoutCss &
+          " background-color: " & hbPillBg &
+          "; color: " & hbTextDim &
+          "; border-color: " & hbPillBorder & ";"
+    r.setAttribute(button, "style", inline)
 
-  r.appendChild(parent, button)
+  r.appendChild(parent, trough)

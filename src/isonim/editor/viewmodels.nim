@@ -356,9 +356,26 @@ proc chat*(vm: EditorVM): AgentChatVM {.inline.} =
   ## verbatim through this alias.
   vm.activeChat()
 
+const firstChatDefaultTitle* = "Make changes with AI"
+  ## Phase P (2026-05-29): the first chat session created by an
+  ## ``EditorVM`` (whether seeded in ``createEditorVM`` or produced
+  ## by an explicit ``createNewChat`` call when no chats exist yet)
+  ## is labelled ``"Make changes with AI"`` to read as a clear,
+  ## inviting prompt rather than a button-like "New chat" header.
+  ## Subsequent chats fall back to the legacy ``"New chat"`` /
+  ## ``"New chat 2"`` / ``"New chat 3"`` … convention.
+
 proc defaultChatTitleFor(index: int): string =
-  if index <= 0: "New chat"
-  else: "New chat " & $(index + 1)
+  ## ``index`` is the 0-based position of the new session within
+  ## ``vm.chats`` at the moment of creation. Index 0 — the FIRST
+  ## chat ever materialised in the editor — uses the
+  ## ``"Make changes with AI"`` invitation. Every later chat uses
+  ## the ``"New chat" / "New chat 2" / "New chat 3" …`` naming so
+  ## users can still tell sessions apart at a glance until the
+  ## agent (or the user) renames them via ``setChatTitle``.
+  if index <= 0: firstChatDefaultTitle
+  elif index == 1: "New chat"
+  else: "New chat " & $index
 
 proc createChatSession*(id: string; title = ""): ChatSession =
   ## Build a ``ChatSession`` with a fresh ``AgentChatVM``. ``title``
@@ -395,6 +412,24 @@ proc switchToChat*(vm: EditorVM; id: string): bool {.discardable.} =
   for session in vm.chats.val:
     if session.id == id:
       vm.activeChatId.val = id
+      return true
+  false
+
+proc setChatTitle*(vm: EditorVM; sessionId: string;
+                   newTitle: string): bool {.discardable.} =
+  ## Phase P (2026-05-29): updates the title of the given chat
+  ## session. Returns ``true`` if a session with ``sessionId``
+  ## exists (and the title write actually landed), ``false``
+  ## otherwise. Reserved for agent-side tool calls — when the
+  ## agent has determined a chat's topic (``"Summarize this chat
+  ## and rename it to that summary"``) it invokes this proc with
+  ## the resolved one-line title. The title is held in a
+  ## ``Signal[string]`` on each ``ChatSession`` so the rename is
+  ## reactive — the AI-assistant tab strip's per-tab label
+  ## refreshes automatically without a manual repaint.
+  for session in vm.chats.val:
+    if session.id == sessionId:
+      session.title.val = newTitle
       return true
   false
 
@@ -10550,11 +10585,14 @@ proc createEditorVM*(): EditorVM =
   let foundations = createFoundationEditorVM()
   let inspector = createInspectorVM(designSystemSchema, foundations.tokens)
   let variants = createComponentVariantEditorVM()
-  # Multi-chat seed: every EditorVM starts with exactly one
-  # ``"New chat"`` session so the ``vm.chat`` accessor always resolves.
-  # Additional chats are spawned via ``createNewChat`` from the
-  # Assistant-tab "+" button.
-  let firstChat = createChatSession("chat-1", "New chat")
+  # Multi-chat seed: every EditorVM starts with exactly one chat
+  # session so the ``vm.chat`` accessor always resolves. Phase P
+  # (2026-05-29): the seed title reads ``"Make changes with AI"``
+  # (``firstChatDefaultTitle``) — a clear invitation rather than a
+  # button-y ``"New chat"`` header. Additional chats spawned via
+  # the Assistant-tab ``+`` button fall back to ``"New chat"`` /
+  # ``"New chat 2"`` / … per ``defaultChatTitleFor``.
+  let firstChat = createChatSession("chat-1", firstChatDefaultTitle)
   let chats = createSignal[seq[ChatSession]](@[firstChat])
   let activeChatId = createSignal("chat-1")
   # Phase F: AI drawer starts CLOSED.  When running in the browser the

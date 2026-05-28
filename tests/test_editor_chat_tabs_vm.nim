@@ -23,12 +23,16 @@ import isonim/editor/viewmodels
 
 suite "Editor multi-chat tabs (Assistant tab)":
 
-  test "createEditorVM seeds a single New chat session":
+  test "createEditorVM seeds a single 'Make changes with AI' session":
+    ## Phase P (2026-05-29): the first ever chat now uses the
+    ## ``firstChatDefaultTitle`` invitation so the tab strip reads
+    ## as an inviting prompt instead of a button-y header.
     createRoot proc(dispose: proc()) =
       let vm = createEditorVM()
       check vm.chats.val.len == 1
       check vm.chats.val[0].id == "chat-1"
-      check vm.chats.val[0].title.val == "New chat"
+      check vm.chats.val[0].title.val == firstChatDefaultTitle
+      check vm.chats.val[0].title.val == "Make changes with AI"
       check vm.activeChatId.val == "chat-1"
       # The alias accessor resolves to the active session's VM.
       check vm.chat == vm.chats.val[0].vm
@@ -37,13 +41,17 @@ suite "Editor multi-chat tabs (Assistant tab)":
       dispose()
 
   test "createNewChat appends, activates, and returns the new id":
+    ## Phase P (2026-05-29): the SECOND chat (index 1) falls back
+    ## to the plain ``"New chat"`` label — the
+    ## ``firstChatDefaultTitle`` invitation is reserved for the
+    ## first chat only.
     createRoot proc(dispose: proc()) =
       let vm = createEditorVM()
       let id = vm.createNewChat()
       check id == "chat-2"
       check vm.chats.val.len == 2
       check vm.chats.val[1].id == "chat-2"
-      check vm.chats.val[1].title.val == "New chat 2"
+      check vm.chats.val[1].title.val == "New chat"
       check vm.activeChatId.val == "chat-2"
       # Active alias follows the new chat — every existing
       # ``vm.chat.*`` call site now targets chat-2.
@@ -56,6 +64,11 @@ suite "Editor multi-chat tabs (Assistant tab)":
       dispose()
 
   test "successive createNewChat assigns stable sequential ids":
+    ## Phase P (2026-05-29): naming sequence is
+    ## ``["Make changes with AI", "New chat", "New chat 2",
+    ##   "New chat 3", …]`` — the first chat keeps the
+    ## invitation; subsequent chats use ``"New chat"`` /
+    ## ``"New chat 2"`` / ``"New chat 3"`` …
     createRoot proc(dispose: proc()) =
       let vm = createEditorVM()
       let id2 = vm.createNewChat()
@@ -65,9 +78,10 @@ suite "Editor multi-chat tabs (Assistant tab)":
       check id3 == "chat-3"
       check id4 == "chat-4"
       check vm.chats.val.len == 4
-      check vm.chats.val[1].title.val == "New chat 2"
-      check vm.chats.val[2].title.val == "New chat 3"
-      check vm.chats.val[3].title.val == "New chat 4"
+      check vm.chats.val[0].title.val == firstChatDefaultTitle
+      check vm.chats.val[1].title.val == "New chat"
+      check vm.chats.val[2].title.val == "New chat 2"
+      check vm.chats.val[3].title.val == "New chat 3"
       check vm.activeChatId.val == "chat-4"
       dispose()
 
@@ -134,6 +148,34 @@ suite "Editor multi-chat tabs (Assistant tab)":
   # ``Front-Ends/IsoNim/isonim-editor.md`` §"Mode-driven right sidebar
   # (2026-05-28 revision)".
   # -------------------------------------------------------------------------
+
+  test "setChatTitle updates the title signal of the matching session":
+    ## Phase P (2026-05-29): the agent-facing rename hook.
+    ## ``setChatTitle`` writes the session's ``title`` signal so
+    ## any reactive observer (notably the tab strip label in
+    ## ``renderAiAssistantPanel``) refreshes automatically.
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      discard vm.createNewChat()  # chat-2 → "New chat"
+      check vm.chats.val[0].title.val == "Make changes with AI"
+      check vm.chats.val[1].title.val == "New chat"
+      # Rename the first chat.
+      check vm.setChatTitle("chat-1", "Restyle the login screen") == true
+      check vm.chats.val[0].title.val == "Restyle the login screen"
+      # Rename the second chat. The first chat's title is untouched.
+      check vm.setChatTitle("chat-2", "Fix the picker bug") == true
+      check vm.chats.val[0].title.val == "Restyle the login screen"
+      check vm.chats.val[1].title.val == "Fix the picker bug"
+      dispose()
+
+  test "setChatTitle returns false for unknown session ids":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      let titleSnap = vm.chats.val[0].title.val
+      check vm.setChatTitle("does-not-exist", "Anything") == false
+      # The signal is untouched when the lookup misses.
+      check vm.chats.val[0].title.val == titleSnap
+      dispose()
 
   test "vm.chat alias always resolves to the active chat":
     ## Regression guard: every existing ``vm.chat.*`` call site in the

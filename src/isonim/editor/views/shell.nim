@@ -848,10 +848,21 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
       # ``editor-sidebar-history-narrow`` class is gated on the same
       # CSS media query) and drives the same gallery host state.
       var sidebarHistorySlot: E
-      tdiv(padding = "8px 10px",
-            border_bottom = "1px solid " & borderFaint):
+      # Phase N (2026-05-29): standardised sidebar header. All three
+      # sidebars (left story-tree, right Inspector, right AI assistant)
+      # carry a 44 px header row above their content, separated from
+      # the body by a 1 px ``borderFaint`` hairline. The
+      # ``data-sidebar-header`` attribute lets headless tests assert
+      # the consistency contract across all three surfaces.
+      tdiv(`data-sidebar-header` = "left",
+            display = "flex", align_items = "center",
+            height = "44px", min_height = "44px",
+            padding = "0 10px",
+            background_color = bgSidebar,
+            border_bottom = "1px solid " & borderFaint,
+            flex_shrink = "0"):
         tdiv(display = "flex", align_items = "center",
-              gap = "6px"):
+              gap = "6px", width = "100%"):
           tdiv(display = "flex", align_items = "center",
                 background_color = bgSurface,
                 border = "1px solid " & border,
@@ -1884,14 +1895,15 @@ proc renderSelectionHeader[R, E](r: R; vm: EditorVM): E =
   var moreIcon: E
   let header = ui(r):
     tdiv(`data-inspector-selection-header` = "true",
+         `data-sidebar-header` = "right-inspector",
          display = "flex", align_items = "center",
          justify_content = "space-between",
-         padding = "8px 12px",
+         padding = "0 12px",
          gap = "8px",
-         min_height = "40px",
+         height = "44px", min_height = "44px",
          flex_shrink = "0",
          background_color = bgSidebar,
-         border_bottom = "1px solid " & border):
+         border_bottom = "1px solid " & borderFaint):
       # Left: element-type dropdown trigger. The chevron is rendered
       # as a separate node so the empty-selection state can hide it
       # without splitting the markup further.
@@ -2939,9 +2951,21 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
   # The on-screen cluster order is now ``[backend, viewport, mode]``
   # with Spec folded into the Mode cluster.
 
+  # Phase O (2026-05-29): the History affordance moves to the LEFT
+  # edge of the chrome bar, BEFORE the Backend cluster. Rationale:
+  # opening the gallery overlay is a "what content is displayed in
+  # the centre column" control — just like Backend / Viewport — so
+  # History logically groups with the leading cluster family rather
+  # than sitting at the trailing edge by itself. The Mode cluster
+  # docks to the right edge via ``margin-left: auto`` (set on
+  # ``modeWrapper`` above), so the chrome bar reads:
+  #
+  #     ``[History] [Backend] [Viewport] ......... [Mode]``
+  design_review_mount_view.mountHistoryButtonForEditor[R, E](r, toolbar, vm)
+
   # CHRM-M5 Fix A: backend cluster appended AFTER the (now removed)
   # surface cluster so the on-screen order reads
-  # ``[surface, backend, viewport, mode]``. The cluster itself
+  # ``[history, backend, viewport, mode]``. The cluster itself
   # was constructed above (alongside its reactive effects) for
   # code readability; only the mount-into-toolbar step happens
   # here.
@@ -3039,11 +3063,21 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
   const modeOrder = [emSpec, emView, emComment, emEdit]
   const modeLabels = @["Spec", "View", "Comment", "Edit"]
 
+  # Phase O (2026-05-29): the Mode cluster now docks to the RIGHT
+  # edge of the centre column. ``margin-left: auto`` claims all the
+  # free horizontal space between the leading clusters (History /
+  # Backend / Viewport) and the Mode cluster, pushing Mode flush with
+  # the inspector boundary while keeping the leading clusters
+  # left-aligned. The ``data-toolbar-cluster-docked`` attribute lets
+  # headless tests assert the right-dock contract without parsing
+  # margin strings.
   let modeWrapper = ui(r):
     tdiv(`data-edge-strip` = "mode",
          `data-preview-edge-group` = "mode",
          `data-toolbar-cluster` = "mode",
+         `data-toolbar-cluster-docked` = "right",
          display = "inline-flex", align_items = "center",
+         margin_left = "auto",
          `aria-label` = "Preview mode")
 
   var modeInitialIndex = 0
@@ -3116,12 +3150,12 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
 
   r.appendChild(toolbar, modeWrapper)
 
-  # REV-M8 — mount the design-review 🕘 history button at the right
-  # end of the chrome bar. CHRM-M5: the button stays VISIBLE for
-  # any brief; the gallery overlay's own empty state surfaces
-  # "No captures yet" when ``briefHasHistory`` is false, which
-  # is a better UX than a button that disappears.
-  design_review_mount_view.mountHistoryButtonForEditor[R, E](r, toolbar, vm)
+  # Phase O (2026-05-29): the History button is no longer mounted
+  # here at the trailing edge — it now sits BEFORE the Backend
+  # cluster (see the ``mountHistoryButtonForEditor`` call above the
+  # ``r.appendChild(toolbar, backendWrapper)`` line). Keeping the
+  # comment block as a breadcrumb so future readers don't reinstate
+  # the old trailing mount when carrying chrome-bar work forward.
 
   # Phase I (2026-05-28): the per-chat robot strip + trailing "+"
   # button are removed from the chrome bar. Chat sessions now live
@@ -3173,12 +3207,13 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
       # Tab strip row — tabs + overflow chevron + plus button.
       tdiv(ref = tabStripEl,
            `data-ai-assistant-tab-strip` = "true",
+           `data-sidebar-header` = "right-ai-assistant",
            `role` = "tablist",
            `aria-label` = "AI chat sessions",
            display = "flex",
            align_items = "stretch",
-           min_height = "36px",
-           height = "36px",
+           min_height = "44px",
+           height = "44px",
            padding_left = "4px",
            padding_right = "4px",
            background_color = bgSidebar,
@@ -3326,7 +3361,7 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
          `role` = "listbox",
          `aria-label` = "All chat sessions",
          position = "absolute",
-         top = "36px", right = "8px",
+         top = "44px", right = "8px",
          min_width = "180px", max_width = "240px",
          max_height = "320px",
          overflow_y = "auto",
@@ -3384,6 +3419,16 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
         let isActive = sessionId == activeId
         var labelHost: E
         var statusDot: E
+        # Phase P (2026-05-29): tab styling rebalanced so the
+        # first chat's tab no longer reads as a button. The active
+        # tab now stays transparent — same surface as the inactive
+        # tabs — but renders the label in ``textPrimary`` at a
+        # bolder weight and carries a 2 px accent underline at the
+        # bottom edge. Inactive tabs stay muted (``textMuted``) on
+        # a transparent background. Net effect: the active tab
+        # reads as the current view (Linear / Notion style) rather
+        # than a saturated accent rectangle competing with the
+        # other on-screen controls.
         let tabEl = ui(r):
           tdiv(`role` = "tab", tabindex = "0",
                `data-ai-assistant-tab` = sessionId,
@@ -3393,17 +3438,22 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
                align_items = "center",
                gap = "6px",
                padding_left = "10px", padding_right = "10px",
-               margin = "4px 2px",
-               border_radius = "4px",
-               background_color = (if isActive: accent else: "transparent"),
-               color = (if isActive: "#FFFFFF" else: textMuted),
+               margin = "6px 2px 0 2px",
+               border_radius = "0",
+               background_color = "transparent",
+               color = (if isActive: textPrimary else: textMuted),
+               font_weight = (if isActive: "600" else: "400"),
+               border_bottom_width = "2px",
+               border_bottom_style = "solid",
+               border_bottom_color = (
+                 if isActive: accent else: "transparent"),
                cursor = "pointer", flex_shrink = "0",
                font_size = "12px",
                white_space = "nowrap",
                max_width = "140px",
                overflow = "hidden",
                text_overflow = "ellipsis",
-               transition = "background-color 0.12s, color 0.12s"):
+               transition = "color 0.12s, border-bottom-color 0.12s"):
             tdiv(ref = statusDot,
                  `data-ai-assistant-tab-status-dot` = "true",
                  width = "6px", height = "6px",
