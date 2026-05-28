@@ -4,7 +4,7 @@
 ## No CSS, no colors, no rendering — only signals, memos, and enums.
 ## Created via withViewModel inside createRoot.
 
-import std/[algorithm, json, math, options, sequtils, strutils]
+import std/[algorithm, hashes, json, math, options, sequtils, strutils, tables]
 import isonim/core/[signals, computation]
 import isonim/viewmodel
 import isonim/editor/types
@@ -75,6 +75,25 @@ type
     ## CSS-specific state
     displayMode*: Signal[DisplayMode]
     flexDirection*: Signal[FlexDirection]
+    selectionVisible*: Signal[bool]
+      ## Phase B (2026-05-28): drives the selection-header visibility
+      ## toggle (``◐``). The handler in ``renderSelectionHeader``
+      ## flips this flag; downstream phases will wire it to the
+      ## preview compositor + the iframe overlay. Defaults to
+      ## ``true`` so first-load matches the eye-open visual state.
+    propertyBindings*: Signal[Table[PropertyBindingKey, VariableBinding]]
+      ## Phase E.1 (2026-05-28): per-(element × property) bindings to
+      ## design-system variables. Empty when the property carries a
+      ## literal value. The signal lives on the inspector so the
+      ## "linked chip" UI (Phase E.2) reactively follows the current
+      ## selection. Phase E.4 will mirror these bindings into the
+      ## source file; for now the signal is the single source of
+      ## truth at the VM layer.
+    availableVariables*: Memo[seq[FoundationTokenEntry]]
+      ## Phase E.1 (2026-05-28): flat list of every foundation token
+      ## available to the variable picker (Phase E.3). Projects
+      ## ``EditorVM.foundations.tokens`` so the picker stays in sync
+      ## as foundations are edited.
 
   VectorEditorVM* = ref object of ViewModel
     ## Embedded vector editor for SVG symbols.
@@ -262,6 +281,19 @@ type
       ## drives `selectBackend` on the streaming-preview VM and mirrors
       ## `availableBackends` into the disabled state.
     hasSelection*: Memo[bool]
+
+func hash*(key: PropertyBindingKey): Hash =
+  ## Phase E.1: enables ``Table[PropertyBindingKey, VariableBinding]``.
+  ## Combines the element id and property name so identical
+  ## (elementId, propertyName) tuples hash to the same bucket
+  ## regardless of declaration site.
+  var h: Hash = 0
+  h = h !& hash(key.elementId)
+  h = h !& hash(key.propertyName)
+  !$h
+
+func `==`*(a, b: PropertyBindingKey): bool =
+  a.elementId == b.elementId and a.propertyName == b.propertyName
 
 func isEmptyStory(story: StoryRef): bool =
   story.group.len == 0 and story.name.len == 0
@@ -2043,6 +2075,42 @@ proc adjustLeftSidebarWidth*(editor: EditorVM; delta: int) =
 proc switchInspectorSection*(editor: EditorVM; section: InspectorSection) =
   editor.inspector.activeSection.val = section
   editor.inspector.setSectionExpanded(section, true)
+
+# ---------------------------------------------------------------------------
+# Selection-header action hooks (Phase B placeholders).
+#
+# The selection header above the inspector section list renders four
+# quick-action icons — Code / Visibility / Duplicate / More. The
+# spec's full wiring (open the source file at the selection's
+# declaration; duplicate the selected element in source; show a
+# context overflow menu) lands in later phases. Phase B introduces
+# the affordances and binds them to these no-op hooks so the click
+# wiring can be tested today without spilling later-phase behaviour
+# into the shell view.
+# ---------------------------------------------------------------------------
+
+proc openSourceForSelection*(editor: EditorVM) =
+  ## Phase B no-op. Later phases route this through the source
+  ## bridge to open ``vm.inspector.selectedElement``'s
+  ## ``sourceFile``/``sourceLine`` in the editor pane.
+  discard
+
+proc toggleSelectionVisible*(editor: EditorVM) =
+  ## Flip the selection-header visibility toggle. Owned here (not
+  ## inlined into the view) so future iframe-overlay wiring can hook
+  ## into a single mutation point.
+  editor.inspector.selectionVisible.val =
+    not editor.inspector.selectionVisible.val
+
+proc duplicateSelection*(editor: EditorVM) =
+  ## Phase B no-op. Later phases route through the workspace edit
+  ## adapter to clone the selected element in source.
+  discard
+
+proc showSelectionMore*(editor: EditorVM) =
+  ## Phase B no-op. Later phases open the overflow popover anchored
+  ## to the ``⫶⫶`` button.
+  discard
 
 func fallbackElementId(element: ElementRef): string =
   if element.id.len > 0:
@@ -8173,6 +8241,114 @@ proc stop*(player: FlowPlayerVM) =
   player.currentStep.val = 0
 
 # ===========================================================================
+# Phase E.1 — Design system variable binding (VM data model)
+# ===========================================================================
+#
+# These helpers maintain the per-(element × property) variable
+# bindings stored on ``InspectorVM.propertyBindings``. They are
+# the foundation for Phase E.2 (linked chip), Phase E.3 (variable
+# picker popover), and Phase E.4 (inline variable editing + source
+# write-back). Phase E.1 keeps the bindings in memory only — the
+# source file is still the source of truth for literal values; the
+# write-back rule from the spec ("Variable binding is persisted to
+# source") is implemented in Phase E.4.
+
+func variableCategoryFor*(token: FoundationTokenEntry): VariablePickerCategory =
+  ## Maps a ``FoundationTokenKind`` onto the coarse picker category.
+  ## The picker (Phase E.3) groups token rows by these categories so
+  ## a user looking for a spacing value does not have to scroll past
+  ## the full colour palette.
+  case token.kind
+  of ftkColorPalette, ftkSemanticColor: vpcColour
+  of ftkSpacingScale: vpcSpacing
+  of ftkTypographyScale: vpcTypography
+  of ftkRadiusScale: vpcRadius
+  of ftkShadow, ftkMotion: vpcEffect
+  of ftkBreakpoint, ftkDensity: vpcNumber
+  of ftkAccessibilityConstraint: vpcString
+
+proc resolveVariableValue*(vm: EditorVM; variableKey: string): string =
+  ## Returns the resolved literal value of ``variableKey`` by walking
+  ## ``vm.foundations.tokens``. Returns the empty string when the
+  ## variable is missing (Phase E.2 surfaces that as
+  ## ``vbsBoundMissing`` on the chip).
+  if variableKey.len == 0:
+    return ""
+  for token in vm.foundations.tokens.val:
+    if token.key.sameTokenKey(variableKey):
+      if token.value.len > 0:
+        return token.value
+      if token.aliasOf.len > 0:
+        return vm.resolveVariableValue(token.aliasOf)
+      return ""
+  ""
+
+proc usageCountFor*(vm: EditorVM; variableKey: string): int =
+  ## Returns how many places in the loaded stories use this
+  ## variable. The current foundations model records the affected
+  ## stories on each token; we surface the count here so the picker
+  ## row (Phase E.3) can render "used 23 ×" without re-walking the
+  ## entire schema.
+  if variableKey.len == 0:
+    return 0
+  for token in vm.foundations.tokens.val:
+    if token.key.sameTokenKey(variableKey):
+      return token.affectedStories.len
+  0
+
+proc bindPropertyToVariable*(vm: EditorVM; key: PropertyBindingKey;
+    variableKey: string) =
+  ## Adds or replaces a binding under ``key``. Phase E.1 only
+  ## updates the VM signal; Phase E.4 will also stage a source-edit
+  ## plan so the change persists to the ``ui:`` DSL.
+  if key.elementId.len == 0 or key.propertyName.len == 0 or
+      variableKey.len == 0:
+    return
+  let resolved = vm.resolveVariableValue(variableKey)
+  var binding = VariableBinding(
+    state: if resolved.len > 0: vbsBound else: vbsBoundMissing,
+    variableKey: variableKey,
+    resolvedValue: resolved,
+    sourceFileRef: "",
+    sourceLineRef: 0)
+  for token in vm.foundations.tokens.val:
+    if token.key.sameTokenKey(variableKey):
+      binding.sourceFileRef = token.sourceFile
+      binding.sourceLineRef = token.sourceLine
+      break
+  vm.inspector.propertyBindings.update(proc(
+      prev: Table[PropertyBindingKey, VariableBinding]):
+      Table[PropertyBindingKey, VariableBinding] =
+    result = prev
+    result[key] = binding)
+
+proc detachPropertyBinding*(vm: EditorVM; key: PropertyBindingKey;
+    detachedValue: string) =
+  ## Removes the binding under ``key``. ``detachedValue`` is the
+  ## literal the detach replaces the binding with — typically the
+  ## previously-resolved value, but the user may edit it before
+  ## confirming (per the spec "Detach with current value" /
+  ## "Detach to empty" affordances). For Phase E.1 the literal is
+  ## not yet persisted anywhere; Phase E.4 will write it back to
+  ## the source file.
+  discard detachedValue
+  vm.inspector.propertyBindings.update(proc(
+      prev: Table[PropertyBindingKey, VariableBinding]):
+      Table[PropertyBindingKey, VariableBinding] =
+    result = prev
+    result.del(key))
+
+proc propertyBindingFor*(vm: EditorVM;
+    key: PropertyBindingKey): Option[VariableBinding] =
+  ## Lookup helper. Returns ``none`` for unbound (element, property)
+  ## pairs — the inspector treats that as "value is a literal".
+  let bindings = vm.inspector.propertyBindings.val
+  if bindings.hasKey(key):
+    some(bindings[key])
+  else:
+    none(VariableBinding)
+
+# ===========================================================================
 # Factory: create all ViewModels with proper reactive wiring
 # ===========================================================================
 
@@ -8229,10 +8405,19 @@ proc createStoryboardVM*(): StoryboardVM =
     selectedItem: selectedItem,
     hoveredItem: hoveredItem)
 
-proc createInspectorVM*(designSystemSchema: Signal[DesignSystemSchema] = nil): InspectorVM =
+proc createInspectorVM*(designSystemSchema: Signal[DesignSystemSchema] = nil;
+    foundationTokens: Signal[seq[FoundationTokenEntry]] = nil): InspectorVM =
+  ## Phase E.1 (2026-05-28): ``foundationTokens`` is wired through
+  ## from ``createEditorVM`` so the variable picker (Phase E.3) can
+  ## react to foundation edits without holding a back-reference to
+  ## the parent ``EditorVM``. Passing nil yields an empty Memo
+  ## (useful for the InspectorVM-only headless tests).
   let schemaSignal =
     if designSystemSchema.isNil: createSignal(DesignSystemSchema())
     else: designSystemSchema
+  let tokensSignal =
+    if foundationTokens.isNil: createSignal[seq[FoundationTokenEntry]](@[])
+    else: foundationTokens
   let selectedElement = createSignal(ElementRef())
   let layers = createSignal[seq[ElementLayerRow]](@[])
   let layerSearch = createSignal("")
@@ -8389,6 +8574,12 @@ proc createInspectorVM*(designSystemSchema: Signal[DesignSystemSchema] = nil): I
 
   let displayMode = createSignal(dmFlex)
   let flexDirection = createSignal(fdRow)
+  let selectionVisible = createSignal(true)
+  let propertyBindings =
+    createSignal[Table[PropertyBindingKey, VariableBinding]](
+      initTable[PropertyBindingKey, VariableBinding]())
+  let availableVariables = createMemo[seq[FoundationTokenEntry]](
+    proc(): seq[FoundationTokenEntry] = tokensSignal.val)
 
   InspectorVM(
     designSystemSchema: schemaSignal,
@@ -8417,7 +8608,10 @@ proc createInspectorVM*(designSystemSchema: Signal[DesignSystemSchema] = nil): I
     largeControlContracts: largeControlContracts,
     isDirty: isDirty,
     displayMode: displayMode,
-    flexDirection: flexDirection)
+    flexDirection: flexDirection,
+    selectionVisible: selectionVisible,
+    propertyBindings: propertyBindings,
+    availableVariables: availableVariables)
 
 func hasCapability*(adapter: VectorAdapterContract;
     capability: VectorAdapterCapability): bool =
@@ -10107,9 +10301,14 @@ proc createEditorVM*(): EditorVM =
 
   let sidebar = createSidebarVM()
   let storyboard = createStoryboardVM()
-  let inspector = createInspectorVM(designSystemSchema)
   let vectorEditor = createVectorEditorVM()
+  # Phase E.1 (2026-05-28): the inspector's ``availableVariables``
+  # Memo and ``propertyBindings`` signal require access to the
+  # foundations token signal so the variable picker (Phase E.3)
+  # stays reactive across foundation edits. Construct foundations
+  # first so we can pass its ``tokens`` signal into the inspector.
   let foundations = createFoundationEditorVM()
+  let inspector = createInspectorVM(designSystemSchema, foundations.tokens)
   let variants = createComponentVariantEditorVM()
   # Multi-chat seed: every EditorVM starts with exactly one
   # ``"New chat"`` session so the ``vm.chat`` accessor always resolves.

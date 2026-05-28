@@ -1759,39 +1759,375 @@ const inspectorPlaceholderSections* = [
   ## content from ``populateInspectorManualBody`` in
   ## ``component_edit.nim`` into per-section widget files.
 
+const inspectorSectionsWithPlusAction = [
+  "fill", "stroke", "effects", "export"]
+  ## Phase B — sections whose header right slot renders a ``+`` plus
+  ## button placeholder ("add fill", "add stroke", "add effect",
+  ## "add export entry"). Selection colors / Appearance / Layout
+  ## carry richer affordances (swatches / eye+droplet / constraint
+  ## widget) that Phase G owns — for Phase B those sections render
+  ## an empty action slot so the right margin still lines up.
+
+func selectionDisplayName(tag: string): string =
+  ## Map an ``ElementRef.tag`` to the selection-header display label
+  ## used in the dropdown trigger. The mapping leans on common HTML
+  ## semantics: container tags read as "Group" / "Frame"; text-bearing
+  ## tags read as "Text"; form controls keep their semantic name.
+  ## Unknown tags fall through to a capitalised echo of the tag so
+  ## new elements aren't relabelled as a generic "Element".
+  let lower = tag.toLowerAscii()
+  case lower
+  of "div", "section", "main", "article", "aside", "nav", "header",
+      "footer": "Group"
+  of "span", "p", "h1", "h2", "h3", "h4", "h5", "h6", "label",
+      "strong", "em", "small", "code", "pre": "Text"
+  of "button": "Button"
+  of "a": "Link"
+  of "img": "Image"
+  of "svg": "Vector"
+  of "input": "Input"
+  of "textarea": "Text area"
+  of "select": "Select"
+  of "ul", "ol", "li": "List"
+  of "table", "thead", "tbody", "tr", "td", "th": "Table"
+  of "form": "Form"
+  of "iframe": "Frame"
+  of "":
+    ""
+  else:
+    # Preserve unknown tag names verbatim — capitalised first letter
+    # so it reads as a noun in the dropdown without losing identity.
+    if lower.len > 0:
+      lower[0..0].toUpperAscii() & lower[1..^1]
+    else:
+      ""
+
+proc renderSelectionHeader[R, E](r: R; vm: EditorVM): E =
+  ## Phase B (2026-05-28): the always-visible selection header that
+  ## sits above the section list. Layout matches the Figma reference
+  ## (`docs/sidebar-figma-reference.png`):
+  ##
+  ##   ``[Group ▾]                    [</>] [◐] [▭▾] [⫶⫶]``
+  ##
+  ## Left: an element-type dropdown trigger that reads from
+  ## ``vm.inspector.selectedElement.tag`` via ``selectionDisplayName``.
+  ## When no element is selected the trigger renders "Nothing
+  ## selected" in muted text (no chevron).
+  ##
+  ## Right: a four-icon cluster (Code / Visibility / Duplicate /
+  ## More) wired to Phase B placeholder hooks on the VM. The
+  ## Visibility button is the only one whose pressed-state is
+  ## reactive in Phase B; the rest are no-op handlers ready for
+  ## Phase D / E / G to wire up real behaviour.
+  ##
+  ## The header is `flex-shrink: 0` so it stays pinned to the top
+  ## of the inspector regardless of how the section list scrolls,
+  ## and carries ``data-inspector-selection-header="true"`` for the
+  ## test harness + future hydration.
+
+  var labelEl: E
+  var chevronEl: E
+  var codeBtn: E
+  var codeIcon: E
+  var visBtn: E
+  var visIcon: E
+  var dupBtn: E
+  var dupIcon: E
+  var moreBtn: E
+  var moreIcon: E
+  let header = ui(r):
+    tdiv(`data-inspector-selection-header` = "true",
+         display = "flex", align_items = "center",
+         justify_content = "space-between",
+         padding = "8px 12px",
+         gap = "8px",
+         min_height = "40px",
+         flex_shrink = "0",
+         background_color = bgSidebar,
+         border_bottom = "1px solid " & border):
+      # Left: element-type dropdown trigger. The chevron is rendered
+      # as a separate node so the empty-selection state can hide it
+      # without splitting the markup further.
+      tdiv(`data-inspector-selection-trigger` = "true",
+           role = "button",
+           tabindex = "0",
+           `aria-label` = "Selection element type",
+           display = "flex", align_items = "center", gap = "4px",
+           padding = "4px 6px",
+           border_radius = "4px",
+           cursor = "default",
+           min_width = "0",
+           font_size = "13px", font_weight = "600"):
+        span(ref = labelEl,
+             `data-inspector-selection-label` = "true",
+             color = textPrimary,
+             overflow = "hidden",
+             text_overflow = "ellipsis",
+             white_space = "nowrap"):
+          text "Nothing selected"
+        span(ref = chevronEl,
+             `data-inspector-selection-chevron` = "true",
+             `aria-hidden` = "true",
+             color = textMuted,
+             font_size = "10px",
+             line_height = "1"):
+          text "\xE2\x96\xBE" # ▾
+      # Right: 4 quick-action icon buttons. They share a uniform
+      # 24×24 footprint so the right-edge alignment matches the
+      # Figma reference; the inner 16×16 host carries the SVG glyph
+      # itself. Refs are captured so the SVG-paint, reactive style
+      # binds, and click wiring below can address each button + its
+      # icon host directly (no tree walks — the `DomRenderer` path
+      # only exposes navigation helpers, not flat ``children``).
+      tdiv(`data-inspector-selection-actions` = "true",
+           display = "flex", align_items = "center", gap = "2px",
+           flex_shrink = "0"):
+        tdiv(ref = codeBtn,
+             `data-inspector-selection-action` = "code",
+             role = "button",
+             tabindex = "0",
+             `aria-label` = "Open source for selection",
+             display = "flex", align_items = "center",
+             justify_content = "center",
+             width = "24px", height = "24px",
+             border_radius = "4px",
+             color = textMuted,
+             cursor = "pointer"):
+          tdiv(ref = codeIcon,
+               `aria-hidden` = "true",
+               display = "flex", align_items = "center",
+               justify_content = "center",
+               width = "16px", height = "16px",
+               line_height = "1")
+        tdiv(ref = visBtn,
+             `data-inspector-selection-action` = "visibility",
+             role = "button",
+             tabindex = "0",
+             `aria-label` = "Toggle selection visibility",
+             display = "flex", align_items = "center",
+             justify_content = "center",
+             width = "24px", height = "24px",
+             border_radius = "4px",
+             color = textMuted,
+             cursor = "pointer"):
+          tdiv(ref = visIcon,
+               `aria-hidden` = "true",
+               display = "flex", align_items = "center",
+               justify_content = "center",
+               width = "16px", height = "16px",
+               line_height = "1")
+        tdiv(ref = dupBtn,
+             `data-inspector-selection-action` = "duplicate",
+             role = "button",
+             tabindex = "0",
+             `aria-label` = "Duplicate selection",
+             display = "flex", align_items = "center",
+             justify_content = "center",
+             width = "24px", height = "24px",
+             border_radius = "4px",
+             color = textMuted,
+             cursor = "pointer"):
+          tdiv(ref = dupIcon,
+               `aria-hidden` = "true",
+               display = "flex", align_items = "center",
+               justify_content = "center",
+               width = "16px", height = "16px",
+               line_height = "1")
+        tdiv(ref = moreBtn,
+             `data-inspector-selection-action` = "more",
+             role = "button",
+             tabindex = "0",
+             `aria-label` = "More selection actions",
+             display = "flex", align_items = "center",
+             justify_content = "center",
+             width = "24px", height = "24px",
+             border_radius = "4px",
+             color = textMuted,
+             cursor = "pointer"):
+          tdiv(ref = moreIcon,
+               `aria-hidden` = "true",
+               display = "flex", align_items = "center",
+               justify_content = "center",
+               width = "16px", height = "16px",
+               line_height = "1")
+
+  # Paint glyphs via setInnerHtml — established affordance for inline
+  # SVG payloads (mirrors ``renderQuickNavIcon`` and the chrome bar).
+  r.setInnerHtml(codeIcon, selectionCodeSvg)
+  r.setInnerHtml(visIcon, selectionVisibilitySvg)
+  r.setInnerHtml(dupIcon, selectionDuplicateSvg)
+  r.setInnerHtml(moreIcon, selectionMoreSvg)
+
+  # Reactive bind: the label + chevron track the selected element;
+  # the visibility button tracks ``selectionVisible``. Both flow
+  # through ``createRenderEffect`` so the no-setStyle-outside-effect
+  # rule holds.
+  createRenderEffect proc() =
+    let element = vm.inspector.selectedElement.val
+    let label = selectionDisplayName(element.tag)
+    if label.len > 0:
+      r.setTextContent(labelEl, label)
+      r.setStyle(labelEl, "color", textPrimary)
+      r.setStyle(chevronEl, "display", "inline")
+    else:
+      r.setTextContent(labelEl, "Nothing selected")
+      r.setStyle(labelEl, "color", textMuted)
+      r.setStyle(chevronEl, "display", "none")
+
+  createRenderEffect proc() =
+    let visible = vm.inspector.selectionVisible.val
+    r.setAttribute(visBtn, "aria-pressed",
+      if visible: "true" else: "false")
+    r.setStyle(visBtn, "color",
+      if visible: textPrimary else: textMuted)
+
+  # Click wiring. The "code" / "duplicate" / "more" actions hit the
+  # Phase B placeholder procs on ``EditorVM``; the "visibility"
+  # action flips the signal that the reactive bind above watches.
+  r.addEventListener(codeBtn, "click", proc() = vm.openSourceForSelection())
+  r.addEventListener(codeBtn, "keydown", proc() = vm.openSourceForSelection())
+  r.addEventListener(visBtn, "click", proc() = vm.toggleSelectionVisible())
+  r.addEventListener(visBtn, "keydown", proc() = vm.toggleSelectionVisible())
+  r.addEventListener(dupBtn, "click", proc() = vm.duplicateSelection())
+  r.addEventListener(dupBtn, "keydown", proc() = vm.duplicateSelection())
+  r.addEventListener(moreBtn, "click", proc() = vm.showSelectionMore())
+  r.addEventListener(moreBtn, "keydown", proc() = vm.showSelectionMore())
+
+  header
+
+proc renderSectionFrame[R, E](r: R; vm: EditorVM;
+    slug, displayName: string): E =
+  ## Phase B (2026-05-28): structured section frame — header (title
+  ## + per-section action slot + chevron caret) plus an empty body
+  ## the Phase G extraction will populate. The whole frame respects
+  ## the dark-theme tokens established in ``shell.nim`` (``border``
+  ## hairline divider, ``textPrimary`` headline, ``textMuted``
+  ## chevron, ``bgSidebar`` surface).
+  ##
+  ## Defaults: every section starts expanded (``data-expanded="true"``)
+  ## with the body rendered in-place. Phase C wires the click-to-
+  ## toggle behaviour plus the per-user persistence of the
+  ## expanded-set; Phase G fills the bodies from the
+  ## ``populateInspectorManualBody`` extraction.
+  ##
+  ## The header right slot is reserved per the section catalogue. In
+  ## Phase B only Fill / Stroke / Effects / Export carry a ``+`` plus
+  ## button placeholder — the other sections leave the slot empty so
+  ## the right margin lines up but the chrome stays quiet.
+  let hasPlus = slug in inspectorSectionsWithPlusAction
+  var plusIcon: E
+  result = ui(r):
+    tdiv(`data-inspector-section-row` = slug,
+         display = "flex", flex_direction = "column",
+         border_bottom = "1px solid " & border):
+      tdiv(`data-inspector-section-header` = slug,
+           `data-expanded` = "true",
+           role = "button",
+           tabindex = "0",
+           `aria-expanded` = "true",
+           display = "flex", align_items = "center",
+           justify_content = "space-between",
+           gap = "8px",
+           padding = "10px 12px",
+           cursor = "default"):
+        span(`data-inspector-section-title` = "true",
+             font_size = "13px", font_weight = "600",
+             color = textPrimary,
+             flex = "1", min_width = "0",
+             overflow = "hidden",
+             text_overflow = "ellipsis",
+             white_space = "nowrap"):
+          text displayName
+        # Per-section action slot. The slot is always rendered (even
+        # when empty) so chevron alignment is uniform across the
+        # 12 frames.
+        tdiv(`data-inspector-section-actions` = slug,
+             display = "flex", align_items = "center",
+             gap = "2px",
+             flex_shrink = "0"):
+          if hasPlus:
+            tdiv(`data-inspector-section-action` = "add",
+                 role = "button",
+                 tabindex = "0",
+                 `aria-label` = "Add " & displayName & " entry",
+                 display = "flex", align_items = "center",
+                 justify_content = "center",
+                 width = "20px", height = "20px",
+                 border_radius = "4px",
+                 color = textMuted,
+                 cursor = "pointer"):
+              tdiv(ref = plusIcon,
+                   `aria-hidden` = "true",
+                   display = "flex", align_items = "center",
+                   justify_content = "center",
+                   width = "14px", height = "14px",
+                   line_height = "1")
+        tdiv(`data-inspector-section-chevron` = slug,
+             `aria-hidden` = "true",
+             display = "flex", align_items = "center",
+             justify_content = "center",
+             width = "12px", height = "12px",
+             flex_shrink = "0",
+             color = textMuted,
+             font_size = "10px",
+             line_height = "1"):
+          text "\xE2\x96\xBE" # ▾
+      tdiv(`data-inspector-section-body` = slug,
+           display = "flex", flex_direction = "column",
+           padding = "0 12px 12px 12px",
+           min_height = "0")
+  # Paint the plus glyph outside the DSL — the renderer affordance
+  # for inline SVG payloads is ``setInnerHtml``, which is an imperative
+  # call. The icon host ref is only assigned when ``hasPlus`` flagged
+  # the slot to be rendered.
+  if hasPlus:
+    r.setInnerHtml(plusIcon, plusSvg)
+
 proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
-  ## Right sidebar — a single-column scroll surface of inspector
-  ## section placeholders.
+  ## Right sidebar — a selection header above a single-column scroll
+  ## surface of inspector section frames.
   ##
   ## 2026-05-28 Phase A demolition: the prior Manual/Assistant tab
   ## pair plus the 12-sub-tab strip were torn out (see
   ## ``Front-Ends/IsoNim/isonim-editor.md`` §"Property Inspector
   ## Panel — Section-Based Design"). The sidebar now scrolls a
-  ## single column of section placeholders — the same shape Figma's
+  ## single column of section frames — the same shape Figma's
   ## UI3 design panel uses. The AI assistant moved out of the
   ## sidebar entirely; per-chat robot icons live in the chrome bar
   ## and open a slide-out drawer (Phase F).
   ##
-  ## Phase A scope:
-  ##   * Render 12 ``data-inspector-section-row`` placeholders in
-  ##     order, each with a ``data-inspector-section-header`` (bold
-  ##     name + placeholder "+" icon) and an empty
-  ##     ``data-inspector-section-body``.
+  ## 2026-05-28 Phase B: the placeholders are replaced by structured
+  ## section frames (header + per-section action slot + chevron caret
+  ## + empty body) and a non-scrolling selection header is mounted
+  ## above the section list. See ``renderSelectionHeader`` and
+  ## ``renderSectionFrame`` above.
+  ##
+  ## Phase B scope:
+  ##   * Mount the selection header (element-type dropdown + 4 quick-
+  ##     action icons) above the section list.
+  ##   * Replace each placeholder row with the structured frame —
+  ##     header title, per-section action slot (``+`` for Fill /
+  ##     Stroke / Effects / Export, empty otherwise), chevron, empty
+  ##     body.
   ##   * Keep the sidebar root's ``data-test-id="property-panel"``
   ##     contract (existing e2e tests resolve the sidebar by it).
   ##   * Keep the left-edge drag-resize handle.
-  ##   * STOP calling ``populateInspectorManualBody`` — that proc
-  ##     is preserved in ``component_edit.nim`` for Phase G content
-  ##     extraction but no longer mounted here.
+  ##   * STILL skip ``populateInspectorManualBody`` — that proc is
+  ##     preserved in ``component_edit.nim`` for Phase G content
+  ##     extraction but is not mounted here.
   ##
-  ## All section bodies render as visible (empty) for Phase A.
-  ## Phase C wires the collapsed-by-default behaviour for Stroke /
-  ## Effects / Export, the conditional visibility for Typography /
-  ## Component properties / State / Selection colors, and the
-  ## persisted expansion state.
+  ## All section bodies render as visible (empty) for Phase B. Every
+  ## frame ships with ``data-expanded="true"`` so Phase C can flip
+  ## individual sections without re-mounting. Conditional visibility
+  ## (Typography only when text element, Component properties only
+  ## for instances, etc.) lands in Phase C as well.
+
+  # Selection header. Sits above the section list and stays pinned —
+  # ``flex-shrink: 0`` inside the header proc.
+  let selectionHeaderEl = renderSelectionHeader[R, E](r, vm)
 
   # Section list container — the single scrollable column that the
-  # placeholder rows mount into. Direct child of the sidebar root.
+  # section frames mount into. Direct child of the sidebar root.
   var sectionList: E
   let sectionListEl = ui(r):
     tdiv(ref = sectionList,
@@ -1801,39 +2137,7 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
          overflow_y = "auto", overflow_x = "hidden")
 
   for (slug, displayName) in inspectorPlaceholderSections:
-    let sectionRow = ui(r):
-      tdiv(`data-inspector-section-row` = slug,
-           display = "flex", flex_direction = "column",
-           border_bottom = "1px solid " & border):
-        # Header: bold section name on the left, placeholder "+" icon
-        # on the right. Phase C wires expansion-state toggling on
-        # header click; Phase A leaves it static.
-        tdiv(`data-inspector-section-header` = slug,
-             display = "flex", align_items = "center",
-             justify_content = "space-between",
-             padding = "10px 12px",
-             font_size = "12px", font_weight = "600",
-             color = textPrimary,
-             cursor = "default"):
-          tdiv(`data-inspector-section-title` = "true"):
-            text displayName
-          # Placeholder "+" affordance — visually quiet, not wired
-          # to anything in Phase A.
-          tdiv(`data-inspector-section-action` = "add",
-               `aria-hidden` = "true",
-               display = "flex", align_items = "center",
-               justify_content = "center",
-               width = "16px", height = "16px",
-               line_height = "1",
-               color = textMuted,
-               font_size = "14px", font_weight = "400"):
-            text "+"
-        # Empty body — Phase G fills this from
-        # ``populateInspectorManualBody`` extractions.
-        tdiv(`data-inspector-section-body` = slug,
-             display = "flex", flex_direction = "column",
-             padding = "0 12px 12px 12px",
-             min_height = "0")
+    let sectionRow = renderSectionFrame[R, E](r, vm, slug, displayName)
     r.appendChild(sectionList, sectionRow)
 
   result = ui(r):
@@ -1872,6 +2176,10 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
          background_color = "transparent",
          z_index = "30")
   r.appendChild(sidebarRoot, rightResizeHandle)
+  # Phase B (2026-05-28): selection header sits above the scrollable
+  # section list. Append BEFORE the list so the DOM order matches the
+  # visual order (header first, then list).
+  r.appendChild(sidebarRoot, selectionHeaderEl)
   r.appendChild(sidebarRoot, sectionListEl)
 
   when defined(js):

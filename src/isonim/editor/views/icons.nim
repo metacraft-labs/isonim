@@ -426,3 +426,39 @@ const
   # Clock face with a counter-clockwise rewind arrow at the top-left.
   # See docs/icon-design/history.svg for the source.
   historySvg* = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3.5 2"/></svg>"""
+
+  # ---------------------------------------------------------------
+  # Selection-header quick-action SVGs (Phase B).
+  #
+  # These four icons live in the inspector's selection header — the
+  # always-visible row above the section list that shows the
+  # selected element's type plus a Code / Visibility / Duplicate /
+  # More action cluster aligned to the right. They are chrome, NOT
+  # part of the swappable ``IconSet`` (no showcase story exposes
+  # them) — the spec pins their look so all icon sets render the
+  # same selection header. See
+  # ``Front-Ends/IsoNim/isonim-editor.md`` §"Selection header".
+  # All four follow the established 24×24 viewBox, currentColor
+  # stroke, 1.75 px stroke-width, round caps/joins family so they
+  # read at the same weight as ``wrenchSvg`` / ``plusSvg`` etc.
+  # ---------------------------------------------------------------
+
+  selectionCodeSvg* = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="8 6 3 12 8 18"/><polyline points="16 6 21 12 16 18"/><line x1="14" y1="4" x2="10" y2="20"/></svg>"""
+    ## ``< / >`` brackets — "open source for selection" affordance.
+    ## Two angle brackets framing a forward-slash. Hand-drawn so the
+    ## stroke weight matches the rest of the in-house set.
+
+  selectionVisibilitySvg* = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor"/></svg>"""
+    ## Half-moon visibility icon. A full circle with the left half
+    ## filled, which reads as "visibility toggled" — clearer than a
+    ## bare eye glyph at 18 px and matches the Figma reference's
+    ## ``◐`` chrome.
+
+  selectionDuplicateSvg* = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="13" height="13" rx="2"/><rect x="8" y="8" width="13" height="13" rx="2"/><polyline points="17 19 20 22 23 19" transform="translate(-3 -3)"/></svg>"""
+    ## Two overlapping rounded squares plus a small chevron — the
+    ## "duplicate / variants" cluster from the Figma reference.
+
+  selectionMoreSvg* = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="100%" height="100%" fill="currentColor" stroke="none"><circle cx="8" cy="8" r="1.6"/><circle cx="16" cy="8" r="1.6"/><circle cx="8" cy="16" r="1.6"/><circle cx="16" cy="16" r="1.6"/></svg>"""
+    ## 2×2 dots overflow glyph. Filled dots (rather than stroked
+    ## circles) so it reads as a clear "more actions" affordance at
+    ## the same visual weight as the other three icons.

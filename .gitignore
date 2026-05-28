@@ -89,6 +89,8 @@ tests/test_editor_spec_toolbar_vm
 tests/test_editor_no_document_html_for_non_web
 # Multi-chat VM test binary
 tests/test_editor_chat_tabs_vm
+# Phase E.1 variable-binding VM test binary
+tests/test_editor_variable_binding_vm
 tests/e2e_design_review_pg_process_compose
 tests/test_design_review_brief_format
 tests/test_design_review_brief_index

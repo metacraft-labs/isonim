@@ -2107,3 +2107,54 @@ type
     kind*: InspectorLargeControlKind
     container*: string
     inlineInDenseRow*: bool
+
+  # --- Design system variable binding (Phase E.1) ---
+  # Data model for the Property Inspector's "linked chip" affordance.
+  # When a property value resolves through a design system variable
+  # (rather than a literal), a ``VariableBinding`` records the link.
+  # Phase E.1 only persists bindings in VM memory; Phase E.4 will
+  # write the binding back to the source file.
+  VariableBindingState* = enum
+    vbsUnbound        ## Value is a literal — no binding exists.
+    vbsBound          ## Value resolves through a known design-system
+                      ## variable; ``resolvedValue`` mirrors the
+                      ## current foundations token value.
+    vbsBoundMissing   ## Binding refers to a variable that has been
+                      ## deleted or renamed in foundations. The
+                      ## inspector surfaces this as a broken-link
+                      ## diagnostic; the user can re-bind or detach.
+
+  VariableBinding* = object
+    state*: VariableBindingState
+    variableKey*: string       ## e.g., "color/surface", "spacing/4".
+    resolvedValue*: string     ## Literal the variable currently
+                               ## resolves to. Mirrors the foundations
+                               ## token value so the inspector can
+                               ## render the value preview without a
+                               ## second lookup.
+    sourceFileRef*: string     ## Foundations file that owns the
+                               ## variable definition (informational —
+                               ## the picker's source-scope footer
+                               ## reads this).
+    sourceLineRef*: int
+
+  PropertyBindingKey* = object
+    ## Compound key identifying the (element × property) pair a
+    ## binding belongs to. The inspector tracks bindings per
+    ## selected element so switching selection does not lose the
+    ## bindings on other elements.
+    elementId*: string         ## Selection identifier (matches
+                               ## ``ElementRef.id`` / fallback id).
+    propertyName*: string      ## CSS property name, e.g.,
+                               ## ``background-color`` or ``gap``.
+
+  VariablePickerCategory* = enum
+    ## Coarse grouping used by the variable picker popover. The
+    ## picker collapses each category like an inspector section.
+    vpcColour
+    vpcSpacing
+    vpcTypography
+    vpcRadius
+    vpcEffect
+    vpcNumber
+    vpcString

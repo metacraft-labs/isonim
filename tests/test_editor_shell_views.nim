@@ -214,6 +214,113 @@ suite "Editor Shell Views (M2)":
       check findByAttr(panel, "data-sidebar-tab-panel", "assistant") == nil
       check findByAttr(panel, "data-inspector-section", "layout") == nil
 
+      # ----- Phase B (2026-05-28) -----------------------------------
+      # The inspector now mounts a selection header above the section
+      # list. The header is always-on (NOT inside the scrollable list)
+      # and exposes four quick-action buttons (Code / Visibility /
+      # Duplicate / More). With no element selected the label reads
+      # "Nothing selected" (textMuted) and the chevron is hidden.
+      let selectionHeader = findByAttr(
+        panel, "data-inspector-selection-header", "true")
+      check selectionHeader != nil
+      # The header sits OUTSIDE the scrollable section list — Phase B's
+      # "doesn't scroll with the rest of the sidebar" contract.
+      check findByAttr(sectionList,
+        "data-inspector-selection-header", "true") == nil
+      # Element-type dropdown trigger + reactive label/chevron.
+      let trigger = findByAttr(
+        panel, "data-inspector-selection-trigger", "true")
+      check trigger != nil
+      let label = findByAttr(
+        panel, "data-inspector-selection-label", "true")
+      check label != nil
+      check label.textContent == "Nothing selected"
+      check label.styles.getOrDefault("color").toLowerAscii() ==
+        "#6b6f80"  # textMuted
+      let chevron = findByAttr(
+        panel, "data-inspector-selection-chevron", "true")
+      check chevron != nil
+      check chevron.styles.getOrDefault("display") == "none"
+
+      # Four quick-action buttons in a single actions row.
+      let actionsRow = findByAttr(
+        panel, "data-inspector-selection-actions", "true")
+      check actionsRow != nil
+      for slug in ["code", "visibility", "duplicate", "more"]:
+        let btn = findByAttr(actionsRow,
+          "data-inspector-selection-action", slug)
+        check btn != nil
+        check btn.attributes.getOrDefault("role") == "button"
+        check btn.attributes.getOrDefault("tabindex") == "0"
+
+      # Visibility button reflects the selectionVisible signal —
+      # defaults to ``true`` so aria-pressed=true / color=textPrimary.
+      let visBtn = findByAttr(actionsRow,
+        "data-inspector-selection-action", "visibility")
+      check visBtn.attributes.getOrDefault("aria-pressed") == "true"
+      vm.toggleSelectionVisible()
+      check vm.inspector.selectionVisible.val == false
+      check visBtn.attributes.getOrDefault("aria-pressed") == "false"
+      # Click the visibility button to flip back via the bound handler.
+      visBtn.fireEvent("click")
+      check vm.inspector.selectionVisible.val == true
+      check visBtn.attributes.getOrDefault("aria-pressed") == "true"
+
+      # When an element IS selected, the label switches to the mapped
+      # display name (eg. "Group" for a <div>) and the chevron shows.
+      vm.inspector.selectedElement.val = ElementRef(tag: "div")
+      check label.textContent == "Group"
+      check label.styles.getOrDefault("color").toLowerAscii() ==
+        "#ecedf3"  # textPrimary
+      check chevron.styles.getOrDefault("display") == "inline"
+      vm.inspector.selectedElement.val = ElementRef(tag: "h2")
+      check label.textContent == "Text"
+      vm.inspector.selectedElement.val = ElementRef(tag: "button")
+      check label.textContent == "Button"
+      # Unknown tags fall through to a capitalised echo.
+      vm.inspector.selectedElement.val = ElementRef(tag: "custom-card")
+      check label.textContent == "Custom-card"
+
+      # ----- Section frame structure --------------------------------
+      # Each frame has a header (title + actions slot + chevron),
+      # ``data-expanded="true"`` by default, plus an empty body.
+      for (slug, displayName) in expectedSections:
+        let header = findByAttr(panel,
+          "data-inspector-section-header", slug)
+        check header != nil
+        check header.attributes.getOrDefault("data-expanded") == "true"
+        check header.attributes.getOrDefault("role") == "button"
+        check header.attributes.getOrDefault("aria-expanded") == "true"
+        # Title carries the display name.
+        let title = findByAttr(header,
+          "data-inspector-section-title", "true")
+        check title != nil
+        check title.textContent == displayName
+        # Per-section action slot is always present.
+        let actions = findByAttr(header,
+          "data-inspector-section-actions", slug)
+        check actions != nil
+        # Chevron caret on the far right.
+        let sectionChevron = findByAttr(header,
+          "data-inspector-section-chevron", slug)
+        check sectionChevron != nil
+        check sectionChevron.textContent == "\xE2\x96\xBE"
+
+      # Fill / Stroke / Effects / Export carry a "+" placeholder
+      # inside the action slot; the other eight sections do not.
+      for slug in ["fill", "stroke", "effects", "export"]:
+        let actions = findByAttr(panel,
+          "data-inspector-section-actions", slug)
+        check findByAttr(actions,
+          "data-inspector-section-action", "add") != nil
+      for slug in ["position", "layout", "appearance", "typography",
+          "selection-colors", "source", "component-properties", "state"]:
+        let actions = findByAttr(panel,
+          "data-inspector-section-actions", slug)
+        check actions != nil
+        check findByAttr(actions,
+          "data-inspector-section-action", "add") == nil
+
       dispose()
 
   test "component_edit_inspector_explains_and_applies_design_system_scope":
