@@ -57,5 +57,10 @@ export section_state
 import isonim/editor/views/widgets/section_export
 export section_export
 
-import isonim/editor/views/widgets/comment_overlay
-export comment_overlay
+# Phase K-fix (2026-05-29) — ``comment_overlay`` is retired.  The
+# Notion-style commenting flow now lives in the spec editor
+# (``spec_comment_popover`` + ``spec_pane``'s ``captureCommentSelection``)
+# and the preview canvas reverts to the pre-Phase-K element-selection
+# comment flow handled by ``component_edit.installPreviewSelectionBridge``.
+# Keeping the export here would only re-introduce the rejected
+# preview-canvas click-to-place overlay.

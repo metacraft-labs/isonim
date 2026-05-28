@@ -3806,17 +3806,18 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
   discard design_review_mount_view.mountGalleryHostForEditor[R, E](
     r, centerColumn, vm)
 
-  # Phase K — Notion-style inline comment overlay.  Mounts on the
-  # centre column so the absolute-positioned overlay layer covers the
-  # active preview surface (page / component / foundations) without
-  # leaking into the chrome bar or right sidebar.  The widget's mode
-  # reactivity gates ``display`` on ``vm.editMode == emComment``; the
-  # underlay only catches pointer events while Comment mode is active
-  # so View / Edit interactions on the preview iframe / canvas remain
-  # unaffected.  Anchor data is preserved across mode switches because
-  # it lives in ``vm.review.annotations`` — the existing
-  # design-review pipeline (REV-M5+) consumes the same signal.
-  discard mountCommentOverlay[R, E](r, centerColumn, vm)
+  # Phase K-fix (2026-05-29) — the Notion-style click-to-place comment
+  # overlay that previously layered over the preview canvas has been
+  # removed per direct user clarification: Notion-style commenting
+  # belongs to the spec editor (where text selection drives a
+  # range-anchored popover via ``spec_comment_popover`` + the spec
+  # pane's TipTap ``onSelectionUpdate`` wiring — see TBAR-M6).  The
+  # preview canvas reverts to the pre-Phase-K element-selection comment
+  # flow: in ``emComment`` mode the in-iframe ``isonim-preview-comment-
+  # added`` bridge in ``component_edit.nim`` dispatches into
+  # ``vm.addReviewAnnotation`` through the existing review-annotation
+  # pipeline.  No mount call here — the spec-pane / preview-bridge
+  # plumbing already covers both surfaces.
 
   # AIVS-NSO — "Select an item to edit its properties" overlay.
   #
