@@ -2026,7 +2026,7 @@ proc renderSelectionHeader[R, E](r: R; vm: EditorVM): E =
   header
 
 proc renderSectionFrame[R, E](r: R; vm: EditorVM;
-    slug, displayName: string): E =
+    slug, displayName: string): tuple[row: E, body: E] =
   ## Phase B (2026-05-28): structured section frame — header (title
   ## + per-section action slot + chevron caret) plus an empty body
   ## the Phase G extraction will populate. The whole frame respects
@@ -2054,7 +2054,7 @@ proc renderSectionFrame[R, E](r: R; vm: EditorVM;
   var bodyEl: E
   var chevronEl: E
   var addBtn: E
-  result = ui(r):
+  let row = ui(r):
     tdiv(`data-inspector-section-row` = slug,
          display = "flex", flex_direction = "column",
          border_bottom = "1px solid " & border):
@@ -2194,6 +2194,43 @@ proc renderSectionFrame[R, E](r: R; vm: EditorVM;
         })(""", addBtnJsEl, """);
       """].}
 
+  result = (row: row, body: bodyEl)
+
+proc mountInspectorSectionBody[R, E](r: R; vm: EditorVM;
+    slug: string; body: E) =
+  ## Phase G — dispatch the section body content to its widget. The
+  ## body slot was left empty by ``renderSectionFrame``; this proc
+  ## reads the slug, picks the matching ``mountSection<Name>`` widget,
+  ## and mounts its property rows into ``body``. Unknown slugs are a
+  ## no-op so future section additions don't trip the dispatcher
+  ## before they have a widget module.
+  case slug
+  of "position":
+    mountSectionPosition[R, E](r, body, vm)
+  of "layout":
+    mountSectionLayout[R, E](r, body, vm)
+  of "appearance":
+    mountSectionAppearance[R, E](r, body, vm)
+  of "fill":
+    mountSectionFill[R, E](r, body, vm)
+  of "stroke":
+    mountSectionStroke[R, E](r, body, vm)
+  of "effects":
+    mountSectionEffects[R, E](r, body, vm)
+  of "typography":
+    mountSectionTypography[R, E](r, body, vm)
+  of "selection-colors":
+    mountSectionSelectionColors[R, E](r, body, vm)
+  of "source":
+    mountSectionSource[R, E](r, body, vm)
+  of "component-properties":
+    mountSectionComponentProps[R, E](r, body, vm)
+  of "state":
+    mountSectionState[R, E](r, body, vm)
+  of "export":
+    mountSectionExport[R, E](r, body, vm)
+  else: discard
+
 proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
   ## Right sidebar — a selection header above a single-column scroll
   ## surface of inspector section frames.
@@ -2248,8 +2285,9 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
          overflow_y = "auto", overflow_x = "hidden")
 
   for (slug, displayName) in inspectorPlaceholderSections:
-    let sectionRow = renderSectionFrame[R, E](r, vm, slug, displayName)
-    r.appendChild(sectionList, sectionRow)
+    let frame = renderSectionFrame[R, E](r, vm, slug, displayName)
+    r.appendChild(sectionList, frame.row)
+    mountInspectorSectionBody[R, E](r, vm, slug, frame.body)
 
   result = ui(r):
     tdiv(class = "editor-inspector",
@@ -3785,6 +3823,37 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
             cb(success, reason))
   spec_comment_popover_view.mountCommentPopover[R, E](
     r, shellRoot, specPaneVm.commentPopover, specCommentSubmit)
+
+  # Phase E.3 + E.4 (2026-05-28): variable picker + inline editor.
+  # Both are mounted at the shell root so their absolute-positioned
+  # popovers layer above the inspector + preview without parent
+  # clipping. A single instance of each is reused across all property
+  # rows (the row's bind-request callback flips ``open`` on the
+  # picker state; the picker's per-row Edit affordance opens the
+  # inline editor through ``onVariableEdit``).
+  #
+  # Phase G will wire the property rows' ``onBindRequest`` callback
+  # to ``openVariablePicker(state, anchorEl, propertyKey)`` and the
+  # chip's ``onVariableNameClick`` to
+  # ``openVariableInlineEditor(vm, inlineState, anchorEl, key)``.
+  # The states live here so they are reachable from every consumer
+  # without piling extra plumbing onto each property row.
+  let variablePickerState = editor_widgets.createVariablePickerState()
+  let variableInlineEditorState =
+    editor_widgets.createVariableInlineEditorState()
+  # Wire the picker's per-row Edit affordance into the inline editor.
+  # The picker's row knows the variable key; the inline editor opens
+  # anchored to the picker by inheriting the picker's anchor rect.
+  variablePickerState.onVariableEdit.val =
+    proc(variableKey: string) {.closure.} =
+      let rect = variablePickerState.anchorRect.val
+      openVariableInlineEditorWithRect(vm, variableInlineEditorState,
+        variableKey, rect.x, rect.y, rect.w, rect.h)
+  discard editor_widgets.mountVariablePicker[R, E](r, shellRoot, vm,
+    variablePickerState)
+  discard editor_widgets.mountVariableInlineEditor[R, E](r, shellRoot, vm,
+    variableInlineEditorState)
+
   r.appendChild(shellRoot, shell)
   # Phase F — AI assistant slide-out drawer.  Mounted at the shell
   # root (NOT inside the editor row) so its ``position: fixed`` slot

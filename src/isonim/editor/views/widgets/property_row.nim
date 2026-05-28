@@ -58,6 +58,7 @@ import isonim/core/computation
 import isonim/dsl/ui
 import isonim/editor/types
 import isonim/editor/views/widgets/choice_group
+import isonim/editor/views/widgets/variable_chip
 
 # --------------------------------------------------------------------------- #
 #  Public types.
@@ -114,6 +115,17 @@ type
     onChange*: proc()
     onBindRequest*: proc()
     onMore*: proc()
+    onDetachRequest*: proc()
+      ## Phase E.2 (2026-05-28): invoked when the linked chip's
+      ## detach affordance is clicked. The parent (typically the
+      ## inspector section) routes this to
+      ## ``vm.detachPropertyBinding(key, detachedValue)``. Nil is a
+      ## no-op so the chip still tolerates a missing handler — the
+      ## detach affordance stays visible but inert.
+    onVariableNameClick*: proc()
+      ## Phase E.4 (2026-05-28): invoked when the linked chip's
+      ## variable name is clicked. Parents route this to the inline
+      ## variable editor (Phase E.4). Nil is a no-op.
 
 # --------------------------------------------------------------------------- #
 #  Visual contract — pulled from the spec's editing-control reference.
@@ -159,11 +171,6 @@ const
   # More affordance.
   prMoreColor    = "#A0A2B0"
   prMoreFont     = "14px"
-
-  # Linked-chip placeholder (Phase E.2 upgrades the visual contract).
-  prLinkedBg     = "rgba(124, 122, 237, 0.12)"
-  prLinkedFg     = "#C8C6FF"
-  prLinkedBorder = "1px solid rgba(124, 122, 237, 0.32)"
 
   # Swatch.
   prSwatchSize   = "16px"
@@ -315,13 +322,17 @@ proc propertyRowNumeric*(name: string;
                          binding = none(VariableBinding);
                          onChange: proc() = nil;
                          onBindRequest: proc() = nil;
-                         onMore: proc() = nil): PropertyRowConfig =
+                         onMore: proc() = nil;
+                         onDetachRequest: proc() = nil;
+                         onVariableNameClick: proc() = nil): PropertyRowConfig =
   PropertyRowConfig(
     name: name, kind: prkNumeric,
     numericValue: value, numericUnit: unit, availableUnits: units,
     numericMin: minValue, numericMax: maxValue, numericStep: step,
     binding: binding,
-    onChange: onChange, onBindRequest: onBindRequest, onMore: onMore)
+    onChange: onChange, onBindRequest: onBindRequest, onMore: onMore,
+    onDetachRequest: onDetachRequest,
+    onVariableNameClick: onVariableNameClick)
 
 proc propertyRowColor*(name: string;
                        value: Signal[string];
@@ -329,12 +340,16 @@ proc propertyRowColor*(name: string;
                        binding = none(VariableBinding);
                        onChange: proc() = nil;
                        onBindRequest: proc() = nil;
-                       onMore: proc() = nil): PropertyRowConfig =
+                       onMore: proc() = nil;
+                       onDetachRequest: proc() = nil;
+                       onVariableNameClick: proc() = nil): PropertyRowConfig =
   PropertyRowConfig(
     name: name, kind: prkColor,
     colorValue: value, alphaValue: alpha,
     binding: binding,
-    onChange: onChange, onBindRequest: onBindRequest, onMore: onMore)
+    onChange: onChange, onBindRequest: onBindRequest, onMore: onMore,
+    onDetachRequest: onDetachRequest,
+    onVariableNameClick: onVariableNameClick)
 
 proc propertyRowChoice*(name: string;
                         value: Signal[string];
@@ -342,36 +357,48 @@ proc propertyRowChoice*(name: string;
                         binding = none(VariableBinding);
                         onChange: proc() = nil;
                         onBindRequest: proc() = nil;
-                        onMore: proc() = nil): PropertyRowConfig =
+                        onMore: proc() = nil;
+                        onDetachRequest: proc() = nil;
+                        onVariableNameClick: proc() = nil): PropertyRowConfig =
   PropertyRowConfig(
     name: name, kind: prkChoice,
     choiceValue: value, choiceOptions: options,
     binding: binding,
-    onChange: onChange, onBindRequest: onBindRequest, onMore: onMore)
+    onChange: onChange, onBindRequest: onBindRequest, onMore: onMore,
+    onDetachRequest: onDetachRequest,
+    onVariableNameClick: onVariableNameClick)
 
 proc propertyRowText*(name: string;
                       value: Signal[string];
                       binding = none(VariableBinding);
                       onChange: proc() = nil;
                       onBindRequest: proc() = nil;
-                      onMore: proc() = nil): PropertyRowConfig =
+                      onMore: proc() = nil;
+                      onDetachRequest: proc() = nil;
+                      onVariableNameClick: proc() = nil): PropertyRowConfig =
   PropertyRowConfig(
     name: name, kind: prkText,
     textValue: value,
     binding: binding,
-    onChange: onChange, onBindRequest: onBindRequest, onMore: onMore)
+    onChange: onChange, onBindRequest: onBindRequest, onMore: onMore,
+    onDetachRequest: onDetachRequest,
+    onVariableNameClick: onVariableNameClick)
 
 proc propertyRowBoolean*(name: string;
                          value: Signal[bool];
                          binding = none(VariableBinding);
                          onChange: proc() = nil;
                          onBindRequest: proc() = nil;
-                         onMore: proc() = nil): PropertyRowConfig =
+                         onMore: proc() = nil;
+                         onDetachRequest: proc() = nil;
+                         onVariableNameClick: proc() = nil): PropertyRowConfig =
   PropertyRowConfig(
     name: name, kind: prkBoolean,
     booleanValue: value,
     binding: binding,
-    onChange: onChange, onBindRequest: onBindRequest, onMore: onMore)
+    onChange: onChange, onBindRequest: onBindRequest, onMore: onMore,
+    onDetachRequest: onDetachRequest,
+    onVariableNameClick: onVariableNameClick)
 
 # --------------------------------------------------------------------------- #
 #  Mount.
@@ -519,40 +546,29 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
   # ------------------------------------------------------------------------- #
 
   if isLinked:
-    let varKey =
-      if cfg.binding.isSome: cfg.binding.get.variableKey else: ""
-    let chip = ui(r):
-      tdiv(
-        `data-property-row-linked-chip` = "true",
-        display = "inline-flex",
-        align_items = "center",
-        gap = "4px",
-        flex = "1",
-        min_width = "0",
-        height = prInputHeight,
-        padding = "4px 8px",
-        background_color = prLinkedBg,
-        border = prLinkedBorder,
-        border_radius = prInputRadius,
-        color = prLinkedFg,
-        font_size = prInputFont,
-        overflow = "hidden",
-        text_overflow = "ellipsis",
-        white_space = "nowrap"):
-        span(`aria-hidden` = "true", font_size = "14px"):
-          # Leading diamond, matching the unbound state's bind glyph.
-          text "\xE2\x97\x87"
-        span(`data-property-row-linked-variable` = varKey,
-              flex = "1",
-              overflow = "hidden",
-              text_overflow = "ellipsis"):
-          text varKey
-        span(`aria-hidden` = "true", font_size = "10px",
-              color = prLabelColor):
-          # U+25BE BLACK DOWN-POINTING SMALL TRIANGLE — chevron hint
-          # that the chip opens a popover (Phase E.2 implementation).
-          text "\xE2\x96\xBE"
-    r.appendChild(valueSlot, chip)
+    # Phase E.2 (2026-05-28): the placeholder chip is now the real
+    # ``variable_chip`` widget — tinted purple background, accent
+    # border, clickable name + chevron + hoverable detach affordance.
+    # The chip widget exposes ``extraRootAttr`` + ``extraNameAttr``
+    # hooks so the property row can preserve the legacy
+    # ``data-property-row-linked-chip="true"`` +
+    # ``data-property-row-linked-variable=<key>`` selectors that
+    # landed in Phase D — those data-attrs are the contract between
+    # property_row and the Phase D headless tests.
+    let binding = cfg.binding.get
+    let chevronCb = cfg.onBindRequest
+    let nameCb = cfg.onVariableNameClick
+    let detachCb = cfg.onDetachRequest
+    let chipConfig = variableChipConfig(
+      binding = binding,
+      usageCount = 0,
+      onChevronClick = chevronCb,
+      onNameClick = nameCb,
+      onDetach = detachCb,
+      extraRootAttr = "data-property-row-linked-chip=true",
+      extraNameAttr = "data-property-row-linked-variable=" &
+        binding.variableKey)
+    discard r.mountVariableChip(valueSlot, chipConfig)
   else:
     case cfg.kind
     of prkNumeric:

@@ -94,6 +94,21 @@ tests/test_editor_variable_binding_vm
 # Phase C / D test binaries
 tests/test_editor_section_collapse_vm
 tests/test_editor_widget_property_row
+# Phase E.2-4 + Phase G test binaries
+tests/test_editor_variable_chip
+tests/test_editor_variable_picker_vm
+tests/test_editor_section_position
+tests/test_editor_section_layout
+tests/test_editor_section_appearance
+tests/test_editor_section_fill
+tests/test_editor_section_stroke
+tests/test_editor_section_effects
+tests/test_editor_section_typography
+tests/test_editor_section_selection_colors
+tests/test_editor_section_source
+tests/test_editor_section_component_props
+tests/test_editor_section_state
+tests/test_editor_section_export
 tests/e2e_design_review_pg_process_compose
 tests/test_design_review_brief_format
 tests/test_design_review_brief_index

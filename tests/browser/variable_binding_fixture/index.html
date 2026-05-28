@@ -1,0 +1,52 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Phase E variable binding harness</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 24px;
+        background: #0b1220;
+        color: #f1f5f9;
+        font-family: system-ui, sans-serif;
+      }
+      section {
+        margin-bottom: 24px;
+      }
+      h2 {
+        font-size: 12px;
+        margin-bottom: 8px;
+        color: #94a3b8;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      #chip-host {
+        display: inline-flex;
+        min-width: 240px;
+      }
+      #preview-swatch {
+        display: inline-block;
+        width: 56px;
+        height: 56px;
+        border-radius: 6px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+      }
+      #popover-host {
+        position: relative;
+      }
+    </style>
+  </head>
+  <body>
+    <section>
+      <h2>Chip</h2>
+      <div id="chip-host"></div>
+    </section>
+    <section>
+      <h2>Live preview</h2>
+      <div id="preview-swatch" data-test-id="live-preview-swatch"></div>
+    </section>
+    <div id="popover-host"></div>
+    <script src="harness.js" defer></script>
+  </body>
+</html>

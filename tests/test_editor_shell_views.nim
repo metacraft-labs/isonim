@@ -67,12 +67,17 @@ suite "Editor Shell Views (M2)":
       # status bar, (M-EVP-8) a hidden ``data-shell-escape-key`` node that
       # the ESC handler binds to, (TBAR-M6) the absolutely positioned
       # ``data-spec-comment-popover`` overlay that the Spec-pane Comment
-      # mode anchors to a TipTap selection, and (Phase F) the
-      # ``data-ai-drawer`` slide-out drawer that hosts the chat panel.
-      check shell.children.len == 7
+      # mode anchors to a TipTap selection, (Phase F) the
+      # ``data-ai-drawer`` slide-out drawer that hosts the chat panel,
+      # and (Phase E.3 + E.4, 2026-05-28) the absolutely positioned
+      # ``data-variable-picker`` + ``data-variable-inline-editor``
+      # overlays — single instances reused across every property row.
+      check shell.children.len == 9
       check findByAttr(shell, "data-shell-escape-key", "true") != nil
       check findByAttr(shell, "data-spec-comment-popover", "true") != nil
       check findByAttr(shell, "data-ai-drawer", "true") != nil
+      check findByAttr(shell, "data-variable-picker", "true") != nil
+      check findByAttr(shell, "data-variable-inline-editor", "true") != nil
       # Editor row children: sidebar, center column, chat panel.
       let editorRow = findByAttr(shell, "data-shell-row", "true")
       check editorRow != nil
