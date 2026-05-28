@@ -126,6 +126,61 @@ suite "Editor multi-chat tabs (Assistant tab)":
       check vm.activeChatId.val == activeSnapshot
       dispose()
 
+  # -------------------------------------------------------------------------
+  # Phase F — AI drawer open/close/toggle
+  # -------------------------------------------------------------------------
+
+  test "aiDrawerOpen starts false on a fresh VM":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      check vm.aiDrawerOpen.val == false
+      dispose()
+
+  test "openAiDrawer flips the signal and optionally switches the active chat":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      discard vm.createNewChat()  # chat-2 (also activates it)
+      check vm.activeChatId.val == "chat-2"
+      # Open without an id leaves the active chat alone.
+      vm.openAiDrawer()
+      check vm.aiDrawerOpen.val == true
+      check vm.activeChatId.val == "chat-2"
+      vm.closeAiDrawer()
+      check vm.aiDrawerOpen.val == false
+      # Open with a known id flips the active chat AND opens.
+      vm.openAiDrawer("chat-1")
+      check vm.aiDrawerOpen.val == true
+      check vm.activeChatId.val == "chat-1"
+      # Open with an unknown id opens but leaves the active chat alone.
+      vm.closeAiDrawer()
+      vm.openAiDrawer("ghost-id")
+      check vm.aiDrawerOpen.val == true
+      check vm.activeChatId.val == "chat-1"
+      dispose()
+
+  test "toggleAiDrawer honours sessionId on open transitions only":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      discard vm.createNewChat()  # chat-2 (active)
+      # Drawer is closed -> open with chat-1.
+      vm.toggleAiDrawer("chat-1")
+      check vm.aiDrawerOpen.val == true
+      check vm.activeChatId.val == "chat-1"
+      # Clicking the SAME (active) robot a second time closes.
+      vm.toggleAiDrawer("chat-1")
+      check vm.aiDrawerOpen.val == false
+      check vm.activeChatId.val == "chat-1"
+      # Clicking a non-active robot while CLOSED reopens to that chat.
+      vm.toggleAiDrawer("chat-2")
+      check vm.aiDrawerOpen.val == true
+      check vm.activeChatId.val == "chat-2"
+      # Clicking the OTHER (non-active) robot while OPEN switches +
+      # keeps the drawer open — not a close.
+      vm.toggleAiDrawer("chat-1")
+      check vm.aiDrawerOpen.val == true
+      check vm.activeChatId.val == "chat-1"
+      dispose()
+
   test "vm.chat alias always resolves to the active chat":
     ## Regression guard: every existing ``vm.chat.*`` call site in the
     ## codebase must keep working. This pins the alias contract

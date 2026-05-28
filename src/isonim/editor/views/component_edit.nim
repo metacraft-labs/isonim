@@ -1387,6 +1387,19 @@ func sectionProperties(section: InspectorSection): seq[(string, string)] =
     @[]
   of isSource:
     @[]
+  of isAppearance:
+    # Phase C: appearance properties live in the new section-based
+    # inspector and are not part of the legacy 12-section property
+    # grid. Phase G extracts the real controls — for now,
+    # ``sectionProperties`` returns an empty list so the legacy
+    # populate path skips the section.
+    @[]
+  of isSelectionColors:
+    @[]
+  of isComponentProps:
+    @[]
+  of isExport:
+    @[]
 
 func quickValues(propertyName: string): seq[string] =
   case propertyName

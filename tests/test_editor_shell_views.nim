@@ -65,12 +65,14 @@ suite "Editor Shell Views (M2)":
 
       # Shell mounts the main editor row, command palette, telemetry overlay,
       # status bar, (M-EVP-8) a hidden ``data-shell-escape-key`` node that
-      # the ESC handler binds to, and (TBAR-M6) the absolutely positioned
+      # the ESC handler binds to, (TBAR-M6) the absolutely positioned
       # ``data-spec-comment-popover`` overlay that the Spec-pane Comment
-      # mode anchors to a TipTap selection.
-      check shell.children.len == 6
+      # mode anchors to a TipTap selection, and (Phase F) the
+      # ``data-ai-drawer`` slide-out drawer that hosts the chat panel.
+      check shell.children.len == 7
       check findByAttr(shell, "data-shell-escape-key", "true") != nil
       check findByAttr(shell, "data-spec-comment-popover", "true") != nil
+      check findByAttr(shell, "data-ai-drawer", "true") != nil
       # Editor row children: sidebar, center column, chat panel.
       let editorRow = findByAttr(shell, "data-shell-row", "true")
       check editorRow != nil
@@ -282,15 +284,25 @@ suite "Editor Shell Views (M2)":
       check label.textContent == "Custom-card"
 
       # ----- Section frame structure --------------------------------
-      # Each frame has a header (title + actions slot + chevron),
-      # ``data-expanded="true"`` by default, plus an empty body.
+      # Each frame has a header (title + actions slot + chevron). The
+      # ``data-expanded`` attribute reflects Phase C's default open
+      # set (Position / Layout / Appearance / Fill) — the remaining
+      # eight sections render collapsed and the body's ``display`` is
+      # ``none``.
+      const defaultOpenSlugs = [
+        "position", "layout", "appearance", "fill"
+      ]
       for (slug, displayName) in expectedSections:
         let header = findByAttr(panel,
           "data-inspector-section-header", slug)
         check header != nil
-        check header.attributes.getOrDefault("data-expanded") == "true"
+        let expectedExpanded =
+          if slug in defaultOpenSlugs: "true" else: "false"
+        check header.attributes.getOrDefault("data-expanded") ==
+          expectedExpanded
         check header.attributes.getOrDefault("role") == "button"
-        check header.attributes.getOrDefault("aria-expanded") == "true"
+        check header.attributes.getOrDefault("aria-expanded") ==
+          expectedExpanded
         # Title carries the display name.
         let title = findByAttr(header,
           "data-inspector-section-title", "true")
@@ -300,11 +312,21 @@ suite "Editor Shell Views (M2)":
         let actions = findByAttr(header,
           "data-inspector-section-actions", slug)
         check actions != nil
-        # Chevron caret on the far right.
+        # Chevron caret on the far right. Glyph mirrors the expanded
+        # state — ``▾`` open, ``▸`` collapsed.
         let sectionChevron = findByAttr(header,
           "data-inspector-section-chevron", slug)
         check sectionChevron != nil
-        check sectionChevron.textContent == "\xE2\x96\xBE"
+        let expectedChevron =
+          if slug in defaultOpenSlugs: "\xE2\x96\xBE" else: "\xE2\x96\xB8"
+        check sectionChevron.textContent == expectedChevron
+        # Body display tracks the expanded state.
+        let body = findByAttr(panel,
+          "data-inspector-section-body", slug)
+        check body != nil
+        let expectedDisplay =
+          if slug in defaultOpenSlugs: "flex" else: "none"
+        check body.styles.getOrDefault("display") == expectedDisplay
 
       # Fill / Stroke / Effects / Export carry a "+" placeholder
       # inside the action slot; the other eight sections do not.
@@ -320,6 +342,55 @@ suite "Editor Shell Views (M2)":
         check actions != nil
         check findByAttr(actions,
           "data-inspector-section-action", "add") == nil
+
+      # ----- Phase C (2026-05-28) -----------------------------------
+      # Clicking a collapsed section header flips its data-expanded
+      # attribute + aria-expanded + body display + chevron glyph.
+      let strokeHeader = findByAttr(panel,
+        "data-inspector-section-header", "stroke")
+      check strokeHeader != nil
+      check strokeHeader.attributes.getOrDefault("data-expanded") == "false"
+      strokeHeader.fireEvent("click")
+      check vm.inspector.expandedSections.val.contains(isStroke)
+      check strokeHeader.attributes.getOrDefault("data-expanded") == "true"
+      check strokeHeader.attributes.getOrDefault("aria-expanded") == "true"
+      let strokeBody = findByAttr(panel,
+        "data-inspector-section-body", "stroke")
+      check strokeBody != nil
+      check strokeBody.styles.getOrDefault("display") == "flex"
+      let strokeChevron = findByAttr(panel,
+        "data-inspector-section-chevron", "stroke")
+      check strokeChevron != nil
+      check strokeChevron.textContent == "\xE2\x96\xBE"
+      # Click again — Stroke collapses, body hides, chevron flips.
+      strokeHeader.fireEvent("click")
+      check not vm.inspector.expandedSections.val.contains(isStroke)
+      check strokeHeader.attributes.getOrDefault("data-expanded") == "false"
+      check strokeBody.styles.getOrDefault("display") == "none"
+      check strokeChevron.textContent == "\xE2\x96\xB8"
+
+      # Clicking a default-open section header collapses it.
+      let positionHeader = findByAttr(panel,
+        "data-inspector-section-header", "position")
+      check positionHeader != nil
+      check positionHeader.attributes.getOrDefault("data-expanded") == "true"
+      positionHeader.fireEvent("click")
+      check not vm.inspector.expandedSections.val.contains(isPosition)
+      check positionHeader.attributes.getOrDefault("data-expanded") == "false"
+      let positionBody = findByAttr(panel,
+        "data-inspector-section-body", "position")
+      check positionBody != nil
+      check positionBody.styles.getOrDefault("display") == "none"
+
+      # Keyboard activation (Enter / Space → ``keydown``) toggles
+      # the same way under MockRenderer.
+      let effectsHeader = findByAttr(panel,
+        "data-inspector-section-header", "effects")
+      check effectsHeader != nil
+      check effectsHeader.attributes.getOrDefault("data-expanded") == "false"
+      effectsHeader.fireEvent("keydown")
+      check vm.inspector.expandedSections.val.contains(isEffects)
+      check effectsHeader.attributes.getOrDefault("data-expanded") == "true"
 
       dispose()
 

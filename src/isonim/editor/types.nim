@@ -204,18 +204,29 @@ type
 
   # --- Inspector ---
   InspectorSection* = enum
-    isLayout      ## Display, flex/grid, alignment, gap, overflow
-    isSize        ## Width, height, min/max, flex grow/shrink
-    isSpacing     ## Visual box model: margin + padding
-    isPosition    ## Position mode, top/right/bottom/left, z-index
-    isFill        ## Background color, gradients, opacity
-    isStroke      ## Border width, color, style, radius
-    isTypography  ## Font, weight, size, line-height, alignment, decoration
-    isEffects     ## Shadows, blur, backdrop-blur, blend, transforms
-    isTransitions ## CSS transitions and animations
-    isFilters     ## CSS filter functions (brightness, contrast, etc.)
-    isState       ## ViewModel signal editor
-    isSource      ## Source ownership, cascade, and impact controls
+    isLayout          ## Display, flex/grid, alignment, gap, overflow
+    isSize            ## Width, height, min/max, flex grow/shrink
+    isSpacing         ## Visual box model: margin + padding
+    isPosition        ## Position mode, top/right/bottom/left, z-index
+    isFill            ## Background color, gradients, opacity
+    isStroke          ## Border width, color, style, radius
+    isTypography      ## Font, weight, size, line-height, alignment, decoration
+    isEffects         ## Shadows, blur, backdrop-blur, blend, transforms
+    isTransitions     ## CSS transitions and animations
+    isFilters         ## CSS filter functions (brightness, contrast, etc.)
+    isState           ## ViewModel signal editor
+    isSource          ## Source ownership, cascade, and impact controls
+    # Phase C (2026-05-28): the section catalogue in the spec
+    # (`Front-Ends/IsoNim/isonim-editor.md` §"Section catalogue")
+    # introduces four sections that did not exist in the M19
+    # twelve-section enum: Appearance, Selection colors,
+    # Component properties, Export. The slugs `appearance`,
+    # `selection-colors`, `component-properties`, and `export` in
+    # ``inspectorPlaceholderSections`` map to these.
+    isAppearance      ## Opacity, corner radius, blend mode, individual corners
+    isSelectionColors ## Auto-computed colours present in the selection
+    isComponentProps  ## Component instance variant / state / slot properties
+    isExport          ## Export settings (size, format, suffix) per entry
 
   # --- Component detail page ---
   UsageExample* = object

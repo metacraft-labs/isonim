@@ -299,6 +299,10 @@ func inspectorSectionSlug(section: InspectorSection): string =
   of isFilters: "filters"
   of isState: "state"
   of isSource: "source"
+  of isAppearance: "appearance"
+  of isSelectionColors: "selection-colors"
+  of isComponentProps: "component-properties"
+  of isExport: "export"
 
 func inspectorSectionFromSlug(slug: string;
     fallback: InspectorSection): InspectorSection =
@@ -315,6 +319,10 @@ func inspectorSectionFromSlug(slug: string;
   of "filters", "filter": isFilters
   of "state": isState
   of "source": isSource
+  of "appearance": isAppearance
+  of "selectioncolors": isSelectionColors
+  of "componentproperties", "componentprops": isComponentProps
+  of "export": isExport
   else: fallback
 
 func boolSlug(value: bool): string =

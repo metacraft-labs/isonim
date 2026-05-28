@@ -79,11 +79,14 @@ const inspectorSectionNames = [
   "Layout", "Size", "Space", "Pos", "Fill", "Stroke", "Type", "FX", "Trans",
   "Filter", "State", "Source"]
 
-func inspectorSectionAttr(section: InspectorSection): string =
-  ## ``data-inspector-section`` value for the 12 sub-tabs in the Manual
-  ## tab. Tests assert these slugs (``layout``, ``size``, ``spacing``,
-  ## …) so the chosen names match ``sectionFullTitle`` in
-  ## ``component_edit.nim`` lower-cased.
+func inspectorSectionAttr*(section: InspectorSection): string =
+  ## ``data-inspector-section`` value for an ``InspectorSection`` enum
+  ## entry. The 12 legacy slugs (``layout``, ``size``, ``spacing``, …)
+  ## match ``sectionFullTitle`` in ``component_edit.nim`` lower-cased.
+  ## Phase C (2026-05-28) extends the mapping with the four section-
+  ## catalogue additions (Appearance, Selection colors,
+  ## Component properties, Export) so the section frame click handlers
+  ## can resolve their owning ``InspectorSection`` value cheaply.
   case section
   of isLayout: "layout"
   of isSize: "size"
@@ -97,6 +100,33 @@ func inspectorSectionAttr(section: InspectorSection): string =
   of isFilters: "filters"
   of isState: "state"
   of isSource: "source"
+  of isAppearance: "appearance"
+  of isSelectionColors: "selection-colors"
+  of isComponentProps: "component-properties"
+  of isExport: "export"
+
+func inspectorSectionFromAttr*(slug: string): InspectorSection =
+  ## Inverse of ``inspectorSectionAttr``. Returns ``isLayout`` for
+  ## unknown slugs so the caller can decide whether to no-op. Tests
+  ## should pin the round-trip property.
+  case slug
+  of "layout": isLayout
+  of "size": isSize
+  of "spacing": isSpacing
+  of "position": isPosition
+  of "fill": isFill
+  of "stroke": isStroke
+  of "typography": isTypography
+  of "effects": isEffects
+  of "transitions": isTransitions
+  of "filters": isFilters
+  of "state": isState
+  of "source": isSource
+  of "appearance": isAppearance
+  of "selection-colors": isSelectionColors
+  of "component-properties": isComponentProps
+  of "export": isExport
+  else: isLayout
 
 const sidebarSections = [
   ssUserJourneys, ssPages, ssComponents, ssFoundations, ssGuidelines]
@@ -2004,23 +2034,32 @@ proc renderSectionFrame[R, E](r: R; vm: EditorVM;
   ## hairline divider, ``textPrimary`` headline, ``textMuted``
   ## chevron, ``bgSidebar`` surface).
   ##
-  ## Defaults: every section starts expanded (``data-expanded="true"``)
-  ## with the body rendered in-place. Phase C wires the click-to-
-  ## toggle behaviour plus the per-user persistence of the
-  ## expanded-set; Phase G fills the bodies from the
-  ## ``populateInspectorManualBody`` extraction.
+  ## Phase C (2026-05-28): the header is now a real toggle. Click /
+  ## Enter / Space flip the owning section's ``expandedSections``
+  ## membership via ``toggleSectionExpanded``; a reactive effect
+  ## mirrors the live expanded state into ``data-expanded`` /
+  ## ``aria-expanded`` on the header, the body's ``display``
+  ## (``flex`` vs ``none``), and the chevron glyph (``▾`` vs
+  ## ``▸``). Phase G fills the body — the section frame doesn't
+  ## reach into ``populateInspectorManualBody``.
   ##
   ## The header right slot is reserved per the section catalogue. In
   ## Phase B only Fill / Stroke / Effects / Export carry a ``+`` plus
   ## button placeholder — the other sections leave the slot empty so
   ## the right margin lines up but the chrome stays quiet.
   let hasPlus = slug in inspectorSectionsWithPlusAction
+  let section = inspectorSectionFromAttr(slug)
   var plusIcon: E
+  var headerEl: E
+  var bodyEl: E
+  var chevronEl: E
+  var addBtn: E
   result = ui(r):
     tdiv(`data-inspector-section-row` = slug,
          display = "flex", flex_direction = "column",
          border_bottom = "1px solid " & border):
-      tdiv(`data-inspector-section-header` = slug,
+      tdiv(ref = headerEl,
+           `data-inspector-section-header` = slug,
            `data-expanded` = "true",
            role = "button",
            tabindex = "0",
@@ -2029,7 +2068,8 @@ proc renderSectionFrame[R, E](r: R; vm: EditorVM;
            justify_content = "space-between",
            gap = "8px",
            padding = "10px 12px",
-           cursor = "default"):
+           cursor = "pointer",
+           user_select = "none"):
         span(`data-inspector-section-title` = "true",
              font_size = "13px", font_weight = "600",
              color = textPrimary,
@@ -2046,7 +2086,8 @@ proc renderSectionFrame[R, E](r: R; vm: EditorVM;
              gap = "2px",
              flex_shrink = "0"):
           if hasPlus:
-            tdiv(`data-inspector-section-action` = "add",
+            tdiv(ref = addBtn,
+                 `data-inspector-section-action` = "add",
                  role = "button",
                  tabindex = "0",
                  `aria-label` = "Add " & displayName & " entry",
@@ -2062,7 +2103,8 @@ proc renderSectionFrame[R, E](r: R; vm: EditorVM;
                    justify_content = "center",
                    width = "14px", height = "14px",
                    line_height = "1")
-        tdiv(`data-inspector-section-chevron` = slug,
+        tdiv(ref = chevronEl,
+             `data-inspector-section-chevron` = slug,
              `aria-hidden` = "true",
              display = "flex", align_items = "center",
              justify_content = "center",
@@ -2072,7 +2114,8 @@ proc renderSectionFrame[R, E](r: R; vm: EditorVM;
              font_size = "10px",
              line_height = "1"):
           text "\xE2\x96\xBE" # ▾
-      tdiv(`data-inspector-section-body` = slug,
+      tdiv(ref = bodyEl,
+           `data-inspector-section-body` = slug,
            display = "flex", flex_direction = "column",
            padding = "0 12px 12px 12px",
            min_height = "0")
@@ -2082,6 +2125,74 @@ proc renderSectionFrame[R, E](r: R; vm: EditorVM;
   # the slot to be rendered.
   if hasPlus:
     r.setInnerHtml(plusIcon, plusSvg)
+
+  # Phase C reactive bind: the header's ``data-expanded`` /
+  # ``aria-expanded`` attributes, the chevron glyph, and the body's
+  # display mode all track ``inspector.expandedSections``. A single
+  # ``createRenderEffect`` keeps them in sync — flipping the signal
+  # (via header click, keyboard activation, storage hydration, or
+  # ``collapseAllSections``/``expandRelevantSections``) repaints the
+  # frame on the next render tick.
+  createRenderEffect proc() =
+    let expanded = section in vm.inspector.expandedSections.val
+    r.setAttribute(headerEl, "data-expanded",
+      if expanded: "true" else: "false")
+    r.setAttribute(headerEl, "aria-expanded",
+      if expanded: "true" else: "false")
+    r.setStyle(bodyEl, "display",
+      if expanded: "flex" else: "none")
+    r.setTextContent(chevronEl,
+      if expanded: "\xE2\x96\xBE" else: "\xE2\x96\xB8") # ▾ vs ▸
+
+  # Click + keyboard activation flip the owning section in
+  # ``expandedSections``. The no-arg handler mirrors the selection-
+  # header buttons above; under MockRenderer ``fireEvent`` calls it
+  # directly (tests pass the slug they want, no key filtering needed).
+  # Under DomRenderer the JS shim below filters keydown to Enter /
+  # Space + intercepts the per-section ``+`` button click so it
+  # doesn't bubble into the header (otherwise pressing Fill's ``+``
+  # would also toggle Fill's expansion).
+  r.addEventListener(headerEl, "click", proc() =
+    vm.inspector.toggleSectionExpanded(section))
+  r.addEventListener(headerEl, "keydown", proc() =
+    vm.inspector.toggleSectionExpanded(section))
+
+  when defined(js):
+    let headerJsEl = headerEl
+    {.emit: ["""
+      (function (header) {
+        if (!header || header.__isonimSectionHeaderReady) return;
+        header.__isonimSectionHeaderReady = true;
+        // Suppress the default scroll-on-Space behaviour and stop
+        // Tab / Shift+Tab from triggering the keydown listener that
+        // the renderer registered. The listener itself is a no-arg
+        // callback so we cannot filter inside it; the capture-phase
+        // shim below pre-empts non-activation keys by stopping
+        // propagation before the renderer's listener sees them.
+        header.addEventListener('keydown', function (ev) {
+          if (!ev) return;
+          var k = ev.key;
+          if (k === 'Enter' || k === ' ' || k === 'Spacebar') {
+            if (ev.preventDefault) ev.preventDefault();
+            return;
+          }
+          if (ev.stopImmediatePropagation) ev.stopImmediatePropagation();
+          else if (ev.stopPropagation) ev.stopPropagation();
+        }, true);
+      })(""", headerJsEl, """);
+    """].}
+
+    if hasPlus:
+      let addBtnJsEl = addBtn
+      {.emit: ["""
+        (function (btn) {
+          if (!btn || btn.__isonimSectionAddReady) return;
+          btn.__isonimSectionAddReady = true;
+          btn.addEventListener('click', function (ev) {
+            if (ev && ev.stopPropagation) ev.stopPropagation();
+          }, false);
+        })(""", addBtnJsEl, """);
+      """].}
 
 proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
   ## Right sidebar — a selection header above a single-column scroll
@@ -2220,6 +2331,33 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
         document.addEventListener('mouseleave', endDrag);
       })(""", handleEl, """, """, panelEl, """);
     """].}
+
+  # Phase C (2026-05-28): hydrate the inspector's expanded-section
+  # set from ``localStorage`` BEFORE the first reactive paint so the
+  # default-vs-restored state lands on the inspector frames in a
+  # single pass (no flash of the default four). The hydration is a
+  # no-op on native (the native build still uses the
+  # ``createInspectorVM`` default), so the call is unconditional.
+  hydrateInspectorExpansionFromStorage(vm)
+
+  # Phase C reactive write-back: every change to
+  # ``expandedSections`` (whether from header click, programmatic
+  # toggle, hydration, or ``collapseAllSections``) is serialized to
+  # ``localStorage["isonim:inspector:expanded"]``. The shim runs
+  # only on JS targets; the native build still owns the
+  # signal-write side but skips the storage emit.
+  when defined(js):
+    createRenderEffect proc() =
+      let payload = serializeExpandedSections(
+        vm.inspector.expandedSections.val).cstring
+      {.emit: ["""
+        try {
+          if (window.localStorage) {
+            window.localStorage.setItem(
+              'isonim:inspector:expanded', """, payload, """);
+          }
+        } catch (e) {}
+      """].}
 
   r.bindRightPanelWidth(result, vm)
 
@@ -2945,7 +3083,269 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
   # is a better UX than a button that disappears.
   design_review_mount_view.mountHistoryButtonForEditor[R, E](r, toolbar, vm)
 
+  # Phase F — per-chat robot strip + trailing "+" button.
+  #
+  # The chrome bar's right-edge slot used to end at the 🕘 history
+  # button. Phase F appends the AI-assistant chat strip after it: one
+  # 28×28 robot button per ``ChatSession`` in ``vm.chats``, plus a
+  # trailing "+" button to spawn fresh chats. The strip uses
+  # ``overflow-x: auto`` so many concurrent chats fall behind a
+  # native horizontal scrollbar rather than being hidden in a
+  # chevron popup.  Clicking a robot toggles the AI drawer for that
+  # session (see ``vm.toggleAiDrawer``); the active robot reflects
+  # both ``aiDrawerOpen`` and ``activeChatId`` so the indigo accent
+  # only lights up when the drawer is actually showing that chat.
+  let chromeChatStrip = ui(r):
+    tdiv(`data-chrome-chat-strip` = "true",
+         `role` = "tablist",
+         `aria-label` = "AI chat sessions",
+         display = "inline-flex", align_items = "center",
+         gap = "4px",
+         margin_left = "8px",
+         max_width = "260px",
+         overflow_x = "auto",
+         overflow_y = "hidden",
+         flex_shrink = "0")
+  r.appendChild(toolbar, chromeChatStrip)
+
+  let chromeNewChatBtn = ui(r):
+    tdiv(`data-chrome-chat-new` = "true",
+         `role` = "button", tabindex = "0",
+         title = "Create new chat",
+         `aria-label` = "Create new chat",
+         display = "flex", align_items = "center",
+         justify_content = "center",
+         width = "28px", height = "28px",
+         border_radius = "6px",
+         color = textMuted,
+         cursor = "pointer", flex_shrink = "0",
+         margin_left = "2px",
+         transition = "background-color 0.12s, color 0.12s")
+  let chromeNewChatIconHost = ui(r):
+    tdiv(`aria-hidden` = "true",
+         display = "flex", align_items = "center",
+         justify_content = "center",
+         width = "18px", height = "18px",
+         line_height = "1",
+         flex_shrink = "0")
+  r.setInnerHtml(chromeNewChatIconHost, plusSvg)
+  r.appendChild(chromeNewChatBtn, chromeNewChatIconHost)
+  block:
+    let capturedVm = vm
+    let newClick = proc() =
+      let id = capturedVm.createNewChat()
+      capturedVm.openAiDrawer(id)
+    r.addEventListener(chromeNewChatBtn, "click", newClick)
+    r.addEventListener(chromeNewChatBtn, "keydown", newClick)
+  r.appendChild(toolbar, chromeNewChatBtn)
+
+  # Rebuild the robot row whenever ``chats``, ``activeChatId`` or
+  # ``aiDrawerOpen`` flips.  The row is small (≤ a few dozen robots
+  # in practice) so a full rebuild is cheaper than partial diffing
+  # and keeps the DOM in lockstep with the VM signals.  Per-session
+  # status-dot effects are registered inside the rebuild so they
+  # tear down with the row.
+  block:
+    let capturedVm = vm
+    let strip = chromeChatStrip
+    proc renderChromeChatStrip() =
+      r.clearChildren(strip)
+      let sessions = capturedVm.chats.val
+      let activeId = capturedVm.activeChatId.val
+      let drawerOpen = capturedVm.aiDrawerOpen.val
+      for session in sessions:
+        let sessionId = session.id
+        let title = session.title.val
+        let isActive = drawerOpen and sessionId == activeId
+        var iconHost: E
+        var statusDot: E
+        let robotEl = ui(r):
+          tdiv(`role` = "tab", tabindex = "0",
+               `data-chat-tab` = sessionId,
+               `aria-selected` = (if isActive: "true" else: "false"),
+               title = title,
+               `aria-label` = title,
+               position = "relative",
+               display = "flex", align_items = "center",
+               justify_content = "center",
+               width = "28px", height = "28px",
+               border_radius = "6px",
+               background_color = (if isActive: accent else: "transparent"),
+               color = (if isActive: "#FFFFFF" else: textMuted),
+               cursor = "pointer", flex_shrink = "0",
+               transition = "background-color 0.12s, color 0.12s"):
+            tdiv(ref = iconHost,
+                 `aria-hidden` = "true",
+                 display = "flex", align_items = "center",
+                 justify_content = "center",
+                 width = "18px", height = "18px",
+                 line_height = "1",
+                 flex_shrink = "0")
+            tdiv(ref = statusDot,
+                 `data-chat-status-dot` = "true",
+                 position = "absolute",
+                 right = "1px", bottom = "1px",
+                 width = "8px", height = "8px",
+                 border_radius = "4px",
+                 border = "1px solid " & bgToolbar,
+                 background_color = "#A0A2B0")
+        r.setInnerHtml(iconHost, robotSvg)
+        # Per-session click → toggle drawer.  We route through a
+        # helper proc that captures the session id by VALUE so the
+        # right chat fires even when the strip is rebuilt under us
+        # (the prior plain ``let capturedId = sessionId`` form shared
+        # a single stack slot across iterations and stranded every
+        # robot with the LAST session id seen).
+        let robotClick = robotClickHandler(capturedVm, sessionId)
+        r.addEventListener(robotEl, "click", robotClick)
+        r.addEventListener(robotEl, "keydown", robotClick)
+        # Status dot reactive on the per-session ``sessionStatus``.
+        block:
+          let dot = statusDot
+          let chatVm = session.vm
+          createRenderEffect proc() =
+            let state = chatVm.sessionStatus.val
+            let color = case state
+              of asIdle: "#A0A2B0"
+              of asLoading: "#F59E0B"
+              of asReady: "#22C55E"
+              of asError: "#EF4444"
+            r.setStyle(dot, "background-color", color)
+            r.setAttribute(dot, "data-chat-status",
+              case state
+              of asIdle: "idle"
+              of asLoading: "loading"
+              of asReady: "ready"
+              of asError: "error")
+        r.appendChild(strip, robotEl)
+    createRenderEffect proc() =
+      discard capturedVm.chats.val
+      discard capturedVm.activeChatId.val
+      discard capturedVm.aiDrawerOpen.val
+      renderChromeChatStrip()
+
   toolbar
+
+proc renderAiDrawer*[R, E](r: R; vm: EditorVM): E =
+  ## Phase F — AI assistant slide-out drawer.
+  ##
+  ## A right-edge fixed-positioned panel that mounts
+  ## ``renderChatPanel`` for the currently-active chat.  Width tracks
+  ## ``vm.rightPanelWidth`` (the same signal the inspector uses) so
+  ## both rails read as a single column even though they are
+  ## independently mounted.  Visibility is driven by
+  ## ``vm.aiDrawerOpen``: when false the root is ``display: none`` so
+  ## the editor surface stays focused on the inspector.
+  ##
+  ## Z-index 80 layers the drawer above the inspector (z-index 30 on
+  ## its resize handle) and below the command palette (z-index 50 +
+  ## ``position: fixed``; effectively a modal layer).  The drawer is
+  ## itself ``position: fixed`` with ``top: 44px`` so the chrome bar
+  ## stays reachable while the drawer is open.
+  var closeBtn: E
+  var body: E
+  result = ui(r):
+    tdiv(`data-ai-drawer` = "true",
+          `data-ai-drawer-open` = "false",
+          position = "fixed",
+          top = "44px", right = "0", bottom = "0",
+          display = "none",
+          flex_direction = "column",
+          background_color = bgSidebar,
+          border_left = "1px solid " & borderStrong,
+          box_shadow = "-12px 0 32px -16px rgba(0, 0, 0, 0.45)",
+          z_index = "80",
+          width = "320px", min_width = "200px", max_width = "420px",
+          overflow = "hidden"):
+      tdiv(`data-ai-drawer-header` = "true",
+           display = "flex", align_items = "center",
+           justify_content = "flex-end",
+           min_height = "32px",
+           padding_top = "6px", padding_right = "8px",
+           padding_bottom = "6px", padding_left = "12px",
+           border_bottom = "1px solid " & border):
+        tdiv(ref = closeBtn,
+             `data-ai-drawer-close` = "true",
+             `role` = "button", tabindex = "0",
+             title = "Close AI drawer",
+             `aria-label` = "Close AI drawer",
+             display = "flex", align_items = "center",
+             justify_content = "center",
+             width = "24px", height = "24px",
+             border_radius = "4px",
+             color = textMuted,
+             font_size = "14px", line_height = "1",
+             cursor = "pointer"):
+          text "\xE2\x9C\x95"  # ✕
+      tdiv(ref = body,
+           `data-ai-drawer-body` = "true",
+           display = "flex", flex_direction = "column",
+           flex = "1", min_height = "0", min_width = "0",
+           overflow_x = "hidden")
+
+  let drawer = result
+  let bodyEl = body
+  # Mount the chat panel inside the drawer body.  ``renderChatPanel``
+  # reads ``vm.activeChat()`` so it automatically reflects the chat
+  # the robot row last activated; no internal tab strip is rendered.
+  let chatPanel = renderChatPanel[R, E](r, vm)
+  r.appendChild(bodyEl, chatPanel)
+
+  # Close button + ESC handling + click-outside handling are all
+  # wired below.  ``aiDrawerOpen`` is the load-bearing signal.
+  let capturedVm = vm
+  r.addEventListener(closeBtn, "click", proc() =
+    capturedVm.closeAiDrawer())
+  r.addEventListener(closeBtn, "keydown", proc() =
+    capturedVm.closeAiDrawer())
+
+  # Width binding — mirror the inspector's ``bindRightPanelWidth`` so
+  # the drawer and the inspector occupy the same horizontal slot
+  # (the drawer overlays the inspector when open).
+  block:
+    let drawerCapture = drawer
+    createRenderEffect proc() =
+      let width = $capturedVm.rightPanelWidth.val & "px"
+      r.setStyle(drawerCapture, "width", width)
+
+  # Visibility binding.
+  block:
+    let drawerCapture = drawer
+    createRenderEffect proc() =
+      let open = capturedVm.aiDrawerOpen.val
+      r.setStyle(drawerCapture, "display", if open: "flex" else: "none")
+      r.setAttribute(drawerCapture, "data-ai-drawer-open",
+        if open: "true" else: "false")
+
+  when defined(js):
+    let drawerJs = drawer
+    {.emit: ["""
+      (function (drawer) {
+        if (!drawer || drawer.__isonimAiDrawerReady) return;
+        drawer.__isonimAiDrawerReady = true;
+        // ESC closes the drawer when it's open.
+        document.addEventListener('keydown', function (event) {
+          if (event.key !== 'Escape') return;
+          if (drawer.getAttribute('data-ai-drawer-open') !== 'true') return;
+          var btn = drawer.querySelector('[data-ai-drawer-close="true"]');
+          if (btn) btn.click();
+        });
+        // Click-outside closes the drawer.  Robot buttons in the
+        // chrome bar are excluded so a click on a robot can still
+        // switch chats / toggle the drawer without an immediate
+        // close fighting the toggle.
+        document.addEventListener('mousedown', function (event) {
+          if (drawer.getAttribute('data-ai-drawer-open') !== 'true') return;
+          var target = event.target;
+          if (!target) return;
+          if (drawer.contains(target)) return;
+          if (target.closest && target.closest('[data-chat-tab]')) return;
+          if (target.closest && target.closest('[data-chrome-chat-new="true"]')) return;
+          var btn = drawer.querySelector('[data-ai-drawer-close="true"]');
+          if (btn) btn.click();
+        });
+      })(""", drawerJs, """);
+    """].}
 
 proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
   ## Top-level editor layout: [sidebar | center column | inspector chat] +
@@ -3365,19 +3765,22 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
         proc(success: bool; reason: string) =
           if success:
             chatOpenedForSpecComment.val = true
-            # DEPRECATED Phase A — replaced by aiDrawerOpen in
-            # Phase F. The Manual/Assistant tab pair is gone; the AI
-            # chat now lives in a chrome-bar-driven slide-out
-            # drawer. This call is a no-op shim
-            # (``setRightSidebarTab`` does nothing) so the
-            # comment-to-chat handoff continues to compile until
-            # Phase F migrates it to ``vm.openAiDrawer(...)``.
-            vm.setRightSidebarTab(rstAssistant)
+            # Phase F: open the AI drawer to the currently-active
+            # chat so the comment-to-chat handoff surfaces the
+            # transcript the spec_comment_chat_view just routed the
+            # comment into.  Empty string lets ``openAiDrawer``
+            # preserve the existing active chat.
+            vm.openAiDrawer(vm.activeChatId.val)
           if cb != nil:
             cb(success, reason))
   spec_comment_popover_view.mountCommentPopover[R, E](
     r, shellRoot, specPaneVm.commentPopover, specCommentSubmit)
   r.appendChild(shellRoot, shell)
+  # Phase F — AI assistant slide-out drawer.  Mounted at the shell
+  # root (NOT inside the editor row) so its ``position: fixed`` slot
+  # overlays the inspector without disturbing flex layout.  The
+  # drawer body hosts ``renderChatPanel`` for the active chat.
+  r.appendChild(shellRoot, renderAiDrawer[R, E](r, vm))
   r.appendChild(shellRoot, renderCommandPalette[R, E](r, vm))
   r.appendChild(shellRoot, renderTelemetryOverlay[R, E](r, vm))
   r.appendChild(shellRoot, renderStatusBar[R, E](r, vm))

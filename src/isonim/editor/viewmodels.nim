@@ -271,6 +271,16 @@ type
       ## Assistant-tab strip in ``shell.nim`` to highlight the active
       ## tab and by the ``chat`` accessor to pick out the right
       ## ``AgentChatVM``.
+    aiDrawerOpen*: Signal[bool]
+      ## Phase F: visibility of the AI assistant slide-out drawer
+      ## (``renderAiDrawer`` in ``shell.nim``).  The drawer overlays
+      ## the inspector at z-index 80 and is driven by the per-chat
+      ## robot icons in the chrome bar — clicking a robot opens the
+      ## drawer for that session; clicking the active robot a second
+      ## time, hitting ESC, or clicking outside closes it.  The state
+      ## (open / closed + active chat id) is persisted to
+      ## ``localStorage`` on the browser via a ``when defined(js)``
+      ## shim in ``createEditorVM``.
     review*: ReviewResultsVM
     preview*: ProjectPreviewVM
     flowPlayer*: FlowPlayerVM
@@ -433,6 +443,41 @@ proc activeChatSession*(vm: EditorVM): ChatSession =
   if vm.chats.val.len > 0:
     return vm.chats.val[0]
   nil
+
+# ===========================================================================
+# Phase F — AI assistant slide-out drawer
+# ===========================================================================
+
+proc openAiDrawer*(vm: EditorVM; sessionId: string = "") =
+  ## Open the AI drawer.  When ``sessionId`` is non-empty AND matches an
+  ## existing chat session, also switch the active chat to that
+  ## session.  The clicked-robot click handler in ``shell.nim`` passes
+  ## the per-robot id so the drawer always opens to the chat the user
+  ## actually pointed at; ``vm.openAiDrawer()`` without an argument
+  ## opens the drawer to whichever chat is already active (used by the
+  ## spec-comment → chat handoff).
+  if sessionId.len > 0:
+    discard vm.switchToChat(sessionId)
+  vm.aiDrawerOpen.val = true
+
+proc closeAiDrawer*(vm: EditorVM) =
+  ## Close the AI drawer.  The chat session itself stays warm in
+  ## ``vm.chats`` so reopening picks up exactly where the user left
+  ## off — closing is purely a visibility flip.
+  vm.aiDrawerOpen.val = false
+
+proc toggleAiDrawer*(vm: EditorVM; sessionId: string = "") =
+  ## Robot-click semantics from the spec:
+  ##   click R while drawer open AND R is the active chat → close
+  ##   click R any other time                              → open + activate R
+  ## ``sessionId`` is honoured on the OPEN transition only — a close
+  ## transition never changes the active chat (so reopening returns
+  ## to the same chat the user last looked at).
+  if vm.aiDrawerOpen.val and
+      (sessionId.len == 0 or vm.activeChatId.val == sessionId):
+    vm.closeAiDrawer()
+  else:
+    vm.openAiDrawer(sessionId)
 
 func commandLabel*(kind: EditorCommandKind): string =
   case kind
@@ -3115,6 +3160,102 @@ proc setSectionExpanded*(inspector: InspectorVM; section: InspectorSection;
 
 proc toggleSectionExpanded*(inspector: InspectorVM; section: InspectorSection) =
   inspector.setSectionExpanded(section, section notin inspector.expandedSections.val)
+
+func inspectorSectionToSlug*(section: InspectorSection): string =
+  ## Phase C (2026-05-28): canonical slug for an ``InspectorSection``
+  ## enum entry, matching the ``data-inspector-section-*`` attributes
+  ## stamped by ``renderSectionFrame`` in ``shell.nim``. Used to
+  ## (a) serialize the expanded set into ``localStorage`` and
+  ## (b) resolve a header click back to its owning enum.
+  case section
+  of isLayout: "layout"
+  of isSize: "size"
+  of isSpacing: "spacing"
+  of isPosition: "position"
+  of isFill: "fill"
+  of isStroke: "stroke"
+  of isTypography: "typography"
+  of isEffects: "effects"
+  of isTransitions: "transitions"
+  of isFilters: "filters"
+  of isState: "state"
+  of isSource: "source"
+  of isAppearance: "appearance"
+  of isSelectionColors: "selection-colors"
+  of isComponentProps: "component-properties"
+  of isExport: "export"
+
+func inspectorSectionFromSlugOpt*(slug: string): Option[InspectorSection] =
+  ## Phase C (2026-05-28): inverse of ``inspectorSectionToSlug``.
+  ## Returns ``none`` for unknown slugs so the localStorage
+  ## hydration drops forward-compat entries safely without erroring.
+  case slug
+  of "layout": some isLayout
+  of "size": some isSize
+  of "spacing": some isSpacing
+  of "position": some isPosition
+  of "fill": some isFill
+  of "stroke": some isStroke
+  of "typography": some isTypography
+  of "effects": some isEffects
+  of "transitions": some isTransitions
+  of "filters": some isFilters
+  of "state": some isState
+  of "source": some isSource
+  of "appearance": some isAppearance
+  of "selection-colors": some isSelectionColors
+  of "component-properties": some isComponentProps
+  of "export": some isExport
+  else: none(InspectorSection)
+
+func serializeExpandedSections*(sections: seq[InspectorSection]): string =
+  ## Phase C (2026-05-28): comma-separated slug list used as the
+  ## ``localStorage["isonim:inspector:expanded"]`` payload.
+  ## Example: ``"position,layout,appearance,fill"``.
+  var parts: seq[string] = @[]
+  for section in sections:
+    parts.add inspectorSectionToSlug(section)
+  parts.join(",")
+
+func parseExpandedSections*(serialized: string): seq[InspectorSection] =
+  ## Inverse of ``serializeExpandedSections``. Unknown slugs are
+  ## dropped (forwards-compat: future enum entries written by a
+  ## newer editor build don't poison the parse).
+  result = @[]
+  for raw in serialized.split(','):
+    let slug = raw.strip()
+    if slug.len == 0:
+      continue
+    let resolved = inspectorSectionFromSlugOpt(slug)
+    if resolved.isSome and resolved.get notin result:
+      result.add resolved.get
+
+proc applyExpandedSectionsFromStorage*(inspector: InspectorVM;
+    serialized: string) =
+  ## Phase C (2026-05-28): replaces ``expandedSections`` with the
+  ## parsed slug list when ``serialized`` is non-empty; leaves the
+  ## default untouched otherwise (missing storage key means "use the
+  ## default").
+  if serialized.len == 0:
+    return
+  inspector.expandedSections.val = parseExpandedSections(serialized)
+
+proc hydrateInspectorExpansionFromStorage*(vm: EditorVM) =
+  ## Phase C (2026-05-28): JS-only shim that reads the previously
+  ## persisted expanded-section set from ``localStorage`` and
+  ## merges it into the inspector VM. Native targets keep the
+  ## ``createInspectorVM`` default since they have no DOM storage.
+  ##
+  ## Storage key: ``isonim:inspector:expanded``.
+  ## Payload: comma-separated slug list (eg. ``position,layout,fill``).
+  when defined(js):
+    var raw: cstring
+    {.emit: ["try { ", raw,
+      " = (window.localStorage && window.localStorage.getItem('isonim:inspector:expanded')) || ''; } catch (e) { ",
+      raw, " = ''; }"].}
+    applyExpandedSectionsFromStorage(vm.inspector, $raw)
+  else:
+    discard
 
 proc collapseAllSections*(inspector: InspectorVM) =
   inspector.expandedSections.val = @[]
@@ -8422,8 +8563,16 @@ proc createInspectorVM*(designSystemSchema: Signal[DesignSystemSchema] = nil;
   let layers = createSignal[seq[ElementLayerRow]](@[])
   let layerSearch = createSignal("")
   let sectionSearch = createSignal("")
+  # Phase C (2026-05-28): the spec's section catalogue calls for
+  # Position / Layout / Appearance / Fill open by default with
+  # Stroke / Effects / Export collapsed. The previous default set
+  # (isLayout / isSpacing / isFill / isSource) was a placeholder
+  # from the 12-sub-tab era; the section frame click handlers and
+  # the localStorage hydration in
+  # ``hydrateInspectorExpansionFromStorage`` write through this
+  # signal so the first-open default lands on the spec-mandated four.
   let expandedSections = createSignal[seq[InspectorSection]](@[
-    isLayout, isSpacing, isFill, isSource
+    isPosition, isLayout, isAppearance, isFill
   ])
   let focusedControlId = createSignal("")
   let commandPaletteHooksReady = createSignal(true)
@@ -8500,6 +8649,13 @@ proc createInspectorVM*(designSystemSchema: Signal[DesignSystemSchema] = nil;
         of isFilters: "filters brightness contrast saturate blur"
         of isState: "state viewmodel signals"
         of isSource: "source ownership cascade scope impact"
+        # Phase C section-catalogue additions — not reachable from
+        # the 12-entry for-loop above but the case must cover the
+        # full enum after the type extension.
+        of isAppearance: "appearance opacity radius blend mode"
+        of isSelectionColors: "selection colors auto computed"
+        of isComponentProps: "component properties variant state slot"
+        of isExport: "export size format suffix"
       if query.len == 0 or label.contains(query):
         result.add section
   )
@@ -10317,6 +10473,37 @@ proc createEditorVM*(): EditorVM =
   let firstChat = createChatSession("chat-1", "New chat")
   let chats = createSignal[seq[ChatSession]](@[firstChat])
   let activeChatId = createSignal("chat-1")
+  # Phase F: AI drawer starts CLOSED.  When running in the browser the
+  # ``when defined(js)`` shim below reads any previously persisted
+  # state from ``localStorage`` and seeds the open flag + active id
+  # accordingly so reloads restore the drawer the user left visible.
+  let aiDrawerOpen = createSignal(false)
+  when defined(js):
+    var storedOpen = 0
+    var storedActive = cstring""
+    {.emit: ["""
+      try {
+        const raw = window.localStorage.getItem('isonim-editor-ai-drawer');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && parsed.open) { """, storedOpen, """ = 1; }
+          if (parsed && typeof parsed.activeChatId === 'string') {
+            """, storedActive, """ = parsed.activeChatId;
+          }
+        }
+      } catch (e) { /* localStorage unavailable / corrupt — ignore */ }
+    """].}
+    let storedActiveStr = $storedActive
+    if storedActiveStr.len > 0:
+      # Honour the persisted active chat id only when it still resolves
+      # to a real session (the seed chat is ``chat-1`` so this is true
+      # by default).  Mismatched ids fall through to the default seed.
+      for session in chats.val:
+        if session.id == storedActiveStr:
+          activeChatId.val = storedActiveStr
+          break
+    if storedOpen != 0:
+      aiDrawerOpen.val = true
   let review = createReviewResultsVM()
   let preview = createProjectPreviewVM(selectedStory, platform)
   let flowPlayer = createFlowPlayerVM()
@@ -10333,7 +10520,7 @@ proc createEditorVM*(): EditorVM =
     selectedStory.val.name.len > 0
   )
 
-  EditorVM(
+  result = EditorVM(
     activeView: activeView,
     previousView: previousView,
     vectorEditorTarget: vectorEditorTarget,
@@ -10374,8 +10561,30 @@ proc createEditorVM*(): EditorVM =
     variants: variants,
     chats: chats,
     activeChatId: activeChatId,
+    aiDrawerOpen: aiDrawerOpen,
     review: review,
     preview: preview,
     flowPlayer: flowPlayer,
     streamingPreview: nil,
     hasSelection: hasSelection)
+
+  # Phase F: persist drawer open + active chat id back to localStorage
+  # whenever either signal flips.  The shim quietly no-ops when the
+  # browser blocks storage (private mode / disabled cookies).
+  when defined(js):
+    let persistOpen = aiDrawerOpen
+    let persistActive = activeChatId
+    createRenderEffect proc() =
+      let open = persistOpen.val
+      let active = persistActive.val
+      let openFlag = if open: 1 else: 0
+      let activeC: cstring = active
+      {.emit: ["""
+        try {
+          window.localStorage.setItem(
+            'isonim-editor-ai-drawer',
+            JSON.stringify({ open: !!""", openFlag, """,
+                              activeChatId: """, activeC, """ })
+          );
+        } catch (e) { /* ignore */ }
+      """].}

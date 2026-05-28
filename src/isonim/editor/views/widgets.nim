@@ -8,3 +8,6 @@
 
 import isonim/editor/views/widgets/choice_group
 export choice_group
+
+import isonim/editor/views/widgets/property_row
+export property_row
