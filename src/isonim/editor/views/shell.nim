@@ -3148,6 +3148,16 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
   block:
     let capturedVm = vm
     let strip = chromeChatStrip
+    # Helper that takes the session id by VALUE and returns a fresh
+    # closure.  The naked ``let capturedId = sessionId`` form used
+    # inline ends up sharing a single stack slot across the for-loop
+    # iterations (the closure captures by reference, so every robot
+    # would fire ``toggleAiDrawer`` with the LAST session id seen).
+    # The helper proc bottoms out the capture so each robot's
+    # listener fires with its own id.
+    proc robotClickHandler(vm: EditorVM; sessionId: string): proc() =
+      result = proc() =
+        vm.toggleAiDrawer(sessionId)
     proc renderChromeChatStrip() =
       r.clearChildren(strip)
       let sessions = capturedVm.chats.val
