@@ -125,7 +125,11 @@ const
     # Freya's brand mark is a fern leaf. Stylised leaf silhouette with
     # a central vein. See docs/icon-design/freya.svg.
     backendFreya: """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M5 19c0-7 5-13 14-15-2 9-8 14-14 15z"/><path d="M5 19 14 9"/></svg>""",
-    backendCocoa: """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20.94c1.5 0 2.75-.67 3.75-2 .83-1 1.5-2.42 2-4.21-1.66-.5-2.75-1.83-2.75-3.66 0-1.6.92-3 2.31-3.71-.91-1.66-2.4-2.66-4.31-2.66s-3.4 1-4.31 2.66c1.39.71 2.31 2.11 2.31 3.71 0 1.83-1.09 3.16-2.75 3.66.5 1.79 1.17 3.21 2 4.21 1 1.33 2.25 2 3.75 2"/><path d="M12 5c.5-1.5 2-2.5 4-2.5"/></svg>""",
+    # Cocoa = macOS native UI framework. The most recognisable macOS
+    # identifier is a window with three traffic-light buttons (close /
+    # minimize / maximize) in the top-left corner. See
+    # docs/icon-design/cocoa.svg.
+    backendCocoa: """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><circle cx="5.8" cy="7" r="0.8" fill="currentColor" stroke="none"/><circle cx="8.2" cy="7" r="0.8" fill="currentColor" stroke="none"/><circle cx="10.6" cy="7" r="0.8" fill="currentColor" stroke="none"/></svg>""",
     # Android's Bugdroid silhouette. Google permits Bugdroid use for
     # identifying the Android platform. See docs/icon-design/bugdroid.svg.
     backendAndroid: """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="100%" height="100%" fill="currentColor"><g stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"><line x1="7.5" y1="4.5" x2="8.8" y2="7"/><line x1="16.5" y1="4.5" x2="15.2" y2="7"/></g><path d="M5.5 9.2c0-1 .7-1.8 1.7-2 1.4-.4 3-.7 4.8-.7s3.4.3 4.8.7c1 .2 1.7 1 1.7 2v4.3H5.5z"/><rect x="6.3" y="14.3" width="11.4" height="6" rx="1.2"/></svg>""",
