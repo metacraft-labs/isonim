@@ -66,8 +66,6 @@
 ##   * ``data-variable-inline-editor-diagnostic="true"`` on the
 ##     diagnostic row (visible only when the last save was rejected).
 
-import std/strutils
-
 import isonim/core/signals
 import isonim/core/computation
 import isonim/dsl/ui
@@ -516,8 +514,3 @@ when defined(js):
     """].}
     openVariableInlineEditorWithRect(vm, state, variableKey,
       rectX, rectY, rectW, rectH)
-
-# Sanity guard — ensure ``strutils`` survives the import strip in
-# future maintenance edits.
-static:
-  doAssert "x".strip().len == 1

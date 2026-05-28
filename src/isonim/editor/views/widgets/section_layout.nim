@@ -76,10 +76,18 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
   let modes = ["none", "vertical", "horizontal", "grid"]
   let modeGlyphs = ["\xE2\x9A\xAC", "\xE2\x86\x95",
                     "\xE2\x86\x94", "\xE2\x96\xA6"]
+  # Phase H (2026-05-28): pack the 4 mode buttons inside a single
+  # tinted trough so the cluster reads as a tightly-segmented
+  # control rather than a row of 4 individually-bordered buttons.
+  # Mirrors the alignment-cluster pattern used in section_position
+  # and the Figma reference.
   let modeRow = ui(r):
     tdiv(`data-layout-mode-row` = "true",
          display = "flex", flex_direction = "row",
-         gap = "4px", padding = "4px 0"):
+         background_color = "#1A1B22",
+         border_radius = "4px",
+         padding = "1px",
+         margin = "2px 0"):
       for i, slug in modes:
         tdiv(ref = modeButtons[i],
               role = "button", tabindex = "0",
@@ -87,8 +95,8 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
               `aria-label` = "Set layout to " & slug,
               display = "flex", align_items = "center",
               justify_content = "center",
-              width = "32px", height = "26px",
-              border = "1px solid " & border, border_radius = "4px",
+              flex = "1", height = "24px",
+              border_radius = "3px",
               color = textMuted, font_size = "12px", cursor = "pointer"):
           text modeGlyphs[i]
   r.appendChild(parent, modeRow)
@@ -102,6 +110,13 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
     r.addEventListener(btn, "keydown", proc() = layoutMode.val = slug)
   for i, slug in modes:
     bindModeClick(modeButtons[i], slug)
+  # Phase H: the active mode pill now reads as a quiet raised inset
+  # (matching the Figma reference's near-white pill in light theme).
+  # In our dark theme we lift the active mode to ``#262838`` — a
+  # subtle elevation above the trough's ``#1A1B22`` — and pair it
+  # with a faint hairline to mimic Figma's chip border. The previous
+  # accent (#7C7AED) violet pill competed with the much more
+  # consequential variable-binding accent elsewhere in the panel.
   createRenderEffect proc() =
     let active = layoutMode.val
     for i, slug in modes:
@@ -109,9 +124,11 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
       r.setAttribute(modeButtons[i], "data-layout-mode-active",
         if isActive: "true" else: "false")
       r.setStyle(modeButtons[i], "background-color",
-        if isActive: accent else: "transparent")
+        if isActive: "#262838" else: "transparent")
       r.setStyle(modeButtons[i], "color",
         if isActive: textPrimary else: textMuted)
+      r.setStyle(modeButtons[i], "box-shadow",
+        if isActive: "0 0 0 1px #2A2C3A" else: "none")
 
   # ----- W / H + constraint icon row ------------------------------- #
   # Two numeric rows + a placeholder constraint glyph. The glyph is a
@@ -121,14 +138,20 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
     name = "W", value = width, unit = widthUnit, units = @[pxUnit]))
   discard r.mountPropertyRow(parent, propertyRowNumeric(
     name = "H", value = height, unit = heightUnit, units = @[pxUnit]))
+  # Phase H (2026-05-28): the constraint indicator reads as a quiet
+  # icon-and-hint row. The Figma reference puts the constraint
+  # affordance as a small bracket glyph on the right edge next to W/H;
+  # we keep the row for the headless test contract but render it
+  # without the bordered chrome that competed with the alignment
+  # cluster pills above.
   let constraintRow = ui(r):
     tdiv(`data-layout-constraint` = "true",
-         display = "flex", align_items = "center", gap = "8px",
-         padding = "4px 0", font_size = "11px", color = textMuted):
-      tdiv(width = "24px", height = "24px",
-            border = "1px solid " & border, border_radius = "4px",
+         display = "flex", align_items = "center", gap = "6px",
+         padding = "2px 0", font_size = "11px", color = textMuted):
+      tdiv(width = "18px", height = "18px",
             display = "flex", align_items = "center",
-            justify_content = "center"):
+            justify_content = "center",
+            color = textMuted):
         text "\xE2\x9F\x8B"
       text "Constraints (auto)"
   r.appendChild(parent, constraintRow)

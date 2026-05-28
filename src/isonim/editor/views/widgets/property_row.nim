@@ -133,47 +133,69 @@ type
 
 const
   # Slot widths.
-  prLabelWidth   = "80px"
-  prBindWidth    = "24px"
-  prMoreWidth    = "20px"
+  # Phase H (2026-05-28): the label scrubber column shrinks from 80px
+  # to a tight prefix-letter cell — the Figma reference puts a faded
+  # single-letter prefix INSIDE the input (X / Y / W / H / etc.). The
+  # outer slot stays present (preserves the
+  # ``data-property-row-slot="label-scrubber"`` test contract + the
+  # scrub-drag region) but its visual weight drops dramatically: the
+  # column is now a 22px-wide gutter that holds the (short) property
+  # name in textMuted, and the longer property names just truncate.
+  prLabelWidth   = "22px"
+  prBindWidth    = "20px"
+  prMoreWidth    = "18px"
 
-  # Row metrics — single dense line, 26px tall like the Figma
-  # reference. The wrapper carries a 4px vertical gutter so adjacent
-  # rows have breathing room without overflowing the section body.
-  prRowMinHeight = "26px"
-  prRowGap       = "8px"
-  prRowVPad      = "4px"
+  # Row metrics — single dense line, 24px tall to match the Figma
+  # reference (was 26px). The wrapper carries a 2px vertical gutter
+  # (was 4px) so adjacent rows pack tighter — the reference looks
+  # 1.5x denser than the prior Phase D contract.
+  prRowMinHeight = "24px"
+  prRowGap       = "6px"
+  prRowVPad      = "2px"
 
-  # Input visual contract.
+  # Input visual contract. Phase H: drop the visible border so the
+  # input reads as a quiet rounded pill (Figma's pattern); the input
+  # gets a subtle hover border via the injected stylesheet so
+  # affordance is preserved without a constant 1px line.
   prInputBg      = "#1A1B22"
   prInputColor   = "#F1F5F9"
-  prInputBorder  = "1px solid #2A2B36"
+  prInputBorder  = "1px solid transparent"
   prInputRadius  = "4px"
-  prInputPadding = "4px 8px"
-  prInputHeight  = "26px"
+  prInputPadding = "3px 8px"
+  prInputHeight  = "24px"
   prInputFont    = "12px"
 
-  # Label scrubber.
-  prLabelColor   = "#A0A2B0"
-  prLabelFont    = "12px"
+  # Inline prefix glyph (the "X" / "Y" / "W" / "H" letter sitting
+  # inside the input). Faded so the value reads loudest.
+  prPrefixColor   = "#6B6F80"
+  prPrefixFont    = "11px"
+  prPrefixWidth   = "12px"
 
-  # Unit chip.
-  prUnitBg       = "#0F172A"
-  prUnitColor    = "#A0A2B0"
-  prUnitPadding  = "0 6px"
-  prUnitFont     = "10px"
-  prUnitRadius   = "3px"
+  # Label scrubber (outer). Phase H: now a thin gutter — the property
+  # name is rendered inside the input as a prefix; the outer slot
+  # only exists to host the scrub-drag affordance.
+  prLabelColor   = "#6B6F80"
+  prLabelFont    = "11px"
 
-  # Bind affordance.
-  prBindColor    = "#A0A2B0"
-  prBindFont     = "14px"
+  # Unit chip. Phase H: dropped background — the chip reads as plain
+  # muted text right-aligned inside the input. Figma's pattern.
+  prUnitBg       = "transparent"
+  prUnitColor    = "#6B6F80"
+  prUnitPadding  = "0 2px"
+  prUnitFont     = "11px"
+  prUnitRadius   = "0"
 
-  # More affordance.
-  prMoreColor    = "#A0A2B0"
-  prMoreFont     = "14px"
+  # Bind affordance. Phase H: hidden by default; CSS rule in
+  # ``injectEditorStyles`` flips opacity to 1 on row hover/focus.
+  prBindColor    = "#6B6F80"
+  prBindFont     = "13px"
+
+  # More affordance. Same hover-reveal behaviour.
+  prMoreColor    = "#6B6F80"
+  prMoreFont     = "13px"
 
   # Swatch.
-  prSwatchSize   = "16px"
+  prSwatchSize   = "14px"
   prSwatchBorder = "1px solid rgba(255, 255, 255, 0.12)"
 
 # --------------------------------------------------------------------------- #
@@ -412,6 +434,37 @@ proc kindAttr(kind: PropertyRowKind): string =
   of prkText:    "text"
   of prkBoolean: "boolean"
 
+proc inlinePrefixGlyph*(name: string): string =
+  ## Phase H (2026-05-28): return the short prefix string that sits
+  ## INSIDE the input pill — Figma's pattern. Single-letter property
+  ## names ("X", "Y", "W", "H") render as-is; short alphabetic names
+  ## ("Gap", "Pad", "Opacity") use their first letter; the empty
+  ## string disables the prefix entirely (long / non-alphabetic
+  ## names just leave the input to host the value uncluttered).
+  ##
+  ## Exported so per-section tests can assert the same prefix map
+  ## without recreating the rules.
+  if name.len == 0:
+    return ""
+  if name.len <= 2:
+    return name.toUpperAscii
+  # Heuristic: the prefix is the first letter for short, well-known
+  # property labels. The dispatch table avoids over-shortening
+  # uncommon labels (e.g. "Overflow", "Blend mode") which we leave
+  # blank — the value control there is descriptive enough.
+  let lower = name.toLowerAscii
+  case lower
+  of "gap": return "G"
+  of "pad top": return "T"
+  of "pad right": return "R"
+  of "pad bottom": return "B"
+  of "pad left": return "L"
+  of "rotation": return "\xE2\x86\xBB" # U+21BB CLOCKWISE OPEN CIRCLE ARROW
+  of "opacity": return "%"
+  of "corner radius": return "\xE2\x97\x90" # U+25D0 CIRCLE WITH LEFT HALF BLACK
+  else:
+    return ""
+
 proc currentUnitLabel(config: PropertyRowConfig): string =
   ## Returns the human label of the current unit chip. Defers to
   ## ``availableUnits`` when the signal-carried unit's label is empty
@@ -478,9 +531,18 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
       padding = prRowVPad & " 0",
       min_height = prRowMinHeight,
       width = "100%"):
+      # Phase H: the label slot is now a thin scrub gutter rather
+      # than a full label column. The display text moved inside the
+      # input as a prefix glyph (see prkNumeric / prkText). The slot
+      # still carries the ``data-property-row-slot="label-scrubber"``
+      # attribute and the col-resize cursor + scrub event handlers,
+      # so headless scrub-drag tests remain green. We render the
+      # name as the slot's accessible title (hover tooltip) for long
+      # labels that don't fit in the inline prefix.
       span(
         ref = labelNode,
         `data-property-row-slot` = "label-scrubber",
+        title = cfg.name,
         font_size = prLabelFont,
         color = prLabelColor,
         white_space = "nowrap",
@@ -489,8 +551,7 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
         min_width = prLabelWidth,
         max_width = prLabelWidth,
         cursor = (if cfg.kind == prkNumeric: "col-resize" else: "default"),
-        user_select = "none"):
-        text cfg.name
+        user_select = "none")
       tdiv(
         ref = valueSlot,
         `data-property-row-slot` = "value",
@@ -574,8 +635,10 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
     of prkNumeric:
       var inputNode: E
       var unitNode: E
+      let prefix = inlinePrefixGlyph(cfg.name)
       let row = ui(r):
-        tdiv(display = "flex", flex = "1",
+        tdiv(`data-property-row-pill` = "true",
+              display = "flex", flex = "1",
               align_items = "center", gap = "4px",
               min_width = "0",
               height = prInputHeight,
@@ -584,6 +647,22 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
               border = prInputBorder,
               border_radius = prInputRadius,
               overflow = "hidden"):
+          # Phase H: inline prefix glyph — the "X" / "Y" / "W" / "H"
+          # / etc. letter sits inside the input as a faded prefix,
+          # mirroring the Figma reference. Hidden when no prefix is
+          # configured for this property name (long names like
+          # "Overflow" render without a glyph).
+          if prefix.len > 0:
+            span(
+              `data-property-row-prefix` = "true",
+              `aria-hidden` = "true",
+              min_width = prPrefixWidth,
+              color = prPrefixColor,
+              font_size = prPrefixFont,
+              user_select = "none",
+              flex_shrink = "0",
+              white_space = "nowrap"):
+              text prefix
           input(
             ref = inputNode,
             `data-property-row-input` = "true",
@@ -597,7 +676,8 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
             font_size = prInputFont,
             font_family = "inherit",
             padding = "0",
-            height = "100%")
+            height = "100%",
+            text_align = "right")
           tdiv(
             ref = unitNode,
             role = "button",
@@ -846,10 +926,23 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
             ref = checkboxNode,
             `data-property-row-input` = "true",
             `aria-label` = "Toggle " & cfg.name,
-            width = "16px",
-            height = "16px",
+            width = "14px",
+            height = "14px",
             margin = "0",
             cursor = "pointer")
+          # Phase H: the boolean kind has no inline-prefix pattern —
+          # the checkbox already encodes the value visually. The
+          # label sits to the right of the checkbox as muted text so
+          # the row reads "[☑] Per-corner" inline.
+          span(
+            `data-property-row-boolean-label` = "true",
+            color = prLabelColor,
+            font_size = prInputFont,
+            user_select = "none",
+            overflow = "hidden",
+            text_overflow = "ellipsis",
+            white_space = "nowrap"):
+            text cfg.name
       r.appendChild(valueSlot, row)
       # The DSL's ``input`` does not natively expose ``type`` (it
       # could collide with the Nim ``type`` keyword). Apply it via

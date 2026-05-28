@@ -1887,7 +1887,8 @@ proc renderSelectionHeader[R, E](r: R; vm: EditorVM): E =
            border_radius = "4px",
            cursor = "default",
            min_width = "0",
-           font_size = "13px", font_weight = "600"):
+           font_size = "14px", font_weight = "700",
+           letter_spacing = "-0.01em"):
         span(ref = labelEl,
              `data-inspector-selection-label` = "true",
              color = textPrimary,
@@ -2057,7 +2058,7 @@ proc renderSectionFrame[R, E](r: R; vm: EditorVM;
   let row = ui(r):
     tdiv(`data-inspector-section-row` = slug,
          display = "flex", flex_direction = "column",
-         border_bottom = "1px solid " & border):
+         border_bottom = "1px solid " & borderFaint):
       tdiv(ref = headerEl,
            `data-inspector-section-header` = slug,
            `data-expanded` = "true",
@@ -2067,11 +2068,12 @@ proc renderSectionFrame[R, E](r: R; vm: EditorVM;
            display = "flex", align_items = "center",
            justify_content = "space-between",
            gap = "8px",
-           padding = "10px 12px",
+           padding = "8px 12px 6px 12px",
            cursor = "pointer",
            user_select = "none"):
         span(`data-inspector-section-title` = "true",
-             font_size = "13px", font_weight = "600",
+             font_size = "13px", font_weight = "700",
+             letter_spacing = "-0.01em",
              color = textPrimary,
              flex = "1", min_width = "0",
              overflow = "hidden",
@@ -2117,7 +2119,7 @@ proc renderSectionFrame[R, E](r: R; vm: EditorVM;
       tdiv(ref = bodyEl,
            `data-inspector-section-body` = slug,
            display = "flex", flex_direction = "column",
-           padding = "0 12px 12px 12px",
+           padding = "2px 12px 10px 12px",
            min_height = "0")
   # Paint the plus glyph outside the DSL — the renderer affordance
   # for inline SVG payloads is ``setInnerHtml``, which is an imperative

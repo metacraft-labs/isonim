@@ -143,56 +143,68 @@ proc mountSectionPosition*[R, E](r: R; parent: E; vm: EditorVM) =
   # buttons), vertical-align (3 buttons), distribute (1 button). The
   # active button reads ``data-position-align-active="true"`` so the
   # per-section test can pin selection without coupling to colours.
+  #
+  # Phase H (2026-05-28): each cluster reads as a tight segmented
+  # icon group on a quiet input-coloured trough — borderless inside
+  # but the trough surface gives the cluster a single rounded pill.
+  # Mirrors Figma's tightly-packed alignment-button row.
   let alignmentRow = ui(r):
     tdiv(`data-position-alignment-row` = "true",
          display = "flex", flex_direction = "row", align_items = "center",
-         gap = "8px", padding = "4px 0"):
+         gap = "4px", padding = "2px 0"):
       tdiv(`data-position-alignment-cluster` = "horizontal",
-            display = "flex", gap = "2px"):
+            display = "flex",
+            background_color = "#1A1B22",
+            border_radius = "4px",
+            padding = "1px"):
         for slug in ["left", "center", "right"]:
           tdiv(role = "button", tabindex = "0",
                 `data-position-align` = slug,
                 `aria-label` = "Align " & slug,
                 display = "flex", align_items = "center",
                 justify_content = "center",
-                width = "24px", height = "24px",
-                border = "1px solid " & border,
-                border_radius = "4px",
+                width = "26px", height = "22px",
+                border_radius = "3px",
                 color = textMuted,
-                font_size = "11px",
+                font_size = "12px",
                 cursor = "pointer"):
             text (if slug == "left": "\xE2\x86\xA4"
                   elif slug == "center": "\xE2\x86\x94"
                   else: "\xE2\x86\xA6")
       tdiv(`data-position-alignment-cluster` = "vertical",
-            display = "flex", gap = "2px"):
+            display = "flex",
+            background_color = "#1A1B22",
+            border_radius = "4px",
+            padding = "1px"):
         for slug in ["top", "middle", "bottom"]:
           tdiv(role = "button", tabindex = "0",
                 `data-position-valign` = slug,
                 `aria-label` = "Vertical align " & slug,
                 display = "flex", align_items = "center",
                 justify_content = "center",
-                width = "24px", height = "24px",
-                border = "1px solid " & border,
-                border_radius = "4px",
+                width = "26px", height = "22px",
+                border_radius = "3px",
                 color = textMuted,
-                font_size = "11px",
+                font_size = "12px",
                 cursor = "pointer"):
             text (if slug == "top": "\xE2\x86\xA5"
                   elif slug == "middle": "\xE2\x86\x95"
                   else: "\xE2\x86\xA7")
       tdiv(`data-position-alignment-cluster` = "distribute",
-            display = "flex", gap = "2px"):
+            display = "flex",
+            background_color = "#1A1B22",
+            border_radius = "4px",
+            padding = "1px",
+            margin_left = "auto"):
         tdiv(role = "button", tabindex = "0",
               `data-position-distribute` = "spacing",
               `aria-label` = "Distribute spacing",
               display = "flex", align_items = "center",
               justify_content = "center",
-              width = "24px", height = "24px",
-              border = "1px solid " & border,
-              border_radius = "4px",
+              width = "26px", height = "22px",
+              border_radius = "3px",
               color = textMuted,
-              font_size = "11px",
+              font_size = "12px",
               cursor = "pointer"):
           text "\xE2\x87\x84"
   r.appendChild(parent, alignmentRow)
@@ -209,28 +221,41 @@ proc mountSectionPosition*[R, E](r: R; parent: E; vm: EditorVM) =
     units = @[degUnit]))
 
   # ----- Flip buttons ---------------------------------------------- #
+  # Phase H (2026-05-28): flip controls render as compact icon
+  # buttons inside a quiet pill row matching the Figma reference's
+  # rotation/flip cluster. The pill carries the same input-trough
+  # background as the alignment clusters above so the rhythm is
+  # consistent across all section button rows.
   let flipRow = ui(r):
     tdiv(`data-position-flip-row` = "true",
-         display = "flex", flex_direction = "row", gap = "8px",
-         padding = "4px 0"):
-      tdiv(role = "button", tabindex = "0",
-            `data-position-flip` = "horizontal",
-            `aria-label` = "Flip horizontally",
-            display = "flex", align_items = "center",
-            justify_content = "center",
-            height = "26px", padding = "0 8px",
-            border = "1px solid " & border, border_radius = "4px",
-            color = textMuted, font_size = "11px", cursor = "pointer"):
-        text "Flip H"
-      tdiv(role = "button", tabindex = "0",
-            `data-position-flip` = "vertical",
-            `aria-label` = "Flip vertically",
-            display = "flex", align_items = "center",
-            justify_content = "center",
-            height = "26px", padding = "0 8px",
-            border = "1px solid " & border, border_radius = "4px",
-            color = textMuted, font_size = "11px", cursor = "pointer"):
-        text "Flip V"
+         display = "flex", flex_direction = "row",
+         align_items = "center", gap = "4px",
+         padding = "2px 0"):
+      tdiv(display = "flex",
+            background_color = "#1A1B22",
+            border_radius = "4px",
+            padding = "1px",
+            margin_left = "auto"):
+        tdiv(role = "button", tabindex = "0",
+              `data-position-flip` = "horizontal",
+              `aria-label` = "Flip horizontally",
+              display = "flex", align_items = "center",
+              justify_content = "center",
+              width = "26px", height = "22px",
+              border_radius = "3px",
+              color = textMuted, font_size = "13px",
+              cursor = "pointer"):
+          text "\xE2\x96\xB7\xE2\x97\x81"  # ▷◁
+        tdiv(role = "button", tabindex = "0",
+              `data-position-flip` = "vertical",
+              `aria-label` = "Flip vertically",
+              display = "flex", align_items = "center",
+              justify_content = "center",
+              width = "26px", height = "22px",
+              border_radius = "3px",
+              color = textMuted, font_size = "13px",
+              cursor = "pointer"):
+          text "\xE2\x96\xBD\xE2\x96\xB3"  # ▽△
   r.appendChild(parent, flipRow)
 
   # ----- Empty-state shadow ---------------------------------------- #
@@ -241,9 +266,9 @@ proc mountSectionPosition*[R, E](r: R; parent: E; vm: EditorVM) =
   let empty = ui(r):
     tdiv(ref = emptyEl,
          `data-position-empty` = "true",
-         padding = "8px 0",
+         padding = "2px 0 0 0",
          font_size = "11px",
-         color = textMuted):
+         color = textDim):
       text "Select an element"
   r.appendChild(parent, empty)
   createRenderEffect proc() =

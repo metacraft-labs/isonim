@@ -119,6 +119,63 @@ proc injectEditorStyles*() =
     }
     .editor-input::placeholder { color: #475569; }
     .editor-input:focus { border-color: #3B82F6 !important; }
+
+    /* ---- Phase H — Property row visual polish (2026-05-28) ---- */
+
+    /* Hover-revealed affordances. The bind and more buttons sit
+       quietly until the row is hovered or focused — Figma's pattern. */
+    [data-property-row] [data-property-row-slot="bind"],
+    [data-property-row] [data-property-row-slot="more"] {
+      opacity: 0;
+      transition: opacity 120ms ease-out;
+    }
+    [data-property-row]:hover [data-property-row-slot="bind"],
+    [data-property-row]:hover [data-property-row-slot="more"],
+    [data-property-row]:focus-within [data-property-row-slot="bind"],
+    [data-property-row]:focus-within [data-property-row-slot="more"] {
+      opacity: 1;
+    }
+    /* Linked rows keep their bind affordance visible (it carries the
+       chip's swap chevron). */
+    [data-property-row][data-property-row-linked="true"]
+      [data-property-row-slot="bind"] {
+      opacity: 1;
+    }
+    /* Hover state on the input pill — subtle border so the user
+       sees the click target without a permanent 1px line. */
+    [data-property-row-pill="true"] {
+      transition: border-color 120ms ease-out,
+                  background-color 120ms ease-out;
+    }
+    [data-property-row]:hover [data-property-row-pill="true"],
+    [data-property-row]:focus-within [data-property-row-pill="true"] {
+      border-color: #2A2C3A !important;
+    }
+    /* The inspector chrome itself — hover affordances on selection
+       header icons + section header. */
+    [data-inspector-selection-action]:hover {
+      background-color: #1F212C !important;
+      color: #ECEDF3 !important;
+    }
+    [data-inspector-section-header]:hover [data-inspector-section-title] {
+      color: #FFFFFF !important;
+    }
+    [data-inspector-section-action="add"]:hover {
+      background-color: #1F212C !important;
+      color: #ECEDF3 !important;
+    }
+
+    /* Soften the segmented-choice active pill INSIDE inspector
+       property rows — the shared widget paints the active state in
+       indigo (#7c7aed), which competes with the variable-binding
+       accent elsewhere. Inspector rows want a quiet raised inset
+       instead, matching the Layout mode strip's Phase H treatment. */
+    [data-property-row] [data-choice-group="segmented"]
+      [data-choice-group-pill][aria-pressed="true"] {
+      background-color: #262838 !important;
+      border-color: #2A2C3A !important;
+      color: #F1F5F9 !important;
+    }
   """
   document.head.appendChild(style)
 

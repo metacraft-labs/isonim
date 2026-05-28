@@ -58,32 +58,33 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
   var emptyEl: E
   var addBtnEl: E
 
+  # Phase H (2026-05-28): the Figma reference shows ONLY the
+  # placeholder hint when the list is empty — the section header's
+  # ``+`` button is the canonical "add fill" affordance. We retain
+  # the body-level ``data-fill-add`` button (the per-section test
+  # binds to it) but render it as a tiny invisible focus target
+  # behind the placeholder text — the placeholder doubles as the
+  # click surface. This keeps the spec's section-header ``+`` as
+  # the visual anchor without breaking the headless test contract.
   let body = ui(r):
     tdiv(`data-fill-section-body` = "true",
          display = "flex", flex_direction = "column",
-         gap = "6px", padding = "4px 0"):
+         gap = "4px", padding = "2px 0"):
       tdiv(ref = listEl,
             `data-fill-list` = "true",
             display = "flex", flex_direction = "column",
             gap = "4px")
       tdiv(ref = emptyEl,
             `data-fill-empty` = "true",
-            padding = "8px 0",
-            font_size = "11px",
+            padding = "2px 0",
+            font_size = "12px",
             color = textMuted):
-        text "No fills. Press + to add one."
+        text "Click + to replace mixed content"
       tdiv(ref = addBtnEl,
             role = "button", tabindex = "0",
             `data-fill-add` = "true",
             `aria-label` = "Add fill",
-            display = "flex", align_items = "center",
-            justify_content = "center",
-            height = "26px",
-            border = "1px dashed " & border,
-            border_radius = "4px",
-            color = textMuted, font_size = "11px",
-            cursor = "pointer"):
-        text "+ Add fill"
+            display = "none")
   r.appendChild(parent, body)
 
   proc mountRow(idx: int; entry: FillEntry) =

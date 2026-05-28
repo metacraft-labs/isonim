@@ -121,7 +121,11 @@ proc mountHarness*() {.exportc.} =
 
     # Whenever the binding picked in the picker changes, rebuild the
     # chip so its data attributes + visible name follow the latest
-    # binding.
+    # binding. We only react to bindings that contain ``targetKey`` —
+    # the harness starts with the chip pre-bound to ``color/surface``
+    # via ``currentBinding``; the picker writes the new binding into
+    # ``vm.inspector.propertyBindings`` on a row click, and that's
+    # when we want the chip to refresh.
     createRenderEffect proc() =
       let bindings = vm.inspector.propertyBindings.val
       if bindings.hasKey(targetKey):
@@ -129,9 +133,6 @@ proc mountHarness*() {.exportc.} =
         if b.variableKey != currentBinding.val.variableKey or
             b.resolvedValue != currentBinding.val.resolvedValue:
           currentBinding.val = b
-      else:
-        currentBinding.val = VariableBinding(state: vbsUnbound,
-          variableKey: "")
 
     # Initial mount.
     remountChip()
