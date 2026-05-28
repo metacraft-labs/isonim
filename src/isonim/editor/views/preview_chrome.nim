@@ -17,6 +17,7 @@ import std/[options]
 import isonim/core/signals
 import isonim/core/computation
 import isonim/dsl/ui
+import isonim/editor/views/icons  # historySvg
 
 type
   HistoryButtonVM* = ref object
@@ -70,8 +71,12 @@ proc mountHistoryButton*[R, E](r: R; parent: E; vm: HistoryButtonVM;
       border = "1px solid " & hbBorder,
       border_radius = "4px",
       cursor = "pointer",
-      user_select = "none"):
-      text "\u{1F558}"  # 🕘 CLOCK FACE NINE OCLOCK (U+1F558)
+      user_select = "none")
+  # Replace the Unicode clock-face emoji with a proper SVG history
+  # glyph that matches the rest of the in-house icon family (clock
+  # face with a counter-clockwise rewind arrow at top-left). See
+  # docs/icon-design/history.svg.
+  r.setInnerHtml(button, historySvg)
 
   proc activate() =
     capturedVm.galleryOpen.val = not capturedVm.galleryOpen.val

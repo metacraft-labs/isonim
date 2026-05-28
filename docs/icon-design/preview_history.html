@@ -1,0 +1,95 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>History icon iteration</title>
+    <style>
+      :root {
+        --bg-toolbar: #16171f;
+        --bg-sidebar: #111827;
+        --accent: #7c7aed;
+        --text-primary: #f1f5f9;
+        --text-muted: #a0a2b0;
+      }
+      body {
+        background: var(--bg-toolbar);
+        color: var(--text-primary);
+        font-family: -apple-system, sans-serif;
+        padding: 24px;
+        margin: 0;
+      }
+      h2 {
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.5px;
+        text-transform: uppercase;
+        color: var(--text-muted);
+        margin: 24px 0 8px 0;
+      }
+      .row {
+        display: flex;
+        gap: 20px;
+        align-items: center;
+        padding: 12px;
+        background: var(--bg-sidebar);
+        border-radius: 8px;
+        margin-bottom: 12px;
+      }
+      .cell {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+      }
+      .cell .lbl {
+        font-size: 10px;
+        color: var(--text-muted);
+      }
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 28px;
+        height: 28px;
+        border-radius: 6px;
+        background: transparent;
+        color: var(--text-muted);
+      }
+      .btn.active {
+        background: var(--accent);
+        color: var(--text-primary);
+      }
+      .btn svg {
+        width: 18px;
+        height: 18px;
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <h2>History icon at three sizes</h2>
+    <div class="row">
+      <div class="cell">
+        <div class="btn">__HISTORY__</div>
+        <span class="lbl">18px (chrome bar)</span>
+      </div>
+      <div class="cell">
+        <div class="btn" style="width: 36px; height: 36px">
+          <span style="width: 24px; height: 24px; display: block"
+            >__HISTORY__</span
+          >
+        </div>
+        <span class="lbl">24px</span>
+      </div>
+      <div class="cell">
+        <span style="width: 48px; height: 48px; display: block"
+          >__HISTORY__</span
+        ><span class="lbl">48px silhouette</span>
+      </div>
+      <div class="cell">
+        <div class="btn active">__HISTORY__</div>
+        <span class="lbl">active state</span>
+      </div>
+    </div>
+  </body>
+</html>

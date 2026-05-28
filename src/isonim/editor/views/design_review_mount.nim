@@ -28,6 +28,7 @@ import std/[options, strutils, tables]
 
 import isonim/core/[signals, computation]
 import isonim/dsl/ui
+import isonim/editor/views/icons  # historySvg
 
 import isonim/editor/types
 import isonim/editor/viewmodels
@@ -727,8 +728,10 @@ proc mountSidebarHistoryButtonForEditor*[R, E](r: R; parent: E; vm: EditorVM) =
       border = "1px solid #334155",
       border_radius = "6px",
       cursor = "pointer",
-      user_select = "none"):
-      text "\u{1F558}"
+      user_select = "none")
+  # CHRM-M7: narrow-mode mirror uses the same SVG history glyph the
+  # chrome-bar button now renders (see preview_chrome.nim).
+  r.setInnerHtml(button, historySvg)
   proc onActivate() =
     capturedState.galleryHostState.val =
       if capturedState.galleryHostState.val == ghsClosed: ghsOpen

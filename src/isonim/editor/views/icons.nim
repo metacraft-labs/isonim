@@ -420,3 +420,9 @@ const
   wrenchSvg* = inhouseSet.wrench
   robotSvg*  = inhouseSet.bot
   plusSvg*   = inhouseSet.plus
+
+  # History (capture-gallery) button — one-off, not part of the
+  # swappable IconSet because the showcase story doesn't expose it.
+  # Clock face with a counter-clockwise rewind arrow at the top-left.
+  # See docs/icon-design/history.svg for the source.
+  historySvg* = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3.5 2"/></svg>"""
