@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Freya — a stylised leaf silhouette inspired by the project's
+       fern-leaf brand mark. Single closed leaf shape with a central
+       vein. Reads as "Freya" to those who know the project; reads
+       as a calm botanical glyph to those who don't. -->
+  <path d="M5 19c0-7 5-13 14-15-2 9-8 14-14 15z"/>
+  <path d="M5 19 14 9"/>
+</svg>

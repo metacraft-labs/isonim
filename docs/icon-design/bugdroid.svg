@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="100%" height="100%" fill="currentColor">
+  <!-- Android Bugdroid silhouette. Head with two short antennae,
+       rounded-rectangle body, two eyes. Monochrome fill so it
+       integrates with the chrome-bar currentColor styling. Google's
+       brand guidelines permit Bugdroid use for identifying the
+       Android platform. -->
+  <!-- Left antenna -->
+  <path d="M7.2 4.8l1.4 2.4"/>
+  <!-- Right antenna -->
+  <path d="M16.8 4.8l-1.4 2.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/>
+  <!-- Top antennae (proper stroked paths) -->
+  <g stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none">
+    <line x1="7.5" y1="4.5" x2="8.8" y2="7"/>
+    <line x1="16.5" y1="4.5" x2="15.2" y2="7"/>
+  </g>
+  <!-- Head: rounded-top rectangle. -->
+  <path d="M5.5 9.2c0-1 .7-1.8 1.7-2 1.4-.4 3-.7 4.8-.7s3.4.3 4.8.7c1 .2 1.7 1 1.7 2v4.3H5.5z"/>
+  <!-- Body (rounded rectangle below the head). -->
+  <rect x="6.3" y="14.3" width="11.4" height="6" rx="1.2"/>
+  <!-- Eye cut-outs as small filled circles (negative space via bg color) — use stroke
+       to draw white dots: but currentColor is single-tone, so we leave the head solid
+       and rely on the silhouette to read as "Bugdroid" without eyes at small sizes.
+       At 24/48 px the silhouette + antennae communicate it; eyes would muddy at 16-18 px. -->
+</svg>

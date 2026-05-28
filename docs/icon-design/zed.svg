@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="100%" height="100%" fill="currentColor">
+  <!-- Zed (GPUI) — the editor's Z mark as a bold angular silhouette.
+       The Z is the canonical identifier for the project; GPUI is
+       Zed's GUI framework. Filled silhouette so it reads as a strong
+       brand mark rather than an outline glyph. -->
+  <path d="M5 5h14v3.5L10 17h9v2H5v-3.5L14 7H5z"/>
+</svg>
