@@ -3202,14 +3202,30 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
     for vp in vps:
       result.add vp.slug
 
+  # Split into two effects so the strip rebuild path (which calls
+  # ``mountSegmentedChoice`` and therefore creates a nested
+  # ``createRenderEffect`` inside ``choice_group``) runs ONLY on
+  # backend change. Reading ``viewport.val`` tracked in this effect
+  # caused the rebuild to re-run on every viewport click; on re-run
+  # ``cleanNode`` disposes everything in this effect's ``owned`` set,
+  # including the inner pill-style effect that was created during the
+  # previous rebuild. The strip's pills would then keep firing click
+  # handlers (those live on the DOM, not the reactive graph) but no
+  # subscriber existed to repaint ``aria-pressed`` / styles — the
+  # exact "click iPhone + 2 viewport clicks → stuck active state"
+  # user repro.
   createRenderEffect proc() =
     let backend = capturedVm.platform.val
-    let active = capturedVm.viewport.val
     let newPinned = pinnedViewports(backend)
     let newPopup = popupViewports(backend)
     let newPinnedLabels = pinnedViewportLabels(backend)
     let needsRebuild = newPinnedLabels != viewportStripVm.labels
     if needsRebuild:
+      # ``.value`` is the un-tracked accessor — needed at strip-mount
+      # time to land the new VM's initial index on the currently-active
+      # viewport, but we do not want a subscription. The viewport-side
+      # effect below handles every subsequent change.
+      let active = capturedVm.viewport.value
       r.clearChildren(viewportStripHost)
       viewportPinned = newPinned
       var pinnedIdx = 0
@@ -3226,16 +3242,27 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
         variant = cgvTransparent)
     else:
       viewportPinned = newPinned
-      for i, vp in newPinned:
-        if viewportsEqual(active, vp):
-          if viewportStripVm.activeIndex.value != i:
-            viewportStripVm.activate(i)
-          break
     if viewportSlugSeq(newPopup) != viewportSlugSeq(viewportPopup):
       viewportPopup = newPopup
       rebuildViewportDropdown(viewportDropdownEl, viewportPopup)
     else:
       viewportPopup = newPopup
+
+  # Sync the strip's ``activeIndex`` to the current viewport. This
+  # effect intentionally lives outside the rebuild effect: it reads
+  # ``viewport.val`` (tracked) but never creates child computations,
+  # so re-running it on every viewport change disposes nothing of
+  # consequence. Needed for two paths: (a) a dropdown pick changes
+  # viewport without going through the strip; (b) the strip rebuild
+  # above only seeds initial index, this effect keeps it in sync
+  # afterwards.
+  createRenderEffect proc() =
+    let active = capturedVm.viewport.val
+    for i, vp in viewportPinned:
+      if viewportsEqual(active, vp):
+        if viewportStripVm.activeIndex.value != i:
+          viewportStripVm.activate(i)
+        break
 
   r.appendChild(toolbar, viewportClusterWrapper)
 

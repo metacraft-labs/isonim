@@ -758,3 +758,90 @@ test("chrome bar survives 200 randomised clicks under property invariants", asyn
     await ctx.close();
   }
 });
+
+// User-reported repro (2026-05-29): "click iPhone + 2 viewport pill clicks
+// → buttons stop responding / active state not displayed". Root cause:
+// the viewport-strip rebuild effect in shell.nim read viewport.val tracked,
+// so every viewport click re-ran the rebuild effect, whose cleanNode
+// disposed the inner choice_group createRenderEffect that drives pill
+// aria-pressed + styles. Click handlers (live on the DOM) still fired and
+// mutated the VM, but no live subscriber repainted the pills → the user
+// perceived the pills as stuck. Fix: split into two effects — one that
+// re-runs only on backend change (and creates the strip), one that
+// re-runs on viewport change (and only calls activate, never mounts).
+// This test reproduces the exact 3-click sequence and asserts the pills
+// repaint correctly. Without the fix the second viewport click leaves
+// aria-pressed stuck on pill #0.
+test("user repro: iPhone Backend + 2 viewport pills repaint correctly", async () => {
+  const { ctx, page } = await openEditor();
+  try {
+    const iphoneSelector = await page.evaluate(() => {
+      const pills = document.querySelectorAll(
+        '[data-toolbar-cluster="backend"] [data-choice-group-pill]',
+      );
+      for (const p of pills) {
+        const lbl =
+          p.getAttribute("data-choice-group-label") ||
+          p.getAttribute("aria-label") ||
+          "";
+        if (/iphone|ios/i.test(lbl)) {
+          return `[data-toolbar-cluster="backend"] [data-choice-group-pill="${p.getAttribute("data-choice-group-pill")}"]`;
+        }
+      }
+      return null;
+    });
+    if (!iphoneSelector) {
+      console.warn(
+        "[repro] no iPhone Backend pill found in current build — skipping",
+      );
+      return;
+    }
+
+    await page.locator(iphoneSelector).click();
+    await page.waitForTimeout(120);
+
+    const viewportPillCount = await page.evaluate(
+      () =>
+        document.querySelectorAll(
+          '[data-toolbar-cluster="viewport"] [data-choice-group-pill]',
+        ).length,
+    );
+    if (viewportPillCount < 2) {
+      console.warn(
+        `[repro] iPhone viewport strip has only ${viewportPillCount} pill(s) — cannot reproduce the 2-click sequence`,
+      );
+      return;
+    }
+
+    const pill0 =
+      '[data-toolbar-cluster="viewport"] [data-choice-group-pill="0"]';
+    const pill1 =
+      '[data-toolbar-cluster="viewport"] [data-choice-group-pill="1"]';
+
+    await page.locator(pill0).click();
+    await page.waitForTimeout(50);
+    await page.locator(pill1).click();
+    await page.waitForTimeout(50);
+
+    const state = await page.evaluate(
+      ({ p0, p1 }) => ({
+        p0Pressed: document.querySelector(p0)?.getAttribute("aria-pressed"),
+        p1Pressed: document.querySelector(p1)?.getAttribute("aria-pressed"),
+      }),
+      { p0: pill0, p1: pill1 },
+    );
+
+    assert.strictEqual(
+      state.p1Pressed,
+      "true",
+      `after iPhone + click(p0) + click(p1), viewport pill #1 must be aria-pressed=true (got ${state.p1Pressed}) — this is the regression net for the rebuild-effect-disposes-inner-effect bug fixed 2026-05-29`,
+    );
+    assert.strictEqual(
+      state.p0Pressed,
+      "false",
+      `viewport pill #0 must be aria-pressed=false after pill #1 click (got ${state.p0Pressed})`,
+    );
+  } finally {
+    await ctx.close();
+  }
+});
