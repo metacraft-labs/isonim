@@ -5,7 +5,7 @@
 
 import std/[options, sets, strutils, tables]
 
-import isonim/core/[signals, computation]
+import isonim/core/[signals, computation, owner]
 import isonim/dsl/ui
 import isonim/viewmodel  # AsyncState (asIdle/asLoading/asReady/asError)
 import isonim/editor/viewmodels
@@ -3214,6 +3214,21 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
   # subscriber existed to repaint ``aria-pressed`` / styles — the
   # exact "click iPhone + 2 viewport clicks → stuck active state"
   # user repro.
+  #
+  # 2026-05-29 follow-up: even with the split, a second user repro
+  # triggered the same stuck-state — click iPhone → Zed → Freya
+  # quickly. Zed and Freya share the same pinned set (both desktop),
+  # so the iPhone → Zed switch rebuilds the strip and creates a new
+  # inner effect, but the Zed → Freya switch sees
+  # ``needsRebuild = false`` (labels unchanged) and skips the
+  # remount. The rebuild effect's ``cleanNode`` still disposed the
+  # Zed-strip's inner effect on re-run, leaving the strip lifeless.
+  # Fix: mount each strip inside its own ``createRoot``, so the
+  # inner effect is owned by the dedicated root (not by the rebuild
+  # effect). On the NEXT rebuild we explicitly call the previous
+  # root's ``dispose`` before clearing the DOM and mounting the new
+  # strip, which gives us tight reactive lifetime + zero leaks.
+  var disposeViewportStrip: proc() = nil
   createRenderEffect proc() =
     let backend = capturedVm.platform.val
     let newPinned = pinnedViewports(backend)
@@ -3226,6 +3241,9 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
       # viewport, but we do not want a subscription. The viewport-side
       # effect below handles every subsequent change.
       let active = capturedVm.viewport.value
+      if disposeViewportStrip != nil:
+        disposeViewportStrip()
+        disposeViewportStrip = nil
       r.clearChildren(viewportStripHost)
       viewportPinned = newPinned
       var pinnedIdx = 0
@@ -3235,11 +3253,13 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
           break
       viewportStripVm = createSegmentedChoiceVM(
         newPinnedLabels, initialIndex = pinnedIdx)
-      r.mountSegmentedChoice(viewportStripHost, viewportStripVm,
-        proc(i: int) {.closure.} =
-          if i >= 0 and i < viewportPinned.len:
-            capturedVm.changeViewport(viewportPinned[i]),
-        variant = cgvTransparent)
+      createRoot(proc(dispose: proc()) =
+        disposeViewportStrip = dispose
+        r.mountSegmentedChoice(viewportStripHost, viewportStripVm,
+          proc(i: int) {.closure.} =
+            if i >= 0 and i < viewportPinned.len:
+              capturedVm.changeViewport(viewportPinned[i]),
+          variant = cgvTransparent))
     else:
       viewportPinned = newPinned
     if viewportSlugSeq(newPopup) != viewportSlugSeq(viewportPopup):

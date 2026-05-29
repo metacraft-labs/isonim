@@ -845,3 +845,83 @@ test("user repro: iPhone Backend + 2 viewport pills repaint correctly", async ()
     await ctx.close();
   }
 });
+
+// User-reported follow-up repro (2026-05-29 second pass): "I click on
+// iPhone, Zed, and Freya, I do it quick and at some point the
+// currently clicked screen size button stops being highlighted." Root
+// cause: the same disposal cascade as the first fix but triggered via
+// a different path — Zed and Freya share the same pinned-viewport set
+// (both are desktop launchers), so the Zed→Freya rebuild effect re-run
+// sees needsRebuild=false and skips re-mounting the strip. But
+// cleanNode already disposed the previous mount's inner effect on
+// re-run, leaving the strip lifeless. Fix: anchor the strip's inner
+// effect to the shell-level owner via runWithOwner.
+test("user repro 2: iPhone → Zed → Freya quick, then viewport click", async () => {
+  const { ctx, page } = await openEditor();
+  try {
+    const pillSelectorFor = (matcher) =>
+      page.evaluate((rxSrc) => {
+        const rx = new RegExp(rxSrc, "i");
+        const pills = document.querySelectorAll(
+          '[data-toolbar-cluster="backend"] [data-choice-group-pill]',
+        );
+        for (const p of pills) {
+          const lbl =
+            p.getAttribute("data-choice-group-label") ||
+            p.getAttribute("aria-label") ||
+            "";
+          if (rx.test(lbl)) {
+            return `[data-toolbar-cluster="backend"] [data-choice-group-pill="${p.getAttribute("data-choice-group-pill")}"]`;
+          }
+        }
+        return null;
+      }, matcher);
+
+    const iphone = await pillSelectorFor("iphone|ios");
+    const zed = await pillSelectorFor("zed");
+    const freya = await pillSelectorFor("freya");
+    if (!iphone || !zed || !freya) {
+      console.warn(
+        "[repro 2] missing iPhone/Zed/Freya pill in current backend set — skipping",
+      );
+      return;
+    }
+
+    await page.locator(iphone).click();
+    await page.waitForTimeout(30);
+    await page.locator(zed).click();
+    await page.waitForTimeout(30);
+    await page.locator(freya).click();
+    await page.waitForTimeout(80);
+
+    const viewportPillCount = await page.evaluate(
+      () =>
+        document.querySelectorAll(
+          '[data-toolbar-cluster="viewport"] [data-choice-group-pill]',
+        ).length,
+    );
+    if (viewportPillCount < 2) {
+      console.warn(
+        `[repro 2] Freya viewport strip has only ${viewportPillCount} pill(s) — cannot reproduce the 2-click sequence`,
+      );
+      return;
+    }
+
+    const pill1 =
+      '[data-toolbar-cluster="viewport"] [data-choice-group-pill="1"]';
+    await page.locator(pill1).click();
+    await page.waitForTimeout(60);
+
+    const p1Pressed = await page.evaluate(
+      (sel) => document.querySelector(sel)?.getAttribute("aria-pressed"),
+      pill1,
+    );
+    assert.strictEqual(
+      p1Pressed,
+      "true",
+      `after iPhone→Zed→Freya + click(viewport pill #1), pill #1 must be aria-pressed=true (got ${p1Pressed}) — regression net for the same-pinned-set disposal cascade fixed 2026-05-29`,
+    );
+  } finally {
+    await ctx.close();
+  }
+});
