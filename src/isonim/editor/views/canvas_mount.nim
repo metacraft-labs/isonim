@@ -650,7 +650,22 @@ when defined(js):
         # AnyFrameSource dims. See VRS-M1 audit § 2.5 / § 3.
         if b.handle == nil: return
         if not isBridgeOpen(b.handle): return
-        sendResize(b.handle, width, height))
+        sendResize(b.handle, width, height),
+      sendHelloAccept = proc(accept: seq[string]) =
+        # EPP-M6: TUI is its own D/M/P transport — pixel-video accept
+        # negotiation is meaningless there. For the F/M/I bridges
+        # (GPUI / Freya / Cocoa / Android / iOS) the JS shim already
+        # advertises the accept list synchronously on ws.open inside
+        # the IIFE, so this closure is the Nim-side re-advertise
+        # surface called from the view layer's onOpen callback to
+        # land a second copy after backend re-attach (defensive: the
+        # in-IIFE send fires once before any Nim-side hook can run,
+        # so this re-advertise is belt-and-braces and ensures the
+        # launcher sees the accept list even if the in-IIFE send
+        # races a torn-down listener on rapid backend toggles).
+        if b.handle == nil: return
+        if not isBridgeOpen(b.handle): return
+        sendHelloAccept(b.handle, accept))
 
   proc ensureTuiHost(canvas: Element): Element =
     ## Resolve (or lazily create) the ``<div data-tui-terminal="true">``
@@ -772,6 +787,28 @@ when defined(js):
             let w = previewViewportWidth(viewport)
             let h = previewViewportHeight(viewport)
             publishResize(capturedVm.streamingPreview, w, h)
+            # EPP-M6: advertise the browser's accepted transports the
+            # moment the socket reaches OPEN, so the launcher (which
+            # is already free to start emitting V or F per its own
+            # capability bag) sees an explicit accept list before its
+            # first non-hello packet. The JS shim's in-IIFE send
+            # covers the synchronous case; this Nim-side publish acts
+            # as a second copy after backend re-attach. The accept
+            # list mirrors the JS shim's feature-detect.
+            var hasVideoDecoder = 0
+            {.emit: ["""
+              try {
+                if (typeof VideoDecoder === 'function' &&
+                    typeof EncodedVideoChunk === 'function') {
+                  """, hasVideoDecoder, """ = 1;
+                }
+              } catch (_) {}
+            """].}
+            var accept: seq[string] = @[]
+            if hasVideoDecoder != 0:
+              accept.add "v/avc1"
+            accept.add "f/rgba"
+            publishHelloAccept(capturedVm.streamingPreview, accept)
           if activeBackend == pbTui:
             let host = ensureTuiHost(canvas)
             binding.tuiHost = host

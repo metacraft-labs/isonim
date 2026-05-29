@@ -182,6 +182,13 @@ type
     sendMutationFn*: proc(target, key, valueLiteral: string;
                           scope: MutationScopeKind) {.closure.}
     sendResizeFn*: proc(width, height: int) {.closure.}
+    sendHelloAcceptFn*: proc(accept: seq[string]) {.closure.}
+      ## EPP-M6: the editor's onWsOpen callback fires this once a
+      ## bridge attaches so the browser advertises which transports it
+      ## can decode. ``accept`` is the ordered preference list — first
+      ## entry the launcher's hello bag indicates it can produce wins.
+      ## Today the JS shim advertises ``["v/avc1", "f/rgba"]`` when
+      ## ``VideoDecoder`` is feature-detected; ``["f/rgba"]`` otherwise.
 
   BackendBinaryRegistry* = ref object
     ## Maps `PreviewBackend` -> path of the executable that hosts
@@ -474,20 +481,31 @@ proc setStoryPublisher*(vm: StreamingPreviewVM;
                                            scope: MutationScopeKind)
                                        {.closure.};
                         sendResize: proc(width, height: int)
+                                       {.closure.} = nil;
+                        sendHelloAccept: proc(accept: seq[string])
                                        {.closure.} = nil) =
-  ## RS-M12 / VRS-M2: the view layer registers concrete bridge
-  ## senders here once a bridge has attached; pass nil-fn arguments
-  ## to clear (on detach). Idempotent — the binding installs the
-  ## same closures across re-attaches so consumer call-sites can
+  ## RS-M12 / VRS-M2 / EPP-M6: the view layer registers concrete
+  ## bridge senders here once a bridge has attached; pass nil-fn
+  ## arguments to clear (on detach). Idempotent — the binding installs
+  ## the same closures across re-attaches so consumer call-sites can
   ## keep firing without dropping packets during reconnects.
   ##
   ## ``sendResize`` is optional for back-compat with existing
   ## tests / call sites that only need select-story + mutation
   ## publishing; the editor's view layer always passes a non-nil
   ## closure (see ``installStoryPublisher`` in ``canvas_mount.nim``).
+  ##
+  ## EPP-M6: ``sendHelloAccept`` is the transport-negotiation
+  ## advertiser fired by the bridge's onWsOpen callback so the browser
+  ## reports which transports it can decode (``"v/avc1"`` when
+  ## ``VideoDecoder`` is available, ``"f/rgba"`` always). The launcher
+  ## already advertises what it can PRODUCE in the hello capability
+  ## bag; once both halves are advertised neither side needs to
+  ## renegotiate.
   vm.publisher = StoryPublisher(sendStoryFn: sendStory,
                                 sendMutationFn: sendMutation,
-                                sendResizeFn: sendResize)
+                                sendResizeFn: sendResize,
+                                sendHelloAcceptFn: sendHelloAccept)
 
 proc clearStoryPublisher*(vm: StreamingPreviewVM) =
   ## RS-M12. Call on bridge detach; subsequent publish attempts are
@@ -528,6 +546,20 @@ proc publishResize*(vm: StreamingPreviewVM; width, height: int) =
     return
   if width <= 0 or height <= 0: return
   vm.publisher.sendResizeFn(width, height)
+
+proc publishHelloAccept*(vm: StreamingPreviewVM; accept: seq[string]) =
+  ## EPP-M6: fire the editor's accepted-transports advertisement
+  ## through the registered publisher. The view layer wires this from
+  ## the bridge's onWsOpen callback so the launcher learns what the
+  ## browser can decode the moment the socket reaches OPEN. No-op when
+  ## no bridge is attached, when the active backend is Web (no
+  ## streaming launcher), or when the accept list is empty (the
+  ## launcher's existing transport stays in force).
+  if vm == nil or vm.selectedBackend.val == pbWeb: return
+  if vm.publisher == nil or vm.publisher.sendHelloAcceptFn == nil:
+    return
+  if accept.len == 0: return
+  vm.publisher.sendHelloAcceptFn(accept)
 
 proc selectBackend*(vm: StreamingPreviewVM; backend: PreviewBackend) =
   ## Mode menu wiring. Editor calls this on user click; clears any
@@ -1023,10 +1055,68 @@ when defined(js):
         if (!canvas || !url) return null;
         var ws = new WebSocket(url);
         ws.binaryType = 'arraybuffer';
+        // EPP-M6: per-connection WebCodecs VideoDecoder state. Lazily
+        // configured on the first V packet so the decoder picks up the
+        // launcher-advertised codec_id from the wire (the launcher's
+        // hello capability bag also carries it, but the V packet
+        // header is the canonical source — it survives reconfigure
+        // across resize when the launcher tears down + re-init's its
+        // VTCompressionSession). ``activeTransport`` mirrors which
+        // packet kind is actually painting; toggled by the first
+        // successfully-handled F or V packet so tests can assert via
+        // ``document.body.dataset.isonimActiveTransport``.
+        var videoDecoder = null;
+        var videoDecoderConfigured = false;
+        var videoDecoderCodecId = '';
+        var videoDecoderWidth = 0;
+        var videoDecoderHeight = 0;
+        var videoChunkSeq = 0;
+        var activeTransport = '';
+        function hasVideoDecoder() {
+          return typeof VideoDecoder === 'function' &&
+                 typeof EncodedVideoChunk === 'function';
+        }
+        function setActiveTransport(tag) {
+          if (activeTransport === tag) return;
+          activeTransport = tag;
+          try {
+            document.body.setAttribute(
+              'data-isonim-active-transport', tag);
+          } catch (_) {}
+        }
         // RS-M12: fire the onWsOpen Nim callback once the socket
         // reaches OPEN state so the editor can flush queued sends
         // (e.g. the initial `select-story` packet) without polling.
         ws.addEventListener('open', function () {
+          // EPP-M6 transport negotiation: advertise the browser's
+          // accepted transports as a hello M packet so the launcher
+          // (which already advertises its capabilities in its own
+          // hello) knows which one to emit. Order = preference; first
+          // entry the launcher can produce wins. The legacy F/RGBA
+          // path is always advertised as a safety net. When
+          // ``VideoDecoder`` is undefined (non-Chromium hypothetical)
+          // the V path is dropped from the accept list so the
+          // launcher silently stays on F.
+          try {
+            var accept = hasVideoDecoder()
+              ? ['v/avc1', 'f/rgba']
+              : ['f/rgba'];
+            var helloJson = JSON.stringify({
+              type: 'hello',
+              accept: accept,
+            });
+            var enc = new TextEncoder();
+            var bodyBytes = enc.encode(helloJson);
+            var buf = new Uint8Array(5 + bodyBytes.length);
+            buf[0] = 0x4D; // 'M'
+            var n = bodyBytes.length;
+            buf[1] = n & 0xFF;
+            buf[2] = (n >>> 8) & 0xFF;
+            buf[3] = (n >>> 16) & 0xFF;
+            buf[4] = (n >>> 24) & 0xFF;
+            buf.set(bodyBytes, 5);
+            ws.send(buf);
+          } catch (_) {}
           try { if (onWsOpen) onWsOpen(); } catch (_) {}
         });
         function readU32LE(view, offset) {
@@ -1043,10 +1133,191 @@ when defined(js):
             // rather than getting upsampled by the browser. Without
             // this the deviceFrame would also blow up to dpr×
             // intended size on a Retina display.
+            //
+            // EPP-M6 reuse: V-packet ``codedWidth`` / ``codedHeight``
+            // funnel through the same ensureSize so the DPR contract
+            // applies identically whether the launcher ships raw RGBA
+            // F-packets or H.264 V-packets. The decoded VideoFrame's
+            // intrinsic dims ARE the canvas intrinsic; CSS sizing
+            // follows / dpr.
             var dpr = (typeof window !== 'undefined' &&
                        window.devicePixelRatio) || 1;
             canvas.style.width = (width / dpr) + 'px';
             canvas.style.height = (height / dpr) + 'px';
+          }
+        }
+        function teardownVideoDecoder() {
+          try {
+            if (videoDecoder &&
+                typeof videoDecoder.close === 'function') {
+              videoDecoder.close();
+            }
+          } catch (_) {}
+          videoDecoder = null;
+          videoDecoderConfigured = false;
+          videoDecoderCodecId = '';
+          videoDecoderWidth = 0;
+          videoDecoderHeight = 0;
+        }
+        function ensureVideoDecoder(codecId, width, height) {
+          // (Re)configure when the codec_id changes (launcher swapped
+          // profile/level), the coded dimensions change (mid-stream
+          // resize: the launcher tore down + re-init'd its
+          // VTCompressionSession — see EPP-M5 brief § "Encoder
+          // lifecycle"), or the decoder closed due to a previous
+          // decode error (the WebCodecs spec transitions the decoder
+          // to ``'closed'`` permanently on any error event, so the
+          // next decode() would throw "Cannot call 'decode' on a
+          // closed codec" — we re-create transparently). The
+          // decoder is created lazily on the first V packet so the
+          // configure() call sees the wire-canonical codec_id rather
+          // than guessing from the hello capability bag.
+          var decoderClosed = videoDecoder &&
+            videoDecoder.state === 'closed';
+          if (videoDecoder && videoDecoderConfigured && !decoderClosed &&
+              videoDecoderCodecId === codecId &&
+              videoDecoderWidth === width &&
+              videoDecoderHeight === height) {
+            return videoDecoder;
+          }
+          teardownVideoDecoder();
+          if (!hasVideoDecoder()) return null;
+          try {
+            videoDecoder = new VideoDecoder({
+              output: function (frame) {
+                try {
+                  ensureSize(frame.codedWidth, frame.codedHeight);
+                  var ctx = canvas.getContext('2d');
+                  if (ctx) {
+                    ctx.imageSmoothingEnabled = true;
+                    ctx.imageSmoothingQuality = 'high';
+                    ctx.drawImage(frame, 0, 0);
+                  }
+                } catch (_) {}
+                // EPP-M6 lifetime contract (audit § 3.4): VideoFrame
+                // holds a GPU texture; the browser caps in-flight
+                // frames per origin (Chrome: 64). Closing
+                // synchronously after the draw releases the surface
+                // immediately and prevents the decoder from
+                // throttling, which would otherwise raise the
+                // perceived latency on a steady stream.
+                try { frame.close(); } catch (_) {}
+              },
+              error: function (e) {
+                // Production: swallow per-frame decode errors —
+                // the next keyframe will resync (EPP-M5 ships GOP=1
+                // so every frame is a keyframe). Test-mode mirror
+                // for diagnostics.
+                try {
+                  if (window.__isonimTestMode === true) {
+                    window.__isonimLastVideoDecodeError = String(e &&
+                      e.message ? e.message : e);
+                  }
+                } catch (_) {}
+              },
+            });
+            videoDecoder.configure({
+              codec: codecId,
+              codedWidth: width,
+              codedHeight: height,
+              // EPP-M6 § 3.1: ``optimizeForLatency`` is the
+              // load-bearing knob. Without it the decoder may queue
+              // frames waiting for B-frames that EPP-M5's encoder
+              // never produces (AllowFrameReordering=false). With it
+              // the output callback fires as soon as the decoded
+              // frame is ready, matching the launcher's per-frame
+              // cadence.
+              optimizeForLatency: true,
+              // Prefer the hardware H.264 decoder (VideoToolbox on
+              // macOS Chromium) to match the launcher's hardware
+              // encoder. Falls back automatically if unavailable.
+              hardwareAcceleration: 'prefer-hardware',
+            });
+            videoDecoderConfigured = true;
+            videoDecoderCodecId = codecId;
+            videoDecoderWidth = width;
+            videoDecoderHeight = height;
+            return videoDecoder;
+          } catch (e) {
+            try {
+              if (window.__isonimTestMode === true) {
+                window.__isonimLastVideoConfigureError = String(e &&
+                  e.message ? e.message : e);
+              }
+            } catch (_) {}
+            teardownVideoDecoder();
+            return null;
+          }
+        }
+        function handleV(bytes) {
+          // V packet wire format (EPP-M5):
+          //   'V' | u8 flags | u8 codec_id_len | codec_id UTF-8 bytes
+          //       | u32 LE width | u32 LE height | u32 LE length
+          //       | NALU bytes
+          // Flag bits: 0 = isKeyframe, 1 = hasExtraData, 2..7 reserved.
+          if (bytes.length < 15) {
+            ws.close(1002, 'V packet truncated (header)'); return;
+          }
+          var flags = bytes[1];
+          if ((flags & 0xFC) !== 0) {
+            ws.close(1002, 'V flag reserved bits set'); return;
+          }
+          var isKeyframe = (flags & 0x01) !== 0;
+          // bit 1 (hasExtraData) — EPP-M5 prepends SPS/PPS inline so
+          // the NALU stream is self-describing; no extra-data field
+          // to peel off here. We could fast-path the very first
+          // keyframe by carving SPS/PPS into a ``description`` for
+          // ``decoder.configure`` but the GOP=1 stream means every
+          // chunk is self-decodable, and Chrome's H.264 decoder
+          // accepts Annex-B with inline SPS/PPS directly.
+          var codecLen = bytes[2];
+          if (bytes.length < 3 + codecLen + 12) {
+            ws.close(1002, 'V packet truncated (codec_id)'); return;
+          }
+          var codecId = '';
+          for (var ci = 0; ci < codecLen; ci++) {
+            codecId += String.fromCharCode(bytes[3 + ci]);
+          }
+          var view = new DataView(bytes.buffer, bytes.byteOffset,
+                                  bytes.byteLength);
+          var widthOff = 3 + codecLen;
+          var width = readU32LE(view, widthOff);
+          var height = readU32LE(view, widthOff + 4);
+          var length = readU32LE(view, widthOff + 8);
+          var headerEnd = widthOff + 12;
+          if (bytes.length < headerEnd + length) {
+            ws.close(1002, 'V payload length mismatch'); return;
+          }
+          var nalu = bytes.subarray(headerEnd, headerEnd + length);
+          var dec = ensureVideoDecoder(codecId, width, height);
+          if (!dec) {
+            // No decoder available — silently drop. The accept-list
+            // advertisement at hello time should have prevented the
+            // launcher from emitting V at all, so reaching here is
+            // either a test-time injection (e.g. forcing the launcher
+            // into h264 while WebCodecs is stripped) or a launcher
+            // bug. Either way we do NOT close the socket — that
+            // would tear down the F path the launcher MAY also be
+            // running on.
+            return;
+          }
+          setActiveTransport('v/avc1');
+          try {
+            var chunk = new EncodedVideoChunk({
+              type: isKeyframe ? 'key' : 'delta',
+              timestamp: videoChunkSeq * 16667, // ~60 FPS spacing
+              duration: 16667,
+              data: nalu,
+            });
+            videoChunkSeq++;
+            dec.decode(chunk);
+          } catch (e) {
+            try {
+              if (window.__isonimTestMode === true) {
+                window.__isonimLastVideoDecodeError = String(e &&
+                  e.message ? e.message : e);
+              }
+            } catch (_) {}
           }
         }
         function handleF(bytes) {
@@ -1073,6 +1344,7 @@ when defined(js):
             ctx.imageSmoothingEnabled = true;
             ctx.imageSmoothingQuality = 'high';
           } catch (_) {}
+          setActiveTransport('f/rgba');
           if (!isDiff) {
             if (payload.length !== width * height * 4) {
               ws.close(1002, 'full frame length mismatch'); return;
@@ -1164,6 +1436,7 @@ when defined(js):
           var kind = String.fromCharCode(bytes[0]);
           if (kind === 'F') { handleF(bytes); }
           else if (kind === 'M') { handleM(bytes); }
+          else if (kind === 'V') { handleV(bytes); }
         });
         function onMouseDown(e) {
           var p = pointFromEvent(e);
@@ -1315,6 +1588,13 @@ when defined(js):
           keydown: onCanvasKey, keyup: onCanvasKey,
         };
         ws.__isonimCanvas = canvas;
+        // EPP-M6: expose the video-decoder teardown so
+        // ``detachBridgeClient`` can release any held GPU surface
+        // when the editor flips backend / detaches the bridge. The
+        // closure captures ``videoDecoder`` by reference so the
+        // detach path always sees the latest decoder instance even
+        // after a mid-stream reconfigure.
+        ws.__isonimTeardownVideoDecoder = teardownVideoDecoder;
         """, socket, """ = ws;
       })(""", canvas, ", ", bridgeUrl.cstring, ", ",
        dispatchMeta, ", ", onClick, ", ", onHover, ", ", onDblClick,
@@ -1432,6 +1712,54 @@ when defined(js):
         } catch (_) {}
       })(""", sock, ", ", width, ", ", height, ");"].}
 
+  proc sendHelloAccept*(handle: BridgeClientHandle;
+                        accept: seq[string]) =
+    ## EPP-M6: send an M-packet hello reply advertising which
+    ## transports the browser can decode. The launcher's hello (sent
+    ## first per RS-M0) advertises what it can produce; the editor's
+    ## reply tells the launcher the browser's preference order. Both
+    ## sides drop into steady-state without further negotiation —
+    ## ``accept`` is a hint, not a renegotiation.
+    ##
+    ## The launcher's existing inbound M handler accepts unknown M
+    ## sub-kinds silently (``bridge.nim:480-486``) so older launchers
+    ## without explicit transport selection ignore this packet
+    ## gracefully. The wire format is ``'M' | u32 LE length | JSON
+    ## body`` mirroring the launcher-side encoder in
+    ## ``isonim-render-serve/.../packet.nim``.
+    ##
+    ## The JS shim ALSO sends the same packet immediately on ws.open
+    ## (so the launcher learns the accept list before any select-story
+    ## packet arrives); this Nim entry point exists so the editor's
+    ## view layer can re-advertise after a backend change without
+    ## requiring a socket reopen.
+    if handle == nil: return
+    var sock = handle.socket
+    var json = "{\"type\":\"hello\",\"accept\":["
+    for i, t in accept:
+      if i > 0: json.add ','
+      json.add '"'
+      json.add t
+      json.add '"'
+    json.add "]}"
+    {.emit: ["""
+      (function (ws, jsonStr) {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        try {
+          var enc = new TextEncoder();
+          var bodyBytes = enc.encode(jsonStr);
+          var buf = new Uint8Array(5 + bodyBytes.length);
+          buf[0] = 0x4D; // 'M'
+          var n = bodyBytes.length;
+          buf[1] = n & 0xFF;
+          buf[2] = (n >>> 8) & 0xFF;
+          buf[3] = (n >>> 16) & 0xFF;
+          buf[4] = (n >>> 24) & 0xFF;
+          buf.set(bodyBytes, 5);
+          ws.send(buf);
+        } catch (_) {}
+      })(""", sock, ", ", json.cstring, ");"].}
+
   proc isBridgeOpen*(handle: BridgeClientHandle): bool =
     ## Probe whether the bridge socket is OPEN — used by reactive
     ## senders to delay the initial select-story until the WS
@@ -1460,6 +1788,14 @@ when defined(js):
               canvas.removeEventListener(k, ws.__isonimHandlers[k]);
             }
             ws.__isonimHandlers = null;
+          }
+        } catch (_) {}
+        // EPP-M6: release any GPU-backed VideoDecoder before closing
+        // the socket so the next attach starts from a clean slate.
+        try {
+          if (typeof ws.__isonimTeardownVideoDecoder === 'function') {
+            ws.__isonimTeardownVideoDecoder();
+            ws.__isonimTeardownVideoDecoder = null;
           }
         } catch (_) {}
         try { ws.close(); } catch (_) {}
