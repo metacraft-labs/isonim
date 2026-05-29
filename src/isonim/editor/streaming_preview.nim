@@ -1228,10 +1228,23 @@ when defined(js):
               // frame is ready, matching the launcher's per-frame
               // cadence.
               optimizeForLatency: true,
-              // Prefer the hardware H.264 decoder (VideoToolbox on
-              // macOS Chromium) to match the launcher's hardware
-              // encoder. Falls back automatically if unavailable.
-              hardwareAcceleration: 'prefer-hardware',
+              // EPP-M9: drop the EPP-M6 ``prefer-hardware`` hint.
+              // Headless Chromium on macOS (the EPP-M8 acceptance
+              // matrix runner) does NOT expose the host's hardware
+              // H.264 decoder — ``VideoDecoder.isConfigSupported``
+              // returns ``{ supported: false }`` for *every*
+              // ``avc1.42E01E`` / ``avc1.420028`` / ``avc1.64xxx``
+              // combination with ``prefer-hardware``, and the
+              // subsequent ``configure`` call surfaces "Unsupported
+              // configuration. Check isConfigSupported() prior to
+              // calling configure()" at the first ``decode()``. Per
+              // the WebCodecs spec ``no-preference`` lets Chrome
+              // pick its software decoder when no GPU decode is
+              // available — that path always succeeds on Chromium
+              // 122+. The non-headless editor still gets the GPU
+              // decode path because Chrome's heuristics prefer it
+              // when the host advertises hardware support.
+              hardwareAcceleration: 'no-preference',
             });
             videoDecoderConfigured = true;
             videoDecoderCodecId = codecId;
