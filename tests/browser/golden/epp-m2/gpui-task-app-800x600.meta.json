@@ -1,0 +1,11 @@
+{
+  "note": "EPP-M2 golden snapshot. RGBA8888 row-major, top row first. Captured from build/backends/isonim-examples-gpui --demo task --width 800 --height 600. Regenerate by deleting this file + re-running the test.",
+  "width": 800,
+  "height": 600,
+  "captured": "2026-05-29T16:01:44.324Z",
+  "telemetry": {
+    "tealBottomBandRatio": 0,
+    "darkGreyFillRatio": 0,
+    "sampledUniqueRgb": 301
+  }
+}
