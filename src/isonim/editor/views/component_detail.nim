@@ -936,6 +936,16 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
             } catch (_) {}
           """].}
       bridgeBinding.attachIfNeeded(vm, projectCanvas, useCanvas, onVectorDbl)
+      # VRS-M2: fire a resize over the bridge whenever the user's
+      # viewport pill changes. Mirrors the page_preview path —
+      # ``publishResize`` short-circuits on Web and on TUI's cell
+      # path; otherwise it routes through the installed publisher
+      # closure into the launcher's resizingSink.
+      if useCanvas and vm.streamingPreview != nil:
+        let vp = vm.viewport.val
+        publishResize(vm.streamingPreview,
+                      previewViewportWidth(vp),
+                      previewViewportHeight(vp))
 
     when defined(js):
       let frame = projectFrame

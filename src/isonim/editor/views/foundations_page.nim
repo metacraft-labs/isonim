@@ -182,6 +182,15 @@ proc renderFoundationsPage*[R, E](r: R; vm: EditorVM): E =
     when defined(js):
       foundationBridgeBinding.attachIfNeeded(vm, foundationCanvasMnt.canvas,
                                              useCanvas)
+      # VRS-M2: fire a resize whenever the viewport changes so the
+      # foundation-launcher re-renders at the user's pill dimensions.
+      # ``publishResize`` is the front-door — Web / TUI / no-publisher
+      # cases short-circuit; F/M/I bridges receive the I packet.
+      if useCanvas and vm.streamingPreview != nil:
+        let vp = vm.viewport.val
+        publishResize(vm.streamingPreview,
+                      previewViewportWidth(vp),
+                      previewViewportHeight(vp))
 
   # M-EVP-13: overlay positioning effect for the foundation canvas.
   bindCanvasOverlayEffect(r, vm, foundationCanvasMnt)

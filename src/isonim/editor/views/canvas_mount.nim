@@ -596,12 +596,22 @@ when defined(js):
 
   proc installStoryPublisher(binding: BridgeBinding;
                               streaming: StreamingPreviewVM) =
-    ## RS-M12 / RS-M13: register sender closures on the streaming-
-    ## preview VM so the viewmodel layer (inspector edits, story
-    ## selection) can publish without taking a transitive dependency
-    ## on either handle type. The closures capture ``binding`` by
-    ## reference so they pick up handle changes across re-attaches
-    ## (including the F/M/I ↔ D/M/P swap when the user toggles TUI).
+    ## RS-M12 / RS-M13 / VRS-M2: register sender closures on the
+    ## streaming-preview VM so the viewmodel layer (inspector edits,
+    ## story selection, viewport-pill clicks) can publish without
+    ## taking a transitive dependency on either handle type. The
+    ## closures capture ``binding`` by reference so they pick up
+    ## handle changes across re-attaches (including the F/M/I ↔ D/M/P
+    ## swap when the user toggles TUI).
+    ##
+    ## VRS-M2 adds the ``sendResize`` closure that fires an
+    ## ``iekResize`` I packet over the F/M/I bridge whenever
+    ## ``page_preview.nim`` / ``component_detail.nim`` /
+    ## ``foundations_page.nim``'s render effect observes a viewport
+    ## change. For the TUI D/M/P bridge the closure is a no-op —
+    ## TUI resize is negotiated via cell counts and the launcher
+    ## drives its own cell-grid size, so re-sending pixel dimensions
+    ## would be meaningless (audit Appendix A item 4).
     let b = binding
     streaming.setStoryPublisher(
       sendStory = proc(storyGroup, storyName, storyKind,
@@ -625,7 +635,16 @@ when defined(js):
                                valueLiteral, scope)
         elif b.handle != nil:
           if not isBridgeOpen(b.handle): return
-          sendApplyMutation(b.handle, target, key, valueLiteral, scope))
+          sendApplyMutation(b.handle, target, key, valueLiteral, scope),
+      sendResize = proc(width, height: int) =
+        # TUI is cell-based; pixel resize is a no-op on that path.
+        # The F/M/I bridges (GPUI / Freya / Cocoa / Android / iOS)
+        # all route the I packet through ``StoryDispatchSink`` into
+        # their per-launcher resizingSink which mutates the
+        # AnyFrameSource dims. See VRS-M1 audit § 2.5 / § 3.
+        if b.handle == nil: return
+        if not isBridgeOpen(b.handle): return
+        sendResize(b.handle, width, height))
 
   proc ensureTuiHost(canvas: Element): Element =
     ## Resolve (or lazily create) the ``<div data-tui-terminal="true">``
@@ -736,6 +755,17 @@ when defined(js):
           let capturedVm = vm
           let onOpen = proc() =
             sendCurrentStory(capturedBinding, capturedVm)
+            # VRS-M2: a freshly-opened bridge inherits the launcher's
+            # default --width/--height. Replay the editor's current
+            # viewport pill so the launcher re-renders at the user-
+            # selected resolution immediately rather than waiting for
+            # the next viewport pill click. Non-Web only — the Web
+            # path has no streaming bridge (see ``publishResize`` for
+            # the gate).
+            let viewport = capturedVm.viewport.val
+            let w = previewViewportWidth(viewport)
+            let h = previewViewportHeight(viewport)
+            publishResize(capturedVm.streamingPreview, w, h)
           if activeBackend == pbTui:
             let host = ensureTuiHost(canvas)
             binding.tuiHost = host

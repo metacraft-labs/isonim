@@ -238,6 +238,18 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
 
     when defined(js):
       pageBridgeBinding.attachIfNeeded(vm, pageCanvasMnt.canvas, useCanvas)
+      # VRS-M2: tell the launcher to re-render at the user-selected
+      # viewport. The publisher closure (installed by
+      # ``installStoryPublisher`` inside ``attachIfNeeded``) routes
+      # to ``sendResize`` over the F/M/I bridge; the launcher's
+      # ``StoryDispatchSink → resizingSink`` chain mutates its
+      # ``AnyFrameSource`` width/height and the next F frame
+      # carries the new dimensions, which the JS shim's
+      # ``ensureSize`` then reseeds onto ``canvas.width`` /
+      # ``canvas.height``. Web short-circuits in ``publishResize``
+      # because Web has no streaming bridge.
+      if useCanvas and vm.streamingPreview != nil:
+        publishResize(vm.streamingPreview, width, height)
 
   # M-EVP-13: overlay positioning effect — hover label, selection
   # outline, breadcrumb, edit-mode handles. Shared with component_detail

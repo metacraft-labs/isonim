@@ -167,10 +167,21 @@ type
     ## `BridgeClientHandle`. The view layer registers concrete
     ## closures via `setStoryPublisher`; consumers call the publish
     ## procs below. Calls when no publisher is registered are no-ops.
+    ##
+    ## VRS-M2: ``sendResizeFn`` is the viewport-resize sender —
+    ## fired by the page/component/foundations preview render effects
+    ## whenever ``viewport.val`` changes (and once at the moment
+    ## the bridge attaches so a fresh launcher learns the current
+    ## viewport). The view layer installs the closure alongside the
+    ## existing select-story / apply-mutation senders in
+    ## ``installStoryPublisher``; the closure is responsible for
+    ## guarding against detached handles and non-OPEN sockets so
+    ## consumers can fire blindly.
     sendStoryFn*: proc(storyGroup, storyName, storyKind,
                        storyId: string) {.closure.}
     sendMutationFn*: proc(target, key, valueLiteral: string;
                           scope: MutationScopeKind) {.closure.}
+    sendResizeFn*: proc(width, height: int) {.closure.}
 
   BackendBinaryRegistry* = ref object
     ## Maps `PreviewBackend` -> path of the executable that hosts
@@ -461,14 +472,22 @@ proc setStoryPublisher*(vm: StreamingPreviewVM;
                         sendMutation: proc(target, key,
                                            valueLiteral: string;
                                            scope: MutationScopeKind)
-                                       {.closure.}) =
-  ## RS-M12: the view layer registers concrete bridge senders here
-  ## once a bridge has attached; pass nil-fn arguments to clear (on
-  ## detach). Idempotent — the binding installs the same closures
-  ## across re-attaches so consumer call-sites can keep firing
-  ## without dropping packets during reconnects.
+                                       {.closure.};
+                        sendResize: proc(width, height: int)
+                                       {.closure.} = nil) =
+  ## RS-M12 / VRS-M2: the view layer registers concrete bridge
+  ## senders here once a bridge has attached; pass nil-fn arguments
+  ## to clear (on detach). Idempotent — the binding installs the
+  ## same closures across re-attaches so consumer call-sites can
+  ## keep firing without dropping packets during reconnects.
+  ##
+  ## ``sendResize`` is optional for back-compat with existing
+  ## tests / call sites that only need select-story + mutation
+  ## publishing; the editor's view layer always passes a non-nil
+  ## closure (see ``installStoryPublisher`` in ``canvas_mount.nim``).
   vm.publisher = StoryPublisher(sendStoryFn: sendStory,
-                                sendMutationFn: sendMutation)
+                                sendMutationFn: sendMutation,
+                                sendResizeFn: sendResize)
 
 proc clearStoryPublisher*(vm: StreamingPreviewVM) =
   ## RS-M12. Call on bridge detach; subsequent publish attempts are
@@ -495,6 +514,20 @@ proc publishApplyMutation*(vm: StreamingPreviewVM;
   if vm.publisher == nil or vm.publisher.sendMutationFn == nil:
     return
   vm.publisher.sendMutationFn(target, key, valueLiteral, scope)
+
+proc publishResize*(vm: StreamingPreviewVM; width, height: int) =
+  ## VRS-M2: fire a ``resize`` I packet through the registered
+  ## publisher so the active launcher re-renders its surface at the
+  ## new dimensions. No-op when no bridge is attached or when the
+  ## active backend is Web (Web renders via iframe `srcdoc`; there
+  ## is no streaming launcher to resize). Also no-op for non-positive
+  ## dimensions (defensive against premature ticks before the
+  ## viewport signal is initialised).
+  if vm == nil or vm.selectedBackend.val == pbWeb: return
+  if vm.publisher == nil or vm.publisher.sendResizeFn == nil:
+    return
+  if width <= 0 or height <= 0: return
+  vm.publisher.sendResizeFn(width, height)
 
 proc selectBackend*(vm: StreamingPreviewVM; backend: PreviewBackend) =
   ## Mode menu wiring. Editor calls this on user click; clears any
@@ -787,6 +820,24 @@ proc encodeApplyMutationBody*(target, key, valueLiteral: string;
   result.add valueLiteral
   result.add ",\"scope\":"
   result.add jsonEscapeString(mutationScopeWire(scope))
+  result.add "}"
+
+proc encodeResizeBody*(width, height: int): string =
+  ## VRS-M2: build the ``resize`` I-packet JSON body. Field order
+  ## locked to ``type, width, height`` for byte-stable diffs across
+  ## the test surface (mirrors ``encodeSelectStoryBody`` /
+  ## ``encodeApplyMutationBody``). Width and height are encoded as
+  ## decimal integers; the launcher's
+  ## ``decodeInputEvent`` (``isonim-render-serve/.../event_dispatch.nim``)
+  ## rejects missing fields with ``PacketProtocolError`` so the
+  ## minimal schema is the one we ship — extra fields would be
+  ## ignored but make the wire body harder to round-trip in tests.
+  result = newStringOfCap(48)
+  result.add "{\"type\":\"resize\""
+  result.add ",\"width\":"
+  result.add $width
+  result.add ",\"height\":"
+  result.add $height
   result.add "}"
 
 proc valueLiteralForString*(s: string): string =
@@ -1189,6 +1240,43 @@ when defined(js):
     if handle == nil: return
     var sock = handle.socket
     let body = encodeApplyMutationBody(target, key, valueLiteral, scope)
+    {.emit: ["""
+      (function (ws, jsonStr) {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        try {
+          var enc = new TextEncoder();
+          var bodyBytes = enc.encode(jsonStr);
+          var buf = new Uint8Array(5 + bodyBytes.length);
+          buf[0] = 0x49; // 'I'
+          var n = bodyBytes.length;
+          buf[1] = n & 0xFF;
+          buf[2] = (n >>> 8) & 0xFF;
+          buf[3] = (n >>> 16) & 0xFF;
+          buf[4] = (n >>> 24) & 0xFF;
+          buf.set(bodyBytes, 5);
+          ws.send(buf);
+        } catch (_) {}
+      })(""", sock, ", ", body.cstring, ");"].}
+
+  proc sendResize*(handle: BridgeClientHandle;
+                   width, height: int) =
+    ## VRS-M2: send a ``resize`` I packet over the bridge's
+    ## WebSocket so the launcher's input-decode loop fires an
+    ## ``iekResize`` event into its ``StoryDispatchSink → resizingSink``
+    ## chain. The decoded event mutates the launcher's
+    ## ``AnyFrameSource.width`` / ``.height`` so the next ``renderFrame``
+    ## emits an F packet at the new dimensions; the JS shim's
+    ## ``handleF`` → ``ensureSize`` then reseeds ``canvas.width`` /
+    ## ``canvas.height`` automatically.
+    ##
+    ## Mirrors ``sendSelectStory`` / ``sendApplyMutation``: thin
+    ## ``{.emit.}`` shim that guards on ``ws.readyState === OPEN``
+    ## so the call is a silent no-op when the bridge has not yet
+    ## attached. Callers re-fire the most recent (w, h) on socket
+    ## open via the editor's attach lifecycle.
+    if handle == nil: return
+    var sock = handle.socket
+    let body = encodeResizeBody(width, height)
     {.emit: ["""
       (function (ws, jsonStr) {
         if (!ws || ws.readyState !== WebSocket.OPEN) return;
