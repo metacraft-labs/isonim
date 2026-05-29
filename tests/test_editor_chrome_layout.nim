@@ -867,10 +867,17 @@ suite "M-EVP-3 preview chrome bar density":
       # chip cluster family — it now sits at the LEFT edge as a
       # ``data-toolbar-cluster="history"`` trough (single
       # ChoiceItem-style pill inside a transparent trough,
-      # matching Backend / Viewport / Mode). The Mode cluster
-      # docks to the RIGHT edge via ``margin-left: auto``. The
-      # canonical direct-child cluster order is now
-      # ``[history, backend, viewport, mode]``.
+      # matching Backend / Viewport / Mode).
+      #
+      # Phase Q (2026-05-29): the cluster order is now
+      # ``[backend, history, viewport, mode]``. The left- and right-
+      # sidebar toggle buttons promoted from the status bar bookend
+      # the cluster row but are NOT clusters (no
+      # ``data-toolbar-cluster`` attribute), so they don't appear in
+      # the direct-child-cluster enumeration. Viewport is centred by
+      # two flex-1 spacers (``data-preview-toolbar-spacer``) flanking
+      # it; Mode dock to the right via the trailing spacer rather
+      # than the prior ``margin-left: auto`` on the cluster itself.
       let clusterAttr = "data-toolbar-cluster"
       check findAllByAttr(bar, clusterAttr, "view-switcher").len == 0
       # Negative assertion: the Surface cluster is gone.
@@ -886,8 +893,9 @@ suite "M-EVP-3 preview chrome bar density":
       # Every cluster must be a direct child of the toolbar — if a
       # future refactor nests them inside an intermediate wrapper the
       # flex `gap` no longer applies between them, so this is the
-      # invariant the visual separation rests on.
-      let clusterKinds = @["history", "backend", "viewport", "mode"]
+      # invariant the visual separation rests on. Phase Q reorders
+      # to ``[backend, history, viewport, mode]``.
+      let clusterKinds = @["backend", "history", "viewport", "mode"]
       var directChildClusters: seq[string] = @[]
       for child in bar.children:
         let kind = child.attributes.getOrDefault(clusterAttr)
@@ -895,14 +903,33 @@ suite "M-EVP-3 preview chrome bar density":
           directChildClusters.add kind
       check directChildClusters == clusterKinds
 
-      # The Mode cluster docks to the right edge — its wrapper
-      # carries ``margin-left: auto`` so the leading clusters
-      # stay flush-left while Mode floats to the trailing edge.
+      # The Mode cluster still declares its right-dock contract via
+      # ``data-toolbar-cluster-docked="right"``. Phase Q replaces the
+      # ``margin-left: auto`` mechanism with two flex-1 spacers
+      # flanking the Viewport cluster (preserving the right-dock
+      # behaviour without fighting Viewport for the trailing slack).
       let modeCluster = findByAttr(bar, clusterAttr, "mode")
       check modeCluster != nil
-      check modeCluster.styles.getOrDefault("margin-left") == "auto"
       check modeCluster.attributes.getOrDefault(
         "data-toolbar-cluster-docked") == "right"
+
+      # Phase Q invariant — two flex-1 spacers wedge Viewport into
+      # the centre. The leading spacer sits BEFORE the Viewport
+      # cluster, the trailing spacer AFTER it. Verifying via direct
+      # children of the toolbar so the centring contract is not
+      # silently weakened by a future refactor.
+      var spacerPositions: seq[string] = @[]
+      var sawViewport = false
+      for child in bar.children:
+        let spacer = child.attributes.getOrDefault(
+          "data-preview-toolbar-spacer")
+        let cluster = child.attributes.getOrDefault(clusterAttr)
+        if spacer.len > 0:
+          spacerPositions.add spacer
+        if cluster == "viewport":
+          sawViewport = true
+      check spacerPositions == @["leading", "trailing"]
+      check sawViewport
 
       # The History cluster IS a trough — it carries the
       # ``data-chrome-history-trough`` marker that pins the
@@ -915,6 +942,15 @@ suite "M-EVP-3 preview chrome bar density":
       let historyBtn = findByAttr(historyTrough,
         "data-design-review-history-button", "true")
       check historyBtn != nil
+
+      # Phase Q — sidebar toggle buttons bookend the cluster row.
+      # Both carry the canonical aria-labels the Playwright tests
+      # already resolve.
+      let leftToggle = findByAttr(bar, "aria-label", "Toggle left sidebar")
+      check leftToggle != nil
+      let rightToggle = findByAttr(bar, "aria-label",
+        "Toggle right sidebar")
+      check rightToggle != nil
       dispose()
 
   test "regression probe: collapsing toolbar gap to 0 invalidates the M-EVP-3 invariant":
@@ -972,15 +1008,25 @@ suite "CHRM-M2 chrome-bar cluster unification":
         let chevron = findByAttr(cluster, "data-choice-group", "chevron")
         check (segmented != nil or chevron != nil)
 
-      # The viewport cluster is the only chevron cluster after CHRM-M2;
-      # the backend and mode clusters are segmented.
-      check findByAttr(
-        findByAttr(bar, clusterAttr, "viewport"),
-        "data-choice-group", "chevron") != nil
-      for kind in ["backend", "mode"]:
+      # Phase Q (2026-05-29): the viewport cluster swapped its chevron
+      # trigger for a segmented strip of common viewports + a trailing
+      # overflow chevron button (``data-preview-viewport-overflow``)
+      # that opens a popup dropdown of the less-common viewports. So
+      # every cluster now embeds the ``data-choice-group="segmented"``
+      # marker; the chevron variant is no longer used in the chrome
+      # bar.
+      for kind in ["backend", "viewport", "mode"]:
         check findByAttr(
           findByAttr(bar, clusterAttr, kind),
           "data-choice-group", "segmented") != nil
+      # Viewport carries the overflow chevron + dropdown listbox in
+      # addition to the segmented strip.
+      let viewportCluster = findByAttr(bar, clusterAttr, "viewport")
+      check viewportCluster != nil
+      check findByAttr(viewportCluster,
+        "data-preview-viewport-overflow", "true") != nil
+      check findByAttr(viewportCluster,
+        "data-preview-viewport-dropdown", "true") != nil
       dispose()
 
   test "chrome-bar clusters use the transparent ChoiceGroup container variant":

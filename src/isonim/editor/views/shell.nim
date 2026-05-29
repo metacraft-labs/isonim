@@ -733,20 +733,16 @@ proc renderStatusBar[R, E](r: R; vm: EditorVM): E =
           discard
         span(color = textDim):
           text editorProductName & " v" & editorVersion
-  # 2026-05-28 icon-coverage expansion: the sidebar-toggle buttons in
-  # the status bar now render real SVG icons from the active IconSet
-  # instead of the Unicode arrow glyphs (U+21E4 / U+21E5). Source from
-  # ``currentIconSet()`` so the per-set sidebar artwork follows the
-  # rest of the editor chrome (in-house set today; a future preference
-  # swap repoints every call site through ``currentIconSet`` in lock
-  # step).
-  let iconSet = currentIconSet()
-  r.appendChild(leftControls,
-    statusPanelButton[R, E](r, vm, epSidebar, "Toggle left sidebar",
-      iconSet.sidebarLeft))
-  r.appendChild(rightControls,
-    statusPanelButton[R, E](r, vm, epInspector, "Toggle right sidebar",
-      iconSet.sidebarRight))
+  # Phase Q (2026-05-29): the left + right sidebar toggle buttons used
+  # to live here in the status bar's left / right control slots. They
+  # were promoted to the chrome bar's leading + trailing bookend
+  # positions in ``renderPreviewChromeBar`` so the toggles align
+  # vertically with the sidebar headers they control. The
+  # ``leftControls`` / ``rightControls`` slots remain in the status
+  # bar layout so future affordances can drop in without re-shaping
+  # the status row.
+  discard leftControls
+  discard rightControls
   createRenderEffect proc() =
     r.clearChildren(statusBadges)
     let selected = vm.inspector.selectedElement.val
@@ -2824,16 +2820,30 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
   # via the four `padding-{top,right,bottom,left}` properties (not the
   # shorthand) so the headless layout test can assert `padding-right`
   # directly from `node.styles`.
+  # Phase Q (2026-05-29): chrome bar height pinned to exactly 44 px so
+  # its bottom edge aligns pixel-perfect with the three sidebar headers
+  # (data-sidebar-header="left" / "right-inspector" / "right-ai-
+  # assistant"). The previous 45 px total (8 px top padding + ~28 px
+  # content + 8 px bottom padding + 1 px border) sat one pixel below
+  # the sidebar header line at the panel boundary. ``box-sizing:
+  # border-box`` ensures the declared height includes the 1 px bottom
+  # border. Vertical padding is dropped (controls centre vertically
+  # via flex ``align-items: center`` against the 44 px row); horizontal
+  # padding is preserved so the leading toggle / cluster row doesn't
+  # kiss the sidebar boundary. The separator colour is dropped to
+  # ``borderFaint`` (#1F212C) — same token the sidebar headers carry
+  # — so all four horizontal hairlines at the chrome-bar / sidebar-
+  # header boundary read as one continuous line.
   let toolbar = ui(r):
     tdiv(display = "flex", align_items = "center",
           justify_content = "flex-start",
-          gap = "16px", flex_wrap = "wrap",
-          row_gap = "6px",
-          min_height = "44px",
-          padding_top = "8px", padding_right = "12px",
-          padding_bottom = "8px", padding_left = "16px",
+          gap = "12px",
+          height = "44px", min_height = "44px",
+          box_sizing = "border-box",
+          padding_top = "0", padding_right = "12px",
+          padding_bottom = "0", padding_left = "8px",
           background_color = bgToolbar,
-          border_bottom = "1px solid " & border,
+          border_bottom = "1px solid " & borderFaint,
           # AIVS-NSO — the chrome bar needs to sit ABOVE the
           # ``no-story`` overlay (z-index 20) so the user can still
           # flip the surface back to Preview, change the viewport, or
@@ -2951,106 +2961,292 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
   # The on-screen cluster order is now ``[backend, viewport, mode]``
   # with Spec folded into the Mode cluster.
 
-  # Phase O (2026-05-29): the History affordance moves to the LEFT
-  # edge of the chrome bar, BEFORE the Backend cluster. Rationale:
-  # opening the gallery overlay is a "what content is displayed in
-  # the centre column" control — just like Backend / Viewport — so
-  # History logically groups with the leading cluster family rather
-  # than sitting at the trailing edge by itself. The Mode cluster
-  # docks to the right edge via ``margin-left: auto`` (set on
-  # ``modeWrapper`` above), so the chrome bar reads:
-  #
-  #     ``[History] [Backend] [Viewport] ......... [Mode]``
-  design_review_mount_view.mountHistoryButtonForEditor[R, E](r, toolbar, vm)
+  # Phase Q (2026-05-29): the chrome bar's leading bookend is now the
+  # left-sidebar toggle button (was: the History pill). The toggle
+  # used to live in the bottom status bar; promoting it to the chrome
+  # bar gives the user a sidebar-show/hide affordance in line with the
+  # right-sidebar toggle on the trailing edge and removes the visual
+  # gap between the sidebar header line and the chrome-bar line at the
+  # panel boundary. Reuses the existing ``statusPanelButton`` helper —
+  # which already binds the togglePanel signal and renders the
+  # canonical SVG icon — so call sites in the status bar drop without
+  # duplicating wiring.
+  let chromeIconSet = currentIconSet()
+  let leftToggleBtn = statusPanelButton[R, E](r, vm, epSidebar,
+    "Toggle left sidebar", chromeIconSet.sidebarLeft)
+  r.appendChild(toolbar, leftToggleBtn)
 
-  # CHRM-M5 Fix A: backend cluster appended AFTER the (now removed)
-  # surface cluster so the on-screen order reads
-  # ``[history, backend, viewport, mode]``. The cluster itself
-  # was constructed above (alongside its reactive effects) for
-  # code readability; only the mount-into-toolbar step happens
-  # here.
+  # Phase Q (2026-05-29): the cluster order is now
+  # ``[L-toggle] [Backend] [History] <spacer> [Viewport] <spacer>
+  #   [Mode] [R-toggle]``.
+  # Backend leads the cluster family (sidebar toggle is a bookend, not
+  # a cluster), History sits after Backend (still grouped with the
+  # leading family), Viewport is centred by the two flex-1 spacers,
+  # and Mode docks before the right-sidebar toggle. See the comment
+  # above ``modeWrapper`` for the right-dock invariant.
   r.appendChild(toolbar, backendWrapper)
 
-  # TBAR-M3: screen-size chevron-popup selector. Replaces the legacy
-  # viewport chip-set in the chrome bar. The chevron's option list is
-  # the union of the per-backend pinned + popup viewports so every
-  # viewport reachable today through the old chip strip stays
-  # reachable. Re-builds when the platform flips (the rebuild lives
-  # inside a ``createRenderEffect`` so the option list, active label,
-  # and selection stay coherent).
+  # History affordance — second-from-left, between Backend and the
+  # centring spacer. Phase O moved History into the cluster family
+  # (was: trailing edge); Phase Q moves it AFTER Backend so the
+  # leading bookend can be the sidebar toggle.
+  design_review_mount_view.mountHistoryButtonForEditor[R, E](r, toolbar, vm)
+
+  # Spacer #1 — flex-grow:1 wedge that claims free horizontal space
+  # so the Viewport cluster centres in the chrome bar. Paired with
+  # the symmetric spacer #2 (appended after Viewport, below). The
+  # two-spacer pattern is preferred over ``margin: auto`` on the
+  # cluster itself because it preserves the Mode cluster's existing
+  # ``margin-left: auto`` right-dock contract — using auto-margins on
+  # both Viewport AND Mode would cause them to fight over the
+  # trailing free space.
+  let leadingSpacer = ui(r):
+    tdiv(`data-preview-toolbar-spacer` = "leading",
+         flex = "1",
+         min_width = "8px")
+  r.appendChild(toolbar, leadingSpacer)
+
+  # Phase Q (2026-05-29): viewport selector restructured from a single
+  # chevron+popup to a segmented strip of the most-common viewports
+  # PLUS a trailing chevron button that opens a dropdown of the
+  # less-common viewports. The strip joins the cluster pill family
+  # (Backend / Mode) — same ``mountSegmentedChoice`` widget, same
+  # transparent container variant — so all three cluster clusters
+  # read as the same widget family rather than the chevron-trigger
+  # being a one-off.
+  #
+  # "Common" viewports = ``pinnedViewports(backend)`` — the same set
+  # that historically lit up the M57 left-edge strip and the legacy
+  # chip-set. The "less common" set = ``popupViewports(backend)`` —
+  # exactly what the chevron exposed before. So this restructure is
+  # purely a presentation move: every viewport reachable today stays
+  # reachable, with the most-common ones promoted to one-tap pills.
   proc viewportOptionList(backend: PreviewBackend): seq[PreviewViewport] =
     result = @[]
     for vp in pinnedViewports(backend):
       result.add vp
     for vp in popupViewports(backend):
       result.add vp
-  proc viewportLabelList(backend: PreviewBackend): seq[string] =
+  proc pinnedViewportLabels(backend: PreviewBackend): seq[string] =
     result = @[]
-    for vp in viewportOptionList(backend):
+    for vp in pinnedViewports(backend):
       result.add vp.label
+  proc popupViewportLabels(backend: PreviewBackend): seq[string] =
+    result = @[]
+    for vp in popupViewports(backend):
+      result.add vp.label
+
   let initialBackend = capturedVm.platform.val
-  let initialVps = viewportOptionList(initialBackend)
-  var initialIndex = 0
+  let initialPinned = pinnedViewports(initialBackend)
+  let initialPopup = popupViewports(initialBackend)
+  var initialPinnedIndex = -1
   block:
     let active = capturedVm.viewport.val
-    for i, vp in initialVps:
+    for i, vp in initialPinned:
       if viewportsEqual(active, vp):
-        initialIndex = i
+        initialPinnedIndex = i
         break
-  let viewportChevronWrapper = ui(r):
+
+  # Outer wrapper — the cluster surface the test harness resolves via
+  # ``data-toolbar-cluster="viewport"``. Position: relative so the
+  # popup can anchor against it.
+  let viewportClusterWrapper = ui(r):
     tdiv(`data-edge-strip` = "viewport",
          `data-toolbar-cluster` = "viewport",
          `data-preview-edge-group` = "viewport",
-         `data-preview-viewport-chevron` = "true",
+         `data-preview-viewport-strip` = "true",
+         display = "inline-flex", align_items = "center",
+         gap = "4px",
+         position = "relative")
+
+  # Inner host — the strip (``mountSegmentedChoice`` mounts here). Kept
+  # separate from the chevron button so the strip can be cleared +
+  # rebuilt on backend change without losing the chevron's click
+  # listeners.
+  let viewportStripHost = ui(r):
+    tdiv(`data-preview-viewport-strip-host` = "true",
          display = "inline-flex", align_items = "center")
-  var viewportChevronVm = createChevronChoiceVM(
-    viewportLabelList(initialBackend), initialIndex = initialIndex)
-  var viewportChoices = initialVps
-  r.mountChevronChoice(viewportChevronWrapper, viewportChevronVm,
+  r.appendChild(viewportClusterWrapper, viewportStripHost)
+
+  # Overflow dropdown open signal — flipped by the chevron button.
+  let viewportDropdownOpen = createSignal(false)
+
+  # Chevron button — last element in the strip. Opens the dropdown of
+  # the popup-only viewports. Pill chrome chosen to read as the same
+  # family as the segmented pills (transparent body, same border-
+  # radius, small chevron glyph). ``data-preview-viewport-overflow``
+  # is the canonical e2e selector.
+  var viewportChevronBtn: E
+  let viewportChevronWrap = ui(r):
+    tdiv(ref = viewportChevronBtn,
+         `role` = "button", tabindex = "0",
+         `aria-haspopup` = "listbox",
+         `aria-expanded` = "false",
+         `aria-label` = "More viewport sizes",
+         title = "More viewport sizes",
+         `data-preview-viewport-overflow` = "true",
+         display = "inline-flex",
+         align_items = "center",
+         justify_content = "center",
+         min_width = "24px", min_height = "22px",
+         padding = "2px 6px",
+         font_size = "10px", line_height = "1",
+         color = "#A0A2B0",
+         background_color = "transparent",
+         border = "1px solid transparent",
+         border_radius = "4px",
+         cursor = "pointer",
+         user_select = "none"):
+      text "\xE2\x96\xBE"  # ▾
+  r.appendChild(viewportClusterWrapper, viewportChevronWrap)
+  block:
+    let openSig = viewportDropdownOpen
+    let toggleHandler = proc() = openSig.val = not openSig.val
+    r.addEventListener(viewportChevronBtn, "click", toggleHandler)
+    r.addEventListener(viewportChevronBtn, "keydown", toggleHandler)
+
+  # Overflow dropdown — listbox of popup viewport options. Anchored
+  # below the cluster wrapper (position: absolute on the dropdown,
+  # position: relative on the wrapper, see above). The dropdown is
+  # rebuilt on backend-flip alongside the strip.
+  var viewportDropdownEl: E
+  let viewportDropdownNode = ui(r):
+    tdiv(ref = viewportDropdownEl,
+         `role` = "listbox",
+         `aria-label` = "More viewport sizes",
+         `data-preview-viewport-dropdown` = "true",
+         position = "absolute",
+         left = "0", top = "100%",
+         margin_top = "4px",
+         min_width = "160px",
+         padding = "4px",
+         background_color = "#151D2E",
+         border = "1px solid #334155",
+         border_radius = "6px",
+         box_shadow = "0 8px 24px rgba(0,0,0,0.28)",
+         z_index = "40",
+         display = "none")
+  r.appendChild(viewportClusterWrapper, viewportDropdownNode)
+
+  # Reactive popup visibility — drives the chevron's aria-expanded and
+  # the dropdown's inline display. Kept inside ``createRenderEffect``
+  # so the no-setStyle-outside-effect rule stays green.
+  block:
+    let dropdown = viewportDropdownEl
+    let chevron = viewportChevronBtn
+    let openSig = viewportDropdownOpen
+    createRenderEffect proc() =
+      let open = openSig.val
+      r.setStyle(dropdown, "display", if open: "block" else: "none")
+      r.setAttribute(chevron, "aria-expanded",
+        if open: "true" else: "false")
+
+  # The strip VM + the popup-options seq are mutated in lockstep when
+  # the backend flips. We hold them as ``var`` bindings so the
+  # rebuild closure can reassign without losing identity.
+  var viewportStripVm = createSegmentedChoiceVM(
+    pinnedViewportLabels(initialBackend),
+    initialIndex = max(0, initialPinnedIndex))
+  var viewportPinned = initialPinned
+  var viewportPopup = initialPopup
+  r.mountSegmentedChoice(viewportStripHost, viewportStripVm,
     proc(i: int) {.closure.} =
-      if i >= 0 and i < viewportChoices.len:
-        capturedVm.changeViewport(viewportChoices[i]),
+      if i >= 0 and i < viewportPinned.len:
+        capturedVm.changeViewport(viewportPinned[i]),
     variant = cgvTransparent)
-  # Reactively rebuild the chevron options when the backend flips OR
-  # when an external write to ``viewport`` moves the active index.
-  # IMPORTANT: this effect must NOT track ``viewportChevronVm
-  # .activeIndex`` — the chevron mount sets that index then dispatches
-  # ``onChange``, so a tracking read here would create a feedback loop
-  # (the effect would re-fire mid-click, snap the index back to the
-  # currently-active viewport, and ``onChange`` would never see a
-  # transition). We read the bare ``value`` field directly to skip
-  # ``trackRead``.
+
+  proc rebuildViewportDropdown(host: E; popup: seq[PreviewViewport]) =
+    r.clearChildren(host)
+    let cvm = capturedVm
+    let openSig = viewportDropdownOpen
+    for i in 0 ..< popup.len:
+      closureScope:
+        let idx = i
+        let vp = popup[idx]
+        let lbl = vp.label
+        var entry: E
+        discard ui(r):
+          tdiv(ref = entry,
+               `role` = "option", tabindex = "-1",
+               `aria-selected` = "false",
+               `data-preview-viewport-dropdown-option` = vp.slug,
+               `data-preview-viewport-dropdown-option-label` = lbl,
+               display = "flex", align_items = "center",
+               padding = "6px 10px",
+               font_size = "11px", font_weight = "500",
+               font_family = "inherit", line_height = "1.4",
+               color = "#F1F5F9",
+               background_color = "transparent",
+               border_radius = "4px",
+               cursor = "pointer", white_space = "nowrap"):
+            text lbl
+        r.appendChild(host, entry)
+        let pickHandler = proc() =
+          cvm.changeViewport(vp)
+          openSig.val = false
+        r.addEventListener(entry, "click", pickHandler)
+        r.addEventListener(entry, "keydown", pickHandler)
+
+  rebuildViewportDropdown(viewportDropdownEl, viewportPopup)
+
+  # Reactive rebuild — when the backend flips, BOTH the strip's pinned
+  # set AND the dropdown's popup set change. We rebuild both in the
+  # same effect so they stay coherent. The strip is re-mounted (the
+  # ``mountSegmentedChoice`` widget doesn't expose a relabel API; it
+  # bakes the label set into per-pill DOM nodes at mount time). When
+  # the active viewport sits inside the new pinned set, the strip's
+  # initial index lands there; when it doesn't, the strip activates
+  # index 0 and the active viewport reads from the popup-side instead.
+  proc viewportSlugSeq(vps: seq[PreviewViewport]): seq[string] =
+    result = newSeqOfCap[string](vps.len)
+    for vp in vps:
+      result.add vp.slug
+
   createRenderEffect proc() =
     let backend = capturedVm.platform.val
     let active = capturedVm.viewport.val
-    let labels = viewportLabelList(backend)
-    if labels != viewportChevronVm.labels:
-      # Re-mount the chevron with a fresh VM matching the new label
-      # list. The DOM under ``viewportChevronWrapper`` is removed first
-      # so the new mount paints into a clean host. This is the same
-      # pattern ``renderCompactChoiceColumn`` uses internally when its
-      # option list churns.
-      r.clearChildren(viewportChevronWrapper)
-      viewportChoices = viewportOptionList(backend)
-      var idx = 0
-      for i, vp in viewportChoices:
+    let newPinned = pinnedViewports(backend)
+    let newPopup = popupViewports(backend)
+    let newPinnedLabels = pinnedViewportLabels(backend)
+    let needsRebuild = newPinnedLabels != viewportStripVm.labels
+    if needsRebuild:
+      r.clearChildren(viewportStripHost)
+      viewportPinned = newPinned
+      var pinnedIdx = 0
+      for i, vp in newPinned:
         if viewportsEqual(active, vp):
-          idx = i
+          pinnedIdx = i
           break
-      viewportChevronVm = createChevronChoiceVM(labels, initialIndex = idx)
-      r.mountChevronChoice(viewportChevronWrapper, viewportChevronVm,
+      viewportStripVm = createSegmentedChoiceVM(
+        newPinnedLabels, initialIndex = pinnedIdx)
+      r.mountSegmentedChoice(viewportStripHost, viewportStripVm,
         proc(i: int) {.closure.} =
-          if i >= 0 and i < viewportChoices.len:
-            capturedVm.changeViewport(viewportChoices[i]),
+          if i >= 0 and i < viewportPinned.len:
+            capturedVm.changeViewport(viewportPinned[i]),
         variant = cgvTransparent)
     else:
-      viewportChoices = viewportOptionList(backend)
-      for i, vp in viewportChoices:
+      viewportPinned = newPinned
+      for i, vp in newPinned:
         if viewportsEqual(active, vp):
-          if viewportChevronVm.activeIndex.value != i:
-            viewportChevronVm.activate(i)
+          if viewportStripVm.activeIndex.value != i:
+            viewportStripVm.activate(i)
           break
-  r.appendChild(toolbar, viewportChevronWrapper)
+    if viewportSlugSeq(newPopup) != viewportSlugSeq(viewportPopup):
+      viewportPopup = newPopup
+      rebuildViewportDropdown(viewportDropdownEl, viewportPopup)
+    else:
+      viewportPopup = newPopup
+
+  r.appendChild(toolbar, viewportClusterWrapper)
+
+  # Spacer #2 — trailing flex-grow:1 wedge. Symmetric with the
+  # leading spacer above; together they centre the Viewport cluster
+  # in the chrome bar.
+  let trailingSpacer = ui(r):
+    tdiv(`data-preview-toolbar-spacer` = "trailing",
+         flex = "1",
+         min_width = "8px")
+  r.appendChild(toolbar, trailingSpacer)
 
   # Phase I (2026-05-28): the Surface (Preview / Spec) cluster is
   # gone; the Mode cluster now carries four options — Spec / View /
@@ -3063,21 +3259,21 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
   const modeOrder = [emSpec, emView, emComment, emEdit]
   const modeLabels = @["Spec", "View", "Comment", "Edit"]
 
-  # Phase O (2026-05-29): the Mode cluster now docks to the RIGHT
-  # edge of the centre column. ``margin-left: auto`` claims all the
-  # free horizontal space between the leading clusters (History /
-  # Backend / Viewport) and the Mode cluster, pushing Mode flush with
-  # the inspector boundary while keeping the leading clusters
-  # left-aligned. The ``data-toolbar-cluster-docked`` attribute lets
-  # headless tests assert the right-dock contract without parsing
-  # margin strings.
+  # Phase O (2026-05-29): the Mode cluster docks to the RIGHT edge of
+  # the centre column. Phase Q (2026-05-29) refines the docking
+  # mechanism: instead of ``margin-left: auto`` on the cluster itself
+  # (which fights the centred Viewport strip for trailing free space),
+  # the chrome bar uses two flex-1 ``data-preview-toolbar-spacer``
+  # wedges flanking the Viewport cluster. Mode sits AFTER the trailing
+  # spacer, so it lands flush with the right-sidebar toggle button.
+  # The ``data-toolbar-cluster-docked`` attribute is retained for
+  # tests that assert the right-dock contract.
   let modeWrapper = ui(r):
     tdiv(`data-edge-strip` = "mode",
          `data-preview-edge-group` = "mode",
          `data-toolbar-cluster` = "mode",
          `data-toolbar-cluster-docked` = "right",
          display = "inline-flex", align_items = "center",
-         margin_left = "auto",
          `aria-label` = "Preview mode")
 
   var modeInitialIndex = 0
@@ -3149,6 +3345,15 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
       syncVm.setDisabledIndices(computeModeDisabled())
 
   r.appendChild(toolbar, modeWrapper)
+
+  # Phase Q (2026-05-29): right-sidebar toggle button — the trailing
+  # bookend symmetrical to the leading left-sidebar toggle. Promoted
+  # from the bottom status bar; see comment near the leading toggle
+  # mount for rationale. Reuses ``statusPanelButton`` so the toggle
+  # signal binding stays identical to the legacy status-bar mount.
+  let rightToggleBtn = statusPanelButton[R, E](r, vm, epInspector,
+    "Toggle right sidebar", chromeIconSet.sidebarRight)
+  r.appendChild(toolbar, rightToggleBtn)
 
   # Phase O (2026-05-29): the History button is no longer mounted
   # here at the trailing edge — it now sits BEFORE the Backend

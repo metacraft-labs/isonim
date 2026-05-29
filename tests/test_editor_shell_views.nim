@@ -1321,6 +1321,96 @@ suite "Phase N — sidebar header consistency":
       dispose()
 
 # ---------------------------------------------------------------------------
+# Phase Q (2026-05-29) — chrome bar height aligns with sidebar headers.
+#
+# Phase N pinned every sidebar header to 44 px. The chrome bar above
+# the centre column previously declared ``min-height: 44px`` plus
+# ``padding-top: 8px`` + ``padding-bottom: 8px`` + a 1 px bottom
+# border, producing a 45 px total height — one pixel below the
+# adjacent sidebar header line at the panel boundary. Phase Q drops
+# the vertical padding and pins ``height = "44px"`` with
+# ``box-sizing: border-box``, so the chrome bar's bottom edge sits at
+# y = 44 — exactly where every sidebar header's bottom edge sits.
+# ---------------------------------------------------------------------------
+
+suite "Phase Q — chrome bar height aligns with sidebar headers":
+
+  test "chrome bar declares a 44 px total height":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      let bar = renderPreviewChromeBar[MockRenderer, MockNode](r, vm)
+
+      # The chrome bar must declare BOTH ``height`` and ``min-height``
+      # at 44 px — a future refactor that drops one without the other
+      # would let flex children stretch past the target, so both are
+      # pinned explicitly.
+      check bar.styles.getOrDefault("height") == "44px"
+      check bar.styles.getOrDefault("min-height") == "44px"
+      # ``box-sizing: border-box`` ensures the declared 44 px includes
+      # the 1 px bottom border — without this the border would push
+      # the rendered total to 45 px.
+      check bar.styles.getOrDefault("box-sizing") == "border-box"
+      # No vertical padding — the 44 px row holds the controls via
+      # ``align-items: center`` against the row height, not via
+      # symmetric padding that would inflate the box.
+      check bar.styles.getOrDefault("padding-top") == "0"
+      check bar.styles.getOrDefault("padding-bottom") == "0"
+      dispose()
+
+  test "chrome bar bottom separator matches sidebar header borderFaint":
+    ## The horizontal hairline at the chrome bar / sidebar header
+    ## boundary must read as ONE continuous line — both the chrome
+    ## bar's ``border-bottom`` and every sidebar header's
+    ## ``border-bottom`` reference the same ``borderFaint`` token
+    ## (#1F212C). Before Phase Q the chrome bar used the heavier
+    ## ``border`` token (#2A2C3A), producing a visible colour shift at
+    ## the panel boundary.
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      let bar = renderPreviewChromeBar[MockRenderer, MockNode](r, vm)
+      let borderBottom = bar.styles.getOrDefault("border-bottom")
+      check borderBottom.toLowerAscii.contains("#1f212c")
+      dispose()
+
+  test "chrome bar bookends carry the sidebar toggle buttons":
+    ## Phase Q — the left + right sidebar toggle buttons were
+    ## promoted from the status bar to the chrome bar so they align
+    ## vertically with the sidebar headers they control. The
+    ## canonical aria-labels are preserved so existing Playwright
+    ## selectors (``getByRole("button", { name: "Toggle left
+    ## sidebar" })``) still resolve to the toggle.
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      let bar = renderPreviewChromeBar[MockRenderer, MockNode](r, vm)
+      let leftBtn = findByAttr(bar, "aria-label", "Toggle left sidebar")
+      let rightBtn = findByAttr(bar, "aria-label", "Toggle right sidebar")
+      check leftBtn != nil
+      check rightBtn != nil
+      dispose()
+
+  test "status bar no longer mounts the sidebar toggle buttons":
+    ## Negative assertion paired with the chrome-bar promotion above.
+    ## After Phase Q, the toggles must NOT also live in the status
+    ## bar — duplicating them would invite the user to wonder which
+    ## affordance is canonical.
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
+      let statusBar = findByAttr(shell, "class", "editor-statusbar")
+      check statusBar != nil
+      let leftInStatus = findByAttr(statusBar,
+        "aria-label", "Toggle left sidebar")
+      let rightInStatus = findByAttr(statusBar,
+        "aria-label", "Toggle right sidebar")
+      check leftInStatus == nil
+      check rightInStatus == nil
+      dispose()
+
+# ---------------------------------------------------------------------------
 # Phase N — left sidebar drag-resize handle present on the sidebar
 # root. The implementation existed before Phase N; this test pins the
 # contract so future refactors don't accidentally drop it while
