@@ -80,6 +80,7 @@ proc mountHistoryButton*[R, E](r: R; parent: E; vm: HistoryButtonVM;
   let capturedOnActivate = onActivate
 
   var button: E
+  var iconHost: E
   let trough = ui(r):
     tdiv(
       `data-chrome-history-trough` = "true",
@@ -113,13 +114,20 @@ proc mountHistoryButton*[R, E](r: R; parent: E; vm: HistoryButtonVM;
         border_radius = hbPillRadius,
         cursor = "pointer",
         transition = "background-color 120ms ease-out, " &
-          "border-color 120ms ease-out, color 120ms ease-out")
-  # Paint the SVG glyph into the pill via ``setInnerHtml``. The icon
-  # is rendered at ``hbIconSize`` (matching ``cgPillIconSize`` used
-  # by the cluster pills) so the chrome bar reads as a uniform row
-  # of equally-weighted glyphs.
-  r.setInnerHtml(button, historySvg)
-  discard hbIconSize  # kept as documentation; the SVG sizes itself
+          "border-color 120ms ease-out, color 120ms ease-out"):
+        tdiv(ref = iconHost,
+             `aria-hidden` = "true",
+             `data-choice-group-pill-icon` = "true",
+             display = "flex", align_items = "center",
+             justify_content = "center",
+             width = hbIconSize, height = hbIconSize,
+             line_height = "1",
+             flex_shrink = "0")
+  # Paint the SVG glyph into the constrained 18x18 icon host (matches
+  # the cluster pills' iconHost pattern in choice_group.nim, so the
+  # rendered glyph is exactly the same size as Backend / Viewport /
+  # Mode icons rather than filling the entire 32x22 pill).
+  r.setInnerHtml(iconHost, historySvg)
 
   proc activate() =
     capturedVm.galleryOpen.val = not capturedVm.galleryOpen.val

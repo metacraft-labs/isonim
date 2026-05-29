@@ -356,11 +356,11 @@ proc chat*(vm: EditorVM): AgentChatVM {.inline.} =
   ## verbatim through this alias.
   vm.activeChat()
 
-const firstChatDefaultTitle* = "Make changes with AI"
+const firstChatDefaultTitle* = "Edit with AI"
   ## Phase P (2026-05-29): the first chat session created by an
   ## ``EditorVM`` (whether seeded in ``createEditorVM`` or produced
   ## by an explicit ``createNewChat`` call when no chats exist yet)
-  ## is labelled ``"Make changes with AI"`` to read as a clear,
+  ## is labelled ``"Edit with AI"`` to read as a clear,
   ## inviting prompt rather than a button-like "New chat" header.
   ## Subsequent chats fall back to the legacy ``"New chat"`` /
   ## ``"New chat 2"`` / ``"New chat 3"`` … convention.
@@ -369,7 +369,7 @@ proc defaultChatTitleFor(index: int): string =
   ## ``index`` is the 0-based position of the new session within
   ## ``vm.chats`` at the moment of creation. Index 0 — the FIRST
   ## chat ever materialised in the editor — uses the
-  ## ``"Make changes with AI"`` invitation. Every later chat uses
+  ## ``"Edit with AI"`` invitation. Every later chat uses
   ## the ``"New chat" / "New chat 2" / "New chat 3" …`` naming so
   ## users can still tell sessions apart at a glance until the
   ## agent (or the user) renames them via ``setChatTitle``.
@@ -10587,7 +10587,7 @@ proc createEditorVM*(): EditorVM =
   let variants = createComponentVariantEditorVM()
   # Multi-chat seed: every EditorVM starts with exactly one chat
   # session so the ``vm.chat`` accessor always resolves. Phase P
-  # (2026-05-29): the seed title reads ``"Make changes with AI"``
+  # (2026-05-29): the seed title reads ``"Edit with AI"``
   # (``firstChatDefaultTitle``) — a clear invitation rather than a
   # button-y ``"New chat"`` header. Additional chats spawned via
   # the Assistant-tab ``+`` button fall back to ``"New chat"`` /

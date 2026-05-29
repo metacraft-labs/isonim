@@ -23,7 +23,7 @@ import isonim/editor/viewmodels
 
 suite "Editor multi-chat tabs (Assistant tab)":
 
-  test "createEditorVM seeds a single 'Make changes with AI' session":
+  test "createEditorVM seeds a single 'Edit with AI' session":
     ## Phase P (2026-05-29): the first ever chat now uses the
     ## ``firstChatDefaultTitle`` invitation so the tab strip reads
     ## as an inviting prompt instead of a button-y header.
@@ -32,7 +32,7 @@ suite "Editor multi-chat tabs (Assistant tab)":
       check vm.chats.val.len == 1
       check vm.chats.val[0].id == "chat-1"
       check vm.chats.val[0].title.val == firstChatDefaultTitle
-      check vm.chats.val[0].title.val == "Make changes with AI"
+      check vm.chats.val[0].title.val == "Edit with AI"
       check vm.activeChatId.val == "chat-1"
       # The alias accessor resolves to the active session's VM.
       check vm.chat == vm.chats.val[0].vm
@@ -65,7 +65,7 @@ suite "Editor multi-chat tabs (Assistant tab)":
 
   test "successive createNewChat assigns stable sequential ids":
     ## Phase P (2026-05-29): naming sequence is
-    ## ``["Make changes with AI", "New chat", "New chat 2",
+    ## ``["Edit with AI", "New chat", "New chat 2",
     ##   "New chat 3", …]`` — the first chat keeps the
     ## invitation; subsequent chats use ``"New chat"`` /
     ## ``"New chat 2"`` / ``"New chat 3"`` …
@@ -157,7 +157,7 @@ suite "Editor multi-chat tabs (Assistant tab)":
     createRoot proc(dispose: proc()) =
       let vm = createEditorVM()
       discard vm.createNewChat()  # chat-2 → "New chat"
-      check vm.chats.val[0].title.val == "Make changes with AI"
+      check vm.chats.val[0].title.val == "Edit with AI"
       check vm.chats.val[1].title.val == "New chat"
       # Rename the first chat.
       check vm.setChatTitle("chat-1", "Restyle the login screen") == true
