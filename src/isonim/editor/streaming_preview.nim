@@ -1005,6 +1005,17 @@ when defined(js):
           if (canvas.width !== width || canvas.height !== height) {
             canvas.width = width;
             canvas.height = height;
+            // VRS-M2 follow-up: the launcher renders at PHYSICAL
+            // pixels (dpr-scaled by ``sendResize`` below). Set the
+            // canvas's CSS width/height to ``intrinsic / dpr`` so
+            // the bitmap maps 1:1 to device pixels at display time
+            // rather than getting upsampled by the browser. Without
+            // this the deviceFrame would also blow up to dpr×
+            // intended size on a Retina display.
+            var dpr = (typeof window !== 'undefined' &&
+                       window.devicePixelRatio) || 1;
+            canvas.style.width = (width / dpr) + 'px';
+            canvas.style.height = (height / dpr) + 'px';
           }
         }
         function handleF(bytes) {
@@ -1274,13 +1285,28 @@ when defined(js):
     ## so the call is a silent no-op when the bridge has not yet
     ## attached. Callers re-fire the most recent (w, h) on socket
     ## open via the editor's attach lifecycle.
+    ##
+    ## VRS-M2 follow-up (2026-05-29): scale by
+    ## ``window.devicePixelRatio`` inside the JS shim so the
+    ## launcher renders at PHYSICAL pixels. The canvas's intrinsic
+    ## size tracks the F-packet (physical px) while its CSS size
+    ## remains the logical viewport dimensions, giving a 1:1
+    ## bitmap → device-pixel mapping at display time. Without
+    ## DPR scaling the browser upsamples a CSS-pixel-sized bitmap
+    ## to 2× on a Retina display, producing the bilinear-blur the
+    ## user reported as "pixelated".
     if handle == nil: return
     var sock = handle.socket
-    let body = encodeResizeBody(width, height)
     {.emit: ["""
-      (function (ws, jsonStr) {
+      (function (ws, w, h) {
         if (!ws || ws.readyState !== WebSocket.OPEN) return;
         try {
+          var dpr = (typeof window !== 'undefined' &&
+                     window.devicePixelRatio) || 1;
+          var pw = Math.max(1, Math.round(w * dpr));
+          var ph = Math.max(1, Math.round(h * dpr));
+          var jsonStr = '{"type":"resize","width":' + pw +
+                        ',"height":' + ph + '}';
           var enc = new TextEncoder();
           var bodyBytes = enc.encode(jsonStr);
           var buf = new Uint8Array(5 + bodyBytes.length);
@@ -1293,7 +1319,7 @@ when defined(js):
           buf.set(bodyBytes, 5);
           ws.send(buf);
         } catch (_) {}
-      })(""", sock, ", ", body.cstring, ");"].}
+      })(""", sock, ", ", width, ", ", height, ");"].}
 
   proc isBridgeOpen*(handle: BridgeClientHandle): bool =
     ## Probe whether the bridge socket is OPEN — used by reactive
