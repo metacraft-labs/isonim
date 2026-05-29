@@ -466,7 +466,28 @@ proc installEditorKeyboardShortcuts(vm: EditorVM) =
       const isEditable = (target) => {
         if (!target) return false;
         const tag = String(target.tagName || '').toLowerCase();
-        return tag === 'input' || tag === 'textarea' || target.isContentEditable;
+        if (tag === 'input' || tag === 'textarea' || target.isContentEditable) {
+          return true;
+        }
+        // EPP-M7. When the preview canvas owns keyboard focus, the
+        // JS shim in streaming_preview.nim toggles
+        // ``data-isonim-canvas-focused="true"`` on the body. Treat
+        // a focused canvas like any other text-input surface so the
+        // chrome bar's window-level shortcuts (cmd-\ sidebar, cmd-/
+        // inspector, e / c / v mode toggles, etc.) don't compete
+        // with the launcher's per-key handlers. The chrome bar
+        // shortcuts come back as soon as the user presses Esc to
+        // release canvas focus.
+        if (tag === 'canvas') {
+          try {
+            if (document.body &&
+                document.body.getAttribute(
+                  'data-isonim-canvas-focused') === 'true') {
+              return true;
+            }
+          } catch (_) {}
+        }
+        return false;
       };
       const paletteOpen = () => {
         const palette = document.querySelector('[data-editor-command-palette="true"]');

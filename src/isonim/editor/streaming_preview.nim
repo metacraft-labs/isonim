@@ -840,6 +840,37 @@ proc encodeResizeBody*(width, height: int): string =
   result.add $height
   result.add "}"
 
+proc encodeKeyboardBody*(action, key, code, text: string;
+                         ctrl, shift, alt, meta: bool): string =
+  ## EPP-M7: build the ``keyboard`` I-packet JSON body. Field order
+  ## locked to ``type, action, key, code, text, modifiers`` matching
+  ## the JS shim's ``sendInput`` payload shape and the launcher-side
+  ## ``encodeKeyboardJson`` deterministic encoder in
+  ## ``isonim-render-serve/.../event_dispatch.nim``. Browser-side
+  ## tests use this to assert byte-exact match against what the
+  ## shim emits when the user types into the focused canvas.
+  ## ``action`` is one of ``"down"`` / ``"up"`` / ``"repeat"`` —
+  ## same string surface as ``KeyboardAction``.
+  result = newStringOfCap(96 + key.len + code.len + text.len)
+  result.add "{\"type\":\"keyboard\""
+  result.add ",\"action\":"
+  result.add jsonEscapeString(action)
+  result.add ",\"key\":"
+  result.add jsonEscapeString(key)
+  result.add ",\"code\":"
+  result.add jsonEscapeString(code)
+  result.add ",\"text\":"
+  result.add jsonEscapeString(text)
+  result.add ",\"modifiers\":{\"ctrl\":"
+  result.add (if ctrl: "true" else: "false")
+  result.add ",\"shift\":"
+  result.add (if shift: "true" else: "false")
+  result.add ",\"alt\":"
+  result.add (if alt: "true" else: "false")
+  result.add ",\"meta\":"
+  result.add (if meta: "true" else: "false")
+  result.add "}}"
+
 proc valueLiteralForString*(s: string): string =
   ## Convenience for callers that have a raw string value to inject
   ## as a JSON string literal in the ``apply-mutation`` body.
@@ -1191,6 +1222,78 @@ when defined(js):
                       deltaX: e.deltaX, deltaY: e.deltaY,
                       modifiers: modsFromEvent(e) });
         }
+        // EPP-M7 canvas focus management. Clicking the canvas gives
+        // it keyboard focus so subsequent keydown/keyup events route
+        // to the launcher instead of the editor chrome bar's
+        // global window-level handlers (browser.nim). While the
+        // canvas owns focus, the chrome bar's keydown listener
+        // skips shortcuts by checking the
+        // ``data-isonim-canvas-focused`` body attribute we toggle
+        // here. Pressing Esc releases focus back to the editor.
+        try {
+          canvas.tabIndex = 0;
+          canvas.style.outline = 'none';
+        } catch (_) {}
+        function setCanvasFocusMarker(on) {
+          try {
+            if (on) {
+              document.body.setAttribute('data-isonim-canvas-focused',
+                                         'true');
+            } else {
+              document.body.removeAttribute('data-isonim-canvas-focused');
+            }
+          } catch (_) {}
+        }
+        function onCanvasFocus() {
+          setCanvasFocusMarker(true);
+        }
+        function onCanvasBlur() {
+          setCanvasFocusMarker(false);
+        }
+        function focusOnPointerDown() {
+          // The browser default is to focus the canvas on mousedown
+          // when tabIndex is set, but Safari needs an explicit
+          // ``focus()`` call to match Chrome/Firefox. preventScroll
+          // keeps the chrome-bar layout stable.
+          try { canvas.focus({ preventScroll: true }); } catch (_) {}
+        }
+        // EPP-M7. Keyboard event handlers. Only emit while the
+        // canvas is the active element so the chrome bar's own
+        // shortcuts keep working when focus is elsewhere.
+        function keyboardAction(e) {
+          if (e.type === 'keyup') return 'up';
+          // keydown — distinguish auto-repeat from initial press so
+          // the launcher's per-key dispatch table can dedupe.
+          return e.repeat ? 'repeat' : 'down';
+        }
+        function onCanvasKey(e) {
+          if (document.activeElement !== canvas) return;
+          if (e.key === 'Escape' && e.type === 'keydown') {
+            // EPP-M7 Esc-to-release contract: blur the canvas so
+            // chrome-bar shortcuts work again. Do NOT also forward
+            // the Esc as a keyboard packet — it would race with
+            // the editor's own Escape handlers.
+            try { canvas.blur(); } catch (_) {}
+            e.preventDefault();
+            return;
+          }
+          sendInput({
+            type: 'keyboard',
+            action: keyboardAction(e),
+            key: String(e.key || ''),
+            code: String(e.code || ''),
+            text: (e.key && e.key.length === 1) ? e.key : '',
+            modifiers: modsFromEvent(e),
+          });
+          // Suppress browser-default for keys the launcher consumes
+          // (otherwise Tab would walk focus off the canvas, Space
+          // would scroll the page, etc.). Modifier-bearing combos
+          // (cmd-c, ctrl-r) stay native so the user can still copy/
+          // reload.
+          if (!e.ctrlKey && !e.metaKey) {
+            e.preventDefault();
+          }
+        }
         canvas.addEventListener('mousedown', onMouseDown);
         canvas.addEventListener('mouseup', onMouseUp);
         canvas.addEventListener('mousemove', onMouseMove);
@@ -1198,10 +1301,18 @@ when defined(js):
         canvas.addEventListener('click', onClickEvt);
         canvas.addEventListener('dblclick', onDblClickEvt);
         canvas.addEventListener('wheel', onWheel);
+        canvas.addEventListener('focus', onCanvasFocus);
+        canvas.addEventListener('blur', onCanvasBlur);
+        canvas.addEventListener('pointerdown', focusOnPointerDown);
+        canvas.addEventListener('keydown', onCanvasKey);
+        canvas.addEventListener('keyup', onCanvasKey);
         ws.__isonimHandlers = {
           mousedown: onMouseDown, mouseup: onMouseUp,
           mousemove: onMouseMove, mouseleave: onMouseLeave,
           click: onClickEvt, dblclick: onDblClickEvt, wheel: onWheel,
+          focus: onCanvasFocus, blur: onCanvasBlur,
+          pointerdown: focusOnPointerDown,
+          keydown: onCanvasKey, keyup: onCanvasKey,
         };
         ws.__isonimCanvas = canvas;
         """, socket, """ = ws;
