@@ -235,11 +235,17 @@ proc applyCanvasFitStyle*[R, E](r: R; mount: CanvasMount[E];
     r.setStyle(mount.wrapper, "box-sizing", "border-box")
     r.setStyle(mount.canvas, "display", "block")
     r.setStyle(mount.overlay, "display", "block")
-    # Intrinsic pixel size — no CSS scaling. Setting width/height to
-    # auto lets the canvas's ``width``/``height`` HTML attributes
-    # drive its rendered size (1 CSS px per source pixel).
-    r.setStyle(mount.canvas, "width", "auto")
-    r.setStyle(mount.canvas, "height", "auto")
+    # CSS sizing is now owned by the streaming_preview.nim
+    # ``ensureSize`` shim (intrinsic_px / devicePixelRatio so the
+    # bitmap maps 1:1 to device pixels on HiDPI displays). Leaving
+    # ``width`` and ``height`` unset here means this proc no longer
+    # clobbers ensureSize's explicit pixel sizing each time the
+    # outer createRenderEffect re-runs (the rebuild fires on every
+    # viewport pill click, which previously left the canvas at
+    # ``width: auto`` = intrinsic CSS = 2× the wrapper on Retina
+    # for the window between the pill click and the next F-packet,
+    # producing a cropped-frame flash the user perceived as
+    # "images often don't show up".
     r.setStyle(mount.canvas, "object-fit", "")
     r.setStyle(mount.canvas, "flex-shrink", "0")
     # Safety net: if any path ever re-introduces CSS scaling, use
