@@ -465,14 +465,21 @@ function instrumentationScript() {
 
       function installObserverOnce() {
         if (window.__fuhM8ObserverInstalled) return;
+        // EMC-M4 Fix A: wrapper-by-contained-canvas-rect (mirrors the
+        // measureHoverOverlay observer-install logic). Wrappers can
+        // pass the >10px gate by chrome alone while the contained
+        // canvas remains zero-sized; we want the wrapper whose canvas
+        // is actually painted.
         const wrappers = document.querySelectorAll(
           '[data-canvas-wrapper="true"]',
         );
         let visible = null;
         for (const w of wrappers) {
           if (getComputedStyle(w).display === "none") continue;
-          const wr = w.getBoundingClientRect();
-          if (wr.width > 10 && wr.height > 10) {
+          const canvasChild = w.querySelector("canvas");
+          if (!canvasChild) continue;
+          const cr = canvasChild.getBoundingClientRect();
+          if (cr.width > 10 && cr.height > 10) {
             visible = w;
             break;
           }
@@ -806,9 +813,47 @@ async function measureIdleBandwidth(page) {
 // Criterion 3: click → visible response
 // ---------------------------------------------------------------------------
 
-// For settings_app we prefer to target the first non-root manifest
-// element so the click lands on a known interactive widget (toggle /
-// choice / number row). Fall back to rect-center otherwise.
+// EMC-M4 Fix B (combination of Options 1 + 2 from the spec brief).
+//
+// The previous shape picked the SMALLEST non-root manifest element as
+// the click target — typically a 28-48 px toggle pill in
+// settings_app. The 128x128 fingerprint ROI centred on the toggle was
+// dominated by the toggle's own chrome rather than the row's
+// row-pressed paint mutation that EMC-M3 wired in. Result: 17/18
+// click cells null after M3.
+//
+// New picker shape:
+//
+//   1. Search the manifest for a candidate element whose centre lies
+//      INSIDE the visible canvas rect AND whose projected canvas-pixel
+//      area is ≥ ROI² (= 128² = 16384 px²). Among those, pick the one
+//      whose centre is CLOSEST to the canvas centre. This biases the
+//      click toward the row-shaped element that is centred in the
+//      preview (typically the active row in settings_app), and the
+//      area gate guarantees the ROI fits inside that element.
+//
+//   2. If no manifest element clears the ROI-fit gate, fall back to
+//      rect-center (the canvas geometric centre). This works because
+//      the editor previews position the demo's primary row near the
+//      canvas centre, and rect-center was the only target shape that
+//      ever yielded a non-null cocoa settings_app Phone measurement
+//      under the pre-M4 picker.
+//
+// Why this combined shape (vs Option 1 alone): Option 1 (largest-fit)
+// can pick a section background or container that doesn't carry the
+// row-pressed handler EMC-M3 wired into itemContainerLeaf. Biasing
+// toward the canvas centre — combined with the ROI-fit area gate —
+// picks the row that is both visually-prominent AND has a click
+// handler installed. The rect-center fallback closes cells where the
+// manifest doesn't yield any large-enough element (notably Phone
+// settings_app cells, where the canvas hosts the row directly with no
+// intermediate sections).
+//
+// Why this is applied to settings_app only: task_app's previous
+// rect-center picker was already producing non-null measurements for
+// the cells where the paint mutation is visible to the rasteriser
+// (gpui), so we keep that shape intact and avoid disturbing the cells
+// that already worked.
 async function pickClickTarget(page, canvas, app) {
   if (app.name === "task_app") {
     return {
@@ -817,37 +862,45 @@ async function pickClickTarget(page, canvas, app) {
       source: "rect-center",
     };
   }
-  const manifestPt = await page.evaluate(() => {
+  const ROI_AREA = 128 * 128;
+  const manifestPt = await page.evaluate((roiAreaArg) => {
     const manifests = window.__isonimManifests || [];
     if (manifests.length === 0) return null;
     const m = manifests[manifests.length - 1];
     const elements = m.elements || [];
     if (elements.length === 0) return null;
+    // EMC-M4 Fix A applied here too: select the wrapper by inspecting
+    // the contained CANVAS's bounding rect, not the wrapper's rect.
     const wrappers = document.querySelectorAll('[data-canvas-wrapper="true"]');
-    let visible = null;
+    let canvasEl = null;
     for (const w of wrappers) {
       if (getComputedStyle(w).display === "none") continue;
-      const wr = w.getBoundingClientRect();
-      if (wr.width > 10 && wr.height > 10) {
-        visible = w;
+      const candidate = w.querySelector("canvas");
+      if (!candidate) continue;
+      const cr = candidate.getBoundingClientRect();
+      if (cr.width > 10 && cr.height > 10) {
+        canvasEl = candidate;
         break;
       }
     }
-    if (!visible) return null;
-    const canvasEl = visible.querySelector("canvas");
     if (!canvasEl) return null;
     const rect = canvasEl.getBoundingClientRect();
     const sx = rect.width / canvasEl.width;
     const sy = rect.height / canvasEl.height;
     const canvasArea = canvasEl.width * canvasEl.height;
-    // Pick the smallest non-root element (likely an interactive
-    // ToggleItem / NumberItem widget).
-    let best = null;
+    const canvasCenterX = rect.left + rect.width * 0.5;
+    const canvasCenterY = rect.top + rect.height * 0.5;
+    // Collect non-root candidates whose centres lie inside the canvas
+    // rect AND whose area is ≥ the ROI gate. Area is computed in
+    // canvas-intrinsic pixel² so the comparison with ROI² is direct.
+    const candidates = [];
     for (const el of elements) {
       if (!el.bounds) continue;
       const { x, y, w, h } = el.bounds;
       if (w <= 0 || h <= 0) continue;
-      if (w * h >= canvasArea * 0.95) continue;
+      const area = w * h;
+      if (area >= canvasArea * 0.95) continue; // skip root
+      if (area < roiAreaArg) continue; // skip too-small for ROI
       const cx = rect.left + (x + w * 0.5) * sx;
       const cy = rect.top + (y + h * 0.5) * sy;
       if (
@@ -858,14 +911,24 @@ async function pickClickTarget(page, canvas, app) {
       ) {
         continue;
       }
-      if (best === null || w * h < best.area) {
-        best = { cx, cy, area: w * h };
-      }
+      const dx = cx - canvasCenterX;
+      const dy = cy - canvasCenterY;
+      candidates.push({ cx, cy, area, distSq: dx * dx + dy * dy });
     }
-    return best ? { x: best.cx, y: best.cy } : null;
-  });
+    if (candidates.length === 0) return null;
+    // Closest-to-canvas-centre wins.
+    let best = candidates[0];
+    for (const c of candidates) {
+      if (c.distSq < best.distSq) best = c;
+    }
+    return { x: best.cx, y: best.cy };
+  }, ROI_AREA);
   if (manifestPt) {
-    return { x: manifestPt.x, y: manifestPt.y, source: "manifest" };
+    return {
+      x: manifestPt.x,
+      y: manifestPt.y,
+      source: "manifest-centre-rowfit",
+    };
   }
   return {
     x: canvas.rectLeft + canvas.rectW / 2,
@@ -981,12 +1044,20 @@ async function measureHoverOverlay(page) {
     window.__fuhM8LatencySamples = [];
     window.__fuhM8LastConsumedSeq = -1;
 
+    // EMC-M4 Fix A: pick the wrapper by inspecting the CONTAINED
+    // CANVAS's bounding rect (the actual paint surface), not the
+    // wrapper's own rect. The wrapper rect can mismatch the paint
+    // surface at narrow viewports (Phone, 390 px), causing the
+    // observer to never install and the Phone hover cells to report
+    // null.
     const wrappers = document.querySelectorAll('[data-canvas-wrapper="true"]');
     let visible = null;
     for (const w of wrappers) {
       if (getComputedStyle(w).display === "none") continue;
-      const wr = w.getBoundingClientRect();
-      if (wr.width > 10 && wr.height > 10) {
+      const canvasChild = w.querySelector("canvas");
+      if (!canvasChild) continue;
+      const cr = canvasChild.getBoundingClientRect();
+      if (cr.width > 10 && cr.height > 10) {
         visible = w;
         break;
       }
@@ -1042,22 +1113,40 @@ async function measureHoverOverlay(page) {
   });
 
   // Build hover targets from the manifest mirror.
+  //
+  // EMC-M4 Fix A. Two changes from the previous shape:
+  //
+  //   (i) Wrapper selection by CONTAINED CANVAS rect. The previous
+  //       shape selected a visible wrapper by the wrapper's own
+  //       bounding rect — but at Phone (390 px) the wrapper is
+  //       narrower than the chrome layout reserved, so its rect can
+  //       mismatch the actual paint surface. We now iterate wrappers
+  //       and pick the first whose <canvas> child has a non-zero
+  //       bounding rect (the real paint surface).
+  //
+  //   (ii) Rect-centre fallback target. If no manifest element passes
+  //        the filter (e.g. at Phone where the manifest reports only
+  //        the root element or where every element fails the
+  //        centre-inside-canvas test), emit ONE hover target at the
+  //        canvas centre. This guarantees the Phone hover cells
+  //        produce non-null measurements — measurability is M4's
+  //        success criterion per the spec brief.
   const targets = await page.evaluate(() => {
     const manifests = window.__isonimManifests || [];
     if (manifests.length === 0) return [];
     const m = manifests[manifests.length - 1];
     const wrappers = document.querySelectorAll('[data-canvas-wrapper="true"]');
-    let visible = null;
+    let canvasEl = null;
     for (const w of wrappers) {
       if (getComputedStyle(w).display === "none") continue;
-      const wr = w.getBoundingClientRect();
-      if (wr.width > 10 && wr.height > 10) {
-        visible = w;
+      const candidate = w.querySelector("canvas");
+      if (!candidate) continue;
+      const cr = candidate.getBoundingClientRect();
+      if (cr.width > 10 && cr.height > 10) {
+        canvasEl = candidate;
         break;
       }
     }
-    if (!visible) return [];
-    const canvasEl = visible.querySelector("canvas");
     if (!canvasEl) return [];
     const rect = canvasEl.getBoundingClientRect();
     const sx = rect.width / canvasEl.width;
@@ -1080,6 +1169,23 @@ async function measureHoverOverlay(page) {
         continue;
       }
       out.push({ x: cx, y: cy });
+    }
+    if (out.length === 0) {
+      // Rect-centre fallback (Fix A (ii)). Emit a small SWEEP of
+      // targets jittered around the canvas centre so the Phone hover
+      // cells produce non-null measurements even when the manifest
+      // mirror doesn't yield in-canvas leaves. Each successive target
+      // must differ from the previous so the hover-label
+      // MutationObserver fires per sample.
+      const cx0 = rect.left + rect.width * 0.5;
+      const cy0 = rect.top + rect.height * 0.5;
+      const jitterX = Math.min(40, rect.width * 0.1);
+      const jitterY = Math.min(40, rect.height * 0.1);
+      out.push({ x: cx0, y: cy0 });
+      out.push({ x: cx0 + jitterX, y: cy0 });
+      out.push({ x: cx0, y: cy0 + jitterY });
+      out.push({ x: cx0 - jitterX, y: cy0 });
+      out.push({ x: cx0, y: cy0 - jitterY });
     }
     return out;
   });
