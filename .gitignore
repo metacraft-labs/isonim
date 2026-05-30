@@ -192,3 +192,5 @@ tests/e2e_campaign_start_and_tick
 tests/test_design_review_chat_priming
 # VRS-M2 viewport resize publisher test binary
 tests/test_editor_viewport_resize_publisher
+# ETS-M4 streaming preview element tree delta test binary
+tests/test_streaming_preview_element_tree_delta
