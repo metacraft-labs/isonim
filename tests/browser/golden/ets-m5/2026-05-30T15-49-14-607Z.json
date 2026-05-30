@@ -1,6 +1,6 @@
 {
   "milestone": "ETS-M5",
-  "timestamp": "2026-05-30T16-03-21-947Z",
+  "timestamp": "2026-05-30T15-49-14-607Z",
   "backend": "cocoa",
   "viewport": {
     "width": 1440,
@@ -11,27 +11,19 @@
     "path": "delta",
     "scenarios": {
       "idle": {
-        "elapsedMs": 5001,
-        "etsBytes": 1109,
-        "etsPackets": 3,
-        "etsBytesPerSec": 221.75564887022594,
-        "etsPacketsPerSec": 0.5998800239952009,
-        "totalBytes": 12446,
-        "totalPackets": 126,
-        "totalBytesPerSec": 2488.7022595480908,
+        "elapsedMs": 5000,
+        "etsBytes": 0,
+        "etsPackets": 0,
+        "etsBytesPerSec": 0,
+        "etsPacketsPerSec": 0,
+        "totalBytes": 4118,
+        "totalPackets": 142,
+        "totalBytesPerSec": 823.6,
         "legacy": null,
-        "delta": {
-          "n": 3,
-          "mean": 369.6666666666667,
-          "p50": 424,
-          "p99": 503,
-          "min": 182,
-          "max": 503,
-          "totalBytes": 1109
-        }
+        "delta": null
       },
       "hover": {
-        "elapsedMs": 2333,
+        "elapsedMs": 2341,
         "etsBytes": 0,
         "etsPackets": 0,
         "etsBytesPerSec": 0,
@@ -40,7 +32,7 @@
         "diag": {
           "manifestEntries": 9,
           "manifestsCount": 2,
-          "deltasCount": 5,
+          "deltasCount": 3,
           "lastHoveredPath": "task_app/views/TaskApp",
           "lastHoveredId": "task_app/views/TaskApp",
           "observerInstalled": true
@@ -49,24 +41,24 @@
           "samples": 1,
           "domLatencyMs": {
             "n": 1,
-            "mean": 2.9000000953674316,
-            "p50": 2.9000000953674316,
-            "p99": 2.9000000953674316,
-            "max": 2.9000000953674316,
-            "min": 2.9000000953674316
+            "mean": 3.200000047683716,
+            "p50": 3.200000047683716,
+            "p99": 3.200000047683716,
+            "max": 3.200000047683716,
+            "min": 3.200000047683716
           },
           "rafLatencyMs": {
             "n": 1,
-            "mean": -4.29999992847479,
-            "p50": -4.29999992847479,
-            "p99": -4.29999992847479,
-            "max": -4.29999992847479,
-            "min": -4.29999992847479
+            "mean": -2.199999976158324,
+            "p50": -2.199999976158324,
+            "p99": -2.199999976158324,
+            "max": -2.199999976158324,
+            "min": -2.199999976158324
           }
         }
       },
       "scroll": {
-        "elapsedMs": 2367,
+        "elapsedMs": 2373,
         "etsBytes": 0,
         "etsPackets": 0,
         "etsBytesPerSec": 0,
@@ -74,13 +66,13 @@
         "delta": null
       },
       "massEdit": {
-        "elapsedMs": 2210,
+        "elapsedMs": 2208,
         "legacy": null,
         "delta": null,
         "deltaOpsHistory": []
       },
       "resize": {
-        "firstPaintLatencyMs": 21.299999952316284,
+        "firstPaintLatencyMs": 3.399999976158142,
         "firstPaintBytes": 760,
         "firstPaintType": "element-tree-delta",
         "legacy": null,
@@ -101,19 +93,19 @@
     "path": "legacy",
     "scenarios": {
       "idle": {
-        "elapsedMs": 5001,
+        "elapsedMs": 5000,
         "etsBytes": 0,
         "etsPackets": 0,
         "etsBytesPerSec": 0,
         "etsPacketsPerSec": 0,
-        "totalBytes": 4147,
-        "totalPackets": 143,
-        "totalBytesPerSec": 829.2341531693661,
+        "totalBytes": 4118,
+        "totalPackets": 142,
+        "totalBytesPerSec": 823.6,
         "legacy": null,
         "delta": null
       },
       "hover": {
-        "elapsedMs": 2330,
+        "elapsedMs": 2334,
         "etsBytes": 0,
         "etsPackets": 0,
         "etsBytesPerSec": 0,
@@ -131,24 +123,24 @@
           "samples": 1,
           "domLatencyMs": {
             "n": 1,
-            "mean": 3.5,
-            "p50": 3.5,
-            "p99": 3.5,
-            "max": 3.5,
-            "min": 3.5
+            "mean": 2.899999976158142,
+            "p50": 2.899999976158142,
+            "p99": 2.899999976158142,
+            "max": 2.899999976158142,
+            "min": 2.899999976158142
           },
           "rafLatencyMs": {
             "n": 1,
-            "mean": -3.551999928474288,
-            "p50": -3.551999928474288,
-            "p99": -3.551999928474288,
-            "max": -3.551999928474288,
-            "min": -3.551999928474288
+            "mean": -5.000000023841494,
+            "p50": -5.000000023841494,
+            "p99": -5.000000023841494,
+            "max": -5.000000023841494,
+            "min": -5.000000023841494
           }
         }
       },
       "scroll": {
-        "elapsedMs": 2372,
+        "elapsedMs": 2374,
         "etsBytes": 0,
         "etsPackets": 0,
         "etsBytesPerSec": 0,
@@ -156,13 +148,13 @@
         "delta": null
       },
       "massEdit": {
-        "elapsedMs": 2211,
+        "elapsedMs": 2209,
         "legacy": null,
         "delta": null,
         "deltaOpsHistory": []
       },
       "resize": {
-        "firstPaintLatencyMs": 15.899999976158142,
+        "firstPaintLatencyMs": 29.600000023841858,
         "firstPaintBytes": 1313,
         "firstPaintType": "element-tree",
         "legacy": {

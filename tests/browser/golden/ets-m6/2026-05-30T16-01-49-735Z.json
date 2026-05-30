@@ -1,0 +1,1759 @@
+{
+  "milestone": "ETS-M6",
+  "timestamp": "2026-05-30T16:01:49.735Z",
+  "backend": "cocoa",
+  "app": "task",
+  "approach": "B-with-resize-trigger",
+  "viewports": [
+    {
+      "viewport": "Phone",
+      "viewportSlug": "phone",
+      "canvasSize": {
+        "width": 390,
+        "height": 844
+      },
+      "stripHelloAccept": false,
+      "detectedPath": "delta",
+      "criteria": {
+        "bboxWithin1Px": true,
+        "medianLatencyMs": 0.9000000953674316,
+        "latencyGateMet": true,
+        "resizeReSnap": true,
+        "hitChainDispatch": true,
+        "backwardCompat": null
+      },
+      "samples": {
+        "hoverSamples": 7,
+        "latencyDomMedianMs": 0.9000000953674316,
+        "latencyDomP99Ms": 1.2000000476837158,
+        "hitChainHits": 8,
+        "hitChainAttempts": 8,
+        "bboxMaxDeltaPx": 1,
+        "bboxMatchCount": 8,
+        "bboxAttemptCount": 8,
+        "initialGeom": {
+          "canvasLeft": 735,
+          "canvasTop": 77,
+          "clientWidth": 390,
+          "clientHeight": 844,
+          "intrinsicWidth": 390,
+          "intrinsicHeight": 844,
+          "wrapperLeft": 292,
+          "wrapperTop": 76,
+          "wrapperWidth": 1276,
+          "wrapperHeight": 846
+        },
+        "initialManifest": {
+          "surfaceWidth": 1440,
+          "surfaceHeight": 900,
+          "elementCount": 9,
+          "elementPaths": [
+            "task_app/views/TaskApp",
+            "task_app/views/TaskInput",
+            "task_app/views/FilterBar",
+            "task_app/views/TaskList",
+            "task_app/views/SummaryBar",
+            "task_app/views/TaskCheckIcon",
+            "task_app/views/TaskRow#4",
+            "task_app/views/TaskRow#5",
+            "task_app/views/TaskRow#6"
+          ]
+        },
+        "bboxRows": [
+          {
+            "target": "task_app/views/TaskInput",
+            "click": "task_app/views/TaskInput",
+            "maxDeltaPx": 1,
+            "dL": 1,
+            "dT": 1,
+            "dW": 0,
+            "dH": 0,
+            "pass": true,
+            "outline": {
+              "left": 297,
+              "top": 89,
+              "width": 382,
+              "height": 56,
+              "styleLeft": "4px",
+              "styleTop": "12px",
+              "styleWidth": "382px",
+              "styleHeight": "56px"
+            },
+            "expected": {
+              "left": 296,
+              "top": 88,
+              "width": 382,
+              "height": 56
+            },
+            "clickBounds": {
+              "x": 4,
+              "y": 12,
+              "w": 382,
+              "h": 56
+            },
+            "geom": {
+              "canvasLeft": 735,
+              "canvasTop": 77,
+              "wrapperLeft": 292,
+              "wrapperTop": 76,
+              "sx": 1,
+              "sy": 1,
+              "intrinsicWidth": 390,
+              "intrinsicHeight": 844,
+              "clientWidth": 390,
+              "clientHeight": 844
+            }
+          },
+          {
+            "target": "task_app/views/FilterBar",
+            "click": "task_app/views/FilterBar",
+            "maxDeltaPx": 1,
+            "dL": 1,
+            "dT": 1,
+            "dW": 0,
+            "dH": 0,
+            "pass": true,
+            "outline": {
+              "left": 297,
+              "top": 145,
+              "width": 382,
+              "height": 44,
+              "styleLeft": "4px",
+              "styleTop": "68px",
+              "styleWidth": "382px",
+              "styleHeight": "44px"
+            },
+            "expected": {
+              "left": 296,
+              "top": 144,
+              "width": 382,
+              "height": 44
+            },
+            "clickBounds": {
+              "x": 4,
+              "y": 68,
+              "w": 382,
+              "h": 44
+            },
+            "geom": {
+              "canvasLeft": 735,
+              "canvasTop": 77,
+              "wrapperLeft": 292,
+              "wrapperTop": 76,
+              "sx": 1,
+              "sy": 1,
+              "intrinsicWidth": 390,
+              "intrinsicHeight": 844,
+              "clientWidth": 390,
+              "clientHeight": 844
+            }
+          },
+          {
+            "target": "task_app/views/TaskList",
+            "click": "task_app/views/TaskRow#5",
+            "maxDeltaPx": 1,
+            "dL": 1,
+            "dT": 1,
+            "dW": 0,
+            "dH": 0,
+            "pass": true,
+            "outline": {
+              "left": 301,
+              "top": 249,
+              "width": 374,
+              "height": 48,
+              "styleLeft": "8px",
+              "styleTop": "172px",
+              "styleWidth": "374px",
+              "styleHeight": "48px"
+            },
+            "expected": {
+              "left": 300,
+              "top": 248,
+              "width": 374,
+              "height": 48
+            },
+            "clickBounds": {
+              "x": 8,
+              "y": 172,
+              "w": 374,
+              "h": 48
+            },
+            "geom": {
+              "canvasLeft": 735,
+              "canvasTop": 77,
+              "wrapperLeft": 292,
+              "wrapperTop": 76,
+              "sx": 1,
+              "sy": 1,
+              "intrinsicWidth": 390,
+              "intrinsicHeight": 844,
+              "clientWidth": 390,
+              "clientHeight": 844
+            }
+          },
+          {
+            "target": "task_app/views/SummaryBar",
+            "click": "task_app/views/SummaryBar",
+            "maxDeltaPx": 1,
+            "dL": 1,
+            "dT": 1,
+            "dW": 0,
+            "dH": 0,
+            "pass": true,
+            "outline": {
+              "left": 297,
+              "top": 361,
+              "width": 382,
+              "height": 44,
+              "styleLeft": "4px",
+              "styleTop": "284px",
+              "styleWidth": "382px",
+              "styleHeight": "44px"
+            },
+            "expected": {
+              "left": 296,
+              "top": 360,
+              "width": 382,
+              "height": 44
+            },
+            "clickBounds": {
+              "x": 4,
+              "y": 284,
+              "w": 382,
+              "h": 44
+            },
+            "geom": {
+              "canvasLeft": 735,
+              "canvasTop": 77,
+              "wrapperLeft": 292,
+              "wrapperTop": 76,
+              "sx": 1,
+              "sy": 1,
+              "intrinsicWidth": 390,
+              "intrinsicHeight": 844,
+              "clientWidth": 390,
+              "clientHeight": 844
+            }
+          },
+          {
+            "target": "task_app/views/TaskCheckIcon",
+            "click": "task_app/views/SummaryBar",
+            "maxDeltaPx": 1,
+            "dL": 1,
+            "dT": 1,
+            "dW": 0,
+            "dH": 0,
+            "pass": true,
+            "outline": {
+              "left": 297,
+              "top": 361,
+              "width": 382,
+              "height": 44,
+              "styleLeft": "4px",
+              "styleTop": "284px",
+              "styleWidth": "382px",
+              "styleHeight": "44px"
+            },
+            "expected": {
+              "left": 296,
+              "top": 360,
+              "width": 382,
+              "height": 44
+            },
+            "clickBounds": {
+              "x": 4,
+              "y": 284,
+              "w": 382,
+              "h": 44
+            },
+            "geom": {
+              "canvasLeft": 735,
+              "canvasTop": 77,
+              "wrapperLeft": 292,
+              "wrapperTop": 76,
+              "sx": 1,
+              "sy": 1,
+              "intrinsicWidth": 390,
+              "intrinsicHeight": 844,
+              "clientWidth": 390,
+              "clientHeight": 844
+            }
+          },
+          {
+            "target": "task_app/views/TaskRow#4",
+            "click": "task_app/views/TaskRow#4",
+            "maxDeltaPx": 1,
+            "dL": 1,
+            "dT": 1,
+            "dW": 0,
+            "dH": 0,
+            "pass": true,
+            "outline": {
+              "left": 301,
+              "top": 201,
+              "width": 374,
+              "height": 48,
+              "styleLeft": "8px",
+              "styleTop": "124px",
+              "styleWidth": "374px",
+              "styleHeight": "48px"
+            },
+            "expected": {
+              "left": 300,
+              "top": 200,
+              "width": 374,
+              "height": 48
+            },
+            "clickBounds": {
+              "x": 8,
+              "y": 124,
+              "w": 374,
+              "h": 48
+            },
+            "geom": {
+              "canvasLeft": 735,
+              "canvasTop": 77,
+              "wrapperLeft": 292,
+              "wrapperTop": 76,
+              "sx": 1,
+              "sy": 1,
+              "intrinsicWidth": 390,
+              "intrinsicHeight": 844,
+              "clientWidth": 390,
+              "clientHeight": 844
+            }
+          },
+          {
+            "target": "task_app/views/TaskRow#5",
+            "click": "task_app/views/TaskRow#5",
+            "maxDeltaPx": 1,
+            "dL": 1,
+            "dT": 1,
+            "dW": 0,
+            "dH": 0,
+            "pass": true,
+            "outline": {
+              "left": 301,
+              "top": 249,
+              "width": 374,
+              "height": 48,
+              "styleLeft": "8px",
+              "styleTop": "172px",
+              "styleWidth": "374px",
+              "styleHeight": "48px"
+            },
+            "expected": {
+              "left": 300,
+              "top": 248,
+              "width": 374,
+              "height": 48
+            },
+            "clickBounds": {
+              "x": 8,
+              "y": 172,
+              "w": 374,
+              "h": 48
+            },
+            "geom": {
+              "canvasLeft": 735,
+              "canvasTop": 77,
+              "wrapperLeft": 292,
+              "wrapperTop": 76,
+              "sx": 1,
+              "sy": 1,
+              "intrinsicWidth": 390,
+              "intrinsicHeight": 844,
+              "clientWidth": 390,
+              "clientHeight": 844
+            }
+          },
+          {
+            "target": "task_app/views/TaskRow#6",
+            "click": "task_app/views/TaskRow#6",
+            "maxDeltaPx": 1,
+            "dL": 1,
+            "dT": 1,
+            "dW": 0,
+            "dH": 0,
+            "pass": true,
+            "outline": {
+              "left": 301,
+              "top": 297,
+              "width": 374,
+              "height": 48,
+              "styleLeft": "8px",
+              "styleTop": "220px",
+              "styleWidth": "374px",
+              "styleHeight": "48px"
+            },
+            "expected": {
+              "left": 300,
+              "top": 296,
+              "width": 374,
+              "height": 48
+            },
+            "clickBounds": {
+              "x": 8,
+              "y": 220,
+              "w": 374,
+              "h": 48
+            },
+            "geom": {
+              "canvasLeft": 735,
+              "canvasTop": 77,
+              "wrapperLeft": 292,
+              "wrapperTop": 76,
+              "sx": 1,
+              "sy": 1,
+              "intrinsicWidth": 390,
+              "intrinsicHeight": 844,
+              "clientWidth": 390,
+              "clientHeight": 844
+            }
+          }
+        ],
+        "rawLatencySamples": [
+          {
+            "seq": 11,
+            "moveT": 5203.700000047684,
+            "paintT": 5204.600000023842,
+            "anchor": "hover-label",
+            "domLatencyMs": 0.8999999761581421
+          },
+          {
+            "seq": 12,
+            "moveT": 5326.200000047684,
+            "paintT": 5327.400000095367,
+            "anchor": "hover-label",
+            "domLatencyMs": 1.2000000476837158
+          },
+          {
+            "seq": 13,
+            "moveT": 5449,
+            "paintT": 5449.900000095367,
+            "anchor": "hover-label",
+            "domLatencyMs": 0.9000000953674316
+          },
+          {
+            "seq": 14,
+            "moveT": 5573.100000023842,
+            "paintT": 5573.900000095367,
+            "anchor": "hover-label",
+            "domLatencyMs": 0.8000000715255737
+          },
+          {
+            "seq": 15,
+            "moveT": 5696.400000095367,
+            "paintT": 5697.200000047684,
+            "anchor": "hover-label",
+            "domLatencyMs": 0.7999999523162842
+          },
+          {
+            "seq": 16,
+            "moveT": 5821,
+            "paintT": 5821.900000095367,
+            "anchor": "hover-label",
+            "domLatencyMs": 0.9000000953674316
+          },
+          {
+            "seq": 17,
+            "moveT": 5945.5,
+            "paintT": 5946.400000095367,
+            "anchor": "hover-label",
+            "domLatencyMs": 0.9000000953674316
+          }
+        ],
+        "observerInstalled": true,
+        "resizeMaxDeltaPx": 1
+      },
+      "notes": []
+    },
+    {
+      "viewport": "Laptop",
+      "viewportSlug": "laptop",
+      "canvasSize": {
+        "width": 1280,
+        "height": 800
+      },
+      "stripHelloAccept": false,
+      "detectedPath": "delta",
+      "criteria": {
+        "bboxWithin1Px": true,
+        "medianLatencyMs": 0.8999999761581421,
+        "latencyGateMet": true,
+        "resizeReSnap": true,
+        "hitChainDispatch": true,
+        "backwardCompat": null
+      },
+      "samples": {
+        "hoverSamples": 7,
+        "latencyDomMedianMs": 0.8999999761581421,
+        "latencyDomP99Ms": 1.100000023841858,
+        "hitChainHits": 8,
+        "hitChainAttempts": 8,
+        "bboxMaxDeltaPx": 1,
+        "bboxMatchCount": 8,
+        "bboxAttemptCount": 8,
+        "initialGeom": {
+          "canvasLeft": 290,
+          "canvasTop": 77,
+          "clientWidth": 1280,
+          "clientHeight": 800,
+          "intrinsicWidth": 1280,
+          "intrinsicHeight": 800,
+          "wrapperLeft": 292,
+          "wrapperTop": 76,
+          "wrapperWidth": 1276,
+          "wrapperHeight": 802
+        },
+        "initialManifest": {
+          "surfaceWidth": 1440,
+          "surfaceHeight": 900,
+          "elementCount": 9,
+          "elementPaths": [
+            "task_app/views/TaskApp",
+            "task_app/views/TaskInput",
+            "task_app/views/FilterBar",
+            "task_app/views/TaskList",
+            "task_app/views/SummaryBar",
+            "task_app/views/TaskCheckIcon",
+            "task_app/views/TaskRow#4",
+            "task_app/views/TaskRow#5",
+            "task_app/views/TaskRow#6"
+          ]
+        },
+        "bboxRows": [
+          {
+            "target": "task_app/views/TaskInput",
+            "click": "task_app/views/TaskInput",
+            "maxDeltaPx": 1,
+            "dL": 1,
+            "dT": 1,
+            "dW": 0,
+            "dH": 0,
+            "pass": true,
+            "outline": {
+              "left": 869,
+              "top": 89,
+              "width": 700,
+              "height": 56,
+              "styleLeft": "576px",
+              "styleTop": "12px",
+              "styleWidth": "700px",
+              "styleHeight": "56px"
+            },
+            "expected": {
+              "left": 868,
+              "top": 88,
+              "width": 700,
+              "height": 56
+            },
+            "clickBounds": {
+              "x": 576,
+              "y": 12,
+              "w": 700,
+              "h": 56
+            },
+            "geom": {
+              "canvasLeft": 290,
+              "canvasTop": 77,
+              "wrapperLeft": 292,
+              "wrapperTop": 76,
+              "sx": 1,
+              "sy": 1,
+              "intrinsicWidth": 1280,
+              "intrinsicHeight": 800,
+              "clientWidth": 1280,
+              "clientHeight": 800
+            }
+          },
+          {
+            "target": "task_app/views/FilterBar",
+            "click": "task_app/views/FilterBar",
+            "maxDeltaPx": 1,
+            "dL": 1,
+            "dT": 1,
+            "dW": 0,
+            "dH": 0,
+            "pass": true,
+            "outline": {
+              "left": 869,
+              "top": 145,
+              "width": 700,
+              "height": 44,
+              "styleLeft": "576px",
+              "styleTop": "68px",
+              "styleWidth": "700px",
+              "styleHeight": "44px"
+            },
+            "expected": {
+              "left": 868,
+              "top": 144,
+              "width": 700,
+              "height": 44
+            },
+            "clickBounds": {
+              "x": 576,
+              "y": 68,
+              "w": 700,
+              "h": 44
+            },
+            "geom": {
+              "canvasLeft": 290,
+              "canvasTop": 77,
+              "wrapperLeft": 292,
+              "wrapperTop": 76,
+              "sx": 1,
+              "sy": 1,
+              "intrinsicWidth": 1280,
+              "intrinsicHeight": 800,
+              "clientWidth": 1280,
+              "clientHeight": 800
+            }
+          },
+          {
+            "target": "task_app/views/TaskList",
+            "click": "task_app/views/TaskRow#5",
+            "maxDeltaPx": 1,
+            "dL": 1,
+            "dT": 1,
+            "dW": 0,
+            "dH": 0,
+            "pass": true,
+            "outline": {
+              "left": 881,
+              "top": 249,
+              "width": 684,
+              "height": 48,
+              "styleLeft": "588px",
+              "styleTop": "172px",
+              "styleWidth": "684px",
+              "styleHeight": "48px"
+            },
+            "expected": {
+              "left": 880,
+              "top": 248,
+              "width": 684,
+              "height": 48
+            },
+            "clickBounds": {
+              "x": 588,
+              "y": 172,
+              "w": 684,
+              "h": 48
+            },
+            "geom": {
+              "canvasLeft": 290,
+              "canvasTop": 77,
+              "wrapperLeft": 292,
+              "wrapperTop": 76,
+              "sx": 1,
+              "sy": 1,
+              "intrinsicWidth": 1280,
+              "intrinsicHeight": 800,
+              "clientWidth": 1280,
+              "clientHeight": 800
+            }
+          },
+          {
+            "target": "task_app/views/SummaryBar",
+            "click": "task_app/views/SummaryBar",
+            "maxDeltaPx": 1,
+            "dL": 1,
+            "dT": 1,
+            "dW": 0,
+            "dH": 0,
+            "pass": true,
+            "outline": {
+              "left": 869,
+              "top": 361,
+              "width": 700,
+              "height": 44,
+              "styleLeft": "576px",
+              "styleTop": "284px",
+              "styleWidth": "700px",
+              "styleHeight": "44px"
+            },
+            "expected": {
+              "left": 868,
+              "top": 360,
+              "width": 700,
+              "height": 44
+            },
+            "clickBounds": {
+              "x": 576,
+              "y": 284,
+              "w": 700,
+              "h": 44
+            },
+            "geom": {
+              "canvasLeft": 290,
+              "canvasTop": 77,
+              "wrapperLeft": 292,
+              "wrapperTop": 76,
+              "sx": 1,
+              "sy": 1,
+              "intrinsicWidth": 1280,
+              "intrinsicHeight": 800,
+              "clientWidth": 1280,
+              "clientHeight": 800
+            }
+          },
+          {
+            "target": "task_app/views/TaskCheckIcon",
+            "click": "task_app/views/SummaryBar",
+            "maxDeltaPx": 1,
+            "dL": 1,
+            "dT": 1,
+            "dW": 0,
+            "dH": 0,
+            "pass": true,
+            "outline": {
+              "left": 869,
+              "top": 361,
+              "width": 700,
+              "height": 44,
+              "styleLeft": "576px",
+              "styleTop": "284px",
+              "styleWidth": "700px",
+              "styleHeight": "44px"
+            },
+            "expected": {
+              "left": 868,
+              "top": 360,
+              "width": 700,
+              "height": 44
+            },
+            "clickBounds": {
+              "x": 576,
+              "y": 284,
+              "w": 700,
+              "h": 44
+            },
+            "geom": {
+              "canvasLeft": 290,
+              "canvasTop": 77,
+              "wrapperLeft": 292,
+              "wrapperTop": 76,
+              "sx": 1,
+              "sy": 1,
+              "intrinsicWidth": 1280,
+              "intrinsicHeight": 800,
+              "clientWidth": 1280,
+              "clientHeight": 800
+            }
+          },
+          {
+            "target": "task_app/views/TaskRow#4",
+            "click": "task_app/views/TaskRow#4",
+            "maxDeltaPx": 1,
+            "dL": 1,
+            "dT": 1,
+            "dW": 0,
+            "dH": 0,
+            "pass": true,
+            "outline": {
+              "left": 881,
+              "top": 201,
+              "width": 684,
+              "height": 48,
+              "styleLeft": "588px",
+              "styleTop": "124px",
+              "styleWidth": "684px",
+              "styleHeight": "48px"
+            },
+            "expected": {
+              "left": 880,
+              "top": 200,
+              "width": 684,
+              "height": 48
+            },
+            "clickBounds": {
+              "x": 588,
+              "y": 124,
+              "w": 684,
+              "h": 48
+            },
+            "geom": {
+              "canvasLeft": 290,
+              "canvasTop": 77,
+              "wrapperLeft": 292,
+              "wrapperTop": 76,
+              "sx": 1,
+              "sy": 1,
+              "intrinsicWidth": 1280,
+              "intrinsicHeight": 800,
+              "clientWidth": 1280,
+              "clientHeight": 800
+            }
+          },
+          {
+            "target": "task_app/views/TaskRow#5",
+            "click": "task_app/views/TaskRow#5",
+            "maxDeltaPx": 1,
+            "dL": 1,
+            "dT": 1,
+            "dW": 0,
+            "dH": 0,
+            "pass": true,
+            "outline": {
+              "left": 881,
+              "top": 249,
+              "width": 684,
+              "height": 48,
+              "styleLeft": "588px",
+              "styleTop": "172px",
+              "styleWidth": "684px",
+              "styleHeight": "48px"
+            },
+            "expected": {
+              "left": 880,
+              "top": 248,
+              "width": 684,
+              "height": 48
+            },
+            "clickBounds": {
+              "x": 588,
+              "y": 172,
+              "w": 684,
+              "h": 48
+            },
+            "geom": {
+              "canvasLeft": 290,
+              "canvasTop": 77,
+              "wrapperLeft": 292,
+              "wrapperTop": 76,
+              "sx": 1,
+              "sy": 1,
+              "intrinsicWidth": 1280,
+              "intrinsicHeight": 800,
+              "clientWidth": 1280,
+              "clientHeight": 800
+            }
+          },
+          {
+            "target": "task_app/views/TaskRow#6",
+            "click": "task_app/views/TaskRow#6",
+            "maxDeltaPx": 1,
+            "dL": 1,
+            "dT": 1,
+            "dW": 0,
+            "dH": 0,
+            "pass": true,
+            "outline": {
+              "left": 881,
+              "top": 297,
+              "width": 684,
+              "height": 48,
+              "styleLeft": "588px",
+              "styleTop": "220px",
+              "styleWidth": "684px",
+              "styleHeight": "48px"
+            },
+            "expected": {
+              "left": 880,
+              "top": 296,
+              "width": 684,
+              "height": 48
+            },
+            "clickBounds": {
+              "x": 588,
+              "y": 220,
+              "w": 684,
+              "h": 48
+            },
+            "geom": {
+              "canvasLeft": 290,
+              "canvasTop": 77,
+              "wrapperLeft": 292,
+              "wrapperTop": 76,
+              "sx": 1,
+              "sy": 1,
+              "intrinsicWidth": 1280,
+              "intrinsicHeight": 800,
+              "clientWidth": 1280,
+              "clientHeight": 800
+            }
+          }
+        ],
+        "rawLatencySamples": [
+          {
+            "seq": 11,
+            "moveT": 4973.299999952316,
+            "paintT": 4974.399999976158,
+            "anchor": "hover-label",
+            "domLatencyMs": 1.100000023841858
+          },
+          {
+            "seq": 12,
+            "moveT": 5097.600000023842,
+            "paintT": 5098.5,
+            "anchor": "hover-label",
+            "domLatencyMs": 0.8999999761581421
+          },
+          {
+            "seq": 13,
+            "moveT": 5220.799999952316,
+            "paintT": 5221.799999952316,
+            "anchor": "hover-label",
+            "domLatencyMs": 1
+          },
+          {
+            "seq": 14,
+            "moveT": 5344.699999928474,
+            "paintT": 5345.699999928474,
+            "anchor": "hover-label",
+            "domLatencyMs": 1
+          },
+          {
+            "seq": 15,
+            "moveT": 5467.600000023842,
+            "paintT": 5468.5,
+            "anchor": "hover-label",
+            "domLatencyMs": 0.8999999761581421
+          },
+          {
+            "seq": 16,
+            "moveT": 5592,
+            "paintT": 5592.899999976158,
+            "anchor": "hover-label",
+            "domLatencyMs": 0.8999999761581421
+          },
+          {
+            "seq": 17,
+            "moveT": 5714.299999952316,
+            "paintT": 5715.100000023842,
+            "anchor": "hover-label",
+            "domLatencyMs": 0.8000000715255737
+          }
+        ],
+        "observerInstalled": true,
+        "resizeMaxDeltaPx": 1
+      },
+      "notes": []
+    },
+    {
+      "viewport": "Desktop",
+      "viewportSlug": "desktop",
+      "canvasSize": {
+        "width": 1440,
+        "height": 900
+      },
+      "stripHelloAccept": false,
+      "detectedPath": "delta",
+      "criteria": {
+        "bboxWithin1Px": true,
+        "medianLatencyMs": 0.9000000357627869,
+        "latencyGateMet": true,
+        "resizeReSnap": true,
+        "hitChainDispatch": true,
+        "backwardCompat": null
+      },
+      "samples": {
+        "hoverSamples": 6,
+        "latencyDomMedianMs": 0.9000000357627869,
+        "latencyDomP99Ms": 0.9000000953674316,
+        "hitChainHits": 7,
+        "hitChainAttempts": 7,
+        "bboxMaxDeltaPx": 1,
+        "bboxMatchCount": 7,
+        "bboxAttemptCount": 7,
+        "initialGeom": {
+          "canvasLeft": 210,
+          "canvasTop": 77,
+          "clientWidth": 1440,
+          "clientHeight": 900,
+          "intrinsicWidth": 1440,
+          "intrinsicHeight": 900,
+          "wrapperLeft": 292,
+          "wrapperTop": 76,
+          "wrapperWidth": 1276,
+          "wrapperHeight": 902
+        },
+        "initialManifest": {
+          "surfaceWidth": 1440,
+          "surfaceHeight": 900,
+          "elementCount": 9,
+          "elementPaths": [
+            "task_app/views/TaskApp",
+            "task_app/views/TaskInput",
+            "task_app/views/FilterBar",
+            "task_app/views/TaskList",
+            "task_app/views/SummaryBar",
+            "task_app/views/TaskCheckIcon",
+            "task_app/views/TaskRow#4",
+            "task_app/views/TaskRow#5",
+            "task_app/views/TaskRow#6"
+          ]
+        },
+        "bboxRows": [
+          {
+            "target": "task_app/views/TaskInput",
+            "click": "task_app/views/TaskInput",
+            "maxDeltaPx": 1,
+            "dL": 1,
+            "dT": 1,
+            "dW": 0,
+            "dH": 0,
+            "pass": true,
+            "outline": {
+              "left": 1029,
+              "top": 89,
+              "width": 700,
+              "height": 56,
+              "styleLeft": "736px",
+              "styleTop": "12px",
+              "styleWidth": "700px",
+              "styleHeight": "56px"
+            },
+            "expected": {
+              "left": 1028,
+              "top": 88,
+              "width": 700,
+              "height": 56
+            },
+            "clickBounds": {
+              "x": 736,
+              "y": 12,
+              "w": 700,
+              "h": 56
+            },
+            "geom": {
+              "canvasLeft": 210,
+              "canvasTop": 77,
+              "wrapperLeft": 292,
+              "wrapperTop": 76,
+              "sx": 1,
+              "sy": 1,
+              "intrinsicWidth": 1440,
+              "intrinsicHeight": 900,
+              "clientWidth": 1440,
+              "clientHeight": 900
+            }
+          },
+          {
+            "target": "task_app/views/FilterBar",
+            "click": "task_app/views/FilterBar",
+            "maxDeltaPx": 1,
+            "dL": 1,
+            "dT": 1,
+            "dW": 0,
+            "dH": 0,
+            "pass": true,
+            "outline": {
+              "left": 1029,
+              "top": 145,
+              "width": 700,
+              "height": 44,
+              "styleLeft": "736px",
+              "styleTop": "68px",
+              "styleWidth": "700px",
+              "styleHeight": "44px"
+            },
+            "expected": {
+              "left": 1028,
+              "top": 144,
+              "width": 700,
+              "height": 44
+            },
+            "clickBounds": {
+              "x": 736,
+              "y": 68,
+              "w": 700,
+              "h": 44
+            },
+            "geom": {
+              "canvasLeft": 210,
+              "canvasTop": 77,
+              "wrapperLeft": 292,
+              "wrapperTop": 76,
+              "sx": 1,
+              "sy": 1,
+              "intrinsicWidth": 1440,
+              "intrinsicHeight": 900,
+              "clientWidth": 1440,
+              "clientHeight": 900
+            }
+          },
+          {
+            "target": "task_app/views/TaskList",
+            "click": "task_app/views/TaskRow#5",
+            "maxDeltaPx": 1,
+            "dL": 1,
+            "dT": 1,
+            "dW": 0,
+            "dH": 0,
+            "pass": true,
+            "outline": {
+              "left": 1041,
+              "top": 249,
+              "width": 684,
+              "height": 48,
+              "styleLeft": "748px",
+              "styleTop": "172px",
+              "styleWidth": "684px",
+              "styleHeight": "48px"
+            },
+            "expected": {
+              "left": 1040,
+              "top": 248,
+              "width": 684,
+              "height": 48
+            },
+            "clickBounds": {
+              "x": 748,
+              "y": 172,
+              "w": 684,
+              "h": 48
+            },
+            "geom": {
+              "canvasLeft": 210,
+              "canvasTop": 77,
+              "wrapperLeft": 292,
+              "wrapperTop": 76,
+              "sx": 1,
+              "sy": 1,
+              "intrinsicWidth": 1440,
+              "intrinsicHeight": 900,
+              "clientWidth": 1440,
+              "clientHeight": 900
+            }
+          },
+          {
+            "target": "task_app/views/SummaryBar",
+            "click": "task_app/views/SummaryBar",
+            "maxDeltaPx": 1,
+            "dL": 1,
+            "dT": 1,
+            "dW": 0,
+            "dH": 0,
+            "pass": true,
+            "outline": {
+              "left": 1029,
+              "top": 361,
+              "width": 700,
+              "height": 44,
+              "styleLeft": "736px",
+              "styleTop": "284px",
+              "styleWidth": "700px",
+              "styleHeight": "44px"
+            },
+            "expected": {
+              "left": 1028,
+              "top": 360,
+              "width": 700,
+              "height": 44
+            },
+            "clickBounds": {
+              "x": 736,
+              "y": 284,
+              "w": 700,
+              "h": 44
+            },
+            "geom": {
+              "canvasLeft": 210,
+              "canvasTop": 77,
+              "wrapperLeft": 292,
+              "wrapperTop": 76,
+              "sx": 1,
+              "sy": 1,
+              "intrinsicWidth": 1440,
+              "intrinsicHeight": 900,
+              "clientWidth": 1440,
+              "clientHeight": 900
+            }
+          },
+          {
+            "target": "task_app/views/TaskRow#4",
+            "click": "task_app/views/TaskRow#4",
+            "maxDeltaPx": 1,
+            "dL": 1,
+            "dT": 1,
+            "dW": 0,
+            "dH": 0,
+            "pass": true,
+            "outline": {
+              "left": 1041,
+              "top": 201,
+              "width": 684,
+              "height": 48,
+              "styleLeft": "748px",
+              "styleTop": "124px",
+              "styleWidth": "684px",
+              "styleHeight": "48px"
+            },
+            "expected": {
+              "left": 1040,
+              "top": 200,
+              "width": 684,
+              "height": 48
+            },
+            "clickBounds": {
+              "x": 748,
+              "y": 124,
+              "w": 684,
+              "h": 48
+            },
+            "geom": {
+              "canvasLeft": 210,
+              "canvasTop": 77,
+              "wrapperLeft": 292,
+              "wrapperTop": 76,
+              "sx": 1,
+              "sy": 1,
+              "intrinsicWidth": 1440,
+              "intrinsicHeight": 900,
+              "clientWidth": 1440,
+              "clientHeight": 900
+            }
+          },
+          {
+            "target": "task_app/views/TaskRow#5",
+            "click": "task_app/views/TaskRow#5",
+            "maxDeltaPx": 1,
+            "dL": 1,
+            "dT": 1,
+            "dW": 0,
+            "dH": 0,
+            "pass": true,
+            "outline": {
+              "left": 1041,
+              "top": 249,
+              "width": 684,
+              "height": 48,
+              "styleLeft": "748px",
+              "styleTop": "172px",
+              "styleWidth": "684px",
+              "styleHeight": "48px"
+            },
+            "expected": {
+              "left": 1040,
+              "top": 248,
+              "width": 684,
+              "height": 48
+            },
+            "clickBounds": {
+              "x": 748,
+              "y": 172,
+              "w": 684,
+              "h": 48
+            },
+            "geom": {
+              "canvasLeft": 210,
+              "canvasTop": 77,
+              "wrapperLeft": 292,
+              "wrapperTop": 76,
+              "sx": 1,
+              "sy": 1,
+              "intrinsicWidth": 1440,
+              "intrinsicHeight": 900,
+              "clientWidth": 1440,
+              "clientHeight": 900
+            }
+          },
+          {
+            "target": "task_app/views/TaskRow#6",
+            "click": "task_app/views/TaskRow#6",
+            "maxDeltaPx": 1,
+            "dL": 1,
+            "dT": 1,
+            "dW": 0,
+            "dH": 0,
+            "pass": true,
+            "outline": {
+              "left": 1041,
+              "top": 297,
+              "width": 684,
+              "height": 48,
+              "styleLeft": "748px",
+              "styleTop": "220px",
+              "styleWidth": "684px",
+              "styleHeight": "48px"
+            },
+            "expected": {
+              "left": 1040,
+              "top": 296,
+              "width": 684,
+              "height": 48
+            },
+            "clickBounds": {
+              "x": 748,
+              "y": 220,
+              "w": 684,
+              "h": 48
+            },
+            "geom": {
+              "canvasLeft": 210,
+              "canvasTop": 77,
+              "wrapperLeft": 292,
+              "wrapperTop": 76,
+              "sx": 1,
+              "sy": 1,
+              "intrinsicWidth": 1440,
+              "intrinsicHeight": 900,
+              "clientWidth": 1440,
+              "clientHeight": 900
+            }
+          }
+        ],
+        "rawLatencySamples": [
+          {
+            "seq": 10,
+            "moveT": 4970.299999952316,
+            "paintT": 4971.200000047684,
+            "anchor": "hover-label",
+            "domLatencyMs": 0.9000000953674316
+          },
+          {
+            "seq": 11,
+            "moveT": 5094.5,
+            "paintT": 5095.399999976158,
+            "anchor": "hover-label",
+            "domLatencyMs": 0.8999999761581421
+          },
+          {
+            "seq": 12,
+            "moveT": 5216.899999976158,
+            "paintT": 5217.799999952316,
+            "anchor": "hover-label",
+            "domLatencyMs": 0.8999999761581421
+          },
+          {
+            "seq": 13,
+            "moveT": 5339.299999952316,
+            "paintT": 5340.200000047684,
+            "anchor": "hover-label",
+            "domLatencyMs": 0.9000000953674316
+          },
+          {
+            "seq": 14,
+            "moveT": 5463.299999952316,
+            "paintT": 5464.200000047684,
+            "anchor": "hover-label",
+            "domLatencyMs": 0.9000000953674316
+          },
+          {
+            "seq": 15,
+            "moveT": 5587.700000047684,
+            "paintT": 5588.600000023842,
+            "anchor": "hover-label",
+            "domLatencyMs": 0.8999999761581421
+          }
+        ],
+        "observerInstalled": true,
+        "resizeMaxDeltaPx": 1
+      },
+      "notes": []
+    }
+  ],
+  "backwardCompat": {
+    "viewport": "Laptop",
+    "canvasSize": {},
+    "stripHelloAccept": true,
+    "detectedPath": "legacy",
+    "criteria": {
+      "bboxWithin1Px": true,
+      "medianLatencyMs": 0.9000000357627869,
+      "latencyGateMet": true,
+      "resizeReSnap": true,
+      "hitChainDispatch": true,
+      "backwardCompat": true
+    },
+    "samples": {
+      "hoverSamples": 6,
+      "latencyDomMedianMs": 0.9000000357627869,
+      "latencyDomP99Ms": 1.2000000476837158,
+      "hitChainHits": 7,
+      "hitChainAttempts": 7,
+      "bboxMaxDeltaPx": 1,
+      "bboxMatchCount": 7,
+      "bboxAttemptCount": 7,
+      "initialGeom": {
+        "canvasLeft": 210,
+        "canvasTop": 77,
+        "clientWidth": 1440,
+        "clientHeight": 900,
+        "intrinsicWidth": 1440,
+        "intrinsicHeight": 900,
+        "wrapperLeft": 292,
+        "wrapperTop": 76,
+        "wrapperWidth": 1276,
+        "wrapperHeight": 902
+      },
+      "initialManifest": {
+        "surfaceWidth": 1440,
+        "surfaceHeight": 900,
+        "elementCount": 9,
+        "elementPaths": [
+          "task_app/views/TaskApp",
+          "task_app/views/TaskInput",
+          "task_app/views/FilterBar",
+          "task_app/views/TaskList",
+          "task_app/views/TaskRow#4",
+          "task_app/views/TaskRow#5",
+          "task_app/views/TaskRow#6",
+          "task_app/views/SummaryBar",
+          "task_app/views/TaskCheckIcon"
+        ]
+      },
+      "bboxRows": [
+        {
+          "target": "task_app/views/TaskInput",
+          "click": "task_app/views/TaskInput",
+          "maxDeltaPx": 1,
+          "dL": 1,
+          "dT": 1,
+          "dW": 0,
+          "dH": 0,
+          "pass": true,
+          "outline": {
+            "left": 1029,
+            "top": 89,
+            "width": 700,
+            "height": 56,
+            "styleLeft": "736px",
+            "styleTop": "12px",
+            "styleWidth": "700px",
+            "styleHeight": "56px"
+          },
+          "expected": {
+            "left": 1028,
+            "top": 88,
+            "width": 700,
+            "height": 56
+          },
+          "clickBounds": {
+            "x": 736,
+            "y": 12,
+            "w": 700,
+            "h": 56
+          },
+          "geom": {
+            "canvasLeft": 210,
+            "canvasTop": 77,
+            "wrapperLeft": 292,
+            "wrapperTop": 76,
+            "sx": 1,
+            "sy": 1,
+            "intrinsicWidth": 1440,
+            "intrinsicHeight": 900,
+            "clientWidth": 1440,
+            "clientHeight": 900
+          }
+        },
+        {
+          "target": "task_app/views/FilterBar",
+          "click": "task_app/views/FilterBar",
+          "maxDeltaPx": 1,
+          "dL": 1,
+          "dT": 1,
+          "dW": 0,
+          "dH": 0,
+          "pass": true,
+          "outline": {
+            "left": 1029,
+            "top": 145,
+            "width": 700,
+            "height": 44,
+            "styleLeft": "736px",
+            "styleTop": "68px",
+            "styleWidth": "700px",
+            "styleHeight": "44px"
+          },
+          "expected": {
+            "left": 1028,
+            "top": 144,
+            "width": 700,
+            "height": 44
+          },
+          "clickBounds": {
+            "x": 736,
+            "y": 68,
+            "w": 700,
+            "h": 44
+          },
+          "geom": {
+            "canvasLeft": 210,
+            "canvasTop": 77,
+            "wrapperLeft": 292,
+            "wrapperTop": 76,
+            "sx": 1,
+            "sy": 1,
+            "intrinsicWidth": 1440,
+            "intrinsicHeight": 900,
+            "clientWidth": 1440,
+            "clientHeight": 900
+          }
+        },
+        {
+          "target": "task_app/views/TaskList",
+          "click": "task_app/views/TaskRow#5",
+          "maxDeltaPx": 1,
+          "dL": 1,
+          "dT": 1,
+          "dW": 0,
+          "dH": 0,
+          "pass": true,
+          "outline": {
+            "left": 1041,
+            "top": 249,
+            "width": 684,
+            "height": 48,
+            "styleLeft": "748px",
+            "styleTop": "172px",
+            "styleWidth": "684px",
+            "styleHeight": "48px"
+          },
+          "expected": {
+            "left": 1040,
+            "top": 248,
+            "width": 684,
+            "height": 48
+          },
+          "clickBounds": {
+            "x": 748,
+            "y": 172,
+            "w": 684,
+            "h": 48
+          },
+          "geom": {
+            "canvasLeft": 210,
+            "canvasTop": 77,
+            "wrapperLeft": 292,
+            "wrapperTop": 76,
+            "sx": 1,
+            "sy": 1,
+            "intrinsicWidth": 1440,
+            "intrinsicHeight": 900,
+            "clientWidth": 1440,
+            "clientHeight": 900
+          }
+        },
+        {
+          "target": "task_app/views/TaskRow#4",
+          "click": "task_app/views/TaskRow#4",
+          "maxDeltaPx": 1,
+          "dL": 1,
+          "dT": 1,
+          "dW": 0,
+          "dH": 0,
+          "pass": true,
+          "outline": {
+            "left": 1041,
+            "top": 201,
+            "width": 684,
+            "height": 48,
+            "styleLeft": "748px",
+            "styleTop": "124px",
+            "styleWidth": "684px",
+            "styleHeight": "48px"
+          },
+          "expected": {
+            "left": 1040,
+            "top": 200,
+            "width": 684,
+            "height": 48
+          },
+          "clickBounds": {
+            "x": 748,
+            "y": 124,
+            "w": 684,
+            "h": 48
+          },
+          "geom": {
+            "canvasLeft": 210,
+            "canvasTop": 77,
+            "wrapperLeft": 292,
+            "wrapperTop": 76,
+            "sx": 1,
+            "sy": 1,
+            "intrinsicWidth": 1440,
+            "intrinsicHeight": 900,
+            "clientWidth": 1440,
+            "clientHeight": 900
+          }
+        },
+        {
+          "target": "task_app/views/TaskRow#5",
+          "click": "task_app/views/TaskRow#5",
+          "maxDeltaPx": 1,
+          "dL": 1,
+          "dT": 1,
+          "dW": 0,
+          "dH": 0,
+          "pass": true,
+          "outline": {
+            "left": 1041,
+            "top": 249,
+            "width": 684,
+            "height": 48,
+            "styleLeft": "748px",
+            "styleTop": "172px",
+            "styleWidth": "684px",
+            "styleHeight": "48px"
+          },
+          "expected": {
+            "left": 1040,
+            "top": 248,
+            "width": 684,
+            "height": 48
+          },
+          "clickBounds": {
+            "x": 748,
+            "y": 172,
+            "w": 684,
+            "h": 48
+          },
+          "geom": {
+            "canvasLeft": 210,
+            "canvasTop": 77,
+            "wrapperLeft": 292,
+            "wrapperTop": 76,
+            "sx": 1,
+            "sy": 1,
+            "intrinsicWidth": 1440,
+            "intrinsicHeight": 900,
+            "clientWidth": 1440,
+            "clientHeight": 900
+          }
+        },
+        {
+          "target": "task_app/views/TaskRow#6",
+          "click": "task_app/views/TaskRow#6",
+          "maxDeltaPx": 1,
+          "dL": 1,
+          "dT": 1,
+          "dW": 0,
+          "dH": 0,
+          "pass": true,
+          "outline": {
+            "left": 1041,
+            "top": 297,
+            "width": 684,
+            "height": 48,
+            "styleLeft": "748px",
+            "styleTop": "220px",
+            "styleWidth": "684px",
+            "styleHeight": "48px"
+          },
+          "expected": {
+            "left": 1040,
+            "top": 296,
+            "width": 684,
+            "height": 48
+          },
+          "clickBounds": {
+            "x": 748,
+            "y": 220,
+            "w": 684,
+            "h": 48
+          },
+          "geom": {
+            "canvasLeft": 210,
+            "canvasTop": 77,
+            "wrapperLeft": 292,
+            "wrapperTop": 76,
+            "sx": 1,
+            "sy": 1,
+            "intrinsicWidth": 1440,
+            "intrinsicHeight": 900,
+            "clientWidth": 1440,
+            "clientHeight": 900
+          }
+        },
+        {
+          "target": "task_app/views/SummaryBar",
+          "click": "task_app/views/SummaryBar",
+          "maxDeltaPx": 1,
+          "dL": 1,
+          "dT": 1,
+          "dW": 0,
+          "dH": 0,
+          "pass": true,
+          "outline": {
+            "left": 1029,
+            "top": 361,
+            "width": 700,
+            "height": 44,
+            "styleLeft": "736px",
+            "styleTop": "284px",
+            "styleWidth": "700px",
+            "styleHeight": "44px"
+          },
+          "expected": {
+            "left": 1028,
+            "top": 360,
+            "width": 700,
+            "height": 44
+          },
+          "clickBounds": {
+            "x": 736,
+            "y": 284,
+            "w": 700,
+            "h": 44
+          },
+          "geom": {
+            "canvasLeft": 210,
+            "canvasTop": 77,
+            "wrapperLeft": 292,
+            "wrapperTop": 76,
+            "sx": 1,
+            "sy": 1,
+            "intrinsicWidth": 1440,
+            "intrinsicHeight": 900,
+            "clientWidth": 1440,
+            "clientHeight": 900
+          }
+        }
+      ],
+      "rawLatencySamples": [
+        {
+          "seq": 10,
+          "moveT": 3479.0999999046326,
+          "paintT": 3480.2999999523163,
+          "anchor": "hover-label",
+          "domLatencyMs": 1.2000000476837158
+        },
+        {
+          "seq": 11,
+          "moveT": 3603.899999976158,
+          "paintT": 3604.6999999284744,
+          "anchor": "hover-label",
+          "domLatencyMs": 0.7999999523162842
+        },
+        {
+          "seq": 12,
+          "moveT": 3728,
+          "paintT": 3729.1999999284744,
+          "anchor": "hover-label",
+          "domLatencyMs": 1.1999999284744263
+        },
+        {
+          "seq": 13,
+          "moveT": 3852.1999999284744,
+          "paintT": 3853.0999999046326,
+          "anchor": "hover-label",
+          "domLatencyMs": 0.8999999761581421
+        },
+        {
+          "seq": 14,
+          "moveT": 3974.6999999284744,
+          "paintT": 3975.5999999046326,
+          "anchor": "hover-label",
+          "domLatencyMs": 0.8999999761581421
+        },
+        {
+          "seq": 15,
+          "moveT": 4098.099999904633,
+          "paintT": 4099,
+          "anchor": "hover-label",
+          "domLatencyMs": 0.9000000953674316
+        }
+      ],
+      "observerInstalled": true,
+      "resizeMaxDeltaPx": 1
+    },
+    "notes": ["viewport pill \"undefined\" not found in chrome bar"]
+  }
+}
