@@ -1,0 +1,1115 @@
+{
+  "campaign": "FUH-M8",
+  "timestamp": "2026-05-30T18:52:12.944Z",
+  "specCommit": "5955d182b86e39eaa4ff3e21dd2f700c54ab955a",
+  "platform": "darwin-arm64",
+  "thresholds": {
+    "medianFrameLatencyMs": 50,
+    "idleMedianPacketBytes": 512,
+    "clickResponseMs": 33,
+    "hoverOverlayMs": 16,
+    "dprDriftPx": 1,
+    "losslessMinUniqueColors": 2,
+    "losslessMinNonGreyRatio": 0.0625
+  },
+  "cells": [
+    {
+      "backend": "gpui",
+      "app": "task_app",
+      "viewport": "Phone",
+      "measurements": {
+        "backend": "gpui",
+        "app": "task_app",
+        "viewport": "Phone",
+        "expectedTransport": "f/rgba",
+        "transportSettled": true,
+        "settledTransport": "f/rgba",
+        "pickedStory": "Task App / Pages/Inbox",
+        "storyPickFailed": false,
+        "diagnostic": ""
+      },
+      "criteria": {
+        "frameLatencyMs": {
+          "measured": 35.39999997615814,
+          "threshold": 50,
+          "pass": true,
+          "na": false,
+          "note": "samples=100 p99=195.40ms "
+        },
+        "idleBandwidthBytes": {
+          "measured": null,
+          "threshold": 512,
+          "pass": true,
+          "na": true,
+          "note": "N/A (raw_rgba transport)"
+        },
+        "clickResponseMs": {
+          "measured": 60.39999997615814,
+          "threshold": 33,
+          "pass": false,
+          "na": false,
+          "note": "target=rect-center focusOk=true bodyMarker=true"
+        },
+        "hoverOverlayMs": {
+          "measured": null,
+          "threshold": 16,
+          "pass": false,
+          "na": false,
+          "note": "samples=0 p99=<inf> — no hover targets"
+        },
+        "dprDriftPx": {
+          "measured": 0,
+          "threshold": 1,
+          "pass": true,
+          "na": false,
+          "note": "drift w=0.00px h=0.00px (intrinsic=390x844, rect=390.0x844.0, dpr=1)"
+        },
+        "losslessUniqueColors": {
+          "measured": null,
+          "threshold": 2,
+          "pass": true,
+          "na": true,
+          "note": "N/A (raw_rgba transport)"
+        }
+      },
+      "verdict": "fail"
+    },
+    {
+      "backend": "gpui",
+      "app": "task_app",
+      "viewport": "Laptop",
+      "measurements": {
+        "backend": "gpui",
+        "app": "task_app",
+        "viewport": "Laptop",
+        "expectedTransport": "f/rgba",
+        "transportSettled": true,
+        "settledTransport": "f/rgba",
+        "pickedStory": "Task App / Pages/Inbox",
+        "storyPickFailed": false,
+        "diagnostic": ""
+      },
+      "criteria": {
+        "frameLatencyMs": {
+          "measured": 55,
+          "threshold": 50,
+          "pass": false,
+          "na": false,
+          "note": "samples=100 p99=272.20ms "
+        },
+        "idleBandwidthBytes": {
+          "measured": null,
+          "threshold": 512,
+          "pass": true,
+          "na": true,
+          "note": "N/A (raw_rgba transport)"
+        },
+        "clickResponseMs": {
+          "measured": 120.39999997615814,
+          "threshold": 33,
+          "pass": false,
+          "na": false,
+          "note": "target=rect-center focusOk=true bodyMarker=true"
+        },
+        "hoverOverlayMs": {
+          "measured": 1.100000023841858,
+          "threshold": 16,
+          "pass": true,
+          "na": false,
+          "note": "samples=2 p99=1.2ms"
+        },
+        "dprDriftPx": {
+          "measured": 0,
+          "threshold": 1,
+          "pass": true,
+          "na": false,
+          "note": "drift w=0.00px h=0.00px (intrinsic=1280x800, rect=1280.0x800.0, dpr=1)"
+        },
+        "losslessUniqueColors": {
+          "measured": null,
+          "threshold": 2,
+          "pass": true,
+          "na": true,
+          "note": "N/A (raw_rgba transport)"
+        }
+      },
+      "verdict": "fail"
+    },
+    {
+      "backend": "gpui",
+      "app": "task_app",
+      "viewport": "Desktop",
+      "measurements": {
+        "backend": "gpui",
+        "app": "task_app",
+        "viewport": "Desktop",
+        "expectedTransport": "f/rgba",
+        "transportSettled": true,
+        "settledTransport": "f/rgba",
+        "pickedStory": "Task App / Pages/Inbox",
+        "storyPickFailed": false,
+        "diagnostic": ""
+      },
+      "criteria": {
+        "frameLatencyMs": {
+          "measured": 58.89999997615814,
+          "threshold": 50,
+          "pass": false,
+          "na": false,
+          "note": "samples=100 p99=289.70ms "
+        },
+        "idleBandwidthBytes": {
+          "measured": null,
+          "threshold": 512,
+          "pass": true,
+          "na": true,
+          "note": "N/A (raw_rgba transport)"
+        },
+        "clickResponseMs": {
+          "measured": 129.79999995231628,
+          "threshold": 33,
+          "pass": false,
+          "na": false,
+          "note": "target=rect-center focusOk=true bodyMarker=true"
+        },
+        "hoverOverlayMs": {
+          "measured": 1,
+          "threshold": 16,
+          "pass": true,
+          "na": false,
+          "note": "samples=2 p99=1.0ms"
+        },
+        "dprDriftPx": {
+          "measured": 0,
+          "threshold": 1,
+          "pass": true,
+          "na": false,
+          "note": "drift w=0.00px h=0.00px (intrinsic=1440x900, rect=1440.0x900.0, dpr=1)"
+        },
+        "losslessUniqueColors": {
+          "measured": null,
+          "threshold": 2,
+          "pass": true,
+          "na": true,
+          "note": "N/A (raw_rgba transport)"
+        }
+      },
+      "verdict": "fail"
+    },
+    {
+      "backend": "gpui",
+      "app": "settings_app",
+      "viewport": "Phone",
+      "measurements": {
+        "backend": "gpui",
+        "app": "settings_app",
+        "viewport": "Phone",
+        "expectedTransport": "f/rgba",
+        "transportSettled": true,
+        "settledTransport": "f/rgba",
+        "pickedStory": "Settings App / Pages/Preferences",
+        "storyPickFailed": false,
+        "diagnostic": ""
+      },
+      "criteria": {
+        "frameLatencyMs": {
+          "measured": 35.5,
+          "threshold": 50,
+          "pass": true,
+          "na": false,
+          "note": "samples=100 p99=293.90ms "
+        },
+        "idleBandwidthBytes": {
+          "measured": null,
+          "threshold": 512,
+          "pass": true,
+          "na": true,
+          "note": "N/A (raw_rgba transport)"
+        },
+        "clickResponseMs": {
+          "measured": null,
+          "threshold": 33,
+          "pass": false,
+          "na": false,
+          "note": "target=rect-center-fallback focusOk=true bodyMarker=true"
+        },
+        "hoverOverlayMs": {
+          "measured": null,
+          "threshold": 16,
+          "pass": false,
+          "na": false,
+          "note": "samples=0 p99=<inf> — no hover targets"
+        },
+        "dprDriftPx": {
+          "measured": 0,
+          "threshold": 1,
+          "pass": true,
+          "na": false,
+          "note": "drift w=0.00px h=0.00px (intrinsic=390x844, rect=390.0x844.0, dpr=1)"
+        },
+        "losslessUniqueColors": {
+          "measured": null,
+          "threshold": 2,
+          "pass": true,
+          "na": true,
+          "note": "N/A (raw_rgba transport)"
+        }
+      },
+      "verdict": "fail"
+    },
+    {
+      "backend": "gpui",
+      "app": "settings_app",
+      "viewport": "Laptop",
+      "measurements": {
+        "backend": "gpui",
+        "app": "settings_app",
+        "viewport": "Laptop",
+        "expectedTransport": "f/rgba",
+        "transportSettled": true,
+        "settledTransport": "f/rgba",
+        "pickedStory": "Settings App / Pages/Preferences",
+        "storyPickFailed": false,
+        "diagnostic": ""
+      },
+      "criteria": {
+        "frameLatencyMs": {
+          "measured": 53.200000047683716,
+          "threshold": 50,
+          "pass": false,
+          "na": false,
+          "note": "samples=100 p99=327.70ms "
+        },
+        "idleBandwidthBytes": {
+          "measured": null,
+          "threshold": 512,
+          "pass": true,
+          "na": true,
+          "note": "N/A (raw_rgba transport)"
+        },
+        "clickResponseMs": {
+          "measured": null,
+          "threshold": 33,
+          "pass": false,
+          "na": false,
+          "note": "target=manifest focusOk=true bodyMarker=true"
+        },
+        "hoverOverlayMs": {
+          "measured": 1,
+          "threshold": 16,
+          "pass": true,
+          "na": false,
+          "note": "samples=1 p99=1.0ms"
+        },
+        "dprDriftPx": {
+          "measured": 0,
+          "threshold": 1,
+          "pass": true,
+          "na": false,
+          "note": "drift w=0.00px h=0.00px (intrinsic=1280x800, rect=1280.0x800.0, dpr=1)"
+        },
+        "losslessUniqueColors": {
+          "measured": null,
+          "threshold": 2,
+          "pass": true,
+          "na": true,
+          "note": "N/A (raw_rgba transport)"
+        }
+      },
+      "verdict": "fail"
+    },
+    {
+      "backend": "gpui",
+      "app": "settings_app",
+      "viewport": "Desktop",
+      "measurements": {
+        "backend": "gpui",
+        "app": "settings_app",
+        "viewport": "Desktop",
+        "expectedTransport": "f/rgba",
+        "transportSettled": true,
+        "settledTransport": "f/rgba",
+        "pickedStory": "Settings App / Pages/Preferences",
+        "storyPickFailed": false,
+        "diagnostic": ""
+      },
+      "criteria": {
+        "frameLatencyMs": {
+          "measured": 58.700000047683716,
+          "threshold": 50,
+          "pass": false,
+          "na": false,
+          "note": "samples=100 p99=207.50ms "
+        },
+        "idleBandwidthBytes": {
+          "measured": null,
+          "threshold": 512,
+          "pass": true,
+          "na": true,
+          "note": "N/A (raw_rgba transport)"
+        },
+        "clickResponseMs": {
+          "measured": null,
+          "threshold": 33,
+          "pass": false,
+          "na": false,
+          "note": "target=manifest focusOk=true bodyMarker=true"
+        },
+        "hoverOverlayMs": {
+          "measured": 0.9500000476837158,
+          "threshold": 16,
+          "pass": true,
+          "na": false,
+          "note": "samples=2 p99=1.0ms"
+        },
+        "dprDriftPx": {
+          "measured": 0,
+          "threshold": 1,
+          "pass": true,
+          "na": false,
+          "note": "drift w=0.00px h=0.00px (intrinsic=1440x900, rect=1440.0x900.0, dpr=1)"
+        },
+        "losslessUniqueColors": {
+          "measured": null,
+          "threshold": 2,
+          "pass": true,
+          "na": true,
+          "note": "N/A (raw_rgba transport)"
+        }
+      },
+      "verdict": "fail"
+    },
+    {
+      "backend": "freya",
+      "app": "task_app",
+      "viewport": "Phone",
+      "measurements": {
+        "backend": "freya",
+        "app": "task_app",
+        "viewport": "Phone",
+        "expectedTransport": "f/rgba",
+        "transportSettled": true,
+        "settledTransport": "f/rgba",
+        "pickedStory": "Task App / Pages/Inbox",
+        "storyPickFailed": false,
+        "diagnostic": ""
+      },
+      "criteria": {
+        "frameLatencyMs": {
+          "measured": 35.5,
+          "threshold": 50,
+          "pass": true,
+          "na": false,
+          "note": "samples=100 p99=149.50ms "
+        },
+        "idleBandwidthBytes": {
+          "measured": null,
+          "threshold": 512,
+          "pass": true,
+          "na": true,
+          "note": "N/A (raw_rgba transport)"
+        },
+        "clickResponseMs": {
+          "measured": null,
+          "threshold": 33,
+          "pass": false,
+          "na": false,
+          "note": "target=rect-center focusOk=true bodyMarker=true"
+        },
+        "hoverOverlayMs": {
+          "measured": null,
+          "threshold": 16,
+          "pass": false,
+          "na": false,
+          "note": "samples=0 p99=<inf> — no hover targets"
+        },
+        "dprDriftPx": {
+          "measured": 0,
+          "threshold": 1,
+          "pass": true,
+          "na": false,
+          "note": "drift w=0.00px h=0.00px (intrinsic=390x844, rect=390.0x844.0, dpr=1)"
+        },
+        "losslessUniqueColors": {
+          "measured": null,
+          "threshold": 2,
+          "pass": true,
+          "na": true,
+          "note": "N/A (raw_rgba transport)"
+        }
+      },
+      "verdict": "fail"
+    },
+    {
+      "backend": "freya",
+      "app": "task_app",
+      "viewport": "Laptop",
+      "measurements": {
+        "backend": "freya",
+        "app": "task_app",
+        "viewport": "Laptop",
+        "expectedTransport": "f/rgba",
+        "transportSettled": true,
+        "settledTransport": "f/rgba",
+        "pickedStory": "Task App / Pages/Inbox",
+        "storyPickFailed": false,
+        "diagnostic": ""
+      },
+      "criteria": {
+        "frameLatencyMs": {
+          "measured": 34.800000071525574,
+          "threshold": 50,
+          "pass": true,
+          "na": false,
+          "note": "samples=100 p99=36.90ms "
+        },
+        "idleBandwidthBytes": {
+          "measured": null,
+          "threshold": 512,
+          "pass": true,
+          "na": true,
+          "note": "N/A (raw_rgba transport)"
+        },
+        "clickResponseMs": {
+          "measured": null,
+          "threshold": 33,
+          "pass": false,
+          "na": false,
+          "note": "target=rect-center focusOk=true bodyMarker=true"
+        },
+        "hoverOverlayMs": {
+          "measured": 1.050000011920929,
+          "threshold": 16,
+          "pass": true,
+          "na": false,
+          "note": "samples=4 p99=1.3ms"
+        },
+        "dprDriftPx": {
+          "measured": 0,
+          "threshold": 1,
+          "pass": true,
+          "na": false,
+          "note": "drift w=0.00px h=0.00px (intrinsic=1280x800, rect=1280.0x800.0, dpr=1)"
+        },
+        "losslessUniqueColors": {
+          "measured": null,
+          "threshold": 2,
+          "pass": true,
+          "na": true,
+          "note": "N/A (raw_rgba transport)"
+        }
+      },
+      "verdict": "fail"
+    },
+    {
+      "backend": "freya",
+      "app": "task_app",
+      "viewport": "Desktop",
+      "measurements": {
+        "backend": "freya",
+        "app": "task_app",
+        "viewport": "Desktop",
+        "expectedTransport": "f/rgba",
+        "transportSettled": true,
+        "settledTransport": "f/rgba",
+        "pickedStory": "Task App / Pages/Inbox",
+        "storyPickFailed": false,
+        "diagnostic": ""
+      },
+      "criteria": {
+        "frameLatencyMs": {
+          "measured": 38.10000002384186,
+          "threshold": 50,
+          "pass": true,
+          "na": false,
+          "note": "samples=100 p99=39.20ms "
+        },
+        "idleBandwidthBytes": {
+          "measured": null,
+          "threshold": 512,
+          "pass": true,
+          "na": true,
+          "note": "N/A (raw_rgba transport)"
+        },
+        "clickResponseMs": {
+          "measured": null,
+          "threshold": 33,
+          "pass": false,
+          "na": false,
+          "note": "target=rect-center focusOk=true bodyMarker=true"
+        },
+        "hoverOverlayMs": {
+          "measured": 1,
+          "threshold": 16,
+          "pass": true,
+          "na": false,
+          "note": "samples=4 p99=1.0ms"
+        },
+        "dprDriftPx": {
+          "measured": 0,
+          "threshold": 1,
+          "pass": true,
+          "na": false,
+          "note": "drift w=0.00px h=0.00px (intrinsic=1440x900, rect=1440.0x900.0, dpr=1)"
+        },
+        "losslessUniqueColors": {
+          "measured": null,
+          "threshold": 2,
+          "pass": true,
+          "na": true,
+          "note": "N/A (raw_rgba transport)"
+        }
+      },
+      "verdict": "fail"
+    },
+    {
+      "backend": "freya",
+      "app": "settings_app",
+      "viewport": "Phone",
+      "measurements": {
+        "backend": "freya",
+        "app": "settings_app",
+        "viewport": "Phone",
+        "expectedTransport": "f/rgba",
+        "transportSettled": true,
+        "settledTransport": "f/rgba",
+        "pickedStory": "Settings App / Pages/Preferences",
+        "storyPickFailed": false,
+        "diagnostic": ""
+      },
+      "criteria": {
+        "frameLatencyMs": {
+          "measured": 35.200000047683716,
+          "threshold": 50,
+          "pass": true,
+          "na": false,
+          "note": "samples=100 p99=42.90ms "
+        },
+        "idleBandwidthBytes": {
+          "measured": null,
+          "threshold": 512,
+          "pass": true,
+          "na": true,
+          "note": "N/A (raw_rgba transport)"
+        },
+        "clickResponseMs": {
+          "measured": null,
+          "threshold": 33,
+          "pass": false,
+          "na": false,
+          "note": "target=rect-center-fallback focusOk=true bodyMarker=true"
+        },
+        "hoverOverlayMs": {
+          "measured": null,
+          "threshold": 16,
+          "pass": false,
+          "na": false,
+          "note": "samples=0 p99=<inf> — no hover targets"
+        },
+        "dprDriftPx": {
+          "measured": 0,
+          "threshold": 1,
+          "pass": true,
+          "na": false,
+          "note": "drift w=0.00px h=0.00px (intrinsic=390x844, rect=390.0x844.0, dpr=1)"
+        },
+        "losslessUniqueColors": {
+          "measured": null,
+          "threshold": 2,
+          "pass": true,
+          "na": true,
+          "note": "N/A (raw_rgba transport)"
+        }
+      },
+      "verdict": "fail"
+    },
+    {
+      "backend": "freya",
+      "app": "settings_app",
+      "viewport": "Laptop",
+      "measurements": {
+        "backend": "freya",
+        "app": "settings_app",
+        "viewport": "Laptop",
+        "expectedTransport": "f/rgba",
+        "transportSettled": true,
+        "settledTransport": "f/rgba",
+        "pickedStory": "Settings App / Pages/Preferences",
+        "storyPickFailed": false,
+        "diagnostic": ""
+      },
+      "criteria": {
+        "frameLatencyMs": {
+          "measured": 36.10000002384186,
+          "threshold": 50,
+          "pass": true,
+          "na": false,
+          "note": "samples=100 p99=37.90ms "
+        },
+        "idleBandwidthBytes": {
+          "measured": null,
+          "threshold": 512,
+          "pass": true,
+          "na": true,
+          "note": "N/A (raw_rgba transport)"
+        },
+        "clickResponseMs": {
+          "measured": null,
+          "threshold": 33,
+          "pass": false,
+          "na": false,
+          "note": "target=manifest focusOk=true bodyMarker=true"
+        },
+        "hoverOverlayMs": {
+          "measured": 2.5,
+          "threshold": 16,
+          "pass": true,
+          "na": false,
+          "note": "samples=1 p99=2.5ms"
+        },
+        "dprDriftPx": {
+          "measured": 0,
+          "threshold": 1,
+          "pass": true,
+          "na": false,
+          "note": "drift w=0.00px h=0.00px (intrinsic=1280x800, rect=1280.0x800.0, dpr=1)"
+        },
+        "losslessUniqueColors": {
+          "measured": null,
+          "threshold": 2,
+          "pass": true,
+          "na": true,
+          "note": "N/A (raw_rgba transport)"
+        }
+      },
+      "verdict": "fail"
+    },
+    {
+      "backend": "freya",
+      "app": "settings_app",
+      "viewport": "Desktop",
+      "measurements": {
+        "backend": "freya",
+        "app": "settings_app",
+        "viewport": "Desktop",
+        "expectedTransport": "f/rgba",
+        "transportSettled": true,
+        "settledTransport": "f/rgba",
+        "pickedStory": "Settings App / Pages/Preferences",
+        "storyPickFailed": false,
+        "diagnostic": ""
+      },
+      "criteria": {
+        "frameLatencyMs": {
+          "measured": 39.60000002384186,
+          "threshold": 50,
+          "pass": true,
+          "na": false,
+          "note": "samples=100 p99=40.60ms "
+        },
+        "idleBandwidthBytes": {
+          "measured": null,
+          "threshold": 512,
+          "pass": true,
+          "na": true,
+          "note": "N/A (raw_rgba transport)"
+        },
+        "clickResponseMs": {
+          "measured": null,
+          "threshold": 33,
+          "pass": false,
+          "na": false,
+          "note": "target=manifest focusOk=true bodyMarker=true"
+        },
+        "hoverOverlayMs": {
+          "measured": 1.100000023841858,
+          "threshold": 16,
+          "pass": true,
+          "na": false,
+          "note": "samples=2 p99=1.2ms"
+        },
+        "dprDriftPx": {
+          "measured": 0,
+          "threshold": 1,
+          "pass": true,
+          "na": false,
+          "note": "drift w=0.00px h=0.00px (intrinsic=1440x900, rect=1440.0x900.0, dpr=1)"
+        },
+        "losslessUniqueColors": {
+          "measured": null,
+          "threshold": 2,
+          "pass": true,
+          "na": true,
+          "note": "N/A (raw_rgba transport)"
+        }
+      },
+      "verdict": "fail"
+    },
+    {
+      "backend": "cocoa",
+      "app": "task_app",
+      "viewport": "Phone",
+      "measurements": {
+        "backend": "cocoa",
+        "app": "task_app",
+        "viewport": "Phone",
+        "expectedTransport": "w/webp",
+        "transportSettled": true,
+        "settledTransport": "w/webp",
+        "pickedStory": "Task App / Pages/Inbox",
+        "storyPickFailed": false,
+        "diagnostic": ""
+      },
+      "criteria": {
+        "frameLatencyMs": {
+          "measured": 35.200000047683716,
+          "threshold": 50,
+          "pass": true,
+          "na": false,
+          "note": "samples=100 p99=38.30ms "
+        },
+        "idleBandwidthBytes": {
+          "measured": 29,
+          "threshold": 512,
+          "pass": true,
+          "na": false,
+          "note": "packets=100 heartbeats=100 nonZero=0 max=29B"
+        },
+        "clickResponseMs": {
+          "measured": null,
+          "threshold": 33,
+          "pass": false,
+          "na": false,
+          "note": "target=rect-center focusOk=true bodyMarker=true"
+        },
+        "hoverOverlayMs": {
+          "measured": null,
+          "threshold": 16,
+          "pass": false,
+          "na": false,
+          "note": "samples=0 p99=<inf> — no hover targets"
+        },
+        "dprDriftPx": {
+          "measured": 0,
+          "threshold": 1,
+          "pass": true,
+          "na": false,
+          "note": "drift w=0.00px h=0.00px (intrinsic=390x844, rect=390.0x844.0, dpr=1)"
+        },
+        "losslessUniqueColors": {
+          "measured": 5,
+          "threshold": 2,
+          "pass": true,
+          "na": false,
+          "note": "uniqueColors=5, nonGrey=8/16 (ratio=0.500; gate 0.063)"
+        }
+      },
+      "verdict": "fail"
+    },
+    {
+      "backend": "cocoa",
+      "app": "task_app",
+      "viewport": "Laptop",
+      "measurements": {
+        "backend": "cocoa",
+        "app": "task_app",
+        "viewport": "Laptop",
+        "expectedTransport": "w/webp",
+        "transportSettled": true,
+        "settledTransport": "w/webp",
+        "pickedStory": "Task App / Pages/Inbox",
+        "storyPickFailed": false,
+        "diagnostic": ""
+      },
+      "criteria": {
+        "frameLatencyMs": {
+          "measured": 35.299999952316284,
+          "threshold": 50,
+          "pass": true,
+          "na": false,
+          "note": "samples=100 p99=38.00ms "
+        },
+        "idleBandwidthBytes": {
+          "measured": 29,
+          "threshold": 512,
+          "pass": true,
+          "na": false,
+          "note": "packets=99 heartbeats=99 nonZero=0 max=29B"
+        },
+        "clickResponseMs": {
+          "measured": null,
+          "threshold": 33,
+          "pass": false,
+          "na": false,
+          "note": "target=rect-center focusOk=true bodyMarker=true"
+        },
+        "hoverOverlayMs": {
+          "measured": 1,
+          "threshold": 16,
+          "pass": true,
+          "na": false,
+          "note": "samples=4 p99=1.0ms"
+        },
+        "dprDriftPx": {
+          "measured": 0,
+          "threshold": 1,
+          "pass": true,
+          "na": false,
+          "note": "drift w=0.00px h=0.00px (intrinsic=1280x800, rect=1280.0x800.0, dpr=1)"
+        },
+        "losslessUniqueColors": {
+          "measured": 4,
+          "threshold": 2,
+          "pass": true,
+          "na": false,
+          "note": "uniqueColors=4, nonGrey=4/16 (ratio=0.250; gate 0.063)"
+        }
+      },
+      "verdict": "fail"
+    },
+    {
+      "backend": "cocoa",
+      "app": "task_app",
+      "viewport": "Desktop",
+      "measurements": {
+        "backend": "cocoa",
+        "app": "task_app",
+        "viewport": "Desktop",
+        "expectedTransport": "w/webp",
+        "transportSettled": true,
+        "settledTransport": "w/webp",
+        "pickedStory": "Task App / Pages/Inbox",
+        "storyPickFailed": false,
+        "diagnostic": ""
+      },
+      "criteria": {
+        "frameLatencyMs": {
+          "measured": 35.10000002384186,
+          "threshold": 50,
+          "pass": true,
+          "na": false,
+          "note": "samples=100 p99=37.90ms "
+        },
+        "idleBandwidthBytes": {
+          "measured": 29,
+          "threshold": 512,
+          "pass": true,
+          "na": false,
+          "note": "packets=100 heartbeats=100 nonZero=0 max=29B"
+        },
+        "clickResponseMs": {
+          "measured": null,
+          "threshold": 33,
+          "pass": false,
+          "na": false,
+          "note": "target=rect-center focusOk=true bodyMarker=true"
+        },
+        "hoverOverlayMs": {
+          "measured": 1,
+          "threshold": 16,
+          "pass": true,
+          "na": false,
+          "note": "samples=4 p99=1.2ms"
+        },
+        "dprDriftPx": {
+          "measured": 0,
+          "threshold": 1,
+          "pass": true,
+          "na": false,
+          "note": "drift w=0.00px h=0.00px (intrinsic=1440x900, rect=1440.0x900.0, dpr=1)"
+        },
+        "losslessUniqueColors": {
+          "measured": 2,
+          "threshold": 2,
+          "pass": true,
+          "na": false,
+          "note": "uniqueColors=2, nonGrey=2/16 (ratio=0.125; gate 0.063)"
+        }
+      },
+      "verdict": "fail"
+    },
+    {
+      "backend": "cocoa",
+      "app": "settings_app",
+      "viewport": "Phone",
+      "measurements": {
+        "backend": "cocoa",
+        "app": "settings_app",
+        "viewport": "Phone",
+        "expectedTransport": "w/webp",
+        "transportSettled": true,
+        "settledTransport": "w/webp",
+        "pickedStory": "Settings App / Pages/Preferences",
+        "storyPickFailed": false,
+        "diagnostic": ""
+      },
+      "criteria": {
+        "frameLatencyMs": {
+          "measured": 35.60000002384186,
+          "threshold": 50,
+          "pass": true,
+          "na": false,
+          "note": "samples=100 p99=38.30ms "
+        },
+        "idleBandwidthBytes": {
+          "measured": 29,
+          "threshold": 512,
+          "pass": true,
+          "na": false,
+          "note": "packets=99 heartbeats=99 nonZero=0 max=29B"
+        },
+        "clickResponseMs": {
+          "measured": null,
+          "threshold": 33,
+          "pass": false,
+          "na": false,
+          "note": "target=rect-center-fallback focusOk=true bodyMarker=true"
+        },
+        "hoverOverlayMs": {
+          "measured": null,
+          "threshold": 16,
+          "pass": false,
+          "na": false,
+          "note": "samples=0 p99=<inf> — no hover targets"
+        },
+        "dprDriftPx": {
+          "measured": 0,
+          "threshold": 1,
+          "pass": true,
+          "na": false,
+          "note": "drift w=0.00px h=0.00px (intrinsic=390x844, rect=390.0x844.0, dpr=1)"
+        },
+        "losslessUniqueColors": {
+          "measured": 5,
+          "threshold": 2,
+          "pass": true,
+          "na": false,
+          "note": "uniqueColors=5, nonGrey=16/16 (ratio=1.000; gate 0.063)"
+        }
+      },
+      "verdict": "fail"
+    },
+    {
+      "backend": "cocoa",
+      "app": "settings_app",
+      "viewport": "Laptop",
+      "measurements": {
+        "backend": "cocoa",
+        "app": "settings_app",
+        "viewport": "Laptop",
+        "expectedTransport": "w/webp",
+        "transportSettled": true,
+        "settledTransport": "w/webp",
+        "pickedStory": "Settings App / Pages/Preferences",
+        "storyPickFailed": false,
+        "diagnostic": ""
+      },
+      "criteria": {
+        "frameLatencyMs": {
+          "measured": 34.199999928474426,
+          "threshold": 50,
+          "pass": true,
+          "na": false,
+          "note": "samples=100 p99=37.60ms "
+        },
+        "idleBandwidthBytes": {
+          "measured": 29,
+          "threshold": 512,
+          "pass": true,
+          "na": false,
+          "note": "packets=103 heartbeats=103 nonZero=0 max=29B"
+        },
+        "clickResponseMs": {
+          "measured": null,
+          "threshold": 33,
+          "pass": false,
+          "na": false,
+          "note": "target=manifest focusOk=true bodyMarker=true"
+        },
+        "hoverOverlayMs": {
+          "measured": 0.6000000238418579,
+          "threshold": 16,
+          "pass": true,
+          "na": false,
+          "note": "samples=2 p99=0.8ms"
+        },
+        "dprDriftPx": {
+          "measured": 0,
+          "threshold": 1,
+          "pass": true,
+          "na": false,
+          "note": "drift w=0.00px h=0.00px (intrinsic=1280x800, rect=1280.0x800.0, dpr=1)"
+        },
+        "losslessUniqueColors": {
+          "measured": 2,
+          "threshold": 2,
+          "pass": true,
+          "na": false,
+          "note": "uniqueColors=2, nonGrey=16/16 (ratio=1.000; gate 0.063)"
+        }
+      },
+      "verdict": "fail"
+    },
+    {
+      "backend": "cocoa",
+      "app": "settings_app",
+      "viewport": "Desktop",
+      "measurements": {
+        "backend": "cocoa",
+        "app": "settings_app",
+        "viewport": "Desktop",
+        "expectedTransport": "w/webp",
+        "transportSettled": true,
+        "settledTransport": "w/webp",
+        "pickedStory": "Settings App / Pages/Preferences",
+        "storyPickFailed": false,
+        "diagnostic": ""
+      },
+      "criteria": {
+        "frameLatencyMs": {
+          "measured": 37.89999997615814,
+          "threshold": 50,
+          "pass": true,
+          "na": false,
+          "note": "samples=100 p99=40.80ms "
+        },
+        "idleBandwidthBytes": {
+          "measured": 29,
+          "threshold": 512,
+          "pass": true,
+          "na": false,
+          "note": "packets=93 heartbeats=93 nonZero=0 max=29B"
+        },
+        "clickResponseMs": {
+          "measured": null,
+          "threshold": 33,
+          "pass": false,
+          "na": false,
+          "note": "target=manifest focusOk=true bodyMarker=true"
+        },
+        "hoverOverlayMs": {
+          "measured": 0.8999999761581421,
+          "threshold": 16,
+          "pass": true,
+          "na": false,
+          "note": "samples=2 p99=0.9ms"
+        },
+        "dprDriftPx": {
+          "measured": 0,
+          "threshold": 1,
+          "pass": true,
+          "na": false,
+          "note": "drift w=0.00px h=0.00px (intrinsic=1440x900, rect=1440.0x900.0, dpr=1)"
+        },
+        "losslessUniqueColors": {
+          "measured": 4,
+          "threshold": 2,
+          "pass": true,
+          "na": false,
+          "note": "uniqueColors=4, nonGrey=16/16 (ratio=1.000; gate 0.063)"
+        }
+      },
+      "verdict": "fail"
+    }
+  ]
+}
