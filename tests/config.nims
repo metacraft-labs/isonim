@@ -14,6 +14,12 @@ switch("path", "$projectDir/../../nim-agents/src")
 # isonim-render-serve via the streaming-preview widget.
 switch("path", "$projectDir/../../isonim-render-serve/src")
 
+# EPP-M5 / ETS-M4: the render-serve VideoToolbox encoder adapter
+# imports ``isonim_cocoa/appkit/capture_videotoolbox`` unconditionally
+# on macOS. The streaming_preview import chain pulls it in transitively
+# (isonim_render_serve → adapters/h264_videotoolbox_encoder).
+switch("path", "$projectDir/../../isonim-cocoa/src")
+
 # REV-M3: vendored ``db_connector`` (provides ``db_connector/db_postgres``).
 # Originally ``std/db_postgres`` in the stdlib; moved out of std in Nim
 # 2.x.  Vendoring is the cheapest workaround while ``nimble install

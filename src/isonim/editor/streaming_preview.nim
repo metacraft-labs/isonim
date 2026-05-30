@@ -187,8 +187,14 @@ type
       ## bridge attaches so the browser advertises which transports it
       ## can decode. ``accept`` is the ordered preference list — first
       ## entry the launcher's hello bag indicates it can produce wins.
-      ## Today the JS shim advertises ``["v/avc1", "f/rgba"]`` when
-      ## ``VideoDecoder`` is feature-detected; ``["f/rgba"]`` otherwise.
+      ## Today the JS shim advertises ``["e/element-tree", "w/webp",
+      ## "v/avc1", "f/rgba"]`` when both ``VideoDecoder`` and
+      ## ``createImageBitmap`` are feature-detected; entries fall out
+      ## of the list when their underlying decoder is unavailable.
+      ## ETS-M4: ``e/element-tree`` is the opt-in element-tree-delta
+      ## tier; advertised first so launchers built with
+      ## ``-d:withElementTreeDelta`` flip from the legacy full-manifest
+      ## M body to the ``element-tree-delta`` M-subtype.
 
   BackendBinaryRegistry* = ref object
     ## Maps `PreviewBackend` -> path of the executable that hosts
@@ -629,17 +635,46 @@ proc decodeTuiElementTreeAsManifest(jsonBody: string): ElementTreeManifest =
     result.elements.add entry
 
 proc dispatchMetaPacket*(vm: StreamingPreviewVM; jsonBody: string) =
-  ## Dispatch one decoded M-packet JSON body. Today the only sub-kind
-  ## the editor consumes from a launcher is `element-tree`; other
-  ## sub-kinds (`hello`, `resize`, `hot-reload`, …) are handled by
-  ## the existing bridge plumbing or simply ignored. Unknown sub-
+  ## Dispatch one decoded M-packet JSON body. Today the editor
+  ## consumes two element-tree sub-kinds from a launcher:
+  ##
+  ##   * ``type:"element-tree"`` — the legacy full-manifest body
+  ##     (RS-M11). Decoded into ``ElementTreeManifest`` and pushed
+  ##     into ``vm.canvas.manifest``. Also seeds the ETS-M4 delta
+  ##     cache so a subsequent ``element-tree-delta`` can mutate
+  ##     incrementally.
+  ##   * ``type:"element-tree-delta"`` — the ETS-M2 per-element delta
+  ##     body. Decoded into ``ElementOp`` list; applied to the local
+  ##     cache; the recomposed manifest goes through the SAME
+  ##     ``vm.canvas.manifest`` signal so ``bindCanvasOverlayEffect``
+  ##     is transparent to which wire path delivered the update.
+  ##
+  ## Other sub-kinds (`hello`, `resize`, `hot-reload`, …) are handled
+  ## by the existing bridge plumbing or simply ignored. Unknown sub-
   ## kinds are intentionally non-fatal per RS-M0 § "Error handling".
   ##
-  ## RS-M13: the TUI native-terminal launcher uses the same M sub-kind
-  ## but with cell coordinates and a ``"boundsUnit": "cells"`` tag.
-  ## We detect that variant by the tag's presence and decode through
-  ## a TUI-aware projection that re-uses the existing
-  ## ``ElementTreeManifest`` shape.
+  ## RS-M13: the TUI native-terminal launcher uses the legacy
+  ## ``element-tree`` sub-kind but with cell coordinates and a
+  ## ``"boundsUnit": "cells"`` tag. We detect that variant by the
+  ## tag's presence and decode through a TUI-aware projection that
+  ## re-uses the existing ``ElementTreeManifest`` shape.
+  ##
+  ## Order of probes matters: ``isElementTreeBody`` substring-scans for
+  ## ``"type":"element-tree"`` which ALSO matches
+  ## ``"type":"element-tree-delta"`` (the delta string contains the
+  ## legacy string as a prefix). The delta probe MUST run first so
+  ## delta bodies route to ``applyElementTreeDeltaOps`` instead of
+  ## ``decodeElementTreeJson`` (which would raise).
+  if isElementTreeDeltaBody(jsonBody):
+    try:
+      let decoded = decodeElementTreeDelta(jsonBody)
+      discard vm.canvas.applyElementTreeDeltaOps(decoded.ops, decoded.seqNo)
+    except PacketProtocolError:
+      # Malformed delta: drop it. The bridge will re-emit on the next
+      # change (and a seed will eventually re-establish the cache via
+      # the legacy path).
+      discard
+    return
   if isElementTreeBody(jsonBody):
     if jsonBody.contains("\"boundsUnit\":\"cells\""):
       try:
@@ -1098,22 +1133,36 @@ when defined(js):
           // the V path is dropped from the accept list so the
           // launcher silently stays on F.
           try {
-            // ELT-M8: advertise the WebP transport first (highest
-            // preference — the only true L1=0 path via the universal
-            // ``createImageBitmap`` decoder per the ELT-M7 synthesis
-            // report). V (H.264 via WebCodecs) stays second; F (raw
-            // RGBA) is the always-available safety net. The launcher
-            // picks the first transport from this list it can produce.
+            // ETS-M4: advertise the element-tree-delta tier first.
+            // This is the new opt-in transport — when the launcher's
+            // hello capabilities include ``e/element-tree`` (which
+            // happens when isonim-examples is built with
+            // ``-d:withElementTreeDelta``), the bridge flips its
+            // per-tick element-tree emission from the legacy
+            // full-manifest body to the ``element-tree-delta``
+            // M-subtype. Launchers that DON'T advertise
+            // ``e/element-tree`` ignore the unknown token per RS-M0 §
+            // "Error handling" and keep emitting the legacy body —
+            // the editor's M dispatcher handles both paths
+            // transparently (Nim-side ``dispatchMetaPacket``).
+            //
+            // ELT-M8: advertise the WebP transport next (highest
+            // preference among the pixel transports — the only true
+            // L1=0 path via the universal ``createImageBitmap``
+            // decoder per the ELT-M7 synthesis report). V (H.264 via
+            // WebCodecs) stays after W; F (raw RGBA) is the always-
+            // available safety net. The launcher picks the first
+            // PIXEL transport from this list it can produce.
             var hasWebP = (typeof createImageBitmap === 'function');
             var accept;
             if (hasWebP && hasVideoDecoder()) {
-              accept = ['w/webp', 'v/avc1', 'f/rgba'];
+              accept = ['e/element-tree', 'w/webp', 'v/avc1', 'f/rgba'];
             } else if (hasVideoDecoder()) {
-              accept = ['v/avc1', 'f/rgba'];
+              accept = ['e/element-tree', 'v/avc1', 'f/rgba'];
             } else if (hasWebP) {
-              accept = ['w/webp', 'f/rgba'];
+              accept = ['e/element-tree', 'w/webp', 'f/rgba'];
             } else {
-              accept = ['f/rgba'];
+              accept = ['e/element-tree', 'f/rgba'];
             }
             var helloJson = JSON.stringify({
               type: 'hello',
@@ -1625,6 +1674,18 @@ when defined(js):
                 window.__isonimManifests = [];
               }
               window.__isonimManifests.push(node);
+            }
+            // ETS-M4: mirror the element-tree-delta M-subtype too so
+            // the playwright suite can count ops + verify the bridge
+            // flipped from the legacy full body to the delta sub-kind
+            // after the editor's hello-accept advertised
+            // ``e/element-tree``.
+            if (window.__isonimTestMode === true && node && node.type === 'element-tree-delta') {
+              window.__isonimLastElementTreeDelta = node;
+              if (!Array.isArray(window.__isonimElementTreeDeltas)) {
+                window.__isonimElementTreeDeltas = [];
+              }
+              window.__isonimElementTreeDeltas.push(node);
             }
           } catch (_) {}
         }

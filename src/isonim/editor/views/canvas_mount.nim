@@ -804,9 +804,23 @@ when defined(js):
                 }
               } catch (_) {}
             """].}
+            # ETS-M4: the element-tree-delta tier is the new
+            # opt-in transport (audit § 7.1). Advertised first so the
+            # launcher (which already advertises ``e/element-tree`` in
+            # its hello capability bag when built with
+            # ``-d:withElementTreeDelta``) flips
+            # ``elementTreeDeltaAccepted = true`` on receipt and
+            # switches its per-tick re-emit from the legacy full body
+            # to the ``element-tree-delta`` M-subtype. Launchers that
+            # don't advertise ``e/element-tree`` ignore the unknown
+            # token (RS-M0 § Error handling) and keep emitting the
+            # legacy body — the editor's M dispatcher handles both
+            # paths transparently.
             var accept: seq[string] = @[]
+            accept.add "e/element-tree"
             if hasVideoDecoder != 0:
               accept.add "v/avc1"
+            accept.add "w/webp"
             accept.add "f/rgba"
             publishHelloAccept(capturedVm.streamingPreview, accept)
           if activeBackend == pbTui:

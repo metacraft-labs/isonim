@@ -57,6 +57,39 @@ type
       ## M-EVP-10: `componentPath` of the hovered entry. Mirrors
       ## `hoveredElementId` so the overlay can bind directly to a
       ## human-readable signal.
+    elementCache*: seq[ElementEntry]
+      ## ETS-M4: per-canvas element-tree delta cache. Mirrors the
+      ## launcher-side ``prevElementTree`` cache that the bridge
+      ## maintains under ETS-M2. Seeded by the legacy full-manifest M
+      ## body (``type:"element-tree"``); subsequently mutated by
+      ## ``element-tree-delta`` ops. The cache + ``surfaceWidth`` /
+      ## ``surfaceHeight`` are recomposed into an
+      ## ``ElementTreeManifest`` after every delta-apply and pushed
+      ## into the ``manifest`` signal so ``bindCanvasOverlayEffect``
+      ## sees the same signal-shape regardless of which wire path
+      ## delivered the update.
+    elementCacheSeeded*: bool
+      ## ETS-M4: false until the first legacy ``element-tree`` body
+      ## (or the first ``element-tree-delta`` ETS-M5 snapshot) seeds
+      ## the cache. Deltas that arrive before the seed are dropped
+      ## defensively — the bridge's monotonic seq + the editor's
+      ## hello-accept handshake make this race extremely narrow.
+    elementCacheSurfaceWidth*: int
+      ## ETS-M4: surface dimensions tracked alongside the cache so the
+      ## post-delta manifest carries the right (width, height). Set on
+      ## seed; left untouched by delta ops (the bridge re-seeds when
+      ## the surface dims change).
+    elementCacheSurfaceHeight*: int
+    elementCacheBoundsUnit*: string
+      ## ETS-M4: ``""`` / ``"pixels"`` / ``"cells"`` — mirrors the
+      ## seed manifest's ``boundsUnit`` so the recomposed manifest
+      ## projects through the right overlay path.
+    elementDeltaSeqSeen*: bool
+    elementDeltaLastSeq*: uint32
+      ## ETS-M4: monotonic seq counter of the last applied delta. A
+      ## non-monotonic increment marks the cache invalid so the next
+      ## seed re-establishes it; in ETS-M5 this will trigger a
+      ## resnapshot request.
 
 proc newPreviewCanvasVM*(): PreviewCanvasVM =
   ## Construct a fresh canvas VM. Must be called inside a `createRoot`
@@ -68,15 +101,40 @@ proc newPreviewCanvasVM*(): PreviewCanvasVM =
     selectedElementId: createSignal(""),
     selectedComponentPath: createSignal(""),
     hoveredElementId: createSignal(none(string)),
-    hoveredComponentPath: createSignal(none(string)))
+    hoveredComponentPath: createSignal(none(string)),
+    elementCache: @[],
+    elementCacheSeeded: false,
+    elementCacheSurfaceWidth: 0,
+    elementCacheSurfaceHeight: 0,
+    elementCacheBoundsUnit: "",
+    elementDeltaSeqSeen: false,
+    elementDeltaLastSeq: 0'u32)
 
 proc updateManifest*(vm: PreviewCanvasVM;
                      manifest: ElementTreeManifest) =
   ## Replace the cached manifest. The signal change propagates to
   ## subscribers (e.g. the optional overlay that paints the
   ## manifest's element rectangles for debug).
+  ##
+  ## ETS-M4: this proc is the legacy full-manifest path AND the seed
+  ## for the delta cache. The ``element-tree-delta`` path
+  ## (``applyElementTreeDeltaOps``) mutates the cache and recomposes
+  ## a manifest through the same signal so the overlay reactive chain
+  ## sees one signal-shape regardless of which wire path delivered
+  ## the update.
   vm.surfaceWidth.val = manifest.surfaceWidth
   vm.surfaceHeight.val = manifest.surfaceHeight
+  vm.elementCache = manifest.elements
+  vm.elementCacheSeeded = true
+  vm.elementCacheSurfaceWidth = manifest.surfaceWidth
+  vm.elementCacheSurfaceHeight = manifest.surfaceHeight
+  vm.elementCacheBoundsUnit = manifest.boundsUnit
+  # Re-seed resets the delta-seq tracking — the next delta on the
+  # post-seed connection will be seq=1 (the bridge's first delta after
+  # the seed full-body) and we want to accept it without complaining
+  # about a missing prior.
+  vm.elementDeltaSeqSeen = false
+  vm.elementDeltaLastSeq = 0'u32
   vm.manifest.val = some(manifest)
 
 proc clearManifest*(vm: PreviewCanvasVM) =
@@ -89,6 +147,89 @@ proc clearManifest*(vm: PreviewCanvasVM) =
   vm.selectedComponentPath.val = ""
   vm.hoveredElementId.val = none(string)
   vm.hoveredComponentPath.val = none(string)
+  vm.elementCache = @[]
+  vm.elementCacheSeeded = false
+  vm.elementCacheSurfaceWidth = 0
+  vm.elementCacheSurfaceHeight = 0
+  vm.elementCacheBoundsUnit = ""
+  vm.elementDeltaSeqSeen = false
+  vm.elementDeltaLastSeq = 0'u32
+
+proc composeManifestFromCache(vm: PreviewCanvasVM): ElementTreeManifest =
+  ## ETS-M4: project the local cache + tracked surface dims into the
+  ## same ``ElementTreeManifest`` shape ``updateManifest`` writes when
+  ## the legacy full-body arrives. The overlay reactive chain
+  ## (`bindCanvasOverlayEffect`) consumes the manifest signal; pushing
+  ## the recomposed manifest through the same signal makes the two
+  ## wire paths indistinguishable to that effect.
+  result = ElementTreeManifest(
+    frameSeq: 0,
+    surfaceWidth: vm.elementCacheSurfaceWidth,
+    surfaceHeight: vm.elementCacheSurfaceHeight,
+    boundsUnit: vm.elementCacheBoundsUnit,
+    elements: vm.elementCache)
+
+proc applyElementTreeDeltaOps*(vm: PreviewCanvasVM;
+                                ops: seq[ElementOp];
+                                seqNo: uint32): bool =
+  ## ETS-M4: apply a decoded ``element-tree-delta`` op-list to the
+  ## local cache and republish the manifest signal. Returns true when
+  ## the delta landed cleanly; false on a seq-gap (cache marked
+  ## invalid; the next legacy seed re-establishes it).
+  ##
+  ## Op order on the wire is removes → adds → updates (the launcher-
+  ## side ``computeElementTreeDelta`` emits them that way; see
+  ## ``isonim-render-serve/src/isonim_render_serve/element_tree_delta.nim``).
+  ## We honour that order so adds of a moved id land in the right
+  ## slot after the corresponding remove.
+  if not vm.elementCacheSeeded:
+    # Defensive: ignore deltas that arrive before the seed. In normal
+    # operation the bridge emits the seed full-body FIRST (post-hello)
+    # and only then flips to the delta sub-kind. Deltas without a
+    # seed would corrupt the empty cache silently; dropping them is
+    # safer and the next seed (or reconnect) re-establishes the cache.
+    return false
+  if vm.elementDeltaSeqSeen and seqNo != vm.elementDeltaLastSeq + 1'u32:
+    # Seq gap detected. Mark the cache invalid so the next legacy
+    # seed (or — in ETS-M5 — a resnapshot request) re-establishes it.
+    # The overlay continues painting the previous cache contents
+    # until the next seed lands (better than a flicker-to-empty).
+    vm.elementCacheSeeded = false
+    vm.elementDeltaSeqSeen = false
+    vm.elementDeltaLastSeq = 0'u32
+    return false
+  for op in ops:
+    case op.kind
+    of eopRemove:
+      var keep: seq[ElementEntry] = @[]
+      for e in vm.elementCache:
+        if e.id != op.remId:
+          keep.add e
+      vm.elementCache = keep
+    of eopAdd:
+      var entry: ElementEntry
+      entry.id = op.addId
+      entry.componentPath = op.addComponentPath
+      entry.kind = op.addElemKind
+      entry.bounds = op.addBounds
+      vm.elementCache.add entry
+    of eopUpdate:
+      for i in 0 ..< vm.elementCache.len:
+        if vm.elementCache[i].id == op.updId:
+          if op.updBoundsSet:
+            vm.elementCache[i].bounds = op.updBounds
+          if op.updElemKindSet:
+            vm.elementCache[i].kind = op.updElemKind
+          if op.updComponentPathSet:
+            vm.elementCache[i].componentPath = op.updComponentPath
+          break
+  vm.elementDeltaSeqSeen = true
+  vm.elementDeltaLastSeq = seqNo
+  let manifest = composeManifestFromCache(vm)
+  vm.surfaceWidth.val = manifest.surfaceWidth
+  vm.surfaceHeight.val = manifest.surfaceHeight
+  vm.manifest.val = some(manifest)
+  true
 
 proc elementAt*(vm: PreviewCanvasVM; x, y: int): Option[ElementEntry] =
   ## Resolve a pointer coordinate to the smallest-area manifest
