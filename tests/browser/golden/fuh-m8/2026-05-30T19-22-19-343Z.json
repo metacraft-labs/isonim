@@ -1,6 +1,6 @@
 {
   "campaign": "FUH-M8",
-  "timestamp": "2026-05-30T19:27:56.782Z",
+  "timestamp": "2026-05-30T19:22:19.343Z",
   "specCommit": "93e21e91b5782c2be5bf06714871cf49f022ce66",
   "platform": "darwin-arm64",
   "thresholds": {
@@ -30,11 +30,11 @@
       },
       "criteria": {
         "frameLatencyMs": {
-          "measured": 35.199999928474426,
+          "measured": 35.200000047683716,
           "threshold": 50,
           "pass": true,
           "na": false,
-          "note": "samples=100 p99=38.90ms "
+          "note": "samples=100 p99=165.00ms "
         },
         "idleBandwidthBytes": {
           "measured": null,
@@ -44,7 +44,7 @@
           "note": "N/A (raw_rgba transport)"
         },
         "clickResponseMs": {
-          "measured": 45.09999990463257,
+          "measured": 63.5,
           "threshold": 33,
           "pass": false,
           "na": false,
@@ -91,11 +91,11 @@
       },
       "criteria": {
         "frameLatencyMs": {
-          "measured": 51.60000002384186,
+          "measured": 52.800000071525574,
           "threshold": 50,
           "pass": false,
           "na": false,
-          "note": "samples=100 p99=60.10ms "
+          "note": "samples=100 p99=62.10ms "
         },
         "idleBandwidthBytes": {
           "measured": null,
@@ -105,18 +105,18 @@
           "note": "N/A (raw_rgba transport)"
         },
         "clickResponseMs": {
-          "measured": 93.60000002384186,
+          "measured": 118,
           "threshold": 33,
           "pass": false,
           "na": false,
           "note": "target=rect-center focusOk=true bodyMarker=true"
         },
         "hoverOverlayMs": {
-          "measured": 0.9000000357627869,
+          "measured": 1,
           "threshold": 16,
           "pass": true,
           "na": false,
-          "note": "samples=2 p99=0.9ms"
+          "note": "samples=2 p99=1.0ms"
         },
         "dprDriftPx": {
           "measured": 0,
@@ -152,11 +152,11 @@
       },
       "criteria": {
         "frameLatencyMs": {
-          "measured": 55.299999952316284,
+          "measured": 58.39999997615814,
           "threshold": 50,
           "pass": false,
           "na": false,
-          "note": "samples=100 p99=61.00ms "
+          "note": "samples=100 p99=61.90ms "
         },
         "idleBandwidthBytes": {
           "measured": null,
@@ -166,18 +166,18 @@
           "note": "N/A (raw_rgba transport)"
         },
         "clickResponseMs": {
-          "measured": 81.20000004768372,
+          "measured": 95.39999997615814,
           "threshold": 33,
           "pass": false,
           "na": false,
           "note": "target=rect-center focusOk=true bodyMarker=true"
         },
         "hoverOverlayMs": {
-          "measured": 0.8999999761581421,
+          "measured": 1.050000011920929,
           "threshold": 16,
           "pass": true,
           "na": false,
-          "note": "samples=2 p99=0.9ms"
+          "note": "samples=2 p99=1.1ms"
         },
         "dprDriftPx": {
           "measured": 0,
@@ -213,7 +213,7 @@
       },
       "criteria": {
         "frameLatencyMs": {
-          "measured": 35.39999997615814,
+          "measured": 35.5,
           "threshold": 50,
           "pass": true,
           "na": false,
@@ -274,11 +274,11 @@
       },
       "criteria": {
         "frameLatencyMs": {
-          "measured": 51.89999997615814,
+          "measured": 52.700000047683716,
           "threshold": 50,
           "pass": false,
           "na": false,
-          "note": "samples=100 p99=286.00ms "
+          "note": "samples=100 p99=57.20ms "
         },
         "idleBandwidthBytes": {
           "measured": null,
@@ -295,11 +295,11 @@
           "note": "target=manifest focusOk=true bodyMarker=true"
         },
         "hoverOverlayMs": {
-          "measured": 1,
+          "measured": 1.100000023841858,
           "threshold": 16,
           "pass": true,
           "na": false,
-          "note": "samples=1 p99=1.0ms"
+          "note": "samples=1 p99=1.1ms"
         },
         "dprDriftPx": {
           "measured": 0,
@@ -335,11 +335,11 @@
       },
       "criteria": {
         "frameLatencyMs": {
-          "measured": 57,
+          "measured": 58.60000002384186,
           "threshold": 50,
           "pass": false,
           "na": false,
-          "note": "samples=100 p99=155.00ms "
+          "note": "samples=100 p99=68.20ms "
         },
         "idleBandwidthBytes": {
           "measured": null,
@@ -356,11 +356,11 @@
           "note": "target=manifest focusOk=true bodyMarker=true"
         },
         "hoverOverlayMs": {
-          "measured": 1.050000011920929,
+          "measured": 0.949999988079071,
           "threshold": 16,
           "pass": true,
           "na": false,
-          "note": "samples=2 p99=1.1ms"
+          "note": "samples=2 p99=1.0ms"
         },
         "dprDriftPx": {
           "measured": 0,
@@ -396,11 +396,11 @@
       },
       "criteria": {
         "frameLatencyMs": {
-          "measured": 34.800000071525574,
+          "measured": 35.39999997615814,
           "threshold": 50,
           "pass": true,
           "na": false,
-          "note": "samples=100 p99=43.40ms "
+          "note": "samples=100 p99=43.50ms "
         },
         "idleBandwidthBytes": {
           "measured": null,
@@ -457,7 +457,7 @@
       },
       "criteria": {
         "frameLatencyMs": {
-          "measured": 35,
+          "measured": 34.799999952316284,
           "threshold": 50,
           "pass": true,
           "na": false,
@@ -478,11 +478,11 @@
           "note": "target=rect-center focusOk=true bodyMarker=true"
         },
         "hoverOverlayMs": {
-          "measured": 1,
+          "measured": 0.9000000357627869,
           "threshold": 16,
           "pass": true,
           "na": false,
-          "note": "samples=4 p99=1.0ms"
+          "note": "samples=4 p99=0.9ms"
         },
         "dprDriftPx": {
           "measured": 0,
@@ -518,11 +518,11 @@
       },
       "criteria": {
         "frameLatencyMs": {
-          "measured": 38.10000002384186,
+          "measured": 38.200000047683716,
           "threshold": 50,
           "pass": true,
           "na": false,
-          "note": "samples=100 p99=39.50ms "
+          "note": "samples=100 p99=40.40ms "
         },
         "idleBandwidthBytes": {
           "measured": null,
@@ -539,7 +539,7 @@
           "note": "target=rect-center focusOk=true bodyMarker=true"
         },
         "hoverOverlayMs": {
-          "measured": 1,
+          "measured": 0.949999988079071,
           "threshold": 16,
           "pass": true,
           "na": false,
@@ -579,11 +579,11 @@
       },
       "criteria": {
         "frameLatencyMs": {
-          "measured": 35.10000002384186,
+          "measured": 35,
           "threshold": 50,
           "pass": true,
           "na": false,
-          "note": "samples=100 p99=41.40ms "
+          "note": "samples=100 p99=41.20ms "
         },
         "idleBandwidthBytes": {
           "measured": null,
@@ -640,11 +640,11 @@
       },
       "criteria": {
         "frameLatencyMs": {
-          "measured": 36,
+          "measured": 36.10000002384186,
           "threshold": 50,
           "pass": true,
           "na": false,
-          "note": "samples=100 p99=37.60ms "
+          "note": "samples=100 p99=38.30ms "
         },
         "idleBandwidthBytes": {
           "measured": null,
@@ -661,11 +661,11 @@
           "note": "target=manifest focusOk=true bodyMarker=true"
         },
         "hoverOverlayMs": {
-          "measured": 2.5,
+          "measured": 2.600000023841858,
           "threshold": 16,
           "pass": true,
           "na": false,
-          "note": "samples=1 p99=2.5ms"
+          "note": "samples=1 p99=2.6ms"
         },
         "dprDriftPx": {
           "measured": 0,
@@ -701,11 +701,11 @@
       },
       "criteria": {
         "frameLatencyMs": {
-          "measured": 39.39999997615814,
+          "measured": 39.5,
           "threshold": 50,
           "pass": true,
           "na": false,
-          "note": "samples=100 p99=40.50ms "
+          "note": "samples=100 p99=41.00ms "
         },
         "idleBandwidthBytes": {
           "measured": null,
@@ -722,11 +722,11 @@
           "note": "target=manifest focusOk=true bodyMarker=true"
         },
         "hoverOverlayMs": {
-          "measured": 1,
+          "measured": 1.050000011920929,
           "threshold": 16,
           "pass": true,
           "na": false,
-          "note": "samples=2 p99=1.0ms"
+          "note": "samples=2 p99=1.1ms"
         },
         "dprDriftPx": {
           "measured": 0,
@@ -754,54 +754,54 @@
         "app": "task_app",
         "viewport": "Phone",
         "expectedTransport": "w/webp",
-        "transportSettled": false,
-        "settledTransport": "",
-        "pickedStory": "",
+        "transportSettled": true,
+        "settledTransport": "w/webp",
+        "pickedStory": "Task App / Pages/Inbox",
         "storyPickFailed": false,
-        "diagnostic": " exception: Error: cocoa launcher failed to bind in 20s\n    at Timeout.tick [as _onTimeout] (file:///Users/zahary/metacraft/isonim/tests/browser/e2e_editor_full_acceptance_matrix_live.mjs:224:16)\n    at listOnTimeout (node:internal/timers:605:17)\n    at process.processTimers (node:internal/timers:541:7);"
+        "diagnostic": ""
       },
       "criteria": {
         "frameLatencyMs": {
-          "measured": null,
+          "measured": 35.199999928474426,
           "threshold": 50,
-          "pass": null,
+          "pass": true,
           "na": false,
-          "note": ""
+          "note": "samples=100 p99=37.40ms "
         },
         "idleBandwidthBytes": {
-          "measured": null,
+          "measured": 29,
           "threshold": 512,
-          "pass": null,
+          "pass": true,
           "na": false,
-          "note": ""
+          "note": "packets=99 heartbeats=99 nonZero=0 max=29B"
         },
         "clickResponseMs": {
           "measured": null,
           "threshold": 33,
-          "pass": null,
+          "pass": false,
           "na": false,
-          "note": ""
+          "note": "target=rect-center focusOk=true bodyMarker=true"
         },
         "hoverOverlayMs": {
           "measured": null,
           "threshold": 16,
-          "pass": null,
+          "pass": false,
           "na": false,
-          "note": ""
+          "note": "samples=0 p99=<inf> — no hover targets"
         },
         "dprDriftPx": {
-          "measured": null,
+          "measured": 0,
           "threshold": 1,
-          "pass": null,
+          "pass": true,
           "na": false,
-          "note": ""
+          "note": "drift w=0.00px h=0.00px (intrinsic=390x844, rect=390.0x844.0, dpr=1)"
         },
         "losslessUniqueColors": {
-          "measured": null,
+          "measured": 5,
           "threshold": 2,
-          "pass": null,
+          "pass": true,
           "na": false,
-          "note": ""
+          "note": "uniqueColors=5, nonGrey=8/16 (ratio=0.500; gate 0.063)"
         }
       },
       "verdict": "fail"
@@ -823,18 +823,18 @@
       },
       "criteria": {
         "frameLatencyMs": {
-          "measured": 35.299999952316284,
+          "measured": 35.39999997615814,
           "threshold": 50,
           "pass": true,
           "na": false,
-          "note": "samples=100 p99=36.70ms "
+          "note": "samples=100 p99=38.00ms "
         },
         "idleBandwidthBytes": {
           "measured": 29,
           "threshold": 512,
           "pass": true,
           "na": false,
-          "note": "packets=99 heartbeats=99 nonZero=0 max=29B"
+          "note": "packets=100 heartbeats=100 nonZero=0 max=29B"
         },
         "clickResponseMs": {
           "measured": null,
@@ -844,11 +844,11 @@
           "note": "target=rect-center focusOk=true bodyMarker=true"
         },
         "hoverOverlayMs": {
-          "measured": 0.949999988079071,
+          "measured": 0.8999999761581421,
           "threshold": 16,
           "pass": true,
           "na": false,
-          "note": "samples=4 p99=1.1ms"
+          "note": "samples=4 p99=1.0ms"
         },
         "dprDriftPx": {
           "measured": 0,
@@ -884,11 +884,11 @@
       },
       "criteria": {
         "frameLatencyMs": {
-          "measured": 35.199999928474426,
+          "measured": 35.200000047683716,
           "threshold": 50,
           "pass": true,
           "na": false,
-          "note": "samples=100 p99=36.90ms "
+          "note": "samples=100 p99=37.60ms "
         },
         "idleBandwidthBytes": {
           "measured": 29,
@@ -905,11 +905,11 @@
           "note": "target=rect-center focusOk=true bodyMarker=true"
         },
         "hoverOverlayMs": {
-          "measured": 0.949999988079071,
+          "measured": 0.9000000357627869,
           "threshold": 16,
           "pass": true,
           "na": false,
-          "note": "samples=4 p99=1.0ms"
+          "note": "samples=4 p99=0.9ms"
         },
         "dprDriftPx": {
           "measured": 0,
@@ -945,11 +945,11 @@
       },
       "criteria": {
         "frameLatencyMs": {
-          "measured": 35.59999990463257,
+          "measured": 35.60000002384186,
           "threshold": 50,
           "pass": true,
           "na": false,
-          "note": "samples=100 p99=41.70ms "
+          "note": "samples=100 p99=37.90ms "
         },
         "idleBandwidthBytes": {
           "measured": 29,
@@ -1006,11 +1006,11 @@
       },
       "criteria": {
         "frameLatencyMs": {
-          "measured": 34,
+          "measured": 34.10000002384186,
           "threshold": 50,
           "pass": true,
           "na": false,
-          "note": "samples=100 p99=37.90ms "
+          "note": "samples=100 p99=38.60ms "
         },
         "idleBandwidthBytes": {
           "measured": 29,
@@ -1027,11 +1027,11 @@
           "note": "target=manifest focusOk=true bodyMarker=true"
         },
         "hoverOverlayMs": {
-          "measured": 0.6000000238418579,
+          "measured": 0.6499999761581421,
           "threshold": 16,
           "pass": true,
           "na": false,
-          "note": "samples=2 p99=0.7ms"
+          "note": "samples=2 p99=0.8ms"
         },
         "dprDriftPx": {
           "measured": 0,
@@ -1078,7 +1078,7 @@
           "threshold": 512,
           "pass": true,
           "na": false,
-          "note": "packets=93 heartbeats=93 nonZero=0 max=29B"
+          "note": "packets=94 heartbeats=94 nonZero=0 max=29B"
         },
         "clickResponseMs": {
           "measured": null,
@@ -1092,7 +1092,7 @@
           "threshold": 16,
           "pass": true,
           "na": false,
-          "note": "samples=2 p99=1.1ms"
+          "note": "samples=2 p99=1.2ms"
         },
         "dprDriftPx": {
           "measured": 0,
