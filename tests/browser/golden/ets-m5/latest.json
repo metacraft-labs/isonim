@@ -1,0 +1,174 @@
+{
+  "milestone": "ETS-M5",
+  "timestamp": "2026-05-30T14-55-53-405Z",
+  "backend": "cocoa",
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "demo": "task",
+  "delta": {
+    "path": "delta",
+    "scenarios": {
+      "idle": {
+        "elapsedMs": 5003,
+        "etsBytes": 0,
+        "etsPackets": 0,
+        "etsBytesPerSec": 0,
+        "etsPacketsPerSec": 0,
+        "totalBytes": 4147,
+        "totalPackets": 143,
+        "totalBytesPerSec": 828.902658404957,
+        "legacy": null,
+        "delta": null
+      },
+      "hover": {
+        "elapsedMs": 2330,
+        "etsBytes": 0,
+        "etsPackets": 0,
+        "etsBytesPerSec": 0,
+        "legacy": null,
+        "delta": null,
+        "diag": {
+          "manifestEntries": 9,
+          "manifestsCount": 1,
+          "deltasCount": 1,
+          "lastHoveredPath": "task_app/views/TaskApp",
+          "lastHoveredId": "task_app/views/TaskApp",
+          "observerInstalled": true
+        },
+        "latency": {
+          "samples": 1,
+          "domLatencyMs": {
+            "n": 1,
+            "mean": 2.700000047683716,
+            "p50": 2.700000047683716,
+            "p99": 2.700000047683716,
+            "max": 2.700000047683716,
+            "min": 2.700000047683716
+          },
+          "rafLatencyMs": {
+            "n": 1,
+            "mean": -4.699999904632932,
+            "p50": -4.699999904632932,
+            "p99": -4.699999904632932,
+            "max": -4.699999904632932,
+            "min": -4.699999904632932
+          }
+        }
+      },
+      "scroll": {
+        "elapsedMs": 2364,
+        "etsBytes": 0,
+        "etsPackets": 0,
+        "etsBytesPerSec": 0,
+        "legacy": null,
+        "delta": null
+      },
+      "massEdit": {
+        "elapsedMs": 2215,
+        "legacy": null,
+        "delta": null,
+        "deltaOpsHistory": []
+      },
+      "resize": {
+        "firstPaintLatencyMs": 13.299999952316284,
+        "firstPaintBytes": 760,
+        "firstPaintType": "element-tree-delta",
+        "legacy": null,
+        "delta": {
+          "n": 1,
+          "mean": 760,
+          "p50": 760,
+          "p99": 760,
+          "min": 760,
+          "max": 760,
+          "totalBytes": 760
+        }
+      }
+    },
+    "detectedPath": "delta"
+  },
+  "legacy": {
+    "path": "legacy",
+    "scenarios": {
+      "idle": {
+        "elapsedMs": 5003,
+        "etsBytes": 0,
+        "etsPackets": 0,
+        "etsBytesPerSec": 0,
+        "etsPacketsPerSec": 0,
+        "totalBytes": 4118,
+        "totalPackets": 142,
+        "totalBytesPerSec": 823.1061363182091,
+        "legacy": null,
+        "delta": null
+      },
+      "hover": {
+        "elapsedMs": 2336,
+        "etsBytes": 0,
+        "etsPackets": 0,
+        "etsBytesPerSec": 0,
+        "legacy": null,
+        "delta": null,
+        "diag": {
+          "manifestEntries": 9,
+          "manifestsCount": 3,
+          "deltasCount": 0,
+          "lastHoveredPath": "task_app/views/TaskApp",
+          "lastHoveredId": "task_app/views/TaskApp",
+          "observerInstalled": true
+        },
+        "latency": {
+          "samples": 1,
+          "domLatencyMs": {
+            "n": 1,
+            "mean": 2.600000023841858,
+            "p50": 2.600000023841858,
+            "p99": 2.600000023841858,
+            "max": 2.600000023841858,
+            "min": 2.600000023841858
+          },
+          "rafLatencyMs": {
+            "n": 1,
+            "mean": -0.8999999046327503,
+            "p50": -0.8999999046327503,
+            "p99": -0.8999999046327503,
+            "max": -0.8999999046327503,
+            "min": -0.8999999046327503
+          }
+        }
+      },
+      "scroll": {
+        "elapsedMs": 2371,
+        "etsBytes": 0,
+        "etsPackets": 0,
+        "etsBytesPerSec": 0,
+        "legacy": null,
+        "delta": null
+      },
+      "massEdit": {
+        "elapsedMs": 2214,
+        "legacy": null,
+        "delta": null,
+        "deltaOpsHistory": []
+      },
+      "resize": {
+        "firstPaintLatencyMs": 29.600000023841858,
+        "firstPaintBytes": 1313,
+        "firstPaintType": "element-tree",
+        "legacy": {
+          "n": 1,
+          "mean": 1313,
+          "p50": 1313,
+          "p99": 1313,
+          "min": 1313,
+          "max": 1313,
+          "totalBytes": 1313
+        },
+        "delta": null
+      }
+    },
+    "detectedPath": "legacy"
+  }
+}

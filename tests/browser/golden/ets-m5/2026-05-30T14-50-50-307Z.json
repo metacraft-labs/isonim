@@ -1,0 +1,174 @@
+{
+  "milestone": "ETS-M5",
+  "timestamp": "2026-05-30T14-50-50-307Z",
+  "backend": "cocoa",
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "demo": "task",
+  "delta": {
+    "path": "delta",
+    "scenarios": {
+      "idle": {
+        "elapsedMs": 5001,
+        "etsBytes": 0,
+        "etsPackets": 0,
+        "etsBytesPerSec": 0,
+        "etsPacketsPerSec": 0,
+        "totalBytes": 4147,
+        "totalPackets": 143,
+        "totalBytesPerSec": 829.2341531693661,
+        "legacy": null,
+        "delta": null
+      },
+      "hover": {
+        "elapsedMs": 2335,
+        "etsBytes": 0,
+        "etsPackets": 0,
+        "etsBytesPerSec": 0,
+        "legacy": null,
+        "delta": null,
+        "diag": {
+          "manifestEntries": 9,
+          "manifestsCount": 1,
+          "deltasCount": 1,
+          "lastHoveredPath": "task_app/views/TaskApp",
+          "lastHoveredId": "task_app/views/TaskApp",
+          "observerInstalled": true
+        },
+        "latency": {
+          "samples": 1,
+          "domLatencyMs": {
+            "n": 1,
+            "mean": 2.5,
+            "p50": 2.5,
+            "p99": 2.5,
+            "max": 2.5,
+            "min": 2.5
+          },
+          "rafLatencyMs": {
+            "n": 1,
+            "mean": -0.20000004768371582,
+            "p50": -0.20000004768371582,
+            "p99": -0.20000004768371582,
+            "max": -0.20000004768371582,
+            "min": -0.20000004768371582
+          }
+        }
+      },
+      "scroll": {
+        "elapsedMs": 2368,
+        "etsBytes": 0,
+        "etsPackets": 0,
+        "etsBytesPerSec": 0,
+        "legacy": null,
+        "delta": null
+      },
+      "massEdit": {
+        "elapsedMs": 2212,
+        "legacy": null,
+        "delta": null,
+        "deltaOpsHistory": []
+      },
+      "resize": {
+        "firstPaintLatencyMs": 16.799999952316284,
+        "firstPaintBytes": 760,
+        "firstPaintType": "element-tree-delta",
+        "legacy": null,
+        "delta": {
+          "n": 1,
+          "mean": 760,
+          "p50": 760,
+          "p99": 760,
+          "min": 760,
+          "max": 760,
+          "totalBytes": 760
+        }
+      }
+    },
+    "detectedPath": "delta"
+  },
+  "legacy": {
+    "path": "legacy",
+    "scenarios": {
+      "idle": {
+        "elapsedMs": 5003,
+        "etsBytes": 0,
+        "etsPackets": 0,
+        "etsBytesPerSec": 0,
+        "etsPacketsPerSec": 0,
+        "totalBytes": 4118,
+        "totalPackets": 142,
+        "totalBytesPerSec": 823.1061363182091,
+        "legacy": null,
+        "delta": null
+      },
+      "hover": {
+        "elapsedMs": 2334,
+        "etsBytes": 0,
+        "etsPackets": 0,
+        "etsBytesPerSec": 0,
+        "legacy": null,
+        "delta": null,
+        "diag": {
+          "manifestEntries": 9,
+          "manifestsCount": 3,
+          "deltasCount": 0,
+          "lastHoveredPath": "task_app/views/TaskApp",
+          "lastHoveredId": "task_app/views/TaskApp",
+          "observerInstalled": true
+        },
+        "latency": {
+          "samples": 1,
+          "domLatencyMs": {
+            "n": 1,
+            "mean": 2.5,
+            "p50": 2.5,
+            "p99": 2.5,
+            "max": 2.5,
+            "min": 2.5
+          },
+          "rafLatencyMs": {
+            "n": 1,
+            "mean": 1.618000000000393,
+            "p50": 1.618000000000393,
+            "p99": 1.618000000000393,
+            "max": 1.618000000000393,
+            "min": 1.618000000000393
+          }
+        }
+      },
+      "scroll": {
+        "elapsedMs": 2387,
+        "etsBytes": 0,
+        "etsPackets": 0,
+        "etsBytesPerSec": 0,
+        "legacy": null,
+        "delta": null
+      },
+      "massEdit": {
+        "elapsedMs": 2210,
+        "legacy": null,
+        "delta": null,
+        "deltaOpsHistory": []
+      },
+      "resize": {
+        "firstPaintLatencyMs": 34.10000002384186,
+        "firstPaintBytes": 1313,
+        "firstPaintType": "element-tree",
+        "legacy": {
+          "n": 1,
+          "mean": 1313,
+          "p50": 1313,
+          "p99": 1313,
+          "min": 1313,
+          "max": 1313,
+          "totalBytes": 1313
+        },
+        "delta": null
+      }
+    },
+    "detectedPath": "legacy"
+  }
+}
