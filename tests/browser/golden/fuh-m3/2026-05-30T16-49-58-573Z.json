@@ -1,0 +1,463 @@
+{
+  "milestone": "FUH-M3",
+  "timestamp": "2026-05-30T16:49:58.573Z",
+  "backend": "cocoa",
+  "app": "task",
+  "hoverN": 10,
+  "payloadBytesGate": 200,
+  "latencyGateMs": 16,
+  "legacyRatioGate": 5,
+  "delta": {
+    "stripHelloAccept": false,
+    "detectedPath": "delta",
+    "perHover": [
+      {
+        "seq": 1,
+        "target": {
+          "id": "task_app/views/TaskRow#4",
+          "componentPath": "task_app/views/TaskRow#4"
+        },
+        "windowMs": 258,
+        "wireSliceLen": 7,
+        "deltaWirePackets": 0,
+        "deltaWireBytes": 0,
+        "deltaWireSizes": [],
+        "legacyWirePackets": 0,
+        "legacyWireBytes": 0,
+        "legacyWireSizes": [],
+        "deltaOps": [],
+        "manifestsAdded": 0
+      },
+      {
+        "seq": 2,
+        "target": {
+          "id": "task_app/views/TaskRow#5",
+          "componentPath": "task_app/views/TaskRow#5"
+        },
+        "windowMs": 255.39999997615814,
+        "wireSliceLen": 7,
+        "deltaWirePackets": 0,
+        "deltaWireBytes": 0,
+        "deltaWireSizes": [],
+        "legacyWirePackets": 0,
+        "legacyWireBytes": 0,
+        "legacyWireSizes": [],
+        "deltaOps": [],
+        "manifestsAdded": 0
+      },
+      {
+        "seq": 3,
+        "target": {
+          "id": "task_app/views/TaskRow#6",
+          "componentPath": "task_app/views/TaskRow#6"
+        },
+        "windowMs": 255.60000002384186,
+        "wireSliceLen": 7,
+        "deltaWirePackets": 0,
+        "deltaWireBytes": 0,
+        "deltaWireSizes": [],
+        "legacyWirePackets": 0,
+        "legacyWireBytes": 0,
+        "legacyWireSizes": [],
+        "deltaOps": [],
+        "manifestsAdded": 0
+      },
+      {
+        "seq": 4,
+        "target": {
+          "id": "task_app/views/TaskInput",
+          "componentPath": "task_app/views/TaskInput"
+        },
+        "windowMs": 255.20000004768372,
+        "wireSliceLen": 7,
+        "deltaWirePackets": 0,
+        "deltaWireBytes": 0,
+        "deltaWireSizes": [],
+        "legacyWirePackets": 0,
+        "legacyWireBytes": 0,
+        "legacyWireSizes": [],
+        "deltaOps": [],
+        "manifestsAdded": 0
+      },
+      {
+        "seq": 5,
+        "target": {
+          "id": "task_app/views/FilterBar",
+          "componentPath": "task_app/views/FilterBar"
+        },
+        "windowMs": 255.20000004768372,
+        "wireSliceLen": 7,
+        "deltaWirePackets": 0,
+        "deltaWireBytes": 0,
+        "deltaWireSizes": [],
+        "legacyWirePackets": 0,
+        "legacyWireBytes": 0,
+        "legacyWireSizes": [],
+        "deltaOps": [],
+        "manifestsAdded": 0
+      },
+      {
+        "seq": 6,
+        "target": {
+          "id": "task_app/views/TaskList",
+          "componentPath": "task_app/views/TaskList"
+        },
+        "windowMs": 255,
+        "wireSliceLen": 9,
+        "deltaWirePackets": 1,
+        "deltaWireBytes": 119,
+        "deltaWireSizes": [119],
+        "legacyWirePackets": 0,
+        "legacyWireBytes": 0,
+        "legacyWireSizes": [],
+        "deltaOps": [
+          {
+            "op": "update",
+            "id": "task_app/views/TaskRow#5",
+            "kind": "row-hovered",
+            "hasBounds": false,
+            "opJson": "{\"op\":\"update\",\"id\":\"task_app/views/TaskRow#5\",\"kind\":\"row-hovered\"}"
+          }
+        ],
+        "manifestsAdded": 0
+      },
+      {
+        "seq": 7,
+        "target": {
+          "id": "task_app/views/SummaryBar",
+          "componentPath": "task_app/views/SummaryBar"
+        },
+        "windowMs": 255.69999992847443,
+        "wireSliceLen": 7,
+        "deltaWirePackets": 0,
+        "deltaWireBytes": 0,
+        "deltaWireSizes": [],
+        "legacyWirePackets": 0,
+        "legacyWireBytes": 0,
+        "legacyWireSizes": [],
+        "deltaOps": [],
+        "manifestsAdded": 0
+      }
+    ],
+    "latencySamples": [
+      {
+        "seq": 1,
+        "moveT": 2587.5,
+        "paintT": 2590.899999976158,
+        "anchor": "hover-label",
+        "domLatencyMs": 3.399999976158142
+      },
+      {
+        "seq": 2,
+        "moveT": 2845.899999976158,
+        "paintT": 2847.5,
+        "anchor": "hover-label",
+        "domLatencyMs": 1.600000023841858
+      },
+      {
+        "seq": 3,
+        "moveT": 3101.899999976158,
+        "paintT": 3103.399999976158,
+        "anchor": "hover-label",
+        "domLatencyMs": 1.5
+      },
+      {
+        "seq": 4,
+        "moveT": 3358.399999976158,
+        "paintT": 3359.899999976158,
+        "anchor": "hover-label",
+        "domLatencyMs": 1.5
+      },
+      {
+        "seq": 5,
+        "moveT": 3614.0999999046326,
+        "paintT": 3615.6999999284744,
+        "anchor": "hover-label",
+        "domLatencyMs": 1.600000023841858
+      },
+      {
+        "seq": 6,
+        "moveT": 3870.1999999284744,
+        "paintT": 3871.6999999284744,
+        "anchor": "hover-label",
+        "domLatencyMs": 1.5
+      },
+      {
+        "seq": 7,
+        "moveT": 4125.899999976158,
+        "paintT": 4127.399999976158,
+        "anchor": "hover-label",
+        "domLatencyMs": 1.5
+      }
+    ],
+    "medianLatencyMs": 1.5,
+    "p99LatencyMs": 3.399999976158142,
+    "medianBytesPerHover": 119,
+    "meanBytesPerHover": 119,
+    "maxBytesPerHover": 119,
+    "hoversWithDelta": 1,
+    "hoversWithUpdateKind": 1,
+    "notes": [],
+    "targetCount": 7,
+    "targetSummary": [
+      {
+        "id": "task_app/views/TaskRow#4",
+        "componentPath": "task_app/views/TaskRow#4"
+      },
+      {
+        "id": "task_app/views/TaskRow#5",
+        "componentPath": "task_app/views/TaskRow#5"
+      },
+      {
+        "id": "task_app/views/TaskRow#6",
+        "componentPath": "task_app/views/TaskRow#6"
+      },
+      {
+        "id": "task_app/views/TaskInput",
+        "componentPath": "task_app/views/TaskInput"
+      },
+      {
+        "id": "task_app/views/FilterBar",
+        "componentPath": "task_app/views/FilterBar"
+      },
+      {
+        "id": "task_app/views/TaskList",
+        "componentPath": "task_app/views/TaskList"
+      },
+      {
+        "id": "task_app/views/SummaryBar",
+        "componentPath": "task_app/views/SummaryBar"
+      }
+    ],
+    "latencySampleCount": 7,
+    "minBytesPerHover": 119,
+    "hoversMeasuredCount": 1,
+    "hoverPacketSum": 1,
+    "allHoverBytes": [0, 0, 0, 0, 0, 119, 0]
+  },
+  "legacy": {
+    "stripHelloAccept": true,
+    "detectedPath": "legacy",
+    "perHover": [
+      {
+        "seq": 1,
+        "target": {
+          "id": "task_app/views/TaskRow#4",
+          "componentPath": "task_app/views/TaskRow#4"
+        },
+        "windowMs": 257.2000000476837,
+        "wireSliceLen": 7,
+        "deltaWirePackets": 0,
+        "deltaWireBytes": 0,
+        "deltaWireSizes": [],
+        "legacyWirePackets": 0,
+        "legacyWireBytes": 0,
+        "legacyWireSizes": [],
+        "deltaOps": [],
+        "manifestsAdded": 0
+      },
+      {
+        "seq": 2,
+        "target": {
+          "id": "task_app/views/TaskRow#5",
+          "componentPath": "task_app/views/TaskRow#5"
+        },
+        "windowMs": 256.10000002384186,
+        "wireSliceLen": 7,
+        "deltaWirePackets": 0,
+        "deltaWireBytes": 0,
+        "deltaWireSizes": [],
+        "legacyWirePackets": 0,
+        "legacyWireBytes": 0,
+        "legacyWireSizes": [],
+        "deltaOps": [],
+        "manifestsAdded": 0
+      },
+      {
+        "seq": 3,
+        "target": {
+          "id": "task_app/views/TaskRow#6",
+          "componentPath": "task_app/views/TaskRow#6"
+        },
+        "windowMs": 252.89999997615814,
+        "wireSliceLen": 8,
+        "deltaWirePackets": 0,
+        "deltaWireBytes": 0,
+        "deltaWireSizes": [],
+        "legacyWirePackets": 0,
+        "legacyWireBytes": 0,
+        "legacyWireSizes": [],
+        "deltaOps": [],
+        "manifestsAdded": 0
+      },
+      {
+        "seq": 4,
+        "target": {
+          "id": "task_app/views/TaskInput",
+          "componentPath": "task_app/views/TaskInput"
+        },
+        "windowMs": 255.10000002384186,
+        "wireSliceLen": 7,
+        "deltaWirePackets": 0,
+        "deltaWireBytes": 0,
+        "deltaWireSizes": [],
+        "legacyWirePackets": 0,
+        "legacyWireBytes": 0,
+        "legacyWireSizes": [],
+        "deltaOps": [],
+        "manifestsAdded": 0
+      },
+      {
+        "seq": 5,
+        "target": {
+          "id": "task_app/views/FilterBar",
+          "componentPath": "task_app/views/FilterBar"
+        },
+        "windowMs": 255.5,
+        "wireSliceLen": 7,
+        "deltaWirePackets": 0,
+        "deltaWireBytes": 0,
+        "deltaWireSizes": [],
+        "legacyWirePackets": 0,
+        "legacyWireBytes": 0,
+        "legacyWireSizes": [],
+        "deltaOps": [],
+        "manifestsAdded": 0
+      },
+      {
+        "seq": 6,
+        "target": {
+          "id": "task_app/views/TaskList",
+          "componentPath": "task_app/views/TaskList"
+        },
+        "windowMs": 255.10000002384186,
+        "wireSliceLen": 8,
+        "deltaWirePackets": 0,
+        "deltaWireBytes": 0,
+        "deltaWireSizes": [],
+        "legacyWirePackets": 1,
+        "legacyWireBytes": 1321,
+        "legacyWireSizes": [1321],
+        "deltaOps": [],
+        "manifestsAdded": 1
+      },
+      {
+        "seq": 7,
+        "target": {
+          "id": "task_app/views/SummaryBar",
+          "componentPath": "task_app/views/SummaryBar"
+        },
+        "windowMs": 252.69999992847443,
+        "wireSliceLen": 8,
+        "deltaWirePackets": 0,
+        "deltaWireBytes": 0,
+        "deltaWireSizes": [],
+        "legacyWirePackets": 0,
+        "legacyWireBytes": 0,
+        "legacyWireSizes": [],
+        "deltaOps": [],
+        "manifestsAdded": 0
+      }
+    ],
+    "latencySamples": [
+      {
+        "seq": 1,
+        "moveT": 1916.1000000238419,
+        "paintT": 1919.5,
+        "anchor": "hover-label",
+        "domLatencyMs": 3.399999976158142
+      },
+      {
+        "seq": 2,
+        "moveT": 2173.899999976158,
+        "paintT": 2175.5,
+        "anchor": "hover-label",
+        "domLatencyMs": 1.600000023841858
+      },
+      {
+        "seq": 3,
+        "moveT": 2430.899999976158,
+        "paintT": 2432.2999999523163,
+        "anchor": "hover-label",
+        "domLatencyMs": 1.399999976158142
+      },
+      {
+        "seq": 4,
+        "moveT": 2684.5,
+        "paintT": 2686.2000000476837,
+        "anchor": "hover-label",
+        "domLatencyMs": 1.7000000476837158
+      },
+      {
+        "seq": 5,
+        "moveT": 2940.600000023842,
+        "paintT": 2942.5,
+        "anchor": "hover-label",
+        "domLatencyMs": 1.899999976158142
+      },
+      {
+        "seq": 6,
+        "moveT": 3197.100000023842,
+        "paintT": 3198.7999999523163,
+        "anchor": "hover-label",
+        "domLatencyMs": 1.6999999284744263
+      },
+      {
+        "seq": 7,
+        "moveT": 3452.600000023842,
+        "paintT": 3453.899999976158,
+        "anchor": "hover-label",
+        "domLatencyMs": 1.2999999523162842
+      }
+    ],
+    "medianLatencyMs": 1.6999999284744263,
+    "p99LatencyMs": 3.399999976158142,
+    "medianBytesPerHover": 1321,
+    "meanBytesPerHover": 1321,
+    "maxBytesPerHover": 1321,
+    "hoversWithDelta": 0,
+    "hoversWithUpdateKind": 0,
+    "notes": [],
+    "targetCount": 7,
+    "targetSummary": [
+      {
+        "id": "task_app/views/TaskRow#4",
+        "componentPath": "task_app/views/TaskRow#4"
+      },
+      {
+        "id": "task_app/views/TaskRow#5",
+        "componentPath": "task_app/views/TaskRow#5"
+      },
+      {
+        "id": "task_app/views/TaskRow#6",
+        "componentPath": "task_app/views/TaskRow#6"
+      },
+      {
+        "id": "task_app/views/TaskInput",
+        "componentPath": "task_app/views/TaskInput"
+      },
+      {
+        "id": "task_app/views/FilterBar",
+        "componentPath": "task_app/views/FilterBar"
+      },
+      {
+        "id": "task_app/views/TaskList",
+        "componentPath": "task_app/views/TaskList"
+      },
+      {
+        "id": "task_app/views/SummaryBar",
+        "componentPath": "task_app/views/SummaryBar"
+      }
+    ],
+    "latencySampleCount": 7,
+    "minBytesPerHover": 1321,
+    "hoversMeasuredCount": 1,
+    "hoverPacketSum": 1,
+    "allHoverBytes": [0, 0, 0, 0, 0, 1321, 0]
+  },
+  "ratio": {
+    "legacyMedianBytesPerHover": 1321,
+    "deltaMedianBytesPerHover": 119,
+    "legacyOverDelta": 11.100840336134453
+  }
+}
