@@ -1098,9 +1098,23 @@ when defined(js):
           // the V path is dropped from the accept list so the
           // launcher silently stays on F.
           try {
-            var accept = hasVideoDecoder()
-              ? ['v/avc1', 'f/rgba']
-              : ['f/rgba'];
+            // ELT-M8: advertise the WebP transport first (highest
+            // preference — the only true L1=0 path via the universal
+            // ``createImageBitmap`` decoder per the ELT-M7 synthesis
+            // report). V (H.264 via WebCodecs) stays second; F (raw
+            // RGBA) is the always-available safety net. The launcher
+            // picks the first transport from this list it can produce.
+            var hasWebP = (typeof createImageBitmap === 'function');
+            var accept;
+            if (hasWebP && hasVideoDecoder()) {
+              accept = ['w/webp', 'v/avc1', 'f/rgba'];
+            } else if (hasVideoDecoder()) {
+              accept = ['v/avc1', 'f/rgba'];
+            } else if (hasWebP) {
+              accept = ['w/webp', 'f/rgba'];
+            } else {
+              accept = ['f/rgba'];
+            }
             var helloJson = JSON.stringify({
               type: 'hello',
               accept: accept,
@@ -1333,6 +1347,85 @@ when defined(js):
             } catch (_) {}
           }
         }
+        function handleW(bytes) {
+          // ELT-M8 W-packet wire format (mirrors V layout exactly,
+          // payload is a complete WebP RIFF instead of a NALU stream):
+          //   'W' | u8 flags | u8 codec_id_len | codec_id UTF-8 bytes
+          //       | u32 LE width | u32 LE height | u32 LE length
+          //       | WebP RIFF bytes
+          // Flag bits: 0 = isStillFrame (always 1 today; ELT-M9 will
+          // use bit 1 for the diff-region variant), 2..7 reserved.
+          if (bytes.length < 15) {
+            ws.close(1002, 'W packet truncated (header)'); return;
+          }
+          var flags = bytes[1];
+          if ((flags & 0xFE) !== 0) {
+            ws.close(1002, 'W flag reserved bits set'); return;
+          }
+          var codecLen = bytes[2];
+          if (bytes.length < 3 + codecLen + 12) {
+            ws.close(1002, 'W packet truncated (codec_id)'); return;
+          }
+          var codecId = '';
+          for (var ci = 0; ci < codecLen; ci++) {
+            codecId += String.fromCharCode(bytes[3 + ci]);
+          }
+          var view = new DataView(bytes.buffer, bytes.byteOffset,
+                                  bytes.byteLength);
+          var widthOff = 3 + codecLen;
+          var width = readU32LE(view, widthOff);
+          var height = readU32LE(view, widthOff + 4);
+          var length = readU32LE(view, widthOff + 8);
+          var headerEnd = widthOff + 12;
+          if (bytes.length < headerEnd + length) {
+            ws.close(1002, 'W payload length mismatch'); return;
+          }
+          var riff = bytes.subarray(headerEnd, headerEnd + length);
+          if (typeof createImageBitmap !== 'function') {
+            // No native decoder — drop the packet silently. The accept-
+            // list advertisement at hello time should have prevented
+            // the launcher from emitting W at all; reaching here means
+            // the launcher ignored our preference. Don't close the
+            // socket — the F path may still be running concurrently
+            // (per-frame transport selection on the launcher side may
+            // be falling back to F for some frames anyway).
+            return;
+          }
+          // Take an immutable copy of the RIFF slice — the Blob spec
+          // says the bytes are consumed asynchronously, so we MUST NOT
+          // hand the underlying ArrayBuffer (which the WebSocket
+          // recycles for the next message) to the Blob constructor
+          // directly.
+          var riffCopy = new Uint8Array(riff.length);
+          riffCopy.set(riff);
+          var mime = codecId || 'image/webp';
+          var blob = new Blob([riffCopy], { type: mime });
+          createImageBitmap(blob).then(function (bitmap) {
+            try {
+              ensureSize(width, height);
+              var ctx = canvas.getContext('2d');
+              if (ctx) {
+                ctx.imageSmoothingEnabled = true;
+                ctx.imageSmoothingQuality = 'high';
+                ctx.drawImage(bitmap, 0, 0);
+              }
+              setActiveTransport('w/webp');
+            } catch (_) {}
+            // ELT-M8 lifetime contract: ImageBitmap holds a GPU
+            // surface; closing synchronously releases it without
+            // waiting for GC. Mirrors the EPP-M6 ``frame.close()``
+            // discipline for V-packets per the audit § 3.4
+            // recommendation, applied to the still-image path.
+            try { bitmap.close(); } catch (_) {}
+          }).catch(function (e) {
+            try {
+              if (window.__isonimTestMode === true) {
+                window.__isonimLastWebPDecodeError = String(e &&
+                  e.message ? e.message : e);
+              }
+            } catch (_) {}
+          });
+        }
         function handleF(bytes) {
           var view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
           var flags = bytes[1];
@@ -1450,6 +1543,7 @@ when defined(js):
           if (kind === 'F') { handleF(bytes); }
           else if (kind === 'M') { handleM(bytes); }
           else if (kind === 'V') { handleV(bytes); }
+          else if (kind === 'W') { handleW(bytes); }
         });
         function onMouseDown(e) {
           var p = pointFromEvent(e);
