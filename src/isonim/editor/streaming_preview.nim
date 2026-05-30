@@ -1353,15 +1353,30 @@ when defined(js):
           //   'W' | u8 flags | u8 codec_id_len | codec_id UTF-8 bytes
           //       | u32 LE width | u32 LE height | u32 LE length
           //       | WebP RIFF bytes
-          // Flag bits: 0 = isStillFrame (always 1 today; ELT-M9 will
-          // use bit 1 for the diff-region variant), 2..7 reserved.
+          //
+          // ELT-M9 wire-format variant: flag bit 1 (``isDiffRegion``)
+          // signals that the payload is NOT a single full-frame RIFF
+          // but a length-prefixed sequence of per-rectangle RIFFs:
+          //   u32 LE rect_count
+          //   rect_count × {
+          //     u32 LE x, u32 LE y, u32 LE w, u32 LE h,
+          //     u32 LE riff_length,
+          //     riff_length bytes of WebP RIFF
+          //   }
+          // The header (width, height) fields still report the full-
+          // frame canvas dimensions so the browser can ensureSize once
+          // per packet. We branch on the flag bit and walk the rect
+          // list when set.
           if (bytes.length < 15) {
             ws.close(1002, 'W packet truncated (header)'); return;
           }
           var flags = bytes[1];
-          if ((flags & 0xFE) !== 0) {
+          // ELT-M9: bit 1 is ``isDiffRegion``; only bits 2..7 are
+          // reserved (mask 0xFC).
+          if ((flags & 0xFC) !== 0) {
             ws.close(1002, 'W flag reserved bits set'); return;
           }
+          var isDiffRegion = (flags & 0x02) !== 0;
           var codecLen = bytes[2];
           if (bytes.length < 3 + codecLen + 12) {
             ws.close(1002, 'W packet truncated (codec_id)'); return;
@@ -1380,7 +1395,6 @@ when defined(js):
           if (bytes.length < headerEnd + length) {
             ws.close(1002, 'W payload length mismatch'); return;
           }
-          var riff = bytes.subarray(headerEnd, headerEnd + length);
           if (typeof createImageBitmap !== 'function') {
             // No native decoder — drop the packet silently. The accept-
             // list advertisement at hello time should have prevented
@@ -1391,32 +1405,138 @@ when defined(js):
             // be falling back to F for some frames anyway).
             return;
           }
-          // Take an immutable copy of the RIFF slice — the Blob spec
-          // says the bytes are consumed asynchronously, so we MUST NOT
-          // hand the underlying ArrayBuffer (which the WebSocket
-          // recycles for the next message) to the Blob constructor
-          // directly.
-          var riffCopy = new Uint8Array(riff.length);
-          riffCopy.set(riff);
           var mime = codecId || 'image/webp';
-          var blob = new Blob([riffCopy], { type: mime });
-          createImageBitmap(blob).then(function (bitmap) {
+          if (!isDiffRegion) {
+            // ELT-M8 full-frame path.
+            var riff = bytes.subarray(headerEnd, headerEnd + length);
+            // Take an immutable copy of the RIFF slice — the Blob spec
+            // says the bytes are consumed asynchronously, so we MUST NOT
+            // hand the underlying ArrayBuffer (which the WebSocket
+            // recycles for the next message) to the Blob constructor
+            // directly.
+            var riffCopy = new Uint8Array(riff.length);
+            riffCopy.set(riff);
+            var blob = new Blob([riffCopy], { type: mime });
+            createImageBitmap(blob).then(function (bitmap) {
+              try {
+                ensureSize(width, height);
+                var ctx = canvas.getContext('2d');
+                if (ctx) {
+                  ctx.imageSmoothingEnabled = true;
+                  ctx.imageSmoothingQuality = 'high';
+                  ctx.drawImage(bitmap, 0, 0);
+                }
+                setActiveTransport('w/webp');
+              } catch (_) {}
+              // ELT-M8 lifetime contract: ImageBitmap holds a GPU
+              // surface; closing synchronously releases it without
+              // waiting for GC. Mirrors the EPP-M6 ``frame.close()``
+              // discipline for V-packets per the audit § 3.4
+              // recommendation, applied to the still-image path.
+              try { bitmap.close(); } catch (_) {}
+            }).catch(function (e) {
+              try {
+                if (window.__isonimTestMode === true) {
+                  window.__isonimLastWebPDecodeError = String(e &&
+                    e.message ? e.message : e);
+                }
+              } catch (_) {}
+            });
+            return;
+          }
+          // ELT-M9 diff-region path. Walk the rect list, decode each
+          // RIFF via ``createImageBitmap``, then paint each at its
+          // (x, y) anchor. We await all bitmaps before painting so
+          // composition order is deterministic — async resolution
+          // ordering would otherwise let a late-arriving rectangle
+          // paint over a later rectangle that happens to overlap.
+          if (length < 4) {
+            ws.close(1002, 'W-diff body too short for rect_count');
+            return;
+          }
+          var rectCount = readU32LE(view, headerEnd);
+          // Test-mode mirror so the playwright suite can count
+          // per-packet rectangle counts (and byte lengths — the
+          // headline ELT-M9 bandwidth claim) without instrumenting
+          // the launcher.
+          try {
+            if (window.__isonimTestMode === true) {
+              if (typeof window.__isonimWDiffRectCounts !== 'object' ||
+                  !Array.isArray(window.__isonimWDiffRectCounts)) {
+                window.__isonimWDiffRectCounts = [];
+              }
+              if (typeof window.__isonimWDiffByteLengths !== 'object' ||
+                  !Array.isArray(window.__isonimWDiffByteLengths)) {
+                window.__isonimWDiffByteLengths = [];
+              }
+              window.__isonimWDiffRectCounts.push(rectCount);
+              window.__isonimWDiffByteLengths.push(bytes.length);
+              window.__isonimLastWDiffRectCount = rectCount;
+              window.__isonimLastWDiffByteLength = bytes.length;
+            }
+          } catch (_) {}
+          // ensureSize is called only when the (fullW, fullH) header
+          // values change. The browser canvas is already sized by the
+          // M-packet hello + the previous F/W packet on connection
+          // setup; we still call ensureSize defensively to handle a
+          // mid-stream resize that flushed a full-frame W via the
+          // EPP-M8 selector.
+          ensureSize(width, height);
+          var rects = [];
+          var off = headerEnd + 4;
+          for (var i = 0; i < rectCount; i++) {
+            if (off + 20 > bytes.length) {
+              ws.close(1002, 'W-diff rect header truncated');
+              return;
+            }
+            var rx = readU32LE(view, off);
+            var ry = readU32LE(view, off + 4);
+            var rw = readU32LE(view, off + 8);
+            var rh = readU32LE(view, off + 12);
+            var rl = readU32LE(view, off + 16);
+            off += 20;
+            if (off + rl > bytes.length) {
+              ws.close(1002, 'W-diff rect payload truncated');
+              return;
+            }
+            var rriff = bytes.subarray(off, off + rl);
+            off += rl;
+            var rriffCopy = new Uint8Array(rriff.length);
+            rriffCopy.set(rriff);
+            rects.push({
+              x: rx, y: ry, w: rw, h: rh,
+              blob: new Blob([rriffCopy], { type: mime }),
+            });
+          }
+          // Heartbeat (zero rects) — flip the active transport and
+          // exit. The canvas paint surface is unchanged, but the
+          // editor's activity signal still ticks via setActiveTransport.
+          if (rects.length === 0) {
+            setActiveTransport('w/webp');
+            return;
+          }
+          var pending = rects.map(function (r) {
+            return createImageBitmap(r.blob).then(function (bm) {
+              return { rect: r, bitmap: bm };
+            });
+          });
+          Promise.all(pending).then(function (decoded) {
             try {
-              ensureSize(width, height);
               var ctx = canvas.getContext('2d');
               if (ctx) {
                 ctx.imageSmoothingEnabled = true;
                 ctx.imageSmoothingQuality = 'high';
-                ctx.drawImage(bitmap, 0, 0);
+                for (var i = 0; i < decoded.length; i++) {
+                  var d = decoded[i];
+                  ctx.drawImage(d.bitmap, d.rect.x, d.rect.y);
+                }
               }
               setActiveTransport('w/webp');
             } catch (_) {}
-            // ELT-M8 lifetime contract: ImageBitmap holds a GPU
-            // surface; closing synchronously releases it without
-            // waiting for GC. Mirrors the EPP-M6 ``frame.close()``
-            // discipline for V-packets per the audit § 3.4
-            // recommendation, applied to the still-image path.
-            try { bitmap.close(); } catch (_) {}
+            // Release GPU surfaces synchronously.
+            for (var i = 0; i < decoded.length; i++) {
+              try { decoded[i].bitmap.close(); } catch (_) {}
+            }
           }).catch(function (e) {
             try {
               if (window.__isonimTestMode === true) {
