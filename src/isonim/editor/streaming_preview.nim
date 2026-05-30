@@ -1426,6 +1426,47 @@ when defined(js):
             ws.close(1002, 'W flag reserved bits set'); return;
           }
           var isDiffRegion = (flags & 0x02) !== 0;
+          // FUH-M6 test-mode mirror — record per-packet arrival
+          // wall-clock so the browser test can compute median W-packet
+          // inter-arrival time. At a known launcher --fps the gap
+          // between consecutive W packets is a tight upper bound on
+          // the launcher's per-frame encode wall-clock budget (the
+          // bridge sleeps the frame-interval residue per
+          // isonim-render-serve/bridge.nim:912-914 — if encode blows
+          // the budget, the residue collapses to 1 ms and the gap
+          // becomes ~encodeMs). Sub-16 ms gap is impossible at
+          // --fps 30 (capped at ~33 ms); the FUH-M6 budget assertion
+          // therefore uses the 60 FPS / 1280×800 unit budget (16 ms)
+          // as an UPPER bound on what the bridge could deliver if the
+          // encoder is in-process AND the tick budget is the dominant
+          // wait, and asserts inter-arrival lands inside the wider
+          // tick budget ≤ 50 ms (matches EPP-M8 frame-latency gate).
+          try {
+            if (window.__isonimTestMode === true) {
+              var nowMs = (typeof performance !== 'undefined' &&
+                           performance && typeof performance.now === 'function')
+                ? performance.now()
+                : Date.now();
+              if (isDiffRegion) {
+                if (!Array.isArray(window.__isonimWDiffArrivalMs)) {
+                  window.__isonimWDiffArrivalMs = [];
+                }
+                window.__isonimWDiffArrivalMs.push(nowMs);
+                window.__isonimLastWDiffArrivalMs = nowMs;
+              } else {
+                if (!Array.isArray(window.__isonimWFullArrivalMs)) {
+                  window.__isonimWFullArrivalMs = [];
+                }
+                if (!Array.isArray(window.__isonimWFullByteLengths)) {
+                  window.__isonimWFullByteLengths = [];
+                }
+                window.__isonimWFullArrivalMs.push(nowMs);
+                window.__isonimWFullByteLengths.push(bytes.length);
+                window.__isonimLastWFullArrivalMs = nowMs;
+                window.__isonimLastWFullByteLength = bytes.length;
+              }
+            }
+          } catch (_) {}
           var codecLen = bytes[2];
           if (bytes.length < 3 + codecLen + 12) {
             ws.close(1002, 'W packet truncated (codec_id)'); return;

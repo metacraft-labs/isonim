@@ -1,0 +1,9 @@
+{
+  "transport": "w/webp (diff)",
+  "samples": 86,
+  "medianGapMs": 35.1,
+  "p99GapMs": 37.4,
+  "tickFloorMs": 34,
+  "mutatingPackets": 0,
+  "totalPackets": 86
+}

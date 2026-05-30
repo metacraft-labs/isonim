@@ -1,6 +1,6 @@
 {
   "milestone": "FUH-M3",
-  "timestamp": "2026-05-30T18:32:53.650Z",
+  "timestamp": "2026-05-30T17:43:43.399Z",
   "backend": "cocoa",
   "app": "task",
   "hoverN": 10,
@@ -17,8 +17,8 @@
           "id": "task_app/views/TaskRow#4",
           "componentPath": "task_app/views/TaskRow#4"
         },
-        "windowMs": 259,
-        "wireSliceLen": 7,
+        "windowMs": 257.5,
+        "wireSliceLen": 8,
         "deltaWirePackets": 0,
         "deltaWireBytes": 0,
         "deltaWireSizes": [],
@@ -34,7 +34,7 @@
           "id": "task_app/views/TaskRow#5",
           "componentPath": "task_app/views/TaskRow#5"
         },
-        "windowMs": 256,
+        "windowMs": 253.69999992847443,
         "wireSliceLen": 7,
         "deltaWirePackets": 0,
         "deltaWireBytes": 0,
@@ -51,7 +51,7 @@
           "id": "task_app/views/TaskRow#6",
           "componentPath": "task_app/views/TaskRow#6"
         },
-        "windowMs": 254.5,
+        "windowMs": 255,
         "wireSliceLen": 7,
         "deltaWirePackets": 0,
         "deltaWireBytes": 0,
@@ -68,7 +68,7 @@
           "id": "task_app/views/TaskInput",
           "componentPath": "task_app/views/TaskInput"
         },
-        "windowMs": 254.89999997615814,
+        "windowMs": 254.70000004768372,
         "wireSliceLen": 7,
         "deltaWirePackets": 0,
         "deltaWireBytes": 0,
@@ -85,8 +85,8 @@
           "id": "task_app/views/FilterBar",
           "componentPath": "task_app/views/FilterBar"
         },
-        "windowMs": 255.60000002384186,
-        "wireSliceLen": 7,
+        "windowMs": 252.79999995231628,
+        "wireSliceLen": 8,
         "deltaWirePackets": 0,
         "deltaWireBytes": 0,
         "deltaWireSizes": [],
@@ -102,8 +102,8 @@
           "id": "task_app/views/TaskList",
           "componentPath": "task_app/views/TaskList"
         },
-        "windowMs": 255,
-        "wireSliceLen": 9,
+        "windowMs": 254.39999997615814,
+        "wireSliceLen": 8,
         "deltaWirePackets": 1,
         "deltaWireBytes": 119,
         "deltaWireSizes": [119],
@@ -127,7 +127,7 @@
           "id": "task_app/views/SummaryBar",
           "componentPath": "task_app/views/SummaryBar"
         },
-        "windowMs": 255.5,
+        "windowMs": 255.39999997615814,
         "wireSliceLen": 7,
         "deltaWirePackets": 0,
         "deltaWireBytes": 0,
@@ -142,56 +142,56 @@
     "latencySamples": [
       {
         "seq": 1,
-        "moveT": 2042.5,
-        "paintT": 2045.9000000953674,
+        "moveT": 6069.399999976158,
+        "paintT": 6072.899999976158,
         "anchor": "hover-label",
-        "domLatencyMs": 3.4000000953674316
+        "domLatencyMs": 3.5
       },
       {
         "seq": 2,
-        "moveT": 2302,
-        "paintT": 2304,
-        "anchor": "hover-label",
-        "domLatencyMs": 2
-      },
-      {
-        "seq": 3,
-        "moveT": 2558.8000000715256,
-        "paintT": 2560.3000000715256,
-        "anchor": "hover-label",
-        "domLatencyMs": 1.5
-      },
-      {
-        "seq": 4,
-        "moveT": 2813.9000000953674,
-        "paintT": 2815.3000000715256,
+        "moveT": 6325.600000023842,
+        "paintT": 6327,
         "anchor": "hover-label",
         "domLatencyMs": 1.399999976158142
       },
       {
+        "seq": 3,
+        "moveT": 6579.899999976158,
+        "paintT": 6581.5,
+        "anchor": "hover-label",
+        "domLatencyMs": 1.600000023841858
+      },
+      {
+        "seq": 4,
+        "moveT": 6835.799999952316,
+        "paintT": 6837.200000047684,
+        "anchor": "hover-label",
+        "domLatencyMs": 1.4000000953674316
+      },
+      {
         "seq": 5,
-        "moveT": 3069.600000023842,
-        "paintT": 3071,
+        "moveT": 7091.100000023842,
+        "paintT": 7092.5,
         "anchor": "hover-label",
         "domLatencyMs": 1.399999976158142
       },
       {
         "seq": 6,
-        "moveT": 3326.2000000476837,
-        "paintT": 3328,
+        "moveT": 7344.399999976158,
+        "paintT": 7345.799999952316,
         "anchor": "hover-label",
-        "domLatencyMs": 1.7999999523162842
+        "domLatencyMs": 1.399999976158142
       },
       {
         "seq": 7,
-        "moveT": 3581.7000000476837,
-        "paintT": 3583.2000000476837,
+        "moveT": 7599.700000047684,
+        "paintT": 7601.200000047684,
         "anchor": "hover-label",
         "domLatencyMs": 1.5
       }
     ],
-    "medianLatencyMs": 1.5,
-    "p99LatencyMs": 3.4000000953674316,
+    "medianLatencyMs": 1.4000000953674316,
+    "p99LatencyMs": 3.5,
     "medianBytesPerHover": 119,
     "meanBytesPerHover": 119,
     "maxBytesPerHover": 119,
@@ -245,7 +245,7 @@
           "id": "task_app/views/TaskRow#4",
           "componentPath": "task_app/views/TaskRow#4"
         },
-        "windowMs": 255.80000007152557,
+        "windowMs": 256.8000000715256,
         "wireSliceLen": 7,
         "deltaWirePackets": 0,
         "deltaWireBytes": 0,
@@ -262,7 +262,7 @@
           "id": "task_app/views/TaskRow#5",
           "componentPath": "task_app/views/TaskRow#5"
         },
-        "windowMs": 255.40000009536743,
+        "windowMs": 254.80000007152557,
         "wireSliceLen": 7,
         "deltaWirePackets": 0,
         "deltaWireBytes": 0,
@@ -279,7 +279,7 @@
           "id": "task_app/views/TaskRow#6",
           "componentPath": "task_app/views/TaskRow#6"
         },
-        "windowMs": 252.80000007152557,
+        "windowMs": 255.89999997615814,
         "wireSliceLen": 8,
         "deltaWirePackets": 0,
         "deltaWireBytes": 0,
@@ -296,7 +296,7 @@
           "id": "task_app/views/TaskInput",
           "componentPath": "task_app/views/TaskInput"
         },
-        "windowMs": 254.60000002384186,
+        "windowMs": 254.80000007152557,
         "wireSliceLen": 7,
         "deltaWirePackets": 0,
         "deltaWireBytes": 0,
@@ -313,7 +313,7 @@
           "id": "task_app/views/FilterBar",
           "componentPath": "task_app/views/FilterBar"
         },
-        "windowMs": 255.30000007152557,
+        "windowMs": 254.80000007152557,
         "wireSliceLen": 7,
         "deltaWirePackets": 0,
         "deltaWireBytes": 0,
@@ -330,8 +330,8 @@
           "id": "task_app/views/TaskList",
           "componentPath": "task_app/views/TaskList"
         },
-        "windowMs": 253.80000007152557,
-        "wireSliceLen": 8,
+        "windowMs": 253.20000004768372,
+        "wireSliceLen": 9,
         "deltaWirePackets": 0,
         "deltaWireBytes": 0,
         "deltaWireSizes": [],
@@ -347,8 +347,8 @@
           "id": "task_app/views/SummaryBar",
           "componentPath": "task_app/views/SummaryBar"
         },
-        "windowMs": 254.70000004768372,
-        "wireSliceLen": 8,
+        "windowMs": 254.39999997615814,
+        "wireSliceLen": 7,
         "deltaWirePackets": 0,
         "deltaWireBytes": 0,
         "deltaWireSizes": [],
@@ -362,56 +362,56 @@
     "latencySamples": [
       {
         "seq": 1,
-        "moveT": 2369,
-        "paintT": 2372.3000000715256,
+        "moveT": 2992.3000000715256,
+        "paintT": 2995.5,
         "anchor": "hover-label",
-        "domLatencyMs": 3.3000000715255737
+        "domLatencyMs": 3.1999999284744263
       },
       {
         "seq": 2,
-        "moveT": 2625.5,
-        "paintT": 2626.899999976158,
-        "anchor": "hover-label",
-        "domLatencyMs": 1.399999976158142
-      },
-      {
-        "seq": 3,
-        "moveT": 2881.5,
-        "paintT": 2882.8000000715256,
+        "moveT": 3249.600000023842,
+        "paintT": 3250.9000000953674,
         "anchor": "hover-label",
         "domLatencyMs": 1.3000000715255737
       },
       {
-        "seq": 4,
-        "moveT": 3135.100000023842,
-        "paintT": 3136.399999976158,
+        "seq": 3,
+        "moveT": 3505.600000023842,
+        "paintT": 3507.3000000715256,
         "anchor": "hover-label",
-        "domLatencyMs": 1.2999999523162842
+        "domLatencyMs": 1.7000000476837158
+      },
+      {
+        "seq": 4,
+        "moveT": 3761.9000000953674,
+        "paintT": 3763.3000000715256,
+        "anchor": "hover-label",
+        "domLatencyMs": 1.399999976158142
       },
       {
         "seq": 5,
-        "moveT": 3390.3000000715256,
-        "paintT": 3391.899999976158,
+        "moveT": 4017.4000000953674,
+        "paintT": 4018.8000000715256,
         "anchor": "hover-label",
-        "domLatencyMs": 1.5999999046325684
+        "domLatencyMs": 1.399999976158142
       },
       {
         "seq": 6,
-        "moveT": 3646.600000023842,
-        "paintT": 3648.399999976158,
+        "moveT": 4273.100000023842,
+        "paintT": 4274.600000023842,
         "anchor": "hover-label",
-        "domLatencyMs": 1.7999999523162842
+        "domLatencyMs": 1.5
       },
       {
         "seq": 7,
-        "moveT": 3900.8000000715256,
-        "paintT": 3902.2000000476837,
+        "moveT": 4526.900000095367,
+        "paintT": 4528.200000047684,
         "anchor": "hover-label",
-        "domLatencyMs": 1.399999976158142
+        "domLatencyMs": 1.2999999523162842
       }
     ],
     "medianLatencyMs": 1.399999976158142,
-    "p99LatencyMs": 3.3000000715255737,
+    "p99LatencyMs": 3.1999999284744263,
     "medianBytesPerHover": 1321,
     "meanBytesPerHover": 1321,
     "maxBytesPerHover": 1321,

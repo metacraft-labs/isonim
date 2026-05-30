@@ -1,0 +1,44 @@
+{
+  "Phone": {
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "firstArrivalSamples": 3,
+    "firstArrivalMedianMs": 201.6,
+    "firstArrivalP99Ms": 201.6,
+    "firstArrivalBudgetMs": 350,
+    "encodeBudgetMs": 16,
+    "encodeUpperBoundMs": 167.6,
+    "bytesPerFrame": 3949,
+    "tickFloorMs": 34
+  },
+  "Laptop": {
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "firstArrivalSamples": 3,
+    "firstArrivalMedianMs": 112.6,
+    "firstArrivalP99Ms": 112.6,
+    "firstArrivalBudgetMs": 500,
+    "encodeBudgetMs": 16,
+    "encodeUpperBoundMs": 78.6,
+    "bytesPerFrame": 4305,
+    "tickFloorMs": 34
+  },
+  "Desktop": {
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "firstArrivalSamples": 3,
+    "firstArrivalMedianMs": 65.4,
+    "firstArrivalP99Ms": 65.4,
+    "firstArrivalBudgetMs": 500,
+    "encodeBudgetMs": 16,
+    "encodeUpperBoundMs": 31.4,
+    "bytesPerFrame": 4363,
+    "tickFloorMs": 34
+  }
+}

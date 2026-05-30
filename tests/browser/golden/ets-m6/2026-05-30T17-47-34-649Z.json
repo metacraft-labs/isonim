@@ -1,6 +1,6 @@
 {
   "milestone": "ETS-M6",
-  "timestamp": "2026-05-30T18:31:33.355Z",
+  "timestamp": "2026-05-30T17:47:34.649Z",
   "backend": "cocoa",
   "app": "task",
   "approach": "B-with-resize-trigger",
@@ -16,7 +16,7 @@
       "detectedPath": "delta",
       "criteria": {
         "bboxWithin1Px": true,
-        "medianLatencyMs": 0.9000000953674316,
+        "medianLatencyMs": 0.8999999761581421,
         "latencyGateMet": true,
         "resizeReSnap": true,
         "hitChainDispatch": true,
@@ -24,8 +24,8 @@
       },
       "samples": {
         "hoverSamples": 7,
-        "latencyDomMedianMs": 0.9000000953674316,
-        "latencyDomP99Ms": 1.100000023841858,
+        "latencyDomMedianMs": 0.8999999761581421,
+        "latencyDomP99Ms": 1.1999999284744263,
         "hitChainHits": 8,
         "hitChainAttempts": 8,
         "bboxMaxDeltaPx": 1,
@@ -416,52 +416,52 @@
         "rawLatencySamples": [
           {
             "seq": 11,
-            "moveT": 4995.399999976158,
-            "paintT": 4996.300000071526,
+            "moveT": 4978.599999904633,
+            "paintT": 4979.5,
             "anchor": "hover-label",
             "domLatencyMs": 0.9000000953674316
           },
           {
             "seq": 12,
-            "moveT": 5119.700000047684,
-            "paintT": 5120.800000071526,
+            "moveT": 5101.599999904633,
+            "paintT": 5102.5,
             "anchor": "hover-label",
-            "domLatencyMs": 1.100000023841858
+            "domLatencyMs": 0.9000000953674316
           },
           {
             "seq": 13,
-            "moveT": 5243.700000047684,
-            "paintT": 5244.600000023842,
+            "moveT": 5224.299999952316,
+            "paintT": 5225.199999928474,
             "anchor": "hover-label",
             "domLatencyMs": 0.8999999761581421
           },
           {
             "seq": 14,
-            "moveT": 5367.899999976158,
-            "paintT": 5368.800000071526,
+            "moveT": 5348.899999976158,
+            "paintT": 5350.099999904633,
             "anchor": "hover-label",
-            "domLatencyMs": 0.9000000953674316
+            "domLatencyMs": 1.1999999284744263
           },
           {
             "seq": 15,
-            "moveT": 5492,
-            "paintT": 5492.899999976158,
+            "moveT": 5474.399999976158,
+            "paintT": 5475.299999952316,
             "anchor": "hover-label",
             "domLatencyMs": 0.8999999761581421
           },
           {
             "seq": 16,
-            "moveT": 5615.600000023842,
-            "paintT": 5616.5,
+            "moveT": 5598.699999928474,
+            "paintT": 5599.599999904633,
             "anchor": "hover-label",
             "domLatencyMs": 0.8999999761581421
           },
           {
             "seq": 17,
-            "moveT": 5739.100000023842,
-            "paintT": 5740.100000023842,
+            "moveT": 5722.299999952316,
+            "paintT": 5723.199999928474,
             "anchor": "hover-label",
-            "domLatencyMs": 1
+            "domLatencyMs": 0.8999999761581421
           }
         ],
         "observerInstalled": true,
@@ -489,7 +489,7 @@
       "samples": {
         "hoverSamples": 7,
         "latencyDomMedianMs": 0.8999999761581421,
-        "latencyDomP99Ms": 0.9000000953674316,
+        "latencyDomP99Ms": 1.100000023841858,
         "hitChainHits": 8,
         "hitChainAttempts": 8,
         "bboxMaxDeltaPx": 1,
@@ -880,52 +880,52 @@
         "rawLatencySamples": [
           {
             "seq": 11,
-            "moveT": 6378.099999904633,
-            "paintT": 6379,
+            "moveT": 5040.800000071526,
+            "paintT": 5041.700000047684,
             "anchor": "hover-label",
-            "domLatencyMs": 0.9000000953674316
+            "domLatencyMs": 0.8999999761581421
           },
           {
             "seq": 12,
-            "moveT": 6502.799999952316,
-            "paintT": 6503.699999928474,
+            "moveT": 5164.600000023842,
+            "paintT": 5165.5,
             "anchor": "hover-label",
             "domLatencyMs": 0.8999999761581421
           },
           {
             "seq": 13,
-            "moveT": 6625.399999976158,
-            "paintT": 6626.299999952316,
+            "moveT": 5286.100000023842,
+            "paintT": 5287.200000047684,
             "anchor": "hover-label",
-            "domLatencyMs": 0.8999999761581421
+            "domLatencyMs": 1.100000023841858
           },
           {
             "seq": 14,
-            "moveT": 6749.899999976158,
-            "paintT": 6750.799999952316,
+            "moveT": 5410.200000047684,
+            "paintT": 5411.100000023842,
             "anchor": "hover-label",
             "domLatencyMs": 0.8999999761581421
           },
           {
             "seq": 15,
-            "moveT": 6871.199999928474,
-            "paintT": 6872,
+            "moveT": 5532.700000047684,
+            "paintT": 5533.800000071526,
             "anchor": "hover-label",
-            "domLatencyMs": 0.8000000715255737
+            "domLatencyMs": 1.100000023841858
           },
           {
             "seq": 16,
-            "moveT": 6995.5,
-            "paintT": 6996.399999976158,
+            "moveT": 5655.800000071526,
+            "paintT": 5656.700000047684,
             "anchor": "hover-label",
             "domLatencyMs": 0.8999999761581421
           },
           {
             "seq": 17,
-            "moveT": 7120,
-            "paintT": 7120.899999976158,
+            "moveT": 5780.100000023842,
+            "paintT": 5781.200000047684,
             "anchor": "hover-label",
-            "domLatencyMs": 0.8999999761581421
+            "domLatencyMs": 1.100000023841858
           }
         ],
         "observerInstalled": true,
@@ -944,7 +944,7 @@
       "detectedPath": "delta",
       "criteria": {
         "bboxWithin1Px": true,
-        "medianLatencyMs": 0.8000000715255737,
+        "medianLatencyMs": 1.0499999523162842,
         "latencyGateMet": true,
         "resizeReSnap": true,
         "hitChainDispatch": true,
@@ -952,8 +952,8 @@
       },
       "samples": {
         "hoverSamples": 6,
-        "latencyDomMedianMs": 0.8000000715255737,
-        "latencyDomP99Ms": 1,
+        "latencyDomMedianMs": 1.0499999523162842,
+        "latencyDomP99Ms": 1.2000000476837158,
         "hitChainHits": 7,
         "hitChainAttempts": 7,
         "bboxMaxDeltaPx": 1,
@@ -1300,43 +1300,43 @@
         "rawLatencySamples": [
           {
             "seq": 10,
-            "moveT": 5609.299999952316,
-            "paintT": 5610.099999904633,
+            "moveT": 4664.300000071526,
+            "paintT": 4665.200000047684,
             "anchor": "hover-label",
-            "domLatencyMs": 0.7999999523162842
+            "domLatencyMs": 0.8999999761581421
           },
           {
             "seq": 11,
-            "moveT": 5732.899999976158,
-            "paintT": 5733.899999976158,
+            "moveT": 4788.899999976158,
+            "paintT": 4790.100000023842,
             "anchor": "hover-label",
-            "domLatencyMs": 1
+            "domLatencyMs": 1.2000000476837158
           },
           {
             "seq": 12,
-            "moveT": 5855.899999976158,
-            "paintT": 5856.699999928474,
+            "moveT": 4913.300000071526,
+            "paintT": 4914.5,
+            "anchor": "hover-label",
+            "domLatencyMs": 1.1999999284744263
+          },
+          {
+            "seq": 13,
+            "moveT": 5037.700000047684,
+            "paintT": 5038.899999976158,
+            "anchor": "hover-label",
+            "domLatencyMs": 1.1999999284744263
+          },
+          {
+            "seq": 14,
+            "moveT": 5162.600000023842,
+            "paintT": 5163.399999976158,
             "anchor": "hover-label",
             "domLatencyMs": 0.7999999523162842
           },
           {
-            "seq": 13,
-            "moveT": 5977.699999928474,
-            "paintT": 5978.5,
-            "anchor": "hover-label",
-            "domLatencyMs": 0.8000000715255737
-          },
-          {
-            "seq": 14,
-            "moveT": 6100.199999928474,
-            "paintT": 6101,
-            "anchor": "hover-label",
-            "domLatencyMs": 0.8000000715255737
-          },
-          {
             "seq": 15,
-            "moveT": 6223.799999952316,
-            "paintT": 6224.699999928474,
+            "moveT": 5286.700000047684,
+            "paintT": 5287.600000023842,
             "anchor": "hover-label",
             "domLatencyMs": 0.8999999761581421
           }
@@ -1354,7 +1354,7 @@
     "detectedPath": "legacy",
     "criteria": {
       "bboxWithin1Px": true,
-      "medianLatencyMs": 0.8999999761581421,
+      "medianLatencyMs": 0.949999988079071,
       "latencyGateMet": true,
       "resizeReSnap": true,
       "hitChainDispatch": true,
@@ -1362,8 +1362,8 @@
     },
     "samples": {
       "hoverSamples": 6,
-      "latencyDomMedianMs": 0.8999999761581421,
-      "latencyDomP99Ms": 1,
+      "latencyDomMedianMs": 0.949999988079071,
+      "latencyDomP99Ms": 1.0999999046325684,
       "hitChainHits": 7,
       "hitChainAttempts": 7,
       "bboxMaxDeltaPx": 1,
@@ -1710,45 +1710,45 @@
       "rawLatencySamples": [
         {
           "seq": 10,
-          "moveT": 4667.100000023842,
-          "paintT": 4668,
+          "moveT": 3456.7999999523163,
+          "paintT": 3457.6999999284744,
           "anchor": "hover-label",
           "domLatencyMs": 0.8999999761581421
         },
         {
           "seq": 11,
-          "moveT": 4788.600000023842,
-          "paintT": 4789.600000023842,
+          "moveT": 3580.7999999523163,
+          "paintT": 3581.7999999523163,
           "anchor": "hover-label",
           "domLatencyMs": 1
         },
         {
           "seq": 12,
-          "moveT": 4912.600000023842,
-          "paintT": 4913.5,
+          "moveT": 3705.100000023842,
+          "paintT": 3706.1999999284744,
           "anchor": "hover-label",
-          "domLatencyMs": 0.8999999761581421
+          "domLatencyMs": 1.0999999046325684
         },
         {
           "seq": 13,
-          "moveT": 5037.200000047684,
-          "paintT": 5038.100000023842,
+          "moveT": 3829,
+          "paintT": 3829.899999976158,
           "anchor": "hover-label",
           "domLatencyMs": 0.8999999761581421
         },
         {
           "seq": 14,
-          "moveT": 5160.600000023842,
-          "paintT": 5161.5,
+          "moveT": 3953.5,
+          "paintT": 3954.5,
           "anchor": "hover-label",
-          "domLatencyMs": 0.8999999761581421
+          "domLatencyMs": 1
         },
         {
           "seq": 15,
-          "moveT": 5284.899999976158,
-          "paintT": 5285.700000047684,
+          "moveT": 4076.600000023842,
+          "paintT": 4077.5,
           "anchor": "hover-label",
-          "domLatencyMs": 0.8000000715255737
+          "domLatencyMs": 0.8999999761581421
         }
       ],
       "observerInstalled": true,

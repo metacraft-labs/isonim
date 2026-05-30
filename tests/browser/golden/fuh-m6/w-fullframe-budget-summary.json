@@ -1,0 +1,25 @@
+{
+  "transport": "w/webp",
+  "backend": "cocoa",
+  "encoder": "in-process libwebp (FUH-M5)",
+  "viewports": {
+    "Phone": {
+      "width": 390,
+      "height": 844,
+      "encodeBudgetMs": 16,
+      "bytesPerFrameBucket": 4000
+    },
+    "Laptop": {
+      "width": 1280,
+      "height": 800,
+      "encodeBudgetMs": 16,
+      "bytesPerFrameBucket": 4400
+    },
+    "Desktop": {
+      "width": 1440,
+      "height": 900,
+      "encodeBudgetMs": 16,
+      "bytesPerFrameBucket": 4400
+    }
+  }
+}
