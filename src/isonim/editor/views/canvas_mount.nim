@@ -191,12 +191,21 @@ proc renderCanvasMount*[R, E](r: R; canvasDataAttr: string = ""):
 
 proc applyCanvasFitStyle*[R, E](r: R; mount: CanvasMount[E];
                                  active: bool) =
-  ## No-stretch rule: when the canvas is the active surface, we render
-  ## it at its **intrinsic pixel size** (no CSS scaling). The wrapper
-  ## becomes a flex container that centers the canvas; if the canvas
-  ## is smaller than the pane, the wrapper letterboxes the surround
-  ## with its ``#0a101e`` background. If the canvas is larger than the
-  ## pane, ``overflow: hidden`` crops it centered.
+  ## ERV-M1: the canvas wrapper is now a **device-frame-equivalent
+  ## container** that mirrors the iframe ``deviceFrame`` chrome from
+  ## ``page_preview.nim`` — white background, 1px hairline border,
+  ## soft drop shadow, smooth width transition. The caller is
+  ## responsible for sizing the wrapper to the active viewport
+  ## (``width``/``height``/``min-width``/``min-height``) so the canvas
+  ## inside (whose CSS size = ``intrinsic_px / devicePixelRatio`` =
+  ## the viewport's CSS px under the VRS-M2 DPR contract) lands
+  ## flush against the wrapper edges with no letterbox gap.
+  ##
+  ## No-stretch contract preserved: ``ensureSize`` in
+  ## ``streaming_preview.nim`` is still the source of truth for the
+  ## canvas's intrinsic + CSS size — we deliberately do NOT set
+  ## ``width``/``height`` on the canvas here so each render-effect
+  ## tick can't clobber the most recent ensureSize sizing.
   ##
   ## Image-rendering safety net: ``pixelated`` is set on the canvas so
   ## that if any code path ever re-introduces CSS scaling, the
@@ -204,50 +213,43 @@ proc applyCanvasFitStyle*[R, E](r: R; mount: CanvasMount[E];
   ## scaling of UI screenshots reads as a stretched/softened image,
   ## which the no-stretch rule exists to prevent).
   ##
-  ## The screen-capture automation is responsible for matching the
-  ## launcher's emitted pixel size to the preview pane's rendered size
-  ## (``--width`` / ``--height`` CLI flags on software backends). On
-  ## real-device backends (e.g. iOS) where the device dictates the
-  ## frame size, this proc lets the wrapper crop/letterbox naturally
-  ## rather than stretching.
+  ## TUI special case: when the active backend is ``pbTui`` the
+  ## caller sizes the wrapper to fill the available pane (cell
+  ## viewports like 80×24 would otherwise produce an 80×24 px wrapper
+  ## that's unreadable). The xterm.js host then mounts inside this
+  ## larger wrapper via ``ensureTuiHost`` and ``pickFontSize`` selects
+  ## a font that fills the host.
   ##
   ## Visibility of the per-affordance overlay children (hover label,
   ## selection outline, breadcrumb, handles) is *not* set here — that
   ## belongs to ``bindCanvasOverlayEffect`` whose reactive chain
   ## already hides them when the active backend is pbWeb.
-  ##
-  ## We also paint a 1px hairline border + subtle inner shadow on the
-  ## wrapper so the rendered demo box reads as a framed surface
-  ## against the surrounding pane chrome (and the letterbox bands
-  ## around an undersized canvas have a visible edge instead of
-  ## bleeding into the pane background).
   if active:
-    r.setStyle(mount.wrapper, "display", "flex")
-    r.setStyle(mount.wrapper, "align-items", "center")
-    r.setStyle(mount.wrapper, "justify-content", "center")
-    r.setStyle(mount.wrapper, "border", "1px solid #303244")
-    r.setStyle(mount.wrapper, "border-radius", "6px")
+    # Device-frame chrome (mirroring deviceFrame in page_preview.nim).
+    r.setStyle(mount.wrapper, "display", "block")
+    r.setStyle(mount.wrapper, "background-color", "#FFFFFF")
+    r.setStyle(mount.wrapper, "border", "1px solid rgba(255,255,255,0.12)")
     r.setStyle(mount.wrapper, "box-shadow",
-               "0 0 0 1px rgba(15,23,42,.6), " &
-               "0 4px 12px rgba(15,23,42,.35)")
-    r.setStyle(mount.wrapper, "background-color", "#0a101e")
+               "0 20px 60px rgba(0,0,0,0.38)")
     r.setStyle(mount.wrapper, "overflow", "hidden")
     r.setStyle(mount.wrapper, "box-sizing", "border-box")
+    r.setStyle(mount.wrapper, "transition", "width 0.15s")
+    r.setStyle(mount.wrapper, "flex", "0 0 auto")
+    # Drop the legacy flex-centering / dark letterbox styles in case
+    # the wrapper was previously toggled to ``active=true`` under the
+    # old chrome (idempotent reseed).
+    r.setStyle(mount.wrapper, "align-items", "")
+    r.setStyle(mount.wrapper, "justify-content", "")
     r.setStyle(mount.canvas, "display", "block")
     r.setStyle(mount.overlay, "display", "block")
-    # CSS sizing is now owned by the streaming_preview.nim
-    # ``ensureSize`` shim (intrinsic_px / devicePixelRatio so the
-    # bitmap maps 1:1 to device pixels on HiDPI displays). Leaving
-    # ``width`` and ``height`` unset here means this proc no longer
-    # clobbers ensureSize's explicit pixel sizing each time the
-    # outer createRenderEffect re-runs (the rebuild fires on every
-    # viewport pill click, which previously left the canvas at
-    # ``width: auto`` = intrinsic CSS = 2× the wrapper on Retina
-    # for the window between the pill click and the next F-packet,
-    # producing a cropped-frame flash the user perceived as
-    # "images often don't show up".
+    # CSS sizing is owned by the streaming_preview.nim ``ensureSize``
+    # shim (intrinsic_px / devicePixelRatio so the bitmap maps 1:1 to
+    # device pixels on HiDPI displays). Leaving ``width`` and
+    # ``height`` unset here means this proc no longer clobbers
+    # ensureSize's explicit pixel sizing each time the outer
+    # createRenderEffect re-runs.
     r.setStyle(mount.canvas, "object-fit", "")
-    r.setStyle(mount.canvas, "flex-shrink", "0")
+    r.setStyle(mount.canvas, "flex-shrink", "")
     # Safety net: if any path ever re-introduces CSS scaling, use
     # nearest-neighbour (never bilinear) so the stretching is obvious
     # instead of silently softening pixels.
@@ -262,6 +264,8 @@ proc applyCanvasFitStyle*[R, E](r: R; mount: CanvasMount[E];
     r.setStyle(mount.wrapper, "box-shadow", "")
     r.setStyle(mount.wrapper, "background-color", "")
     r.setStyle(mount.wrapper, "overflow", "")
+    r.setStyle(mount.wrapper, "transition", "")
+    r.setStyle(mount.wrapper, "flex", "")
     r.setStyle(mount.canvas, "display", "none")
     r.setStyle(mount.overlay, "display", "none")
     r.setStyle(mount.canvas, "image-rendering", "")

@@ -179,6 +179,36 @@ proc renderFoundationsPage*[R, E](r: R; vm: EditorVM): E =
     r.setStyle(foundationProjectSectionEl, "display",
       if showFoundationProject: "flex" else: "none")
     r.applyCanvasFitStyle(foundationCanvasMnt, useCanvas)
+    if useCanvas:
+      # ERV-M1: let the wrapper auto-size to the canvas's natural CSS
+      # dimensions (intrinsic_px / dpr = viewport_px under the VRS-M2
+      # DPR contract) so the chrome wraps the rendered surface snugly
+      # without producing horizontal overflow when the viewport is
+      # wider than the foundations section. TUI cell viewports fall
+      # back to filling the section so xterm.js has room to pick a
+      # usable font size.
+      let vp = vm.viewport.val
+      let radius =
+        case vp.kind
+        of pvkDesktop, pvkLaptop, pvkWide, pvkUltrawide,
+            pvkTui80x24, pvkTui120x40: "8px"
+        else: "18px"
+      if vp.isCells:
+        r.setStyle(foundationCanvasMnt.wrapper, "width", "100%")
+        r.setStyle(foundationCanvasMnt.wrapper, "height", "100%")
+        r.setStyle(foundationCanvasMnt.wrapper, "min-width", "320px")
+        r.setStyle(foundationCanvasMnt.wrapper, "min-height", "240px")
+        r.setStyle(foundationCanvasMnt.wrapper, "flex", "1 1 auto")
+        r.setStyle(foundationCanvasMnt.wrapper, "border-radius", "8px")
+      else:
+        # Width/height left unset so the block-level wrapper sizes
+        # to the canvas's intrinsic CSS dimensions.
+        r.setStyle(foundationCanvasMnt.wrapper, "width", "")
+        r.setStyle(foundationCanvasMnt.wrapper, "height", "")
+        r.setStyle(foundationCanvasMnt.wrapper, "min-width", "")
+        r.setStyle(foundationCanvasMnt.wrapper, "min-height", "")
+        r.setStyle(foundationCanvasMnt.wrapper, "flex", "0 0 auto")
+        r.setStyle(foundationCanvasMnt.wrapper, "border-radius", radius)
     when defined(js):
       foundationBridgeBinding.attachIfNeeded(vm, foundationCanvasMnt.canvas,
                                              useCanvas)

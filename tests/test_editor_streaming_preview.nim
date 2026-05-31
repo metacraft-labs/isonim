@@ -457,3 +457,67 @@ suite "RS-M12: streaming-preview publish paths":
       vm.clearStoryPublisher()
       vm.publishSelectStory("C", "D", "skPage", "C / D")
       check hits == 1  # no-op after clear
+
+# ---------------------------------------------------------------------------
+# Suite 5 — ERV-M2 canvas-blank-on-resize regression guards
+# ---------------------------------------------------------------------------
+
+## ERV-M2 (2026-05-31): the browser-side bridge client lives in a
+## ``{.emit: ...}`` block — there is no Nim-callable surface for the
+## ``handleW`` / ``handleF`` packet handlers, so we can't drive them
+## from a unit test without standing up a real browser (forbidden by
+## the milestone: no ``just editor-build`` and no playwright in this
+## fix's test surface). Instead we use ``staticRead`` to snapshot the
+## emitted JS source at compile time and assert that the load-bearing
+## guards stay in place. If a future refactor strips the partial-
+## draw skip or the snapshot-preserve in ``ensureSize`` the test
+## fails at compile time with a precise pointer to the bug class
+## (canvas blank flash after resize). The browser-side behaviour is
+## covered by the existing playwright VRS regression suites the
+## orchestrator runs after the milestone lands.
+
+const streamingPreviewSrc = staticRead(
+  "../src/isonim/editor/streaming_preview.nim")
+
+suite "ERV-M2: canvas-blank-on-resize guards":
+
+  test "pendingResizeNeedsFullFrame flag declared in bridge JS closure":
+    check streamingPreviewSrc.contains(
+      "var pendingResizeNeedsFullFrame = false;")
+
+  test "ensureSize snapshots prior canvas before resizing":
+    check streamingPreviewSrc.contains(
+      "snapshotCanvas =\n                  document.createElement('canvas');")
+    check streamingPreviewSrc.contains("snapCtx.drawImage(canvas, 0, 0);")
+    check streamingPreviewSrc.contains(
+      "rctx.drawImage(snapshotCanvas, 0, 0,\n                                 width, height);")
+
+  test "ensureSize arms the partial-draw guard on dim change":
+    check streamingPreviewSrc.contains(
+      "if (hadPriorContent) {\n              pendingResizeNeedsFullFrame = true;")
+
+  test "W-diff partial-draw branch skips when the guard is set":
+    # The dispatch-time check (before kicking off bitmap decode).
+    check streamingPreviewSrc.contains(
+      "if (pendingResizeNeedsFullFrame) {\n            try {")
+    # The promise-resolution check (covers the resize-during-decode race).
+    check streamingPreviewSrc.contains(
+      "if (pendingResizeNeedsFullFrame) {\n                for (var i = 0; i < decoded.length; i++) {")
+
+  test "F-diff partial-draw branch skips when the guard is set":
+    check streamingPreviewSrc.contains(
+      "if (pendingResizeNeedsFullFrame) {\n              try {\n                if (window.__isonimTestMode === true) {\n                  if (!Array.isArray(\n                      window.__isonimFDiffSkippedAfterResize)) {")
+
+  test "W-full / F-full / V-frame paths clear the guard":
+    # Counts: declaration (false) + W-full clear + F-full clear + V-frame
+    # clear = 4 occurrences of the explicit reset.
+    var clears = 0
+    var i = 0
+    while true:
+      let j = streamingPreviewSrc.find(
+        "pendingResizeNeedsFullFrame = false;", i)
+      if j < 0: break
+      inc clears
+      i = j + 1
+    # 1 for the declaration line, 3 for the explicit per-path clears.
+    check clears >= 4

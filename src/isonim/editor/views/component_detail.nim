@@ -890,13 +890,45 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
     # RS-M11: iframe stays for Web, canvas takes over for non-Web.
     r.setStyle(projectFrame, "display",
                if useCanvas: "none" else: "block")
-    # M-EVP-13: canvas + overlay visibility (and fit-to-pane CSS) is
+    # ERV-M1: canvas + overlay visibility (and device-frame chrome) is
     # owned by the shared helper so page_preview.nim /
     # foundations_page.nim use the exact same toggle. The helper sets
-    # ``data-canvas-active`` and the Approach-A fill rules (``width:
-    # 100%; height: 100%; object-fit: contain``) so the canvas reads
-    # at full pane size instead of the prior tiny-strip behaviour.
+    # ``data-canvas-active`` plus the white-card / hairline-border /
+    # drop-shadow chrome that mirrors the iframe deviceFrame from
+    # page_preview.nim, giving the canvas the same "nice frame" the
+    # user reported missing for non-Web backends.
     r.applyCanvasFitStyle(canvasMnt, useCanvas)
+    if useCanvas:
+      # Component-detail's preview row is centered; let the canvas
+      # wrapper auto-size to the canvas's natural CSS dimensions
+      # (intrinsic_px / dpr = viewport_px under the VRS-M2 DPR
+      # contract) so the chrome wraps the rendered surface snugly
+      # without producing horizontal overflow when the viewport is
+      # wider than the editor pane. TUI cell viewports fall back to
+      # filling the row so xterm.js has room to pick a usable font
+      # size.
+      let vp = vm.viewport.val
+      let radius =
+        case vp.kind
+        of pvkDesktop, pvkLaptop, pvkWide, pvkUltrawide,
+            pvkTui80x24, pvkTui120x40: "8px"
+        else: "18px"
+      if vp.isCells:
+        r.setStyle(canvasWrapper, "width", "100%")
+        r.setStyle(canvasWrapper, "height", "100%")
+        r.setStyle(canvasWrapper, "min-width", "320px")
+        r.setStyle(canvasWrapper, "min-height", "320px")
+        r.setStyle(canvasWrapper, "flex", "1 1 auto")
+        r.setStyle(canvasWrapper, "border-radius", "8px")
+      else:
+        # Width/height left unset so the block-level wrapper sizes
+        # to the canvas's intrinsic CSS dimensions.
+        r.setStyle(canvasWrapper, "width", "")
+        r.setStyle(canvasWrapper, "height", "")
+        r.setStyle(canvasWrapper, "min-width", "")
+        r.setStyle(canvasWrapper, "min-height", "")
+        r.setStyle(canvasWrapper, "flex", "0 0 auto")
+        r.setStyle(canvasWrapper, "border-radius", radius)
     r.setStyle(projectSection, "display", if showProject: "flex" else: "none")
     r.setStyle(genericContent, "display", if showProject: "none" else: "flex")
     r.populateComponentPropertyPanel(vm, propertyPanel, projectFrame,

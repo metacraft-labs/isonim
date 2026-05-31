@@ -83,36 +83,31 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
           height = "100%",
           border = "0",
           `data-page-project-frame` = "true")
-  # M-EVP-13: Pattern A canvas mount for Pages. When the active
+  # ERV-M1: Pattern A canvas mount for Pages. When the active
   # backend is non-Web, the iframe hides and the canvas (fed by
-  # `attachBridgeClient`) takes over. The canvas wrapper does NOT
-  # live inside the device frame — the device frame is sized to the
-  # user's chosen viewport, which for TUI is 80x24 cells (i.e. 80x24
-  # CSS pixels under our `width: <viewport>px` rule). The launcher's
-  # 640x288 surface would be a thin stretched strip inside that box
-  # (the original M-EVP-13 bug report). Instead we paint the canvas
-  # into a sibling pane that fills the available preview area, with
-  # `object-fit: contain` preserving the launcher's surface ratio at
-  # the maximum readable size.
+  # `attachBridgeClient`) takes over. The canvas wrapper now mounts
+  # as a sibling of the iframe deviceFrame inside `frameHostNode` so
+  # it inherits the same dotted-grid preview pane chrome and is
+  # sized to the user's chosen viewport — matching the iframe
+  # deviceFrame's white-card / hairline-border / drop-shadow look
+  # and eliminating the dark letterbox bands the old `canvasPaneEl`
+  # produced.
+  #
+  # The launcher's surface size matches the wrapper exactly: the
+  # ``publishResize`` call at the bottom of the render effect
+  # advertises viewport dims; the JS shim scales by
+  # ``window.devicePixelRatio`` so the launcher renders at physical
+  # pixels; ``ensureSize`` reseeds ``canvas.style.width =
+  # intrinsic_px / dpr`` = viewport_px, which equals the wrapper's
+  # CSS px. The canvas therefore fills the wrapper edge-to-edge with
+  # no letterbox or stretching.
+  #
+  # TUI special case: cell viewports (80×24) would size the wrapper
+  # to 80×24 px and make xterm.js unreadable. For those we fall back
+  # to filling the preview pane (``flex: 1``).
   let pageCanvasMnt = renderCanvasMount[R, E](r, "data-page-project-canvas")
-  var canvasPaneEl: E
-  let canvasPaneNode = ui(r):
-    tdiv(ref = canvasPaneEl,
-          `data-page-canvas-pane` = "true",
-          display = "none",
-          flex = "1",
-          min_width = "0",
-          min_height = "0",
-          padding = "16px",
-          align_items = "stretch",
-          justify_content = "stretch",
-          flex_direction = "column"):
-      discard
-  r.setStyle(pageCanvasMnt.wrapper, "flex", "1")
-  r.setStyle(pageCanvasMnt.wrapper, "min-height", "320px")
-  r.appendChild(canvasPaneEl, pageCanvasMnt.wrapper)
   r.appendChild(frameHostNode, frame)
-  r.appendChild(frameHostNode, canvasPaneNode)
+  r.appendChild(frameHostNode, pageCanvasMnt.wrapper)
   # M-EVP-13: breadcrumb sits in the host scroll region directly below
   # the device frame so the canvas selection's componentPath is always
   # readable, even when the device frame is sized to a small viewport
@@ -200,20 +195,19 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
     r.setStyle(deviceFrame, "height", $height & "px")
     r.setStyle(deviceFrame, "min-width", $width & "px")
     r.setStyle(deviceFrame, "min-height", $height & "px")
-    r.setStyle(deviceFrame, "border-radius",
+    let borderRadius =
       case viewport.kind
       of pvkDesktop, pvkLaptop, pvkWide, pvkUltrawide,
           pvkTui80x24, pvkTui120x40: "8px"
-      else: "18px")
+      else: "18px"
+    r.setStyle(deviceFrame, "border-radius", borderRadius)
     r.setStyle(previewFrame, "width", "100%")
     r.setStyle(previewFrame, "height", "100%")
     # M-EVP-13: hide the viewport-sized device frame when the canvas
-    # takes over (TUI cell viewports are 80x24, far too small for the
-    # launcher's 640x288 surface to render legibly inside).
+    # takes over.
     r.setStyle(deviceFrame, "display", if useCanvas: "none" else: "flex")
-    r.setStyle(canvasPaneEl, "display", if useCanvas: "flex" else: "none")
     if useCanvas:
-      # Hide iframe + fallback; the canvas fills the dedicated pane.
+      # Hide iframe + fallback; the canvas wrapper takes over.
       r.setAttribute(previewFrame, "srcdoc", "")
       r.setStyle(fallbackPanel, "display", "none")
       r.setStyle(previewFrame, "display", "none")
@@ -233,8 +227,32 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
       r.setStyle(fallbackPanel, "display", "flex")
       r.setStyle(previewFrame, "display", "none")
 
-    # M-EVP-13: canvas + overlay visibility + fit-to-pane CSS.
+    # ERV-M1: canvas + overlay visibility + device-frame chrome.
     r.applyCanvasFitStyle(pageCanvasMnt, useCanvas)
+    if useCanvas:
+      # Size the canvas wrapper exactly like the iframe deviceFrame
+      # so the canvas (sized by ``ensureSize`` to intrinsic_px / dpr
+      # = viewport_px in CSS terms) lands flush against the wrapper
+      # edges, replacing the previous dark letterbox bands.
+      #
+      # TUI cell viewports (80×24) are too small for an 80×24 px
+      # wrapper to be readable — fall back to filling the preview
+      # pane (the legacy ``canvasPaneEl`` behaviour) so xterm.js has
+      # room to pick a usable font size.
+      if viewport.isCells:
+        r.setStyle(pageCanvasMnt.wrapper, "width", "100%")
+        r.setStyle(pageCanvasMnt.wrapper, "height", "100%")
+        r.setStyle(pageCanvasMnt.wrapper, "min-width", "320px")
+        r.setStyle(pageCanvasMnt.wrapper, "min-height", "320px")
+        r.setStyle(pageCanvasMnt.wrapper, "flex", "1 1 auto")
+        r.setStyle(pageCanvasMnt.wrapper, "border-radius", "8px")
+      else:
+        r.setStyle(pageCanvasMnt.wrapper, "width", $width & "px")
+        r.setStyle(pageCanvasMnt.wrapper, "height", $height & "px")
+        r.setStyle(pageCanvasMnt.wrapper, "min-width", $width & "px")
+        r.setStyle(pageCanvasMnt.wrapper, "min-height", $height & "px")
+        r.setStyle(pageCanvasMnt.wrapper, "flex", "0 0 auto")
+        r.setStyle(pageCanvasMnt.wrapper, "border-radius", borderRadius)
 
     when defined(js):
       pageBridgeBinding.attachIfNeeded(vm, pageCanvasMnt.canvas, useCanvas)

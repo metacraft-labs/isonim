@@ -1107,6 +1107,18 @@ when defined(js):
         var videoDecoderHeight = 0;
         var videoChunkSeq = 0;
         var activeTransport = '';
+        // ERV-M2: when ``ensureSize`` changes the canvas intrinsic
+        // dimensions, setting ``canvas.width`` / ``canvas.height``
+        // clears the backing buffer to transparent per the HTML spec.
+        // A subsequent W-diff (or F-diff) partial paint would then
+        // composite a small rect of new pixels on top of a fully-
+        // transparent canvas — the rest reads as black against the
+        // dark editor pane and the user sees an intermittent black
+        // frame after resize. We set the guard true on every size
+        // change (skipping the first paint when the canvas had no
+        // prior content) and clear it when a full frame arrives.
+        // Partial-draw branches consult the flag and skip while set.
+        var pendingResizeNeedsFullFrame = false;
         function hasVideoDecoder() {
           return typeof VideoDecoder === 'function' &&
                  typeof EncodedVideoChunk === 'function';
@@ -1187,6 +1199,34 @@ when defined(js):
         }
         function ensureSize(width, height) {
           if (canvas.width !== width || canvas.height !== height) {
+            // ERV-M2: snapshot the prior canvas content BEFORE we
+            // reassign canvas.width / canvas.height (which clears the
+            // buffer per the HTML spec). On resize we draw the
+            // snapshot back, stretched to the new intrinsic dims, so
+            // the canvas shows a visually-approximate prior frame
+            // until the launcher delivers a fresh full frame instead
+            // of going black. The stretched snapshot is overwritten
+            // wholesale by the next W-full / F-full / V-frame draw.
+            var hadPriorContent =
+              canvas.width > 0 && canvas.height > 0;
+            var snapshotCanvas = null;
+            if (hadPriorContent) {
+              try {
+                snapshotCanvas =
+                  document.createElement('canvas');
+                snapshotCanvas.width = canvas.width;
+                snapshotCanvas.height = canvas.height;
+                var snapCtx =
+                  snapshotCanvas.getContext('2d');
+                if (snapCtx) {
+                  snapCtx.drawImage(canvas, 0, 0);
+                } else {
+                  snapshotCanvas = null;
+                }
+              } catch (_) {
+                snapshotCanvas = null;
+              }
+            }
             canvas.width = width;
             canvas.height = height;
             // VRS-M2 follow-up: the launcher renders at PHYSICAL
@@ -1207,6 +1247,29 @@ when defined(js):
                        window.devicePixelRatio) || 1;
             canvas.style.width = (width / dpr) + 'px';
             canvas.style.height = (height / dpr) + 'px';
+            // ERV-M2: redraw the prior snapshot stretched to the new
+            // intrinsic dims so the canvas is not transparent while
+            // we wait for the next full frame. Test-mode mirror so
+            // playwright can verify the guard armed.
+            if (snapshotCanvas !== null) {
+              try {
+                var rctx = canvas.getContext('2d');
+                if (rctx) {
+                  rctx.imageSmoothingEnabled = true;
+                  rctx.imageSmoothingQuality = 'high';
+                  rctx.drawImage(snapshotCanvas, 0, 0,
+                                 width, height);
+                }
+              } catch (_) {}
+            }
+            if (hadPriorContent) {
+              pendingResizeNeedsFullFrame = true;
+              try {
+                if (window.__isonimTestMode === true) {
+                  window.__isonimPendingResizeNeedsFullFrame = true;
+                }
+              } catch (_) {}
+            }
           }
         }
         function teardownVideoDecoder() {
@@ -1256,6 +1319,17 @@ when defined(js):
                     ctx.imageSmoothingQuality = 'high';
                     ctx.drawImage(frame, 0, 0);
                   }
+                  // ERV-M2: V frames are always full-frame (decoded
+                  // VideoFrame covers the entire canvas). Lift the
+                  // post-resize partial-draw guard so any concurrent
+                  // W-diff / F-diff packets resume painting against
+                  // the now-current backing buffer.
+                  pendingResizeNeedsFullFrame = false;
+                  try {
+                    if (window.__isonimTestMode === true) {
+                      window.__isonimPendingResizeNeedsFullFrame = false;
+                    }
+                  } catch (_) {}
                 } catch (_) {}
                 // EPP-M6 lifetime contract (audit § 3.4): VideoFrame
                 // holds a GPU texture; the browser caps in-flight
@@ -1516,6 +1590,17 @@ when defined(js):
                   ctx.imageSmoothingQuality = 'high';
                   ctx.drawImage(bitmap, 0, 0);
                 }
+                // ERV-M2: a full-frame W repaints the entire canvas,
+                // so any post-resize stale-snapshot redraw from
+                // ``ensureSize`` is overwritten and the partial-draw
+                // skip guard can be lifted for subsequent W-diff
+                // packets that depend on this backing buffer.
+                pendingResizeNeedsFullFrame = false;
+                try {
+                  if (window.__isonimTestMode === true) {
+                    window.__isonimPendingResizeNeedsFullFrame = false;
+                  }
+                } catch (_) {}
                 setActiveTransport('w/webp');
               } catch (_) {}
               // ELT-M8 lifetime contract: ImageBitmap holds a GPU
@@ -1605,6 +1690,30 @@ when defined(js):
             setActiveTransport('w/webp');
             return;
           }
+          // ERV-M2: if the canvas was just resized, the launcher's
+          // W-diff was encoded against the OLD intrinsic dimensions
+          // and would paint rectangles at stale coordinates onto the
+          // freshly-sized canvas. Drop these partial draws and wait
+          // for the next full-frame W (worst case ~85 ms at 12 FPS
+          // for WebP) which is guaranteed to repaint the entire
+          // canvas. Meanwhile ``ensureSize`` has already painted the
+          // stretched prior snapshot so the canvas is not black.
+          // Test-mode mirror records the drop so the playwright
+          // regression suite can verify the guard fired.
+          if (pendingResizeNeedsFullFrame) {
+            try {
+              if (window.__isonimTestMode === true) {
+                if (!Array.isArray(
+                    window.__isonimWDiffSkippedAfterResize)) {
+                  window.__isonimWDiffSkippedAfterResize = [];
+                }
+                window.__isonimWDiffSkippedAfterResize.push(
+                  rects.length);
+              }
+            } catch (_) {}
+            setActiveTransport('w/webp');
+            return;
+          }
           var pending = rects.map(function (r) {
             return createImageBitmap(r.blob).then(function (bm) {
               return { rect: r, bitmap: bm };
@@ -1612,6 +1721,20 @@ when defined(js):
           });
           Promise.all(pending).then(function (decoded) {
             try {
+              // ERV-M2: re-check the flag on the promise resolution.
+              // ``ensureSize`` runs synchronously on the next packet
+              // (or the next M-resize), so a resize that races
+              // between the dispatch above and bitmap decode here
+              // would still produce stale-coord rects. The guard is
+              // cheap and the partial-draw is what causes the visible
+              // black flash.
+              if (pendingResizeNeedsFullFrame) {
+                for (var i = 0; i < decoded.length; i++) {
+                  try { decoded[i].bitmap.close(); } catch (_) {}
+                }
+                setActiveTransport('w/webp');
+                return;
+              }
               var ctx = canvas.getContext('2d');
               if (ctx) {
                 ctx.imageSmoothingEnabled = true;
@@ -1667,7 +1790,35 @@ when defined(js):
             }
             var img = new ImageData(new Uint8ClampedArray(payload), width, height);
             ctx.putImageData(img, 0, 0);
+            // ERV-M2: F-full repaints the entire canvas, so lift the
+            // post-resize partial-draw guard (mirrors the W-full
+            // clear above). Important when the launcher's accept-
+            // list negotiation lands on F for some frames and W for
+            // others — the guard must clear on either path.
+            pendingResizeNeedsFullFrame = false;
+            try {
+              if (window.__isonimTestMode === true) {
+                window.__isonimPendingResizeNeedsFullFrame = false;
+              }
+            } catch (_) {}
           } else {
+            // ERV-M2: F-diff is the raw-RGBA mirror of W-diff and
+            // suffers the same post-resize garbage-coord problem.
+            // Drop the partial paint while we wait for the next
+            // full F (or W) frame. The ``ensureSize`` snapshot
+            // redraw keeps the canvas visually non-black.
+            if (pendingResizeNeedsFullFrame) {
+              try {
+                if (window.__isonimTestMode === true) {
+                  if (!Array.isArray(
+                      window.__isonimFDiffSkippedAfterResize)) {
+                    window.__isonimFDiffSkippedAfterResize = [];
+                  }
+                  window.__isonimFDiffSkippedAfterResize.push(1);
+                }
+              } catch (_) {}
+              return;
+            }
             var count = new DataView(payload.buffer, payload.byteOffset).getUint32(0, true);
             var off = 4;
             for (var i = 0; i < count; i++) {
