@@ -180,13 +180,9 @@ proc renderFoundationsPage*[R, E](r: R; vm: EditorVM): E =
       if showFoundationProject: "flex" else: "none")
     r.applyCanvasFitStyle(foundationCanvasMnt, useCanvas)
     if useCanvas:
-      # ERV-M1: let the wrapper auto-size to the canvas's natural CSS
-      # dimensions (intrinsic_px / dpr = viewport_px under the VRS-M2
-      # DPR contract) so the chrome wraps the rendered surface snugly
-      # without producing horizontal overflow when the viewport is
-      # wider than the foundations section. TUI cell viewports fall
-      # back to filling the section so xterm.js has room to pick a
-      # usable font size.
+      # ERV-M1 fix: explicit viewport-pixel wrapper sizing — matches
+      # page_preview's working pattern. The previous content-driven
+      # approach left the flex-child wrapper at 0×0 in this layout.
       let vp = vm.viewport.val
       let radius =
         case vp.kind
@@ -201,12 +197,12 @@ proc renderFoundationsPage*[R, E](r: R; vm: EditorVM): E =
         r.setStyle(foundationCanvasMnt.wrapper, "flex", "1 1 auto")
         r.setStyle(foundationCanvasMnt.wrapper, "border-radius", "8px")
       else:
-        # Width/height left unset so the block-level wrapper sizes
-        # to the canvas's intrinsic CSS dimensions.
-        r.setStyle(foundationCanvasMnt.wrapper, "width", "")
-        r.setStyle(foundationCanvasMnt.wrapper, "height", "")
-        r.setStyle(foundationCanvasMnt.wrapper, "min-width", "")
-        r.setStyle(foundationCanvasMnt.wrapper, "min-height", "")
+        let vw = previewViewportWidth(vp)
+        let vh = previewViewportHeight(vp)
+        r.setStyle(foundationCanvasMnt.wrapper, "width", $vw & "px")
+        r.setStyle(foundationCanvasMnt.wrapper, "height", $vh & "px")
+        r.setStyle(foundationCanvasMnt.wrapper, "min-width", $vw & "px")
+        r.setStyle(foundationCanvasMnt.wrapper, "min-height", $vh & "px")
         r.setStyle(foundationCanvasMnt.wrapper, "flex", "0 0 auto")
         r.setStyle(foundationCanvasMnt.wrapper, "border-radius", radius)
     when defined(js):

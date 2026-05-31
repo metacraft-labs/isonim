@@ -899,14 +899,15 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
     # user reported missing for non-Web backends.
     r.applyCanvasFitStyle(canvasMnt, useCanvas)
     if useCanvas:
-      # Component-detail's preview row is centered; let the canvas
-      # wrapper auto-size to the canvas's natural CSS dimensions
-      # (intrinsic_px / dpr = viewport_px under the VRS-M2 DPR
-      # contract) so the chrome wraps the rendered surface snugly
-      # without producing horizontal overflow when the viewport is
-      # wider than the editor pane. TUI cell viewports fall back to
-      # filling the row so xterm.js has room to pick a usable font
-      # size.
+      # ERV-M1 fix: size the wrapper explicitly to viewport pixels —
+      # matches page_preview's working pattern. The previous
+      # content-driven approach left the flex-child wrapper at 0×0
+      # because a block-level canvas with explicit pixel CSS dims
+      # doesn't drive ``flex: 0 0 auto`` parent's auto-size in this
+      # column-stack layout. Canvas CSS dims = intrinsic/dpr =
+      # viewport_px under the VRS-M2 DPR contract, so explicit
+      # viewport-px wrapper sizing snaps the canvas flush with no
+      # letterbox.
       let vp = vm.viewport.val
       let radius =
         case vp.kind
@@ -921,12 +922,12 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
         r.setStyle(canvasWrapper, "flex", "1 1 auto")
         r.setStyle(canvasWrapper, "border-radius", "8px")
       else:
-        # Width/height left unset so the block-level wrapper sizes
-        # to the canvas's intrinsic CSS dimensions.
-        r.setStyle(canvasWrapper, "width", "")
-        r.setStyle(canvasWrapper, "height", "")
-        r.setStyle(canvasWrapper, "min-width", "")
-        r.setStyle(canvasWrapper, "min-height", "")
+        let vw = previewViewportWidth(vp)
+        let vh = previewViewportHeight(vp)
+        r.setStyle(canvasWrapper, "width", $vw & "px")
+        r.setStyle(canvasWrapper, "height", $vh & "px")
+        r.setStyle(canvasWrapper, "min-width", $vw & "px")
+        r.setStyle(canvasWrapper, "min-height", $vh & "px")
         r.setStyle(canvasWrapper, "flex", "0 0 auto")
         r.setStyle(canvasWrapper, "border-radius", radius)
     r.setStyle(projectSection, "display", if showProject: "flex" else: "none")
