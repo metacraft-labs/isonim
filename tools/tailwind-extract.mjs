@@ -10,10 +10,18 @@
 // CSS variables resolved to concrete values.
 //
 // Usage: node tools/tailwind-extract.mjs [--input src/input.css] [--out-dir build]
+//                                        [--content '<glob>' ...]
+//
+// `--content` (repeatable) adds explicit @source directives so consuming
+// apps can drive the extract from their own repo. Tailwind v4's default
+// auto-detection only scans the project root and recognized file types
+// (no `.nim`), so callers from sibling repos MUST pass `--content` to
+// have their source files scanned. Each pattern is emitted verbatim as
+// a `@source "<pattern>";` line in a generated input CSS.
 
 import { execSync } from 'child_process';
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
-import { join, dirname } from 'path';
+import { join, dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -22,16 +30,40 @@ const projectRoot = join(__dirname, '..');
 // Parse args
 let inputCss = null;
 let outDir = join(projectRoot, 'build');
+let contentPatterns = [];
 
 for (let i = 2; i < process.argv.length; i++) {
   if (process.argv[i] === '--input' && process.argv[i + 1]) {
     inputCss = process.argv[++i];
   } else if (process.argv[i] === '--out-dir' && process.argv[i + 1]) {
     outDir = process.argv[++i];
+  } else if (process.argv[i] === '--content' && process.argv[i + 1]) {
+    contentPatterns.push(process.argv[++i]);
   }
 }
 
 mkdirSync(outDir, { recursive: true });
+
+// If --content was passed but no --input, synthesize an input CSS file
+// with explicit @source directives.  The generated CSS file MUST live
+// inside isonim's tree so Node's module-resolution walk (used by
+// Tailwind v4 to resolve `@import "tailwindcss"`) can find isonim's
+// node_modules.  Writing it under the caller's out-dir would fail with
+// `Error: Can't resolve 'tailwindcss'` when the caller's repo has no
+// local node_modules.  Each pattern is resolved to an absolute path
+// against the caller's cwd so repo-relative globs work.
+if (contentPatterns.length > 0 && !inputCss) {
+  const isonimBuild = join(projectRoot, 'build');
+  mkdirSync(isonimBuild, { recursive: true });
+  const generatedInput = join(isonimBuild, '_input.generated.css');
+  const lines = ['@import "tailwindcss";'];
+  for (const pat of contentPatterns) {
+    const absPat = pat.startsWith('/') ? pat : resolve(process.cwd(), pat);
+    lines.push(`@source "${absPat}";`);
+  }
+  writeFileSync(generatedInput, lines.join('\n') + '\n');
+  inputCss = generatedInput;
+}
 
 // ---------------------------------------------------------------------------
 // Step 1: Run Tailwind CSS CLI

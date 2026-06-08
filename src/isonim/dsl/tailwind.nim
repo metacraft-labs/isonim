@@ -22,8 +22,20 @@ import std/[json, tables, strutils, os]
 # Load the Tailwind style map at compile time from the JSON file
 # ===========================================================================
 
-const tailwindJsonPath = currentSourcePath().parentDir().parentDir().parentDir().parentDir() /
-                          "build" / "tailwind-styles.json"
+## Each consuming app drives its own extract so the content-scan set covers
+## that app's source.  Pass an absolute path via
+## ``-d:tailwindStylesPathOverride=<path>`` (preferred) when invoking nim;
+## the empty default falls back to isonim's own ``build/`` so isonim's own
+## dev/test compiles keep working without the flag.
+const tailwindStylesPathOverride* {.strdefine.}: string = ""
+
+const defaultTailwindJsonPath =
+  currentSourcePath().parentDir().parentDir().parentDir().parentDir() /
+    "build" / "tailwind-styles.json"
+
+const tailwindJsonPath =
+  if tailwindStylesPathOverride.len > 0: tailwindStylesPathOverride
+  else: defaultTailwindJsonPath
 
 when defined(nimscript) or defined(js):
   # fileExists not available at compile time for JS target
