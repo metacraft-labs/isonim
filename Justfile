@@ -1,5 +1,14 @@
 # IsoNim — Isomorphic reactive web framework for Nim
 
+# Generate build/tailwind.css + build/tailwind-styles.json from the
+# isonim source via the real Tailwind CSS CLI.  CodeTracer's
+# scripts/build-once.sh invokes this before any Nim compile because
+# ui_js.nim's staticRead of build/tailwind-styles.json is uncatchable
+# at compile time.
+build-tailwind:
+    [ -d node_modules ] || yarn install --frozen-lockfile
+    node tools/tailwind-extract.mjs
+
 # Run all tests (both JS and C targets)
 test: test-c test-js
 
