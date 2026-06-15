@@ -120,22 +120,6 @@ test-web:
 
 # --- Tailwind CSS extracts ---
 
-# Generate the Tailwind CSS lookup table consumed by isonim/dsl/tailwind.nim.
-#
-# `isonim/dsl/tailwind.nim` does a compile-time
-# `staticRead("build/tailwind-styles.json")`; the try/except around it
-# cannot catch the staticRead error on a missing file, so any Nim
-# consumer of `isonim/dsl/ui` (which transitively pulls tailwind.nim)
-# fails to compile unless this artifact exists.  The companion
-# `build/tailwind.css` is the real stylesheet served to browsers.
-#
-# Cross-repo callers (e.g. codetracer's scripts/build-once.sh) invoke
-# this via `direnv exec <isonim> just build-tailwind` so the sibling's
-# own flake-pinned `node` + `yarn` toolchain is used.
-build-tailwind:
-    @[ -d node_modules ] || yarn install --frozen-lockfile
-    node tools/tailwind-extract.mjs
-
 # --- IsoNim Design Review CLI (REV-M1 + REV-M4) ---
 
 # Build the isonim-review CLI. Compiles tools/isonim_review/main.nim to
