@@ -29,9 +29,9 @@ import std/[json, tables, strutils, os]
 ## dev/test compiles keep working without the flag.
 const tailwindStylesPathOverride* {.strdefine.}: string = ""
 
-const defaultTailwindJsonPath =
-  currentSourcePath().parentDir().parentDir().parentDir().parentDir() /
-    "build" / "tailwind-styles.json"
+const defaultTailwindJsonPath = block:
+  const path = currentSourcePath().replace('\\', '/')
+  path.parentDir().parentDir().parentDir().parentDir() / "build" / "tailwind-styles.json"
 
 const tailwindJsonPath =
   if tailwindStylesPathOverride.len > 0: tailwindStylesPathOverride
