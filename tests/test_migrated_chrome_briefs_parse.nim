@@ -6,7 +6,7 @@
 ##   - ``kind`` is ``bkChrome`` for every file,
 ##   - ``coversPreviews`` is non-empty and every storyRef.group + name
 ##     looks plausible (non-empty, contains ASCII letters),
-##   - the 12 expected migrated brief slugs are all present.
+##   - the 18 expected migrated brief slugs are all present.
 
 import std/[unittest, os, sequtils, strutils, sets, tables]
 
@@ -30,6 +30,12 @@ const ExpectedSlugs = [
   "canvas-preview-tui",
   "canvas-preview-edit-mode",
   "canvas-preview-vector-dblclick-open",
+  "gallery-compare",
+  "gallery-empty-state",
+  "gallery-grid-and-full-tab",
+  "spec-pane-comment",
+  "spec-pane-edit",
+  "spec-pane-view",
 ]
 
 suite "REV-M10 migrated chrome briefs":
@@ -64,5 +70,6 @@ suite "REV-M10 migrated chrome briefs":
     for slug in ExpectedSlugs:
       check slug in found
 
-    # We expect exactly 12 chrome briefs (the migration produced 12).
+    # We expect exactly 18 chrome briefs (the migrated corpus grew to 18
+    # with the gallery-* and spec-pane-* additions).
     check parsedBriefs.len == ExpectedSlugs.len

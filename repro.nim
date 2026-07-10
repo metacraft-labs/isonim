@@ -140,11 +140,12 @@
 ##         trailing expression (``appendChild(section, ul): Node``) inside a
 ##         ``createRenderEffect do:`` block → compile-time ``type mismatch``
 ##         under the repo's OWN ``nim js`` (``:522``); provisioning-independent.
-##       - ``tests/test_editor_public_browser_imports.nim`` — the same set-(C)
-##         ``agent_harbor.nim(109)`` ``aekMilestoneProgress``/
-##         ``aekWorkspaceReady`` enum-skew product bug (it reaches the editor
-##         shell). Also a ``nim js`` COMPILE-ONLY recipe entry (``-o:`` without
-##         ``-r``), never a node run.
+##       (FUP-J RE-INCLUDED: ``tests/test_editor_public_browser_imports.nim``
+##       is no longer deferred. It was blocked by the same set-(C)
+##       ``agent_harbor.nim(109)`` enum-skew product bug; the FUP-J fix to
+##       ``agent_harbor.nim`` makes it compile clean on the JS back-end. As a
+##       ``nim js`` COMPILE-ONLY recipe entry (``-o:`` without ``-r``) it is
+##       modelled as a BUILD-only edge — see ``isonimJsCompileOnlySpecs``.)
 ##       - **Real browser / DOM** (un-runnable under headless node): the HMR
 ##         fixtures (``test_hmr*.nim`` build to JS bundles for Playwright), the
 ##         ``poc_datatable_host`` / ``poc_terminal_host`` browser hosts, and
@@ -235,38 +236,87 @@
 ##          ``walkDirRec``s repo-relative paths (``docs/``, ``tests/``) that the
 ##          sandbox work-root does not stage. Compile-only.
 ##
-## (C) **Pre-existing broken tests at HEAD** (fail under the repo's OWN
-##     ``nim c -r`` on a clean tree — NOT provisioning-blocked, NOT
-##     reprobuild-specific; NOT weakened here):
-##       - ``tests/test_editor_agent_harbor.nim`` +
-##         ``tests/test_editor_viewmodels.nim`` +
-##         ``tests/test_design_review_editor_agent_adapter_vm.nim`` — all
-##         reach ``src/isonim/editor/agent_harbor.nim``, whose
-##         ``applyAgentEvent`` ``case event.kind`` does NOT cover the
-##         ``aekMilestoneProgress`` / ``aekWorkspaceReady`` variants that the
-##         LANDED ``nim_agents`` sibling defines
-##         (``nim-agents/src/nim_agents/client.nim:52-53``). Compile error:
-##         "not all cases are covered" (reproduced:
-##         ``agent_harbor.nim(109,3)``). A genuine version-skew product bug
-##         (isonim has not caught up to the sibling's enum). Reported
-##         upstream; NOT papered over by this recipe.
-##       - ``tests/test_design_review_cli_init.nim`` — hardcodes
+## (C) **Pre-existing broken tests at HEAD — the FUP-J four are now FIXED +
+##     RE-INCLUDED; the remainder stay deferred for OTHER reasons** (each
+##     fails under the repo's OWN ``nim c -r`` on a clean tree — NOT
+##     provisioning-blocked, NOT reprobuild-specific; NOT weakened here):
+##       - **FUP-J product fix (RE-INCLUDED):**
+##         ``tests/test_design_review_editor_agent_adapter_vm.nim`` reaches
+##         ``src/isonim/editor/agent_harbor.nim``, whose ``applyAgentEvent``
+##         ``case event.kind`` did NOT cover the ``aekMilestoneProgress`` /
+##         ``aekWorkspaceReady`` variants that the LANDED ``nim_agents`` sibling
+##         defines (``nim-agents/src/nim_agents/client.nim:52-53``) → compile
+##         error ``agent_harbor.nim(109,3)`` "not all cases are covered". FIXED
+##         by adding both case branches (progress → context note + loading;
+##         workspace-ready → connected state + note) and qualifying the
+##         now-ambiguous ``types.AgentFileDiff`` (the sibling grew a colliding
+##         ``AgentFileDiff``). Re-included in ``isonimDesignReviewSpecs``.
+##         (``tests/test_editor_agent_harbor.nim`` +
+##         ``tests/test_editor_viewmodels.nim`` reach the same enum fix and now
+##         COMPILE, but each has a SEPARATE unrelated failure — a runtime
+##         ``KeyError: workingCopyMode`` and a test-file-level ``AgentFileDiff``
+##         ambiguity at ``:4725`` respectively — so they stay deferred, out of
+##         FUP-J scope.)
+##       - **FUP-J stale-assertion fix (RE-INCLUDED):**
+##         ``tests/test_design_review_cli_init.nim`` hardcoded
 ##         ``countMigrations(f) == 8`` / "applied 8 migration(s)" /
-##         ``after == 7|8`` but the repo now ships NINE migrations
-##         (``db/migrations/009_design_review_campaign_restart.sql``,
-##         committed in CMP-M7). Provisioning SUCCEEDS (postgres applies all
-##         9); three subtests fail purely on the stale hardcoded count — a
-##         stale-assertion bug, not a service gap.
-##       - ``tests/test_migrated_chrome_briefs_parse.nim`` —
-##         ``parsedBriefs.len == ExpectedSlugs.len`` fails
-##         (``:68``): the migrated chrome-brief corpus grew past the test's
-##         hardcoded ``ExpectedSlugs``. The parser works; the expectation is
-##         stale. No service involved (pure parse test).
-##       - ``tests/test_design_review_cli_campaign.nim`` — 23/26 subtests
-##         pass against real PG + fake ACP; the three ``inject_*`` subtests
-##         fail (``iExit == 0`` / "injection queued" / ``sawText``,
-##         ``:205/237/262``) — a genuine campaign-inject CLI behaviour
-##         mismatch, independent of provisioning.
+##         ``after == 7|8`` but the repo ships NINE migrations
+##         (``db/migrations/009_design_review_campaign_restart.sql``, CMP-M7).
+##         Provisioning SUCCEEDS (postgres applies all 9); the product is
+##         correct — the TEST expectations were bumped to 9. Re-included.
+##       - **FUP-J stale-assertion fix (RE-INCLUDED):**
+##         ``tests/test_migrated_chrome_briefs_parse.nim`` —
+##         ``parsedBriefs.len == ExpectedSlugs.len`` failed: the migrated
+##         chrome-brief corpus grew from 12 to 18 (``gallery-*`` + ``spec-pane-*``
+##         added). The parser works; ``ExpectedSlugs`` was updated to the
+##         current 18. Re-included.
+##       - **FUP-J stale-assertion fix (RE-INCLUDED):**
+##         ``tests/test_design_review_cli_campaign.nim`` — its three
+##         ``inject_*`` subtests were CMP-M4-era and expected
+##         inject-after-``start`` to SUCCEED (202 + an ``operator_injection``
+##         note). CMP-M6/CMP-M7 made the campaign a single ACP turn whose
+##         session is torn down (``dropSession`` + ``shutdownAndRelease``)
+##         when the turn ends, and ``start --no-tail`` drains the SSE to that
+##         ``end`` event before returning — so inject deterministically hits a
+##         session-less campaign. The AUTHORITATIVE, documented CMP-M7 route
+##         contract (``tests/test_design_review_campaign_routes.nim`` ::
+##         ``test_inject_after_turn_end_returns_404`` /
+##         ``test_inject_after_turn_end_does_not_record_event``) is: inject
+##         after the single-turn teardown returns 404 ``no_active_session``
+##         and records NO note ("be honest about session lifetime rather than
+##         pretend at queueing"). The CMP-M4-era ``cli_campaign`` inject_*
+##         assertions (expect success) are therefore STALE. Resolution: the
+##         three subtests were updated to assert that same CMP-M7 outcome
+##         end-to-end through the CLI (exit 5 / ``no_active_session`` in
+##         stderr / no ``operator_injection`` note recorded), and renamed to
+##         ``inject_after_turn_end_*_returns_404``. The product is UNCHANGED —
+##         both the 202 (session live) and 404 (session gone) paths already
+##         exist in ``campaign_routes.nim``; only the stale test expectations
+##         moved to the current CMP-M7 contract. Re-included. (Exercising the
+##         in-flight-inject success path is left to a future milestone: the
+##         fake-ACP fixture exits too fast to hold a session open reliably.)
+##       - **Same-root-cause (9-migration) stale assertions, FIXED alongside
+##         cli_init (already in the DR set, RE-INCLUDED):**
+##         ``tests/e2e_design_review_cli_init.nim`` (``count == 8`` → 9) and
+##         ``tests/test_design_review_cli_db_health.nim`` (``schemaVersion == 8``
+##         → 9, plus the "detects stale schema" case now injects a fake v10
+##         beyond the shipped v9). FUP-E1 re-included both but only executed a
+##         subset under repro, so their 9-migration staleness surfaced only under
+##         this milestone's full cold ``repro build test``. Product correct; tests
+##         bumped to the current state.
+##       - **Pre-existing concurrency FLAKE (NOT a FUP-J item, NOT a monitor
+##         artifact):** ``tests/e2e_design_review_run_review.nim`` ::
+##         ``e2e_concurrent_two_agent_reports_one_run`` spawns two ``run-review``
+##         processes against one run and asserts BOTH record (2 reports). It is a
+##         genuine RACE: whichever agent finishes first transitions the run to
+##         ``complete``, after which ``guard_run_status`` rejects the second
+##         (``run … in status complete not in allowed set``). Proven flaky with
+##         the repo's OWN runner, no monitor: 1 pass / 3 fail across 4 standalone
+##         runs on this host. Unrelated to FUP-J (not migrations/inject/enum;
+##         FUP-J touches nothing on the run-review/agent_reports path) and
+##         pre-existing (fails on HEAD). FUP-E1 re-included this edge and got a
+##         lucky pass in its subset run. Reviewer-checkable; reserved as a
+##         separate follow-up (its other two subtests pass every run).
 ##       - ``tests/test_corner_cases.nim`` — a duplicate ``var sum`` in one
 ##         ``test`` block (lines 237 + 254) → "redefinition of 'sum'". Fails
 ##         under plain ``nim c`` too (it is in the ``Justfile`` ``test-c``
@@ -415,13 +465,18 @@ const isonimCompileOnlySpecs: seq[IsonimTestSpec] = @[
 # direct ``nim js -r`` sweep of the whole ``test-js`` list + ``test-js``-only
 # ``test_custom_elements`` (its ``{.error.}`` head requires the JS back-end).
 #
-# The two JS files that do NOT run green headless stay DEFERRED (documented,
-# reproduced, NOT weakened — set (A) tail in the docstring): ``test_app_e2e``
-# (a pre-existing non-void ``createRenderEffect do:`` block — compile-time
-# ``type mismatch`` under the repo's own ``nim js``) and
-# ``test_editor_public_browser_imports`` (the same set-(C)
-# ``agent_harbor.nim`` ``aekMilestoneProgress``/``aekWorkspaceReady`` enum-skew
-# product bug; a ``nim js`` COMPILE-ONLY recipe entry, not a node run).
+# ``test_app_e2e`` stays DEFERRED (documented, reproduced, NOT weakened —
+# set (A) tail in the docstring): a pre-existing non-void
+# ``createRenderEffect do:`` block → compile-time ``type mismatch`` under the
+# repo's own ``nim js``.
+#
+# FUP-J — ``test_editor_public_browser_imports`` is now RE-INCLUDED (see
+# ``isonimJsCompileOnlySpecs`` below). It was previously blocked by the same
+# set-(C) ``agent_harbor.nim`` ``aekMilestoneProgress``/``aekWorkspaceReady``
+# enum-skew product bug; the FUP-J fix to ``agent_harbor.nim`` (plus the
+# ``types.AgentFileDiff`` qualification) makes it compile clean on the JS
+# back-end. It is a ``nim js`` COMPILE-ONLY recipe entry (``-o:`` without
+# ``-r``), so it is modelled as a BUILD-only edge (no node run).
 const isonimJsTestSpecs: seq[string] = @[
   # Reactive core (dual-backend; also in the native corpus above).
   "test_signals", "test_effects", "test_clock", "test_context", "test_rxcore",
@@ -433,6 +488,15 @@ const isonimJsTestSpecs: seq[string] = @[
   "test_data_loading",
   # JS-back-end-only (``{.error.}`` head unless ``defined(js)``).
   "test_custom_elements",
+]
+
+# FUP-J — JS COMPILE-ONLY stems: the ``Justfile`` ``test-editor`` recipe
+# checks these compile on the JS back-end (``nim js ... -o:<out>`` with no
+# ``-r``) rather than running them under node. Modelled as a ``nim.js``
+# BUILD-only edge (folded into ``test-builds`` / ``js-test-builds``); there is
+# no ``node`` EXECUTE edge because the recipe never runs the emitted JS.
+const isonimJsCompileOnlySpecs: seq[string] = @[
+  "test_editor_public_browser_imports",
 ]
 
 # --- Design-review external-service suite (set (B), FUP-E1) -----------------
@@ -471,8 +535,17 @@ const isonimDesignReviewSpecs: seq[DrSpec] = @[
   dr("test_design_review_gallery_no_setstyle"),
   dr("test_design_review_gallery_drag_rearrange_vm"),
   dr("test_design_review_gallery_side_by_side_vm"),
+  # FUP-J — product fix: ``src/isonim/editor/agent_harbor.nim`` now covers
+  # the ``aekMilestoneProgress`` / ``aekWorkspaceReady`` variants the landed
+  # ``nim_agents`` sibling defines (and qualifies the newly-ambiguous
+  # ``types.AgentFileDiff``). Pure VM test, no service.
+  dr("test_design_review_editor_agent_adapter_vm"),
   dr("test_migrated_task_app_brief_parses"),
   dr("test_migrated_settings_app_brief_parses"),
+  # FUP-J — stale-assertion fix: the migrated chrome-brief corpus grew to
+  # 18 (``gallery-*`` + ``spec-pane-*`` added); ``ExpectedSlugs`` updated
+  # to match. Pure parse test, no service.
+  dr("test_migrated_chrome_briefs_parse"),
   dr("test_no_dangling_references_to_old_brief_path"),
   dr("test_design_review_cli_config"),
   # Capture pipeline — in-process FakeBridge + PgFixture, no CLI subprocess.
@@ -488,6 +561,10 @@ const isonimDesignReviewSpecs: seq[DrSpec] = @[
   dr("test_design_review_cli_serve_smoke",        {drNeedsReview}),
   dr("test_design_review_cli_seed_run",           {drNeedsReview}),
   dr("test_design_review_config_agent_backend",   {drNeedsReview}),
+  # FUP-J — stale-assertion fix: the repo ships NINE migrations
+  # (``009_design_review_campaign_restart.sql``, CMP-M7); the test's
+  # hardcoded ``== 8`` counts were updated to ``9``.
+  dr("test_design_review_cli_init",               {drNeedsReview}),
   dr("e2e_design_review_cli_init",                {drNeedsReview}),
   dr("e2e_design_review_cli_serve_lifecycle",     {drNeedsReview}),
   # HTTP API routes over the serve daemon + PgFixture.
@@ -516,6 +593,20 @@ const isonimDesignReviewSpecs: seq[DrSpec] = @[
   dr("test_design_review_streaming_sse",          {drNeedsReview, drNeedsFakeAcp}),
   dr("test_design_review_chat_priming",           {drNeedsReview, drNeedsFakeAcp}),
   dr("test_design_review_campaign_routes",        {drNeedsReview, drNeedsFakeAcp}),
+  # FUP-J — stale-assertion fix (RE-INCLUDED): the three ``inject_*``
+  # subtests were CMP-M4-era and expected ``campaign inject`` after
+  # ``start`` to SUCCEED (202 + an ``operator_injection`` note). CMP-M7's
+  # single-turn model tears the ACP session down when the turn ends, and
+  # ``start --no-tail`` drains the SSE to that ``end`` event before it
+  # returns — so inject now deterministically hits a session-less
+  # campaign. The authoritative CMP-M7 route contract (enshrined by
+  # ``test_design_review_campaign_routes`` above:
+  # ``test_inject_after_turn_end_returns_404`` /
+  # ``_does_not_record_event``) is 404 ``no_active_session`` + no note.
+  # The subtests were updated to assert that CMP-M7 outcome end-to-end
+  # through the CLI (exit 5 / ``no_active_session`` / no note recorded);
+  # the product is unchanged. Re-included.
+  dr("test_design_review_cli_campaign",           {drNeedsReview, drNeedsFakeAcp}),
   dr("e2e_campaign_start_and_tick",               {drNeedsReview, drNeedsFakeAcp}),
   # Benchmark threshold suite — design_review_bench binary + PgFixture.
   dr("test_design_review_bench_thresholds_respected", {drNeedsBench}),
@@ -787,6 +878,24 @@ package isonim:
         extraInputs = @[jsOut])
       testExecuteActions.add(jsExecuteEdge)
       jsExecuteActions.add(jsExecuteEdge)
+
+    # FUP-J — JS compile-only stems: a ``nim.js`` BUILD edge with NO node
+    # execute edge (the ``test-editor`` recipe compiles but never runs these).
+    for stem in isonimJsCompileOnlySpecs:
+      let jsSource = "tests/" & stem & ".nim"
+      let jsOut = "build/js-test/" & stem & ".js"
+      let jsCompileOnlyEdge = nim.js(
+        source = jsSource,
+        output = jsOut,
+        defines = isonimDefines & @["nodejs"],
+        paths = isonimPaths,
+        hintsOff = true,
+        warningsOff = true,
+        actionId = "isonim.js_build." & stem,
+        after = @[tailwindStylesEdge],
+        extraInputs = @["src", "build/tailwind-styles.json", "isonim.nimble"])
+      testBuildActions.add(jsCompileOnlyEdge)
+      jsBuildActions.add(jsCompileOnlyEdge)
 
     discard collect("test", testExecuteActions)
     discard collect("test-builds", testBuildActions)

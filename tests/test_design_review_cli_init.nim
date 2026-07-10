@@ -41,7 +41,7 @@ suite "REV-M4 isonim-review init":
     ## Fresh cluster with no migrations applied → cmdInit reports
     ## ``applied N`` and ``schema_migrations`` contains every migration
     ## file we ship (REV-M3's 001+002, REV-M7's 003, REV-M8's 004,
-    ## CMP-M2's 005+006, CMP-M2.1's 007, CMP-M4's 008).
+    ## CMP-M2's 005+006, CMP-M2.1's 007, CMP-M4's 008, CMP-M7's 009).
     let f = newPgFixture(applyMigrations = false)
     defer: f.shutdown()
 
@@ -53,7 +53,7 @@ suite "REV-M4 isonim-review init":
     let outText = readFile(tmpLog)
     removeFile(tmpLog)
     check rc == 0
-    check countMigrations(f) == 8
+    check countMigrations(f) == 9
     check "apply 001" in outText
     check "apply 002" in outText
     check "apply 003" in outText
@@ -62,7 +62,8 @@ suite "REV-M4 isonim-review init":
     check "apply 006" in outText
     check "apply 007" in outText
     check "apply 008" in outText
-    check "applied 8 migration(s)" in outText
+    check "apply 009" in outText
+    check "applied 9 migration(s)" in outText
 
   test "test_cli_init_is_noop_on_already_migrated":
     ## Second run against the same cluster: every migration is
@@ -88,6 +89,7 @@ suite "REV-M4 isonim-review init":
     check countMigrations(f) == before
     check "skip 001" in outText
     check "skip 002" in outText
+    check "skip 009" in outText
     check "no migrations to apply" in outText
 
   test "test_cli_init_refuses_dirty_migration_state":
@@ -139,13 +141,14 @@ suite "REV-M4 isonim-review init":
       let c = connectMigrator(f)
       defer: c.close()
       parseInt(c.getValue(sql"SELECT count(*) FROM public.schema_migrations"))
-    # Migrations 2..8 remain (1 was DELETEd above).  REV-M8
+    # Migrations 2..9 remain (1 was DELETEd above).  REV-M8
     # added migration 004 (``fetch_layout``); CMP-M2 added migrations
     # 005 + 006 (campaigns + campaign routines); CMP-M2.1 added
     # migration 007 (``next_campaign_round``); CMP-M4 added migration
-    # 008 (``update_campaign_doc_sha``).  The dirty-state guard counts
+    # 008 (``update_campaign_doc_sha``); CMP-M7 added migration 009
+    # (``campaign_restart``).  The dirty-state guard counts
     # whatever rows survive the DELETE.
-    check after == 7
+    check after == 8
 
   test "test_cli_init_refuses_modified_migration_file":
     ## Apply, copy a migration to a scratch dir, mutate one byte,
@@ -190,6 +193,9 @@ suite "REV-M4 isonim-review init":
     copyFile(
       MigDir / "008_design_review_campaign_doc_refresh.sql",
       scratch / "008_design_review_campaign_doc_refresh.sql")
+    copyFile(
+      MigDir / "009_design_review_campaign_restart.sql",
+      scratch / "009_design_review_campaign_restart.sql")
     let altered = scratch / "001_design_review_schema.sql"
     var body = readFile(altered)
     body.add "\n-- drift marker\n"
@@ -224,12 +230,13 @@ suite "REV-M4 isonim-review init":
     # REV-M8 added migration 004 (``fetch_layout``); CMP-M2 added
     # migrations 005 + 006 (campaigns + campaign routines); CMP-M2.1
     # added migration 007 (``next_campaign_round``); CMP-M4 added
-    # migration 008 (``update_campaign_doc_sha``).  The schema now
-    # tracks eight migration rows.
+    # migration 008 (``update_campaign_doc_sha``); CMP-M7 added
+    # migration 009 (``campaign_restart``).  The schema now
+    # tracks nine migration rows.
     let after = block:
       let c = connectMigrator(f)
       defer: c.close()
       parseInt(c.getValue(sql"SELECT count(*) FROM public.schema_migrations"))
-    check after == 8
+    check after == 9
 
     removeDir(scratch)

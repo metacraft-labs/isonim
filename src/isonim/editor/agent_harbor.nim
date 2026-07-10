@@ -153,6 +153,35 @@ proc applyAgentEvent*(chat: AgentChatVM; event: AgentEvent) =
       else: event.filePath & " changed"
     chat.addContextMessage(summary)
     chat.sessionStatus.val = asLoading
+  of aekMilestoneProgress:
+    # Milestone/progress heartbeat emitted while the agent is still
+    # working. ``nim_agents`` maps a ``"milestone"`` /
+    # ``"milestone_progress"`` harbor/ACP update to this kind and fills
+    # ``milestoneCompleted`` / ``milestoneTotal`` (plus an optional
+    # ``text`` note). Surface the progress on the transcript and keep the
+    # session in the loading state, since more work follows.
+    let progress =
+      if event.milestoneTotal > 0:
+        "milestone " & $event.milestoneCompleted & "/" & $event.milestoneTotal
+      else:
+        "milestone progress"
+    let detail =
+      if event.text.len > 0: progress & ": " & event.text
+      else: progress
+    chat.addContextMessage(detail)
+    chat.sessionStatus.val = asLoading
+  of aekWorkspaceReady:
+    # The remote workspace/working copy finished provisioning.
+    # ``nim_agents`` maps a ``"workspace"`` update carrying a mount path
+    # to this kind with ``state == acsConnected``. Reflect the connected
+    # state and note the mount path; the agent keeps working afterwards,
+    # so the session stays in the loading state.
+    chat.connectionState.val = $event.state
+    let where =
+      if event.workspacePath.len > 0: "workspace ready: " & event.workspacePath
+      else: "workspace ready"
+    chat.addContextMessage(where)
+    chat.sessionStatus.val = asLoading
   of aekDelivery:
     if event.text.len > 0:
       chat.addContextMessage("delivery " & event.status & ": " & event.text)
@@ -243,8 +272,13 @@ func proposalPlanFromEvent(event: AgentEvent): SourceEditPlan =
     conflictKey: event.filePath & ":" & $event.line & ":agent",
     expectedOldValue: before)
 
-func proposalDiffFromEvent(event: AgentEvent): AgentFileDiff =
-  AgentFileDiff(
+func proposalDiffFromEvent(event: AgentEvent): types.AgentFileDiff =
+  # ``AgentFileDiff`` is ambiguous: both ``isonim/editor/types`` and the
+  # landed ``nim_agents`` sibling (re-exported via ``import nim_agents``)
+  # now define one. This adapter builds the editor-side diff record
+  # (``file`` / ``beforeText`` / ``afterText`` / ``summary``), so qualify
+  # it explicitly as ``types.AgentFileDiff``.
+  types.AgentFileDiff(
     file: event.filePath,
     beforeText: "-" & $event.linesRemoved & " lines",
     afterText:

@@ -186,11 +186,30 @@ proc invokeCliWithStdin(baseUrl: string;
 
 # ---------------------------------------------------------------------------
 # CMP-M4 — ``isonim-review campaign inject`` + ``campaign edit-doc``.
+#
+# CMP-M7 update: these three ``inject_*`` subtests were written against the
+# CMP-M4 assumption that a campaign keeps a live ACP session after ``start``.
+# CMP-M6/CMP-M7 made the campaign a single ACP turn whose session is torn
+# down (``dropSession`` + ``shutdownAndRelease``) the moment the turn ends,
+# and ``start --no-tail`` drains the SSE stream to that ``end`` event before
+# it returns.  So by the time ``inject`` runs, the session is gone and the
+# route is honest about it: it returns 404 ``no_active_session`` and records
+# NO note — the contract deliberately enshrined by
+# ``test_design_review_campaign_routes.nim`` (``test_inject_after_turn_end_
+# returns_404`` / ``test_inject_after_turn_end_does_not_record_event``).
+# These subtests assert that same CMP-M7 contract end-to-end through the CLI
+# + daemon + Postgres stack for each of the three text-input methods; each
+# still verifies its input method resolved a non-empty string (an empty
+# resolution exits 2 "text is empty" BEFORE the POST, not 5).  Exercising the
+# in-flight-inject success path is intentionally left to a future milestone
+# — the fake-ACP fixture exits too fast to hold a session open reliably (see
+# the campaign_routes note).
 # ---------------------------------------------------------------------------
 
-test "test_cli_campaign_inject_with_positional_text":
-  ## ``isonim-review campaign inject <id> "hello operator"`` → 0,
-  ## ``note`` event with the expected text lands.
+test "test_cli_campaign_inject_after_turn_end_positional_text_returns_404":
+  ## ``isonim-review campaign inject <id> "hello operator"`` after
+  ## ``start --no-tail`` → exit 5 (route 404 ``no_active_session``), no
+  ## ``operator_injection`` note recorded (CMP-M7 contract).
   let f = startCampaignDaemon()
   defer: f.shutdown()
   let fx = writeFixtures()
@@ -202,20 +221,23 @@ test "test_cli_campaign_inject_with_positional_text":
 
   let (iExit, _, iErr) = invokeCli(f.baseUrl,
     ["inject", campaignId, "hello operator"])
-  check iExit == 0
-  check iErr.contains("injection queued")
+  check iExit == 5
+  check iErr.contains("no_active_session")
 
-  var sawText = ""
+  var sawInjection = false
   for e in eventsForCampaign(f, campaignId):
     if e.kind == "note":
       let p = parseJson(e.payload)
       if p{"kind"}.getStr("") == "operator_injection":
-        sawText = p{"text"}.getStr("")
-  check sawText == "hello operator"
+        sawInjection = true
+  check not sawInjection
 
-test "test_cli_campaign_inject_with_message_file":
+test "test_cli_campaign_inject_after_turn_end_message_file_returns_404":
   ## ``--message-file`` reads the text off disk verbatim (newlines and
-  ## all).
+  ## all) and POSTs it; after ``start --no-tail`` the session is gone, so
+  ## the route returns 404 ``no_active_session`` (CLI exit 5) and records
+  ## no note.  Reaching the 404 (rather than exit 2 "text is empty")
+  ## confirms the file was read into a non-empty string (CMP-M7).
   let f = startCampaignDaemon()
   defer: f.shutdown()
   let fx = writeFixtures()
@@ -234,19 +256,23 @@ test "test_cli_campaign_inject_with_message_file":
 
   let (iExit, _, iErr) = invokeCli(f.baseUrl,
     ["inject", campaignId, "--message-file", msgPath])
-  check iExit == 0
-  check iErr.contains("injection queued")
+  check iExit == 5
+  check iErr.contains("no_active_session")
 
-  var sawText = ""
+  var sawInjection = false
   for e in eventsForCampaign(f, campaignId):
     if e.kind == "note":
       let p = parseJson(e.payload)
       if p{"kind"}.getStr("") == "operator_injection":
-        sawText = p{"text"}.getStr("")
-  check sawText == payload
+        sawInjection = true
+  check not sawInjection
 
-test "test_cli_campaign_inject_with_stdin":
-  ## ``--stdin`` reads text from stdin.
+test "test_cli_campaign_inject_after_turn_end_stdin_returns_404":
+  ## ``--stdin`` reads text from stdin and POSTs it; after
+  ## ``start --no-tail`` the session is gone, so the route returns 404
+  ## ``no_active_session`` (CLI exit 5) and records no note.  Reaching the
+  ## 404 (rather than exit 2 "text is empty") confirms stdin was read into
+  ## a non-empty string (CMP-M7).
   let f = startCampaignDaemon()
   defer: f.shutdown()
   let fx = writeFixtures()
@@ -259,16 +285,16 @@ test "test_cli_campaign_inject_with_stdin":
   let payload = "stdin-piped operator inject"
   let (iExit, _, iErr) = invokeCliWithStdin(f.baseUrl,
     ["inject", campaignId, "--stdin"], payload)
-  check iExit == 0
-  check iErr.contains("injection queued")
+  check iExit == 5
+  check iErr.contains("no_active_session")
 
-  var sawText = ""
+  var sawInjection = false
   for e in eventsForCampaign(f, campaignId):
     if e.kind == "note":
       let p = parseJson(e.payload)
       if p{"kind"}.getStr("") == "operator_injection":
-        sawText = p{"text"}.getStr("")
-  check sawText == payload
+        sawInjection = true
+  check not sawInjection
 
 test "test_cli_campaign_edit_doc_refreshes_sha":
   ## ``campaign edit-doc <id> --no-edit`` after mutating the on-disk
