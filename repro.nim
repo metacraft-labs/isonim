@@ -4,8 +4,9 @@
 ## isonim ecosystem (SC-11 develop-mode from-source sibling consumption).**
 ## ``isonim`` is the isomorphic reactive UI framework: its ``src/`` reactive
 ## core / DSL / SSR / routing tree is a Linux leaf, but the *editor* subtree
-## (``src/isonim/editor/*``) imports FOUR landed workspace Nim libraries at
-## build time:
+## (``src/isonim/editor/*``) imports FOUR landed workspace Nim libraries
+## directly at build time (plus a fifth, ``nim_agent_harbor``, pulled in
+## transitively — see the fifth bullet):
 ##
 ##   * ``isonim_render_serve`` — ``src/isonim/editor/preview_canvas.nim``,
 ##     ``streaming_preview.nim``, ``design_review/bridge_client.nim``
@@ -22,11 +23,19 @@
 ##     pervasively (``src/isonim/editor/agent_context.nim`` and the async /
 ##     time / http facade the reactive core + SSR pull in). Producer:
 ##     ``nim-everywhere/repro.nim`` → ``library nim_everywhere``.
+##   * ``nim_agent_harbor`` — NOT imported by isonim directly, but required
+##     TRANSITIVELY: ``nim_agents`` ``import``s + re-``export``s it
+##     (``nim-agents/src/nim_agents.nim`` + ``.../client.nim`` reference
+##     ``nim_agent_harbor.HarborContentBlock``), so every edge that imports
+##     ``nim_agents`` needs ``nim_agent_harbor`` on ``--path:`` too — dropping
+##     the ``uses:`` edge makes ``nim_agents`` fail to compile with ``cannot
+##     open file: nim_agent_harbor``. Producer:
+##     ``nim-agent-harbor/repro.nim`` → ``library nim_agent_harbor``.
 ##
 ## The repo's own ``tests/config.nims`` resolves these with hand-maintained
 ## ``--path:../../nim-*/src`` / ``--path:../../isonim-render-serve/src``
 ## flags (and the ``Justfile`` recipes repeat them inline). This recipe
-## expresses those four sibling dependencies the reprobuild-native way
+## expresses those five sibling dependencies the reprobuild-native way
 ## instead: ``uses: "<sibling>"`` names each PRODUCER project by its
 ## workspace directory name; reprobuild builds each from source (its
 ## ``library`` edge) and threads its ``src/`` root onto THIS repo's
@@ -35,7 +44,7 @@
 ## ``../../nim-*/src`` literals. Editing a sibling's ``src/`` invalidates +
 ## rebuilds this repo's affected test compiles (the reused SC-4 fold).
 ##
-## All four siblings are in the rollout's AVAILABLE set (each ships a landed
+## All five siblings are in the rollout's AVAILABLE set (each ships a landed
 ## ``repro.nim`` with a ``library`` export), so this is proper SC-11
 ## develop-mode consumption — NOT a SKIP and NOT a hardcoded path.
 ##
@@ -45,7 +54,7 @@
 ## consumer) and ``nim-agent-harbor/repro.nim`` (single-sibling consumer):
 ##
 ## * Declares the toolchain floor via ``uses:`` (``nim`` + ``gcc``) plus the
-##   four sibling ``uses:`` edges. Mirrors the nimble file's
+##   five sibling ``uses:`` edges. Mirrors the nimble file's
 ##   ``requires "nim >= 2.0.0"``.
 ## * Declares ``library isonim`` — the importable umbrella
 ##   (``src/isonim.nim``) so the downstream isonim renderer repos
@@ -120,37 +129,63 @@
 ##     Follow-up: a ``nim.js`` backend edge (or a JS-runner tool) can model
 ##     these once the rollout gains a JS-backend test template.
 ##
-## (B) **Design-review suites needing EXTERNAL SERVICES** — genuinely
-##     un-provisionable headless. The whole ``tests/*design_review*`` +
-##     ``tests/e2e_*`` + ``tests/smoke_design_review_*`` corpus
-##     (``Justfile`` recipes ``test-design-review`` … ``test-design-review-
-##     campaigns``, lines ~156-722) is gated on one or more of:
+## (B) **Design-review external-service suite — PROVISIONED HEADLESS
+##     (FUP-E1) and RE-INCLUDED.** Previously deferred wholesale as
+##     "genuinely un-provisionable headless"; that claim is now falsified.
+##     All three services come up headless with no display and no external
+##     network, so the corpus is re-included as ``isonimDesignReviewSpecs``:
 ##       - **PostgreSQL** via the REV-M3 ``PgFixture``
-##         (``tests/helpers/design_review_pg_fixture.nim``) / the
-##         process-compose dev cluster — every ``*_pg_*`` /
-##         ``*_api_*`` / ``*_cli_*`` / ``*_campaign*`` / ``*_bench_*`` test
-##         and all ``e2e_*_pipeline*`` / ``e2e_design_review_*`` tests
-##         (``test_design_review_pg_schema.nim``,
-##         ``test_design_review_api_list_history.nim``,
-##         ``test_design_review_agent_dispatch.nim``,
-##         ``e2e_design_review_run_review.nim``, …).
-##       - a **live ``isonim-render-serve`` bridge server** — the capture
-##         pipeline (``e2e_design_review_capture_web_real_bridge.nim``,
-##         ``test_design_review_bridge_client.nim`` against a running
-##         ``ws://…`` endpoint, ``test_design_review_capture_store.nim``).
-##       - a **live Anthropic / OpenAI ACP agent** (real ``claude-agent-acp``
-##         / ``codex-acp`` binary + credentials) — the chat / run-review
-##         real-ACP smokes (``e2e_design_review_chat_real_acp.nim``,
-##         ``e2e_design_review_chat_real_codex_acp.nim``).
-##     These are deferred wholesale as a cohesive suite (they also require
-##     the ``isonim-review`` CLI binary + ``fake-acp-agent`` to be built
-##     first via ``just isonim-review-build`` / ``fake-acp-agent-build``).
-##     A subset is pure parse/VM (e.g. ``test_design_review_brief_format``,
-##     ``test_migrated_*_brief_parses``, the ``*_gallery_vm`` /
-##     ``*_vm.nim`` ViewModel tests) and COULD be modelled as headless
-##     ``nim.c`` edges in a follow-up; they are deferred here with the rest
-##     of the suite to keep the design-review corpus a single coherent unit
-##     rather than splintering it.
+##         (``tests/helpers/design_review_pg_fixture.nim``): an ephemeral
+##         ``initdb`` cluster on a loopback port, migrations applied, torn
+##         down per test. ``initdb``/``postgres``/``psql``/``pg_isready``/
+##         ``createdb``/``pg_dump`` are on ``PATH`` from the flake dev shell
+##         (``flake.nix`` ``postgresql_16``); ``process-compose`` boots the
+##         same cluster for ``e2e_design_review_pg_process_compose``.
+##       - the **render-serve bridge** via the in-process ``FakeBridge`` —
+##         a real RFC-6455 ``Sec-WebSocket-Accept`` handshake +
+##         ``isonim_render_serve/{packet,ws_frame,bridge}`` framing — so the
+##         capture pipeline runs against a real ``ws://127.0.0.1:<port>``
+##         endpoint with no external server.
+##       - the **ACP agent** via ``tests/helpers/fake_acp_agent.nim`` — a
+##         deterministic stdio JSON-RPC ACP server the daemon spawns through
+##         ``ISONIM_ACP_AGENT_CMD`` (``NativeStdioAcpTransport``); no network,
+##         no credentials.
+##     The daemon/CLI/bench tests spawn three prerequisite tool binaries
+##     (``build/bin/isonim-review``, ``build/bin/fake-acp-agent``,
+##     ``build/bin/design_review_bench``); each is modelled as a BUILD edge
+##     and wired to the execute edges via ``requiredBinaries`` (the
+##     Bootstrap-And-Self-Build B3 channel), so the engine builds them first.
+##     Every re-included design-review execute edge is routed through the
+##     capacity-1 serial pool ``isonim.design-review-serial`` because each
+##     spawns an ephemeral cluster + binds loopback ports (the fixture itself
+##     warns that parallel files race on ports/PGDATA). The re-included set
+##     was verified GREEN headless via the repo's own ``just
+##     test-design-review-*`` recipes with the real services; ``repro build
+##     test`` itself is not executed here because the ``repro`` binary is not
+##     provisioned in this workspace (the same limitation recorded for
+##     FUP-D), so these edges are modelled + recipe-verified, not
+##     repro-executed.
+##
+##     STILL DEFERRED (documented, reproduced — NOT weakened):
+##       - **Real remote ACP** (network + credentials):
+##         ``e2e_design_review_chat_real_acp`` /
+##         ``e2e_design_review_chat_real_codex_acp`` — ``skip()`` at runtime
+##         unless ``claude-agent-acp``/``codex-acp`` + Anthropic/OpenAI creds
+##         are present; un-exercisable on a headless, network-isolated host
+##         (``codex-acp`` is on ``PATH`` from the flake, but no creds exist).
+##       - **Real cross-repo backend binary**:
+##         ``test_design_review_backend_launcher`` /
+##         ``e2e_design_review_capture_web_real_bridge`` — each
+##         ``require``s ``../isonim-examples/build/backends/
+##         isonim-examples-web`` (hard-fails when absent); needs the sibling
+##         isonim-examples web backend built, which is not staged here.
+##       - **Browser / JS backend** (set A scope):
+##         ``test_design_review_browser_agent_client_compiles`` (``nim js``)
+##         + the ``tests/*.mjs`` Playwright gallery/editor-chat suites — a
+##         separate backend the ``nim.c`` edge cannot model.
+##       - the four **pre-existing broken files** listed in set (C), which
+##         fail under the repo's own ``nim c -r`` on a clean tree — NOT a
+##         provisioning gap.
 ##
 ## (B2) **Live-service editor tests — COMPILE-ONLY (BUILD edge kept, EXECUTE
 ##      edge deferred).** Three ``test-editor`` files COMPILE cleanly against
@@ -179,17 +214,37 @@
 ##          sandbox work-root does not stage. Compile-only.
 ##
 ## (C) **Pre-existing broken tests at HEAD** (fail under the repo's OWN
-##     ``nim c`` too — NOT reprobuild-specific; NOT weakened here):
+##     ``nim c -r`` on a clean tree — NOT provisioning-blocked, NOT
+##     reprobuild-specific; NOT weakened here):
 ##       - ``tests/test_editor_agent_harbor.nim`` +
-##         ``tests/test_editor_viewmodels.nim`` — both ``import
-##         isonim/editor/agent_harbor``, whose ``applyAgentEvent`` ``case
-##         event.kind`` does NOT cover the ``aekMilestoneProgress`` /
-##         ``aekWorkspaceReady`` variants that the LANDED ``nim_agents``
-##         sibling defines (``nim-agents/src/nim_agents/client.nim:52-53``).
-##         Compile error: "not all cases are covered". A genuine
-##         version-skew product bug in ``src/isonim/editor/agent_harbor.nim``
+##         ``tests/test_editor_viewmodels.nim`` +
+##         ``tests/test_design_review_editor_agent_adapter_vm.nim`` — all
+##         reach ``src/isonim/editor/agent_harbor.nim``, whose
+##         ``applyAgentEvent`` ``case event.kind`` does NOT cover the
+##         ``aekMilestoneProgress`` / ``aekWorkspaceReady`` variants that the
+##         LANDED ``nim_agents`` sibling defines
+##         (``nim-agents/src/nim_agents/client.nim:52-53``). Compile error:
+##         "not all cases are covered" (reproduced:
+##         ``agent_harbor.nim(109,3)``). A genuine version-skew product bug
 ##         (isonim has not caught up to the sibling's enum). Reported
 ##         upstream; NOT papered over by this recipe.
+##       - ``tests/test_design_review_cli_init.nim`` — hardcodes
+##         ``countMigrations(f) == 8`` / "applied 8 migration(s)" /
+##         ``after == 7|8`` but the repo now ships NINE migrations
+##         (``db/migrations/009_design_review_campaign_restart.sql``,
+##         committed in CMP-M7). Provisioning SUCCEEDS (postgres applies all
+##         9); three subtests fail purely on the stale hardcoded count — a
+##         stale-assertion bug, not a service gap.
+##       - ``tests/test_migrated_chrome_briefs_parse.nim`` —
+##         ``parsedBriefs.len == ExpectedSlugs.len`` fails
+##         (``:68``): the migrated chrome-brief corpus grew past the test's
+##         hardcoded ``ExpectedSlugs``. The parser works; the expectation is
+##         stale. No service involved (pure parse test).
+##       - ``tests/test_design_review_cli_campaign.nim`` — 23/26 subtests
+##         pass against real PG + fake ACP; the three ``inject_*`` subtests
+##         fail (``iExit == 0`` / "injection queued" / ``sawText``,
+##         ``:205/237/262``) — a genuine campaign-inject CLI behaviour
+##         mismatch, independent of provisioning.
 ##       - ``tests/test_corner_cases.nim`` — a duplicate ``var sum`` in one
 ##         ``test`` block (lines 237 + 254) → "redefinition of 'sum'". Fails
 ##         under plain ``nim c`` too (it is in the ``Justfile`` ``test-c``
@@ -308,7 +363,7 @@ const isonimTestSpecs: seq[IsonimTestSpec] = @[
   spec("test_editor_section_state"),
   spec("test_editor_section_stroke"),
   spec("test_editor_section_typography"),
-  # --- SC-11 sibling-exercising editor tests (the reason for the four
+  # --- SC-11 sibling-exercising editor tests (the reason for the five
   #     ``uses:`` edges — each compiles a sibling ``src/`` root threaded via
   #     the ``nimPathDirs`` channel), FULL build+execute (headless-runnable):
   spec("test_editor_agent_context"),          # import nim_acp
@@ -327,6 +382,95 @@ const isonimCompileOnlySpecs: seq[IsonimTestSpec] = @[
   spec("test_editor_release_gate"),           # dirExists("../metacraft-web") hard-fail
 ]
 
+# --- Design-review external-service suite (set (B), FUP-E1) -----------------
+# Re-included: provisioned headless (PgFixture ephemeral cluster + in-process
+# FakeBridge + fake-acp-agent stdio). Each execute edge runs in the capacity-1
+# serial pool ``isonim.design-review-serial`` (per-test ephemeral clusters +
+# loopback ports must not race). ``needs`` names the prerequisite tool
+# binaries the test subprocess spawns at runtime — threaded to the execute
+# edge via ``requiredBinaries`` (Bootstrap-And-Self-Build B3) so the engine
+# builds them first. Verified green headless via ``just test-design-review-*``.
+type
+  DrNeed = enum
+    drNeedsReview   ## spawns ``build/bin/isonim-review`` (CLI / serve daemon)
+    drNeedsFakeAcp  ## spawns ``build/bin/fake-acp-agent`` (stdio ACP agent)
+    drNeedsBench    ## spawns ``build/bin/design_review_bench``
+  DrSpec = object
+    stem:  string
+    needs: set[DrNeed]
+
+proc dr(stem: string; needs: set[DrNeed] = {}): DrSpec =
+  DrSpec(stem: stem, needs: needs)
+
+const isonimDesignReviewSpecs: seq[DrSpec] = @[
+  # PostgreSQL fixture (initdb ephemeral cluster) — self-provisioning, no bin.
+  dr("test_design_review_pg_schema"),
+  dr("test_design_review_pg_routines"),
+  dr("test_design_review_pg_roles"),
+  dr("smoke_design_review_pg_dump_restore"),
+  dr("e2e_design_review_pg_process_compose"),  # via process-compose on PATH
+  # Pure parse / ViewModel (MockRenderer / git / fs) — no service, no bin.
+  dr("test_design_review_brief_format"),
+  dr("test_design_review_brief_index"),
+  dr("test_design_review_reviewer_output"),
+  dr("test_design_review_brief_at_revision"),
+  dr("test_design_review_gallery_vm"),
+  dr("test_design_review_gallery_no_setstyle"),
+  dr("test_design_review_gallery_drag_rearrange_vm"),
+  dr("test_design_review_gallery_side_by_side_vm"),
+  dr("test_migrated_task_app_brief_parses"),
+  dr("test_migrated_settings_app_brief_parses"),
+  dr("test_no_dangling_references_to_old_brief_path"),
+  dr("test_design_review_cli_config"),
+  # Capture pipeline — in-process FakeBridge + PgFixture, no CLI subprocess.
+  dr("test_design_review_clean_tree"),
+  dr("test_design_review_manifest_hash"),
+  dr("test_design_review_capture_store"),
+  dr("test_design_review_bridge_client"),
+  dr("test_design_review_capture_native_dimensions"),
+  dr("test_design_review_record_capture_idempotent"),
+  # CLI + serve-daemon over PgFixture — spawn the isonim-review binary.
+  dr("test_design_review_isonim_review_cli",      {drNeedsReview}),
+  dr("test_design_review_cli_db_health",          {drNeedsReview}),
+  dr("test_design_review_cli_serve_smoke",        {drNeedsReview}),
+  dr("test_design_review_cli_seed_run",           {drNeedsReview}),
+  dr("test_design_review_config_agent_backend",   {drNeedsReview}),
+  dr("e2e_design_review_cli_init",                {drNeedsReview}),
+  dr("e2e_design_review_cli_serve_lifecycle",     {drNeedsReview}),
+  # HTTP API routes over the serve daemon + PgFixture.
+  dr("test_design_review_api_list_history",       {drNeedsReview}),
+  dr("test_design_review_api_fetch_run",          {drNeedsReview}),
+  dr("test_design_review_api_get_capture_png",    {drNeedsReview}),
+  dr("test_design_review_api_brief_has_history",  {drNeedsReview}),
+  dr("test_design_review_api_save_layout",        {drNeedsReview}),
+  dr("test_design_review_api_promote_layout",     {drNeedsReview}),
+  dr("test_design_review_api_list_layouts",       {drNeedsReview}),
+  dr("test_design_review_gallery_fetch_on_open",  {drNeedsReview}),
+  dr("test_design_review_daemon_discovery",       {drNeedsReview}),
+  dr("test_design_review_brief_has_history_signal", {drNeedsReview}),
+  dr("test_design_review_list_history_e2e",       {drNeedsReview}),
+  dr("test_design_review_save_brief_route",       {drNeedsReview}),
+  # run-review + capture e2e — real CLI subprocess + PgFixture (+ FakeBridge).
+  dr("test_design_review_agent_dispatch",         {drNeedsReview}),
+  dr("e2e_design_review_run_review",              {drNeedsReview}),
+  dr("e2e_design_review_capture_fullsweep",       {drNeedsReview}),
+  dr("e2e_full_pipeline_run_through_task_app_brief", {drNeedsReview}),
+  dr("e2e_full_pipeline_round_trip_two_runs_visible_in_gallery", {drNeedsReview}),
+  dr("e2e_pipeline_refuses_dirty_workspace",      {drNeedsReview}),
+  # Chat / agent-routes / campaigns — serve daemon + fake-acp-agent stdio.
+  dr("test_design_review_daemon_agent_routes",    {drNeedsReview, drNeedsFakeAcp}),
+  dr("test_design_review_cli_chat",               {drNeedsReview, drNeedsFakeAcp}),
+  dr("test_design_review_streaming_sse",          {drNeedsReview, drNeedsFakeAcp}),
+  dr("test_design_review_chat_priming",           {drNeedsReview, drNeedsFakeAcp}),
+  dr("test_design_review_campaign_routes",        {drNeedsReview, drNeedsFakeAcp}),
+  dr("e2e_campaign_start_and_tick",               {drNeedsReview, drNeedsFakeAcp}),
+  # Benchmark threshold suite — design_review_bench binary + PgFixture.
+  dr("test_design_review_bench_thresholds_respected", {drNeedsBench}),
+  dr("e2e_design_review_bench_runner",            {drNeedsBench}),
+  dr("e2e_design_review_bench_regression",        {drNeedsBench}),
+  dr("e2e_design_review_bench_published",         {drNeedsBench}),
+]
+
 package isonim:
   defaultToolProvisioning "path"
 
@@ -339,7 +483,7 @@ package isonim:
     "nim >=2.0"
     "gcc >=12"
 
-    # The four landed sibling Nim-library producers (SC-11 develop-mode
+    # The five landed sibling Nim-library producers (SC-11 develop-mode
     # from-source consumption). ``src/isonim/editor/*`` import each of these;
     # naming the workspace project here makes reprobuild build the sibling
     # from source (its ``library`` edge) and thread its ``src/`` root onto
@@ -349,6 +493,11 @@ package isonim:
     "isonim-render-serve"   # library isonim_render_serve
     "nim-acp"               # library nim_acp
     "nim-agents"            # library nim_agents
+    "nim-agent-harbor"      # library nim_agent_harbor — needed transitively:
+                            # ``nim_agents`` ``import``s + ``export``s
+                            # ``nim_agent_harbor`` (nim_agents.nim / client.nim),
+                            # so every edge importing nim_agents needs it on
+                            # ``--path:`` (dropping it breaks nim_agents compile).
     "nim-everywhere"        # library nim_everywhere
 
   # Library declaration — the ``src/`` tree is importable when this package
@@ -371,7 +520,7 @@ package isonim:
     #
     # ``paths`` reproduces exactly what ``tests/config.nims`` + the
     # ``Justfile`` recipes put on ``--path`` for the native corpus, MINUS
-    # the four sibling ``src`` roots (those are threaded by the SC-11
+    # the five sibling ``src`` roots (those are threaded by the SC-11
     # ``nimPathDirs`` channel off the ``uses:`` edges):
     #   * ``src`` + ``.``               — the repo's own module roots.
     #   * ``vendor/{chronicles,serialization,json_serialization}`` +
@@ -439,6 +588,75 @@ package isonim:
     for s in isonimCompileOnlySpecs:
       emitTest(s.source, s.binary, executeToo = false,
         testBuildActions, testExecuteActions)
+
+    # --- Design-review external-service suite (set (B), FUP-E1) ------------
+    # Prerequisite tool binaries the design-review daemon/CLI/bench tests
+    # spawn at runtime. Modelled as BUILD edges (folded into ``test-builds``)
+    # and wired to the execute edges below via ``requiredBinaries`` so the
+    # engine builds them first. They compile with the same paths/defines as
+    # the test corpus (the ``uses:`` siblings supply the sibling ``src``
+    # roots via the ``nimPathDirs`` channel).
+    const drReviewBin = "build/bin/isonim-review"
+    const drFakeAcpBin = "build/bin/fake-acp-agent"
+    const drBenchBin = "build/bin/design_review_bench"
+
+    let reviewToolEdge = buildNimUnittest.build(
+      source = "tools/isonim_review/main.nim",
+      binary = drReviewBin,
+      defines = isonimDefines,
+      paths = isonimPaths,
+      actionId = "isonim.tool_build.isonim_review",
+      extraInputs = @["src", "tools", "db", "isonim.nimble"])
+    testBuildActions.add(reviewToolEdge.action)
+
+    let fakeAcpToolEdge = buildNimUnittest.build(
+      source = "tests/helpers/fake_acp_agent.nim",
+      binary = drFakeAcpBin,
+      defines = isonimDefines,
+      paths = isonimPaths,
+      actionId = "isonim.tool_build.fake_acp_agent",
+      extraInputs = @["src", "tests/helpers", "isonim.nimble"])
+    testBuildActions.add(fakeAcpToolEdge.action)
+
+    let benchToolEdge = buildNimUnittest.build(
+      source = "bench/design_review_bench.nim",
+      binary = drBenchBin,
+      defines = isonimDefines,
+      paths = isonimPaths,
+      actionId = "isonim.tool_build.design_review_bench",
+      extraInputs = @["src", "bench", "db", "isonim.nimble"])
+    testBuildActions.add(benchToolEdge.action)
+
+    # Per design-review test: a BUILD edge (into ``test-builds``) + an
+    # EXECUTE edge routed through the capacity-1 serial pool, declaring the
+    # tool binaries it spawns via ``requiredBinaries``.
+    const designReviewPool = "isonim.design-review-serial"
+    for s in isonimDesignReviewSpecs:
+      let source = "tests/" & s.stem & ".nim"
+      let binary = "build/test-bin/" & s.stem
+      let edge = buildNimUnittest.build(
+        source = source,
+        binary = binary,
+        defines = isonimDefines,
+        paths = isonimPaths,
+        actionId = "isonim.dr_build." & s.stem,
+        # ``db`` (migrations SQL) + ``tests/helpers`` (the PgFixture /
+        # FakeBridge / fake-acp helpers) are declared inputs alongside
+        # ``src`` so a fixture/migration edit invalidates the affected
+        # design-review edges.
+        extraInputs = @["src", "db", "tests/helpers", "isonim.nimble"])
+      testBuildActions.add(edge.action)
+      var req: seq[string] = @[]
+      if drNeedsReview in s.needs: req.add drReviewBin
+      if drNeedsFakeAcp in s.needs: req.add drFakeAcpBin
+      if drNeedsBench in s.needs: req.add drBenchBin
+      let executeEdge = edge.testBinary.run(
+        actionId = "isonim.dr_execute." & s.stem,
+        pool = designReviewPool,
+        poolUnits = 1'u32,
+        requiredBinaries = req,
+        registerImplicitName = false)
+      testExecuteActions.add(executeEdge)
 
     discard collect("test", testExecuteActions)
     discard collect("test-builds", testBuildActions)
