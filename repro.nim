@@ -97,37 +97,59 @@
 ## edge below passes those defines explicitly via the ``defines:`` slot to
 ## reproduce the repo's own compile.
 ##
-## **Native (C-backend) corpus only.** The engine's ``nim.c`` typed-tool
-## models the ``nim c`` (native / C back-end) compile. The repo ALSO ships a
-## large ``nim js`` matrix (``Justfile`` ``test-js``) + Playwright browser
-## suites; those run on the JavaScript back-end, a separate backend this
-## ``nim.c`` edge cannot model. So the JS-backend-only tests are DEFERRED
-## (see the deferral block below), not modelled as ``nim.c`` edges. Every
-## test edge emitted here compiles + runs to exit 0 under ``nim c`` on this
-## Linux host — verified by a direct ``nim c -c`` sweep of the whole
-## candidate corpus.
+## **C + JS back-end corpus.** The engine's ``nim.c`` typed-tool models the
+## ``nim c`` (native / C back-end) compile; the ``nim.js`` typed-tool models
+## the ``nim js`` (JavaScript back-end) compile, run under ``node`` (set (A),
+## FUP-E2, below). The repo's Playwright browser (``.mjs`` / real-DOM) suites
+## remain a separate surface neither edge can model. Every native edge
+## compiles + runs to exit 0 under ``nim c``; every JS edge compiles under
+## ``nim js`` + runs to exit 0 under ``node`` — both verified headless.
 ##
 ## ==========================================================================
-## DEFERRED test sets (documented, NOT deleted or weakened)
+## Test sets: JS-backend PROVISIONED (A); others documented-deferred (B/C)
 ## ==========================================================================
 ##
-## (A) **JS-backend-only tests** — run via ``nim js`` (a separate back-end
-##     the ``nim.c`` edge cannot model; modelling them needs a ``nim.js``
-##     typed-tool edge, a follow-up). Each carries a module-head
-##     ``{.error: "... must be compiled with the JS backend".}`` or lives in
-##     the ``Justfile`` ``test-js`` list only:
-##       - ``tests/test_custom_elements.nim``  (``{.error.}`` JS-backend head)
-##       - ``tests/test_web.nim``              (JS renderer; ``test-js`` only)
-##       - ``tests/test_hydration.nim``, ``tests/test_ssr_hydration_e2e.nim``,
-##         ``tests/test_app_e2e.nim``, ``tests/test_web_components_advanced.nim``
-##                                             (``test-js`` only — DOM/JS)
-##       - ``tests/test_editor_public_browser_imports.nim``
-##                                             (``Justfile`` ``test-editor``
-##                                              runs it via ``nim js``)
-##       - the HMR fixtures (``test_hmr*.nim`` build to JS bundles for
-##         Playwright) + ``poc_*_host.nim`` monaco/datatable/terminal hosts.
-##     Follow-up: a ``nim.js`` backend edge (or a JS-runner tool) can model
-##     these once the rollout gains a JS-backend test template.
+## (A) **JS-backend tests — PROVISIONED HEADLESS (FUP-E2) and RE-INCLUDED.**
+##     Previously deferred wholesale ("the ``nim.c`` edge cannot model the JS
+##     back-end"). Now modelled the reprobuild-native way: a ``nim.js`` BUILD
+##     edge compiles each to ``build/js-test/<stem>.js`` and a ``node``
+##     EXECUTE edge runs the emitted JS under node (keyed on exit status — Nim
+##     ``unittest`` exits non-zero on failure). The runner is provisioned from
+##     the flake dev shell: ``node`` (declared in ``uses:``) + ``nim js``
+##     (the already-declared ``nim``). The re-included set is the repo's own
+##     ``Justfile`` ``test-js`` list + the ``{.error.}``-headed
+##     ``test_custom_elements`` (see ``isonimJsTestSpecs``); each is folded
+##     into the ``test`` target AND a dedicated ``js-test`` target, verified
+##     GREEN headless via ``repro build js-test`` under the automatic monitor
+##     (43 actions asSucceeded, exit=0 — 1 tailwind extract + 21 ``nim js``
+##     compiles + 21 node runs).
+##
+##     **Compile-time prerequisite (provisioned):** ``src/isonim/dsl/
+##     tailwind.nim`` ``staticRead``s ``build/tailwind-styles.json`` on the JS
+##     back-end (the native path guards it behind ``when fileExists`` and
+##     tolerates absence; the JS ``staticRead``'s missing-file failure is an
+##     UNCATCHABLE compile error). Modelled as an ``isonim.tailwind_extract``
+##     ``node`` BUILD edge (``node tools/tailwind-extract.mjs`` → the real
+##     Tailwind v4 CLI) that every JS compile depends on; node_modules
+##     (``@tailwindcss/cli``) is a bootstrap prerequisite the same way the
+##     flake toolchain is (``just build-tailwind`` runs ``[ -d node_modules ]
+##     || yarn install`` first; the extract itself is then offline).
+##
+##     STILL DEFERRED (documented, reproduced — NOT weakened, NOT re-included):
+##       - ``tests/test_app_e2e.nim`` — pre-existing product bug: a non-void
+##         trailing expression (``appendChild(section, ul): Node``) inside a
+##         ``createRenderEffect do:`` block → compile-time ``type mismatch``
+##         under the repo's OWN ``nim js`` (``:522``); provisioning-independent.
+##       - ``tests/test_editor_public_browser_imports.nim`` — the same set-(C)
+##         ``agent_harbor.nim(109)`` ``aekMilestoneProgress``/
+##         ``aekWorkspaceReady`` enum-skew product bug (it reaches the editor
+##         shell). Also a ``nim js`` COMPILE-ONLY recipe entry (``-o:`` without
+##         ``-r``), never a node run.
+##       - **Real browser / DOM** (un-runnable under headless node): the HMR
+##         fixtures (``test_hmr*.nim`` build to JS bundles for Playwright), the
+##         ``poc_datatable_host`` / ``poc_terminal_host`` browser hosts, and
+##         the ``tests/*.mjs`` Playwright gallery/editor-chat suites — these
+##         need a real browser/DOM, not a node runtime.
 ##
 ## (B) **Design-review external-service suite — PROVISIONED HEADLESS
 ##     (FUP-E1) and RE-INCLUDED.** Previously deferred wholesale as
@@ -382,6 +404,37 @@ const isonimCompileOnlySpecs: seq[IsonimTestSpec] = @[
   spec("test_editor_release_gate"),           # dirExists("../metacraft-web") hard-fail
 ]
 
+# --- JS-backend suite (set (A), FUP-E2) ------------------------------------
+# The repo's ``nim js`` matrix (``Justfile`` ``test-js``) runs each of these
+# on the JavaScript back-end under node (``nim js -r`` shells out to ``node``).
+# Provisioned + re-included headless here: a ``nim.js`` BUILD edge compiles
+# each to ``build/js-test/<stem>.js`` and a ``node`` EXECUTE edge runs it
+# under node, keyed on exit status (Nim ``unittest`` exits non-zero on
+# failure). Every stem below compiles + runs to exit 0 under ``nim js -r`` on
+# this Linux host with ``node`` from the flake dev shell — verified by a
+# direct ``nim js -r`` sweep of the whole ``test-js`` list + ``test-js``-only
+# ``test_custom_elements`` (its ``{.error.}`` head requires the JS back-end).
+#
+# The two JS files that do NOT run green headless stay DEFERRED (documented,
+# reproduced, NOT weakened — set (A) tail in the docstring): ``test_app_e2e``
+# (a pre-existing non-void ``createRenderEffect do:`` block — compile-time
+# ``type mismatch`` under the repo's own ``nim js``) and
+# ``test_editor_public_browser_imports`` (the same set-(C)
+# ``agent_harbor.nim`` ``aekMilestoneProgress``/``aekWorkspaceReady`` enum-skew
+# product bug; a ``nim js`` COMPILE-ONLY recipe entry, not a node run).
+const isonimJsTestSpecs: seq[string] = @[
+  # Reactive core (dual-backend; also in the native corpus above).
+  "test_signals", "test_effects", "test_clock", "test_context", "test_rxcore",
+  # DSL / SSR-hydration / web-component / router / server-fn / data-loading.
+  "test_dsl", "test_web", "test_demo_vm", "test_benchmark", "test_viewmodel",
+  "test_terminal", "test_hydration", "test_ssr_hydration_e2e",
+  "test_web_components_advanced", "test_third_party", "poc_monaco_host",
+  "test_accessibility", "test_router", "test_server_functions",
+  "test_data_loading",
+  # JS-back-end-only (``{.error.}`` head unless ``defined(js)``).
+  "test_custom_elements",
+]
+
 # --- Design-review external-service suite (set (B), FUP-E1) -----------------
 # Re-included: provisioned headless (PgFixture ephemeral cluster + in-process
 # FakeBridge + fake-acp-agent stdio). Each execute edge runs in the capacity-1
@@ -482,6 +535,16 @@ package isonim:
     # path-mode resolver under ``nix develop``.
     "nim >=2.0"
     "gcc >=12"
+
+    # FUP-E2 JS-backend suite: ``node`` runs the ``nim js`` output (the
+    # ``build/js-test/<stem>.js`` files) and drives the Tailwind extract
+    # (``tools/tailwind-extract.mjs``). Declaring it here makes the engine
+    # provision it (path-mode: resolve ``node`` on PATH from the flake dev
+    # shell) AND injects the ``node`` typed-tool into this project file — the
+    # same mechanism ``codetracer/reprobuild.nim`` uses (``"node >=20"`` in
+    # its ``uses:`` block powers its ``node(...)`` webpack/stylus edges). The
+    # ``nim.js`` typed-tool comes from the already-declared ``nim`` above.
+    "node >=20"
 
     # The five landed sibling Nim-library producers (SC-11 develop-mode
     # from-source consumption). ``src/isonim/editor/*`` import each of these;
@@ -658,5 +721,74 @@ package isonim:
         registerImplicitName = false)
       testExecuteActions.add(executeEdge)
 
+    # --- JS-backend suite (set (A), FUP-E2) --------------------------------
+    # Two edges per JS test: a ``nim.js`` BUILD edge (compile the JS back-end
+    # to ``build/js-test/<stem>.js``) + a ``node`` EXECUTE edge (run the
+    # emitted JS under node). BUILD halves fold into ``test-builds``; EXECUTE
+    # halves into ``test``. The JS compiles reuse the SAME ``isonimPaths`` +
+    # ``isonimDefines`` as the C corpus — ``tests/config.nims`` applies both
+    # sets to ``nim js -r`` too, so the edge reproduces the repo's own JS
+    # compile environment (the engine build does not read ``config.nims``).
+    #
+    # Compile-time prerequisite: ``src/isonim/dsl/tailwind.nim`` ``staticRead``s
+    # ``build/tailwind-styles.json`` on the JS back-end. The native back-end
+    # guards that read behind ``when fileExists`` and tolerates the file's
+    # absence (empty style map); the JS/nimscript path uses a bare
+    # ``staticRead`` whose missing-file failure is an UNCATCHABLE compile
+    # error (the ``try/except`` around it does not catch it). So the file must
+    # exist before any JS compile. The repo generates it with ``just
+    # build-tailwind`` (``node tools/tailwind-extract.mjs`` → the real Tailwind
+    # v4 CLI); modelled here as a ``node`` BUILD edge that every JS compile
+    # depends on via ``after``. node_modules (``@tailwindcss/cli`` + deps) is a
+    # bootstrap prerequisite the same way the flake dev shell is — the repo's
+    # own ``build-tailwind`` recipe runs ``[ -d node_modules ] || yarn
+    # install`` before the extract; once installed the extract is offline
+    # (``npx`` resolves the local install, no network).
+    let tailwindStylesEdge = node(
+      args = @["tools/tailwind-extract.mjs"],
+      actionId = "isonim.tailwind_extract",
+      extraInputs = @["tools/tailwind-extract.mjs", "package.json", "src"],
+      extraOutputs = @["build/tailwind-styles.json", "build/tailwind.css"])
+    testBuildActions.add(tailwindStylesEdge)
+
+    # JS execute/build halves are ALSO folded into a dedicated ``js-test`` /
+    # ``js-test-builds`` target so ``repro build js-test`` materialises just
+    # the JS-backend closure (tailwind extract + ``nim js`` compiles + node
+    # runs) — the reprobuild-native analogue of the ``Justfile`` ``test-js``
+    # recipe — without pulling the native + design-review corpus.
+    var jsBuildActions: seq[BuildActionDef] = @[tailwindStylesEdge]
+    var jsExecuteActions: seq[BuildActionDef] = @[]
+    for stem in isonimJsTestSpecs:
+      let jsSource = "tests/" & stem & ".nim"
+      let jsOut = "build/js-test/" & stem & ".js"
+      let jsCompileEdge = nim.js(
+        source = jsSource,
+        output = jsOut,
+        # ``nodejs``: ``nim js`` defaults to the BROWSER target, where Nim's
+        # ``quit(1)`` (emitted by a failing ``unittest`` ``check``) is a no-op,
+        # so ``node`` would exit 0 even on an assertion failure. The repo's own
+        # ``nim js -r`` sweep escapes this because ``-r`` auto-adds
+        # ``-d:nodejs`` (emits ``process.exit``); this compile-only edge has no
+        # ``-r``, so it must add ``-d:nodejs`` itself for ``node`` to propagate
+        # the failing exit code to the ``isonim.js_execute.<stem>`` edge.
+        defines = isonimDefines & @["nodejs"],
+        paths = isonimPaths,
+        hintsOff = true,
+        warningsOff = true,
+        actionId = "isonim.js_build." & stem,
+        after = @[tailwindStylesEdge],
+        extraInputs = @["src", "build/tailwind-styles.json", "isonim.nimble"])
+      testBuildActions.add(jsCompileEdge)
+      jsBuildActions.add(jsCompileEdge)
+      let jsExecuteEdge = node(
+        args = @[jsOut],
+        actionId = "isonim.js_execute." & stem,
+        after = @[jsCompileEdge],
+        extraInputs = @[jsOut])
+      testExecuteActions.add(jsExecuteEdge)
+      jsExecuteActions.add(jsExecuteEdge)
+
     discard collect("test", testExecuteActions)
     discard collect("test-builds", testBuildActions)
+    discard collect("js-test", jsExecuteActions)
+    discard collect("js-test-builds", jsBuildActions)
