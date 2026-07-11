@@ -442,11 +442,16 @@ proc dispatchReview*(runId: string; cfg: ReviewConfigLite; brief: Brief;
          r["agent_version"].getStr == agentVersion:
         return r["report_id"].getStr
 
-  if status notin ["capture_complete", "review_pending", "reviewed"]:
+  # ``complete`` is accepted so a second concurrent reviewer (a distinct
+  # agent_version) can still attach its report after another reviewer has
+  # already driven the run to ``complete``.  This mirrors the SQL guard in
+  # ``record_agent_report`` (migration 010) — the two must agree, else the
+  # Nim gate rejects a dispatch the DB would have accepted (or vice versa).
+  if status notin ["capture_complete", "review_pending", "reviewed", "complete"]:
     raise newException(RunNotReadyForReviewError,
       "run_not_ready_for_review: run " & runId & " is in status '" &
       status & "'; review can only be dispatched against runs in " &
-      "capture_complete / review_pending / reviewed")
+      "capture_complete / review_pending / reviewed / complete")
 
   let header = RunHeader(briefId: runJson["brief_id"].getStr,
                          manifestHash: runJson["manifest_hash"].getStr,

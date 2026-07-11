@@ -6,7 +6,7 @@
 ## the daemon, curl's ``/health`` for a 200, SIGTERMs the daemon, and
 ## asserts it exits within 5 s with no orphan postgres children.
 
-import std/[json, os, osproc, posix, strtabs, strutils, times, unittest]
+import std/[json, net, os, osproc, posix, strtabs, strutils, times, unittest]
 import db_connector/db_postgres
 
 const RepoRoot = currentSourcePath().parentDir().parentDir()
@@ -14,29 +14,41 @@ const ComposeFile = RepoRoot / "process-compose.yaml"
 const MigDir = RepoRoot / "db" / "migrations"
 const CliPath = RepoRoot / "build" / "bin" / "isonim-review"
 
-proc pickFreePort(): int =
-  let now = epochTime()
-  let seed = int(now * 1000) mod 100
-  for offset in 0..99:
-    let candidate = 5500 + ((seed + offset) mod 100)
-    let probe = execCmdEx("pg_isready -h 127.0.0.1 -p " & $candidate &
-        " -t 1 -q")
-    if probe.exitCode != 0:
-      return candidate
-  return 5599
+proc allocateEphemeralPorts(n: int): seq[int] =
+  ## Atomically obtain ``n`` DISTINCT genuinely-free loopback ports.  We
+  ## hold a ``127.0.0.1:0`` bind open for every port simultaneously
+  ## while reading each kernel-assigned number, so no two of them can
+  ## alias, then close them all so the daemon / postgres / process-compose
+  ## can take them.  This replaces the old ``pg_isready`` / ``curl``
+  ## fixed-range scans, which had a check-then-use TOCTOU window (a
+  ## sibling or unrelated host process could grab the "free" port between
+  ## the probe and the actual bind) and were the source of the
+  ## ``Address already in use`` port-collision flakes.
+  var socks: seq[Socket] = @[]
+  try:
+    for _ in 0 ..< n:
+      let s = newSocket()
+      s.bindAddr(Port(0), "127.0.0.1")
+      socks.add s
+      let (_, p) = s.getLocalAddr()
+      result.add int(p)
+  finally:
+    for s in socks: s.close()
 
-proc pickFreeTcpPort(low, high: int): int =
-  let curl = findExe("curl")
-  let span = high - low + 1
-  let now = epochTime()
-  let seed = int(now * 1000) mod span
-  for offset in 0..<span:
-    let candidate = low + ((seed + offset) mod span)
-    let r = execCmdEx(curl & " -s -o /dev/null --max-time 0.3 " &
-        "http://127.0.0.1:" & $candidate & "/")
-    if r.exitCode != 0:
-      return candidate
-  return high
+proc leftoverCliProcesses(cliPath: string): int =
+  ## Count live processes whose full command line references ``cliPath``,
+  ## EXCLUDING the ``pgrep`` invocation itself.  ``pgrep -f`` otherwise
+  ## matches the ``sh -c "pgrep -f <cliPath>"`` wrapper (the pattern
+  ## string is in that wrapper's own argv), which would make a raw
+  ## ``exitCode != 0`` check race/false-positive.  ``pgrep -af`` prints
+  ## "pid cmdline"; we drop any line whose cmdline contains ``pgrep``.
+  let r = execCmdEx("pgrep -af " & quoteShell(cliPath))
+  if r.exitCode != 0: return 0          # nothing matched at all
+  for line in r.output.splitLines():
+    let s = line.strip()
+    if s.len == 0: continue
+    if "pgrep" in s: continue           # the wrapper shell / pgrep itself
+    inc result
 
 proc waitForReady(port: int; timeoutSeconds = 60): bool =
   let deadline = epochTime() + timeoutSeconds.float
@@ -68,14 +80,18 @@ proc waitForMigrated(port: int; timeoutSeconds = 60): bool =
   false
 
 proc runLifecycle() =
-  let pgPort = pickFreePort()
-  let httpPort = pickFreeTcpPort(18200, 18299)
+  # Allocate all three loopback ports atomically + distinct: postgres,
+  # the daemon's HTTP port, and process-compose's own admin port.
+  let ports = allocateEphemeralPorts(3)
+  let pgPort = ports[0]
+  let httpPort = ports[1]
+  let pcAdminPort = ports[2]
   let tmpRoot = getTempDir() / "isonim_review_e2e_serve"
   createDir(tmpRoot)
   let dataDir = tmpRoot / ("pg-" & $pgPort & "-" &
       $((int(epochTime() * 1000)) mod 1000000))
   createDir(dataDir)
-  let pcPort = $(pgPort + 300)
+  let pcPort = $pcAdminPort
   let sock = (tmpRoot / "pc.sock").quoteShell
 
   putEnv("ISONIM_REVIEW_PGDATA", dataDir)
@@ -146,9 +162,18 @@ proc runLifecycle() =
 
   # No orphan children: process-compose still owns postgres; the
   # daemon shouldn't have spawned any other subprocess in this
-  # milestone.  Check no process matches the binary's path.
-  let leftovers = execCmdEx("pgrep -f " & quoteShell(CliPath))
-  check leftovers.exitCode != 0  # pgrep returns 1 when nothing matches.
+  # milestone.  ``waitForExit`` above reaps the daemon itself, but the
+  # kernel may still be tearing down transient descendants for a beat,
+  # so poll until no ``isonim-review`` process remains (bounded), rather
+  # than a single-shot check that races the reaping.
+  var leftoverGone = false
+  let leftoverDeadline = epochTime() + 5.0
+  while epochTime() < leftoverDeadline:
+    if leftoverCliProcesses(CliPath) == 0:
+      leftoverGone = true
+      break
+    sleep(80)
+  check leftoverGone
 
   # Tear the cluster down.
   let downCmd = "process-compose down --config " & ComposeFile.quoteShell &

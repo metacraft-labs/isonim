@@ -304,19 +304,21 @@
 ##         subset under repro, so their 9-migration staleness surfaced only under
 ##         this milestone's full cold ``repro build test``. Product correct; tests
 ##         bumped to the current state.
-##       - **Pre-existing concurrency FLAKE (NOT a FUP-J item, NOT a monitor
-##         artifact):** ``tests/e2e_design_review_run_review.nim`` ::
+##       - **Concurrency race in multi-agent review — RESOLVED (FUP-N).**
+##         ``tests/e2e_design_review_run_review.nim`` ::
 ##         ``e2e_concurrent_two_agent_reports_one_run`` spawns two ``run-review``
-##         processes against one run and asserts BOTH record (2 reports). It is a
-##         genuine RACE: whichever agent finishes first transitions the run to
-##         ``complete``, after which ``guard_run_status`` rejects the second
-##         (``run … in status complete not in allowed set``). Proven flaky with
-##         the repo's OWN runner, no monitor: 1 pass / 3 fail across 4 standalone
-##         runs on this host. Unrelated to FUP-J (not migrations/inject/enum;
-##         FUP-J touches nothing on the run-review/agent_reports path) and
-##         pre-existing (fails on HEAD). FUP-E1 re-included this edge and got a
-##         lucky pass in its subset run. Reviewer-checkable; reserved as a
-##         separate follow-up (its other two subtests pass every run).
+##         processes against one run and asserts BOTH record (2 reports). The
+##         earlier flake was a genuine PRODUCT gap, not a test defect: whichever
+##         agent finishes first transitions the run to ``complete``, after which
+##         ``record_agent_report``'s guard rejected the second reviewer
+##         (``run … in status complete not in allowed set``), so only one report
+##         persisted. Fixed in migration 010
+##         (``010_design_review_multi_agent_report.sql``) by adding the terminal
+##         ``complete`` to ``record_agent_report``'s allowed-status set (and the
+##         matching ``dispatchReview`` gate); ``complete`` stays terminal, no new
+##         transition, the second report simply lands with its own audit event.
+##         The test was already correct and is byte-identical to HEAD. Now 100%
+##         over the review determinism loops; no longer a flake.
 ##       - ``tests/test_corner_cases.nim`` — a duplicate ``var sum`` in one
 ##         ``test`` block (lines 237 + 254) → "redefinition of 'sum'". Fails
 ##         under plain ``nim c`` too (it is in the ``Justfile`` ``test-c``

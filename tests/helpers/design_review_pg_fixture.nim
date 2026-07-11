@@ -20,7 +20,7 @@
 ## ``e2e_design_review_pg_process_compose.nim``.  That test is the one
 ## that proves the orchestrator file boots a healthy cluster.
 
-import std/[algorithm, os, osproc, streams, strutils, times]
+import std/[algorithm, net, os, osproc, streams, strutils, times]
 
 const RepoRoot* = currentSourcePath().parentDir().parentDir().parentDir()
 const MigrationsDir* = RepoRoot / "db" / "migrations"
@@ -55,25 +55,25 @@ proc pgBin(binDir, name: string): string =
     raise newException(IOError,
       "design_review_pg_fixture: " & name & " not found at " & result)
 
-proc pickFreePort(): int =
-  ## Best-effort: pick a port in 5500..5599 that doesn't already have a
-  ## ``postmaster.pid`` colliding under ``$TMPDIR``.  In CI two parallel
-  ## test files might still race; for now we sequence them via Justfile
-  ## ordering rather than locking.
-  ## We try a high-numbered range so collisions with system Postgres
-  ## (5432, 5433) and developer clusters are unlikely.
-  let now = epochTime()
-  let seed = int(now * 1000) mod 100
-  for offset in 0..99:
-    let candidate = 5500 + ((seed + offset) mod 100)
-    # ``pg_isready`` reports "no response" if no server bound; that's our
-    # "free" signal.  ``execCmdEx`` returns 2 in that case.
-    let probe = execCmdEx("pg_isready -h 127.0.0.1 -p " & $candidate &
-                          " -t 1 -q")
-    if probe.exitCode != 0:
-      return candidate
-  raise newException(IOError,
-    "design_review_pg_fixture: no free port in 5500..5599 (all responding)")
+proc allocateEphemeralPort(): int =
+  ## Atomically obtain a genuinely-free loopback port.  We bind a
+  ## throwaway TCP socket to ``127.0.0.1:0`` and read the port the kernel
+  ## assigned from its free pool, then close the socket so postgres can
+  ## take it.  Because the port came from an actual successful ``bind``
+  ## (not a ``pg_isready`` guess against a fixed 5500..5599 range) there
+  ## is no check-then-use TOCTOU: the port was provably unbound the
+  ## instant we held it.  The socket only ``bind``s (never ``listen`` /
+  ## ``connect``), so there is no ``TIME_WAIT`` and the port is reusable
+  ## immediately.  The residual microsecond window between our ``close``
+  ## and postgres' ``bind`` is closed by the retry-on-EADDRINUSE loop in
+  ## ``newPgFixture``.
+  let s = newSocket()
+  try:
+    s.bindAddr(Port(0), "127.0.0.1")
+    let (_, p) = s.getLocalAddr()
+    result = int(p)
+  finally:
+    s.close()
 
 proc runPsql(binDir: string; port: int; dbName, sql: string;
     role: string = "") =
@@ -122,7 +122,7 @@ proc waitForReady(binDir: string; port: int; timeoutSeconds = 30) =
 # ----- public API ----------------------------------------------------------
 
 proc newPgFixture*(applyMigrations = true): PgFixture =
-  ## 1) Pick an ephemeral free port in 5500..5599.
+  ## 1) Allocate a genuinely-free ephemeral port atomically (bind :0).
   ## 2) Create a tmpdir as $PGDATA.
   ## 3) Boot postgres against this PGDATA + port.
   ## 4) Create the two design_review roles.
@@ -130,50 +130,80 @@ proc newPgFixture*(applyMigrations = true): PgFixture =
   ## 6) Apply ``db/migrations/*.sql`` in order.
   ## 7) Return.
   let binDir = detectPgBinDir()
-  let port = pickFreePort()
-  # Single fixed parent dir keeps cleanup explicit even if a previous
-  # crash left a half-built PGDATA around.
-  let tmpParent = getTempDir() / "isonim_review_pg"
-  createDir(tmpParent)
-  let dataDir = tmpParent / ("pg-" & $port & "-" &
-      $((int(epochTime() * 1000)) mod 1000000))
-  createDir(dataDir)
-
   let initdb = pgBin(binDir, "initdb")
-  let res = execCmdEx(initdb & " --locale=C.UTF-8 --encoding=UTF8 " &
-                      "--auth=trust -D " & dataDir.quoteShell)
-  if res.exitCode != 0:
-    raise newException(IOError,
-      "design_review_pg_fixture: initdb failed:\n" & res.output)
-
-  # Patch postgresql.conf in-place.
-  let confPath = dataDir / "postgresql.conf"
-  let configLines = "\nlisten_addresses = '127.0.0.1'\nport = " & $port &
-                    "\nunix_socket_directories = '" & dataDir &
-                    "'\nlog_statement = 'all'\nlog_connections = on\n" &
-                    "log_disconnections = on\n"
-  let f = open(confPath, fmAppend)
-  f.write(configLines)
-  f.close()
-
   # pg_ctl daemonises postgres but the daemon inherits stdout/stderr from
   # the launching shell.  Under nim's ``execCmdEx`` (popen-based) those
   # inherited descriptors keep the pipe open, so the parent read blocks
   # *forever* despite pg_ctl itself exiting.  Force-redirect both
   # descriptors to /dev/null so the daemon doesn't hold them open.
   let pgCtl = pgBin(binDir, "pg_ctl")
-  let startCmd = pgCtl & " -D " & dataDir.quoteShell &
-      " -l " & (dataDir / "postgres.log").quoteShell &
-      " -w start </dev/null >/dev/null 2>&1"
-  let startCode = execCmd(startCmd)
-  if startCode != 0:
-    let logSlice =
-      try: readFile(dataDir / "postgres.log")
-      except IOError: "(no log)"
+  # Single fixed parent dir keeps cleanup explicit even if a previous
+  # crash left a half-built PGDATA around.
+  let tmpParent = getTempDir() / "isonim_review_pg"
+  createDir(tmpParent)
+
+  # Boot loop: allocate a genuinely-free port (bind :0), initdb, start.
+  # If postgres cannot ``bind`` because an unrelated host process grabbed
+  # the port in the microsecond after ``allocateEphemeralPort`` closed
+  # its probe socket, we retry with a freshly-allocated port instead of
+  # failing the whole fixture.  Bounded so a persistently-broken
+  # environment still terminates.
+  const MaxBootAttempts = 8
+  var port = 0
+  var dataDir = ""
+  var booted = false
+  var lastErr = ""
+  for attempt in 0 ..< MaxBootAttempts:
+    port = allocateEphemeralPort()
+    dataDir = tmpParent / ("pg-" & $port & "-" &
+        $((int(epochTime() * 1000)) mod 1000000) & "-" & $attempt)
+    createDir(dataDir)
+
+    let res = execCmdEx(initdb & " --locale=C.UTF-8 --encoding=UTF8 " &
+                        "--auth=trust -D " & dataDir.quoteShell)
+    if res.exitCode != 0:
+      lastErr = "initdb failed:\n" & res.output
+      try: removeDir(dataDir) except OSError: discard
+      continue
+
+    # Patch postgresql.conf in-place.
+    let confPath = dataDir / "postgresql.conf"
+    let configLines = "\nlisten_addresses = '127.0.0.1'\nport = " & $port &
+                      "\nunix_socket_directories = '" & dataDir &
+                      "'\nlog_statement = 'all'\nlog_connections = on\n" &
+                      "log_disconnections = on\n"
+    let f = open(confPath, fmAppend)
+    f.write(configLines)
+    f.close()
+
+    let startCmd = pgCtl & " -D " & dataDir.quoteShell &
+        " -l " & (dataDir / "postgres.log").quoteShell &
+        " -w start </dev/null >/dev/null 2>&1"
+    let startCode = execCmd(startCmd)
+    if startCode != 0:
+      let logSlice =
+        try: readFile(dataDir / "postgres.log")
+        except IOError: "(no log)"
+      # A lost race for the port manifests as a bind failure in the log.
+      # Anything else is a genuine boot failure and must surface.
+      if logSlice.contains("Address already in use") or
+         logSlice.contains("could not bind"):
+        discard execCmd(pgCtl & " -D " & dataDir.quoteShell &
+                        " -m immediate stop </dev/null >/dev/null 2>&1")
+        try: removeDir(dataDir) except OSError: discard
+        lastErr = "pg_ctl start lost port " & $port & " (EADDRINUSE)"
+        continue
+      raise newException(IOError,
+        "design_review_pg_fixture: pg_ctl start failed (" & $startCode &
+        "). Log:\n" & logSlice)
+    waitForReady(binDir, port)
+    booted = true
+    break
+
+  if not booted:
     raise newException(IOError,
-      "design_review_pg_fixture: pg_ctl start failed (" & $startCode &
-      "). Log:\n" & logSlice)
-  waitForReady(binDir, port)
+      "design_review_pg_fixture: could not boot postgres after " &
+      $MaxBootAttempts & " attempts; last error: " & lastErr)
 
   result = PgFixture(
     dataDir: dataDir,
