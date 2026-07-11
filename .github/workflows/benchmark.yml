@@ -9,7 +9,9 @@ on:
 jobs:
   size-benchmarks:
     name: Bundle Size Metrics
-    runs-on: ubuntu-latest
+    # Single Linux Nix class: metric collection auto-pushes to the
+    # gh-pages baseline, which must not race across parallel legs.
+    runs-on: incus
     steps:
       - uses: actions/checkout@v4
 
@@ -48,7 +50,9 @@ jobs:
 
   test-counts:
     name: Test Count Metrics
-    runs-on: ubuntu-latest
+    # Single Linux Nix class: metric collection auto-pushes to the
+    # gh-pages baseline, which must not race across parallel legs.
+    runs-on: incus
     steps:
       - uses: actions/checkout@v4
 
