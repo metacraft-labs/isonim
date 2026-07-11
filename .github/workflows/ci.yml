@@ -8,25 +8,29 @@ on:
 
 jobs:
   test:
-    name: Test (Nim ${{ matrix.nim-version }})
-    runs-on: ubuntu-latest
+    name: Test (${{ matrix.runner }})
     strategy:
       fail-fast: false
       matrix:
-        nim-version: ["stable", "2.0.0"]
+        # The Nix self-hosted classes get the toolchain (nim, nimble,
+        # just, nodejs) from the repo's flake dev shell, which pins a
+        # single Nim. The former `nim-version` matrix (stable/2.0.0 via
+        # jiro4989/setup-nim-action) does not apply here — Nim is fixed
+        # by the flake, so we matrix only over the runner classes.
+        runner: [incus, tart-linux-arm, macos-tart]
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Nim
-        uses: jiro4989/setup-nim-action@v2
+      - name: Setup Nix
+        uses: metacraft-labs/nixos-modules/.github/setup-nix@main
         with:
-          nim-version: ${{ matrix.nim-version }}
-
-      - name: Install just
-        uses: extractions/setup-just@v2
+          trusted-public-keys: ${{ vars.TRUSTED_PUBLIC_KEYS }}
+          substituters: ${{ vars.SUBSTITUTERS }}
+          nix-github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run C backend tests
-        run: just test-c
+        run: nix develop --command just test-c
 
       - name: Run JS backend tests
-        run: just test-js
+        run: nix develop --command just test-js
