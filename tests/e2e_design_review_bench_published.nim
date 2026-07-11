@@ -26,7 +26,7 @@
 ## reviewers do (during incident investigation), so structural
 ## correctness is part of the contract.
 
-import std/[json, math, os, osproc, streams, strtabs, strutils, unittest]
+import std/[json, math, os, osproc, streams, strtabs, strutils, times, unittest]
 
 import helpers/design_review_pg_fixture
 
@@ -102,14 +102,27 @@ suite "REV-M9 bench published shape":
       check ("isonim-design-review/" & routine & "/p95_ms") in coverage
 
     # ----- per-run snapshot -----
+    # ``bench-results/`` is not git-tracked and accumulates across runs;
+    # sibling bench tests (regression / thresholds) run single routines and
+    # leave stale 1-routine snapshots here, and the per-run stamp is only
+    # second-resolution so a name can be overwritten. The old ``[^1]`` of an
+    # unsorted walkDir could therefore latch onto a stale partial snapshot.
+    # Select the most-recently-written snapshot that carries the full
+    # four-routine set — the bench THIS run just published.
     let outDir = RepoRootHere / "bench-results"
-    var perRunSnaps: seq[string] = @[]
+    var snap: JsonNode = nil
+    var newest: Time
     for kind, path in walkDir(outDir):
       if kind == pcFile and path.endsWith(".json") and
          not path.endsWith("benchmark_results.json"):
-        perRunSnaps.add path
-    check perRunSnaps.len >= 1
-    let snap = parseJson(readFile(perRunSnaps[^1]))
+        let node = parseJson(readFile(path))
+        if node.kind == JObject and node.hasKey("routines") and
+           node["routines"].kind == JArray and node["routines"].len == 4:
+          let mt = getLastModificationTime(path)
+          if snap.isNil or mt > newest:
+            snap = node
+            newest = mt
+    check not snap.isNil
     check snap.kind == JObject
     check snap.hasKey("routines")
     check snap.hasKey("iterations")
