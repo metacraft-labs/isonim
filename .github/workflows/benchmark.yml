@@ -11,7 +11,7 @@ jobs:
     name: Bundle Size Metrics
     # Single Linux Nix class: metric collection auto-pushes to the
     # gh-pages baseline, which must not race across parallel legs.
-    runs-on: incus
+    runs-on: eph-linux-x64
     steps:
       - uses: actions/checkout@v4
 
@@ -52,7 +52,7 @@ jobs:
     name: Test Count Metrics
     # Single Linux Nix class: metric collection auto-pushes to the
     # gh-pages baseline, which must not race across parallel legs.
-    runs-on: incus
+    runs-on: eph-linux-x64
     steps:
       - uses: actions/checkout@v4
 
