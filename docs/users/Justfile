@@ -1,0 +1,20 @@
+# ../isonim/docs/users -- task entry points (mirrors ../../../isonim-docs/Justfile's style).
+#
+# Every recipe assumes the IsoNim dev shell is active. From a clean checkout:
+#   nix develop ../isonim -c just --justfile docs/users/Justfile --working-directory docs/users test
+
+test:
+    nim c -r tests/test_site_builds.nim
+    nim c -r tests/test_completeness.nim
+    nim c -r tests/test_content_loader.nim
+    nim c -r tests/test_manifest_from_content.nim
+    nim c -r tests/test_docs_graph_integration.nim
+    nim c -r tests/test_references.nim
+    nim c -r tests/test_redirects.nim
+    nim c -r tests/test_proofsite_examples_compile.nim
+
+build:
+    nim c -r --hints:off -o:build/build src/build.nim
+
+serve:
+    nim c -r --hints:off src/ssr.nim
