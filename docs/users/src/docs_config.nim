@@ -18,6 +18,15 @@ proc isonimDocsConfig*(): DocsConfig =
     defaultRoute: "/",
     stylesheetHref: "/assets/style.css",
     baseUrl: "https://docs.codetracer.com",
+    # metacraft-theme M3: use the framework's optional chrome hooks instead of
+    # the M2 CSS stopgaps. `siteLogo` renders the vendored CodeTracer mark as a
+    # real `<img class="docs-logo">` in `.docs-header` (replacing the M2
+    # `.docs-title::before` background-image), linked home via `logoHref`;
+    # `footerHtml` fills the previously-empty `.docs-footer` with the WebFlow
+    # attribution line.
+    siteLogo: "/assets/img/logo-black-horizontal.svg",
+    logoHref: "/",
+    footerHtml: "Built by <a href=\"https://github.com/metacraft-labs\">metacraft-labs</a> — 2026",
   )
 
 proc isonimCompletenessMatrix*(): seq[CompletenessRequirement] =

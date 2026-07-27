@@ -191,3 +191,15 @@ suite "CodeTracer docs theme -- fidelity-critical values (metacraft-theme M2)":
 
   test "dark chrome inversion via filter: invert(1)":
     check "filter: invert(1);" in consumerCss
+
+  test "M3 (Gap A): the logo is a real .docs-logo <img>, not the M2 ::before stopgap":
+    check ".docs-logo {" in consumerCss
+    check ".docs-title::before" notin consumerCss
+    # dark-mode inversion moved from the ::before mark onto the real image.
+    check "[data-theme=\"dark\"] .docs-logo," in consumerCss
+
+  test "M3 (Gap D): important=violet.500 / caution=red.500 bound + styled distinctly":
+    check "--docs-admonition-important-border: #8b5cf6;" in tokensCss  # violet.500
+    check "--docs-admonition-caution-border: #ef4444;" in tokensCss    # red.500
+    check ".docs-md-admonition-important {" in consumerCss
+    check ".docs-md-admonition-caution {" in consumerCss

@@ -120,10 +120,24 @@ a:hover {
   z-index: 30;
 }
 
-/* Gap A (logo): rendered as a background image on the header title until
- * the framework's optional `siteLogo` hook lands in M3. The logo sits to
- * the left of the page-title text via a ::before mark, so dark-mode
- * `filter: invert(1)` recolours only the mark, never the title text. */
+/* Gap A (logo): now the framework's optional `siteLogo` hook (M3) renders a
+ * real `<img class="docs-logo">` in `.docs-header`, linked home via the
+ * `.docs-logo-link` wrapper -- replacing M2's `.docs-title::before`
+ * background-image stopgap. The monochrome mark inverts in dark mode (see the
+ * dark-chrome block) so only the logo recolours, never the title text. */
+.docs-logo-link {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  line-height: 0;
+}
+
+.docs-logo {
+  display: inline-block;
+  height: 1.6rem;
+  width: auto;
+}
+
 .docs-title {
   display: inline-flex;
   align-items: center;
@@ -134,14 +148,6 @@ a:hover {
   font-weight: 600;
   letter-spacing: -0.02em;
   color: var(--docs-fg);
-}
-
-.docs-title::before {
-  content: "";
-  display: inline-block;
-  width: 8rem;
-  height: 1.6rem;
-  background: url(/assets/img/logo-black-horizontal.svg) left center / contain no-repeat;
 }
 
 .docs-nav,
@@ -197,12 +203,20 @@ a:hover {
   padding: var(--docs-space-8) 0;
 }
 
+/* Gap F (M3): the framework's optional `footerHtml` hook now fills this
+ * footer with the WebFlow attribution line (previously an empty element). */
 .docs-footer {
   grid-column: 1 / -1;
   padding: var(--docs-space-5) 0;
   border-top: 1px solid var(--docs-border);
   color: var(--docs-fg-muted);
   font-size: var(--docs-font-size-sm);
+}
+
+.docs-footer a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 @media (max-width: 960px) {
@@ -691,6 +705,18 @@ h6.docs-md-heading {
   background: var(--docs-admonition-tip-bg);
 }
 
+/* Gap D (M3): the book's `important` (violet) + `caution` (red) severities,
+ * now first-class framework admonition kinds. */
+.docs-md-admonition-important {
+  border-color: var(--docs-admonition-important-border);
+  background: var(--docs-admonition-important-bg);
+}
+
+.docs-md-admonition-caution {
+  border-color: var(--docs-admonition-caution-border);
+  background: var(--docs-admonition-caution-bg);
+}
+
 .docs-md-admonition-warning {
   border-color: var(--docs-admonition-warning-border);
   background: var(--docs-admonition-warning-bg);
@@ -805,13 +831,13 @@ h6.docs-md-heading {
 /* --- dark-mode chrome inversion ----------------------------------- */
 /* Monochrome logo + search glyph invert to read on the dark canvas; the
  * page-title text and all content imagery are left untouched. */
-[data-theme="dark"] .docs-title::before,
+[data-theme="dark"] .docs-logo,
 [data-theme="dark"] .docs-search::before {
   filter: invert(1);
 }
 
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .docs-title::before,
+  :root:not([data-theme="light"]) .docs-logo,
   :root:not([data-theme="light"]) .docs-search::before {
     filter: invert(1);
   }

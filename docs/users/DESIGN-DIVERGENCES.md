@@ -33,7 +33,7 @@ deliberate docs-specific look pending a joint design decision.
 | Dimension | Docs design | Brand token | Status |
 |-----------|-------------|-------------|--------|
 | Focus ring | `#3b82f6` | `colors.ui.border.focus` = blue.500 `#3b82f6` | **exact match** |
-| Admonition palette (note/tip/important/warning/caution) | blue/green/violet/amber/red `.500`+`.50` | same hexes in `brand.json` primitives | **exact match** — the docs admonitions already *are* the brand palette |
+| Admonition palette (note/tip/important/warning/caution) | blue/green/violet/amber/red `.500`+`.50` | same hexes in `brand.json` primitives | **exact match** — the docs admonitions already *are* the brand palette; all five severities render distinctly as of M3 |
 | Body text | `#111` / dark `#dfe0e4` | `neutral.1000 #101010` / dark `neutral.150` | near-match, keep |
 | Muted text | `#7e7e7e` / `#a8aab1` | `neutral.300 #919191` / `neutral.250` | near-match, keep |
 | Borders/dividers | `#e5e7eb` / `#3c4046` | `divider.subtle` (neutral.700) | close, keep docs values |
@@ -74,7 +74,9 @@ mechanical tag the "How this doc is meant to be used" section calls for.
 | `--docs-admonition-note-border` | `#3b82f6` | **token** `colors.blue.500` | exact match |
 | `--docs-admonition-tip-border` | `#22c55e` | **token** `colors.green.500` | exact match |
 | `--docs-admonition-warning-border` | `#f59e0b` | **token** `colors.amber.500` | exact match |
-| `--docs-admonition-danger-border` | `#ef4444` | **token** `colors.red.500` | exact match (WebFlow `caution`) |
+| `--docs-admonition-danger-border` | `#ef4444` | **token** `colors.red.500` | exact match |
+| `--docs-admonition-important-border` (M3) | `#8b5cf6` | **token** `colors.violet.500` | exact match |
+| `--docs-admonition-caution-border` (M3) | `#ef4444` | **token** `colors.red.500` | exact match (WebFlow `caution` = red, now its own severity) |
 | `--docs-admonition-*-bg` | tint / rgba tint | **literal** | brand `*.50` primitives (light); dark tints docs-specific |
 | `--docs-code-*`, `--docs-tok-*`, `--docs-api-*`, radii/spacing/sizes | see `theme_tokens.nim` | **literal** | structural / no WebFlow spec |
 
@@ -86,9 +88,25 @@ mechanical tag the "How this doc is meant to be used" section calls for.
   brand `*.50` primitives, but the dark tints are translucent `rgba(...)`
   overlays with no single brand-token equivalent, and a `Binding` is
   all-token or all-literal (no per-side mix).
-- **Gap D** (the book's `important`/`caution` severities) is deferred to
-  M3's framework admonition hook; for now WebFlow `caution` → framework
-  `danger` (red.500) and `important` has no distinct rendering.
+- **Gap A** (logo) — RESOLVED in M3. The framework's optional `siteLogo`/
+  `logoHref` `DocsConfig` hooks now render the vendored CodeTracer mark as a
+  real `<img class="docs-logo">` in `.docs-header` (linked home), replacing the
+  M2 `.docs-title::before` background-image stopgap. `.docs-logo` styling +
+  dark-mode `filter: invert(1)` live in the consumer stylesheet.
+- **Gap D** (the book's `important`/`caution` severities) — RESOLVED in M3.
+  The framework markdown renderer now has first-class `important` (violet) and
+  `caution` (red) admonition kinds, so `:::important` / `:::caution` parse and
+  render their own `.docs-md-admonition-important` / `-caution` classes. The
+  consumer binds `--docs-admonition-important-border` → `colors.violet.500`
+  (exact brand primitive) and `--docs-admonition-caution-border` →
+  `colors.red.500`. WebFlow `caution` is now its OWN severity (red) instead of
+  borrowing `danger`, and `important` renders distinctly (violet) — no more
+  lossy remap.
+- **Gap F** (footer) — RESOLVED in M3. The framework's optional `footerHtml`
+  hook fills the previously-empty `.docs-footer` with the WebFlow attribution
+  line ("Built by metacraft-labs — 2026"). SSR-string hook (raw HTML has no
+  generic-renderer node form); the consumer is a static SSG build, so this is
+  the delivery path.
 - **Asset delivery deviation.** The design-port spec calls for vendoring the
   Geist woff2 / logo / glyph under `assets/` referenced as `url(/assets/...)`.
   The framework SSG hash pipeline content-hashes+renames *and removes* every

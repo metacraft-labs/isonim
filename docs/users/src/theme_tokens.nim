@@ -132,10 +132,16 @@ proc metacraftDocsTokenLayer*(): DocsTokenLayer =
   result.add "--docs-admonition-tip-bg", literal("#f0fdf4", "rgba(74, 222, 128, 0.12)")
   result.add "--docs-admonition-warning-border", token("colors.amber.500", "colors.amber.500")
   result.add "--docs-admonition-warning-bg", literal("#fffbeb", "rgba(251, 191, 36, 0.12)")
-  # framework maps `danger` <- WebFlow `caution` (red.500); `important`+
-  # `caution` as distinct severities are M3's framework hook.
   result.add "--docs-admonition-danger-border", token("colors.red.500", "colors.red.500")
   result.add "--docs-admonition-danger-bg", literal("#fef2f2", "rgba(248, 113, 113, 0.12)")
+  # metacraft-theme M3 (Gap D): the framework's new `important`/`caution`
+  # severities now render distinctly, so the book's 5-severity WebFlow palette
+  # ports 1:1 -- `important` = violet.500 (matches brand primitive), `caution`
+  # = red.500 (WebFlow's caution IS red; it no longer has to borrow `danger`).
+  result.add "--docs-admonition-important-border", token("colors.violet.500", "colors.violet.500")
+  result.add "--docs-admonition-important-bg", literal("#f5f3ff", "rgba(139, 92, 246, 0.12)")
+  result.add "--docs-admonition-caution-border", token("colors.red.500", "colors.red.500")
+  result.add "--docs-admonition-caution-bg", literal("#fef2f2", "rgba(248, 113, 113, 0.12)")
 
   # --- API reference method colours (no WebFlow spec; framework palette) --
   result.add "--docs-api-get", literal("#1a8754", "#56d364")
