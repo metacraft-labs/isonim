@@ -12,6 +12,7 @@ test:
     nim c -r tests/test_references.nim
     nim c -r tests/test_redirects.nim
     nim c -r tests/test_proofsite_examples_compile.nim
+    nim c -r tests/test_theme_contract.nim
 
 build:
     nim c -r --hints:off -o:build/build src/build.nim

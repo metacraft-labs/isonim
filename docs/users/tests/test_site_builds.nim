@@ -39,7 +39,7 @@ suite "IsoNim docs site -- auto-discovered routes all render (Tier 3, C-target)"
       let (status, html) = renderRoute(entry.canonicalPath, contentDir)
       check status == 200
       check html.contains(entry.meta.title)
-      check html.contains("IsoNim Docs") # this site's own DocsConfig branding
+      check html.contains("CodeTracer Docs") # this site's own DocsConfig branding (metacraft-theme M2)
 
 proc extractStylesheetHref(html: string): string =
   ## Pull the `href` out of the document's `<link rel="stylesheet" ...>`
@@ -78,7 +78,7 @@ suite "IsoNim docs site -- real on-disk buildSite() emits a non-dangling public/
     check fileExists(indexPath)
     let indexHtml = readFile(indexPath)
     check indexHtml.len > 0
-    check indexHtml.contains("IsoNim Docs") # a real content page really rendered
+    check indexHtml.contains("CodeTracer Docs") # a real content page really rendered (metacraft-theme M2)
 
     ## 3. The stylesheet the emitted page references exists on disk and is
     ## non-empty -- i.e. `stylesheetHref` is NOT dangling. The declared

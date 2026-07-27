@@ -1,12 +1,21 @@
-/* IsoNim Docs -- this site's own stylesheet (M1 corrective deliverable 1).
+/* CodeTracer docs theme -- the RULES half of the Metacraft docs theme
+ * (metacraft-theme M2 deliverable 2).
  *
- * A committed, token-driven stylesheet targeting the isonim-docs
- * framework's stable semantic `docs-*` class contract (shell, navigation,
- * markdown, search). It carries no IsoNim-specific content -- branding is
- * a DocsConfig/content concern -- so it is the real stylesheet these docs
- * render against. `just build` copies it into public/assets and the SSG
- * content-hashes it; the framework also provisions its own identical
- * bundled default as a fallback so stylesheetHref can never dangle.
+ * A faithful port of the WebFlow CodeTracer docs design onto the
+ * isonim-docs framework's stable semantic `docs-*` class contract. The
+ * token VALUES (colours, fonts, radii, the warm canvas, the blue accent)
+ * come from the Metacraft docs token layer (`src/theme_tokens.nim`), whose
+ * emitted `:root{ --docs-*: ... }` / `[data-theme="dark"]` blocks are
+ * PREPENDED onto this file at build time (see `src/build.nim` ->
+ * `buildSite(docsTokensCss = ...)`). This file therefore defines NO
+ * `--docs-*` values itself; it only consumes them.
+ *
+ * Vendored theme binaries (Geist woff2, the CodeTracer logo, the search
+ * glyph) live in `static/` and are copied verbatim into `public/assets/`
+ * by `src/build.nim` AFTER the SSG hash/purge pass, so the `url(/assets/...)`
+ * references below resolve to real, non-hashed files (the framework's
+ * hash pipeline renames+removes files under `assets/` and does not rewrite
+ * CSS `url()` refs -- see DESIGN-DIVERGENCES.md).
  */
 
 *,
@@ -29,111 +38,13 @@ svg {
   display: block;
 }
 
-:root {
-  color-scheme: light dark;
-
-  --docs-font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --docs-font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-
-  --docs-space-1: 0.25rem;
-  --docs-space-2: 0.5rem;
-  --docs-space-3: 0.75rem;
-  --docs-space-4: 1rem;
-  --docs-space-5: 1.5rem;
-  --docs-space-6: 2rem;
-  --docs-space-8: 3rem;
-
-  --docs-radius-sm: 4px;
-  --docs-radius-md: 8px;
-
-  --docs-font-size-sm: 0.875rem;
-  --docs-font-size-base: 1rem;
-  --docs-line-height: 1.65;
-
-  --docs-max-content-width: 46rem;
-
-  --docs-bg: #ffffff;
-  --docs-bg-raised: #f6f7f9;
-  --docs-fg: #1a1d23;
-  --docs-fg-muted: #5b6270;
-  --docs-border: #e2e5ea;
-  --docs-accent: #2f6feb;
-  --docs-accent-fg: #ffffff;
-  --docs-link: #2f6feb;
-  --docs-code-bg: #f0f2f5;
-  --docs-code-fg: #b3261e;
-  --docs-focus-ring: #2f6feb;
-  --docs-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
-
-  --docs-tok-keyword: #a626a4;
-  --docs-tok-string: #22863a;
-  --docs-tok-comment: #6a737d;
-  --docs-tok-number: #005cc5;
-
-  --docs-admonition-note-border: #2f6feb;
-  --docs-admonition-note-bg: #eef4ff;
-  --docs-admonition-tip-border: #1a8754;
-  --docs-admonition-tip-bg: #eafaf1;
-  --docs-admonition-warning-border: #b8860b;
-  --docs-admonition-warning-bg: #fff8e6;
-  --docs-admonition-danger-border: #cc3333;
-  --docs-admonition-danger-bg: #fdeeee;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --docs-bg: #14161a;
-    --docs-bg-raised: #1c1f26;
-    --docs-fg: #e7e9ee;
-    --docs-fg-muted: #9aa2b1;
-    --docs-border: #2c313c;
-    --docs-accent: #6ea8ff;
-    --docs-accent-fg: #0b1220;
-    --docs-link: #6ea8ff;
-    --docs-code-bg: #1c1f26;
-    --docs-code-fg: #ff9d8a;
-    --docs-focus-ring: #6ea8ff;
-    --docs-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-    --docs-tok-keyword: #d2a8ff;
-    --docs-tok-string: #7ee787;
-    --docs-tok-comment: #8b949e;
-    --docs-tok-number: #79c0ff;
-    --docs-admonition-note-bg: #16233d;
-    --docs-admonition-tip-bg: #113321;
-    --docs-admonition-warning-bg: #332a10;
-    --docs-admonition-danger-bg: #3a1717;
-  }
-}
-
-:root[data-theme="dark"] {
-  --docs-bg: #14161a;
-  --docs-bg-raised: #1c1f26;
-  --docs-fg: #e7e9ee;
-  --docs-fg-muted: #9aa2b1;
-  --docs-border: #2c313c;
-  --docs-accent: #6ea8ff;
-  --docs-accent-fg: #0b1220;
-  --docs-link: #6ea8ff;
-  --docs-code-bg: #1c1f26;
-  --docs-code-fg: #ff9d8a;
-  --docs-focus-ring: #6ea8ff;
-  --docs-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-  --docs-tok-keyword: #d2a8ff;
-  --docs-tok-string: #7ee787;
-  --docs-tok-comment: #8b949e;
-  --docs-tok-number: #79c0ff;
-  --docs-admonition-note-bg: #16233d;
-  --docs-admonition-tip-bg: #113321;
-  --docs-admonition-warning-bg: #332a10;
-  --docs-admonition-danger-bg: #3a1717;
-}
-
 /* --- base typography ---------------------------------------------- */
 
 body {
   font-family: var(--docs-font-sans);
   font-size: var(--docs-font-size-base);
   line-height: var(--docs-line-height);
+  letter-spacing: -0.01em; /* --ls-body */
   color: var(--docs-fg);
   background: var(--docs-bg);
 }
@@ -152,12 +63,7 @@ a:hover {
   outline-offset: 2px;
 }
 
-/* --- a11y: skip-to-content link ------------------------------------
- * Offscreen (not `display: none` -- that would drop it from the
- * accessibility tree/tab order) until it receives keyboard focus, at
- * which point it becomes the first visible, high-contrast element on
- * the page so a keyboard/screen-reader user can jump straight past the
- * header/nav into `#docs-region-main`. */
+/* --- a11y: skip-to-content link ---------------------------------- */
 
 .docs-skip-link {
   position: absolute;
@@ -176,7 +82,7 @@ a:hover {
   transform: translateY(0);
 }
 
-/* --- M0 minimal shell (docs-shell / docs-title / docs-body) -------- */
+/* --- M0 minimal shell -------------------------------------------- */
 
 .docs-shell {
   max-width: var(--docs-max-content-width);
@@ -184,40 +90,58 @@ a:hover {
   padding: var(--docs-space-6) var(--docs-space-5);
 }
 
-.docs-title {
-  font-size: 1.25rem;
-  font-weight: 700;
-  margin: 0;
-}
-
 .docs-body {
   max-width: var(--docs-max-content-width);
 }
 
-/* --- three-column site frame ---------------------------------------
- * .docs-nav and its inner .docs-navigation wrapper carry no visual
- * box of their own (`display: contents`); their four landmark
- * children become direct grid items of `.docs-frame` and are placed
- * explicitly below. */
+/* --- three-column site frame ------------------------------------- */
 
 .docs-frame {
   display: grid;
-  grid-template-columns: minmax(200px, 260px) minmax(0, 1fr) minmax(180px, 240px);
+  grid-template-columns: minmax(0, var(--docs-sidebar-width)) minmax(0, 1fr) minmax(0, 15rem);
   column-gap: var(--docs-space-6);
   max-width: 90rem;
   margin: 0 auto;
   padding: 0 var(--docs-space-5);
 }
 
+/* Header: brand (with CodeTracer logo) | centered search | theme toggle. */
 .docs-header {
   grid-column: 1 / -1;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 24px;
   flex-wrap: wrap;
-  gap: var(--docs-space-4);
   padding: var(--docs-space-4) 0;
   border-bottom: 1px solid var(--docs-border);
+  position: sticky;
+  top: 0;
+  background: var(--docs-bg);
+  z-index: 30;
+}
+
+/* Gap A (logo): rendered as a background image on the header title until
+ * the framework's optional `siteLogo` hook lands in M3. The logo sits to
+ * the left of the page-title text via a ::before mark, so dark-mode
+ * `filter: invert(1)` recolours only the mark, never the title text. */
+.docs-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--docs-space-3);
+  flex: 0 0 auto;
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--docs-fg);
+}
+
+.docs-title::before {
+  content: "";
+  display: inline-block;
+  width: 8rem;
+  height: 1.6rem;
+  background: url(/assets/img/logo-black-horizontal.svg) left center / contain no-repeat;
 }
 
 .docs-nav,
@@ -232,22 +156,25 @@ a:hover {
   color: var(--docs-fg-muted);
 }
 
+/* Sidebar: warm right-divider column, sticky under the header. */
 .docs-nav-sidebar {
   grid-column: 1;
-  padding-top: var(--docs-space-4);
+  max-width: var(--docs-sidebar-width);
+  padding: var(--docs-space-8) var(--docs-space-6) var(--docs-space-8) 0;
+  border-right: 1px solid var(--docs-border);
   position: sticky;
-  top: var(--docs-space-4);
+  top: 6vh;
   align-self: start;
-  max-height: calc(100vh - 2 * var(--docs-space-4));
+  max-height: calc(100vh - 6vh);
   overflow-y: auto;
   font-size: var(--docs-font-size-sm);
 }
 
 .docs-nav-toc {
   grid-column: 3;
-  padding-top: var(--docs-space-4);
+  padding-top: var(--docs-space-8);
   position: sticky;
-  top: var(--docs-space-4);
+  top: 6vh;
   align-self: start;
   font-size: var(--docs-font-size-sm);
 }
@@ -262,10 +189,12 @@ a:hover {
   border-top: 1px solid var(--docs-border);
 }
 
+/* Content column: max 50rem, generous padding. */
 .docs-main {
   grid-column: 2;
   min-width: 0;
-  padding: var(--docs-space-4) 0 var(--docs-space-8);
+  max-width: var(--docs-max-content-width);
+  padding: var(--docs-space-8) 0;
 }
 
 .docs-footer {
@@ -289,18 +218,12 @@ a:hover {
     grid-column: 1;
     position: static;
     max-height: none;
+    max-width: none;
+    border-right: none;
   }
 }
 
-/* --- <768px hamburger drawer (M5 corrective deliverable 1) -------------
- * `.docs-nav-drawer-toggle` stays hidden and `.docs-nav-drawer-body`
- * stays `display: contents` (transparent to the grid above, same as
- * `.docs-nav`/`.docs-navigation`) down to 768px, so nothing here
- * changes layout above that width. Below it, the toggle becomes a real
- * button and the body becomes an off-canvas panel toggled by
- * `[data-open]` -- written by `main_web.wireNavDrawer`'s click handler,
- * not by a `:target`/checkbox CSS-only hack, since the same handler
- * also owns the focus trap. */
+/* --- <768px hamburger drawer ------------------------------------- */
 
 .docs-nav-drawer-toggle {
   display: none;
@@ -344,7 +267,7 @@ a:hover {
   }
 }
 
-/* --- breadcrumbs ----------------------------------------------------- */
+/* --- breadcrumbs -------------------------------------------------- */
 
 .docs-nav-breadcrumb-list {
   list-style: none;
@@ -366,16 +289,13 @@ a:hover {
   font-weight: 600;
 }
 
-/* --- sidebar navigation ------------------------------------------------ */
+/* --- sidebar navigation ------------------------------------------- */
 
 .docs-nav-section {
   margin-bottom: var(--docs-space-4);
 }
 
-/* M5 corrective deliverable 1: the section title is a real, keyboard-
- * operable `<button>` (click-to-collapse, wired by
- * `main_web.wireSidebarCollapse`) -- reset to look like the plain
- * label it always has, not a default button chrome. */
+/* UPPERCASE muted section headers (WebFlow `.display-xs-nav-header`). */
 .docs-nav-section-title {
   display: block;
   width: 100%;
@@ -389,7 +309,7 @@ a:hover {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  font-size: 0.75rem;
+  font-size: 0.813rem;
   color: var(--docs-fg-muted);
 }
 
@@ -399,12 +319,9 @@ a:hover {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--docs-space-1);
 }
 
-/* Infinite-depth nesting: each level indents from its parent and gets
- * a thin rule so a deeply-nested item still reads as "inside" its
- * ancestor sections at a glance. */
 .docs-nav-section-children {
   margin-left: var(--docs-space-3);
   padding-left: var(--docs-space-2);
@@ -418,19 +335,25 @@ a:hover {
 
 .docs-nav-item a {
   display: block;
-  padding: var(--docs-space-1) var(--docs-space-3);
+  padding: 0.45rem 0.9rem;
   border-radius: var(--docs-radius-sm);
+  font-size: var(--docs-font-size-sm);
+  font-weight: 500;
   color: var(--docs-fg);
 }
 
+/* Warm hover AND active surface (`#E7E5E1`) -- the WebFlow sidebar never
+ * paints the accent behind an item, so the active state is overridden off
+ * the framework default's accent fill onto the warm raised surface. */
 .docs-nav-item a:hover {
   background: var(--docs-bg-raised);
+  color: var(--docs-fg);
   text-decoration: none;
 }
 
 .docs-nav-item-active a {
-  background: var(--docs-accent);
-  color: var(--docs-accent-fg);
+  background: var(--docs-bg-raised);
+  color: var(--docs-fg);
   font-weight: 600;
 }
 
@@ -440,7 +363,7 @@ a:hover {
   opacity: 0.7;
 }
 
-/* --- table of contents -------------------------------------------------- */
+/* --- table of contents -------------------------------------------- */
 
 .docs-nav-toc-list,
 .docs-nav-toc-list ul {
@@ -463,7 +386,7 @@ a:hover {
   color: var(--docs-link);
 }
 
-/* --- prev/next pagination ------------------------------------------------ */
+/* --- prev/next pagination ----------------------------------------- */
 
 .docs-nav-prev,
 .docs-nav-next {
@@ -478,37 +401,64 @@ a:hover {
   text-align: right;
 }
 
-/* --- search -------------------------------------------------------------- */
+/* --- search ------------------------------------------------------- */
 
+/* Centered search field (max 560px) with an inset glyph. */
 .docs-search {
   position: relative;
-  width: min(20rem, 100%);
+  flex: 1 1 auto;
+  max-width: 560px;
+  margin: 0 auto;
+}
+
+.docs-search::before {
+  content: "";
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 16px;
+  background: url(/assets/img/ct-search-icon.svg) center / contain no-repeat;
+  pointer-events: none;
 }
 
 .docs-search-input {
   width: 100%;
-  padding: var(--docs-space-2) var(--docs-space-3);
+  height: 38px;
+  padding: 0 16px 0 42px;
   border: 1px solid var(--docs-border);
-  border-radius: var(--docs-radius-md);
-  background: var(--docs-bg-raised);
-  color: var(--docs-fg);
-  font-size: var(--docs-font-size-sm);
+  border-radius: var(--docs-radius-lg);
+  background: var(--docs-input-bg);
+  color: var(--docs-code-fg);
+  font-size: 0.9375rem;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.docs-search-input::placeholder {
+  color: var(--docs-fg-muted);
+}
+
+.docs-search-input:focus {
+  border-color: var(--docs-focus-ring);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
 }
 
 .docs-search-results {
   list-style: none;
-  margin: var(--docs-space-1) 0 0;
-  padding: var(--docs-space-1);
+  margin: 0;
+  padding: 6px;
   position: absolute;
   inset-inline: 0;
-  top: 100%;
-  background: var(--docs-bg);
+  top: calc(100% + 8px);
+  background: var(--docs-input-bg);
   border: 1px solid var(--docs-border);
-  border-radius: var(--docs-radius-md);
+  border-radius: var(--docs-radius-lg);
   box-shadow: var(--docs-shadow);
-  max-height: 20rem;
+  max-height: 60vh;
   overflow-y: auto;
-  z-index: 20;
+  z-index: 1000;
 }
 
 .docs-search-results:empty {
@@ -516,40 +466,37 @@ a:hover {
 }
 
 .docs-search-result {
-  border-radius: var(--docs-radius-sm);
+  border-radius: 7px;
 }
 
 .docs-search-result-link {
   display: block;
-  padding: var(--docs-space-2) var(--docs-space-3);
-  color: var(--docs-fg);
+  padding: 9px 12px;
+  border-radius: 7px;
+  color: var(--docs-code-fg);
 }
 
+.docs-search-result:hover .docs-search-result-link,
 .docs-search-result-active,
 .docs-search-result-active .docs-search-result-link {
-  background: var(--docs-accent);
-  color: var(--docs-accent-fg);
+  background: var(--docs-code-inline-bg);
+  color: var(--docs-code-fg);
 }
 
 .docs-search-result-section {
   display: block;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--docs-fg-muted);
-  padding: 0 var(--docs-space-3) var(--docs-space-2);
-}
-
-.docs-search-result-active .docs-search-result-section {
-  color: inherit;
-  opacity: 0.85;
+  padding: 0 12px 6px;
 }
 
 .docs-search-empty {
-  padding: var(--docs-space-3);
+  padding: 14px 12px;
   color: var(--docs-fg-muted);
   font-size: var(--docs-font-size-sm);
 }
 
-/* --- theme toggle ---------------------------------------------------- */
+/* --- theme toggle ------------------------------------------------- */
 
 .docs-theme-toggle {
   flex-shrink: 0;
@@ -557,8 +504,8 @@ a:hover {
   height: 2.25rem;
   padding: 0;
   border: 1px solid var(--docs-border);
-  border-radius: var(--docs-radius-md);
-  background: var(--docs-bg-raised);
+  border-radius: var(--docs-radius-pill);
+  background: var(--docs-input-bg);
   color: var(--docs-fg);
   font-size: 1rem;
   line-height: 1;
@@ -566,49 +513,63 @@ a:hover {
 }
 
 .docs-theme-toggle:hover {
-  background: var(--docs-border);
+  background: var(--docs-bg-raised);
 }
 
-/* --- markdown content ------------------------------------------------------ */
+/* --- markdown content --------------------------------------------- */
 
 .docs-md-body {
   max-width: var(--docs-max-content-width);
 }
 
+/* UNDERLINED content headings: every heading carries a hairline bottom
+ * rule + `.25em` of padding, the CodeTracer docs' signature treatment. */
 .docs-md-heading {
   scroll-margin-top: var(--docs-space-6);
-  font-weight: 700;
-  line-height: 1.25;
+  font-weight: 600;
+  line-height: 1.25em;
+  letter-spacing: -0.02em;
+  border-bottom: 1px solid var(--docs-border);
+  padding-bottom: 0.25em;
 }
 
 h1.docs-md-heading {
   font-size: 1.75rem;
-  margin: 0 0 var(--docs-space-4);
+  margin: 0 0 0.75em;
 }
 
 h2.docs-md-heading {
   font-size: 1.4rem;
-  margin: var(--docs-space-6) 0 var(--docs-space-3);
+  margin: var(--docs-space-6) 0 0.75em;
 }
 
 h3.docs-md-heading {
-  font-size: 1.15rem;
-  margin: var(--docs-space-5) 0 var(--docs-space-2);
+  font-size: 1.25rem;
+  margin: var(--docs-space-5) 0 0.75em;
 }
 
-h4.docs-md-heading,
-h5.docs-md-heading,
-h6.docs-md-heading {
+h4.docs-md-heading {
+  font-size: 1.1rem;
+  margin: var(--docs-space-4) 0 0.7em;
+}
+
+h5.docs-md-heading {
   font-size: 1rem;
-  margin: var(--docs-space-4) 0 var(--docs-space-2);
+  margin: var(--docs-space-4) 0 0.75em;
 }
 
+h6.docs-md-heading {
+  font-size: 0.85rem;
+  margin: var(--docs-space-4) 0 0.75em;
+}
+
+/* Paragraph rhythm: 2.5rem between blocks (WebFlow `--rich-text-space`). */
 .docs-md-paragraph {
-  margin: 0 0 var(--docs-space-4);
+  margin: 0 0 2.5rem;
 }
 
 .docs-md-list {
-  margin: 0 0 var(--docs-space-4);
+  margin: 0 0 2.5rem;
   padding-left: var(--docs-space-5);
 }
 
@@ -616,18 +577,20 @@ h6.docs-md-heading {
   margin-bottom: var(--docs-space-1);
 }
 
+/* Inline code: `#f1f5f9` tint, 4px radius, `#282A2D` text. */
 .docs-md-body code {
   font-family: var(--docs-font-mono);
-  font-size: 0.9em;
-  background: var(--docs-code-bg);
+  font-size: 0.875rem;
+  background: var(--docs-code-inline-bg);
   color: var(--docs-code-fg);
-  padding: 0.15em 0.4em;
+  border: 1px solid var(--docs-border);
+  padding: 0.05rem 0.4rem;
   border-radius: var(--docs-radius-sm);
 }
 
 .docs-md-code-block {
   position: relative;
-  margin: 0 0 var(--docs-space-5);
+  margin: 0 0 2.5rem;
 }
 
 .docs-md-code-block .docs-md-code-fence {
@@ -659,21 +622,26 @@ h6.docs-md-heading {
   border-color: var(--docs-tok-string);
 }
 
+/* Code fence: `#f6f8fa` surface, 6px radius. */
 .docs-md-code-fence {
   font-family: var(--docs-font-mono);
-  font-size: var(--docs-font-size-sm);
+  font-size: 0.875rem;
+  color: var(--docs-code-fg);
   background: var(--docs-code-bg);
   border: 1px solid var(--docs-border);
-  border-radius: var(--docs-radius-md);
-  padding: var(--docs-space-4);
+  border-radius: var(--docs-radius-code);
+  padding: 0.5rem 0.75rem;
+  line-height: 1.5;
   overflow-x: auto;
-  margin: 0 0 var(--docs-space-5);
+  margin: 0 0 2.5rem;
 }
 
 .docs-md-code-fence code {
   background: none;
+  border: none;
   padding: 0;
   color: inherit;
+  font-weight: 400;
 }
 
 .tok-keyword {
@@ -693,20 +661,20 @@ h6.docs-md-heading {
   color: var(--docs-tok-number);
 }
 
+/* Admonitions: 4px left border + tinted background. */
 .docs-md-admonition {
   border-left: 4px solid var(--docs-border);
-  border-radius: var(--docs-radius-md);
-  padding: var(--docs-space-4) var(--docs-space-5);
-  margin: 0 0 var(--docs-space-5);
+  border-radius: var(--docs-radius-code);
+  padding: 12px 16px;
+  margin: 0 0 2.5rem;
   background: var(--docs-bg-raised);
 }
 
 .docs-md-admonition strong {
   display: block;
-  margin-bottom: var(--docs-space-2);
-  text-transform: uppercase;
-  font-size: 0.75rem;
-  letter-spacing: 0.04em;
+  margin-bottom: 6px;
+  text-transform: capitalize;
+  font-weight: 600;
 }
 
 .docs-md-admonition p:last-child {
@@ -734,7 +702,7 @@ h6.docs-md-heading {
 }
 
 .docs-md-tabs {
-  margin: 0 0 var(--docs-space-5);
+  margin: 0 0 2.5rem;
 }
 
 .docs-md-tablist {
@@ -773,17 +741,18 @@ h6.docs-md-heading {
   display: none;
 }
 
+/* Tables: `#e5e7eb` borders, 8px/12px cell padding. */
 .docs-md-table {
   width: 100%;
   border-collapse: collapse;
-  margin: 0 0 var(--docs-space-5);
+  margin: 0 0 2.5rem;
   font-size: var(--docs-font-size-sm);
 }
 
 .docs-md-table th,
 .docs-md-table td {
   border: 1px solid var(--docs-border);
-  padding: var(--docs-space-2) var(--docs-space-3);
+  padding: 8px 12px;
   text-align: left;
 }
 
@@ -792,7 +761,7 @@ h6.docs-md-heading {
   font-weight: 600;
 }
 
-/* --- not-found / redirect pages -------------------------------------------- */
+/* --- not-found / redirect pages ----------------------------------- */
 
 .docs-not-found,
 .docs-redirect {
@@ -805,17 +774,7 @@ h6.docs-md-heading {
   font-weight: 600;
 }
 
-/* --- M4 corrective deliverable 3: loading indicator for slow routes ------
- * A thin top-of-viewport bar, toggled via `data-visible` around every
- * soft-nav route swap (`src/main_web.nim`'s `showLoadingIndicator`/
- * `hideLoadingIndicator`). The `transition-delay` below is what makes
- * this "for slow routes" rather than "for every route": a real browser
- * only starts the opacity/transform transition once `data-visible`
- * has stayed "true" for the full delay, and resets it (no visible
- * flash) if it flips back to "false" first -- exactly what happens for
- * this framework's own synchronous route content. A consumer whose own
- * content loading is genuinely asynchronous gets a real, visible bar
- * for anything slower than the delay, no JS timer required. */
+/* --- loading indicator -------------------------------------------- */
 
 .docs-route-loading {
   position: fixed;
@@ -843,45 +802,22 @@ h6.docs-md-heading {
   }
 }
 
-/* --------------------------------------------------------------------------
- * M7: OpenAPI three-column API reference (pkApiReference)
- *
- * A strict three-column grid inside the page `<main>`: LEFT endpoint nav,
- * CENTER prose + parameter/response/schema tables, RIGHT synthesized code
- * samples. Below the 900px breakpoint it collapses to a single column so it
- * stays readable on narrow viewports. HTTP-method color-coding is driven by
- * the `docs-api-method-*` classes; the colors are theme variables so they
- * adapt in light and dark exactly like the rest of the system.
- * ------------------------------------------------------------------------ */
-
-:root {
-  --docs-api-get: #1a8754;
-  --docs-api-post: #2f6feb;
-  --docs-api-put: #b8860b;
-  --docs-api-patch: #8250df;
-  --docs-api-delete: #cc3333;
-  --docs-api-other: #5b6270;
+/* --- dark-mode chrome inversion ----------------------------------- */
+/* Monochrome logo + search glyph invert to read on the dark canvas; the
+ * page-title text and all content imagery are left untouched. */
+[data-theme="dark"] .docs-title::before,
+[data-theme="dark"] .docs-search::before {
+  filter: invert(1);
 }
 
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --docs-api-get: #56d364;
-    --docs-api-post: #6ea8ff;
-    --docs-api-put: #e3b341;
-    --docs-api-patch: #d2a8ff;
-    --docs-api-delete: #ff7b72;
-    --docs-api-other: #9aa2b1;
+  :root:not([data-theme="light"]) .docs-title::before,
+  :root:not([data-theme="light"]) .docs-search::before {
+    filter: invert(1);
   }
 }
 
-[data-theme="dark"] {
-  --docs-api-get: #56d364;
-  --docs-api-post: #6ea8ff;
-  --docs-api-put: #e3b341;
-  --docs-api-patch: #d2a8ff;
-  --docs-api-delete: #ff7b72;
-  --docs-api-other: #9aa2b1;
-}
+/* --- OpenAPI three-column API reference (pkApiReference) ----------- */
 
 .docs-api-layout {
   display: grid;
@@ -935,7 +871,6 @@ h6.docs-md-heading {
   overflow-wrap: anywhere;
 }
 
-/* Method badge color-coding */
 .docs-api-method {
   display: inline-block;
   font-family: var(--docs-font-mono);
@@ -999,7 +934,7 @@ h6.docs-md-heading {
 .docs-api-schema-table th,
 .docs-api-schema-table td {
   border: 1px solid var(--docs-border);
-  padding: var(--docs-space-2) var(--docs-space-3);
+  padding: 8px 12px;
   text-align: left;
   vertical-align: top;
 }
@@ -1054,7 +989,7 @@ h6.docs-md-heading {
   margin: 0;
   padding: var(--docs-space-3);
   background: var(--docs-code-bg);
-  border-radius: var(--docs-radius-md);
+  border-radius: var(--docs-radius-code);
   overflow-x: auto;
   font-family: var(--docs-font-mono);
   font-size: var(--docs-font-size-sm);

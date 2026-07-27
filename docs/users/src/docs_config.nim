@@ -7,11 +7,17 @@ import core/config
 import core/completeness
 
 proc isonimDocsConfig*(): DocsConfig =
+  ## metacraft-theme M2 deliverable 4: CodeTracer branding for the
+  ## Metacraft-internal docs build. `stylesheetHref` is kept unchanged so
+  ## the SSG hash/purge pipeline (and its non-dangling guarantee) is
+  ## untouched; the CodeTracer look is delivered by the token layer +
+  ## `assets/style.css`, not by pointing at a different stylesheet.
   DocsConfig(
-    siteTitle: "IsoNim Docs",
-    siteDescription: "Documentation for the IsoNim isomorphic reactive web framework.",
+    siteTitle: "CodeTracer Docs",
+    siteDescription: "Documentation for CodeTracer -- the time-travelling debugger.",
     defaultRoute: "/",
     stylesheetHref: "/assets/style.css",
+    baseUrl: "https://docs.codetracer.com",
   )
 
 proc isonimCompletenessMatrix*(): seq[CompletenessRequirement] =

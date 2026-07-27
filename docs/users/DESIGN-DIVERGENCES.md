@@ -1,0 +1,104 @@
+# Docs theme ↔ brand-token divergences
+
+**Purpose.** The CodeTracer docs site uses its own docs-specific design (ported from the
+WebFlow reference `codetracer-docs-review`). That design is an independent lineage from
+the canonical Metacraft brand tokens in the `codetracer-design-system` repo
+(`brand → alias → mapped`). This document enumerates every point where the two disagree,
+so the authors of both designs can decide whether more alignment is desired.
+
+**Current stance (per operator decision).** The docs theme follows the WebFlow docs design
+faithfully (structure, layout, spacing, radii, canvas, *and* brand identity — fonts/accent).
+Divergences below are recorded, not yet reconciled. Nothing here is "wrong" — it is a
+deliberate docs-specific look pending a joint design decision.
+
+**Sources**
+- Docs design: `codetracer-docs-review/69cfa7efe94af49e84c7ba44/css/codetracer-docs.shared.*.css`
+  (hand-authored CodeTracer layer, lines ~3954–4105).
+- Brand tokens: `codetracer-design-system/{brand,alias,mapped}/*.json` (W3C DTCG).
+
+---
+
+## Divergences (need a design decision)
+
+| # | Dimension | Docs design (WebFlow) | Brand token (design-system) | Notes for the authors |
+|---|-----------|-----------------------|-----------------------------|-----------------------|
+| ① | UI / body font | **Geist** (variable, self-hosted) | `type.fontFamily.ui-primary` = **Space Grotesk** | The docs mockup uses Geist; the brand mandates Space Grotesk. Both are geometric sans. Decision: keep Geist for docs, or adopt Space Grotesk for brand consistency? |
+| ② | Code / mono font | browser default **`monospace`** | `type.fontFamily.code-primary` = **Space Mono** (Fira Mono also shipped) | Docs mockup left code font unspecified. Brand has Space/Fira Mono. Adopting a real mono is a strict improvement; which one? |
+| ③ | Accent / link color | **blue `#4168cc`** (link text is actually near-black `#111`, blue used sparingly) | `colors.action.primary` = brand.600 **indigo `#4f46e5`** (dark: brand.400 `#818cf8`) | Neither matches CodeTracer's logo red `#ff3300` (reserved for the mark). Docs blue vs brand indigo is a visible identity choice. |
+| ④ | Page canvas (light) | **warm off-white `#f0eeea`** | closest `graphite.50 #ececeb` (no exact token) | The warm canvas is a deliberate WebFlow choice with no brand-token equivalent. Keep warm, or snap to a neutral token? |
+| ④' | Page canvas (dark) | `#161719` | `neutral.950 #161616` (near-match) | ~3 units off; could snap to `#161616` with no visible change. |
+
+## Near-matches (aligned enough; noted for completeness)
+
+| Dimension | Docs design | Brand token | Status |
+|-----------|-------------|-------------|--------|
+| Focus ring | `#3b82f6` | `colors.ui.border.focus` = blue.500 `#3b82f6` | **exact match** |
+| Admonition palette (note/tip/important/warning/caution) | blue/green/violet/amber/red `.500`+`.50` | same hexes in `brand.json` primitives | **exact match** — the docs admonitions already *are* the brand palette |
+| Body text | `#111` / dark `#dfe0e4` | `neutral.1000 #101010` / dark `neutral.150` | near-match, keep |
+| Muted text | `#7e7e7e` / `#a8aab1` | `neutral.300 #919191` / `neutral.250` | near-match, keep |
+| Borders/dividers | `#e5e7eb` / `#3c4046` | `divider.subtle` (neutral.700) | close, keep docs values |
+| Spacing / radii / line-height | bespoke WebFlow scale (§ theme) | `alias.padding` / `alias.border-radius` | docs scale is structural design; keep |
+| Theme mechanism | `[data-theme="dark"]` + `prefers-color-scheme` | (n/a) | identical to isonim-docs's own; ports 1:1 |
+
+---
+
+## How this doc is meant to be used
+1. The docs theme ships with the **Docs design** column values (WebFlow-faithful).
+2. Each token in the docs theme is tagged with its brand-token counterpart (or "docs-specific,
+   no token") so a future alignment pass is mechanical.
+3. When the design authors decide on ①–④, update the docs token layer and prune the resolved
+   rows here. Rows in "Near-matches" can be snapped to the brand token at any time with no
+   visible change if strict token-sourcing is later required.
+
+---
+
+## Implemented binding (M2 docs token layer)
+
+The docs token layer (`src/theme_tokens.nim`, emitted by the M1
+`emitTokensCss`) binds each `--docs-*` variable either as a docs-specific
+**literal** (`bkLiteral`) or by **token** (`bkToken`, resolved against
+`codetracer-design-system/{brand,alias,mapped}/*.json`). This is the
+mechanical tag the "How this doc is meant to be used" section calls for.
+
+| `--docs-*` variable | Light / dark value | Binding | Brand-token counterpart |
+|---------------------|--------------------|---------|-------------------------|
+| `--docs-font-sans` | Geist stack | **literal** (①) | `type.fontFamily.ui-primary` = Space Grotesk |
+| `--docs-font-mono` | monospace stack | **literal** (②) | `type.fontFamily.code-primary` = Space Mono |
+| `--docs-bg` | `#f0eeea` / `#161719` | **literal** (④, ④') | none / `neutral.950 #161616` (near) |
+| `--docs-bg-raised` | `#E7E5E1` / `#31343a` | **literal** | warm hover, docs-specific |
+| `--docs-fg` | `#111` / `#dfe0e4` | **literal** | `neutral.1000` / `neutral.150` (near) |
+| `--docs-fg-muted` | `#7e7e7e` / `#a8aab1` | **literal** | `neutral.300` / `neutral.250` (near) |
+| `--docs-border` | `#e5e7eb` / `#3c4046` | **literal** | `divider.subtle` (near) |
+| `--docs-accent`, `--docs-link` | `#4168cc` / `#88a4f2` | **literal** (③) | `colors.action.primary` = indigo `#4f46e5` |
+| `--docs-focus-ring` | `#3b82f6` | **token** `colors.blue.500` | exact match |
+| `--docs-admonition-note-border` | `#3b82f6` | **token** `colors.blue.500` | exact match |
+| `--docs-admonition-tip-border` | `#22c55e` | **token** `colors.green.500` | exact match |
+| `--docs-admonition-warning-border` | `#f59e0b` | **token** `colors.amber.500` | exact match |
+| `--docs-admonition-danger-border` | `#ef4444` | **token** `colors.red.500` | exact match (WebFlow `caution`) |
+| `--docs-admonition-*-bg` | tint / rgba tint | **literal** | brand `*.50` primitives (light); dark tints docs-specific |
+| `--docs-code-*`, `--docs-tok-*`, `--docs-api-*`, radii/spacing/sizes | see `theme_tokens.nim` | **literal** | structural / no WebFlow spec |
+
+**Notes.**
+- The five brand-primitive **border** colours are bound by token precisely
+  because they already match the design system (see "Near-matches"); a
+  future alignment pass need only flip the divergent literals (①②③④).
+- The admonition **backgrounds** stay literals: their light tints match the
+  brand `*.50` primitives, but the dark tints are translucent `rgba(...)`
+  overlays with no single brand-token equivalent, and a `Binding` is
+  all-token or all-literal (no per-side mix).
+- **Gap D** (the book's `important`/`caution` severities) is deferred to
+  M3's framework admonition hook; for now WebFlow `caution` → framework
+  `danger` (red.500) and `important` has no distinct rendering.
+- **Asset delivery deviation.** The design-port spec calls for vendoring the
+  Geist woff2 / logo / glyph under `assets/` referenced as `url(/assets/...)`.
+  The framework SSG hash pipeline content-hashes+renames *and removes* every
+  file under `assets/` but does **not** rewrite CSS `url()` refs, so a font
+  shipped there would dangle at runtime. To keep both the `url(/assets/...)`
+  authoring convention **and** a working (non-dangling) reference, the
+  binaries live in `static/` and `src/build.nim` copies them verbatim into
+  `public/assets/` *after* the hash pass. Net effect: real files at the
+  exact unhashed `/assets/...` paths the stylesheet points at.
+
+_Maintained alongside the docs theme in `isonim/docs/users/`. Last updated by the
+M2 docs-theme port; see the design-port spec for exact CSS line references and
+per-component mapping._
