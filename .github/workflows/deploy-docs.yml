@@ -75,4 +75,6 @@ jobs:
       # default GITHUB_TOKEN with contents:write authorizes the same-repo push).
       - name: Build + deploy docs to gh-pages
         working-directory: isonim
+        env:
+          DEPLOY_TOKEN: ${{ secrets.GITHUB_TOKEN }} # same-repo gh-pages push (contents:write)
         run: ./ci/deploy/docs.sh

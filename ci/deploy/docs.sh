@@ -3,17 +3,21 @@
 set -e
 
 # Build IsoNim's own documentation site (docs/users/) and publish it to the
-# `gh-pages` orphan branch that GitHub Pages serves at
+# `gh-pages` branch that GitHub Pages serves at
 # https://metacraft-labs.github.io/isonim/.
 #
 # docs/users/ is an isonim-docs SSG consumer: `just build` runs
 # `nim c -r src/build.nim` under this repo's dev shell and emits the static site
-# (guide pages + hashed stylesheet + search index + sitemap.xml + robots.txt)
 # into docs/users/public/. Its DocsConfig sets basePath="/isonim" so every
 # internal URL is prefixed for the project-Pages subpath (see the isonim-docs
-# framework's core/base_path).
+# framework's core/base_path). The Metacraft brand DTCG tokens are read from the
+# codetracer-design-system sibling checkout at build time.
 #
-# Set DOCS_DEPLOY_DRY_RUN=1 (or pass --dry-run) to build + stage WITHOUT pushing.
+# Publish uses a throwaway git repo + force-push (NOT `git worktree --orphan`,
+# which needs git 2.42+; the CI runner's git is older), so no gh-pages history is
+# kept. In CI the deploy step provides DEPLOY_TOKEN (the workflow GITHUB_TOKEN)
+# and GITHUB_REPOSITORY (owner/repo). Set DOCS_DEPLOY_DRY_RUN=1 (or --dry-run) to
+# build + stage without pushing (neither var is needed then).
 
 DRY_RUN=0
 if [ "${DOCS_DEPLOY_DRY_RUN:-0}" = "1" ] || [ "${1:-}" = "--dry-run" ]; then
@@ -21,47 +25,32 @@ if [ "${DOCS_DEPLOY_DRY_RUN:-0}" = "1" ] || [ "${1:-}" = "--dry-run" ]; then
 fi
 
 # --- Build the docs site ---------------------------------------------------
-# docs/users switches `--path` to sibling checkouts (the isonim-docs framework,
-# nim-everywhere, nim-faststreams, nim-stew) at the workspace root, plus this
-# repo's own src + vendored deps. The toolchain is this repo's flake dev shell:
-# from docs/users/, that flake is at ../.. .
 pushd docs/users/
 nix develop ../.. -c just build # build output is in ./public
 popd
 
-# --- Publish docs/users/public/ to the gh-pages orphan branch --------------
+SITE_DIR="docs/users/public"
 
-git worktree prune
-if [ -d "gh-pages" ]; then
-	git worktree remove --force gh-pages
-fi
-if git show-ref --verify --quiet refs/heads/gh-pages; then
-	git branch -D gh-pages
-fi
+# --- Publish to gh-pages via a throwaway repo (force-push) -----------------
+PUBLISH="$(mktemp -d)"
+cp -a "$SITE_DIR/." "$PUBLISH/"
+# Serve the SSG output verbatim (no Jekyll). No CNAME -- project-Pages subpath
+# (basePath handles URL prefixing); add a CNAME + drop basePath for a domain.
+touch "$PUBLISH/.nojekyll"
 
-git worktree add --orphan -B gh-pages gh-pages
-cp -a docs/users/public/. gh-pages
-
-# Serve the SSG output verbatim (no Jekyll). No CNAME -- this is a GitHub
-# *project* Pages site served under the /isonim subpath (basePath handles URL
-# prefixing). Add a CNAME + drop basePath once a custom domain is DNS-ready.
-touch gh-pages/.nojekyll
-
+cd "$PUBLISH"
+git init -q
 git config user.name "Deploy from CI"
-git config user.email ""
-cd gh-pages
+git config user.email "deploy@ci"
 git add -A
-git commit -m 'deploy isonim docs' --no-gpg-sign
+git commit -q -m 'deploy isonim docs' --no-gpg-sign
 
 if [ "$DRY_RUN" = "1" ]; then
-	echo "docs.sh: DRY RUN -- skipping 'git push origin +gh-pages'"
-	echo "docs.sh: staged $(git ls-files | wc -l) files for gh-pages"
+	echo "docs.sh: DRY RUN -- skipping push; staged $(git ls-files | wc -l) files"
 else
-	git push origin +gh-pages
-fi
-cd ..
-
-git worktree remove --force gh-pages
-if git show-ref --verify --quiet refs/heads/gh-pages; then
-	git branch -D gh-pages
+	: "${DEPLOY_TOKEN:?DEPLOY_TOKEN required for the gh-pages push}"
+	: "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required (owner/repo)}"
+	git push --force \
+		"https://x-access-token:${DEPLOY_TOKEN}@github.com/${GITHUB_REPOSITORY}" \
+		HEAD:gh-pages
 fi
