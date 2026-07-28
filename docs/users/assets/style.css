@@ -558,7 +558,9 @@ a:hover {
   scroll-margin-top: var(--docs-space-6);
   font-weight: 600;
   line-height: 1.25em;
-  letter-spacing: -0.02em;
+  /* WebFlow tracks only the big display H1; its smaller headings (h2+) are
+   * normal. Match that -- no negative tracking on markdown headings. */
+  letter-spacing: normal;
   border-bottom: 1px solid var(--docs-border);
   padding-bottom: 0.25em;
 }
@@ -1143,9 +1145,11 @@ h6.docs-md-heading {
 .docs-md-title {
   margin: 0 0 var(--docs-space-3);
   font-size: 2.25rem;
-  font-weight: 700;
-  line-height: 1.15;
-  letter-spacing: -0.02em;
+  /* Match the WebFlow display H1 exactly: 600 weight, 1.25 line-height, and
+   * -1px tracking (-0.028em at 36px) -- not 700/1.15/-0.02em. */
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.028em;
   color: var(--docs-fg);
 }
 
