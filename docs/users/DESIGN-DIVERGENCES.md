@@ -142,6 +142,23 @@ mechanical tag the "How this doc is meant to be used" section calls for.
   `public/assets/` *after* the hash pass. Net effect: real files at the
   exact unhashed `/assets/...` paths the stylesheet points at.
 
+- **Landing hero H1 vs the framework content H1 (M3).** `pageTitleInContent`
+  renders the page title as a `.docs-md-title` H1 at the top of `.docs-main` on
+  every page (WebFlow's `.content-title` H1). The home ALSO opens with a
+  `:::hero`, which brings its own H1 + subtitle + button group — the WebFlow home
+  puts exactly that in `.content-title`. To avoid a duplicate big heading on the
+  landing, the consumer stylesheet drops the framework's `.docs-md-title` (and
+  its meta line) on the one page that carries a hero, keyed purely on the hero
+  component's presence (`.docs-main:has(.docs-md-hero) > .docs-md-title`), so
+  ordinary article pages keep their content H1 unchanged.
+- **Home product video — OMITTED (M3).** The WebFlow home embeds a CodeTracer
+  Noir demo video (a YouTube/embedly iframe) between the Overview and the
+  "Start here" cards. This consumer documents IsoNim / isonim-docs, for which no
+  real product video exists, so the embed is deliberately omitted rather than
+  faking a CodeTracer video or shipping an empty placeholder box. Everything
+  else in the WebFlow home layout (hero, Overview prose, Start-here + Popular
+  card grids, need-help) is reproduced.
+
 _Maintained alongside the docs theme in `isonim/docs/users/`. Last updated by the
-M2 docs-theme port; see the design-port spec for exact CSS line references and
-per-component mapping._
+M3 landing + FAQ build (WebFlow-equivalent home, FAQ accordion, prev/next fix);
+see the design-port spec for exact CSS line references and per-component mapping._

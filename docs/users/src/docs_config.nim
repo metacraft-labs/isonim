@@ -32,11 +32,13 @@ proc isonimDocsConfig*(): DocsConfig =
     # `core/config.DocsConfig` + `shell.nim`). Each is content-agnostic in the
     # framework; the CodeTracer-specific values live here in the consumer.
     #
-    # Gap B (header nav buttons, WebFlow `.ct-nav-btn`). External targets until
-    # the M3 landing/FAQ pages exist.
+    # Gap B (header nav buttons, WebFlow `.ct-nav-btn`). The FAQ button now
+    # targets the real in-site `/faq` page authored in M3 (WebFlow points its
+    # own FAQ nav button at the internal faq.html); Support stays external
+    # (there is no in-site support page).
     headerLinks: @[
       (label: "Support", href: "https://github.com/metacraft-labs/codetracer/issues"),
-      (label: "FAQ", href: "https://github.com/metacraft-labs/codetracer/discussions"),
+      (label: "FAQ", href: "/faq"),
     ],
     # Gap C (sidebar social links, WebFlow `.link-with-icon`) -- the vendored
     # `icon__github.svg`/`icon__twitter.svg` marks under `static/img/` (copied to
@@ -57,7 +59,7 @@ proc isonimDocsConfig*(): DocsConfig =
     needHelp: (heading: "Need some help?", links: @[
       (label: "Contact our support", href: "https://github.com/metacraft-labs/codetracer/issues",
        icon: "/assets/img/icon__support.svg"),
-      (label: "Frequently asked questions", href: "https://github.com/metacraft-labs/codetracer/discussions",
+      (label: "Frequently asked questions", href: "/faq",
        icon: "/assets/img/icon__faq.svg"),
     ]),
   )

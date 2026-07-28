@@ -1,42 +1,54 @@
-# Welcome to isonim-docs
+---
+title: Welcome to the IsoNim docs
+description: IsoNim is an isomorphic reactive UI framework for Nim; isonim-docs builds documentation sites on top of it.
+---
 
-:::hero title="Welcome to CodeTracer Docs" subtitle="Record, replay and understand your program's execution."
-:::button href="getting-started.md" variant="primary"
+# Welcome to the IsoNim docs
+
+:::hero title="Welcome to the IsoNim docs" subtitle="IsoNim is an isomorphic reactive UI framework for Nim — write one component tree that renders identically under server-side rendering and in the browser."
+:::button href="/getting-started" variant="primary"
 Get Started
-:::button href="guide/install-setup.md" variant="secondary"
+:::button href="https://github.com/metacraft-labs/codetracer/issues" variant="secondary"
 Support
 :::
 
-isonim-docs is a documentation-site framework built on top of IsoNim, the
-isomorphic reactive UI framework for Nim. This page is the M0 proof-of-life
-route: it is loaded from a real file in content/, rendered through the same
-docs shell component under SSR (nim c) and in the browser (nim js), and its
-exact title and body text are asserted by the MockRenderer, SSR, and
-JS-mount test tiers alike.
+## Overview
+
+isonim-docs is the documentation-site framework these pages are built with. It
+renders every page twice from a single source: once as static HTML at build
+time (`nim c`, for fast first paint and search-engine indexing) and once in the
+browser (`nim js`, for client-side navigation) — so what you are reading is
+served pre-rendered and then hydrated in place, with no content forked between
+the two targets.
+
+Use the sidebar to set up a local checkout, learn the reactive core (signals,
+effects, and the `ui` DSL), understand how server-side rendering and routing
+fit together, and explore the IsoNim editor package.
 
 ## Start here
 
 :::cards
-:::card title="Getting Started" icon="/assets/img/icon__github.svg" href="getting-started.md"
-Install the toolchain and render your first page.
-:::card title="Guide" icon="/assets/img/icon__faq.svg" href="guide/install-setup.md"
-Install & setup, the DSL, signals & effects, SSR basics and testing.
-:::card title="Editor" icon="/assets/img/icon__support.svg" href="editor/overview.md"
-The editor integration, workspace and browser-mount overview.
+:::card title="Getting Started" icon="/assets/img/icon__support.svg" href="/getting-started"
+Set up a sibling checkout inside the IsoNim dev shell and render your first page.
+:::card title="Guide" icon="/assets/img/icon__faq.svg" href="/guide/install-setup"
+Install & setup, signals & effects, the `ui` DSL, SSR basics, and the testing strategy.
+:::card title="Editor" icon="/assets/img/icon__github.svg" href="/editor/overview"
+The IsoNim editor package: its workspace model, browser-mount contract, and integration.
 :::
 
-:::button href="getting-started.md" variant="primary"
-Read the guide
+## Popular articles
 
-:::
-
-## Frequently asked questions
-
-:::faq
-:::q title="What is isonim-docs?"
-A documentation-site framework built on IsoNim that renders the same content
-under SSR and in the browser.
-:::q title="Do the content components require JavaScript?"
-No. The FAQ accordion uses native `<details>`/`<summary>`, so it expands and
-collapses with zero JavaScript.
+:::cards
+:::card title="Install & Setup" href="/guide/install-setup"
+Guide
+:::card title="Signals & Effects" href="/guide/signals-effects"
+Guide
+:::card title="The ui DSL" href="/guide/dsl"
+Guide
+:::card title="SSR Basics" href="/guide/ssr-basics"
+Guide
+:::card title="Editor Overview" href="/editor/overview"
+Editor
+:::card title="Testing Strategy" href="/guide/testing-strategy"
+Guide
 :::

@@ -4,7 +4,7 @@
 ## Proves this site's own `content/` dir, addressed purely via the
 ## framework's auto-discovery (no explicit manifest passed anywhere --
 ## `ssr.nim`'s own `renderRoute` wrapper never supplies one either),
-## renders all 11 real IsoNim pages, each with its own real title and
+## renders all 12 real IsoNim pages, each with its own real title and
 ## this site's own branding, end to end.
 ##
 ## M1 corrective deliverable 5.2: a SECOND suite below drives the REAL
@@ -30,7 +30,7 @@ suite "IsoNim docs site -- auto-discovered routes all render (Tier 3, C-target)"
     let manifest = buildManifestFromContent(contentDir)
     let entries = loadContentEntries(contentDir)
 
-    check entries.len == 11
+    check entries.len == 12
     check manifest.entries.len == entries.len
 
     for entry in manifest.entries:
@@ -71,7 +71,7 @@ suite "IsoNim docs site -- real on-disk buildSite() emits a non-dangling public/
 
     ## 1. Build exited success and rendered at least one real content page.
     check pageCount >= 1
-    check pageCount == 11 # every real IsoNim content/ page (redirects excluded)
+    check pageCount == 12 # every real IsoNim content/ page (redirects excluded)
 
     ## 2. public/index.html exists on disk and is non-empty.
     let indexPath = outDir / "index.html"

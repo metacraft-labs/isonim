@@ -162,9 +162,22 @@ a:hover {
   color: var(--docs-fg-muted);
 }
 
-/* Sidebar: warm right-divider column, sticky under the header. */
+/* Sidebar: warm right-divider column, sticky under the header.
+ *
+ * `grid-row: 2 / span 9999` pins the sidebar to the content band (row 2,
+ * directly under the full-width header row) and lets it SPAN every content
+ * row rather than claim a solo auto-placed row of its own. Without this the
+ * grid's row auto-placement drops the sidebar (col 1) and TOC (col 3) into a
+ * dedicated row BETWEEN the breadcrumb row (col 2) and the `.docs-main` row
+ * (col 2) -- the tall sidebar then inflates that row and shoves the page H1
+ * hundreds of px below the breadcrumb. Spanning distributes the sidebar's
+ * height across all the col-2 rows instead, so `.docs-main` sits right under
+ * the breadcrumb. Empty trailing rows collapse (the frame has no row-gap), so
+ * the footer stays tight at the bottom. Reset to `auto` in the single-column
+ * media query below. */
 .docs-nav-sidebar {
   grid-column: 1;
+  grid-row: 2 / span 9999;
   max-width: var(--docs-sidebar-width);
   padding: var(--docs-space-8) var(--docs-space-6) var(--docs-space-8) 0;
   border-right: 1px solid var(--docs-border);
@@ -178,6 +191,7 @@ a:hover {
 
 .docs-nav-toc {
   grid-column: 3;
+  grid-row: 2 / span 9999;
   padding-top: var(--docs-space-8);
   position: sticky;
   top: 6vh;
@@ -231,6 +245,7 @@ a:hover {
   .docs-main,
   .docs-need-help {
     grid-column: 1;
+    grid-row: auto;
     position: static;
     max-height: none;
     max-width: none;
@@ -843,12 +858,19 @@ h6.docs-md-heading {
 
 .docs-md-hero-title {
   margin: 0;
+  font-size: 2.75rem;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  color: var(--docs-fg);
 }
 
 .docs-md-hero-subtitle {
   margin: 0;
+  max-width: 42rem;
   color: var(--docs-fg-muted);
-  font-size: 1.1rem;
+  font-size: 1.15rem;
+  line-height: 1.5;
 }
 
 .docs-md-hero-actions {
@@ -1125,6 +1147,17 @@ h6.docs-md-heading {
   line-height: 1.15;
   letter-spacing: -0.02em;
   color: var(--docs-fg);
+}
+
+/* Landing hero: on the one page that opens with a `:::hero` (the home), the
+ * hero already supplies the big H1 + subtitle + button group -- WebFlow's
+ * `.content-title` block -- so drop the framework's duplicate page-title H1
+ * that `pageTitleInContent` renders as the first child of `.docs-main`. Keyed
+ * purely on the hero component's presence, so every ordinary article page
+ * (no hero) keeps its content H1. */
+.docs-main:has(.docs-md-hero) > .docs-md-title,
+.docs-main:has(.docs-md-hero) > .docs-md-meta {
+  display: none;
 }
 
 .docs-md-meta {
