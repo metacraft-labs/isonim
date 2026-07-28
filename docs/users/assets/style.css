@@ -768,6 +768,202 @@ h6.docs-md-heading {
   display: none;
 }
 
+/* --- metacraft-theme-parity M2: content components ------------------ */
+/* All four ride the existing `--docs-*` vocabulary so they theme (and,
+ * for the buttons, invert) exactly like the rest of the surface. They
+ * render nothing unless a page authors the directives, so the framework
+ * default output is unchanged. */
+
+/* Card grid -- the WebFlow `.category-card`/`.popular-article-card` look:
+ * a responsive grid of bordered cards, each a focusable <a> with an icon
+ * chip, a title, and a muted description; warm `#E7E5E1` hover fill and a
+ * 7px radius. */
+.docs-md-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: var(--docs-space-5);
+  margin: 0 0 2.5rem;
+}
+
+.docs-md-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--docs-space-3);
+  padding: var(--docs-space-5);
+  border: 1px solid var(--docs-border);
+  border-radius: 7px;
+  color: var(--docs-fg);
+  text-decoration: none;
+  transition: background-color 0.35s cubic-bezier(0.165, 0.84, 0.44, 1);
+}
+
+.docs-md-card:hover {
+  background: var(--docs-bg-raised);
+  text-decoration: none;
+}
+
+.docs-md-card:focus-visible {
+  outline: 3px solid var(--docs-focus-ring);
+  outline-offset: 2px;
+}
+
+.docs-md-card-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+}
+
+.docs-md-card-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.docs-md-card-title {
+  font-weight: 600;
+  font-size: 1.05rem;
+  color: var(--docs-fg);
+}
+
+.docs-md-card-description {
+  margin: 0;
+  color: var(--docs-fg-muted);
+  font-size: var(--docs-font-size-sm);
+}
+
+/* Hero -- the landing H1 + optional subtitle + action-button row. */
+.docs-md-hero {
+  display: flex;
+  flex-direction: column;
+  gap: var(--docs-space-4);
+  margin: 0 0 var(--docs-space-8);
+}
+
+.docs-md-hero-title {
+  margin: 0;
+}
+
+.docs-md-hero-subtitle {
+  margin: 0;
+  color: var(--docs-fg-muted);
+  font-size: 1.1rem;
+}
+
+.docs-md-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--docs-space-3);
+  margin-top: var(--docs-space-2);
+}
+
+/* Buttons -- black primary `.docs-md-button`, white `.docs-md-button-secondary`.
+ * Both invert cleanly in dark mode because they ride the inverting
+ * `--docs-fg`/`--docs-bg` pair rather than hard-coded black/white. */
+.docs-md-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 3rem;
+  padding: var(--docs-space-2) var(--docs-space-4);
+  border: 1px solid var(--docs-fg);
+  border-radius: 7px;
+  background: var(--docs-fg);
+  color: var(--docs-bg);
+  font-weight: 500;
+  font-size: 0.9rem;
+  text-decoration: none;
+  transition: background-color 0.35s cubic-bezier(0.165, 0.84, 0.44, 1),
+    border-color 0.35s cubic-bezier(0.165, 0.84, 0.44, 1);
+}
+
+.docs-md-button:hover {
+  background: var(--docs-fg-muted);
+  border-color: var(--docs-fg-muted);
+  text-decoration: none;
+}
+
+.docs-md-button:focus-visible {
+  outline: 3px solid var(--docs-focus-ring);
+  outline-offset: 2px;
+}
+
+.docs-md-button-secondary {
+  background: var(--docs-input-bg);
+  border-color: var(--docs-border);
+  color: var(--docs-fg);
+}
+
+.docs-md-button-secondary:hover {
+  background: var(--docs-bg-raised);
+  border-color: var(--docs-border);
+}
+
+/* FAQ accordion -- native <details>/<summary> with a plus/minus marker
+ * and WebFlow's bordered rows. Fully keyboard-operable and works with
+ * zero JS (the browser toggles <details> natively). */
+.docs-md-faq {
+  display: flex;
+  flex-direction: column;
+  margin: 0 0 2.5rem;
+  border-top: 1px solid var(--docs-border);
+}
+
+.docs-md-faq-item {
+  border-bottom: 1px solid var(--docs-border);
+}
+
+.docs-md-faq-question {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--docs-space-4);
+  padding: var(--docs-space-4) 0;
+  cursor: pointer;
+  font-weight: 600;
+  list-style: none;
+}
+
+/* strip the native disclosure triangle across engines */
+.docs-md-faq-question::-webkit-details-marker {
+  display: none;
+}
+
+/* plus (collapsed) -> minus (expanded) marker on the right */
+.docs-md-faq-question::after {
+  content: "+";
+  font-size: 1.5rem;
+  font-weight: 400;
+  line-height: 1;
+  color: var(--docs-fg-muted);
+}
+
+.docs-md-faq-item[open] > .docs-md-faq-question::after {
+  content: "\2212"; /* minus sign */
+}
+
+.docs-md-faq-question:focus-visible {
+  outline: 3px solid var(--docs-focus-ring);
+  outline-offset: 2px;
+}
+
+.docs-md-faq-answer {
+  padding: 0 0 var(--docs-space-4);
+  color: var(--docs-fg-muted);
+}
+
+.docs-md-faq-answer p:last-child {
+  margin-bottom: 0;
+}
+
+/* mobile: collapse the card grid to a single column */
+@media (max-width: 40rem) {
+  .docs-md-card-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* Tables: `#e5e7eb` borders, 8px/12px cell padding. */
 .docs-md-table {
   width: 100%;
