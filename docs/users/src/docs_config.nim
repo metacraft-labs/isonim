@@ -27,6 +27,39 @@ proc isonimDocsConfig*(): DocsConfig =
     siteLogo: "/assets/img/logo-black-horizontal.svg",
     logoHref: "/",
     footerHtml: "Built by <a href=\"https://github.com/metacraft-labs\">metacraft-labs</a> — 2026",
+    # metacraft-theme-parity M1: the WebFlow-parity chrome, delivered through the
+    # framework's optional default-off hooks (see isonim-docs
+    # `core/config.DocsConfig` + `shell.nim`). Each is content-agnostic in the
+    # framework; the CodeTracer-specific values live here in the consumer.
+    #
+    # Gap B (header nav buttons, WebFlow `.ct-nav-btn`). External targets until
+    # the M3 landing/FAQ pages exist.
+    headerLinks: @[
+      (label: "Support", href: "https://github.com/metacraft-labs/codetracer/issues"),
+      (label: "FAQ", href: "https://github.com/metacraft-labs/codetracer/discussions"),
+    ],
+    # Gap C (sidebar social links, WebFlow `.link-with-icon`) -- the vendored
+    # `icon__github.svg`/`icon__twitter.svg` marks under `static/img/` (copied to
+    # `public/assets/img/` by `build.nim`).
+    sidebarLinks: @[
+      (label: "Github", href: "https://github.com/metacraft-labs/codetracer",
+       icon: "/assets/img/icon__github.svg"),
+      (label: "Twitter", href: "https://x.com/CodeTracerIDE",
+       icon: "/assets/img/icon__twitter.svg"),
+    ],
+    # Gap C (toggle placement): render the theme toggle as a pill at the bottom
+    # of the sidebar (WebFlow `.theme-switch`) instead of in the header.
+    sidebarThemeToggle: true,
+    # Content-page header parity: the page title becomes the big content `<h1>`
+    # at the top of `.docs-main` (and drops out of the header), matching WebFlow.
+    pageTitleInContent: true,
+    # The WebFlow "Need some help?" block above the footer.
+    needHelp: (heading: "Need some help?", links: @[
+      (label: "Contact our support", href: "https://github.com/metacraft-labs/codetracer/issues",
+       icon: "/assets/img/icon__support.svg"),
+      (label: "Frequently asked questions", href: "https://github.com/metacraft-labs/codetracer/discussions",
+       icon: "/assets/img/icon__faq.svg"),
+    ]),
   )
 
 proc isonimCompletenessMatrix*(): seq[CompletenessRequirement] =

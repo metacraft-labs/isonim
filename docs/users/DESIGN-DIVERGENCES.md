@@ -93,6 +93,31 @@ mechanical tag the "How this doc is meant to be used" section calls for.
   real `<img class="docs-logo">` in `.docs-header` (linked home), replacing the
   M2 `.docs-title::before` background-image stopgap. `.docs-logo` styling +
   dark-mode `filter: invert(1)` live in the consumer stylesheet.
+- **Gap B** (header nav-links) — RESOLVED in metacraft-theme-parity M1. The
+  framework's optional `headerLinks: seq[{label, href}]` `DocsConfig` hook now
+  renders the WebFlow `.ct-nav-btn` row (Support/FAQ) as a `.docs-header-nav`
+  group at the right of `.docs-header`. Content-agnostic in the framework
+  (empty ⇒ nothing, header byte-for-byte pre-M1); the CodeTracer button
+  set + `.docs-header-nav-btn` pill styling live in the consumer.
+- **Gap C** (sidebar social icons + toggle placement) — RESOLVED in
+  metacraft-theme-parity M1. Two optional framework hooks: `sidebarLinks:
+  seq[{label, href, icon}]` renders the WebFlow `.link-with-icon` external
+  items (Github/Twitter, with the vendored `icon__github.svg`/
+  `icon__twitter.svg` marks under `static/img/`) at the bottom of
+  `.docs-nav-sidebar`; `sidebarThemeToggle: bool` moves the single
+  `#docs-theme-toggle` out of the header into a bottom-of-sidebar pill
+  (WebFlow `.theme-switch`). Both default off (byte-for-byte pre-M1); the
+  `.docs-sidebar-extras` / `.docs-theme-switch-wrap` styling is consumer-side.
+  The black Github/Twitter marks invert in dark mode (like the logo); the
+  blue need-help icons do not.
+- **Content-page header/footer parity** — ADDED in metacraft-theme-parity M1.
+  Optional framework hooks: `pageTitleInContent: bool` renders the page title
+  as an `<h1 class="docs-md-title">` at the top of `.docs-main` and drops it
+  from the header (WebFlow's big content H1); `lastUpdated`/`showLastUpdated`
+  add the "Last updated <date>" `.docs-md-meta` line under it (left off in this
+  consumer — no per-page date source yet); and `needHelp: {heading, links}`
+  renders the WebFlow "Need some help?" `.docs-need-help` block above the
+  footer. All default off ⇒ byte-for-byte pre-M1.
 - **Gap D** (the book's `important`/`caution` severities) — RESOLVED in M3.
   The framework markdown renderer now has first-class `important` (violet) and
   `caution` (red) admonition kinds, so `:::important` / `:::caution` parse and
