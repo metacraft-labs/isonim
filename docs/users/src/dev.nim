@@ -11,7 +11,7 @@
 ## `renderRoute`, so everything resolves at http://localhost:<port>/ with no
 ## prefix -- the dev experience is byte-for-byte the served look, sans subpath.
 ##
-## Driven by `just dev` (server) + `just open` (browser). Optional first arg is
+## Driven by `just dev-docs` (server) + `just open-docs` (browser). Optional first arg is
 ## the port (default 8000).
 
 import std/[os, strutils, asyncdispatch]
@@ -27,7 +27,7 @@ proc newDocsDevServer*(contentDir = "content";
   ## Constructs this site's themed live-reload dev server: its own `content/`,
   ## `DocsConfig`, and the Metacraft token CSS served over its `assets/` +
   ## `static/` dirs. Exposed (not just inlined below) so a test can drive the
-  ## exact wiring `just dev` runs without binding a socket.
+  ## exact wiring `just dev-docs` runs without binding a socket.
   let tokensCss = emitTokensCss(metacraftDocsTokenLayer(), designSystemTokens())
   newDevServer(contentDir = contentDir, cfg = isonimDocsConfig(),
                assetsDirs = assetsDirs, docsTokensCss = tokensCss)

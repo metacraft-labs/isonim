@@ -1,8 +1,8 @@
-## Protects the `just dev` live-reload server wiring for this site: that it
+## Protects the `just dev-docs` live-reload server wiring for this site: that it
 ## serves the THEMED stylesheet (Metacraft token CSS prepended) + branded,
 ## reload-injected pages over its own content/assets/static, and that a content
 ## edit fires a live-reload broadcast. Drives the exact `newDocsDevServer` wiring
-## `just dev` runs, at the `handleRoute`/`pollForChanges` level (no bound socket),
+## `just dev-docs` runs, at the `handleRoute`/`pollForChanges` level (no bound socket),
 ## the same in-process idiom as the framework's own dev-server suite.
 
 import std/[unittest, os, strutils]
