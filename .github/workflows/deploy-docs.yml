@@ -54,6 +54,15 @@ jobs:
           repository: metacraft-labs/nim-stew
           path: nim-stew
 
+      # docs/users' theme_tokens loads the Metacraft brand/alias/mapped DTCG
+      # token set from the codetracer-design-system repo (a workspace-root
+      # sibling); the build reads its JSON directly, so it must be checked out.
+      - name: Check out codetracer-design-system (sibling — DTCG design tokens)
+        uses: actions/checkout@v4
+        with:
+          repository: metacraft-labs/codetracer-design-system
+          path: codetracer-design-system
+
       - name: Setup Nix
         uses: metacraft-labs/nixos-modules/.github/setup-nix@main
         with:
