@@ -44,5 +44,18 @@ proc designSystemTokens*(): TokenSet =
 proc metacraftDocsTokenLayer*(): DocsTokenLayer =
   ## The CodeTracer docs token layer, loaded from the shared design system
   ## (codetracer-design-system/docs/codetracer-docs.tokens.json) -- the exact
-  ## same tokens every Metacraft docs site + the editor use.
+  ## same tokens every Metacraft docs site + the editor use. Embedded at compile
+  ## time; `build.nim` (the production SSG) uses this.
   loadDocsTokenLayer(docsDesignSystemJson)
+
+const docsDesignSystemPath* = designSystemRoot / "docs" / "codetracer-docs.tokens.json"
+  ## Runtime path to the shared token file -- the dev server WATCHES it so
+  ## design-system edits hot-reload with no rebuild.
+
+proc docsTokensCssLive*(): string =
+  ## Re-reads the shared design system FROM DISK and emits its token CSS. The
+  ## dev server calls this per request + on file change, so editing the tokens
+  ## updates the running site live (unlike the compile-time-embedded
+  ## `metacraftDocsTokenLayer` the production build uses).
+  emitTokensCss(loadDocsTokenLayer(readFile(docsDesignSystemPath)),
+                designSystemTokens())

@@ -25,12 +25,16 @@ export dev_server
 proc newDocsDevServer*(contentDir = "content";
                        assetsDirs = @["assets", "static"]): DevServer =
   ## Constructs this site's themed live-reload dev server: its own `content/`,
-  ## `DocsConfig`, and the Metacraft token CSS served over its `assets/` +
-  ## `static/` dirs. Exposed (not just inlined below) so a test can drive the
-  ## exact wiring `just dev-docs` runs without binding a socket.
-  let tokensCss = emitTokensCss(metacraftDocsTokenLayer(), designSystemTokens())
+  ## `DocsConfig`, and the shared design-system token CSS served over its
+  ## `assets/` + `static/` dirs. The tokens are read LIVE (and the token file is
+  ## watched), so editing the shared design system hot-reloads the theme with no
+  ## rebuild. Exposed so a test can drive the exact `just dev-docs` wiring
+  ## without binding a socket.
   newDevServer(contentDir = contentDir, cfg = isonimDocsConfig(),
-               assetsDirs = assetsDirs, docsTokensCss = tokensCss)
+               assetsDirs = assetsDirs,
+               docsTokensCss = docsTokensCssLive(),
+               tokensCssProvider = (proc(): string = docsTokensCssLive()),
+               watchPaths = @[docsDesignSystemPath])
 
 when isMainModule:
   let port = if paramCount() >= 1: parseInt(paramStr(1)) else: 8000
