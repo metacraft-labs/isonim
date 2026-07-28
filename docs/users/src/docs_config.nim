@@ -13,19 +13,21 @@ proc isonimDocsConfig*(): DocsConfig =
   ## untouched; the CodeTracer look is delivered by the token layer +
   ## `assets/style.css`, not by pointing at a different stylesheet.
   DocsConfig(
-    siteTitle: "CodeTracer Docs",
-    siteDescription: "Documentation for CodeTracer -- the time-travelling debugger.",
+    siteTitle: "IsoNim",
+    siteDescription: "Documentation for IsoNim -- the isomorphic reactive UI framework for Nim.",
     defaultRoute: "/",
     stylesheetHref: "/assets/style.css",
-    baseUrl: "https://docs.codetracer.com",
-    # metacraft-theme M3: use the framework's optional chrome hooks instead of
-    # the M2 CSS stopgaps. `siteLogo` renders the vendored CodeTracer mark as a
-    # real `<img class="docs-logo">` in `.docs-header` (replacing the M2
-    # `.docs-title::before` background-image), linked home via `logoHref`;
-    # `footerHtml` fills the previously-empty `.docs-footer` with the WebFlow
-    # attribution line.
-    siteLogo: "/assets/img/logo-black-horizontal.svg",
-    logoHref: "/",
+    # Published to GitHub project Pages (metacraft-labs.github.io/isonim), so the
+    # site is served under the `/isonim` subpath: `baseUrl` carries it for
+    # absolute canonical/sitemap URLs, and `basePath` prefixes every internal
+    # root-relative URL the SSG emits (see isonim-docs `core/base_path`).
+    baseUrl: "https://metacraft-labs.github.io/isonim",
+    basePath: "/isonim",
+    # The Metacraft docs THEME (Geist/accent/canvas token layer + assets/style.css)
+    # is retained as the shared internal doc-site look; only the site IDENTITY is
+    # IsoNim's. No `siteLogo`: the header renders the plain `.docs-title` text
+    # ("IsoNim") -- IsoNim ships no wordmark here, and the CodeTracer mark must
+    # not brand the framework's own docs. `footerHtml` fills the `.docs-footer`.
     footerHtml: "Built by <a href=\"https://github.com/metacraft-labs\">metacraft-labs</a> — 2026",
     # metacraft-theme-parity M1: the WebFlow-parity chrome, delivered through the
     # framework's optional default-off hooks (see isonim-docs
@@ -37,17 +39,16 @@ proc isonimDocsConfig*(): DocsConfig =
     # own FAQ nav button at the internal faq.html); Support stays external
     # (there is no in-site support page).
     headerLinks: @[
-      (label: "Support", href: "https://github.com/metacraft-labs/codetracer/issues"),
+      (label: "Support", href: "https://github.com/metacraft-labs/isonim/issues"),
       (label: "FAQ", href: "/faq"),
     ],
     # Gap C (sidebar social links, WebFlow `.link-with-icon`) -- the vendored
-    # `icon__github.svg`/`icon__twitter.svg` marks under `static/img/` (copied to
-    # `public/assets/img/` by `build.nim`).
+    # `icon__github.svg` mark under `static/img/` (copied to `public/assets/img/`
+    # by `build.nim`). Points at IsoNim's own repo; the CodeTracer Twitter is
+    # dropped (IsoNim has no separate social handle).
     sidebarLinks: @[
-      (label: "Github", href: "https://github.com/metacraft-labs/codetracer",
+      (label: "Github", href: "https://github.com/metacraft-labs/isonim",
        icon: "/assets/img/icon__github.svg"),
-      (label: "Twitter", href: "https://x.com/CodeTracerIDE",
-       icon: "/assets/img/icon__twitter.svg"),
     ],
     # Gap C (toggle placement): render the theme toggle as a pill at the bottom
     # of the sidebar (WebFlow `.theme-switch`) instead of in the header.
@@ -57,7 +58,7 @@ proc isonimDocsConfig*(): DocsConfig =
     pageTitleInContent: true,
     # The WebFlow "Need some help?" block above the footer.
     needHelp: (heading: "Need some help?", links: @[
-      (label: "Contact our support", href: "https://github.com/metacraft-labs/codetracer/issues",
+      (label: "Contact our support", href: "https://github.com/metacraft-labs/isonim/issues",
        icon: "/assets/img/icon__support.svg"),
       (label: "Frequently asked questions", href: "/faq",
        icon: "/assets/img/icon__faq.svg"),

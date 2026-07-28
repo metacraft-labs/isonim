@@ -19,6 +19,7 @@
 import std/[unittest, os, strutils]
 import core/routes
 import core/content
+import core/base_path      ## normalizeBasePath (project-subpath hosting)
 import build_site          ## the framework's real on-disk SSG entry
 import ../src/ssr
 import ../src/docs_config  ## this site's own DocsConfig (isonimDocsConfig)
@@ -39,7 +40,7 @@ suite "IsoNim docs site -- auto-discovered routes all render (Tier 3, C-target)"
       let (status, html) = renderRoute(entry.canonicalPath, contentDir)
       check status == 200
       check html.contains(entry.meta.title)
-      check html.contains("CodeTracer Docs") # this site's own DocsConfig branding (metacraft-theme M2)
+      check html.contains("IsoNim") # this site's own DocsConfig branding (siteTitle after the IsoNim rebrand)
 
 proc extractStylesheetHref(html: string): string =
   ## Pull the `href` out of the document's `<link rel="stylesheet" ...>`
@@ -78,14 +79,23 @@ suite "IsoNim docs site -- real on-disk buildSite() emits a non-dangling public/
     check fileExists(indexPath)
     let indexHtml = readFile(indexPath)
     check indexHtml.len > 0
-    check indexHtml.contains("CodeTracer Docs") # a real content page really rendered (metacraft-theme M2)
+    check indexHtml.contains("IsoNim") # a real content page really rendered (branding after the IsoNim rebrand)
 
     ## 3. The stylesheet the emitted page references exists on disk and is
     ## non-empty -- i.e. `stylesheetHref` is NOT dangling. The declared
     ## href is `/assets/style.css`; the build's hash+purge pipeline
     ## rewrites it to a content-hashed name, so what index.html points at
     ## must be that hashed file, present and non-empty in public/.
-    let cssHref = extractStylesheetHref(indexHtml)
+    ## This site is served under a GitHub project-Pages subpath, so the SSG
+    ## prefixes the href with the config's `basePath` (/isonim). Verify the
+    ## prefix IS present (stronger than before), then strip it to resolve the
+    ## on-disk file -- `public/` is served AT the basePath, so the bytes live at
+    ## `public/assets/...`. Empty basePath (root hosting) makes the strip a no-op.
+    let base = normalizeBasePath(isonimDocsConfig().basePath)
+    var cssHref = extractStylesheetHref(indexHtml)
+    if base.len > 0:
+      check cssHref.startsWith(base & "/assets/style.")
+      cssHref = cssHref[base.len .. ^1]
     check cssHref.startsWith("/assets/style.")
     check cssHref.endsWith(".css")
     check cssHref != "/assets/style.css" # proves the hash/purge pipeline ran
