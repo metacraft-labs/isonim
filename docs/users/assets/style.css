@@ -1180,6 +1180,20 @@ h6.docs-md-heading {
   border-top: 1px solid var(--docs-border);
 }
 
+/* Single-column collapse (see the `max-width: 960px` reset far above): that
+ * media query already lists `.docs-need-help`, but this base `.docs-need-help`
+ * rule is declared LATER in source order at the same specificity, so its
+ * `grid-column: 2` / capped `max-width` would win the cascade at <=960px and
+ * lift the "Need some help?" block out of the single-column flow, overlapping
+ * the prev/next `.docs-nav-adjacent` band. Re-assert the single-column
+ * placement here, after the base rule, so it stacks below prev/next. */
+@media (max-width: 960px) {
+  .docs-need-help {
+    grid-column: 1;
+    max-width: none;
+  }
+}
+
 .docs-need-help-heading {
   font-size: 1.25rem;
   font-weight: 600;
