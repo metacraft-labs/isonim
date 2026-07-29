@@ -53,6 +53,18 @@ type
       ## M-EVP-8: names of vector symbols this story references. The
       ## vector editor's usage-context companion reads this to surface
       ## every Page/Component that uses the symbol being edited.
+    foundationCategories*: set[FoundationTokenKind]
+      ## M2: optional per-foundation-story token-category scope. When a
+      ## `skFoundation` story declares a non-empty set, selecting it
+      ## restricts the foundations view to tokens whose `kind` is in this
+      ## set (e.g. a "Typography" story shows only ``ftkTypographyScale``;
+      ## a "Spacing & Radii" story shows ``ftkSpacingScale`` +
+      ## ``ftkRadiusScale`` + ``ftkBreakpoint`` together). Empty (the
+      ## default) preserves the legacy behaviour — the story shows the
+      ## whole token set filtered by the in-page category buttons — so
+      ## single-story pilots are byte-unchanged. This is a general
+      ## framework capability; no project-specific category names are
+      ## hard-coded in the editor.
 
   StoryRenderMetadata* = object
     ## Project-owned render metadata for a story, separate from sidebar copy.

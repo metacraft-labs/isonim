@@ -236,6 +236,15 @@ proc renderFoundationsPage*[R, E](r: R; vm: EditorVM): E =
         text "Categories"
   r.appendChild(body, categories)
 
+  # M2: when the selected foundation story imposes a category scope
+  # (``StoryItem.foundationCategories``), the story itself IS the category
+  # selector, so the in-page category rail is redundant and is hidden.
+  # With no scope (legacy single-story pilots) the rail stays visible and
+  # drives ``selectedCategory`` exactly as before.
+  createRenderEffect proc() =
+    let scoped = vm.foundations.storyCategories.val.len > 0
+    r.setStyle(categories, "display", if scoped: "none" else: "flex")
+
   for kind in allFoundationTokenKinds():
     let capturedKind = kind
     let label = foundationTokenKindLabel(capturedKind)

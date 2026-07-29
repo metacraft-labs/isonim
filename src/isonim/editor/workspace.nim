@@ -165,6 +165,7 @@ proc applyWorkspace*(vm: EditorVM; workspace: EditorWorkspace) =
   vm.vectorEditor.adapter.val = selectedVectorAdapter()
   vm.foundations.tokens.val = workspace.foundationTokens
   vm.foundations.selectedCategory.val = ftkColorPalette
+  vm.foundations.storyCategories.val = {}
   vm.foundations.selectedTokenKey.val =
     if workspace.foundationTokens.len > 0: workspace.foundationTokens[0].key
     else: ""

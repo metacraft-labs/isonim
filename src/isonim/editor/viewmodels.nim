@@ -118,6 +118,14 @@ type
   FoundationEditorVM* = ref object of ViewModel
     tokens*: Signal[seq[FoundationTokenEntry]]
     selectedCategory*: Signal[FoundationTokenKind]
+    storyCategories*: Signal[set[FoundationTokenKind]]
+      ## M2: category scope imposed by the currently-selected foundation
+      ## story (``StoryItem.foundationCategories``). Empty = no story scope
+      ## (legacy single-category behaviour: filter by ``selectedCategory``).
+      ## Non-empty = the foundations view shows every token whose ``kind``
+      ## is in this set, so a "Spacing & Radii" story surfaces spacing and
+      ## radius tokens together while a "Colors" story hides the font
+      ## tokens. Set by ``selectStory`` and reset by ``applyWorkspace``.
     selectedTokenKey*: Signal[string]
     searchFilter*: Signal[string]
     impacts*: Signal[seq[FoundationTokenImpact]]
@@ -1882,6 +1890,54 @@ proc selectFlowStep*(editor: EditorVM; index: int): bool {.discardable.} =
 # EditorVM headless actions
 # ===========================================================================
 
+proc foundationCategoriesForStory(editor: EditorVM;
+    story: StoryRef): set[FoundationTokenKind] =
+  ## M2: look up the ``foundationCategories`` scope declared by the sidebar
+  ## ``StoryItem`` matching ``story``. Returns the empty set when the story
+  ## is unknown or declares no scope (legacy behaviour).
+  for group in editor.sidebar.groups.val:
+    if group.name != story.group:
+      continue
+    for item in group.items:
+      if item.name == story.name and item.kind == story.kind:
+        return item.foundationCategories
+  {}
+
+proc applyFoundationStoryScope(editor: EditorVM; story: StoryRef) =
+  ## M2: when a ``skFoundation`` story is selected, mirror its declared
+  ## category scope onto the foundation editor so the foundations view shows
+  ## only that story's token categories. Non-foundation stories clear the
+  ## scope so a later legacy foundation story renders with the full,
+  ## category-button-driven token set (backward compatible).
+  if story.kind != skFoundation:
+    editor.foundations.storyCategories.val = {}
+    return
+  let scope = editor.foundationCategoriesForStory(story)
+  editor.foundations.storyCategories.val = scope
+  if scope.len == 0:
+    return
+  # Coherence: point ``selectedCategory`` at the first in-scope kind and the
+  # selected token at the first in-scope token, so the detail/preview pane
+  # never lags on a token that the scoped list no longer shows. Iterate the
+  # enum in declaration order (== ``allFoundationTokenKinds`` order, which is
+  # defined later in this module so cannot be called here).
+  for kind in FoundationTokenKind:
+    if kind in scope:
+      editor.foundations.selectedCategory.val = kind
+      break
+  let current = editor.foundations.selectedTokenKey.val.toLowerAscii()
+  var currentInScope = false
+  for token in editor.foundations.tokens.val:
+    if token.key.toLowerAscii() == current and token.kind in scope:
+      currentInScope = true
+      break
+  if not currentInScope:
+    editor.foundations.selectedTokenKey.val = ""
+    for token in editor.foundations.tokens.val:
+      if token.kind in scope:
+        editor.foundations.selectedTokenKey.val = token.key
+        break
+
 proc selectStory*(editor: EditorVM; story: StoryRef): bool {.discardable.} =
   ## Select a story and move the shell to the view that owns that story kind.
   if not editor.hasStory(story):
@@ -1905,6 +1961,7 @@ proc selectStory*(editor: EditorVM; story: StoryRef): bool {.discardable.} =
 
   editor.selectedStory.val = story
   editor.activeView.val = nextView
+  editor.applyFoundationStoryScope(story)
   discard editor.ensureComponentPropertySchemaForSelectedStory()
   editor.storyboard.selectedItem.val = editor.findCanvasItem(story)
   editor.syncFlowStep(story)
@@ -10346,6 +10403,7 @@ proc createVectorEditorVM*(): VectorEditorVM =
 proc createFoundationEditorVM*(): FoundationEditorVM =
   let tokens = createSignal[seq[FoundationTokenEntry]](@[])
   let selectedCategory = createSignal(ftkColorPalette)
+  let storyCategories = createSignal[set[FoundationTokenKind]]({})
   let selectedTokenKey = createSignal("")
   let searchFilter = createSignal("")
   let impacts = createSignal[seq[FoundationTokenImpact]](@[])
@@ -10354,15 +10412,29 @@ proc createFoundationEditorVM*(): FoundationEditorVM =
   let redoStack = createSignal[seq[FoundationEditHistoryEntry]](@[])
   let availableCategories = createMemo[seq[FoundationTokenKind]](proc(): seq[
       FoundationTokenKind] =
+    # M2: when a foundation story imposes a category scope, only the kinds
+    # inside that scope are offered; otherwise every kind present in the
+    # token set is available (legacy behaviour).
+    let scope = storyCategories.val
     for kind in allFoundationTokenKinds():
+      if scope.len > 0 and kind notin scope:
+        continue
       if tokens.val.anyIt(it.kind == kind):
         result.add kind)
   let filteredTokens = createMemo[seq[FoundationTokenEntry]](proc(): seq[
       FoundationTokenEntry] =
+    # M2: a non-empty story scope shows EVERY token whose kind is in the
+    # scope (so "Spacing & Radii" surfaces spacing + radius + widths at
+    # once). With no scope the view keeps the legacy single-category
+    # filter driven by the in-page category buttons.
+    let scope = storyCategories.val
     let kind = selectedCategory.val
     let query = searchFilter.val
     for token in tokens.val:
-      if token.kind == kind and token.tokenMatchesSearch(query):
+      let inCategory =
+        if scope.len > 0: token.kind in scope
+        else: token.kind == kind
+      if inCategory and token.tokenMatchesSearch(query):
         result.add token)
   let selectedToken = createMemo[FoundationTokenEntry](proc(): FoundationTokenEntry =
     let key = selectedTokenKey.val
@@ -10379,6 +10451,7 @@ proc createFoundationEditorVM*(): FoundationEditorVM =
   FoundationEditorVM(
     tokens: tokens,
     selectedCategory: selectedCategory,
+    storyCategories: storyCategories,
     selectedTokenKey: selectedTokenKey,
     searchFilter: searchFilter,
     impacts: impacts,
