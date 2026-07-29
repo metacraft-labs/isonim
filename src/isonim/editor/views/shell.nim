@@ -1461,6 +1461,11 @@ proc buildBackendOptions(vm: EditorVM): seq[CompactChoiceOption] =
   let active = vm.platform.val
   for i in 0 ..< backends.len:
     let b = backends[i]
+    # M1: honour the project's optional platform allow-list. An empty set
+    # means "all platforms" (the default), so pilots that do not opt in are
+    # byte-unchanged; a non-empty set hides any backend it excludes.
+    if vm.allowedPlatforms.len > 0 and b notin vm.allowedPlatforms:
+      continue
     let available =
       if vm.streamingPreview != nil:
         vm.streamingPreview.backendIsAvailable(b)

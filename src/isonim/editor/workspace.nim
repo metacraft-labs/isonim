@@ -44,6 +44,12 @@ type
     sourceAdapterReady*: bool
     editAdapter*: WorkspaceEditAdapter
     platform*: Platform
+    allowedPlatforms*: set[PreviewBackend]
+      ## Optional per-project platform allow-list for the backend/platform
+      ## toolbar. Empty set = ALL platforms (today's behaviour), so pilots
+      ## that do not opt in are byte-unchanged. When non-empty, only the
+      ## listed backends appear in the left-edge strip and the VM's active
+      ## platform is forced into the allowed set at workspace-apply time.
     panels*: PanelVisibility
 
 proc defaultPanelVisibility*(): PanelVisibility =
@@ -110,6 +116,7 @@ proc newEditorWorkspace*(title: string;
                           sourceAdapterReady = false;
                           editAdapter: WorkspaceEditAdapter = nil;
                           platform = pbWeb;
+                          allowedPlatforms: set[PreviewBackend] = {};
                           panels = defaultPanelVisibility()): EditorWorkspace =
   ## Convenience constructor for project-owned workspace definitions.
   EditorWorkspace(
@@ -140,6 +147,7 @@ proc newEditorWorkspace*(title: string;
     sourceAdapterReady: sourceAdapterReady,
     editAdapter: editAdapter,
     platform: platform,
+    allowedPlatforms: allowedPlatforms,
     panels: panels
   )
 
@@ -211,7 +219,18 @@ proc applyWorkspace*(vm: EditorVM; workspace: EditorWorkspace) =
   vm.flowPlayer.currentStep.val = 0
   vm.activeView.val = workspace.initialView
   vm.inspector.activeSection.val = workspace.initialInspectorSection
-  vm.changePlatform(workspace.platform)
+  vm.allowedPlatforms = workspace.allowedPlatforms
+  # M1: when a project restricts platforms and its declared active platform is
+  # not in the allow-list, fall back to the first allowed backend in canonical
+  # order (the PreviewBackend enum order matches `backendsForLeftEdge`).
+  var initialPlatform = workspace.platform
+  if workspace.allowedPlatforms.len > 0 and
+      workspace.platform notin workspace.allowedPlatforms:
+    for b in PreviewBackend:
+      if b in workspace.allowedPlatforms:
+        initialPlatform = b
+        break
+  vm.changePlatform(initialPlatform)
   vm.panels.val = workspace.panels
   if workspace.initialReviewBaseline.isSome:
     vm.review.violations.val = workspace.initialReviewBaseline.get()

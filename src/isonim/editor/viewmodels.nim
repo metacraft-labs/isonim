@@ -233,6 +233,11 @@ type
       ## the spec-comment chat-handoff site keeps compiling. Reads
       ## are no longer observed by any renderer.
     platform*: Signal[Platform]
+    allowedPlatforms*: set[PreviewBackend]
+      ## M1: per-project platform allow-list mirrored from
+      ## ``EditorWorkspace.allowedPlatforms`` at ``applyWorkspace`` time.
+      ## Empty set = ALL platforms (default). When non-empty, the
+      ## left-edge backend strip only surfaces the listed backends.
     viewport*: Signal[PreviewViewport]
     workspacePermissions*: Signal[EditorWorkspacePermissions]
     sourceAdapterReady*: Signal[bool]
