@@ -40,6 +40,12 @@ suite "IsoNim docs site -- M3 landing + FAQ components (Tier 3, C-target)":
     # The M1 "Need some help?" chrome block is present.
     check html.contains("class=\"docs-need-help\"")
 
+    # M6 (framework): a landing (its body carries a `:::hero`) renders the
+    # wider content column and DROPS the prev/next pager -- a landing is not
+    # part of a linear article sequence, and the WebFlow home has none.
+    check html.contains("class=\"docs-main docs-main--wide\"")
+    check not html.contains("docs-nav-adjacent")
+
   test "the FAQ page renders a native <details>/<summary> accordion of real Q&A":
     let (status, html) = renderRoute("/faq", contentDir)
     check status == 200
@@ -60,3 +66,6 @@ suite "IsoNim docs site -- M3 landing + FAQ components (Tier 3, C-target)":
     # after the main region closes -- never above the H1 inside the nav column.
     check adjacent > mainClose
     check html.count("docs-nav-adjacent") == 1
+    # M6 (framework): a normal article (no hero) keeps the narrow content column
+    # -- the `.docs-main--wide` landing modifier is never added here.
+    check not html.contains("docs-main--wide")
