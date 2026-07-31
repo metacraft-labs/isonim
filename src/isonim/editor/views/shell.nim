@@ -2873,10 +2873,43 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
   # streaming-preview availability check + the transparent container
   # variant so the pills sit directly on the chrome-bar surface
   # without the bespoke ``tiltHorizontal`` setStyle workaround.
-  let backendOrder = backendsForLeftEdge()
-  let backendShortLabels = backendShortLabelsForLeftEdge()
+  # M1: honour the project's optional platform allow-list on BOTH backend
+  # controls. Like ``buildBackendOptions`` (the left-edge strip), whose
+  # ``if vm.allowedPlatforms.len > 0 and b notin vm.allowedPlatforms: continue``
+  # guard hides excluded backends, the chrome-bar backend cluster now filters
+  # its option list by ``vm.allowedPlatforms`` too. An empty set means "all
+  # platforms" (the default), so multi-backend pilots render all 7 pills
+  # byte-unchanged; a non-empty set (e.g. the docs pilot's ``{pbWeb}``) renders
+  # only the listed platforms. The parallel label + icon seqs are filtered in
+  # lockstep with ``backendOrder`` so every downstream index (initial
+  # selection, disabled set, mount callback, sync effects) stays aligned.
+  let allBackendOrder = backendsForLeftEdge()
+  let allBackendShortLabels = backendShortLabelsForLeftEdge()
+  # 2026-05-28 icon-coverage expansion — Backend cluster pills render the
+  # per-backend glyph from the active IconSet. The label text is surfaced as
+  # the pill's tooltip + screen-reader label. The icon order must match
+  # ``backendsForLeftEdge()`` (pbWeb, pbTui, pbGpui, pbFreya, pbCocoa,
+  # pbAndroid, pbIos).
+  let chromeIcons = currentIconSet()
+  let allBackendIcons = [
+    chromeIcons.backendWeb,
+    chromeIcons.backendTui,
+    chromeIcons.backendGpui,
+    chromeIcons.backendFreya,
+    chromeIcons.backendCocoa,
+    chromeIcons.backendAndroid,
+    chromeIcons.backendIos,
+  ]
+  var backendOrder: seq[PreviewBackend] = @[]
   var backendLabelSeq: seq[string] = @[]
-  for s in backendShortLabels: backendLabelSeq.add s
+  var backendIcons: seq[string] = @[]
+  for i in 0 ..< allBackendOrder.len:
+    let b = allBackendOrder[i]
+    if vm.allowedPlatforms.len > 0 and b notin vm.allowedPlatforms:
+      continue
+    backendOrder.add b
+    backendLabelSeq.add allBackendShortLabels[i]
+    backendIcons.add allBackendIcons[i]
 
   let backendWrapper = ui(r):
     tdiv(`data-edge-strip` = "backend",
@@ -2892,23 +2925,6 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
       if backendOrder[i] == current:
         backendInitialIndex = i
         break
-  # 2026-05-28 icon-coverage expansion — Backend cluster pills now
-  # render the per-backend glyph from the active IconSet. The label
-  # text (``Web`` / ``TUI`` / ``GPUI`` / ``Freya`` / ``Cocoa`` /
-  # ``Android`` / ``iOS``) is still surfaced as the pill's tooltip +
-  # screen-reader label via the icon-aware mount. The icon order must
-  # match ``backendOrder`` (pbWeb, pbTui, pbGpui, pbFreya, pbCocoa,
-  # pbAndroid, pbIos).
-  let chromeIcons = currentIconSet()
-  let backendIcons = @[
-    chromeIcons.backendWeb,
-    chromeIcons.backendTui,
-    chromeIcons.backendGpui,
-    chromeIcons.backendFreya,
-    chromeIcons.backendCocoa,
-    chromeIcons.backendAndroid,
-    chromeIcons.backendIos,
-  ]
   let backendVm = createSegmentedChoiceVMWithIcons(
     backendLabelSeq, backendIcons, initialIndex = backendInitialIndex)
 
