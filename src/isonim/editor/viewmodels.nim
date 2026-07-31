@@ -8992,6 +8992,46 @@ proc collectWorkspaceBindingMetadata*(vm: EditorVM):
       variableKey: binding.variableKey)
   result.history = vm.inspector.variableBindingHistory.val
 
+proc previouslyLinkedVariables*(vm: EditorVM;
+    key: PropertyBindingKey): seq[string] =
+  ## VBIND-M6: the variables PREVIOUSLY linked to ``key``
+  ## (``elementId × propertyName``), MOST-RECENT-FIRST, read from
+  ## ``inspector.variableBindingHistory`` (rehydrated from the workspace
+  ## sidecar in ``applyWorkspace`` and kept live within a session by
+  ## ``pushVariableBindingHistory``). The picker (``variable_picker.nim``)
+  ## renders these in a leading "Previously linked" group above the
+  ## normal category groups so re-linking a property surfaces its prior
+  ## variables first.
+  ##
+  ## DANGLING keys are dropped: a previously-linked variable that no
+  ## longer exists in the current foundations (not in
+  ## ``availableVariables``) is omitted so the picker never offers a
+  ## variable it cannot bind. The result is deduped by construction (the
+  ## history itself is deduped on record).
+  ##
+  ## Returns an EMPTY seq when nothing was ever linked to ``key`` — the
+  ## default for every pilot with no history metadata, so the picker
+  ## omits the group entirely and renders exactly as VBIND-M4.
+  if key.elementId.len == 0 or key.propertyName.len == 0:
+    return @[]
+  var recorded: seq[string] = @[]
+  for entry in vm.inspector.variableBindingHistory.val:
+    if entry.elementId == key.elementId and
+        entry.propertyName == key.propertyName:
+      recorded = entry.variableKeys
+      break
+  if recorded.len == 0:
+    return @[]
+  let available = vm.inspector.availableVariables.val
+  for variableKey in recorded:
+    var exists = false
+    for token in available:
+      if token.key.sameTokenKey(variableKey):
+        exists = true
+        break
+    if exists:
+      result.add variableKey
+
 # ===========================================================================
 # Factory: create all ViewModels with proper reactive wiring
 # ===========================================================================

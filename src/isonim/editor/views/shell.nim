@@ -4391,6 +4391,12 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
       # which the picker treats as "show all" (backward-compatible).
       variablePickerState.compatibleCategories.val =
         compatibleCategoriesFor(key.propertyName)
+      # VBIND-M6: seed the "Previously linked" group from the property's
+      # binding history (rehydrated + in-session, most-recent-first,
+      # dangling variables dropped). Empty history ⇒ empty seq ⇒ the
+      # picker omits the group and renders exactly as VBIND-M4.
+      variablePickerState.previouslyLinked.val =
+        vm.previouslyLinkedVariables(key)
       openVariablePickerWithRect(variablePickerState, key, x, y, w, h)
   # Wire the picker's per-row Edit affordance into the inline editor.
   # The picker's row knows the variable key; the inline editor opens

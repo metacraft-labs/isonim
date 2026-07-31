@@ -95,6 +95,19 @@ type
       ## isolated fixture) see the picker exactly as before. Opening the
       ## picker to link a specific property seeds this from
       ## ``compatibleCategoriesFor(targetKey.propertyName)``.
+    previouslyLinked*: Signal[seq[string]]
+      ## VBIND-M6 "Previously linked" group. The variable keys previously
+      ## linked to the target property (``elementId × propertyName``),
+      ## MOST-RECENT-FIRST, seeded at open time from
+      ## ``previouslyLinkedVariables(vm, targetKey)``. When non-empty the
+      ## picker renders these in a leading group ABOVE the category
+      ## groups, intersected with the currently-available + compatible +
+      ## searched token set (so only still-valid, still-compatible,
+      ## still-matching prior variables show) and DEDUPED out of their
+      ## category groups below. The EMPTY seq is the backward-compatible
+      ## default: no group, picker identical to VBIND-M4. Callers that
+      ## never set it (every existing caller + the isolated fixture) see
+      ## no change.
     expandedCategories*: Signal[Table[VariablePickerCategory, bool]]
       ## Per-category expansion state. ``true`` means the category's
       ## rows are visible; ``false`` collapses them. All categories
@@ -168,6 +181,7 @@ proc createVariablePickerState*(): VariablePickerState =
     targetPropertyKey: createSignal(PropertyBindingKey()),
     compatibleCategories:
       createSignal(default(set[VariablePickerCategory])),
+    previouslyLinked: createSignal[seq[string]](@[]),
     expandedCategories: createSignal(expansion),
     onVariableEdit: createSignal[proc(variableKey: string)](nil))
 
@@ -414,6 +428,7 @@ proc mountVariablePicker*[R, E](r: R; parent: E; vm: EditorVM;
     let expansion = capturedState.expandedCategories.val
     let targetKey = capturedState.targetPropertyKey.val
     let compatible = capturedState.compatibleCategories.val
+    let priorKeys = capturedState.previouslyLinked.val
     r.clearChildren(bodyNode)
     # VBIND-M4: restrict to the property's compatible categories first
     # (empty set ⇒ no filter), then apply the search query. An empty
@@ -434,10 +449,184 @@ proc mountVariablePicker*[R, E](r: R; parent: E; vm: EditorVM;
           text "No matching variables"
       r.appendChild(bodyNode, empty)
       return
+
+    # Shared per-row builder — reused by the VBIND-M6 "Previously linked"
+    # group and the normal category groups, so a row clicked in either
+    # place binds identically (``bindPropertyToVariable`` + close).
+    proc renderRow(entry: FoundationTokenEntry) =
+      let entryKey = entry.key
+      let entryValue = entry.value
+      let usage = entry.affectedStories.len
+      let isColour = variableCategoryFor(entry) == vpcColour
+      var rowNode: E
+      var editNode: E
+      let rowMounted = ui(r):
+        tdiv(
+          ref = rowNode,
+          `data-variable-picker-row` = entryKey,
+          role = "button",
+          tabindex = "0",
+          display = "flex",
+          align_items = "center",
+          gap = vpRowGap,
+          min_height = vpRowHeight,
+          padding = vpRowPadding,
+          cursor = "pointer")
+      # Swatch (colour categories) or value-preview tile (others).
+      # Built outside the ui block so a clean ``if/else`` keeps the
+      # DSL happy.
+      let preview =
+        if isColour:
+          ui(r):
+            tdiv(
+              `data-variable-picker-row-swatch` = entryValue,
+              width = vpSwatchSize,
+              height = vpSwatchSize,
+              background_color = entryValue,
+              border = vpSwatchBorder,
+              border_radius = vpSwatchRadius,
+              flex_shrink = "0")
+        else:
+          ui(r):
+            tdiv(
+              `data-variable-picker-row-preview` = entryValue,
+              display = "flex",
+              align_items = "center",
+              justify_content = "center",
+              min_width = vpSwatchSize,
+              height = vpSwatchSize,
+              padding = "0 4px",
+              background_color = "#1A1B22",
+              border = "1px solid #2A2B36",
+              border_radius = vpSwatchRadius,
+              color = vpTextMuted,
+              font_size = "9px",
+              flex_shrink = "0"):
+              text (if entryValue.len > 0: entryValue else: "-")
+      r.appendChild(rowNode, preview)
+      # Name + resolved value column.
+      let nameCol = ui(r):
+        tdiv(
+          display = "flex",
+          flex_direction = "column",
+          flex = "1",
+          min_width = "0",
+          gap = "1px"):
+          span(
+            `data-variable-picker-row-name` = entryKey,
+            color = vpTextPrimary,
+            font_size = vpRowFont,
+            font_family = vpRowFamily,
+            overflow = "hidden",
+            text_overflow = "ellipsis",
+            white_space = "nowrap"):
+            text entryKey
+          span(
+            `data-variable-picker-row-value` = entryValue,
+            color = vpTextMuted,
+            font_size = "10px",
+            font_family = vpRowFamily,
+            overflow = "hidden",
+            text_overflow = "ellipsis",
+            white_space = "nowrap"):
+            text entryValue
+      r.appendChild(rowNode, nameCol)
+      # Usage badge.
+      let usageBadge = ui(r):
+        span(
+          `data-variable-picker-row-usage` = $usage,
+          flex_shrink = "0",
+          padding = vpUsagePadding,
+          background_color = vpUsageBg,
+          border = vpUsageBorder,
+          border_radius = vpUsageRadius,
+          color = vpUsageColor,
+          font_size = vpUsageFont,
+          white_space = "nowrap"):
+          text ($usage & "x")
+      r.appendChild(rowNode, usageBadge)
+      # Edit this variable affordance.
+      let editButton = ui(r):
+        tdiv(
+          ref = editNode,
+          `data-variable-picker-row-edit` = "true",
+          role = "button",
+          tabindex = "0",
+          `aria-label` = "Edit variable " & entryKey,
+          title = "Edit this variable",
+          flex_shrink = "0",
+          padding = "0 4px",
+          color = vpAccent,
+          font_size = "11px",
+          cursor = "pointer",
+          user_select = "none"):
+          # U+270E LOWER RIGHT PENCIL.
+          text "\xE2\x9C\x8E"
+      r.appendChild(rowNode, editButton)
+      r.appendChild(bodyNode, rowMounted)
+      let capturedKey = entryKey
+      let pickHandler = proc() =
+        capturedVm.bindPropertyToVariable(targetKey, capturedKey)
+        capturedState.closeVariablePicker()
+      r.addEventListener(rowNode, "click", pickHandler)
+      r.addEventListener(rowNode, "keydown", pickHandler)
+      let editHandler = proc() =
+        let cb = capturedState.onVariableEdit.val
+        if cb != nil:
+          cb(capturedKey)
+      r.addEventListener(editNode, "click", editHandler)
+      r.addEventListener(editNode, "keydown", editHandler)
+
+    # VBIND-M6: leading "Previously linked" group. Intersect the history
+    # (already most-recent-first) with the currently-visible ``filtered``
+    # set so only still-available + still-compatible + still-matching
+    # prior variables appear; a prior variable that no longer exists (or
+    # was filtered out) is dropped. The matched keys are deduped OUT of
+    # the category groups below so each variable renders once (at the
+    # top). Empty history ⇒ no group ⇒ picker identical to VBIND-M4.
+    var priorEntries: seq[FoundationTokenEntry] = @[]
+    var priorMatched: seq[string] = @[]
+    for pk in priorKeys:
+      for token in filtered:
+        if token.key == pk and token.key notin priorMatched:
+          priorEntries.add token
+          priorMatched.add token.key
+          break
+    if priorEntries.len > 0:
+      let priorHeader = ui(r):
+        tdiv(
+          `data-variable-picker-previously-linked` = "true",
+          display = "flex",
+          flex_direction = "column",
+          margin_bottom = "4px"):
+          tdiv(
+            `data-variable-picker-previously-linked-header` = "true",
+            display = "flex",
+            align_items = "center",
+            justify_content = "space-between",
+            padding = "4px 12px",
+            color = vpTextMuted,
+            font_size = vpCategoryFont,
+            text_transform = "uppercase",
+            letter_spacing = "0.04em",
+            user_select = "none"):
+            span:
+              text "Previously linked"
+      r.appendChild(bodyNode, priorHeader)
+      for entry in priorEntries:
+        renderRow(entry)
+
     let grouped = categoriseTokens(filtered)
     for groupIndex in 0 ..< grouped.len:
       let category = grouped[groupIndex].category
-      let entries = grouped[groupIndex].entries
+      # Dedup: hide entries already shown in the "Previously linked"
+      # group so a prior variable renders once (at the top).
+      var entries: seq[FoundationTokenEntry] = @[]
+      for entry in grouped[groupIndex].entries:
+        if entry.key notin priorMatched:
+          entries.add entry
+      if entries.len == 0:
+        continue
       let slug = categorySlug(category)
       let label = categoryLabel(category)
       let expanded = expansion.getOrDefault(category, true)
@@ -479,130 +668,8 @@ proc mountVariablePicker*[R, E](r: R; parent: E; vm: EditorVM;
         capturedState.toggleCategoryExpansion(capturedCategory))
       if not expanded:
         continue
-      for entryIndex in 0 ..< entries.len:
-        let entryKey = entries[entryIndex].key
-        let entryValue = entries[entryIndex].value
-        let usage = entries[entryIndex].affectedStories.len
-        closureScope:
-          let isColour = category == vpcColour
-          var rowNode: E
-          var editNode: E
-          let rowMounted = ui(r):
-            tdiv(
-              ref = rowNode,
-              `data-variable-picker-row` = entryKey,
-              role = "button",
-              tabindex = "0",
-              display = "flex",
-              align_items = "center",
-              gap = vpRowGap,
-              min_height = vpRowHeight,
-              padding = vpRowPadding,
-              cursor = "pointer")
-          # Swatch (colour categories) or value-preview tile (others).
-          # Built outside the ui block so a clean ``if/else`` keeps the
-          # DSL happy.
-          let preview =
-            if isColour:
-              ui(r):
-                tdiv(
-                  `data-variable-picker-row-swatch` = entryValue,
-                  width = vpSwatchSize,
-                  height = vpSwatchSize,
-                  background_color = entryValue,
-                  border = vpSwatchBorder,
-                  border_radius = vpSwatchRadius,
-                  flex_shrink = "0")
-            else:
-              ui(r):
-                tdiv(
-                  `data-variable-picker-row-preview` = entryValue,
-                  display = "flex",
-                  align_items = "center",
-                  justify_content = "center",
-                  min_width = vpSwatchSize,
-                  height = vpSwatchSize,
-                  padding = "0 4px",
-                  background_color = "#1A1B22",
-                  border = "1px solid #2A2B36",
-                  border_radius = vpSwatchRadius,
-                  color = vpTextMuted,
-                  font_size = "9px",
-                  flex_shrink = "0"):
-                  text (if entryValue.len > 0: entryValue else: "-")
-          r.appendChild(rowNode, preview)
-          # Name + resolved value column.
-          let nameCol = ui(r):
-            tdiv(
-              display = "flex",
-              flex_direction = "column",
-              flex = "1",
-              min_width = "0",
-              gap = "1px"):
-              span(
-                `data-variable-picker-row-name` = entryKey,
-                color = vpTextPrimary,
-                font_size = vpRowFont,
-                font_family = vpRowFamily,
-                overflow = "hidden",
-                text_overflow = "ellipsis",
-                white_space = "nowrap"):
-                text entryKey
-              span(
-                `data-variable-picker-row-value` = entryValue,
-                color = vpTextMuted,
-                font_size = "10px",
-                font_family = vpRowFamily,
-                overflow = "hidden",
-                text_overflow = "ellipsis",
-                white_space = "nowrap"):
-                text entryValue
-          r.appendChild(rowNode, nameCol)
-          # Usage badge.
-          let usageBadge = ui(r):
-            span(
-              `data-variable-picker-row-usage` = $usage,
-              flex_shrink = "0",
-              padding = vpUsagePadding,
-              background_color = vpUsageBg,
-              border = vpUsageBorder,
-              border_radius = vpUsageRadius,
-              color = vpUsageColor,
-              font_size = vpUsageFont,
-              white_space = "nowrap"):
-              text ($usage & "x")
-          r.appendChild(rowNode, usageBadge)
-          # Edit this variable affordance.
-          let editButton = ui(r):
-            tdiv(
-              ref = editNode,
-              `data-variable-picker-row-edit` = "true",
-              role = "button",
-              tabindex = "0",
-              `aria-label` = "Edit variable " & entryKey,
-              title = "Edit this variable",
-              flex_shrink = "0",
-              padding = "0 4px",
-              color = vpAccent,
-              font_size = "11px",
-              cursor = "pointer",
-              user_select = "none"):
-              # U+270E LOWER RIGHT PENCIL.
-              text "\xE2\x9C\x8E"
-          r.appendChild(rowNode, editButton)
-          r.appendChild(bodyNode, rowMounted)
-          let capturedKey = entryKey
-          let pickHandler = proc() =
-            capturedVm.bindPropertyToVariable(targetKey, capturedKey)
-            capturedState.closeVariablePicker()
-          r.addEventListener(rowNode, "click", pickHandler)
-          r.addEventListener(rowNode, "keydown", pickHandler)
-          let editHandler = proc() =
-            let cb = capturedState.onVariableEdit.val
-            if cb != nil:
-              cb(capturedKey)
-          r.addEventListener(editNode, "click", editHandler)
-          r.addEventListener(editNode, "keydown", editHandler)
+      for entry in entries:
+        renderRow(entry)
 
   # Mirror searchText → search input on external writes (e.g. tests).
   createRenderEffect proc() =

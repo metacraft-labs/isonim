@@ -725,3 +725,237 @@ suite "VBIND-M4 compatible-only picker":
       let rows = collectByAttr(root, "data-variable-picker-row")
       check rows.len == 0
       dispose()
+
+# --------------------------------------------------------------------------- #
+#  VBIND-M6 — previously-linked variables at the TOP of the picker
+#
+#  When the picker (re)opens to link a property, any variables PREVIOUSLY
+#  linked to that same (elementId × propertyName) — from
+#  ``inspector.variableBindingHistory`` — appear in a distinct
+#  "Previously linked" group ABOVE the category groups, most-recent-first,
+#  intersected with the still-available + still-compatible token set, and
+#  deduped OUT of their category groups. Empty history ⇒ no group ⇒ the
+#  picker is identical to VBIND-M4 (backward-compat).
+#
+#  ``previouslyLinkedVariables(vm, key)`` reads the history; the picker's
+#  ``previouslyLinked`` signal is seeded from it at open time (the shell
+#  hook does this; the headless tests seed the signal directly, mirroring
+#  how the M4 tests seed ``compatibleCategories``).
+# --------------------------------------------------------------------------- #
+
+const ColourTarget = PropertyBindingKey(
+  elementId: "frame-1", propertyName: "background-color")
+
+suite "VBIND-M6 previously-linked group":
+
+  test "previouslyLinkedVariables reads history most-recent-first, drops dangling":
+    createRoot do (dispose: proc()):
+      let vm = createEditorVM()
+      seedTokens(vm)
+      # History: accent (most recent), surface, and a ghost key that no
+      # longer exists in foundations — the ghost must be dropped.
+      vm.inspector.variableBindingHistory.val = @[
+        PropertyBindingHistoryEntry(
+          elementId: "frame-1", propertyName: "background-color",
+          variableKeys: @["color/accent", "color/ghost", "color/surface"])]
+      let prior = vm.previouslyLinkedVariables(ColourTarget)
+      check prior == @["color/accent", "color/surface"]
+      # A property with no history ⇒ empty.
+      check vm.previouslyLinkedVariables(PropertyBindingKey(
+        elementId: "frame-1", propertyName: "gap")).len == 0
+      # An empty key ⇒ empty (no crash).
+      check vm.previouslyLinkedVariables(PropertyBindingKey()).len == 0
+      dispose()
+
+  test "picker renders a Previously linked group at the top, most-recent-first":
+    createRoot do (dispose: proc()):
+      let vm = createEditorVM()
+      seedTokens(vm)
+      let state = createVariablePickerState()
+      let (r, root) = mkRoot()
+      discard r.mountVariablePicker(root, vm, state)
+
+      state.compatibleCategories.val =
+        compatibleCategoriesFor(ColourTarget.propertyName)
+      # Most-recent-first: accent then surface. Both compatible + present.
+      state.previouslyLinked.val = @["color/accent", "color/surface"]
+      openVariablePickerWithRect(state, ColourTarget, 0, 0, 0, 0)
+
+      let picker = findByAttr(root, "data-variable-picker", "true")
+      check picker != nil
+
+      # The group header is present at the top.
+      let group = findByAttr(picker,
+        "data-variable-picker-previously-linked", "true")
+      check group != nil
+
+      # Rows appear most-recent-first, ahead of any category rows. Both
+      # colour tokens are in the prior group, so the colour category is
+      # fully deduped away (no leftover empty category header).
+      let rows = collectByAttr(picker, "data-variable-picker-row")
+      check rows.len == 2
+      check rows[0].attributes["data-variable-picker-row"] == "color/accent"
+      check rows[1].attributes["data-variable-picker-row"] == "color/surface"
+      let categories = collectByAttr(picker, "data-variable-picker-category")
+      check categories.len == 0
+      dispose()
+
+  test "prior group sits above the category and dedupes its own entry":
+    createRoot do (dispose: proc()):
+      let vm = createEditorVM()
+      seedTokens(vm)
+      let state = createVariablePickerState()
+      let (r, root) = mkRoot()
+      discard r.mountVariablePicker(root, vm, state)
+
+      state.compatibleCategories.val =
+        compatibleCategoriesFor(ColourTarget.propertyName)
+      # Only accent is previously linked; surface stays in the category.
+      state.previouslyLinked.val = @["color/accent"]
+      openVariablePickerWithRect(state, ColourTarget, 0, 0, 0, 0)
+
+      let picker = findByAttr(root, "data-variable-picker", "true")
+      check picker != nil
+      check findByAttr(picker,
+        "data-variable-picker-previously-linked", "true") != nil
+
+      # accent (prior, top) then surface (colour category, deduped).
+      let rows = collectByAttr(picker, "data-variable-picker-row")
+      check rows.len == 2
+      check rows[0].attributes["data-variable-picker-row"] == "color/accent"
+      check rows[1].attributes["data-variable-picker-row"] == "color/surface"
+      # The colour category still renders (for surface) — accent removed.
+      let categories = collectByAttr(picker, "data-variable-picker-category")
+      check categories.len == 1
+      check categories[0].attributes["data-variable-picker-category"] ==
+        "colour"
+      dispose()
+
+  test "a previously-linked variable that no longer exists is dropped":
+    createRoot do (dispose: proc()):
+      let vm = createEditorVM()
+      seedTokens(vm)
+      let state = createVariablePickerState()
+      let (r, root) = mkRoot()
+      discard r.mountVariablePicker(root, vm, state)
+
+      state.compatibleCategories.val =
+        compatibleCategoriesFor(ColourTarget.propertyName)
+      # ghost does not exist; accent does. Only accent surfaces.
+      state.previouslyLinked.val = @["color/ghost", "color/accent"]
+      openVariablePickerWithRect(state, ColourTarget, 0, 0, 0, 0)
+
+      let picker = findByAttr(root, "data-variable-picker", "true")
+      check picker != nil
+      check findByAttr(picker, "data-variable-picker-row", "color/ghost") ==
+        nil
+      let group = findByAttr(picker,
+        "data-variable-picker-previously-linked", "true")
+      check group != nil
+      # accent (prior) + surface (category) — ghost dropped entirely.
+      let rows = collectByAttr(picker, "data-variable-picker-row")
+      check rows.len == 2
+      check rows[0].attributes["data-variable-picker-row"] == "color/accent"
+      dispose()
+
+  test "empty history omits the group — picker identical to VBIND-M4":
+    createRoot do (dispose: proc()):
+      let vm = createEditorVM()
+      seedTokens(vm)
+      let state = createVariablePickerState()
+      let (r, root) = mkRoot()
+      discard r.mountVariablePicker(root, vm, state)
+
+      state.compatibleCategories.val =
+        compatibleCategoriesFor(ColourTarget.propertyName)
+      # Default previouslyLinked is empty.
+      check state.previouslyLinked.val.len == 0
+      openVariablePickerWithRect(state, ColourTarget, 0, 0, 0, 0)
+
+      let picker = findByAttr(root, "data-variable-picker", "true")
+      check picker != nil
+      # No "Previously linked" group node at all.
+      check findByAttr(picker,
+        "data-variable-picker-previously-linked", "true") == nil
+      # Exactly the M4 shape: two colour rows in one colour category.
+      let rows = collectByAttr(picker, "data-variable-picker-row")
+      check rows.len == 2
+      check rows[0].attributes["data-variable-picker-row"] == "color/surface"
+      check rows[1].attributes["data-variable-picker-row"] == "color/accent"
+      let categories = collectByAttr(picker, "data-variable-picker-category")
+      check categories.len == 1
+      dispose()
+
+  test "search filters the previously-linked group too":
+    createRoot do (dispose: proc()):
+      let vm = createEditorVM()
+      seedTokens(vm)
+      let state = createVariablePickerState()
+      let (r, root) = mkRoot()
+      discard r.mountVariablePicker(root, vm, state)
+
+      state.compatibleCategories.val =
+        compatibleCategoriesFor(ColourTarget.propertyName)
+      state.previouslyLinked.val = @["color/accent", "color/surface"]
+      openVariablePickerWithRect(state, ColourTarget, 0, 0, 0, 0)
+
+      let picker = findByAttr(root, "data-variable-picker", "true")
+      check picker != nil
+      let search = findByAttr(root, "data-variable-picker-search", "true")
+      check search != nil
+      # Narrow to "accent": the prior group keeps only accent; surface
+      # (prior + category) is filtered out of both.
+      r.setInputValue(search, "accent")
+      fireEvent(search, "input")
+
+      let rows = collectByAttr(picker, "data-variable-picker-row")
+      check rows.len == 1
+      check rows[0].attributes["data-variable-picker-row"] == "color/accent"
+      check findByAttr(picker,
+        "data-variable-picker-previously-linked", "true") != nil
+      dispose()
+
+  test "clicking a previously-linked row binds it and closes the picker":
+    createRoot do (dispose: proc()):
+      let vm = createEditorVM()
+      seedTokens(vm)
+      let state = createVariablePickerState()
+      let (r, root) = mkRoot()
+      discard r.mountVariablePicker(root, vm, state)
+
+      state.compatibleCategories.val =
+        compatibleCategoriesFor(ColourTarget.propertyName)
+      state.previouslyLinked.val = @["color/accent"]
+      openVariablePickerWithRect(state, ColourTarget, 0, 0, 0, 0)
+
+      let picker = findByAttr(root, "data-variable-picker", "true")
+      check picker != nil
+      let group = findByAttr(picker,
+        "data-variable-picker-previously-linked", "true")
+      check group != nil
+      # The FIRST row is the prior-group accent row.
+      let priorRow = findByAttr(picker,
+        "data-variable-picker-row", "color/accent")
+      check priorRow != nil
+      fireEvent(priorRow, "click")
+
+      check state.open.val == false
+      let binding = vm.propertyBindingFor(ColourTarget)
+      check binding.isSome
+      check binding.get.variableKey == "color/accent"
+      check binding.get.state == vbsBound
+      dispose()
+
+  test "bind then unbind floats the just-unlinked variable to the top":
+    createRoot do (dispose: proc()):
+      let vm = createEditorVM()
+      seedTokens(vm)
+      # Link surface, then link accent, then UNLINK accent (detach-to-empty
+      # so no editCssProperty side effects). The just-unlinked accent must
+      # float to the FRONT of the previously-linked history.
+      vm.bindPropertyToVariable(ColourTarget, "color/surface")
+      vm.bindPropertyToVariable(ColourTarget, "color/accent")
+      vm.detachPropertyBinding(ColourTarget, "")
+      let prior = vm.previouslyLinkedVariables(ColourTarget)
+      check prior == @["color/accent", "color/surface"]
+      dispose()
