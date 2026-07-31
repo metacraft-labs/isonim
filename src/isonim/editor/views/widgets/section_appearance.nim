@@ -55,10 +55,12 @@ proc mountSectionAppearance*[R, E](r: R; parent: E; vm: EditorVM) =
   discard r.mountPropertyRow(parent, propertyRowNumeric(
     name = "Opacity", value = opacity, unit = opacityUnit,
     units = @[pctUnit],
-    minValue = some(0.0), maxValue = some(100.0), step = 1.0))
+    minValue = some(0.0), maxValue = some(100.0), step = 1.0,
+    binding = vm.inspectorBindingFor("opacity")))
   discard r.mountPropertyRow(parent, propertyRowNumeric(
     name = "Corner radius", value = radius, unit = radiusUnit,
-    units = @[pxUnit], minValue = some(0.0)))
+    units = @[pxUnit], minValue = some(0.0),
+    binding = vm.inspectorBindingFor("border-radius")))
   discard r.mountPropertyRow(parent, propertyRowChoice(
     name = "Blend mode", value = blend,
     options = @[
@@ -67,7 +69,8 @@ proc mountSectionAppearance*[R, E](r: R; parent: E; vm: EditorVM) =
       (label: "Screen", value: "screen"),
       (label: "Overlay", value: "overlay"),
       (label: "Darken", value: "darken"),
-      (label: "Lighten", value: "lighten")]))
+      (label: "Lighten", value: "lighten")],
+    binding = vm.inspectorBindingFor("mix-blend-mode")))
   discard r.mountPropertyRow(parent, propertyRowBoolean(
     name = "Per-corner", value = perCorner))
 
@@ -78,13 +81,17 @@ proc mountSectionAppearance*[R, E](r: R; parent: E; vm: EditorVM) =
          display = "none", flex_direction = "column")
   r.appendChild(parent, perCornerHost)
   discard r.mountPropertyRow(perCornerHostEl, propertyRowNumeric(
-    name = "TL", value = radiusTL, unit = radiusUnit, units = @[pxUnit]))
+    name = "TL", value = radiusTL, unit = radiusUnit, units = @[pxUnit],
+    binding = vm.inspectorBindingFor("border-top-left-radius")))
   discard r.mountPropertyRow(perCornerHostEl, propertyRowNumeric(
-    name = "TR", value = radiusTR, unit = radiusUnit, units = @[pxUnit]))
+    name = "TR", value = radiusTR, unit = radiusUnit, units = @[pxUnit],
+    binding = vm.inspectorBindingFor("border-top-right-radius")))
   discard r.mountPropertyRow(perCornerHostEl, propertyRowNumeric(
-    name = "BR", value = radiusBR, unit = radiusUnit, units = @[pxUnit]))
+    name = "BR", value = radiusBR, unit = radiusUnit, units = @[pxUnit],
+    binding = vm.inspectorBindingFor("border-bottom-right-radius")))
   discard r.mountPropertyRow(perCornerHostEl, propertyRowNumeric(
-    name = "BL", value = radiusBL, unit = radiusUnit, units = @[pxUnit]))
+    name = "BL", value = radiusBL, unit = radiusUnit, units = @[pxUnit],
+    binding = vm.inspectorBindingFor("border-bottom-left-radius")))
   createRenderEffect proc() =
     r.setStyle(perCornerHostEl, "display",
       if perCorner.val: "flex" else: "none")

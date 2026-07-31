@@ -20,6 +20,7 @@ import isonim/dsl/ui
 import isonim/editor/types
 import isonim/editor/viewmodels
 import isonim/editor/views/widgets/section_position
+import isonim/editor/views/widgets/variable_chip
 
 type
   FillEntry* = object
@@ -91,11 +92,29 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
     ## Isolating helper — closure-captures ``idx`` from this proc's
     ## scope so each row's click handlers bind to the right index.
     ## ``for``-body ``let`` does not isolate captures across iterations.
+    ##
+    ## VBIND-M1 read-path: the first fill entry maps onto the
+    ## selected element's canonical ``background-color`` property, so
+    ## when that property is bound to a design-system variable the
+    ## value area renders the real ``variable_chip`` instead of the
+    ## inert ``◇``. Reading the binding here (inside ``rebuildList``'s
+    ## ``createRenderEffect``) makes the row re-render when the binding
+    ## or the selection changes. Because ``propertyBindings`` is empty
+    ## for every workspace until M5 seeds it, ``binding`` is ``none``
+    ## for every row today and the DOM is byte-identical to before.
+    ##
+    ## Only the primary fill (idx 0) participates in M1: multi-fill
+    ## compositing has no per-index canonical CSS property yet, so
+    ## additional fill rows stay literal (honest M1 gap — see M2/M3).
+    let binding =
+      if idx == 0: vm.inspectorBindingFor("background-color")
+      else: none(VariableBinding)
     var swatchEl: E
     var hexEl: E
     var alphaEl: E
     var bindEl: E
     var deleteEl: E
+    var chipHostEl: E
     let row = ui(r):
       tdiv(`data-fill-row` = $idx,
             display = "flex", flex_direction = "row",
@@ -110,36 +129,46 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
               border_radius = "3px",
               background_color = entry.color,
               cursor = "pointer", flex_shrink = "0")
-        input(ref = hexEl,
-               `data-fill-row-hex` = $idx,
-               `aria-label` = "Edit fill hex",
-               flex = "1", min_width = "0",
-               background_color = bgInput,
-               border = "1px solid " & border,
-               border_radius = "3px",
-               color = textPrimary, font_size = "11px",
-               font_family = "monospace",
-               padding = "2px 6px", height = "22px")
-        input(ref = alphaEl,
-               `data-fill-row-alpha` = $idx,
-               `aria-label` = "Edit fill opacity",
-               width = "48px",
-               background_color = bgInput,
-               border = "1px solid " & border,
-               border_radius = "3px",
-               color = textSecondary, font_size = "11px",
-               padding = "2px 6px", height = "22px",
-               text_align = "right")
-        tdiv(ref = bindEl,
-              role = "button", tabindex = "0",
-              `data-fill-row-bind` = $idx,
-              `aria-label` = "Bind fill to variable",
-              width = "20px", height = "20px",
-              display = "flex", align_items = "center",
-              justify_content = "center",
-              color = textMuted, font_size = "12px",
-              cursor = "pointer"):
-          text "\xE2\x97\x87"
+        if binding.isSome:
+          # Linked chip read-path — replaces the hex + opacity inputs
+          # and the inert ◇ bind slot with the real variable chip.
+          # The detach / re-bind click wiring lands in M2/M3; for M1
+          # the chip is display-only.
+          tdiv(ref = chipHostEl,
+                `data-fill-row-chip-host` = $idx,
+                display = "flex", flex = "1", min_width = "0",
+                align_items = "center")
+        else:
+          input(ref = hexEl,
+                 `data-fill-row-hex` = $idx,
+                 `aria-label` = "Edit fill hex",
+                 flex = "1", min_width = "0",
+                 background_color = bgInput,
+                 border = "1px solid " & border,
+                 border_radius = "3px",
+                 color = textPrimary, font_size = "11px",
+                 font_family = "monospace",
+                 padding = "2px 6px", height = "22px")
+          input(ref = alphaEl,
+                 `data-fill-row-alpha` = $idx,
+                 `aria-label` = "Edit fill opacity",
+                 width = "48px",
+                 background_color = bgInput,
+                 border = "1px solid " & border,
+                 border_radius = "3px",
+                 color = textSecondary, font_size = "11px",
+                 padding = "2px 6px", height = "22px",
+                 text_align = "right")
+          tdiv(ref = bindEl,
+                role = "button", tabindex = "0",
+                `data-fill-row-bind` = $idx,
+                `aria-label` = "Bind fill to variable",
+                width = "20px", height = "20px",
+                display = "flex", align_items = "center",
+                justify_content = "center",
+                color = textMuted, font_size = "12px",
+                cursor = "pointer"):
+            text "\xE2\x97\x87"
         tdiv(ref = deleteEl,
               role = "button", tabindex = "0",
               `data-fill-row-delete` = $idx,
@@ -151,21 +180,28 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
               cursor = "pointer"):
           text "\xC3\x97"
     r.appendChild(listEl, row)
-    r.setInputValue(hexEl, entry.color)
-    r.setInputValue(alphaEl, $int(entry.alpha * 100.0))
-    r.addEventListener(hexEl, "change", proc() =
-      var next = entries.val
-      if idx >= 0 and idx < next.len:
-        next[idx].color = r.inputValue(hexEl)
-        entries.val = next)
-    r.addEventListener(alphaEl, "change", proc() =
-      var next = entries.val
-      if idx >= 0 and idx < next.len:
-        var parsed = 100.0
-        try: parsed = parseFloat(r.inputValue(alphaEl))
-        except ValueError: discard
-        next[idx].alpha = max(0.0, min(1.0, parsed / 100.0))
-        entries.val = next)
+    if binding.isSome:
+      r.setAttribute(row, "data-fill-row-linked", "true")
+      let chipConfig = variableChipConfig(
+        binding = binding.get,
+        extraRootAttr = "data-fill-row-linked-chip=true")
+      discard r.mountVariableChip(chipHostEl, chipConfig)
+    else:
+      r.setInputValue(hexEl, entry.color)
+      r.setInputValue(alphaEl, $int(entry.alpha * 100.0))
+      r.addEventListener(hexEl, "change", proc() =
+        var next = entries.val
+        if idx >= 0 and idx < next.len:
+          next[idx].color = r.inputValue(hexEl)
+          entries.val = next)
+      r.addEventListener(alphaEl, "change", proc() =
+        var next = entries.val
+        if idx >= 0 and idx < next.len:
+          var parsed = 100.0
+          try: parsed = parseFloat(r.inputValue(alphaEl))
+          except ValueError: discard
+          next[idx].alpha = max(0.0, min(1.0, parsed / 100.0))
+          entries.val = next)
     r.addEventListener(deleteEl, "click", proc() =
       var next = entries.val
       if idx >= 0 and idx < next.len:

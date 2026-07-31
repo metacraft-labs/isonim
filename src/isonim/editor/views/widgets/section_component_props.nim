@@ -69,7 +69,8 @@ proc mountSectionComponentProps*[R, E](r: R; parent: E; vm: EditorVM) =
       if prop.schemaKey.len == 0:
         continue
       let value = createSignal(prop.value)
-      let cfg = propertyRowText(name = prop.name, value = value)
+      let cfg = propertyRowText(name = prop.name, value = value,
+        binding = vm.inspectorBindingFor(prop.name))
       let row = r.mountPropertyRow(listEl, cfg)
       r.setAttribute(row, "data-component-prop-schema", prop.schemaKey)
 

@@ -8670,6 +8670,39 @@ proc propertyBindingFor*(vm: EditorVM;
   else:
     none(VariableBinding)
 
+proc inspectorBindingFor*(vm: EditorVM;
+    propertyName: string): Option[VariableBinding] =
+  ## VBIND-M1 read-path helper for the inspector section widgets.
+  ##
+  ## Composes ``propertyBindingFor`` with the CURRENTLY-SELECTED
+  ## element so a section row can ask "is my property bound?" without
+  ## re-deriving the (element × property) key itself.
+  ##
+  ## ``propertyName`` is the CANONICAL CSS property name each section
+  ## already reads/writes via ``findPropertyValue`` — e.g.
+  ## ``background-color`` for a fill, ``border-color`` for the stroke
+  ## colour, ``gap`` for the layout gap. This is deliberately the SAME
+  ## string ``bindPropertyToVariable`` keys by (see the Phase E.1 VM
+  ## tests, which bind ``background-color`` / ``gap``), so the read
+  ## path and the future link/unlink write path (M2/M3) agree on one
+  ## key namespace.
+  ##
+  ## The selected-element id is taken from ``fallbackElementId`` — the
+  ## same id the VM uses everywhere else for selection identity — so a
+  ## binding recorded against the selected element resolves here.
+  ##
+  ## Returns ``none`` when nothing is selected or the property is a
+  ## literal. Because ``propertyBindings`` is empty for every workspace
+  ## until M5 seeds it, this returns ``none`` for every row today, and
+  ## the sections render exactly as before (the inert ``◇``).
+  if propertyName.len == 0:
+    return none(VariableBinding)
+  let elementId = vm.inspector.selectedElement.val.fallbackElementId()
+  if elementId.len == 0:
+    return none(VariableBinding)
+  vm.propertyBindingFor(PropertyBindingKey(
+    elementId: elementId, propertyName: propertyName))
+
 # ===========================================================================
 # Factory: create all ViewModels with proper reactive wiring
 # ===========================================================================

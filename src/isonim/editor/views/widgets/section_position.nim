@@ -212,13 +212,16 @@ proc mountSectionPosition*[R, E](r: R; parent: E; vm: EditorVM) =
   # ----- X / Y / rotation property rows ---------------------------- #
   discard r.mountPropertyRow(parent, propertyRowNumeric(
     name = "X", value = xValue, unit = xUnit,
-    units = @[pxUnit]))
+    units = @[pxUnit],
+    binding = vm.inspectorBindingFor("left")))
   discard r.mountPropertyRow(parent, propertyRowNumeric(
     name = "Y", value = yValue, unit = yUnit,
-    units = @[pxUnit]))
+    units = @[pxUnit],
+    binding = vm.inspectorBindingFor("top")))
   discard r.mountPropertyRow(parent, propertyRowNumeric(
     name = "Rotation", value = rotationValue, unit = rotUnit,
-    units = @[degUnit]))
+    units = @[degUnit],
+    binding = vm.inspectorBindingFor("transform")))
 
   # ----- Flip buttons ---------------------------------------------- #
   # Phase H (2026-05-28): flip controls render as compact icon

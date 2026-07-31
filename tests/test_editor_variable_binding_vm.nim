@@ -101,6 +101,34 @@ suite "Editor variable binding VM (Phase E.1)":
       check vm.propertyBindingFor(otherKey).isNone
       dispose()
 
+  test "inspectorBindingFor keys off the current selection (VBIND-M1)":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      vm.foundations.tokens.val = @[
+        FoundationTokenEntry(key: "color/surface", kind: ftkSemanticColor,
+          value: "#0F172A")]
+      vm.inspector.selectedElement.val = ElementRef(tag: "div", id: "frame-1")
+
+      # Default: no binding, no selection dependence — returns none.
+      check vm.inspectorBindingFor("background-color").isNone
+
+      vm.bindPropertyToVariable(PropertyBindingKey(
+        elementId: "frame-1", propertyName: "background-color"),
+        "color/surface")
+      let bound = vm.inspectorBindingFor("background-color")
+      check bound.isSome
+      check bound.get().variableKey == "color/surface"
+
+      # A different property is still unbound.
+      check vm.inspectorBindingFor("gap").isNone
+      # An empty property name is a no-op.
+      check vm.inspectorBindingFor("").isNone
+
+      # The binding is scoped to the selected element only.
+      vm.inspector.selectedElement.val = ElementRef(tag: "div", id: "frame-9")
+      check vm.inspectorBindingFor("background-color").isNone
+      dispose()
+
   test "resolveVariableValue returns foundations value or empty for missing":
     createRoot proc(dispose: proc()) =
       let vm = createEditorVM()

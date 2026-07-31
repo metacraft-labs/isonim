@@ -41,16 +41,19 @@ proc mountSectionStroke*[R, E](r: R; parent: E; vm: EditorVM) =
     # outside/inside trick.
 
   discard r.mountPropertyRow(parent, propertyRowColor(
-    name = "Color", value = strokeColor, alpha = strokeAlpha))
+    name = "Color", value = strokeColor, alpha = strokeAlpha,
+    binding = vm.inspectorBindingFor("border-color")))
   discard r.mountPropertyRow(parent, propertyRowNumeric(
     name = "Width", value = strokeWidth, unit = strokeWidthUnit,
-    units = @[pxUnit], minValue = some(0.0)))
+    units = @[pxUnit], minValue = some(0.0),
+    binding = vm.inspectorBindingFor("border-width")))
   discard r.mountPropertyRow(parent, propertyRowChoice(
     name = "Style", value = strokeStyle,
     options = @[
       (label: "Solid", value: "solid"),
       (label: "Dashed", value: "dashed"),
-      (label: "Dotted", value: "dotted")]))
+      (label: "Dotted", value: "dotted")],
+    binding = vm.inspectorBindingFor("border-style")))
   discard r.mountPropertyRow(parent, propertyRowChoice(
     name = "Position", value = strokePosition,
     options = @[

@@ -97,7 +97,8 @@ proc mountSectionTypography*[R, E](r: R; parent: E; vm: EditorVM) =
     r.setStyle(headerHostEl, "display", if hide: "block" else: "none")
 
   discard r.mountPropertyRow(parent, propertyRowText(
-    name = "Font family", value = fontFamily))
+    name = "Font family", value = fontFamily,
+    binding = vm.inspectorBindingFor("font-family")))
   discard r.mountPropertyRow(parent, propertyRowChoice(
     name = "Font weight", value = fontWeight,
     options = @[
@@ -106,42 +107,51 @@ proc mountSectionTypography*[R, E](r: R; parent: E; vm: EditorVM) =
       (label: "Regular", value: "regular"),
       (label: "Medium", value: "medium"),
       (label: "Semibold", value: "semibold"),
-      (label: "Bold", value: "bold")]))
+      (label: "Bold", value: "bold")],
+    binding = vm.inspectorBindingFor("font-weight")))
   discard r.mountPropertyRow(parent, propertyRowNumeric(
     name = "Font size", value = fontSize, unit = fontSizeUnit,
-    units = @[pxUnit], minValue = some(0.0)))
+    units = @[pxUnit], minValue = some(0.0),
+    binding = vm.inspectorBindingFor("font-size")))
   discard r.mountPropertyRow(parent, propertyRowNumeric(
     name = "Line height", value = lineHeight, unit = lineHeightUnit,
-    units = @[unitless], minValue = some(0.0)))
+    units = @[unitless], minValue = some(0.0),
+    binding = vm.inspectorBindingFor("line-height")))
   discard r.mountPropertyRow(parent, propertyRowNumeric(
     name = "Letter spacing", value = letterSpacing,
-    unit = letterSpacingUnit, units = @[pxUnit]))
+    unit = letterSpacingUnit, units = @[pxUnit],
+    binding = vm.inspectorBindingFor("letter-spacing")))
   discard r.mountPropertyRow(parent, propertyRowNumeric(
     name = "Paragraph spacing", value = paragraphSpacing,
-    unit = paragraphSpacingUnit, units = @[pxUnit]))
+    unit = paragraphSpacingUnit, units = @[pxUnit],
+    binding = vm.inspectorBindingFor("margin-bottom")))
   discard r.mountPropertyRow(parent, propertyRowChoice(
     name = "Text alignment", value = textAlign,
     options = @[
       (label: "Left", value: "left"),
       (label: "Center", value: "center"),
       (label: "Right", value: "right"),
-      (label: "Justify", value: "justify")]))
+      (label: "Justify", value: "justify")],
+    binding = vm.inspectorBindingFor("text-align")))
   discard r.mountPropertyRow(parent, propertyRowChoice(
     name = "Decoration", value = decoration,
     options = @[
       (label: "None", value: "none"),
       (label: "Underline", value: "underline"),
-      (label: "Line-through", value: "line-through")]))
+      (label: "Line-through", value: "line-through")],
+    binding = vm.inspectorBindingFor("text-decoration")))
   discard r.mountPropertyRow(parent, propertyRowChoice(
     name = "Text transform", value = textTransform,
     options = @[
       (label: "None", value: "none"),
       (label: "Uppercase", value: "uppercase"),
       (label: "Lowercase", value: "lowercase"),
-      (label: "Capitalize", value: "capitalize")]))
+      (label: "Capitalize", value: "capitalize")],
+    binding = vm.inspectorBindingFor("text-transform")))
   discard r.mountPropertyRow(parent, propertyRowChoice(
     name = "List style", value = listStyle,
     options = @[
       (label: "None", value: "none"),
       (label: "Disc", value: "disc"),
-      (label: "Decimal", value: "decimal")]))
+      (label: "Decimal", value: "decimal")],
+    binding = vm.inspectorBindingFor("list-style-type")))
