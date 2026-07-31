@@ -210,3 +210,116 @@ suite "Editor variable binding VM (Phase E.1)":
       vm.foundations.tokens.val = @[]
       check vm.inspector.availableVariables.val.len == 0
       dispose()
+
+suite "Editor variable binding VM (VBIND-M3 unlink → local override)":
+
+  test "detachPropertyBinding journals the resolved value as a local literal":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      vm.foundations.tokens.val = @[
+        FoundationTokenEntry(key: "spacing/4", kind: ftkSpacingScale,
+          value: "16px", sourceFile: "foundations/spacing.nim",
+          sourceLine: 7)]
+      # Selection owns the property being bound, with a real source
+      # anchor so the detach can journal a local literal override.
+      vm.inspector.selectedElement.val = ElementRef(
+        tag: "div", id: "row-1",
+        sourceFile: "components/Row.nim", sourceLine: 42,
+        properties: @[PropertyInfo(name: "gap", value: "8px",
+          origin: poInherited, sourceFile: "components/Row.nim",
+          sourceLine: 42, directStyleAllowed: true)])
+
+      let key = PropertyBindingKey(elementId: "row-1", propertyName: "gap")
+      vm.bindPropertyToVariable(key, "spacing/4")
+      check vm.inspector.propertyBindings.val.hasKey(key)
+      check vm.inspector.pendingSourceEdits.val.len == 0
+
+      # Detach with the binding's currently-resolved value.
+      vm.detachPropertyBinding(key, "16px")
+
+      # (a) the binding is gone.
+      check vm.inspector.propertyBindings.val.len == 0
+      check (not vm.inspector.propertyBindings.val.hasKey(key))
+      # (b) a local literal edit for gap = 16px is journaled.
+      let edits = vm.inspector.pendingSourceEdits.val
+      check edits.len == 1
+      check edits[0].property == "gap"
+      check edits[0].newValue == "16px"
+      check edits[0].scope == pesLocal
+      # (c) the selected element now carries the literal override, so the
+      # row re-renders the editable literal control seeded with 16px.
+      check vm.propertyBindingFor(key).isNone
+      var gapLiteral = ""
+      for p in vm.inspector.selectedElement.val.properties:
+        if p.name == "gap": gapLiteral = p.value
+      check gapLiteral == "16px"
+      dispose()
+
+  test "detachPropertyBinding to empty removes the binding without journaling":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      vm.foundations.tokens.val = @[
+        FoundationTokenEntry(key: "spacing/4", kind: ftkSpacingScale,
+          value: "16px")]
+      vm.inspector.selectedElement.val = ElementRef(
+        tag: "div", id: "row-1",
+        sourceFile: "components/Row.nim", sourceLine: 42,
+        properties: @[PropertyInfo(name: "gap", value: "8px",
+          origin: poInherited, sourceFile: "components/Row.nim",
+          sourceLine: 42, directStyleAllowed: true)])
+
+      let key = PropertyBindingKey(elementId: "row-1", propertyName: "gap")
+      vm.bindPropertyToVariable(key, "spacing/4")
+      check vm.inspector.propertyBindings.val.hasKey(key)
+
+      # "Detach to empty" — no literal override staged.
+      vm.detachPropertyBinding(key, "")
+      check vm.inspector.propertyBindings.val.len == 0
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      dispose()
+
+  test "detachPropertyBinding off-selection removes binding, does not mis-journal":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      vm.foundations.tokens.val = @[
+        FoundationTokenEntry(key: "spacing/4", kind: ftkSpacingScale,
+          value: "16px")]
+      # Nothing selected — a detach for an off-screen element must not
+      # journal an edit against the (empty) selection.
+      let key = PropertyBindingKey(elementId: "row-9", propertyName: "gap")
+      vm.bindPropertyToVariable(key, "spacing/4")
+      vm.detachPropertyBinding(key, "16px")
+      check vm.inspector.propertyBindings.val.len == 0
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      dispose()
+
+  test "detach then a further literal edit keeps the property unbound":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      vm.foundations.tokens.val = @[
+        FoundationTokenEntry(key: "spacing/4", kind: ftkSpacingScale,
+          value: "16px")]
+      vm.inspector.selectedElement.val = ElementRef(
+        tag: "div", id: "row-1",
+        sourceFile: "components/Row.nim", sourceLine: 42,
+        properties: @[PropertyInfo(name: "gap", value: "8px",
+          origin: poInherited, sourceFile: "components/Row.nim",
+          sourceLine: 42, directStyleAllowed: true)])
+
+      let key = PropertyBindingKey(elementId: "row-1", propertyName: "gap")
+      vm.bindPropertyToVariable(key, "spacing/4")
+      vm.detachPropertyBinding(key, "16px")
+
+      # A subsequent local literal edit (the same channel the sections use)
+      # keeps the property unbound and updates only this element.
+      discard vm.editCssProperty("gap", "24px", scope = pesLocal)
+      check vm.propertyBindingFor(key).isNone
+      var gapLiteral = ""
+      for p in vm.inspector.selectedElement.val.properties:
+        if p.name == "gap": gapLiteral = p.value
+      check gapLiteral == "24px"
+      let edits = vm.inspector.pendingSourceEdits.val
+      check edits.len >= 1
+      check edits[^1].property == "gap"
+      check edits[^1].newValue == "24px"
+      dispose()

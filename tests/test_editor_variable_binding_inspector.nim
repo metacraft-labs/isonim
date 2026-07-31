@@ -13,7 +13,7 @@
 ## read path: red before the sections thread the binding through,
 ## green after.
 
-import std/[options, tables, unittest]
+import std/[options, tables, strutils, unittest]
 
 import isonim/core/[signals, computation, owner]
 import isonim/editor/types
@@ -312,4 +312,123 @@ suite "VBIND-M2 inspector link flow":
         "data-property-row-linked") == "true"
       check findByAttr(colorRow, "data-variable-chip-key", "color/surface") !=
         nil
+      dispose()
+
+# --------------------------------------------------------------------------- #
+#  VBIND-M3 — unlink → local literal override (journal the detached value).
+# --------------------------------------------------------------------------- #
+
+suite "VBIND-M3 inspector unlink → local override":
+
+  test "unlinking a stroke Color row converts it to a seeded local literal":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let root = r.createElement("div")
+      let vm = createEditorVM()
+      vm.seedSurfaceToken()
+      vm.inspector.selectedElement.val = ElementRef(tag: "div", id: "frame-1",
+        sourceFile: "components/Frame.nim", sourceLine: 10,
+        properties: @[PropertyInfo(name: "border-color", value: "#1A1B22",
+          origin: poInherited, sourceFile: "components/Frame.nim",
+          sourceLine: 10, directStyleAllowed: true)])
+      vm.bindPropertyToVariable(PropertyBindingKey(
+        elementId: "frame-1", propertyName: "border-color"), "color/surface")
+
+      mountSectionStroke[MockRenderer, MockNode](r, root, vm)
+
+      # Bound → the chip (with a detach affordance) is present.
+      var colorRow = findByAttr(root, "data-property-row", "color")
+      check colorRow.attributes.getOrDefault(
+        "data-property-row-linked") == "true"
+      let detach = findByAttr(colorRow, "data-variable-chip-detach", "true")
+      check detach != nil
+
+      # Click the chip's UNLINK affordance.
+      fireEvent(detach, "click")
+
+      # (a) the property is now UNBOUND.
+      check vm.propertyBindingFor(PropertyBindingKey(
+        elementId: "frame-1", propertyName: "border-color")).isNone
+
+      # (b) a LOCAL literal override carrying the resolved value is
+      # journaled onto pendingSourceEdits (the override actually applies).
+      let edits = vm.inspector.pendingSourceEdits.val
+      check edits.len == 1
+      check edits[0].property == "border-color"
+      check edits[0].scope == pesLocal
+      check edits[0].newValue.toLowerAscii() == "#0f172a"
+
+      # (c) the row reactively swapped chip → editable literal, seeded to
+      # the detached (resolved) value.
+      colorRow = findByAttr(root, "data-property-row", "color")
+      check colorRow.attributes.getOrDefault(
+        "data-property-row-linked") == "false"
+      check findByAttr(colorRow, "data-variable-chip", "true") == nil
+      let input = findByAttr(colorRow, "data-property-row-input", "true")
+      check input != nil
+      check r.inputValue(input).toLowerAscii() == "#0f172a"
+      check r.inputValue(input) == edits[0].newValue
+      dispose()
+
+  test "unlinking is a pure no-op path when nothing is bound":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let root = r.createElement("div")
+      let vm = createEditorVM()
+      vm.seedSurfaceToken()
+      vm.inspector.selectedElement.val = ElementRef(tag: "div", id: "frame-1",
+        sourceFile: "components/Frame.nim", sourceLine: 10,
+        properties: @[PropertyInfo(name: "border-color", value: "#1A1B22",
+          origin: poInherited, sourceFile: "components/Frame.nim",
+          sourceLine: 10, directStyleAllowed: true)])
+
+      mountSectionStroke[MockRenderer, MockNode](r, root, vm)
+
+      # Firing the detach handler with no binding stages nothing.
+      vm.inspectorDetachRequestHandler("border-color")()
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      let colorRow = findByAttr(root, "data-property-row", "color")
+      check colorRow.attributes.getOrDefault(
+        "data-property-row-linked") == "false"
+      check findByAttr(colorRow, "data-property-row-input", "true") != nil
+      dispose()
+
+  test "unlinking the primary fill chip journals a local override":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let root = r.createElement("div")
+      let vm = createEditorVM()
+      vm.seedSurfaceToken()
+      vm.inspector.selectedElement.val = ElementRef(tag: "div", id: "frame-1",
+        sourceFile: "components/Frame.nim", sourceLine: 10,
+        properties: @[PropertyInfo(name: "background-color", value: "#1A1B22",
+          origin: poInherited, sourceFile: "components/Frame.nim",
+          sourceLine: 10, directStyleAllowed: true)])
+      vm.bindPropertyToVariable(PropertyBindingKey(
+        elementId: "frame-1", propertyName: "background-color"),
+        "color/surface")
+
+      mountSectionFill[MockRenderer, MockNode](r, root, vm)
+
+      var fillRow = findByAttr(root, "data-fill-row", "0")
+      check fillRow.attributes.getOrDefault("data-fill-row-linked") == "true"
+      let detach = findByAttr(fillRow, "data-variable-chip-detach", "true")
+      check detach != nil
+
+      fireEvent(detach, "click")
+
+      # Unbound + local override journaled with the resolved value.
+      check vm.propertyBindingFor(PropertyBindingKey(
+        elementId: "frame-1", propertyName: "background-color")).isNone
+      let edits = vm.inspector.pendingSourceEdits.val
+      check edits.len == 1
+      check edits[0].property == "background-color"
+      check edits[0].scope == pesLocal
+      check edits[0].newValue.toLowerAscii() == "#0f172a"
+
+      # The row reactively fell back to the literal hex control (+ inert ◇).
+      fillRow = findByAttr(root, "data-fill-row", "0")
+      check fillRow.attributes.getOrDefault("data-fill-row-linked") != "true"
+      check findByAttr(fillRow, "data-variable-chip", "true") == nil
+      check findByAttr(root, "data-fill-row-hex", "0") != nil
       dispose()

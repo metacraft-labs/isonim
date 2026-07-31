@@ -43,12 +43,14 @@ proc mountSectionStroke*[R, E](r: R; parent: E; vm: EditorVM) =
   discard r.mountPropertyRow(parent, propertyRowColor(
     name = "Color", value = strokeColor, alpha = strokeAlpha,
     bindingReactive = vm.inspectorBindingThunk("border-color"),
-    onBindRequest = vm.inspectorBindRequestHandler("border-color")))
+    onBindRequest = vm.inspectorBindRequestHandler("border-color"),
+    onDetachRequest = vm.inspectorDetachRequestHandler("border-color")))
   discard r.mountPropertyRow(parent, propertyRowNumeric(
     name = "Width", value = strokeWidth, unit = strokeWidthUnit,
     units = @[pxUnit], minValue = some(0.0),
     bindingReactive = vm.inspectorBindingThunk("border-width"),
-    onBindRequest = vm.inspectorBindRequestHandler("border-width")))
+    onBindRequest = vm.inspectorBindRequestHandler("border-width"),
+    onDetachRequest = vm.inspectorDetachRequestHandler("border-width")))
   discard r.mountPropertyRow(parent, propertyRowChoice(
     name = "Style", value = strokeStyle,
     options = @[
@@ -56,7 +58,8 @@ proc mountSectionStroke*[R, E](r: R; parent: E; vm: EditorVM) =
       (label: "Dashed", value: "dashed"),
       (label: "Dotted", value: "dotted")],
     bindingReactive = vm.inspectorBindingThunk("border-style"),
-    onBindRequest = vm.inspectorBindRequestHandler("border-style")))
+    onBindRequest = vm.inspectorBindRequestHandler("border-style"),
+    onDetachRequest = vm.inspectorDetachRequestHandler("border-style")))
   discard r.mountPropertyRow(parent, propertyRowChoice(
     name = "Position", value = strokePosition,
     options = @[

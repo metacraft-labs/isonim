@@ -99,7 +99,8 @@ proc mountSectionTypography*[R, E](r: R; parent: E; vm: EditorVM) =
   discard r.mountPropertyRow(parent, propertyRowText(
     name = "Font family", value = fontFamily,
     bindingReactive = vm.inspectorBindingThunk("font-family"),
-    onBindRequest = vm.inspectorBindRequestHandler("font-family")))
+    onBindRequest = vm.inspectorBindRequestHandler("font-family"),
+    onDetachRequest = vm.inspectorDetachRequestHandler("font-family")))
   discard r.mountPropertyRow(parent, propertyRowChoice(
     name = "Font weight", value = fontWeight,
     options = @[
@@ -110,27 +111,32 @@ proc mountSectionTypography*[R, E](r: R; parent: E; vm: EditorVM) =
       (label: "Semibold", value: "semibold"),
       (label: "Bold", value: "bold")],
     bindingReactive = vm.inspectorBindingThunk("font-weight"),
-    onBindRequest = vm.inspectorBindRequestHandler("font-weight")))
+    onBindRequest = vm.inspectorBindRequestHandler("font-weight"),
+    onDetachRequest = vm.inspectorDetachRequestHandler("font-weight")))
   discard r.mountPropertyRow(parent, propertyRowNumeric(
     name = "Font size", value = fontSize, unit = fontSizeUnit,
     units = @[pxUnit], minValue = some(0.0),
     bindingReactive = vm.inspectorBindingThunk("font-size"),
-    onBindRequest = vm.inspectorBindRequestHandler("font-size")))
+    onBindRequest = vm.inspectorBindRequestHandler("font-size"),
+    onDetachRequest = vm.inspectorDetachRequestHandler("font-size")))
   discard r.mountPropertyRow(parent, propertyRowNumeric(
     name = "Line height", value = lineHeight, unit = lineHeightUnit,
     units = @[unitless], minValue = some(0.0),
     bindingReactive = vm.inspectorBindingThunk("line-height"),
-    onBindRequest = vm.inspectorBindRequestHandler("line-height")))
+    onBindRequest = vm.inspectorBindRequestHandler("line-height"),
+    onDetachRequest = vm.inspectorDetachRequestHandler("line-height")))
   discard r.mountPropertyRow(parent, propertyRowNumeric(
     name = "Letter spacing", value = letterSpacing,
     unit = letterSpacingUnit, units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("letter-spacing"),
-    onBindRequest = vm.inspectorBindRequestHandler("letter-spacing")))
+    onBindRequest = vm.inspectorBindRequestHandler("letter-spacing"),
+    onDetachRequest = vm.inspectorDetachRequestHandler("letter-spacing")))
   discard r.mountPropertyRow(parent, propertyRowNumeric(
     name = "Paragraph spacing", value = paragraphSpacing,
     unit = paragraphSpacingUnit, units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("margin-bottom"),
-    onBindRequest = vm.inspectorBindRequestHandler("margin-bottom")))
+    onBindRequest = vm.inspectorBindRequestHandler("margin-bottom"),
+    onDetachRequest = vm.inspectorDetachRequestHandler("margin-bottom")))
   discard r.mountPropertyRow(parent, propertyRowChoice(
     name = "Text alignment", value = textAlign,
     options = @[
@@ -139,7 +145,8 @@ proc mountSectionTypography*[R, E](r: R; parent: E; vm: EditorVM) =
       (label: "Right", value: "right"),
       (label: "Justify", value: "justify")],
     bindingReactive = vm.inspectorBindingThunk("text-align"),
-    onBindRequest = vm.inspectorBindRequestHandler("text-align")))
+    onBindRequest = vm.inspectorBindRequestHandler("text-align"),
+    onDetachRequest = vm.inspectorDetachRequestHandler("text-align")))
   discard r.mountPropertyRow(parent, propertyRowChoice(
     name = "Decoration", value = decoration,
     options = @[
@@ -147,7 +154,8 @@ proc mountSectionTypography*[R, E](r: R; parent: E; vm: EditorVM) =
       (label: "Underline", value: "underline"),
       (label: "Line-through", value: "line-through")],
     bindingReactive = vm.inspectorBindingThunk("text-decoration"),
-    onBindRequest = vm.inspectorBindRequestHandler("text-decoration")))
+    onBindRequest = vm.inspectorBindRequestHandler("text-decoration"),
+    onDetachRequest = vm.inspectorDetachRequestHandler("text-decoration")))
   discard r.mountPropertyRow(parent, propertyRowChoice(
     name = "Text transform", value = textTransform,
     options = @[
@@ -156,7 +164,8 @@ proc mountSectionTypography*[R, E](r: R; parent: E; vm: EditorVM) =
       (label: "Lowercase", value: "lowercase"),
       (label: "Capitalize", value: "capitalize")],
     bindingReactive = vm.inspectorBindingThunk("text-transform"),
-    onBindRequest = vm.inspectorBindRequestHandler("text-transform")))
+    onBindRequest = vm.inspectorBindRequestHandler("text-transform"),
+    onDetachRequest = vm.inspectorDetachRequestHandler("text-transform")))
   discard r.mountPropertyRow(parent, propertyRowChoice(
     name = "List style", value = listStyle,
     options = @[
@@ -164,4 +173,5 @@ proc mountSectionTypography*[R, E](r: R; parent: E; vm: EditorVM) =
       (label: "Disc", value: "disc"),
       (label: "Decimal", value: "decimal")],
     bindingReactive = vm.inspectorBindingThunk("list-style-type"),
-    onBindRequest = vm.inspectorBindRequestHandler("list-style-type")))
+    onBindRequest = vm.inspectorBindRequestHandler("list-style-type"),
+    onDetachRequest = vm.inspectorDetachRequestHandler("list-style-type")))

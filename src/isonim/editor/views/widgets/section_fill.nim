@@ -196,9 +196,18 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
               rc.x, rc.y, rc.w, rc.h))
         else:
           nil
+      # VBIND-M3: the chip's UNLINK / detach affordance detaches the
+      # primary fill's ``background-color`` binding into a LOCAL literal
+      # override seeded with the resolved value, journaled onto
+      # ``pendingSourceEdits``. Additional fill rows have no canonical
+      # CSS key yet, so their detach stays inert (honest gap — see M3+).
+      let detachCb =
+        if idx == 0: vm.inspectorDetachRequestHandler("background-color")
+        else: nil
       let chipConfig = variableChipConfig(
         binding = binding.get,
         onChevronClick = chevronCb,
+        onDetach = detachCb,
         extraRootAttr = "data-fill-row-linked-chip=true")
       chipRootRef = r.mountVariableChip(chipHostEl, chipConfig)
     else:

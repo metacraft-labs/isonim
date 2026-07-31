@@ -8656,19 +8656,42 @@ proc bindPropertyToVariable*(vm: EditorVM; key: PropertyBindingKey;
 
 proc detachPropertyBinding*(vm: EditorVM; key: PropertyBindingKey;
     detachedValue: string) =
-  ## Removes the binding under ``key``. ``detachedValue`` is the
-  ## literal the detach replaces the binding with — typically the
-  ## previously-resolved value, but the user may edit it before
-  ## confirming (per the spec "Detach with current value" /
-  ## "Detach to empty" affordances). For Phase E.1 the literal is
-  ## not yet persisted anywhere; Phase E.4 will write it back to
-  ## the source file.
-  discard detachedValue
+  ## VBIND-M3: UNLINK → LOCAL LITERAL OVERRIDE.
+  ##
+  ## Removes the binding under ``key`` and converts the property into a
+  ## LOCAL literal override for the selected element, seeded with
+  ## ``detachedValue`` — typically the binding's previously-resolved
+  ## value (the spec's "Detach with current value"), though the user may
+  ## edit it before confirming.
+  ##
+  ## Unlike Phase E.1 (which discarded the detached value), the literal
+  ## is now JOURNALED onto ``inspector.pendingSourceEdits`` via the exact
+  ## same ``editCssProperty`` → ``SourceEditPlan`` channel that ordinary
+  ## literal inspector edits already flow through, so the override
+  ## actually reaches the ``WorkspaceEditAdapter`` and applies to this
+  ## element only. The edit is staged with an explicit ``pesLocal`` scope
+  ## so a shared/token property does not stall on a scope prompt.
+  ##
+  ## An EMPTY ``detachedValue`` is the spec's "Detach to empty"
+  ## affordance: the binding is removed and NO literal override is
+  ## staged (the row falls back to whatever literal the source already
+  ## carries). The journal step is also skipped when ``key`` does not
+  ## name the currently-selected element — ``editCssProperty`` edits the
+  ## selection, so journaling a detach for an off-screen element would
+  ## mis-target; such a detach only removes the in-memory binding.
   vm.inspector.propertyBindings.update(proc(
       prev: Table[PropertyBindingKey, VariableBinding]):
       Table[PropertyBindingKey, VariableBinding] =
     result = prev
     result.del(key))
+  if detachedValue.len == 0:
+    return
+  if key.propertyName.len == 0:
+    return
+  if key.elementId != vm.inspector.selectedElement.val.fallbackElementId():
+    return
+  discard vm.editCssProperty(key.propertyName, detachedValue,
+    scope = pesLocal, origin = peoInspector)
 
 proc propertyBindingFor*(vm: EditorVM;
     key: PropertyBindingKey): Option[VariableBinding] =
@@ -8765,6 +8788,28 @@ proc inspectorBindRequestHandler*(vm: EditorVM;
   let p = propertyName
   result = proc(x, y, w, h: float) =
     vm.requestInspectorVariablePicker(p, x, y, w, h)
+
+proc inspectorDetachRequestHandler*(vm: EditorVM;
+    propertyName: string): proc() =
+  ## VBIND-M3: the ``onDetachRequest`` closure a property row fires when
+  ## its chip's UNLINK / detach affordance is clicked. Detaches the
+  ## CURRENT selection's binding for ``propertyName`` into a LOCAL literal
+  ## override, seeding the literal from the binding's currently-resolved
+  ## value (the spec's "Detach with current value").
+  ##
+  ## No-op when the property is unbound for the current selection, so a
+  ## row whose detach affordance is never surfaced (the default, since a
+  ## property is only detachable while it shows a chip) stays inert and
+  ## byte-unchanged.
+  let p = propertyName
+  result = proc() =
+    let key = vm.inspectorBindingKeyFor(p)
+    if key.elementId.len == 0:
+      return
+    let binding = vm.propertyBindingFor(key)
+    if binding.isNone:
+      return
+    vm.detachPropertyBinding(key, binding.get.resolvedValue)
 
 # ===========================================================================
 # Factory: create all ViewModels with proper reactive wiring
