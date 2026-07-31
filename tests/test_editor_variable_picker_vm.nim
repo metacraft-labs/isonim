@@ -565,3 +565,163 @@ suite "VBIND-M2 requestInspectorVariablePicker seam":
       check key.elementId == "frame-7"
       check key.propertyName == "border-color"
       dispose()
+
+# --------------------------------------------------------------------------- #
+#  VBIND-M4 — compatible-only picker (property → category filter)
+#
+#  Linking a property must offer only variables whose category is
+#  type-compatible with that property, per the spec's Compatibility
+#  table. ``compatibleCategoriesFor`` maps a canonical CSS name onto the
+#  compatible category set; ``VariablePickerState.compatibleCategories``
+#  drives the picker's list. An EMPTY set is the backward-compatible
+#  default meaning "show all".
+# --------------------------------------------------------------------------- #
+
+suite "VBIND-M4 compatible-only picker":
+
+  test "compatibleCategoriesFor maps representative properties":
+    # Colour props → colour only.
+    check compatibleCategoriesFor("background-color") == {vpcColour}
+    check compatibleCategoriesFor("color") == {vpcColour}
+    check compatibleCategoriesFor("border-color") == {vpcColour}
+    check compatibleCategoriesFor("fill") == {vpcColour}
+    check compatibleCategoriesFor("stroke") == {vpcColour}
+    # Spacing / size props → spacing only.
+    check compatibleCategoriesFor("gap") == {vpcSpacing}
+    check compatibleCategoriesFor("width") == {vpcSpacing}
+    check compatibleCategoriesFor("padding-left") == {vpcSpacing}
+    check compatibleCategoriesFor("margin-top") == {vpcSpacing}
+    check compatibleCategoriesFor("x") == {vpcSpacing}
+    check compatibleCategoriesFor("border-width") == {vpcSpacing}
+    # Corner radius must resolve to radius, not spacing.
+    check compatibleCategoriesFor("border-radius") == {vpcRadius}
+    check compatibleCategoriesFor("border-top-left-radius") == {vpcRadius}
+    # Typography.
+    check compatibleCategoriesFor("font-size") == {vpcTypography}
+    check compatibleCategoriesFor("font-family") == {vpcTypography}
+    # Effects / numerics / string.
+    check compatibleCategoriesFor("box-shadow") == {vpcEffect}
+    check compatibleCategoriesFor("opacity") == {vpcNumber}
+    check compatibleCategoriesFor("content") == {vpcString}
+    # Unknown / ambiguous → empty set (no filter, show all).
+    check compatibleCategoriesFor("mystery-prop") == {}
+    check compatibleCategoriesFor("") == {}
+
+  test "filterByCompatibleCategories restricts / no-ops on empty set":
+    let tokens = @[
+      FoundationTokenEntry(key: "color/surface", kind: ftkSemanticColor,
+        value: "#0F172A"),
+      FoundationTokenEntry(key: "spacing/4", kind: ftkSpacingScale,
+        value: "16px"),
+      FoundationTokenEntry(key: "radius/sm", kind: ftkRadiusScale,
+        value: "4px")]
+    # Empty set is a no-op (backward-compatible show-all).
+    let all = filterByCompatibleCategories(
+      tokens, default(set[VariablePickerCategory]))
+    check all.len == 3
+    # Colour-only keeps just the colour token.
+    let colour = filterByCompatibleCategories(tokens, {vpcColour})
+    check colour.len == 1
+    check colour[0].key == "color/surface"
+    # Spacing-only keeps just the spacing token.
+    let spacing = filterByCompatibleCategories(tokens, {vpcSpacing})
+    check spacing.len == 1
+    check spacing[0].key == "spacing/4"
+
+  test "picker lists only colour variables for a colour property":
+    createRoot do (dispose: proc()):
+      let vm = createEditorVM()
+      seedTokens(vm)
+      let state = createVariablePickerState()
+      let (r, root) = mkRoot()
+      discard r.mountVariablePicker(root, vm, state)
+
+      # Seed the compatibility filter as the shell does when linking a
+      # colour property, then open the picker for that property.
+      let colourKey = PropertyBindingKey(
+        elementId: "frame-1", propertyName: "background-color")
+      state.compatibleCategories.val =
+        compatibleCategoriesFor(colourKey.propertyName)
+      openVariablePickerWithRect(state, colourKey, 0, 0, 0, 0)
+
+      let picker = findByAttr(root, "data-variable-picker", "true")
+      check picker != nil
+
+      let rows = collectByAttr(picker, "data-variable-picker-row")
+      check rows.len == 2
+      check rows[0].attributes["data-variable-picker-row"] == "color/surface"
+      check rows[1].attributes["data-variable-picker-row"] == "color/accent"
+
+      # Only the Colour category is rendered — no Spacing / Radius.
+      let categories = collectByAttr(picker, "data-variable-picker-category")
+      check categories.len == 1
+      check categories[0].attributes["data-variable-picker-category"] ==
+        "colour"
+      dispose()
+
+  test "picker lists only spacing variables for a size property":
+    createRoot do (dispose: proc()):
+      let vm = createEditorVM()
+      seedTokens(vm)
+      let state = createVariablePickerState()
+      let (r, root) = mkRoot()
+      discard r.mountVariablePicker(root, vm, state)
+
+      let sizeKey = PropertyBindingKey(
+        elementId: "frame-1", propertyName: "gap")
+      state.compatibleCategories.val =
+        compatibleCategoriesFor(sizeKey.propertyName)
+      openVariablePickerWithRect(state, sizeKey, 0, 0, 0, 0)
+
+      let picker = findByAttr(root, "data-variable-picker", "true")
+      check picker != nil
+
+      let rows = collectByAttr(picker, "data-variable-picker-row")
+      check rows.len == 1
+      check rows[0].attributes["data-variable-picker-row"] == "spacing/4"
+
+      let categories = collectByAttr(picker, "data-variable-picker-category")
+      check categories.len == 1
+      check categories[0].attributes["data-variable-picker-category"] ==
+        "spacing"
+      dispose()
+
+  test "empty compatible set shows all variables (backward-compat)":
+    createRoot do (dispose: proc()):
+      let vm = createEditorVM()
+      seedTokens(vm)
+      let state = createVariablePickerState()
+      let (r, root) = mkRoot()
+      discard r.mountVariablePicker(root, vm, state)
+
+      # Default (unset) compatibleCategories == {} ⇒ no filter.
+      check state.compatibleCategories.val == {}
+      openVariablePickerWithRect(state, TargetKey, 0, 0, 0, 0)
+
+      let picker = findByAttr(root, "data-variable-picker", "true")
+      check picker != nil
+      let rows = collectByAttr(picker, "data-variable-picker-row")
+      check rows.len == 4
+      let categories = collectByAttr(picker, "data-variable-picker-category")
+      check categories.len == 3
+      dispose()
+
+  test "compatible filter with no matching variables shows empty-state":
+    createRoot do (dispose: proc()):
+      let vm = createEditorVM()
+      seedTokens(vm)  # colour, spacing, radius tokens — no typography
+      let state = createVariablePickerState()
+      let (r, root) = mkRoot()
+      discard r.mountVariablePicker(root, vm, state)
+
+      let typoKey = PropertyBindingKey(
+        elementId: "frame-1", propertyName: "font-size")
+      state.compatibleCategories.val =
+        compatibleCategoriesFor(typoKey.propertyName)
+      openVariablePickerWithRect(state, typoKey, 0, 0, 0, 0)
+
+      let empty = findByAttr(root, "data-variable-picker-empty", "true")
+      check empty != nil
+      let rows = collectByAttr(root, "data-variable-picker-row")
+      check rows.len == 0
+      dispose()

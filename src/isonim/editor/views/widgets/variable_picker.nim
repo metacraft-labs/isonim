@@ -86,6 +86,15 @@ type
       ## anchor when the bottom would clip the viewport.
     searchText*: Signal[string]
     targetPropertyKey*: Signal[PropertyBindingKey]
+    compatibleCategories*: Signal[set[VariablePickerCategory]]
+      ## VBIND-M4 compatibility filter. When NON-empty, the picker lists
+      ## only variables whose ``variableCategoryFor`` is in this set (so
+      ## a colour property offers only colour tokens). The EMPTY set is
+      ## the backward-compatible default meaning *no filter / show all*;
+      ## callers that never set it (every existing caller and the
+      ## isolated fixture) see the picker exactly as before. Opening the
+      ## picker to link a specific property seeds this from
+      ## ``compatibleCategoriesFor(targetKey.propertyName)``.
     expandedCategories*: Signal[Table[VariablePickerCategory, bool]]
       ## Per-category expansion state. ``true`` means the category's
       ## rows are visible; ``false`` collapses them. All categories
@@ -157,6 +166,8 @@ proc createVariablePickerState*(): VariablePickerState =
     anchorRect: createSignal((0.0, 0.0, 0.0, 0.0)),
     searchText: createSignal(""),
     targetPropertyKey: createSignal(PropertyBindingKey()),
+    compatibleCategories:
+      createSignal(default(set[VariablePickerCategory])),
     expandedCategories: createSignal(expansion),
     onVariableEdit: createSignal[proc(variableKey: string)](nil))
 
@@ -213,6 +224,18 @@ func filterPickerTokens*(tokens: seq[FoundationTokenEntry];
                           query: string): seq[FoundationTokenEntry] =
   for token in tokens:
     if token.matchesPickerQuery(query):
+      result.add token
+
+func filterByCompatibleCategories*(tokens: seq[FoundationTokenEntry];
+    categories: set[VariablePickerCategory]): seq[FoundationTokenEntry] =
+  ## VBIND-M4: restrict ``tokens`` to those whose
+  ## ``variableCategoryFor`` is one of ``categories``. An EMPTY
+  ## ``categories`` set is the backward-compatible no-op: the input is
+  ## returned unchanged (the picker shows every variable, as before).
+  if categories == {}:
+    return tokens
+  for token in tokens:
+    if variableCategoryFor(token) in categories:
       result.add token
 
 func categoriseTokens*(tokens: seq[FoundationTokenEntry]):
@@ -390,8 +413,13 @@ proc mountVariablePicker*[R, E](r: R; parent: E; vm: EditorVM;
     let tokens = capturedVm.inspector.availableVariables.val
     let expansion = capturedState.expandedCategories.val
     let targetKey = capturedState.targetPropertyKey.val
+    let compatible = capturedState.compatibleCategories.val
     r.clearChildren(bodyNode)
-    let filtered = filterPickerTokens(tokens, query)
+    # VBIND-M4: restrict to the property's compatible categories first
+    # (empty set ⇒ no filter), then apply the search query. An empty
+    # result falls through to the shared empty-state row below.
+    let filtered = filterByCompatibleCategories(
+      filterPickerTokens(tokens, query), compatible)
     if filtered.len == 0:
       let empty = ui(r):
         tdiv(
@@ -673,4 +701,9 @@ when defined(js):
         """, rectH, """ = rect.height;
       })(""", anchorEl, """);
     """].}
+    # VBIND-M4: seed the compatibility filter from the target property
+    # so a JS-side open (chip chevron / bind slot) lists only compatible
+    # variables. An unmapped property → empty set → show all.
+    state.compatibleCategories.val =
+      compatibleCategoriesFor(targetKey.propertyName)
     openVariablePickerWithRect(state, targetKey, rectX, rectY, rectW, rectH)

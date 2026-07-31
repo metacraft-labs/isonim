@@ -8599,6 +8599,68 @@ func variableCategoryFor*(token: FoundationTokenEntry): VariablePickerCategory =
   of ftkBreakpoint, ftkDensity: vpcNumber
   of ftkAccessibilityConstraint: vpcString
 
+func compatibleCategoriesFor*(propertyName: string):
+    set[VariablePickerCategory] =
+  ## Maps a canonical CSS property name onto the set of picker
+  ## categories whose design-system variables are type-compatible with
+  ## it, per the spec's "Compatibility — the picker shows only
+  ## compatible variables" table (``isonim-editor.md`` §"Design-system
+  ## variable binding (Edit mode)"). The variable picker (VBIND-M4)
+  ## uses this to list only compatible variables when a property is
+  ## being linked, so a colour property never offers a spacing token.
+  ##
+  ## An EMPTY set means "no compatible category is known for this
+  ## property" — callers treat that as *no filter / show all* so an
+  ## unmapped or ambiguous property is never over-restricted. This is
+  ## also the backward-compatible default: a picker opened without a
+  ## known property behaves exactly as before.
+  let name = propertyName.toLowerAscii()
+  if name.len == 0:
+    return {}
+
+  # Corner radius — must be tested before the generic ``border-*``
+  # spacing rules so ``border-radius`` never falls through to spacing.
+  if name == "border-radius" or
+     (name.startsWith("border-") and name.endsWith("-radius")):
+    return {vpcRadius}
+
+  # Colour — exact names plus any ``*-color`` longhand (border-color,
+  # outline-color, caret-color, text-decoration-color, …).
+  if name in ["color", "fill", "stroke", "background-color"] or
+     name.endsWith("-color"):
+    return {vpcColour}
+
+  # Typography — font metrics and family.
+  if name in ["font-size", "line-height", "font-weight", "font-family",
+              "letter-spacing"]:
+    return {vpcTypography}
+
+  # Effects — shadow / blur / motion rows.
+  if name in ["box-shadow", "filter", "backdrop-filter", "transition",
+              "transition-duration", "animation", "animation-duration"]:
+    return {vpcEffect}
+
+  # Unitless numerics.
+  if name in ["opacity", "z-index", "flex-grow", "flex-shrink", "order"]:
+    return {vpcNumber}
+
+  # Free-text props.
+  if name == "content":
+    return {vpcString}
+
+  # Spacing / size — gaps, the box model, offsets and border widths.
+  if name in ["gap", "row-gap", "column-gap", "width", "height",
+              "min-width", "max-width", "min-height", "max-height",
+              "top", "right", "bottom", "left", "inset", "x", "y",
+              "flex-basis", "border-width"] or
+     name.startsWith("padding") or
+     name.startsWith("margin") or
+     (name.startsWith("border-") and name.endsWith("-width")):
+    return {vpcSpacing}
+
+  # Unknown / ambiguous property: empty set == no filter (show all).
+  {}
+
 proc resolveVariableValue*(vm: EditorVM; variableKey: string): string =
   ## Returns the resolved literal value of ``variableKey`` by walking
   ## ``vm.foundations.tokens``. Returns the empty string when the

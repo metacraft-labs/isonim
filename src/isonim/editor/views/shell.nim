@@ -4384,6 +4384,13 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
   # renderer-agnostic.
   vm.inspector.requestVariablePicker =
     proc(key: PropertyBindingKey; x, y, w, h: float) {.closure.} =
+      # VBIND-M4: seed the picker's compatibility filter from the
+      # property being linked so the popover lists only type-compatible
+      # variables (colour props → colour tokens, spacing props →
+      # spacing tokens, …). An unmapped property yields the empty set,
+      # which the picker treats as "show all" (backward-compatible).
+      variablePickerState.compatibleCategories.val =
+        compatibleCategoriesFor(key.propertyName)
       openVariablePickerWithRect(variablePickerState, key, x, y, w, h)
   # Wire the picker's per-row Edit affordance into the inline editor.
   # The picker's row knows the variable key; the inline editor opens
