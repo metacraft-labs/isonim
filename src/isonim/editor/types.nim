@@ -2204,3 +2204,34 @@ type
     vpcEffect
     vpcNumber
     vpcString
+
+  # --- VBIND-M5: workspace-file persistence of variable bindings ---
+  # The in-memory ``InspectorVM.propertyBindings`` table (Phase E.1)
+  # never survives a reload. VBIND-M5 persists it — and the
+  # previously-linked history — as ADDITIVE editor-WORKSPACE metadata
+  # written to a JSON sidecar (``<workspace-dir>/.isonim/bindings.json``),
+  # NEVER the shipped framework code and NEVER the DTCG design-token
+  # source (``codetracer-design-system/*.json``). Both records are plain
+  # value objects so the sidecar (de)serializer in ``workspace.nim`` can
+  # round-trip them with no VM/DOM dependency.
+  PersistedPropertyBinding* = object
+    ## One persisted (element × property) → design-system variable link.
+    ## ``elementId`` is the SAME selection identity the VM keys bindings
+    ## by everywhere else (``fallbackElementId`` — element id, else the
+    ## source anchor), so a rehydrated binding resolves against the same
+    ## selection after reload.
+    elementId*: string
+    propertyName*: string       ## Canonical CSS property name, e.g.
+                                ## ``background-color`` or ``gap`` — the
+                                ## same namespace M1's ``inspectorBindingFor``
+                                ## reads (propertyName canonicalization is
+                                ## already handled upstream in M1).
+    variableKey*: string        ## e.g. ``color/surface``, ``spacing/4``.
+
+  PropertyBindingHistoryEntry* = object
+    ## Previously-linked variable history for one (element × property)
+    ## pair, ``variableKeys`` ordered MOST-RECENT-FIRST and deduped.
+    ## Feeds the picker's "Previously linked" group (VBIND-M6).
+    elementId*: string
+    propertyName*: string
+    variableKeys*: seq[string]

@@ -104,6 +104,22 @@ type
       ## ``requestInspectorVariablePicker``. Keeping the seam a plain
       ## rect-based callback keeps ``viewmodels`` free of any renderer /
       ## DOM dependency and lets headless tests wire their own hook.
+    variableBindingHistory*: Signal[seq[PropertyBindingHistoryEntry]]
+      ## VBIND-M5: previously-linked variable history, most-recent-first
+      ## per (element × property). Rehydrated from the workspace sidecar
+      ## in ``applyWorkspace`` and kept live as bindings are made/detached
+      ## so the picker (VBIND-M6) can render a "Previously linked" group.
+      ## Empty for every pilot until a binding is recorded / seeded, so it
+      ## is byte-inert by default.
+    onBindingsChanged*: proc() {.closure.}
+      ## VBIND-M5 SAVE SEAM: fired after ``bindPropertyToVariable`` /
+      ## ``detachPropertyBinding`` mutate the persisted state. The
+      ## FRAMEWORK does not touch the filesystem — the CONSUMER (pilot)
+      ## wires this to snapshot ``collectWorkspaceBindingMetadata`` →
+      ## ``bindingSidecarJson`` and write the sidecar wherever that pilot
+      ## stores it (demo project dir, docs dev-server route, …). ``nil``
+      ## (the default) is a no-op, so a pilot that never wires it — and
+      ## editor_chrome / task_app, which never bind — is byte-unchanged.
 
   VectorEditorVM* = ref object of ViewModel
     ## Embedded vector editor for SVG symbols.
@@ -8690,11 +8706,43 @@ proc usageCountFor*(vm: EditorVM; variableKey: string): int =
       return token.affectedStories.len
   0
 
+proc pushVariableBindingHistory*(vm: EditorVM; elementId, propertyName,
+    variableKey: string) =
+  ## VBIND-M5 RECORD helper: push ``variableKey`` to the FRONT of the
+  ## previously-linked history for ``(elementId × propertyName)``,
+  ## deduped (an existing occurrence is removed first so re-linking a
+  ## prior variable floats it back to the top). Most-recent-first is the
+  ## order the picker's "Previously linked" group (VBIND-M6) renders.
+  ## No-op for empty keys.
+  if elementId.len == 0 or propertyName.len == 0 or variableKey.len == 0:
+    return
+  vm.inspector.variableBindingHistory.update(proc(
+      prev: seq[PropertyBindingHistoryEntry]):
+      seq[PropertyBindingHistoryEntry] =
+    result = prev
+    var idx = -1
+    for i in 0 ..< result.len:
+      if result[i].elementId == elementId and
+          result[i].propertyName == propertyName:
+        idx = i
+        break
+    if idx < 0:
+      result.add PropertyBindingHistoryEntry(
+        elementId: elementId, propertyName: propertyName,
+        variableKeys: @[variableKey])
+    else:
+      var keys: seq[string] = @[variableKey]
+      for k in result[idx].variableKeys:
+        if k != variableKey:
+          keys.add k
+      result[idx].variableKeys = keys)
+
 proc bindPropertyToVariable*(vm: EditorVM; key: PropertyBindingKey;
     variableKey: string) =
-  ## Adds or replaces a binding under ``key``. Phase E.1 only
-  ## updates the VM signal; Phase E.4 will also stage a source-edit
-  ## plan so the change persists to the ``ui:`` DSL.
+  ## Adds or replaces a binding under ``key``. Updates the live VM signal
+  ## and (VBIND-M5) records the variable in the previously-linked history
+  ## and fires the consumer's ``onBindingsChanged`` save hook so the
+  ## sidecar can be persisted. Phase E.4 also stages a source-edit plan.
   if key.elementId.len == 0 or key.propertyName.len == 0 or
       variableKey.len == 0:
     return
@@ -8715,6 +8763,10 @@ proc bindPropertyToVariable*(vm: EditorVM; key: PropertyBindingKey;
       Table[PropertyBindingKey, VariableBinding] =
     result = prev
     result[key] = binding)
+  # VBIND-M5: record the previously-linked history + fire the save seam.
+  vm.pushVariableBindingHistory(key.elementId, key.propertyName, variableKey)
+  if vm.inspector.onBindingsChanged != nil:
+    vm.inspector.onBindingsChanged()
 
 proc detachPropertyBinding*(vm: EditorVM; key: PropertyBindingKey;
     detachedValue: string) =
@@ -8741,11 +8793,23 @@ proc detachPropertyBinding*(vm: EditorVM; key: PropertyBindingKey;
   ## name the currently-selected element — ``editCssProperty`` edits the
   ## selection, so journaling a detach for an off-screen element would
   ## mis-target; such a detach only removes the in-memory binding.
+  # VBIND-M5: capture the variable being unlinked BEFORE removal so it
+  # floats to the front of the previously-linked history (so re-opening
+  # the picker offers the just-unlinked variable at the top — VBIND-M6).
+  var detachedKey = ""
+  block:
+    let bindings = vm.inspector.propertyBindings.val
+    if bindings.hasKey(key):
+      detachedKey = bindings[key].variableKey
   vm.inspector.propertyBindings.update(proc(
       prev: Table[PropertyBindingKey, VariableBinding]):
       Table[PropertyBindingKey, VariableBinding] =
     result = prev
     result.del(key))
+  if detachedKey.len > 0:
+    vm.pushVariableBindingHistory(key.elementId, key.propertyName, detachedKey)
+  if vm.inspector.onBindingsChanged != nil:
+    vm.inspector.onBindingsChanged()
   if detachedValue.len == 0:
     return
   if key.propertyName.len == 0:
@@ -8872,6 +8936,61 @@ proc inspectorDetachRequestHandler*(vm: EditorVM;
     if binding.isNone:
       return
     vm.detachPropertyBinding(key, binding.get.resolvedValue)
+
+proc rehydratePropertyBindings*(vm: EditorVM;
+    persisted: seq[PersistedPropertyBinding];
+    history: seq[PropertyBindingHistoryEntry] = @[]) =
+  ## VBIND-M5 REHYDRATE: deterministically RESET the in-memory
+  ## ``propertyBindings`` table to exactly the workspace's persisted set,
+  ## resolving each ``variableKey`` through the current foundations
+  ## (``vbsBound`` with the resolved literal, or ``vbsBoundMissing`` when
+  ## the key no longer exists), and stash the previously-linked
+  ## ``history`` for the picker (VBIND-M6).
+  ##
+  ## The reset is UNCONDITIONAL — even an empty ``persisted`` overwrites
+  ## the table with an empty one — so re-applying a workspace never leaks
+  ## bindings from a prior apply (fixing the latent gap where
+  ## ``applyWorkspace`` never touched ``propertyBindings``). Because every
+  ## pilot's workspace defaults to empty metadata, this seeds nothing and
+  ## the inspector renders exactly as before.
+  var tbl = initTable[PropertyBindingKey, VariableBinding]()
+  for pb in persisted:
+    if pb.elementId.len == 0 or pb.propertyName.len == 0 or
+        pb.variableKey.len == 0:
+      continue
+    let resolved = vm.resolveVariableValue(pb.variableKey)
+    var binding = VariableBinding(
+      state: if resolved.len > 0: vbsBound else: vbsBoundMissing,
+      variableKey: pb.variableKey,
+      resolvedValue: resolved,
+      sourceFileRef: "",
+      sourceLineRef: 0)
+    for token in vm.foundations.tokens.val:
+      if token.key.sameTokenKey(pb.variableKey):
+        binding.sourceFileRef = token.sourceFile
+        binding.sourceLineRef = token.sourceLine
+        break
+    tbl[PropertyBindingKey(elementId: pb.elementId,
+      propertyName: pb.propertyName)] = binding
+  vm.inspector.propertyBindings.val = tbl
+  vm.inspector.variableBindingHistory.val = history
+
+proc collectWorkspaceBindingMetadata*(vm: EditorVM):
+    tuple[bindings: seq[PersistedPropertyBinding],
+          history: seq[PropertyBindingHistoryEntry]] =
+  ## VBIND-M5: snapshot the live in-memory bindings + previously-linked
+  ## history as PERSISTABLE workspace metadata. The consumer's
+  ## ``onBindingsChanged`` save hook calls this, hands the result to
+  ## ``bindingSidecarJson`` and writes the sidecar wherever that pilot
+  ## stores it. Derives ``PersistedPropertyBinding`` from the live
+  ## ``propertyBindings`` table so the table stays the single source of
+  ## truth (order is unspecified — the sidecar is a set, not a list).
+  for key, binding in vm.inspector.propertyBindings.val:
+    result.bindings.add PersistedPropertyBinding(
+      elementId: key.elementId,
+      propertyName: key.propertyName,
+      variableKey: binding.variableKey)
+  result.history = vm.inspector.variableBindingHistory.val
 
 # ===========================================================================
 # Factory: create all ViewModels with proper reactive wiring
@@ -9120,6 +9239,8 @@ proc createInspectorVM*(designSystemSchema: Signal[DesignSystemSchema] = nil;
       initTable[PropertyBindingKey, VariableBinding]())
   let availableVariables = createMemo[seq[FoundationTokenEntry]](
     proc(): seq[FoundationTokenEntry] = tokensSignal.val)
+  let variableBindingHistory =
+    createSignal[seq[PropertyBindingHistoryEntry]](@[])
 
   InspectorVM(
     designSystemSchema: schemaSignal,
@@ -9151,7 +9272,8 @@ proc createInspectorVM*(designSystemSchema: Signal[DesignSystemSchema] = nil;
     flexDirection: flexDirection,
     selectionVisible: selectionVisible,
     propertyBindings: propertyBindings,
-    availableVariables: availableVariables)
+    availableVariables: availableVariables,
+    variableBindingHistory: variableBindingHistory)
 
 func hasCapability*(adapter: VectorAdapterContract;
     capability: VectorAdapterCapability): bool =
