@@ -491,3 +491,77 @@ suite "Phase E.4 variable_inline_editor":
       check inlineState.targetVariableKey.val == "color/surface"
       check inlineState.anchorRect.val == (100.0, 200.0, 24.0, 26.0)
       dispose()
+
+# --------------------------------------------------------------------------- #
+#  VBIND-M2 — requestInspectorVariablePicker seam
+#
+#  The link flow the inspector rows use: a row fires ``onBindRequest``
+#  with its measured anchor rect; the section forwards it to
+#  ``requestInspectorVariablePicker(propertyName, x, y, w, h)`` which
+#  builds the ``(selectedElementId × propertyName)`` key and calls the
+#  shell-wired ``inspector.requestVariablePicker`` hook. This suite
+#  exercises that seam at the VM level (no DOM click needed).
+# --------------------------------------------------------------------------- #
+
+suite "VBIND-M2 requestInspectorVariablePicker seam":
+
+  test "opens the picker for the selection's canonical property key":
+    createRoot do (dispose: proc()):
+      let vm = createEditorVM()
+      seedTokens(vm)
+      vm.inspector.selectedElement.val = ElementRef(tag: "div", id: "frame-1")
+      let state = createVariablePickerState()
+      vm.inspector.requestVariablePicker =
+        proc(key: PropertyBindingKey; x, y, w, h: float) {.closure.} =
+          openVariablePickerWithRect(state, key, x, y, w, h)
+
+      vm.requestInspectorVariablePicker("background-color",
+        10.0, 20.0, 24.0, 26.0)
+
+      check state.open.val == true
+      check state.anchorRect.val == (10.0, 20.0, 24.0, 26.0)
+      check state.targetPropertyKey.val.elementId == "frame-1"
+      check state.targetPropertyKey.val.propertyName == "background-color"
+      dispose()
+
+  test "no-op without a hook, without a selection, or with an empty prop":
+    createRoot do (dispose: proc()):
+      let vm = createEditorVM()
+      seedTokens(vm)
+
+      # No hook wired yet: must not raise.
+      vm.inspector.selectedElement.val = ElementRef(tag: "div", id: "frame-1")
+      vm.requestInspectorVariablePicker("background-color", 0, 0, 0, 0)
+
+      var opened = 0
+      let state = createVariablePickerState()
+      vm.inspector.requestVariablePicker =
+        proc(key: PropertyBindingKey; x, y, w, h: float) {.closure.} =
+          inc opened
+          openVariablePickerWithRect(state, key, x, y, w, h)
+
+      # No selection (empty ElementRef ⇒ empty fallback id): no open.
+      vm.inspector.selectedElement.val = ElementRef()
+      vm.requestInspectorVariablePicker("background-color", 0, 0, 0, 0)
+      check opened == 0
+
+      # Empty property name: no open even with a selection.
+      vm.inspector.selectedElement.val = ElementRef(tag: "div", id: "frame-1")
+      vm.requestInspectorVariablePicker("", 0, 0, 0, 0)
+      check opened == 0
+
+      # Valid selection + property: opens with the right key.
+      vm.requestInspectorVariablePicker("gap", 0, 0, 0, 0)
+      check opened == 1
+      check state.targetPropertyKey.val.elementId == "frame-1"
+      check state.targetPropertyKey.val.propertyName == "gap"
+      dispose()
+
+  test "inspectorBindingKeyFor mirrors the selection + property name":
+    createRoot do (dispose: proc()):
+      let vm = createEditorVM()
+      vm.inspector.selectedElement.val = ElementRef(tag: "div", id: "frame-7")
+      let key = vm.inspectorBindingKeyFor("border-color")
+      check key.elementId == "frame-7"
+      check key.propertyName == "border-color"
+      dispose()

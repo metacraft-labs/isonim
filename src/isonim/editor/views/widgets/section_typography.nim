@@ -98,7 +98,8 @@ proc mountSectionTypography*[R, E](r: R; parent: E; vm: EditorVM) =
 
   discard r.mountPropertyRow(parent, propertyRowText(
     name = "Font family", value = fontFamily,
-    binding = vm.inspectorBindingFor("font-family")))
+    bindingReactive = vm.inspectorBindingThunk("font-family"),
+    onBindRequest = vm.inspectorBindRequestHandler("font-family")))
   discard r.mountPropertyRow(parent, propertyRowChoice(
     name = "Font weight", value = fontWeight,
     options = @[
@@ -108,23 +109,28 @@ proc mountSectionTypography*[R, E](r: R; parent: E; vm: EditorVM) =
       (label: "Medium", value: "medium"),
       (label: "Semibold", value: "semibold"),
       (label: "Bold", value: "bold")],
-    binding = vm.inspectorBindingFor("font-weight")))
+    bindingReactive = vm.inspectorBindingThunk("font-weight"),
+    onBindRequest = vm.inspectorBindRequestHandler("font-weight")))
   discard r.mountPropertyRow(parent, propertyRowNumeric(
     name = "Font size", value = fontSize, unit = fontSizeUnit,
     units = @[pxUnit], minValue = some(0.0),
-    binding = vm.inspectorBindingFor("font-size")))
+    bindingReactive = vm.inspectorBindingThunk("font-size"),
+    onBindRequest = vm.inspectorBindRequestHandler("font-size")))
   discard r.mountPropertyRow(parent, propertyRowNumeric(
     name = "Line height", value = lineHeight, unit = lineHeightUnit,
     units = @[unitless], minValue = some(0.0),
-    binding = vm.inspectorBindingFor("line-height")))
+    bindingReactive = vm.inspectorBindingThunk("line-height"),
+    onBindRequest = vm.inspectorBindRequestHandler("line-height")))
   discard r.mountPropertyRow(parent, propertyRowNumeric(
     name = "Letter spacing", value = letterSpacing,
     unit = letterSpacingUnit, units = @[pxUnit],
-    binding = vm.inspectorBindingFor("letter-spacing")))
+    bindingReactive = vm.inspectorBindingThunk("letter-spacing"),
+    onBindRequest = vm.inspectorBindRequestHandler("letter-spacing")))
   discard r.mountPropertyRow(parent, propertyRowNumeric(
     name = "Paragraph spacing", value = paragraphSpacing,
     unit = paragraphSpacingUnit, units = @[pxUnit],
-    binding = vm.inspectorBindingFor("margin-bottom")))
+    bindingReactive = vm.inspectorBindingThunk("margin-bottom"),
+    onBindRequest = vm.inspectorBindRequestHandler("margin-bottom")))
   discard r.mountPropertyRow(parent, propertyRowChoice(
     name = "Text alignment", value = textAlign,
     options = @[
@@ -132,14 +138,16 @@ proc mountSectionTypography*[R, E](r: R; parent: E; vm: EditorVM) =
       (label: "Center", value: "center"),
       (label: "Right", value: "right"),
       (label: "Justify", value: "justify")],
-    binding = vm.inspectorBindingFor("text-align")))
+    bindingReactive = vm.inspectorBindingThunk("text-align"),
+    onBindRequest = vm.inspectorBindRequestHandler("text-align")))
   discard r.mountPropertyRow(parent, propertyRowChoice(
     name = "Decoration", value = decoration,
     options = @[
       (label: "None", value: "none"),
       (label: "Underline", value: "underline"),
       (label: "Line-through", value: "line-through")],
-    binding = vm.inspectorBindingFor("text-decoration")))
+    bindingReactive = vm.inspectorBindingThunk("text-decoration"),
+    onBindRequest = vm.inspectorBindRequestHandler("text-decoration")))
   discard r.mountPropertyRow(parent, propertyRowChoice(
     name = "Text transform", value = textTransform,
     options = @[
@@ -147,11 +155,13 @@ proc mountSectionTypography*[R, E](r: R; parent: E; vm: EditorVM) =
       (label: "Uppercase", value: "uppercase"),
       (label: "Lowercase", value: "lowercase"),
       (label: "Capitalize", value: "capitalize")],
-    binding = vm.inspectorBindingFor("text-transform")))
+    bindingReactive = vm.inspectorBindingThunk("text-transform"),
+    onBindRequest = vm.inspectorBindRequestHandler("text-transform")))
   discard r.mountPropertyRow(parent, propertyRowChoice(
     name = "List style", value = listStyle,
     options = @[
       (label: "None", value: "none"),
       (label: "Disc", value: "disc"),
       (label: "Decimal", value: "decimal")],
-    binding = vm.inspectorBindingFor("list-style-type")))
+    bindingReactive = vm.inspectorBindingThunk("list-style-type"),
+    onBindRequest = vm.inspectorBindRequestHandler("list-style-type")))

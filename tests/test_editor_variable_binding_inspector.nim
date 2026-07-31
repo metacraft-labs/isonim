@@ -20,6 +20,7 @@ import isonim/editor/types
 import isonim/editor/viewmodels
 import isonim/editor/views/widgets/section_stroke
 import isonim/editor/views/widgets/section_fill
+import isonim/editor/views/widgets/variable_picker
 import isonim/testing/mock_dom
 
 proc findByAttr(node: MockNode; attr, value: string): MockNode =
@@ -162,4 +163,153 @@ suite "VBIND-M1 inspector binding read-path":
       # The literal hex input + inert ◇ bind slot are gone.
       check findByAttr(fillRow, "data-fill-row-hex", "0") == nil
       check findByAttr(fillRow, "data-fill-row-bind", "0") == nil
+      dispose()
+
+# --------------------------------------------------------------------------- #
+#  VBIND-M2 — link flow (row → picker) + hot-swap of the static rows.
+# --------------------------------------------------------------------------- #
+
+proc wirePicker(vm: EditorVM; picker: VariablePickerState) =
+  ## Wire the inspector's picker hook the same way the shell does, so a
+  ## section row's bind affordance opens ``picker``.
+  vm.inspector.requestVariablePicker =
+    proc(key: PropertyBindingKey; x, y, w, h: float) {.closure.} =
+      openVariablePickerWithRect(picker, key, x, y, w, h)
+
+suite "VBIND-M2 inspector link flow":
+
+  test "clicking a stroke row's bind slot opens the picker for its key":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let root = r.createElement("div")
+      let vm = createEditorVM()
+      vm.seedSurfaceToken()
+      vm.inspector.selectedElement.val = ElementRef(tag: "div", id: "frame-1")
+      let picker = createVariablePickerState()
+      vm.wirePicker(picker)
+
+      mountSectionStroke[MockRenderer, MockNode](r, root, vm)
+
+      let colorRow = findByAttr(root, "data-property-row", "color")
+      check colorRow != nil
+      let bindSlot = findByAttr(colorRow, "data-property-row-slot", "bind")
+      check bindSlot != nil
+      check picker.open.val == false
+
+      fireEvent(bindSlot, "click")
+
+      check picker.open.val == true
+      check picker.targetPropertyKey.val.elementId == "frame-1"
+      check picker.targetPropertyKey.val.propertyName == "border-color"
+      dispose()
+
+  test "picking a variable binds the property and hot-swaps the row to a chip":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let root = r.createElement("div")
+      let vm = createEditorVM()
+      vm.seedSurfaceToken()
+      vm.inspector.selectedElement.val = ElementRef(tag: "div", id: "frame-1")
+      let picker = createVariablePickerState()
+      vm.wirePicker(picker)
+
+      # Section + picker share the VM, exactly as the live shell mounts
+      # them (picker at the shell root, sections in the inspector body).
+      mountSectionStroke[MockRenderer, MockNode](r, root, vm)
+      discard r.mountVariablePicker(root, vm, picker)
+
+      # Before linking: the Color row is a literal control.
+      block:
+        let colorRow = findByAttr(root, "data-property-row", "color")
+        check colorRow.attributes.getOrDefault(
+          "data-property-row-linked") == "false"
+        check findByAttr(colorRow, "data-property-row-input", "true") != nil
+
+      # Open the picker from the row, then pick a variable.
+      let bindSlot = findByAttr(
+        findByAttr(root, "data-property-row", "color"),
+        "data-property-row-slot", "bind")
+      fireEvent(bindSlot, "click")
+      check picker.open.val == true
+
+      let pickerRoot = findByAttr(root, "data-variable-picker", "true")
+      let surfaceRow = findByAttr(pickerRoot,
+        "data-variable-picker-row", "color/surface")
+      check surfaceRow != nil
+      fireEvent(surfaceRow, "click")
+
+      # The picker committed the binding under the row's canonical key
+      # and closed itself.
+      check picker.open.val == false
+      let bound = vm.propertyBindingFor(PropertyBindingKey(
+        elementId: "frame-1", propertyName: "border-color"))
+      check bound.isSome
+      check bound.get.variableKey == "color/surface"
+
+      # The static stroke row hot-swapped to the chip WITHOUT a remount.
+      let colorRow = findByAttr(root, "data-property-row", "color")
+      check colorRow.attributes.getOrDefault(
+        "data-property-row-linked") == "true"
+      check findByAttr(colorRow, "data-property-row-linked-chip", "true") != nil
+      check findByAttr(colorRow, "data-variable-chip-key", "color/surface") !=
+        nil
+      check findByAttr(colorRow, "data-property-row-input", "true") == nil
+      dispose()
+
+  test "binding after mount hot-swaps a static row to the chip":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let root = r.createElement("div")
+      let vm = createEditorVM()
+      vm.seedSurfaceToken()
+      vm.inspector.selectedElement.val = ElementRef(tag: "div", id: "frame-1")
+
+      mountSectionStroke[MockRenderer, MockNode](r, root, vm)
+
+      block:
+        let colorRow = findByAttr(root, "data-property-row", "color")
+        check colorRow.attributes.getOrDefault(
+          "data-property-row-linked") == "false"
+        check findByAttr(colorRow, "data-property-row-input", "true") != nil
+
+      # Seeding the binding AFTER the row is mounted must flip it to the
+      # chip reactively (the M1 hot-swap gap this milestone closes).
+      vm.bindPropertyToVariable(PropertyBindingKey(
+        elementId: "frame-1", propertyName: "border-color"), "color/surface")
+
+      let colorRow = findByAttr(root, "data-property-row", "color")
+      check colorRow.attributes.getOrDefault(
+        "data-property-row-linked") == "true"
+      check findByAttr(colorRow, "data-variable-chip-key", "color/surface") !=
+        nil
+      check findByAttr(colorRow, "data-property-row-input", "true") == nil
+      dispose()
+
+  test "selecting a bound element hot-swaps the row to the chip":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let root = r.createElement("div")
+      let vm = createEditorVM()
+      vm.seedSurfaceToken()
+      # frame-2 owns a binding; frame-1 does not.
+      vm.bindPropertyToVariable(PropertyBindingKey(
+        elementId: "frame-2", propertyName: "border-color"), "color/surface")
+      vm.inspector.selectedElement.val = ElementRef(tag: "div", id: "frame-1")
+
+      mountSectionStroke[MockRenderer, MockNode](r, root, vm)
+
+      block:
+        let colorRow = findByAttr(root, "data-property-row", "color")
+        check colorRow.attributes.getOrDefault(
+          "data-property-row-linked") == "false"
+
+      # Move the selection to the bound element — the same row must now
+      # render the chip without being re-mounted.
+      vm.inspector.selectedElement.val = ElementRef(tag: "div", id: "frame-2")
+
+      let colorRow = findByAttr(root, "data-property-row", "color")
+      check colorRow.attributes.getOrDefault(
+        "data-property-row-linked") == "true"
+      check findByAttr(colorRow, "data-variable-chip-key", "color/surface") !=
+        nil
       dispose()

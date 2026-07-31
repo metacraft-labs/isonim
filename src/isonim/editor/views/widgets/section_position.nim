@@ -213,15 +213,18 @@ proc mountSectionPosition*[R, E](r: R; parent: E; vm: EditorVM) =
   discard r.mountPropertyRow(parent, propertyRowNumeric(
     name = "X", value = xValue, unit = xUnit,
     units = @[pxUnit],
-    binding = vm.inspectorBindingFor("left")))
+    bindingReactive = vm.inspectorBindingThunk("left"),
+    onBindRequest = vm.inspectorBindRequestHandler("left")))
   discard r.mountPropertyRow(parent, propertyRowNumeric(
     name = "Y", value = yValue, unit = yUnit,
     units = @[pxUnit],
-    binding = vm.inspectorBindingFor("top")))
+    bindingReactive = vm.inspectorBindingThunk("top"),
+    onBindRequest = vm.inspectorBindRequestHandler("top")))
   discard r.mountPropertyRow(parent, propertyRowNumeric(
     name = "Rotation", value = rotationValue, unit = rotUnit,
     units = @[degUnit],
-    binding = vm.inspectorBindingFor("transform")))
+    bindingReactive = vm.inspectorBindingThunk("transform"),
+    onBindRequest = vm.inspectorBindRequestHandler("transform")))
 
   # ----- Flip buttons ---------------------------------------------- #
   # Phase H (2026-05-28): flip controls render as compact icon

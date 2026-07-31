@@ -4374,6 +4374,17 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
   let variablePickerState = editor_widgets.createVariablePickerState()
   let variableInlineEditorState =
     editor_widgets.createVariableInlineEditorState()
+  # VBIND-M2: wire the inspector rows' bind affordance → variable picker.
+  # ``requestInspectorVariablePicker`` (viewmodels) builds the
+  # ``(selectedElementId × canonicalPropertyName)`` key and calls this
+  # hook with the row's measured anchor rect; the picker's own per-row
+  # click then commits ``bindPropertyToVariable`` and closes. The hook
+  # lives on the inspector VM so every section reaches it without extra
+  # plumbing, and it is a plain rect callback so ``viewmodels`` stays
+  # renderer-agnostic.
+  vm.inspector.requestVariablePicker =
+    proc(key: PropertyBindingKey; x, y, w, h: float) {.closure.} =
+      openVariablePickerWithRect(variablePickerState, key, x, y, w, h)
   # Wire the picker's per-row Edit affordance into the inline editor.
   # The picker's row knows the variable key; the inline editor opens
   # anchored to the picker by inheriting the picker's anchor rect.

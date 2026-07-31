@@ -65,7 +65,8 @@ proc mountSectionState*[R, E](r: R; parent: E; vm: EditorVM) =
       let value = createSignal(prop.value)
       let row = r.mountPropertyRow(listEl,
         propertyRowText(name = prop.name, value = value,
-          binding = vm.inspectorBindingFor(prop.name)))
+          binding = vm.inspectorBindingFor(prop.name),
+          onBindRequest = vm.inspectorBindRequestHandler(prop.name)))
       r.setAttribute(row, "data-state-signal-origin", prop.originDetail)
 
   createRenderEffect proc() =

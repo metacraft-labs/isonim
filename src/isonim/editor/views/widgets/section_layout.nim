@@ -136,10 +136,12 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
   # constraint editor.
   discard r.mountPropertyRow(parent, propertyRowNumeric(
     name = "W", value = width, unit = widthUnit, units = @[pxUnit],
-    binding = vm.inspectorBindingFor("width")))
+    bindingReactive = vm.inspectorBindingThunk("width"),
+    onBindRequest = vm.inspectorBindRequestHandler("width")))
   discard r.mountPropertyRow(parent, propertyRowNumeric(
     name = "H", value = height, unit = heightUnit, units = @[pxUnit],
-    binding = vm.inspectorBindingFor("height")))
+    bindingReactive = vm.inspectorBindingThunk("height"),
+    onBindRequest = vm.inspectorBindRequestHandler("height")))
   # Phase H (2026-05-28): the constraint indicator reads as a quiet
   # icon-and-hint row. The Figma reference puts the constraint
   # affordance as a small bracket glyph on the right edge next to W/H;
@@ -167,7 +169,8 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
   r.appendChild(parent, gapHost)
   discard r.mountPropertyRow(gapHostEl, propertyRowNumeric(
     name = "Gap", value = gap, unit = gapUnit, units = @[pxUnit],
-    binding = vm.inspectorBindingFor("gap")))
+    bindingReactive = vm.inspectorBindingThunk("gap"),
+    onBindRequest = vm.inspectorBindRequestHandler("gap")))
   createRenderEffect proc() =
     let m = layoutMode.val
     let visible = m in ["vertical", "horizontal", "grid"]
@@ -182,16 +185,20 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
   r.appendChild(parent, padHost)
   discard r.mountPropertyRow(padHostEl, propertyRowNumeric(
     name = "Pad top", value = padTop, unit = padUnit, units = @[pxUnit],
-    binding = vm.inspectorBindingFor("padding-top")))
+    bindingReactive = vm.inspectorBindingThunk("padding-top"),
+    onBindRequest = vm.inspectorBindRequestHandler("padding-top")))
   discard r.mountPropertyRow(padHostEl, propertyRowNumeric(
     name = "Pad right", value = padRight, unit = padUnit, units = @[pxUnit],
-    binding = vm.inspectorBindingFor("padding-right")))
+    bindingReactive = vm.inspectorBindingThunk("padding-right"),
+    onBindRequest = vm.inspectorBindRequestHandler("padding-right")))
   discard r.mountPropertyRow(padHostEl, propertyRowNumeric(
     name = "Pad bottom", value = padBottom, unit = padUnit, units = @[pxUnit],
-    binding = vm.inspectorBindingFor("padding-bottom")))
+    bindingReactive = vm.inspectorBindingThunk("padding-bottom"),
+    onBindRequest = vm.inspectorBindRequestHandler("padding-bottom")))
   discard r.mountPropertyRow(padHostEl, propertyRowNumeric(
     name = "Pad left", value = padLeft, unit = padUnit, units = @[pxUnit],
-    binding = vm.inspectorBindingFor("padding-left")))
+    bindingReactive = vm.inspectorBindingThunk("padding-left"),
+    onBindRequest = vm.inspectorBindRequestHandler("padding-left")))
   createRenderEffect proc() =
     let m = layoutMode.val
     let visible = m in ["vertical", "horizontal", "grid"]
@@ -205,4 +212,5 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
       (label: "Hidden", value: "hidden"),
       (label: "Scroll", value: "scroll"),
       (label: "Auto", value: "auto")],
-    binding = vm.inspectorBindingFor("overflow")))
+    bindingReactive = vm.inspectorBindingThunk("overflow"),
+    onBindRequest = vm.inspectorBindRequestHandler("overflow")))

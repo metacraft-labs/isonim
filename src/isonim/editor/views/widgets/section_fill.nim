@@ -21,6 +21,7 @@ import isonim/editor/types
 import isonim/editor/viewmodels
 import isonim/editor/views/widgets/section_position
 import isonim/editor/views/widgets/variable_chip
+import isonim/editor/views/widgets/property_row  # measureAnchorRect (VBIND-M2)
 
 type
   FillEntry* = object
@@ -182,11 +183,34 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
     r.appendChild(listEl, row)
     if binding.isSome:
       r.setAttribute(row, "data-fill-row-linked", "true")
+      # VBIND-M2: the chip's chevron re-opens the picker anchored to the
+      # chip for the canonical ``background-color`` binding (primary fill
+      # only). Additional fill rows have no canonical CSS key yet, so
+      # their chevron stays inert (honest M2 gap — see M3+).
+      var chipRootRef: E
+      let chevronCb =
+        if idx == 0:
+          (proc() =
+            let rc = measureAnchorRect(chipRootRef)
+            vm.requestInspectorVariablePicker("background-color",
+              rc.x, rc.y, rc.w, rc.h))
+        else:
+          nil
       let chipConfig = variableChipConfig(
         binding = binding.get,
+        onChevronClick = chevronCb,
         extraRootAttr = "data-fill-row-linked-chip=true")
-      discard r.mountVariableChip(chipHostEl, chipConfig)
+      chipRootRef = r.mountVariableChip(chipHostEl, chipConfig)
     else:
+      # VBIND-M2: clicking the inert ◇ bind slot opens the variable
+      # picker for the primary fill's canonical ``background-color``
+      # property, anchored to the slot. Only the primary fill (idx 0)
+      # participates — extra fill rows have no canonical key yet.
+      if idx == 0:
+        r.addEventListener(bindEl, "click", proc() =
+          let rc = measureAnchorRect(bindEl)
+          vm.requestInspectorVariablePicker("background-color",
+            rc.x, rc.y, rc.w, rc.h))
       r.setInputValue(hexEl, entry.color)
       r.setInputValue(alphaEl, $int(entry.alpha * 100.0))
       r.addEventListener(hexEl, "change", proc() =

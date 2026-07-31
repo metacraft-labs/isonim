@@ -110,10 +110,26 @@ type
     # variable.
     binding*: Option[VariableBinding]
 
+    # Optional REACTIVE binding source (VBIND-M2 hot-swap). When set,
+    # the mount ignores the static ``binding`` above and instead reads
+    # this closure INSIDE a ``createRenderEffect`` so the value slot
+    # re-renders the chip vs. the literal control live whenever the
+    # binding changes (a variable is linked/unlinked, or the selection
+    # moves to/from a bound element) — without the parent section
+    # having to re-mount the row. ``nil`` keeps the legacy static
+    # behaviour (built once from ``binding``), so callers that pass
+    # neither are byte-unchanged.
+    bindingReactive*: proc(): Option[VariableBinding]
+
     # Callbacks — every callback is allowed to be ``nil``; the mount
     # treats a nil callback as a no-op.
     onChange*: proc()
-    onBindRequest*: proc()
+    onBindRequest*: proc(x, y, w, h: float)
+      ## VBIND-M2: fired when the bind affordance (the ``◇`` slot or the
+      ## chip chevron) is clicked. The mount measures the affordance's
+      ## document rect (``getBoundingClientRect`` + scroll on the JS
+      ## side; zeros headless) and passes it so the parent can anchor
+      ## the variable picker to this row. Nil is a no-op.
     onMore*: proc()
     onDetachRequest*: proc()
       ## Phase E.2 (2026-05-28): invoked when the linked chip's
@@ -342,8 +358,9 @@ proc propertyRowNumeric*(name: string;
                          maxValue = none(float);
                          step: float = 1.0;
                          binding = none(VariableBinding);
+                         bindingReactive: proc(): Option[VariableBinding] = nil;
                          onChange: proc() = nil;
-                         onBindRequest: proc() = nil;
+                         onBindRequest: proc(x, y, w, h: float) = nil;
                          onMore: proc() = nil;
                          onDetachRequest: proc() = nil;
                          onVariableNameClick: proc() = nil): PropertyRowConfig =
@@ -352,6 +369,7 @@ proc propertyRowNumeric*(name: string;
     numericValue: value, numericUnit: unit, availableUnits: units,
     numericMin: minValue, numericMax: maxValue, numericStep: step,
     binding: binding,
+    bindingReactive: bindingReactive,
     onChange: onChange, onBindRequest: onBindRequest, onMore: onMore,
     onDetachRequest: onDetachRequest,
     onVariableNameClick: onVariableNameClick)
@@ -360,8 +378,9 @@ proc propertyRowColor*(name: string;
                        value: Signal[string];
                        alpha: Signal[float];
                        binding = none(VariableBinding);
+                       bindingReactive: proc(): Option[VariableBinding] = nil;
                        onChange: proc() = nil;
-                       onBindRequest: proc() = nil;
+                       onBindRequest: proc(x, y, w, h: float) = nil;
                        onMore: proc() = nil;
                        onDetachRequest: proc() = nil;
                        onVariableNameClick: proc() = nil): PropertyRowConfig =
@@ -369,6 +388,7 @@ proc propertyRowColor*(name: string;
     name: name, kind: prkColor,
     colorValue: value, alphaValue: alpha,
     binding: binding,
+    bindingReactive: bindingReactive,
     onChange: onChange, onBindRequest: onBindRequest, onMore: onMore,
     onDetachRequest: onDetachRequest,
     onVariableNameClick: onVariableNameClick)
@@ -377,8 +397,9 @@ proc propertyRowChoice*(name: string;
                         value: Signal[string];
                         options: seq[tuple[label: string; value: string]];
                         binding = none(VariableBinding);
+                        bindingReactive: proc(): Option[VariableBinding] = nil;
                         onChange: proc() = nil;
-                        onBindRequest: proc() = nil;
+                        onBindRequest: proc(x, y, w, h: float) = nil;
                         onMore: proc() = nil;
                         onDetachRequest: proc() = nil;
                         onVariableNameClick: proc() = nil): PropertyRowConfig =
@@ -386,6 +407,7 @@ proc propertyRowChoice*(name: string;
     name: name, kind: prkChoice,
     choiceValue: value, choiceOptions: options,
     binding: binding,
+    bindingReactive: bindingReactive,
     onChange: onChange, onBindRequest: onBindRequest, onMore: onMore,
     onDetachRequest: onDetachRequest,
     onVariableNameClick: onVariableNameClick)
@@ -393,8 +415,9 @@ proc propertyRowChoice*(name: string;
 proc propertyRowText*(name: string;
                       value: Signal[string];
                       binding = none(VariableBinding);
+                      bindingReactive: proc(): Option[VariableBinding] = nil;
                       onChange: proc() = nil;
-                      onBindRequest: proc() = nil;
+                      onBindRequest: proc(x, y, w, h: float) = nil;
                       onMore: proc() = nil;
                       onDetachRequest: proc() = nil;
                       onVariableNameClick: proc() = nil): PropertyRowConfig =
@@ -402,6 +425,7 @@ proc propertyRowText*(name: string;
     name: name, kind: prkText,
     textValue: value,
     binding: binding,
+    bindingReactive: bindingReactive,
     onChange: onChange, onBindRequest: onBindRequest, onMore: onMore,
     onDetachRequest: onDetachRequest,
     onVariableNameClick: onVariableNameClick)
@@ -409,8 +433,9 @@ proc propertyRowText*(name: string;
 proc propertyRowBoolean*(name: string;
                          value: Signal[bool];
                          binding = none(VariableBinding);
+                         bindingReactive: proc(): Option[VariableBinding] = nil;
                          onChange: proc() = nil;
-                         onBindRequest: proc() = nil;
+                         onBindRequest: proc(x, y, w, h: float) = nil;
                          onMore: proc() = nil;
                          onDetachRequest: proc() = nil;
                          onVariableNameClick: proc() = nil): PropertyRowConfig =
@@ -418,6 +443,7 @@ proc propertyRowBoolean*(name: string;
     name: name, kind: prkBoolean,
     booleanValue: value,
     binding: binding,
+    bindingReactive: bindingReactive,
     onChange: onChange, onBindRequest: onBindRequest, onMore: onMore,
     onDetachRequest: onDetachRequest,
     onVariableNameClick: onVariableNameClick)
@@ -493,6 +519,36 @@ proc nextUnit(config: PropertyRowConfig): PropertyUnitOption =
     if idx < 0: 0
     else: (idx + 1) mod config.availableUnits.len
   config.availableUnits[nextIdx]
+
+proc measureAnchorRect*[E](node: E): tuple[x, y, w, h: float] =
+  ## VBIND-M2: return ``node``'s bounding rectangle in DOCUMENT
+  ## coordinates (viewport rect + ``window.scrollX/Y``) so a caller can
+  ## anchor the variable picker to a bind affordance. JS-only; on the
+  ## native/headless path there is no layout, so the zero rect is
+  ## returned (the picker's headless path anchors from the rect the
+  ## test supplies instead). Mirrors ``openVariablePicker``'s own
+  ## measurement so the row anchor and the picker agree.
+  result = (0.0, 0.0, 0.0, 0.0)
+  when defined(js):
+    var rx = 0.0
+    var ry = 0.0
+    var rw = 0.0
+    var rh = 0.0
+    {.emit: ["""
+      (function (el) {
+        if (!el || !el.getBoundingClientRect) return;
+        var rc = el.getBoundingClientRect();
+        var sx = window.scrollX || 0;
+        var sy = window.scrollY || 0;
+        """, rx, """ = rc.left + sx;
+        """, ry, """ = rc.top + sy;
+        """, rw, """ = rc.width;
+        """, rh, """ = rc.height;
+      })(""", node, """);
+    """].}
+    result = (rx, ry, rw, rh)
+  else:
+    discard node
 
 proc mountPropertyRow*[R, E](r: R; parent: E;
                               config: PropertyRowConfig): E =
@@ -606,116 +662,170 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
   #  so Phase E.2 can upgrade the visual without touching this widget.
   # ------------------------------------------------------------------------- #
 
-  if isLinked:
-    # Phase E.2 (2026-05-28): the placeholder chip is now the real
-    # ``variable_chip`` widget — tinted purple background, accent
-    # border, clickable name + chevron + hoverable detach affordance.
-    # The chip widget exposes ``extraRootAttr`` + ``extraNameAttr``
-    # hooks so the property row can preserve the legacy
-    # ``data-property-row-linked-chip="true"`` +
-    # ``data-property-row-linked-variable=<key>`` selectors that
-    # landed in Phase D — those data-attrs are the contract between
-    # property_row and the Phase D headless tests.
-    let binding = cfg.binding.get
-    let chevronCb = cfg.onBindRequest
-    let nameCb = cfg.onVariableNameClick
-    let detachCb = cfg.onDetachRequest
-    let chipConfig = variableChipConfig(
-      binding = binding,
-      usageCount = 0,
-      onChevronClick = chevronCb,
-      onNameClick = nameCb,
-      onDetach = detachCb,
-      extraRootAttr = "data-property-row-linked-chip=true",
-      extraNameAttr = "data-property-row-linked-variable=" &
-        binding.variableKey)
-    discard r.mountVariableChip(valueSlot, chipConfig)
-  else:
-    case cfg.kind
-    of prkNumeric:
-      var inputNode: E
-      var unitNode: E
-      let prefix = inlinePrefixGlyph(cfg.name)
-      let row = ui(r):
-        tdiv(`data-property-row-pill` = "true",
-              display = "flex", flex = "1",
-              align_items = "center", gap = "4px",
+  proc buildValueSlot(activeBinding: Option[VariableBinding]) =
+    ## VBIND-M2: (re)build the value slot for the current binding
+    ## state. Called once for the static path, or from a render
+    ## effect for the reactive (hot-swap) path so the chip vs.
+    ## literal control follows the binding live.
+    r.setAttribute(root, "data-property-row-linked",
+      if activeBinding.isSome: "true" else: "false")
+    if activeBinding.isSome:
+      # Phase E.2 (2026-05-28): the placeholder chip is now the real
+      # ``variable_chip`` widget — tinted purple background, accent
+      # border, clickable name + chevron + hoverable detach affordance.
+      # The chip widget exposes ``extraRootAttr`` + ``extraNameAttr``
+      # hooks so the property row can preserve the legacy
+      # ``data-property-row-linked-chip="true"`` +
+      # ``data-property-row-linked-variable=<key>`` selectors that
+      # landed in Phase D — those data-attrs are the contract between
+      # property_row and the Phase D headless tests.
+      let binding = activeBinding.get
+      var chipRootRef: E
+      # VBIND-M2: the chevron re-opens the picker anchored to the
+      # chip. Measure the chip's rect at click time and forward it.
+      let onBind = cfg.onBindRequest
+      let chevronCb =
+        if onBind != nil:
+          (proc() =
+            let rc = measureAnchorRect(chipRootRef)
+            onBind(rc.x, rc.y, rc.w, rc.h))
+        else:
+          nil
+      let nameCb = cfg.onVariableNameClick
+      let detachCb = cfg.onDetachRequest
+      let chipConfig = variableChipConfig(
+        binding = binding,
+        usageCount = 0,
+        onChevronClick = chevronCb,
+        onNameClick = nameCb,
+        onDetach = detachCb,
+        extraRootAttr = "data-property-row-linked-chip=true",
+        extraNameAttr = "data-property-row-linked-variable=" &
+          binding.variableKey)
+      chipRootRef = r.mountVariableChip(valueSlot, chipConfig)
+    else:
+      case cfg.kind
+      of prkNumeric:
+        var inputNode: E
+        var unitNode: E
+        let prefix = inlinePrefixGlyph(cfg.name)
+        let row = ui(r):
+          tdiv(`data-property-row-pill` = "true",
+                display = "flex", flex = "1",
+                align_items = "center", gap = "4px",
+                min_width = "0",
+                height = prInputHeight,
+                padding = prInputPadding,
+                background_color = prInputBg,
+                border = prInputBorder,
+                border_radius = prInputRadius,
+                overflow = "hidden"):
+            # Phase H: inline prefix glyph — the "X" / "Y" / "W" / "H"
+            # / etc. letter sits inside the input as a faded prefix,
+            # mirroring the Figma reference. Hidden when no prefix is
+            # configured for this property name (long names like
+            # "Overflow" render without a glyph).
+            if prefix.len > 0:
+              span(
+                `data-property-row-prefix` = "true",
+                `aria-hidden` = "true",
+                min_width = prPrefixWidth,
+                color = prPrefixColor,
+                font_size = prPrefixFont,
+                user_select = "none",
+                flex_shrink = "0",
+                white_space = "nowrap"):
+                text prefix
+            input(
+              ref = inputNode,
+              `data-property-row-input` = "true",
+              `aria-label` = "Edit " & cfg.name,
+              flex = "1",
               min_width = "0",
-              height = prInputHeight,
-              padding = prInputPadding,
-              background_color = prInputBg,
-              border = prInputBorder,
-              border_radius = prInputRadius,
-              overflow = "hidden"):
-          # Phase H: inline prefix glyph — the "X" / "Y" / "W" / "H"
-          # / etc. letter sits inside the input as a faded prefix,
-          # mirroring the Figma reference. Hidden when no prefix is
-          # configured for this property name (long names like
-          # "Overflow" render without a glyph).
-          if prefix.len > 0:
-            span(
-              `data-property-row-prefix` = "true",
-              `aria-hidden` = "true",
-              min_width = prPrefixWidth,
-              color = prPrefixColor,
-              font_size = prPrefixFont,
+              background_color = "transparent",
+              border = "none",
+              outline = "none",
+              color = prInputColor,
+              font_size = prInputFont,
+              font_family = "inherit",
+              padding = "0",
+              height = "100%",
+              text_align = "right")
+            tdiv(
+              ref = unitNode,
+              role = "button",
+              tabindex = "0",
+              `data-property-row-unit` = "true",
+              `aria-label` = "Cycle " & cfg.name & " unit",
+              display = "flex",
+              align_items = "center",
+              justify_content = "center",
+              padding = prUnitPadding,
+              background_color = prUnitBg,
+              color = prUnitColor,
+              font_size = prUnitFont,
+              border_radius = prUnitRadius,
+              cursor = "pointer",
               user_select = "none",
-              flex_shrink = "0",
-              white_space = "nowrap"):
-              text prefix
-          input(
-            ref = inputNode,
-            `data-property-row-input` = "true",
-            `aria-label` = "Edit " & cfg.name,
-            flex = "1",
-            min_width = "0",
-            background_color = "transparent",
-            border = "none",
-            outline = "none",
-            color = prInputColor,
-            font_size = prInputFont,
-            font_family = "inherit",
-            padding = "0",
-            height = "100%",
-            text_align = "right")
-          tdiv(
-            ref = unitNode,
-            role = "button",
-            tabindex = "0",
-            `data-property-row-unit` = "true",
-            `aria-label` = "Cycle " & cfg.name & " unit",
-            display = "flex",
-            align_items = "center",
-            justify_content = "center",
-            padding = prUnitPadding,
-            background_color = prUnitBg,
-            color = prUnitColor,
-            font_size = prUnitFont,
-            border_radius = prUnitRadius,
-            cursor = "pointer",
-            user_select = "none",
-            white_space = "nowrap",
-            flex_shrink = "0"):
-            text currentUnitLabel(cfg)
-      r.appendChild(valueSlot, row)
-      r.setInputValue(inputNode, formatNumber(cfg.numericValue.val))
+              white_space = "nowrap",
+              flex_shrink = "0"):
+              text currentUnitLabel(cfg)
+        r.appendChild(valueSlot, row)
+        r.setInputValue(inputNode, formatNumber(cfg.numericValue.val))
 
-      # Reactive bind — when ``numericValue`` mutates externally the
-      # input mirrors it (e.g. variable updates, undo). When the user
-      # types and presses Enter the commit handler writes the parsed
-      # math expression back through ``numericValue.val``.
-      createRenderEffect proc() =
-        let v = cfg.numericValue.val
-        r.setInputValue(inputNode, formatNumber(v))
+        # Reactive bind — when ``numericValue`` mutates externally the
+        # input mirrors it (e.g. variable updates, undo). When the user
+        # types and presses Enter the commit handler writes the parsed
+        # math expression back through ``numericValue.val``.
+        createRenderEffect proc() =
+          let v = cfg.numericValue.val
+          r.setInputValue(inputNode, formatNumber(v))
 
-      createRenderEffect proc() =
-        r.setTextContent(unitNode, currentUnitLabel(cfg))
+        createRenderEffect proc() =
+          r.setTextContent(unitNode, currentUnitLabel(cfg))
 
-      let commit = proc() =
-        let raw = r.inputValue(inputNode)
-        let parsed = evalMathExpr(raw)
-        if parsed.isSome:
-          var v = parsed.get
+        let commit = proc() =
+          let raw = r.inputValue(inputNode)
+          let parsed = evalMathExpr(raw)
+          if parsed.isSome:
+            var v = parsed.get
+            if cfg.numericMin.isSome and v < cfg.numericMin.get:
+              v = cfg.numericMin.get
+            if cfg.numericMax.isSome and v > cfg.numericMax.get:
+              v = cfg.numericMax.get
+            cfg.numericValue.val = v
+            r.setInputValue(inputNode, formatNumber(v))
+            if cfg.onChange != nil: cfg.onChange()
+          else:
+            # Reject garbage — restore the previous value so the input
+            # never displays an unparseable string after losing focus.
+            r.setInputValue(inputNode, formatNumber(cfg.numericValue.val))
+        r.addEventListener(inputNode, "change", commit)
+        r.addEventListener(inputNode, "blur", commit)
+
+        let cycleUnit = proc() =
+          let nxt = nextUnit(cfg)
+          cfg.numericUnit.val = nxt
+          if cfg.onChange != nil: cfg.onChange()
+        r.addEventListener(unitNode, "click", cycleUnit)
+        r.addEventListener(unitNode, "keydown", cycleUnit)
+
+        # ---- Scrub-drag on the label -------------------------------- #
+        #
+        # Headless tests exercise the scrub via three synthetic events
+        # fired in sequence on the label node — ``mousedown`` arms the
+        # drag, ``mousemove`` nudges the value by ``numericStep``,
+        # ``mouseup`` disarms. The Nim-side handlers update the signal
+        # on every move so callers can observe the value transition
+        # without leaving the test process.
+        var dragArmed = false
+        let scrubStart = proc() =
+          dragArmed = true
+        let scrubMove = proc() =
+          if not dragArmed: return
+          var step = cfg.numericStep
+          if step <= 0.0: step = 1.0
+          var v = cfg.numericValue.val + step
           if cfg.numericMin.isSome and v < cfg.numericMin.get:
             v = cfg.numericMin.get
           if cfg.numericMax.isSome and v > cfg.numericMax.get:
@@ -723,246 +833,235 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
           cfg.numericValue.val = v
           r.setInputValue(inputNode, formatNumber(v))
           if cfg.onChange != nil: cfg.onChange()
-        else:
-          # Reject garbage — restore the previous value so the input
-          # never displays an unparseable string after losing focus.
-          r.setInputValue(inputNode, formatNumber(cfg.numericValue.val))
-      r.addEventListener(inputNode, "change", commit)
-      r.addEventListener(inputNode, "blur", commit)
+        let scrubEnd = proc() =
+          dragArmed = false
+        r.addEventListener(labelNode, "mousedown", scrubStart)
+        r.addEventListener(labelNode, "mousemove", scrubMove)
+        r.addEventListener(labelNode, "mouseup", scrubEnd)
 
-      let cycleUnit = proc() =
-        let nxt = nextUnit(cfg)
-        cfg.numericUnit.val = nxt
-        if cfg.onChange != nil: cfg.onChange()
-      r.addEventListener(unitNode, "click", cycleUnit)
-      r.addEventListener(unitNode, "keydown", cycleUnit)
-
-      # ---- Scrub-drag on the label -------------------------------- #
-      #
-      # Headless tests exercise the scrub via three synthetic events
-      # fired in sequence on the label node — ``mousedown`` arms the
-      # drag, ``mousemove`` nudges the value by ``numericStep``,
-      # ``mouseup`` disarms. The Nim-side handlers update the signal
-      # on every move so callers can observe the value transition
-      # without leaving the test process.
-      var dragArmed = false
-      let scrubStart = proc() =
-        dragArmed = true
-      let scrubMove = proc() =
-        if not dragArmed: return
-        var step = cfg.numericStep
-        if step <= 0.0: step = 1.0
-        var v = cfg.numericValue.val + step
-        if cfg.numericMin.isSome and v < cfg.numericMin.get:
-          v = cfg.numericMin.get
-        if cfg.numericMax.isSome and v > cfg.numericMax.get:
-          v = cfg.numericMax.get
-        cfg.numericValue.val = v
-        r.setInputValue(inputNode, formatNumber(v))
-        if cfg.onChange != nil: cfg.onChange()
-      let scrubEnd = proc() =
-        dragArmed = false
-      r.addEventListener(labelNode, "mousedown", scrubStart)
-      r.addEventListener(labelNode, "mousemove", scrubMove)
-      r.addEventListener(labelNode, "mouseup", scrubEnd)
-
-    of prkColor:
-      var swatchNode: E
-      var hexInput: E
-      let row = ui(r):
-        tdiv(display = "flex", flex = "1",
-              align_items = "center", gap = "6px",
+      of prkColor:
+        var swatchNode: E
+        var hexInput: E
+        let row = ui(r):
+          tdiv(display = "flex", flex = "1",
+                align_items = "center", gap = "6px",
+                min_width = "0",
+                height = prInputHeight,
+                padding = prInputPadding,
+                background_color = prInputBg,
+                border = prInputBorder,
+                border_radius = prInputRadius,
+                overflow = "hidden"):
+            tdiv(
+              ref = swatchNode,
+              role = "button",
+              tabindex = "0",
+              `data-property-row-swatch` = "true",
+              `aria-label` = "Open " & cfg.name & " color picker",
+              width = prSwatchSize,
+              height = prSwatchSize,
+              border = prSwatchBorder,
+              border_radius = "3px",
+              cursor = "pointer",
+              flex_shrink = "0",
+              background_color = cfg.colorValue.val)
+            input(
+              ref = hexInput,
+              `data-property-row-input` = "true",
+              `aria-label` = "Edit " & cfg.name & " hex value",
+              flex = "1",
               min_width = "0",
-              height = prInputHeight,
-              padding = prInputPadding,
-              background_color = prInputBg,
-              border = prInputBorder,
-              border_radius = prInputRadius,
-              overflow = "hidden"):
-          tdiv(
-            ref = swatchNode,
-            role = "button",
-            tabindex = "0",
-            `data-property-row-swatch` = "true",
-            `aria-label` = "Open " & cfg.name & " color picker",
-            width = prSwatchSize,
-            height = prSwatchSize,
-            border = prSwatchBorder,
-            border_radius = "3px",
-            cursor = "pointer",
-            flex_shrink = "0",
-            background_color = cfg.colorValue.val)
-          input(
-            ref = hexInput,
-            `data-property-row-input` = "true",
-            `aria-label` = "Edit " & cfg.name & " hex value",
-            flex = "1",
-            min_width = "0",
-            background_color = "transparent",
-            border = "none",
-            outline = "none",
-            color = prInputColor,
-            font_size = prInputFont,
-            font_family = "monospace",
-            padding = "0",
-            height = "100%")
-      r.appendChild(valueSlot, row)
-      r.setInputValue(hexInput, cfg.colorValue.val)
+              background_color = "transparent",
+              border = "none",
+              outline = "none",
+              color = prInputColor,
+              font_size = prInputFont,
+              font_family = "monospace",
+              padding = "0",
+              height = "100%")
+        r.appendChild(valueSlot, row)
+        r.setInputValue(hexInput, cfg.colorValue.val)
 
-      createRenderEffect proc() =
-        let v = cfg.colorValue.val
-        r.setInputValue(hexInput, v)
-        r.setAttribute(swatchNode, "data-property-row-swatch-value", v)
-        # Update the inline background-color via setAttribute("style",
-        # ...) — this is inside a reactive effect, so the
-        # no-setStyle-outside-reactive-effects invariant holds. We
-        # rewrite the full style attribute so we don't leak through
-        # the no-setStyle scan in widgets/.
-        r.setAttribute(swatchNode, "style",
-          "width: " & prSwatchSize & "; height: " & prSwatchSize &
-          "; border: " & prSwatchBorder & "; border-radius: 3px;" &
-          " cursor: pointer; flex-shrink: 0; background-color: " & v & ";")
+        createRenderEffect proc() =
+          let v = cfg.colorValue.val
+          r.setInputValue(hexInput, v)
+          r.setAttribute(swatchNode, "data-property-row-swatch-value", v)
+          # Update the inline background-color via setAttribute("style",
+          # ...) — this is inside a reactive effect, so the
+          # no-setStyle-outside-reactive-effects invariant holds. We
+          # rewrite the full style attribute so we don't leak through
+          # the no-setStyle scan in widgets/.
+          r.setAttribute(swatchNode, "style",
+            "width: " & prSwatchSize & "; height: " & prSwatchSize &
+            "; border: " & prSwatchBorder & "; border-radius: 3px;" &
+            " cursor: pointer; flex-shrink: 0; background-color: " & v & ";")
 
-      let commit = proc() =
-        let raw = r.inputValue(hexInput).strip()
-        if raw.len > 0:
-          cfg.colorValue.val = raw
-          if cfg.onChange != nil: cfg.onChange()
-      r.addEventListener(hexInput, "change", commit)
-      r.addEventListener(hexInput, "blur", commit)
+        let commit = proc() =
+          let raw = r.inputValue(hexInput).strip()
+          if raw.len > 0:
+            cfg.colorValue.val = raw
+            if cfg.onChange != nil: cfg.onChange()
+        r.addEventListener(hexInput, "change", commit)
+        r.addEventListener(hexInput, "blur", commit)
 
-      let openPicker = proc() =
-        # Phase G wires the real picker — Phase D leaves a no-op
-        # marker so behaviour tests can confirm the click reached
-        # the swatch.
-        r.setAttribute(swatchNode, "data-property-row-picker-requested", "true")
-      r.addEventListener(swatchNode, "click", openPicker)
+        let openPicker = proc() =
+          # Phase G wires the real picker — Phase D leaves a no-op
+          # marker so behaviour tests can confirm the click reached
+          # the swatch.
+          r.setAttribute(swatchNode, "data-property-row-picker-requested", "true")
+        r.addEventListener(swatchNode, "click", openPicker)
 
-    of prkChoice:
-      var labels: seq[string] = @[]
-      var values: seq[string] = @[]
-      for opt in cfg.choiceOptions:
-        labels.add opt.label
-        values.add opt.value
-      var initialIdx = 0
-      let current = cfg.choiceValue.val
-      for i in 0 ..< values.len:
-        if values[i] == current:
-          initialIdx = i
-          break
-      let vm = createSegmentedChoiceVM(labels, initialIndex = initialIdx)
-      let host = ui(r):
-        tdiv(
-          `data-property-row-choice-host` = "true",
-          display = "flex",
-          flex = "1",
-          align_items = "center",
-          min_width = "0")
-      r.appendChild(valueSlot, host)
-      let onPick = proc(i: int) {.closure.} =
-        if i >= 0 and i < values.len:
-          cfg.choiceValue.val = values[i]
-          if cfg.onChange != nil: cfg.onChange()
-      r.mountSegmentedChoice(host, vm, onPick, variant = cgvTransparent)
-
-      # When the bound signal is updated externally, mirror the
-      # selection into the VM so the segmented control stays in
-      # sync.
-      createRenderEffect proc() =
-        let v = cfg.choiceValue.val
+      of prkChoice:
+        var labels: seq[string] = @[]
+        var values: seq[string] = @[]
+        for opt in cfg.choiceOptions:
+          labels.add opt.label
+          values.add opt.value
+        var initialIdx = 0
+        let current = cfg.choiceValue.val
         for i in 0 ..< values.len:
-          if values[i] == v:
-            vm.activate(i)
+          if values[i] == current:
+            initialIdx = i
             break
-
-    of prkText:
-      var inputNode: E
-      let row = ui(r):
-        tdiv(display = "flex", flex = "1",
-              align_items = "center",
-              min_width = "0",
-              height = prInputHeight,
-              padding = prInputPadding,
-              background_color = prInputBg,
-              border = prInputBorder,
-              border_radius = prInputRadius,
-              overflow = "hidden"):
-          input(
-            ref = inputNode,
-            `data-property-row-input` = "true",
-            `aria-label` = "Edit " & cfg.name,
+        let vm = createSegmentedChoiceVM(labels, initialIndex = initialIdx)
+        let host = ui(r):
+          tdiv(
+            `data-property-row-choice-host` = "true",
+            display = "flex",
             flex = "1",
-            min_width = "0",
-            background_color = "transparent",
-            border = "none",
-            outline = "none",
-            color = prInputColor,
-            font_size = prInputFont,
-            font_family = "inherit",
-            padding = "0",
-            height = "100%")
-      r.appendChild(valueSlot, row)
-      r.setInputValue(inputNode, cfg.textValue.val)
+            align_items = "center",
+            min_width = "0")
+        r.appendChild(valueSlot, host)
+        let onPick = proc(i: int) {.closure.} =
+          if i >= 0 and i < values.len:
+            cfg.choiceValue.val = values[i]
+            if cfg.onChange != nil: cfg.onChange()
+        r.mountSegmentedChoice(host, vm, onPick, variant = cgvTransparent)
 
-      createRenderEffect proc() =
-        let v = cfg.textValue.val
-        r.setInputValue(inputNode, v)
+        # When the bound signal is updated externally, mirror the
+        # selection into the VM so the segmented control stays in
+        # sync.
+        createRenderEffect proc() =
+          let v = cfg.choiceValue.val
+          for i in 0 ..< values.len:
+            if values[i] == v:
+              vm.activate(i)
+              break
 
-      let commit = proc() =
-        cfg.textValue.val = r.inputValue(inputNode)
-        if cfg.onChange != nil: cfg.onChange()
-      r.addEventListener(inputNode, "change", commit)
-      r.addEventListener(inputNode, "blur", commit)
-
-    of prkBoolean:
-      var checkboxNode: E
-      let row = ui(r):
-        tdiv(display = "flex", flex = "1",
-              align_items = "center",
-              gap = "8px",
+      of prkText:
+        var inputNode: E
+        let row = ui(r):
+          tdiv(display = "flex", flex = "1",
+                align_items = "center",
+                min_width = "0",
+                height = prInputHeight,
+                padding = prInputPadding,
+                background_color = prInputBg,
+                border = prInputBorder,
+                border_radius = prInputRadius,
+                overflow = "hidden"):
+            input(
+              ref = inputNode,
+              `data-property-row-input` = "true",
+              `aria-label` = "Edit " & cfg.name,
+              flex = "1",
               min_width = "0",
-              height = prInputHeight):
-          input(
-            ref = checkboxNode,
-            `data-property-row-input` = "true",
-            `aria-label` = "Toggle " & cfg.name,
-            width = "14px",
-            height = "14px",
-            margin = "0",
-            cursor = "pointer")
-          # Phase H: the boolean kind has no inline-prefix pattern —
-          # the checkbox already encodes the value visually. The
-          # label sits to the right of the checkbox as muted text so
-          # the row reads "[☑] Per-corner" inline.
-          span(
-            `data-property-row-boolean-label` = "true",
-            color = prLabelColor,
-            font_size = prInputFont,
-            user_select = "none",
-            overflow = "hidden",
-            text_overflow = "ellipsis",
-            white_space = "nowrap"):
-            text cfg.name
-      r.appendChild(valueSlot, row)
-      # The DSL's ``input`` does not natively expose ``type`` (it
-      # could collide with the Nim ``type`` keyword). Apply it via
-      # ``setAttribute`` so the rendered DOM is a real checkbox.
-      r.setAttribute(checkboxNode, "type", "checkbox")
-      r.setAttribute(checkboxNode, "checked",
-        if cfg.booleanValue.val: "true" else: "false")
+              background_color = "transparent",
+              border = "none",
+              outline = "none",
+              color = prInputColor,
+              font_size = prInputFont,
+              font_family = "inherit",
+              padding = "0",
+              height = "100%")
+        r.appendChild(valueSlot, row)
+        r.setInputValue(inputNode, cfg.textValue.val)
 
-      createRenderEffect proc() =
-        let v = cfg.booleanValue.val
+        createRenderEffect proc() =
+          let v = cfg.textValue.val
+          r.setInputValue(inputNode, v)
+
+        let commit = proc() =
+          cfg.textValue.val = r.inputValue(inputNode)
+          if cfg.onChange != nil: cfg.onChange()
+        r.addEventListener(inputNode, "change", commit)
+        r.addEventListener(inputNode, "blur", commit)
+
+      of prkBoolean:
+        var checkboxNode: E
+        let row = ui(r):
+          tdiv(display = "flex", flex = "1",
+                align_items = "center",
+                gap = "8px",
+                min_width = "0",
+                height = prInputHeight):
+            input(
+              ref = checkboxNode,
+              `data-property-row-input` = "true",
+              `aria-label` = "Toggle " & cfg.name,
+              width = "14px",
+              height = "14px",
+              margin = "0",
+              cursor = "pointer")
+            # Phase H: the boolean kind has no inline-prefix pattern —
+            # the checkbox already encodes the value visually. The
+            # label sits to the right of the checkbox as muted text so
+            # the row reads "[☑] Per-corner" inline.
+            span(
+              `data-property-row-boolean-label` = "true",
+              color = prLabelColor,
+              font_size = prInputFont,
+              user_select = "none",
+              overflow = "hidden",
+              text_overflow = "ellipsis",
+              white_space = "nowrap"):
+              text cfg.name
+        r.appendChild(valueSlot, row)
+        # The DSL's ``input`` does not natively expose ``type`` (it
+        # could collide with the Nim ``type`` keyword). Apply it via
+        # ``setAttribute`` so the rendered DOM is a real checkbox.
+        r.setAttribute(checkboxNode, "type", "checkbox")
         r.setAttribute(checkboxNode, "checked",
-          if v: "true" else: "false")
-        r.setAttribute(checkboxNode, "data-property-row-boolean-value",
-          if v: "true" else: "false")
+          if cfg.booleanValue.val: "true" else: "false")
 
-      let toggle = proc() =
-        cfg.booleanValue.val = not cfg.booleanValue.val
-        if cfg.onChange != nil: cfg.onChange()
-      r.addEventListener(checkboxNode, "click", toggle)
-      r.addEventListener(checkboxNode, "change", toggle)
+        createRenderEffect proc() =
+          let v = cfg.booleanValue.val
+          r.setAttribute(checkboxNode, "checked",
+            if v: "true" else: "false")
+          r.setAttribute(checkboxNode, "data-property-row-boolean-value",
+            if v: "true" else: "false")
+
+        let toggle = proc() =
+          cfg.booleanValue.val = not cfg.booleanValue.val
+          if cfg.onChange != nil: cfg.onChange()
+        r.addEventListener(checkboxNode, "click", toggle)
+        r.addEventListener(checkboxNode, "change", toggle)
+
+  # ------------------------------------------------------------------------- #
+  #  Build the value slot. When ``bindingReactive`` is supplied the build
+  #  runs inside a render effect (VBIND-M2 hot-swap) so linking/unlinking a
+  #  variable — or moving the selection to/from a bound element — swaps the
+  #  chip and the literal control live, without the section re-mounting the
+  #  row. A change guard skips rebuilds when this row's binding is unchanged
+  #  (e.g. an unrelated selection change), so the literal control's listeners
+  #  are not needlessly re-wired. With no ``bindingReactive`` the slot is
+  #  built once from the static ``binding`` — byte-identical to before.
+  # ------------------------------------------------------------------------- #
+  if cfg.bindingReactive != nil:
+    let bindingReactive = cfg.bindingReactive
+    var lastBindingSig = "\x00uninitialised"
+    createRenderEffect proc() =
+      let active = bindingReactive()
+      let sig =
+        if active.isSome: "b|" & active.get.variableKey & "|" &
+          $ord(active.get.state)
+        else: "-"
+      if sig == lastBindingSig: return
+      lastBindingSig = sig
+      r.clearChildren(valueSlot)
+      buildValueSlot(active)
+  else:
+    buildValueSlot(cfg.binding)
 
   # ------------------------------------------------------------------------- #
   #  Wire the bind + more affordances. Both forward to the
@@ -970,7 +1069,9 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
   #  G (overflow menu) plug the real handlers in.
   # ------------------------------------------------------------------------- #
   let bindHandler = proc() =
-    if cfg.onBindRequest != nil: cfg.onBindRequest()
+    if cfg.onBindRequest != nil:
+      let rc = measureAnchorRect(bindNode)
+      cfg.onBindRequest(rc.x, rc.y, rc.w, rc.h)
   r.addEventListener(bindNode, "click", bindHandler)
   r.addEventListener(bindNode, "keydown", bindHandler)
 

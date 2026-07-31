@@ -94,6 +94,16 @@ type
       ## available to the variable picker (Phase E.3). Projects
       ## ``EditorVM.foundations.tokens`` so the picker stays in sync
       ## as foundations are edited.
+    requestVariablePicker*: proc(key: PropertyBindingKey;
+        x, y, w, h: float) {.closure.}
+      ## VBIND-M2 link flow: shell-wired hook that opens the variable
+      ## picker anchored at the ``(x, y, w, h)`` document rect for the
+      ## given ``(element × property)`` key. ``nil`` until the shell
+      ## mounts the picker and wires this (see ``renderEditorShell``);
+      ## the inspector sections invoke it through
+      ## ``requestInspectorVariablePicker``. Keeping the seam a plain
+      ## rect-based callback keeps ``viewmodels`` free of any renderer /
+      ## DOM dependency and lets headless tests wire their own hook.
 
   VectorEditorVM* = ref object of ViewModel
     ## Embedded vector editor for SVG symbols.
@@ -8702,6 +8712,59 @@ proc inspectorBindingFor*(vm: EditorVM;
     return none(VariableBinding)
   vm.propertyBindingFor(PropertyBindingKey(
     elementId: elementId, propertyName: propertyName))
+
+proc inspectorBindingKeyFor*(vm: EditorVM;
+    propertyName: string): PropertyBindingKey =
+  ## VBIND-M2: build the canonical ``(element × property)`` key for the
+  ## CURRENT selection + ``propertyName``. This is exactly the key that
+  ## ``inspectorBindingFor`` reads and ``bindPropertyToVariable`` writes,
+  ## so the link flow (picker → bind) and the read flow (chip) agree on
+  ## one key namespace. ``elementId`` is empty when nothing is selected.
+  PropertyBindingKey(
+    elementId: vm.inspector.selectedElement.val.fallbackElementId(),
+    propertyName: propertyName)
+
+proc requestInspectorVariablePicker*(vm: EditorVM; propertyName: string;
+    x, y, w, h: float) =
+  ## VBIND-M2 link flow: open the variable picker for the selected
+  ## element's ``propertyName``, anchored at the given document rect.
+  ##
+  ## Composes ``inspectorBindingKeyFor`` with the shell-wired
+  ## ``inspector.requestVariablePicker`` hook. No-op when the property
+  ## name is empty, nothing is selected, or the shell has not wired the
+  ## hook (e.g. a headless section mount with no shell) — so a section
+  ## whose bind affordance is never clicked, or one mounted without a
+  ## picker, stays inert and byte-unchanged.
+  if propertyName.len == 0:
+    return
+  let hook = vm.inspector.requestVariablePicker
+  if hook == nil:
+    return
+  let key = vm.inspectorBindingKeyFor(propertyName)
+  if key.elementId.len == 0:
+    return
+  hook(key, x, y, w, h)
+
+proc inspectorBindingThunk*(vm: EditorVM;
+    propertyName: string): proc(): Option[VariableBinding] =
+  ## VBIND-M2: a reactive read closure for one ``propertyName``. Handed
+  ## to ``mountPropertyRow`` as ``bindingReactive`` so the row re-reads
+  ## its binding inside a render effect and hot-swaps between the linked
+  ## chip and the literal control whenever ``propertyBindings`` or the
+  ## selection changes. Captures the property name by value.
+  let p = propertyName
+  result = proc(): Option[VariableBinding] =
+    vm.inspectorBindingFor(p)
+
+proc inspectorBindRequestHandler*(vm: EditorVM;
+    propertyName: string): proc(x, y, w, h: float) =
+  ## VBIND-M2: the ``onBindRequest`` closure a property row fires when
+  ## its bind affordance (the ``◇`` slot or the chip chevron) is
+  ## clicked. Forwards the row's measured anchor rect to
+  ## ``requestInspectorVariablePicker`` for the captured property name.
+  let p = propertyName
+  result = proc(x, y, w, h: float) =
+    vm.requestInspectorVariablePicker(p, x, y, w, h)
 
 # ===========================================================================
 # Factory: create all ViewModels with proper reactive wiring
