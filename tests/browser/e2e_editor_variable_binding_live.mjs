@@ -1,5 +1,15 @@
 // Phase E.2 + E.3 + E.4 — live e2e for the variable binding flow.
 //
+// VBIND-M7 NOTE: this drives the STANDALONE widget fixture
+// (`variable_binding_fixture/harness.nim`) — a single chip + picker on a bare
+// page, NOT the section-based inspector shell. It is retained as a FAST widget
+// SMOKE TEST. The M7 ACCEPTANCE GATE for the full loop through the REAL
+// inspector shell + real workspace (select → chip → unlink → local override →
+// compatible-only picker with previously-linked at the top → re-link → save +
+// load round-trip through the sidecar, DTCG source untouched) is the headless
+// real-shell e2e `tests/test_editor_variable_binding_e2e.nim` (isonim's
+// headless-first philosophy). See that file for the shell-level acceptance.
+//
 // Boots Chromium against a Nim-compiled harness that mounts:
 //
 //   * A ``variable_chip`` bound to ``color/surface``.
