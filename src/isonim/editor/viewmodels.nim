@@ -2976,8 +2976,26 @@ proc setEditMode*(editor: EditorVM; mode: EditMode) =
   let canvasActive =
     editor.streamingPreview != nil and
     editor.streamingPreview.selectedBackend.val != pbWeb
-  if mode in {emComment, emEdit} and editor.activeView.val in {evComponentDetail,
-      evPagePreview} and not canvasActive:
+  # Layout-invariance fix (preview layout identical across modes): a
+  # PAGE story (``evPagePreview``) must NOT swap to the source-edit
+  # canvas (``evComponentEdit``) when entering emComment/emEdit. That
+  # surface lays the composed page out at the fluid centre-column width
+  # (iframe ``width:100%`` inside a ``padding:24px`` scroll box) instead
+  # of the viewport-sized white device frame ``page_preview.nim`` uses,
+  # so the previewed page visibly re-wraps at a different width the
+  # instant the operator toggles the mode chip — and because nothing
+  # restored the surface on leaving Edit (emView left ``activeView`` on
+  # ``evComponentEdit``), View-after-Edit no longer matched
+  # View-before-Edit. Page stories now stay on ``evPagePreview`` across
+  # View/Comment/Edit; ``page_preview.nim`` overlays the editable
+  # selection bridge on the SAME device-frame render so element
+  # selection + the property inspector (the M1-M7 variable binding)
+  # still work. Keeping the surface constant also makes the round-trip
+  # emView→emEdit→emView invariant hold for free. Component stories keep
+  # their existing in-place-vs-source-edit split
+  # (``evComponentDetail`` → ``evComponentEdit``).
+  if mode in {emComment, emEdit} and
+      editor.activeView.val == evComponentDetail and not canvasActive:
     editor.activeView.val = evComponentEdit
 
 proc setVectorTool*(editor: EditorVM; tool: VectorTool) =

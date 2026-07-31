@@ -125,7 +125,7 @@ proc restoreInspectorFocus[R, E](r: R; root: E; vm: EditorVM) =
     discard root
     discard vm
 
-proc editablePreviewDocument(documentHtml: string;
+proc editablePreviewDocument*(documentHtml: string;
     metadata: StoryRenderMetadata; mode: EditMode): string =
   ## Injects editor-only click selection metadata into the project-owned
   ## document. The project document remains the rendered component source.

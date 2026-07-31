@@ -8,6 +8,7 @@ import isonim/editor/types
 import isonim/editor/viewmodels
 import isonim/editor/streaming_preview
 import isonim/editor/views/canvas_mount
+import isonim/editor/views/component_edit  # editablePreviewDocument (edit overlay)
 
 const
   bgBase = "#0B1120"
@@ -219,7 +220,26 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
       # editor"). For every non-Web backend the canvas path above
       # is the live stream; if it's not active the fallback panel
       # is the empty-state surface (no more HTML-themed iframe).
-      r.setAttribute(previewFrame, "srcdoc", preview.documentHtml)
+      #
+      # Layout-invariance fix: entering Comment/Edit no longer swaps a
+      # page story to the source-edit canvas (see ``setEditMode`` in
+      # viewmodels.nim). Instead this SAME device-frame render stays up
+      # and — in emComment/emEdit — the editor's selection bridge is
+      # injected into the SAME ``documentHtml`` via
+      # ``editablePreviewDocument`` (overlay-only CSS/JS; it does not
+      # alter the base page layout). The window-level selection bridge
+      # is already installed by ``renderComponentEditView`` at shell
+      # build time, so the injected script's ``isonim-preview-element-
+      # selected`` events flow straight into ``vm.inspector`` and the
+      # property inspector lights up on the same viewport-sized page
+      # render the operator saw in View mode.
+      let srcdoc =
+        if vm.editMode.val == emView:
+          preview.documentHtml
+        else:
+          editablePreviewDocument(preview.documentHtml, preview.metadata,
+            vm.editMode.val)
+      r.setAttribute(previewFrame, "srcdoc", srcdoc)
       r.setStyle(fallbackPanel, "display", "none")
       r.setStyle(previewFrame, "display", "block")
     else:
