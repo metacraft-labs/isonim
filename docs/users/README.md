@@ -13,7 +13,9 @@ and is themed by the shared
 
 ## Prerequisites
 
-Every task runs inside the **IsoNim Nix dev shell**. Enter it once…
+Every task runs inside the **IsoNim Nix dev shell** — and because this docs set
+lives *inside* the IsoNim repo, that shell is IsoNim's own (`../..` is the
+repo root that holds the flake), not a foreign one. Enter it once…
 
 ```bash
 cd isonim/docs/users
