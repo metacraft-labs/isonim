@@ -2,9 +2,9 @@ name: Benchmarks
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev, stable]
   pull_request:
-    branches: [main]
+    branches: [main, dev, stable]
 
 jobs:
   size-benchmarks:
@@ -34,7 +34,7 @@ jobs:
         run: cat benchmark-results.json
 
       - name: Store benchmark results
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/dev'
         uses: benchmark-action/github-action-benchmark@v1
         with:
           name: "IsoNim Bundle Sizes"
@@ -66,7 +66,7 @@ jobs:
         run: cat test-count-results.json
 
       - name: Store test count results
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/dev'
         uses: benchmark-action/github-action-benchmark@v1
         with:
           name: "IsoNim Test Counts"
