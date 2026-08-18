@@ -19,6 +19,7 @@ let siblingRoot = root / "../../.." ## .../codetracer-ci-refactor/
 
 switch("path", siblingRoot / "isonim/src")
 switch("path", siblingRoot / "isonim-docs/src") ## the framework (isonim-docs), a PATH dependency
+switch("path", siblingRoot / "codetracer-design-system/nim") ## the shared docs theme helper (metacraft_docs_theme)
 switch("path", siblingRoot / "nim-everywhere/src")
 switch("path", siblingRoot / "nim-faststreams")
 switch("path", siblingRoot / "nim-stew")

@@ -1,0 +1,68 @@
+/* IsoNim user-docs site-specific overrides.
+ *
+ * The structural + WebFlow-parity RULES now come from the framework's bundled
+ * default stylesheet (isonim-docs/assets/style.css); the `--docs-*` token
+ * VALUES come from the shared design system. This file holds ONLY the rules
+ * unique to this site -- everything the framework default already covers is no
+ * longer copied here. Appended after the default at build time, so these win by
+ * cascade order. */
+
+/* FAQ accordion: this site's open-marker uses a child combinator, plus a
+ * keyboard focus ring and a tight last-paragraph, that the framework default
+ * does not carry. */
+.docs-md-faq-item[open] > .docs-md-faq-question::after {
+  content: "\2212"; /* minus sign */
+}
+
+.docs-md-faq-question:focus-visible {
+  outline: 3px solid var(--docs-focus-ring);
+  outline-offset: 2px;
+}
+
+.docs-md-faq-answer p:last-child {
+  margin-bottom: 0;
+}
+
+/* Header nav button hover. */
+.docs-header-nav-btn:hover {
+  background: var(--docs-bg-raised);
+}
+
+/* Sidebar "Dark mode" pill theme toggle -- a labelled, pill-shaped variant of
+ * the framework theme toggle, unique to this site's sidebar. */
+.docs-theme-switch-wrap::before {
+  content: "Dark mode";
+  order: 2;
+  color: var(--docs-fg-muted);
+  font-size: var(--docs-font-size-sm);
+}
+
+.docs-sidebar-extras .docs-theme-toggle {
+  order: 1;
+  width: 3rem;
+  height: 1.6rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--docs-radius-pill);
+}
+
+/* Content-page header: the page title as a big content <h1> at the top of
+ * `.docs-main` + a "Last updated" meta row (standalone selectors the framework
+ * default only styles in combined hero-suppression rules). */
+.docs-md-title {
+  margin: 0 0 var(--docs-space-3);
+  font-size: 2.25rem;
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.028em;
+  color: var(--docs-fg);
+}
+
+.docs-md-meta {
+  display: flex;
+  gap: var(--docs-space-2);
+  margin: 0 0 var(--docs-space-6);
+  color: var(--docs-fg-muted);
+  font-size: var(--docs-font-size-sm);
+}

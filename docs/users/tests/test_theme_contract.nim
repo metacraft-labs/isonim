@@ -5,8 +5,11 @@
 ## Drives the REAL theme artifacts this site ships:
 ##   * the emitted token layer (`theme_tokens.metacraftDocsTokenLayer`
 ##     resolved through the real `codetracer-design-system` token set), and
-##   * the consumer stylesheet (`assets/style.css`),
-## exactly as `src/build.nim` prepends the former onto the latter.
+##   * the composed stylesheet the build serves -- the framework's bundled
+##     default (`isonim-docs/assets/style.css`) plus this site's small
+##     `assets/overrides.css` (see `composedConsumerCss`),
+## exactly as `build_site.copyAssetsVerbatim` prepends the token layer onto the
+## composed base at build time.
 ##
 ## Assertions are genuine: every `--docs-*` the framework components
 ## consume must be DEFINED by the emitted token layer (a dangling theme
@@ -22,8 +25,20 @@ import ../src/theme_tokens
 import core/docs_tokens
 
 const usersDir = currentSourcePath().parentDir().parentDir()
-const consumerCssPath = usersDir / "assets" / "style.css"
 const frameworkCssPath = usersDir / "../../.." / "isonim-docs" / "assets" / "style.css"
+const overridesPath = usersDir / "assets" / "overrides.css"
+  ## This site no longer ships a full `style.css`: the structural RULES come
+  ## from the framework's bundled default stylesheet, plus this site's small
+  ## `assets/overrides.css`. The "consumer stylesheet" the build actually
+  ## composes and serves is therefore the framework default + these overrides --
+  ## which is exactly what these assertions validate.
+
+proc composedConsumerCss(): string =
+  ## The stylesheet this site actually ships: framework default + site overrides
+  ## (mirrors `build_site.copyAssetsVerbatim`'s base + overrides composition).
+  result = readFile(frameworkCssPath)
+  if fileExists(overridesPath):
+    result.add("\n" & readFile(overridesPath))
 
 proc stripCssComments(css: string): string =
   ## Removes `/* ... */` comments so prose mentioning `--docs-*:` (e.g. this
@@ -75,7 +90,7 @@ proc definedDocsVars(css: string): HashSet[string] =
 suite "CodeTracer docs theme -- framework --docs-* contract (metacraft-theme M2)":
 
   let tokensCss = emitTokensCss(metacraftDocsTokenLayer(), designSystemTokens())
-  let consumerCss = stripCssComments(readFile(consumerCssPath))
+  let consumerCss = stripCssComments(composedConsumerCss())
   let frameworkCss = stripCssComments(readFile(frameworkCssPath))
   let combinedCss = tokensCss & "\n" & consumerCss
 
@@ -111,7 +126,7 @@ suite "CodeTracer docs theme -- framework --docs-* contract (metacraft-theme M2)
 suite "CodeTracer docs theme -- fidelity-critical values (metacraft-theme M2)":
 
   let tokensCss = emitTokensCss(metacraftDocsTokenLayer(), designSystemTokens())
-  let consumerCss = stripCssComments(readFile(consumerCssPath))
+  let consumerCss = stripCssComments(composedConsumerCss())
 
   test "warm canvas: --docs-bg #f0eeea light, #161719 dark (in both dark blocks)":
     check "--docs-bg: #f0eeea;" in tokensCss
