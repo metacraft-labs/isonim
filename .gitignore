@@ -194,3 +194,4 @@ tests/test_design_review_chat_priming
 tests/test_editor_viewport_resize_publisher
 # ETS-M4 streaming preview element tree delta test binary
 tests/test_streaming_preview_element_tree_delta
+.repro/
