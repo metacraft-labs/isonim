@@ -35,6 +35,7 @@ test-c:
     nim c -r tests/test_router.nim
     nim c -r tests/test_ssr_routing.nim
     nim c -r tests/test_server_functions.nim
+    nim c -r tests/test_static_dist_dev_server.nim
     nim c -r tests/test_data_loading.nim
     nim c -r tests/test_file_routes.nim
     nim c -r tests/test_http_types.nim
@@ -101,6 +102,7 @@ test-dsl:
 test-server:
     nim c -r tests/test_server_functions.nim
     nim js -r tests/test_server_functions.nim
+    nim c -r tests/test_static_dist_dev_server.nim
 
 # Run data loading (server resource) tests
 test-data-loading:
