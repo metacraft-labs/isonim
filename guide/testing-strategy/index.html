@@ -1,0 +1,125 @@
+<html><head><meta charset="utf-8" /><script id="docs-theme-bootstrap">(function(){try{var k='isonim-docs-theme';var a='data-theme';var t=localStorage.getItem(k);if(t!=='light'&&t!=='dark'){t=(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light';}document.documentElement.setAttribute(a,t);}catch(e){}})();</script><title>Testing Strategy — IsoNim</title><meta name="description" content="The three-tier test harness every isonim-docs suite is built on." /><link rel="stylesheet" href="/isonim/assets/style.32bc81bee3.css" /><link rel="canonical" href="https://metacraft-labs.github.io/isonim/guide/testing-strategy" /><meta property="og:title" content="Testing Strategy — IsoNim" /><meta property="og:description" content="The three-tier test harness every isonim-docs suite is built on." /><meta property="og:type" content="article" /><meta property="og:url" content="https://metacraft-labs.github.io/isonim/guide/testing-strategy" /><meta property="og:site_name" content="IsoNim" /><meta name="twitter:card" content="summary" /><meta name="twitter:title" content="Testing Strategy — IsoNim" /><meta name="twitter:description" content="The three-tier test harness every isonim-docs suite is built on." /><script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","headline":"Testing Strategy — IsoNim","description":"The three-tier test harness every isonim-docs suite is built on.","url":"https://metacraft-labs.github.io/isonim/guide/testing-strategy","publisher":{"@type":"Organization","name":"IsoNim"}}</script></head><body><div class="docs-frame"><a class="docs-skip-link" href="#docs-region-main">Skip to content</a><header id="docs-region-header" class="docs-header"><div class="docs-search" role="search"><input type="text" id="docs-search-input" class="docs-search-input" placeholder="Search docs…" aria-label="Search documentation" value=""><div id="docs-search-results-wrapper"><ul class="docs-search-results" role="listbox"></ul></div></div><nav class="docs-header-nav"><a class="docs-header-nav-btn" href="https://github.com/metacraft-labs/isonim/issues">Support</a><a class="docs-header-nav-btn" href="/isonim/faq">FAQ</a></nav></header><nav id="docs-region-nav" class="docs-nav"><div class="docs-navigation"><button type="button" class="docs-nav-drawer-toggle" aria-expanded="false" aria-controls="docs-nav-drawer-body" aria-label="Menu">Menu</button><div class="docs-nav-drawer-body" id="docs-nav-drawer-body" data-open="false"><nav class="docs-nav-breadcrumbs" aria-label="breadcrumbs"><ol class="docs-nav-breadcrumb-list"><li class="docs-nav-breadcrumb"><a href="/isonim/">Home</a></li><li class="docs-nav-breadcrumb"><a href="/isonim/guide">Guide</a></li><li class="docs-nav-breadcrumb"><span class="docs-nav-breadcrumb-current" aria-current="page">Testing Strategy</span></li></ol></nav><nav class="docs-nav-sidebar" aria-label="sidebar"><div class="docs-nav-section docs-nav-section-expanded" data-nav-key=""><ul class="docs-nav-section-list"><li class="docs-nav-item"><a href="/isonim/getting-started">Getting Started</a></li><li class="docs-nav-item"><a href="/isonim/">Welcome to the IsoNim docs</a></li><li class="docs-nav-item"><a href="/isonim/faq">FAQ</a></li></ul></div><div class="docs-nav-section" data-nav-key="editor"><button type="button" class="docs-nav-section-title" aria-expanded="false">Editor</button><ul class="docs-nav-section-list"><li class="docs-nav-item"><a href="/isonim/editor/overview">Editor Overview</a></li><li class="docs-nav-item"><a href="/isonim/editor/workspace">Editor Workspace Model</a></li><li class="docs-nav-item"><a href="/isonim/editor/browser-mount">Editor Browser Mount Contract</a></li><li class="docs-nav-item"><a href="/isonim/editor/integration">Editor Consumer Integration</a></li></ul></div><div class="docs-nav-section docs-nav-section-expanded" data-nav-key="guide"><button type="button" class="docs-nav-section-title" aria-expanded="true">Guide</button><ul class="docs-nav-section-list"><li class="docs-nav-item"><a href="/isonim/guide/install-setup">Install &amp; Setup</a></li><li class="docs-nav-item"><a href="/isonim/guide/signals-effects">Signals &amp; Effects</a></li><li class="docs-nav-item"><a href="/isonim/guide/dsl">The ui DSL</a></li><li class="docs-nav-item"><a href="/isonim/guide/ssr-basics">SSR Basics</a></li><li class="docs-nav-item docs-nav-item-active"><a href="/isonim/guide/testing-strategy" aria-current="page">Testing Strategy</a></li></ul></div><div class="docs-sidebar-extras"><a class="docs-sidebar-link" href="https://github.com/metacraft-labs/isonim" target="_blank" rel="noopener"><img class="docs-sidebar-link-icon" src="/isonim/assets/img/icon__github.svg" alt="" /><span>Github</span></a><div class="docs-theme-switch-wrap"><button type="button" id="docs-theme-toggle" class="docs-theme-toggle" data-theme="light" aria-pressed="false" aria-label="Switch to dark theme">☀</button></div></div></nav><nav class="docs-nav-toc" aria-label="table of contents"><ul class="docs-nav-toc-list"><li class="docs-nav-toc-item"><a href="#three-tiers">Three tiers</a></li><li class="docs-nav-toc-item"><a href="#mockrenderer">MockRenderer</a></li><li class="docs-nav-toc-item"><a href="#fixtures-and-log-capture">Fixtures and log capture</a></li></ul></nav></div></div></nav><main id="docs-region-main" class="docs-main" tabindex="-1"><h1 class="docs-md-title">Testing Strategy</h1><div class="docs-md-body"><p class="docs-md-paragraph">Every isonim-docs suite follows the same three-tier IsoNim test pyramid, run dual-target (<code>nim c -r</code> and, where the code under test has no filesystem dependency, <code>nim js -r</code> too) so a passing suite proves the same behavior on both the server and the browser.</p><h2 class="docs-md-heading" id="three-tiers">Three tiers</h2><ol class="docs-md-list"><li>**Tier 1 -- ViewModel/unit.** Pure functions and data transforms (a</li></ol><p class="docs-md-paragraph">route matcher, a markdown parser, a navigation ViewModel builder) with no renderer and no filesystem involved. These are the cheapest tests to run and the ones most suites lean on most heavily -- see <code>test_search_vm.nim</code>, <code>test_navigation_vm.nim</code>, <code>test_references_vm.nim</code>.</p><ol class="docs-md-list"><li>**Tier 2 -- MockRenderer.** The same ViewModels rendered through</li></ol><p class="docs-md-paragraph"><code>isonim/testing/mock_dom</code>'s <code>MockRenderer</code>, asserted on with plain tree-walk helpers (<code>findByTag</code>, <code>findAllByTag</code>) instead of a real DOM or an HTML string -- proves a component's *shape*, independent of whichever backend eventually renders it.</p><ol class="docs-md-list"><li>**Tier 3 -- SSR/browser integration.** <code>renderRoute</code> (SSR, C target)</li></ol><p class="docs-md-paragraph">or <code>createRouteApp</code> (browser mount, JS target) driven end to end against real fixture content, with SSR output run through HTML whitespace normalization before any string assertion, so a snapshot check never goes flaky over incidental spacing.</p><h2 class="docs-md-heading" id="mockrenderer">MockRenderer</h2><p class="docs-md-paragraph">MockRenderer component suites never touch a real DOM or generate real HTML strings -- a component under test renders into an in-memory <code>MockNode</code> tree that both a Tier-2 unit test and the eventual real SSR/browser renderers agree on, since every isonim-docs component is itself written generic over its renderer (<code>proc renderX*[R, N](r: R; ...): N</code>).</p><h2 class="docs-md-heading" id="fixtures-and-log-capture">Fixtures and log capture</h2><ul class="docs-md-list"><li>**Fixtures are real, not faked.** Content-loading tests write real</li></ul><p class="docs-md-paragraph">files into a real, isolated temp directory (<code>withFixtureDir</code>) rather than mocking the filesystem -- the one exception this harness allows is a fake clock for deterministic timestamps; the filesystem, router, renderer, and content loader all stay real end to end.</p><ul class="docs-md-list"><li>**Structured logging is asserted on, not just printed.** Route</li></ul><p class="docs-md-paragraph">resolution and render failures log through <code>chronicles</code>; tests that need to assert on a specific log line redirect the real OS-level stderr file descriptor around the code under test and read back what was actually written, rather than swapping in a fake logging sink.</p><ul class="docs-md-list"><li>**The real <code>content/</code> directory is exercised directly, too.** Several</li></ul><p class="docs-md-paragraph">Tier-3 suites (<code>test_content_loader.nim</code>, <code>test_references_renderroute.nim</code>, <code>test_redirects_renderroute.nim</code>) load and validate the real, checked-in <code>content/</code> tree itself, not just hermetic fixtures -- the same <code>validateContentGraph</code> check <code>just docs-smoke</code> runs for real, so a broken internal link in this very corpus fails a test locally before it ever fails CI.</p><div class="docs-md-admonition docs-md-admonition-tip"><strong>Tip</strong><p>When a change spans more than one subsystem (routing + navigation + references, for example), look for an existing cross-feature integration suite (<code>test_docs_graph_integration.nim</code> and its <code>_renderroute</code> companion) before writing a new one -- proving subsystems agree with each other from one shared content graph is exactly what those suites exist for.</p></div><p class="docs-md-paragraph">See <a href="/isonim/guide/install-setup">Install &amp; Setup</a> for the <code>just</code> commands that run these suites, and <a href="/isonim/guide/ssr-basics">SSR Basics</a> for what <code>renderRoute</code> itself does. Back to <a href="/isonim/">the site index</a>.</p></div></main><nav class="docs-nav-adjacent" aria-label="pagination"><a class="docs-nav-prev" href="/isonim/guide/ssr-basics">SSR Basics</a></nav><section class="docs-need-help"><div class="docs-need-help-heading">Need some help?</div><a class="docs-need-help-link" href="https://github.com/metacraft-labs/isonim/issues"><img class="docs-need-help-link-icon" src="/isonim/assets/img/icon__support.svg" alt="" /><span>Contact our support</span></a><a class="docs-need-help-link" href="/isonim/faq"><img class="docs-need-help-link-icon" src="/isonim/assets/img/icon__faq.svg" alt="" /><span>Frequently asked questions</span></a></section><footer id="docs-region-footer" class="docs-footer">Built by <a href="https://github.com/metacraft-labs">metacraft-labs</a> — 2026</footer><div class="docs-search-overlay" id="docs-search-overlay" role="dialog" aria-modal="true" aria-label="Search documentation" data-search-index-url="/isonim/search-index.02f295f7c6.json" data-search-mode="client" data-open="false" hidden><div class="docs-search-overlay-dialog"><input type="text" id="docs-search-overlay-input" class="docs-search-overlay-input" placeholder="Search docs…" aria-label="Search documentation" value=""><div id="docs-search-overlay-results"><ul class="docs-search-results" role="listbox"></ul></div><div class="docs-search-overlay-hint">Press Esc to close</div></div></div></div><script id="docs-image-viewer">(function(){
+try{
+if(typeof document==='undefined'||!document.addEventListener){return;}
+var FIG='docs-md-figure';
+var IMG='docs-md-image';
+var EXP='docs-md-image-expand';
+var ZOOM='data-zoomable';
+var OPEN='data-open';
+var LOCK='data-docs-image-viewer-open';
+var DIALOG_LABEL='Image viewer';
+var CLOSE_LABEL='Close image viewer';
+var overlay=null,overlayImg=null,overlayCaption=null,closeBtn=null,lastFocused=null;
+var savedScrollX=0,savedScrollY=0;
+function figureImage(fig){return fig.querySelector('.'+IMG);}
+function measure(fig){
+  var img=figureImage(fig);
+  if(!img){return;}
+  var natural=img.naturalWidth||0;
+  var shown=img.clientWidth||0;
+  var zoomable=(natural>0&&shown>0&&natural>shown+1)?'true':'false';
+  if(fig.getAttribute(ZOOM)!==zoomable){fig.setAttribute(ZOOM,zoomable);}
+}
+function measureAll(){
+  var list=document.querySelectorAll('.'+FIG);
+  for(var i=0;i<list.length;i++){measure(list[i]);}
+}
+var pending=false;
+function scheduleMeasure(){
+  if(pending){return;}
+  pending=true;
+  var run=function(){pending=false;measureAll();};
+  if(typeof requestAnimationFrame==='function'){requestAnimationFrame(run);}
+  else{setTimeout(run,16);}
+}
+function isOpen(){return !!overlay&&overlay.getAttribute(OPEN)==='true';}
+function closeViewer(){
+  if(!isOpen()){return;}
+  overlay.setAttribute(OPEN,'false');
+  overlay.hidden=true;
+  overlayImg.removeAttribute('src');
+  try{document.documentElement.removeAttribute(LOCK);}catch(e){}
+  var target=lastFocused;
+  lastFocused=null;
+  if(target&&target.focus&&document.contains(target)){
+    try{target.focus({preventScroll:true});}catch(e){target.focus();}
+  }
+  if(typeof window!=='undefined'&&window.scrollTo){window.scrollTo(savedScrollX,savedScrollY);}
+}
+function buildOverlay(){
+  if(overlay){return;}
+  overlay=document.createElement('div');
+  overlay.className='docs-image-overlay';
+  overlay.setAttribute('role','dialog');
+  overlay.setAttribute('aria-modal','true');
+  overlay.setAttribute('aria-label',DIALOG_LABEL);
+  overlay.setAttribute('tabindex','-1');
+  overlay.setAttribute(OPEN,'false');
+  overlay.hidden=true;
+  closeBtn=document.createElement('button');
+  closeBtn.setAttribute('type','button');
+  closeBtn.className='docs-image-overlay-close';
+  closeBtn.setAttribute('aria-label',CLOSE_LABEL);
+  closeBtn.appendChild(document.createTextNode('\u00d7'));
+  overlay.appendChild(closeBtn);
+  overlayImg=document.createElement('img');
+  overlayImg.className='docs-image-overlay-image';
+  overlay.appendChild(overlayImg);
+  overlayCaption=document.createElement('p');
+  overlayCaption.className='docs-image-overlay-caption';
+  overlay.appendChild(overlayCaption);
+  closeBtn.addEventListener('click',function(ev){ev.preventDefault();closeViewer();});
+  overlay.addEventListener('click',function(ev){if(ev.target===overlay){closeViewer();}});
+  document.body.appendChild(overlay);
+}
+function openViewer(src,alt){
+  buildOverlay();
+  lastFocused=document.activeElement;
+  savedScrollX=(typeof window!=='undefined'&&window.pageXOffset)||0;
+  savedScrollY=(typeof window!=='undefined'&&window.pageYOffset)||0;
+  overlayImg.setAttribute('src',src);
+  overlayImg.setAttribute('alt',alt||'');
+  overlay.setAttribute('aria-label',alt?(DIALOG_LABEL+': '+alt):DIALOG_LABEL);
+  overlayCaption.textContent=alt||'';
+  overlayCaption.hidden=!alt;
+  overlay.hidden=false;
+  overlay.setAttribute(OPEN,'true');
+  try{document.documentElement.setAttribute(LOCK,'true');}catch(e){}
+  closeBtn.focus();
+}
+document.addEventListener('click',function(ev){
+  if(ev.defaultPrevented){return;}
+  if(ev.metaKey||ev.ctrlKey||ev.shiftKey||ev.altKey){return;}
+  if(typeof ev.button==='number'&&ev.button!==0){return;}
+  var t=ev.target;
+  if(!t||!t.closest){return;}
+  var fig=t.closest('.'+FIG);
+  if(!fig){return;}
+  if(fig.getAttribute(ZOOM)!=='true'){return;}
+  var img=figureImage(fig);
+  if(!img){return;}
+  if(t!==img&&!t.closest('.'+EXP)){return;}
+  ev.preventDefault();
+  openViewer(img.currentSrc||img.getAttribute('src')||'',img.getAttribute('alt')||'');
+});
+document.addEventListener('keydown',function(ev){
+  if(!isOpen()){return;}
+  var k=ev.key;
+  if(k==='Escape'||k==='Esc'){ev.preventDefault();closeViewer();return;}
+  if(k==='Tab'){ev.preventDefault();if(closeBtn&&closeBtn.focus){closeBtn.focus();}}
+},true);
+document.addEventListener('load',function(ev){
+  var t=ev.target;
+  if(t&&t.classList&&t.classList.contains(IMG)){scheduleMeasure();}
+},true);
+if(typeof window!=='undefined'&&window.addEventListener){
+  window.addEventListener('resize',scheduleMeasure);
+  window.addEventListener('load',scheduleMeasure);
+}
+if(typeof MutationObserver==='function'&&document.body){
+  try{new MutationObserver(scheduleMeasure).observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['hidden','src']});}catch(e){}
+}
+document.addEventListener('DOMContentLoaded',scheduleMeasure);
+scheduleMeasure();
+}catch(e){}
+})();</script></body></html>

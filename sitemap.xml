@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://metacraft-labs.github.io/isonim/getting-started</loc></url>
+  <url><loc>https://metacraft-labs.github.io/isonim/</loc></url>
+  <url><loc>https://metacraft-labs.github.io/isonim/faq</loc></url>
+  <url><loc>https://metacraft-labs.github.io/isonim/editor/overview</loc></url>
+  <url><loc>https://metacraft-labs.github.io/isonim/editor/workspace</loc></url>
+  <url><loc>https://metacraft-labs.github.io/isonim/editor/browser-mount</loc></url>
+  <url><loc>https://metacraft-labs.github.io/isonim/editor/integration</loc></url>
+  <url><loc>https://metacraft-labs.github.io/isonim/guide/install-setup</loc></url>
+  <url><loc>https://metacraft-labs.github.io/isonim/guide/signals-effects</loc></url>
+  <url><loc>https://metacraft-labs.github.io/isonim/guide/dsl</loc></url>
+  <url><loc>https://metacraft-labs.github.io/isonim/guide/ssr-basics</loc></url>
+  <url><loc>https://metacraft-labs.github.io/isonim/guide/testing-strategy</loc></url>
+</urlset>

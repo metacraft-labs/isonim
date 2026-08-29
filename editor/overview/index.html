@@ -1,0 +1,125 @@
+<html><head><meta charset="utf-8" /><script id="docs-theme-bootstrap">(function(){try{var k='isonim-docs-theme';var a='data-theme';var t=localStorage.getItem(k);if(t!=='light'&&t!=='dark'){t=(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light';}document.documentElement.setAttribute(a,t);}catch(e){}})();</script><title>Editor Overview — IsoNim</title><meta name="description" content="How the IsoNim editor package fits into an IsoNim app." /><link rel="stylesheet" href="/isonim/assets/style.32bc81bee3.css" /><link rel="canonical" href="https://metacraft-labs.github.io/isonim/editor/overview" /><meta property="og:title" content="Editor Overview — IsoNim" /><meta property="og:description" content="How the IsoNim editor package fits into an IsoNim app." /><meta property="og:type" content="article" /><meta property="og:url" content="https://metacraft-labs.github.io/isonim/editor/overview" /><meta property="og:site_name" content="IsoNim" /><meta name="twitter:card" content="summary" /><meta name="twitter:title" content="Editor Overview — IsoNim" /><meta name="twitter:description" content="How the IsoNim editor package fits into an IsoNim app." /><script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","headline":"Editor Overview — IsoNim","description":"How the IsoNim editor package fits into an IsoNim app.","url":"https://metacraft-labs.github.io/isonim/editor/overview","publisher":{"@type":"Organization","name":"IsoNim"}}</script></head><body><div class="docs-frame"><a class="docs-skip-link" href="#docs-region-main">Skip to content</a><header id="docs-region-header" class="docs-header"><div class="docs-search" role="search"><input type="text" id="docs-search-input" class="docs-search-input" placeholder="Search docs…" aria-label="Search documentation" value=""><div id="docs-search-results-wrapper"><ul class="docs-search-results" role="listbox"></ul></div></div><nav class="docs-header-nav"><a class="docs-header-nav-btn" href="https://github.com/metacraft-labs/isonim/issues">Support</a><a class="docs-header-nav-btn" href="/isonim/faq">FAQ</a></nav></header><nav id="docs-region-nav" class="docs-nav"><div class="docs-navigation"><button type="button" class="docs-nav-drawer-toggle" aria-expanded="false" aria-controls="docs-nav-drawer-body" aria-label="Menu">Menu</button><div class="docs-nav-drawer-body" id="docs-nav-drawer-body" data-open="false"><nav class="docs-nav-breadcrumbs" aria-label="breadcrumbs"><ol class="docs-nav-breadcrumb-list"><li class="docs-nav-breadcrumb"><a href="/isonim/">Home</a></li><li class="docs-nav-breadcrumb"><a href="/isonim/editor">Editor</a></li><li class="docs-nav-breadcrumb"><span class="docs-nav-breadcrumb-current" aria-current="page">Editor Overview</span></li></ol></nav><nav class="docs-nav-sidebar" aria-label="sidebar"><div class="docs-nav-section docs-nav-section-expanded" data-nav-key=""><ul class="docs-nav-section-list"><li class="docs-nav-item"><a href="/isonim/getting-started">Getting Started</a></li><li class="docs-nav-item"><a href="/isonim/">Welcome to the IsoNim docs</a></li><li class="docs-nav-item"><a href="/isonim/faq">FAQ</a></li></ul></div><div class="docs-nav-section docs-nav-section-expanded" data-nav-key="editor"><button type="button" class="docs-nav-section-title" aria-expanded="true">Editor</button><ul class="docs-nav-section-list"><li class="docs-nav-item docs-nav-item-active"><a href="/isonim/editor/overview" aria-current="page">Editor Overview</a></li><li class="docs-nav-item"><a href="/isonim/editor/workspace">Editor Workspace Model</a></li><li class="docs-nav-item"><a href="/isonim/editor/browser-mount">Editor Browser Mount Contract</a></li><li class="docs-nav-item"><a href="/isonim/editor/integration">Editor Consumer Integration</a></li></ul></div><div class="docs-nav-section" data-nav-key="guide"><button type="button" class="docs-nav-section-title" aria-expanded="false">Guide</button><ul class="docs-nav-section-list"><li class="docs-nav-item"><a href="/isonim/guide/install-setup">Install &amp; Setup</a></li><li class="docs-nav-item"><a href="/isonim/guide/signals-effects">Signals &amp; Effects</a></li><li class="docs-nav-item"><a href="/isonim/guide/dsl">The ui DSL</a></li><li class="docs-nav-item"><a href="/isonim/guide/ssr-basics">SSR Basics</a></li><li class="docs-nav-item"><a href="/isonim/guide/testing-strategy">Testing Strategy</a></li></ul></div><div class="docs-sidebar-extras"><a class="docs-sidebar-link" href="https://github.com/metacraft-labs/isonim" target="_blank" rel="noopener"><img class="docs-sidebar-link-icon" src="/isonim/assets/img/icon__github.svg" alt="" /><span>Github</span></a><div class="docs-theme-switch-wrap"><button type="button" id="docs-theme-toggle" class="docs-theme-toggle" data-theme="light" aria-pressed="false" aria-label="Switch to dark theme">☀</button></div></div></nav><nav class="docs-nav-toc" aria-label="table of contents"><ul class="docs-nav-toc-list"><li class="docs-nav-toc-item"><a href="#the-editor-docs-page-by-page">The editor docs, page by page</a></li></ul></nav></div></div></nav><main id="docs-region-main" class="docs-main" tabindex="-1"><h1 class="docs-md-title">Editor Overview</h1><div class="docs-md-body"><p class="docs-md-paragraph">The IsoNim editor (<code>isonim/editor</code>) is a separate, published package that plugs into a host IsoNim app as a regular component tree -- it doesn't require a special build mode or a different rendering pipeline from the rest of your app. It's a visual, storyboard-and-canvas component editor: consuming projects supply their own component stories, canvas layout, and design-token data, and the package supplies the framework, view models, and rendering around them.</p><h2 class="docs-md-heading" id="the-editor-docs-page-by-page">The editor docs, page by page</h2><ul class="docs-md-list"><li>**<a href="/isonim/editor/workspace">Editor Workspace Model</a>** -- the <code>EditorWorkspace</code></li></ul><p class="docs-md-paragraph">data contract a host project supplies (story groups, canvas items, flow data, permissions, panel visibility), and how to build and update one.</p><ul class="docs-md-list"><li>**<a href="/isonim/editor/browser-mount">Editor Browser Mount Contract</a>** -- <code>mountEditor</code>,</li></ul><p class="docs-md-paragraph">the JS-target-only entry point that mounts the editor shell into a real DOM element and returns its live <code>EditorVM</code>.</p><ul class="docs-md-list"><li>**<a href="/isonim/editor/integration">Editor Consumer Integration</a>** -- the imports a</li></ul><p class="docs-md-paragraph">host app needs, the project-owned/package-owned data boundary, and a minimal end-to-end mount example.</p><div class="docs-md-admonition docs-md-admonition-note"><strong>Note</strong><p>The editor's browser mount contract is the same <code>WebRenderer</code>-family DOM contract every other IsoNim component uses -- there is no editor-specific renderer, just an editor-specific mount helper (<code>mountEditor</code>) that wires the shell's routing and keyboard shortcuts for you.</p></div><p class="docs-md-paragraph">See <a href="/isonim/guide/dsl">the ui DSL</a> for the markup layer the editor's own components are built with. Back to <a href="/isonim/">the site index</a>.</p></div></main><nav class="docs-nav-adjacent" aria-label="pagination"><a class="docs-nav-prev" href="/isonim/faq">FAQ</a><a class="docs-nav-next" href="/isonim/editor/workspace">Editor Workspace Model</a></nav><section class="docs-need-help"><div class="docs-need-help-heading">Need some help?</div><a class="docs-need-help-link" href="https://github.com/metacraft-labs/isonim/issues"><img class="docs-need-help-link-icon" src="/isonim/assets/img/icon__support.svg" alt="" /><span>Contact our support</span></a><a class="docs-need-help-link" href="/isonim/faq"><img class="docs-need-help-link-icon" src="/isonim/assets/img/icon__faq.svg" alt="" /><span>Frequently asked questions</span></a></section><footer id="docs-region-footer" class="docs-footer">Built by <a href="https://github.com/metacraft-labs">metacraft-labs</a> — 2026</footer><div class="docs-search-overlay" id="docs-search-overlay" role="dialog" aria-modal="true" aria-label="Search documentation" data-search-index-url="/isonim/search-index.02f295f7c6.json" data-search-mode="client" data-open="false" hidden><div class="docs-search-overlay-dialog"><input type="text" id="docs-search-overlay-input" class="docs-search-overlay-input" placeholder="Search docs…" aria-label="Search documentation" value=""><div id="docs-search-overlay-results"><ul class="docs-search-results" role="listbox"></ul></div><div class="docs-search-overlay-hint">Press Esc to close</div></div></div></div><script id="docs-image-viewer">(function(){
+try{
+if(typeof document==='undefined'||!document.addEventListener){return;}
+var FIG='docs-md-figure';
+var IMG='docs-md-image';
+var EXP='docs-md-image-expand';
+var ZOOM='data-zoomable';
+var OPEN='data-open';
+var LOCK='data-docs-image-viewer-open';
+var DIALOG_LABEL='Image viewer';
+var CLOSE_LABEL='Close image viewer';
+var overlay=null,overlayImg=null,overlayCaption=null,closeBtn=null,lastFocused=null;
+var savedScrollX=0,savedScrollY=0;
+function figureImage(fig){return fig.querySelector('.'+IMG);}
+function measure(fig){
+  var img=figureImage(fig);
+  if(!img){return;}
+  var natural=img.naturalWidth||0;
+  var shown=img.clientWidth||0;
+  var zoomable=(natural>0&&shown>0&&natural>shown+1)?'true':'false';
+  if(fig.getAttribute(ZOOM)!==zoomable){fig.setAttribute(ZOOM,zoomable);}
+}
+function measureAll(){
+  var list=document.querySelectorAll('.'+FIG);
+  for(var i=0;i<list.length;i++){measure(list[i]);}
+}
+var pending=false;
+function scheduleMeasure(){
+  if(pending){return;}
+  pending=true;
+  var run=function(){pending=false;measureAll();};
+  if(typeof requestAnimationFrame==='function'){requestAnimationFrame(run);}
+  else{setTimeout(run,16);}
+}
+function isOpen(){return !!overlay&&overlay.getAttribute(OPEN)==='true';}
+function closeViewer(){
+  if(!isOpen()){return;}
+  overlay.setAttribute(OPEN,'false');
+  overlay.hidden=true;
+  overlayImg.removeAttribute('src');
+  try{document.documentElement.removeAttribute(LOCK);}catch(e){}
+  var target=lastFocused;
+  lastFocused=null;
+  if(target&&target.focus&&document.contains(target)){
+    try{target.focus({preventScroll:true});}catch(e){target.focus();}
+  }
+  if(typeof window!=='undefined'&&window.scrollTo){window.scrollTo(savedScrollX,savedScrollY);}
+}
+function buildOverlay(){
+  if(overlay){return;}
+  overlay=document.createElement('div');
+  overlay.className='docs-image-overlay';
+  overlay.setAttribute('role','dialog');
+  overlay.setAttribute('aria-modal','true');
+  overlay.setAttribute('aria-label',DIALOG_LABEL);
+  overlay.setAttribute('tabindex','-1');
+  overlay.setAttribute(OPEN,'false');
+  overlay.hidden=true;
+  closeBtn=document.createElement('button');
+  closeBtn.setAttribute('type','button');
+  closeBtn.className='docs-image-overlay-close';
+  closeBtn.setAttribute('aria-label',CLOSE_LABEL);
+  closeBtn.appendChild(document.createTextNode('\u00d7'));
+  overlay.appendChild(closeBtn);
+  overlayImg=document.createElement('img');
+  overlayImg.className='docs-image-overlay-image';
+  overlay.appendChild(overlayImg);
+  overlayCaption=document.createElement('p');
+  overlayCaption.className='docs-image-overlay-caption';
+  overlay.appendChild(overlayCaption);
+  closeBtn.addEventListener('click',function(ev){ev.preventDefault();closeViewer();});
+  overlay.addEventListener('click',function(ev){if(ev.target===overlay){closeViewer();}});
+  document.body.appendChild(overlay);
+}
+function openViewer(src,alt){
+  buildOverlay();
+  lastFocused=document.activeElement;
+  savedScrollX=(typeof window!=='undefined'&&window.pageXOffset)||0;
+  savedScrollY=(typeof window!=='undefined'&&window.pageYOffset)||0;
+  overlayImg.setAttribute('src',src);
+  overlayImg.setAttribute('alt',alt||'');
+  overlay.setAttribute('aria-label',alt?(DIALOG_LABEL+': '+alt):DIALOG_LABEL);
+  overlayCaption.textContent=alt||'';
+  overlayCaption.hidden=!alt;
+  overlay.hidden=false;
+  overlay.setAttribute(OPEN,'true');
+  try{document.documentElement.setAttribute(LOCK,'true');}catch(e){}
+  closeBtn.focus();
+}
+document.addEventListener('click',function(ev){
+  if(ev.defaultPrevented){return;}
+  if(ev.metaKey||ev.ctrlKey||ev.shiftKey||ev.altKey){return;}
+  if(typeof ev.button==='number'&&ev.button!==0){return;}
+  var t=ev.target;
+  if(!t||!t.closest){return;}
+  var fig=t.closest('.'+FIG);
+  if(!fig){return;}
+  if(fig.getAttribute(ZOOM)!=='true'){return;}
+  var img=figureImage(fig);
+  if(!img){return;}
+  if(t!==img&&!t.closest('.'+EXP)){return;}
+  ev.preventDefault();
+  openViewer(img.currentSrc||img.getAttribute('src')||'',img.getAttribute('alt')||'');
+});
+document.addEventListener('keydown',function(ev){
+  if(!isOpen()){return;}
+  var k=ev.key;
+  if(k==='Escape'||k==='Esc'){ev.preventDefault();closeViewer();return;}
+  if(k==='Tab'){ev.preventDefault();if(closeBtn&&closeBtn.focus){closeBtn.focus();}}
+},true);
+document.addEventListener('load',function(ev){
+  var t=ev.target;
+  if(t&&t.classList&&t.classList.contains(IMG)){scheduleMeasure();}
+},true);
+if(typeof window!=='undefined'&&window.addEventListener){
+  window.addEventListener('resize',scheduleMeasure);
+  window.addEventListener('load',scheduleMeasure);
+}
+if(typeof MutationObserver==='function'&&document.body){
+  try{new MutationObserver(scheduleMeasure).observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['hidden','src']});}catch(e){}
+}
+document.addEventListener('DOMContentLoaded',scheduleMeasure);
+scheduleMeasure();
+}catch(e){}
+})();</script></body></html>

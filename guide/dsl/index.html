@@ -1,0 +1,142 @@
+<html><head><meta charset="utf-8" /><script id="docs-theme-bootstrap">(function(){try{var k='isonim-docs-theme';var a='data-theme';var t=localStorage.getItem(k);if(t!=='light'&&t!=='dark'){t=(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light';}document.documentElement.setAttribute(a,t);}catch(e){}})();</script><title>The ui DSL — IsoNim</title><meta name="description" content="A tour of IsoNim's Karax-style ui(...) markup DSL." /><link rel="stylesheet" href="/isonim/assets/style.32bc81bee3.css" /><link rel="canonical" href="https://metacraft-labs.github.io/isonim/guide/dsl" /><meta property="og:title" content="The ui DSL — IsoNim" /><meta property="og:description" content="A tour of IsoNim's Karax-style ui(...) markup DSL." /><meta property="og:type" content="article" /><meta property="og:url" content="https://metacraft-labs.github.io/isonim/guide/dsl" /><meta property="og:site_name" content="IsoNim" /><meta name="twitter:card" content="summary" /><meta name="twitter:title" content="The ui DSL — IsoNim" /><meta name="twitter:description" content="A tour of IsoNim's Karax-style ui(...) markup DSL." /><script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","headline":"The ui DSL — IsoNim","description":"A tour of IsoNim's Karax-style ui(...) markup DSL.","url":"https://metacraft-labs.github.io/isonim/guide/dsl","publisher":{"@type":"Organization","name":"IsoNim"}}</script></head><body><div class="docs-frame"><a class="docs-skip-link" href="#docs-region-main">Skip to content</a><header id="docs-region-header" class="docs-header"><div class="docs-search" role="search"><input type="text" id="docs-search-input" class="docs-search-input" placeholder="Search docs…" aria-label="Search documentation" value=""><div id="docs-search-results-wrapper"><ul class="docs-search-results" role="listbox"></ul></div></div><nav class="docs-header-nav"><a class="docs-header-nav-btn" href="https://github.com/metacraft-labs/isonim/issues">Support</a><a class="docs-header-nav-btn" href="/isonim/faq">FAQ</a></nav></header><nav id="docs-region-nav" class="docs-nav"><div class="docs-navigation"><button type="button" class="docs-nav-drawer-toggle" aria-expanded="false" aria-controls="docs-nav-drawer-body" aria-label="Menu">Menu</button><div class="docs-nav-drawer-body" id="docs-nav-drawer-body" data-open="false"><nav class="docs-nav-breadcrumbs" aria-label="breadcrumbs"><ol class="docs-nav-breadcrumb-list"><li class="docs-nav-breadcrumb"><a href="/isonim/">Home</a></li><li class="docs-nav-breadcrumb"><a href="/isonim/guide">Guide</a></li><li class="docs-nav-breadcrumb"><span class="docs-nav-breadcrumb-current" aria-current="page">The ui DSL</span></li></ol></nav><nav class="docs-nav-sidebar" aria-label="sidebar"><div class="docs-nav-section docs-nav-section-expanded" data-nav-key=""><ul class="docs-nav-section-list"><li class="docs-nav-item"><a href="/isonim/getting-started">Getting Started</a></li><li class="docs-nav-item"><a href="/isonim/">Welcome to the IsoNim docs</a></li><li class="docs-nav-item"><a href="/isonim/faq">FAQ</a></li></ul></div><div class="docs-nav-section" data-nav-key="editor"><button type="button" class="docs-nav-section-title" aria-expanded="false">Editor</button><ul class="docs-nav-section-list"><li class="docs-nav-item"><a href="/isonim/editor/overview">Editor Overview</a></li><li class="docs-nav-item"><a href="/isonim/editor/workspace">Editor Workspace Model</a></li><li class="docs-nav-item"><a href="/isonim/editor/browser-mount">Editor Browser Mount Contract</a></li><li class="docs-nav-item"><a href="/isonim/editor/integration">Editor Consumer Integration</a></li></ul></div><div class="docs-nav-section docs-nav-section-expanded" data-nav-key="guide"><button type="button" class="docs-nav-section-title" aria-expanded="true">Guide</button><ul class="docs-nav-section-list"><li class="docs-nav-item"><a href="/isonim/guide/install-setup">Install &amp; Setup</a></li><li class="docs-nav-item"><a href="/isonim/guide/signals-effects">Signals &amp; Effects</a></li><li class="docs-nav-item docs-nav-item-active"><a href="/isonim/guide/dsl" aria-current="page">The ui DSL</a></li><li class="docs-nav-item"><a href="/isonim/guide/ssr-basics">SSR Basics</a></li><li class="docs-nav-item"><a href="/isonim/guide/testing-strategy">Testing Strategy</a></li></ul></div><div class="docs-sidebar-extras"><a class="docs-sidebar-link" href="https://github.com/metacraft-labs/isonim" target="_blank" rel="noopener"><img class="docs-sidebar-link-icon" src="/isonim/assets/img/icon__github.svg" alt="" /><span>Github</span></a><div class="docs-theme-switch-wrap"><button type="button" id="docs-theme-toggle" class="docs-theme-toggle" data-theme="light" aria-pressed="false" aria-label="Switch to dark theme">☀</button></div></div></nav><nav class="docs-nav-toc" aria-label="table of contents"><ul class="docs-nav-toc-list"><li class="docs-nav-toc-item"><a href="#basic-elements">Basic elements</a></li><li class="docs-nav-toc-item"><a href="#dynamic-attributes-and-text">Dynamic attributes and text</a></li><li class="docs-nav-toc-item"><a href="#control-flow">Control flow</a></li><li class="docs-nav-toc-item"><a href="#components">Components</a></li></ul></nav></div></div></nav><main id="docs-region-main" class="docs-main" tabindex="-1"><h1 class="docs-md-title">The ui DSL</h1><div class="docs-md-body"><p class="docs-md-paragraph">IsoNim's <code>ui</code> macro compiles a nested, HTML-shaped block of Nim code into real element-tree construction calls (client mode) or an HTML string (server mode) -- the same markup, two different backends.</p><h2 class="docs-md-heading" id="basic-elements">Basic elements</h2><div class="docs-md-code-block"><button type="button" class="docs-md-code-copy" aria-label="Copy code" data-copied="false">Copy code</button><pre class="docs-md-code-fence"><code class="language-nim">ui(r):
+  tdiv(class = <span class="tok-string">"card"</span>):
+    h1: text <span class="tok-string">"Hello"</span>
+    span: text <span class="tok-string">"World"</span></code></pre></div><p class="docs-md-paragraph"><code>tdiv</code> maps to a real <code>&lt;div&gt;</code> tag (<code>div</code> is a Nim keyword, so the DSL uses <code>tdiv</code> for it); every other tag name maps straight to its HTML tag.</p><h2 class="docs-md-heading" id="dynamic-attributes-and-text">Dynamic attributes and text</h2><p class="docs-md-paragraph">Any expression that reads a signal -- not just a literal -- can be used as an attribute value or a <code>text</code> argument:</p><div class="docs-md-code-block"><button type="button" class="docs-md-code-copy" aria-label="Copy code" data-copied="false">Copy code</button><pre class="docs-md-code-fence"><code class="language-nim">ui(r):
+  span(class = <span class="tok-keyword">if</span> active.val: <span class="tok-string">"on"</span> <span class="tok-keyword">else</span>: <span class="tok-string">"off"</span>):
+    text $count.val</code></pre></div><p class="docs-md-paragraph">The DSL wraps a dynamic expression like this in a <code>createRenderEffect</code> automatically, so the <code>&lt;span&gt;</code>'s class and text content update whenever <code>active</code> or <code>count</code> change -- no manual re-render call needed.</p><h2 class="docs-md-heading" id="control-flow">Control flow</h2><p class="docs-md-paragraph"><code>if</code>, <code>for</code>, and <code>case</code> all work directly inside a <code>ui(...)</code> block and rewrite their branches' DSL children in place:</p><div class="docs-md-code-block"><button type="button" class="docs-md-code-copy" aria-label="Copy code" data-copied="false">Copy code</button><pre class="docs-md-code-fence"><code class="language-nim">ui(r):
+  tdiv:
+    <span class="tok-keyword">if</span> items.val.len == <span class="tok-number">0</span>:
+      span: text <span class="tok-string">"Nothing yet"</span>
+    <span class="tok-keyword">else</span>:
+      <span class="tok-keyword">for</span> item <span class="tok-keyword">in</span> items.val:
+        li: text item</code></pre></div><div class="docs-md-admonition docs-md-admonition-note"><strong>Note</strong><p>A bare proc call as a loop body (instead of a literal DSL element) is *not* rewired automatically -- build the child element yourself and append it with <code>r.appendChild</code> outside the <code>ui(...)</code> block instead.</p></div><h2 class="docs-md-heading" id="components">Components</h2><p class="docs-md-paragraph">IsoNim ships a small set of built-in **control-flow components** -- <code>show</code>, <code>forEachKeyed</code>/<code>indexEach</code>, and <code>errorBoundary</code> -- generic over both the renderer and the node type, so they work identically under SSR and JS mount:</p><div class="docs-md-code-block"><button type="button" class="docs-md-code-copy" aria-label="Copy code" data-copied="false">Copy code</button><pre class="docs-md-code-fence"><code class="language-nim">show(r, parent,
+  condition = <span class="tok-keyword">proc</span>(): bool = user.val.isSome,
+  body = <span class="tok-keyword">proc</span>(): Node = renderProfile(r, user.val.get))</code></pre></div><p class="docs-md-paragraph">Beyond those built-ins, an isonim-docs **component** is just a plain, generic proc that takes a renderer and returns a node -- exactly the convention this site's own chrome is built with (<code>renderShell</code>, <code>renderMarkdownPage</code>, <code>renderSearchView</code> under <code>src/components/</code>). There is no separate component-definition macro or class hierarchy:</p><div class="docs-md-code-block"><button type="button" class="docs-md-code-copy" aria-label="Copy code" data-copied="false">Copy code</button><pre class="docs-md-code-fence"><code class="language-nim"><span class="tok-keyword">proc</span> renderCard*[R, N](r: R; title, body: string): N =
+  ui(r):
+    tdiv(class = <span class="tok-string">"card"</span>):
+      h2: text title
+      p: text body</code></pre></div><p class="docs-md-paragraph">Any page (or another component) can call <code>renderCard(r, ...)</code> like any other proc, which is what makes a component tree composable across an entire site without a plugin system.</p><p class="docs-md-paragraph">Once you're comfortable with the DSL, <a href="/isonim/guide/ssr-basics">SSR basics</a> covers how the exact same block renders to a string on the server, and <a href="/isonim/guide/signals-effects">Signals &amp; Effects</a> covers the reactive primitives <code>ui(...)</code> wires up for you. Back to <a href="/isonim/">the site index</a>.</p></div></main><nav class="docs-nav-adjacent" aria-label="pagination"><a class="docs-nav-prev" href="/isonim/guide/signals-effects">Signals &amp; Effects</a><a class="docs-nav-next" href="/isonim/guide/ssr-basics">SSR Basics</a></nav><section class="docs-need-help"><div class="docs-need-help-heading">Need some help?</div><a class="docs-need-help-link" href="https://github.com/metacraft-labs/isonim/issues"><img class="docs-need-help-link-icon" src="/isonim/assets/img/icon__support.svg" alt="" /><span>Contact our support</span></a><a class="docs-need-help-link" href="/isonim/faq"><img class="docs-need-help-link-icon" src="/isonim/assets/img/icon__faq.svg" alt="" /><span>Frequently asked questions</span></a></section><footer id="docs-region-footer" class="docs-footer">Built by <a href="https://github.com/metacraft-labs">metacraft-labs</a> — 2026</footer><div class="docs-search-overlay" id="docs-search-overlay" role="dialog" aria-modal="true" aria-label="Search documentation" data-search-index-url="/isonim/search-index.02f295f7c6.json" data-search-mode="client" data-open="false" hidden><div class="docs-search-overlay-dialog"><input type="text" id="docs-search-overlay-input" class="docs-search-overlay-input" placeholder="Search docs…" aria-label="Search documentation" value=""><div id="docs-search-overlay-results"><ul class="docs-search-results" role="listbox"></ul></div><div class="docs-search-overlay-hint">Press Esc to close</div></div></div></div><script id="docs-image-viewer">(function(){
+try{
+if(typeof document==='undefined'||!document.addEventListener){return;}
+var FIG='docs-md-figure';
+var IMG='docs-md-image';
+var EXP='docs-md-image-expand';
+var ZOOM='data-zoomable';
+var OPEN='data-open';
+var LOCK='data-docs-image-viewer-open';
+var DIALOG_LABEL='Image viewer';
+var CLOSE_LABEL='Close image viewer';
+var overlay=null,overlayImg=null,overlayCaption=null,closeBtn=null,lastFocused=null;
+var savedScrollX=0,savedScrollY=0;
+function figureImage(fig){return fig.querySelector('.'+IMG);}
+function measure(fig){
+  var img=figureImage(fig);
+  if(!img){return;}
+  var natural=img.naturalWidth||0;
+  var shown=img.clientWidth||0;
+  var zoomable=(natural>0&&shown>0&&natural>shown+1)?'true':'false';
+  if(fig.getAttribute(ZOOM)!==zoomable){fig.setAttribute(ZOOM,zoomable);}
+}
+function measureAll(){
+  var list=document.querySelectorAll('.'+FIG);
+  for(var i=0;i<list.length;i++){measure(list[i]);}
+}
+var pending=false;
+function scheduleMeasure(){
+  if(pending){return;}
+  pending=true;
+  var run=function(){pending=false;measureAll();};
+  if(typeof requestAnimationFrame==='function'){requestAnimationFrame(run);}
+  else{setTimeout(run,16);}
+}
+function isOpen(){return !!overlay&&overlay.getAttribute(OPEN)==='true';}
+function closeViewer(){
+  if(!isOpen()){return;}
+  overlay.setAttribute(OPEN,'false');
+  overlay.hidden=true;
+  overlayImg.removeAttribute('src');
+  try{document.documentElement.removeAttribute(LOCK);}catch(e){}
+  var target=lastFocused;
+  lastFocused=null;
+  if(target&&target.focus&&document.contains(target)){
+    try{target.focus({preventScroll:true});}catch(e){target.focus();}
+  }
+  if(typeof window!=='undefined'&&window.scrollTo){window.scrollTo(savedScrollX,savedScrollY);}
+}
+function buildOverlay(){
+  if(overlay){return;}
+  overlay=document.createElement('div');
+  overlay.className='docs-image-overlay';
+  overlay.setAttribute('role','dialog');
+  overlay.setAttribute('aria-modal','true');
+  overlay.setAttribute('aria-label',DIALOG_LABEL);
+  overlay.setAttribute('tabindex','-1');
+  overlay.setAttribute(OPEN,'false');
+  overlay.hidden=true;
+  closeBtn=document.createElement('button');
+  closeBtn.setAttribute('type','button');
+  closeBtn.className='docs-image-overlay-close';
+  closeBtn.setAttribute('aria-label',CLOSE_LABEL);
+  closeBtn.appendChild(document.createTextNode('\u00d7'));
+  overlay.appendChild(closeBtn);
+  overlayImg=document.createElement('img');
+  overlayImg.className='docs-image-overlay-image';
+  overlay.appendChild(overlayImg);
+  overlayCaption=document.createElement('p');
+  overlayCaption.className='docs-image-overlay-caption';
+  overlay.appendChild(overlayCaption);
+  closeBtn.addEventListener('click',function(ev){ev.preventDefault();closeViewer();});
+  overlay.addEventListener('click',function(ev){if(ev.target===overlay){closeViewer();}});
+  document.body.appendChild(overlay);
+}
+function openViewer(src,alt){
+  buildOverlay();
+  lastFocused=document.activeElement;
+  savedScrollX=(typeof window!=='undefined'&&window.pageXOffset)||0;
+  savedScrollY=(typeof window!=='undefined'&&window.pageYOffset)||0;
+  overlayImg.setAttribute('src',src);
+  overlayImg.setAttribute('alt',alt||'');
+  overlay.setAttribute('aria-label',alt?(DIALOG_LABEL+': '+alt):DIALOG_LABEL);
+  overlayCaption.textContent=alt||'';
+  overlayCaption.hidden=!alt;
+  overlay.hidden=false;
+  overlay.setAttribute(OPEN,'true');
+  try{document.documentElement.setAttribute(LOCK,'true');}catch(e){}
+  closeBtn.focus();
+}
+document.addEventListener('click',function(ev){
+  if(ev.defaultPrevented){return;}
+  if(ev.metaKey||ev.ctrlKey||ev.shiftKey||ev.altKey){return;}
+  if(typeof ev.button==='number'&&ev.button!==0){return;}
+  var t=ev.target;
+  if(!t||!t.closest){return;}
+  var fig=t.closest('.'+FIG);
+  if(!fig){return;}
+  if(fig.getAttribute(ZOOM)!=='true'){return;}
+  var img=figureImage(fig);
+  if(!img){return;}
+  if(t!==img&&!t.closest('.'+EXP)){return;}
+  ev.preventDefault();
+  openViewer(img.currentSrc||img.getAttribute('src')||'',img.getAttribute('alt')||'');
+});
+document.addEventListener('keydown',function(ev){
+  if(!isOpen()){return;}
+  var k=ev.key;
+  if(k==='Escape'||k==='Esc'){ev.preventDefault();closeViewer();return;}
+  if(k==='Tab'){ev.preventDefault();if(closeBtn&&closeBtn.focus){closeBtn.focus();}}
+},true);
+document.addEventListener('load',function(ev){
+  var t=ev.target;
+  if(t&&t.classList&&t.classList.contains(IMG)){scheduleMeasure();}
+},true);
+if(typeof window!=='undefined'&&window.addEventListener){
+  window.addEventListener('resize',scheduleMeasure);
+  window.addEventListener('load',scheduleMeasure);
+}
+if(typeof MutationObserver==='function'&&document.body){
+  try{new MutationObserver(scheduleMeasure).observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['hidden','src']});}catch(e){}
+}
+document.addEventListener('DOMContentLoaded',scheduleMeasure);
+scheduleMeasure();
+}catch(e){}
+})();</script></body></html>
