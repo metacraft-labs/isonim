@@ -323,11 +323,20 @@
 ##         ``test`` block (lines 237 + 254) → "redefinition of 'sum'". Fails
 ##         under plain ``nim c`` too (it is in the ``Justfile`` ``test-c``
 ##         list, so ``just test-c`` is itself red at HEAD).
-##     NOTE: ``test_flexbox`` / ``test_branded_ui`` (need the uninitialised
-##     ``src/isonim/layout/yoga`` C++ submodule) and ``test_faststreams_ssr``
-##     (references the removed ``renderToOutputStream``) are NOT in any
-##     ``Justfile`` recipe — stale/experimental, out of the sanctioned test
-##     scope — so they simply get no edge (nothing to defer-document).
+##     NOTE: ``test_flexbox`` was previously excluded here as "needs the
+##     uninitialised ``src/isonim/layout/yoga`` C++ submodule". The submodule
+##     being uninitialised was the defect, not a property of the test: nothing
+##     in the repo ever provisioned it (no ``submodules:`` on
+##     ``actions/checkout``, no setup recipe, README said only ``nimble
+##     install``), and excluding its only consumer from every recipe is what
+##     kept CI green over it. Provisioning now exists (``just setup``,
+##     ``just check-submodules``, ``submodules: recursive`` in the workflows)
+##     and ``test_flexbox`` compiles and passes, so it IS in ``test-c`` and
+##     gets a normal edge pair.
+##     Still out of the sanctioned scope: ``test_branded_ui`` (real API drift —
+##     ``branded_ui.nim:212`` calls a two-arg ``textContent`` that no longer
+##     exists) and ``test_faststreams_ssr`` (references the removed
+##     ``renderToOutputStream``) — genuinely stale, so they get no edge.
 ##
 ## **Tool provisioning.** ``defaultToolProvisioning "path"`` matches the
 ## canonical recipes: the nix dev shell puts ``nim`` + ``gcc`` on ``PATH``,

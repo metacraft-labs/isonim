@@ -20,7 +20,15 @@ jobs:
         runner: [eph-linux-x64, eph-linux-arm64, eph-macos-arm64]
     runs-on: ${{ matrix.runner }}
     steps:
+      # `submodules: recursive` is load-bearing: `src/isonim/layout/yoga`
+      # (facebook/yoga) is a submodule that `yoga_bindings.nim` compiles from
+      # source. A bare checkout leaves it empty. CI stayed green only because
+      # the yoga-dependent tests are absent from the recipes below, so nothing
+      # in the sanctioned scope ever compiled it — the gap surfaced instead in
+      # downstream repos (isonim-tui) as an opaque Nim error.
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Setup Nix
         uses: metacraft-labs/nixos-modules/.github/setup-nix@main
@@ -28,6 +36,12 @@ jobs:
           trusted-public-keys: ${{ vars.TRUSTED_PUBLIC_KEYS }}
           substituters: ${{ vars.SUBSTITUTERS }}
           nix-github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Guards the checkout option above: if `submodules: recursive` is ever
+      # dropped, this fails here with a legible message and the remedy, rather
+      # than 19 "cannot find: .../YGConfig.cpp" lines in a consumer's build.
+      - name: Verify submodules are provisioned
+        run: nix develop --command just check-submodules
 
       - name: Run C backend tests
         run: nix develop --command just test-c

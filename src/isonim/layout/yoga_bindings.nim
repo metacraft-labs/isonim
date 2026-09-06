@@ -5,47 +5,74 @@ const yogaRoot = currentSourcePath()[0..^(len("yoga_bindings.nim") + 1)] & "yoga
 const yogaInclude = yogaRoot
 const yogaHeader = yogaInclude & "/yoga/Yoga.h"
 
+# --- Provisioning guard ---------------------------------------------------
+#
+# `yogaRoot` is the `src/isonim/layout/yoga` git submodule (facebook/yoga,
+# declared in isonim's `.gitmodules`).  A plain `git clone` does NOT populate
+# it, so without this guard the 19 `{.compile.}` pragmas below each emit an
+# opaque `Error: cannot find: .../yoga/yoga/YGConfig.cpp` — 19 lines that name
+# neither the submodule nor the command that fixes it, and that surface far
+# from here in downstream repos (isonim-tui's `layout/terminal_layout.nim`
+# imports this module directly, so a missing submodule gates all of
+# `isonim_tui`).  Fail once, early, with the remedy in the message instead.
+import std/os
+
+when not fileExists(yogaHeader):
+  {.error: "isonim: the vendored Yoga layout engine is missing.\n" &
+    "  Expected: " & yogaHeader & "\n" &
+    "  `src/isonim/layout/yoga` is a git submodule (facebook/yoga) declared in\n" &
+    "  isonim's .gitmodules; a plain `git clone` leaves it empty.\n" &
+    "  Fix, in the *isonim* checkout (not the consuming repo):\n" &
+    "      just setup      # or: git submodule update --init --recursive\n" &
+    "  Downstream repos (isonim-tui, isonim-cocoa, ...) compile against isonim's\n" &
+    "  working tree via --path, so it must be provisioned there.".}
+
 # Include path needed for Nim-generated C files that reference the Yoga header
 {.passC: "-I" & yogaInclude.}
-
-# Compile all Yoga C++ source files
-const yogaCxxFlags = "-std=c++20 -I" & yogaInclude
 
 when defined(macosx):
   {.passL: "-lc++".}
 else:
   {.passL: "-lstdc++".}
 
-# Core
-{.compile(yogaRoot & "/yoga/YGConfig.cpp", yogaCxxFlags).}
-{.compile(yogaRoot & "/yoga/YGEnums.cpp", yogaCxxFlags).}
-{.compile(yogaRoot & "/yoga/YGNode.cpp", yogaCxxFlags).}
-{.compile(yogaRoot & "/yoga/YGNodeLayout.cpp", yogaCxxFlags).}
-{.compile(yogaRoot & "/yoga/YGNodeStyle.cpp", yogaCxxFlags).}
-{.compile(yogaRoot & "/yoga/YGPixelGrid.cpp", yogaCxxFlags).}
-{.compile(yogaRoot & "/yoga/YGValue.cpp", yogaCxxFlags).}
+# Guarded by the same predicate as the `{.error.}` above: `nim check` keeps
+# going past `{.error.}` and would otherwise bury the actionable message under
+# 19 `cannot find: .../YGConfig.cpp` lines.  Skipping the pragmas leaves the
+# guard as the only diagnostic.
+when fileExists(yogaHeader):
+  # Compile all Yoga C++ source files
+  const yogaCxxFlags = "-std=c++20 -I" & yogaInclude
 
-# Algorithm
-{.compile(yogaRoot & "/yoga/algorithm/AbsoluteLayout.cpp", yogaCxxFlags).}
-{.compile(yogaRoot & "/yoga/algorithm/Baseline.cpp", yogaCxxFlags).}
-{.compile(yogaRoot & "/yoga/algorithm/Cache.cpp", yogaCxxFlags).}
-{.compile(yogaRoot & "/yoga/algorithm/CalculateLayout.cpp", yogaCxxFlags).}
-{.compile(yogaRoot & "/yoga/algorithm/FlexLine.cpp", yogaCxxFlags).}
-{.compile(yogaRoot & "/yoga/algorithm/PixelGrid.cpp", yogaCxxFlags).}
+  # Core
+  {.compile(yogaRoot & "/yoga/YGConfig.cpp", yogaCxxFlags).}
+  {.compile(yogaRoot & "/yoga/YGEnums.cpp", yogaCxxFlags).}
+  {.compile(yogaRoot & "/yoga/YGNode.cpp", yogaCxxFlags).}
+  {.compile(yogaRoot & "/yoga/YGNodeLayout.cpp", yogaCxxFlags).}
+  {.compile(yogaRoot & "/yoga/YGNodeStyle.cpp", yogaCxxFlags).}
+  {.compile(yogaRoot & "/yoga/YGPixelGrid.cpp", yogaCxxFlags).}
+  {.compile(yogaRoot & "/yoga/YGValue.cpp", yogaCxxFlags).}
 
-# Config
-{.compile(yogaRoot & "/yoga/config/Config.cpp", yogaCxxFlags).}
+  # Algorithm
+  {.compile(yogaRoot & "/yoga/algorithm/AbsoluteLayout.cpp", yogaCxxFlags).}
+  {.compile(yogaRoot & "/yoga/algorithm/Baseline.cpp", yogaCxxFlags).}
+  {.compile(yogaRoot & "/yoga/algorithm/Cache.cpp", yogaCxxFlags).}
+  {.compile(yogaRoot & "/yoga/algorithm/CalculateLayout.cpp", yogaCxxFlags).}
+  {.compile(yogaRoot & "/yoga/algorithm/FlexLine.cpp", yogaCxxFlags).}
+  {.compile(yogaRoot & "/yoga/algorithm/PixelGrid.cpp", yogaCxxFlags).}
 
-# Debug
-{.compile(yogaRoot & "/yoga/debug/AssertFatal.cpp", yogaCxxFlags).}
-{.compile(yogaRoot & "/yoga/debug/Log.cpp", yogaCxxFlags).}
+  # Config
+  {.compile(yogaRoot & "/yoga/config/Config.cpp", yogaCxxFlags).}
 
-# Event
-{.compile(yogaRoot & "/yoga/event/event.cpp", yogaCxxFlags).}
+  # Debug
+  {.compile(yogaRoot & "/yoga/debug/AssertFatal.cpp", yogaCxxFlags).}
+  {.compile(yogaRoot & "/yoga/debug/Log.cpp", yogaCxxFlags).}
 
-# Node
-{.compile(yogaRoot & "/yoga/node/LayoutResults.cpp", yogaCxxFlags).}
-{.compile(yogaRoot & "/yoga/node/Node.cpp", yogaCxxFlags).}
+  # Event
+  {.compile(yogaRoot & "/yoga/event/event.cpp", yogaCxxFlags).}
+
+  # Node
+  {.compile(yogaRoot & "/yoga/node/LayoutResults.cpp", yogaCxxFlags).}
+  {.compile(yogaRoot & "/yoga/node/Node.cpp", yogaCxxFlags).}
 
 # --- Types ---
 

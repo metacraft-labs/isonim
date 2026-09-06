@@ -37,6 +37,19 @@ checklist, and required test matrix are documented in
 ## Quick Start
 
 ```sh
+# Fresh clone: provision submodules first (required, once per clone).
+just setup
+```
+
+`src/isonim/layout/yoga` is a git submodule (facebook/yoga) whose C++ sources
+`src/isonim/layout/yoga_bindings.nim` compiles directly. `git clone` does not
+populate submodules, so without `just setup` anything importing
+`isonim/layout/{flexbox,layout_engine,yoga_bindings}` fails to compile — as do
+downstream consumers such as isonim-tui, which compile against this working
+tree via `--path`. Clone with `git clone --recurse-submodules` to skip the
+extra step. `just check-submodules` verifies the state at any time.
+
+```sh
 # With Nix (recommended)
 nix develop
 just test-c

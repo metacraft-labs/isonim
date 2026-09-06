@@ -1,5 +1,35 @@
 # IsoNim — Isomorphic reactive web framework for Nim
 
+# One-time provisioning for a fresh clone.  `git clone` does not populate
+# submodules, and `src/isonim/layout/yoga` (facebook/yoga) is one: without it
+# `isonim/layout/{flexbox,layout_engine,yoga_bindings}` — and every downstream
+# consumer, notably isonim-tui's `layout/terminal_layout.nim` — cannot compile.
+# Nothing else in this repo ran this, which is why fresh clones were broken.
+setup:
+    git -C "{{justfile_directory()}}" submodule update --init --recursive
+
+# Fail loudly when a declared submodule is not provisioned, instead of letting
+# it surface as an opaque Nim error deep inside a consumer's import graph.
+# Wired into CI ahead of the test recipes; also runnable by hand.
+check-submodules:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "{{justfile_directory()}}"
+    # `git submodule status` prefixes uninitialised entries with '-'.
+    missing="$(git submodule status --recursive | grep '^-' | awk '{print $2}' || true)"
+    if [ -n "$missing" ]; then
+      echo "ERROR: git submodule(s) declared in .gitmodules but not initialised:" >&2
+      echo "$missing" | sed 's/^/  - /' >&2
+      echo "" >&2
+      echo "A plain 'git clone' does not populate submodules. Run:" >&2
+      echo "    just setup" >&2
+      echo "(equivalently: git submodule update --init --recursive)" >&2
+      echo "" >&2
+      echo "In CI, give actions/checkout 'submodules: recursive'." >&2
+      exit 1
+    fi
+    echo "[check-submodules] all $(git submodule status --recursive | wc -l | tr -d ' ') submodule(s) initialised"
+
 # Generate build/tailwind.css + build/tailwind-styles.json from the
 # isonim source via the real Tailwind CSS CLI.  CodeTracer's
 # scripts/build-once.sh invokes this before any Nim compile because
@@ -14,6 +44,11 @@ test: test-c test-js
 
 # Run tests on C target
 test-c:
+    # C-only (compiles Yoga's C++ sources). Deliberately first: it is the one
+    # recipe entry that reaches the `src/isonim/layout/yoga` submodule, so an
+    # unprovisioned checkout goes red here with the guard message from
+    # `yoga_bindings.nim` instead of building green over a missing dependency.
+    nim c -r tests/test_flexbox.nim
     nim c -r tests/test_signals.nim
     nim c -r tests/test_effects.nim
     nim c -r tests/test_clock.nim
