@@ -535,6 +535,15 @@ test-design-review-layouts: isonim-review-build
         --path:../nim-everywhere/src --path:../isonim-render-serve/src \
         --hints:off \
         tests/test_design_review_gallery_fetch_on_open.nim
+    # Pins the production Save-layout chip to the production HTTP
+    # client: mounts ``mountGalleryHostForEditor`` under the
+    # MockRenderer and asserts on the bytes that reach a stub daemon
+    # socket.  Red if ``onSave`` is ever dropped from the mount site
+    # again (the nil-``onSave`` fallback clears the dirty flag without
+    # persisting, which is how the chip shipped as a placebo).
+    nim c -r --path:. --path:src --path:../nim-everywhere/src \
+        --path:../isonim-render-serve/src --hints:off \
+        tests/test_design_review_gallery_save_layout_wired.nim
     node --test tests/e2e_design_review_gallery_save_layout.mjs
     node --test tests/e2e_design_review_gallery_promote_layout.mjs
     node --test tests/e2e_design_review_gallery_conflict.mjs

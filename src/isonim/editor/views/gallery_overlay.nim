@@ -572,13 +572,19 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM;
   ##
   ## ``onSave`` is invoked when the user clicks the Save layout chip
   ## (rendered reactively when ``vm.isDirty.val == true``).  The
-  ## production caller wires this to a POST against
+  ## production caller (``design_review_mount.mountGalleryHostForEditor``)
+  ## wires this to ``saveGalleryLayout``, which POSTs to
   ## ``/api/design-review/save-layout`` and calls ``vm.markSaved`` /
   ## ``vm.markConflict`` from the response callback.  Tests pass in a
-  ## fake handler.  When ``onSave`` is nil the chip falls back to a
-  ## VM-local ``markSaved`` (empty layoutId / version 0) so the dirty
-  ## flag still clears — useful for UI smoke tests that don't care
-  ## about the round-trip.
+  ## fake handler.
+  ##
+  ## When ``onSave`` is nil the chip falls back to a VM-local
+  ## ``markSaved`` (empty layoutId / version 0) so the dirty flag still
+  ## clears.  **That fallback DISCARDS the layout** — it exists only for
+  ## UI smoke tests that never reload.  Any on-screen caller must pass
+  ## ``onSave``; the production mount site shipped without it once and
+  ## the chip became a placebo that silently lost user work.  See
+  ## ``tests/test_design_review_gallery_save_layout_wired.nim``.
   ##
   ## CHRM-M7 polish — ``narrow`` is the design-review narrow-viewport
   ## signal (``DesignReviewState.narrow``).  When non-nil and true,

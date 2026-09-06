@@ -614,9 +614,155 @@ proc fetchGalleryTiles*(st: DesignReviewState) =
       fetchRun(capturedState.httpClient, rid, onRun)
   fetchListHistory(st.httpClient, bid, 50, 0, onHistory)
 
+# ---------------------------------------------------------------------------
+# Layout persistence.  REV-M8 built the whole stack — migration 004, the
+# ``design_review.save_gallery_layout`` / ``list_layouts`` SQL routines,
+# the ``/api/design-review/{save,promote,list}-layout(s)`` handlers, and
+# ``editor_http_client``'s ``postSaveLayout`` / ``fetchListLayouts`` —
+# but never connected the editor to any of it.  The gallery's Save chip
+# fell through to ``mountGalleryOverlay``'s nil-``onSave`` fallback
+# (``vm.markSaved("", 0)``), which clears the dirty flag WITHOUT
+# persisting, so a drag-rearrange was silently discarded on reload.
+#
+# ``saveGalleryLayout`` and ``loadGalleryLayout`` below are the two
+# halves of the round trip.  ``mountGalleryHostForEditor`` passes the
+# former as ``onSave``; ``startGalleryFetchOnOpen`` calls the latter
+# right after the tile fetch so a saved arrangement is restored on the
+# first open.
+#
+# Covered by ``tests/test_design_review_gallery_save_layout_wired.nim``,
+# which mounts the production host and asserts on the bytes that reach
+# a stub daemon socket — it goes red if either wiring is removed.
+# ---------------------------------------------------------------------------
+
+const DefaultGalleryLayoutOwner* = "local"
+  ## The editor has no session / identity layer yet, so ``scope: "user"``
+  ## saves need a stable owner id to satisfy the API's
+  ## "ownerUserId required for user scope" guard.  Every layout the
+  ## editor writes and reads uses this id.  When an identity layer
+  ## lands, seed ``GalleryVM.ownerUserId`` from it and this constant
+  ## becomes the anonymous fallback rather than the only value.
+  ## ``isonim-review layouts promote`` is how a personal layout becomes
+  ## the workspace default, so the shared case is still reachable.
+
+proc galleryOwnerUserId(st: DesignReviewState): string =
+  let explicit = st.galleryVm.ownerUserId.val
+  if explicit.len > 0: explicit else: DefaultGalleryLayoutOwner
+
+proc galleryScopeWire(st: DesignReviewState): string =
+  case st.galleryVm.saveScope.val
+  of ssWorkspace: "workspace"
+  of ssUser: "user"
+
+proc saveGalleryLayout*(st: DesignReviewState) =
+  ## POST the gallery's ``pendingLayout`` to the daemon and fold the
+  ## reply back into the VM.  Wired as the overlay's ``onSave``.
+  ##
+  ##   * 200 → ``markSaved(layout_id, version)``.  Recording the id +
+  ##     version is what turns the NEXT save into an optimistic-
+  ##     concurrency UPDATE instead of a duplicate INSERT.
+  ##   * 409 → ``markConflict``; the overlay already renders a
+  ##     reload-or-overwrite dialog off that signal.  ``isDirty`` stays
+  ##     true because nothing was persisted.
+  ##   * anything else (daemon down, 500) → leave the VM dirty so the
+  ##     chip stays on screen.  Silently clearing it is the bug this
+  ##     whole block exists to fix.
+  if st.httpClient == nil: return
+  let bid = st.briefId.val
+  if bid.len == 0: return
+  let vm = st.galleryVm
+  let scope = galleryScopeWire(st)
+  let name = if vm.layoutName.val.len > 0: vm.layoutName.val else: "default"
+  let layoutId = vm.activeLayoutId.val
+  var body = "{\"briefId\":\"" & jsonStringEscape(bid) &
+             "\",\"scope\":\"" & scope & "\""
+  if scope == "user":
+    body.add(",\"ownerUserId\":\"" &
+             jsonStringEscape(galleryOwnerUserId(st)) & "\"")
+  body.add(",\"name\":\"" & jsonStringEscape(name) & "\"")
+  body.add(",\"layout\":" & serializePendingLayout(vm))
+  if layoutId.len > 0:
+    body.add(",\"expectedVersion\":" & $vm.activeLayoutVersion.val)
+    body.add(",\"layoutId\":\"" & jsonStringEscape(layoutId) & "\"")
+  body.add("}")
+
+  let capturedVm = vm
+  let capturedLayoutId = layoutId
+  proc onSaved(res: HttpCallbackResult) =
+    case res.kind
+    of hcOk:
+      let newId = jsonStringField(res.body, "layout_id")
+      let newVersion = jsonIntField(res.body, "version")
+      capturedVm.markSaved(
+        if newId.len > 0: newId else: capturedLayoutId, newVersion)
+    of hcConflict:
+      # Hand the dialog the daemon's ``current`` row verbatim so it can
+      # show the competing version.
+      var currentRow = res.body
+      let idx = res.body.find("\"current\"")
+      if idx >= 0:
+        let (lo, hi) = findBalancedObject(res.body, idx)
+        if lo >= 0 and hi > lo:
+          currentRow = res.body[lo .. hi]
+      capturedVm.markConflict(capturedLayoutId, currentRow)
+    of hcError:
+      discard
+  postSaveLayout(st.httpClient, body, onSaved)
+
+proc loadGalleryLayout*(st: DesignReviewState) =
+  ## GET the saved layouts for the active brief and re-hydrate
+  ## ``pendingLayout`` from the row matching the VM's layout name.
+  ## Without this the save round trip is write-only: the daemon has the
+  ## arrangement but the user still sees the default order on reload.
+  if st.httpClient == nil: return
+  let bid = st.briefId.val
+  if bid.len == 0: return
+  let vm = st.galleryVm
+  let wantName =
+    if vm.layoutName.val.len > 0: vm.layoutName.val else: "default"
+  let capturedVm = vm
+  proc onLayouts(res: HttpCallbackResult) =
+    if res.kind != hcOk: return
+    # The body is a JSON array of layout rows.  Walk the top-level
+    # objects and take the first whose ``name`` matches; fall back to
+    # the first row so a layout saved under another name still shows.
+    var chosenLo = -1
+    var chosenHi = -1
+    var firstLo = -1
+    var firstHi = -1
+    var cursor = 0
+    while cursor < res.body.len:
+      let (lo, hi) = findBalancedObject(res.body, cursor)
+      if lo < 0 or hi <= lo: break
+      let row = res.body[lo .. hi]
+      if firstLo < 0:
+        firstLo = lo
+        firstHi = hi
+      if jsonStringField(row, "name") == wantName:
+        chosenLo = lo
+        chosenHi = hi
+        break
+      cursor = hi + 1
+    if chosenLo < 0:
+      chosenLo = firstLo
+      chosenHi = firstHi
+    if chosenLo < 0: return
+    let row = res.body[chosenLo .. chosenHi]
+    let layoutIdx = row.find("\"layout\"")
+    if layoutIdx < 0: return
+    let (llo, lhi) = findBalancedObject(row, layoutIdx)
+    if llo < 0 or lhi <= llo: return
+    # ``applyLayoutJson`` clears ``isDirty`` — the restored arrangement
+    # is what the daemon already holds, so there is nothing to save.
+    capturedVm.applyLayoutJson(row[llo .. lhi])
+    capturedVm.activeLayoutId.val = jsonStringField(row, "layout_id")
+    capturedVm.activeLayoutVersion.val = jsonIntField(row, "version")
+  fetchListLayouts(st.httpClient, bid, galleryOwnerUserId(st), onLayouts)
+
 proc startGalleryFetchOnOpen*(st: DesignReviewState) =
   ## Reactive effect: whenever ``galleryHostState`` flips to ``ghsOpen``
-  ## with an empty ``tiles`` cache, kick off the two-step fetch.
+  ## with an empty ``tiles`` cache, kick off the two-step fetch and then
+  ## restore any layout the user previously saved for this brief.
   let capturedState = st
   createRenderEffect proc() =
     let open = capturedState.galleryHostState.val == ghsOpen
@@ -624,6 +770,7 @@ proc startGalleryFetchOnOpen*(st: DesignReviewState) =
     if capturedState.galleryVm.tiles.val.len > 0: return
     if capturedState.briefId.val.len == 0: return
     fetchGalleryTiles(capturedState)
+    loadGalleryLayout(capturedState)
 
   # When the briefId changes while the host is closed, drop any
   # stale tiles so the next open re-fetches against the new brief.
@@ -855,7 +1002,16 @@ proc mountGalleryHostForEditor*[R, E](r: R; parent: E; vm: EditorVM): E =
   # CHRM-M7 polish — thread the narrow-viewport signal through so the
   # gallery toolbar can swap to a single-line horizontally-scrollable
   # chip strip at ≤768 px (Pattern A in the polish wave brief).
-  mountGalleryOverlay[R, E](r, host, st.galleryVm, narrow = st.narrow)
+  #
+  # ``onSave`` MUST be supplied here.  ``mountGalleryOverlay`` falls
+  # back to a VM-local ``markSaved("", 0)`` when it is nil — the chip
+  # then clears the dirty flag while persisting nothing, so the user's
+  # rearranged layout is lost on the next reload.  See
+  # ``tests/test_design_review_gallery_save_layout_wired.nim``.
+  let onSaveLayout = proc() =
+    saveGalleryLayout(capturedState)
+  mountGalleryOverlay[R, E](r, host, st.galleryVm, onSave = onSaveLayout,
+                            narrow = st.narrow)
   # CHRM-M7 — re-parenting bookkeeping. When the viewport flips to
   # narrow AND the gallery is open, detach the host from its inline
   # parent (the centre column) and attach it to ``document.body`` so
