@@ -502,6 +502,11 @@ test-design-review-gallery: isonim-review-build
         tests/test_design_review_gallery_vm.nim
     nim c -r --path:src --path:. --hints:off \
         tests/test_design_review_gallery_no_setstyle.nim
+    # ``gmFullScreen`` is reachable from the toolbar chip AND from a
+    # shift-click.  These tests keep it from regressing back into a
+    # state that renders nothing, and keep ESC bound.
+    nim c -r --path:src --path:. --path:../nim-everywhere/src --hints:off \
+        tests/test_design_review_gallery_full_screen.nim
     nim c -r --path:. --path:src --path:vendor/db_connector/src \
         --path:../nim-everywhere/src --hints:off \
         tests/test_design_review_api_list_history.nim

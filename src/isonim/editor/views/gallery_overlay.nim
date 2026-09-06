@@ -307,12 +307,18 @@ proc createGalleryVM*(briefId: string;
     applyPendingLayout(filtered, capturedVm.pendingLayout.val)
   vm.rows = createMemo[seq[GalleryRow]] proc(): seq[GalleryRow] =
     groupByPreview(capturedVm.effectiveTiles.val)
-  # When mode leaves gmFullTab the focused capture id must clear; if
-  # the spec changes to keep it persistent across mode switches the
-  # full-tab tests will catch the regression.
+  # When mode leaves the single-capture modes the focused capture id
+  # must clear; if the spec changes to keep it persistent across mode
+  # switches the full-tab tests will catch the regression.
+  #
+  # ``gmFullScreen`` is a single-capture mode too — it is the same
+  # focused capture as ``gmFullTab``, promoted to the whole editor.
+  # Clearing the id on the way in (which this effect used to do, since
+  # it tested ``!= gmFullTab`` alone) discarded the capture the user
+  # shift-clicked before ``renderFullTab`` could ever draw it.
   createRenderEffect proc() =
     let m = capturedVm.mode.val
-    if m != gmFullTab:
+    if m != gmFullTab and m != gmFullScreen:
       capturedVm.fullTabCaptureId.val = none[string]()
   vm
 
@@ -964,6 +970,48 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM;
       capturedVm.markSaved("", 0)
   r.addEventListener(saveButton, "click", savePressHandler)
   r.addEventListener(saveButton, "keydown", savePressHandler)
+
+  # ESC handling.  ``restoreMode`` has been documented as "the ESC
+  # handler" since REV-M7 but nothing ever bound it — its only caller
+  # was a unit test.  Combined with ``gmFullScreen`` having no view,
+  # that made shift-clicking a tile a trap: blank body, no key out.
+  #
+  # Same idiom as ``shell.nim``'s ``data-shell-escape-key`` node: a
+  # zero-size node carrying a NO-ARG ``keydown`` handler, plus a JS
+  # document-level listener that filters on ``event.key === 'Escape'``
+  # and dispatches ``keydown`` at it.  Keeping the key filter in the
+  # JS shim is what lets the handler stay no-arg, which in turn is
+  # what lets this generic (``R``, ``E``) mount bind it at all — the
+  # event type differs per renderer backend.
+  var escKeyNode: E
+  let escKeyNodeOuter = ui(r):
+    tdiv(ref = escKeyNode,
+          `data-design-review-gallery-escape-key` = "true",
+          position = "absolute", width = "0", height = "0",
+          overflow = "hidden", `aria-hidden` = "true")
+  r.appendChild(root, escKeyNodeOuter)
+  r.addEventListener(escKeyNode, "keydown", proc() =
+    let current = capturedVm.mode.val
+    if current == gmGrid: return
+    capturedVm.restoreMode()
+    if capturedVm.mode.val == current:
+      # ``priorMode`` did not move us (it still names the mode we are
+      # already in — e.g. chip-driven full-tab → full-screen, then a
+      # second ESC).  ESC must never be a no-op while a non-grid mode
+      # is on screen, so fall through to the grid.
+      capturedVm.mode.val = gmGrid)
+  when defined(js):
+    {.emit: ["""
+      (function () {
+        var node = """, escKeyNode, """;
+        if (!node || node.__isonimGalleryEscBound) return;
+        node.__isonimGalleryEscBound = true;
+        document.addEventListener('keydown', function (event) {
+          if (!event || event.key !== 'Escape') return;
+          node.dispatchEvent(new Event('keydown', { bubbles: false }));
+        });
+      })();
+    """].}
 
   # REV-M8 follow-up — shared drag-source tracker.  ``dragstart`` on
   # any tile writes its captureId here; ``drop`` on any (possibly
@@ -1783,10 +1831,23 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM;
                    if mode == gmGrid: "true" else: "false")
     r.setAttribute(bodyWrap, "data-gallery-visible",
                    if mode == gmGrid: "true" else: "false")
+    # ``gmFullScreen`` shares ``fullTabHost``: same focused capture,
+    # same body, only the OVERLAY's own box changes (it is promoted to
+    # cover the whole editor rather than sitting inside the centre
+    # column). Before this, ``gmFullScreen`` hid every body host and
+    # rendered nothing at all — a state the user could enter from the
+    # toolbar chip or a shift-click and be left staring at an empty
+    # panel.
+    let singleCapture = mode == gmFullTab or mode == gmFullScreen
     r.setAttribute(fullTabHost, "data-gallery-visible",
-                   if mode == gmFullTab: "true" else: "false")
+                   if singleCapture: "true" else: "false")
     r.setAttribute(compareHost, "data-gallery-visible",
                    if mode == gmCompare: "true" else: "false")
+    # Whole-editor promotion flag. The JS shim below drives the actual
+    # ``position: fixed`` box; the attribute is what native tests and
+    # any wrapping CSS key off.
+    r.setAttribute(root, "data-design-review-gallery-fullscreen",
+                   if mode == gmFullScreen: "true" else: "false")
     # CHRM-M6 Wave A — also drive the inline display style so the host
     # swap actually paints. Pre-Wave-A the mode-mirror flipped only
     # the data-attr, so gridHost stayed ``display: flex`` from its
@@ -1811,14 +1872,34 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM;
       let gridDisp: cstring =
         if mode == gmGrid: "flex" else: "none"
       let fullDisp: cstring =
-        if mode == gmFullTab: "flex" else: "none"
+        if singleCapture: "flex" else: "none"
       let cmpDisp: cstring =
         if mode == gmCompare: "flex" else: "none"
+      # Full-screen box: lift the overlay out of the flow so it covers
+      # the editor. Reset back to the inline box on every other mode so
+      # the promotion is not sticky. Only the properties listed here are
+      # touched — the DSL's flex/padding/colour declarations survive.
+      let fsPos: cstring = if mode == gmFullScreen: "fixed" else: ""
+      let fsInset: cstring = if mode == gmFullScreen: "0px" else: ""
+      let fsZ: cstring = if mode == gmFullScreen: "9999" else: ""
+      let fsMaxH: cstring = if mode == gmFullScreen: "100%" else: "100%"
+      let fsRadius: cstring = if mode == gmFullScreen: "0px" else: "8px"
       {.emit: ["""
         try {
           if (""", bodyWrap, """ && """, bodyWrap, """.style) """, bodyWrap, """.style.display = """, gridDisp, """;
           if (""", fullTabHost, """ && """, fullTabHost, """.style) """, fullTabHost, """.style.display = """, fullDisp, """;
           if (""", compareHost, """ && """, compareHost, """.style) """, compareHost, """.style.display = """, cmpDisp, """;
+          if (""", root, """ && """, root, """.style) {
+            var s = """, root, """.style;
+            s.position = """, fsPos, """;
+            s.top = """, fsInset, """;
+            s.left = """, fsInset, """;
+            s.right = """, fsInset, """;
+            s.bottom = """, fsInset, """;
+            s.zIndex = """, fsZ, """;
+            s.maxHeight = """, fsMaxH, """;
+            s.borderRadius = """, fsRadius, """;
+          }
         } catch (e) { /* ignore */ }
       """].}
     # Chip aria-selected mirrors the mode signal.
