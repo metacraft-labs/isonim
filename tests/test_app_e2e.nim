@@ -522,8 +522,15 @@ proc createDemoApp(store: TaskStore): Node =
   createRenderEffect do:
     let tasks = store.filteredTasks.val
     section.innerHTML = ""
+    # `discard` on both branches, deliberately. `dom_api.nim`'s appendChild is
+    # `proc(p, c: Node): Node {.discardable.}`, and `discardable` only permits
+    # ignoring the result in STATEMENT position — it does not stop this
+    # if/else, the last thing in the block, from being an expression of type
+    # `Node`. That made the whole `do:` body a `proc(): Node`, which
+    # `createRenderEffect(fn: proc())` does not accept. Discarding explicitly
+    # types both branches void, so the block is void and the overload resolves.
     if tasks.len == 0:
-      section.appendChild(emptyMsg.Node.cloneNode(true))
+      discard section.appendChild(emptyMsg.Node.cloneNode(true))
     else:
       let ul = document.createElement("ul")
       ul.className = "task-list"
@@ -551,7 +558,7 @@ proc createDemoApp(store: TaskStore): Node =
         )
         li.appendChild(removeBtn)
         ul.appendChild(li)
-      section.appendChild(ul)
+      discard section.appendChild(ul)
 
   # Footer
   let footerContainer = document.createElement("div")

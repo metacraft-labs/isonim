@@ -1,6 +1,63 @@
 # Cross-repo siblings cloned by setup-dev-env at workspace-lock-pinned
 # revisions (see codetracer-specs/Testing/Cross-Repo-CI-Integration.md).
-isonim-render-serve
+#
+# This list is the set of `../../<repo>` entries `tests/config.nims` actually
+# resolves, plus the repos those pull in transitively. It has to be COMPLETE:
+# ci.yml ran a bare `actions/checkout@v4` with no `setup-dev-env` at all, so
+# none of them were on disk and 25 of the 29 `just test-c` entries died on
+# `cannot open file`. Measured on run 33226741540, all three runners:
+#
+#   src/isonim/core/platform.nim(4, 22) Error: cannot open file: nim_everywhere/platform
+#
+# Unlike isonim-tui, isonim's recipes do not pipe into `tee`, so `just` aborted
+# on the first failing line and the jobs went honestly RED rather than falsely
+# green -- every ci.yml run since 2026-08-17 has failed. The diagnosis was still
+# opaque: one line naming a Nim module, nothing naming this file.
+#
+# `just check-siblings` now guards both halves -- that every name here is on
+# disk, and that every `../../` path in `tests/config.nims` is named here. The
+# second is the drift this file actually suffered: 8 paths, 4 declarations.
+
+# Directly imported by src/ and tests/.
+nim-everywhere
 nim-acp
 nim-agents
-nim-everywhere
+isonim-render-serve
+
+# Transitive, and each one verified load-bearing by removing it from a
+# provisioned checkout and re-running `nim check`:
+#
+#   nim-agent-harbor  <- nim-agents/src/nim_agents/client.nim imports
+#                        `nim_agent_harbor`. Nothing in isonim imports it
+#                        directly, which is why it was easy to miss.
+#   nim-faststreams   <- src/isonim/server/http_types.nim imports
+#                        `faststreams/{inputs,outputs}`; reached from `test-c`
+#                        via tests/test_http_types.nim.
+#   isonim-cocoa      <- isonim-render-serve/src/isonim_render_serve/adapters/
+#                        h264_videotoolbox_encoder.nim imports
+#                        `isonim_cocoa/appkit/capture_videotoolbox`
+#                        unconditionally on macOS.
+nim-agent-harbor
+nim-faststreams
+isonim-cocoa
+
+# nim-stew is reached only through nim-faststreams: `faststreams/inputs.nim`
+# imports `stew/ptrops`. It is easy to conclude it is unneeded, because on a
+# developer machine a nimble-installed `stew` (`~/.nimble/pkgs2/stew-0.5.0`)
+# satisfies it and removing this sibling changes nothing. It is NOT satisfied
+# on a runner: the flake dev shell installs no nimble packages and the repo
+# vendors no stew. Verified with `NIMBLE_DIR` pointed at an empty directory --
+# without this entry, `nim check tests/test_http_types.nim` fails with
+# `nim-faststreams/faststreams/inputs.nim(3, 7) Error: cannot open file:
+# stew/ptrops`; with it, clean.
+#
+# Pinned to an explicit revision rather than resolved from the workspace lock,
+# for the same reason isonim-tui pins the tree-sitter grammars: `nim-stew` is
+# not a member of the `isonim` project manifest, so a bare entry resolves to a
+# workspace-membership gap instead of a clone. `metacraft-manifests` already
+# carries `repos/nim-stew.toml` and `projects/codetracer.toml` already includes
+# it; the durable fix is one line adding that include to `projects/isonim.toml`,
+# after which this pin should be dropped for a bare `nim-stew`. The SHA is
+# `master` @ 83eb115, which is also `status-im/master` -- i.e. upstream tip, not
+# a fork divergence.
+nim-stew=83eb1157963b7f49351dbdd858355fa990bbe23c

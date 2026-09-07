@@ -30,6 +30,88 @@ check-submodules:
     fi
     echo "[check-submodules] all $(git submodule status --recursive | wc -l | tr -d ' ') submodule(s) initialised"
 
+# Fail loudly when a declared cross-repo sibling is not provisioned, and when
+# `tests/config.nims` reaches a sibling `.github/sibling-repos` does not
+# declare. Same purpose as `check-submodules`, one layer out.
+#
+# Both halves were broken at once. ci.yml carried no `setup-dev-env`, so NO
+# sibling was on disk; and `.github/sibling-repos` named 4 of the 8 that
+# `tests/config.nims` resolves, so even adding the step would have provisioned
+# half a workspace. Either half surfaces as `cannot open file: <nim module>`
+# from inside src/ — a message that names neither this repo's declaration file
+# nor the repo the module lives in.
+#
+# Wired into CI ahead of the test recipes; also runnable by hand.
+check-siblings:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "{{justfile_directory()}}"
+
+    decl_file=".github/sibling-repos"
+    cfg="tests/config.nims"
+
+    if [ ! -f "$decl_file" ]; then
+      echo "ERROR: $decl_file is missing; CI has nothing to provision from." >&2
+      exit 1
+    fi
+
+    # One repo per line. Strip comments and blanks, then strip the optional
+    # `owner/` prefix and the optional `=<rev>` / `!=<rev>` pin, leaving the
+    # bare name — which is what the clone is placed at (`../<name>`).
+    declared="$(
+      sed -e 's/#.*//' -e 's/[[:space:]]*$//' "$decl_file" \
+        | sed -e 's/!\{0,1\}=.*$//' -e 's#^.*/##' \
+        | grep -v '^$' \
+        | sort -u
+    )"
+
+    # PART 1 — everything declared must be on disk next to this checkout.
+    missing=""
+    for repo in $declared; do
+      [ -d "../$repo" ] || missing="$missing $repo"
+    done
+    if [ -n "$missing" ]; then
+      echo "ERROR: cross-repo sibling(s) declared in $decl_file but not present:" >&2
+      for repo in $missing; do echo "  - ../$repo" >&2; done
+      echo "" >&2
+      echo "Nim resolves these through 'switch(\"path\", ...)' in $cfg." >&2
+      echo "Absent, the compile fails deep inside src/ with 'cannot open file:'" >&2
+      echo "naming a module, not a repo — which is what this check replaces." >&2
+      echo "" >&2
+      echo "Locally: clone each one adjacent to this repo (a workspace checkout" >&2
+      echo "already has them), e.g.  git -C .. clone git@github.com:metacraft-labs/<name>" >&2
+      echo "In CI: the job must run metacraft-labs/metacraft-github-actions/setup-dev-env," >&2
+      echo "which clones every $decl_file entry at its workspace-lock revision." >&2
+      exit 1
+    fi
+
+    # PART 2 — everything tests/config.nims reaches must be declared. This is
+    # the drift that made PART 1 insufficient on its own: a path added here
+    # without a matching declaration is a sibling CI will never clone.
+    if [ -f "$cfg" ]; then
+      reached="$(
+        grep -o -E '\.\./\.\./[A-Za-z0-9_.-]+' "$cfg" \
+          | sed -e 's#^\.\./\.\./##' \
+          | sort -u
+      )"
+      undeclared=""
+      for repo in $reached; do
+        printf '%s\n' "$declared" | grep -q -x -F "$repo" || undeclared="$undeclared $repo"
+      done
+      if [ -n "$undeclared" ]; then
+        echo "ERROR: $cfg resolves sibling(s) that $decl_file does not declare:" >&2
+        for repo in $undeclared; do echo "  - $repo" >&2; done
+        echo "" >&2
+        echo "setup-dev-env clones exactly what $decl_file names, so an" >&2
+        echo "undeclared sibling is one CI silently builds without." >&2
+        echo "Add each name to $decl_file (one per line)." >&2
+        exit 1
+      fi
+      echo "[check-siblings] $(printf '%s\n' "$reached" | wc -l | tr -d ' ') sibling path(s) in $cfg, all declared"
+    fi
+
+    echo "[check-siblings] all $(printf '%s\n' "$declared" | wc -l | tr -d ' ') declared sibling(s) present"
+
 # Generate build/tailwind.css + build/tailwind-styles.json from the
 # isonim source via the real Tailwind CSS CLI.  CodeTracer's
 # scripts/build-once.sh invokes this before any Nim compile because
@@ -77,9 +159,26 @@ test-c:
     nim c -r tests/test_streaming_stress.nim
     nim c -r tests/test_third_party.nim
     nim c -r tests/poc_monaco_host.nim
+    # Reaches `nim_everywhere/async_compat` through `src/isonim/core/resource.nim`.
+    # Was in no recipe at all and named in no exclusion note — the same shape as
+    # `test_flexbox` before the yoga fix, where being unreachable from any recipe
+    # is what kept the missing provisioning invisible. It compiles and passes
+    # 10/10 on the C target, so it gets a normal entry. C only: it calls
+    # `newFuture`, which the JS backend does not provide.
+    nim c -r tests/test_resource_async.nim
 
-# Run tests on JS target
-test-js:
+# Run tests on JS target.
+#
+# `build-tailwind` is a prerequisite, not a convention: on the JS target
+# `src/isonim/dsl/tailwind.nim` reaches `build/tailwind-styles.json` through
+# `staticRead`, which is uncatchable at compile time — the `try/except` around
+# it at tailwind.nim:43 does NOT save it — so `nim js tests/test_dsl.nim` dies
+# with `cannot open file: .../build/tailwind-styles.json` unless that file was
+# generated first. Third unprovisioned build input of the same family as the
+# yoga submodule and the cross-repo siblings, and the one the other two were
+# hiding: this lane never got past `test_signals` while the siblings were
+# missing, so it had never reached `test_dsl` to fail there.
+test-js: build-tailwind
     nim js -r tests/test_signals.nim
     nim js -r tests/test_effects.nim
     nim js -r tests/test_clock.nim

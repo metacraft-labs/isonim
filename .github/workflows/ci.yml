@@ -1,5 +1,45 @@
 name: CI
 
+# Every job here compiles against sibling repositories that are NOT part of
+# this checkout: `tests/config.nims` carries `switch("path", "$projectDir/../../
+# <repo>/...")` for each entry in `.github/sibling-repos`. This workflow ran a
+# bare `actions/checkout@v4` with NO provisioning step of any kind, so none of
+# them were on disk and nothing cross-repo resolved.
+#
+# Unlike isonim-tui -- whose recipes pipe into `tee`, so the same gap showed up
+# as 18 of 20 jobs reporting "success" over tens of thousands of "cannot open
+# file" errors (run 29056929571, fixed in isonim-tui a230eb3) -- isonim's
+# recipes do not, so `just` aborts on the first failing line and these jobs went
+# honestly RED. Every run of this workflow since 2026-08-17 has failed. Measured
+# on run 33226741540, identically on all three runners:
+#
+#   src/isonim/core/platform.nim(4, 22) Error: cannot open file: nim_everywhere/platform
+#
+# Red, but not legible: one line naming a Nim module, nothing naming the repo it
+# lives in or the file that was supposed to declare it. Reproduced exactly by
+# checking this tree out with no siblings adjacent, where 25 of the 29 `test-c`
+# entries fail the same way.
+#
+# Siblings are cloned by `setup-dev-env`, which delegates to `clone-siblings`
+# and resolves each name in `.github/sibling-repos` against the per-commit
+# workspace lock in the manifest repo. That is the single approved sibling
+# revision source (codetracer-specs/Testing/Cross-Repo-CI-Integration.md); a
+# second hand-pinned `actions/checkout` would be another place for revisions to
+# drift away from what the workspace actually builds.
+#
+# NOTE ON THE LOCK. `clone-siblings` needs the commit under test to CARRY a
+# workspace lock, and fails loudly when it does not -- which is what
+# ci-reprobuild.yml (already on `setup-dev-env`) has been dying of:
+#
+#   resolve-sibling-rev: no workspace lock found for isonim
+#
+# The manifest repo holds exactly one isonim lock today
+# (locks/dev/isonim/1f8087c8….xml). Locks are written by the pre-push gate in
+# a workspace checkout and re-anchored onto mainline by `publish-workspace-lock`;
+# a branch pushed from a checkout without the managed hooks never gets one. That
+# is a hook-coverage gap upstream of this workflow, not something this file can
+# fix, and it gates these jobs going green as much as the missing step did.
+
 on:
   push:
     branches: [main, dev, stable]
@@ -20,6 +60,24 @@ jobs:
         runner: [eph-linux-x64, eph-linux-arm64, eph-macos-arm64]
     runs-on: ${{ matrix.runner }}
     steps:
+      # The manifest repo holding the workspace locks (metacraft-manifests) is
+      # private, so `secrets.GITHUB_TOKEN` cannot read it. Mint an installation
+      # token from the org's CI Token Provider app instead.
+      #
+      # Spelled `secrets.` to match ci-reprobuild.yml, which is the only wiring
+      # in this repo observed to work: on run 33226741514 it minted a token and
+      # got as far as checking out the private manifest repo. isonim carries the
+      # app id BOTH as a repo secret and as the org variable
+      # `vars.CI_TOKEN_PROVIDER_APP_ID`; sibling repos that carry only the org
+      # variable (isonim-tui) must use `vars.` there.
+      - name: Generate CI token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.CI_TOKEN_PROVIDER_APP_ID }}
+          private-key: ${{ secrets.CI_TOKEN_PROVIDER_PRIVATE_KEY }}
+          owner: metacraft-labs
+
       # `submodules: recursive` is load-bearing: `src/isonim/layout/yoga`
       # (facebook/yoga) is a submodule that `yoga_bindings.nim` compiles from
       # source. A bare checkout leaves it empty. CI stayed green only because
@@ -30,21 +88,34 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Setup Nix
-        uses: metacraft-labs/nixos-modules/.github/setup-nix@main
+      # Replaces the bare `nixos-modules/.github/setup-nix` this job used to
+      # run. `env-flavor: nix` gets the same Nix install and substituter trust
+      # through the same action, and additionally clones `.github/sibling-repos`
+      # adjacent to the checkout; `dev-exec` below is its `nix develop --command`.
+      - name: Setup dev env (clones .github/sibling-repos at lock revisions)
+        uses: metacraft-labs/metacraft-github-actions/setup-dev-env@dev
         with:
-          trusted-public-keys: ${{ vars.TRUSTED_PUBLIC_KEYS }}
+          env-flavor: nix
+          gh-token: ${{ steps.app-token.outputs.token }}
           substituters: ${{ vars.SUBSTITUTERS }}
-          nix-github-token: ${{ secrets.GITHUB_TOKEN }}
+          trusted-public-keys: ${{ vars.TRUSTED_PUBLIC_KEYS }}
 
       # Guards the checkout option above: if `submodules: recursive` is ever
       # dropped, this fails here with a legible message and the remedy, rather
       # than 19 "cannot find: .../YGConfig.cpp" lines in a consumer's build.
       - name: Verify submodules are provisioned
-        run: nix develop --command just check-submodules
+        run: dev-exec just check-submodules
+
+      # Guards the step above, and the completeness of the file it reads: fails
+      # naming the absent repos and the action that clones them, rather than one
+      # "cannot open file: nim_everywhere/platform" from inside src/. Also fails
+      # when tests/config.nims reaches a sibling the declaration file omits,
+      # which is the drift that left 8 paths against 4 declarations.
+      - name: Verify cross-repo siblings are provisioned
+        run: dev-exec just check-siblings
 
       - name: Run C backend tests
-        run: nix develop --command just test-c
+        run: dev-exec just test-c
 
       - name: Run JS backend tests
-        run: nix develop --command just test-js
+        run: dev-exec just test-js

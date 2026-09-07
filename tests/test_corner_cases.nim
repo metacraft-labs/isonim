@@ -250,11 +250,17 @@ suite "Concurrent Signal Bursts":
       for i in 0 ..< 100:
         signals[i].val = i + 1
 
-      # Verify final state is correct
-      var sum = 0
+      # Verify final state is correct.
+      # Named `finalSum`, not `sum`: `createEffect do:` above splices its body
+      # into THIS scope, so its own `var sum` is already declared here and a
+      # second `var sum` is "redefinition of 'sum'". That error made
+      # `just test-c` red at HEAD independently of the cross-repo sibling gap —
+      # it was simply never reached, because the recipe aborted 22 entries
+      # earlier on `cannot open file: nim_everywhere/platform`.
+      var finalSum = 0
       for i in 0 ..< 100:
-        sum += signals[i].val
-      check sum == 5050  # sum of 1..100
+        finalSum += signals[i].val
+      check finalSum == 5050  # sum of 1..100
 
 suite "Resource Cancellation":
   test "changing source before first fetch completes discards first result":
