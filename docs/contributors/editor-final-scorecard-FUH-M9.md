@@ -14,6 +14,17 @@ cell.
 
 ---
 
+> **Configuration caveat.** Every number below was measured with the
+> matrix harness spawning launchers under an explicit `--encoder`. The
+> editor passes no `--encoder` at any spawn site, so only gpui (which
+> self-defaults to WebP per EMC-M2) runs the W path by default; cocoa —
+> the backend that produced the 29 B idle floor and the L1 = 0 lossless
+> cells — stays on raw RGBA under the editor. Those two figures
+> describe the WebP transport when a caller selects it, not the shipped
+> editor's default path. See
+> `full-acceptance-matrix-FUH-M7.md` § "This matrix measures a harness
+> configuration, not the editor's default".
+
 ## 1. Executive summary
 
 EPP delivered the frame-latency, encoder, decoder, DPR, and

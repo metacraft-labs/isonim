@@ -270,6 +270,40 @@ not the editor's default for Android. Per the FUH-M7 brief explicitly:
 "skip Android — mockJni works but desktop-spawn is not the editor's
 default".
 
+**This matrix measures a harness configuration, not the editor's
+default.** `tests/browser/e2e_editor_full_acceptance_matrix_live.mjs`
+always spawns launchers with an explicit `--encoder` (see the table
+above). The editor never does: neither
+`isonim/src/isonim/editor/design_review/backend_launcher.nim`'s
+`launchBackend` argv, nor
+`isonim/src/isonim/editor/streaming_preview.nim`'s bridge spawn, nor
+`isonim-examples/Justfile`'s `editor-serve-all` passes `--encoder`, so
+each launcher falls back to its own default. That means:
+
+- **gpui** — self-defaults to `auto` → WebP (`backends/gpui.nim`,
+  EMC-M2 Option A, under `-d:withCodecWebP`). The editor's GPUI
+  previews therefore DO run the W path, and this table's `raw_rgba`
+  row for gpui describes the harness, not the product.
+- **cocoa, freya, web, tui, tui_term, ios, android** — stay on
+  `raw_rgba`. Nothing in the editor promotes them.
+
+Consequently **Criterion 2 (29 B idle floor) and Criterion 6 (L1 = 0
+lossless) are cocoa-with-`--encoder webp` results only**, and the
+editor never produces that configuration. Quoting either number as a
+property of the shipped editor is wrong; both describe what the W path
+achieves when a caller selects it.
+
+This is a deliberate arrangement (launchers own their defaults, the
+editor stays neutral), not an oversight — but it was undocumented, and
+until `isonim-examples` commit "fix(launchers): stop silently
+discarding --encoder" the flag itself was a placebo on six of the eight
+launchers: `runDemoBridgeWith` defaulted `encoder` to `ekRawRgba` and
+only cocoa and gpui passed it through, so `isonim-examples-web
+--encoder webp` reported `encoder=raw_rgba` with no diagnostic. Any
+pre-fix measurement taken on a non-cocoa, non-gpui launcher with
+`--encoder` on the command line was measuring raw RGBA regardless of
+what the flag said.
+
 ### 2.2 Viewport axis (3)
 
 | Pill label | Width × Height (CSS px) | Notes                                                                                                |

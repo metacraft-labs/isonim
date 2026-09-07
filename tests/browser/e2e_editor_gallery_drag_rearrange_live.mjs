@@ -20,9 +20,19 @@
 //     (``[data-design-review-gallery-save-button="true"]``) whose
 //     ``data-design-review-gallery-save-visible`` flag mirrors
 //     ``isDirty``. Clicking it calls the caller-supplied ``onSave``
-//     callback (or falls back to ``vm.markSaved`` when no callback
-//     was wired). On success the chip carries ``data-saved="true"``
+//     callback. On success the chip carries ``data-saved="true"``
 //     briefly so the e2e can observe the transition.
+//
+// NOTE ON WHAT THIS FILE DOES *NOT* COVER. Until the save-layout
+// wiring fix, the production mount passed no ``onSave`` at all, so the
+// click below exercised ``mountGalleryOverlay``'s nil-``onSave``
+// fallback (``vm.markSaved("", 0)``) — the dirty flag cleared, this
+// e2e went green, and the layout was discarded on reload. The
+// assertions here are DOM-state assertions; they cannot tell a real
+// POST from the fallback. The wiring itself is pinned by
+// ``tests/test_design_review_gallery_save_layout_wired.nim``, which
+// asserts on the bytes that reach the daemon. Do not treat a green
+// run of this file as evidence that persistence works.
 //
 // This file used to assert the inverse "REV-M7 contract: drop records
 // pendingLayout but does not re-render". That assertion is now
