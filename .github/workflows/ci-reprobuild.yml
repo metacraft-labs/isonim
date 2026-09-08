@@ -66,13 +66,21 @@ jobs:
           owner: metacraft-labs
 
       - name: Setup dev env (reprobuild flavor)
-        # setup-dev-env clones the siblings listed in .github/sibling-repos
-        # (codetracer-trace-format, codetracer-trace-format-nim) at the
-        # workspace-lock-pinned revisions before materialising the env.
+        # setup-dev-env clones the siblings listed in .github/sibling-repos at
+        # the workspace-lock-pinned revisions before materialising the env.
+        # (That file used to be misdescribed here as naming
+        # codetracer-trace-format / codetracer-trace-format-nim — neither is nor
+        # was in it; it names isonim's own eight Nim siblings.)
         uses: metacraft-labs/metacraft-github-actions/setup-dev-env@dev
         with:
           env-flavor: reprobuild
           gh-token: ${{ steps.ci_token.outputs.token }}
+
+      - name: Verify cross-repo siblings are provisioned
+        # Same guard ci.yml runs. This job already reached setup-dev-env, so it
+        # is the one that surfaces sibling problems first — see run 33226741514,
+        # "resolve-sibling-rev: no workspace lock found for isonim".
+        run: dev-exec just check-siblings
 
       - name: repro build
         # Builds the conventional `build` collection declared in

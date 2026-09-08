@@ -336,7 +336,39 @@
 ##     Still out of the sanctioned scope: ``test_branded_ui`` (real API drift —
 ##     ``branded_ui.nim:212`` calls a two-arg ``textContent`` that no longer
 ##     exists) and ``test_faststreams_ssr`` (references the removed
-##     ``renderToOutputStream``) — genuinely stale, so they get no edge.
+##     ``renderToOutputStream``) — genuinely stale, so they get no edge. Both
+##     re-verified against a fully provisioned checkout while fixing the sibling
+##     gap below: the stated reasons are the actual compiler errors, so these
+##     two exclusions stand.
+##     The same sweep found the yoga pattern once more, in the tests that reach
+##     the CROSS-REPO siblings rather than the submodule. Three tests were in no
+##     ``Justfile`` recipe:
+##       - ``test_faststreams_ssr`` — genuinely stale, as above.
+##       - ``test_resource_async`` — no recorded reason, and none holds. It
+##         compiles and passes 10/10 on the C target and is now in ``test-c``
+##         (C only: it calls ``newFuture``, absent on the JS backend). It
+##         reaches ``nim_everywhere`` through ``src/isonim/core/resource.nim``.
+##       - ``test_editor_real_preview`` — no recorded reason either, but this
+##         one has a real environmental dependency rather than a false
+##         justification: it launches ``../isonim-examples/build/backends/
+##         isonim-examples-tui`` and fails ``[FAILED] real launcher feeds a
+##         manifest the VM hit-tests back to a task row`` without it. Note
+##         ``isonim-examples`` is a member of the isonim project manifest but is
+##         NOT in ``tests/config.nims`` (it is a runtime, not a compile-time,
+##         dependency), so ``.github/sibling-repos`` does not declare it and
+##         ``check-siblings`` does not ask for it. Bringing this test into scope
+##         means declaring that sibling and building its backend first; left
+##         alone here, recorded so the exclusion is a decision and not an
+##         accident.
+##
+## **Cross-repo siblings.** ``tests/config.nims`` resolves 8 sibling repos
+## through ``$projectDir/../../``; ``.github/sibling-repos`` declared 4 and
+## ``ci.yml`` ran no ``setup-dev-env`` at all, so CI had none of them. All 8 are
+## load-bearing — three only transitively (``nim-agent-harbor`` via
+## ``nim-agents``, ``isonim-cocoa`` via ``isonim-render-serve``, ``nim-stew`` via
+## ``nim-faststreams``), which is why they were the ones omitted. ``just
+## check-siblings`` now fails on either half: a declared sibling missing from
+## disk, or a ``config.nims`` path missing from the declaration file.
 ##
 ## **Tool provisioning.** ``defaultToolProvisioning "path"`` matches the
 ## canonical recipes: the nix dev shell puts ``nim`` + ``gcc`` on ``PATH``,
