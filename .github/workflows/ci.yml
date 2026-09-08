@@ -27,18 +27,28 @@ name: CI
 # second hand-pinned `actions/checkout` would be another place for revisions to
 # drift away from what the workspace actually builds.
 #
-# NOTE ON THE LOCK. `clone-siblings` needs the commit under test to CARRY a
-# workspace lock, and fails loudly when it does not -- which is what
-# ci-reprobuild.yml (already on `setup-dev-env`) has been dying of:
+# NOTE ON THE LOCK. A BARE entry in `.github/sibling-repos` needs the probed
+# commit to CARRY a workspace lock, and `clone-siblings` fails loudly when it
+# does not -- which is what ci-reprobuild.yml (already on `setup-dev-env`) has
+# been dying of:
 #
 #   resolve-sibling-rev: no workspace lock found for isonim
 #
 # The manifest repo holds exactly one isonim lock today
-# (locks/dev/isonim/1f8087c8….xml). Locks are written by the pre-push gate in
-# a workspace checkout and re-anchored onto mainline by `publish-workspace-lock`;
-# a branch pushed from a checkout without the managed hooks never gets one. That
-# is a hook-coverage gap upstream of this workflow, not something this file can
-# fix, and it gates these jobs going green as much as the missing step did.
+# (locks/dev/isonim/1f8087c8….xml), for an old commit; none for `dev`'s tip, and
+# on a `pull_request` event the probed commit is the PR BASE sha, not the head.
+# Locks are written by the reprobuild pre-push gate in a workspace checkout and
+# re-anchored onto mainline by `publish-workspace-lock`; isonim runs neither, so
+# no commit of it acquires one. That is a hook-coverage gap upstream of this
+# workflow and not something this file can fix.
+#
+# It no longer gates these jobs, because every entry in `.github/sibling-repos`
+# now carries an explicit SHA. `clone-siblings.sh` raises `NEED_LOCK` only for
+# an entry with an empty ref, and `lock_unavailable()` is fatal only under
+# `NEED_LOCK`; with all eight pinned it downgrades to a `::warning::` and clones
+# all eight. That is a temporary stand-in for the lock, with a stated cost --
+# see the block at the top of `.github/sibling-repos` for the SHAs' provenance
+# and for what removes them again.
 
 on:
   push:

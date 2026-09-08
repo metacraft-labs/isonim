@@ -17,12 +17,58 @@
 # `just check-siblings` now guards both halves -- that every name here is on
 # disk, and that every `../../` path in `tests/config.nims` is named here. The
 # second is the drift this file actually suffered: 8 paths, 4 declarations.
+#
+# ---------------------------------------------------------------------------
+# WHY EVERY ENTRY CARRIES AN EXPLICIT SHA, AND WHAT REMOVES THEM AGAIN
+#
+# The header above is the intended end state: bare names, revisions resolved
+# from the per-commit workspace lock. isonim cannot reach it yet, because there
+# is no lock to resolve against. `metacraft-manifests` holds exactly one isonim
+# lock -- `locks/dev/isonim/1f8087c82865057ec94d89f51a0988b33f2ee404.xml`, an
+# old commit -- and none for `dev`'s tip. On a `pull_request` event
+# `clone-siblings.sh` probes the lock for the PR BASE sha, not the head, so a
+# bare list here fails before cloning anything:
+#
+#   resolve-sibling-rev: no workspace lock found for isonim
+#
+# That is what ci-reprobuild.yml (already on `setup-dev-env`) has been dying of.
+# Locks are written by the reprobuild pre-push gate and re-anchored onto
+# mainline by `publish-workspace-lock`; isonim runs neither, so no commit of it
+# acquires one. A hook-coverage gap upstream of this repo.
+#
+# An explicit ref makes that gap non-fatal, and this is a documented property of
+# the action, not a workaround of it. `clone-siblings.sh` sets `NEED_LOCK=1`
+# only for an entry with an EMPTY ref; `lock_unavailable()` is fatal only when
+# `NEED_LOCK=1`, and otherwise downgrades to a `::warning::` and clones. With
+# all eight pinned, nothing needs a revision FROM the lock, so nothing depends
+# on one existing. Every sibling is still cloned -- none is dropped, skipped or
+# made optional -- and the lock is still consulted and still reported on.
+#
+# The SHAs are not "current tips". They are the exact revisions of the eight
+# sibling checkouts in the workspace where `just test-c` and `just test-js` were
+# measured green (748 assertions, 0 failures, 0 `cannot open file`). That is
+# precisely the set the pre-push gate would have written into the lock had it
+# been able to run, so this file is standing in for the missing lock rather than
+# inventing a different pinning. Each SHA was verified present upstream with
+# `gh api repos/metacraft-labs/<repo>/commits/<sha>`, and each is an ancestor of
+# that repo's `dev`.
+#
+# TO REVERT: once any isonim commit on `dev` carries a published workspace lock,
+# delete the `=<sha>` from the seven metacraft siblings below and they resolve
+# from it again. `nim-stew`'s pin is independent and outlives this one -- see its
+# own note at the bottom.
+#
+# THE COST, STATED PLAINLY: while these pins stand, isonim CI tests against
+# frozen siblings, so a breaking change in one of them will not turn isonim red.
+# That is strictly better than the current state (every run red, zero signal),
+# and strictly worse than the lock. It should not be left here indefinitely.
+# ---------------------------------------------------------------------------
 
 # Directly imported by src/ and tests/.
-nim-everywhere
-nim-acp
-nim-agents
-isonim-render-serve
+nim-everywhere=0c259bec859d74b696d1aabd677c06365b399869
+nim-acp=c7c430ad1fd64ef8c4c508c5ccdfa5a41eae69b4
+nim-agents=a4bc08c21fa53ca9f5de324fbaa938373b916a54
+isonim-render-serve=688e7d2af57c49b539de4da124c98995d15d0649
 
 # Transitive, and each one verified load-bearing by removing it from a
 # provisioned checkout and re-running `nim check`:
@@ -37,9 +83,9 @@ isonim-render-serve
 #                        h264_videotoolbox_encoder.nim imports
 #                        `isonim_cocoa/appkit/capture_videotoolbox`
 #                        unconditionally on macOS.
-nim-agent-harbor
-nim-faststreams
-isonim-cocoa
+nim-agent-harbor=271cef2214216a7e940b69af677b18571f25eb9d
+nim-faststreams=82c8c3edb5fa7a4fdfcdb5d8ab53bbe1830d4503
+isonim-cocoa=69d835c9cff51ac394908397fdb7b68cf4a129ea
 
 # nim-stew is reached only through nim-faststreams: `faststreams/inputs.nim`
 # imports `stew/ptrops`. It is easy to conclude it is unneeded, because on a
@@ -60,4 +106,11 @@ isonim-cocoa
 # after which this pin should be dropped for a bare `nim-stew`. The SHA is
 # `master` @ 83eb115, which is also `status-im/master` -- i.e. upstream tip, not
 # a fork divergence.
+#
+# This pin is INDEPENDENT of the seven above and outlives them: those come off
+# the moment a workspace lock exists, this one only when `nim-stew` joins the
+# project manifest. Note also that `repos/nim-stew.toml` declares
+# `branch = "codetracer"` (currently cc40540), so even after the membership fix
+# a bare entry would resolve to the fork branch, not to 83eb115 -- worth
+# checking that is what isonim wants before dropping the `=`.
 nim-stew=83eb1157963b7f49351dbdd858355fa990bbe23c
