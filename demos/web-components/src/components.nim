@@ -317,11 +317,18 @@ registerCustomElement(
     createRenderEffect do:
       listContainer.innerHTML = ""
       let currentTasks = tasks.val
+      # `discard` on both branches — third instance of the same shape as
+      # tests/test_app_e2e.nim and demos/isonim-replica/src/main.nim.
+      # `appendChild` is `{.discardable.}` returning `Node`, and `discardable`
+      # only permits ignoring the result in STATEMENT position; it does not stop
+      # this if/else, the last thing in the block, being an expression of type
+      # `Node`, which types the `do:` body as `proc(): Node` and makes
+      # `createRenderEffect(fn: proc())` fail to resolve.
       if currentTasks.len == 0:
         let emptyMsg = document.createElement("p")
         emptyMsg.className = "empty"
         emptyMsg.textContent = "No tasks yet"
-        listContainer.appendChild(emptyMsg.Node)
+        discard listContainer.appendChild(emptyMsg.Node)
       else:
         let ul = document.createElement("ul")
         for t in currentTasks:
@@ -369,7 +376,7 @@ registerCustomElement(
           li.appendChild(removeBtn.Node)
 
           ul.appendChild(li.Node)
-        listContainer.appendChild(ul.Node)
+        discard listContainer.appendChild(ul.Node)
 
     wrapper.appendChild(listContainer.Node)
 

@@ -85,30 +85,72 @@ check-siblings:
       exit 1
     fi
 
-    # PART 2 — everything tests/config.nims reaches must be declared. This is
-    # the drift that made PART 1 insufficient on its own: a path added here
-    # without a matching declaration is a sibling CI will never clone.
-    if [ -f "$cfg" ]; then
-      reached="$(
-        grep -o -E '\.\./\.\./[A-Za-z0-9_.-]+' "$cfg" \
-          | sed -e 's#^\.\./\.\./##' \
-          | sort -u
-      )"
-      undeclared=""
-      for repo in $reached; do
-        printf '%s\n' "$declared" | grep -q -x -F "$repo" || undeclared="$undeclared $repo"
-      done
-      if [ -n "$undeclared" ]; then
-        echo "ERROR: $cfg resolves sibling(s) that $decl_file does not declare:" >&2
-        for repo in $undeclared; do echo "  - $repo" >&2; done
-        echo "" >&2
-        echo "setup-dev-env clones exactly what $decl_file names, so an" >&2
-        echo "undeclared sibling is one CI silently builds without." >&2
-        echo "Add each name to $decl_file (one per line)." >&2
-        exit 1
-      fi
-      echo "[check-siblings] $(printf '%s\n' "$reached" | wc -l | tr -d ' ') sibling path(s) in $cfg, all declared"
+    # PART 2 — everything ANY config.nims reaches must be declared. This is the
+    # drift that made PART 1 insufficient on its own: a path added without a
+    # matching declaration is a sibling CI will never clone.
+    #
+    # This used to read `tests/config.nims` ALONE, and matched the literal
+    # prefix `../../`. Both were too narrow, and the narrowness was not
+    # theoretical — the tree already had two configs it could not see:
+    #
+    #   demos/config.nims                      `$projectDir/../../nim-everywhere/src`
+    #   benchmarks/keyed/isonim/src/config.nims  five `..` up, a different prefix
+    #
+    # so a sibling reached only from a demo or a benchmark was invisible to a
+    # guard whose whole purpose is finding exactly that. Every config.nims in
+    # the repo is scanned now, and each `$projectDir` path is RESOLVED against
+    # its own directory rather than pattern-matched, so the number of `..` no
+    # longer has to be guessed. Anything that lands outside the repo root is a
+    # sibling reference, whatever depth it was written at.
+    #
+    # vendor/ and the yoga submodule are excluded: they are third-party trees
+    # whose configs describe their own layout, not isonim's siblings.
+    root_name="$(basename "$PWD")"
+    reached=""
+    cfg_count=0
+    while IFS= read -r cfgfile; do
+      cfg_count=$((cfg_count + 1))
+      cfgdir="$(dirname "$cfgfile")"
+      while IFS= read -r rel; do
+        [ -n "$rel" ] || continue
+        # Normalise "<cfgdir>/<rel>" by string, not by realpath: the target need
+        # not exist (PART 1 owns existence) and realpath -m is not portable.
+        # Anchored at the repo's own directory NAME, so that a path staying
+        # inside the repo still begins with it and only an escape does not.
+        norm=""
+        IFS='/' read -r -a parts <<< "$root_name/${cfgdir#./}/${rel}"
+        for p in "${parts[@]}"; do
+          case "$p" in
+          ""|".") ;;
+          "..") norm="${norm% *}" ;;
+          *) norm="$norm $p" ;;
+          esac
+        done
+        # Inside the repo -> not a sibling. Outside -> the path was rewritten
+        # relative to the repo's PARENT, so it now starts with the repo's own
+        # directory name for anything internal; a sibling starts with its own.
+        set -- $norm
+        [ "$#" -ge 1 ] || continue
+        [ "$1" = "$root_name" ] && continue
+        reached="$reached $1"
+      done < <(grep -o -E '\$projectDir[A-Za-z0-9_./-]*' "$cfgfile" | sed -e 's#^\$projectDir/\{0,1\}##')
+    done < <(find . -name 'config.nims' -not -path './vendor/*' -not -path './src/isonim/layout/yoga/*' | sort)
+
+    reached="$(printf '%s\n' $reached | grep -v '^$' | sort -u)"
+    undeclared=""
+    for repo in $reached; do
+      printf '%s\n' "$declared" | grep -q -x -F "$repo" || undeclared="$undeclared $repo"
+    done
+    if [ -n "$undeclared" ]; then
+      echo "ERROR: a config.nims resolves sibling(s) that $decl_file does not declare:" >&2
+      for repo in $undeclared; do echo "  - $repo" >&2; done
+      echo "" >&2
+      echo "setup-dev-env clones exactly what $decl_file names, so an" >&2
+      echo "undeclared sibling is one CI silently builds without." >&2
+      echo "Add each name to $decl_file (one per line)." >&2
+      exit 1
     fi
+    echo "[check-siblings] $(printf '%s\n' "$reached" | wc -l | tr -d ' ') sibling(s) reached from $cfg_count config.nims file(s), all declared"
 
     echo "[check-siblings] all $(printf '%s\n' "$declared" | wc -l | tr -d ' ') declared sibling(s) present"
 
