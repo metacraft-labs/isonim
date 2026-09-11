@@ -296,3 +296,140 @@ suite "SSR natural control flow":
 
     check "<span>x</span>" in html
     check "<span>y</span>" in html
+
+# ---------------------------------------------------------------------------
+# Top-level control flow: rejected at compile time, not silently dropped
+# ---------------------------------------------------------------------------
+#
+# Regression guard for the defect that made `stepCard` in
+# `isonim-platform/dashboard/src/onboarding_pages.nim` render a blank card in
+# the product: a `case` (or `if`, `for`, …) at the TOP level of a `ui:` block
+# compiled to an empty `block:`, which left the enclosing string proc's
+# `result` at "" with no error and no warning.
+#
+# THE SHAPE OF THESE PROBES IS LOAD-BEARING. The obvious probe —
+#
+#     check(not compiles(block: (let html = ui: (case s ...)); html))
+#
+# passes against the UNFIXED macro too, because the empty `block:` it emits is
+# of type void and the assignment fails to compile for a reason that has
+# nothing to do with the rejection. Measured, not assumed: that form printed
+# "REJECTED" against both the fixed source and the pinned unfixed source.
+#
+# The form below — a `string` proc whose body IS the `ui:` block, which is
+# exactly how `stepCard` was written — compiles cleanly on the unfixed macro
+# and returns "". Against the pinned unfixed source it reports ACCEPTED and
+# renders []; against this source it reports REJECTED. That is the only shape
+# that discriminates, so it is the shape used.
+#
+# Every negative below is paired with a positive control: the same markup,
+# nested one level inside an element, must still compile AND still render.
+
+type ProbeStep = enum probeOne, probeTwo
+
+const topLevelCaseRejected = not compiles(
+  block:
+    proc probe(s: ProbeStep): string =
+      ui:
+        case s
+        of probeOne:
+          tdiv(class = "a"): text "A"
+        of probeTwo:
+          tdiv(class = "b"): text "B"
+    discard probe(probeOne)
+)
+
+const topLevelIfRejected = not compiles(
+  block:
+    proc probe(show: bool): string =
+      ui:
+        if show:
+          p: text "shown"
+        else:
+          p: text "hidden"
+    discard probe(true)
+)
+
+const topLevelForRejected = not compiles(
+  block:
+    proc probe(items: seq[string]): string =
+      ui:
+        for item in items:
+          li: text item
+    discard probe(@["x"])
+)
+
+const topLevelIfAmongSiblingsRejected = not compiles(
+  block:
+    proc probe(show: bool): string =
+      ui:
+        h1: text "title"
+        if show:
+          p: text "shown"
+    discard probe(true)
+)
+
+const plainSiblingsStillCompile = compiles(
+  block:
+    proc probe(): string =
+      ui:
+        h1: text "title"
+        p: text "body"
+    discard probe()
+)
+
+suite "SSR top-level control flow is rejected, not silently dropped":
+  test "top_level_case_is_rejected":
+    check topLevelCaseRejected
+
+  test "top_level_case_positive_control_nested_still_renders":
+    ## The control: identical branches, one level in. If this stopped
+    ## compiling, the negative above would pass for the wrong reason.
+    let s = probeOne
+    let html = ui:
+      tdiv(class = "host"):
+        case s
+        of probeOne:
+          tdiv(class = "a"): text "A"
+        of probeTwo:
+          tdiv(class = "b"): text "B"
+    check html == "<div class=\"host\"><div class=\"a\">A</div></div>"
+
+  test "top_level_if_is_rejected":
+    check topLevelIfRejected
+
+  test "top_level_if_positive_control_nested_still_renders":
+    let show = true
+    let html = ui:
+      tdiv:
+        if show:
+          p: text "shown"
+        else:
+          p: text "hidden"
+    check html == "<div><p>shown</p></div>"
+
+  test "top_level_for_is_rejected":
+    check topLevelForRejected
+
+  test "top_level_for_positive_control_nested_still_renders":
+    let items = @["x", "y"]
+    let html = ui:
+      ul:
+        for item in items:
+          li: text item
+    check html == "<ul><li>x</li><li>y</li></ul>"
+
+  test "top_level_control_flow_among_siblings_is_rejected":
+    ## The multi-root form dropped the branch into a `<div>` wrapper instead of
+    ## returning "" — a quieter version of the same bug.
+    check topLevelIfAmongSiblingsRejected
+
+  test "plain_elements_among_siblings_positive_control":
+    ## Control for the test above: the multi-root form is still legal for plain
+    ## elements, so the rejection is of control flow and not of multi-root
+    ## blocks generally.
+    check plainSiblingsStillCompile
+    let html = ui:
+      h1: text "title"
+      p: text "body"
+    check html == "<div><h1>title</h1><p>body</p></div>"
