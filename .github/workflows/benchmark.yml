@@ -26,7 +26,7 @@ jobs:
     name: Bundle Size Metrics
     # Single Linux Nix class: metric collection auto-pushes to the
     # gh-pages baseline, which must not race across parallel legs.
-    runs-on: eph-linux-x64
+    runs-on: [self-hosted, linux, x64]
     steps:
       # See ci.yml for why this is `secrets.` and not `vars.`.
       - name: Generate CI token
@@ -86,7 +86,7 @@ jobs:
     name: Test Count Metrics
     # Single Linux Nix class: metric collection auto-pushes to the
     # gh-pages baseline, which must not race across parallel legs.
-    runs-on: eph-linux-x64
+    runs-on: [self-hosted, linux, x64]
     steps:
       # See ci.yml for why this is `secrets.` and not `vars.`.
       - name: Generate CI token
