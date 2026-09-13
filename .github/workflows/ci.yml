@@ -67,7 +67,7 @@ jobs:
         # single Nim. The former `nim-version` matrix (stable/2.0.0 via
         # jiro4989/setup-nim-action) does not apply here — Nim is fixed
         # by the flake, so we matrix only over the runner classes.
-        runner: [eph-linux-x64, eph-linux-arm64, eph-macos-arm64]
+        runner: [[self-hosted, linux, x64], [self-hosted, linux, arm64], [self-hosted, macos, arm64]]
     runs-on: ${{ matrix.runner }}
     steps:
       # The manifest repo holding the workspace locks (metacraft-manifests) is

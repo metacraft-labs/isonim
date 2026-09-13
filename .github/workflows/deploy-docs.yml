@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   build-and-deploy-docs:
-    runs-on: eph-linux-x64
+    runs-on: [self-hosted, linux, x64]
     if: github.ref == 'refs/heads/dev'
     permissions:
       contents: write # push the built site to the gh-pages branch
