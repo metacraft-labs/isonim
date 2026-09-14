@@ -206,8 +206,18 @@ test-c:
     # `test_flexbox` before the yoga fix, where being unreachable from any recipe
     # is what kept the missing provisioning invisible. It compiles and passes
     # 10/10 on the C target, so it gets a normal entry. C only: it calls
-    # `newFuture`, which the JS backend does not provide.
     nim c -r tests/test_resource_async.nim
+    # NH-M0 & NH-M5 / HX-S-0: Native HCR shim tests (inactive path & active linked path)
+    nim c -r tests/test_native_hcr_shim.nim
+    bash tests/test_hx_s0_isonim_link_line_names_something_that_exists.sh
+
+# Run native HCR integration tests (inactive shim & active librepro_hcr_agent linking)
+test-hcr:
+    nim c -r tests/test_native_hcr_shim.nim
+    bash tests/test_hx_s0_isonim_link_line_names_something_that_exists.sh
+
+test-hcr-shim:
+    bash tests/test_hx_s0_isonim_link_line_names_something_that_exists.sh
 
 # Run tests on JS target.
 #
