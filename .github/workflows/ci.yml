@@ -58,7 +58,7 @@ on:
 
 jobs:
   test:
-    name: Test (${{ matrix.runner }})
+    name: Test (${{ join(matrix.runner, '-') }})
     strategy:
       fail-fast: false
       matrix:
