@@ -6,6 +6,9 @@
 
 import std/[tables, hashes]
 
+import ../core/boundary_meter
+export boundary_meter
+
 type
   MockNodeKind* = enum
     mnkElement
@@ -52,6 +55,7 @@ var mockActiveElement* {.threadvar.}: MockNode
 type ElementHandle* = MockNode
 
 proc createElement*(r: MockRenderer; tag: string): MockNode =
+  noteOp(boCreateElement, 1, tag)
   inc nextMockNodeId
   MockNode(
     id: nextMockNodeId,
@@ -64,6 +68,7 @@ proc createElement*(r: MockRenderer; tag: string): MockNode =
   )
 
 proc createTextNode*(r: MockRenderer; text: string): MockNode =
+  noteOp(boCreateTextNode, 1, text)
   inc nextMockNodeId
   MockNode(
     id: nextMockNodeId,
@@ -80,6 +85,7 @@ proc appendChild*(r: MockRenderer; parent, child: MockNode) =
   ## detached from its current position first, then appended to the end
   ## of `parent.children`. Focus on the moved node survives — real
   ## browsers preserve `document.activeElement` across same-tree moves.
+  noteOp(boAppendChild, 2)
   if child.parent != nil:
     let oldParent = child.parent
     var oldIdx = -1
@@ -99,6 +105,7 @@ proc insertBefore*(r: MockRenderer; parent, child, reference: MockNode) =
   ## reference's slot. Crucially, this preserves focus — moving a
   ## focused node within its parent does NOT clear `document.activeElement`
   ## in real browsers.
+  noteOp(boInsertBefore, 3)
   if child.parent != nil:
     let oldParent = child.parent
     var oldIdx = -1
@@ -120,6 +127,7 @@ proc insertBefore*(r: MockRenderer; parent, child, reference: MockNode) =
     parent.children.add(child)
 
 proc removeChild*(r: MockRenderer; parent, child: MockNode) =
+  noteOp(boRemoveChild, 2)
   child.parent = nil
   var idx = -1
   for i, c in parent.children:
@@ -134,6 +142,7 @@ proc removeChild*(r: MockRenderer; parent, child: MockNode) =
 proc focus*(r: MockRenderer; node: MockNode) =
   ## Mark `node` as the focused element in the mock DOM. Mirrors the
   ## browser's `HTMLElement.focus()` API minus the scroll behaviour.
+  noteOp(boFocus, 1)
   mockActiveElement = node
 
 proc activeElement*(r: MockRenderer): MockNode =
@@ -141,14 +150,17 @@ proc activeElement*(r: MockRenderer): MockNode =
   mockActiveElement
 
 proc setAttribute*(r: MockRenderer; node: MockNode; name, value: string) =
+  noteOp(boSetAttribute, 1, name, value)
   node.attributes[name] = value
   if name == "value":
     node.text = value
 
 proc removeAttribute*(r: MockRenderer; node: MockNode; name: string) =
+  noteOp(boRemoveAttribute, 1, name)
   node.attributes.del(name)
 
 proc setTextContent*(r: MockRenderer; node: MockNode; text: string) =
+  noteOp(boSetTextContent, 1, text)
   if node.kind == mnkText:
     node.text = text
   else:
@@ -162,9 +174,11 @@ proc setTextContent*(r: MockRenderer; node: MockNode; text: string) =
     node.children.add(textNode)
 
 proc setStyle*(r: MockRenderer; node: MockNode; prop, value: string) =
+  noteOp(boSetStyle, 1, prop, value)
   node.styles[prop] = value
 
 proc setInnerHtml*(r: MockRenderer; node: MockNode; html: string) =
+  noteOp(boSetInnerHtml, 1, html)
   ## Mock-side stand-in for ``element.innerHTML = ...``. The mock DOM
   ## doesn't parse HTML; we drop the raw string into a single child
   ## text node so ``textContent`` recovers the markup verbatim and
@@ -184,9 +198,13 @@ proc setInnerHtml*(r: MockRenderer; node: MockNode; html: string) =
 
 proc getAttribute*(r: MockRenderer; node: MockNode; name: string): string =
   ## Look up an attribute or return the empty string when absent.
-  if name in node.attributes: node.attributes[name] else: ""
+  result = if name in node.attributes: node.attributes[name] else: ""
+  # The ANSWER crosses back, so both strings are charged: a host call that
+  # reads an attribute pays for the name going out and the value coming in.
+  noteOp(boGetAttribute, 1, name, result)
 
 proc addEventListener*(r: MockRenderer; node: MockNode; event: string; handler: proc()) =
+  noteOp(boAddEventListener, 2, event)
   if event notin node.eventListeners:
     node.eventListeners[event] = @[]
   node.eventListeners[event].add(handler)
@@ -196,14 +214,17 @@ proc addEventListener*(r: MockRenderer; node: MockNode; event: string;
   ## Overload accepting an event-receiving handler — mirrors the DOM's
   ## `(ev) => …` form. The DSL picks this overload when the user's handler
   ## takes a single `MockEvent` parameter.
+  noteOp(boAddEventListener, 2, event)
   if event notin node.eventHandlers:
     node.eventHandlers[event] = @[]
   node.eventHandlers[event].add(handler)
 
 proc firstChild*(r: MockRenderer; node: MockNode): MockNode =
+  noteOp(boFirstChild, 2)
   if node.children.len > 0: node.children[0] else: nil
 
 proc nextSibling*(r: MockRenderer; node: MockNode): MockNode =
+  noteOp(boNextSibling, 2)
   if node.parent == nil: return nil
   let siblings = node.parent.children
   for i, c in siblings:
@@ -212,15 +233,18 @@ proc nextSibling*(r: MockRenderer; node: MockNode): MockNode =
   return nil
 
 proc parentNode*(r: MockRenderer; node: MockNode): MockNode =
+  noteOp(boParentNode, 2)
   node.parent
 
 proc clearChildren*(r: MockRenderer; node: MockNode) =
+  noteOp(boClearChildren, 1)
   ## Remove all children from a mock node.
   for c in node.children:
     c.parent = nil
   node.children.setLen(0)
 
 proc clearEventListeners*(r: MockRenderer; node: MockNode) =
+  noteOp(boClearEventListeners, 1)
   ## Remove all event listeners from a mock node.
   node.eventListeners.clear()
   node.eventHandlers.clear()
@@ -265,12 +289,11 @@ proc textContent*(node: MockNode): string =
     result.add(textContent(child))
 
 proc inputValue*(r: MockRenderer; node: MockNode): string =
-  if "value" in node.attributes:
-    node.attributes["value"]
-  else:
-    node.text
+  result = if "value" in node.attributes: node.attributes["value"] else: node.text
+  noteOp(boInputValue, 1, result)
 
 proc setInputValue*(r: MockRenderer; node: MockNode; value: string) =
+  noteOp(boSetInputValue, 1, value)
   node.attributes["value"] = value
   node.text = value
 

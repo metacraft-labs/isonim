@@ -18,6 +18,8 @@ when not defined(js):
   {.error: "isonim/web/web_renderer requires the JS backend".}
 
 import isonim/web/dom_api
+import isonim/core/boundary_meter
+export boundary_meter
 
 type
   WebRenderer* = object
@@ -31,10 +33,12 @@ type
 
 proc createElement*(r: WebRenderer; tag: string): Element =
   ## Create a real DOM element via `document.createElement`.
+  noteOp(boCreateElement, 1, tag)
   dom_api.document.createElement(cstring(tag))
 
 proc createTextNode*(r: WebRenderer; text: string): Node =
   ## Create a real DOM text node via `document.createTextNode`.
+  noteOp(boCreateTextNode, 1, text)
   dom_api.document.createTextNode(cstring(text))
 
 # ---------------------------------------------------------------------------
@@ -43,14 +47,17 @@ proc createTextNode*(r: WebRenderer; text: string): Node =
 
 proc appendChild*(r: WebRenderer; parent: Element, child: Element) =
   ## Append a child element to a parent element.
+  noteOp(boAppendChild, 2)
   dom_api.appendChild(Node(parent), Node(child))
 
 proc appendChild*(r: WebRenderer; parent: Element, child: Node) =
   ## Append a child node to a parent element.
+  noteOp(boAppendChild, 2)
   dom_api.appendChild(Node(parent), child)
 
 proc appendChild*(r: WebRenderer; parent: Node, child: Node) =
   ## Append a child node to a parent node.
+  noteOp(boAppendChild, 2)
   dom_api.appendChild(parent, child)
 
 # ---------------------------------------------------------------------------
@@ -59,10 +66,12 @@ proc appendChild*(r: WebRenderer; parent: Node, child: Node) =
 
 proc setAttribute*(r: WebRenderer; node: Element; name, value: string) =
   ## Set an attribute on a real DOM element.
+  noteOp(boSetAttribute, 1, name, value)
   dom_api.setAttribute(node, cstring(name), cstring(value))
 
 proc removeAttribute*(r: WebRenderer; node: Element; name: string) =
   ## Remove an attribute from a real DOM element.
+  noteOp(boRemoveAttribute, 1, name)
   dom_api.removeAttribute(node, cstring(name))
 
 # ---------------------------------------------------------------------------
@@ -71,10 +80,12 @@ proc removeAttribute*(r: WebRenderer; node: Element; name: string) =
 
 proc setTextContent*(r: WebRenderer; node: Element; text: string) =
   ## Set the text content of a real DOM element.
+  noteOp(boSetTextContent, 1, text)
   Node(node).textContent = cstring(text)
 
 proc setTextContent*(r: WebRenderer; node: Node; text: string) =
   ## Set the text content of a real DOM node.
+  noteOp(boSetTextContent, 1, text)
   node.textContent = cstring(text)
 
 # ---------------------------------------------------------------------------
@@ -86,6 +97,7 @@ proc addEventListener*(r: WebRenderer; node: Element; event: string;
   ## Attach a click (or other) event listener to a real DOM element.
   ## Wraps the no-arg handler into the EventHandler signature expected
   ## by `dom_api.addEventListener`.
+  noteOp(boAddEventListener, 2, event)
   let wrappedHandler: EventHandler = proc(ev: Event) =
     handler()
   dom_api.addEventListener(Node(node), cstring(event), wrappedHandler)
@@ -96,6 +108,7 @@ proc addEventListener*(r: WebRenderer; node: Element; event: string;
   ## no-arg form, this passes through to `dom_api.addEventListener`
   ## without wrapping — Nim's overload resolution selects this one when
   ## the DSL emits a handler whose argument type is `Event`.
+  noteOp(boAddEventListener, 2, event)
   dom_api.addEventListener(Node(node), cstring(event), EventHandler(handler))
 
 # ---------------------------------------------------------------------------
@@ -103,12 +116,15 @@ proc addEventListener*(r: WebRenderer; node: Element; event: string;
 # ---------------------------------------------------------------------------
 
 proc firstChild*(r: WebRenderer; node: Element): Node =
+  noteOp(boFirstChild, 2)
   Node(node).firstChild
 
 proc nextSibling*(r: WebRenderer; node: Element): Node =
+  noteOp(boNextSibling, 2)
   Node(node).nextSibling
 
 proc parentNode*(r: WebRenderer; node: Element): Node =
+  noteOp(boParentNode, 2)
   Node(node).parentNode
 
 # ---------------------------------------------------------------------------
@@ -117,20 +133,24 @@ proc parentNode*(r: WebRenderer; node: Element): Node =
 
 proc setStyle*(r: WebRenderer; node: Element; prop: string; value: string) =
   ## Set a CSS style property on a real DOM element.
+  noteOp(boSetStyle, 1, prop, value)
   dom_api.setStyleProperty(node, cstring(prop), cstring(value))
 
 proc removeChild*(r: WebRenderer; parent: Element; child: Element) =
   ## Remove a child element from its parent in the real DOM.
+  noteOp(boRemoveChild, 2)
   discard dom_api.removeChild(Node(parent), Node(child))
 
 proc insertBefore*(r: WebRenderer; parent: Element; child: Element;
                     reference: Element) =
   ## Insert a child element before a reference element in the real DOM.
+  noteOp(boInsertBefore, 3)
   discard dom_api.insertBefore(Node(parent), Node(child), Node(reference))
 
 proc clearChildren*(r: WebRenderer; node: Element) =
   ## Remove all children from a real DOM element.
   ## Uses innerHTML = "" for efficiency.
+  noteOp(boClearChildren, 1)
   node.innerHTML = cstring""
 
 proc clearEventListeners*(r: WebRenderer; node: Element) =
