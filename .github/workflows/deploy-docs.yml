@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   build-and-deploy-docs:
-    runs-on: eph-linux-x64
+    runs-on: [self-hosted, linux, x64]
     if: github.ref == 'refs/heads/dev'
     permissions:
       contents: write # push the built site to the gh-pages branch
@@ -29,6 +29,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: isonim
+          submodules: recursive
 
       - name: Check out isonim-docs (sibling framework)
         uses: actions/checkout@v4
@@ -64,7 +65,7 @@ jobs:
           path: codetracer-design-system
 
       - name: Setup Nix
-        uses: metacraft-labs/nixos-modules/.github/setup-nix@main
+        uses: metacraft-labs/devops-modules/.github/setup-nix@dev
         with:
           trusted-public-keys: ${{ vars.TRUSTED_PUBLIC_KEYS }}
           substituters: ${{ vars.SUBSTITUTERS }}

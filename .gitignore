@@ -71,6 +71,14 @@ tests/test_design_review_pg_schema
 tests/test_design_review_pg_routines
 tests/test_design_review_pg_roles
 tests/smoke_design_review_pg_dump_restore
+# The last two `just test-c` binaries that this hand-maintained list did not
+# cover. `tests/test_flexbox` was COMMITTED as a 449 KB macOS-arm64 executable
+# in 52fa490 because of the gap, so it is untracked in the same commit that
+# ignores it; `tests/test_resource_async` is new to `test-c` here and would have
+# been the next one. Every other binary the recipes build is already ignored
+# above -- these two were the whole remainder.
+tests/test_flexbox
+tests/test_resource_async
 # TBAR-M1: list-history e2e against real daemon
 tests/test_design_review_list_history_e2e
 # TBAR-M2: ChoiceGroup widget tests

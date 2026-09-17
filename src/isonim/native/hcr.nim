@@ -16,8 +16,8 @@
 ##
 ## - ``-d:reprobuildHcr`` — toggles **this** module's FFI bindings.
 ##   When the flag is on, the procs below `importc` the real
-##   ``rb_hcr_*`` symbols from Reprobuild's ``libct_hcr_agent`` and
-##   ``-lct_hcr_agent`` is added to the link command. When the flag is
+##   ``rb_hcr_*`` symbols from Reprobuild's ``librepro_hcr_agent`` and
+##   ``-lrepro_hcr_agent`` is added to the link command. When the flag is
 ##   off, every proc has a no-op fallback body with the same signature,
 ##   so call sites in higher layers do **not** need ``when`` blocks per
 ##   call.
@@ -61,78 +61,104 @@ when defined(js):
 # `RbHcrReloadCallback` calling convention with no `when` ladder of their own.
 # ---------------------------------------------------------------------------
 
-type
-  RbHcrTypeChange* = object
-    ## Per-type layout-change descriptor handed to before/after-reload
-    ## callbacks. Mirrors the C ``RbHcrTypeChange`` struct (see Reprobuild
-    ## HCR-Overview § 13.3). The Nim object layout is `{.bycopy.}` by
-    ## default for non-`ref` `object` types, which matches the C struct
-    ## layout the agent expects.
-    typeName*: cstring
-    oldSize*: uint32
-    newSize*: uint32
+when defined(reprobuildHcr):
+  type
+    RbHcrTypeChange* {.importc: "RbHcrTypeChange", header: "repro_hcr_agent.h", bycopy.} = object
+      ## Per-type layout-change descriptor handed to before/after-reload
+      ## callbacks. Mirrors the C ``RbHcrTypeChange`` struct (see Reprobuild
+      ## HCR-Overview § 13.3).
+      typeName*: cstring
+      oldSize*: uint32
+      newSize*: uint32
 
-  RbHcrReloadInfo* = object
-    ## Reload context passed to before/after-reload callbacks. Pointer +
-    ## count pairs mirror the C structure (`const char* const*` becomes
-    ## ``ptr UncheckedArray[cstring]``). The C agent owns this storage;
-    ## IsoNim must not retain pointers past the callback's return.
-    changedFiles*: ptr UncheckedArray[cstring]
-    changedFilesCount*: uint32
-    changedTypes*: ptr UncheckedArray[RbHcrTypeChange]
-    changedTypesCount*: uint32
+    RbHcrReloadInfo* {.importc: "const RbHcrReloadInfo", header: "repro_hcr_agent.h", bycopy.} = object
+      ## Reload context passed to before/after-reload callbacks. Pointer +
+      ## count pairs mirror the C structure (`const char* const*` becomes
+      ## ``ptr UncheckedArray[cstring]``). The C agent owns this storage;
+      ## IsoNim must not retain pointers past the callback's return.
+      changedFiles*: ptr UncheckedArray[cstring]
+      changedFilesCount*: uint32
+      changedTypes*: ptr UncheckedArray[RbHcrTypeChange]
+      changedTypesCount*: uint32
 
-  RbHcrReloadCallback* = proc (info: ptr RbHcrReloadInfo;
-      userData: pointer) {.cdecl.}
-    ## C-callable callback signature used by both before- and
-    ## after-reload registration. ``{.cdecl.}`` is mandatory: the
-    ## Reprobuild agent invokes these directly from C code and assumes
-    ## the platform C calling convention.
+    RbHcrReloadCallback* {.importc: "RbHcrReloadCallback", header: "repro_hcr_agent.h".} = proc (info: ptr RbHcrReloadInfo;
+        userData: pointer) {.cdecl.}
+      ## C-callable callback signature used by both before- and
+      ## after-reload registration. ``{.cdecl.}`` is mandatory: the
+      ## Reprobuild agent invokes these directly from C code and assumes
+      ## the platform C calling convention.
+
+else:
+  type
+    RbHcrTypeChange* = object
+      ## Per-type layout-change descriptor handed to before/after-reload
+      ## callbacks. Mirrors the C ``RbHcrTypeChange`` struct (see Reprobuild
+      ## HCR-Overview § 13.3).
+      typeName*: cstring
+      oldSize*: uint32
+      newSize*: uint32
+
+    RbHcrReloadInfo* = object
+      ## Reload context passed to before/after-reload callbacks. Pointer +
+      ## count pairs mirror the C structure (`const char* const*` becomes
+      ## ``ptr UncheckedArray[cstring]``). The C agent owns this storage;
+      ## IsoNim must not retain pointers past the callback's return.
+      changedFiles*: ptr UncheckedArray[cstring]
+      changedFilesCount*: uint32
+      changedTypes*: ptr UncheckedArray[RbHcrTypeChange]
+      changedTypesCount*: uint32
+
+    RbHcrReloadCallback* = proc (info: ptr RbHcrReloadInfo;
+        userData: pointer) {.cdecl.}
+      ## C-callable callback signature used by both before- and
+      ## after-reload registration. ``{.cdecl.}`` is mandatory: the
+      ## Reprobuild agent invokes these directly from C code and assumes
+      ## the platform C calling convention.
 
 # ---------------------------------------------------------------------------
 # FFI surface — active path (``-d:reprobuildHcr``).
 # ---------------------------------------------------------------------------
 
 when defined(reprobuildHcr):
-  {.passL: "-lct_hcr_agent".}
+  {.passL: "-lrepro_hcr_agent".}
 
   proc rbHcrWantsReload*(): bool
-    {.importc: "rb_hcr_wants_reload", header: "reprobuild/hcr.h".}
+    {.importc: "rb_hcr_wants_reload", header: "repro_hcr_agent.h".}
 
   proc rbHcrApplyReload*()
-    {.importc: "rb_hcr_apply_reload", header: "reprobuild/hcr.h".}
+    {.importc: "rb_hcr_apply_reload", header: "repro_hcr_agent.h".}
 
   proc rbHcrRegisterManagedType*(typeName: cstring)
     {.importc: "rb_hcr_register_managed_type",
-      header: "reprobuild/hcr.h".}
+      header: "repro_hcr_agent.h".}
 
   proc rbHcrUnregisterManagedType*(typeName: cstring)
     {.importc: "rb_hcr_unregister_managed_type",
-      header: "reprobuild/hcr.h".}
+      header: "repro_hcr_agent.h".}
 
   proc rbHcrBeforeReload*(callback: RbHcrReloadCallback;
       userData: pointer)
-    {.importc: "rb_hcr_before_reload", header: "reprobuild/hcr.h".}
+    {.importc: "rb_hcr_before_reload", header: "repro_hcr_agent.h".}
 
   proc rbHcrAfterReload*(callback: RbHcrReloadCallback;
       userData: pointer)
-    {.importc: "rb_hcr_after_reload", header: "reprobuild/hcr.h".}
+    {.importc: "rb_hcr_after_reload", header: "repro_hcr_agent.h".}
 
   proc rbHcrRemoveBeforeReload*(callback: RbHcrReloadCallback;
       userData: pointer)
     {.importc: "rb_hcr_remove_before_reload",
-      header: "reprobuild/hcr.h".}
+      header: "repro_hcr_agent.h".}
 
   proc rbHcrRemoveAfterReload*(callback: RbHcrReloadCallback;
       userData: pointer)
     {.importc: "rb_hcr_remove_after_reload",
-      header: "reprobuild/hcr.h".}
+      header: "repro_hcr_agent.h".}
 
   proc rbHcrFileChanged*(filePath: cstring): bool
-    {.importc: "rb_hcr_file_changed", header: "reprobuild/hcr.h".}
+    {.importc: "rb_hcr_file_changed", header: "repro_hcr_agent.h".}
 
   proc rbHcrTypeChanged*(typeName: cstring): bool
-    {.importc: "rb_hcr_type_changed", header: "reprobuild/hcr.h".}
+    {.importc: "rb_hcr_type_changed", header: "repro_hcr_agent.h".}
 
 # ---------------------------------------------------------------------------
 # No-op fallback surface — inactive path (``-d:reprobuildHcr`` off).

@@ -17,9 +17,9 @@
 ##   direnv exec ~/metacraft/isonim nim c -d:reprobuildHcr -c \
 ##     tests/test_native_hcr_shim.nim
 ##
-## (Compile-only — full linking requires ``libct_hcr_agent`` and
-## ``reprobuild/hcr.h``, which only exist once Reprobuild itself is
-## built. NH-M4 wires up the real-agent integration test.)
+## (Full linking requires ``librepro_hcr_agent`` and
+## ``repro_hcr_agent.h``, which are provided by Reprobuild.
+## NH-M5 and HX-S-0 provide the real shared library and header.)
 
 when defined(js):
   {.error: "test_native_hcr_shim is a native-only test (use `nim c -r`)".}

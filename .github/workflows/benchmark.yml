@@ -1,5 +1,20 @@
 name: Benchmarks
 
+# `bench-build` / `demo-build` / `build-web-components` all compile isonim, so
+# they reach `src/isonim/core/platform.nim`'s `nim_everywhere/platform` import
+# exactly the way ci.yml's test recipes do — and this workflow had no sibling
+# provisioning either. It is provisioned the same way, through `setup-dev-env`.
+#
+# That change also retires the DeterminateSystems installer pair these jobs
+# used. On the self-hosted `eph-*` classes it is what they were actually dying
+# of, ahead of the sibling wall (run 33226741516, both jobs):
+#
+#   Error: Command failed: cat …/magic-nix-cache | xz -d | nix-store --import
+#   Unable to locate executable file: determinate-nixd
+#
+# `env-flavor: nix` routes through `nixos-modules/.github/setup-nix`, which is
+# what every other Nix job in this org runs on these runners.
+
 on:
   push:
     branches: [main, dev, stable]
@@ -11,24 +26,43 @@ jobs:
     name: Bundle Size Metrics
     # Single Linux Nix class: metric collection auto-pushes to the
     # gh-pages baseline, which must not race across parallel legs.
-    runs-on: eph-linux-x64
+    runs-on: [self-hosted, linux, x64]
     steps:
-      - uses: actions/checkout@v4
+      # See ci.yml for why this is `secrets.` and not `vars.`.
+      - name: Generate CI token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.CI_TOKEN_PROVIDER_APP_ID }}
+          private-key: ${{ secrets.CI_TOKEN_PROVIDER_PRIVATE_KEY }}
+          owner: metacraft-labs
 
-      - uses: DeterminateSystems/nix-installer-action@main
-      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup dev env (clones .github/sibling-repos at lock revisions)
+        uses: metacraft-labs/metacraft-github-actions/setup-dev-env@dev
+        with:
+          env-flavor: nix
+          gh-token: ${{ steps.app-token.outputs.token }}
+          substituters: ${{ vars.SUBSTITUTERS }}
+          trusted-public-keys: ${{ vars.TRUSTED_PUBLIC_KEYS }}
+
+      - name: Verify cross-repo siblings are provisioned
+        run: dev-exec just check-siblings
 
       - name: Build benchmark bundle
-        run: nix develop --command just bench-build
+        run: dev-exec just bench-build
 
       - name: Build demo bundle
-        run: nix develop --command just demo-build
+        run: dev-exec just demo-build
 
       - name: Build web components bundle
-        run: nix develop --command just build-web-components
+        run: dev-exec just build-web-components
 
       - name: Collect size metrics
-        run: nix develop --command ./scripts/collect-metrics.sh --sizes > benchmark-results.json
+        run: dev-exec ./scripts/collect-metrics.sh --sizes > benchmark-results.json
 
       - name: Show collected metrics
         run: cat benchmark-results.json
@@ -52,15 +86,34 @@ jobs:
     name: Test Count Metrics
     # Single Linux Nix class: metric collection auto-pushes to the
     # gh-pages baseline, which must not race across parallel legs.
-    runs-on: eph-linux-x64
+    runs-on: [self-hosted, linux, x64]
     steps:
-      - uses: actions/checkout@v4
+      # See ci.yml for why this is `secrets.` and not `vars.`.
+      - name: Generate CI token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.CI_TOKEN_PROVIDER_APP_ID }}
+          private-key: ${{ secrets.CI_TOKEN_PROVIDER_PRIVATE_KEY }}
+          owner: metacraft-labs
 
-      - uses: DeterminateSystems/nix-installer-action@main
-      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup dev env (clones .github/sibling-repos at lock revisions)
+        uses: metacraft-labs/metacraft-github-actions/setup-dev-env@dev
+        with:
+          env-flavor: nix
+          gh-token: ${{ steps.app-token.outputs.token }}
+          substituters: ${{ vars.SUBSTITUTERS }}
+          trusted-public-keys: ${{ vars.TRUSTED_PUBLIC_KEYS }}
+
+      - name: Verify cross-repo siblings are provisioned
+        run: dev-exec just check-siblings
 
       - name: Collect test count metrics
-        run: nix develop --command ./scripts/collect-metrics.sh --tests > test-count-results.json
+        run: dev-exec ./scripts/collect-metrics.sh --tests > test-count-results.json
 
       - name: Show collected metrics
         run: cat test-count-results.json

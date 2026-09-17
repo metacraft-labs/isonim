@@ -29,22 +29,24 @@ jobs:
         include:
           - os: linux
             arch: x64
-            runner: eph-linux-x64
+            runner: [self-hosted, linux, x64]
           - os: linux
             arch: arm64
-            runner: eph-linux-arm64
+            runner: [self-hosted, linux, arm64]
           - os: macos
             arch: arm64
-            runner: eph-macos-arm64
+            runner: [self-hosted, macos, arm64]
           - os: windows
             arch: x64
-            runner: eph-win-x64
+            runner: [self-hosted, windows, x64]
           - os: windows
             arch: arm64
-            runner: eph-win-arm64
+            runner: [self-hosted, windows, arm64]
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       # Mint a GitHub App installation token via the CI Token Provider
       # app so the reprobuild flake/sibling steps can clone private
@@ -64,13 +66,21 @@ jobs:
           owner: metacraft-labs
 
       - name: Setup dev env (reprobuild flavor)
-        # setup-dev-env clones the siblings listed in .github/sibling-repos
-        # (codetracer-trace-format, codetracer-trace-format-nim) at the
-        # workspace-lock-pinned revisions before materialising the env.
+        # setup-dev-env clones the siblings listed in .github/sibling-repos at
+        # the workspace-lock-pinned revisions before materialising the env.
+        # (That file used to be misdescribed here as naming
+        # codetracer-trace-format / codetracer-trace-format-nim — neither is nor
+        # was in it; it names isonim's own eight Nim siblings.)
         uses: metacraft-labs/metacraft-github-actions/setup-dev-env@dev
         with:
           env-flavor: reprobuild
           gh-token: ${{ steps.ci_token.outputs.token }}
+
+      - name: Verify cross-repo siblings are provisioned
+        # Same guard ci.yml runs. This job already reached setup-dev-env, so it
+        # is the one that surfaces sibling problems first — see run 33226741514,
+        # "resolve-sibling-rev: no workspace lock found for isonim".
+        run: dev-exec just check-siblings
 
       - name: repro build
         # Builds the conventional `build` collection declared in
@@ -92,13 +102,43 @@ jobs:
       - name: just test (cross-check)
         run: dev-exec just test
 
+      # Diagnostics on failure. Three things below are load-bearing:
+      #
+      # 1. `include-hidden-files: true`. actions/upload-artifact@v4 defaults this
+      #    input to false, and @actions/glob then skips any entry it traverses whose
+      #    own basename starts with "." (internal-globber.ts:
+      #    `if (options.excludeHiddenFiles && path.basename(item.path).match(/^\./))
+      #    continue`). The old `path: .repro/` made `.repro` itself the search root,
+      #    so it was skipped outright and this step logged
+      #      "No files were found with the provided path: target/ .repro/"
+      #    which `if-no-files-found: ignore` then swallowed. Net effect: the build
+      #    engine's per-action stdio captures -- `<outDir>/build-engine-cache/
+      #    actions/<actionId>.stderr.log`, see repro_build_engine.nim -- have never
+      #    been uploaded from any leg of this workflow, on any platform.
+      # 2. Narrow paths. A whole `.repro/` tree measures ~1.1 GiB (dominated by
+      #    build-engine-cache/monitor-depfiles and dependency-evidence); the failure
+      #    report plus the per-action logs are ~600 KiB. `target/` was dropped: it is
+      #    a build-output tree rather than a log tree, it matches nothing in the Nim
+      #    repos, and where it does match it would permanently mask the warning below.
+      # 3. `if-no-files-found: warn` (the action's own default). This step only runs
+      #    on failure, so a warning costs nothing -- and it is exactly what would have
+      #    surfaced (1) years ago instead of hiding it behind a green step.
+      #
+      # Context, 2026-09: no leg of this workflow is green on ANY platform. Census of
+      # the job records: linux-x64 77 failure / 19 cancelled / 0 success, linux-arm64
+      # 77/19/0, macos-arm64 75/25/0, windows-x64 61/35/0. The only two successes on
+      # record are from 2026-07-06, under the pre-rename job names. The arm64 leg
+      # fails earlier than x64, and x64 fails for an unrelated project-level reason
+      # (`cannot open file: results`, codetracer_ct_print.nim(24, 8)). These
+      # artifacts are the only way to find out why any of it actually fails.
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: reprobuild-logs-${{ matrix.os }}-${{ matrix.arch }}
           path: |
-            target/
-            .repro/
+            .repro/build/*/build-failure-report.json
+            .repro/build/*/build-engine-cache/actions/
+          include-hidden-files: true
           retention-days: 7
-          if-no-files-found: ignore
+          if-no-files-found: warn

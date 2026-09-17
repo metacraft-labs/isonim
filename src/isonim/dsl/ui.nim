@@ -689,6 +689,60 @@ proc ssrNodeExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.} =
   else:
     return nil
 
+const topLevelControlFlow = {
+  nnkIfStmt, nnkIfExpr, nnkCaseStmt, nnkForStmt, nnkWhileStmt,
+  nnkWhenStmt, nnkTryStmt, nnkBlockStmt,
+}
+  ## Statement kinds that are valid DSL *children* but not valid DSL *roots*.
+  ## See `ssrTopLevelExpr` for why they are rejected rather than rendered.
+
+proc ssrTopLevelExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.} =
+  ## Render one node appearing at the top level of a `ui:` block, or reject it
+  ## at compile time.
+  ##
+  ## The string backend can only turn *elements* into an HTML expression. Until
+  ## this proc existed, anything else at the top level was dropped in silence:
+  ## `ssrNodeExpr` returned nil, `uiSsrImpl` emitted an empty `block:`, and the
+  ## enclosing proc returned its default "" — no error, no warning, a blank
+  ## page. The failure mode reached production: `isonim-platform`'s
+  ## `dashboard/src/onboarding_pages.nim` opened `stepCard`'s `ui:` block with
+  ## a bare `case step`, and that card rendered as nothing at all.
+  ##
+  ## The rule is therefore: a `ui:` block that cannot be rendered does not
+  ## compile. Control flow gets its own message because it is both the common
+  ## mistake and the one with a mechanical fix — nest it one level inside an
+  ## element, where `ssrChildrenExpr` already renders it correctly.
+  if node.kind in topLevelControlFlow:
+    error("ui: cannot render a `" & (case node.kind
+        of nnkIfStmt, nnkIfExpr: "if"
+        of nnkCaseStmt: "case"
+        of nnkForStmt: "for"
+        of nnkWhileStmt: "while"
+        of nnkWhenStmt: "when"
+        of nnkTryStmt: "try"
+        else: "block") &
+      "` at the top level of the block: there is no element for its branches " &
+      "to be children of, and a `ui:` block must evaluate to markup. Put the " &
+      "control flow inside an element (e.g. `tdiv:`), where it renders " &
+      "normally, or move it outside the `ui:` block and keep one `ui:` per " &
+      "branch.", node)
+
+  # Doc comments survive into the AST and carry no markup; they are the one
+  # thing that may legitimately render to nothing.
+  if node.kind == nnkCommentStmt:
+    return nil
+
+  # Bare void-element idents (`br`, `hr`) are legal children; accept them as
+  # roots too rather than rejecting a form the nested path already allows.
+  if node.kind == nnkIdent and isVoidElement(resolveTagName(node.strVal)):
+    return newStrLitNode("<" & resolveTagName(node.strVal) & " />")
+
+  result = ssrNodeExpr(node, stmts)
+  if result == nil:
+    error("ui: cannot render " & $node.kind & " at the top level of the " &
+      "block. A `ui:` block must evaluate to markup; only element calls, " &
+      "`text`, `raw` and bare void elements are renderable here.", node)
+
 proc uiSsrImpl(body: NimNode): NimNode {.compileTime.} =
   ## Shared SSR implementation used by both `ui` (no renderer) and `uiString`.
   let stmts = newStmtList()
@@ -697,12 +751,12 @@ proc uiSsrImpl(body: NimNode): NimNode {.compileTime.} =
   case body.kind
   of nnkStmtList:
     if body.len == 1:
-      resultExpr = ssrNodeExpr(body[0], stmts)
+      resultExpr = ssrTopLevelExpr(body[0], stmts)
     else:
       # Multiple top-level nodes: wrap in a div
       var parts: seq[NimNode] = @[newStrLitNode("<div>")]
       for child in body:
-        let expr = ssrNodeExpr(child, stmts)
+        let expr = ssrTopLevelExpr(child, stmts)
         if expr != nil:
           parts.add(expr)
       parts.add(newStrLitNode("</div>"))
@@ -711,13 +765,18 @@ proc uiSsrImpl(body: NimNode): NimNode {.compileTime.} =
         resultExpr = newCall(ident"&", resultExpr, parts[i])
 
   of nnkCall, nnkCommand:
-    resultExpr = ssrNodeExpr(body, stmts)
+    resultExpr = ssrTopLevelExpr(body, stmts)
 
   else:
     error("ui expects a DSL body block", body)
 
-  if resultExpr != nil:
-    stmts.add(resultExpr)
+  # An empty block would compile to `block: discard`, leave the enclosing
+  # proc's `result` at "" and render nothing — the silent blank this whole
+  # path exists to prevent. A `ui:` block with no markup in it is an error.
+  if resultExpr == nil:
+    error("ui: the block contains no markup, so it cannot produce HTML.", body)
+
+  stmts.add(resultExpr)
 
   result = newBlockStmt(stmts)
 
