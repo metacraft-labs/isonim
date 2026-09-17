@@ -9,6 +9,7 @@
 
 import std/[tables, strutils]
 import isonim/renderers/abstract_renderer
+import isonim/rxcore
 
 type
   NativeWidgetKind* = enum
@@ -280,6 +281,124 @@ proc renderWidgetTree*(node: NativeWidget; indent: int = 0): string =
     result = prefix & widgetKindLabel(node.kind) & "(" & title & ")" & layoutStr & enabledStr & visibleStr & "\n"
     for child in node.children:
       result.add renderWidgetTree(child, indent + 1)
+
+# ---- NH-M1: reactive root scaffold for native renderers ----
+#
+# The native sibling of the web seam at `isonim/web/client.nim::render`.
+#
+# Web `render()` does three things: open a reactive root with `createRoot`,
+# wrap the root build in an accessor, and route that accessor through an
+# insertion site that lives inside a `createRenderEffect`. The third step is
+# the load-bearing one: because the insertion site is an effect, a later
+# hot-component proxy (NH-M2) can swap the root component by writing a signal
+# the accessor reads, instead of disposing and re-creating the reactive root
+# (which would drop every signal, resource and cleanup the running app owns).
+#
+# `renderNative` is that same seam, expressed against any renderer that
+# satisfies `abstract_renderer.checkRendererBackend`. It deliberately does NOT
+# know what "the surface" is: the TUI mounts into a `TerminalTestHarness`, GPUI
+# and Freya mount into a shim-owned element tree, so the surface-specific step
+# is a `mount` callback (or, for renderers whose surface really is a parent
+# element, the `renderer`/`host` overload below, which performs the insert
+# through the RendererBackend proc surface itself).
+#
+# TRACKING CONTRACT. `accessor` is invoked *inside* the render effect with
+# tracking ON, so every signal it reads becomes a dependency of the mount seam.
+# Callers that want today's build-once behaviour — the root tree is constructed
+# exactly once and all later updates flow through the leaves' own fine-grained
+# effects — pass their build proc through `staticNativeRoot`, which is the
+# direct analogue of web `render()`'s `untrack(proc(): Node = code())`.
+
+type
+  NativeRootAccessor*[E] = proc(): E {.closure.}
+    ## Produces the current root node. Called inside the mount seam's render
+    ## effect, so signal reads performed here re-run the seam.
+
+  NativeRootMount*[E] = proc(node: E) {.closure.}
+    ## Attaches `node` to the renderer's surface. Called once per render
+    ## effect run, including the first, and must be idempotent for a repeated
+    ## identical `node` (the TUI's repaint-on-flush is exactly that case).
+
+  NativeRootHandle*[E] = ref object
+    ## Live handle on a mounted reactive root.
+    current*: E          ## The node the surface currently holds.
+    renders*: int        ## Times the render effect body has run.
+    rootSwaps*: int      ## Times `current` changed identity (1 after mount).
+    disposeRoot: proc()  ## `createRoot`'s disposer; nil once disposed.
+
+proc staticNativeRoot*[E](build: proc(): E): NativeRootAccessor[E] =
+  ## Wrap a plain build proc so the mount seam runs it exactly once.
+  ##
+  ## Mirrors `isonim/web/client.nim::render`, which passes
+  ## `untrack(proc(): Node = code())` for the same reason: a composition root
+  ## that reads a signal while *constructing* the tree must not thereby make
+  ## the whole tree a dependency of the insertion site. Non-HMR callers use
+  ## this and observe byte-identical behaviour to a direct build call.
+  if build == nil:
+    raise newException(ValueError,
+      "staticNativeRoot: build proc is nil — there is no root to construct")
+  result = proc(): E = untrack(proc(): E = build())
+
+proc renderNative*[E](accessor: NativeRootAccessor[E];
+                      mount: NativeRootMount[E]): NativeRootHandle[E] =
+  ## Open a reactive root and mount `accessor`'s result through a render
+  ## effect. Returns a handle whose `dispose` tears the root down.
+  ##
+  ## This is the shared scaffold every `renderNative*` per-renderer entry
+  ## point delegates to (`isonim-tui::renderTui`, `isonim-gpui::renderGpui`,
+  ## `isonim-freya::renderFreya`).
+  if accessor == nil:
+    raise newException(ValueError,
+      "renderNative: accessor is nil — the reactive root has nothing to build")
+  if mount == nil:
+    raise newException(ValueError,
+      "renderNative: mount is nil — a built root would never reach a surface")
+  let handle = NativeRootHandle[E](renders: 0, rootSwaps: 0)
+  createRoot proc(dispose: proc()) =
+    handle.disposeRoot = dispose
+    createRenderEffect proc() =
+      let node = accessor()
+      let swapped = handle.renders == 0 or handle.current != node
+      inc handle.renders
+      if swapped:
+        handle.current = node
+        inc handle.rootSwaps
+      mount(node)
+  handle
+
+proc renderNative*[R, E](renderer: R; host: E;
+                         accessor: NativeRootAccessor[E]): NativeRootHandle[E] =
+  ## `renderNative` for renderers whose surface is an element: the reactive
+  ## insert is performed with the RendererBackend's own `appendChild` /
+  ## `removeChild`, so the renderer's tree-mutation API stays the single
+  ## reconciliation primitive (Native HMR design principle #4).
+  ##
+  ## `mixin` is load-bearing: without it Nim binds `appendChild` /
+  ## `removeChild` at the definition site, where the only candidates are this
+  ## module's own `NativeRenderer` overloads, and every other renderer fails to
+  ## instantiate with "type mismatch … Expected: proc appendChild(r:
+  ## NativeRenderer …)".
+  mixin appendChild, removeChild
+  var mounted: E
+  var haveMounted = false
+  renderNative(accessor, proc(node: E) =
+    if haveMounted:
+      if mounted == node: return
+      renderer.removeChild(host, mounted)
+    renderer.appendChild(host, node)
+    mounted = node
+    haveMounted = true)
+
+proc dispose*[E](handle: NativeRootHandle[E]) =
+  ## Dispose the reactive root. Idempotent.
+  if handle == nil: return
+  let d = handle.disposeRoot
+  if d != nil:
+    handle.disposeRoot = nil
+    d()
+
+proc isDisposed*[E](handle: NativeRootHandle[E]): bool =
+  handle == nil or handle.disposeRoot == nil
 
 # ---- Compile-time concept check ----
 

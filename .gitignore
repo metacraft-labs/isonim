@@ -207,3 +207,6 @@ tests/test_editor_viewport_resize_publisher
 # ETS-M4 streaming preview element tree delta test binary
 tests/test_streaming_preview_element_tree_delta
 .repro/
+
+# NH-M1 reactive-root suite binary
+tests/test_render_native_reactive

@@ -188,6 +188,8 @@ test-c:
     nim c -r tests/test_demo_vm.nim
     nim c -r tests/test_terminal.nim
     nim c -r tests/test_native_renderer.nim
+    # NH-M1: the shared reactive-root scaffold (`renderNative`).
+    nim c -r tests/test_render_native_reactive.nim
     nim c -r tests/test_nginx_module.nim
     nim c -r tests/test_corner_cases.nim
     nim c -r tests/test_accessibility.nim
