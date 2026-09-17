@@ -69,6 +69,20 @@ assert rbHcrTypeChanged("test.ComponentState") == false, "type_changed should be
 var hitCount = 0
 proc reloadCallback(info: ptr RbHcrReloadInfo, userData: pointer) {.cdecl.} =
   inc hitCount
+  # NH-M2: READ the struct fields, do not merely receive the pointer.
+  # Every field of RbHcrReloadInfo / RbHcrTypeChange needs its own
+  # `importc` because the C header spells them snake_case while Nim
+  # spells them camelCase; without those pragmas this callback body is
+  # the first thing that fails to compile, and a probe that only
+  # increments a counter never touches a field and so never notices.
+  # That is exactly how the mismatch survived from NH-M0 to NH-M2.
+  if info != nil:
+    if info.changedFilesCount > 0'u32 and info.changedFiles != nil:
+      discard $info.changedFiles[0]
+    if info.changedTypesCount > 0'u32 and info.changedTypes != nil:
+      let tc = info.changedTypes[0]
+      discard $tc.typeName
+      discard tc.oldSize + tc.newSize
 
 rbHcrBeforeReload(reloadCallback, nil)
 rbHcrAfterReload(reloadCallback, nil)

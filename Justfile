@@ -211,7 +211,19 @@ test-c:
     nim c -r tests/test_resource_async.nim
     # NH-M0 & NH-M5 / HX-S-0: Native HCR shim tests (inactive path & active linked path)
     nim c -r tests/test_native_hcr_shim.nim
+    # NH-M2: the native HMR runtime, in BOTH its gating configurations.
+    # The pair is the point: the flag-on suite proves the machinery works,
+    # the flag-off suite proves a production binary still has none of it
+    # and still mounts build-once. Each file refuses to compile in the
+    # other's configuration, so neither can pass vacuously.
+    nim c -r -d:isonimHmr tests/test_native_hmr.nim
+    nim c -r tests/test_native_hmr_inactive.nim
     bash tests/test_hx_s0_isonim_link_line_names_something_that_exists.sh
+
+# NH-M2: native hot module reload, both gating configurations.
+test-hmr:
+    nim c -r -d:isonimHmr tests/test_native_hmr.nim
+    nim c -r tests/test_native_hmr_inactive.nim
 
 # Run native HCR integration tests (inactive shim & active librepro_hcr_agent linking)
 test-hcr:

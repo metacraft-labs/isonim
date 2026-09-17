@@ -210,3 +210,7 @@ tests/test_streaming_preview_element_tree_delta
 
 # NH-M1 reactive-root suite binary
 tests/test_render_native_reactive
+
+# NH-M2 native HMR suite binaries (both gating configurations)
+tests/test_native_hmr
+tests/test_native_hmr_inactive

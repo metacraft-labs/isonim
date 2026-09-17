@@ -67,19 +67,30 @@ when defined(reprobuildHcr):
       ## Per-type layout-change descriptor handed to before/after-reload
       ## callbacks. Mirrors the C ``RbHcrTypeChange`` struct (see Reprobuild
       ## HCR-Overview § 13.3).
-      typeName*: cstring
-      oldSize*: uint32
-      newSize*: uint32
+      ##
+      ## NH-M2: the per-field ``importc`` pragmas are load-bearing and were
+      ## missing. Without them Nim emits the camelCase Nim spelling into the
+      ## generated C (``x.typeName``) while the header declares ``type_name``,
+      ## so any code that READS a field fails to compile under
+      ## ``-d:reprobuildHcr``. NH-M0 never read one — its callback body only
+      ## increments a counter — which is why the mismatch survived four
+      ## months behind a green gate.
+      typeName* {.importc: "type_name".}: cstring
+      oldSize* {.importc: "old_size".}: uint32
+      newSize* {.importc: "new_size".}: uint32
 
     RbHcrReloadInfo* {.importc: "const RbHcrReloadInfo", header: "repro_hcr_agent.h", bycopy.} = object
       ## Reload context passed to before/after-reload callbacks. Pointer +
       ## count pairs mirror the C structure (`const char* const*` becomes
       ## ``ptr UncheckedArray[cstring]``). The C agent owns this storage;
       ## IsoNim must not retain pointers past the callback's return.
-      changedFiles*: ptr UncheckedArray[cstring]
-      changedFilesCount*: uint32
-      changedTypes*: ptr UncheckedArray[RbHcrTypeChange]
-      changedTypesCount*: uint32
+      ##
+      ## See the note on ``RbHcrTypeChange`` for why each field carries its
+      ## own ``importc``.
+      changedFiles* {.importc: "changed_files".}: ptr UncheckedArray[cstring]
+      changedFilesCount* {.importc: "changed_files_count".}: uint32
+      changedTypes* {.importc: "changed_types".}: ptr UncheckedArray[RbHcrTypeChange]
+      changedTypesCount* {.importc: "changed_types_count".}: uint32
 
     RbHcrReloadCallback* {.importc: "RbHcrReloadCallback", header: "repro_hcr_agent.h".} = proc (info: ptr RbHcrReloadInfo;
         userData: pointer) {.cdecl.}
@@ -117,47 +128,55 @@ else:
 
 # ---------------------------------------------------------------------------
 # FFI surface — active path (``-d:reprobuildHcr``).
+#
+# NH-M2 note on the ``Raw`` suffix. These are the *bindings*; the names
+# IsoNim code calls (``rbHcrBeforeReload`` etc., no suffix) are the thin
+# wrappers further down, which are shared by both gating paths. Splitting
+# the two layers is what lets ``-d:isonimHmr`` interpose a test agent
+# (``isonim/tests/helpers/hcr_stub.nim``) without any call site changing
+# shape. The C symbol names and signatures are unchanged — NH-M5 / HX-S-0's
+# link gate greps ``nm`` for exactly these ten.
 # ---------------------------------------------------------------------------
 
 when defined(reprobuildHcr):
   {.passL: "-lrepro_hcr_agent".}
 
-  proc rbHcrWantsReload*(): bool
+  proc rbHcrWantsReloadRaw(): bool
     {.importc: "rb_hcr_wants_reload", header: "repro_hcr_agent.h".}
 
-  proc rbHcrApplyReload*()
+  proc rbHcrApplyReloadRaw()
     {.importc: "rb_hcr_apply_reload", header: "repro_hcr_agent.h".}
 
-  proc rbHcrRegisterManagedType*(typeName: cstring)
+  proc rbHcrRegisterManagedTypeRaw(typeName: cstring)
     {.importc: "rb_hcr_register_managed_type",
       header: "repro_hcr_agent.h".}
 
-  proc rbHcrUnregisterManagedType*(typeName: cstring)
+  proc rbHcrUnregisterManagedTypeRaw(typeName: cstring)
     {.importc: "rb_hcr_unregister_managed_type",
       header: "repro_hcr_agent.h".}
 
-  proc rbHcrBeforeReload*(callback: RbHcrReloadCallback;
+  proc rbHcrBeforeReloadRaw(callback: RbHcrReloadCallback;
       userData: pointer)
     {.importc: "rb_hcr_before_reload", header: "repro_hcr_agent.h".}
 
-  proc rbHcrAfterReload*(callback: RbHcrReloadCallback;
+  proc rbHcrAfterReloadRaw(callback: RbHcrReloadCallback;
       userData: pointer)
     {.importc: "rb_hcr_after_reload", header: "repro_hcr_agent.h".}
 
-  proc rbHcrRemoveBeforeReload*(callback: RbHcrReloadCallback;
+  proc rbHcrRemoveBeforeReloadRaw(callback: RbHcrReloadCallback;
       userData: pointer)
     {.importc: "rb_hcr_remove_before_reload",
       header: "repro_hcr_agent.h".}
 
-  proc rbHcrRemoveAfterReload*(callback: RbHcrReloadCallback;
+  proc rbHcrRemoveAfterReloadRaw(callback: RbHcrReloadCallback;
       userData: pointer)
     {.importc: "rb_hcr_remove_after_reload",
       header: "repro_hcr_agent.h".}
 
-  proc rbHcrFileChanged*(filePath: cstring): bool
+  proc rbHcrFileChangedRaw(filePath: cstring): bool
     {.importc: "rb_hcr_file_changed", header: "repro_hcr_agent.h".}
 
-  proc rbHcrTypeChanged*(typeName: cstring): bool
+  proc rbHcrTypeChangedRaw(typeName: cstring): bool
     {.importc: "rb_hcr_type_changed", header: "repro_hcr_agent.h".}
 
 # ---------------------------------------------------------------------------
@@ -172,64 +191,222 @@ when defined(reprobuildHcr):
 # ---------------------------------------------------------------------------
 
 else:
-  proc rbHcrWantsReload*(): bool =
+  proc rbHcrWantsReloadRaw(): bool =
     ## No-op fallback: Reprobuild HCR isn't linked, so no patch is ever
     ## pending.
     false
 
-  proc rbHcrApplyReload*() =
+  proc rbHcrApplyReloadRaw() =
     ## No-op fallback: applying a non-existent patch is a no-op.
     discard
 
-  proc rbHcrRegisterManagedType*(typeName: cstring) =
+  proc rbHcrRegisterManagedTypeRaw(typeName: cstring) =
     ## No-op fallback: managed-type registration is meaningless without
     ## the agent. Callers can register types unconditionally; if HCR is
     ## off the call is silently dropped.
     discard
 
-  proc rbHcrUnregisterManagedType*(typeName: cstring) =
+  proc rbHcrUnregisterManagedTypeRaw(typeName: cstring) =
     ## No-op fallback.
     discard
 
-  proc rbHcrBeforeReload*(callback: RbHcrReloadCallback;
+  proc rbHcrBeforeReloadRaw(callback: RbHcrReloadCallback;
       userData: pointer) =
     ## No-op fallback: with no agent there's no reload event, so the
     ## callback is simply never invoked. We deliberately do *not* hold
     ## onto the callback pointer here — the no-op path has no registry.
     discard
 
-  proc rbHcrAfterReload*(callback: RbHcrReloadCallback;
+  proc rbHcrAfterReloadRaw(callback: RbHcrReloadCallback;
       userData: pointer) =
-    ## No-op fallback. See ``rbHcrBeforeReload`` for rationale.
+    ## No-op fallback. See ``rbHcrBeforeReloadRaw`` for rationale.
     discard
 
-  proc rbHcrRemoveBeforeReload*(callback: RbHcrReloadCallback;
+  proc rbHcrRemoveBeforeReloadRaw(callback: RbHcrReloadCallback;
       userData: pointer) =
     ## No-op fallback: removing a never-registered callback is a no-op.
     discard
 
-  proc rbHcrRemoveAfterReload*(callback: RbHcrReloadCallback;
+  proc rbHcrRemoveAfterReloadRaw(callback: RbHcrReloadCallback;
       userData: pointer) =
     ## No-op fallback.
     discard
 
-  proc rbHcrFileChanged*(filePath: cstring): bool =
+  proc rbHcrFileChangedRaw(filePath: cstring): bool =
     ## No-op fallback: with no agent there is no notion of a "changed
     ## file in the most recent reload", so every query returns ``false``.
     false
 
-  proc rbHcrTypeChanged*(typeName: cstring): bool =
-    ## No-op fallback: same reasoning as ``rbHcrFileChanged``.
+  proc rbHcrTypeChangedRaw(typeName: cstring): bool =
+    ## No-op fallback: same reasoning as ``rbHcrFileChangedRaw``.
     false
 
 # ---------------------------------------------------------------------------
-# TODO (NH-M2): expose Reprobuild's padded-allocation surface
+# NH-M2 — the agent-hook seam (``-d:isonimHmr`` only).
+#
+# The ten functions above are the only surface IsoNim binds. There is no
+# runnable Linux implementation of them yet: Reprobuild's shipped
+# ``librepro_hcr_agent`` exports *baseline* bodies (`repro_hcr_agent.c`,
+# "Application Runtime ABI: rb_hcr_*") whose ``wants_reload`` is a constant
+# ``false`` and whose ``apply_reload`` is an explicit no-op; dynamic patch
+# delivery, live callback dispatch and managed-type layout checking are all
+# owned by Reprobuild ``HLX-M8``, which is ``planned``.
+#
+# So the only way to exercise IsoNim's reload lifecycle today is to stand a
+# test agent in the real agent's place. ``HcrAgentHooks`` is that seam: when
+# a hook is non-nil it *replaces* the corresponding shim call, so the
+# application's own code path — ``if rbHcrWantsReload(): rbHcrApplyReload()``,
+# ``rbHcrBeforeReload(cb, ud)`` — is byte-for-byte the path it will take
+# against the real agent. The double is ``isonim/tests/helpers/hcr_stub.nim``.
+#
+# Gated on ``-d:isonimHmr``, not merely on "tests", for two reasons: the
+# non-HMR production build must remain exactly what NH-M0 shipped (the
+# symbol-absence gate compiles its probe with neither flag), and a seam that
+# only exists in a test build is a seam the shipped code has never run
+# through.
+# ---------------------------------------------------------------------------
+
+when defined(isonimHmr):
+  type
+    HcrAgentHooks* = ref object
+      ## A stand-in for the HCR agent. Every field is optional; a nil field
+      ## means "let the shim handle it". A non-nil field REPLACES the shim
+      ## call rather than augmenting it, so exactly one registry sees each
+      ## registration and callbacks cannot be double-fired.
+      registerManagedType*: proc(typeName: cstring) {.closure.}
+      unregisterManagedType*: proc(typeName: cstring) {.closure.}
+      beforeReload*: proc(callback: RbHcrReloadCallback;
+                          userData: pointer) {.closure.}
+      afterReload*: proc(callback: RbHcrReloadCallback;
+                         userData: pointer) {.closure.}
+      removeBeforeReload*: proc(callback: RbHcrReloadCallback;
+                                userData: pointer) {.closure.}
+      removeAfterReload*: proc(callback: RbHcrReloadCallback;
+                               userData: pointer) {.closure.}
+      wantsReload*: proc(): bool {.closure.}
+      applyReload*: proc() {.closure.}
+      fileChanged*: proc(filePath: cstring): bool {.closure.}
+      typeChanged*: proc(typeName: cstring): bool {.closure.}
+
+  var hcrAgentHooks*: HcrAgentHooks
+    ## The installed stand-in, or nil (the default) to go straight to the
+    ## shim. Set by ``isonim/tests/helpers/hcr_stub.nim``'s
+    ## ``installHcrStub``; cleared by ``uninstall``.
+
+# ---------------------------------------------------------------------------
+# Public surface — one wrapper layer shared by both gating paths.
+#
+# These are the names every IsoNim caller uses. Under ``-d:isonimHmr`` they
+# consult ``hcrAgentHooks`` first; otherwise (and always in a production
+# build) they are a direct forward to the layer above, which the C compiler
+# inlines away.
+# ---------------------------------------------------------------------------
+
+proc rbHcrWantsReload*(): bool =
+  ## True when a compiled patch is pending. HCR-Overview § 13.1.
+  when defined(isonimHmr):
+    if hcrAgentHooks != nil and hcrAgentHooks.wantsReload != nil:
+      return hcrAgentHooks.wantsReload()
+  rbHcrWantsReloadRaw()
+
+proc rbHcrApplyReload*() =
+  ## Apply the pending patch now, running the full lifecycle
+  ## (before-reload callbacks → patch application → after-reload
+  ## callbacks). HCR-Overview § 13.1.
+  when defined(isonimHmr):
+    if hcrAgentHooks != nil and hcrAgentHooks.applyReload != nil:
+      hcrAgentHooks.applyReload()
+      return
+  rbHcrApplyReloadRaw()
+
+proc rbHcrRegisterManagedType*(typeName: cstring) =
+  ## Whitelist a type whose layout may change across a patch.
+  ## HCR-Overview § 13.2 / § 7.4.
+  ##
+  ## The agent stores the POINTER, not a copy (see
+  ## ``repro_hcr_agent.c``'s ``rb_hcr_register_managed_type``), so the
+  ## caller owns keeping the string alive for the process lifetime.
+  when defined(isonimHmr):
+    if hcrAgentHooks != nil and hcrAgentHooks.registerManagedType != nil:
+      hcrAgentHooks.registerManagedType(typeName)
+      return
+  rbHcrRegisterManagedTypeRaw(typeName)
+
+proc rbHcrUnregisterManagedType*(typeName: cstring) =
+  ## Remove a type from the managed whitelist. HCR-Overview § 13.2.
+  when defined(isonimHmr):
+    if hcrAgentHooks != nil and hcrAgentHooks.unregisterManagedType != nil:
+      hcrAgentHooks.unregisterManagedType(typeName)
+      return
+  rbHcrUnregisterManagedTypeRaw(typeName)
+
+proc rbHcrBeforeReload*(callback: RbHcrReloadCallback; userData: pointer) =
+  ## Register a callback to run BEFORE the patch is applied.
+  ## HCR-Overview § 13.3.
+  when defined(isonimHmr):
+    if hcrAgentHooks != nil and hcrAgentHooks.beforeReload != nil:
+      hcrAgentHooks.beforeReload(callback, userData)
+      return
+  rbHcrBeforeReloadRaw(callback, userData)
+
+proc rbHcrAfterReload*(callback: RbHcrReloadCallback; userData: pointer) =
+  ## Register a callback to run AFTER the patch is applied.
+  ## HCR-Overview § 13.3.
+  when defined(isonimHmr):
+    if hcrAgentHooks != nil and hcrAgentHooks.afterReload != nil:
+      hcrAgentHooks.afterReload(callback, userData)
+      return
+  rbHcrAfterReloadRaw(callback, userData)
+
+proc rbHcrRemoveBeforeReload*(callback: RbHcrReloadCallback;
+                              userData: pointer) =
+  ## Remove a before-reload callback, matched by (function, user_data).
+  ## HCR-Overview § 13.3.
+  when defined(isonimHmr):
+    if hcrAgentHooks != nil and hcrAgentHooks.removeBeforeReload != nil:
+      hcrAgentHooks.removeBeforeReload(callback, userData)
+      return
+  rbHcrRemoveBeforeReloadRaw(callback, userData)
+
+proc rbHcrRemoveAfterReload*(callback: RbHcrReloadCallback;
+                             userData: pointer) =
+  ## Remove an after-reload callback, matched by (function, user_data).
+  ## HCR-Overview § 13.3.
+  when defined(isonimHmr):
+    if hcrAgentHooks != nil and hcrAgentHooks.removeAfterReload != nil:
+      hcrAgentHooks.removeAfterReload(callback, userData)
+      return
+  rbHcrRemoveAfterReloadRaw(callback, userData)
+
+proc rbHcrFileChanged*(filePath: cstring): bool =
+  ## True iff the most recent **applied** reload listed this file.
+  ## HCR-Overview § 13.4, with the applied-not-requested rule pinned by
+  ## GDScript-Hot-Reload-Multi-Version-Sources § 4.5 (and restated in the
+  ## baseline C body's own comment).
+  when defined(isonimHmr):
+    if hcrAgentHooks != nil and hcrAgentHooks.fileChanged != nil:
+      return hcrAgentHooks.fileChanged(filePath)
+  rbHcrFileChangedRaw(filePath)
+
+proc rbHcrTypeChanged*(typeName: cstring): bool =
+  ## True iff the most recent applied reload changed this type's layout.
+  ## HCR-Overview § 13.4.
+  when defined(isonimHmr):
+    if hcrAgentHooks != nil and hcrAgentHooks.typeChanged != nil:
+      return hcrAgentHooks.typeChanged(typeName)
+  rbHcrTypeChangedRaw(typeName)
+
+# ---------------------------------------------------------------------------
+# NOT exposed here: Reprobuild's padded-allocation surface
 # (``rb_hcr_padded_alloc`` / ``rb_hcr_padded_free`` /
-# ``rb_hcr_padded_capacity`` — see Reprobuild HCR-Overview § 13.5). They
-# are *not* required by NH-M0 since the NH-M1 reactive root scaffold does
-# not allocate any managed-type instances. They will be introduced
-# alongside the managed-type lifecycle work in NH-M2, where the signal
-# storage migration path actually consumes them. Bringing them in here
-# would add three more `importc`/no-op pairs without any caller — pure
-# surface area for no benefit at this milestone.
+# ``rb_hcr_padded_capacity`` — HCR-Overview § 13.5).
+#
+# NH-M0 deferred these to NH-M2 on the assumption that NH-M2's signal
+# storage would consume them. It does not: the native HMR registry keeps
+# ``SignalState[T]`` instances behind a ``ref`` (the Pimpl shape
+# HCR-Overview § 7.5 describes), so the handle IsoNim holds has a fixed
+# one-word layout and a value-type growth never has to fit in a padding
+# budget. Bringing the three procs in would still add surface with no
+# caller. They belong with whatever first allocates a managed instance
+# inline — not here.
 # ---------------------------------------------------------------------------
