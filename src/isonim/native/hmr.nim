@@ -5,11 +5,31 @@
 ## ``isonim/web/hmr_ui_registry.nim``.
 ##
 ## Specs:
+## - ``reprobuild-specs/HCR/Patch-Loading-Lifecycle.md`` § 3.1 and § 3.3
+##   — **the normative phase order**, and the authority for where each of
+##   the two agent callbacks may do its work. Read it before moving
+##   anything between them.
 ## - ``codetracer-specs/Front-Ends/IsoNim/Hot-Module-Reload-Native.md``
-##   — "Reactive root reload sequence" and "Failure mode" are the two
-##   sections this module implements literally.
+##   — "Reactive root reload sequence" and "Failure mode". The
+##   "Failure mode" section is implemented literally. The sequence block
+##   is NOT: its first four lines put trampoline installation before
+##   ``before_reload``, which contradicts the normative order above, and
+##   that contradiction was adjudicated on 2026-09-17 in the normative
+##   order's favour — see the correction in that document.
 ## - ``…/Hot-Module-Reload-Native.milestones.org`` § NH-M2.
 ## - ``reprobuild-specs/HCR/HCR-Overview.md`` § 7.4, § 13.
+##
+## ## Where the reload actually happens, and why it is not obvious
+##
+## ``before_reload`` is the agent's Phase E; ``after_reload`` is Phase H;
+## the trampolines go in at Phase G, strictly between them. So **the
+## before-reload callback cannot observe the patch** — at that point the
+## patch library has not even been loaded. Everything that must observe
+## new code (the entry call that re-registers ui blocks, the factory
+## dispatch, the stale-slot prune) therefore lives in the AFTER callback;
+## the before callback holds only what must happen while OLD code is live
+## (the application's save/destroy hook) plus the transaction bookkeeping
+## that reads no patched code at all.
 ##
 ## ## What is here
 ##
@@ -178,11 +198,25 @@ when defined(isonimHmr):
 
     HmrEntry* = proc() {.closure.}
       ## The ui-block registration pass. Re-run inside
-      ## ``rb_hcr_before_reload``: after a patch the trampolines are in
-      ## place, so running the entry executes the NEW bodies, which call
-      ## ``hmrRegisterFactory`` with the new hashes. This is the native
-      ## stand-in for the browser's "the reloaded bundle re-runs module
-      ## init" (design doc, "Reactive root reload sequence").
+      ## ``rb_hcr_AFTER_reload``, which is the only callback at which the
+      ## new bodies are live. Running it executes the patched bodies,
+      ## which call ``hmrRegisterFactory`` with the new hashes. This is
+      ## the native stand-in for the browser's "the reloaded bundle
+      ## re-runs module init".
+      ##
+      ## CORRECTED 2026-09-17. NH-M2 ran this inside ``before_reload``,
+      ## on IsoNim's design doc's sequence, which installed trampolines
+      ## before firing that callback. Reprobuild's normative ordering
+      ## (``reprobuild-specs/HCR/Patch-Loading-Lifecycle.md`` §3.1, the
+      ## document HCR-Overview's index designates "Normative
+      ## specification for the exact ordering of operations") is the
+      ## opposite: Phase E fires ``before_reload`` (steps 12-15), Phase F
+      ## loads the library (16-20), Phase G installs the trampolines
+      ## (21-27), and only Phase H fires ``after_reload`` (28-29). At
+      ## Phase E the trampolines are physically not in yet, so an entry
+      ## call there re-registers the OLD hashes, no factory signal is
+      ## written, and the reload is a silent no-op — measured, see the
+      ## verification log under NH-M2.
 
     HmrRoot* = ref object
       ## Handle on a running native HMR session.
@@ -199,6 +233,28 @@ when defined(isonimHmr):
       lastReloadFailed*: bool
       lastError*: ref Exception
       lastReloadInfo*: HmrReloadInfo
+      reloadInFlight*: bool
+        ## True between the before-reload callback and its matching
+        ## after-reload callback. The two are one transaction split
+        ## across the agent's Phase E and Phase H, and the after half
+        ## must be able to tell "my before half ran" from "I was called
+        ## without one" — the latter is an agent that does not conform
+        ## and must not be allowed to prune a registry it never staged.
+        ##
+        ## The MIRROR case is deliberately not guarded, and the reason is
+        ## worth stating so it is not mistaken for an oversight: a second
+        ## ``before_reload`` with no ``after_reload`` between the two
+        ## overwrites ``genBeforeReload`` with the already-flipped
+        ## generation, so a subsequent failure rolls back one generation
+        ## short. That cannot blank the surface — the failure path does
+        ## not prune, and the success path re-claims every slot at the
+        ## current generation — so the cost is a stale counter and not a
+        ## lost tree, and the guard it would need (refusing or nesting
+        ## reload transactions) is a policy no spec text decides.
+      genBeforeReload*: int
+        ## The generation the registry was on when Phase E flipped it.
+        ## Held here rather than in a local because the rollback now
+        ## happens in a DIFFERENT callback from the flip.
       managedTypes*: seq[string]
         ## Held for the process lifetime ON PURPOSE: the agent's registry
         ## stores the ``const char*`` it was handed rather than copying it
@@ -498,8 +554,24 @@ when defined(isonimHmr):
 
   proc hmrBeforeReloadCallback(info: ptr RbHcrReloadInfo;
                                userData: pointer) {.cdecl.} =
-    ## ``rb_hcr_before_reload``. Flips the generation, re-runs the
-    ## ui-block registration pass, and dispatches the updated factories.
+    ## ``rb_hcr_before_reload`` — the agent's **Phase E**, steps 12-15 of
+    ## ``Patch-Loading-Lifecycle.md`` §3.1.
+    ##
+    ## WHAT THIS CALLBACK MAY AND MAY NOT DO, and why the split is where
+    ## it is. At Phase E the patch library has not been loaded (Phase F)
+    ## and no trampoline has been installed (Phase G): the OLD bodies are
+    ## the only bodies in the process. So the one thing that genuinely
+    ## belongs here is the thing that can only be done while the old code
+    ## is live — step 14's "serialize and destroy instances of managed
+    ## types whose layout changed", which for IsoNim means the
+    ## application's own ``onBeforeReload`` hook. Everything that needs to
+    ## OBSERVE the patch — the entry call, factory dispatch, pruning —
+    ## moves to the after-reload callback, because here it would observe
+    ## the code the patch is replacing.
+    ##
+    ## What this leaves for the registry is transaction bookkeeping:
+    ## flip the generation, remember the generation to roll back to, and
+    ## open the staging window. None of that reads patched code.
     ##
     ## NOTHING MAY ESCAPE THIS PROC. The agent calls it from C; a Nim
     ## exception unwinding through a C frame is undefined behaviour, and
@@ -516,43 +588,60 @@ when defined(isonimHmr):
     let info2 = toHmrReloadInfo(info)
     root.lastReloadInfo = info2
 
-    let genBefore = reg.currentGen
+    root.genBeforeReload = reg.currentGen
     inc reg.currentGen
     reg.discardPending()
     reg.staging = true
+    root.lastReloadFailed = false
+    root.reloadInFlight = true
 
-    var failed = false
-    try:
-      if root.onBeforeReload != nil:
+    if root.onBeforeReload != nil:
+      try:
         root.onBeforeReload(info2)
-      if root.entry != nil:
-        root.entry()
-    except Exception as err:
-      failed = true
-      root.lastError = err
-      if root.onError != nil:
-        try:
-          root.onError("<hmr-entry>", err)
-        except Exception:
-          discard
-
-    reg.staging = false
-    if failed:
-      # Design doc, "Failure mode": catch, roll the generation counter
-      # back, leave the previous tree intact.
-      reg.discardPending()
-      reg.currentGen = genBefore
-      root.lastReloadFailed = true
-      inc root.failedReloads
-    else:
-      reg.commitPending()
-      root.lastReloadFailed = false
-      inc root.appliedReloads
+      except Exception as err:
+        # The application failed to save what it wanted to save. Mark the
+        # transaction failed so the after half rolls back instead of
+        # committing: restoring into a half-saved state is how a reload
+        # blanks a surface.
+        root.lastReloadFailed = true
+        root.lastError = err
+        if root.onError != nil:
+          try:
+            root.onError("<hmr-before-hook>", err)
+          except Exception:
+            discard
 
   proc hmrAfterReloadCallback(info: ptr RbHcrReloadInfo;
                               userData: pointer) {.cdecl.} =
-    ## ``rb_hcr_after_reload``. Prunes stale-generation entries and runs
-    ## the user hook. Same no-escape rule as the before callback.
+    ## ``rb_hcr_after_reload`` — the agent's **Phase H**, steps 28-29.
+    ##
+    ## This is where the reload actually happens, because this is the
+    ## first callback at which the trampolines are in and the patched
+    ## bodies are what a call reaches. It re-runs the ui-block
+    ## registration pass (so the NEW bodies register their new
+    ## ``symBodyHash`` values), commits the staged registrations — which
+    ## writes each hash-changed slot's factory ``Signal``, invalidating
+    ## its memo and every mount that read it — prunes the slots the new
+    ## source no longer registers, and finally runs the application's
+    ## ``onAfterReload`` hook, which is step 29's "create new instances
+    ## with the new layout and deserialize from saved state".
+    ##
+    ## **The "patch failed, nothing changed" case** (§3.3 step 38): if
+    ## ``dlopen``/load fails after before-reload has already fired, the
+    ## agent **must still** call this callback, with zero
+    ## ``changed_types``, so the application can restore. This path needs
+    ## no detection for that, which is the property that makes it safe:
+    ## zero ``changed_types`` is ALSO what an ordinary patch with no
+    ## layout change carries, so it is not a usable failure signal. What
+    ## happens instead is that the entry call runs against the UNPATCHED
+    ## bodies, re-registers the hashes already in the registry,
+    ## ``applyRegistration`` takes its equality branch, no factory signal
+    ## is written, and nothing on the surface moves — while every slot is
+    ## re-claimed at the current generation, so the prune that follows
+    ## deletes nothing. The reload is a no-op by construction rather than
+    ## by a branch that could be wrong.
+    ##
+    ## Same no-escape rule as the before callback.
     if userData == nil: return
     let root = cast[HmrRoot](userData)
     if root == nil or root.registry == nil: return
@@ -560,12 +649,60 @@ when defined(isonimHmr):
     let reg = root.registry
     activeUiRegistry = reg
     let info2 = toHmrReloadInfo(info)
-    # A failed before-phase rolled the generation back, so EVERY slot now
-    # looks stale. Pruning here would delete the entire registry on the
-    # strength of a reload that was refused — the opposite of leaving the
-    # previous tree intact.
-    if not root.lastReloadFailed:
+
+    if not root.reloadInFlight:
+      # An after-reload with no matching before-reload. A conforming
+      # agent does not do this (§3.1 pairs them; §3.3 step 38 guarantees
+      # the after half fires even when the patch dies in between), so
+      # this is a non-conforming agent and the safe reading is "nothing
+      # was staged". Running the entry here would re-register at a
+      # generation nothing flipped, and pruning would sweep a registry
+      # this callback never claimed.
+      if root.onAfterReload != nil:
+        try:
+          root.onAfterReload(info2)
+        except Exception as err:
+          root.lastError = err
+          if root.onError != nil:
+            try:
+              root.onError("<hmr-after-hook>", err)
+            except Exception:
+              discard
+      return
+
+    root.reloadInFlight = false
+
+    var failed = root.lastReloadFailed   # the before hook already failed
+    if not failed:
+      try:
+        if root.entry != nil:
+          root.entry()
+      except Exception as err:
+        failed = true
+        root.lastError = err
+        if root.onError != nil:
+          try:
+            root.onError("<hmr-entry>", err)
+          except Exception:
+            discard
+
+    reg.staging = false
+    if failed:
+      # Design doc, "Failure mode": catch, roll the generation counter
+      # back, leave the previous tree intact. And do NOT prune: the
+      # rollback puts every slot's ``claimedGen`` behind ``currentGen``
+      # again, so a sweep here would delete the whole registry on the
+      # strength of a reload that was refused.
+      reg.discardPending()
+      reg.currentGen = root.genBeforeReload
+      root.lastReloadFailed = true
+      inc root.failedReloads
+    else:
+      reg.commitPending()
       reg.pruneStaleEntries()
+      root.lastReloadFailed = false
+      inc root.appliedReloads
+
     if root.onAfterReload != nil:
       try:
         root.onAfterReload(info2)
@@ -678,6 +815,15 @@ when defined(isonimHmr):
     for name in root.managedTypes:
       rbHcrUnregisterManagedType(cstring(name))
     root.started = false
+    # A root stopped between Phase E and Phase H has a transaction that
+    # will never be closed, because the after-reload callback was just
+    # unregistered. Close it here so a later `start()` does not inherit
+    # an in-flight flag and a stale rollback generation.
+    if root.reloadInFlight:
+      root.reloadInFlight = false
+      root.registry.staging = false
+      root.registry.discardPending()
+      root.registry.currentGen = root.genBeforeReload
     if activeUiRegistry == root.registry:
       activeUiRegistry = nil
     GC_unref(root)

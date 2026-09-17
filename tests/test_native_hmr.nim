@@ -23,9 +23,18 @@
 ## ## What each gate proves, and how it discriminates
 ##
 ## The claim NH-M2 makes is not "a proc named mountUiHot exists". It is
-## four separable behaviours, each paired here with a control that must
+## five separable behaviours, each paired here with a control that must
 ## stay green when the behaviour is present and would have to go red if
 ## the control were itself accidentally reactive:
+##
+## - **Dispatch observes POST-SWAP code.** Added 2026-09-17, and it is
+##   the gate the other four could not be: they were all green under
+##   either candidate phase ordering, because the fixture mutated its own
+##   "source" before the lifecycle started, so the new body was reachable
+##   at every phase. Here the AGENT owns the swap and performs it at
+##   Phase G, so "which code did the registration pass see?" has a
+##   different answer under each ordering. Measured both ways — see the
+##   milestone's verification log.
 ##
 ## - **Signal preservation.** The new body re-claims the same
 ##   ``SignalState`` instead of creating a fresh one. Asserted on the
@@ -106,9 +115,13 @@ proc makeBodyB(version: int): UiSlotFactory =
     n)
 
 proc appEntry() =
-  ## The ui-block registration pass. Re-run by `rb_hcr_before_reload`;
-  ## after a real patch it would be the patched bodies registering their
-  ## new hashes, which is what `versionA` / `versionB` stand for here.
+  ## The ui-block registration pass. Re-run by `rb_hcr_AFTER_reload` —
+  ## Phase H, the first point at which the trampolines are in and the
+  ## patched bodies are what a call reaches. After a real patch it is the
+  ## patched bodies registering their new hashes, which is what
+  ## `versionA` / `versionB` stand for here; the stub flips them at its
+  ## Phase G step, so a body version read here is genuinely "whatever is
+  ## live at the moment the entry runs".
   inc entryRuns
   hmrRegisterFactory(slotA, "hashA" & $versionA, makeBodyA(versionA))
   if entryRaises:
@@ -173,8 +186,22 @@ proc slotNode(host: NativeWidget; cls: string): NativeWidget =
         return grand
   nil
 
-proc queueSimple(stub: HcrStubAgent; files: seq[string] = @["demo_app.nim"]) =
-  stub.queuePatch(HcrStubPatch(changedFiles: files, changedTypes: @[]))
+proc queueSimple(stub: HcrStubAgent; files: seq[string] = @["demo_app.nim"];
+                 swap: proc() = nil) =
+  stub.queuePatch(HcrStubPatch(changedFiles: files, changedTypes: @[],
+                               applyCodeSwap: swap))
+
+proc queueVersionA(stub: HcrStubAgent; v: int) =
+  ## The common case: a patch whose **Phase G** replaces slot A's body
+  ## with version `v`.
+  ##
+  ## Written as a swap the AGENT performs, never as a mutation the test
+  ## performs before `applyReload`, and the difference is the whole
+  ## subject of `test_dispatch_observes_post_swap_code_not_pre_swap_code`.
+  ## Mutating `versionA` up front would mean the "new body" was already
+  ## reachable at Phase E, which is the inverted order NH-M2 shipped
+  ## against and which `Patch-Loading-Lifecycle.md` § 3.1 forbids.
+  stub.queueSimple(swap = proc() = versionA = v)
 
 suite "NH-M2: native hot-component proxy + signal registry":
 
@@ -214,8 +241,7 @@ suite "NH-M2: native hot-component proxy + signal registry":
     check textContent(f.host).contains("count=0")
     check f.mount.handle.renders == 1
 
-    versionA = 2
-    f.stub.queueSimple()
+    f.stub.queueVersionA(2)
     check rbHcrWantsReload()
     rbHcrApplyReload()
 
@@ -240,8 +266,7 @@ suite "NH-M2: native hot-component proxy + signal registry":
     let rendersBefore = f.mount.handle.renders
     let mountsBefore = uiHotMounts
 
-    versionA = 2
-    f.stub.queueSimple()
+    f.stub.queueVersionA(2)
     rbHcrApplyReload()
 
     check textContent(f.host).contains("A2")
@@ -287,8 +312,7 @@ suite "NH-M2: native hot-component proxy + signal registry":
     let idBBefore = nodeBBefore.id
     let bodyBRunsBefore = bodyBRuns
 
-    versionA = 2                  # only A changes
-    f.stub.queueSimple()
+    f.stub.queueVersionA(2)       # only A changes
     rbHcrApplyReload()
 
     let nodeAAfter = slotNode(f.host, "slot-a")
@@ -317,9 +341,8 @@ suite "NH-M2: native hot-component proxy + signal registry":
     let rendersBefore = f.mount.handle.renders
     let slotsBefore = f.root.slotCount
 
-    versionA = 2          # the entry stages a real change …
     entryRaises = true    # … and then throws before finishing.
-    f.stub.queueSimple()
+    f.stub.queueVersionA(2)   # the entry stages a real change …
     rbHcrApplyReload()
 
     # The callbacks did run — this is a failure INSIDE the reload, not a
@@ -356,12 +379,12 @@ suite "NH-M2: native hot-component proxy + signal registry":
     # "a rejected patch leaves the process untouched".
     var f = newFixture()
     let textBefore = textContent(f.host)
-    versionA = 2
 
     f.stub.queuePatch(HcrStubPatch(
       changedFiles: @["demo_app.nim"],
       changedTypes: @[HcrStubTypeChange(typeName: "app.NotRegistered",
-                                        oldSize: 16, newSize: 24)]))
+                                        oldSize: 16, newSize: 24)],
+      applyCodeSwap: proc() = versionA = 2))
     rbHcrApplyReload()
 
     check f.stub.lastOutcome.rejection == hsrIncompatibleChange
@@ -377,7 +400,8 @@ suite "NH-M2: native hot-component proxy + signal registry":
     f.stub.queuePatch(HcrStubPatch(
       changedFiles: @["demo_app.nim"],
       changedTypes: @[HcrStubTypeChange(typeName: "isonim.UiSlot",
-                                        oldSize: 16, newSize: 24)]))
+                                        oldSize: 16, newSize: 24)],
+      applyCodeSwap: proc() = versionA = 2))
     rbHcrApplyReload()
     check f.stub.lastOutcome.applied
     check f.root.beforeReloads == 1
@@ -409,12 +433,142 @@ suite "NH-M2: native hot-component proxy + signal registry":
     teardown(f)
 
   test "test_reload_lifecycle_runs_in_the_specified_order":
-    # § 13.1: before-reload callbacks → patch application → after-reload
-    # callbacks, and § 13.3's "they execute in registration order".
+    # `Patch-Loading-Lifecycle.md` § 3.1's phase order: Phase E
+    # before-reload (12-15) → Phase F load (16-20) → Phase G trampolines
+    # (21-27) → Phase H after-reload (28-29). And § 13.3's "they execute
+    # in registration order".
     var f = newFixture()
     f.stub.queueSimple()
     rbHcrApplyReload()
-    check f.stub.lifecycle == @["prepare", "latch", "before", "apply", "after"]
+    check f.stub.lifecycle ==
+      @["prepare", "latch", "before", "load", "trampolines", "after"]
+    # The two facts the whole native HMR design rests on, spelled as
+    # index comparisons so they cannot be read past:
+    let iBefore = f.stub.lifecycle.find("before")
+    let iTramp = f.stub.lifecycle.find("trampolines")
+    let iAfter = f.stub.lifecycle.find("after")
+    check iBefore < iTramp     # before_reload runs over OLD code
+    check iTramp < iAfter      # after_reload runs over NEW code
+    teardown(f)
+
+  test "test_dispatch_observes_post_swap_code_not_pre_swap_code":
+    # GATE 5 — the one that discriminates between the two candidate
+    # orderings, which is why it exists. The four gates above are green
+    # under BOTH orderings, because each of them lets the test mutate its
+    # own "source" before the lifecycle starts, so the new body is
+    # reachable at every phase. That is the defect: it made NH-M2 green
+    # against a shape `Patch-Loading-Lifecycle.md` § 3.1 says no
+    # conforming agent presents.
+    #
+    # Here the AGENT owns the swap and performs it at Phase G, between
+    # the two callback sets — exactly where a real trampoline goes in. So
+    # the question "which code did the registration pass observe?" has a
+    # different answer under each ordering:
+    #
+    #   entry in after_reload (normative)  → sees version 2 → A2 painted
+    #   entry in before_reload (inverted)  → sees version 1 → A1 painted,
+    #                                        hash unchanged, no dispatch
+    #
+    # …and the second answer is a SILENT no-op: the agent reports the
+    # patch applied and the application reports the reload applied.
+    var f = newFixture()
+    check textContent(f.host).contains("A1")
+    check f.root.slotHash(slotA) == "hashA1"
+    let rendersBefore = f.mount.handle.renders
+
+    # The body version the entry call will read is still 1 at this point
+    # and STAYS 1 until the stub's Phase G step runs. Asserted, so the
+    # premise of the gate is not itself an assumption.
+    check versionA == 1
+    var versionAtBeforeReload = -1
+    f.root.onBeforeReload = proc(info: HmrReloadInfo) =
+      versionAtBeforeReload = versionA
+    var versionAtAfterReload = -1
+    f.root.onAfterReload = proc(info: HmrReloadInfo) =
+      versionAtAfterReload = versionA
+
+    f.stub.queueVersionA(2)
+    rbHcrApplyReload()
+
+    # What the agent did: the swap happened, and it happened between the
+    # callbacks.
+    check f.stub.lastOutcome.applied
+    check f.stub.lastOutcome.codeSwapped
+    check versionAtBeforeReload == 1   # Phase E saw the OLD body
+    check versionAtAfterReload == 2    # Phase H saw the NEW body
+
+    # What the application did with it — asserted on the observed tree,
+    # not on a counter. Under the inverted order every line below fails:
+    # the hash would still be hashA1, `renders` would not move, and the
+    # painted text would still say A1.
+    check f.root.slotHash(slotA) == "hashA2"
+    check textContent(f.host).contains("A2")
+    check not textContent(f.host).contains("A1 ")
+    check f.mount.handle.renders > rendersBefore
+    check f.root.appliedReloads == 1
+    teardown(f)
+
+  test "test_late_load_failure_still_reaches_after_reload_and_changes_nothing":
+    # `Patch-Loading-Lifecycle.md` § 3.3 step 38: if the load fails in
+    # Phase F, before-reload has ALREADY fired, so the agent must still
+    # invoke after-reload — with zero `changed_types` — so the
+    # application can restore. The stub could not produce this state at
+    # all before today; NH-M2's review recorded that as a gap.
+    #
+    # The IsoNim requirement is the never-blank-the-surface guarantee in
+    # its hardest form: after-reload arrives, the entry call runs, and it
+    # runs against UNPATCHED bodies. Nothing may move.
+    var f = newFixture()
+    let nodeABefore = slotNode(f.host, "slot-a")
+    let nodeBBefore = slotNode(f.host, "slot-b")
+    let textBefore = textContent(f.host)
+    let rendersBefore = f.mount.handle.renders
+    let slotsBefore = f.root.slotCount
+    let signalsBefore = f.root.signalCount
+
+    var afterSawTypes = -1
+    f.root.onAfterReload = proc(info: HmrReloadInfo) =
+      afterSawTypes = info.changedTypes.len
+
+    f.stub.queuePatch(HcrStubPatch(
+      changedFiles: @["demo_app.nim"],
+      changedTypes: @[HcrStubTypeChange(typeName: "isonim.UiSlot",
+                                        oldSize: 16, newSize: 24)],
+      applyCodeSwap: proc() = versionA = 2,
+      loadFails: true,
+      loadDiagnostic: "undefined symbol: nimUiBlockA__demo_app_12"))
+    rbHcrApplyReload()
+
+    # The agent's half of step 38.
+    check f.stub.lastOutcome.rejection == hsrLoadFailed
+    check not f.stub.lastOutcome.applied
+    check not f.stub.lastOutcome.codeSwapped
+    check f.stub.lifecycle ==
+      @["prepare", "latch", "before", "load", "load-failed", "after"]
+    check f.root.beforeReloads == 1
+    check f.root.afterReloads == 1
+    check afterSawTypes == 0        # "zero changed_types", per step 38
+    # Not applied, so the introspection window must not have moved.
+    check not rbHcrFileChanged("demo_app.nim")
+
+    # IsoNim's half: nothing moved. Same nodes, same text, same render
+    # count, same populations, and the slot hash is still the old one
+    # because the entry ran against the code that was never replaced.
+    check textContent(f.host) == textBefore
+    check slotNode(f.host, "slot-a") == nodeABefore
+    check slotNode(f.host, "slot-b") == nodeBBefore
+    check f.mount.handle.renders == rendersBefore
+    check f.root.slotCount == slotsBefore
+    check f.root.signalCount == signalsBefore
+    check f.root.slotHash(slotA) == "hashA1"
+    check f.errors.len == 0        # a failed LOAD is not an app error
+
+    # And the root is not wedged: the next patch, which does load,
+    # applies normally.
+    f.stub.queueVersionA(3)
+    rbHcrApplyReload()
+    check textContent(f.host).contains("A3")
+    check f.root.slotHash(slotA) == "hashA3"
     teardown(f)
 
   test "test_deleted_ui_block_is_pruned_after_reload":
@@ -448,8 +602,7 @@ suite "NH-M2: native hot-component proxy + signal registry":
     let mountsAtStart = uiHotMounts
     let handleAtStart = f.mount.handle
     for v in 2 .. 6:
-      versionA = v
-      f.stub.queueSimple()
+      f.stub.queueVersionA(v)
       rbHcrApplyReload()
       check textContent(f.host).contains("A" & $v)
     check uiHotMounts == mountsAtStart
@@ -473,8 +626,7 @@ suite "NH-M2: native hot-component proxy + signal registry":
       n)
     check inertBuilds == 1
 
-    versionA = 2
-    f.stub.queueSimple()
+    f.stub.queueVersionA(2)
     rbHcrApplyReload()
 
     check inertBuilds == 1

@@ -47,6 +47,47 @@
 ##    pins that § 13 does not: before-reload fires only after prepare has
 ##    fully succeeded, and ``rb_hcr_file_changed`` answers about the most
 ##    recent APPLIED reload rather than the most recent requested one.
+## 5. **``reprobuild-specs/HCR/Patch-Loading-Lifecycle.md`` § 3.1 / § 3.3**
+##    — the normative phase ORDER, which HCR-Overview's document index
+##    designates "Normative specification for the exact ordering of
+##    operations". Added 2026-09-17; see the next section.
+##
+## ## THE PHASE ORDER THIS STUB SIMULATES — corrected 2026-09-17
+##
+## The stub's first version fired before-reload callbacks with the new
+## code notionally already live, following IsoNim's design doc. That was
+## **wrong**, and it is the defect that made all four NH-M2 gates green
+## against a shape a conforming agent will never present. The normative
+## order is:
+##
+## | Phase | Steps | What happens |
+## |---|---|---|
+## | E | 12-15 | ``before_reload`` callbacks fire. **Old code is still the only code in the process.** |
+## | F | 16-20 | The patch library is loaded (``dlopen``) and symbols resolved. |
+## | G | 21-27 | Threads suspended, **trampolines installed** — this is where new code becomes live — threads resumed. |
+## | H | 28-29 | ``after_reload`` callbacks fire. New code is live. |
+##
+## So this stub OWNS the code swap. ``HcrStubPatch.applyCodeSwap`` is the
+## test's stand-in for Phase G, and the stub calls it BETWEEN the two
+## callback sets. A test must not mutate its own "source" before calling
+## ``applyReload`` — doing so re-creates the inverted order the stub used
+## to model, and the gate
+## ``test_dispatch_observes_post_swap_code_not_pre_swap_code`` exists to
+## make that failure loud.
+##
+## ``HcrStubPatch.loadFails`` models § 3.3 **step 38**: ``dlopen`` fails
+## in Phase F, *after* before-reload has already fired. The agent **must
+## still** invoke after-reload callbacks — with an ``RbHcrReloadInfo``
+## carrying **zero** ``changed_types`` — so the application can restore
+## what it saved. No code swap happens on that path and nothing is marked
+## applied. This is distinct from ``prepareFails``, which is refused
+## before any callback fires.
+##
+## Note, because it constrains what an application may do with the § 38
+## signal: zero ``changed_types`` is ALSO what an ordinary patch with no
+## layout change carries, so an application **cannot** use it to detect
+## the failure. § 38 gives the agent an obligation, not the application a
+## discriminator. Recorded as ``OPEN-5``.
 ##
 ## Where none of the four pins a behaviour, the gap is marked ``OPEN:``
 ## in place rather than filled with a plausible guess. A stub that encodes
@@ -91,14 +132,29 @@
 ##   would unwind into the stub's own frame — which is *more* forgiving
 ##   than a real C agent would be. IsoNim's callbacks therefore catch
 ##   everything themselves and must keep doing so. ``OPEN-3``.
-## - **Ordering of before-callbacks relative to trampoline installation.**
-##   The design doc's sequence installs trampolines *before* firing
-##   before_reload (which is what makes re-running the entry call execute
-##   the new bodies); § 13.3 says before_reload runs "BEFORE the patch is
-##   applied". These are not the same claim. This stub fires
-##   before-callbacks with the new code notionally live, matching the
-##   design doc, because that is what IsoNim's entry call depends on.
-##   ``OPEN-4``.
+## - ``OPEN-4`` — **RESOLVED 2026-09-17, and it was not open.** It used
+##   to read: "the design doc's sequence installs trampolines *before*
+##   firing before_reload … this stub fires before-callbacks with the new
+##   code notionally live, matching the design doc, because that is what
+##   IsoNim's entry call depends on." That was a guess encoded as a
+##   contract, which this file's own header says is worse than a gap.
+##   ``Patch-Loading-Lifecycle.md`` § 3.1 states the order normatively and
+##   the design doc was the side that disagreed; § 3.2 confirms Direct
+##   Patch Injection keeps the same phase structure, and HCR-Overview
+##   § 7.4's Save/Patch/Restore list agrees. The stub now models the
+##   normative order and IsoNim moved its entry call to after-reload. See
+##   the phase table above.
+## - ``OPEN-5`` — **what an application can conclude from § 3.3 step 38.**
+##   The step obliges the agent to fire after-reload with zero
+##   ``changed_types`` when the load fails. But zero ``changed_types`` is
+##   indistinguishable from an ordinary no-layout-change patch, and no
+##   spec text gives the application any other channel — ``RbHcrReloadInfo``
+##   has no status field and ``rb_hcr_file_changed`` is defined over the
+##   APPLIED reload, so on this stub's latch semantics it answers "no" for
+##   a failed load, which is correct but is also what it answers for a file
+##   that was simply not in the patch. An application therefore cannot
+##   detect the case and must be correct without detecting it. IsoNim is;
+##   whether a conforming agent should offer a discriminator is undecided.
 ##
 ## ### Constraints the real Linux agent carries that this stub cannot express
 ##
@@ -118,7 +174,11 @@
 ##     defer: stub.uninstall()
 ##     let root = newHmrRoot(entry)
 ##     root.start()                      # registers with `stub`
-##     stub.queuePatch(HcrStubPatch(changedFiles: @["views.nim"]))
+##     stub.queuePatch(HcrStubPatch(
+##       changedFiles: @["views.nim"],
+##       # Phase G. NOT done by the test before applyReload — the agent
+##       # owns when new code becomes live, and it is after Phase E.
+##       applyCodeSwap: proc() = sourceVersion = 2))
 ##     doAssert rbHcrWantsReload()
 ##     let outcome = stub.applyReload()  # or: rbHcrApplyReload()
 
@@ -174,12 +234,30 @@ type
       ## Linux provider names five (``sled-window-not-instruction-
       ## boundary``, ``island-unplaceable``, …); the stub does not
       ## enumerate them, it just carries whichever the caller supplies.
+    applyCodeSwap*: proc() {.closure.}
+      ## **Phase G.** The test's stand-in for trampoline installation:
+      ## whatever makes the "new bodies" reachable. The stub calls it
+      ## between the before-reload and after-reload callback sets, which
+      ## is the entire point — it is the only place in the lifecycle
+      ## where new code becomes live, and a test that instead mutates its
+      ## own source before ``applyReload`` is modelling an order no
+      ## conforming agent implements. Optional: a patch that changes no
+      ## body (a data-only or no-op patch) leaves it nil.
+    loadFails*: bool
+      ## **§ 3.3 step 38.** ``dlopen`` / ``LoadLibrary`` fails in Phase F,
+      ## AFTER before-reload has fired. No code swap happens, nothing is
+      ## marked applied — but after-reload callbacks **must still** run,
+      ## with zero ``changed_types``, so the application can restore.
+    loadDiagnostic*: string
+      ## The load error the agent would report, e.g. an ``undefined
+      ## symbol`` from ``dlerror()``.
 
   HcrStubRejection* = enum
     hsrNone
     hsrNoPatchPending      ## apply_reload with nothing queued — a no-op
     hsrPrepareFailed       ## provider refused during prepare
     hsrIncompatibleChange  ## § 7.4: a layout-changed type is unmanaged
+    hsrLoadFailed          ## § 3.3 step 38: Phase F failed after Phase E fired
 
   HcrStubOutcome* = object
     ## What one ``applyReload`` did. Returned for convenience; the tests
@@ -192,6 +270,10 @@ type
     diagnostic*: string
     beforeCallbacksFired*: int
     afterCallbacksFired*: int
+    codeSwapped*: bool
+      ## Whether Phase G ran. False for every rejection AND for the
+      ## § 3.3 step 38 late-load failure, which is the case in which
+      ## after-reload callbacks fire over UNPATCHED code.
 
   HcrStubCallback = object
     callback: RbHcrReloadCallback
@@ -210,9 +292,13 @@ type
 
     # ---- observation, for the gates ----
     lifecycle*: seq[string]
-      ## Ordered trace: "prepare", "latch", "before", "apply", "after",
-      ## "reject:<reason>". Lets a test assert the ORDER rather than
-      ## just the counts.
+      ## Ordered trace, one entry per normative phase the stub reaches:
+      ## "prepare" (C/D), "latch", "before" (E), "load" (F),
+      ## "trampolines" (G), "after" (H), plus "reject:<reason>" and
+      ## "load-failed". Lets a test assert the ORDER rather than just the
+      ## counts — and the order is now the thing most worth asserting,
+      ## since "before" landing on the wrong side of "trampolines" is the
+      ## defect that made this file's first version wrong.
     applyCalls*: int
     beforeFired*: int
     afterFired*: int
@@ -327,7 +413,8 @@ proc queuePatch*(agent: HcrStubAgent; patch: HcrStubPatch) =
   agent.pending.add(patch)
 
 proc fireCallbacks(agent: HcrStubAgent; list: seq[HcrStubCallback];
-                   patch: HcrStubPatch): int =
+                   changedFiles: seq[string];
+                   changedTypes: seq[HcrStubTypeChange]): int =
   ## Build a real C-shaped ``RbHcrReloadInfo`` and run every registered
   ## callback in registration order.
   ##
@@ -341,14 +428,14 @@ proc fireCallbacks(agent: HcrStubAgent; list: seq[HcrStubCallback];
   # `cstring(f)` would hand the callback a dangling pointer. Indexing
   # points at the parameter's own storage, which outlives the dispatch.
   var files: seq[cstring] = @[]
-  for i in 0 ..< patch.changedFiles.len:
-    files.add(cstring(patch.changedFiles[i]))
+  for i in 0 ..< changedFiles.len:
+    files.add(cstring(changedFiles[i]))
   var types: seq[RbHcrTypeChange] = @[]
-  for i in 0 ..< patch.changedTypes.len:
+  for i in 0 ..< changedTypes.len:
     types.add(RbHcrTypeChange(
-      typeName: cstring(patch.changedTypes[i].typeName),
-      oldSize: patch.changedTypes[i].oldSize,
-      newSize: patch.changedTypes[i].newSize))
+      typeName: cstring(changedTypes[i].typeName),
+      oldSize: changedTypes[i].oldSize,
+      newSize: changedTypes[i].newSize))
 
   var info = RbHcrReloadInfo(
     changedFiles:
@@ -370,11 +457,14 @@ proc fireCallbacks(agent: HcrStubAgent; list: seq[HcrStubCallback];
 
 proc applyReload*(agent: HcrStubAgent): HcrStubOutcome =
   ## ``rb_hcr_apply_reload`` (§ 13.1): blocks until the full lifecycle
-  ## completes — prepare, before-reload callbacks, patch application,
-  ## after-reload callbacks.
+  ## completes. The phases, in the order ``Patch-Loading-Lifecycle.md``
+  ## § 3.1 requires: prepare (C/D) → **Phase E** before-reload callbacks
+  ## → **Phase F** library load → **Phase G** trampoline installation,
+  ## i.e. the code swap → **Phase H** after-reload callbacks.
   inc agent.applyCalls
   result = HcrStubOutcome(applied: false, rejection: hsrNone,
-                          unmanagedTypes: @[], diagnostic: "")
+                          unmanagedTypes: @[], diagnostic: "",
+                          codeSwapped: false)
 
   if agent.pending.len == 0:
     result.rejection = hsrNoPatchPending
@@ -420,29 +510,69 @@ proc applyReload*(agent: HcrStubAgent): HcrStubOutcome =
   # ---- OPEN-1: latch the introspection window ---------------------------
   # Prepare has fully succeeded, so this patch WILL be applied and
   # before-reload callbacks may legitimately ask what changed (§ 13.6's
-  # own example does exactly that). A patch refused above never reaches
-  # here, so "requested" and "applied" stay distinct. No spec text names
-  # this latch point; see the OPEN list in this file's header.
+  # own example does exactly that; Patch-Loading-Lifecycle step 10
+  # sequences the `changed_types` list as prepared in Phase C, before
+  # Phase E, which is this point). A patch refused above never reaches
+  # here, so "requested" and "applied" stay distinct.
+  #
+  # The latch is SAVED first, because Phase F can still fail below and
+  # `rb_hcr_file_changed` is defined over the most recent APPLIED reload
+  # (HLX-M8 deliverable 6). A patch that dies at `dlopen` was not applied,
+  # so it must not move the answer — and by then the before-callbacks have
+  # already run and may already have consulted it.
+  let savedFiles = agent.appliedFiles
+  let savedTypes = agent.appliedTypes
   agent.appliedFiles.clear()
   agent.appliedTypes.clear()
   for f in patch.changedFiles: agent.appliedFiles[f] = true
   for t in patch.changedTypes: agent.appliedTypes[t.typeName] = true
   agent.lifecycle.add("latch")
 
+  # ---- Phase E (steps 12-15): before-reload callbacks --------------------
+  # OLD code is still the only code in the process. Nothing has been
+  # loaded and no trampoline exists.
   agent.lifecycle.add("before")
-  result.beforeCallbacksFired = agent.fireCallbacks(agent.beforeCallbacks,
-                                                     patch)
+  result.beforeCallbacksFired = agent.fireCallbacks(
+    agent.beforeCallbacks, patch.changedFiles, patch.changedTypes)
   agent.beforeFired += result.beforeCallbacksFired
 
-  # ---- the patch itself --------------------------------------------------
-  # There is no code to patch here: the "new bodies" in an IsoNim test are
-  # whatever closures the entry call registers. The marker exists so the
-  # lifecycle trace has the same five steps a real apply does.
-  agent.lifecycle.add("apply")
+  # ---- Phase F (steps 16-20): load the patch library ---------------------
+  agent.lifecycle.add("load")
+  if patch.loadFails:
+    # § 3.3 step 38. Before-reload has ALREADY fired, so the agent must
+    # still invoke after-reload callbacks — with ZERO changed_types — so
+    # the application can restore what it saved. No code swap happens and
+    # nothing is marked applied.
+    result.rejection = hsrLoadFailed
+    result.diagnostic =
+      if patch.loadDiagnostic.len > 0: patch.loadDiagnostic
+      else: "dlopen-failed"
+    inc agent.rejections
+    agent.lifecycle.add("load-failed")
+    # Un-latch: this reload was not applied.
+    agent.appliedFiles = savedFiles
+    agent.appliedTypes = savedTypes
+    agent.lifecycle.add("after")
+    result.afterCallbacksFired = agent.fireCallbacks(
+      agent.afterCallbacks, patch.changedFiles, @[])
+    agent.afterFired += result.afterCallbacksFired
+    agent.lastOutcome = result
+    return
 
+  # ---- Phase G (steps 21-27): trampolines. NEW CODE BECOMES LIVE HERE ----
+  # Everything above ran against the old bodies; everything below runs
+  # against the new ones. In a real agent this is the thread-suspended
+  # prologue overwrite; here it is whatever the test says "the patched
+  # source" means.
+  if patch.applyCodeSwap != nil:
+    patch.applyCodeSwap()
+    result.codeSwapped = true
+  agent.lifecycle.add("trampolines")
+
+  # ---- Phase H (steps 28-29): after-reload callbacks ---------------------
   agent.lifecycle.add("after")
-  result.afterCallbacksFired = agent.fireCallbacks(agent.afterCallbacks,
-                                                    patch)
+  result.afterCallbacksFired = agent.fireCallbacks(
+    agent.afterCallbacks, patch.changedFiles, patch.changedTypes)
   agent.afterFired += result.afterCallbacksFired
 
   result.applied = true
