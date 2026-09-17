@@ -41,7 +41,10 @@ tests/test_form_actions
 tests/test_file_routes
 benchmarks/runner/
 benchmarks/results/
-node_modules/
+# Matches the directory AND the dev shell's symlink into the Nix store:
+# a trailing slash matches directories only, and `node_modules` here is a
+# symlink, so the slashed form left it permanently untracked-and-dirty.
+node_modules
 test_data_loading
 tests/test_editor_viewmodels
 tests/test_editor_user_project
