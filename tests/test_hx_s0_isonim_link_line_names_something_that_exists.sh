@@ -17,6 +17,16 @@
 # 5. Falsifiers:
 #    - Reverting link line to -lct_hcr_agent fails at LINK with linker diagnostic.
 #    - Reverting header to reprobuild/hcr.h fails at PREPROCESS with preprocessor diagnostic.
+#
+# PORTABILITY, 2026-09-18 (NH-M5 residual). Step 3 used to grep `nm` output for
+# `_$sym` — the Mach-O assembler spelling, which prefixes C symbols with an
+# underscore. ELF does not, so on Linux this gate went RED *after* it had already
+# printed "Successfully linked binary" and "ACTIVE-OK: all 10 rb_hcr_* functions
+# executed successfully": the assertion the milestone is about had passed and only
+# the symbol-spelling check was wrong. The host's spelling is now resolved once,
+# and the per-symbol pattern is ANCHORED on it rather than being a substring match
+# that `_rb_hcr_wants_reload_anything` would also satisfy. An unrecognised host
+# FAILS LOUDLY; it does not skip.
 
 set -euo pipefail
 
@@ -39,10 +49,41 @@ trap cleanup EXIT
 echo "=== Gate 2: hx_s0_isonim_link_line_names_something_that_exists ==="
 echo "Working directory: $WORK_DIR"
 
+# Host resolution. Every host-specific spelling below comes from here, and a host
+# with no arm FAILS rather than skipping — a gate that exits 0 on a platform it
+# cannot test reads green in every sweep that runs it.
+HOST_UNAME="$(uname -s 2>/dev/null || echo Unknown)"
+case "$HOST_UNAME" in
+  Darwin*)
+    # Mach-O `nm` prints the assembler name, which prefixes C symbols with `_`.
+    SYM_PREFIX="_"
+    # Lists the LC_LOAD_DYLIB entries of a Mach-O image.
+    DEPS_CMD=(otool -L)
+    ;;
+  Linux*)
+    # ELF `nm` prints the symbol verbatim: no leading underscore.
+    SYM_PREFIX=""
+    # Lists the resolved DT_NEEDED entries of an ELF image.
+    DEPS_CMD=(ldd)
+    ;;
+  *)
+    echo "ERROR: host '$HOST_UNAME' has no arm in this gate; add one rather than skipping." >&2
+    exit 1
+    ;;
+esac
+
+# The canonical library name is the agent build script's, not this gate's guess.
+AGENT_LIB_NAME="$("$REPRO_AGENT_DIR/build_lib.sh" --print-name)"
+echo "Host: $HOST_UNAME; canonical agent artifact: $AGENT_LIB_NAME"
+
 # Ensure librepro_hcr_agent is built
-if [[ ! -s "$REPRO_AGENT_BUILD/librepro_hcr_agent.dylib" ]]; then
+if [[ ! -s "$REPRO_AGENT_BUILD/$AGENT_LIB_NAME" ]]; then
   echo "Building librepro_hcr_agent..."
   "$REPRO_AGENT_DIR/build_lib.sh" "$REPRO_AGENT_BUILD"
+fi
+if [[ ! -s "$REPRO_AGENT_BUILD/$AGENT_LIB_NAME" ]]; then
+  echo "ERROR: agent library still absent at $REPRO_AGENT_BUILD/$AGENT_LIB_NAME" >&2
+  exit 1
 fi
 
 # -----------------------------------------------------------------------------
@@ -131,13 +172,35 @@ BOUND_SYMBOLS=(
 )
 
 NM_OUT="$(nm "$ACTIVE_BIN" 2>/dev/null)"
+if [[ -z "$NM_OUT" ]]; then
+  echo "ERROR: nm produced no output for $ACTIVE_BIN; the loop below would be vacuous" >&2
+  exit 1
+fi
+
+# Each symbol must appear as its own symbol-table entry under the HOST object
+# format's spelling: an optional address, a one-letter type (`U` for the normal
+# dynamically-bound case, or a defined type if it is ever linked in statically),
+# then the symbol and nothing else. The anchors matter — the substring match this
+# replaced was satisfied by any line merely CONTAINING the name.
 for sym in "${BOUND_SYMBOLS[@]}"; do
-  if ! echo "$NM_OUT" | grep -q "_$sym"; then
-    echo "ERROR: Symbol _$sym not referenced by $ACTIVE_BIN" >&2
+  if ! echo "$NM_OUT" | grep -qE "^[0-9a-fA-F]* +[A-Za-z] ${SYM_PREFIX}${sym}$"; then
+    echo "ERROR: Symbol ${SYM_PREFIX}${sym} not referenced by $ACTIVE_BIN" >&2
     exit 1
   fi
 done
 echo "  [OK] All ${#BOUND_SYMBOLS[@]} rb_hcr_* symbols referenced and resolved."
+
+# And the reference must be satisfied by the canonical library, not by anything
+# else that happens to export the name: the linked image records a dependency on
+# it, and the loader resolves that dependency (the binary ran, above).
+DEPS_OUT="$("${DEPS_CMD[@]}" "$ACTIVE_BIN" 2>&1)"
+if ! echo "$DEPS_OUT" | grep -q "$AGENT_LIB_NAME"; then
+  echo "ERROR: $ACTIVE_BIN records no dependency on $AGENT_LIB_NAME" >&2
+  echo "$DEPS_OUT" >&2
+  exit 1
+fi
+echo "  [OK] Linked image depends on $AGENT_LIB_NAME:"
+echo "       $(echo "$DEPS_OUT" | grep "$AGENT_LIB_NAME" | head -n 1 | sed 's/^[[:space:]]*//')"
 
 # -----------------------------------------------------------------------------
 # 2. Control arm: flag-off build contains 0 rb_hcr_ / repro_hcr_ symbols
