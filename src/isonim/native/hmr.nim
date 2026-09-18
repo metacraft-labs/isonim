@@ -484,6 +484,81 @@ when defined(isonimHmr):
     root.registry.applyRegistration(
       PendingRegistration(loc: loc, hash: hash, factory: factory))
 
+  proc hmrTouchSlot*(loc: string) =
+    ## Subscribe the calling reactive scope to one slot's factory signal
+    ## WITHOUT invoking it.
+    ##
+    ## This is the native counterpart of what web's parametric dispatch
+    ## gets for free from ``slot.factory.val``: the call site has to
+    ## re-run when the body changes, but the body cannot be served from a
+    ## per-slot memo because the same slot is reachable with different
+    ## arguments. So the dispatch touches the slot (for the dependency
+    ## edge) and then calls the patched body directly — through
+    ## Reprobuild's trampoline, which is what makes the direct call
+    ## observe the new code.
+    let reg = activeUiRegistry
+    if reg == nil:
+      raise newException(Defect,
+        "isonim native HMR: hmrTouchSlot(" & loc & ") called with no " &
+        "active registry — HmrRoot.start() has not run on this thread.")
+    let slot = reg.entries.getOrDefault(loc)
+    if slot == nil:
+      raise newException(Defect,
+        "isonim native HMR: no factory registered for ui slot at " & loc &
+        ". The entry call passed to HmrRoot.start() must register every " &
+        "slot it later invokes.")
+    slot.claimedGen = reg.currentGen
+    discard slot.factory.val
+
+  # -------------------------------------------------------------------------
+  # Declared slots — the seam the ``{.uiComponent.}`` native arm registers
+  # through.
+  # -------------------------------------------------------------------------
+
+  type
+    UiSlotDeclaration* = object
+      ## One ``{.uiComponent.}``-marked proc, as seen from module init.
+      loc*: string
+      register*: proc() {.closure.}
+        ## Calls ``hmrRegisterFactory`` with the hash literal the macro
+        ## baked into THIS PROC'S BODY. That indirection is the whole
+        ## point and is not an accident of style: module init does not
+        ## re-run on native — a Reprobuild patch replaces function bodies
+        ## in place, it does not re-execute a module's top level — so a
+        ## hash captured into a ``seq`` at init would be frozen at the
+        ## pre-patch value forever. Holding a PROC instead means the
+        ## re-registration pass calls through the trampoline and reads
+        ## the patched literal.
+
+  var declaredUiSlots* {.threadvar.}: seq[UiSlotDeclaration]
+
+  proc hmrDeclareSlot*(loc: string; register: proc() {.closure.}) =
+    ## Record a ui slot at module-init time. Deliberately does NOT
+    ## register it: ``hmrRegisterFactory`` needs an active registry, and
+    ## module init runs before any ``HmrRoot.start()``. Declaration is
+    ## therefore separated from registration, and
+    ## ``hmrRegisterDeclaredSlots`` performs the second half whenever an
+    ## entry pass runs.
+    if register == nil:
+      raise newException(ValueError,
+        "isonim native HMR: nil registration proc declared for ui slot " &
+        loc)
+    for i in 0 ..< declaredUiSlots.len:
+      if declaredUiSlots[i].loc == loc:
+        declaredUiSlots[i].register = register
+        return
+    declaredUiSlots.add(UiSlotDeclaration(loc: loc, register: register))
+
+  proc declaredUiSlotCount*(): int = declaredUiSlots.len
+
+  proc hmrRegisterDeclaredSlots*() =
+    ## The default ui-block registration pass: re-register every declared
+    ## slot. Safe to pass straight to ``newHmrRoot`` as the ``HmrEntry``
+    ## when an app has no registration work of its own beyond its
+    ## ``{.uiComponent.}`` procs.
+    for d in declaredUiSlots:
+      if d.register != nil: d.register()
+
   proc slotCount*(root: HmrRoot): int =
     if root == nil or root.registry == nil: 0 else: root.registry.entries.len
 
@@ -968,6 +1043,17 @@ else:
   proc slotCount*(root: HmrRoot): int = 0
   proc signalCount*(root: HmrRoot): int = 0
   proc currentGeneration*(root: HmrRoot): int = 0
+
+  # Declared-slot seam, build-once flavour. The names exist so a module
+  # that uses ``{.uiComponent.}`` still compiles without ``-d:isonimHmr``
+  # — but nothing is recorded and nothing is registered, because there is
+  # no registry to register into and a production binary must carry none
+  # of this. ``declaredUiSlotCount`` returning 0 is what
+  # ``test_native_hmr_inactive`` asserts on.
+  proc hmrDeclareSlot*(loc: string; register: proc() {.closure.}) = discard
+  proc declaredUiSlotCount*(): int = 0
+  proc hmrRegisterDeclaredSlots*() = discard
+  proc hmrTouchSlot*(loc: string) = discard
 
   proc mountUiHot*[E](factory: proc(): E;
                       mount: NativeRootMount[E];

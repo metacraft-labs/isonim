@@ -218,12 +218,21 @@ test-c:
     # other's configuration, so neither can pass vacuously.
     nim c -r -d:isonimHmr tests/test_native_hmr.nim
     nim c -r tests/test_native_hmr_inactive.nim
+    # NH-M3: the {.uiComponent.} native arm. Compiles its own fixture six
+    # times (three bodies x two backends), so it is slower than the rest
+    # of this recipe — and it is the gate that gives every hash assertion
+    # in the two files above a meaning, so it runs in the same lane.
+    # No -d:isonimHmr here: the flag belongs to the fixture builds this
+    # test performs, not to the test itself.
+    nim c -r tests/test_uicomponent_native_arm.nim
     bash tests/test_hx_s0_isonim_link_line_names_something_that_exists.sh
 
-# NH-M2: native hot module reload, both gating configurations.
+# NH-M2 / NH-M3: native hot module reload, both gating configurations,
+# plus the {.uiComponent.} native arm.
 test-hmr:
     nim c -r -d:isonimHmr tests/test_native_hmr.nim
     nim c -r tests/test_native_hmr_inactive.nim
+    nim c -r tests/test_uicomponent_native_arm.nim
 
 # Run native HCR integration tests (inactive shim & active librepro_hcr_agent linking)
 test-hcr:

@@ -214,3 +214,7 @@ tests/test_render_native_reactive
 # NH-M2 native HMR suite binaries (both gating configurations)
 tests/test_native_hmr
 tests/test_native_hmr_inactive
+tests/uicomponentprobefixture.nim
+tests/_build/
+tests/test_uicomponent_native_arm
+tests/uicomponentprobefixture

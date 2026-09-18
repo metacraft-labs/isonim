@@ -28,6 +28,46 @@
 
 import std/macros
 
+proc cloneParamsWithFreshNames*(params: NimNode): (NimNode, seq[NimNode]) =
+  ## Copy a `nnkFormalParams` node, replacing parameter-name symbols
+  ## with fresh untyped idents (so the new proc binds them as its own
+  ## locals when type-checked). Type and default nodes are copied as
+  ## subtrees — type sym refs resolve back to the same types when the
+  ## generated dispatch is checked in the caller's scope. Returns the
+  ## new params node and the list of fresh argument idents in
+  ## declaration order.
+  ##
+  ## Hoisted out of the JS arm on 2026-09-18 (NH-M3) so the native arm
+  ## calls the SAME proc rather than a second copy of it — two copies of
+  ## one rule is `Verification-Harness-Traps` §30, and a parametric
+  ## signature that the two backends cloned differently would be exactly
+  ## that defect with a compile error for a symptom.
+  let cloned = newTree(nnkFormalParams)
+  cloned.add(params[0].copyNimTree)  # return type slot
+  var argNames: seq[NimNode] = @[]
+  for i in 1 ..< params.len:
+    let identDef = params[i]
+    doAssert identDef.len >= 3,
+      "uiComponent: malformed parameter definition"
+    let typeNode = identDef[identDef.len - 2].copyNimTree
+    let defaultNode = identDef[identDef.len - 1].copyNimTree
+    for j in 0 ..< identDef.len - 2:
+      let originalName = identDef[j]
+      let freshName = ident($originalName)
+      argNames.add(freshName)
+      cloned.add(newIdentDefs(freshName, typeNode.copyNimTree,
+                              defaultNode.copyNimTree))
+  (cloned, argNames)
+
+proc uiComponentSlotLoc*(procDef: NimNode): string =
+  ## `file:line:col` of a `{.uiComponent.}`-marked proc — the slot key.
+  ## One definition, used by BOTH arms, because the native/web control
+  ## arm in NH-M3 asserts the two locations are EQUAL before it compares
+  ## hashes, and a location computed by two expressions could agree or
+  ## disagree for reasons that have nothing to do with the subject.
+  let info = procDef.lineInfoObj()
+  info.filename & ":" & $info.line & ":" & $info.column
+
 when defined(isonimHmr) and defined(js):
   import std/[jsffi, tables]
   import isonim/web/dom_api
@@ -185,31 +225,6 @@ when defined(isonimHmr) and defined(js):
     body.add(coerce)
     body
 
-  proc cloneParamsWithFreshNames(params: NimNode): (NimNode, seq[NimNode]) =
-    ## Copy a `nnkFormalParams` node, replacing parameter-name symbols
-    ## with fresh untyped idents (so the new proc binds them as its own
-    ## locals when type-checked). Type and default nodes are copied as
-    ## subtrees — type sym refs resolve back to the same types when the
-    ## generated dispatch is checked in the caller's scope. Returns the
-    ## new params node and the list of fresh argument idents in
-    ## declaration order.
-    let cloned = newTree(nnkFormalParams)
-    cloned.add(params[0].copyNimTree)  # return type slot
-    var argNames: seq[NimNode] = @[]
-    for i in 1 ..< params.len:
-      let identDef = params[i]
-      doAssert identDef.len >= 3,
-        "uiComponent: malformed parameter definition"
-      let typeNode = identDef[identDef.len - 2].copyNimTree
-      let defaultNode = identDef[identDef.len - 1].copyNimTree
-      for j in 0 ..< identDef.len - 2:
-        let originalName = identDef[j]
-        let freshName = ident($originalName)
-        argNames.add(freshName)
-        cloned.add(newIdentDefs(freshName, typeNode.copyNimTree,
-                                defaultNode.copyNimTree))
-    (cloned, argNames)
-
   macro uiComponentTyped(realName: untyped;
                           procDef: typed): untyped =
     ## Stage 2 of the `{.uiComponent.}` pragma: receives the proc def
@@ -233,8 +248,7 @@ when defined(isonimHmr) and defined(js):
     expectKind procDef, nnkProcDef
     let implSym = procDef.name
     let h = symBodyHash(implSym)
-    let info = procDef.lineInfoObj()
-    let locStr = info.filename & ":" & $info.line & ":" & $info.column
+    let locStr = uiComponentSlotLoc(procDef)
     let locLit = newLit(locStr)
 
     # `params[0]` is the return type slot; subsequent entries are
@@ -276,7 +290,18 @@ when defined(isonimHmr) and defined(js):
       postfix(locConstName, "*"),
       newLit(locStr))
 
-    result = newStmtList(procDef, dispatchProc, registration, locConst)
+    # And the `symBodyHash` the macro just computed, as
+    # `<ProcName>Hash*`. ADDED 2026-09-18 (NH-M3). Without it the hash is
+    # reachable only from inside the registry at runtime, which is why
+    # every gate up to now asserted on a hash string the FIXTURE chose.
+    # A test that reads this const is reading the compiler's answer.
+    let hashConstName = ident($realName & "Hash")
+    let hashConst = newConstStmt(
+      postfix(hashConstName, "*"),
+      newLit(h))
+
+    result = newStmtList(procDef, dispatchProc, registration, locConst,
+                         hashConst)
 
   macro uiComponent*(procDef: untyped): untyped =
     ## Stage 1 of the pragma. Renames the user's proc with a genSym'd
@@ -295,10 +320,159 @@ when defined(isonimHmr) and defined(js):
     ## per-module sweep) can hook in without changing user code.
     result = newStmtList()
 
+elif defined(isonimHmr):
+  # ---------------------------------------------------------------------------
+  # THE NATIVE ARM — added 2026-09-18 for NH-M3.
+  #
+  # Until this existed the branch above was the ONLY arm, so under `nim c`
+  # `{.uiComponent.}` was a transparent no-op and `symBodyHash` was never
+  # called on native at all. Every native HMR gate therefore had to supply
+  # the hash a patched body "would have" produced, as a literal — which is
+  # a defensible fixture for "one loc, two hashes" (a real patch replaces a
+  # body in place, so that IS the shape) and proves nothing whatsoever
+  # about the only claim that makes a hash load-bearing: that a CHANGED
+  # BODY produces a DIFFERENT hash. See NH-M3's
+  # `test_uicomponent_native_arm_hashes_a_changed_body_differently`.
+  #
+  # What it emits, per `{.uiComponent.}`-marked proc `Name`:
+  #
+  #   <impl>                       the user's body, under a genSym'd name
+  #   proc Name(...): T            the dispatch (see below)
+  #   proc NameHmrRegister*()      registers loc + hash + factory
+  #   let _ = block: hmrDeclareSlot(loc, NameHmrRegister); true
+  #   const NameLoc*  = "file:line:col"
+  #   const NameHash* = "<symBodyHash>"
+  #
+  # THE REGISTRATION IS A PROC, NOT A TOP-LEVEL CALL, and the difference
+  # is the whole reason this arm is shaped the way it is. On the web the
+  # pragma emits a top-level `hmrRegisterFactory` because a reloaded
+  # bundle RE-RUNS module init, so the new hash arrives by itself. Native
+  # has no such event: Reprobuild replaces function BODIES in place and
+  # never re-executes a module's top level. So the hash literal has to
+  # live inside a proc body — `NameHmrRegister` — which the patch
+  # replaces along with the component, and the re-registration pass
+  # (`hmrRegisterDeclaredSlots`, run from `HmrRoot`'s entry inside
+  # `after_reload`) calls it through the trampoline and reads the NEW
+  # literal. A `seq` of (loc, hash) captured at module init would be
+  # frozen at the pre-patch value forever, and the failure mode is a
+  # reload that silently does nothing.
+  #
+  # DISPATCH, in two shapes, mirroring the web arm's two:
+  #
+  # - Zero-arg → `hmrInvokeSlot[T](loc)`: the per-slot memo, which is what
+  #   makes "unchanged ui block → unchanged native subtree" true.
+  # - Parametric → `hmrTouchSlot(loc)` then a DIRECT call to the impl. The
+  #   same slot is reachable from several call sites with different args,
+  #   so a per-slot memo would be wrong (web says the same and for the
+  #   same reason). `hmrTouchSlot` supplies the one thing the memo was
+  #   also providing — the dependency edge from the mount to the slot's
+  #   factory signal — and the direct call lands on the patched body
+  #   because it goes through Reprobuild's trampoline.
+  # ---------------------------------------------------------------------------
+  import isonim/native/hmr as native_hmr
+  export native_hmr
+
+  macro uiComponentTypedNative(realName: untyped;
+                               procDef: typed): untyped =
+    expectKind procDef, nnkProcDef
+    let implSym = procDef.name
+    let h = symBodyHash(implSym)
+    let locStr = uiComponentSlotLoc(procDef)
+    let locLit = newLit(locStr)
+    let hashLit = newLit(h)
+
+    let returnType = procDef.params[0]
+    if returnType.kind == nnkEmpty:
+      error("uiComponent: a ui component must return the renderer node " &
+            "it builds. A `proc` with no return type builds nothing the " &
+            "registry could hold, so a reload would have nothing to " &
+            "swap. Give it a return type (e.g. `: TerminalNode`).",
+            procDef)
+
+    let isParametric = procDef.params.len > 1
+    let registerName = ident($realName & "HmrRegister")
+
+    var dispatchProc: NimNode
+    if isParametric:
+      let (newParams, argNames) = cloneParamsWithFreshNames(procDef.params)
+      var body = newStmtList()
+      body.add(newCall(bindSym"hmrTouchSlot", locLit))
+      var directCall = newCall(implSym)
+      for arg in argNames: directCall.add(arg)
+      body.add(directCall)
+      dispatchProc = newProc(name = realName, body = body)
+      dispatchProc.params = newParams
+    else:
+      dispatchProc = newProc(
+        name = realName,
+        params = @[returnType.copyNimTree],
+        body = newCall(
+          newTree(nnkBracketExpr, bindSym"hmrInvokeSlot",
+                  returnType.copyNimTree),
+          locLit))
+
+    # The factory the slot holds. Zero-arg components hand over their own
+    # body; parametric ones cannot — there is no zero-arg form of them —
+    # so they register a factory that RAISES if anything ever invokes it.
+    # A raising factory rather than a silent `nil` or a default value is
+    # deliberate: `hmrInvokeSlot` on a parametric slot means some call
+    # site took the memoised path for a component that must not be
+    # memoised, and the quiet version of that bug is a stale subtree.
+    var factoryExpr: NimNode
+    if isParametric:
+      let msg = newLit(
+        "isonim native HMR: ui component at " & locStr & " is " &
+        "PARAMETRIC and has no zero-arg factory. It is reached through " &
+        "its generated dispatch, which calls the body directly after " &
+        "hmrTouchSlot(); hmrInvokeSlot() must never be used on it.")
+      factoryExpr = quote do:
+        uiSlotFactory[int](proc(): int =
+          raise newException(Defect, `msg`))
+    else:
+      factoryExpr = newCall(
+        newTree(nnkBracketExpr, bindSym"uiSlotFactory",
+                returnType.copyNimTree),
+        implSym)
+
+    let registerProc = newProc(
+      name = postfix(registerName, "*"),
+      params = @[newEmptyNode()],
+      body = newCall(bindSym"hmrRegisterFactory", locLit, hashLit,
+                     factoryExpr))
+
+    let declVar = genSym(nskLet, "isonimHmrDecl_" & $realName)
+    let declaration = newLetStmt(declVar, newBlockStmt(quote do:
+      hmrDeclareSlot(`locLit`, `registerName`)
+      true))
+
+    let locConst = newConstStmt(
+      postfix(ident($realName & "Loc"), "*"), newLit(locStr))
+    let hashConst = newConstStmt(
+      postfix(ident($realName & "Hash"), "*"), newLit(h))
+
+    result = newStmtList(procDef, registerProc, dispatchProc, declaration,
+                         locConst, hashConst)
+
+  macro uiComponent*(procDef: untyped): untyped =
+    ## Stage 1, native. Identical in shape to the JS arm: rename the
+    ## user's proc so the original name is free for the dispatcher, then
+    ## forward to the typed analyzer, which is where `symBodyHash` can
+    ## see a resolved symbol.
+    expectKind procDef, nnkProcDef
+    let realName = procDef.name
+    procDef.name = genSym(nskProc, $realName & "_impl")
+    result = newCall(bindSym"uiComponentTypedNative", realName, procDef)
+
+  macro bootstrapHmr*(): untyped =
+    ## Native counterpart of the JS no-op. Each pragma already emits its
+    ## own declaration, so there is nothing to sweep per module; the call
+    ## is kept so a module written for one backend compiles on the other.
+    result = newStmtList()
+
 else:
-  # `-d:isonimHmr` not set, or not the JS target. The pragma is a
-  # transparent no-op: user's proc keeps its name, body, and behaviour;
-  # callers reach it directly without going through any registry.
+  # `-d:isonimHmr` not set. The pragma is a transparent no-op: user's
+  # proc keeps its name, body, and behaviour; callers reach it directly
+  # without going through any registry.
   macro uiComponent*(procDef: untyped): untyped =
     procDef
 
