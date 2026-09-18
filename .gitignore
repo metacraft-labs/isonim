@@ -218,3 +218,4 @@ tests/uicomponentprobefixture.nim
 tests/_build/
 tests/test_uicomponent_native_arm
 tests/uicomponentprobefixture
+tests/test_native_reconciler
