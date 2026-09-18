@@ -225,6 +225,11 @@ test-c:
     # No -d:isonimHmr here: the flag belongs to the fixture builds this
     # test performs, not to the test itself.
     nim c -r tests/test_uicomponent_native_arm.nim
+    # NH-M3: the shared reconciliation engine, over the real NativeWidget
+    # tree. No -d:isonimHmr: the reconciler is independent of the HMR
+    # flag by design — a renderer may use it for any tree diff — and a
+    # gate that needed the flag could not say so.
+    nim c -r tests/test_native_reconciler.nim
     bash tests/test_hx_s0_isonim_link_line_names_something_that_exists.sh
 
 # NH-M2 / NH-M3: native hot module reload, both gating configurations,
