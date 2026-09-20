@@ -527,8 +527,10 @@ suite "NH-M2: native hot-component proxy + signal registry":
     let signalsBefore = f.root.signalCount
 
     var afterSawTypes = -1
+    var afterSawCodeSwapped = true   # seeded WRONG so an unset field fails
     f.root.onAfterReload = proc(info: HmrReloadInfo) =
       afterSawTypes = info.changedTypes.len
+      afterSawCodeSwapped = info.codeSwapped
 
     f.stub.queuePatch(HcrStubPatch(
       changedFiles: @["demo_app.nim"],
@@ -548,6 +550,11 @@ suite "NH-M2: native hot-component proxy + signal registry":
     check f.root.beforeReloads == 1
     check f.root.afterReloads == 1
     check afterSawTypes == 0        # "zero changed_types", per step 38
+    # OPEN-5, decided 2026-09-20: `changedTypes.len == 0` alone CANNOT tell
+    # this apart from an ordinary no-layout-change patch — that ambiguity is
+    # the whole reason the field was added. Here the load failed, so no swap
+    # happened and the application may restore what it saved.
+    check afterSawCodeSwapped == false
     # Not applied, so the introspection window must not have moved.
     check not rbHcrFileChanged("demo_app.nim")
 
@@ -593,6 +600,46 @@ suite "NH-M2: native hot-component proxy + signal registry":
     check f.root.slotHash(slotB) == ""
     # The signal that lived in the surviving slot is still there.
     check f.root.signalCount == 1
+    teardown(f)
+
+  test "test_code_swapped_separates_a_failed_load_from_a_no_layout_change_patch":
+    ## OPEN-5, decided 2026-09-20. This is the PAIR that makes the field mean
+    ## something. The step-38 test above asserts one half; on its own that half
+    ## is satisfied by a field hardwired to `false`. Here the SAME observable
+    ## the application would otherwise key on — `changedTypes.len == 0` — is
+    ## produced by a patch that DID commit, and `codeSwapped` is the only thing
+    ## that differs between the two runs.
+    ##
+    ## An application that saved state in before-reload has to tell them apart:
+    ## after a failed load it must RESTORE what it saved, after a committed
+    ## no-layout-change patch it must not.
+    var f = newFixture()
+    var sawTypes = -1
+    var sawCodeSwapped = false     # seeded WRONG in the opposite direction
+                                   # to the step-38 arm, so a constant field
+                                   # cannot satisfy both tests.
+    f.root.onAfterReload = proc(info: HmrReloadInfo) =
+      sawTypes = info.changedTypes.len
+      sawCodeSwapped = info.codeSwapped
+
+    # A real patch, a real swap, and NO layout change — so it delivers the
+    # same zero `changedTypes` a late load failure delivers.
+    f.stub.queuePatch(HcrStubPatch(
+      changedFiles: @["demo_app.nim"],
+      changedTypes: @[],
+      applyCodeSwap: proc() = versionA = 2))
+    rbHcrApplyReload()
+
+    check f.stub.lastOutcome.applied
+    check f.stub.lastOutcome.codeSwapped
+    check f.stub.lifecycle ==
+      @["prepare", "latch", "before", "load", "trampolines", "after"]
+    check sawTypes == 0                 # indistinguishable from step 38 …
+    check sawCodeSwapped == true        # … except for this.
+    # And the swap really happened, so "true" is not merely asserted.
+    check textContent(f.host).contains("A2")
+    check f.root.slotHash(slotA) == "hashA2"
+    check rbHcrFileChanged("demo_app.nim")
     teardown(f)
 
   test "test_mount_survives_and_is_never_re_entered_across_many_reloads":

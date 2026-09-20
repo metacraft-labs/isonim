@@ -91,6 +91,21 @@ when defined(reprobuildHcr):
       changedFilesCount* {.importc: "changed_files_count".}: uint32
       changedTypes* {.importc: "changed_types".}: ptr UncheckedArray[RbHcrTypeChange]
       changedTypesCount* {.importc: "changed_types_count".}: uint32
+      codeSwapped* {.importc: "code_swapped".}: cint
+        ## OPEN-5, decided 2026-09-20 in Reprobuild: non-zero iff the code swap
+        ## has actually happened by the time this callback runs. Zero
+        ## ``changedTypesCount`` alone is ambiguous — it is what a late load
+        ## failure delivers (Patch-Loading-Lifecycle § 3.3 step 38) and equally
+        ## what an ordinary no-layout-change patch delivers. A before-reload
+        ## callback sees 0; an after-reload callback on a reload that committed
+        ## sees 1; an after-reload callback on a step-38 failure sees 0.
+        ##
+        ## IsoNim does not need it: the native HMR path is correct WITHOUT
+        ## detecting the case, because the entry re-runs against unpatched
+        ## bodies, re-registers the hashes already present, and every slot is
+        ## re-claimed so nothing is pruned. It is bound because the portable ABI
+        ## now carries it and a binding that silently omits a field is how the
+        ## two sides drift.
 
     RbHcrReloadCallback* {.importc: "RbHcrReloadCallback", header: "repro_hcr_agent.h".} = proc (info: ptr RbHcrReloadInfo;
         userData: pointer) {.cdecl.}
@@ -118,6 +133,10 @@ else:
       changedFilesCount*: uint32
       changedTypes*: ptr UncheckedArray[RbHcrTypeChange]
       changedTypesCount*: uint32
+      codeSwapped*: cint
+        ## Mirrors the C field appended for OPEN-5 (2026-09-20). This branch
+        ## compiles without the agent header, so the layout is maintained by
+        ## hand and MUST stay in the same order as the importc branch above.
 
     RbHcrReloadCallback* = proc (info: ptr RbHcrReloadInfo;
         userData: pointer) {.cdecl.}

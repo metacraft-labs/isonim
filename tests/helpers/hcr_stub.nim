@@ -414,7 +414,8 @@ proc queuePatch*(agent: HcrStubAgent; patch: HcrStubPatch) =
 
 proc fireCallbacks(agent: HcrStubAgent; list: seq[HcrStubCallback];
                    changedFiles: seq[string];
-                   changedTypes: seq[HcrStubTypeChange]): int =
+                   changedTypes: seq[HcrStubTypeChange];
+                   codeSwapped: bool): int =
   ## Build a real C-shaped ``RbHcrReloadInfo`` and run every registered
   ## callback in registration order.
   ##
@@ -445,7 +446,15 @@ proc fireCallbacks(agent: HcrStubAgent; list: seq[HcrStubCallback];
     changedTypes:
       (if types.len == 0: nil
        else: cast[ptr UncheckedArray[RbHcrTypeChange]](addr types[0])),
-    changedTypesCount: uint32(types.len))
+    changedTypesCount: uint32(types.len),
+    # OPEN-5, decided in Reprobuild 2026-09-20 and mirrored here because this
+    # stub is the contract the real agent must present. The caller passes what
+    # is TRUE AT THIS DISPATCH, not what the patch will eventually do: false in
+    # Phase E, false on the step-38 after-dispatch, true on the Phase H
+    # after-dispatch of a reload that committed. A stub that hardcoded it would
+    # make the one case the field exists for — telling a late load failure apart
+    # from a no-layout-change patch — untestable against the double.
+    codeSwapped: (if codeSwapped: cint(1) else: cint(0)))
 
   # Iterate over a copy: a callback may register or remove callbacks,
   # and the C agent's array would not be re-read mid-dispatch either.
@@ -533,7 +542,8 @@ proc applyReload*(agent: HcrStubAgent): HcrStubOutcome =
   # loaded and no trampoline exists.
   agent.lifecycle.add("before")
   result.beforeCallbacksFired = agent.fireCallbacks(
-    agent.beforeCallbacks, patch.changedFiles, patch.changedTypes)
+    agent.beforeCallbacks, patch.changedFiles, patch.changedTypes,
+    codeSwapped = false)
   agent.beforeFired += result.beforeCallbacksFired
 
   # ---- Phase F (steps 16-20): load the patch library ---------------------
@@ -554,7 +564,8 @@ proc applyReload*(agent: HcrStubAgent): HcrStubOutcome =
     agent.appliedTypes = savedTypes
     agent.lifecycle.add("after")
     result.afterCallbacksFired = agent.fireCallbacks(
-      agent.afterCallbacks, patch.changedFiles, @[])
+      agent.afterCallbacks, patch.changedFiles, @[],
+      codeSwapped = false)
     agent.afterFired += result.afterCallbacksFired
     agent.lastOutcome = result
     return
@@ -572,7 +583,8 @@ proc applyReload*(agent: HcrStubAgent): HcrStubOutcome =
   # ---- Phase H (steps 28-29): after-reload callbacks ---------------------
   agent.lifecycle.add("after")
   result.afterCallbacksFired = agent.fireCallbacks(
-    agent.afterCallbacks, patch.changedFiles, patch.changedTypes)
+    agent.afterCallbacks, patch.changedFiles, patch.changedTypes,
+    codeSwapped = result.codeSwapped)
   agent.afterFired += result.afterCallbacksFired
 
   result.applied = true

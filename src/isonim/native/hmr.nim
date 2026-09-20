@@ -195,6 +195,14 @@ when defined(isonimHmr):
       ## Nim-owned copy of one ``RbHcrReloadInfo``.
       changedFiles*: seq[string]
       changedTypes*: seq[HmrTypeChange]
+      codeSwapped*: bool
+        ## OPEN-5 (decided in Reprobuild 2026-09-20): whether the code swap had
+        ## happened by the time this callback ran. False in before-reload;
+        ## false in the after-reload of a § 3.3 step-38 late load failure; true
+        ## in the after-reload of a reload that committed. IsoNim's own path
+        ## does not consult it — it is correct without detecting the case — but
+        ## a user hook that saved state in before-reload needs it to tell
+        ## "restore what I saved" from "migrate to the new layout".
 
     HmrEntry* = proc() {.closure.}
       ## The ui-block registration pass. Re-run inside
@@ -616,6 +624,7 @@ when defined(isonimHmr):
     ## is turned into a ``string`` immediately.
     result = HmrReloadInfo(changedFiles: @[], changedTypes: @[])
     if info == nil: return
+    result.codeSwapped = info.codeSwapped != 0
     if info.changedFiles != nil:
       for i in 0 ..< int(info.changedFilesCount):
         let p = info.changedFiles[i]
