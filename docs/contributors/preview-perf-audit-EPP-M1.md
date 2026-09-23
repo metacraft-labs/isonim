@@ -616,7 +616,7 @@ in W3C / WICG; `optimizeForLatency` flag at
 | Playwright Chromium (default) | Yes            | Yes                  | The editor's e2e test target               |
 
 **Editor dev target:** Chromium via `tests/browser` (per
-`isonim/CLAUDE.md`'s `just test-browser-editor-*` recipes). Always
+`isonim/AGENTS.md`'s `just test-browser-editor-*` recipes). Always
 has `VideoDecoder`. The JPEG-per-frame fallback path in EPP-M6's
 brief is a defensive safety net for non-Chromium browsers; it can
 be implemented behind feature-detect (`typeof VideoDecoder ===

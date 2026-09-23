@@ -1,7 +1,7 @@
 ## REV-M5 — workspace clean-tree gate.
 ##
 ## Replicates the pre-push hook's reproducibility checks from
-## ``metacraft/CLAUDE.md`` § "Pre-push: publication check".  Each
+## ``metacraft/AGENTS.md`` § "Pre-push: publication check".  Each
 ## repo listed in ``.repo/manifest.xml`` (plus any
 ## ``.repo/local_manifests/*.xml``) is inspected for:
 ##

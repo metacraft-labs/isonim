@@ -32,7 +32,7 @@ switch("path", "$projectDir/../vendor/db_connector/src")
 # Phase B: vendored ``chronicles`` + its transitive deps so the daemon
 # and CLI can emit structured logs without bringing the segfault-prone
 # ``nimble install chronicles`` step into the build path.  See the
-# isonim/CLAUDE.md Phase B notes for the vendoring rationale.
+# isonim/AGENTS.md Phase B notes for the vendoring rationale.
 switch("path", "$projectDir/../vendor/chronicles")
 switch("path", "$projectDir/../vendor/serialization")
 switch("path", "$projectDir/../vendor/json_serialization")

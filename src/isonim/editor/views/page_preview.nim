@@ -216,7 +216,7 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
       # CHRM-M5 Fix B: ``documentHtml`` is now Web-only. The Web
       # composition root renders inside the iframe via srcdoc
       # because there's no streaming launcher for Web (the editor
-      # itself is HTML — see isonim-examples/CLAUDE.md "Try the
+      # itself is HTML — see isonim-examples/AGENTS.md "Try the
       # editor"). For every non-Web backend the canvas path above
       # is the live stream; if it's not active the fallback panel
       # is the empty-state surface (no more HTML-themed iframe).

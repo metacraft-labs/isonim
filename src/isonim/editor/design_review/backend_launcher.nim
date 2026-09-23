@@ -95,7 +95,7 @@ const
 proc backendBinaryName*(backend: PreviewBackend): string =
   ## Filename of the per-backend launcher binary as shipped by
   ## ``isonim-examples`` under ``build/backends/``.  Matches the
-  ## convention documented in ``isonim-examples/CLAUDE.md``.
+  ## convention documented in ``isonim-examples/AGENTS.md``.
   case backend
   of pbWeb:     "isonim-examples-web"
   of pbTui:     "isonim-examples-tui"

@@ -249,7 +249,7 @@ page, not the editor.
   updates). So manifests already follow size changes. Good.
 
 - `M` `resize`, `M` `screenshot-response`, `M` `hot-reload` —
-  declared in `isonim-render-serve/CLAUDE.md` § "What this library
+  declared in `isonim-render-serve/AGENTS.md` § "What this library
   does" but the **outbound `resize` M packet has no sender today**
   (see 2.1). VRS-M4..M7 should EITHER add an outbound resize meta
   emission after `dynamicW`/`dynamicH` mutate, OR rely on the
