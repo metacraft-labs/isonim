@@ -4,6 +4,10 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    git-hooks = {
+      url = "github:cachix/git-hooks.nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -11,6 +15,7 @@
       self,
       nixpkgs,
       flake-utils,
+      git-hooks,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -39,6 +44,23 @@
                 ln -s ${pkgs.claude-agent-acp}/bin/claude-agent-acp $out/bin/claude-code-acp
               fi
             '';
+        # The repo's pre-commit hooks. Entering the default dev shell writes
+        # the (gitignored) .pre-commit-config.yaml symlink and installs them;
+        # CI's shared lint workflow runs the same set from this shell.
+        preCommit = git-hooks.lib.${system}.run {
+          src = ./.;
+          hooks = {
+            check-added-large-files.enable = true;
+            check-merge-conflicts.enable = true;
+            lint = {
+              enable = true;
+              name = "just lint";
+              entry = "just lint";
+              language = "system";
+              pass_filenames = false;
+            };
+          };
+        };
       in
       {
         devShells.default = pkgs.mkShell {
@@ -93,6 +115,7 @@
             );
 
           shellHook = ''
+            ${preCommit.shellHook}
             echo "IsoNim dev shell — nim $(nim --version 2>&1 | head -1), node $(node --version)"
             # REV-M3 dev-cluster defaults; users may override in their own
             # .envrc (see .envrc.example).
