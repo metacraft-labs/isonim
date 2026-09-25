@@ -10,7 +10,7 @@ the IsoNim Editor.
 Run commands through the repo dev shell:
 
 ```sh
-direnv exec ~/metacraft/isonim <command>
+repro exec -- <command>
 ```
 
 This repo is used inside the `~/metacraft` multi-repo workspace. Several editor
@@ -42,7 +42,7 @@ or duplicate sibling code.
 
 ## Common Commands
 
-Use `direnv exec ~/metacraft/isonim` for all of these:
+Use `repro exec --` for all of these:
 
 ```sh
 just test              # native + JS framework tests
@@ -61,9 +61,9 @@ just test-browser-editor
 Focused editor checks used frequently:
 
 ```sh
-direnv exec ~/metacraft/isonim nim c -r tests/test_editor_viewmodels.nim
-direnv exec ~/metacraft/isonim nim c -r tests/test_editor_shell_views.nim
-direnv exec ~/metacraft/isonim bash -lc 'cd tests/browser && npx playwright test --project=metacraft-web-editor'
+repro exec -- nim c -r tests/test_editor_viewmodels.nim
+repro exec -- nim c -r tests/test_editor_shell_views.nim
+repro exec -- bash -lc 'cd tests/browser && npx playwright test --project=metacraft-web-editor'
 ```
 
 Before running metacraft-web consumer browser tests, rebuild the consumer bundle
@@ -71,7 +71,7 @@ from the sibling repo when the editor framework or workspace integration
 changed:
 
 ```sh
-direnv exec ~/metacraft/metacraft-web just build-back-office-editor
+(cd ../metacraft-web && repro exec -- just build-back-office-editor)
 ```
 
 ## Development Conventions

@@ -307,7 +307,7 @@ test-rxcore:
     nim js -r tests/test_rxcore.nim
 
 # Run only DSL/html/components tests
-test-dsl:
+test-dsl: build-tailwind
     nim c -r tests/test_dsl.nim
     nim js -r tests/test_dsl.nim
     nim c -r tests/test_dsl_ssr.nim
