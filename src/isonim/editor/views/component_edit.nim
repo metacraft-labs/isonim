@@ -227,6 +227,10 @@ proc editablePreviewDocument*(documentHtml: string;
     background: rgba(59,130,246,.9);
     color: white;
   }
+  #isonim-editor-selection-breadcrumb > span[data-drill] {
+    background: rgba(148,163,184,.28);
+    color: #E2E8F0;
+  }
   #isonim-editor-context-menu {
     position: fixed;
     z-index: 2147483647;
@@ -272,7 +276,23 @@ proc editablePreviewDocument*(documentHtml: string;
     'isonim-editor-context-menu',
     'isonim-editor-comment-popup'
   ]);
-  let lastClick = { x: -10000, y: -10000, index: 0, at: 0 };
+  // Repeat-click drill state. `target` is the element the pointer is
+  // actually over (the deepest selectable node under it), `chain` is that
+  // element's ancestor stack captured when the drill started, and `index`
+  // is how far up `chain` the repeated clicks have walked (-1 = not
+  // clicked yet).
+  //
+  // Two properties matter, and both used to be missing:
+  //
+  //  * The index is read against the chain it was captured with, never
+  //    against a freshly walked one, so it can never end up pointing at an
+  //    element from a different chain.
+  //  * Nothing here is timed. The drill resets when the pointer moves to a
+  //    different element -- not when clicks arrive more than N ms apart and
+  //    not when the cursor wobbles by more than N px -- so which element a
+  //    click selects depends only on where the pointer is, never on how
+  //    fast the user is clicking.
+  let drill = { target: null, chain: [], index: -1 };
   let styleClipboard = null;
   function isElement(node) {
     return node && node.nodeType === 1;
@@ -369,6 +389,32 @@ proc editablePreviewDocument*(documentHtml: string;
       };
     });
   }
+  function drillRestart(leaf) {
+    drill = { target: leaf, chain: ancestorStack(leaf), index: -1 };
+    return drill;
+  }
+  function drillAt(node) {
+    const leaf = ancestorStack(node)[0] || null;
+    if (!leaf) return null;
+    // Restart when the pointer is over a different element, and also when
+    // the captured chain has gone stale -- the preview re-renders on its
+    // own (hot reload, a reactive update), and a retained index must never
+    // resolve against detached nodes.
+    if (drill.target !== leaf || !drill.chain.length ||
+        !drill.chain[0].isConnected) return drillRestart(leaf);
+    return drill;
+  }
+  function drillPosition(el) {
+    // Where `el` sits in the live drill, or -1 when it is not part of it.
+    return drill.chain.length > 1 ? drill.chain.indexOf(el) : -1;
+  }
+  function drillSync(el) {
+    // Keep the drill honest about what is actually selected, whichever
+    // route selected it (keyboard, scene graph, breadcrumb, restore).
+    const at = drill.chain.indexOf(el);
+    if (at >= 0) drill.index = at;
+    else drill = { target: el, chain: ancestorStack(el), index: 0 };
+  }
   function preferredElement(event) {
     const stack = ancestorStack(event.target);
     if (!stack.length) return null;
@@ -379,20 +425,23 @@ proc editablePreviewDocument*(documentHtml: string;
     if (event.metaKey || event.ctrlKey || event.altKey) {
       return stack[Math.min(1, stack.length - 1)];
     }
-    const now = Date.now();
-    const close =
-      Math.abs(event.clientX - lastClick.x) <= 3 &&
-      Math.abs(event.clientY - lastClick.y) <= 3 &&
-      now - lastClick.at < 900;
-    if (close) {
-      lastClick.index = Math.min(lastClick.index + 1, stack.length - 1);
-    } else {
-      lastClick.index = 0;
+    const state = drillAt(event.target);
+    if (!state) return null;
+    // `event.detail === 2` is the second click of a double-click. That
+    // click belongs to the dblclick gesture (inline text editing), not to
+    // the climb, so the climb does not consume it. Letting both handlers
+    // act on it is what made rapid clicking oscillate: the click advanced
+    // the climb while the dblclick yanked the selection back to the leaf.
+    if (event.detail !== 2) {
+      // The climb only ever moves outwards, and stops at the outermost
+      // element rather than wrapping back to the leaf. Wrapping would put
+      // an unrequested jump from the outermost element to the innermost
+      // into the middle of a click burst -- the same "goes berserk" the
+      // drill is supposed to avoid. The breadcrumb reports the position so
+      // "nothing moved" reads as "you are at the top", not as a dead click.
+      state.index = Math.min(state.index + 1, state.chain.length - 1);
     }
-    lastClick.x = event.clientX;
-    lastClick.y = event.clientY;
-    lastClick.at = now;
-    return stack[Math.min(lastClick.index, stack.length - 1)];
+    return state.chain[Math.max(state.index, 0)];
   }
   function ensureHoverLabel() {
     let label = document.getElementById('isonim-editor-hover-label');
@@ -542,6 +591,17 @@ proc editablePreviewDocument*(documentHtml: string;
       chip.textContent = stableSelector(node);
       crumb.appendChild(chip);
     });
+    // Where the repeat-click climb currently is. Without this the operator
+    // has no way to tell a climb that has reached the outermost element
+    // from a click that did nothing.
+    const position = drillPosition(el);
+    if (position > 0) {
+      const chip = document.createElement('span');
+      chip.dataset.drill = 'position';
+      chip.textContent = '↑ ' + (position + 1) + '/' + drill.chain.length +
+        (position === drill.chain.length - 1 ? ' top' : '');
+      crumb.appendChild(chip);
+    }
     crumb.style.left = Math.max(6, Math.min(rect.left, window.innerWidth - 280)) + 'px';
     crumb.style.top = Math.min(window.innerHeight - 30, rect.bottom + 8) + 'px';
     crumb.hidden = false;
@@ -555,11 +615,19 @@ proc editablePreviewDocument*(documentHtml: string;
   function selectElement(target) {
     const el = target;
     if (!el || el === document.documentElement || el === document.body) return;
+    // Selecting something else ends inline text editing. The click handler
+    // calls preventDefault, so the browser never moves focus by itself and
+    // an element left editing by a double-click would otherwise stay
+    // editable for the rest of the session. `blur` runs the commit path.
+    document.querySelectorAll('[data-isonim-inline-editing]').forEach((node) => {
+      if (node !== el && node.blur) node.blur();
+    });
     document.querySelectorAll('[data-isonim-selected="true"]').forEach((node) => {
       node.removeAttribute('data-isonim-selected');
     });
     el.setAttribute('data-isonim-selected', 'true');
     window.__isonimSelectedElement = el;
+    drillSync(el);
     placeHandles(el);
     const source = parseSource(el.getAttribute('data-isonim-src'));
     const style = window.getComputedStyle(el);
@@ -787,10 +855,19 @@ proc editablePreviewDocument*(documentHtml: string;
   }, true);
   document.addEventListener('dblclick', function (event) {
     if (editorMode === 'view') return;
-    const selected = ancestorStack(event.target)[0];
-    if (!selected) return;
+    const state = drillAt(event.target);
+    if (!state) return;
+    const selected = state.chain[0];
     event.preventDefault();
     event.stopPropagation();
+    // A double-click is the same gesture as the click that opened it, so
+    // it must not move the selection: the repeat-click climb owns that,
+    // and a dblclick that re-selected the leaf turned a burst of clicks
+    // into a selection oscillating between the leaf and the outermost
+    // element. It acts only while the climb is still on the element under
+    // the pointer -- a deliberate double-click rather than two of the
+    // clicks in a mash that has already walked halfway up the chain.
+    if (state.index > 0) return;
     // M-EVP-8: if the resolved element (or one of its ancestors) carries
     // the `data-isonim-vector-symbol` marker, forward the dblclick to
     // the host editor so it opens the vector editor instead of entering
@@ -828,6 +905,10 @@ proc editablePreviewDocument*(documentHtml: string;
       selected.removeAttribute('contenteditable');
       selected.removeAttribute('data-isonim-inline-editing');
       const next = String(selected.textContent || '').trim().replace(/\s+/g, ' ');
+      // Entering and leaving inline editing without typing is not an edit.
+      // Reporting it staged a no-op source edit every time a click burst
+      // passed through the double-click that opens the editor.
+      if (next === before) return;
       parent.dispatchEvent(new CustomEvent('isonim-preview-direct-manipulation', {
         detail: {
           kind: 'inline-text',
@@ -930,12 +1011,20 @@ proc editablePreviewDocument*(documentHtml: string;
       label.hidden = true;
       return;
     }
+    // Moving onto a different element restarts the climb. This is the
+    // only reset there is: pointer position, not elapsed time and not a
+    // pixel threshold, is what decides where a click lands.
+    if (el !== drill.target) drillRestart(el);
     const rect = el.getBoundingClientRect();
     const style = window.getComputedStyle(el);
     el.setAttribute('data-isonim-hovered', 'true');
+    const position = drill.index;
     label.textContent = el.tagName.toLowerCase() + ' ' +
       Math.round(rect.width) + 'x' + Math.round(rect.height) +
-      ' p:' + style.padding + ' • click selects, repeat-click climbs';
+      ' p:' + style.padding + ' • click selects, repeat-click climbs' +
+      (position > 0
+        ? ' (' + (position + 1) + '/' + drill.chain.length + ')'
+        : '');
     label.style.left = Math.max(6, rect.left) + 'px';
     label.style.top = Math.max(18, rect.top - 6) + 'px';
     label.hidden = false;
