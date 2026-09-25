@@ -23,7 +23,7 @@
 ##   when defined(isonimHmr):
 ##     bootstrapHmr()
 ##
-## See `codetracer-specs/Front-Ends/IsoNim/Hot-Module-Reload.md` for the
+## See `isonim-specs/Hot-Module-Reload.md` for the
 ## full design rationale.
 
 import std/macros

@@ -6,7 +6,7 @@
 ## of the popover is mounted at the editor shell root and re-used by
 ## every property row.
 ##
-## Spec reference: ``codetracer-specs/Front-Ends/IsoNim/isonim-editor.md``
+## Spec reference: ``isonim-specs/isonim-editor.md``
 ## § "Variable picker".
 ##
 ## Architecture:

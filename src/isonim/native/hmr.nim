@@ -9,7 +9,7 @@
 ##   — **the normative phase order**, and the authority for where each of
 ##   the two agent callbacks may do its work. Read it before moving
 ##   anything between them.
-## - ``codetracer-specs/Front-Ends/IsoNim/Hot-Module-Reload-Native.md``
+## - ``isonim-specs/Hot-Module-Reload-Native.md``
 ##   — "Reactive root reload sequence" and "Failure mode". The
 ##   "Failure mode" section is implemented literally. The sequence block
 ##   is NOT: its first four lines put trampoline installation before

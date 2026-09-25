@@ -1,7 +1,7 @@
 -- CMP-M2 — design_review campaigns + campaign_events tables.
 --
 -- Implements the storage layer described in the campaign-system task plan
--- (mandatory reading: codetracer-specs/Front-Ends/IsoNim/isonim-editor.md
+-- (mandatory reading: isonim-specs/isonim-editor.md
 -- § "AI Assistant & Design Campaigns").  This is the CMP-M2 schema —
 -- forward-references in that spec lead here.
 --

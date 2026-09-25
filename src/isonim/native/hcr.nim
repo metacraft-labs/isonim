@@ -39,11 +39,11 @@
 ## ## Source-of-truth references
 ##
 ## - Native HMR design spec:
-##   ``codetracer-specs/Front-Ends/IsoNim/Hot-Module-Reload-Native.md``
+##   ``isonim-specs/Hot-Module-Reload-Native.md``
 ##   § "How Reprobuild HCR participates" lists the FFI surface IsoNim
 ##   consumes.
 ## - Native HMR milestones:
-##   ``codetracer-specs/Front-Ends/IsoNim/Hot-Module-Reload-Native.milestones.org``
+##   ``isonim-specs/Hot-Module-Reload-Native.milestones.org``
 ##   § "NH-M0" pins this module's scope and verification tests.
 ## - Reprobuild HCR C API (canonical):
 ##   ``metacraft/reprobuild-specs/HCR/HCR-Overview.md`` § 13

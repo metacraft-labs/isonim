@@ -3,7 +3,7 @@
 **Milestone:** ETS-M5 — bandwidth + latency measurement comparing the
 legacy `element-tree` M-subtype full-body path against the new
 `element-tree-delta` M-subtype delta path.
-**Spec:** `codetracer-specs/Front-Ends/IsoNim/Editor-Element-Tree-Streaming.milestones.org`
+**Spec:** `isonim-specs/Editor-Element-Tree-Streaming.milestones.org`
 **Audit it builds on:** `isonim/docs/element-tree-flow-audit-ETS-M1.md`
 **Bench harness:** `isonim/tests/browser/e2e_editor_ets_bench_live.mjs`
 **Raw data:** `isonim/tests/browser/golden/ets-m5/<timestamp>.json` +

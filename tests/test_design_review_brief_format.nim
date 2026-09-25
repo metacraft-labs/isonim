@@ -1,7 +1,7 @@
 ## REV-M1: Tests for ``isonim/editor/design_review/brief_format``.
 ##
 ## Test names match those listed in REV-M1's Verification block of
-## ``codetracer-specs/Front-Ends/IsoNim/Design-Review-Database.milestones.org``
+## ``isonim-specs/Design-Review-Database.milestones.org``
 ## verbatim.
 
 import std/[unittest, os, tables, strutils]

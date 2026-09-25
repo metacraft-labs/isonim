@@ -2,7 +2,7 @@
 
 Date: 2026-05-29
 Author: VRS-M1 sub-agent (audit only — no code changes)
-Spec: `codetracer-specs/Front-Ends/IsoNim/Viewport-Resize-Streaming.milestones.org`
+Spec: `isonim-specs/Viewport-Resize-Streaming.milestones.org`
 
 This audit maps the complete viewport-pill → launcher → frame pipeline
 across `isonim/`, `isonim-render-serve/`, `isonim-examples/editor/backends/`,

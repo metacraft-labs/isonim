@@ -2,7 +2,7 @@
 ##
 ## Hot Module Reload runtime for IsoNim's JS browser target.
 ##
-## See `codetracer-specs/Front-Ends/IsoNim/Hot-Module-Reload.md` for the
+## See `isonim-specs/Hot-Module-Reload.md` for the
 ## full design and `Hot-Module-Reload.milestones.org` for the milestone
 ## tracker.
 ##

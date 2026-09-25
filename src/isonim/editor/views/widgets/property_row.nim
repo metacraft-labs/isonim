@@ -12,7 +12,7 @@
 ## reuse this widget instead.
 ##
 ## Design contract (mirrors the spec in
-## ``codetracer-specs/Front-Ends/IsoNim/isonim-editor.md``
+## ``isonim-specs/isonim-editor.md``
 ## § "Property row pattern" + § "Editing Controls"):
 ##
 ##   * **Label scrubber** is a 80px-wide span. For ``prkNumeric`` it

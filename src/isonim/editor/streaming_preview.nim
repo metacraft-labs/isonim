@@ -2,7 +2,7 @@
 ##
 ## Standalone, reusable module that wires the editor's preview pane
 ## to `isonim-render-serve` (see the IsoNim render-stream spec under
-## `Front-Ends/IsoNim/isonim-render-stream.status.org` in the
+## `isonim-specs/isonim-render-stream.status.org` in the
 ## cross-project specs repo).
 ## The editor's preview pane (`views/page_preview.nim`,
 ## `views/foundations_page.nim`, `views/component_detail.nim`,

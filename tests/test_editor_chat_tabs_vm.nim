@@ -145,7 +145,7 @@ suite "Editor multi-chat tabs (Assistant tab)":
   # tests were dropped. The drawer no longer exists; the AI assistant is
   # mounted in the right sidebar via ``renderAiAssistantPanel`` whenever
   # the active mode is not ``emEdit``. See
-  # ``Front-Ends/IsoNim/isonim-editor.md`` §"Mode-driven right sidebar
+  # ``isonim-specs/isonim-editor.md`` §"Mode-driven right sidebar
   # (2026-05-28 revision)".
   # -------------------------------------------------------------------------
 

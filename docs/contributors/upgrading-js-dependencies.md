@@ -17,7 +17,7 @@ library FFI modules under `isonim/src/isonim/editor/vendor/*.nim`
 consume those globals via `{.importc, nodecl.}` + `{.importjs.}`.
 
 The architectural pattern lives in
-[`Editor-Topbar-Spec.milestones.org`](../../codetracer-specs/Front-Ends/IsoNim/Editor-Topbar-Spec.milestones.org)
+[`Editor-Topbar-Spec.milestones.org`](../../isonim-specs/Editor-Topbar-Spec.milestones.org)
 under milestone TBAR-M5b.
 
 ## When to use this recipe
@@ -242,4 +242,4 @@ extension exposed via
 - `isonim-examples/Justfile` (the `editor-build` recipe)
 - `isonim-examples/editor/index.html` (loads the UMDs)
 - TBAR-M5b in
-  `codetracer-specs/Front-Ends/IsoNim/Editor-Topbar-Spec.milestones.org`
+  `isonim-specs/Editor-Topbar-Spec.milestones.org`

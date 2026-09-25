@@ -5,7 +5,7 @@
 ## database stores under ``agent_reports.parsed_scores`` (JSONB); the
 ## markdown body is rendered verbatim for human consumption.
 ##
-## See ``codetracer-specs/Front-Ends/IsoNim/isonim-editor.md`` §
+## See ``isonim-specs/isonim-editor.md`` §
 ## "Reviewer Output Schema" and § "``parsed_scores`` Shape" for the
 ## contract this parser enforces.
 ##

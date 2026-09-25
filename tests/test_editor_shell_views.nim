@@ -215,7 +215,7 @@ suite "Editor Shell Views (M2)":
     ## Phase A demolition (2026-05-28): the prior Manual/Assistant
     ## tab pair plus the 12-sub-tab strip are gone. The sidebar
     ## now renders a single-column scroll surface of section
-    ## placeholders — see ``Front-Ends/IsoNim/isonim-editor.md``
+    ## placeholders — see ``isonim-specs/isonim-editor.md``
     ## §"Property Inspector Panel — Section-Based Design".
     ## Twelve ``data-inspector-section-row`` placeholders appear
     ## in user-decided order (Position / Layout / Appearance /
@@ -465,7 +465,7 @@ suite "Editor Shell Views (M2)":
 
   test "component_edit_inspector_explains_and_applies_design_system_scope":
     ## DEFERRED to Phase G — see
-    ## ``Front-Ends/IsoNim/isonim-editor.md`` §"Property Inspector
+    ## ``isonim-specs/isonim-editor.md`` §"Property Inspector
     ## Panel — Section-Based Design".
     ##
     ## Phase A demolition (2026-05-28) stopped mounting
@@ -493,7 +493,7 @@ suite "Editor Shell Views (M2)":
 
   test "test_chat_section_has_input":
     ## DEFERRED to Phase F — see
-    ## ``Front-Ends/IsoNim/isonim-editor.md`` §"AI assistant
+    ## ``isonim-specs/isonim-editor.md`` §"AI assistant
     ## placement".
     ##
     ## Phase A demolition (2026-05-28) removed the Assistant tab

@@ -21,7 +21,7 @@
 ##     pixel size to the preview pane's rendered size).
 ##
 ## See M-EVP-13 in
-## ``codetracer-specs/Front-Ends/IsoNim/isonim-editor.status.org``
+## ``isonim-specs/isonim-editor.status.org``
 ## for the acceptance criteria this helper exists to satisfy.
 
 import std/options

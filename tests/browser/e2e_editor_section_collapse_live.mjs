@@ -1,7 +1,7 @@
 // Phase C (2026-05-28) — Playwright-driven browser e2e for the
 // collapsible-section behaviour introduced by the editor sidebar
 // redesign. Backstops the contracts pinned in
-// `~/metacraft/codetracer-specs/Front-Ends/IsoNim/isonim-editor.md`
+// `~/metacraft/isonim-specs/isonim-editor.md`
 // §"Section header pattern" + the "Section catalogue" table:
 //
 //   1. On initial render the spec-mandated default open set

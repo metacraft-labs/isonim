@@ -4,7 +4,7 @@
 ## variable directly from the inspector sidebar without trampolining
 ## through the foundations page.
 ##
-## Spec reference: ``codetracer-specs/Front-Ends/IsoNim/isonim-editor.md``
+## Spec reference: ``isonim-specs/isonim-editor.md``
 ## § "In-sidebar variable editing — IsoNim's 'go beyond Figma'".
 ##
 ## Entry points (per spec):

@@ -4,7 +4,7 @@
 // The Surface cluster is gone; its Spec selection folds into the
 // Mode cluster as a fourth option (Spec / View / Comment / Edit),
 // and selecting ``emSpec`` couples ``surfaceSig`` to ``sSpec``
-// via ``setEditMode``. See ``Front-Ends/IsoNim/isonim-editor.md``
+// via ``setEditMode``. See ``isonim-specs/isonim-editor.md``
 // §"Mode-driven right sidebar (2026-05-28 revision)".
 //
 // The replacement live test that exercises the mode-strip Spec

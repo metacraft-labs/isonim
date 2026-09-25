@@ -3,7 +3,7 @@
 // The AI assistant slide-out drawer was removed in favour of a
 // right-sidebar AI assistant panel mounted by
 // ``renderAiAssistantPanel`` whenever the active editing mode is
-// NOT ``emEdit``. See ``Front-Ends/IsoNim/isonim-editor.md``
+// NOT ``emEdit``. See ``isonim-specs/isonim-editor.md``
 // §"Mode-driven right sidebar (2026-05-28 revision)" and
 // §"AI assistant — sidebar with traditional tabs".
 //

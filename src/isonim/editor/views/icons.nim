@@ -437,7 +437,7 @@ const
   # part of the swappable ``IconSet`` (no showcase story exposes
   # them) — the spec pins their look so all icon sets render the
   # same selection header. See
-  # ``Front-Ends/IsoNim/isonim-editor.md`` §"Selection header".
+  # ``isonim-specs/isonim-editor.md`` §"Selection header".
   # All four follow the established 24×24 viewBox, currentColor
   # stroke, 1.75 px stroke-width, round caps/joins family so they
   # read at the same weight as ``wrenchSvg`` / ``plusSvg`` etc.

@@ -2,7 +2,7 @@
 ##
 ## Verifies that migration 001 + migration 002 land exactly the tables,
 ## indexes, and (public) routines documented in
-## ``codetracer-specs/Front-Ends/IsoNim/isonim-editor.md``.  A real
+## ``isonim-specs/isonim-editor.md``.  A real
 ## Postgres cluster from the fixture; no mocks.
 
 import std/[sets, unittest]

@@ -820,7 +820,7 @@ func viewForStory*(story: StoryRef): EditorView =
   ## owns that kind. M-EVP-7 makes the sidebar the only navigation
   ## surface, so ``selectStory`` calls this to switch ``vm.activeView``
   ## whenever a story row is clicked. The spec table in
-  ## ``codetracer-specs/Front-Ends/IsoNim/isonim-editor.md`` ("Sidebar
+  ## ``isonim-specs/isonim-editor.md`` ("Sidebar
   ## drives view selection") is the source of truth.
   case story.kind
   of skFlow:
@@ -2202,7 +2202,7 @@ proc setRightSidebarTab*(editor: EditorVM; tab: RightSidebarTab) =
   ## Originally toggled the right sidebar between the Manual
   ## (inspector) and Assistant (chat) tabs. The Manual/Assistant tab
   ## pair was demolished on 2026-05-28 (see
-  ## ``Front-Ends/IsoNim/isonim-editor.md`` §"AI assistant
+  ## ``isonim-specs/isonim-editor.md`` §"AI assistant
   ## placement"). This proc is kept as a no-op shim so existing call
   ## sites (notably the spec-comment chat handoff in ``shell.nim``)
   ## keep compiling until Phase F migrates them to

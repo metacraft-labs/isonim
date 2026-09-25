@@ -3,7 +3,7 @@
 **Milestone:** ETS-M6 — final acceptance gate for the IsoNim Editor
 Element-Tree Streaming campaign. Verifies the production stream's
 overlay tracking meets the campaign's user-visible promise.
-**Spec:** `codetracer-specs/Front-Ends/IsoNim/Editor-Element-Tree-Streaming.milestones.org`
+**Spec:** `isonim-specs/Editor-Element-Tree-Streaming.milestones.org`
 **Audit it builds on:** `isonim/docs/element-tree-flow-audit-ETS-M1.md`
 **Bench it complements:** `isonim/docs/element-tree-stream-bench-ETS-M5.md`
 **Acceptance harness:** `isonim/tests/browser/e2e_editor_overlay_streaming_acceptance_live.mjs`

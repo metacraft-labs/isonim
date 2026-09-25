@@ -6,7 +6,7 @@ single Playwright matrix run. Read-only audit; no source changes; no
 commits. The matrix itself ships in FUH-M8.
 
 **Spec:**
-`codetracer-specs/Front-Ends/IsoNim/Editor-Followup-Hardening.milestones.org`
+`isonim-specs/Editor-Followup-Hardening.milestones.org`
 **Audit consumers:** FUH-M8 (matrix implementation),
 FUH-M9 (final scorecard).
 

@@ -5,7 +5,7 @@
 ##
 ##   ``[◇ color/surface ▾]`` + a thin ``↕`` detach affordance on hover.
 ##
-## Spec reference: ``codetracer-specs/Front-Ends/IsoNim/isonim-editor.md``
+## Spec reference: ``isonim-specs/isonim-editor.md``
 ## § "Design system variable binding" → "Visual indicator — the linked
 ## chip".
 ##

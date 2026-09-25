@@ -3,7 +3,7 @@
 ## Renders the Position section's property rows inside the empty body
 ## slot the Phase B section frame leaves in
 ## ``shell.nim::renderSectionFrame``. The catalogue (see
-## ``codetracer-specs/Front-Ends/IsoNim/isonim-editor.md`` § "Section
+## ``isonim-specs/isonim-editor.md`` § "Section
 ## catalogue") prescribes:
 ##
 ##   * Horizontal align — 3-button row (left / center / right).

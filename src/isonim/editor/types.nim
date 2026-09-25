@@ -233,7 +233,7 @@ type
     isState           ## ViewModel signal editor
     isSource          ## Source ownership, cascade, and impact controls
     # Phase C (2026-05-28): the section catalogue in the spec
-    # (`Front-Ends/IsoNim/isonim-editor.md` §"Section catalogue")
+    # (`isonim-specs/isonim-editor.md` §"Section catalogue")
     # introduces four sections that did not exist in the M19
     # twelve-section enum: Appearance, Selection colors,
     # Component properties, Export. The slugs `appearance`,
@@ -2115,7 +2115,7 @@ type
   # --- Right sidebar tab selection ---
   # DEPRECATED Phase A — replaced by aiDrawerOpen in Phase F.
   # The right sidebar's Manual/Assistant tab pair was demolished on
-  # 2026-05-28 (see ``Front-Ends/IsoNim/isonim-editor.md`` §"AI
+  # 2026-05-28 (see ``isonim-specs/isonim-editor.md`` §"AI
   # assistant placement"). The sidebar is now a single-column scroll
   # surface; the AI chat moved to a chrome-bar-driven slide-out
   # drawer. This enum is retained as a deprecation shim so the

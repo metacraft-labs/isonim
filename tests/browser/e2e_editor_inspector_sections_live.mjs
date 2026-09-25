@@ -1,7 +1,7 @@
 // Phase G (2026-05-28) — Playwright-driven browser e2e for the section
 // body content the Phase G section_<name>.nim widgets paint into the
 // Phase B section frames. Backstops the per-section catalogue rows from
-// `~/metacraft/codetracer-specs/Front-Ends/IsoNim/isonim-editor.md`
+// `~/metacraft/isonim-specs/isonim-editor.md`
 // §"Section catalogue":
 //
 //   1. Position section exposes X / Y / Rotation property rows.

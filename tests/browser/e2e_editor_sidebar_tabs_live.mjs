@@ -1,7 +1,7 @@
 // OBSOLETE — superseded by Phase F.
 //
 // The Manual/Assistant tab pair in the right sidebar is gone (Phase
-// A demolition, 2026-05-28).  Per ``Front-Ends/IsoNim/isonim-editor
+// A demolition, 2026-05-28).  Per ``isonim-specs/isonim-editor
 // .md`` §"AI assistant placement", the AI chat now lives in a
 // chrome-bar-driven slide-out drawer; per-chat affordances are the
 // robot icons in ``[data-preview-chrome-bar] [data-chrome-chat-strip]``

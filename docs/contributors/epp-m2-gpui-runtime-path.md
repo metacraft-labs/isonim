@@ -2,7 +2,7 @@
 
 Date: 2026-05-29
 Author: EPP-M2 sub-agent
-Spec: `codetracer-specs/Front-Ends/IsoNim/Editor-Preview-Performance.milestones.org`
+Spec: `isonim-specs/Editor-Preview-Performance.milestones.org`
 Audit basis: `isonim/docs/preview-perf-audit-EPP-M1.md` § 1.1 + § 5.1
 
 ## Question

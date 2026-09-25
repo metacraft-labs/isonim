@@ -12,7 +12,7 @@
 ##
 ## `sceneGraphEnabled` is exported for the macro's Design-B arm, which skips
 ## generating the call at all. SGR-M1 measures the two and keeps one; see
-## `codetracer-specs/Front-Ends/IsoNim/Editor-Scene-Graph.milestones.org`.
+## `isonim-specs/Editor-Scene-Graph.milestones.org`.
 
 const sceneGraphEnabled* = defined(isonimEditor)
 

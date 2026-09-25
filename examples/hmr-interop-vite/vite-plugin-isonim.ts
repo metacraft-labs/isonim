@@ -25,7 +25,7 @@
 // top-level code runs, each {.uiComponent.}-emitted
 // `hmrRegisterFactory` call updates its slot's factory signal, and
 // every `mountUiHot` boundary that reads that slot re-renders in
-// place. See codetracer-specs/Front-Ends/IsoNim/Hot-Module-Reload-Host-Interop.md.
+// place. See isonim-specs/Hot-Module-Reload-Host-Interop.md.
 
 import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";

@@ -6,7 +6,7 @@ the now-mutating `task_app` and measure whether FUH-M2's
 ~15x per-mutation payload win and the campaign's <=16 ms
 mouse-move→overlay-update latency.
 
-**Spec:** `codetracer-specs/Front-Ends/IsoNim/Editor-Followup-Hardening.milestones.org`
+**Spec:** `isonim-specs/Editor-Followup-Hardening.milestones.org`
 **Audit it re-checks:** `isonim/docs/hover-dispatch-audit-FUH-M1.md`
 (the ~70-byte sparse op vs ~250-byte full row projection at § 4.3).
 **Wiring it verifies:**

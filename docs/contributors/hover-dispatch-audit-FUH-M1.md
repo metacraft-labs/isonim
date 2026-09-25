@@ -2,7 +2,7 @@
 
 **Milestone:** FUH-M1 — read-only audit for the IsoNim Editor
 Follow-Up Hardening campaign, Phase A (hover dispatch).
-**Spec:** `codetracer-specs/Front-Ends/IsoNim/Editor-Followup-Hardening.milestones.org`
+**Spec:** `isonim-specs/Editor-Followup-Hardening.milestones.org`
 **Trigger:** ETS-M6 acceptance closed `Editor-Element-Tree-Streaming`
 honestly, but flagged that all four backends' input adapters
 log-only `maMove`. The ETS campaign's projected 15x per-mutation

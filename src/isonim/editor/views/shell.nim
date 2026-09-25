@@ -2269,7 +2269,7 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
   ##
   ## 2026-05-28 Phase A demolition: the prior Manual/Assistant tab
   ## pair plus the 12-sub-tab strip were torn out (see
-  ## ``Front-Ends/IsoNim/isonim-editor.md`` §"Property Inspector
+  ## ``isonim-specs/isonim-editor.md`` §"Property Inspector
   ## Panel — Section-Based Design"). The sidebar now scrolls a
   ## single column of section frames — the same shape Figma's
   ## UI3 design panel uses. The AI assistant moved out of the

@@ -2,7 +2,7 @@
 
 **Milestone:** ETS-M1 — read-only inventory of how the element-tree
 manifest is built, shipped, and consumed today.
-**Spec:** `codetracer-specs/Front-Ends/IsoNim/Editor-Element-Tree-Streaming.milestones.org`
+**Spec:** `isonim-specs/Editor-Element-Tree-Streaming.milestones.org`
 **Status of this document:** complete; no source code changes; no
 commits.
 

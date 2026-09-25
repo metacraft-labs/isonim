@@ -3,7 +3,7 @@
 ## Per-ui-block HMR registry — the runtime side of ui-as-boundary HMR.
 ## Active only under `-d:isonimHmr`.
 ##
-## See `codetracer-specs/Front-Ends/IsoNim/Hot-Module-Reload.md`.
+## See `isonim-specs/Hot-Module-Reload.md`.
 ##
 ## Architecture (browser, JS target):
 ##

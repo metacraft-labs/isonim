@@ -2,7 +2,7 @@
 
 Date: 2026-05-30
 Author: EMC-M1 sub-agent
-Spec: `codetracer-specs/Front-Ends/IsoNim/Editor-Matrix-Closer.milestones.org`
+Spec: `isonim-specs/Editor-Matrix-Closer.milestones.org`
 Closes the FUH-M9 gap: 4 GPUI Laptop/Desktop frame-latency cells (55-59 ms
 median vs the 50 ms gate) + 3 GPUI task_app click-response cells (120-130 ms)
 both rooted in the EPP-M2 raw_rgba serialisation cost.

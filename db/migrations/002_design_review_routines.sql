@@ -1,7 +1,7 @@
 -- REV-M3 — design_review stored-procedure layer.
 --
 -- All twelve routines documented in
--- codetracer-specs/Front-Ends/IsoNim/isonim-editor.md
+-- isonim-specs/isonim-editor.md
 -- § "Design Briefs & Review Database" → "Routines".
 --
 -- Contract for every routine:

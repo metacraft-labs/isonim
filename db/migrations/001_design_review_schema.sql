@@ -1,6 +1,6 @@
 -- REV-M3 — design_review schema, tables, indexes, and role grants.
 --
--- Source of truth for the DDL: codetracer-specs/Front-Ends/IsoNim/isonim-editor.md
+-- Source of truth for the DDL: isonim-specs/isonim-editor.md
 -- § "Design Briefs & Review Database" → "Tables".  Keep the column lists
 -- and CHECK constraints byte-identical to that spec; if a mismatch is
 -- ever introduced, fix the migration, not the spec.

@@ -7,7 +7,7 @@
 #
 # Design docs:
 # - reprobuild-specs/HCR/HCR-Overview.md §7, §13
-# - codetracer-specs/Front-Ends/IsoNim/Hot-Module-Reload-Native.md
+# - isonim-specs/Hot-Module-Reload-Native.md
 #
 # Asserts:
 # 1. Real build of IsoNim with -d:reprobuildHcr links against librepro_hcr_agent.

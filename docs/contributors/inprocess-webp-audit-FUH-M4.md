@@ -4,7 +4,7 @@ Read-only audit feeding FUH-M5 (Phase B wire). Mirrors the EPP-M1
 audit shape (file, symbol surface, wrapper recommendation, perf
 expectations, fallback story).
 
-Campaign: [Editor Follow-Up Hardening](../../codetracer-specs/Front-Ends/IsoNim/Editor-Followup-Hardening.milestones.org)
+Campaign: [Editor Follow-Up Hardening](../../isonim-specs/Editor-Followup-Hardening.milestones.org)
 Phase: B — In-Process libwebp.
 Audit date: 2026-05-30. Workspace HEAD: see `repo manifest -r` of the
 caller's workspace.

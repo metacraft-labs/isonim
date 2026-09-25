@@ -112,7 +112,7 @@ SolidJS. Mandatory mental model:
 
 If you forget any of the above mid-conversation, **read the spec
 before you answer**: the canonical sources are
-`codetracer-specs/Front-Ends/IsoNim/IsoNim.md`,
+`isonim-specs/IsoNim.md`,
 `isonim-viewmodel-testing.md`,
 `isonim-component-layer.md`, and
 `isonim-cross-platform-architecture.md`. Quoting from memory and
@@ -130,7 +130,7 @@ IsoNim's product philosophy is **design comes first**:
    `<project-repo>/briefs/<kind>/<slug>.md`, where `<kind>` is one of
    `render`, `interaction`, `accessibility`, `copy`, `chrome`. Brief
    format is locked in
-   `codetracer-specs/Front-Ends/IsoNim/isonim-editor.md`
+   `isonim-specs/isonim-editor.md`
    § _Design Briefs & Review Database_, with frontmatter the editor's
    brief-index walker parses at startup. Read
    `isonim-examples/briefs/render/task-app.md` end-to-end before
@@ -638,19 +638,19 @@ upholding them.
 | Campaign doc format                                       | `isonim/prompts/campaign-document.template.md`                                            |
 | The orchestrator's prompt                                 | `isonim/prompts/campaign-orchestrator.md`                                                 |
 | The reviewer's prompt                                     | `isonim/prompts/design_review/reviewer_prompt.template`                                   |
-| Brief format + database schema                            | `codetracer-specs/Front-Ends/IsoNim/isonim-editor.md` § _Design Briefs & Review Database_ |
-| AI Assistant & Design Campaigns (this prompt's spec home) | `codetracer-specs/Front-Ends/IsoNim/isonim-editor.md` § _AI Assistant & Design Campaigns_ |
-| IsoNim framework — signals, DSL, components               | `codetracer-specs/Front-Ends/IsoNim/IsoNim.md`                                            |
-| ViewModel/View separation                                 | `codetracer-specs/Front-Ends/IsoNim/isonim-viewmodel-testing.md`                          |
-| Cross-platform layered architecture                       | `codetracer-specs/Front-Ends/IsoNim/isonim-cross-platform-architecture.md`                |
-| Component layer + native vs branded backends              | `codetracer-specs/Front-Ends/IsoNim/isonim-component-layer.md`                            |
+| Brief format + database schema                            | `isonim-specs/isonim-editor.md` § _Design Briefs & Review Database_ |
+| AI Assistant & Design Campaigns (this prompt's spec home) | `isonim-specs/isonim-editor.md` § _AI Assistant & Design Campaigns_ |
+| IsoNim framework — signals, DSL, components               | `isonim-specs/IsoNim.md`                                            |
+| ViewModel/View separation                                 | `isonim-specs/isonim-viewmodel-testing.md`                          |
+| Cross-platform layered architecture                       | `isonim-specs/isonim-cross-platform-architecture.md`                |
+| Component layer + native vs branded backends              | `isonim-specs/isonim-component-layer.md`                            |
 | The visual-design-iteration methodology                   | `codetracer-specs/Methodologies/visual-design-iteration.md`                               |
-| Render-streaming bridge protocol                          | `codetracer-specs/Front-Ends/IsoNim/isonim-render-stream.status.org`                      |
+| Render-streaming bridge protocol                          | `isonim-specs/isonim-render-stream.status.org`                      |
 | Canonical example brief                                   | `isonim-examples/briefs/render/task-app.md`                                               |
 | Canonical example demo (four layers)                      | `isonim-examples/task_app/`                                                               |
 | Editor agent adapter (you talk through this)              | `isonim/src/isonim/editor/design_review/editor_agent_adapter.nim`                         |
 | `isonim-review` CLI source                                | `isonim/tools/isonim_review/`                                                             |
-| Design Review Database milestones (REV-M\*)               | `codetracer-specs/Front-Ends/IsoNim/Design-Review-Database.milestones.org`                |
+| Design Review Database milestones (REV-M\*)               | `isonim-specs/Design-Review-Database.milestones.org`                |
 
 ---
 

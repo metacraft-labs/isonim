@@ -11,7 +11,7 @@
 ##
 ## The parser is intentionally NOT a full YAML implementation. The brief
 ## frontmatter grammar is constrained (the spec under
-## ``codetracer-specs/Front-Ends/IsoNim/isonim-editor.md`` § "Brief File
+## ``isonim-specs/isonim-editor.md`` § "Brief File
 ## Format" defines the exact shape), so this module recognises only the
 ## subset of YAML that brief files are allowed to use:
 ##

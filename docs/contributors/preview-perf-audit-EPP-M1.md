@@ -2,7 +2,7 @@
 
 Date: 2026-05-29
 Author: EPP-M1 sub-agent (audit only — no code changes, no commits)
-Spec: `codetracer-specs/Front-Ends/IsoNim/Editor-Preview-Performance.milestones.org`
+Spec: `isonim-specs/Editor-Preview-Performance.milestones.org`
 Prior: `isonim/docs/viewport-resize-audit-VRS-M1.md` (referenced as VRS-M1)
 
 This audit maps the territory the Editor Preview Performance + Interaction

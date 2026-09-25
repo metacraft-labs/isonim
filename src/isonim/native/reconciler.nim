@@ -5,7 +5,7 @@
 ## operational meaning instead of a hopeful one.
 ##
 ## Specs:
-## - ``codetracer-specs/Front-Ends/IsoNim/Hot-Module-Reload-Native.md``
+## - ``isonim-specs/Hot-Module-Reload-Native.md``
 ##   § "Per-renderer reconciliation contract" — the normative shape of
 ##   ``RendererReconciler[T]``.
 ## - ``…/Hot-Module-Reload-Native.milestones.org`` § NH-M3.
