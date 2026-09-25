@@ -93,20 +93,9 @@ changed:
 
 ## Specs
 
-Repo-local docs may live in `docs`, but cross-project specs, milestones, and
-status files should stay in the specs repos. **IsoNim specs live in
-[`isonim-specs`](https://github.com/metacraft-labs/isonim-specs)** (private,
-mainline branch `latest`) — the editor spec, the milestone files, the
-hot-module-reload design, all of it, at the top level rather than under a
-subdirectory.
-
-They were split out of `codetracer-specs/Front-Ends/IsoNim/`, and **that copy
-still exists**. It is the migration's source, it is being retired, and when the
-two disagree `isonim-specs` wins. Do not edit the `codetracer-specs` copy: two
-editable copies of one spec is the second-source-of-truth problem the split
-exists to end, and the stale one silently wins for anyone who greps the old
-path. This pointer previously named the old location and sent at least one
-agent to edit the wrong repo.
+Repo-local docs may live in `docs`. Cross-project specs, milestones and
+status files live in the specs repo, not here — the workspace root's generated
+repo list says which one and what is in it, so this file does not name it.
 
 When user requests refine editor behavior, check the relevant spec first. If the
 request changes the intended behavior, update the spec in the specs repo in the
