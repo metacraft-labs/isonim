@@ -1199,6 +1199,138 @@ suite "Editor Shell Views (M2)":
 
       dispose()
 
+suite "Status-bar breadcrumb — the retained trail":
+
+  proc sceneGraphRows(): seq[ElementLayerRow] =
+    @[ElementLayerRow(id: "root", label: "root", tag: "div", childCount: 1,
+        depth: 0, expanded: true),
+      ElementLayerRow(id: "header", parentId: "root", label: "header",
+        tag: "header", childCount: 1, depth: 1, expanded: true),
+      ElementLayerRow(id: "title", parentId: "header", label: "h1.title",
+        tag: "h1", depth: 2)]
+
+  proc breadcrumbStates(shell: MockNode): seq[(string, string)] =
+    ## (label, state) for every element segment, in render order.
+    for node in shell.findAllByAttr("role", "button"):
+      if "data-breadcrumb-state" in node.attributes:
+        let state = node.attributes["data-breadcrumb-state"]
+        if state != "story":
+          result.add (node.attributes["data-breadcrumb-id"], state)
+
+  test "clicking a middle segment keeps the deeper trail, dimmed":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.selectedStory.val = StoryRef(group: "Pages", name: "Home",
+        kind: skPage, index: 0)
+      vm.inspector.setSelectionTree(sceneGraphRows())
+      check vm.selectInspectorElementById("title")
+
+      let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
+      check shell.breadcrumbStates() == @[("root", "ancestor"),
+        ("header", "ancestor"), ("title", "selected")]
+
+      # The breadcrumb selecting one of its own segments is a walk, not
+      # a jump: the deeper segment stays, dimmed and not-selected.
+      check vm.selectInspectorElementById("header", soBreadcrumb)
+      check vm.inspector.selectedElement.val.id == "header"
+      check shell.breadcrumbStates() == @[("root", "ancestor"),
+        ("header", "selected"), ("title", "trail")]
+
+      # Walking back down re-selects the dimmed segment.
+      check vm.selectInspectorElementById("title", soBreadcrumb)
+      check vm.inspector.selectedElement.val.id == "title"
+      check shell.breadcrumbStates() == @[("root", "ancestor"),
+        ("header", "ancestor"), ("title", "selected")]
+
+      dispose()
+
+  test "the preview's selection echo does not wipe the retained trail":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.inspector.setSelectionTree(sceneGraphRows())
+      check vm.selectInspectorElementById("title")
+      let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
+
+      check vm.selectInspectorElementById("header", soBreadcrumb)
+      # The click also travels to the preview bridge, which answers with
+      # a fresh selection event for the same element carrying only that
+      # element's own (truncated) ancestry. It is the tail of the click
+      # already handled, not a new selection from outside.
+      check vm.selectInspectorElement(ElementRef(id: "header",
+        tag: "header", ancestors: @["root", "header"],
+        ancestorIds: @["root", "header"]))
+      check shell.breadcrumbStates() == @[("root", "ancestor"),
+        ("header", "selected"), ("title", "trail")]
+
+      dispose()
+
+  test "a selection from outside replaces the whole trail":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.inspector.setSelectionTree(sceneGraphRows())
+      check vm.selectInspectorElementById("title")
+      let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
+      check vm.selectInspectorElementById("header", soBreadcrumb)
+      check shell.breadcrumbStates().len == 3
+
+      # A scene-graph row click is a jump: the retained tail belonged to
+      # the path the user just left.
+      check vm.selectInspectorElementById("root")
+      check shell.breadcrumbStates() == @[("root", "selected")]
+
+      dispose()
+
+  test "a retained tail the preview no longer renders is dropped":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.inspector.setSelectionTree(sceneGraphRows())
+      check vm.selectInspectorElementById("title")
+      let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
+      check vm.selectInspectorElementById("header", soBreadcrumb)
+      check shell.breadcrumbStates().len == 3
+
+      # The preview re-rendered without the h1: a dimmed segment that
+      # would select nothing is worse than no segment.
+      vm.inspector.setSelectionTree(sceneGraphRows()[0 .. 1])
+      check shell.breadcrumbStates() == @[("root", "ancestor"),
+        ("header", "selected")]
+
+      dispose()
+
+  test "the three breadcrumb states are visually distinct":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.inspector.setSelectionTree(sceneGraphRows())
+      check vm.selectInspectorElementById("title")
+      let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
+      check vm.selectInspectorElementById("header", soBreadcrumb)
+
+      proc chip(id: string): MockNode = shell.findByAttr("data-breadcrumb-id", id)
+      let ancestor = chip("root")
+      let selected = chip("header")
+      let trail = chip("title")
+      check ancestor != nil and selected != nil and trail != nil
+      # Fill and text colour both differ across the three states, and
+      # the dimmed tail is outlined rather than filled so it does not
+      # read as a disabled control.
+      check selected.styles["background-color"] != ancestor.styles["background-color"]
+      check trail.styles["background-color"] != ancestor.styles["background-color"]
+      check trail.styles["color"] != selected.styles["color"]
+      check trail.styles["border"].contains("dashed")
+      check not ancestor.styles["border"].contains("dashed")
+      check selected.attributes["aria-current"] == "true"
+      check trail.attributes["aria-current"] == "false"
+      # Still a control: it keeps the pointer cursor and a click handler.
+      check trail.styles["cursor"] == "pointer"
+      check "click" in trail.eventListeners
+
+      dispose()
+
 # ---------------------------------------------------------------------------
 # Phase N (2026-05-29) — sidebar header consistency.
 #
