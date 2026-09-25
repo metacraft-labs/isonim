@@ -687,18 +687,29 @@ proc ssrNodeExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.} =
     var tagParts: seq[NimNode] = @[]
     tagParts.add(newStrLitNode("<" & htmlTag))
 
-    # SGR-M1b: in an editor build, carry identity and parent linkage in the
-    # markup itself. String mode has no renderer to call and no element handle
-    # to hand a recorder, but its output IS the HTML the Web preview loads in
-    # an iframe — so the tree is read back from the DOM, the way browser
-    # devtools read theirs. In a production build `sceneGraphEnabled` is false
-    # and not one byte of this is emitted.
+    # SGR-M1b: in an editor build, carry the source location in the markup.
+    # String mode has no renderer to call and no element handle to hand a
+    # recorder, but its output IS the HTML the Web preview loads in an iframe.
+    #
+    # The attribute is `data-isonim-src`, and the name is not a new invention:
+    # the editor's preview bridge ALREADY parses it
+    # (`editor/views/component_edit.nim`, `parseSource` / `sourceKeyFor` /
+    # `layerTree`), and the editor spec's § "Compile-Time Source Mapping"
+    # specifies exactly this attribute. Until now nothing emitted it, so every
+    # element fell back to `fallbackSource`. This is the producer for a
+    # consumer that was already written.
+    #
+    # No parent attribute: `layerTree()` derives parentage by walking
+    # `parentElement` in the rendered DOM, and in string mode the nesting IS
+    # the linkage. Emitting it again would be a second source of truth that
+    # could disagree with the tree the browser actually built.
+    #
+    # In a production build `sceneGraphEnabled` is false and not one byte of
+    # this is emitted.
     let ssrSceneId = sceneElementId(node)
     when sceneGraphEnabled:
       tagParts.add(newStrLitNode(
-        " data-isonim-id=\"" & ssrSceneId & "\"" &
-        " data-isonim-parent=\"" &
-          (if parentIdStack.len > 0: parentIdStack[^1] else: "") & "\"" &
+        " data-isonim-src=\"" & ssrSceneId & "\"" &
         " data-isonim-tag=\"" & htmlTag & "\""))
 
     # Collect attributes and children

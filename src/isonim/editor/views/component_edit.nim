@@ -982,11 +982,44 @@ proc editablePreviewDocument*(documentHtml: string;
     const target = document.querySelector('[data-isonim-element-id="' + CSS.escape(selectedId) + '"]');
     if (target) selectElement(target);
   };
+  // SGR-M3: publish the element tree as soon as the preview exists, and
+  // again whenever it changes. Before this the tree reached the editor only
+  // inside the selection event, so the scene-graph panel was empty until the
+  // user clicked something in the preview -- which is backwards: the panel
+  // exists so you can find the thing you have not clicked yet.
+  function publishLayerTree() {
+    try {
+      parent.dispatchEvent(new CustomEvent('isonim-preview-layer-tree', {
+        detail: {
+          rows: JSON.stringify(layerTree(window.__isonimSelectedElement || null))
+        }
+      }));
+    } catch (error) {}
+  }
+  window.__isonimPublishLayerTree = publishLayerTree;
   setTimeout(function () {
     try {
       window.__isonimRestoreSelection(parent.__isonimPendingPreviewSelectionId || '');
     } catch (error) {}
+    publishLayerTree();
   }, 0);
+  // The preview re-renders on its own (hot reload, a story switch, a
+  // reactive update). A MutationObserver is the only signal that covers all
+  // of them without the editor having to know which one happened. Coalesced
+  // on a frame so a burst of mutations publishes once.
+  try {
+    let pending = 0;
+    const observer = new MutationObserver(function () {
+      if (pending) return;
+      pending = requestAnimationFrame(function () {
+        pending = 0;
+        publishLayerTree();
+      });
+    });
+    observer.observe(document.body, {
+      childList: true, subtree: true, attributes: false
+    });
+  } catch (error) {}
 })();
 </script>
 """
@@ -1082,6 +1115,34 @@ proc installPreviewSelectionBridge[R, E](r: R; frame: E; vm: EditorVM) =
             d.rectWidth || '', d.rectHeight || '', d.textContent || '',
             d.layerTree || ''
           );
+        });
+      }
+    """].}
+
+    # SGR-M3: the standing element tree. Distinct from the selection bridge
+    # above: that one carries a tree as a by-product of the user picking an
+    # element, this one carries the tree because the preview exists. The
+    # scene-graph panel reads `vm.inspector.layers`, so without this it has
+    # nothing to show until the first click.
+    let layerTreeFromBrowser = proc(rows: cstring) =
+      # `.id` rather than the private `fallbackElementId()`: an empty id here
+      # just means "nothing selected yet", which is the common case on load
+      # and is exactly what the row highlighter should see.
+      let parsed = previewDomLayerRows($rows,
+        vm.inspector.selectedElement.val.id,
+        vm.inspector.hoveredElementId.val,
+        vm.inspector.expandedLayerIds.val)
+      # Do not clobber a populated tree with an empty one. A mutation burst
+      # mid-rerender can observe a momentarily empty body, and blanking the
+      # panel on that flicker is worse than showing the previous tree for one
+      # more frame.
+      if parsed.len > 0 or vm.inspector.layers.val.len == 0:
+        vm.inspector.setSelectionTree(parsed)
+    {.emit: ["""
+      if (!window.__isonimPreviewLayerTreeBridgeInstalled) {
+        window.__isonimPreviewLayerTreeBridgeInstalled = true;
+        window.addEventListener('isonim-preview-layer-tree', function (event) {
+          """, layerTreeFromBrowser, """((event.detail || {}).rows || '');
         });
       }
     """].}

@@ -41,6 +41,11 @@ suite "SGR-M1 scene-graph seam":
     # not carry it.
     check not js.contains("scene_graph_fixture.nim:")
 
+    # SSR string mode stamps `data-isonim-src` in editor builds only. The
+    # attribute name is not ours to choose: the editor's preview bridge and
+    # the scene-graph reader both key on it, and the editor spec names it.
+    check not js.contains("data-isonim-src")
+
     # NOTE ON WHICH ASSERTION IS LOAD-BEARING. The source-path check above is
     # the one with teeth, and that was established rather than assumed: with
     # the production template deliberately changed to USE its parameters

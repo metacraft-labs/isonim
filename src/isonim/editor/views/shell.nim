@@ -806,6 +806,335 @@ proc renderStatusBar[R, E](r: R; vm: EditorVM): E =
               text "/"
           r.appendChild(breadcrumbNode, sep)
 
+proc bindSceneGraphRow[R, E](vm: EditorVM; r: R; node: E; rowId: string) =
+  ## Route a scene-graph row click into the ONE selection the editor has.
+  ##
+  ## `selectInspectorElementById` is the same proc the preview's keyboard
+  ## navigation uses, so a click here and a click in the preview converge
+  ## immediately: the Inspector loads the element, the preview outlines it,
+  ## and the tree highlights the row. There is no separate "tree selection"
+  ## to keep in sync, which is the bug this avoids rather than solves.
+  let capturedVm = vm
+  let capturedId = rowId
+  r.addEventListener(node, "click", proc() =
+    capturedVm.selectInspectorElementById(capturedId)
+    # Tell the preview too, so the outline moves. The iframe listens for this
+    # on its parent; if no preview is mounted the event is simply unheard.
+    when defined(js):
+      {.emit: ["""
+        window.dispatchEvent(new CustomEvent('isonim-select-preview-element-id', {
+          detail: { id: """, capturedId, """ }
+        }));
+      """].}
+  )
+  r.addEventListener(node, "mouseenter", proc() =
+    capturedVm.inspector.hoveredElementId.val = capturedId)
+  r.addEventListener(node, "mouseleave", proc() =
+    if capturedVm.inspector.hoveredElementId.val == capturedId:
+      capturedVm.inspector.hoveredElementId.val = "")
+
+proc installSceneGraphReader[R, E](vm: EditorVM; r: R; host: E) =
+  ## Read the preview's element tree from the parent side.
+  ##
+  ## The alternative was to have the preview publish its own tree, and that is
+  ## what the selection bridge does. It cannot serve the scene graph, because
+  ## the bridge is injected only OUTSIDE View mode (`page_preview.nim` and
+  ## `component_edit.nim` both hand View the raw document deliberately, so the
+  ## preview is exactly what ships). The panel is specified as visible in every
+  ## mode, so a View-mode-shaped hole in it is not acceptable — and injecting
+  ## the bridge into View mode to fill the hole would change the one mode whose
+  ## whole job is to be unmodified.
+  ##
+  ## The srcdoc iframe is same-origin, so the editor can simply walk
+  ## `contentDocument` itself. No injection, one code path, every mode.
+  ##
+  ## The rows are shaped exactly like the bridge's `layerTree()` output and go
+  ## through the same `previewDomLayerRows` parser, so downstream there is one
+  ## tree and one selection regardless of which producer ran.
+  let capturedVm = vm
+  let ingest = proc(rows: cstring) =
+    let parsed = previewDomLayerRows($rows,
+      capturedVm.inspector.selectedElement.val.id,
+      capturedVm.inspector.hoveredElementId.val,
+      capturedVm.inspector.expandedLayerIds.val)
+    # The reader decides when an empty tree is real (see `emptyPolls`), so an
+    # empty arriving here is deliberate and is published. The flicker guard
+    # lives at the producer, where the timing information is.
+    capturedVm.inspector.setSelectionTree(parsed)
+  when defined(js):
+    {.emit: ["""
+      (function(ingest, host) {
+        if (window.__isonimSceneGraphReaderInstalled) return;
+        window.__isonimSceneGraphReaderInstalled = true;
+        var lastSignature = '';
+        function previewDoc() {
+          // Several iframes exist at once (the canvas preview, the detail
+          // view, and hidden ones kept mounted). Pick by VISIBILITY first and
+          // source-element count only as a tie-break: choosing the frame with
+          // the most source-mapped elements alone kept returning a
+          // still-mounted previous story, so switching stories left the tree
+          // showing the old page -- measured, not hypothetical.
+          var frames = document.querySelectorAll('iframe');
+          var best = null, bestScore = -1;
+          for (var i = 0; i < frames.length; i++) {
+            try {
+              var f = frames[i];
+              var d = f.contentDocument;
+              if (!d || !d.body) continue;
+              var n = d.querySelectorAll('[data-isonim-src]').length;
+              if (n === 0) continue;
+              var rect = f.getBoundingClientRect();
+              var visible = rect.width > 1 && rect.height > 1 &&
+                f.offsetParent !== null;
+              // Visibility dominates: a visible frame always outranks a
+              // hidden one however many elements the hidden one carries.
+              var score = (visible ? 1000000 : 0) + n;
+              if (score > bestScore) { bestScore = score; best = d; }
+            } catch (e) {}
+          }
+          return bestScore > 0 ? best : null;
+        }
+        function cssPath(el) {
+          var parts = [];
+          var node = el;
+          while (node && node.nodeType === 1 && parts.length < 12) {
+            var seg = node.tagName.toLowerCase();
+            if (node.id) { seg += '#' + node.id; parts.unshift(seg); break; }
+            var parent = node.parentElement;
+            if (parent) {
+              var sibs = Array.prototype.filter.call(
+                parent.children,
+                function (c) { return c.tagName === node.tagName; });
+              if (sibs.length > 1) {
+                seg += ':nth-of-type(' + (sibs.indexOf(node) + 1) + ')';
+              }
+            }
+            parts.unshift(seg);
+            node = node.parentElement;
+          }
+          return parts.join(' > ');
+        }
+        function label(el) {
+          var tag = el.tagName.toLowerCase();
+          var cls = String(el.getAttribute('class') || '').trim()
+            .split(/\s+/).filter(Boolean).slice(0, 2).join('.');
+          var base = tag + (cls ? '.' + cls : '');
+          // A leaf's own text is usually the most recognisable thing about
+          // it -- `span.tag` tells you nothing, `span "Faster than C."` tells
+          // you which one. Only for leaves: an ancestor's text belongs to its
+          // descendants, not to it.
+          if (!el.children || el.children.length === 0) {
+            var t = String(el.textContent || '').trim().replace(/\s+/g, ' ');
+            if (t) {
+              if (t.length > 24) t = t.slice(0, 24) + '\u2026';
+              return base + '  \u201C' + t + '\u201D';
+            }
+          }
+          return base;
+        }
+        // A scene graph shows what is on screen. `html`, `head`, `meta`,
+        // `title`, `style` and `script` all carry a source location because
+        // the DSL emitted them, but none of them is a thing a designer can
+        // select, move or restyle -- listing them pushes the actual page
+        // below the fold and makes the first eight rows useless.
+        var SKIP = { html: 1, head: 1, meta: 1, title: 1, style: 1,
+                     script: 1, link: 1, base: 1, body: 1 };
+        function build(doc) {
+          var nodes = Array.prototype.slice.call(
+            doc.querySelectorAll('[data-isonim-src]'))
+            .filter(function (el) {
+              return !SKIP[el.tagName.toLowerCase()];
+            });
+          var set = new Set(nodes);
+          var depthOf = function (el) {
+            var d = 0, p = el.parentElement;
+            while (p) { if (set.has(p)) d++; p = p.parentElement; }
+            return d;
+          };
+          return nodes.map(function (el) {
+            var src = String(el.getAttribute('data-isonim-src') || '');
+            var m = src.match(/^(.*?):(\d+)(?::(\d+))?$/);
+            var file = m ? m[1] : src;
+            var line = m ? Number(m[2]) : 0;
+            var parent = el.parentElement;
+            while (parent && !set.has(parent)) parent = parent.parentElement;
+            var kids = Array.prototype.filter.call(
+              el.children || [], function (c) { return set.has(c); });
+            return {
+              id: src + ':' + cssPath(el),
+              parentId: parent
+                ? (parent.getAttribute('data-isonim-src') + ':' + cssPath(parent))
+                : '',
+              label: label(el),
+              tag: el.tagName.toLowerCase(),
+              sourceKey: src,
+              schemaKey: 'dom.' + el.tagName.toLowerCase(),
+              domPath: cssPath(el),
+              sourceFile: file,
+              sourceLine: line,
+              depth: depthOf(el),
+              childCount: kids.length,
+              expanded: true,
+              selected: false,
+              hovered: false,
+              hidden: false,
+              locked: false
+            };
+          });
+        }
+        // Distinguish "this preview has no source-mapped elements" from
+        // "the preview is between renders". Both look like zero rows for an
+        // instant; only the first should empty the panel. Two consecutive
+        // empty polls (~1.4s) is the threshold -- a reload is far quicker
+        // than that, and a story that genuinely is not DSL-rendered never
+        // stops being empty.
+        var emptyPolls = 0;
+        function tick() {
+          try {
+            var doc = previewDoc();
+            if (!doc) {
+              emptyPolls++;
+              if (emptyPolls === 2 && lastSignature !== 'EMPTY') {
+                lastSignature = 'EMPTY';
+                ingest('[]');
+              }
+              return;
+            }
+            emptyPolls = 0;
+            var rows = build(doc);
+            // Signature-gated: the walk is cheap but re-entering the reactive
+            // graph is not, and an unconditional publish every poll would
+            // re-render the panel forever.
+            // Include a mid-row in the signature: two different stories can
+            // share a row count and the same first/last element (both start
+            // with the site header), which made the gate treat a story switch
+            // as "no change".
+            var mid = rows.length ? rows[Math.floor(rows.length / 2)].id : '';
+            var sig = rows.length + ':' +
+              (rows.length ? rows[0].id + '|' + mid + '|' +
+                rows[rows.length - 1].id : '');
+            if (sig === lastSignature) return;
+            lastSignature = sig;
+            ingest(JSON.stringify(rows));
+          } catch (e) {}
+        }
+        setInterval(tick, 700);
+        setTimeout(tick, 300);
+      })(""", ingest, """, """, host, """);
+    """].}
+
+proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
+  ## SGR-M3: the scene graph — the rendered element hierarchy of the selected
+  ## story, in the LEFT sidebar beside the storyboard.
+  ##
+  ## The storyboard answers "which view am I looking at?"; this answers "what
+  ## is it made of?". Both are questions about the same selection, which is
+  ## why they share a panel rather than competing for one. See
+  ## `isonim-specs/isonim-editor.md` § "Scene Graph — the element tree".
+  ##
+  ## It renders `vm.inspector.filteredLayers` — the SAME signal the Inspector's
+  ## "Source / Cascade" tree reads. That is deliberate: one tree, two views of
+  ## it, one selection. A second tree state would drift from the first within a
+  ## day and there would be no way to tell which was right.
+  ##
+  ## Visible in every mode, unlike the right sidebar, which swaps content per
+  ## mode: understanding structure is as useful while reading a spec or leaving
+  ## a comment as while changing a padding.
+  let capturedVm = vm
+  var rowsHost: E
+  var countEl: E
+  let panel = ui(r):
+    tdiv(class = "editor-scene-graph",
+          `data-scene-graph` = "true",
+          display = "flex", flex_direction = "column",
+          border_top = "1px solid " & borderFaint,
+          flex_shrink = "0",
+          max_height = "45%",
+          overflow = "hidden"):
+      tdiv(`data-scene-graph-header` = "true",
+            display = "flex", align_items = "center", gap = "6px",
+            height = "30px", min_height = "30px", padding = "0 10px",
+            border_bottom = "1px solid " & borderFaint,
+            flex_shrink = "0"):
+        span(font_size = "10px", letter_spacing = "0.08em",
+              text_transform = "uppercase", color = textMuted):
+          text "Scene graph"
+        span(ref = countEl,
+              `data-scene-graph-count` = "true",
+              margin_left = "auto", font_size = "10px", color = textDim):
+          text ""
+      tdiv(ref = rowsHost,
+            `data-scene-graph-rows` = "true",
+            display = "flex", flex_direction = "column",
+            overflow_y = "auto", overflow_x = "hidden",
+            padding = "4px 0", flex = "1", min_height = "0")
+  result = panel
+  vm.installSceneGraphReader(r, rowsHost)
+
+  # Rows are rebuilt by a render effect rather than by a `for` inside the DSL
+  # block, because the row set changes identity wholesale on every republish
+  # from the preview (a new tree arrives, not a mutation of the old one).
+  createRenderEffect proc() =
+    let rows = capturedVm.inspector.filteredLayers.val
+    r.setTextContent(countEl,
+      if rows.len == 0: "" else: $rows.len)
+    while true:
+      let first = r.firstChild(rowsHost)
+      if first == nil: break
+      r.removeChild(rowsHost, first)
+
+    if rows.len == 0:
+      # An empty tree is a state worth naming. Silence here reads as a broken
+      # panel, which is exactly how this feature was first reported.
+      let empty = ui(r):
+        tdiv(`data-scene-graph-empty` = "true",
+              padding = "10px 12px", font_size = "11px",
+              line_height = "1.5", color = textDim):
+          text "No source-mapped elements in this preview. Stories rendered " &
+               "from pre-built HTML rather than the ui DSL have no tree yet."
+      r.appendChild(rowsHost, empty)
+      return
+
+    for i in 0 ..< rows.len:
+      # Copy the fields out before the DSL block: `for row in rows` yields a
+      # `lent ElementLayerRow`, which Nim refuses to let a closure capture --
+      # correctly, since the row's storage belongs to the memo and the
+      # closure outlives this iteration.
+      let rowId = rows[i].id
+      let rowDepth = rows[i].depth
+      let rowChildCount = rows[i].childCount
+      let rowSelected = rows[i].selected
+      let rowHovered = rows[i].hovered
+      let indent = 8 + rowDepth * 12
+      let bg = if rowSelected: "rgba(124,122,237,0.35)"
+               elif rowHovered: "rgba(255,255,255,0.04)"
+               else: "transparent"
+      let fg = if rowSelected: textPrimary else: textSecondary
+      let label = if rows[i].label.len > 0: rows[i].label else: rows[i].tag
+      let rowEl = ui(r):
+        tdiv(class = "editor-scene-graph-row",
+              `data-scene-graph-row` = rowId,
+              `data-scene-graph-depth` = $rowDepth,
+              `data-selected` = (if rowSelected: "true" else: "false"),
+              role = "button", tabindex = "0",
+              `aria-label` = label,
+              display = "flex", align_items = "center", gap = "6px",
+              padding = "0 8px 0 " & $indent & "px",
+              height = "22px", min_height = "22px",
+              font_size = "11px", cursor = "pointer",
+              white_space = "nowrap", overflow = "hidden",
+              text_overflow = "ellipsis",
+              background_color = bg, color = fg):
+          span(color = textDim, font_size = "9px", flex_shrink = "0"):
+            text (if rowChildCount > 0: "\xE2\x96\xBE" else: "\xC2\xB7")
+          span(overflow = "hidden", text_overflow = "ellipsis"):
+            text label
+      # Selection routes through the same proc the preview's own click path
+      # uses, so a tree click and a preview click are indistinguishable
+      # downstream -- including to the Inspector, which is the point.
+      capturedVm.bindSceneGraphRow(r, rowEl, rowId)
+      r.appendChild(rowsHost, rowEl)
+
 proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
   ## Left panel: storyboard navigation tree.
   ## Built entirely with the ui DSL — if/for inside the body.
@@ -1275,6 +1604,11 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
         document.addEventListener('mouseleave', endDrag);
       })(""", handleEl, """, """, sidebarEl, """);
     """].}
+
+  # SGR-M3: the scene graph sits below the storyboard in the same sidebar.
+  # Appended after the resize wiring so the handle keeps covering the whole
+  # sidebar height rather than just the storyboard's share of it.
+  r.appendChild(sidebar, renderSceneGraphPanel[R, E](r, vm))
 
   result = sidebar
 
