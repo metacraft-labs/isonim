@@ -852,11 +852,40 @@ proc installSceneGraphReader[R, E](vm: EditorVM; r: R; host: E) =
   ## through the same `previewDomLayerRows` parser, so downstream there is one
   ## tree and one selection regardless of which producer ran.
   let capturedVm = vm
+  var knownIds: seq[string] = @[]
+    ## Ids this reader has already seen. The seeding rule below is "open a
+    ## shallow node the first time it appears", and that word `first` is what
+    ## needs remembering -- without it, every poll would re-open whatever the
+    ## user had just collapsed.
   let ingest = proc(rows: cstring) =
     let parsed = previewDomLayerRows($rows,
       capturedVm.inspector.selectedElement.val.id,
       capturedVm.inspector.hoveredElementId.val,
       capturedVm.inspector.expandedLayerIds.val)
+    # Seed the shallow levels open the FIRST time each node is seen.
+    #
+    # `expandedLayerIds` is a list of explicitly-expanded ids, so an untouched
+    # tree would render as a single root row -- technically a tree, useless as
+    # a panel. Seeding only ids we have not seen before is what preserves a
+    # collapse the user performed: a node they folded is already known, so it
+    # is not re-seeded on the next publish and stays folded.
+    #
+    # Depth 2 rather than "everything": the grip page is 62 nodes and opening
+    # all of them buries the page structure in leaf spans.
+    var seeded = capturedVm.inspector.expandedLayerIds.val
+    var changed = false
+    for row in parsed:
+      if row.childCount > 0 and row.depth <= 2 and
+          row.id notin knownIds:
+        knownIds.add row.id
+        if row.id notin seeded:
+          seeded.add row.id
+          changed = true
+      elif row.id notin knownIds:
+        knownIds.add row.id
+    if changed:
+      capturedVm.inspector.expandedLayerIds.val = seeded
+
     # The reader decides when an empty tree is real (see `emptyPolls`), so an
     # empty arriving here is deliberate and is published. The flicker guard
     # lives at the producer, where the timing information is.
@@ -1023,6 +1052,20 @@ proc installSceneGraphReader[R, E](vm: EditorVM; r: R; host: E) =
       })(""", ingest, """, """, host, """);
     """].}
 
+proc bindSceneGraphTwisty[R, E](vm: EditorVM; r: R; node: E; rowId: string) =
+  ## Expand/collapse without selecting. `stopPropagation` is the whole point:
+  ## the twisty sits inside the row, and without it every collapse would also
+  ## move the selection and the inspector to the node you were trying to fold
+  ## away.
+  let capturedVm = vm
+  let capturedId = rowId
+  r.addEventListener(node, "click", proc() =
+    capturedVm.inspector.toggleLayerExpanded(capturedId))
+  when defined(js):
+    {.emit: [node, """.addEventListener('click', function (e) {
+      e.stopPropagation();
+    });"""].}
+
 proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
   ## SGR-M3: the scene graph — the rendered element hierarchy of the selected
   ## story, in the LEFT sidebar beside the storyboard.
@@ -1075,9 +1118,37 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
   # block, because the row set changes identity wholesale on every republish
   # from the preview (a new tree arrives, not a mutation of the old one).
   createRenderEffect proc() =
-    let rows = capturedVm.inspector.filteredLayers.val
+    let allRows = capturedVm.inspector.filteredLayers.val
+    # A row is visible only if every ancestor is expanded. `filteredLayers`
+    # carries the whole tree flat with a `depth` and a `parentId`; collapsing
+    # is a property of what we DRAW, not of what the tree contains, so it is
+    # computed here rather than pruning the model. That keeps a collapsed
+    # subtree searchable and keeps the selection valid while hidden.
+    let expanded = capturedVm.inspector.expandedLayerIds.val
+    var collapsedIds: seq[string] = @[]
+    var rows: seq[ElementLayerRow] = @[]
+    for i in 0 ..< allRows.len:
+      let row = allRows[i]
+      var hiddenByAncestor = false
+      # Walk up to find a collapsed ancestor.
+      var cursor = row.parentId
+      while cursor.len > 0:
+        if cursor in collapsedIds:
+          hiddenByAncestor = true
+          break
+        var found = false
+        for j in 0 ..< allRows.len:
+          if allRows[j].id == cursor:
+            cursor = allRows[j].parentId
+            found = true
+            break
+        if not found: break
+      if hiddenByAncestor: continue
+      if row.childCount > 0 and row.id notin expanded:
+        collapsedIds.add row.id
+      rows.add row
     r.setTextContent(countEl,
-      if rows.len == 0: "" else: $rows.len)
+      if allRows.len == 0: "" else: $allRows.len)
     while true:
       let first = r.firstChild(rowsHost)
       if first == nil: break
@@ -1105,12 +1176,14 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
       let rowChildCount = rows[i].childCount
       let rowSelected = rows[i].selected
       let rowHovered = rows[i].hovered
+      let rowExpanded = rowChildCount == 0 or rowId in expanded
       let indent = 8 + rowDepth * 12
       let bg = if rowSelected: "rgba(124,122,237,0.35)"
                elif rowHovered: "rgba(255,255,255,0.04)"
                else: "transparent"
       let fg = if rowSelected: textPrimary else: textSecondary
       let label = if rows[i].label.len > 0: rows[i].label else: rows[i].tag
+      var twisty: E
       let rowEl = ui(r):
         tdiv(class = "editor-scene-graph-row",
               `data-scene-graph-row` = rowId,
@@ -1125,14 +1198,25 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
               white_space = "nowrap", overflow = "hidden",
               text_overflow = "ellipsis",
               background_color = bg, color = fg):
-          span(color = textDim, font_size = "9px", flex_shrink = "0"):
-            text (if rowChildCount > 0: "\xE2\x96\xBE" else: "\xC2\xB7")
+          # The twisty is its own control: clicking it expands or collapses
+          # WITHOUT changing the selection, which is what every tree does and
+          # what a designer expects. Clicking the label selects.
+          span(ref = twisty,
+                `data-scene-graph-twisty` = (if rowChildCount > 0: rowId else: ""),
+                color = textDim, font_size = "9px", flex_shrink = "0",
+                width = "9px", text_align = "center",
+                cursor = (if rowChildCount > 0: "pointer" else: "default")):
+            text (if rowChildCount == 0: "\xC2\xB7"
+                  elif rowExpanded: "\xE2\x96\xBE"
+                  else: "\xE2\x96\xB8")
           span(overflow = "hidden", text_overflow = "ellipsis"):
             text label
       # Selection routes through the same proc the preview's own click path
       # uses, so a tree click and a preview click are indistinguishable
       # downstream -- including to the Inspector, which is the point.
       capturedVm.bindSceneGraphRow(r, rowEl, rowId)
+      if rowChildCount > 0:
+        capturedVm.bindSceneGraphTwisty(r, twisty, rowId)
       r.appendChild(rowsHost, rowEl)
 
 proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
