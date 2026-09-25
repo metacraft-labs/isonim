@@ -49,6 +49,20 @@ type
   InspectorVM* = ref object of ViewModel
     designSystemSchema*: Signal[DesignSystemSchema]
     selectedElement*: Signal[ElementRef]
+    breadcrumbTrail*: Signal[seq[BreadcrumbEntry]]
+      ## The status-bar element path. Display state, not selection:
+      ## it is the ancestor chain of the last selection that arrived
+      ## from outside the breadcrumb, and it *keeps* the entries below
+      ## the selected one while the user walks it, so clicking a middle
+      ## segment does not delete the way back down. The one selection
+      ## stays ``selectedElement``.
+    breadcrumbWalkId*: Signal[string]
+      ## Non-empty while the breadcrumb itself drove the current
+      ## selection. It holds the id the breadcrumb asked for, so the
+      ## echo that comes back from the preview bridge (which re-selects
+      ## the same element with a freshly truncated ancestor chain) is
+      ## recognised as part of the same walk rather than as a new
+      ## selection from outside.
     layers*: Signal[seq[ElementLayerRow]]
     layerSearch*: Signal[string]
     sectionSearch*: Signal[string]
@@ -2325,6 +2339,40 @@ func rowToElement(row: ElementLayerRow; previous: ElementRef): ElementRef =
     ancestorIds: @[row.id],
     depth: row.depth)
 
+func rowIndex(rows: seq[ElementLayerRow]; id: string): int =
+  for i, row in rows:
+    if row.id == id:
+      return i
+  -1
+
+func parentRow(rows: seq[ElementLayerRow]; row: ElementLayerRow): ElementLayerRow =
+  for candidate in rows:
+    if candidate.id == row.parentId:
+      return candidate
+  ElementLayerRow()
+
+func rowAncestry(rows: seq[ElementLayerRow]; row: ElementLayerRow): tuple[
+    labels: seq[string], ids: seq[string]] =
+  var stack = @[row]
+  var current = row
+  while current.parentId.len > 0:
+    let parent = rows.parentRow(current)
+    if parent.id.len == 0:
+      break
+    stack.add parent
+    current = parent
+  for i in countdown(stack.high, 0):
+    result.labels.add stack[i].label
+    result.ids.add stack[i].id
+
+proc elementFromRow(inspector: InspectorVM; row: ElementLayerRow): ElementRef =
+  let previous = inspector.selectedElement.val
+  result = row.rowToElement(previous)
+  let ancestry = inspector.layers.val.rowAncestry(row)
+  result.ancestors = ancestry.labels
+  result.ancestorIds = ancestry.ids
+  result.depth = max(0, ancestry.ids.len - 1)
+
 proc parseLayerTreeRows(raw: string; selectedId, hoveredId: string;
     expandedIds: seq[string]): seq[ElementLayerRow] =
   if raw.strip.len == 0:
@@ -2371,10 +2419,97 @@ func withLayerSelection(rows: seq[ElementLayerRow]; selectedId,
       copy.expanded = copy.id in expandedIds or row.expanded
     result.add copy
 
+func breadcrumbTrailFrom(element: ElementRef): seq[BreadcrumbEntry] =
+  ## The element path as the selection itself reports it: root first,
+  ## selected element last.
+  for i, label in element.ancestors:
+    result.add BreadcrumbEntry(label: label,
+      id: if i < element.ancestorIds.len: element.ancestorIds[i] else: "")
+  if result.len == 0 and element.tag.len > 0:
+    result.add BreadcrumbEntry(label: element.tag,
+      id: element.fallbackElementId())
+
+func trailIndex(trail: seq[BreadcrumbEntry]; id: string): int =
+  if id.len == 0:
+    return -1
+  for i, entry in trail:
+    if entry.id == id:
+      return i
+  -1
+
+proc noteBreadcrumbSelection(inspector: InspectorVM; element: ElementRef;
+    origin: SelectionOrigin) =
+  ## Keep the status-bar trail in step with the one selection.
+  ##
+  ## Walking the trail (clicking one of its own segments) keeps every
+  ## segment, including the ones below the new selection: the path you
+  ## came down is how you get back down. A selection from anywhere else
+  ## — a scene-graph row, a click in the preview — means the user left
+  ## that path, so the trail is rebuilt from the new element's ancestry.
+  ##
+  ## The breadcrumb's own click also travels out to the preview bridge
+  ## and comes back as a fresh selection event for the same element.
+  ## ``breadcrumbWalkId`` is what lets that echo be recognised as the
+  ## tail of the click we already handled instead of as an outside
+  ## selection that would wipe the retained tail.
+  let id = element.fallbackElementId()
+  if id.len == 0 or element.tag.len == 0:
+    inspector.breadcrumbTrail.val = @[]
+    inspector.breadcrumbWalkId.val = ""
+    return
+  let walking = origin == soBreadcrumb or
+    (inspector.breadcrumbWalkId.val.len > 0 and
+     inspector.breadcrumbWalkId.val == id)
+  if walking and inspector.breadcrumbTrail.val.trailIndex(id) >= 0:
+    inspector.breadcrumbWalkId.val = id
+    return
+  inspector.breadcrumbTrail.val = element.breadcrumbTrailFrom()
+  inspector.breadcrumbWalkId.val = if origin == soBreadcrumb: id else: ""
+
+proc pruneBreadcrumbTrail(inspector: InspectorVM;
+    rows: seq[ElementLayerRow]) =
+  ## Drop a retained tail the preview no longer renders. A dimmed entry
+  ## is an offer to re-select that element; once the element is gone the
+  ## offer is a lie, so the trail is cut at the first missing segment.
+  if rows.len == 0:
+    return
+  let trail = inspector.breadcrumbTrail.val
+  let selectedIndex = trail.trailIndex(
+    inspector.selectedElement.val.fallbackElementId())
+  if selectedIndex < 0 or selectedIndex == trail.high:
+    return
+  for i in (selectedIndex + 1) .. trail.high:
+    if rows.rowIndex(trail[i].id) < 0:
+      inspector.breadcrumbTrail.val = trail[0 ..< i]
+      return
+
+proc breadcrumbPath*(inspector: InspectorVM): tuple[
+    entries: seq[BreadcrumbEntry], selectedIndex: int] =
+  ## The element breadcrumb as the status bar should draw it.
+  ##
+  ## Normally this is the retained trail, with ``selectedIndex`` marking
+  ## where the current selection sits on it: entries before it are the
+  ## selection's ancestors, entries after it are the deeper elements the
+  ## user walked up from and can walk back down to. When the selection
+  ## is not on the trail at all (undo/redo and other paths that write
+  ## ``selectedElement`` directly) the element's own ancestry is used and
+  ## there is no retained tail.
+  let element = inspector.selectedElement.val
+  let id = element.fallbackElementId()
+  if id.len == 0 or element.tag.len == 0:
+    return (@[], -1)
+  let trail = inspector.breadcrumbTrail.val
+  let index = trail.trailIndex(id)
+  if index >= 0:
+    return (trail, index)
+  let own = element.breadcrumbTrailFrom()
+  (own, own.high)
+
 proc setSelectionTree*(inspector: InspectorVM; rows: seq[ElementLayerRow]) =
   let selectedId = inspector.selectedElement.val.fallbackElementId()
   inspector.layers.val = rows.withLayerSelection(selectedId,
     inspector.hoveredElementId.val, inspector.expandedLayerIds.val)
+  inspector.pruneBreadcrumbTrail(rows)
 
 proc refreshLayerFlags(inspector: InspectorVM) =
   inspector.layers.val = inspector.layers.val.withLayerSelection(
@@ -2382,11 +2517,12 @@ proc refreshLayerFlags(inspector: InspectorVM) =
     inspector.hoveredElementId.val,
     inspector.expandedLayerIds.val)
 
-proc selectInspectorElement*(editor: EditorVM;
-    element: ElementRef): bool {.discardable.} =
+proc selectInspectorElement*(editor: EditorVM; element: ElementRef;
+    origin = soExternal): bool {.discardable.} =
   if element.tag.len == 0:
     editor.inspector.selectedElement.val = ElementRef()
     editor.inspector.editDiagnostics.val = @[]
+    editor.inspector.noteBreadcrumbSelection(ElementRef(), origin)
     editor.inspector.refreshLayerFlags()
     return false
 
@@ -2403,6 +2539,7 @@ proc selectInspectorElement*(editor: EditorVM;
     next.ancestorIds = @[next.id]
   editor.inspector.selectedElement.val = next
   editor.inspector.editDiagnostics.val = @[]
+  editor.inspector.noteBreadcrumbSelection(next, origin)
   if editor.inspector.layers.val.len == 0:
     editor.inspector.layers.val = @[next.rowFromElement()]
   else:
@@ -2543,12 +2680,20 @@ proc previewDomLayerRows*(raw: string; selectedId = ""; hoveredId = "";
     expandedIds: seq[string] = @[]): seq[ElementLayerRow] =
   parseLayerTreeRows(raw, selectedId, hoveredId, expandedIds)
 
-proc selectInspectorElementById*(editor: EditorVM; id: string): bool {.discardable.} =
+proc selectInspectorElementById*(editor: EditorVM; id: string;
+    origin = soExternal): bool {.discardable.} =
   for row in editor.inspector.layers.val:
     if row.id == id:
-      editor.inspector.selectedElement.val = row.rowToElement(
-        editor.inspector.selectedElement.val)
+      # ``elementFromRow`` walks the tree's parent links, so the
+      # selection carries its whole ancestor path. ``rowToElement``
+      # alone reports the row as its own only ancestor, which collapsed
+      # the status-bar breadcrumb to a single segment whenever the
+      # selection came from a row rather than from the preview.
+      editor.inspector.selectedElement.val =
+        editor.inspector.elementFromRow(row)
       editor.inspector.editDiagnostics.val = @[]
+      editor.inspector.noteBreadcrumbSelection(
+        editor.inspector.selectedElement.val, origin)
       editor.inspector.refreshLayerFlags()
       return true
   false
@@ -2598,6 +2743,7 @@ proc selectPreviousInspectorElement*(editor: EditorVM): bool {.discardable.} =
 proc clearInspectorSelection*(editor: EditorVM) =
   editor.inspector.selectedElement.val = ElementRef()
   editor.inspector.editDiagnostics.val = @[]
+  editor.inspector.noteBreadcrumbSelection(ElementRef(), soExternal)
   editor.inspector.refreshLayerFlags()
 
 proc changePlatform*(editor: EditorVM; platform: Platform) =
@@ -3282,7 +3428,8 @@ proc categoryHasStories*(sidebar: SidebarVM; kind: StoryKind): bool =
 # InspectorVM actions
 # ===========================================================================
 
-proc selectElement*(inspector: InspectorVM; element: ElementRef) =
+proc selectElement*(inspector: InspectorVM; element: ElementRef;
+    origin = soExternal) =
   var next = element
   if next.id.len == 0:
     next.id = next.fallbackElementId()
@@ -3292,6 +3439,7 @@ proc selectElement*(inspector: InspectorVM; element: ElementRef) =
     next.ancestorIds = @[next.id]
   inspector.selectedElement.val = next
   inspector.editDiagnostics.val = @[]
+  inspector.noteBreadcrumbSelection(next, origin)
   inspector.refreshLayerFlags()
 
 proc setSection*(inspector: InspectorVM; section: InspectorSection) =
@@ -3426,6 +3574,7 @@ proc rememberInspectorFocus*(inspector: InspectorVM; id: string) =
 proc clearSelection*(inspector: InspectorVM) =
   inspector.selectedElement.val = ElementRef()
   inspector.editDiagnostics.val = @[]
+  inspector.noteBreadcrumbSelection(ElementRef(), soExternal)
   inspector.refreshLayerFlags()
 
 func sameSourceJournalSlot(a, b: SourceEditPlan): bool =
@@ -3499,47 +3648,15 @@ proc sourceJournalOwnershipDiagnostics*(inspector: InspectorVM): seq[
         message: "Pending source edit is missing a stable source owner key.",
         file: plan.file, line: plan.line, property: plan.property)
 
-func rowIndex(rows: seq[ElementLayerRow]; id: string): int =
-  for i, row in rows:
-    if row.id == id:
-      return i
-  -1
-
-func parentRow(rows: seq[ElementLayerRow]; row: ElementLayerRow): ElementLayerRow =
-  for candidate in rows:
-    if candidate.id == row.parentId:
-      return candidate
-  ElementLayerRow()
-
-func rowAncestry(rows: seq[ElementLayerRow]; row: ElementLayerRow): tuple[
-    labels: seq[string], ids: seq[string]] =
-  var stack = @[row]
-  var current = row
-  while current.parentId.len > 0:
-    let parent = rows.parentRow(current)
-    if parent.id.len == 0:
-      break
-    stack.add parent
-    current = parent
-  for i in countdown(stack.high, 0):
-    result.labels.add stack[i].label
-    result.ids.add stack[i].id
-
-proc elementFromRow(inspector: InspectorVM; row: ElementLayerRow): ElementRef =
-  let previous = inspector.selectedElement.val
-  result = row.rowToElement(previous)
-  let ancestry = inspector.layers.val.rowAncestry(row)
-  result.ancestors = ancestry.labels
-  result.ancestorIds = ancestry.ids
-  result.depth = max(0, ancestry.ids.len - 1)
-
-proc selectElementById*(inspector: InspectorVM; id: string): bool {.discardable.} =
+proc selectElementById*(inspector: InspectorVM; id: string;
+    origin = soExternal): bool {.discardable.} =
   if id.len == 0:
     return false
   for row in inspector.layers.val:
     if row.id == id:
       inspector.selectedElement.val = inspector.elementFromRow(row)
       inspector.editDiagnostics.val = @[]
+      inspector.noteBreadcrumbSelection(inspector.selectedElement.val, origin)
       inspector.refreshLayerFlags()
       return true
   false
@@ -9303,6 +9420,8 @@ proc createInspectorVM*(designSystemSchema: Signal[DesignSystemSchema] = nil;
   InspectorVM(
     designSystemSchema: schemaSignal,
     selectedElement: selectedElement,
+    breadcrumbTrail: createSignal[seq[BreadcrumbEntry]](@[]),
+    breadcrumbWalkId: createSignal(""),
     layers: layers,
     layerSearch: layerSearch,
     sectionSearch: sectionSearch,

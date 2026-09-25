@@ -1009,6 +1009,20 @@ type
     sourceEdit*: SourceEditPlan
     diagnostics*: seq[PropertyEditDiagnostic]
 
+  SelectionOrigin* = enum
+    ## Where a selection came from. The editor has exactly one selection
+    ## (``vm.inspector.selectedElement``); the origin is not part of it,
+    ## it only tells the status-bar breadcrumb whether the user is
+    ## walking the trail the breadcrumb already shows, or has jumped
+    ## somewhere else entirely.
+    soExternal   ## Scene graph, preview click, keyboard nav, commands
+    soBreadcrumb ## The status-bar breadcrumb walking its own trail
+
+  BreadcrumbEntry* = object
+    ## One clickable segment of the status-bar element trail.
+    label*: string
+    id*: string
+
   ElementRef* = object
     ## Reference to a selected element in the preview.
     id*: string            ## Stable source-backed element identity

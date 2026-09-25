@@ -1031,8 +1031,18 @@ proc editablePreviewDocument*(documentHtml: string;
       of emView: "view"
       of emComment: "comment"
       of emEdit: "edit"))
-  if "</body>" in documentHtml:
-    documentHtml.replace("</body>", injected & "</body>")
+  # Splice by index rather than `strutils.replace`. On the JS backend a
+  # Nim `string` is an array of char codes and `replace` appends each
+  # piece with `result.push.apply(result, piece)`; a piece longer than
+  # the engine's argument limit (~121k entries in V8) raises
+  # "Maximum call stack size exceeded". Real project documents cross
+  # that limit easily (the GRIP home page is ~159k chars), so entering
+  # Comment/Edit mode on any sizeable page threw here and the preview
+  # never got its selection bridge. `&` compiles to `Array.concat`,
+  # which has no such limit.
+  let closing = documentHtml.rfind("</body>")
+  if closing >= 0:
+    documentHtml[0 ..< closing] & injected & documentHtml[closing .. ^1]
   else:
     documentHtml & injected
 
