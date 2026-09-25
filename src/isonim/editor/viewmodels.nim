@@ -2473,9 +2473,15 @@ proc pruneBreadcrumbTrail(inspector: InspectorVM;
   ## offer is a lie, so the trail is cut at the first missing segment.
   if rows.len == 0:
     return
+  let selectedId = inspector.selectedElement.val.fallbackElementId()
+  # Only a tree that contains the current selection is evidence about
+  # the trail. A tree that does not describe the same render (a partial
+  # or not-yet-settled publish) would otherwise read as "everything
+  # below the selection is gone" and delete a tail that is still there.
+  if rows.rowIndex(selectedId) < 0:
+    return
   let trail = inspector.breadcrumbTrail.val
-  let selectedIndex = trail.trailIndex(
-    inspector.selectedElement.val.fallbackElementId())
+  let selectedIndex = trail.trailIndex(selectedId)
   if selectedIndex < 0 or selectedIndex == trail.high:
     return
   for i in (selectedIndex + 1) .. trail.high:
