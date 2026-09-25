@@ -52,6 +52,7 @@ tests/test_editor_shell_views
 tests/test_editor_task_views
 tests/test_editor_interactivity
 tests/test_editor_responsive
+tests/test_editor_page_layout_invariance
 tests/poc_datatable_host
 tests/poc_monaco_host
 tests/poc_terminal_host
