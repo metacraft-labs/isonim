@@ -687,6 +687,20 @@ proc ssrNodeExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.} =
     var tagParts: seq[NimNode] = @[]
     tagParts.add(newStrLitNode("<" & htmlTag))
 
+    # SGR-M1b: in an editor build, carry identity and parent linkage in the
+    # markup itself. String mode has no renderer to call and no element handle
+    # to hand a recorder, but its output IS the HTML the Web preview loads in
+    # an iframe — so the tree is read back from the DOM, the way browser
+    # devtools read theirs. In a production build `sceneGraphEnabled` is false
+    # and not one byte of this is emitted.
+    let ssrSceneId = sceneElementId(node)
+    when sceneGraphEnabled:
+      tagParts.add(newStrLitNode(
+        " data-isonim-id=\"" & ssrSceneId & "\"" &
+        " data-isonim-parent=\"" &
+          (if parentIdStack.len > 0: parentIdStack[^1] else: "") & "\"" &
+        " data-isonim-tag=\"" & htmlTag & "\""))
+
     # Collect attributes and children
     var childBody: NimNode = nil
     var hasHydrationKey = false
@@ -736,9 +750,11 @@ proc ssrNodeExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.} =
     else:
       tagParts.add(newStrLitNode(">"))
 
-      # Process children
+      # Process children. SGR-M1b: this element is their parent.
       if childBody != nil:
+        parentIdStack.add ssrSceneId
         let childExpr = ssrChildrenExpr(childBody, stmts)
+        discard parentIdStack.pop()
         if childExpr != nil:
           tagParts.add(childExpr)
 
