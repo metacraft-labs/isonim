@@ -1301,6 +1301,26 @@ suite "Status-bar breadcrumb — the retained trail":
 
       dispose()
 
+  test "a tree that does not describe the selection leaves the trail alone":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.inspector.setSelectionTree(sceneGraphRows())
+      check vm.selectInspectorElementById("title")
+      let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
+      check vm.selectInspectorElementById("header", soBreadcrumb)
+
+      # Not every published tree describes the render the selection came
+      # from; the editable preview publishes one that describes nothing
+      # in particular. A tree without the selected element in it is no
+      # evidence that the tail below it disappeared.
+      vm.inspector.setSelectionTree(@[ElementLayerRow(id: "other",
+        label: "other", tag: "div")])
+      check shell.breadcrumbStates() == @[("root", "ancestor"),
+        ("header", "selected"), ("title", "trail")]
+
+      dispose()
+
   test "the three breadcrumb states are visually distinct":
     createRoot do (dispose: proc()):
       let r = MockRenderer()
