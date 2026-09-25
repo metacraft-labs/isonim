@@ -2548,7 +2548,7 @@ proc selectInspectorElement*(editor: EditorVM; element: ElementRef;
     "element-selection:" & next.id)
   true
 
-func previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
+proc previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
     className, role, elementPath, ancestry, sourceFile: string;
     sourceLine: int; display, position, backgroundColor, color, padding,
     margin, width, height, borderRadius, borderWidth, borderStyle, borderColor,
@@ -2646,12 +2646,28 @@ func previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
     else:
       ""
   ].filterIt(it.len > 0)
-  let ancestors =
+  var ancestors =
     if ancestry.len > 0: ancestry.split(" > ")
     else: @[if tag.len > 0: tag else: "element"]
-  let parsedAncestorIds =
+  var parsedAncestorIds =
     if ancestorIds.len > 0: ancestorIds.split(" > ").filterIt(it.len > 0)
     else: @[identity]
+  # The bridge joins the ancestor ids with " > ", but a stable element
+  # id *ends* in a DOM path that contains " > " itself, so splitting the
+  # joined string shreds every id after the first: the breadcrumb ended
+  # up offering fragments like "nav:nth-of-type(1)" that match no
+  # element, and clicking them selected nothing. When the same selection
+  # event carries the layer tree, walk its parent links instead —
+  # structured data that cannot be ambiguous — and keep the split only
+  # as the fallback for events that arrive without a tree.
+  if layerTreeJson.len > 0:
+    let rows = parseLayerTreeRows(layerTreeJson, "", "", @[])
+    let index = rows.rowIndex(identity)
+    if index >= 0:
+      let treeAncestry = rows.rowAncestry(rows[index])
+      if treeAncestry.ids.len > 0:
+        ancestors = treeAncestry.labels
+        parsedAncestorIds = treeAncestry.ids
 
   ElementRef(
     id: identity,
@@ -2668,7 +2684,7 @@ func previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
     ancestors: ancestors,
     ancestorIds: parsedAncestorIds)
 
-func previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
+proc previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
     className, sourceFile: string; sourceLine: int; backgroundColor, color,
     padding, width, height: string): ElementRef =
   previewDomElementRef(metadata, tag, testId, className, "", "", "",
