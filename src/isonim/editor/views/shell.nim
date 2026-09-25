@@ -616,37 +616,58 @@ proc statusPanelButton[R, E](r: R; vm: EditorVM; panel: EditorPanel;
   r.addEventListener(result, "keydown", proc() = vm.togglePanel(panel))
   r.bindStatusPanelButton(result, vm, panel)
 
-proc statusBreadcrumbParts(vm: EditorVM): seq[string] =
+type
+  StatusBreadcrumbState = enum
+    ## How one breadcrumb segment relates to the single selection.
+    sbsStory     ## Group / story name — navigation context, not an element
+    sbsAncestor  ## An ancestor of the selected element
+    sbsSelected  ## The selected element itself
+    sbsTrail     ## Deeper than the selection: retained, dimmed, clickable
+
+  StatusBreadcrumbPart = object
+    label: string
+    id: string
+    state: StatusBreadcrumbState
+    ancestorIndex: int
+      ## Position among the element segments, for the legacy
+      ## index-addressed preview fallback used when a segment carries no
+      ## stable id. -1 for story segments.
+
+proc statusBreadcrumbParts(vm: EditorVM): seq[StatusBreadcrumbPart] =
   let story = vm.selectedStory.val
+  var storyParts: seq[string]
   if story.group.len > 0:
-    result.add story.group
+    storyParts.add story.group
   if story.name.len > 0:
-    result.add story.name
-  let element = vm.inspector.selectedElement.val
-  if element.ancestors.len > 0:
-    result.add element.ancestors
-  elif element.tag.len > 0:
-    result.add element.tag
-  # M-EVP-14 Wave Chrome CR-4: suppress trailing path segments that
-  # duplicate the active story name (or its containing group path).
-  # The page-preview root element commonly tags as the same word as the
-  # story leaf (e.g. story name "Inbox" + element tag "Inbox"), which
-  # produced visibly redundant breadcrumb tails like
-  # "Task App / Pages / Inbox / Inbox". Trim consecutive duplicates
-  # from the right so the breadcrumb reads as the story path without
-  # the redundant echo.
-  while result.len >= 2 and result[^1] == result[^2]:
-    result.setLen(result.len - 1)
-  # Also drop the trailing element label if it equals the active story
-  # name — same redundancy class, but the duplicated segment may not be
-  # strictly adjacent if the breadcrumb interleaves the group / name
-  # halves of the story path against the element tag.
-  if story.name.len > 0 and result.len >= 2 and result[^1] == story.name and
-      not (result[^2] == story.name):
-    # only drop if the *story name itself* (result[^2] in the typical
-    # group+name+tag shape) is already present earlier in the chain.
-    if story.name in result[0 ..< result.high]:
-      result.setLen(result.len - 1)
+    storyParts.add story.name
+
+  let path = vm.inspector.breadcrumbPath()
+  var elementParts: seq[StatusBreadcrumbPart]
+  for i, entry in path.entries:
+    elementParts.add StatusBreadcrumbPart(
+      label: entry.label,
+      id: entry.id,
+      state:
+        if i < path.selectedIndex: sbsAncestor
+        elif i == path.selectedIndex: sbsSelected
+        else: sbsTrail,
+      ancestorIndex: i)
+
+  # M-EVP-14 Wave Chrome CR-4: suppress a leading element segment that
+  # merely echoes the story path. The page-preview root element commonly
+  # labels as the same word as the story leaf (story "Inbox" + root
+  # element "Inbox"), which produced breadcrumbs like
+  # "Task App / Pages / Inbox / Inbox". The duplicate is dropped from the
+  # *story* side rather than the element side: the two read identically,
+  # and the element segment is the one you can click to select.
+  while storyParts.len > 0 and elementParts.len > 0 and
+      storyParts[^1] == elementParts[0].label:
+    storyParts.setLen(storyParts.len - 1)
+
+  for label in storyParts:
+    result.add StatusBreadcrumbPart(label: label, state: sbsStory,
+      ancestorIndex: -1)
+  result.add elementParts
 
 proc dispatchPreviewAncestorSelection(index: int) =
   when defined(js):
@@ -680,8 +701,13 @@ proc previewAncestorSelectionHandler(vm: EditorVM; index: int; id: string): proc
     dispatchPreviewAncestorSelection(captured)
   if capturedId.len > 0:
     result = proc() =
-      discard vm.selectInspectorElementById(capturedId)
-      dispatchPreviewAncestorSelection(captured)
+      # ``soBreadcrumb`` is the whole difference between walking this
+      # trail and jumping somewhere else: it tells the ViewModel to keep
+      # the segments below the one being clicked, so the path stays
+      # walkable in both directions. It also arms the trail against the
+      # selection echo that the preview bridge sends back for the same
+      # element a moment later.
+      discard vm.selectInspectorElementById(capturedId, soBreadcrumb)
       dispatchPreviewElementSelection(capturedId)
 
 func selectedOriginLabel(element: ElementRef): string =
@@ -775,30 +801,58 @@ proc renderStatusBar[R, E](r: R; vm: EditorVM): E =
           text "No selection"
       r.appendChild(breadcrumbNode, empty)
     else:
-      let storyDepth = (if vm.selectedStory.val.group.len > 0: 1 else: 0) +
-        (if vm.selectedStory.val.name.len > 0: 1 else: 0)
       for i, part in parts:
-        let label = part
+        let label = part.label
+        # Three element states, three fills. The selected segment is the
+        # only one wearing the editor's selection colour; ancestors sit
+        # on the flat surface chip; the retained tail has no fill at all
+        # and is outlined instead, so it reads as "still here, not
+        # currently selected" rather than as a greyed-out dead control.
         let chip = ui(r):
           tdiv(`role` = "button", tabindex = "0",
                 `aria-label` = "Select breadcrumb " & label,
-                padding = "2px 5px", border_radius = "4px",
+                `data-breadcrumb-state` = (case part.state
+                  of sbsStory: "story"
+                  of sbsAncestor: "ancestor"
+                  of sbsSelected: "selected"
+                  of sbsTrail: "trail"),
+                `data-breadcrumb-id` = part.id,
+                `aria-current` = (if part.state == sbsSelected: "true" else: "false"),
+                padding = "1px 5px", border_radius = "4px",
                 white_space = "nowrap", overflow = "hidden",
                 text_overflow = "ellipsis", max_width = "180px",
                 cursor = "pointer",
-                background_color = (if i >= storyDepth: bgSurface else: "transparent"),
-                color = (if i == parts.high: textPrimary else: textMuted)):
+                background_color = (case part.state
+                  of sbsStory, sbsTrail: "transparent"
+                  of sbsAncestor: bgSurface
+                  of sbsSelected: accentSoft),
+                border = (case part.state
+                  of sbsTrail: "1px dashed " & borderStrong
+                  else: "1px solid transparent"),
+                font_weight = (if part.state == sbsSelected: "600" else: "400"),
+                color = (case part.state
+                  of sbsStory: textMuted
+                  of sbsAncestor: textSecondary
+                  of sbsSelected: textPrimary
+                  of sbsTrail: textMuted)):
             text label
-        let ancestorIndex = i - storyDepth
-        if ancestorIndex >= 0:
-          let ids = vm.inspector.selectedElement.val.ancestorIds
-          let id =
-            if ancestorIndex >= 0 and ancestorIndex < ids.len: ids[ancestorIndex]
-            else: ""
+        if part.state != sbsStory:
           let selectAncestor = previewAncestorSelectionHandler(vm,
-            ancestorIndex, id)
+            part.ancestorIndex, part.id)
           r.addEventListener(chip, "click", selectAncestor)
           r.addEventListener(chip, "keydown", selectAncestor)
+          # The dimmed tail is the least obviously clickable thing in the
+          # status bar, so it says so on hover: the outline and the text
+          # both brighten. Inline handlers rather than a `:hover` rule
+          # because this view has no stylesheet to hang one on.
+          if part.state == sbsTrail:
+            let hovered = chip
+            r.addEventListener(chip, "mouseenter", proc() =
+              r.setStyle(hovered, "color", textSecondary)
+              r.setStyle(hovered, "border", "1px dashed " & accent))
+            r.addEventListener(chip, "mouseleave", proc() =
+              r.setStyle(hovered, "color", textMuted)
+              r.setStyle(hovered, "border", "1px dashed " & borderStrong))
         r.appendChild(breadcrumbNode, chip)
         if i < parts.high:
           let sep = ui(r):
