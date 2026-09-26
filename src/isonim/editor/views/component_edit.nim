@@ -949,6 +949,14 @@ __ISONIM_SCENE_GRAPH_WALK__
       selectElement(target);
     }
   }, true);
+  let lastHoverReported = '';
+  document.addEventListener('mouseleave', function () {
+    if (lastHoverReported === '') return;
+    lastHoverReported = '';
+    parent.dispatchEvent(new CustomEvent('isonim-preview-element-hovered', {
+      detail: { id: '' }
+    }));
+  });
   document.addEventListener('mousemove', function (event) {
     if (editorMode === 'view') return;
     const el = ancestorStack(event.target)[0];
@@ -967,6 +975,16 @@ __ISONIM_SCENE_GRAPH_WALK__
     const rect = el.getBoundingClientRect();
     const style = window.getComputedStyle(el);
     el.setAttribute('data-isonim-hovered', 'true');
+    // Tell the editor which element the pointer is over, so the Layers
+    // panel can show it softly. Only on CHANGE: mousemove fires per pixel
+    // and the panel would re-render on every one of them.
+    const hoveredId = identityFor(el);
+    if (hoveredId !== lastHoverReported) {
+      lastHoverReported = hoveredId;
+      parent.dispatchEvent(new CustomEvent('isonim-preview-element-hovered', {
+        detail: { id: hoveredId }
+      }));
+    }
     const position = drill.index;
     label.textContent = el.tagName.toLowerCase() + ' ' +
       Math.round(rect.width) + 'x' + Math.round(rect.height) +

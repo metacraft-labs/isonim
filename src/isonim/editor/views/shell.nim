@@ -975,11 +975,11 @@ proc bindSceneGraphRow[R, E](vm: EditorVM; r: R; node: E; rowId: string) =
   # 1px dashed outline against the selection's 2px solid, so "dimmer than
   # selected" needs no new styling -- only the message.
   r.addEventListener(node, "mouseenter", proc() =
-    capturedVm.inspector.hoveredElementId.val = capturedId
+    capturedVm.inspector.setLayerHover(capturedId)
     dispatchPreviewElementHover(capturedId))
   r.addEventListener(node, "mouseleave", proc() =
     if capturedVm.inspector.hoveredElementId.val == capturedId:
-      capturedVm.inspector.hoveredElementId.val = ""
+      capturedVm.inspector.setLayerHover("")
       dispatchPreviewElementHover(""))
 
 proc installSceneGraphReader[R, E](vm: EditorVM; r: R; host: E) =
@@ -1285,6 +1285,26 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
     r.addEventListener(field, "input", proc() =
       capturedVm.inspector.setLayerSearch($r.inputValue(field)))
 
+  # The preview tells us what the pointer is over; the rows show it softly.
+  # `hoveredElementId` already drives `ElementLayerRow.hovered`, which
+  # already renders a background four times fainter than the selection --
+  # nothing was setting it from the preview side.
+  when defined(js):
+    let hoverVm = vm
+    let onPreviewHover = proc(id: cstring) =
+      # `setLayerHover`, not the raw signal: the row flags are baked when the
+      # tree is PUBLISHED, and the reader only republishes when the tree's
+      # signature changes -- which hovering never does. Setting the id alone
+      # moved a value nothing re-read.
+      hoverVm.inspector.setLayerHover($id)
+    {.emit: ["""
+      (function (onHover) {
+        window.addEventListener('isonim-preview-element-hovered',
+          function (event) {
+            onHover(String((event.detail && event.detail.id) || ''));
+          });
+      })(""", onPreviewHover, ");"].}
+
   result = panel
   vm.installSceneGraphReader(r, rowsHost)
 
@@ -1392,6 +1412,40 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
       if rowChildCount > 0:
         capturedVm.bindSceneGraphTwisty(r, twisty, rowId)
       r.appendChild(rowsHost, rowEl)
+
+  # Bring the selection into view -- and only the selection.
+  #
+  # Selecting an element in the preview is a statement about which row you
+  # want, and a 61-row panel showing rows 1-14 is not showing it. Hovering
+  # is NOT such a statement: the pointer sweeps across a page and a panel
+  # that chased it would be unreadable, which is why this watches the
+  # selected id and nothing else.
+  #
+  # `block: "nearest"` so a row already on screen does not jump. Tracked by
+  # id rather than run on every rebuild, because the reader republishes the
+  # tree about twice a second and scrolling on each would fight the user's
+  # own scrolling.
+  when defined(js):
+    var lastScrolledTo = ""
+    createRenderEffect proc() =
+      let selectedId = capturedVm.inspector.selectedElement.val.id
+      if selectedId.len == 0 or selectedId == lastScrolledTo:
+        return
+      lastScrolledTo = selectedId
+      let host = rowsHost
+      let wanted = selectedId.cstring
+      {.emit: ["""
+        (function (host, id) {
+          // After the rebuild effect above has run.
+          requestAnimationFrame(function () {
+            if (!host) return;
+            var row = host.querySelector('[data-scene-graph-row="' +
+              (window.CSS && CSS.escape ? CSS.escape(id) : id) + '"]');
+            if (row && row.scrollIntoView) {
+              row.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+            }
+          });
+        })(""", host, ", ", wanted, ");"].}
 
 proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
   ## Left panel: storyboard navigation tree.
