@@ -94,13 +94,34 @@ iterator topLevelRules(css: string): RuleSpan =
     else:
       i += 1
 
+func withoutComments(text: string): string =
+  ## Strip `/* ... */` spans. Selector text is everything since the previous
+  ## rule closed, which in a commented stylesheet includes that rule's
+  ## trailing comment:
+  ##
+  ##     .hero-argument { align-self:start; }   /* STRUCTURAL */
+  ##
+  ##     .tagline { font:var(--sys-type-display);
+  ##
+  ## so `.tagline`'s raw selector text is "/* STRUCTURAL */\n\n  .tagline".
+  ## The grip pilot comments nearly every rule that way, which is why this
+  ## was invisible in a fixture and total in the real file.
+  var i = 0
+  while i < text.len:
+    if i + 1 < text.len and text[i] == '/' and text[i + 1] == '*':
+      let close = text.find("*/", i + 2)
+      i = if close < 0: text.len else: close + 2
+    else:
+      result.add text[i]
+      i += 1
+
 func selectorMatches(ruleSelector, wanted: string): bool =
   ## A rule matches when `wanted` is one of its comma-separated selectors.
   ##
   ## Exact, after trimming. `.tagline` must not match `.tagline-clause`, and
   ## a grouped rule (`html,body { ... }`) is a legitimate home for the
   ## declaration when you ask for either of its members.
-  for part in ruleSelector.split(','):
+  for part in ruleSelector.withoutComments().split(','):
     if part.strip() == wanted.strip():
       return true
   false

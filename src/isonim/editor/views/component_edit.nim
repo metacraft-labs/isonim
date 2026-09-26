@@ -11,6 +11,7 @@ import isonim/editor/viewmodels
 import isonim/editor/types
 import isonim/editor/views/choice_row
 import isonim/editor/views/scene_graph_walk
+import isonim/editor/style_provenance_decode
 
 const
   bgBase = "#0B1120"
@@ -137,7 +138,18 @@ proc editablePreviewDocument*(documentHtml: string;
       .replace("\n", "\\n")
       .replace("\r", "\\r")
 
+  # The inspector's editable-property list, as a JS array literal. Built from
+  # the Nim const rather than typed twice: the bridge reads these off
+  # `getComputedStyle` and the editor turns them back into properties, so the
+  # two sides drifting would silently empty rows rather than fail.
+  var editablePropsJs = "["
+  for i, name in inspectorEditableCssProperties:
+    if i > 0: editablePropsJs.add ","
+    editablePropsJs.add "\"" & name & "\""
+  editablePropsJs.add "]"
+
   let bridge = """
+<script>var ISONIM_EDITABLE_PROPS = """ & editablePropsJs & """;</script>
 <style id="isonim-editor-selection-style">
   [data-isonim-selected="true"] {
     outline: 2px solid #3B82F6 !important;
@@ -317,6 +329,7 @@ __ISONIM_SCENE_GRAPH_WALK__
   const identityFor = walk.identityFor;
   const ancestorStack = walk.ancestorStack;
   const layerTree = walk.layerTree;
+  const schemaKeyFor = walk.schemaKeyFor;
   function drillRestart(leaf) {
     drill = { target: leaf, chain: ancestorStack(leaf), index: -1 };
     return drill;
@@ -557,8 +570,9 @@ __ISONIM_SCENE_GRAPH_WALK__
     const stack = ancestorStack(el).reverse().map(stableSelector);
     const stackIds = ancestorStack(el).reverse().map(identityFor);
     const elementId = identityFor(el);
-    const schemaKey = el.getAttribute('data-isonim-schema-key') ||
-      ('dom.' + (el.getAttribute('data-testid') || el.tagName.toLowerCase()));
+    // One definition, shared with the scene-graph walk: see `schemaKeyFor`
+    // there for why the class list comes before the tag.
+    const schemaKey = schemaKeyFor(el);
     parent.dispatchEvent(new CustomEvent('isonim-preview-element-selected', {
       detail: {
         elementId: elementId,
@@ -598,7 +612,15 @@ __ISONIM_SCENE_GRAPH_WALK__
         // Every other style field above is a COMPUTED value, and a computed
         // value has already lost the answer to "was this a binding?". This is
         // the only field in the payload that still knows.
-        styleBindings: el.getAttribute('data-isonim-props') || ''
+        styleBindings: el.getAttribute('data-isonim-props') || '',
+        // Every property the inspector has a row for, from the single list in
+        // `style_provenance_decode`. The named fields above are a fixed 17;
+        // the panel renders 51 rows, and a row whose property the selection
+        // does not carry refuses the commit with "does not expose ...".
+        computedStyles: ISONIM_EDITABLE_PROPS
+          .map(function (p) {
+            return p + '=' + (style.getPropertyValue(p) || '');
+          }).join(';')
       }
     }));
   }
@@ -1056,7 +1078,7 @@ proc installPreviewSelectionBridge*[R, E](r: R; frame: E; vm: EditorVM) =
         color, padding, margin, width, height, borderRadius, borderWidth,
         borderStyle, borderColor, fontSize, fontWeight, lineHeight, boxShadow,
         opacity, rectWidth, rectHeight, textContent, layerTreeJson,
-        styleBindings: cstring) =
+        styleBindings, computedStyles: cstring) =
       let line =
         try: parseInt($sourceLine)
         except ValueError: 0
@@ -1095,7 +1117,8 @@ proc installPreviewSelectionBridge*[R, E](r: R; frame: E; vm: EditorVM) =
         $schemaKey,
         $ancestorIds,
         $layerTreeJson,
-        $styleBindings)
+        $styleBindings,
+        $computedStyles)
       # SGR: selecting does NOT republish the tree. `selectInspectorElement`
       # re-flags the rows the scene-graph reader already published, which is
       # the same tree walked from the same source. Publishing a second one
@@ -1129,7 +1152,8 @@ proc installPreviewSelectionBridge*[R, E](r: R; frame: E; vm: EditorVM) =
             d.borderColor || '', d.fontSize || '', d.fontWeight || '',
             d.lineHeight || '', d.boxShadow || '', d.opacity || '',
             d.rectWidth || '', d.rectHeight || '', d.textContent || '',
-            d.layerTree || '', d.styleBindings || ''
+            d.layerTree || '', d.styleBindings || '',
+            d.computedStyles || ''
           );
         });
       }

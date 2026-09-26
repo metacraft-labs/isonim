@@ -104,6 +104,23 @@ func withStyleProvenance*(prop: PropertyInfo;
   # `directStyleAllowed` is the flag the edit path already consults for that.
   if binding.kind in {sbkClassUtility, sbkTokenRef}:
     result.directStyleAllowed = false
+    # And it is not this element's FILE either. The property was captured off
+    # the rendered element, so it arrived carrying that element's source
+    # location -- but a value set by `.tagline` lives in the stylesheet, not
+    # in the page that happens to use the class.
+    #
+    # Leaving the element's path on it misleads twice: the Source section
+    # names a file that does not contain the declaration, and the edit
+    # pipeline refuses the plan outright, because it checks the plan's file
+    # against the file the project's schema says owns the property and sees
+    # two different paths.
+    #
+    # Cleared rather than corrected, because provenance genuinely does not
+    # know where the class is defined -- the DSL records WHICH class set the
+    # value, and which file that class lives in is the project's to answer.
+    # An empty file lets the schema entry supply it.
+    result.sourceFile = ""
+    result.sourceLine = 0
 
 func withStyleProvenance*(props: seq[PropertyInfo];
                           encoded: string): seq[PropertyInfo] =
@@ -120,7 +137,8 @@ func withStyleProvenance*(props: seq[PropertyInfo];
     result.add prop.withStyleProvenance(bindings)
 
 func authoredOnlyProperties*(props: seq[PropertyInfo];
-                             encoded: string): seq[PropertyInfo] =
+                             encoded: string;
+                             schemaPrefix = ""): seq[PropertyInfo] =
   ## The properties the AUTHOR set that the computed-style capture never asked
   ## for, as `PropertyInfo`s carrying their authored value and provenance.
   ##
@@ -159,6 +177,10 @@ func authoredOnlyProperties*(props: seq[PropertyInfo];
       value: binding.value,
       origin: propertyOriginFor(binding.kind),
       originDetail: binding.detail,
+      # Same reason as the computed path: without a schema key the project's
+      # adapter cannot tell which element's rule an edit belongs to.
+      schemaKey: (if schemaPrefix.len > 0: schemaPrefix & "." & binding.property
+                  else: ""),
       directStyleAllowed: binding.kind notin {sbkClassUtility, sbkTokenRef})
     if binding.token.len > 0:
       prop.tokenName = binding.token
@@ -206,3 +228,75 @@ func styleBindingDiagnostics*(encoded, file: string;
       file: file,
       line: line,
       property: binding.property)
+
+const inspectorEditableCssProperties* = [
+  # Position / Layout
+  "left", "top", "transform", "width", "height", "display", "position",
+  "gap", "overflow",
+  "padding", "padding-top", "padding-right", "padding-bottom", "padding-left",
+  "margin", "margin-top", "margin-right", "margin-bottom", "margin-left",
+  # Appearance / Fill / Stroke / Effects
+  "opacity", "mix-blend-mode", "background-color", "color", "box-shadow",
+  "border-radius", "border-top-left-radius", "border-top-right-radius",
+  "border-bottom-right-radius", "border-bottom-left-radius",
+  "border-color", "border-width", "border-style",
+  # Typography
+  "font", "font-family", "font-weight", "font-size", "line-height",
+  "letter-spacing", "text-align", "text-decoration", "text-transform",
+  "list-style-type", "text-wrap"
+]
+  ## Every CSS property the inspector renders a row for.
+  ##
+  ## ONE list, read by both sides of the preview boundary: the injected
+  ## bridge reads these off `getComputedStyle` and the editor turns them into
+  ## the element's property list. Before it existed the bridge captured a
+  ## fixed 17 while the panel rendered 51 rows, so two thirds of the panel
+  ## edited a property the selection did not have -- and the commit refused
+  ## with "The selected element does not expose margin-bottom", which reads
+  ## like a bug in the element rather than a gap in the capture.
+  ##
+  ## Adding a row to a section means adding its property here. That is a
+  ## second place to remember, and the alternative -- deriving it from the
+  ## section widgets -- would mean the preview bridge importing the whole
+  ## inspector view layer to render a string.
+
+func computedStyleProperties*(props: seq[PropertyInfo];
+                              encoded: string;
+                              schemaPrefix = ""): seq[PropertyInfo] =
+  ## Decode the bridge's `prop=value;prop=value` capture into the properties
+  ## the element does not already carry.
+  ##
+  ## Appended rather than merged: anything already in `props` arrived either
+  ## from the named capture or from the author's own provenance, and both are
+  ## better sources than a bare computed value -- the first because it is
+  ## already restamped, the second because it knows what wrote it.
+  if encoded.len == 0:
+    return @[]
+  var seen = initHashSet[string]()
+  for prop in props:
+    seen.incl prop.name.toLowerAscii()
+  for record in encoded.split(';'):
+    if record.len == 0:
+      continue
+    let sep = record.find('=')
+    if sep <= 0:
+      continue
+    let name = record[0 ..< sep]
+    let value = record[sep + 1 .. ^1]
+    if value.len == 0 or name.toLowerAscii() in seen:
+      continue
+    seen.incl name.toLowerAscii()
+    result.add PropertyInfo(
+      name: name,
+      value: value,
+      # `poInherited` is the honest origin for a computed value with no
+      # provenance: something set it, and this capture cannot say what.
+      origin: poInherited,
+      originDetail: "computed:" & name,
+      # The schema key identifies the element to the project's edit adapter,
+      # and without it the adapter cannot tell WHICH element's rule to edit.
+      # The named capture sets it; this path must too, or every property that
+      # only this capture provides is uneditable -- which was two thirds of
+      # the inspector.
+      schemaKey: (if schemaPrefix.len > 0: schemaPrefix & "." & name else: ""),
+      directStyleAllowed: true)

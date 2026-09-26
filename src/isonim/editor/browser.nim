@@ -731,12 +731,29 @@ proc exposeWindowEditorHandle*(vm: EditorVM) =
   let cbMode = setEditModeByIndex
   let cbLeftWidth = setLeftSidebar
   let cbRightWidth = setRightPanel
+  # Saving, and saying what happened. Every other exposure returns `true`
+  # unconditionally because the e2e tests only check truthiness -- which is
+  # exactly wrong for a command that writes files, where "it ran" and "it
+  # worked" are different answers and the interesting one is WHY NOT.
+  #
+  # Needed because `Mod+S` is unreachable from a test that has just typed
+  # into a field: the keydown handler returns early for an editable target,
+  # so the shortcut a person uses after typing a value is the one path a
+  # browser test cannot exercise.
+  let cbSave = proc(): cstring =
+    let state = vm.runEditorCommand(eckSave)
+    if state.diagnostic.len > 0: state.diagnostic.cstring
+    else: "".cstring
+  let cbPending = proc(): int =
+    vm.inspector.pendingSourceEdits.val.len
   {.emit: ["""
     (function () {
       const fn = """, cb, """;
       const fnMode = """, cbMode, """;
       const fnLeftW = """, cbLeftWidth, """;
       const fnRightW = """, cbRightWidth, """;
+      const fnSave = """, cbSave, """;
+      const fnPending = """, cbPending, """;
       window.__isonimEditor = window.__isonimEditor || {};
       window.__isonimEditor.selectStoryByName = function (group, name) {
         fn(group, name);
@@ -753,6 +770,14 @@ proc exposeWindowEditorHandle*(vm: EditorVM) =
       window.__isonimEditor.setRightPanelWidth = function (width) {
         fnRightW(width | 0);
         return true;
+      };
+      // Returns "" when the save succeeded, or the refusal. Not a boolean:
+      // "this workspace is read-only" and "no adapter is ready" are
+      // different problems with different fixes.
+      window.__isonimEditor.save = function () { return String(fnSave()); };
+      // How many source edits are staged and waiting for a save.
+      window.__isonimEditor.pendingSourceEdits = function () {
+        return fnPending() | 0;
       };
     })();
   """].}

@@ -82,6 +82,19 @@ suite "css_patch: choosing the right rule":
     check ".site-header { background:var(--sys-color-surface-page); }" in
       r.content
 
+  test "a rule reached past the previous rule's trailing comment":
+    ## grip comments nearly every rule on the line it closes, so a rule's
+    ## selector text almost always begins with the PREVIOUS rule's comment.
+    ## The fixture above has exactly that shape between `.site-header` and
+    ## `.tagline`, and missing it made every real-file patch fail while every
+    ## test passed.
+    let r = patchCssDeclaration(gripCss, ".tagline", "text-wrap", "pretty")
+    check r.ok
+    check r.outcome == cpoReplaced
+    check "text-wrap:pretty; }" in r.content
+    # And the comment that preceded it is still there.
+    check "/* STRUCTURAL */" in r.content
+
   test "a prefix of another selector is not a match":
     ## `.tagline` must not reach `.tagline-clause`, in either direction.
     let r = patchCssDeclaration(gripCss, ".tagline-clause", "display", "flex")

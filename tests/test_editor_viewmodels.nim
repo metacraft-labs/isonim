@@ -20,6 +20,7 @@ import isonim/editor/views/page_preview
 import isonim/editor/views/component_detail
 import isonim/editor/views/component_edit
 import isonim/editor/element_semantics
+import isonim/editor/css_patch
 import isonim/editor/views/widgets/property_commit
 import isonim/testing/mock_dom
 import examples/wanderlust/stories as wanderlust
@@ -6918,4 +6919,155 @@ suite "Editor ViewModels (the inspector adapts to what is selected)":
       let before = vm.inspector.expandedSections.val
       vm.inspector.applyKindDefaultExpansion(ElementRef())
       check vm.inspector.expandedSections.val == before
+      dispose()
+
+suite "Editor ViewModels (a class-based project writes its stylesheet)":
+  ## The grip pilot's shape end to end: styles in one CSS rule, provenance
+  ## naming the class, an adapter that patches the rule, and a real file on
+  ## disk afterwards. Written because the browser round trip was silent --
+  ## a commit reported success and nothing reached the file -- and a test
+  ## that fails in half a second beats a browser that says nothing.
+
+  const styleSheet = """const structureCssText* = """ & "\"\"\"" & """
+  .tagline { font:var(--sys-type-display);
+             margin-bottom:30px; }
+""" & "\"\"\"" & """
+"""
+
+  let cssStory = StoryRef(group: "Home / Sections", name: "Hero",
+                          kind: skComponent)
+
+  proc cssStoryGroups(): seq[StoryGroup] =
+    @[StoryGroup(name: "Home / Sections", items: @[
+      StoryItem(name: "Hero", kind: skComponent, group: "Home / Sections")])]
+
+  proc cssAdapter(file: string): WorkspaceEditAdapter =
+    ## The same shape as grip's `editor/write_bridge.nim`, with the XHR
+    ## replaced by the filesystem. What is under test is the part grip owns:
+    ## which rule a property edit means, and what the file becomes.
+    result = WorkspaceEditAdapter(
+      allowMissingExpectedOldValue: true,
+      schema: @[WorkspaceEditableSchemaEntry(
+        key: "styles", kind: wskSourceMap, file: file, property: "")])
+    result.readFile = proc(f: string): WorkspaceReadResult =
+      WorkspaceReadResult(ok: true, content: readFile(f))
+    result.writeFile = proc(f, content: string): WorkspaceOperationResult =
+      atomicWrite(f, content)
+      WorkspaceOperationResult(ok: true)
+    result.patchFile = proc(plan: SourceEditPlan; content: string;
+        schema: WorkspaceEditableSchemaEntry): WorkspacePatchResult =
+      var selector = ""
+      if plan.originDetail.startsWith("class:"):
+        selector = "." & plan.originDetail["class:".len .. ^1]
+      elif plan.schemaKey.startsWith("dom."):
+        var parts = plan.schemaKey[4 .. ^1].split('.')
+        if parts.len > 0 and parts[^1] == plan.property:
+          parts.setLen(parts.len - 1)
+        if parts.len == 1: selector = "." & parts[0]
+      if selector.len == 0:
+        return WorkspacePatchResult(ok: false, diagnostics: @[
+          WorkspaceEditDiagnostic(kind: wedPatchFailed,
+            message: "no rule owns " & plan.property)])
+      let patched = patchCssInNimConst(content, "structureCssText", selector,
+                                       plan.property, plan.newValue)
+      if not patched.ok:
+        return WorkspacePatchResult(ok: false, diagnostics: @[
+          WorkspaceEditDiagnostic(kind: wedPatchFailed,
+            message: patched.message)])
+      WorkspacePatchResult(ok: true, patch: WorkspaceFilePatch(
+        file: schema.file, afterContent: patched.content, fullReload: true))
+
+  proc taglineElement(): ElementRef =
+    ## What the preview bridge produces for `h1.tagline`: provenance for the
+    ## two properties the author wrote, and a computed value for the one the
+    ## inspector offers but the stylesheet does not declare.
+    previewDomElementRef(
+      StoryRenderMetadata(title: "Hero"),
+      "h1", "", "tagline", "", "", "", "", 0,
+      "block", "static", "", "rgb(0,0,0)", "", "0px 0px 30px", "877px",
+      "158px", "", "", "", "", "34px", "700", "39px", "", "1",
+      "877", "158", "Faster than C.", "el-1", "", "", "", "",
+      "font|var(--sys-type-display)|tok|class:tagline|sys-type-display;" &
+        "margin-bottom|30px|cls|class:tagline|",
+      "letter-spacing=-0.01px;text-align=left")
+
+  proc cssVm(file: string): EditorVM =
+    result = createEditorVM(newEditorWorkspace(
+      title = "class-based workspace",
+      storyGroups = cssStoryGroups(),
+      initialStory = some(cssStory),
+      permissions = EditorWorkspacePermissions(readSource: true,
+        writeSource: true),
+      editAdapter = cssAdapter(file),
+      sourceAdapterReady = true))
+    discard result.selectInspectorElement(taglineElement())
+
+  test "editing a property the author wrote patches that declaration":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("css-writeback-replace")
+      defer: removeDir(root)
+      let file = root / "styles.nim"
+      atomicWrite(file, styleSheet)
+      let vm = cssVm(file)
+
+      let outcome = vm.commitInspectorValue("margin-bottom", "40px",
+        sskLocalInstance)
+      check outcome.ok
+      check vm.inspector.pendingSourceEdits.val.len == 1
+      # Through the COMMAND, not straight to `applyWorkspaceFileEdits`. The
+      # command gate is a second thing that can refuse a save -- it checks
+      # `sourceAdapterReady`, which defaults to false -- and a test that
+      # calls the apply directly proves the pipeline while the product still
+      # refuses every Cmd+S.
+      let saved = vm.runEditorCommand(eckSave)
+      check saved.diagnostic == ""
+      check saved.status == ecsSucceeded
+
+      let after = readFile(file)
+      check "margin-bottom:40px;" in after
+      check "font:var(--sys-type-display);" in after
+      dispose()
+
+  test "editing a property no rule declares inserts it into the element's class":
+    ## grip writes shorthands and the inspector edits longhands: `.tagline`
+    ## declares `margin`, the panel offers Paragraph spacing, which is
+    ## `margin-bottom`. Provenance cannot name a class for it, so the
+    ## element's own class is what says where the declaration goes.
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("css-writeback-insert")
+      defer: removeDir(root)
+      let file = root / "styles.nim"
+      atomicWrite(file, styleSheet)
+      let vm = cssVm(file)
+
+      let outcome = vm.commitInspectorValue("letter-spacing", "0.05em",
+        sskLocalInstance)
+      check outcome.ok
+      check vm.applyWorkspaceFileEdits().ok
+
+      let after = readFile(file)
+      check "letter-spacing:0.05em;" in after
+      # The declarations it sits beside are untouched.
+      check "margin-bottom:30px;" in after
+      check "font:var(--sys-type-display);" in after
+      dispose()
+
+  test "a read-only workspace refuses before anything reaches the file":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("css-writeback-readonly")
+      defer: removeDir(root)
+      let file = root / "styles.nim"
+      atomicWrite(file, styleSheet)
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "read-only", storyGroups = cssStoryGroups(),
+        initialStory = some(cssStory),
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: false),
+        editAdapter = cssAdapter(file)))
+      discard vm.selectInspectorElement(taglineElement())
+
+      let outcome = vm.commitInspectorValue("margin-bottom", "40px",
+        sskLocalInstance)
+      check not outcome.ok
+      check readFile(file) == styleSheet
       dispose()

@@ -2616,7 +2616,8 @@ proc previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
     margin, width, height, borderRadius, borderWidth, borderStyle, borderColor,
     fontSize, fontWeight, lineHeight, boxShadow, opacity, rectWidth,
     rectHeight, textContent, elementId, sourceKey, schemaKey, ancestorIds,
-    layerTreeJson: string; styleBindings = ""): ElementRef =
+    layerTreeJson: string; styleBindings = "";
+    computedStyles = ""): ElementRef =
   ## Build the generic inspector selection produced by the browser iframe DOM
   ## bridge. Projects own the preview HTML/source metadata; the editor owns the
   ## normalized ElementRef and editable property model.
@@ -2755,8 +2756,17 @@ proc previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
     # The computed capture first, restamped with its provenance, then every
     # property the author set that the capture never asked for. Order matters
     # only in that the captured ones keep their computed values.
-    properties: props.withStyleProvenance(styleBindings) &
-      props.authoredOnlyProperties(styleBindings),
+    # Three sources, best first. The named capture restamped with its
+    # provenance; then what the author wrote that the capture never asked
+    # for; then every remaining property the inspector has a row for, as a
+    # bare computed value. Each later group only fills gaps the earlier ones
+    # left, so a property never loses a better origin to a worse one.
+    properties: block:
+      let named = props.withStyleProvenance(styleBindings)
+      let authored = props.authoredOnlyProperties(styleBindings,
+        schemaPrefix)
+      named & authored & (named & authored).computedStyleProperties(
+        computedStyles, schemaPrefix),
     children: children,
     ancestors: ancestors,
     ancestorIds: parsedAncestorIds,
@@ -7642,7 +7652,15 @@ func resolveWorkspaceSchema(adapter: WorkspaceEditAdapter;
       if entry.key == key:
         return (true, entry)
   for entry in adapter.schema:
-    if entry.file == plan.file and
+    # An empty `plan.file` matches any entry whose property fits.
+    #
+    # A plan knows its file only when the property was captured with a source
+    # location. For a class-based or token-based design system it never is:
+    # provenance records WHICH class set the value, and which file that class
+    # lives in is precisely what the project's schema is here to answer.
+    # Requiring the plan to already know made the schema useful only for
+    # edits that did not need it.
+    if (plan.file.len == 0 or entry.file == plan.file) and
         (entry.property == plan.property or entry.property.len == 0):
       return (true, entry)
 
