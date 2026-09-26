@@ -1,6 +1,6 @@
 ## Tests for IsoNim Editor ViewModels (M0)
 
-import std/[options, unittest, strutils, sequtils, os]
+import std/[options, unittest, strutils, sequtils, os, algorithm]
 import nim_agents
 import isonim/core/[signals, computation, owner]
 import isonim/viewmodel
@@ -6750,3 +6750,65 @@ suite "Editor ViewModels (detail-view preview wiring)":
     for mode in [emEdit, emComment]:
       check detailPreviewDocument(bodyHtml, metadataFixture(), mode) ==
         editablePreviewDocument(bodyHtml, metadataFixture(), mode)
+
+suite "Editor ViewModels (authored properties reach the inspector)":
+  ## The DOM selection bridge captures a FIXED list of 17 computed properties.
+  ## The DSL records provenance for whatever the author wrote, and the
+  ## inspector renders rows for far more than 17. A token bound to a property
+  ## outside the 17 therefore had provenance, had a row, and still could not
+  ## light the linked chip.
+  ##
+  ## This payload is grip's, copied from `p.positioning` as the browser
+  ## serves it: `font` and `color` both bound to `sys` tokens, `margin` set
+  ## through a class. Only `color` is one of the 17.
+  const positioningProps =
+    "font|var(--sys-type-lead)|tok|class:positioning|sys-type-lead|;" &
+    "color|var(--sys-color-text-primary)|tok|class:positioning|" &
+      "sys-color-text-primary|;" &
+    "margin|0 0 var(--sys-space-gutter)|cls|class:positioning||"
+
+  proc captured(): seq[PropertyInfo] =
+    ## What the bridge captured: `color` is in the 17, `font` is not.
+    @[PropertyInfo(name: "color", value: "rgb(20, 20, 20)",
+        origin: poInherited, directStyleAllowed: true)]
+
+  test "the captured property keeps its computed value and gains its token":
+    let props = captured().withStyleProvenance(positioningProps)
+    check props.len == 1
+    check props[0].name == "color"
+    # The COMPUTED value survives -- the edit path round-trips it, and the
+    # authored form is kept separately in originDetail.
+    check props[0].value == "rgb(20, 20, 20)"
+    check props[0].tokenName == "sys-color-text-primary"
+    check props[0].isTokenBound()
+
+  test "an authored property outside the captured list still arrives":
+    let extra = captured().authoredOnlyProperties(positioningProps)
+    let names = extra.mapIt(it.name)
+    # `color` was already captured and must not be duplicated.
+    check "color" notin names
+    check "font" in names
+    check "margin" in names
+    let font = extra.filterIt(it.name == "font")[0]
+    check font.tokenName == "sys-type-lead"
+    check font.isTokenBound()
+    # No computed value was read for it, so it reports the authored one
+    # rather than inventing a number.
+    check font.value == "var(--sys-type-lead)"
+    # A class-set property arrives too, and is honestly NOT token-bound.
+    let margin = extra.filterIt(it.name == "margin")[0]
+    check not margin.isTokenBound()
+    check margin.origin == poTailwindClass
+
+  test "an element with no provenance payload is unchanged":
+    ## Every non-IsoNim preview and every hand-built fixture goes through
+    ## this path, so the empty case must cost exactly nothing.
+    check captured().authoredOnlyProperties("").len == 0
+    check captured().withStyleProvenance("") == captured()
+
+  test "both token-bound properties are now bindable, not just one":
+    ## The regression in one line: before, this was 1.
+    let all = captured().withStyleProvenance(positioningProps) &
+      captured().authoredOnlyProperties(positioningProps)
+    check all.filterIt(it.isTokenBound()).mapIt(it.name).sorted() ==
+      @["color", "font"]

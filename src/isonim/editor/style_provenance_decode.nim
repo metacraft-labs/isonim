@@ -41,7 +41,7 @@
 ## becomes a `PropertyEditDiagnostic` that the inspector shows on selection.
 ## Dropping it would reproduce the exact defect the payload exists to expose.
 
-import std/strutils
+import std/[strutils, sets]
 import ../dsl/style_provenance
 import ./types
 
@@ -118,6 +118,51 @@ func withStyleProvenance*(props: seq[PropertyInfo];
     return props
   for prop in props:
     result.add prop.withStyleProvenance(bindings)
+
+func authoredOnlyProperties*(props: seq[PropertyInfo];
+                             encoded: string): seq[PropertyInfo] =
+  ## The properties the AUTHOR set that the computed-style capture never asked
+  ## for, as `PropertyInfo`s carrying their authored value and provenance.
+  ##
+  ## The DOM selection bridge reads a FIXED list of computed properties off
+  ## the preview -- 17 of them. The DSL, by contrast, records provenance for
+  ## whatever the author actually wrote, and the inspector renders rows for
+  ## far more than 17. So a token bound to `letter-spacing`, `gap` or the
+  ## `font` shorthand had provenance recorded, had a row to show it in, and
+  ## still could not light the linked chip: nothing in the property list was
+  ## named that, so `winningBinding` never matched.
+  ##
+  ## Measured on the grip pilot: `p.positioning` binds both `font` and
+  ## `color` to `sys` tokens and only `color` -- the one in the 17 -- showed a
+  ## chip. Widening the capture list would fix that pair and lose the next
+  ## property someone binds; deriving the list from what the author wrote
+  ## cannot fall behind, because it IS what the author wrote.
+  ##
+  ## The value is the AUTHORED one (`var(--sys-type-lead)`), not a computed
+  ## one, and it is honest about that: no computed value was captured for
+  ## these, and inventing one by re-reading the iframe here would put a second
+  ## style-reading path next to the bridge's.
+  if encoded.len == 0:
+    return @[]
+  var seen = initHashSet[string]()
+  for prop in props:
+    seen.incl prop.name.toLowerAscii()
+  for binding in decodeStyleBindings(encoded):
+    if binding.kind == sbkUnresolved or binding.property.len == 0:
+      continue
+    let key = binding.property.toLowerAscii()
+    if key in seen:
+      continue
+    seen.incl key
+    var prop = PropertyInfo(
+      name: binding.property,
+      value: binding.value,
+      origin: propertyOriginFor(binding.kind),
+      originDetail: binding.detail,
+      directStyleAllowed: binding.kind notin {sbkClassUtility, sbkTokenRef})
+    if binding.token.len > 0:
+      prop.tokenName = binding.token
+    result.add prop
 
 func isTokenBound*(prop: PropertyInfo): bool =
   ## The question the inspector's linked chip asks: binding, or literal?

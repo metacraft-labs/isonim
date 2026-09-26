@@ -2739,7 +2739,11 @@ proc previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
     sourceLine: line,
     sourceColumn: 1,
     depth: max(0, ancestors.len - 1),
-    properties: props.withStyleProvenance(styleBindings),
+    # The computed capture first, restamped with its provenance, then every
+    # property the author set that the capture never asked for. Order matters
+    # only in that the captured ones keep their computed values.
+    properties: props.withStyleProvenance(styleBindings) &
+      props.authoredOnlyProperties(styleBindings),
     children: children,
     ancestors: ancestors,
     ancestorIds: parsedAncestorIds,
