@@ -1336,6 +1336,23 @@ type
     wesReviewing
     wesFailed
 
+  SaveIndicatorState* = enum
+    ## What the chrome bar's save control shows. Four states, because a save
+    ## can be refused and "refused" is not "clean" -- before this existed, an
+    ## edit that committed and an edit that was refused looked identical.
+    sisClean   ## Nothing staged; everything the user did is on disk.
+    sisDirty   ## Staged edits waiting for a write.
+    sisSaving  ## A write transaction is in flight.
+    sisFailed  ## The last save was refused; `detail` says why.
+
+  SaveIndicator* = object
+    ## The whole control in one value, so the widget renders and the tests
+    ## assert against the same thing.
+    state*: SaveIndicatorState
+    label*: string   ## Never empty. Colour never carries the state alone.
+    detail*: string  ## The refusal, when there is one.
+    pending*: int    ## How many source edits are staged.
+
   WriteBridgeClientState* = enum
     wbcsOffline
     wbcsConnecting

@@ -6921,6 +6921,63 @@ suite "Editor ViewModels (the inspector adapts to what is selected)":
       check vm.inspector.expandedSections.val == before
       dispose()
 
+let cssStory = StoryRef(group: "Home / Sections", name: "Hero",
+                        kind: skComponent)
+
+proc cssStoryGroups(): seq[StoryGroup] =
+  @[StoryGroup(name: "Home / Sections", items: @[
+    StoryItem(name: "Hero", kind: skComponent, group: "Home / Sections")])]
+
+proc taglineElement(): ElementRef =
+  ## What the preview bridge produces for `h1.tagline`: provenance for the
+  ## two properties the author wrote, and a computed value for the one the
+  ## inspector offers but the stylesheet does not declare.
+  previewDomElementRef(
+    StoryRenderMetadata(title: "Hero"),
+    "h1", "", "tagline", "", "", "", "", 0,
+    "block", "static", "", "rgb(0,0,0)", "", "0px 0px 30px", "877px",
+    "158px", "", "", "", "", "34px", "700", "39px", "", "1",
+    "877", "158", "Faster than C.", "el-1", "", "", "", "",
+    "font|var(--sys-type-display)|tok|class:tagline|sys-type-display;" &
+      "margin-bottom|30px|cls|class:tagline|",
+    "letter-spacing=-0.01px;text-align=left")
+
+proc cssAdapter(file: string): WorkspaceEditAdapter =
+  ## The same shape as grip's `editor/write_bridge.nim`, with the XHR
+  ## replaced by the filesystem. What is under test is the part grip owns:
+  ## which rule a property edit means, and what the file becomes.
+  result = WorkspaceEditAdapter(
+    allowMissingExpectedOldValue: true,
+    schema: @[WorkspaceEditableSchemaEntry(
+      key: "styles", kind: wskSourceMap, file: file, property: "")])
+  result.readFile = proc(f: string): WorkspaceReadResult =
+    WorkspaceReadResult(ok: true, content: readFile(f))
+  result.writeFile = proc(f, content: string): WorkspaceOperationResult =
+    atomicWrite(f, content)
+    WorkspaceOperationResult(ok: true)
+  result.patchFile = proc(plan: SourceEditPlan; content: string;
+      schema: WorkspaceEditableSchemaEntry): WorkspacePatchResult =
+    var selector = ""
+    if plan.originDetail.startsWith("class:"):
+      selector = "." & plan.originDetail["class:".len .. ^1]
+    elif plan.schemaKey.startsWith("dom."):
+      var parts = plan.schemaKey[4 .. ^1].split('.')
+      if parts.len > 0 and parts[^1] == plan.property:
+        parts.setLen(parts.len - 1)
+      if parts.len == 1: selector = "." & parts[0]
+    if selector.len == 0:
+      return WorkspacePatchResult(ok: false, diagnostics: @[
+        WorkspaceEditDiagnostic(kind: wedPatchFailed,
+          message: "no rule owns " & plan.property)])
+    let patched = patchCssInNimConst(content, "structureCssText", selector,
+                                     plan.property, plan.newValue)
+    if not patched.ok:
+      return WorkspacePatchResult(ok: false, diagnostics: @[
+        WorkspaceEditDiagnostic(kind: wedPatchFailed,
+          message: patched.message)])
+    WorkspacePatchResult(ok: true, patch: WorkspaceFilePatch(
+      file: schema.file, afterContent: patched.content, fullReload: true))
+
 suite "Editor ViewModels (a class-based project writes its stylesheet)":
   ## The grip pilot's shape end to end: styles in one CSS rule, provenance
   ## naming the class, an adapter that patches the rule, and a real file on
@@ -6934,62 +6991,13 @@ suite "Editor ViewModels (a class-based project writes its stylesheet)":
 """ & "\"\"\"" & """
 """
 
-  let cssStory = StoryRef(group: "Home / Sections", name: "Hero",
-                          kind: skComponent)
 
-  proc cssStoryGroups(): seq[StoryGroup] =
-    @[StoryGroup(name: "Home / Sections", items: @[
-      StoryItem(name: "Hero", kind: skComponent, group: "Home / Sections")])]
 
-  proc cssAdapter(file: string): WorkspaceEditAdapter =
-    ## The same shape as grip's `editor/write_bridge.nim`, with the XHR
-    ## replaced by the filesystem. What is under test is the part grip owns:
-    ## which rule a property edit means, and what the file becomes.
-    result = WorkspaceEditAdapter(
-      allowMissingExpectedOldValue: true,
-      schema: @[WorkspaceEditableSchemaEntry(
-        key: "styles", kind: wskSourceMap, file: file, property: "")])
-    result.readFile = proc(f: string): WorkspaceReadResult =
-      WorkspaceReadResult(ok: true, content: readFile(f))
-    result.writeFile = proc(f, content: string): WorkspaceOperationResult =
-      atomicWrite(f, content)
-      WorkspaceOperationResult(ok: true)
-    result.patchFile = proc(plan: SourceEditPlan; content: string;
-        schema: WorkspaceEditableSchemaEntry): WorkspacePatchResult =
-      var selector = ""
-      if plan.originDetail.startsWith("class:"):
-        selector = "." & plan.originDetail["class:".len .. ^1]
-      elif plan.schemaKey.startsWith("dom."):
-        var parts = plan.schemaKey[4 .. ^1].split('.')
-        if parts.len > 0 and parts[^1] == plan.property:
-          parts.setLen(parts.len - 1)
-        if parts.len == 1: selector = "." & parts[0]
-      if selector.len == 0:
-        return WorkspacePatchResult(ok: false, diagnostics: @[
-          WorkspaceEditDiagnostic(kind: wedPatchFailed,
-            message: "no rule owns " & plan.property)])
-      let patched = patchCssInNimConst(content, "structureCssText", selector,
-                                       plan.property, plan.newValue)
-      if not patched.ok:
-        return WorkspacePatchResult(ok: false, diagnostics: @[
-          WorkspaceEditDiagnostic(kind: wedPatchFailed,
-            message: patched.message)])
-      WorkspacePatchResult(ok: true, patch: WorkspaceFilePatch(
-        file: schema.file, afterContent: patched.content, fullReload: true))
 
-  proc taglineElement(): ElementRef =
-    ## What the preview bridge produces for `h1.tagline`: provenance for the
-    ## two properties the author wrote, and a computed value for the one the
-    ## inspector offers but the stylesheet does not declare.
-    previewDomElementRef(
-      StoryRenderMetadata(title: "Hero"),
-      "h1", "", "tagline", "", "", "", "", 0,
-      "block", "static", "", "rgb(0,0,0)", "", "0px 0px 30px", "877px",
-      "158px", "", "", "", "", "34px", "700", "39px", "", "1",
-      "877", "158", "Faster than C.", "el-1", "", "", "", "",
-      "font|var(--sys-type-display)|tok|class:tagline|sys-type-display;" &
-        "margin-bottom|30px|cls|class:tagline|",
-      "letter-spacing=-0.01px;text-align=left")
+
+
+
+
 
   proc cssVm(file: string): EditorVM =
     result = createEditorVM(newEditorWorkspace(
@@ -7070,4 +7078,279 @@ suite "Editor ViewModels (a class-based project writes its stylesheet)":
         sskLocalInstance)
       check not outcome.ok
       check readFile(file) == styleSheet
+      dispose()
+
+proc indicatorVm(writeSource = true; adapterReady = true): EditorVM =
+  createEditorVM(newEditorWorkspace(
+    title = "save-indicator",
+    storyGroups = cssStoryGroups(),
+    initialStory = some(cssStory),
+    permissions = EditorWorkspacePermissions(readSource: true,
+      writeSource: writeSource),
+    editAdapter = WorkspaceEditAdapter(
+      schema: @[WorkspaceEditableSchemaEntry(key: "s", kind: wskSourceMap,
+        file: "styles.nim", property: "")]),
+    sourceAdapterReady = adapterReady))
+
+suite "Editor ViewModels (the save control)":
+  ## The chrome bar's save button is also the editor's only indicator that
+  ## there is unsaved work. It exists because a property edit that committed
+  ## and one that was refused looked identical -- nothing moved -- so every
+  ## case here is about the control telling the truth.
+
+
+
+  test "a fresh workspace reads as saved":
+    createRoot proc(dispose: proc()) =
+      let vm = indicatorVm()
+      let ind = vm.saveIndicator()
+      check ind.state == sisClean
+      check ind.label == "Saved"
+      check ind.pending == 0
+      dispose()
+
+  test "every state carries a label, never colour alone":
+    ## A colour-only indicator is unreadable to a colour-blind user and
+    ## invisible in a screenshot review.
+    createRoot proc(dispose: proc()) =
+      let vm = indicatorVm()
+      for stage in [wesClean, wesDirty, wesApplying, wesFormatting,
+                    wesRegenerating, wesCompiling, wesReloading,
+                    wesReviewing, wesFailed]:
+        vm.workspaceEditStage.val = stage
+        check vm.saveIndicator().label.len > 0
+      dispose()
+
+  test "a staged edit reads as unsaved, and counts":
+    createRoot proc(dispose: proc()) =
+      let vm = indicatorVm()
+      discard vm.selectInspectorElement(taglineElement())
+      check vm.commitInspectorValue("letter-spacing", "0.05em",
+        sskLocalInstance).ok
+      let one = vm.saveIndicator()
+      check one.state == sisDirty
+      check one.label == "1 unsaved change"
+      check one.pending == 1
+
+      check vm.commitInspectorValue("margin-bottom", "40px",
+        sskLocalInstance).ok
+      let two = vm.saveIndicator()
+      check two.state == sisDirty
+      check two.label == "2 unsaved changes"
+      dispose()
+
+  test "a transaction in flight reads as saving":
+    createRoot proc(dispose: proc()) =
+      let vm = indicatorVm()
+      for stage in [wesApplying, wesFormatting, wesRegenerating,
+                    wesCompiling, wesReloading, wesReviewing]:
+        vm.workspaceEditStage.val = stage
+        check vm.saveIndicator().state == sisSaving
+        check vm.saveIndicator().label == "Saving…"
+      dispose()
+
+  test "a refused save reads as failed and keeps the reason":
+    ## The reason is the only thing that tells the user what to do, so the
+    ## control holds it rather than letting it scroll past in a row message.
+    createRoot proc(dispose: proc()) =
+      let vm = indicatorVm()
+      vm.workspaceEditStage.val = wesFailed
+      vm.workspaceEditDiagnostics.val = @[WorkspaceEditDiagnostic(
+        kind: wedSourceConflict,
+        message: "Source changed before the pending edit could be applied.")]
+      let ind = vm.saveIndicator()
+      check ind.state == sisFailed
+      check ind.label == "Not saved"
+      check "Source changed" in ind.detail
+      dispose()
+
+  test "a failed save with no diagnostic still says something":
+    createRoot proc(dispose: proc()) =
+      let vm = indicatorVm()
+      vm.workspaceEditStage.val = wesFailed
+      vm.workspaceEditDiagnostics.val = @[]
+      check vm.saveIndicator().detail.len > 0
+      dispose()
+
+  test "a dirty stage with nothing staged reads as saved":
+    ## Several paths set the stage dirty and may then revert. Reporting
+    ## "Unsaved" with nothing to save is the indicator lying in the safe
+    ## direction, which is still lying.
+    createRoot proc(dispose: proc()) =
+      let vm = indicatorVm()
+      vm.workspaceEditStage.val = wesDirty
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check vm.saveIndicator().state == sisClean
+      dispose()
+
+suite "Editor ViewModels (auto-save)":
+
+  test "auto-save is off until asked for":
+    ## The editor writes real source files that agents and people edit by
+    ## hand. A tool that starts writing to them without being asked is not
+    ## one you can leave open.
+    createRoot proc(dispose: proc()) =
+      check not createEditorVM(newEditorWorkspace(
+        title = "t", storyGroups = cssStoryGroups())).autoSaveEnabled.val
+      dispose()
+
+  test "a commit schedules a save only when auto-save is on":
+    createRoot proc(dispose: proc()) =
+      let vm = indicatorVm()
+      discard vm.selectInspectorElement(taglineElement())
+
+      check vm.commitInspectorValue("letter-spacing", "0.05em",
+        sskLocalInstance).ok
+      check vm.autoSaveGeneration.val == 0
+
+      vm.setAutoSave(true)
+      check vm.commitInspectorValue("margin-bottom", "40px",
+        sskLocalInstance).ok
+      check vm.autoSaveGeneration.val == 1
+      dispose()
+
+  test "a refused commit never schedules a save":
+    ## Staging is what auto-save writes. An edit that did not stage has
+    ## nothing to write, and scheduling one would make the indicator flicker
+    ## through `Saving…` for an edit the user was refused.
+    createRoot proc(dispose: proc()) =
+      let vm = indicatorVm(writeSource = false)
+      discard vm.selectInspectorElement(taglineElement())
+      vm.setAutoSave(true)
+      check not vm.commitInspectorValue("letter-spacing", "0.05em",
+        sskLocalInstance).ok
+      check vm.autoSaveGeneration.val == 0
+      dispose()
+
+  test "toggling auto-save does not itself schedule a save":
+    createRoot proc(dispose: proc()) =
+      let vm = indicatorVm()
+      vm.setAutoSave(true)
+      check vm.autoSaveGeneration.val == 0
+      vm.setAutoSave(false)
+      check vm.autoSaveGeneration.val == 0
+      dispose()
+
+suite "Editor ViewModels (the reported silent failures)":
+  ## Reported from the running editor: select "Faster than C.", set Text
+  ## alignment to Center, set Font size to 50px -- nothing happens, and
+  ## nothing says why.
+  ##
+  ## Both edits committed. Saving refused, at three checkpoints in turn, each
+  ## for a version of the same mistake: comparing something the browser
+  ## COMPUTED against something the author WROTE. These are the cases that
+  ## would have caught it, using the element exactly as the preview bridge
+  ## reports it.
+
+  const clauseCss = """const structureCssText* = """ & "\"\"\"" & """
+  .tagline { font:var(--sys-type-display);
+             letter-spacing:var(--sys-tracking-display); }
+  .tagline-clause { display:block; }
+""" & "\"\"\"" & """
+"""
+
+  proc clauseElement(): ElementRef =
+    ## `span.tagline-clause` as the bridge reports it: a real source file for
+    ## the SPAN (it is in `home.nim`), provenance for the one property its
+    ## own class declares, and computed values for everything else.
+    previewDomElementRef(
+      StoryRenderMetadata(title: "Hero"),
+      "span", "", "tagline-clause", "", "", "",
+      "grip/isonim/src/pages/home.nim", 90,
+      "block", "static", "", "rgb(21,23,26)", "", "", "877px", "39px",
+      "", "", "", "", "34px", "700", "39px", "", "1",
+      "877", "39", "Faster than C.", "el-1", "", "", "", "",
+      "display|block|cls|class:tagline-clause|",
+      "text-align=start;letter-spacing=-0.01px")
+
+  proc clauseVm(file: string): EditorVM =
+    # `allowMissingExpectedOldValue = false`, as grip sets it: a write that
+    # cannot verify what it is overwriting should not happen. The point of
+    # these cases is that a COMPUTED value is not something to verify
+    # against, not that the verification should be turned off.
+    var strict = cssAdapter(file)
+    strict.allowMissingExpectedOldValue = false
+    result = createEditorVM(newEditorWorkspace(
+      title = "clause", storyGroups = cssStoryGroups(),
+      initialStory = some(cssStory),
+      permissions = EditorWorkspacePermissions(readSource: true,
+        writeSource: true),
+      editAdapter = strict,
+      sourceAdapterReady = true))
+    discard result.selectInspectorElement(clauseElement())
+
+  test "font size on a span whose class does not declare it reaches source":
+    ## The plan carries `home.nim`, because that is where the SPAN is. The
+    ## schema owns the stylesheet. Comparing the two and refusing answered
+    ## the commonest edit a class-based design system makes with "No project
+    ## schema or source map entry can safely represent this edit".
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("clause-font-size")
+      defer: removeDir(root)
+      let file = root / "styles.nim"
+      atomicWrite(file, clauseCss)
+      let vm = clauseVm(file)
+
+      check vm.commitInspectorValue("font-size", "50px", sskLocalInstance).ok
+      let saved = vm.runEditorCommand(eckSave)
+      check saved.diagnostic == ""
+      check "font-size:50px;" in readFile(file)
+      dispose()
+
+  test "a token-valued property is not a conflict against itself":
+    ## `letter-spacing` computes to `-0.01px`; the stylesheet says
+    ## `var(--sys-tracking-display)`. The pipeline looked for the computed
+    ## text in the file, did not find it, and reported "Source changed before
+    ## the pending edit could be applied" -- a conflict against a change
+    ## nobody made, on every token-valued property in the project.
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("clause-letter-spacing")
+      defer: removeDir(root)
+      let file = root / "styles.nim"
+      atomicWrite(file, clauseCss)
+      let vm = clauseVm(file)
+
+      check vm.commitInspectorValue("letter-spacing", "0.08em",
+        sskLocalInstance).ok
+      let saved = vm.runEditorCommand(eckSave)
+      check saved.diagnostic == ""
+      check "letter-spacing:0.08em;" in readFile(file)
+      dispose()
+
+  test "a genuine conflict is still refused":
+    ## The exemption above must not disable the check for values that WERE
+    ## authored. A property carrying real source text still has to match.
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("clause-conflict")
+      defer: removeDir(root)
+      let file = root / "styles.nim"
+      atomicWrite(file, clauseCss)
+      let vm = clauseVm(file)
+      # `display` is class-authored, so its old value is real source text.
+      check vm.commitInspectorValue("display", "flex", sskLocalInstance).ok
+      # Someone else rewrites the file underneath the staged edit.
+      atomicWrite(file, clauseCss.replace("display:block", "display:grid"))
+      let saved = vm.runEditorCommand(eckSave)
+      check saved.diagnostic != ""
+      check "display:grid" in readFile(file)
+      check "display:flex" notin readFile(file)
+      dispose()
+
+  test "the save indicator reports the refusal rather than swallowing it":
+    ## The whole reported defect in one assertion: after a refused save the
+    ## control must say so, and must carry the reason.
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("clause-indicator")
+      defer: removeDir(root)
+      let file = root / "styles.nim"
+      atomicWrite(file, clauseCss)
+      let vm = clauseVm(file)
+      check vm.commitInspectorValue("display", "flex", sskLocalInstance).ok
+      check vm.saveIndicator().state == sisDirty
+      atomicWrite(file, clauseCss.replace("display:block", "display:grid"))
+      discard vm.runEditorCommand(eckSave)
+      let ind = vm.saveIndicator()
+      check ind.state == sisFailed
+      check ind.label == "Not saved"
+      check ind.detail.len > 0
       dispose()

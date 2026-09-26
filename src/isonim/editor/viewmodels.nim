@@ -300,6 +300,15 @@ type
     workspacePermissions*: Signal[EditorWorkspacePermissions]
     sourceAdapterReady*: Signal[bool]
     workspaceEditStage*: Signal[WorkspaceEditStage]
+    autoSaveEnabled*: Signal[bool]
+      ## Whether a commit schedules its own write. Defaults FALSE: the editor
+      ## writes real source files that agents and people edit by hand, and a
+      ## tool that starts writing to them without being asked is not one you
+      ## can leave open. Ticking the box is the user asking for it.
+    autoSaveGeneration*: Signal[int]
+      ## Bumped every time a commit asks for an auto-save. The browser layer
+      ## watches this and debounces the actual write; the VM does not own a
+      ## timer, so the rule stays testable without one.
     workspaceEditDiagnostics*: Signal[seq[WorkspaceEditDiagnostic]]
     workspaceBridgeRecovered*: Signal[bool]
     workspaceEditPatches*: Signal[seq[WorkspaceFilePatch]]
@@ -1629,7 +1638,22 @@ proc sourcePlan(prop: PropertyInfo; request: PropertyEditRequest;
   let before = prop.originDetail & " " & prop.name & ": " & prop.value
   let after = prop.originDetail & " " & prop.name & ": " & normalized.canonical
   let expectedOld =
-    if prop.originDetail.startsWith("iframe-dom:"): ""
+    # A value nobody authored cannot be used to verify what was authored.
+    #
+    # `expectedOldValue` is checked by looking for it VERBATIM in the file,
+    # which only works when the property's value is the text that is in the
+    # file. For anything read off `getComputedStyle` it is not: the browser
+    # reports `letter-spacing` as `-0.01px` while the stylesheet says
+    # `var(--sys-tracking-display)`, so the check refused every such edit
+    # with "Source changed before the pending edit could be applied" -- a
+    # conflict against a change nobody made.
+    #
+    # `iframe-dom:` was already exempt for this reason. `computed:` is the
+    # same capture by a different route and needs the same exemption; it was
+    # added later and this was missed, which is exactly the kind of thing two
+    # spellings of one idea cost.
+    if prop.originDetail.startsWith("iframe-dom:") or
+       prop.originDetail.startsWith("computed:"): ""
     else: prop.value
   let variantSuffix =
     if prop.variantKey.len > 0: ":" & prop.variantKey else: ""
@@ -7796,6 +7820,71 @@ proc requireWorkspaceAdapter(editor: EditorVM): tuple[ok: bool,
     return
   result.ok = true
 
+proc saveIndicator*(editor: EditorVM): SaveIndicator =
+  ## What the chrome bar's save control shows right now.
+  ##
+  ## Derived rather than stored, so it cannot disagree with the pipeline it
+  ## describes. Every input is already a signal the pipeline maintains:
+  ## `workspaceEditStage` for the transaction, `pendingSourceEdits` for what
+  ## is staged, `workspaceEditDiagnostics` for why a save was refused.
+  ##
+  ## The label is never empty. Colour alone is unreadable to a colour-blind
+  ## user and invisible in a screenshot review, so each state changes the
+  ## text too.
+  let pending = editor.inspector.pendingSourceEdits.val.len
+  case editor.workspaceEditStage.val
+  of wesApplying, wesFormatting, wesRegenerating, wesCompiling,
+     wesReloading, wesReviewing:
+    SaveIndicator(state: sisSaving, label: "Saving…", pending: pending)
+  of wesFailed:
+    let detail =
+      if editor.workspaceEditDiagnostics.val.len > 0:
+        editor.workspaceEditDiagnostics.val[0].message
+      else:
+        "The last save was refused."
+    SaveIndicator(state: sisFailed, label: "Not saved", detail: detail,
+                  pending: pending)
+  of wesDirty:
+    # A dirty stage with nothing staged is clean in every way the user can
+    # see. The stage is set by several paths -- a foundation edit, a chat
+    # proposal -- that may then be reverted, and reporting "Unsaved" with
+    # nothing to save is the indicator lying in the safe direction, which is
+    # still lying.
+    if pending == 0:
+      SaveIndicator(state: sisClean, label: "Saved")
+    elif pending == 1:
+      SaveIndicator(state: sisDirty, label: "1 unsaved change", pending: 1)
+    else:
+      SaveIndicator(state: sisDirty, label: $pending & " unsaved changes",
+                    pending: pending)
+  of wesClean:
+    if pending > 0:
+      # Staged edits with a clean stage: the commit path stages before the
+      # stage signal moves. Trust the count -- it is the thing that would be
+      # lost.
+      SaveIndicator(state: sisDirty,
+        label: (if pending == 1: "1 unsaved change"
+                else: $pending & " unsaved changes"),
+        pending: pending)
+    else:
+      SaveIndicator(state: sisClean, label: "Saved")
+
+proc setAutoSave*(editor: EditorVM; enabled: bool) =
+  ## Turn auto-save on or off. The browser layer persists it; the VM only
+  ## holds it, so a headless test can exercise the rule without storage.
+  editor.autoSaveEnabled.val = enabled
+
+proc noteCommitForAutoSave*(editor: EditorVM) =
+  ## Called after a commit stages a plan. Bumps a generation the browser
+  ## layer debounces into an actual write.
+  ##
+  ## A generation rather than a direct call: the VM has no timer and should
+  ## not grow one, and a commit that wrote immediately would write once per
+  ## keystroke in a numeric field.
+  if editor.autoSaveEnabled.val and
+     editor.inspector.pendingSourceEdits.val.len > 0:
+    editor.autoSaveGeneration.val = editor.autoSaveGeneration.val + 1
+
 proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardable.} =
   ## Apply pending source plans through a project-owned adapter transaction.
   ## Files are read and patched before writes begin; failed post-write operations
@@ -11508,6 +11597,8 @@ proc createEditorVM*(): EditorVM =
     workspacePermissions: workspacePermissions,
     sourceAdapterReady: sourceAdapterReady,
     workspaceEditStage: workspaceEditStage,
+    autoSaveEnabled: createSignal(false),
+    autoSaveGeneration: createSignal(0),
     workspaceEditDiagnostics: workspaceEditDiagnostics,
     workspaceBridgeRecovered: workspaceBridgeRecovered,
     workspaceEditPatches: workspaceEditPatches,

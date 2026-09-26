@@ -229,6 +229,11 @@ proc commitInspectorValue*(vm: EditorVM; property, rawValue: string;
       message: "Staged, but no source edit adapter is ready to write it.",
       scope: scope, committedValue: normalized)
 
+  # The edit is staged. If the user has asked for auto-save, say so; the
+  # browser layer debounces it into a write. Placed after every refusal so a
+  # rejected edit never schedules one.
+  vm.noteCommitForAutoSave()
+
   PropertyCommitOutcome(ok: true, message: "", scope: scope,
     committedValue: normalized)
 

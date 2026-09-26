@@ -519,6 +519,15 @@ proc installEditorKeyboardShortcuts(vm: EditorVM) =
           }
           return;
         }
+        // Save is exempt from the editable-target early return. Every other
+        // shortcut here would fight the field the user is typing in; this one
+        // is the thing they reach for immediately AFTER typing a value, and
+        // returning early made it dead in exactly that moment.
+        if (mod && lower === 's') {
+          event.preventDefault();
+          save();
+          return;
+        }
         if (editable) return;
         if (mod && (key === '\\' || key === 'Backslash' || code === 'Backslash')) {
           event.preventDefault();
@@ -526,9 +535,6 @@ proc installEditorKeyboardShortcuts(vm: EditorVM) =
         } else if (mod && (key === '/' || key === 'Slash' || code === 'Slash')) {
           event.preventDefault();
           toggleInspector();
-        } else if (mod && lower === 's') {
-          event.preventDefault();
-          save();
         } else if (mod && event.shiftKey && lower === 'z') {
           event.preventDefault();
           redo();
@@ -746,6 +752,40 @@ proc exposeWindowEditorHandle*(vm: EditorVM) =
     else: "".cstring
   let cbPending = proc(): int =
     vm.inspector.pendingSourceEdits.val.len
+  let cbAutoSave = proc(enabled: bool) =
+    vm.setAutoSave(enabled)
+  let cbAutoSaveOn = proc(): bool =
+    vm.autoSaveEnabled.val
+
+  # Auto-save. The VM bumps a generation when a commit stages an edit and
+  # auto-save is on; the debounce lives here because the VM has no timer and
+  # should not grow one -- a commit that wrote immediately would write once
+  # per keystroke in a numeric field.
+  #
+  # 900ms: long enough to type "1", "12", "120" as one edit, short enough
+  # that looking away and back finds the file already written.
+  when defined(js):
+    var lastAutoSaveGeneration = 0
+    let runAutoSave = proc() =
+      if vm.autoSaveEnabled.val and
+         vm.inspector.pendingSourceEdits.val.len > 0:
+        discard vm.runEditorCommand(eckSave)
+    createRenderEffect proc() =
+      let generation = vm.autoSaveGeneration.val
+      if generation == lastAutoSaveGeneration:
+        return
+      lastAutoSaveGeneration = generation
+      let fire = runAutoSave
+      {.emit: ["""
+        (function (fire) {
+          if (window.__isonimAutoSaveTimer) {
+            clearTimeout(window.__isonimAutoSaveTimer);
+          }
+          window.__isonimAutoSaveTimer = setTimeout(function () {
+            window.__isonimAutoSaveTimer = null;
+            fire();
+          }, 900);
+        })(""", fire, ");"].}
   {.emit: ["""
     (function () {
       const fn = """, cb, """;
@@ -754,6 +794,8 @@ proc exposeWindowEditorHandle*(vm: EditorVM) =
       const fnRightW = """, cbRightWidth, """;
       const fnSave = """, cbSave, """;
       const fnPending = """, cbPending, """;
+      const fnSetAutoSave = """, cbAutoSave, """;
+      const fnAutoSaveOn = """, cbAutoSaveOn, """;
       window.__isonimEditor = window.__isonimEditor || {};
       window.__isonimEditor.selectStoryByName = function (group, name) {
         fn(group, name);
@@ -779,6 +821,25 @@ proc exposeWindowEditorHandle*(vm: EditorVM) =
       window.__isonimEditor.pendingSourceEdits = function () {
         return fnPending() | 0;
       };
+      window.__isonimEditor.setAutoSave = function (on) {
+        fnSetAutoSave(!!on);
+        try {
+          window.localStorage.setItem('isonim:editor:auto-save',
+            on ? '1' : '0');
+        } catch (e) {}
+        return true;
+      };
+      window.__isonimEditor.autoSaveEnabled = function () {
+        return !!fnAutoSaveOn();
+      };
+      // Restore the preference. It is a working style rather than a property
+      // of the project, and having to re-set it every reload would make it
+      // not worth setting.
+      try {
+        if (window.localStorage.getItem('isonim:editor:auto-save') === '1') {
+          fnSetAutoSave(true);
+        }
+      } catch (e) {}
     })();
   """].}
 
