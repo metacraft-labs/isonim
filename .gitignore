@@ -238,3 +238,8 @@ tests/browser/generate_ssr
 # that look like new baselines and are really just their own font rendering.
 tests/browser/specs/*-snapshots/*-darwin.png
 tests/browser/specs/*-snapshots/*-win32.png
+
+# Python bytecode from tools/ (the compliance check is imported by
+# web-site-prototypes/grip/isonim's calibration test).
+__pycache__/
+*.pyc
