@@ -1905,7 +1905,12 @@ def report(results, rows, observed, project, baseline_path, mode,
         }, indent=2))
         return 1 if failed and mode == "gate" else 0
 
-    name = project.resolve().name
+    # Two path components, not one: a dozen projects in this workspace are
+    # called `isonim`, and a header that says which one is the difference
+    # between a report you can paste and one you have to explain.
+    resolved = project.resolve()
+    name = f"{resolved.parent.name}/{resolved.name}" if resolved.parent \
+        else resolved.name
     print(f"isonim editor compliance — {name}")
     print()
     for result in results:
