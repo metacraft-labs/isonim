@@ -94,6 +94,7 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
               role = "button", tabindex = "0",
               `data-layout-mode` = slug,
               `aria-label` = "Set layout to " & slug,
+              title = "Set layout to " & slug,
               display = "flex", align_items = "center",
               justify_content = "center",
               flex = "1", height = "24px",
