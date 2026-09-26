@@ -11,6 +11,7 @@ import isonim/editor/viewmodels
 import isonim/editor/types
 import isonim/editor/streaming_preview
 import isonim/editor/views/canvas_mount
+import isonim/editor/views/component_edit
 import isonim/editor/views/choice_row
 
 const
@@ -27,6 +28,28 @@ const
   accent = "#7C7AED"
   green = "#22C55E"
   red = "#EF4444"
+
+proc detailPreviewDocument*(documentHtml: string;
+    metadata: StoryRenderMetadata; mode: EditMode): string =
+  ## What the detail view puts in its project frame's ``srcdoc``.
+  ##
+  ## Split out of the render effect so the rule is testable without a
+  ## browser. The rule has two halves and BOTH are load-bearing:
+  ##
+  ## * outside View mode the document carries the selection bridge, so the
+  ##   preview can be clicked. Without it the detail view was a dead canvas
+  ##   under a live Layers panel and a live inspector -- the editor looked
+  ##   wired and was not, which is worse than looking broken;
+  ## * in View mode the document is handed over UNTOUCHED. View's whole
+  ##   contract is that it renders exactly what ships, so a bridge injected
+  ##   there would make the one mode that must not lie about the output lie
+  ##   about the output.
+  ##
+  ## This is component_edit.nim's rule, reused rather than restated: a
+  ## second copy of "when may we inject" is how the two views drifted apart
+  ## in the first place.
+  if mode == emView: documentHtml
+  else: editablePreviewDocument(documentHtml, metadata, mode)
 
 proc renderGenericComponentPreview[R, E](r: R; title, description: string): E =
   ## Generic dark-themed placeholder card. The real demo lives in the
@@ -774,6 +797,20 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
           scrolling = "no",
           `data-component-project-frame` = "true",
           background_color = "#FFFFFF")
+  # The detail view's project frame is an EDITING surface, not only a
+  # preview, so it needs the same selection bridge the edit view installs.
+  #
+  # It did not have one, and the asymmetry was invisible from the outside:
+  # the Layers panel and the inspector are both live over this frame (the
+  # scene-graph reader picks the VISIBLE frame, which in `view=detail` is
+  # this one, and a Layers click populates the inspector normally), so the
+  # editor looked fully wired while clicking the preview itself did nothing
+  # at all. Measured on the grip pilot: 61 Layers rows and 34 property rows
+  # over a canvas where no click ever selected anything.
+  #
+  # `view=detail` is also where selecting a story in the sidebar LANDS, so
+  # this was the first thing a user touched.
+  r.installPreviewSelectionBridge(projectFrame, vm)
   # Mount the shared canvas+overlay subtree into the preview row.
   r.appendChild(previewRow, canvasWrapper)
   r.appendChild(projectPreviewSection, previewRowNode)
@@ -829,6 +866,7 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
   r.appendChild(content, genericContent)
 
   var lastProjectSrcdoc = ""
+  var lastRestoredDetailSelection = ""
   when defined(js):
     let bridgeBinding = newBridgeBinding()
   createRenderEffect proc() =
@@ -877,16 +915,29 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
     # isn't active the section stays hidden via ``showProject``.
     let nextProjectSrcdoc =
       if showProject and vm.platform.val == pbWeb:
-        preview.documentHtml & "\n<!-- isonim-reload:" & $reloadGeneration &
-          " -->"
+        detailPreviewDocument(preview.documentHtml, preview.metadata,
+          vm.editMode.val) &
+          "\n<!-- isonim-reload:" & $reloadGeneration & " -->"
       else:
         ""
+    var projectSrcdocChanged = false
     if nextProjectSrcdoc != lastProjectSrcdoc:
       r.setAttribute(projectFrame, "srcdoc", nextProjectSrcdoc)
       lastProjectSrcdoc = nextProjectSrcdoc
+      projectSrcdocChanged = true
     r.setStyle(projectFrame, "width", "100%")
     r.setStyle(projectFrame, "min-height", "1px")
     r.setStyle(projectFrame, "overflow", "hidden")
+    # Re-seed the in-iframe selection after a srcdoc swap. Replacing the
+    # srcdoc builds a fresh document, so whatever the bridge had marked is
+    # gone; without this the Layers panel keeps showing a selection that the
+    # preview no longer draws. Guarded on a CHANGE in either the document or
+    # the id so an unrelated re-render does not re-enter the bridge.
+    let detailSelectedId = vm.inspector.selectedElement.val.id
+    if detailSelectedId.len > 0 and
+       (projectSrcdocChanged or detailSelectedId != lastRestoredDetailSelection):
+      lastRestoredDetailSelection = detailSelectedId
+      r.restorePreviewSelection(projectFrame, detailSelectedId)
     # RS-M11: iframe stays for Web, canvas takes over for non-Web.
     r.setStyle(projectFrame, "display",
                if useCanvas: "none" else: "block")

@@ -192,6 +192,15 @@ export default defineConfig({
   use: {
     headless: true,
     browserName: "chromium",
+    // Explicit, though it matches Playwright's own default. The Layers panel
+    // decides membership by VISIBILITY -- `scene_graph_walk.nim`'s
+    // `isSelectable` requires `getBoundingClientRect()` to be non-zero -- so a
+    // browser with no window size filters out every element and the panel
+    // renders zero rows. That failure is SILENT: no error, no warning, just an
+    // empty tree that looks like "this story has nothing in it". Measured
+    // against the grip pilot: 61 rows at 1600x1000, 0 rows at 0x0. Pinning the
+    // viewport here means a future default change cannot reintroduce it.
+    viewport: { width: 1280, height: 720 },
     launchOptions: chromiumExecutable
       ? { executablePath: chromiumExecutable }
       : undefined,

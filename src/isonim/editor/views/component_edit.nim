@@ -1048,7 +1048,7 @@ __ISONIM_SCENE_GRAPH_WALK__
 proc applyInspectorValue(vm: EditorVM; propName, value: string;
     scope = pesLocal)
 
-proc installPreviewSelectionBridge[R, E](r: R; frame: E; vm: EditorVM) =
+proc installPreviewSelectionBridge*[R, E](r: R; frame: E; vm: EditorVM) =
   when defined(js):
     let selectFromBrowser = proc(elementId, sourceKey, schemaKey, tag, testId,
         className, role, elementPath, ancestry, ancestorIds, sourceFile,
@@ -1746,7 +1746,7 @@ proc hoverPreviewElementById[R, E](r: R; frame: E; id: string) =
     discard frame
     discard id
 
-proc restorePreviewSelection[R, E](r: R; frame: E; id: string) =
+proc restorePreviewSelection*[R, E](r: R; frame: E; id: string) =
   when defined(js):
     {.emit: ["""
       (function () {

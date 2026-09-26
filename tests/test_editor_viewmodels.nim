@@ -17,6 +17,8 @@ from isonim/editor/types as editor_types import nil
 import isonim/editor/viewmodels
 import isonim/editor/workspace
 import isonim/editor/views/page_preview
+import isonim/editor/views/component_detail
+import isonim/editor/views/component_edit
 import isonim/editor/views/widgets/property_commit
 import isonim/testing/mock_dom
 import examples/wanderlust/stories as wanderlust
@@ -6707,3 +6709,44 @@ suite "Editor ViewModels (cross-surface integration)":
       check vm.inspector.selectedElement.val.properties.anyIt(
         it.name == "font-size" and it.value == "24px")
       dispose()
+
+suite "Editor ViewModels (detail-view preview wiring)":
+  ## The detail view's project frame had no selection bridge while its Layers
+  ## panel and its inspector were both live over it, so the editor presented a
+  ## full editing UI on top of a canvas where no click ever selected anything.
+  ## It is also the view that selecting a story LANDS on, so it was the first
+  ## surface a user touched.
+  ##
+  ## The browser suite cannot guard this: the packaged wanderlust example's
+  ## component detail renders a variant-matrix card and no ``documentHtml`` at
+  ## all, so its project frame is empty and the path is never taken there. The
+  ## composition rule is pure, so it is checked here instead.
+
+  const bodyHtml = "<html><body><main>ship this exactly</main></body></html>"
+
+  proc metadataFixture(): StoryRenderMetadata =
+    StoryRenderMetadata(title: "Hero", sourceFile: "src/pages/home.nim",
+      sourceLine: 85, renderKind: "component")
+
+  test "view_mode_gets_the_document_untouched":
+    ## View's contract is that it renders what ships. Byte equality, not
+    ## "contains the body" -- a bridge appended after </body> would still
+    ## satisfy the weaker check, and that is exactly how it would regress.
+    check detailPreviewDocument(bodyHtml, metadataFixture(), emView) == bodyHtml
+
+  test "edit_and_comment_modes_get_the_selection_bridge":
+    for mode in [emEdit, emComment]:
+      let doc = detailPreviewDocument(bodyHtml, metadataFixture(), mode)
+      check doc != bodyHtml
+      # The page's own markup survives injection.
+      check "ship this exactly" in doc
+      # The bridge is what was injected, identified by the elements the
+      # scene-graph walk itself excludes as editor chrome.
+      check "isonim-editor-selection-style" in doc
+
+  test "detail_and_edit_views_compose_the_same_document":
+    ## Two copies of "when may we inject" is how the two views drifted apart
+    ## in the first place. Outside View mode they must agree exactly.
+    for mode in [emEdit, emComment]:
+      check detailPreviewDocument(bodyHtml, metadataFixture(), mode) ==
+        editablePreviewDocument(bodyHtml, metadataFixture(), mode)
