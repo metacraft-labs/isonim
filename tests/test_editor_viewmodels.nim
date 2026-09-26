@@ -17,6 +17,7 @@ from isonim/editor/types as editor_types import nil
 import isonim/editor/viewmodels
 import isonim/editor/workspace
 import isonim/editor/views/page_preview
+import isonim/editor/views/widgets/property_commit
 import isonim/testing/mock_dom
 import examples/wanderlust/stories as wanderlust
 
@@ -6467,4 +6468,242 @@ suite "Editor ViewModels (cross-surface integration)":
       check readFile(tokenFile).contains("semantic.surface.raised=#e2e8f0")
       # The element still reads through the binding, not a stale literal.
       check readFile(viewFile).contains("token(semantic.surface.raised)")
+      dispose()
+
+  # ------------------------------------------------------------------ #
+  #  Phase G+1 — inspector section writeback.
+  #
+  #  Phase A demolished the tabbed inspector and Phases B-H rebuilt the
+  #  chrome without the writeback: no section passed ``onChange`` to
+  #  ``mountPropertyRow``, so typing a value staged nothing and said
+  #  nothing. These cases pin the replacement — that a row commit
+  #  reaches source, that it picks the same scope the old inspector
+  #  picked, and that every path which cannot commit produces a message
+  #  rather than silence.
+  #
+  #  ``test_editor_shell_views.nim``'s
+  #  ``component_edit_inspector_explains_and_applies_design_system_scope``
+  #  is the browser-side sibling and is still ``skip()``ped pending the
+  #  section-chrome rewrite; the scope rule itself is covered here.
+  # ------------------------------------------------------------------ #
+
+  proc writebackVm(root, sourceFile, tree: string;
+      writeSource = true): EditorVM =
+    let recorder = WorkspaceEditRecorder()
+    result = createEditorVM(newEditorWorkspace(
+      title = "Section writeback workspace",
+      storyGroups = cardStoryGroups(),
+      initialStory = some(cardStory),
+      permissions = EditorWorkspacePermissions(readSource: true,
+        writeSource: writeSource),
+      editAdapter = adapterFor(root, cardSchema(sourceFile),
+        recorder = recorder)))
+    result.inspector.setSelectionTree(previewDomLayerRows(tree))
+    discard result.selectInspectorElementById("src:title")
+    discard result.selectInspectorElement(titleSelection(sourceFile, tree))
+
+  test "section_row_commit_reaches_source_through_the_edit_pipeline":
+    ## The founder's report: typing a value in the mounted inspector did
+    ## nothing. A row commit must stage a plan that names the selected
+    ## element's own file, line and property, and must survive a save.
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("writeback-commit")
+      defer: removeDir(root)
+      let sourceFile = root / "card.nim"
+      atomicWrite(sourceFile, "card-title.font-size=20px\n")
+      let tree = cardTreeJson.replace("SRC", sourceFile)
+      let vm = writebackVm(root, sourceFile, tree)
+
+      let outcome = vm.commitInspectorValue("font-size", "24px",
+        sskLocalInstance)
+      check outcome.ok
+      check outcome.message == ""
+      check outcome.committedValue == "24px"
+      check vm.inspector.pendingSourceEdits.val.len == 1
+      let plan = vm.inspector.pendingSourceEdits.val[0]
+      check plan.property == "font-size"
+      check plan.file == sourceFile
+      check plan.line == 3
+      check vm.applyWorkspaceFileEdits().ok
+      check readFile(sourceFile).contains("font-size=24px")
+      dispose()
+
+  test "section_row_commit_evaluates_expressions_and_keeps_the_unit":
+    ## ``6*4px`` is the shape the founder asked about. The parser lives
+    ## in ``normalizePrimitiveInputValue``, which the old path reached
+    ## through ``applyInspectorValue``; the section path has to reach
+    ## the same one rather than grow a second arithmetic.
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("writeback-expr")
+      defer: removeDir(root)
+      let sourceFile = root / "card.nim"
+      atomicWrite(sourceFile, "card-title.font-size=20px\n")
+      let tree = cardTreeJson.replace("SRC", sourceFile)
+      let vm = writebackVm(root, sourceFile, tree)
+
+      let outcome = vm.commitInspectorValue("font-size", "6*4px",
+        sskLocalInstance)
+      check outcome.ok
+      check outcome.committedValue == "24px"
+      check vm.inspector.pendingSourceEdits.val[0].newValue == "24px"
+      dispose()
+
+  test "section_row_scope_default_matches_the_old_inspectors_rule":
+    ## ``defaultScopeIndex`` is transcribed from
+    ## ``renderPropertyInput``. Two implementations of "which source
+    ## owns this property" would disagree precisely where nothing tests
+    ## them, so the rule is pinned directly: a shared / token-backed /
+    ## schema-owned property defaults to the first EDITABLE non-local
+    ## scope; anything else defaults to the head of the list.
+    createRoot proc(dispose: proc()) =
+      let choices = @[
+        SourceScopeChoice(kind: sskLocalInstance, label: "Local instance",
+          editable: true),
+        SourceScopeChoice(kind: sskSharedClass, label: "Shared class",
+          editable: false),
+        SourceScopeChoice(kind: sskSemanticToken, label: "Semantic token",
+          editable: true)]
+
+      # Purely local property: index 0, even though editable shared
+      # scopes exist.
+      let localProp = PropertyInfo(name: "font-size", value: "20px")
+      check defaultScopeIndex(choices, localProp) == 0
+
+      # Shared property: skips the NON-editable shared class and lands
+      # on the first editable non-local scope. Picking the shared class
+      # here would be the plausible-but-wrong rule.
+      let sharedProp = PropertyInfo(name: "font-size", value: "20px",
+        sharedCount: 7)
+      check defaultScopeIndex(choices, sharedProp) == 2
+
+      # Token-backed and schema-owned reach the same branch.
+      check defaultScopeIndex(choices,
+        PropertyInfo(name: "color", tokenName: "semantic.text")) == 2
+      check defaultScopeIndex(choices,
+        PropertyInfo(name: "color", schemaKey: "dom.card.color")) == 2
+
+      # Strip order: local first, shared class second, then the rest.
+      check orderedScopeIndexes(choices, 2) == @[0, 1, 2]
+      dispose()
+
+  test "section_row_scope_choices_are_offered_and_commit_at_that_scope":
+    ## The spec's Bind/scope slot. The row's chips come from
+    ## ``inspectorRowWiring``; each carries the same "Apply <scope>
+    ## scope for <property>" label the old inspector used, and choosing
+    ## one moves where a subsequent commit lands.
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("writeback-scope")
+      defer: removeDir(root)
+      let sourceFile = root / "card.nim"
+      atomicWrite(sourceFile, "card-title.font-size=20px\n")
+      let tree = cardTreeJson.replace("SRC", sourceFile)
+      let vm = writebackVm(root, sourceFile, tree)
+
+      let wiring = vm.inspectorRowWiring("font-size")
+      check wiring.cssProperty == "font-size"
+      let options = wiring.scopeOptions()
+      check options.len > 0
+      check options.anyIt(it.ariaLabel ==
+        "Apply local instance scope for font-size")
+      # Exactly one chip reads as selected, and the strip is ordered
+      # local-first.
+      check options.countIt(it.selected) == 1
+      check options[0].shortLabel == sourceScopeAbbrev(sskLocalInstance)
+
+      # Committing through the wiring stages at the resolved scope.
+      wiring.commit("26px")
+      check wiring.commitMessage.val == ""
+      check vm.inspector.pendingSourceEdits.val.len == 1
+      check vm.inspector.pendingSourceEdits.val[0].newValue == "26px"
+      dispose()
+
+  test "section_row_refuses_out_loud_on_a_read_only_workspace":
+    ## The founder's actual complaint was silence, and a read-only
+    ## workspace is the case with a correct sentence already written
+    ## for it. The row must say that sentence at the keystroke, not at
+    ## the Save several interactions later, and must stage nothing.
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("writeback-read-only")
+      defer: removeDir(root)
+      let sourceFile = root / "card.nim"
+      let original = "card-title.font-size=20px\n"
+      atomicWrite(sourceFile, original)
+      let tree = cardTreeJson.replace("SRC", sourceFile)
+      let vm = writebackVm(root, sourceFile, tree, writeSource = false)
+
+      let wiring = vm.inspectorRowWiring("font-size")
+      wiring.commit("24px")
+      check wiring.commitMessage.val ==
+        "This workspace is read-only for source changes."
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check readFile(sourceFile) == original
+
+      # The same refusal through the direct entry point.
+      let outcome = vm.commitInspectorValue("font-size", "24px",
+        sskLocalInstance)
+      check not outcome.ok
+      check outcome.message.contains("read-only")
+      dispose()
+
+  test "section_row_refuses_out_loud_with_no_selection_or_no_property":
+    ## Two more ways to reach a dead end. Neither produced anything
+    ## before; both have to produce a sentence.
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("writeback-no-selection")
+      defer: removeDir(root)
+      let sourceFile = root / "card.nim"
+      atomicWrite(sourceFile, "card-title.font-size=20px\n")
+      let tree = cardTreeJson.replace("SRC", sourceFile)
+
+      let recorder = WorkspaceEditRecorder()
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "No selection workspace",
+        storyGroups = cardStoryGroups(),
+        initialStory = some(cardStory),
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true),
+        editAdapter = adapterFor(root, cardSchema(sourceFile),
+          recorder = recorder)))
+
+      # Nothing selected at all.
+      let noSelection = vm.commitInspectorValue("font-size", "24px",
+        sskLocalInstance)
+      check not noSelection.ok
+      check noSelection.message.contains("Select an element")
+
+      # Selected, but the element does not expose the property. A row
+      # for a property the element has no opinion about must not
+      # invent one.
+      vm.inspector.setSelectionTree(previewDomLayerRows(tree))
+      discard vm.selectInspectorElementById("src:title")
+      discard vm.selectInspectorElement(titleSelection(sourceFile, tree))
+      let unknown = vm.commitInspectorValue("grid-auto-flow", "column",
+        sskLocalInstance)
+      check not unknown.ok
+      check unknown.message.contains("does not expose")
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      dispose()
+
+  test "section_row_commit_leaves_the_selection_and_the_layers_tree_alone":
+    ## Cross-surface: a commit must not disturb the surfaces around it.
+    ## The inspector, the layers tree and the breadcrumb all read one
+    ## selection, and an edit that silently retargeted it would be the
+    ## same class of defect by a different route.
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("writeback-selection-stable")
+      defer: removeDir(root)
+      let sourceFile = root / "card.nim"
+      atomicWrite(sourceFile, "card-title.font-size=20px\n")
+      let tree = cardTreeJson.replace("SRC", sourceFile)
+      let vm = writebackVm(root, sourceFile, tree)
+
+      let before = vm.inspector.selectedElement.val.id
+      check before == "src:title"
+      let selectedRowsBefore = vm.inspector.filteredLayers.val.len
+
+      check vm.commitInspectorValue("font-size", "24px", sskLocalInstance).ok
+      check vm.inspector.selectedElement.val.id == before
+      check vm.inspector.filteredLayers.val.len == selectedRowsBefore
+      check vm.inspector.selectedElement.val.properties.anyIt(
+        it.name == "font-size" and it.value == "24px")
       dispose()
