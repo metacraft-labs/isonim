@@ -1130,7 +1130,18 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
             flex_shrink = "0"):
         span(font_size = "10px", letter_spacing = "0.08em",
               text_transform = "uppercase", color = textMuted):
-          text "Scene graph"
+          # "Layers", not "Scene graph". The founder: "scene graph is a term
+          # I used because I'm former game developer. I don't think the
+          # intended audience of the isonim editor will understand it."
+          # Layers is what Figma calls this panel, so a designer reads it
+          # without translation, and it is already this codebase's internal
+          # vocabulary -- ElementLayerRow, filteredLayers, expandedLayerIds.
+          #
+          # The `data-scene-graph-*` attributes are deliberately NOT renamed:
+          # they are the test and tooling surface, and churning them would
+          # break every probe for a cosmetic gain. A rename there is its own
+          # change with its own risk.
+          text "Layers"
         span(ref = countEl,
               `data-scene-graph-count` = "true",
               margin_left = "auto", font_size = "10px", color = textDim):
