@@ -348,6 +348,39 @@ suite "DSE the headless editor consumes provenance":
       check bound.get.variableKey == "zc-space-token"
       dispose()
 
+  test "the selection echo does not silently downgrade the selection":
+    # The same element is selected twice by design: the preview bridge selects
+    # it from the DOM, where `data-isonim-props` lives, and the echo
+    # re-selects it from a layer row, which is built from the scene-graph tree
+    # and carries no provenance. Taking the echo verbatim made the chip and
+    # the diagnostic appear and then vanish a few milliseconds later -- a
+    # failure that looks exactly like the feature not working.
+    let wire = fixtureOutput().ssrHtml().payloads()
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      let withProvenance =
+        domRef("fixture.nim", 34, "p-4 zc-not-a-class", "", "16px", wire[0],
+        elementId = "echo-target")
+      check vm.selectInspectorElement(withProvenance)
+      check vm.inspector.editDiagnostics.val.len == 1
+
+      # The echo: same element, same id, no payload.
+      var echoed = withProvenance
+      echoed.styleBindings = ""
+      vm.inspector.selectElement(echoed)
+      check vm.inspector.selectedElement.val.styleBindings == wire[0]
+      check vm.inspector.editDiagnostics.val.len == 1
+
+      # A DIFFERENT element must NOT inherit it.
+      var other = withProvenance
+      other.styleBindings = ""
+      other.id = "somewhere-else"
+      other.sourceKey = "somewhere-else"
+      vm.inspector.selectElement(other)
+      check vm.inspector.selectedElement.val.styleBindings == ""
+      check vm.inspector.editDiagnostics.val.len == 0
+      dispose()
+
   test "a selection with no provenance behaves exactly as before":
     # Every surface that is not an IsoNim-rendered element -- a hand-built
     # story fixture, a non-IsoNim preview document -- passes an empty payload,

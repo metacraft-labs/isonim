@@ -2525,6 +2525,30 @@ proc refreshLayerFlags(inspector: InspectorVM) =
     inspector.hoveredElementId.val,
     inspector.expandedLayerIds.val)
 
+proc publishStyleProvenance(inspector: InspectorVM; next: var ElementRef) =
+  ## Carry the selection's authored provenance across a re-selection, and
+  ## publish its diagnostics.
+  ##
+  ## The same element gets selected more than once, by design. The preview
+  ## bridge selects it from the DOM -- where `data-isonim-props` lives -- and
+  ## then the selection ECHO re-selects it from a layer row, which is built
+  ## from the scene-graph tree and carries no provenance at all. Assigning
+  ## the echo's `ElementRef` verbatim would silently downgrade the selection
+  ## a few milliseconds after it arrived: the chip would appear and vanish,
+  ## and the unresolved-binding diagnostic with it. The breadcrumb already
+  ## has to defend against this same echo; this is the property-level
+  ## counterpart.
+  ##
+  ## Retention is conditional on the id matching, so selecting a DIFFERENT
+  ## element correctly clears what the previous one carried.
+  if next.styleBindings.len == 0:
+    let current = inspector.selectedElement.val
+    if current.styleBindings.len > 0 and
+        current.fallbackElementId() == next.fallbackElementId():
+      next.styleBindings = current.styleBindings
+  inspector.editDiagnostics.val = styleBindingDiagnostics(
+    next.styleBindings, next.sourceFile, next.sourceLine)
+
 proc seedStyleProvenanceBindings(editor: EditorVM; element: ElementRef)
   ## Forward-declared: the body needs ``resolveVariableValue`` and
   ## ``sameTokenKey``, both defined further down this module, and the call
@@ -2556,14 +2580,13 @@ proc selectInspectorElement*(editor: EditorVM; element: ElementRef;
       else: next.sourceKey
   if next.ancestorIds.len == 0:
     next.ancestorIds = @[next.id]
-  editor.inspector.selectedElement.val = next
   # Requirement 8 ("never fail silently"): a class that is in no class index,
   # or a styling attribute computed at runtime, contributes NOTHING to the
   # rendered element and used to say so nowhere. It says so here, on the same
   # signal the inspector already renders edit diagnostics from, at the moment
   # the user looks at the element.
-  editor.inspector.editDiagnostics.val =
-    styleBindingDiagnostics(next.styleBindings, next.sourceFile, next.sourceLine)
+  editor.inspector.publishStyleProvenance(next)
+  editor.inspector.selectedElement.val = next
   editor.seedStyleProvenanceBindings(next)
   editor.inspector.noteBreadcrumbSelection(next, origin)
   if editor.inspector.layers.val.len == 0:
@@ -2743,9 +2766,12 @@ proc selectInspectorElementById*(editor: EditorVM; id: string;
       # alone reports the row as its own only ancestor, which collapsed
       # the status-bar breadcrumb to a single segment whenever the
       # selection came from a row rather than from the preview.
-      editor.inspector.selectedElement.val =
-        editor.inspector.elementFromRow(row)
-      editor.inspector.editDiagnostics.val = @[]
+      var fromRow = editor.inspector.elementFromRow(row)
+      # A layer row has no `data-isonim-props`; `publishStyleProvenance`
+      # carries it over when this is the SAME element the preview selected.
+      editor.inspector.publishStyleProvenance(fromRow)
+      editor.inspector.selectedElement.val = fromRow
+      editor.seedStyleProvenanceBindings(fromRow)
       editor.inspector.noteBreadcrumbSelection(
         editor.inspector.selectedElement.val, origin)
       editor.inspector.refreshLayerFlags()
@@ -3491,8 +3517,8 @@ proc selectElement*(inspector: InspectorVM; element: ElementRef;
     next.sourceKey = next.id
   if next.ancestorIds.len == 0:
     next.ancestorIds = @[next.id]
+  inspector.publishStyleProvenance(next)
   inspector.selectedElement.val = next
-  inspector.editDiagnostics.val = @[]
   inspector.noteBreadcrumbSelection(next, origin)
   inspector.refreshLayerFlags()
 
