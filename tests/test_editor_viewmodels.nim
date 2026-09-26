@@ -6,6 +6,14 @@ import isonim/core/[signals, computation, owner]
 import isonim/viewmodel
 import isonim/editor/agent_context
 import isonim/editor/agent_harbor
+# ``AgentFileDiff`` is defined both by ``isonim/editor/types`` (re-exported
+# through ``isonim/editor/viewmodels``) and by the ``nim_agents`` sibling's
+# ``client`` module, so the bare name is ambiguous here. Bind the editor-side
+# module to a qualifier without importing any symbol from it, and spell the
+# editor record ``editor_types.AgentFileDiff`` at its use sites. This mirrors
+# the ``types.AgentFileDiff`` qualification already used in
+# ``src/isonim/editor/agent_harbor.nim``.
+from isonim/editor/types as editor_types import nil
 import isonim/editor/viewmodels
 import isonim/editor/workspace
 import isonim/editor/views/page_preview
@@ -217,12 +225,53 @@ suite "Editor ViewModels (M0)":
         continue # Skip comments
       check not line.contains("#[0-9a-fA-F]")
 
-    # No Tailwind class strings
+    # No Tailwind class strings.
+    #
+    # 2026-09-26: this check used to be a bare ``"flex-" notin vmFile``.
+    # Since the compatible-only variable picker landed (7c062b8), the
+    # ViewModels carry a CSS *property-name* classifier that legitimately
+    # names ``flex-grow`` / ``flex-shrink`` / ``flex-basis``. Those are
+    # domain data for the property editors, not presentation, so the blunt
+    # substring test reported a false positive. The check is now narrower
+    # in what it permits and stricter in what it rejects: a hyphenated
+    # ``flex-``/``text-``/``bg-`` token is allowed only when it spells a
+    # real CSS longhand property, so Tailwind utilities such as
+    # ``flex-row``, ``flex-1``, ``text-sm`` or ``bg-slate-900`` still fail.
+    const cssLonghands = [
+      "flex-grow", "flex-shrink", "flex-basis", "flex-direction",
+      "flex-wrap", "flex-flow",
+      "text-align", "text-align-last", "text-combine-upright",
+      "text-decoration", "text-decoration-color", "text-decoration-line",
+      "text-decoration-style", "text-decoration-thickness",
+      "text-emphasis", "text-emphasis-color", "text-emphasis-position",
+      "text-emphasis-style", "text-indent", "text-justify",
+      "text-orientation", "text-overflow", "text-rendering",
+      "text-shadow", "text-size-adjust", "text-transform",
+      "text-underline-offset", "text-underline-position", "text-wrap"
+    ]
+
+    proc utilityClassTokens(source: string; prefix: string): seq[string] =
+      ## Every ``prefix``-led hyphenated token in ``source`` that is not a
+      ## known CSS longhand property name.
+      var idx = source.find(prefix)
+      while idx >= 0:
+        var stop = idx + prefix.len
+        while stop < source.len and
+              (source[stop].isAlphaNumeric or source[stop] == '-'):
+          inc stop
+        let token = source[idx ..< stop]
+        if token != prefix and token notin cssLonghands and
+           token notin result:
+          result.add token
+        idx = source.find(prefix, idx + prefix.len)
+
     check "class =" notin vmFile
     check "rounded" notin vmFile
-    check "flex-" notin vmFile
-    check "bg-" notin vmFile
-    check "text-" notin vmFile.replace("setTextContent", "").replace("text:", "")
+    check utilityClassTokens(vmFile, "flex-") == newSeq[string]()
+    check utilityClassTokens(vmFile, "bg-") == newSeq[string]()
+    check utilityClassTokens(
+      vmFile.replace("setTextContent", "").replace("text:", ""),
+      "text-") == newSeq[string]()
 
     # Types file also clean
     check "class =" notin typesFile
@@ -4722,7 +4771,7 @@ suite "Editor ViewModels (M27 workspace file writes)":
           planFor(schemaFile, "margin", "8px", "12px",
             "components.card.margin")
         ],
-        diffs: @[AgentFileDiff(file: schemaFile, beforeText: "padding=16px",
+        diffs: @[editor_types.AgentFileDiff(file: schemaFile, beforeText: "padding=16px",
           afterText: "padding=24px", summary: "padding update")]))
 
       var rerunPrompt = ""
@@ -5715,7 +5764,7 @@ suite "Editor ViewModels (M27 workspace file writes)":
         summary: "padding shared schema scope",
         sourceEdits: @[planFor(schemaFile, "padding", "16px", "24px",
           "components.card.padding")],
-        diffs: @[AgentFileDiff(file: schemaFile, beforeText: "padding=16px",
+        diffs: @[editor_types.AgentFileDiff(file: schemaFile, beforeText: "padding=16px",
           afterText: "padding=24px", summary: "padding 16px -> 24px")],
         impact: AgentProposalImpact(summary: "Updates Card default padding.",
           affectedStories: @[writeStory],
@@ -5742,7 +5791,7 @@ suite "Editor ViewModels (M27 workspace file writes)":
         summary: "padding against current schema scope",
         sourceEdits: @[planFor(schemaFile, "padding", "24px", "32px",
           "components.card.padding")],
-        diffs: @[AgentFileDiff(file: schemaFile, beforeText: "padding=24px",
+        diffs: @[editor_types.AgentFileDiff(file: schemaFile, beforeText: "padding=24px",
           afterText: "padding=32px", summary: "padding 24px -> 32px")],
         tests: @["compile DestinationCard/Default"]))
       let manual = vm.editCssProperty("padding", "28px", pesShared)
