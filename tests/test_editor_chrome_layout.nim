@@ -895,16 +895,13 @@ suite "M-EVP-3 preview chrome bar density":
       # flex `gap` no longer applies between them, so this is the
       # invariant the visual separation rests on.
       #
-      # The order is grouped by WHAT A CLUSTER ANSWERS, not by history:
+      # Viewport is CENTRED, between the two flex-1 spacers, so it sits
+      # over the middle of the preview rather than over the sidebar.
       #
-      #   backend, viewport   — "what am I looking at"   (left)
-      #   history, save       — "what has happened to it" (centred)
-      #   mode                — "what am I doing to it"   (right)
-      #
-      # Phase Q had `[backend, history, viewport, mode]`, which split the
-      # two visibility controls around an unrelated one and left Save
-      # floating on its own.
-      let clusterKinds = @["backend", "viewport", "history", "save", "mode"]
+      # There is no `save` cluster: saving is automatic, so there is no
+      # state for a control to report and nothing to press. Failures go to
+      # the status bar.
+      let clusterKinds = @["backend", "history", "viewport", "mode"]
       var directChildClusters: seq[string] = @[]
       for child in bar.children:
         let kind = child.attributes.getOrDefault(clusterAttr)

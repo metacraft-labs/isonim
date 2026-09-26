@@ -300,15 +300,17 @@ type
     workspacePermissions*: Signal[EditorWorkspacePermissions]
     sourceAdapterReady*: Signal[bool]
     workspaceEditStage*: Signal[WorkspaceEditStage]
-    autoSaveEnabled*: Signal[bool]
-      ## Whether a commit schedules its own write. Defaults FALSE: the editor
-      ## writes real source files that agents and people edit by hand, and a
-      ## tool that starts writing to them without being asked is not one you
-      ## can leave open. Ticking the box is the user asking for it.
     autoSaveGeneration*: Signal[int]
-      ## Bumped every time a commit asks for an auto-save. The browser layer
-      ## watches this and debounces the actual write; the VM does not own a
-      ## timer, so the rule stays testable without one.
+      ## Bumped every time a commit stages an edit. The browser layer watches
+      ## this and debounces the actual write; the VM does not own a timer, so
+      ## the rule stays testable without one.
+      ##
+      ## There is no manual mode and no switch. Saving is what the editor
+      ## does with an edit -- an editor that holds your change hostage to a
+      ## second gesture has invented a state the user has to manage, and the
+      ## indicator that state needed was taking up space in the chrome bar
+      ## explaining itself. Failures surface in the status bar; success needs
+      ## no announcement.
     workspaceEditDiagnostics*: Signal[seq[WorkspaceEditDiagnostic]]
     workspaceBridgeRecovered*: Signal[bool]
     workspaceEditPatches*: Signal[seq[WorkspaceFilePatch]]
@@ -7869,11 +7871,6 @@ proc saveIndicator*(editor: EditorVM): SaveIndicator =
     else:
       SaveIndicator(state: sisClean, label: "Saved")
 
-proc setAutoSave*(editor: EditorVM; enabled: bool) =
-  ## Turn auto-save on or off. The browser layer persists it; the VM only
-  ## holds it, so a headless test can exercise the rule without storage.
-  editor.autoSaveEnabled.val = enabled
-
 proc noteCommitForAutoSave*(editor: EditorVM) =
   ## Called after a commit stages a plan. Bumps a generation the browser
   ## layer debounces into an actual write.
@@ -7881,8 +7878,11 @@ proc noteCommitForAutoSave*(editor: EditorVM) =
   ## A generation rather than a direct call: the VM has no timer and should
   ## not grow one, and a commit that wrote immediately would write once per
   ## keystroke in a numeric field.
-  if editor.autoSaveEnabled.val and
-     editor.inspector.pendingSourceEdits.val.len > 0:
+  ##
+  ## Nothing gates this but "did anything stage". A commit that was REFUSED
+  ## stages nothing and so schedules nothing, which is the only condition
+  ## that ever mattered.
+  if editor.inspector.pendingSourceEdits.val.len > 0:
     editor.autoSaveGeneration.val = editor.autoSaveGeneration.val + 1
 
 proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardable.} =
@@ -11597,7 +11597,6 @@ proc createEditorVM*(): EditorVM =
     workspacePermissions: workspacePermissions,
     sourceAdapterReady: sourceAdapterReady,
     workspaceEditStage: workspaceEditStage,
-    autoSaveEnabled: createSignal(false),
     autoSaveGeneration: createSignal(0),
     workspaceEditDiagnostics: workspaceEditDiagnostics,
     workspaceBridgeRecovered: workspaceBridgeRecovered,

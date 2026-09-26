@@ -782,23 +782,22 @@ proc exposeWindowEditorHandle*(vm: EditorVM) =
     else: "".cstring
   let cbPending = proc(): int =
     vm.inspector.pendingSourceEdits.val.len
-  let cbAutoSave = proc(enabled: bool) =
-    vm.setAutoSave(enabled)
-  let cbAutoSaveOn = proc(): bool =
-    vm.autoSaveEnabled.val
 
-  # Auto-save. The VM bumps a generation when a commit stages an edit and
-  # auto-save is on; the debounce lives here because the VM has no timer and
-  # should not grow one -- a commit that wrote immediately would write once
-  # per keystroke in a numeric field.
+  # Auto-save. The VM bumps a generation when a commit stages an edit; the
+  # debounce lives here because the VM has no timer and should not grow one
+  # -- a commit that wrote immediately would write once per keystroke in a
+  # numeric field.
+  #
+  # There is no manual mode. `Mod+S` still works and still saves NOW rather
+  # than in 900ms, because a person who reaches for it is telling you they
+  # do not want to wait.
   #
   # 900ms: long enough to type "1", "12", "120" as one edit, short enough
   # that looking away and back finds the file already written.
   when defined(js):
     var lastAutoSaveGeneration = 0
     let runAutoSave = proc() =
-      if vm.autoSaveEnabled.val and
-         vm.inspector.pendingSourceEdits.val.len > 0:
+      if vm.inspector.pendingSourceEdits.val.len > 0:
         discard vm.runEditorCommand(eckSave)
     createRenderEffect proc() =
       let generation = vm.autoSaveGeneration.val
@@ -824,8 +823,6 @@ proc exposeWindowEditorHandle*(vm: EditorVM) =
       const fnRightW = """, cbRightWidth, """;
       const fnSave = """, cbSave, """;
       const fnPending = """, cbPending, """;
-      const fnSetAutoSave = """, cbAutoSave, """;
-      const fnAutoSaveOn = """, cbAutoSaveOn, """;
       window.__isonimEditor = window.__isonimEditor || {};
       window.__isonimEditor.selectStoryByName = function (group, name) {
         fn(group, name);
@@ -851,25 +848,7 @@ proc exposeWindowEditorHandle*(vm: EditorVM) =
       window.__isonimEditor.pendingSourceEdits = function () {
         return fnPending() | 0;
       };
-      window.__isonimEditor.setAutoSave = function (on) {
-        fnSetAutoSave(!!on);
-        try {
-          window.localStorage.setItem('isonim:editor:auto-save',
-            on ? '1' : '0');
-        } catch (e) {}
-        return true;
-      };
-      window.__isonimEditor.autoSaveEnabled = function () {
-        return !!fnAutoSaveOn();
-      };
-      // Restore the preference. It is a working style rather than a property
-      // of the project, and having to re-set it every reload would make it
-      // not worth setting.
-      try {
-        if (window.localStorage.getItem('isonim:editor:auto-save') === '1') {
-          fnSetAutoSave(true);
-        }
-      } catch (e) {}
+
     })();
   """].}
 

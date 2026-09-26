@@ -799,7 +799,59 @@ proc renderStatusBar[R, E](r: R; vm: EditorVM): E =
   # bar layout so future affordances can drop in without re-shaping
   # the status row.
   discard leftControls
-  discard rightControls
+
+  # Save failures, and only failures.
+  #
+  # Saving is automatic, so a successful write is not news -- announcing it
+  # would train the eye to ignore this corner, which is the corner that has
+  # to work when something goes wrong. A refusal is different: it is the one
+  # thing the user has to act on, it names a file they may be sharing with
+  # an agent, and it is the difference between "my edit did not take" and
+  # "my edit was silently dropped".
+  #
+  # `role="alert"` so a screen reader is told without the user having to
+  # look at a 26px strip at the bottom of the window.
+  var saveErrorEl: E
+  let saveError = ui(r):
+    tdiv(ref = saveErrorEl,
+          `data-save-error` = "true",
+          role = "alert",
+          `aria-live` = "assertive",
+          display = "none",
+          align_items = "center", gap = "6px",
+          max_width = "46vw",
+          padding = "0 8px", height = "18px",
+          border_radius = "4px",
+          background_color = "rgba(248, 113, 113, 0.12)",
+          border = "1px solid rgba(248, 113, 113, 0.34)",
+          color = "#F87171",
+          font_size = "10px",
+          white_space = "nowrap", overflow = "hidden",
+          text_overflow = "ellipsis"):
+      text ""
+  # In the RIGHT slot, immediately left of the version tag, rather than in
+  # the left slot. The left slot sits before the breadcrumb, so a message
+  # appearing there shoved the breadcrumb sideways -- the status bar moved
+  # under the reader at the exact moment it asked them to read something.
+  # The right slot is already a quiet corner and the message can grow into
+  # it without displacing anything that was being looked at.
+  r.insertBefore(rightControls, saveError, statusBadges)
+
+  createRenderEffect proc() =
+    let indicator = vm.saveIndicator()
+    if indicator.state == sisFailed:
+      let detail =
+        if indicator.detail.len > 0: indicator.detail
+        else: "The last save was refused."
+      r.setTextContent(saveErrorEl, "Not saved \xE2\x80\x94 " & detail)
+      # The full text in `title` too: the bar truncates, and the truncated
+      # half is usually the half that says what to do about it.
+      r.setAttribute(saveErrorEl, "title", detail)
+      r.setStyle(saveErrorEl, "display", "flex")
+    else:
+      r.setTextContent(saveErrorEl, "")
+      r.setAttribute(saveErrorEl, "title", "")
+      r.setStyle(saveErrorEl, "display", "none")
   createRenderEffect proc() =
     r.clearChildren(statusBadges)
     let selected = vm.inspector.selectedElement.val
@@ -3515,15 +3567,21 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
     "Toggle left sidebar", chromeIconSet.sidebarLeft)
   r.appendChild(toolbar, leftToggleBtn)
 
-  # The cluster order is grouped by what each one answers:
+  # Cluster order:
   #
-  #   [L-toggle] [Backend] [Viewport] <spacer> [History] [Save] <spacer>
+  #   [L-toggle] [Backend] [History] <spacer> [Viewport] <spacer>
   #     [Mode] [R-toggle]
   #
-  # Backend and Viewport both answer "what am I looking at"; History and
-  # Save both answer "what has happened to this document"; Mode answers
-  # "what am I doing to it". The sidebar toggles are bookends, not clusters.
+  # Viewport is CENTRED -- it is the control the eye returns to while
+  # looking at the centre column, and the two flex-1 spacers put it over the
+  # middle of the preview rather than over the sidebar.
+  #
+  # There is no Save cluster. Saving is automatic, so there is no state for
+  # a control to report and nothing to press; a failure surfaces in the
+  # status bar, where a message can sit without a toolbar slot standing
+  # reserved for the case that almost never happens.
   r.appendChild(toolbar, backendWrapper)
+  design_review_mount_view.mountHistoryButtonForEditor[R, E](r, toolbar, vm)
 
   # A chooser with one option is not a chooser. A project that declares a
   # single target platform -- `allowedPlatforms = {pbWeb}`, which is every
@@ -3846,228 +3904,8 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
   # together in the left group rather than one being bookended and the other
   # centred. History and Save both answer "what has happened to the
   # document", so they are the centred pair.
-  r.appendChild(toolbar, viewportClusterWrapper)
   r.appendChild(toolbar, leadingSpacer)
-  design_review_mount_view.mountHistoryButtonForEditor[R, E](r, toolbar, vm)
-
-  # ----- Save control ---------------------------------------------------- #
-  #
-  # A button that is also the editor's only indicator of unsaved work, sat
-  # next to the viewport cluster because that is where the eye already is
-  # while looking at the centre column. Before it existed, a property edit
-  # that committed and one that was refused looked identical: nothing moved.
-  #
-  # Colour never carries the state alone -- the label changes too, so it
-  # survives a colour-blind reader and a screenshot review.
-  var saveButtonEl: E
-  var saveLabelEl: E
-  var saveDotEl: E
-  var saveChevronEl: E
-  var saveMenuEl: E
-  var autoSaveBoxEl: E
-  let saveMenuOpen = createSignal(false)
-
-  let saveCluster = ui(r):
-    tdiv(`data-toolbar-cluster` = "save",
-         `data-save-cluster` = "true",
-         display = "inline-flex", align_items = "center",
-         # Tight against History: the two are one group -- what has happened
-         # to this document -- and a gap between them reads as two unrelated
-         # controls that happen to be near each other.
-         margin_left = "2px",
-         # Same trough as History and the mode cluster: 2px of padding around
-         # a 6px-radius well. Without it the save control floated on the bar
-         # while every other button sat in one, which read as a different
-         # widget family rather than a sibling.
-         background_color = "#22232E",
-         border_radius = "6px",
-         padding = "2px",
-         position = "relative"):
-      tdiv(ref = saveButtonEl,
-           role = "button", tabindex = "0",
-           `data-save-button` = "true",
-           display = "inline-flex", align_items = "center", gap = "5px",
-           height = "22px", padding = "0 6px",
-           border_radius = "4px",
-           font_size = "11px",
-           cursor = "pointer",
-           user_select = "none"):
-        # An icon button, like every other control in this bar. The GLYPH
-        # changes with the state as well as the colour -- a control that
-        # distinguishes "saved" from "not saved" by hue alone is unreadable
-        # to a colour-blind user and invisible in a screenshot review.
-        span(ref = saveDotEl,
-             `data-save-glyph` = "true",
-             display = "inline-flex", align_items = "center",
-             justify_content = "center",
-             width = "15px", height = "15px",
-             flex_shrink = "0")
-        # The words are a hint, shown when the bar has room for them. The
-        # icon and the tooltip carry the meaning on their own.
-        span(ref = saveLabelEl,
-             `data-save-label` = "true",
-             white_space = "nowrap",
-             overflow = "hidden",
-             max_width = "0px",
-             opacity = "0"):
-          text "Saved"
-      tdiv(ref = saveChevronEl,
-           role = "button", tabindex = "0",
-           `data-save-menu-trigger` = "true",
-           `aria-haspopup` = "menu",
-           `aria-label` = "Save options",
-           display = "inline-flex", align_items = "center",
-           justify_content = "center",
-           width = "16px", height = "22px",
-           border_radius = "4px",
-           font_size = "9px",
-           color = textMuted,
-           cursor = "pointer",
-           user_select = "none"):
-        text "\xE2\x96\xBE"  # ▾
-      tdiv(ref = saveMenuEl,
-           `data-save-menu` = "true",
-           role = "menu",
-           position = "absolute", top = "30px", right = "0",
-           min_width = "184px",
-           padding = "4px",
-           background_color = bgSidebar,
-           border = "1px solid " & borderStrong,
-           border_radius = "6px",
-           box_shadow = "0 8px 24px rgba(0,0,0,0.32)",
-           z_index = "60",
-           display = "none"):
-        tdiv(role = "menuitemcheckbox",
-             `data-save-menu-autosave` = "true",
-             display = "flex", align_items = "center", gap = "8px",
-             padding = "6px 8px",
-             border_radius = "4px",
-             font_size = "11px",
-             color = textPrimary,
-             cursor = "pointer"):
-          span(ref = autoSaveBoxEl,
-               `data-save-menu-autosave-box` = "true",
-               display = "inline-flex", align_items = "center",
-               justify_content = "center",
-               width = "13px", height = "13px",
-               # `borderStrong` is the panel's own border token and vanishes
-               # against the menu at 13px -- the checkbox rendered as nothing
-               # at all. A control whose unchecked state is invisible reads
-               # as "there is no checkbox here".
-               border = "1px solid " & textMuted,
-               border_radius = "3px",
-               font_size = "9px",
-               flex_shrink = "0"):
-            text ""
-          span: text "Auto-save"
-  r.appendChild(toolbar, saveCluster)
-
-  block saveControlWiring:
-    r.setInnerHtml(saveDotEl, saveSvg)
-    let capturedVm = vm
-    let button = saveButtonEl
-    let labelNode = saveLabelEl
-    let dot = saveDotEl
-    let menu = saveMenuEl
-    let box = autoSaveBoxEl
-
-    createRenderEffect proc() =
-      let ind = capturedVm.saveIndicator()
-      r.setTextContent(labelNode, ind.label)
-      r.setAttribute(button, "data-save-state",
-        case ind.state
-        of sisClean: "clean"
-        of sisDirty: "dirty"
-        of sisSaving: "saving"
-        of sisFailed: "failed")
-      r.setAttribute(button, "data-save-pending", $ind.pending)
-      # `title` carries the refusal. It is the only thing that tells the
-      # user what to do about a failed save, so it must not be dropped.
-      r.setAttribute(button, "title",
-        if ind.detail.len > 0: ind.detail
-        elif ind.state == sisDirty: "Save to source"
-        else: ind.label)
-      r.setAttribute(button, "aria-label",
-        if ind.detail.len > 0: ind.label & ": " & ind.detail else: ind.label)
-      # One glyph, recoloured. A floppy disk says "save" at a glance the way
-      # no abstract mark does, and swapping the SHAPE per state would mean
-      # the control stopped looking like a save button exactly when it most
-      # needs to be found. The state is carried by the colour AND by the
-      # words beside it, which is why the words appear whenever there is
-      # anything to report.
-      let fg =
-        case ind.state
-        of sisClean:  textMuted
-        of sisDirty:  "#FBBF24"
-        of sisSaving: accentHot
-        of sisFailed: "#F87171"
-      r.setStyle(dot, "color", fg)
-      r.setStyle(labelNode, "color", fg)
-      # The words appear exactly when there is something to say. At rest the
-      # control is an icon like its neighbours; the moment there is unsaved
-      # work, a write running, or a refusal, it says so in words -- which is
-      # when a tooltip nobody hovers would be too late.
-      let hasSomethingToSay = ind.state != sisClean
-      r.setStyle(labelNode, "max-width",
-        if hasSomethingToSay: "140px" else: "0px")
-      r.setStyle(labelNode, "opacity", if hasSomethingToSay: "1" else: "0")
-      r.setStyle(labelNode, "margin-left", if hasSomethingToSay: "1px" else: "0")
-      r.setStyle(button, "cursor",
-        if ind.state == sisClean: "default" else: "pointer")
-      r.setAttribute(button, "aria-disabled",
-        if ind.state == sisClean: "true" else: "false")
-
-    createRenderEffect proc() =
-      r.setStyle(menu, "display", if saveMenuOpen.val: "block" else: "none")
-
-    createRenderEffect proc() =
-      let on = capturedVm.autoSaveEnabled.val
-      r.setTextContent(box, if on: "\xE2\x9C\x93" else: "")
-      r.setStyle(box, "background-color", if on: accent else: "transparent")
-      r.setStyle(box, "border-color", if on: accent else: textMuted)
-      r.setAttribute(box, "data-checked", if on: "true" else: "false")
-
-    r.addEventListener(button, "click", proc(ev: auto) =
-      if capturedVm.saveIndicator().state != sisClean:
-        discard capturedVm.runEditorCommand(eckSave))
-    r.addEventListener(saveChevronEl, "click", proc(ev: auto) =
-      saveMenuOpen.val = not saveMenuOpen.val)
-
-    # Dismiss on a click anywhere else, and on Escape. A popup that only
-    # closes by clicking the control that opened it is a popup you have to
-    # remember how to get rid of -- and this one overlaps the preview.
-    #
-    # Capture phase, so a click on a control UNDER the menu still closes it
-    # even if that control stops propagation; and the cluster is excluded by
-    # containment rather than by target equality, so clicking the checkbox
-    # inside the menu does not dismiss it before its own handler runs.
-    when defined(js):
-      let cluster = saveCluster
-      let closeMenu = proc() =
-        if saveMenuOpen.val:
-          saveMenuOpen.val = false
-      {.emit: ["""
-        (function (cluster, close) {
-          document.addEventListener('pointerdown', function (event) {
-            if (cluster && cluster.contains(event.target)) return;
-            close();
-          }, true);
-          document.addEventListener('keydown', function (event) {
-            if (event.key === 'Escape') close();
-          }, true);
-        })(""", cluster, ", ", closeMenu, ");"].}
-    r.addEventListener(menu, "click", proc(ev: auto) =
-      capturedVm.setAutoSave(not capturedVm.autoSaveEnabled.val)
-      # Persist through the same path the exposed API uses, so a click and a
-      # scripted call cannot disagree about what is remembered.
-      when defined(js):
-        let on = capturedVm.autoSaveEnabled.val
-        {.emit: ["""
-          try {
-            window.localStorage.setItem('isonim:editor:auto-save',
-              """, on, """ ? '1' : '0');
-          } catch (e) {}
-        """].})
+  r.appendChild(toolbar, viewportClusterWrapper)
 
   # Spacer #2 — trailing flex-grow:1 wedge. Symmetric with the
   # leading spacer above; together they centre the Viewport cluster

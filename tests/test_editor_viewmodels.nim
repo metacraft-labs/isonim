@@ -7092,26 +7092,19 @@ proc indicatorVm(writeSource = true; adapterReady = true): EditorVM =
         file: "styles.nim", property: "")]),
     sourceAdapterReady = adapterReady))
 
-suite "Editor ViewModels (the save control)":
-  ## The chrome bar's save button is also the editor's only indicator that
-  ## there is unsaved work. It exists because a property edit that committed
-  ## and one that was refused looked identical -- nothing moved -- so every
-  ## case here is about the control telling the truth.
-
-
+suite "Editor ViewModels (the save indicator)":
+  ## There is no save CONTROL any more -- saving is automatic. The indicator
+  ## survives because the status bar shows failures, and a failure is the one
+  ## thing the user has to act on.
 
   test "a fresh workspace reads as saved":
     createRoot proc(dispose: proc()) =
       let vm = indicatorVm()
-      let ind = vm.saveIndicator()
-      check ind.state == sisClean
-      check ind.label == "Saved"
-      check ind.pending == 0
+      check vm.saveIndicator().state == sisClean
+      check vm.saveIndicator().label == "Saved"
       dispose()
 
   test "every state carries a label, never colour alone":
-    ## A colour-only indicator is unreadable to a colour-blind user and
-    ## invisible in a screenshot review.
     createRoot proc(dispose: proc()) =
       let vm = indicatorVm()
       for stage in [wesClean, wesDirty, wesApplying, wesFormatting,
@@ -7121,37 +7114,10 @@ suite "Editor ViewModels (the save control)":
         check vm.saveIndicator().label.len > 0
       dispose()
 
-  test "a staged edit reads as unsaved, and counts":
-    createRoot proc(dispose: proc()) =
-      let vm = indicatorVm()
-      discard vm.selectInspectorElement(taglineElement())
-      check vm.commitInspectorValue("letter-spacing", "0.05em",
-        sskLocalInstance).ok
-      let one = vm.saveIndicator()
-      check one.state == sisDirty
-      check one.label == "1 unsaved change"
-      check one.pending == 1
-
-      check vm.commitInspectorValue("margin-bottom", "40px",
-        sskLocalInstance).ok
-      let two = vm.saveIndicator()
-      check two.state == sisDirty
-      check two.label == "2 unsaved changes"
-      dispose()
-
-  test "a transaction in flight reads as saving":
-    createRoot proc(dispose: proc()) =
-      let vm = indicatorVm()
-      for stage in [wesApplying, wesFormatting, wesRegenerating,
-                    wesCompiling, wesReloading, wesReviewing]:
-        vm.workspaceEditStage.val = stage
-        check vm.saveIndicator().state == sisSaving
-        check vm.saveIndicator().label == "Saving…"
-      dispose()
-
   test "a refused save reads as failed and keeps the reason":
-    ## The reason is the only thing that tells the user what to do, so the
-    ## control holds it rather than letting it scroll past in a row message.
+    ## The status bar renders exactly this, and nothing else. A successful
+    ## write is not news -- announcing it would train the eye to ignore the
+    ## corner that has to work when something goes wrong.
     createRoot proc(dispose: proc()) =
       let vm = indicatorVm()
       vm.workspaceEditStage.val = wesFailed
@@ -7160,7 +7126,6 @@ suite "Editor ViewModels (the save control)":
         message: "Source changed before the pending edit could be applied.")]
       let ind = vm.saveIndicator()
       check ind.state == sisFailed
-      check ind.label == "Not saved"
       check "Source changed" in ind.detail
       dispose()
 
@@ -7173,61 +7138,49 @@ suite "Editor ViewModels (the save control)":
       dispose()
 
   test "a dirty stage with nothing staged reads as saved":
-    ## Several paths set the stage dirty and may then revert. Reporting
-    ## "Unsaved" with nothing to save is the indicator lying in the safe
-    ## direction, which is still lying.
     createRoot proc(dispose: proc()) =
       let vm = indicatorVm()
       vm.workspaceEditStage.val = wesDirty
-      check vm.inspector.pendingSourceEdits.val.len == 0
       check vm.saveIndicator().state == sisClean
       dispose()
 
 suite "Editor ViewModels (auto-save)":
+  ## Automatic, always, with no switch. An editor that holds your change
+  ## hostage to a second gesture has invented a state the user has to manage.
 
-  test "auto-save is off until asked for":
-    ## The editor writes real source files that agents and people edit by
-    ## hand. A tool that starts writing to them without being asked is not
-    ## one you can leave open.
-    createRoot proc(dispose: proc()) =
-      check not createEditorVM(newEditorWorkspace(
-        title = "t", storyGroups = cssStoryGroups())).autoSaveEnabled.val
-      dispose()
-
-  test "a commit schedules a save only when auto-save is on":
+  test "a commit schedules a save":
     createRoot proc(dispose: proc()) =
       let vm = indicatorVm()
       discard vm.selectInspectorElement(taglineElement())
-
-      check vm.commitInspectorValue("letter-spacing", "0.05em",
-        sskLocalInstance).ok
       check vm.autoSaveGeneration.val == 0
-
-      vm.setAutoSave(true)
-      check vm.commitInspectorValue("margin-bottom", "40px",
+      check vm.commitInspectorValue("letter-spacing", "0.05em",
         sskLocalInstance).ok
       check vm.autoSaveGeneration.val == 1
       dispose()
 
+  test "each further commit schedules again":
+    ## The browser layer debounces, so a burst of commits collapses into one
+    ## write -- but every commit has to ARRIVE, or the last edit in a burst
+    ## would be the one that never got saved.
+    createRoot proc(dispose: proc()) =
+      let vm = indicatorVm()
+      discard vm.selectInspectorElement(taglineElement())
+      check vm.commitInspectorValue("letter-spacing", "0.05em",
+        sskLocalInstance).ok
+      check vm.commitInspectorValue("margin-bottom", "40px",
+        sskLocalInstance).ok
+      check vm.autoSaveGeneration.val == 2
+      dispose()
+
   test "a refused commit never schedules a save":
     ## Staging is what auto-save writes. An edit that did not stage has
-    ## nothing to write, and scheduling one would make the indicator flicker
-    ## through `Saving…` for an edit the user was refused.
+    ## nothing to write, and scheduling one would send the status bar through
+    ## a failure for an edit the user was already told about in the row.
     createRoot proc(dispose: proc()) =
       let vm = indicatorVm(writeSource = false)
       discard vm.selectInspectorElement(taglineElement())
-      vm.setAutoSave(true)
       check not vm.commitInspectorValue("letter-spacing", "0.05em",
         sskLocalInstance).ok
-      check vm.autoSaveGeneration.val == 0
-      dispose()
-
-  test "toggling auto-save does not itself schedule a save":
-    createRoot proc(dispose: proc()) =
-      let vm = indicatorVm()
-      vm.setAutoSave(true)
-      check vm.autoSaveGeneration.val == 0
-      vm.setAutoSave(false)
       check vm.autoSaveGeneration.val == 0
       dispose()
 
