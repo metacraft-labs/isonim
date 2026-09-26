@@ -161,8 +161,16 @@ const portOf = (s: ServerSpec) => s.basePort + portOffset;
 // worker would fail the very tests it is meant to protect.
 const inWorker = process.env.TEST_WORKER_INDEX !== undefined;
 
+// `--list` starts no servers, so it has no prerequisites. Keeping it usable
+// on a checkout that has not been built is the difference between "what is
+// in this suite?" being answerable and not.
+const listingOnly = process.argv.includes("--list");
+
 const active = specs.filter((s) => isSelected(s.project));
-const missing = inWorker ? [] : active.filter((s) => !existsSync(s.requires));
+const missing =
+  inWorker || listingOnly
+    ? []
+    : active.filter((s) => !existsSync(s.requires));
 if (missing.length > 0) {
   throw new Error(
     "\n\nPlaywright prerequisites are missing. Build them first — or run\n" +

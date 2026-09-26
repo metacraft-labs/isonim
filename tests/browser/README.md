@@ -116,10 +116,23 @@ standing ones as of the last sweep.
   hence `toHaveCount(3)` seeing 6. This round-trip has never worked; the specs
   were added in 1552585 and the fixture stopped compiling in ddcb5bd, so
   nothing was watching.
-- **`metacraft-web-editor`, all 22** — blocked, cannot run here.
-  `metacraft-web`'s `build-back-office-editor` does not compile against this
-  isonim: `apps/back-office/src/backoffice_editor/workspace.nim:1174` is a
-  `case` that does not handle isonim's `skVectorSymbol`, and
-  `metacraft-web/nim.cfg` is missing `--path:../isonim-render-serve/src`,
-  which `isonim/src/isonim/editor/preview_canvas.nim` needs. Both fixes belong
-  in metacraft-web.
+- **`metacraft-web-editor`, all 22** — red, and two layers of the failure are
+  in the sibling repo rather than here.
+
+  Building the bundle at all needs two metacraft-web-side fixes:
+  `metacraft-web/nim.cfg` has no `--path:../isonim-render-serve/src`, which
+  `isonim/src/isonim/editor/preview_canvas.nim` imports; and
+  `apps/back-office/src/backoffice_editor/workspace.nim:1174` is a `case`
+  that does not handle isonim's `skVectorSymbol`. With both worked around,
+  all 22 still fail, in two groups:
+
+  * 9 never get a writable bridge — `.editor-statusbar` reads
+    `…/mainViewmainIsoNim Editor v0.1.0` where the spec wants
+    `write writable`, so `?writeBridge=1` is not engaging.
+  * the remaining 13 die on `net::ERR_CONNECTION_REFUSED`: the dev bridge
+    (`metacraft-web/tools/serve_editor_dev_bridge.mjs`) logs
+    `Editor dev bridge listening`, serves the first few specs, and then exits
+    mid-run without a message. Everything after it is collateral.
+
+  This project is not in either CI job. It needs a sibling repo that is not
+  in this checkout and is not listed in `.github/sibling-repos`.
