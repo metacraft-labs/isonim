@@ -7650,6 +7650,29 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
     editor.workspaceEditDiagnostics.val = @[]
     return WorkspaceEditResult(ok: true, stage: wesClean)
 
+  # The permission gate belongs HERE, not only at command dispatch.
+  #
+  # `commandRequirementFailure` refuses eckApply/eckSave on a read-only
+  # workspace, which greys out the Save chip and is what a user sees. But this
+  # proc is the public transaction entry point, and three callers reach it
+  # WITHOUT going through a command: `retryWorkspaceFileEdits`,
+  # `acceptAgentProposedEdit` and `revertAgentProposedEdit`. On a workspace
+  # declaring `writeSource: false` they each wrote to disk and reported
+  # success.
+  #
+  # The agent path is the one that matters: an AI-proposed edit, accepted in a
+  # workspace the project declared read-only, mutated source and told the user
+  # it had worked. A permission that holds at one door and not the other three
+  # is not a permission.
+  #
+  # Checked against the adapter's absence rather than instead of it: a
+  # workspace can be writable and adapterless, and that is a different
+  # diagnostic.
+  if not editor.workspacePermissions.val.writeSource:
+    return editor.failWorkspaceEdit(@[workspaceDiagnostic(wedMissingOperation,
+      "This workspace is read-only for source changes.",
+      file = "", schemaKey = "", property = "")])
+
   let ownershipDiagnostics = editor.inspector.sourceJournalOwnershipDiagnostics()
   if ownershipDiagnostics.len > 0:
     var diagnostics: seq[WorkspaceEditDiagnostic] = @[]
