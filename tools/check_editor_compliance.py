@@ -204,6 +204,9 @@ REASON_KINDS = {
     "behaviour-hook":
         "a class that carries no declarations because it is a script "
         "selector rather than a style class",
+    "design-decision":
+        "an argued departure from a tier or surface rule, recorded so the "
+        "next project inherits the ARGUMENT and not just the departure",
 }
 
 # Which kinds each row type may carry. A `raw-region` justified as
@@ -215,13 +218,12 @@ ROW_KINDS = {
                              "non-visual"},
     ("D2", "class"): {"contextual-selector", "behaviour-hook"},
     ("D2", "runtime-class"): {"runtime-computed"},
-    ("D4", "comp-references-ref"): {"generated-content", "contextual-selector",
-                                    "runtime-computed", "codegen-artifact",
-                                    "non-visual", "behaviour-hook"},
-    ("D4", "component-references-ref"): set(REASON_KINDS),
-    ("D5", "token"): set(REASON_KINDS),
-    ("D6", "unreachable"): set(REASON_KINDS),
-    ("D7", "edit-contract"): set(REASON_KINDS),
+    ("D4", "comp-references-ref"): {"design-decision"},
+    ("D4", "component-references-ref"): {"design-decision"},
+    ("D4", "missed-role-binding"): {"design-decision"},
+    ("D5", "token"): {"design-decision"},
+    ("D6", "unreachable"): {"design-decision"},
+    ("D7", "edit-contract"): {"design-decision"},
 }
 
 DIMENSION_TITLES = {
@@ -544,6 +546,8 @@ def row_type_for(dimension: str, key: str) -> str:
     if dimension == "D2":
         return "runtime-class" if "::" in key else "class"
     if dimension == "D4":
+        if key.startswith("role::"):
+            return "missed-role-binding"
         return "component-references-ref" if "::" in key else \
                "comp-references-ref"
     if dimension == "D5":
@@ -1174,7 +1178,7 @@ def check_d4(tiers, nodes, class_index, rows, observed):
             "Bind the `sys` (or, inside one component, `comp`) role that names "
             "the\n"
             "decision. If no role names it, that is the role that is missing.",
-            f"D4\t<typed-reason>\t{key}\t{len(sites)}\t<why no semantic role "
+            f"D4\tdesign-decision\t{key}\t{len(sites)}\t<why no semantic role "
             f"can name this>"))
 
     # --- D4b: does a `comp` token reference a `ref` directly? -------------
@@ -1218,8 +1222,74 @@ def check_d4(tiers, nodes, class_index, rows, observed):
                 "layer, say so. That is a defensible answer and it is the one "
                 "grip gives,\n"
                 "but it has to be given rather than assumed.",
-                f"D4\t<typed-reason>\t{group}\t{len(members)}\t<why this "
+                f"D4\tdesign-decision\t{group}\t{len(members)}\t<why this "
                 f"component's comp tier is its own semantic layer>"))
+
+    # --- D4c: a `comp` token that could have bound a `sys` role -----------
+    #
+    # THIS IS THE PART OF D3 THAT SURVIVES MECHANISATION, and it is worth
+    # saying why it is here rather than there. D3's open question is "value
+    # matches a token but is not bound", and the objection to it is sound: a
+    # design system has coincidental value matches and a test that fires on
+    # them gets ignored.
+    #
+    # This test does not compare VALUES. It compares REFERENCES: a `comp`
+    # token and a `sys` role that resolve to the SAME `ref` primitive are not
+    # coincidentally equal, they are the same decision written twice, and one
+    # of the two writings has a name that says what the decision is. Measured
+    # on grip it fires four times and every one is arguable in a sentence,
+    # which is the frequency a gated check can carry.
+    #
+    # It fires only where D4b already fires, so it costs no new scan and adds
+    # no new failure mode: a project whose `comp` tier goes through `sys` has
+    # nothing here by construction.
+    sys_by_ref: dict[str, list[str]] = defaultdict(list)
+    for token in tiers.get("sys", []):
+        if not isinstance(token["value"], str):
+            continue
+        match = re.fullmatch(r"\{(ref\.[a-zA-Z0-9_.-]+)\}",
+                             token["value"].strip())
+        if match:
+            sys_by_ref[match.group(1)].append(token["key"])
+
+    missed = 0
+    for token in tiers.get("comp", []):
+        if not isinstance(token["value"], str):
+            continue
+        match = re.fullmatch(r"\{(ref\.[a-zA-Z0-9_.-]+)\}",
+                             token["value"].strip())
+        if not match:
+            continue
+        roles = sys_by_ref.get(match.group(1))
+        if not roles:
+            continue
+        missed += 1
+        key = f"role::{token['key']}"
+        observed[("D4", key)] = 1
+        row = accepted.get(key)
+        if row is not None:
+            row.used = True
+            continue
+        result.findings.append(Finding(
+            "D4",
+            f"`{token['key']}` resolves to `{match.group(1)}`, which "
+            f"`{roles[0]}` already names",
+            "The same primitive is reached by two paths, and one of them has a "
+            "name that\n"
+            "says what the decision IS. This is not a coincidental value "
+            "match -- both\n"
+            "tokens point at the identical `ref` -- so either they are the "
+            "same decision,\n"
+            "in which case one should bind the other, or they are two "
+            "decisions that\n"
+            "happen to coincide today and will drift apart the moment either "
+            "moves.",
+            f"Bind `{roles[0]}` instead of the primitive -- or, if these are "
+            f"genuinely two\n"
+            f"different decisions, say which two, because nothing in the "
+            f"files says it now.",
+            f"D4\tdesign-decision\t{key}\t1\t<the two different decisions, "
+            f"named>"))
 
     result.measurements = {
         "refTokens": len(tiers.get("ref", [])),
@@ -1227,12 +1297,14 @@ def check_d4(tiers, nodes, class_index, rows, observed):
         "compTokens": len(tiers.get("comp", [])),
         "compReferencingRef": len(comp_to_ref),
         "componentsBindingRef": sum(len(v) for v in component_hits.values()),
+        "missedRoleBindings": missed,
     }
     result.summary = (
         f"{len(tiers.get('ref', []))} ref / {len(tiers.get('sys', []))} sys / "
         f"{len(tiers.get('comp', []))} comp; "
         f"{sum(len(v) for v in component_hits.values())} component bindings "
-        f"reach a `ref`; {len(comp_to_ref)} comp tokens reference a `ref`")
+        f"reach a `ref`; {len(comp_to_ref)} comp tokens reference a `ref`, "
+        f"{missed} of them one a `sys` role already names")
 
     # The advisory the spec asked for as a test. Printed, never a verdict.
     alias_only = alias_only_sys_tokens(tiers)
@@ -1327,7 +1399,7 @@ def check_d5(tiers, rows, observed):
             f"recurring decision this token names -- or mark it "
             f"`\"surface\": \"not-agent-facing\"`\n"
             f"if it is machinery.",
-            f"D5\t<typed-reason>\t{key}\t1\t<why this token can carry no "
+            f"D5\tdesign-decision\t{key}\t1\t<why this token can carry no "
             f"usage sentence>"))
 
     for key in unmarked:
@@ -1347,7 +1419,7 @@ def check_d5(tiers, rows, observed):
             f"`$extensions.\"{AGENT_EXTENSION}\".usage`, or mark its group\n"
             f"`\"surface\": \"not-agent-facing\"` the way a primitive tier "
             f"should be.",
-            f"D5\t<typed-reason>\t{key}\t1\t<why it can be neither>"))
+            f"D5\tdesign-decision\t{key}\t1\t<why it can be neither>"))
 
     total = sum(len(v) for v in tiers.values())
     result.measurements = {
@@ -1433,7 +1505,7 @@ def check_d6(manifest, rows, observed):
             "domain. The project's preview hook can render whatever sheet it "
             "likes for\n"
             "them; the editor's own token grid appears underneath.",
-            "D6\t<typed-reason>\tfoundationTokens\t1\t<why the tokens are "
+            "D6\tdesign-decision\tfoundationTokens\t1\t<why the tokens are "
             "meant to be unreachable>")
 
     # --- a group whose kind disagrees with its items ----------------------
@@ -1463,7 +1535,7 @@ def check_d6(manifest, rows, observed):
                 "Give the group and its items the same kind, or move the item "
                 "to a group\n"
                 "that matches it.",
-                f"D6\t<typed-reason>\t{key}\t1\t<why the mismatch is "
+                f"D6\tdesign-decision\t{key}\t1\t<why the mismatch is "
                 f"intended>")
 
     # --- a component variant whose story does not exist -------------------
@@ -1488,7 +1560,7 @@ def check_d6(manifest, rows, observed):
             "the inspector will never offer them.",
             "Add the story, or point the variant at the story that renders "
             "this component.",
-            f"D6\t<typed-reason>\t{key}\t1\t<why the variant needs no story>")
+            f"D6\tdesign-decision\t{key}\t1\t<why the variant needs no story>")
 
     result.measurements = {
         "storyGroups": len(groups), "stories": len(items),
@@ -1543,7 +1615,7 @@ def check_d7(manifest, rows, observed):
             "Supply an `editAdapter`, or set `writeSource: false` so the "
             "editor refuses\n"
             "visibly instead of silently.",
-            "D7\t<typed-reason>\twriteSource-without-adapter\t1\t<why>")
+            "D7\tdesign-decision\twriteSource-without-adapter\t1\t<why>")
 
     if write and has_adapter and not schema:
         report(
@@ -1555,7 +1627,7 @@ def check_d7(manifest, rows, observed):
             "edit knows what to change but not where it lives.",
             "Declare the schema entries for the keys the variants and tokens "
             "carry.",
-            "D7\t<typed-reason>\twriteSource-without-schema\t1\t<why>")
+            "D7\tdesign-decision\twriteSource-without-schema\t1\t<why>")
 
     if not write:
         # Not a finding. A read-only instance is a legitimate and common state
@@ -1687,9 +1759,13 @@ def self_test() -> None:
     tiers = load_tokens_from_object(SELF_TEST_TOKENS)
     d4 = check_d4(tiers, nodes, {"x": {"color": "var(--ref-color-blue-500)"}},
                   [], {})
-    if len(d4.findings) != 2:
-        failures.append(f"D4: expected 2 findings (one comp->ref group, one "
-                        f"component binding a ref), got {len(d4.findings)}")
+    if len(d4.findings) != 3:
+        failures.append(f"D4: expected 3 findings (one comp->ref group, one "
+                        f"component binding a ref, one missed role binding), "
+                        f"got {len(d4.findings)}")
+    if d4.measurements.get("missedRoleBindings") != 1:
+        failures.append("D4: `comp.code.keyword` and `sys.color.accent` "
+                        "resolve to the same ref and that was not reported")
     d5 = check_d5(tiers, [], {})
     if len(d5.findings) != 1:
         failures.append(f"D5: expected 1 unmarked token, got "
@@ -1877,6 +1953,8 @@ def placeholder_kind(dimension: str, key: str) -> str:
         return next(iter(allowed))
     if dimension == "D2":
         return ("runtime-computed" if "::" in key else "contextual-selector")
+    if dimension in {"D4", "D5", "D6", "D7"}:
+        return "design-decision"
     return "generated-content"
 
 
