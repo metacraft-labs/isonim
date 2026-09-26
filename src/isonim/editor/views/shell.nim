@@ -14,6 +14,7 @@ import isonim/editor/views/choice_row
 import isonim/editor/views/storyboard
 import isonim/editor/views/component_detail
 import isonim/editor/views/component_edit
+import isonim/editor/views/scene_graph_walk
 import isonim/editor/views/foundations_page
 import isonim/editor/views/page_preview
 import isonim/editor/views/vector_editor
@@ -874,12 +875,14 @@ proc bindSceneGraphRow[R, E](vm: EditorVM; r: R; node: E; rowId: string) =
     capturedVm.selectInspectorElementById(capturedId)
     # Tell the preview too, so the outline moves. The iframe listens for this
     # on its parent; if no preview is mounted the event is simply unheard.
-    when defined(js):
-      {.emit: ["""
-        window.dispatchEvent(new CustomEvent('isonim-select-preview-element-id', {
-          detail: { id: """, capturedId, """ }
-        }));
-      """].}
+    #
+    # Through `dispatchPreviewElementSelection`, NOT a local `{.emit.}`. A Nim
+    # `string` on the JS backend is an array of char codes, so handing one
+    # straight to a `CustomEvent` detail delivered an array; the iframe's
+    # `String(detail.id)` then read "47,85,115,..." and matched nothing, so a
+    # row click moved the Inspector but never outlined the element. That
+    # helper converts, and is the same one the status-bar breadcrumb uses.
+    dispatchPreviewElementSelection(capturedId)
   )
   r.addEventListener(node, "mouseenter", proc() =
     capturedVm.inspector.hoveredElementId.val = capturedId)
@@ -888,23 +891,41 @@ proc bindSceneGraphRow[R, E](vm: EditorVM; r: R; node: E; rowId: string) =
       capturedVm.inspector.hoveredElementId.val = "")
 
 proc installSceneGraphReader[R, E](vm: EditorVM; r: R; host: E) =
-  ## Read the preview's element tree from the parent side.
+  ## Read the preview's element tree from the parent side. THE producer.
   ##
-  ## The alternative was to have the preview publish its own tree, and that is
-  ## what the selection bridge does. It cannot serve the scene graph, because
-  ## the bridge is injected only OUTSIDE View mode (`page_preview.nim` and
-  ## `component_edit.nim` both hand View the raw document deliberately, so the
-  ## preview is exactly what ships). The panel is specified as visible in every
-  ## mode, so a View-mode-shaped hole in it is not acceptable — and injecting
-  ## the bridge into View mode to fill the hole would change the one mode whose
-  ## whole job is to be unmodified.
+  ## The alternative was to have the preview publish its own tree, which the
+  ## selection bridge used to do as well. It cannot serve the scene graph,
+  ## because the bridge is injected only OUTSIDE View mode (`page_preview.nim`
+  ## and `component_edit.nim` both hand View the raw document deliberately, so
+  ## the preview is exactly what ships). The panel is specified as visible in
+  ## every mode, so a View-mode-shaped hole in it is not acceptable — and
+  ## injecting the bridge into View mode to fill the hole would change the one
+  ## mode whose whole job is to be unmodified.
+  ##
+  ## Running BOTH was worse than either: two producers wrote one signal, the
+  ## last writer won, and which tree the panel showed depended on whether the
+  ## user had just switched modes or just moved the mouse. The bridge no
+  ## longer publishes (see `component_edit.nim`); this is the only producer,
+  ## in every mode.
   ##
   ## The srcdoc iframe is same-origin, so the editor can simply walk
   ## `contentDocument` itself. No injection, one code path, every mode.
   ##
-  ## The rows are shaped exactly like the bridge's `layerTree()` output and go
-  ## through the same `previewDomLayerRows` parser, so downstream there is one
-  ## tree and one selection regardless of which producer ran.
+  ## It walks the RENDERED DOM, not `[data-isonim-src]`. The attribute is
+  ## stamped by the SSR `ui:` DSL on the elements it generates, and that is a
+  ## minority of a real page: the grip pilot's home page renders 3465
+  ## elements and 70 carry it. Everything assembled as an HTML string (`raw`
+  ## in the DSL) or built by the page's own client script has no attribute and
+  ## can never have one — a compile-time stamp cannot reach markup the
+  ## compiler never saw. Filtering on it produced a 62-row tree for a page
+  ## whose visible hierarchy is 230 elements deep-and-wide, which is the
+  ## "shallow, incomplete" panel this replaces. Source attribution still comes
+  ## from the attribute WHERE IT EXISTS; membership does not depend on it.
+  ##
+  ## The walk itself is `scene_graph_walk.nim`, the same source text the
+  ## in-iframe bridge instantiates, so an element's id is one string on both
+  ## sides of the boundary and a row click resolves to the element the bridge
+  ## would have selected.
   let capturedVm = vm
   var knownIds: seq[string] = @[]
     ## Ids this reader has already seen. The seeding rule below is "open a
@@ -924,12 +945,35 @@ proc installSceneGraphReader[R, E](vm: EditorVM; r: R; host: E) =
     # collapse the user performed: a node they folded is already known, so it
     # is not re-seeded on the next publish and stays folded.
     #
-    # Depth 2 rather than "everything": the grip page is 62 nodes and opening
-    # all of them buries the page structure in leaf spans.
+    # How deep to seed is a budget, not a constant. A fixed depth of 2 reads
+    # as "shallow" on exactly the trees where it matters: a page composed of
+    # `div.w > section > div > ...` wrappers spends its first three levels on
+    # containers and shows seven rows, while a flat one shows fifty. The rule
+    # is instead "open as many whole levels as fit in `seedBudget` visible
+    # rows", which gives a comparable amount of tree whatever the nesting
+    # style, and still stops well short of `everything` -- opening every node
+    # buries the page structure in leaf spans.
+    const seedBudget = 120
+    var perDepth: seq[int] = @[]
+    for row in parsed:
+      while perDepth.len <= row.depth:
+        perDepth.add 0
+      perDepth[row.depth] += 1
+    # Opening every node down to depth `k` makes every row of depth <= k+1
+    # visible, so the affordable `k` is one less than the deepest level whose
+    # running total still fits. Floor of 2 so a tree that is wide at the top
+    # is not left closed by the budget alone.
+    var seedDepth = 2
+    var visible = 0
+    for d in 0 ..< perDepth.len:
+      visible += perDepth[d]
+      if visible > seedBudget:
+        break
+      seedDepth = max(seedDepth, d - 1)
     var seeded = capturedVm.inspector.expandedLayerIds.val
     var changed = false
     for row in parsed:
-      if row.childCount > 0 and row.depth <= 2 and
+      if row.childCount > 0 and row.depth <= seedDepth and
           row.id notin knownIds:
         knownIds.add row.id
         if row.id notin seeded:
@@ -944,19 +988,32 @@ proc installSceneGraphReader[R, E](vm: EditorVM; r: R; host: E) =
     # empty arriving here is deliberate and is published. The flicker guard
     # lives at the producer, where the timing information is.
     capturedVm.inspector.setSelectionTree(parsed)
+  let walkSource: cstring = cstring(sceneGraphWalkJs)
   when defined(js):
     {.emit: ["""
-      (function(ingest, host) {
+      (function(ingest, host, walkSource) {
         if (window.__isonimSceneGraphReaderInstalled) return;
         window.__isonimSceneGraphReaderInstalled = true;
+        // The walk is a Nim const shared with the injected preview bridge.
+        // The editor's own window needs its own instance of it; a script
+        // element is the plainest way to evaluate it here without a second
+        // copy of the source living in this file.
+        if (!window.__isonimSceneGraphWalk) {
+          try {
+            var tag = document.createElement('script');
+            tag.setAttribute('data-isonim-scene-graph-walk', 'true');
+            tag.textContent = walkSource;
+            document.head.appendChild(tag);
+          } catch (e) {}
+        }
         var lastSignature = '';
         function previewDoc() {
           // Several iframes exist at once (the canvas preview, the detail
           // view, and hidden ones kept mounted). Pick by VISIBILITY first and
-          // source-element count only as a tie-break: choosing the frame with
-          // the most source-mapped elements alone kept returning a
-          // still-mounted previous story, so switching stories left the tree
-          // showing the old page -- measured, not hypothetical.
+          // element count only as a tie-break: choosing the frame with the
+          // most elements alone kept returning a still-mounted previous
+          // story, so switching stories left the tree showing the old page --
+          // measured, not hypothetical.
           var frames = document.querySelectorAll('iframe');
           var best = null, bestScore = -1;
           for (var i = 0; i < frames.length; i++) {
@@ -964,7 +1021,7 @@ proc installSceneGraphReader[R, E](vm: EditorVM; r: R; host: E) =
               var f = frames[i];
               var d = f.contentDocument;
               if (!d || !d.body) continue;
-              var n = d.querySelectorAll('[data-isonim-src]').length;
+              var n = d.body.querySelectorAll('*').length;
               if (n === 0) continue;
               var rect = f.getBoundingClientRect();
               var visible = rect.width > 1 && rect.height > 1 &&
@@ -977,100 +1034,18 @@ proc installSceneGraphReader[R, E](vm: EditorVM; r: R; host: E) =
           }
           return bestScore > 0 ? best : null;
         }
-        function cssPath(el) {
-          var parts = [];
-          var node = el;
-          while (node && node.nodeType === 1 && parts.length < 12) {
-            var seg = node.tagName.toLowerCase();
-            if (node.id) { seg += '#' + node.id; parts.unshift(seg); break; }
-            var parent = node.parentElement;
-            if (parent) {
-              var sibs = Array.prototype.filter.call(
-                parent.children,
-                function (c) { return c.tagName === node.tagName; });
-              if (sibs.length > 1) {
-                seg += ':nth-of-type(' + (sibs.indexOf(node) + 1) + ')';
-              }
-            }
-            parts.unshift(seg);
-            node = node.parentElement;
-          }
-          return parts.join(' > ');
-        }
-        function label(el) {
-          var tag = el.tagName.toLowerCase();
-          var cls = String(el.getAttribute('class') || '').trim()
-            .split(/\s+/).filter(Boolean).slice(0, 2).join('.');
-          var base = tag + (cls ? '.' + cls : '');
-          // A leaf's own text is usually the most recognisable thing about
-          // it -- `span.tag` tells you nothing, `span "Faster than C."` tells
-          // you which one. Only for leaves: an ancestor's text belongs to its
-          // descendants, not to it.
-          if (!el.children || el.children.length === 0) {
-            var t = String(el.textContent || '').trim().replace(/\s+/g, ' ');
-            if (t) {
-              if (t.length > 24) t = t.slice(0, 24) + '\u2026';
-              return base + '  \u201C' + t + '\u201D';
-            }
-          }
-          return base;
-        }
-        // A scene graph shows what is on screen. `html`, `head`, `meta`,
-        // `title`, `style` and `script` all carry a source location because
-        // the DSL emitted them, but none of them is a thing a designer can
-        // select, move or restyle -- listing them pushes the actual page
-        // below the fold and makes the first eight rows useless.
-        var SKIP = { html: 1, head: 1, meta: 1, title: 1, style: 1,
-                     script: 1, link: 1, base: 1, body: 1 };
         function build(doc) {
-          var nodes = Array.prototype.slice.call(
-            doc.querySelectorAll('[data-isonim-src]'))
-            .filter(function (el) {
-              return !SKIP[el.tagName.toLowerCase()];
-            });
-          var set = new Set(nodes);
-          var depthOf = function (el) {
-            var d = 0, p = el.parentElement;
-            while (p) { if (set.has(p)) d++; p = p.parentElement; }
-            return d;
-          };
-          return nodes.map(function (el) {
-            var src = String(el.getAttribute('data-isonim-src') || '');
-            var m = src.match(/^(.*?):(\d+)(?::(\d+))?$/);
-            var file = m ? m[1] : src;
-            var line = m ? Number(m[2]) : 0;
-            var parent = el.parentElement;
-            while (parent && !set.has(parent)) parent = parent.parentElement;
-            var kids = Array.prototype.filter.call(
-              el.children || [], function (c) { return set.has(c); });
-            return {
-              id: src + ':' + cssPath(el),
-              parentId: parent
-                ? (parent.getAttribute('data-isonim-src') + ':' + cssPath(parent))
-                : '',
-              label: label(el),
-              tag: el.tagName.toLowerCase(),
-              sourceKey: src,
-              schemaKey: 'dom.' + el.tagName.toLowerCase(),
-              domPath: cssPath(el),
-              sourceFile: file,
-              sourceLine: line,
-              depth: depthOf(el),
-              childCount: kids.length,
-              expanded: true,
-              selected: false,
-              hovered: false,
-              hidden: false,
-              locked: false
-            };
-          });
+          if (!window.__isonimSceneGraphWalk) return [];
+          // No `selected` argument: the row flags are applied on the Nim
+          // side from `vm.inspector`, which is the one selection both the
+          // panel and the preview read.
+          return window.__isonimSceneGraphWalk(doc).layerTree(null);
         }
-        // Distinguish "this preview has no source-mapped elements" from
-        // "the preview is between renders". Both look like zero rows for an
-        // instant; only the first should empty the panel. Two consecutive
-        // empty polls (~1.4s) is the threshold -- a reload is far quicker
-        // than that, and a story that genuinely is not DSL-rendered never
-        // stops being empty.
+        // Distinguish "this preview has nothing in it" from "the preview is
+        // between renders". Both look like zero rows for an instant; only the
+        // first should empty the panel. Two consecutive empty polls (~1.4s)
+        // is the threshold -- a reload is far quicker than that, and a story
+        // that genuinely renders nothing never stops being empty.
         var emptyPolls = 0;
         function tick() {
           try {
@@ -1103,7 +1078,7 @@ proc installSceneGraphReader[R, E](vm: EditorVM; r: R; host: E) =
         }
         setInterval(tick, 700);
         setTimeout(tick, 300);
-      })(""", ingest, """, """, host, """);
+      })(""", ingest, """, """, host, """, """, walkSource, """);
     """].}
 
 proc bindSceneGraphTwisty[R, E](vm: EditorVM; r: R; node: E; rowId: string) =
@@ -1215,8 +1190,8 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
         tdiv(`data-scene-graph-empty` = "true",
               padding = "10px 12px", font_size = "11px",
               line_height = "1.5", color = textDim):
-          text "No source-mapped elements in this preview. Stories rendered " &
-               "from pre-built HTML rather than the ui DSL have no tree yet."
+          text "Nothing to show: this preview renders no visible " &
+               "elements, or has not rendered yet."
       r.appendChild(rowsHost, empty)
       return
 

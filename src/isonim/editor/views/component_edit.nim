@@ -10,6 +10,7 @@ import isonim/dsl/ui
 import isonim/editor/viewmodels
 import isonim/editor/types
 import isonim/editor/views/choice_row
+import isonim/editor/views/scene_graph_walk
 
 const
   bgBase = "#0B1120"
@@ -262,6 +263,9 @@ proc editablePreviewDocument*(documentHtml: string;
   }
 </style>
 <script>
+__ISONIM_SCENE_GRAPH_WALK__
+</script>
+<script>
 (function () {
   const fallbackSource = "__ISONIM_SOURCE__";
   const fallbackLine = "__ISONIM_LINE__";
@@ -294,101 +298,25 @@ proc editablePreviewDocument*(documentHtml: string;
   //    fast the user is clicking.
   let drill = { target: null, chain: [], index: -1 };
   let styleClipboard = null;
-  function isElement(node) {
-    return node && node.nodeType === 1;
-  }
-  function isSelectable(el) {
-    if (!isElement(el)) return false;
-    if (el === document.documentElement || el === document.body) return false;
-    if (editorIds.has(el.id)) return false;
-    if (el.closest && el.closest('#isonim-editor-hover-label, #isonim-editor-selection-handles, #isonim-editor-selection-breadcrumb, #isonim-editor-comment-popup')) return false;
-    const rect = el.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0;
-  }
-  function stableSelector(el) {
-    if (!isElement(el)) return '';
-    const tag = el.tagName.toLowerCase();
-    const testId = el.getAttribute('data-testid');
-    if (testId) return tag + '[data-testid=' + testId + ']';
-    const role = el.getAttribute('role');
-    const cls = String(el.getAttribute('class') || '').trim().split(/\s+/).filter(Boolean).slice(0, 2);
-    let text = tag;
-    if (cls.length) text += '.' + cls.join('.');
-    if (role) text += '[role=' + role + ']';
-    return text;
-  }
-  function sourceKeyFor(el) {
-    const source = parseSource(el.getAttribute('data-isonim-src'));
-    const tag = el.tagName.toLowerCase();
-    const testId = el.getAttribute('data-testid') || '';
-    const cls = String(el.getAttribute('class') || '').trim().split(/\s+/).filter(Boolean).slice(0, 2).join('.');
-    const owned = testId ? 'testid:' + testId : (cls ? 'class:' + cls : 'tag:' + tag);
-    return source.file + ':' + source.line + ':' + owned;
-  }
-  function identityFor(el) {
-    if (!isElement(el)) return '';
-    const existing = el.getAttribute('data-isonim-element-id');
-    if (existing) return existing;
-    const id = sourceKeyFor(el) + ':' + cssPath(el);
-    el.setAttribute('data-isonim-element-id', id);
-    return id;
-  }
-  function cssPath(el) {
-    const parts = [];
-    let node = el;
-    while (isSelectable(node)) {
-      let part = stableSelector(node);
-      let index = 1;
-      let sibling = node;
-      while ((sibling = sibling.previousElementSibling)) {
-        if (sibling.tagName === node.tagName) index += 1;
-      }
-      part += ':nth-of-type(' + index + ')';
-      parts.unshift(part);
-      node = node.parentElement;
-    }
-    return parts.join(' > ');
-  }
-  function ancestorStack(target) {
-    const stack = [];
-    let el = isElement(target) ? target : target && target.parentElement;
-    while (isSelectable(el)) {
-      stack.push(el);
-      el = el.parentElement;
-    }
-    return stack;
-  }
-  function layerTree(selected) {
-    const nodes = Array.from(document.querySelectorAll('body *')).filter(isSelectable);
-    const nodeSet = new Set(nodes);
-    return nodes.map((node) => {
-      const id = identityFor(node);
-      let parent = node.parentElement;
-      while (parent && !nodeSet.has(parent)) parent = parent.parentElement;
-      const directChildren = Array.from(node.children || []).filter((child) => isSelectable(child));
-      const source = parseSource(node.getAttribute('data-isonim-src'));
-      const label = stableSelector(node);
-      return {
-        id: id,
-        parentId: parent ? identityFor(parent) : '',
-        label: label,
-        tag: node.tagName.toLowerCase(),
-        sourceKey: sourceKeyFor(node),
-      schemaKey: node.getAttribute('data-isonim-schema-key') ||
-        ('dom.' + (node.getAttribute('data-testid') || node.tagName.toLowerCase())),
-        domPath: cssPath(node),
-        sourceFile: source.file,
-        sourceLine: Number(source.line) || 0,
-        depth: ancestorStack(node).length - 1,
-        childCount: directChildren.length,
-        expanded: true,
-        selected: selected === node,
-        hovered: node.hasAttribute('data-isonim-hovered'),
-        hidden: false,
-        locked: false
-      };
-    });
-  }
+  // SGR: the element walk is NOT defined here. One definition lives in
+  // `scene_graph_walk.nim` and is injected above; this bridge and the
+  // editor's parent-side scene-graph reader both instantiate THAT source, so
+  // an element's id is the same string on both sides of the iframe boundary.
+  // Two hand-matched copies is what made the panel disagree with itself.
+  const walk = window.__isonimSceneGraphWalk(document, {
+    fallbackSource: fallbackSource,
+    fallbackLine: fallbackLine,
+    editorIds: editorIds
+  });
+  const isElement = walk.isElement;
+  const isSelectable = walk.isSelectable;
+  const stableSelector = walk.stableSelector;
+  const parseSource = walk.parseSource;
+  const sourceKeyFor = walk.sourceKeyFor;
+  const cssPath = walk.cssPath;
+  const identityFor = walk.identityFor;
+  const ancestorStack = walk.ancestorStack;
+  const layerTree = walk.layerTree;
   function drillRestart(leaf) {
     drill = { target: leaf, chain: ancestorStack(leaf), index: -1 };
     return drill;
@@ -605,12 +533,6 @@ proc editablePreviewDocument*(documentHtml: string;
     crumb.style.left = Math.max(6, Math.min(rect.left, window.innerWidth - 280)) + 'px';
     crumb.style.top = Math.min(window.innerHeight - 30, rect.bottom + 8) + 'px';
     crumb.hidden = false;
-  }
-  function parseSource(value) {
-    if (!value) return { file: fallbackSource, line: fallbackLine };
-    const match = String(value).match(/^(.*?):(\d+)(?::\d+)?$/);
-    if (!match) return { file: String(value), line: fallbackLine };
-    return { file: match[1], line: match[2] };
   }
   function selectElement(target) {
     const el = target;
@@ -1071,48 +993,31 @@ proc editablePreviewDocument*(documentHtml: string;
     const target = document.querySelector('[data-isonim-element-id="' + CSS.escape(selectedId) + '"]');
     if (target) selectElement(target);
   };
-  // SGR-M3: publish the element tree as soon as the preview exists, and
-  // again whenever it changes. Before this the tree reached the editor only
-  // inside the selection event, so the scene-graph panel was empty until the
-  // user clicked something in the preview -- which is backwards: the panel
-  // exists so you can find the thing you have not clicked yet.
-  function publishLayerTree() {
-    try {
-      parent.dispatchEvent(new CustomEvent('isonim-preview-layer-tree', {
-        detail: {
-          rows: JSON.stringify(layerTree(window.__isonimSelectedElement || null))
-        }
-      }));
-    } catch (error) {}
-  }
-  window.__isonimPublishLayerTree = publishLayerTree;
+  // SGR: the preview does NOT publish the element tree.
+  //
+  // It used to, on a MutationObserver, and the editor's parent-side reader
+  // published one too. Two producers writing one signal is a race, and the
+  // race is visible: whichever fired last won, so the panel's contents
+  // depended on whether the user had just switched modes or just moved the
+  // mouse. The reader is now the only producer (see
+  // `installSceneGraphReader` in `shell.nim`) -- it polls the same
+  // `contentDocument` this script would have walked, through the same
+  // `scene_graph_walk.nim` source, and it works in View mode too, where this
+  // script deliberately does not exist.
+  //
+  // `layerTree` stays because the bridge itself needs it: arrow-key
+  // navigation and the selection payload's ancestor chain are computed here,
+  // in the iframe, where the selection lives.
   setTimeout(function () {
     try {
       window.__isonimRestoreSelection(parent.__isonimPendingPreviewSelectionId || '');
     } catch (error) {}
-    publishLayerTree();
   }, 0);
-  // The preview re-renders on its own (hot reload, a story switch, a
-  // reactive update). A MutationObserver is the only signal that covers all
-  // of them without the editor having to know which one happened. Coalesced
-  // on a frame so a burst of mutations publishes once.
-  try {
-    let pending = 0;
-    const observer = new MutationObserver(function () {
-      if (pending) return;
-      pending = requestAnimationFrame(function () {
-        pending = 0;
-        publishLayerTree();
-      });
-    });
-    observer.observe(document.body, {
-      childList: true, subtree: true, attributes: false
-    });
-  } catch (error) {}
 })();
 </script>
 """
   let injected = bridge
+    .replace("__ISONIM_SCENE_GRAPH_WALK__", sceneGraphWalkJs)
     .replace("__ISONIM_SOURCE__", metadata.sourceFile.jsString)
     .replace("__ISONIM_LINE__", $max(metadata.sourceLine, 1))
     .replace("__ISONIM_MODE__", (case mode
@@ -1184,10 +1089,15 @@ proc installPreviewSelectionBridge[R, E](r: R; frame: E; vm: EditorVM) =
         $schemaKey,
         $ancestorIds,
         $layerTreeJson)
+      # SGR: selecting does NOT republish the tree. `selectInspectorElement`
+      # re-flags the rows the scene-graph reader already published, which is
+      # the same tree walked from the same source. Publishing a second one
+      # here is what let a click in the preview replace a complete tree with
+      # a differently-built one whose ids the panel's expansion state did not
+      # recognise -- the panel collapsed to its top-level rows on every click.
+      # The payload is still carried: `previewDomElementRef` reads it for the
+      # selection's ancestor chain.
       discard vm.selectInspectorElement(element)
-      vm.inspector.setSelectionTree(previewDomLayerRows($layerTreeJson,
-        element.id, vm.inspector.hoveredElementId.val,
-        vm.inspector.expandedLayerIds.val))
       if ($backgroundColor).len > 0 and ($backgroundColor) != "rgba(0, 0, 0, 0)":
         vm.inspector.activeSection.val = isFill
       elif ($padding).len > 0 or ($margin).len > 0:
@@ -1218,33 +1128,10 @@ proc installPreviewSelectionBridge[R, E](r: R; frame: E; vm: EditorVM) =
       }
     """].}
 
-    # SGR-M3: the standing element tree. Distinct from the selection bridge
-    # above: that one carries a tree as a by-product of the user picking an
-    # element, this one carries the tree because the preview exists. The
-    # scene-graph panel reads `vm.inspector.layers`, so without this it has
-    # nothing to show until the first click.
-    let layerTreeFromBrowser = proc(rows: cstring) =
-      # `.id` rather than the private `fallbackElementId()`: an empty id here
-      # just means "nothing selected yet", which is the common case on load
-      # and is exactly what the row highlighter should see.
-      let parsed = previewDomLayerRows($rows,
-        vm.inspector.selectedElement.val.id,
-        vm.inspector.hoveredElementId.val,
-        vm.inspector.expandedLayerIds.val)
-      # Do not clobber a populated tree with an empty one. A mutation burst
-      # mid-rerender can observe a momentarily empty body, and blanking the
-      # panel on that flicker is worse than showing the previous tree for one
-      # more frame.
-      if parsed.len > 0 or vm.inspector.layers.val.len == 0:
-        vm.inspector.setSelectionTree(parsed)
-    {.emit: ["""
-      if (!window.__isonimPreviewLayerTreeBridgeInstalled) {
-        window.__isonimPreviewLayerTreeBridgeInstalled = true;
-        window.addEventListener('isonim-preview-layer-tree', function (event) {
-          """, layerTreeFromBrowser, """((event.detail || {}).rows || '');
-        });
-      }
-    """].}
+    # SGR: there is no `isonim-preview-layer-tree` listener any more. The
+    # preview used to publish its own tree here and the parent-side reader in
+    # `shell.nim` published another; the panel showed whichever arrived last.
+    # The reader is the single producer now, in every mode.
 
     let clearFromBrowser = proc() =
       vm.clearInspectorSelection()
