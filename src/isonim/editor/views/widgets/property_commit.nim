@@ -247,6 +247,14 @@ type
     cssProperty*: string
     scopeSelected*: Signal[SourceScopeChoiceKind]
     commitMessage*: Signal[string]
+    commitRejected*: Signal[int]
+      ## Bumped every time a commit is REFUSED. The row snapshots this
+      ## counter around its call to `commit` and, when it advances, puts its
+      ## own control back the way it was. Without it a refused edit left the
+      ## typed value sitting in the field: the panel said 42, the element was
+      ## still 34, and the only thing saying so was a one-line message the
+      ## eye slides past. A control that keeps a value the system rejected is
+      ## lying about the document.
     scopeOptions*: proc(): seq[CompactChoiceOption]
     commit*: proc(value: string)
 
@@ -263,6 +271,7 @@ proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
   let selected = createSignal(sskLocalInstance)
   let userPicked = createSignal(false)
   let message = createSignal("")
+  let rejected = createSignal(0)
 
   proc currentChoices(): seq[SourceScopeChoice] =
     let found = vm.inspectorProperty(capturedProperty)
@@ -287,6 +296,8 @@ proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
     let outcome = commitInspectorValue(vm, capturedProperty, value,
       effectiveScope())
     message.val = outcome.message
+    if not outcome.ok:
+      rejected.val = rejected.val + 1
 
   proc scopeOptions(): seq[CompactChoiceOption] =
     let choices = currentChoices()
@@ -336,5 +347,6 @@ proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
     cssProperty: capturedProperty,
     scopeSelected: selected,
     commitMessage: message,
+    commitRejected: rejected,
     scopeOptions: scopeOptions,
     commit: commit)

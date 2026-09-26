@@ -169,6 +169,10 @@ type
       ## which source an edit should modify. Nil keeps the slot
       ## bind-only.
     commitMessage*: Signal[string]
+    commitRejected*: Signal[int]
+      ## See `InspectorRowWiring.commitRejected`: a refused commit must put
+      ## the control back, or the panel keeps showing a value the document
+      ## does not have.
       ## Refusal / diagnostic text for the last commit attempt,
       ## rendered inline under the row. Nil means the row has no
       ## message surface — acceptable only for rows that cannot
@@ -426,6 +430,7 @@ proc propertyRowNumeric*(name: string;
     cssProperty: wiring.cssProperty,
     scopeOptions: wiring.scopeOptions,
     commitMessage: wiring.commitMessage,
+    commitRejected: wiring.commitRejected,
     onCommitValue: wiring.commit)
 
 proc propertyRowColor*(name: string;
@@ -450,6 +455,7 @@ proc propertyRowColor*(name: string;
     cssProperty: wiring.cssProperty,
     scopeOptions: wiring.scopeOptions,
     commitMessage: wiring.commitMessage,
+    commitRejected: wiring.commitRejected,
     onCommitValue: wiring.commit)
 
 proc propertyRowChoice*(name: string;
@@ -474,6 +480,7 @@ proc propertyRowChoice*(name: string;
     cssProperty: wiring.cssProperty,
     scopeOptions: wiring.scopeOptions,
     commitMessage: wiring.commitMessage,
+    commitRejected: wiring.commitRejected,
     onCommitValue: wiring.commit)
 
 proc propertyRowText*(name: string;
@@ -497,6 +504,7 @@ proc propertyRowText*(name: string;
     cssProperty: wiring.cssProperty,
     scopeOptions: wiring.scopeOptions,
     commitMessage: wiring.commitMessage,
+    commitRejected: wiring.commitRejected,
     onCommitValue: wiring.commit)
 
 proc propertyRowBoolean*(name: string;
@@ -520,6 +528,7 @@ proc propertyRowBoolean*(name: string;
     cssProperty: wiring.cssProperty,
     scopeOptions: wiring.scopeOptions,
     commitMessage: wiring.commitMessage,
+    commitRejected: wiring.commitRejected,
     onCommitValue: wiring.commit)
 
 # --------------------------------------------------------------------------- #
@@ -891,9 +900,26 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
     of prkBoolean:
       if cfg.booleanValue.val: "true" else: "false"
 
-  proc commitValue() =
+  proc commitValue(restore: proc() {.closure.} = nil) =
+    ## Commit the row's current value, and put the control back if the
+    ## pipeline refuses it.
+    ##
+    ## `restore` is supplied by the caller because only the caller still
+    ## holds the previous value: every kind's input handler writes the new
+    ## value into its signal BEFORE committing, so by the time we are here
+    ## the old one is gone. A refused edit that leaves the typed value in
+    ## the field makes the panel disagree with the document -- grip showed
+    ## `42` in Font size while the element stayed at `34`, with a one-line
+    ## message the eye slides past as the only correction.
+    let hadRejections =
+      if cfg.commitRejected != nil: cfg.commitRejected.val else: 0
     if cfg.onCommitValue != nil:
       cfg.onCommitValue(currentCssValue())
+    if cfg.commitRejected != nil and
+       cfg.commitRejected.val != hadRejections:
+      if restore != nil:
+        restore()
+      return
     if cfg.onChange != nil:
       cfg.onChange()
 
@@ -1034,9 +1060,12 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
               v = cfg.numericMin.get
             if cfg.numericMax.isSome and v > cfg.numericMax.get:
               v = cfg.numericMax.get
+            let priorValue = cfg.numericValue.val
             cfg.numericValue.val = v
             r.setInputValue(inputNode, formatNumber(v))
-            commitValue()
+            commitValue(proc() =
+              cfg.numericValue.val = priorValue
+              r.setInputValue(inputNode, formatNumber(priorValue)))
           else:
             # Reject garbage — restore the previous value so the input
             # never displays an unparseable string after losing focus.
