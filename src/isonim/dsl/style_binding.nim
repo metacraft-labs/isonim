@@ -11,13 +11,34 @@
 ##
 ## ## The class index
 ##
-## Resolving a class token to properties needs an index. Today the only one
-## in the tree is the Tailwind extract (`build/tailwind-styles.json`, via
-## `dsl/tailwind.nim`), so that is what is consulted. The index is a
-## parameter of the design, not a commitment to Tailwind: a vocabulary
-## generated from the project's DTCG tokens would plug in here unchanged, and
-## would additionally keep its `var()` indirection, which this module already
-## promotes to `sbkTokenRef`.
+## Resolving a class token to properties needs an index. The loader is
+## `dsl/tailwind.nim` and its default input is the Tailwind extract
+## (`build/tailwind-styles.json`), but the index is a **parameter of the
+## design, not a commitment to Tailwind**: anything that produces
+## `class -> {property: value}` plugs in via
+## `-d:tailwindStylesPathOverride`.
+##
+## **That prediction has been exercised, 2026-09-26.**
+## `web-site-prototypes/grip/isonim` writes semantic classes against a bespoke
+## stylesheet and generates the index *from that stylesheet*
+## (`src/design_system/class_index.nim`), emitting the `var(--sys-…)`
+## reference rather than the resolved value — so this module promotes it to
+## `sbkTokenRef` and the inspector can chase a class to a token. Measured on
+## that page: **66 of 74 distinct classes resolve, 5,179 of 5,239 class
+## records** — from 0 of 34 and 0 of 43 before the index existed.
+##
+## Two details from that exercise that the next such index should copy:
+##
+##   * **index only a bare single-class selector.** `.a:hover`, `.a .b`,
+##     `.a.b` and `.a[x]` all describe a class *in a context*, and this format
+##     has no way to say "in a context" — indexing them asserts that a hover
+##     colour is a resting colour, which is worse than the silence;
+##   * **the override path must be absolute.** `tailwind.nim` `staticRead`s
+##     it, so a relative path resolves against `tailwind.nim`'s own directory
+##     inside this checkout, and an unreadable path leaves the index silently
+##     empty. A `nim.cfg` cannot build an absolute one — config-file variables
+##     are not substituted inside a `-d:` value — so it belongs in a
+##     `config.nims` using `thisDir()`.
 ##
 ## ## Silence is the defect
 ##
@@ -36,13 +57,28 @@ import ./tailwind
 const styleBindingStrict* = defined(isonimStyleBindingStrict)
   ## Opt-in: turn an unresolvable class into a compile error.
   ##
-  ## Not the default, and the reason is measured rather than squeamish: no
-  ## project in this workspace styles with an indexed vocabulary. `grip`
-  ## writes `class="panel"` against a bespoke stylesheet, and
-  ## `isonim-examples` has 3 Tailwind-shaped classes out of 307. Erroring by
-  ## default would fail every build in the workspace on day one, which is how
-  ## a diagnostic gets switched off rather than fixed. The record is always
-  ## produced; this flag only decides whether it also stops the build.
+  ## Not the default, and the reason is measured rather than squeamish.
+  ##
+  ## When this landed, no project in the workspace styled with an indexed
+  ## vocabulary: `grip` wrote `class="panel"` against a bespoke stylesheet and
+  ## `isonim-examples` had 3 Tailwind-shaped classes out of 307. Erroring by
+  ## default would have failed every build on day one, which is how a
+  ## diagnostic gets switched off rather than fixed.
+  ##
+  ## **Half of that is now out of date and the conclusion still holds.** grip
+  ## generates an index from its own stylesheet and resolves 66 of its 74
+  ## classes — but the eight that remain are the ones the index *correctly*
+  ## refuses (`#panel .hd`, `.viva-inset-body .row`, `.plot-axis.is-faint`,
+  ## `.viva-state[hidden]`), and six further records are unresolvable because
+  ## the `class` attribute is computed at runtime. Both are legitimate and
+  ## permanent, so even the workspace's best-instrumented page would fail
+  ## under `-d:isonimStyleBindingStrict`.
+  ##
+  ## That is the useful finding: the flag's ceiling is not 100%, so it is a
+  ## tool for a project that has decided which of its classes are contextual
+  ## and wants the rest policed — not a bar anyone clears by trying harder.
+  ## The record is always produced; this flag only decides whether it also
+  ## stops the build.
 
 func classIndexLoaded*(): bool =
   ## Whether any class -> properties index is available to this compilation.
