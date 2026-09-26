@@ -237,3 +237,48 @@ proc patchCssDeclaration*(css, selector, property, newValue: string):
   CssPatchResult(ok: true, outcome: cpoInserted,
     content: css[0 ..< insertAt] & (if needsSemicolon: ";" else: "") & sep &
       property & ":" & newValue.strip() & ";" & css[insertAt .. ^1])
+
+proc patchCssInNimConst*(nimSource, constName, selector, property,
+                         newValue: string): CssPatchResult =
+  ## The same edit, for a stylesheet that lives in a Nim raw-string const.
+  ##
+  ## This is the IsoNim idiom rather than a grip peculiarity: a project that
+  ## compiles to both a server and a browser keeps its CSS as a `const` so
+  ## the same bytes reach the SSR output and the client, and
+  ## `staticRead`ing a `.css` file would put it out of reach of the
+  ## compile-time class index. So the adapter of any such project needs to
+  ## reach inside the literal, and doing it here means it is done once and
+  ## tested once.
+  ##
+  ## Only the const's own body is handed to the patcher, so a selector that
+  ## appears elsewhere in the module -- in a doc comment, in a second
+  ## stylesheet, in ordinary code -- is out of range by construction rather
+  ## than by a careful regex.
+  let decl = "const " & constName & "* = \"\"\""
+  var start = nimSource.find(decl)
+  var declLen = decl.len
+  if start < 0:
+    # A non-exported const is still a stylesheet.
+    let unexported = "const " & constName & " = \"\"\""
+    start = nimSource.find(unexported)
+    declLen = unexported.len
+  if start < 0:
+    return CssPatchResult(ok: false, outcome: cpoRuleNotFound,
+      message: "`" & constName & "` is not a raw-string const in this file.")
+
+  let bodyStart = start + declLen
+  let bodyEnd = nimSource.find("\"\"\"", bodyStart)
+  if bodyEnd < 0:
+    return CssPatchResult(ok: false, outcome: cpoRuleNotFound,
+      message: "`" & constName & "` has no closing `\"\"\"`.")
+
+  let body = nimSource[bodyStart ..< bodyEnd]
+  result = patchCssDeclaration(body, selector, property, newValue)
+  if not result.ok or result.outcome == cpoUnchanged:
+    # An unchanged patch returns the CSS body as `content`; the caller wants
+    # the whole module back either way, so splice it regardless.
+    if result.outcome == cpoUnchanged:
+      result.content = nimSource
+    return
+  result.content = nimSource[0 ..< bodyStart] & result.content &
+    nimSource[bodyEnd .. ^1]

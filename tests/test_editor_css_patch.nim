@@ -225,3 +225,58 @@ suite "css_patch: refusals":
   test "an empty selector or property is refused":
     check not patchCssDeclaration(gripCss, "", "color", "red").ok
     check not patchCssDeclaration(gripCss, ".tagline", "", "red").ok
+
+suite "css_patch: stylesheets that live in a Nim raw-string const":
+  ## The IsoNim idiom: a project that renders on both sides keeps its CSS as
+  ## a `const` so the same bytes reach SSR and the client.
+
+  const module = """import ../design_system/tokens
+
+const structureCssText* = """ & "\"\"\"" & """
+  .tagline { font:var(--sys-type-display);
+             margin:0 0 30px; }
+  .chip { color:red; }
+""" & "\"\"\"" & """
+
+const globalCss* = tokenCss & structureCssText
+"""
+
+  test "the declaration is patched inside the literal":
+    let r = patchCssInNimConst(module, "structureCssText", ".chip",
+                               "color", "blue")
+    check r.ok
+    check r.outcome == cpoReplaced
+    check r.oldValue == "red"
+    check ".chip { color:blue; }" in r.content
+    # The module around the literal survives.
+    check "import ../design_system/tokens" in r.content
+    check "const globalCss* = tokenCss & structureCssText" in r.content
+    check r.content.endsWith("\n")
+
+  test "a selector that appears outside the literal is out of range":
+    ## The whole reason the const is located first: a class named in a doc
+    ## comment or in ordinary code must not be reachable by a source edit.
+    const withDecoy = """## The `.chip { color:red; }` rule is explained here.
+
+const structureCssText* = """ & "\"\"\"" & """
+  .other { color:green; }
+""" & "\"\"\"" & """
+"""
+    let r = patchCssInNimConst(withDecoy, "structureCssText", ".chip",
+                               "color", "blue")
+    check not r.ok
+    check r.outcome == cpoRuleNotFound
+    # The doc comment is untouched, because nothing was written.
+    check r.content.len == 0
+
+  test "a missing const refuses by name":
+    let r = patchCssInNimConst(module, "nopeCss", ".chip", "color", "blue")
+    check not r.ok
+    check "`nopeCss` is not a raw-string const" in r.message
+
+  test "an unchanged value returns the whole module, not just the CSS":
+    let r = patchCssInNimConst(module, "structureCssText", ".chip",
+                               "color", "red")
+    check r.ok
+    check r.outcome == cpoUnchanged
+    check r.content == module
