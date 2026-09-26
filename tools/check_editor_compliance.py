@@ -1438,6 +1438,12 @@ def check_d5(tiers, rows, observed):
 # D6 / D7 -- the workspace declaration
 # ---------------------------------------------------------------------------
 
+# Bumped by `isonim/editor/compliance_manifest.nim` when a field changes
+# meaning. Refusing an unknown version is deliberate: a check that silently
+# misreads a moved field is worse than one that does not run, because it
+# reports PASS.
+MANIFEST_VERSION = 1
+
 STORY_VIEW = {
     "skFlow": "the storyboard",
     "skPage": "the page preview",
@@ -1471,6 +1477,17 @@ def check_d6(manifest, rows, observed):
     result = DimensionResult("D6")
     result.ran = True
     accepted = {r.key: r for r in rows if r.dimension == "D6"}
+
+    version = manifest.get("schemaVersion")
+    if version != MANIFEST_VERSION:
+        result.findings.append(Finding(
+            "D6",
+            f"the workspace manifest declares schemaVersion "
+            f"{version!r}, and this check reads {MANIFEST_VERSION}",
+            "Refusing to read it rather than guessing which fields moved: a "
+            "misread\nmanifest reports PASS, which is worse than not running.",
+            "Regenerate the manifest with the matching isonim checkout.", ""))
+        return result
 
     groups = manifest.get("storyGroups", []) or []
     items = [(g, i) for g in groups for i in (g.get("items") or [])]
