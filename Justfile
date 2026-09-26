@@ -1097,10 +1097,14 @@ test-browser: test-browser-demo test-browser-ssr test-browser-hmr test-browser-h
 # `nim js` compile below reaches `build/tailwind-styles.json` through an
 # uncatchable `staticRead`. On a warm working copy that file already exists,
 # which is exactly why its absence would only ever have bitten a cold runner.
+
+# Build every artifact the six in-repo Playwright projects serve.
 browser-test-deps: build-tailwind demo-build build-ssr-test-all build-hmr-fixture build-hmr-parametric-fixture build-hmr-transport-fixture editor-build
 
-# Install the browser-test npm deps + chromium. Separate from
-# `browser-test-deps` because it is the only step that touches the network.
+# Separate from `browser-test-deps` because it is the only step here that
+# touches the network.
+
+# Install the browser-test npm deps + a chromium build.
 browser-test-install:
     npm --prefix tests/browser install
     npx --prefix tests/browser playwright install chromium
@@ -1121,6 +1125,8 @@ test-browser-all: browser-test-deps
 # `editor-example` is out for cost, not colour: its 14 screenshot and layout
 # tests take ~4 minutes on their own, against a runner pool that is small and
 # permanently saturated. It runs nightly.
+
+# The CI gate: the three HMR Playwright projects, 25 tests, ~56s cold.
 test-browser-smoke: build-tailwind build-hmr-fixture build-hmr-parametric-fixture build-hmr-transport-fixture
     cd tests/browser && npx playwright test --project=hmr --project=hmr-parametric --project=hmr-transport
 
