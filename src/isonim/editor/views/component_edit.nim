@@ -593,7 +593,12 @@ __ISONIM_SCENE_GRAPH_WALK__
         rectWidth: String(Math.round(rect.width)),
         rectHeight: String(Math.round(rect.height)),
         textContent: String(el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 240),
-        layerTree: JSON.stringify(layerTree(el))
+        layerTree: JSON.stringify(layerTree(el)),
+        // The authored style provenance the `ui` DSL stamped at macro time.
+        // Every other style field above is a COMPUTED value, and a computed
+        // value has already lost the answer to "was this a binding?". This is
+        // the only field in the payload that still knows.
+        styleBindings: el.getAttribute('data-isonim-props') || ''
       }
     }));
   }
@@ -1050,7 +1055,8 @@ proc installPreviewSelectionBridge[R, E](r: R; frame: E; vm: EditorVM) =
         sourceLine, display, position, backgroundColor,
         color, padding, margin, width, height, borderRadius, borderWidth,
         borderStyle, borderColor, fontSize, fontWeight, lineHeight, boxShadow,
-        opacity, rectWidth, rectHeight, textContent, layerTreeJson: cstring) =
+        opacity, rectWidth, rectHeight, textContent, layerTreeJson,
+        styleBindings: cstring) =
       let line =
         try: parseInt($sourceLine)
         except ValueError: 0
@@ -1088,7 +1094,8 @@ proc installPreviewSelectionBridge[R, E](r: R; frame: E; vm: EditorVM) =
         $sourceKey,
         $schemaKey,
         $ancestorIds,
-        $layerTreeJson)
+        $layerTreeJson,
+        $styleBindings)
       # SGR: selecting does NOT republish the tree. `selectInspectorElement`
       # re-flags the rows the scene-graph reader already published, which is
       # the same tree walked from the same source. Publishing a second one
@@ -1122,7 +1129,7 @@ proc installPreviewSelectionBridge[R, E](r: R; frame: E; vm: EditorVM) =
             d.borderColor || '', d.fontSize || '', d.fontWeight || '',
             d.lineHeight || '', d.boxShadow || '', d.opacity || '',
             d.rectWidth || '', d.rectHeight || '', d.textContent || '',
-            d.layerTree || ''
+            d.layerTree || '', d.styleBindings || ''
           );
         });
       }
