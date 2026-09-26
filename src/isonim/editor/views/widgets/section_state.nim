@@ -20,6 +20,7 @@ import isonim/core/computation
 import isonim/dsl/ui
 import isonim/editor/types
 import isonim/editor/viewmodels
+import isonim/editor/views/widgets/property_commit
 import isonim/editor/views/widgets/property_row
 
 const
@@ -67,7 +68,8 @@ proc mountSectionState*[R, E](r: R; parent: E; vm: EditorVM) =
         propertyRowText(name = prop.name, value = value,
           binding = vm.inspectorBindingFor(prop.name),
           onBindRequest = vm.inspectorBindRequestHandler(prop.name),
-          onDetachRequest = vm.inspectorDetachRequestHandler(prop.name)))
+          onDetachRequest = vm.inspectorDetachRequestHandler(prop.name),
+          wiring = vm.inspectorRowWiring(prop.name)))
       r.setAttribute(row, "data-state-signal-origin", prop.originDetail)
 
   createRenderEffect proc() =

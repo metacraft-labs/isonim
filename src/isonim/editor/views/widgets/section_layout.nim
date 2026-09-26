@@ -17,6 +17,7 @@ import isonim/core/computation
 import isonim/dsl/ui
 import isonim/editor/types
 import isonim/editor/viewmodels
+import isonim/editor/views/widgets/property_commit
 import isonim/editor/views/widgets/property_row
 import isonim/editor/views/widgets/section_position
 
@@ -138,12 +139,14 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
     name = "W", value = width, unit = widthUnit, units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("width"),
     onBindRequest = vm.inspectorBindRequestHandler("width"),
-    onDetachRequest = vm.inspectorDetachRequestHandler("width")))
+    onDetachRequest = vm.inspectorDetachRequestHandler("width"),
+    wiring = vm.inspectorRowWiring("width")))
   discard r.mountPropertyRow(parent, propertyRowNumeric(
     name = "H", value = height, unit = heightUnit, units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("height"),
     onBindRequest = vm.inspectorBindRequestHandler("height"),
-    onDetachRequest = vm.inspectorDetachRequestHandler("height")))
+    onDetachRequest = vm.inspectorDetachRequestHandler("height"),
+    wiring = vm.inspectorRowWiring("height")))
   # Phase H (2026-05-28): the constraint indicator reads as a quiet
   # icon-and-hint row. The Figma reference puts the constraint
   # affordance as a small bracket glyph on the right edge next to W/H;
@@ -173,7 +176,8 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
     name = "Gap", value = gap, unit = gapUnit, units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("gap"),
     onBindRequest = vm.inspectorBindRequestHandler("gap"),
-    onDetachRequest = vm.inspectorDetachRequestHandler("gap")))
+    onDetachRequest = vm.inspectorDetachRequestHandler("gap"),
+    wiring = vm.inspectorRowWiring("gap")))
   createRenderEffect proc() =
     let m = layoutMode.val
     let visible = m in ["vertical", "horizontal", "grid"]
@@ -190,22 +194,26 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
     name = "Pad top", value = padTop, unit = padUnit, units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("padding-top"),
     onBindRequest = vm.inspectorBindRequestHandler("padding-top"),
-    onDetachRequest = vm.inspectorDetachRequestHandler("padding-top")))
+    onDetachRequest = vm.inspectorDetachRequestHandler("padding-top"),
+    wiring = vm.inspectorRowWiring("padding-top")))
   discard r.mountPropertyRow(padHostEl, propertyRowNumeric(
     name = "Pad right", value = padRight, unit = padUnit, units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("padding-right"),
     onBindRequest = vm.inspectorBindRequestHandler("padding-right"),
-    onDetachRequest = vm.inspectorDetachRequestHandler("padding-right")))
+    onDetachRequest = vm.inspectorDetachRequestHandler("padding-right"),
+    wiring = vm.inspectorRowWiring("padding-right")))
   discard r.mountPropertyRow(padHostEl, propertyRowNumeric(
     name = "Pad bottom", value = padBottom, unit = padUnit, units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("padding-bottom"),
     onBindRequest = vm.inspectorBindRequestHandler("padding-bottom"),
-    onDetachRequest = vm.inspectorDetachRequestHandler("padding-bottom")))
+    onDetachRequest = vm.inspectorDetachRequestHandler("padding-bottom"),
+    wiring = vm.inspectorRowWiring("padding-bottom")))
   discard r.mountPropertyRow(padHostEl, propertyRowNumeric(
     name = "Pad left", value = padLeft, unit = padUnit, units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("padding-left"),
     onBindRequest = vm.inspectorBindRequestHandler("padding-left"),
-    onDetachRequest = vm.inspectorDetachRequestHandler("padding-left")))
+    onDetachRequest = vm.inspectorDetachRequestHandler("padding-left"),
+    wiring = vm.inspectorRowWiring("padding-left")))
   createRenderEffect proc() =
     let m = layoutMode.val
     let visible = m in ["vertical", "horizontal", "grid"]
@@ -221,4 +229,5 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
       (label: "Auto", value: "auto")],
     bindingReactive = vm.inspectorBindingThunk("overflow"),
     onBindRequest = vm.inspectorBindRequestHandler("overflow"),
-    onDetachRequest = vm.inspectorDetachRequestHandler("overflow")))
+    onDetachRequest = vm.inspectorDetachRequestHandler("overflow"),
+    wiring = vm.inspectorRowWiring("overflow")))

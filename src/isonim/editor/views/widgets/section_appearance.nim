@@ -14,6 +14,7 @@ import isonim/core/computation
 import isonim/dsl/ui
 import isonim/editor/types
 import isonim/editor/viewmodels
+import isonim/editor/views/widgets/property_commit
 import isonim/editor/views/widgets/property_row
 import isonim/editor/views/widgets/section_position
 
@@ -58,13 +59,15 @@ proc mountSectionAppearance*[R, E](r: R; parent: E; vm: EditorVM) =
     minValue = some(0.0), maxValue = some(100.0), step = 1.0,
     bindingReactive = vm.inspectorBindingThunk("opacity"),
     onBindRequest = vm.inspectorBindRequestHandler("opacity"),
-    onDetachRequest = vm.inspectorDetachRequestHandler("opacity")))
+    onDetachRequest = vm.inspectorDetachRequestHandler("opacity"),
+    wiring = vm.inspectorRowWiring("opacity")))
   discard r.mountPropertyRow(parent, propertyRowNumeric(
     name = "Corner radius", value = radius, unit = radiusUnit,
     units = @[pxUnit], minValue = some(0.0),
     bindingReactive = vm.inspectorBindingThunk("border-radius"),
     onBindRequest = vm.inspectorBindRequestHandler("border-radius"),
-    onDetachRequest = vm.inspectorDetachRequestHandler("border-radius")))
+    onDetachRequest = vm.inspectorDetachRequestHandler("border-radius"),
+    wiring = vm.inspectorRowWiring("border-radius")))
   discard r.mountPropertyRow(parent, propertyRowChoice(
     name = "Blend mode", value = blend,
     options = @[
@@ -76,7 +79,8 @@ proc mountSectionAppearance*[R, E](r: R; parent: E; vm: EditorVM) =
       (label: "Lighten", value: "lighten")],
     bindingReactive = vm.inspectorBindingThunk("mix-blend-mode"),
     onBindRequest = vm.inspectorBindRequestHandler("mix-blend-mode"),
-    onDetachRequest = vm.inspectorDetachRequestHandler("mix-blend-mode")))
+    onDetachRequest = vm.inspectorDetachRequestHandler("mix-blend-mode"),
+    wiring = vm.inspectorRowWiring("mix-blend-mode")))
   discard r.mountPropertyRow(parent, propertyRowBoolean(
     name = "Per-corner", value = perCorner))
 
@@ -90,24 +94,28 @@ proc mountSectionAppearance*[R, E](r: R; parent: E; vm: EditorVM) =
     name = "TL", value = radiusTL, unit = radiusUnit, units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("border-top-left-radius"),
     onBindRequest = vm.inspectorBindRequestHandler("border-top-left-radius"),
-    onDetachRequest = vm.inspectorDetachRequestHandler("border-top-left-radius")))
+    onDetachRequest = vm.inspectorDetachRequestHandler("border-top-left-radius"),
+    wiring = vm.inspectorRowWiring("border-top-left-radius")))
   discard r.mountPropertyRow(perCornerHostEl, propertyRowNumeric(
     name = "TR", value = radiusTR, unit = radiusUnit, units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("border-top-right-radius"),
     onBindRequest = vm.inspectorBindRequestHandler("border-top-right-radius"),
-    onDetachRequest = vm.inspectorDetachRequestHandler("border-top-right-radius")))
+    onDetachRequest = vm.inspectorDetachRequestHandler("border-top-right-radius"),
+    wiring = vm.inspectorRowWiring("border-top-right-radius")))
   discard r.mountPropertyRow(perCornerHostEl, propertyRowNumeric(
     name = "BR", value = radiusBR, unit = radiusUnit, units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("border-bottom-right-radius"),
     onBindRequest =
       vm.inspectorBindRequestHandler("border-bottom-right-radius"),
-    onDetachRequest = vm.inspectorDetachRequestHandler("border-bottom-right-radius")))
+    onDetachRequest = vm.inspectorDetachRequestHandler("border-bottom-right-radius"),
+    wiring = vm.inspectorRowWiring("border-bottom-right-radius")))
   discard r.mountPropertyRow(perCornerHostEl, propertyRowNumeric(
     name = "BL", value = radiusBL, unit = radiusUnit, units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("border-bottom-left-radius"),
     onBindRequest =
       vm.inspectorBindRequestHandler("border-bottom-left-radius"),
-    onDetachRequest = vm.inspectorDetachRequestHandler("border-bottom-left-radius")))
+    onDetachRequest = vm.inspectorDetachRequestHandler("border-bottom-left-radius"),
+    wiring = vm.inspectorRowWiring("border-bottom-left-radius")))
   createRenderEffect proc() =
     r.setStyle(perCornerHostEl, "display",
       if perCorner.val: "flex" else: "none")

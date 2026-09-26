@@ -34,6 +34,7 @@ import isonim/core/computation
 import isonim/dsl/ui
 import isonim/editor/types
 import isonim/editor/viewmodels
+import isonim/editor/views/widgets/property_commit
 import isonim/editor/views/widgets/property_row
 
 # --------------------------------------------------------------------------- #
@@ -215,19 +216,22 @@ proc mountSectionPosition*[R, E](r: R; parent: E; vm: EditorVM) =
     units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("left"),
     onBindRequest = vm.inspectorBindRequestHandler("left"),
-    onDetachRequest = vm.inspectorDetachRequestHandler("left")))
+    onDetachRequest = vm.inspectorDetachRequestHandler("left"),
+    wiring = vm.inspectorRowWiring("left")))
   discard r.mountPropertyRow(parent, propertyRowNumeric(
     name = "Y", value = yValue, unit = yUnit,
     units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("top"),
     onBindRequest = vm.inspectorBindRequestHandler("top"),
-    onDetachRequest = vm.inspectorDetachRequestHandler("top")))
+    onDetachRequest = vm.inspectorDetachRequestHandler("top"),
+    wiring = vm.inspectorRowWiring("top")))
   discard r.mountPropertyRow(parent, propertyRowNumeric(
     name = "Rotation", value = rotationValue, unit = rotUnit,
     units = @[degUnit],
     bindingReactive = vm.inspectorBindingThunk("transform"),
     onBindRequest = vm.inspectorBindRequestHandler("transform"),
-    onDetachRequest = vm.inspectorDetachRequestHandler("transform")))
+    onDetachRequest = vm.inspectorDetachRequestHandler("transform"),
+    wiring = vm.inspectorRowWiring("transform")))
 
   # ----- Flip buttons ---------------------------------------------- #
   # Phase H (2026-05-28): flip controls render as compact icon

@@ -19,6 +19,7 @@ import isonim/core/computation
 import isonim/dsl/ui
 import isonim/editor/types
 import isonim/editor/viewmodels
+import isonim/editor/views/widgets/property_commit
 import isonim/editor/views/widgets/property_row
 
 const
@@ -72,7 +73,8 @@ proc mountSectionComponentProps*[R, E](r: R; parent: E; vm: EditorVM) =
       let cfg = propertyRowText(name = prop.name, value = value,
         binding = vm.inspectorBindingFor(prop.name),
         onBindRequest = vm.inspectorBindRequestHandler(prop.name),
-        onDetachRequest = vm.inspectorDetachRequestHandler(prop.name))
+        onDetachRequest = vm.inspectorDetachRequestHandler(prop.name),
+        wiring = vm.inspectorRowWiring(prop.name))
       let row = r.mountPropertyRow(listEl, cfg)
       r.setAttribute(row, "data-component-prop-schema", prop.schemaKey)
 
