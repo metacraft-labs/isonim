@@ -66,6 +66,14 @@ const
   textPrimary = "#ECEDF3"
   textSecondary = "#9CA0B0"
   textMuted = "#6B6F80"
+  # The left sidebar's type scale. TWO text sizes and one icon size, because
+  # it had eight: 9px quicknav captions, 10px section headers, 10px and 13px
+  # icons, 11px layer rows, 12px story rows, and 12px group rows with 0.1px
+  # of tracking that nothing else used. A list row and a list row two panels
+  # down were different sizes for no reason either could state.
+  sidebarCaptionFont = "10px"   ## section headers, quicknav captions
+  sidebarBodyFont    = "12px"   ## every row, and the search inputs
+  sidebarIconFont    = "12px"   ## every glyph that is not text
   textDim = "#4A4D5C"
   accent* = "#7C7AED"
     ## M-EVP-4: exported so tests (and any sibling editor view) can refer
@@ -1127,6 +1135,35 @@ proc bindSceneGraphTwisty[R, E](vm: EditorVM; r: R; node: E; rowId: string) =
       e.stopPropagation();
     });"""].}
 
+proc renderSidebarSearchBox[R, E](r: R; dataAttr, ariaLabel,
+    placeholder: string): tuple[root: E, input: E] =
+  ## THE search box. Both of the left sidebar's searches are this proc.
+  ##
+  ## They were built separately and looked it: the story search was a
+  ## bordered 28px well with a magnifier and a transparent 12px input; the
+  ## layers search was a bare 22px field with its own background, its own
+  ## border colour, its own radius and an 11px font. Two controls doing the
+  ## same job in one column, sharing nothing.
+  var inputEl: E
+  let root = ui(r):
+    tdiv(display = "flex", align_items = "center",
+          background_color = bgSurface,
+          border = "1px solid " & border,
+          border_radius = "5px", padding = "0 8px", height = "28px",
+          flex = "1", min_width = "0"):
+      span(font_size = sidebarBodyFont, opacity = "0.5",
+            margin_right = "6px"):
+        text "\xF0\x9F\x94\x8D"
+      input(class = "editor-input",
+            ref = inputEl,
+            background_color = "transparent", border = "none",
+            font_size = sidebarBodyFont, color = textSecondary,
+            outline = "none", flex = "1", min_width = "0")
+  r.setAttribute(inputEl, dataAttr, "true")
+  r.setAttribute(inputEl, "aria-label", ariaLabel)
+  r.setAttribute(inputEl, "placeholder", placeholder)
+  (root, inputEl)
+
 proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
   ## SGR-M3: the scene graph — the rendered element hierarchy of the selected
   ## story, in the LEFT sidebar beside the storyboard.
@@ -1147,6 +1184,7 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
   let capturedVm = vm
   var rowsHost: E
   var countEl: E
+  var layerSearchSlot: E
   var layerSearchEl: E
   let panel = ui(r):
     tdiv(class = "editor-scene-graph",
@@ -1161,32 +1199,21 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
           overflow = "hidden"):
       tdiv(`data-scene-graph-header` = "true",
             display = "flex", align_items = "center", gap = "6px",
-            height = "30px", min_height = "30px", padding = "0 10px",
+            height = "40px", min_height = "40px", padding = "0 10px",
             border_bottom = "1px solid " & borderFaint,
             flex_shrink = "0"):
         # A search box rather than a "LAYERS" label. The panel is 61 rows
         # deep on the grip pilot's Hero alone and the label was the least
-        # useful thing that could occupy a 30px header: it told you what you
-        # were already looking at. `filteredLayers` has filtered on
-        # `layerSearch` since M18 and nothing was setting it.
+        # useful thing that could occupy the header: it told you what you
+        # were already looking at.
+        #
+        # Mounted from `renderSidebarSearchBox`, so it IS the story search's
+        # control rather than a second one that resembles it.
         #
         # The `data-scene-graph-*` attributes are deliberately NOT renamed:
-        # they are the test and tooling surface, and churning them for a
-        # cosmetic gain would break every probe.
-        input(ref = layerSearchEl,
-              `data-scene-graph-search` = "true",
-              `aria-label` = "Search layers",
-              placeholder = "Search layers\xE2\x80\xA6",
-              value = "",
-              flex = "1", min_width = "0",
-              height = "22px",
-              padding = "0 8px",
-              font_size = "11px",
-              color = textPrimary,
-              background_color = bgBase,
-              border = "1px solid " & borderFaint,
-              border_radius = "4px",
-              outline = "none")
+        # they are the test and tooling surface.
+        tdiv(ref = layerSearchSlot, display = "flex",
+              align_items = "center", flex = "1", min_width = "0")
         span(ref = countEl,
               `data-scene-graph-count` = "true",
               margin_left = "auto", font_size = "10px", color = textDim):
@@ -1196,8 +1223,15 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
             display = "flex", flex_direction = "column",
             overflow_y = "auto", overflow_x = "hidden",
             padding = "4px 0", flex = "1", min_height = "0")
-  r.addEventListener(layerSearchEl, "input", proc() =
-    capturedVm.inspector.setLayerSearch($r.inputValue(layerSearchEl)))
+  block:
+    let layerSearch = renderSidebarSearchBox[R, E](r,
+      "data-scene-graph-search", "Search layers",
+      "Search layers\xE2\x80\xA6")
+    r.appendChild(layerSearchSlot, layerSearch.root)
+    layerSearchEl = layerSearch.input
+    let field = layerSearchEl
+    r.addEventListener(field, "input", proc() =
+      capturedVm.inspector.setLayerSearch($r.inputValue(field)))
 
   result = panel
   vm.installSceneGraphReader(r, rowsHost)
@@ -1247,7 +1281,7 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
       # panel, which is exactly how this feature was first reported.
       let empty = ui(r):
         tdiv(`data-scene-graph-empty` = "true",
-              padding = "10px 12px", font_size = "11px",
+              padding = "10px 12px", font_size = sidebarBodyFont,
               line_height = "1.5", color = textDim):
           text "Nothing to show: this preview renders no visible " &
                "elements, or has not rendered yet."
@@ -1282,7 +1316,7 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
               display = "flex", align_items = "center", gap = "6px",
               padding = "0 8px 0 " & $indent & "px",
               height = "22px", min_height = "22px",
-              font_size = "11px", cursor = "pointer",
+              font_size = sidebarBodyFont, cursor = "pointer",
               white_space = "nowrap", overflow = "hidden",
               text_overflow = "ellipsis",
               background_color = bg, color = fg):
@@ -1291,7 +1325,7 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
           # what a designer expects. Clicking the label selects.
           span(ref = twisty,
                 `data-scene-graph-twisty` = (if rowChildCount > 0: rowId else: ""),
-                color = textDim, font_size = "9px", flex_shrink = "0",
+                color = textDim, font_size = sidebarCaptionFont, flex_shrink = "0",
                 width = "9px", text_align = "center",
                 cursor = (if rowChildCount > 0: "pointer" else: "default")):
             text (if rowChildCount == 0: "\xC2\xB7"
@@ -1340,8 +1374,9 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
           # neither of which scrolled the thing under the pointer.
           overflow = "hidden"):
 
-      # Search input
-      var searchInput: E
+      # Search input — mounted from `renderSidebarSearchBox` below, so it
+      # is the same control as the Layers search by construction.
+      var storySearchSlot: E
       # CHRM-M7 — sidebar header row holds the search input plus a
       # narrow-only history affordance.  At wide / laptop widths the
       # chrome-bar's history button (rendered inside the centre
@@ -1368,21 +1403,8 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
             flex_shrink = "0"):
         tdiv(display = "flex", align_items = "center",
               gap = "6px", width = "100%"):
-          tdiv(display = "flex", align_items = "center",
-                background_color = bgSurface,
-                border = "1px solid " & border,
-                border_radius = "5px", padding = "0 8px", height = "28px",
-                flex = "1"):
-            span(font_size = "11px", opacity = "0.5", margin_right = "6px"):
-              text "\xF0\x9F\x94\x8D"
-            input(class = "editor-input",
-                  ref = searchInput,
-                  `data-sidebar-search` = "true",
-                  background_color = "transparent", border = "none",
-                  font_size = "12px", color = textSecondary,
-                  outline = "none", flex = "1",
-                  `aria-label` = "Search stories",
-                  placeholder = "Search stories\xE2\x80\xA6")
+          tdiv(ref = storySearchSlot, display = "flex",
+                align_items = "center", flex = "1", min_width = "0")
           # Narrow-only history-button slot. ``mountHistoryButtonForEditor``
           # appends the 🕘 button into this slot. The
           # ``editor-sidebar-history-narrow`` class is gated by the
@@ -1406,6 +1428,11 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
         design_review_mount_view.mountSidebarHistoryButtonForEditor[R, E](
           r, sidebarHistorySlot, vm)
       block:
+        let storySearch = renderSidebarSearchBox[R, E](r,
+          "data-sidebar-search", "Search stories",
+          "Search stories\xE2\x80\xA6")
+        r.appendChild(storySearchSlot, storySearch.root)
+        let searchInput = storySearch.input
         let onSearch = searchInputHandler[R, E](r, vm, searchInput)
         r.addEventListener(searchInput, "input", onSearch)
         r.addEventListener(searchInput, "change", onSearch)
@@ -1463,9 +1490,9 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
                   border_radius = "5px",
                   color = textMuted,
                   transition = "background-color 0.12s, color 0.12s"):
-              span(font_size = "13px", line_height = "1"):
+              span(font_size = sidebarIconFont, line_height = "1"):
                 text cIcon
-              span(font_size = "9px", line_height = "1.1",
+              span(font_size = sidebarCaptionFont, line_height = "1.1",
                     margin_top = "3px",
                     white_space = "nowrap", overflow = "hidden",
                     text_overflow = "ellipsis",
@@ -1515,10 +1542,10 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
                     border_radius = "5px", cursor = "pointer",
                     background_color = (
                         if sExpanded: bgSurface else: "transparent")):
-                span(font_size = "10px", color = textMuted,
+                span(font_size = sidebarIconFont, color = textMuted,
                       opacity = "0.85"):
                   text sIcon
-                span(font_size = "10px", font_weight = "600",
+                span(font_size = sidebarCaptionFont, font_weight = "600",
                       color = textMuted, text_transform = "uppercase",
                       letter_spacing = "0.9px"):
                   text sLabel
@@ -1532,7 +1559,7 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
                     `aria-expanded` = (if sExpanded: "true" else: "false"),
                     onclick = toggleSection,
                     onkeydown = toggleSection,
-                    font_size = "9px", color = textMuted, cursor = "pointer"):
+                    font_size = sidebarIconFont, color = textMuted, cursor = "pointer"):
                 text sChevron
 
             tdiv(ref = sectionBody,
@@ -1588,7 +1615,7 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
                               if gShowsStories: toggleGroup else: openJourney),
                           gap = "6px", padding = "8px 8px 8px 18px",
                           border_radius = "4px", cursor = "pointer"):
-                      span(font_size = "10px", color = textMuted,
+                      span(font_size = sidebarIconFont, color = textMuted,
                             flex_shrink = "0"):
                         text gIcon
                       # v4: group names are typically "App / Story" — they
@@ -1596,16 +1623,16 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
                       # the row to a single line with ellipsis so the
                       # sidebar reads as a clean list rather than a
                       # rag-right scroll.
-                      span(font_size = "12px", font_weight = "500",
+                      span(font_size = sidebarBodyFont, font_weight = "500",
                             color = textPrimary,
-                            letter_spacing = "0.1px",
+                            
                             white_space = "nowrap",
                             overflow = "hidden",
                             text_overflow = "ellipsis",
                             flex = "1", min_width = "0"):
                         text gName
                       span(ref = groupChevron,
-                            font_size = "9px", color = textMuted,
+                            font_size = sidebarIconFont, color = textMuted,
                             margin_left = "auto",
                             flex_shrink = "0"):
                         if gShowsStories:
@@ -1664,7 +1691,7 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
                                 border_left_width = "3px",
                                 border_left_style = "solid",
                                 border_left_color = storyBorderColor):
-                            span(font_size = "12px", line_height = "1.4",
+                            span(font_size = sidebarBodyFont, line_height = "1.4",
                                   flex = "1", min_width = "0",
                                   overflow = "hidden",
                                   text_overflow = "ellipsis",
@@ -1692,7 +1719,7 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
                                     flex_shrink = "0",
                                     padding = "2px 6px",
                                     border_radius = "3px",
-                                    font_size = "10px",
+                                    font_size = sidebarCaptionFont,
                                     color = textSecondary,
                                     background_color = bgSurface,
                                     border = "1px solid " & border,
@@ -2421,7 +2448,7 @@ proc renderSelectionHeader[R, E](r: R; vm: EditorVM): E =
              `data-inspector-selection-chevron` = "true",
              `aria-hidden` = "true",
              color = textMuted,
-             font_size = "10px",
+             font_size = sidebarCaptionFont,
              line_height = "1"):
           text "\xE2\x96\xBE" # ▾
       # Right: 4 quick-action icon buttons. They share a uniform
@@ -2634,7 +2661,7 @@ proc renderSectionFrame[R, E](r: R; vm: EditorVM;
              width = "12px", height = "12px",
              flex_shrink = "0",
              color = textMuted,
-             font_size = "10px",
+             font_size = sidebarCaptionFont,
              line_height = "1"):
           text "\xE2\x96\xBE" # ▾
       tdiv(ref = bodyEl,
@@ -2962,7 +2989,7 @@ proc renderCommandPalette[R, E](r: R; vm: EditorVM): E =
               `aria-live` = "polite",
               min_height = "18px",
               padding = "6px 10px 0 10px",
-              font_size = "10px",
+              font_size = sidebarCaptionFont,
               color = textDim):
           text "Use arrow keys to choose a command."
         tdiv(ref = listNode,
@@ -3161,12 +3188,12 @@ proc renderCommandPalette[R, E](r: R; vm: EditorVM): E =
                   overflow = "hidden", text_overflow = "ellipsis",
                   white_space = "nowrap"):
               text label
-            span(font_size = "10px", color = textDim,
+            span(font_size = sidebarCaptionFont, color = textDim,
                   overflow = "hidden", text_overflow = "ellipsis",
                   white_space = "nowrap",
                   id = diagnosticId):
               text section & " - " & diagnostic
-          span(font_size = "10px", color = textMuted,
+          span(font_size = sidebarIconFont, color = textMuted,
                 font_family = "monospace", white_space = "nowrap"):
             text shortcut
       bindPaletteItem(item, command)
@@ -3205,7 +3232,7 @@ proc renderTelemetryOverlay[R, E](r: R; vm: EditorVM): E =
           border_radius = "8px",
           background_color = "rgba(15, 23, 42, 0.96)",
           color = textSecondary,
-          font_size = "10px",
+          font_size = sidebarCaptionFont,
           box_shadow = "0 16px 48px rgba(0, 0, 0, 0.32)"):
       tdiv(display = "flex", align_items = "center",
             justify_content = "space-between", gap = "8px"):
@@ -4005,8 +4032,42 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
         discard capturedVm.runEditorCommand(eckSave))
     r.addEventListener(saveChevronEl, "click", proc(ev: auto) =
       saveMenuOpen.val = not saveMenuOpen.val)
+
+    # Dismiss on a click anywhere else, and on Escape. A popup that only
+    # closes by clicking the control that opened it is a popup you have to
+    # remember how to get rid of -- and this one overlaps the preview.
+    #
+    # Capture phase, so a click on a control UNDER the menu still closes it
+    # even if that control stops propagation; and the cluster is excluded by
+    # containment rather than by target equality, so clicking the checkbox
+    # inside the menu does not dismiss it before its own handler runs.
+    when defined(js):
+      let cluster = saveCluster
+      let closeMenu = proc() =
+        if saveMenuOpen.val:
+          saveMenuOpen.val = false
+      {.emit: ["""
+        (function (cluster, close) {
+          document.addEventListener('pointerdown', function (event) {
+            if (cluster && cluster.contains(event.target)) return;
+            close();
+          }, true);
+          document.addEventListener('keydown', function (event) {
+            if (event.key === 'Escape') close();
+          }, true);
+        })(""", cluster, ", ", closeMenu, ");"].}
     r.addEventListener(menu, "click", proc(ev: auto) =
-      capturedVm.setAutoSave(not capturedVm.autoSaveEnabled.val))
+      capturedVm.setAutoSave(not capturedVm.autoSaveEnabled.val)
+      # Persist through the same path the exposed API uses, so a click and a
+      # scripted call cannot disagree about what is remembered.
+      when defined(js):
+        let on = capturedVm.autoSaveEnabled.val
+        {.emit: ["""
+          try {
+            window.localStorage.setItem('isonim:editor:auto-save',
+              """, on, """ ? '1' : '0');
+          } catch (e) {}
+        """].})
 
   # Spacer #2 — trailing flex-grow:1 wedge. Symmetric with the
   # leading spacer above; together they centre the Viewport cluster
