@@ -173,6 +173,7 @@ test-c:
     # unprovisioned checkout goes red here with the guard message from
     # `yoga_bindings.nim` instead of building green over a missing dependency.
     nim c -r tests/test_flexbox.nim
+    nim c -r tests/test_nimcache_is_worktree_local.nim
     nim c -r tests/test_signals.nim
     nim c -r tests/test_effects.nim
     nim c -r tests/test_clock.nim
