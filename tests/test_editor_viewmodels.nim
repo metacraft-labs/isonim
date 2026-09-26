@@ -19,6 +19,7 @@ import isonim/editor/workspace
 import isonim/editor/views/page_preview
 import isonim/editor/views/component_detail
 import isonim/editor/views/component_edit
+import isonim/editor/element_semantics
 import isonim/editor/views/widgets/property_commit
 import isonim/testing/mock_dom
 import examples/wanderlust/stories as wanderlust
@@ -6812,3 +6813,109 @@ suite "Editor ViewModels (authored properties reach the inspector)":
       captured().authoredOnlyProperties(positioningProps)
     check all.filterIt(it.isTokenBound()).mapIt(it.name).sorted() ==
       @["color", "font"]
+
+suite "Editor ViewModels (the inspector adapts to what is selected)":
+  ## Everything here was found by looking at the rendered panel rather than at
+  ## the DOM, and each case pins a defect that reading attributes had missed.
+
+  test "a text layer's fill is its text colour":
+    ## `p.positioning` binds `color` to `sys.color.text.primary` and has a
+    ## transparent background. Asking `background-color` reported "nothing
+    ## here" about the element's most editable property -- and, on a design
+    ## system, the one carrying the token.
+    check fillTargetProperty("p") == "color"
+    check fillTargetProperty("h1") == "color"
+    check fillTargetProperty("span") == "color"
+    check fillTargetProperty("div") == "background-color"
+    check fillTargetProperty("section") == "background-color"
+    # An unknown tag must not be guessed into the text branch: filling a
+    # `<marquee>`'s text colour when the author meant its background is a
+    # silent wrong answer, where the box default is at least the common one.
+    check fillTargetProperty("marquee") == "background-color"
+
+  test "the selection label and the fill target agree on what an element is":
+    ## Two copies of "what kind of element is this" is what put a Text label
+    ## above a background-colour Fill section. One classifier, both readers.
+    for tag in ["p", "h1", "span", "code"]:
+      check selectionDisplayName(tag) == "Text"
+      check fillTargetProperty(tag) == "color"
+    for tag in ["div", "section", "nav"]:
+      check selectionDisplayName(tag) == "Group"
+      check fillTargetProperty(tag) == "background-color"
+
+  test "an unknown tag identifies itself rather than becoming Element":
+    check selectionDisplayName("marquee") == "Marquee"
+    check selectionDisplayName("") == ""
+    check elementKind("marquee") == ekUnknown
+
+  test "a text layer opens Typography and Fill, not Position":
+    let sections = defaultExpandedSections("p", positioned = false)
+    check isTypography in sections
+    check isFill in sections
+    # Position on a static-flow element offers X / Y / rotation, which are
+    # not merely zero there -- they are inapplicable.
+    check isPosition notin sections
+
+  test "a positioned element does open Position":
+    let sections = defaultExpandedSections("p", positioned = true)
+    check isPosition in sections
+    check isTypography in sections
+
+  test "an image opens neither Typography nor Fill":
+    let sections = defaultExpandedSections("img", positioned = false)
+    check isTypography notin sections
+    check isLayout in sections
+    check isEffects in sections
+
+  test "selecting a second element does not reverse a choice the user made":
+    ## The whole reason `sectionsUserSet` exists. A default that re-asserts
+    ## itself on the next click is not a default, it is an override.
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      let textEl = ElementRef(tag: "p", id: "e1",
+        properties: @[PropertyInfo(name: "position", value: "static")])
+
+      vm.inspector.applyKindDefaultExpansion(textEl)
+      check isTypography in vm.inspector.expandedSections.val
+
+      # The user closes Typography by clicking its header.
+      vm.inspector.toggleSectionExpanded(isTypography)
+      check isTypography notin vm.inspector.expandedSections.val
+
+      # Selecting another text element must leave it closed.
+      let otherText = ElementRef(tag: "h1", id: "e2",
+        properties: @[PropertyInfo(name: "position", value: "static")])
+      vm.inspector.applyKindDefaultExpansion(otherText)
+      check isTypography notin vm.inspector.expandedSections.val
+
+      # A section the user never touched still follows the defaults.
+      check isFill in vm.inspector.expandedSections.val
+      dispose()
+
+  test "a user-opened section stays open even where it is not a default":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      let img = ElementRef(tag: "img", id: "e3",
+        properties: @[PropertyInfo(name: "position", value: "static")])
+      vm.inspector.applyKindDefaultExpansion(img)
+      check isTypography notin vm.inspector.expandedSections.val
+
+      vm.inspector.toggleSectionExpanded(isTypography)
+      check isTypography in vm.inspector.expandedSections.val
+
+      # Another image: the default would close it, the user's choice wins.
+      vm.inspector.applyKindDefaultExpansion(ElementRef(tag: "img", id: "e4",
+        properties: @[PropertyInfo(name: "position", value: "static")]))
+      check isTypography in vm.inspector.expandedSections.val
+      dispose()
+
+  test "an empty selection leaves the sections alone":
+    ## Clearing the selection should not slam every section shut underneath
+    ## someone who is mid-task.
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      vm.inspector.applyKindDefaultExpansion(ElementRef(tag: "p", id: "e5"))
+      let before = vm.inspector.expandedSections.val
+      vm.inspector.applyKindDefaultExpansion(ElementRef())
+      check vm.inspector.expandedSections.val == before
+      dispose()

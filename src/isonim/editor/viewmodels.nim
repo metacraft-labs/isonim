@@ -8,6 +8,7 @@ import std/[algorithm, hashes, json, math, options, sequtils, strutils, tables]
 import isonim/core/[signals, computation]
 import isonim/viewmodel
 import isonim/editor/types
+import isonim/editor/element_semantics
 import isonim/editor/streaming_preview
 import isonim/editor/style_provenance_decode
 
@@ -69,6 +70,13 @@ type
     layerSearch*: Signal[string]
     sectionSearch*: Signal[string]
     expandedSections*: Signal[seq[InspectorSection]]
+    sectionsUserSet*: Signal[seq[InspectorSection]]
+      ## Sections whose open/closed state the USER decided, by clicking the
+      ## header. Per-kind defaults are applied only to sections absent from
+      ## this list, so selecting a second element never reverses a choice the
+      ## person just made. Same shape as the Layers panel's "seed a node open
+      ## the first time it is seen" rule, and for the same reason: a default
+      ## that re-asserts itself is not a default, it is an override.
     focusedControlId*: Signal[string]
     commandPaletteHooksReady*: Signal[bool]
     expandedLayerIds*: Signal[seq[string]]
@@ -2549,6 +2557,10 @@ proc publishStyleProvenance(inspector: InspectorVM; next: var ElementRef) =
   inspector.editDiagnostics.val = styleBindingDiagnostics(
     next.styleBindings, next.sourceFile, next.sourceLine)
 
+proc applyKindDefaultExpansion*(inspector: InspectorVM; element: ElementRef)
+  ## Forward-declared: defined with the other section-expansion procs, but
+  ## the call site is selection, which is here.
+
 proc seedStyleProvenanceBindings(editor: EditorVM; element: ElementRef)
   ## Forward-declared: the body needs ``resolveVariableValue`` and
   ## ``sameTokenKey``, both defined further down this module, and the call
@@ -2588,6 +2600,7 @@ proc selectInspectorElement*(editor: EditorVM; element: ElementRef;
   editor.inspector.publishStyleProvenance(next)
   editor.inspector.selectedElement.val = next
   editor.seedStyleProvenanceBindings(next)
+  editor.inspector.applyKindDefaultExpansion(next)
   editor.inspector.noteBreadcrumbSelection(next, origin)
   if editor.inspector.layers.val.len == 0:
     editor.inspector.layers.val = @[next.rowFromElement()]
@@ -2776,6 +2789,7 @@ proc selectInspectorElementById*(editor: EditorVM; id: string;
       editor.inspector.publishStyleProvenance(fromRow)
       editor.inspector.selectedElement.val = fromRow
       editor.seedStyleProvenanceBindings(fromRow)
+      editor.inspector.applyKindDefaultExpansion(fromRow)
       editor.inspector.noteBreadcrumbSelection(
         editor.inspector.selectedElement.val, origin)
       editor.inspector.refreshLayerFlags()
@@ -3543,7 +3557,45 @@ proc setSectionExpanded*(inspector: InspectorVM; section: InspectorSection;
   inspector.expandedSections.val = next
 
 proc toggleSectionExpanded*(inspector: InspectorVM; section: InspectorSection) =
+  ## The USER path -- a header click. Records the intent so the per-kind
+  ## defaults stop deciding this section. `setSectionExpanded` stays the
+  ## neutral setter, used by the defaults themselves and by restore-from-
+  ## storage, neither of which is a statement of intent.
+  var touched = inspector.sectionsUserSet.val
+  if section notin touched:
+    touched.add section
+    inspector.sectionsUserSet.val = touched
   inspector.setSectionExpanded(section, section notin inspector.expandedSections.val)
+
+proc applyKindDefaultExpansion*(inspector: InspectorVM; element: ElementRef) =
+  ## Re-seed the untouched sections for what is now selected.
+  ##
+  ## Called on every selection change. Sections the user has opened or closed
+  ## themselves are left exactly as they are; everything else follows
+  ## `defaultExpandedSections` for the element's kind.
+  if element.tag.len == 0:
+    return
+  # Inlined rather than reaching for the widgets' `findPropertyValue`:
+  # `views/widgets/section_position` sits ABOVE this module, and importing
+  # upward to save three lines would invert the layering.
+  var positionValue = "static"
+  for prop in element.properties:
+    if prop.name == "position":
+      positionValue = prop.value
+      break
+  let positioned = positionValue notin ["", "static"]
+  let wanted = defaultExpandedSections(element.tag, positioned)
+  let touched = inspector.sectionsUserSet.val
+  var next = inspector.expandedSections.val
+  for section in InspectorSection:
+    if section in touched:
+      continue
+    let shouldOpen = section in wanted
+    if shouldOpen and section notin next:
+      next.add section
+    elif not shouldOpen and section in next:
+      next = next.filterIt(it != section)
+  inspector.expandedSections.val = next
 
 func inspectorSectionToSlug*(section: InspectorSection): string =
   ## Phase C (2026-05-28): canonical slug for an ``InspectorSection``
@@ -9593,6 +9645,7 @@ proc createInspectorVM*(designSystemSchema: Signal[DesignSystemSchema] = nil;
     layerSearch: layerSearch,
     sectionSearch: sectionSearch,
     expandedSections: expandedSections,
+    sectionsUserSet: createSignal[seq[InspectorSection]](@[]),
     focusedControlId: focusedControlId,
     commandPaletteHooksReady: commandPaletteHooksReady,
     expandedLayerIds: expandedLayerIds,

@@ -10,6 +10,7 @@ import isonim/dsl/ui
 import isonim/viewmodel  # AsyncState (asIdle/asLoading/asReady/asError)
 import isonim/editor/viewmodels
 import isonim/editor/types
+import isonim/editor/element_semantics
 import isonim/editor/views/choice_row
 import isonim/editor/views/storyboard
 import isonim/editor/views/component_detail
@@ -2285,39 +2286,10 @@ const inspectorSectionsWithPlusAction = [
   ## widget) that Phase G owns — for Phase B those sections render
   ## an empty action slot so the right margin still lines up.
 
-func selectionDisplayName(tag: string): string =
-  ## Map an ``ElementRef.tag`` to the selection-header display label
-  ## used in the dropdown trigger. The mapping leans on common HTML
-  ## semantics: container tags read as "Group" / "Frame"; text-bearing
-  ## tags read as "Text"; form controls keep their semantic name.
-  ## Unknown tags fall through to a capitalised echo of the tag so
-  ## new elements aren't relabelled as a generic "Element".
-  let lower = tag.toLowerAscii()
-  case lower
-  of "div", "section", "main", "article", "aside", "nav", "header",
-      "footer": "Group"
-  of "span", "p", "h1", "h2", "h3", "h4", "h5", "h6", "label",
-      "strong", "em", "small", "code", "pre": "Text"
-  of "button": "Button"
-  of "a": "Link"
-  of "img": "Image"
-  of "svg": "Vector"
-  of "input": "Input"
-  of "textarea": "Text area"
-  of "select": "Select"
-  of "ul", "ol", "li": "List"
-  of "table", "thead", "tbody", "tr", "td", "th": "Table"
-  of "form": "Form"
-  of "iframe": "Frame"
-  of "":
-    ""
-  else:
-    # Preserve unknown tag names verbatim — capitalised first letter
-    # so it reads as a noun in the dropdown without losing identity.
-    if lower.len > 0:
-      lower[0..0].toUpperAscii() & lower[1..^1]
-    else:
-      ""
+# `selectionDisplayName` moved to `editor/element_semantics.nim`: the Fill
+# section needs the same classification to decide which property it edits,
+# and two copies of "what kind of element is this" drift.
+
 
 proc renderSelectionHeader[R, E](r: R; vm: EditorVM): E =
   ## Phase B (2026-05-28): the always-visible selection header that

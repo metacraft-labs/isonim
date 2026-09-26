@@ -195,6 +195,13 @@ const
   # column is now a 22px-wide gutter that holds the (short) property
   # name in textMuted, and the longer property names just truncate.
   prLabelWidth   = "22px"
+  # A row that gets no inline glyph has to write its name somewhere. 88px
+  # is measured, not guessed: at 76px the longest names in the catalogue
+  # ("Paragraph spacing", "Text alignment", "Text transform") ellipsised to
+  # "Paragraph s...", which defeats the purpose of writing the label at all.
+  # 88px clears all three and still leaves ~130px for the value, which is
+  # more than a number with a unit chip or a popup trigger needs.
+  prLabelWideWidth = "88px"
   prBindWidth    = "20px"
   prMoreWidth    = "18px"
 
@@ -730,6 +737,22 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
   # option is to drop the message, and a property row that swallows
   # "this workspace is read-only" is the exact defect this phase
   # exists to remove.
+  # A row is ANONYMOUS when nothing on it says what it edits. Typography was
+  # the proof: font size, line height, letter spacing and paragraph spacing
+  # rendered as four unlabelled numbers in a column (19, 30.4, -0.01, 0),
+  # identifiable only by hovering each one for its `title`.
+  #
+  # Choice rows were exempted at first, on the theory that the value names
+  # the row -- "Visible", "Normal". It does not hold: decoration, transform
+  # and list style all read **None**, so three consecutive rows said the
+  # same word and named nothing. The value only identifies a row when its
+  # vocabulary happens to be unique, which is not a property anything
+  # enforces.
+  #
+  # So every kind writes its name except where a glyph already carries it.
+  # Figma gets away without labels here because it has an icon for each of
+  # these; we do not, and an unlabelled control is worse than a wider one.
+  let writesOwnLabel = inlinePrefixGlyph(cfg.name).len == 0
   let root = ui(r):
     tdiv(
       `data-property-row` = slug,
@@ -766,10 +789,15 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
         white_space = "nowrap",
         overflow = "hidden",
         text_overflow = "ellipsis",
-        min_width = prLabelWidth,
-        max_width = prLabelWidth,
+        min_width = (if writesOwnLabel: prLabelWideWidth else: prLabelWidth),
+        max_width = (if writesOwnLabel: prLabelWideWidth else: prLabelWidth),
         cursor = (if cfg.kind == prkNumeric: "col-resize" else: "default"),
-        user_select = "none")
+        user_select = "none"):
+        # Blank unless the row would otherwise be anonymous. See
+        # `writesOwnLabel` above: a glyph row is already named, and a choice
+        # row's value names it, but a bare number names nothing.
+        if writesOwnLabel:
+          text cfg.name
       tdiv(
         ref = valueSlot,
         `data-property-row-slot` = "value",
@@ -1150,7 +1178,43 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
           if i >= 0 and i < values.len:
             cfg.choiceValue.val = values[i]
             commitValue()
-        r.mountSegmentedChoice(host, vm, onPick, variant = cgvTransparent)
+        # Segmented strips only fit while their labels do. The container
+        # clips rather than scrolls, so an overlong strip does not compress
+        # -- it slices the last option mid-word. The grip pilot showed
+        # "Auto" as "Au", "Overlay" as "O" and "Line-through" as
+        # "Line-thro". A truncated option reads as a rendering fault, and it
+        # is not clickable either.
+        #
+        # Counting options is not enough: None / Underline / Line-through is
+        # only three and still overflows, while None / Disc / Decimal fits.
+        # So estimate the width the pills need and compare it with the room
+        # the row has.
+        #
+        # The constants are CALIBRATED, not guessed. Measured in the grip
+        # pilot at the default 320px panel, where the choice host is 196px:
+        #
+        #   Visible/Hidden/Scroll/Auto      23 chars, 4 pills -> 230px
+        #   Left/Center/Right/Justify       22 chars, 4 pills -> 229px
+        #   None/Underline/Line-through     25 chars, 3 pills -> 222px
+        #   None/Disc/Decimal               15 chars, 3 pills -> 177px
+        #
+        # which fit `5.0 * chars + 34 * pills` closely, rounded UP at every
+        # step. Rounding up is the point: being wrong toward the popup costs
+        # one click, being wrong toward the strip cuts a label in half.
+        #
+        # The panel is resizable down to 200px, so a strip that just fits
+        # here will not fit there. That is the remaining gap, and it argues
+        # for the bias rather than against it.
+        var pillWidth = 0.0
+        for opt in cfg.choiceOptions:
+          pillWidth += float(opt.label.len) * 5.0 + 34.0
+        # Minus the label gutter when this row writes its own name: 76px
+        # instead of 22px leaves 54px less for pills.
+        let roomForPills = 196.0 - (if writesOwnLabel: 66.0 else: 0.0)
+        if pillWidth > roomForPills:
+          r.mountChevronChoice(host, vm, onPick, variant = cgvTransparent)
+        else:
+          r.mountSegmentedChoice(host, vm, onPick, variant = cgvTransparent)
 
         # When the bound signal is updated externally, mirror the
         # selection into the VM so the segmented control stays in

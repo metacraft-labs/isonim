@@ -18,6 +18,7 @@ import isonim/core/signals
 import isonim/core/computation
 import isonim/dsl/ui
 import isonim/editor/types
+import isonim/editor/element_semantics
 import isonim/editor/viewmodels
 import isonim/editor/views/widgets/property_commit
 import isonim/editor/views/widgets/section_position
@@ -60,8 +61,22 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
   # saying so is the whole point of this phase. Before, editing them
   # silently updated a section-local signal and nothing else, which
   # looks identical to editing row 0 and is not.
-  let fillWiring = vm.inspectorRowWiring("background-color")
-  let fillMessage = fillWiring.commitMessage
+  # Which property "Fill" means depends on what is selected: a text layer's
+  # fill is its text colour (`element_semantics.fillTargetProperty`). The
+  # wiring has to follow the selection, so it is read inside the effects
+  # below rather than captured once at mount -- capturing it here would bind
+  # every element to whatever the first selection happened to be.
+  proc fillProperty(): string =
+    fillTargetProperty(vm.inspector.selectedElement.val.tag)
+
+  # Both wirings are built once. `inspectorRowWiring` owns signals, so
+  # rebuilding one per commit would hand each commit a fresh message signal
+  # that nothing is rendering -- the refusal would be recorded where no one
+  # could see it. Two cheap long-lived wirings, and a picker.
+  let textFillWiring = vm.inspectorRowWiring("color")
+  let boxFillWiring = vm.inspectorRowWiring("background-color")
+  proc fillWiringNow(): InspectorRowWiring =
+    if fillProperty() == "color": textFillWiring else: boxFillWiring
 
   # Seed from the selection's background-color when an element is
   # selected. The seeding happens once per selection change.
@@ -72,7 +87,7 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
     if id != lastElementId:
       lastElementId = id
       if vm.inspector.hasElement.val:
-        let bg = findPropertyValue(el.properties, "background-color", "")
+        let bg = findPropertyValue(el.properties, fillProperty(), "")
         if bg.len > 0 and bg != "transparent" and bg != "none":
           entries.val = @[FillEntry(color: bg, alpha: 1.0)]
         else:
@@ -144,7 +159,7 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
     ## compositing has no per-index canonical CSS property yet, so
     ## additional fill rows stay literal (honest M1 gap — see M2/M3).
     let binding =
-      if idx == 0: vm.inspectorBindingFor("background-color")
+      if idx == 0: vm.inspectorBindingFor(fillProperty())
       else: none(VariableBinding)
     var swatchEl: E
     var hexEl: E
@@ -162,7 +177,13 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
               `data-fill-row-swatch` = $idx,
               role = "button", tabindex = "0",
               width = "16px", height = "16px",
-              border = "1px solid rgba(255, 255, 255, 0.12)",
+              # The swatch sits on a near-black panel and very often holds a
+              # near-black colour -- `sys.color.text.primary` is rgb(21,23,26)
+              # in the grip pilot. At 12% the border was invisible and the
+              # swatch read as an empty outline, i.e. as "no colour set" for
+              # an element that has one. 34% separates it from the panel
+              # without competing with the value next to it.
+              border = "1px solid rgba(255, 255, 255, 0.34)",
               border_radius = "3px",
               background_color = entry.color,
               cursor = "pointer", flex_shrink = "0")
@@ -264,9 +285,9 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
           next[idx].color = r.inputValue(hexEl)
           entries.val = next
           if idx == 0:
-            fillWiring.commit(next[idx].color)
+            fillWiringNow().commit(next[idx].color)
           else:
-            fillMessage.val = secondaryFillNotice)
+            fillWiringNow().commitMessage.val = secondaryFillNotice)
       r.addEventListener(alphaEl, "change", proc() =
         var next = entries.val
         if idx >= 0 and idx < next.len:
@@ -278,7 +299,7 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
           # Alpha has no standalone source property: the section never
           # composed an rgba() value, so there is nothing to write.
           # Reported rather than dropped.
-          fillMessage.val = fillAlphaNotice)
+          fillWiringNow().commitMessage.val = fillAlphaNotice)
     r.addEventListener(deleteEl, "click", proc() =
       var next = entries.val
       if idx >= 0 and idx < next.len:
@@ -303,7 +324,7 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
   r.addEventListener(addBtnEl, "keydown", onAdd)
 
   createRenderEffect proc() =
-    let text = fillMessage.val
+    let text = fillWiringNow().commitMessage.val
     r.setTextContent(messageEl, text)
     r.setAttribute(messageEl, "data-fill-message-visible",
       if text.len > 0: "true" else: "false")
