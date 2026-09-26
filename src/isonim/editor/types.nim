@@ -963,6 +963,12 @@ type
     pedInvalidPropertyCombination
     pedSchemaViolation
     pedSourceConflict
+    pedUnresolvedStyleBinding
+      ## A styling construct the DSL captured but could not resolve to any
+      ## CSS property -- a class that is in no class index, or an attribute
+      ## whose value is computed at runtime. Carried so the inspector can say
+      ## so: a construct that silently does nothing is the defect
+      ## ``Styling-Substrate-Evaluation.md`` ranks worst, not a non-event.
 
   PropertyEditDiagnostic* = object
     kind*: PropertyEditDiagnosticKind
@@ -1038,6 +1044,13 @@ type
     ancestors*: seq[string] ## Breadcrumb labels from root to selected element
     ancestorIds*: seq[string] ## Breadcrumb identities from root to selected element
     depth*: int            ## Nesting depth
+    styleBindings*: string
+      ## Encoded authored style provenance for this element, exactly as the
+      ## DSL stamped it (``data-isonim-props`` in SSR, ``noteProperties`` in
+      ## client mode). Decoded by ``editor/style_provenance_decode``; see
+      ## ``dsl/style_provenance`` for the format. Empty for any selection that
+      ## did not come from an IsoNim-rendered element, and every consumer
+      ## treats empty as "no provenance available" rather than "no bindings".
 
   ElementLayerRow* = object
     ## Source-backed row in the editor-owned element/layers tree.

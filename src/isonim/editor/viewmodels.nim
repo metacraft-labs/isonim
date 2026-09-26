@@ -9,9 +9,11 @@ import isonim/core/[signals, computation]
 import isonim/viewmodel
 import isonim/editor/types
 import isonim/editor/streaming_preview
+import isonim/editor/style_provenance_decode
 
 export types
 export streaming_preview
+export style_provenance_decode
 
 # ===========================================================================
 # All ViewModel types (single type block for forward references)
@@ -2523,8 +2525,19 @@ proc refreshLayerFlags(inspector: InspectorVM) =
     inspector.hoveredElementId.val,
     inspector.expandedLayerIds.val)
 
+proc seedStyleProvenanceBindings(editor: EditorVM; element: ElementRef)
+  ## Forward-declared: the body needs ``resolveVariableValue`` and
+  ## ``sameTokenKey``, both defined further down this module, and the call
+  ## site is selection, which is defined here.
+
 proc selectInspectorElement*(editor: EditorVM; element: ElementRef;
     origin = soExternal): bool {.discardable.} =
+  ## Selecting an element also publishes its *authored* style provenance:
+  ## ``editDiagnostics`` gains an entry per styling construct the DSL captured
+  ## and could not resolve, and ``propertyBindings`` gains a chip for every
+  ## property whose authored form was a token reference. Both are derived from
+  ## ``element.styleBindings`` and both are empty for a selection that carries
+  ## no payload, so a non-IsoNim preview behaves exactly as it did.
   if element.tag.len == 0:
     editor.inspector.selectedElement.val = ElementRef()
     editor.inspector.editDiagnostics.val = @[]
@@ -2544,7 +2557,14 @@ proc selectInspectorElement*(editor: EditorVM; element: ElementRef;
   if next.ancestorIds.len == 0:
     next.ancestorIds = @[next.id]
   editor.inspector.selectedElement.val = next
-  editor.inspector.editDiagnostics.val = @[]
+  # Requirement 8 ("never fail silently"): a class that is in no class index,
+  # or a styling attribute computed at runtime, contributes NOTHING to the
+  # rendered element and used to say so nowhere. It says so here, on the same
+  # signal the inspector already renders edit diagnostics from, at the moment
+  # the user looks at the element.
+  editor.inspector.editDiagnostics.val =
+    styleBindingDiagnostics(next.styleBindings, next.sourceFile, next.sourceLine)
+  editor.seedStyleProvenanceBindings(next)
   editor.inspector.noteBreadcrumbSelection(next, origin)
   if editor.inspector.layers.val.len == 0:
     editor.inspector.layers.val = @[next.rowFromElement()]
@@ -2560,10 +2580,21 @@ proc previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
     margin, width, height, borderRadius, borderWidth, borderStyle, borderColor,
     fontSize, fontWeight, lineHeight, boxShadow, opacity, rectWidth,
     rectHeight, textContent, elementId, sourceKey, schemaKey, ancestorIds,
-    layerTreeJson: string): ElementRef =
+    layerTreeJson: string; styleBindings = ""): ElementRef =
   ## Build the generic inspector selection produced by the browser iframe DOM
   ## bridge. Projects own the preview HTML/source metadata; the editor owns the
   ## normalized ElementRef and editable property model.
+  ##
+  ## ``styleBindings`` is the element's ``data-isonim-props`` payload -- the
+  ## authored style provenance the ``ui`` DSL captured at macro time. Every
+  ## other argument here is a *computed* style read out of the preview iframe,
+  ## and a computed style cannot say whether ``12px`` was written ``p-3``,
+  ## ``padding = "12px"`` or ``var(--space-3)``. That is why every property
+  ## built below used to be stamped ``poInherited``: with only the computed
+  ## value in hand, it was the one claim that was not a guess. The payload is
+  ## the missing half, and ``withStyleProvenance`` restamps the list with it.
+  ## When it is empty -- a non-IsoNim preview document, a hand-built fixture --
+  ## the properties keep exactly the shape they had before.
   let file =
     if sourceFile.len > 0: sourceFile
     else: metadata.sourceFile
@@ -2685,10 +2716,11 @@ proc previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
     sourceLine: line,
     sourceColumn: 1,
     depth: max(0, ancestors.len - 1),
-    properties: props,
+    properties: props.withStyleProvenance(styleBindings),
     children: children,
     ancestors: ancestors,
-    ancestorIds: parsedAncestorIds)
+    ancestorIds: parsedAncestorIds,
+    styleBindings: styleBindings)
 
 proc previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
     className, sourceFile: string; sourceLine: int; backgroundColor, color,
@@ -3915,7 +3947,7 @@ proc editInspectorProperty*(editor: EditorVM;
           of pedInvalidCssValue, pedInvalidPropertyCombination,
               pedSchemaViolation, pedSourceConflict:
             vcDirectStyle
-          of pedInvalidTokenReference:
+          of pedInvalidTokenReference, pedUnresolvedStyleBinding:
             vcDryTokens
         result.add Violation(
           severity: if d.kind in {pedSharedScopeRequired, pedMissingSelection,
@@ -9154,6 +9186,66 @@ proc rehydratePropertyBindings*(vm: EditorVM;
       propertyName: pb.propertyName)] = binding
   vm.inspector.propertyBindings.val = tbl
   vm.inspector.variableBindingHistory.val = history
+
+proc seedStyleProvenanceBindings(editor: EditorVM; element: ElementRef) =
+  ## Turn the element's authored token references into inspector bindings.
+  ##
+  ## This is what makes the linked chip real. ``inspectorBindingFor`` has been
+  ## the read path since VBIND-M1 and its own doc comment says it "returns
+  ## ``none`` for every row today" because nothing seeds the table outside a
+  ## workspace sidecar. A token reference the author actually wrote --
+  ## ``padding = "var(--space-3)"`` -- is exactly such a seed, and it is one
+  ## the source can be trusted for: the DSL read it off the attribute, not off
+  ## a computed value.
+  ##
+  ## Three deliberate restraints:
+  ##
+  ## * An EXISTING entry for a key is never overwritten. A binding the user
+  ##   made, or one rehydrated from the workspace sidecar, outranks what the
+  ##   source happened to say when the page was compiled.
+  ## * ``onBindingsChanged`` is NOT fired. This table entry is derived from
+  ##   source, not a user decision, and persisting it into the sidecar would
+  ##   turn a fact the source already states into duplicated state that can
+  ##   drift from it.
+  ## * A token the foundations do not know becomes ``vbsBoundMissing`` rather
+  ##   than being dropped -- the inspector already renders that as a broken
+  ##   link, which is the whole point of requirement 8. A binding that cannot
+  ##   be resolved must be visible, not absent.
+  let elementId = element.fallbackElementId()
+  if elementId.len == 0 or element.styleBindings.len == 0:
+    return
+  var additions: seq[(PropertyBindingKey, VariableBinding)] = @[]
+  for prop in element.properties:
+    if not prop.isTokenBound():
+      continue
+    let key = PropertyBindingKey(elementId: elementId, propertyName: prop.name)
+    if editor.inspector.propertyBindings.val.hasKey(key):
+      continue
+    let resolved = editor.resolveVariableValue(prop.tokenName)
+    var binding = VariableBinding(
+      state: if resolved.len > 0: vbsBound else: vbsBoundMissing,
+      variableKey: prop.tokenName,
+      resolvedValue: if resolved.len > 0: resolved else: prop.value)
+    for token in editor.foundations.tokens.val:
+      if token.key.sameTokenKey(prop.tokenName):
+        binding.sourceFileRef = token.sourceFile
+        binding.sourceLineRef = token.sourceLine
+        break
+    additions.add (key, binding)
+  if additions.len == 0:
+    return
+  editor.inspector.propertyBindings.update(proc(
+      prev: Table[PropertyBindingKey, VariableBinding]):
+      Table[PropertyBindingKey, VariableBinding] =
+    result = prev
+    for (key, binding) in additions:
+      result[key] = binding)
+
+proc unresolvedStyleBindingsForSelection*(editor: EditorVM): seq[StyleBinding] =
+  ## Every authored styling construct on the current selection that resolved
+  ## to nothing. The per-element view of requirement 8; the whole-page view is
+  ## ``editor/scene_graph_hooks.sceneUnresolvedBindings``.
+  unresolvedStyleBindings(editor.inspector.selectedElement.val.styleBindings)
 
 proc collectWorkspaceBindingMetadata*(vm: EditorVM):
     tuple[bindings: seq[PersistedPropertyBinding],
