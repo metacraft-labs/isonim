@@ -19,6 +19,7 @@ import isonim/core/computation
 import isonim/dsl/ui
 import isonim/editor/types
 import isonim/editor/viewmodels
+import isonim/editor/views/widgets/property_commit
 import isonim/editor/views/widgets/section_position
 import isonim/editor/views/widgets/variable_chip
 import isonim/editor/views/widgets/property_row  # measureAnchorRect (VBIND-M2)
@@ -36,8 +37,31 @@ const
   accent = "#7C7AED"
   bgInput = "#1A1B22"
 
+  # Phase G+1 refusal copy. Held as constants so the closures that
+  # raise them stay single-statement — a multi-line `&` as the last
+  # expression of an anonymous proc trips Nim's indentation rules.
+  secondaryFillNotice =
+    "Only the first fill maps to a source property; additional fills " &
+    "are preview-only."
+  fillAlphaNotice =
+    "Fill opacity is preview-only until fills compose an rgba() source value."
+
 proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
   let entries = createSignal[seq[FillEntry]](@[])
+
+  # Phase G+1: the fill section hand-builds its rows rather than going
+  # through ``mountPropertyRow``, so it needs the writeback wired
+  # directly. Only the primary fill has a source property to write:
+  # the section's own read path (see ``mountRow``) already treats
+  # entry 0 as the selected element's canonical ``background-color``
+  # and calls multi-fill compositing an honest M1 gap.
+  #
+  # The consequence for rows 1..n is that they cannot commit — and
+  # saying so is the whole point of this phase. Before, editing them
+  # silently updated a section-local signal and nothing else, which
+  # looks identical to editing row 0 and is not.
+  let fillWiring = vm.inspectorRowWiring("background-color")
+  let fillMessage = fillWiring.commitMessage
 
   # Seed from the selection's background-color when an element is
   # selected. The seeding happens once per selection change.
@@ -59,6 +83,7 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
   var listEl: E
   var emptyEl: E
   var addBtnEl: E
+  var messageEl: E
 
   # Phase H (2026-05-28): the Figma reference shows ONLY the
   # placeholder hint when the list is empty — the section header's
@@ -82,6 +107,17 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
             font_size = "12px",
             color = textMuted):
         text "Click + to replace mixed content"
+      # Phase G+1 refusal surface. Hidden while empty; carries the
+      # reason a fill edit could not reach source.
+      tdiv(ref = messageEl,
+            `data-fill-message` = "true",
+            role = "status",
+            `aria-live` = "polite",
+            padding = "0 0 2px 0",
+            font_size = "10px",
+            line_height = "1.35",
+            color = "#FBBF24"):
+        text ""
       tdiv(ref = addBtnEl,
             role = "button", tabindex = "0",
             `data-fill-add` = "true",
@@ -226,7 +262,11 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
         var next = entries.val
         if idx >= 0 and idx < next.len:
           next[idx].color = r.inputValue(hexEl)
-          entries.val = next)
+          entries.val = next
+          if idx == 0:
+            fillWiring.commit(next[idx].color)
+          else:
+            fillMessage.val = secondaryFillNotice)
       r.addEventListener(alphaEl, "change", proc() =
         var next = entries.val
         if idx >= 0 and idx < next.len:
@@ -234,7 +274,11 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
           try: parsed = parseFloat(r.inputValue(alphaEl))
           except ValueError: discard
           next[idx].alpha = max(0.0, min(1.0, parsed / 100.0))
-          entries.val = next)
+          entries.val = next
+          # Alpha has no standalone source property: the section never
+          # composed an rgba() value, so there is nothing to write.
+          # Reported rather than dropped.
+          fillMessage.val = fillAlphaNotice)
     r.addEventListener(deleteEl, "click", proc() =
       var next = entries.val
       if idx >= 0 and idx < next.len:
@@ -257,3 +301,10 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
     entries.val = next
   r.addEventListener(addBtnEl, "click", onAdd)
   r.addEventListener(addBtnEl, "keydown", onAdd)
+
+  createRenderEffect proc() =
+    let text = fillMessage.val
+    r.setTextContent(messageEl, text)
+    r.setAttribute(messageEl, "data-fill-message-visible",
+      if text.len > 0: "true" else: "false")
+    r.setStyle(messageEl, "display", if text.len > 0: "block" else: "none")
