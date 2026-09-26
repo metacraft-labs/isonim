@@ -8,6 +8,8 @@
 ## dependency of the whole framework in editor builds.
 
 import std/[tables, strutils]
+import ../dsl/style_provenance
+export style_provenance
 
 type
   SceneNode* = object
@@ -18,6 +20,7 @@ type
     file*: string
     line*: int
     column*: int
+    bindings*: string  ## Encoded style provenance; see `dsl/style_provenance`.
 
   SceneGraph* = object
     nodes*: seq[SceneNode]
@@ -61,9 +64,45 @@ proc recordElement*(id, tag, loc, parentId: string) =
     id: id, tag: tag, parentId: parentId,
     file: parsed.file, line: parsed.line, column: parsed.column)
 
+proc recordProperties*(id, bindings: string) =
+  ## Attach this element's authored style provenance to the node the macro
+  ## already recorded. A proc for the same reason `recordElement` is one: the
+  ## DSL's expansion should carry a call, not a body.
+  ##
+  ## An id with no node is dropped rather than creating one. The macro always
+  ## emits `noteElement` before `noteProperties` for the same element, so a
+  ## miss means the two got out of step, and inventing a node here would hide
+  ## that behind a parentless entry in the tree.
+  if not current.byId.hasKey(id):
+    return
+  current.nodes[current.byId[id]].bindings = bindings
+
+proc sceneBindings*(id: string): seq[StyleBinding] =
+  ## Decoded provenance for one element.
+  if not current.byId.hasKey(id):
+    return @[]
+  decodeStyleBindings(current.nodes[current.byId[id]].bindings)
+
+proc sceneUnresolvedBindings*(): seq[tuple[id: string; binding: StyleBinding]] =
+  ## Every binding in the last render that could not be resolved.
+  ##
+  ## Requirement 8 of `Styling-Substrate-Evaluation.md` §7.4: a class that
+  ## does nothing must not do it quietly. This is the whole-page view of that;
+  ## the per-element view reaches the inspector through the selection payload.
+  for node in current.nodes:
+    for b in decodeStyleBindings(node.bindings):
+      if b.kind == sbkUnresolved:
+        result.add (node.id, b)
+
 template noteElement*(el: untyped; id: static string; tag: static string;
                       loc: static string; parentId: static string) =
   ## Record one element. `el` — the renderer's element handle — is
   ## deliberately unused: its lifetime belongs to the renderer, and the graph
   ## must not keep it alive.
   recordElement(id, tag, loc, parentId)
+
+template noteProperties*(el: untyped; id: static string;
+                         bindings: static string) =
+  ## Record one element's authored style provenance. `el` is unused here for
+  ## the same reason it is unused in `noteElement`.
+  recordProperties(id, bindings)

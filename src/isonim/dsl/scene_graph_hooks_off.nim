@@ -19,3 +19,13 @@ template noteElement*(el: untyped; id: static string; tag: static string;
                       loc: static string; parentId: static string) =
   ## No-op. Every parameter is deliberately unused; see the module doc.
   discard
+
+template noteProperties*(el: untyped; id: static string;
+                         bindings: static string) =
+  ## No-op, on the same terms as `noteElement`. `bindings` is the encoded
+  ## style provenance for this element (`dsl/style_provenance.nim`); it is a
+  ## compile-time constant, it is never referenced here, and it therefore
+  ## does not reach the emitted JS or C. `tests/test_scene_graph_hooks.nim`
+  ## asserts that, and the assertion was checked against a deliberately
+  ## sabotaged version of this template that DOES use its parameters.
+  discard

@@ -38,6 +38,8 @@ import std/macros
 import transform
 import tailwind
 import ./scene_graph
+import ./style_provenance
+import ./style_binding
 
 var gensymCounter {.compileTime.} = 0
 
@@ -117,6 +119,54 @@ proc sceneElementId(node: NimNode): string {.compileTime.} =
   ## milestone records it as unfinished rather than claiming otherwise.
   let info = node.lineInfoObj
   result = info.filename & ":" & $info.line & ":" & $info.column
+
+proc literalText(node: NimNode): string {.compileTime.} =
+  ## The authored text of a non-dynamic attribute value, or "" if the node is
+  ## not one the macro can read. `isDynamic` already answers "can this be
+  ## read at all"; this answers "as what string".
+  case node.kind
+  of nnkStrLit, nnkRStrLit, nnkTripleStrLit: node.strVal
+  of nnkIntLit .. nnkFloat128Lit: node.repr
+  else: ""
+
+proc collectAttrBindings(bindings: var seq[StyleBinding];
+                         attrName: string; attrVal: NimNode) {.compileTime.} =
+  ## Turn one authored attribute into style-provenance records.
+  ##
+  ## This is the whole point of the feature and it is three lines of dispatch,
+  ## because the expensive part -- knowing which syntax the author used -- is
+  ## free here and unrecoverable anywhere later. Called from BOTH backends so
+  ## the client-mode hook and the SSR attribute cannot describe the same
+  ## element differently.
+  if isEventHandler(attrName):
+    return
+  if attrName == "class":
+    if isDynamic(attrVal):
+      bindings.add dynamicBinding("class", "the class attribute")
+    else:
+      bindings.add classBindings(literalText(attrVal))
+  elif attrName == "style":
+    if isDynamic(attrVal):
+      bindings.add dynamicBinding("style-attr", "the style attribute")
+    else:
+      bindings.add inlineStyleBindings(literalText(attrVal))
+  elif isStyleProperty(attrName):
+    let cssName = toStyleName(attrName)
+    if isDynamic(attrVal):
+      bindings.add dynamicBinding("attr:" & cssName,
+                                  "the `" & cssName & "` attribute")
+    else:
+      bindings.add styleAttrBinding(cssName, literalText(attrVal))
+
+proc reportUnresolved(bindings: seq[StyleBinding]; node: NimNode) {.compileTime.} =
+  ## `-d:isonimStyleBindingStrict` turns an unresolvable binding into a build
+  ## failure. Off by default; `dsl/style_binding.nim` records why.
+  when styleBindingStrict:
+    for b in bindings:
+      if b.kind == sbkUnresolved:
+        error("unresolved style binding " & b.detail & ": " & b.note, node)
+  else:
+    discard
 
 proc emitNoteElement(stmts, elSym: NimNode; tag: string;
                      node: NimNode): string {.compileTime.} =
@@ -372,6 +422,11 @@ proc processNode(rendererSym: NimNode; node: NimNode;
     let sceneId = emitNoteElement(stmts, elSym, htmlTag, node)
     parentIdStack.add sceneId
 
+    # The authored styling of this element, recorded as the attributes are
+    # walked. A computed style cannot answer "was this a binding?"; this can,
+    # and only here.
+    var styleBindings: seq[StyleBinding] = @[]
+
     # Process arguments (attributes, event handlers) and body
     for i in 1 ..< node.len:
       let arg = node[i]
@@ -388,6 +443,7 @@ proc processNode(rendererSym: NimNode; node: NimNode;
           # attr = value
           let attrName = attrNameStr(arg[0])
           let attrVal = arg[1]
+          collectAttrBindings(styleBindings, attrName, attrVal)
 
           if isEventHandler(attrName):
             # Event handler: onclick = proc() = ...
@@ -452,6 +508,14 @@ proc processNode(rendererSym: NimNode; node: NimNode;
                             elSym, childNode))
       else:
         discard
+
+    # DSE: one provenance payload per element, emitted after the attribute
+    # walk so it describes every attribute, and through the same seam as
+    # `noteElement` so production erases it on the same terms.
+    reportUnresolved(styleBindings, node)
+    stmts.add(newCall(bindSym"noteProperties", elSym,
+                      newStrLitNode(sceneId),
+                      newStrLitNode(encodeStyleBindings(styleBindings))))
 
     # SGR-M1: children are walked; this element is no longer the parent.
     discard parentIdStack.pop()
@@ -715,6 +779,7 @@ proc ssrNodeExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.} =
     # Collect attributes and children
     var childBody: NimNode = nil
     var hasHydrationKey = false
+    var styleBindings: seq[StyleBinding] = @[]
 
     for i in 1 ..< node.len:
       let arg = node[i]
@@ -722,6 +787,7 @@ proc ssrNodeExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.} =
       of nnkExprEqExpr:
         let attrName = attrNameStr(arg[0])
         let attrVal = arg[1]
+        collectAttrBindings(styleBindings, attrName, attrVal)
 
         if isEventHandler(attrName):
           # Event handlers are ignored in SSR
@@ -751,6 +817,19 @@ proc ssrNodeExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.} =
           childBody.add(arg)
       else:
         discard
+
+    # DSE: the SSR counterpart of `noteProperties`. String mode has no
+    # element handle to hand a recorder, but its output IS the HTML the Web
+    # preview loads, and the editor reads provenance off the rendered DOM --
+    # `data-isonim-props` sits beside `data-isonim-src` and is read by the
+    # same walk. Inside the same `when` for the same reason: in a production
+    # build not one byte of this is emitted.
+    reportUnresolved(styleBindings, node)
+    when sceneGraphEnabled:
+      if styleBindings.len > 0:
+        tagParts.add(newStrLitNode(
+          " data-isonim-props=\"" &
+          htmlAttrEscape(encodeStyleBindings(styleBindings)) & "\""))
 
     # Add hydration key if needed
     if hasHydrationKey:
