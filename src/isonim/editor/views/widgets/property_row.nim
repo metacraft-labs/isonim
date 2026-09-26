@@ -1042,22 +1042,30 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
   #  runs inside a render effect (VBIND-M2 hot-swap) so linking/unlinking a
   #  variable — or moving the selection to/from a bound element — swaps the
   #  chip and the literal control live, without the section re-mounting the
-  #  row. A change guard skips rebuilds when this row's binding is unchanged
-  #  (e.g. an unrelated selection change), so the literal control's listeners
-  #  are not needlessly re-wired. With no ``bindingReactive`` the slot is
-  #  built once from the static ``binding`` — byte-identical to before.
+  #  row. With no ``bindingReactive`` the slot is built once from the static
+  #  ``binding`` — byte-identical to before.
+  #
+  #  The build must run on EVERY pass of this effect, unconditionally.
+  #  ``buildValueSlot`` creates nested computations — the numeric/text
+  #  input's value bind, the unit-chip label bind, the colour swatch bind
+  #  — and those are owned by this effect. ``updateComputation`` calls
+  #  ``cleanNode`` before each re-run, which recursively disposes owned
+  #  computations and unlinks them from their sources. So by the time this
+  #  body runs, the previous pass's value binds are already dead. An
+  #  earlier "skip the rebuild when the binding signature is unchanged"
+  #  guard therefore did not save work — it permanently severed the row
+  #  from its value signal. Every numeric row in the inspector froze at
+  #  its mount-time value on the first selection change, which is why
+  #  X / Y / W / H / opacity / font-size all read 0 (or their fallback)
+  #  no matter what was selected. The guard is unsound by construction in
+  #  this ownership model; if the DOM churn ever matters, the fix is to
+  #  own the value-slot computations outside this effect, not to skip the
+  #  rebuild.
   # ------------------------------------------------------------------------- #
   if cfg.bindingReactive != nil:
     let bindingReactive = cfg.bindingReactive
-    var lastBindingSig = "\x00uninitialised"
     createRenderEffect proc() =
       let active = bindingReactive()
-      let sig =
-        if active.isSome: "b|" & active.get.variableKey & "|" &
-          $ord(active.get.state)
-        else: "-"
-      if sig == lastBindingSig: return
-      lastBindingSig = sig
       r.clearChildren(valueSlot)
       buildValueSlot(active)
   else:

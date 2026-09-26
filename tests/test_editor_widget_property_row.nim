@@ -333,3 +333,47 @@ suite "Phase D property_row binding placeholder":
       let input = findByAttrPresent(root, "data-property-row-input")
       check input == nil
       dispose()
+
+# --------------------------------------------------------------------------- #
+#  Reactive value slot survives an unrelated re-run of the binding effect
+# --------------------------------------------------------------------------- #
+
+suite "property_row reactive value slot":
+
+  test "numeric input still tracks its signal after the binding effect re-runs":
+    # Regression: ``bindingReactive`` builds the value slot inside a render
+    # effect, so the input's value bind is a computation OWNED by that
+    # effect. ``updateComputation`` disposes owned computations before each
+    # re-run, so a guard that skipped the rebuild when the binding signature
+    # was unchanged left the row permanently severed from its value signal.
+    # In the editor that froze every numeric row (X / Y / W / H / opacity /
+    # font size) at its mount-time value on the first selection change.
+    createRoot do (dispose: proc()):
+      let value = createSignal(0.0)
+      let unit = createSignal(PropertyUnitOption(label: "px", code: "px"))
+      # Any signal the binding thunk reads: an unrelated selection change
+      # in the editor invalidates the effect exactly like this.
+      let selectionTick = createSignal(0)
+      let cfg = propertyRowNumeric(
+        name = "W", value = value, unit = unit,
+        units = @[PropertyUnitOption(label: "px", code: "px")],
+        bindingReactive = proc(): Option[VariableBinding] =
+          discard selectionTick.val
+          none(VariableBinding))
+      let (r, root) = mkRoot()
+      discard r.mountPropertyRow(root, cfg)
+
+      var input = findByAttr(root, "data-property-row-input", "true")
+      check input != nil
+      check r.inputValue(input) == "0"
+
+      # The binding is unchanged (still unbound) but the effect re-runs.
+      selectionTick.val = 1
+
+      # The rebuilt slot has a fresh input node, so re-resolve it.
+      input = findByAttr(root, "data-property-row-input", "true")
+      check input != nil
+
+      value.val = 110.0
+      check r.inputValue(input) == "110"
+      dispose()
