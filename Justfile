@@ -1060,7 +1060,8 @@ test-browser-hmr-parametric: build-hmr-parametric-fixture
 # project triggers a rebuild via the dev server's POST /__isonim/trigger
 # endpoint to swap before → after at runtime.
 build-hmr-transport-fixture:
-    nim c -d:isServer --path:src --path:../nim-everywhere/src --path:../nim-faststreams --path:../nim-stew -o:/tmp/isonim_test_server tests/browser/hmr_transport_fixture/server.nim
+    mkdir -p build
+    nim c -d:isServer --path:src --path:../nim-everywhere/src --path:../nim-faststreams --path:../nim-stew -o:build/isonim_test_server tests/browser/hmr_transport_fixture/server.nim
     nim js -d:isonimHmr --path:src --path:../nim-everywhere/src -o:tests/browser/hmr_transport_fixture/before.js tests/browser/hmr_transport_fixture/app.nim
     nim js -d:isonimHmr -d:transportFixtureAfter --path:src --path:../nim-everywhere/src -o:tests/browser/hmr_transport_fixture/after.js tests/browser/hmr_transport_fixture/app.nim
     cp tests/browser/hmr_transport_fixture/before.js tests/browser/hmr_transport_fixture/main.js
@@ -1072,8 +1073,59 @@ test-browser-hmr-transport: build-hmr-transport-fixture
 # Run Playwright browser tests (requires: just demo-build && cd tests/browser && npm install)
 test-browser: test-browser-demo test-browser-ssr test-browser-hmr test-browser-hmr-parametric test-browser-hmr-transport
 
+# --- Playwright: one-shot entry points ------------------------------------
+#
+# `playwright.config.ts` refuses to start with a hard error naming the
+# missing artifact and the recipe that builds it, so these two targets are
+# the supported way in: `browser-test-deps` produces every build input the
+# in-repo Playwright projects serve, and `test-browser-all` builds then runs.
+#
+# The one-time setup that is NOT a build (do it once per checkout):
+#
+#   git submodule update --init --depth 1 src/isonim/layout/yoga
+#   repro exec -- npm --prefix tests/browser install
+#   repro exec -- npx --prefix tests/browser playwright install chromium
+#
+# Without the submodule `repro exec` itself fails, and `repro exec` is what
+# puts node on PATH. See tests/browser/README.md.
+
+# Build every artifact the six in-repo Playwright projects serve.
+# (`metacraft-web-editor` is excluded: it serves a bundle from the
+# metacraft-web sibling repo — see `test-browser-editor-consumer`.)
+#
+# `build-tailwind` first, for the reason spelled out above `test-js`: every
+# `nim js` compile below reaches `build/tailwind-styles.json` through an
+# uncatchable `staticRead`. On a warm working copy that file already exists,
+# which is exactly why its absence would only ever have bitten a cold runner.
+browser-test-deps: build-tailwind demo-build build-ssr-test-all build-hmr-fixture build-hmr-parametric-fixture build-hmr-transport-fixture editor-build
+
+# Install the browser-test npm deps + chromium. Separate from
+# `browser-test-deps` because it is the only step that touches the network.
+browser-test-install:
+    npm --prefix tests/browser install
+    npx --prefix tests/browser playwright install chromium
+
+# Build everything, then run the six in-repo Playwright projects (55 tests).
+test-browser-all: browser-test-deps
+    cd tests/browser && npx playwright test --project=demo-app --project=ssr-hydration --project=hmr --project=hmr-parametric --project=hmr-transport --project=editor-example
+
+# The gate run on every push: the three HMR projects, 25 tests, ~20s of
+# browser time once the Nim fixtures are built.
+#
+# `demo-app` and `ssr-hydration` are deliberately NOT here, and are not
+# skipped either — they run in `test-browser-all`, and they are currently red
+# on real product defects diagnosed in tests/browser/README.md. A permanently
+# red required gate teaches people to ignore CI, which is how this suite came
+# to rot in the first place. Move them in as soon as they are fixed.
+#
+# `editor-example` is out for cost, not colour: its 14 screenshot and layout
+# tests take ~4 minutes on their own, against a runner pool that is small and
+# permanently saturated. It runs nightly.
+test-browser-smoke: build-tailwind build-hmr-fixture build-hmr-parametric-fixture build-hmr-transport-fixture
+    cd tests/browser && npx playwright test --project=hmr --project=hmr-parametric --project=hmr-transport
+
 # Run Playwright demo app tests only
-test-browser-demo:
+test-browser-demo: demo-build
     cd tests/browser && npx playwright test --project=demo-app
 
 # Run Playwright SSR hydration tests (requires: just build-ssr-test-all)

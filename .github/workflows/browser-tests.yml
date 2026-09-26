@@ -1,0 +1,143 @@
+name: Browser tests (Playwright)
+
+# The Playwright suite -- 77 tests in 7 spec files under `tests/browser` -- has
+# never been in CI. That is why it rotted: `tests/browser/hydrate_entry.nim`
+# stopped compiling in ddcb5bd (May 2026) and nothing noticed, because the only
+# recipe that builds it (`just build-hydrate`) is not in `just test`.
+#
+# CAPACITY. The self-hosted pool is small and permanently saturated (2 Windows
+# slots, few macOS; 10-30 minute queues are normal). A one-hour browser job on
+# every push would make that worse for everyone, so the split is:
+#
+#   * `smoke` on every push and PR -- one Linux runner, the three HMR projects
+#     (25 tests) via `just test-browser-smoke`. Measured end to end from
+#     deleted artifacts on an M-series laptop: 56s, of which 4s is browser
+#     time and the rest is four Nim compiles. This is the gate.
+#   * `full` nightly and on demand -- `just test-browser-all`: the six in-repo
+#     projects (55 tests), including `editor-example`, whose 14 screenshot and
+#     layout tests take ~4 minutes on their own and dominate the wall clock.
+#
+# Both jobs go through `just` rather than spelling the Playwright invocation
+# out here, so CI and a developer's terminal cannot drift apart.
+#
+# WHY THE GATE IS 25 TESTS AND NOT 41. `demo-app` and `ssr-hydration` are
+# currently red on real product defects, diagnosed in `tests/browser/README.md`
+# (a JS-backend closure-capture bug in the demo's filter buttons; an SSR
+# hydration round-trip that emits no `data-hk` markers and has never worked).
+# Neither test is weakened or skipped -- both run in `full`, where their result
+# is visible. Move them into `smoke` the moment they are fixed; a permanently
+# red required gate teaches people to ignore CI, which is how a suite rots
+# twice.
+#
+# `metacraft-web-editor` (22 tests) is in neither job. It serves a bundle built
+# from the `metacraft-web` sibling repo, which is not in this checkout and not
+# in `.github/sibling-repos`; today that repo does not compile against this
+# isonim at all. See `tests/browser/README.md`.
+
+on:
+  push:
+    branches: [agents, main, dev, stable]
+  pull_request:
+    branches: [main, dev, stable]
+  schedule:
+    # 03:17 UTC daily -- off the hour, to stay out of the way of every other
+    # repo's midnight cron on the same pool.
+    - cron: "17 3 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: browser-tests-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: Smoke (HMR projects, 25 tests)
+    if: github.event_name != 'schedule'
+    runs-on: [self-hosted, linux, x64]
+    steps:
+      - name: Generate CI token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.CI_TOKEN_PROVIDER_APP_ID }}
+          private-key: ${{ secrets.CI_TOKEN_PROVIDER_PRIVATE_KEY }}
+          owner: metacraft-labs
+
+      # `submodules: recursive` is not optional here. `src/isonim/layout/yoga`
+      # is a declared submodule that nothing initialises on a plain clone, and
+      # without it `repro exec` -- the thing that puts node on PATH -- fails
+      # outright. That, not Playwright, is what blocks a clean checkout.
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup dev env (clones .github/sibling-repos at pinned revisions)
+        uses: metacraft-labs/metacraft-github-actions/setup-dev-env@dev
+        with:
+          env-flavor: nix
+          gh-token: ${{ steps.app-token.outputs.token }}
+          substituters: ${{ vars.SUBSTITUTERS }}
+          trusted-public-keys: ${{ vars.TRUSTED_PUBLIC_KEYS }}
+
+      - name: Verify submodules are provisioned
+        run: dev-exec just check-submodules
+
+      - name: Verify cross-repo siblings are provisioned
+        run: dev-exec just check-siblings
+
+      - name: Install Playwright and chromium
+        run: dev-exec just browser-test-install
+
+      # One recipe, so CI and a developer's terminal cannot drift apart.
+      # It builds the three HMR fixtures and runs their 25 tests.
+      - name: Build fixtures and run the HMR browser projects
+        run: dev-exec just test-browser-smoke
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-smoke-report
+          path: |
+            tests/browser/test-results
+            tests/browser/playwright-report
+          retention-days: 7
+
+  full:
+    name: Full (six in-repo projects, 55 tests)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, linux, x64]
+    steps:
+      - name: Generate CI token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.CI_TOKEN_PROVIDER_APP_ID }}
+          private-key: ${{ secrets.CI_TOKEN_PROVIDER_PRIVATE_KEY }}
+          owner: metacraft-labs
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup dev env (clones .github/sibling-repos at pinned revisions)
+        uses: metacraft-labs/metacraft-github-actions/setup-dev-env@dev
+        with:
+          env-flavor: nix
+          gh-token: ${{ steps.app-token.outputs.token }}
+          substituters: ${{ vars.SUBSTITUTERS }}
+          trusted-public-keys: ${{ vars.TRUSTED_PUBLIC_KEYS }}
+
+      - name: Install Playwright and chromium
+        run: dev-exec just browser-test-install
+
+      - name: Build every browser-test artifact and run all six projects
+        run: dev-exec just test-browser-all
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-full-report
+          path: |
+            tests/browser/test-results
+            tests/browser/playwright-report
+          retention-days: 14

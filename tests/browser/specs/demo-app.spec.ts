@@ -46,13 +46,20 @@ test.describe("IsoNim Demo App", () => {
     const checkboxes = page.locator('.task-list li input[type="checkbox"]');
     await checkboxes.nth(1).click();
 
-    // Filter to active
-    await page.click('button:has-text("fActive")');
+    // Filter to active.
+    //
+    // The button label is the enum's *display* string, not its identifier:
+    // `Filter` in task_store.nim has been `fActive = "active"` since the demo
+    // was introduced (d998bea), so `$filterVal` has always rendered "active".
+    // This spec asked for `has-text("fActive")` and therefore never matched.
+    // Scoped to `.filters` and matched exactly, because "Clear completed" also
+    // contains "completed".
+    await page.click('.filters button:text-is("active")');
     await expect(page.locator(".task-list li")).toHaveCount(1);
     await expect(page.locator(".task-list li span")).toHaveText("Active task");
 
     // Filter to completed
-    await page.click('button:has-text("fCompleted")');
+    await page.click('.filters button:text-is("completed")');
     await expect(page.locator(".task-list li")).toHaveCount(1);
     await expect(page.locator(".task-list li span")).toHaveText("Done task");
   });
