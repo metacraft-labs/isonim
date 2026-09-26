@@ -7643,26 +7643,50 @@ func workspacePlanKeys(plan: SourceEditPlan): seq[string] =
     result.add plan.originDetail
 
 func resolveWorkspaceSchema(adapter: WorkspaceEditAdapter;
-    plan: SourceEditPlan): tuple[ok: bool, entry: WorkspaceEditableSchemaEntry] =
+    plan: SourceEditPlan): tuple[ok: bool, entry: WorkspaceEditableSchemaEntry,
+                                 entryOwnsFile: bool] =
+  ## `entryOwnsFile` says the ENTRY's file is authoritative and the plan's is
+  ## not to be checked against it -- which is true exactly when the match was
+  ## made despite the plan naming a different file, or none.
   if adapter.isNil:
     return
   let keys = workspacePlanKeys(plan)
   for key in keys:
     for entry in adapter.schema:
       if entry.key == key:
-        return (true, entry)
+        return (true, entry, false)
+  # Exact file match first: a plan that names a file the schema owns is
+  # unambiguous and keeps its old behaviour.
   for entry in adapter.schema:
-    # An empty `plan.file` matches any entry whose property fits.
-    #
-    # A plan knows its file only when the property was captured with a source
-    # location. For a class-based or token-based design system it never is:
-    # provenance records WHICH class set the value, and which file that class
-    # lives in is precisely what the project's schema is here to answer.
-    # Requiring the plan to already know made the schema useful only for
-    # edits that did not need it.
-    if (plan.file.len == 0 or entry.file == plan.file) and
+    if entry.file == plan.file and
         (entry.property == plan.property or entry.property.len == 0):
-      return (true, entry)
+      return (true, entry, false)
+
+  # Then a plan that names NO file. Provenance records which class or token
+  # set a value; which file that lives in is what the schema is here to
+  # answer, and requiring the plan to already know made the schema useful
+  # only for edits that did not need it.
+  #
+  # Then a plan whose file is the ELEMENT's rather than the value's. A
+  # property captured off the rendered DOM carries the element's source
+  # location because the capture has no other to offer -- `font-size` on a
+  # `span.tagline-clause` is set by a CSS rule while the span is in
+  # `home.nim`. Matching that path against the stylesheet's and refusing is
+  # true of the path and false of the edit, and it answered a design system's
+  # commonest edit with "No project schema or source map entry can safely
+  # represent this edit".
+  #
+  # Both fall back only to an entry with an EMPTY property -- a project
+  # saying "this file owns whatever you send me". A schema that names its
+  # properties individually keeps refusing, which is the stricter contract
+  # and still available.
+  let capturedOnly =
+    plan.originDetail.startsWith("iframe-dom:") or
+    plan.originDetail.startsWith("computed:")
+  if plan.file.len == 0 or capturedOnly:
+    for entry in adapter.schema:
+      if entry.property.len == 0:
+        return (true, entry, true)
 
 func workspaceOpFailed(op: WorkspaceOperationResult): bool =
   not op.ok
@@ -7852,7 +7876,12 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
         property = plan.property)
       continue
 
-    if resolved.entry.file.len > 0 and plan.file.len > 0 and
+    # Skipped when the entry owns the file: the resolution already knew the
+    # plan named a different path and matched anyway, because the path it
+    # named is the element's rather than the value's. Re-checking it here
+    # would refuse the edit the fallback exists to allow.
+    if not resolved.entryOwnsFile and
+        resolved.entry.file.len > 0 and plan.file.len > 0 and
         resolved.entry.file != plan.file:
       diagnostics.add workspaceDiagnostic(wedUnsafeSourceMap,
         "The source plan file does not match the resolved project schema file.",
@@ -7862,7 +7891,8 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
       continue
 
     let targetFile =
-      if plan.file.len > 0: plan.file
+      if resolved.entryOwnsFile: resolved.entry.file
+      elif plan.file.len > 0: plan.file
       else: resolved.entry.file
     var draftPos = drafts.draftIndex(targetFile)
     if draftPos < 0:
