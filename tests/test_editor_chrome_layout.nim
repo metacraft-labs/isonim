@@ -893,9 +893,18 @@ suite "M-EVP-3 preview chrome bar density":
       # Every cluster must be a direct child of the toolbar — if a
       # future refactor nests them inside an intermediate wrapper the
       # flex `gap` no longer applies between them, so this is the
-      # invariant the visual separation rests on. Phase Q reorders
-      # to ``[backend, history, viewport, mode]``.
-      let clusterKinds = @["backend", "history", "viewport", "mode"]
+      # invariant the visual separation rests on.
+      #
+      # The order is grouped by WHAT A CLUSTER ANSWERS, not by history:
+      #
+      #   backend, viewport   — "what am I looking at"   (left)
+      #   history, save       — "what has happened to it" (centred)
+      #   mode                — "what am I doing to it"   (right)
+      #
+      # Phase Q had `[backend, history, viewport, mode]`, which split the
+      # two visibility controls around an unrelated one and left Save
+      # floating on its own.
+      let clusterKinds = @["backend", "viewport", "history", "save", "mode"]
       var directChildClusters: seq[string] = @[]
       for child in bar.children:
         let kind = child.attributes.getOrDefault(clusterAttr)

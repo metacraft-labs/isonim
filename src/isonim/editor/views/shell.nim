@@ -681,6 +681,27 @@ proc dispatchPreviewAncestorSelection(index: int) =
   else:
     discard index
 
+proc dispatchPreviewElementHover(id: string) =
+  ## Tell the preview which element the pointer is over, or "" for none.
+  ##
+  ## Window-scoped like the selection event: the injected bridge listens on
+  ## `parent`, so the panel does not need a handle on the frame -- which
+  ## matters because the Layers panel lives in the left sidebar and has no
+  ## reason to know which view is currently mounting a preview.
+  when defined(js):
+    {.emit: ["""
+      (function () {
+      const toJsString = (raw) => Array.isArray(raw)
+        ? String.fromCharCode.apply(null, raw)
+        : String(raw || '');
+      window.dispatchEvent(new CustomEvent('isonim-hover-preview-element-id', {
+        detail: { id: toJsString(""", id, """) }
+      }));
+      })();
+    """].}
+  else:
+    discard id
+
 proc dispatchPreviewElementSelection(id: string) =
   when defined(js):
     {.emit: ["""
@@ -885,11 +906,21 @@ proc bindSceneGraphRow[R, E](vm: EditorVM; r: R; node: E; rowId: string) =
     # helper converts, and is the same one the status-bar breadcrumb uses.
     dispatchPreviewElementSelection(capturedId)
   )
+  # Hovering a row outlines the element in the preview, dimmer than the
+  # selection. The signal alone was never enough: it flagged the ROW, and
+  # nothing told the preview, so pointing at a layer highlighted the list
+  # and not the thing the list is about.
+  #
+  # The injected bridge already listens for this and already draws it as a
+  # 1px dashed outline against the selection's 2px solid, so "dimmer than
+  # selected" needs no new styling -- only the message.
   r.addEventListener(node, "mouseenter", proc() =
-    capturedVm.inspector.hoveredElementId.val = capturedId)
+    capturedVm.inspector.hoveredElementId.val = capturedId
+    dispatchPreviewElementHover(capturedId))
   r.addEventListener(node, "mouseleave", proc() =
     if capturedVm.inspector.hoveredElementId.val == capturedId:
-      capturedVm.inspector.hoveredElementId.val = "")
+      capturedVm.inspector.hoveredElementId.val = ""
+      dispatchPreviewElementHover(""))
 
 proc installSceneGraphReader[R, E](vm: EditorVM; r: R; host: E) =
   ## Read the preview's element tree from the parent side. THE producer.
@@ -1116,6 +1147,7 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
   let capturedVm = vm
   var rowsHost: E
   var countEl: E
+  var layerSearchEl: E
   let panel = ui(r):
     tdiv(class = "editor-scene-graph",
           `data-scene-graph` = "true",
@@ -1132,20 +1164,29 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
             height = "30px", min_height = "30px", padding = "0 10px",
             border_bottom = "1px solid " & borderFaint,
             flex_shrink = "0"):
-        span(font_size = "10px", letter_spacing = "0.08em",
-              text_transform = "uppercase", color = textMuted):
-          # "Layers", not "Scene graph". The founder: "scene graph is a term
-          # I used because I'm former game developer. I don't think the
-          # intended audience of the isonim editor will understand it."
-          # Layers is what Figma calls this panel, so a designer reads it
-          # without translation, and it is already this codebase's internal
-          # vocabulary -- ElementLayerRow, filteredLayers, expandedLayerIds.
-          #
-          # The `data-scene-graph-*` attributes are deliberately NOT renamed:
-          # they are the test and tooling surface, and churning them would
-          # break every probe for a cosmetic gain. A rename there is its own
-          # change with its own risk.
-          text "Layers"
+        # A search box rather than a "LAYERS" label. The panel is 61 rows
+        # deep on the grip pilot's Hero alone and the label was the least
+        # useful thing that could occupy a 30px header: it told you what you
+        # were already looking at. `filteredLayers` has filtered on
+        # `layerSearch` since M18 and nothing was setting it.
+        #
+        # The `data-scene-graph-*` attributes are deliberately NOT renamed:
+        # they are the test and tooling surface, and churning them for a
+        # cosmetic gain would break every probe.
+        input(ref = layerSearchEl,
+              `data-scene-graph-search` = "true",
+              `aria-label` = "Search layers",
+              placeholder = "Search layers\xE2\x80\xA6",
+              value = "",
+              flex = "1", min_width = "0",
+              height = "22px",
+              padding = "0 8px",
+              font_size = "11px",
+              color = textPrimary,
+              background_color = bgBase,
+              border = "1px solid " & borderFaint,
+              border_radius = "4px",
+              outline = "none")
         span(ref = countEl,
               `data-scene-graph-count` = "true",
               margin_left = "auto", font_size = "10px", color = textDim):
@@ -1155,6 +1196,9 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
             display = "flex", flex_direction = "column",
             overflow_y = "auto", overflow_x = "hidden",
             padding = "4px 0", flex = "1", min_height = "0")
+  r.addEventListener(layerSearchEl, "input", proc() =
+    capturedVm.inspector.setLayerSearch($r.inputValue(layerSearchEl)))
+
   result = panel
   vm.installSceneGraphReader(r, rowsHost)
 
@@ -3444,21 +3488,41 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
     "Toggle left sidebar", chromeIconSet.sidebarLeft)
   r.appendChild(toolbar, leftToggleBtn)
 
-  # Phase Q (2026-05-29): the cluster order is now
-  # ``[L-toggle] [Backend] [History] <spacer> [Viewport] <spacer>
-  #   [Mode] [R-toggle]``.
-  # Backend leads the cluster family (sidebar toggle is a bookend, not
-  # a cluster), History sits after Backend (still grouped with the
-  # leading family), Viewport is centred by the two flex-1 spacers,
-  # and Mode docks before the right-sidebar toggle. See the comment
-  # above ``modeWrapper`` for the right-dock invariant.
+  # The cluster order is grouped by what each one answers:
+  #
+  #   [L-toggle] [Backend] [Viewport] <spacer> [History] [Save] <spacer>
+  #     [Mode] [R-toggle]
+  #
+  # Backend and Viewport both answer "what am I looking at"; History and
+  # Save both answer "what has happened to this document"; Mode answers
+  # "what am I doing to it". The sidebar toggles are bookends, not clusters.
   r.appendChild(toolbar, backendWrapper)
 
-  # History affordance — second-from-left, between Backend and the
-  # centring spacer. Phase O moved History into the cluster family
-  # (was: trailing edge); Phase Q moves it AFTER Backend so the
-  # leading bookend can be the sidebar toggle.
-  design_review_mount_view.mountHistoryButtonForEditor[R, E](r, toolbar, vm)
+  # A chooser with one option is not a chooser. A project that declares a
+  # single target platform -- `allowedPlatforms = {pbWeb}`, which is every
+  # web-only site in the workspace -- gets a backend cluster containing
+  # exactly one chip that is already active and cannot be clicked to
+  # anything. Hiding it gives that space back to the controls that do
+  # something.
+  #
+  # `allowedPlatforms` is a plain field rather than a signal, so this reads
+  # it once inside a render effect that also touches the backend option list
+  # -- which IS reactive -- so a workspace swap re-runs it.
+  block singlePlatformBackend:
+    let capturedBackendWrapper = backendWrapper
+    let backendVm = vm
+    createRenderEffect proc() =
+      let allowed = backendVm.allowedPlatforms
+      # Touch the active backend so a workspace swap re-runs this.
+      discard backendVm.platform.val
+      let onlyOne = allowed.card == 1
+      r.setStyle(capturedBackendWrapper, "display",
+        if onlyOne: "none" else: "inline-flex")
+      # Left as a marker rather than unmounted: a test that asserts the
+      # cluster set should be able to see that the project HAS one platform,
+      # not that the editor forgot to render a backend cluster.
+      r.setAttribute(capturedBackendWrapper, "data-toolbar-cluster-hidden",
+        if onlyOne: "single-platform" else: "")
 
   # Spacer #1 — flex-grow:1 wedge that claims free horizontal space
   # so the Viewport cluster centres in the chrome bar. Paired with
@@ -3472,7 +3536,6 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
     tdiv(`data-preview-toolbar-spacer` = "leading",
          flex = "1",
          min_width = "8px")
-  r.appendChild(toolbar, leadingSpacer)
 
   # Phase Q (2026-05-29): viewport selector restructured from a single
   # chevron+popup to a segmented strip of the most-common viewports
@@ -3752,7 +3815,13 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
           viewportStripVm.activate(i)
         break
 
+  # Backend and viewport both answer "what am I looking at", so they sit
+  # together in the left group rather than one being bookended and the other
+  # centred. History and Save both answer "what has happened to the
+  # document", so they are the centred pair.
   r.appendChild(toolbar, viewportClusterWrapper)
+  r.appendChild(toolbar, leadingSpacer)
+  design_review_mount_view.mountHistoryButtonForEditor[R, E](r, toolbar, vm)
 
   # ----- Save control ---------------------------------------------------- #
   #
@@ -3775,23 +3844,45 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
     tdiv(`data-toolbar-cluster` = "save",
          `data-save-cluster` = "true",
          display = "inline-flex", align_items = "center",
-         margin_left = "8px",
+         # Tight against History: the two are one group -- what has happened
+         # to this document -- and a gap between them reads as two unrelated
+         # controls that happen to be near each other.
+         margin_left = "2px",
+         # Same trough as History and the mode cluster: 2px of padding around
+         # a 6px-radius well. Without it the save control floated on the bar
+         # while every other button sat in one, which read as a different
+         # widget family rather than a sibling.
+         background_color = "#22232E",
+         border_radius = "6px",
+         padding = "2px",
          position = "relative"):
       tdiv(ref = saveButtonEl,
            role = "button", tabindex = "0",
            `data-save-button` = "true",
-           display = "inline-flex", align_items = "center", gap = "6px",
-           height = "24px", padding = "0 8px",
-           border_radius = "4px 0 0 4px",
+           display = "inline-flex", align_items = "center", gap = "5px",
+           height = "22px", padding = "0 6px",
+           border_radius = "4px",
            font_size = "11px",
            cursor = "pointer",
            user_select = "none"):
-        # The dot is the colour; the label is the meaning.
-        tdiv(ref = saveDotEl,
-             `data-save-dot` = "true",
-             width = "7px", height = "7px", border_radius = "50%",
+        # An icon button, like every other control in this bar. The GLYPH
+        # changes with the state as well as the colour -- a control that
+        # distinguishes "saved" from "not saved" by hue alone is unreadable
+        # to a colour-blind user and invisible in a screenshot review.
+        span(ref = saveDotEl,
+             `data-save-glyph` = "true",
+             display = "inline-flex", align_items = "center",
+             justify_content = "center",
+             width = "15px", height = "15px",
              flex_shrink = "0")
-        span(ref = saveLabelEl):
+        # The words are a hint, shown when the bar has room for them. The
+        # icon and the tooltip carry the meaning on their own.
+        span(ref = saveLabelEl,
+             `data-save-label` = "true",
+             white_space = "nowrap",
+             overflow = "hidden",
+             max_width = "0px",
+             opacity = "0"):
           text "Saved"
       tdiv(ref = saveChevronEl,
            role = "button", tabindex = "0",
@@ -3800,8 +3891,8 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
            `aria-label` = "Save options",
            display = "inline-flex", align_items = "center",
            justify_content = "center",
-           width = "18px", height = "24px",
-           border_radius = "0 4px 4px 0",
+           width = "16px", height = "22px",
+           border_radius = "4px",
            font_size = "9px",
            color = textMuted,
            cursor = "pointer",
@@ -3810,7 +3901,7 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
       tdiv(ref = saveMenuEl,
            `data-save-menu` = "true",
            role = "menu",
-           position = "absolute", top = "28px", right = "0",
+           position = "absolute", top = "30px", right = "0",
            min_width = "184px",
            padding = "4px",
            background_color = bgSidebar,
@@ -3845,6 +3936,7 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
   r.appendChild(toolbar, saveCluster)
 
   block saveControlWiring:
+    r.setInnerHtml(saveDotEl, saveSvg)
     let capturedVm = vm
     let button = saveButtonEl
     let labelNode = saveLabelEl
@@ -3870,14 +3962,29 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
         else: ind.label)
       r.setAttribute(button, "aria-label",
         if ind.detail.len > 0: ind.label & ": " & ind.detail else: ind.label)
-      let (fg, dotColour) =
+      # One glyph, recoloured. A floppy disk says "save" at a glance the way
+      # no abstract mark does, and swapping the SHAPE per state would mean
+      # the control stopped looking like a save button exactly when it most
+      # needs to be found. The state is carried by the colour AND by the
+      # words beside it, which is why the words appear whenever there is
+      # anything to report.
+      let fg =
         case ind.state
-        of sisClean: (textMuted, borderStrong)
-        of sisDirty: ("#FBBF24", "#FBBF24")
-        of sisSaving: (accentHot, accentHot)
-        of sisFailed: ("#F87171", "#F87171")
+        of sisClean:  textMuted
+        of sisDirty:  "#FBBF24"
+        of sisSaving: accentHot
+        of sisFailed: "#F87171"
+      r.setStyle(dot, "color", fg)
       r.setStyle(labelNode, "color", fg)
-      r.setStyle(dot, "background-color", dotColour)
+      # The words appear exactly when there is something to say. At rest the
+      # control is an icon like its neighbours; the moment there is unsaved
+      # work, a write running, or a refusal, it says so in words -- which is
+      # when a tooltip nobody hovers would be too late.
+      let hasSomethingToSay = ind.state != sisClean
+      r.setStyle(labelNode, "max-width",
+        if hasSomethingToSay: "140px" else: "0px")
+      r.setStyle(labelNode, "opacity", if hasSomethingToSay: "1" else: "0")
+      r.setStyle(labelNode, "margin-left", if hasSomethingToSay: "1px" else: "0")
       r.setStyle(button, "cursor",
         if ind.state == sisClean: "default" else: "pointer")
       r.setAttribute(button, "aria-disabled",
