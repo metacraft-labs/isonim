@@ -1121,8 +1121,11 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
           `data-scene-graph` = "true",
           display = "flex", flex_direction = "column",
           border_top = "1px solid " & borderFaint,
-          flex_shrink = "0",
-          max_height = "45%",
+          # A sibling of the story tree, not a child of it. `flex-shrink: 0`
+          # plus `max-height: 45%` kept it from collapsing when the tree was
+          # long; now that the tree scrolls itself the panel can simply take
+          # its share of the column.
+          flex = "1 1 45%", min_height = "0",
           overflow = "hidden"):
       tdiv(`data-scene-graph-header` = "true",
             display = "flex", align_items = "center", gap = "6px",
@@ -1283,7 +1286,15 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
           flex_shrink = "0",
           background_color = bgSidebar,
           border_right = "1px solid " & borderStrong,
-          overflow_y = "auto", overflow_x = "hidden"):
+          # NOT a scroll container. The story tree and the Layers panel are
+          # siblings inside it and each scrolls itself, so the column has two
+          # scroll regions stacked rather than one nested inside another.
+          #
+          # It used to scroll, with the Layers rows scrolling inside it:
+          # 1084px of content in 792px of sidebar, wrapped around 1350px of
+          # rows in 325px of panel. Two scrollbars, one inside the other,
+          # neither of which scrolled the thing under the pointer.
+          overflow = "hidden"):
 
       # Search input
       var searchInput: E
@@ -1425,8 +1436,14 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
               r.bindQuickNavIcon(iconNode, vm, cKind)
 
       # Story sections
-      tdiv(display = "flex", flex_direction = "column",
-            gap = "2px", padding = "8px 8px 16px 8px"):
+      tdiv(`data-sidebar-story-tree` = "true",
+            display = "flex", flex_direction = "column",
+            gap = "2px", padding = "8px 8px 16px 8px",
+            # `min-height: 0` is what lets a flex child shrink below its
+            # content and scroll; without it the tree pushes the Layers panel
+            # off the bottom instead.
+            flex = "1 1 auto", min_height = "0",
+            overflow_y = "auto", overflow_x = "hidden"):
         for section in sidebarSections:
           let sLabel = sectionLabel(section)
           let sIcon = sectionIcon(section)

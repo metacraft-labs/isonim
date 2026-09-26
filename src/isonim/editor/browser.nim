@@ -27,6 +27,36 @@ proc injectEditorStyles*() =
   ## Inject base responsive styles required by the editor shell.
   let style = document.createElement("style")
   style.textContent = cstring"""
+    /* Discreet scrollbars, editor-wide.
+     *
+     * The platform default is a 15px light-grey bar that reads as chrome in
+     * its own right -- in a dark tool it is the brightest thing on screen,
+     * and the editor stacks several scroll regions, so the defaults compete
+     * with the content for attention.
+     *
+     * Overlay-style: thin, transparent track, thumb only, and only visibly
+     * darker on hover. Firefox gets `scrollbar-width` / `scrollbar-color`,
+     * which is the whole of what it offers.
+     */
+    * {
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+    }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-corner { background: transparent; }
+    ::-webkit-scrollbar-thumb {
+      background-color: rgba(255, 255, 255, 0.14);
+      border-radius: 4px;
+      /* Inset with a transparent border so the thumb reads as 4px of colour
+       * inside an 8px track rather than a slab against the content. */
+      border: 2px solid transparent;
+      background-clip: padding-box;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background-color: rgba(255, 255, 255, 0.28);
+    }
+
     .editor-tabbar::-webkit-scrollbar { display: none; }
     /* Inspector tabbar: fade the right edge so overflow reads as scrollable. */
     .editor-manual-inspector .editor-tabbar {
