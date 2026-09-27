@@ -199,13 +199,14 @@ const
   # column is now a 22px-wide gutter that holds the (short) property
   # name in textMuted, and the longer property names just truncate.
   prLabelWidth   = "22px"
-  # A row that gets no inline glyph has to write its name somewhere. 88px
-  # is measured, not guessed: at 76px the longest names in the catalogue
-  # ("Paragraph spacing", "Text alignment", "Text transform") ellipsised to
-  # "Paragraph s...", which defeats the purpose of writing the label at all.
-  # 88px clears all three and still leaves ~130px for the value, which is
-  # more than a number with a unit chip or a popup trigger needs.
-  prLabelWideWidth = "88px"
+  # The label lives INSIDE the field well now, as Figma's does: `X 0`,
+  # `W 600`, `Opacity 100%`. The outside gutter it replaced was the source
+  # of two problems at once -- it was 22px, too narrow for any real word, so
+  # most rows rendered anonymous; and widening it to 88px ate the value
+  # column and pushed every segmented control into a popup.
+  #
+  # A well that carries its own label needs neither.
+  prFieldLabelWidth = "auto"
   prBindWidth    = "20px"
   prMoreWidth    = "18px"
 
@@ -213,9 +214,9 @@ const
   # reference (was 26px). The wrapper carries a 2px vertical gutter
   # (was 4px) so adjacent rows pack tighter — the reference looks
   # 1.5x denser than the prior Phase D contract.
-  prRowMinHeight = "24px"
+  prRowMinHeight = "28px"
   prRowGap       = "6px"
-  prRowVPad      = "2px"
+  prRowVPad      = "3px"
 
   # Input visual contract. Phase H: drop the visible border so the
   # input reads as a quiet rounded pill (Figma's pattern); the input
@@ -224,9 +225,9 @@ const
   prInputBg      = "#1A1B22"
   prInputColor   = "#F1F5F9"
   prInputBorder  = "1px solid transparent"
-  prInputRadius  = "4px"
-  prInputPadding = "3px 8px"
-  prInputHeight  = "24px"
+  prInputRadius  = "6px"
+  prInputPadding = "0 8px"
+  prInputHeight  = "28px"
   prInputFont    = "12px"
 
   # Inline prefix glyph (the "X" / "Y" / "W" / "H" letter sitting
@@ -631,8 +632,10 @@ proc inlinePrefixGlyph*(name: string): string =
   of "pad bottom": return "B"
   of "pad left": return "L"
   of "rotation": return "\xE2\x86\xBB" # U+21BB CLOCKWISE OPEN CIRCLE ARROW
-  of "opacity": return "%"
-  of "corner radius": return "\xE2\x97\x90" # U+25D0 CIRCLE WITH LEFT HALF BLACK
+  # `opacity` and `corner radius` used to return "%" and a half-filled
+  # circle. The first put a per-cent sign next to a per-cent unit and the
+  # second was unreadable; both now fall through to their names, which the
+  # field has room for.
   else:
     return ""
 
@@ -791,6 +794,7 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
   let isLinked = cfg.binding.isSome
 
   var labelNode: E
+  var fieldLabelNode: E
   var valueSlot: E
   var scopeSlot: E
   var bindNode: E
@@ -851,24 +855,19 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
       # so headless scrub-drag tests remain green. We render the
       # name as the slot's accessible title (hover tooltip) for long
       # labels that don't fit in the inline prefix.
+      # The scrub handle. It carries no text and takes no width: the label
+      # it used to hold now sits inside the field well, and the drag target
+      # moved with it (the well's own label is `cursor: col-resize`).
+      #
+      # The element stays because `data-property-row-slot="label-scrubber"`
+      # is the contract the scrub tests and the headless fixture resolve,
+      # and because a zero-width span is a cheaper thing to keep than a
+      # rename is to land across every probe.
       span(
         ref = labelNode,
         `data-property-row-slot` = "label-scrubber",
         title = cfg.name,
-        font_size = prLabelFont,
-        color = prLabelColor,
-        white_space = "nowrap",
-        overflow = "hidden",
-        text_overflow = "ellipsis",
-        min_width = (if writesOwnLabel: prLabelWideWidth else: prLabelWidth),
-        max_width = (if writesOwnLabel: prLabelWideWidth else: prLabelWidth),
-        cursor = (if cfg.kind == prkNumeric: "col-resize" else: "default"),
-        user_select = "none"):
-        # Blank unless the row would otherwise be anonymous. See
-        # `writesOwnLabel` above: a glyph row is already named, and a choice
-        # row's value names it, but a bare number names nothing.
-        if writesOwnLabel:
-          text cfg.name
+        display = "none")
       tdiv(
         ref = valueSlot,
         `data-property-row-slot` = "value",
@@ -1054,17 +1053,29 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
             # mirroring the Figma reference. Hidden when no prefix is
             # configured for this property name (long names like
             # "Overflow" render without a glyph).
-            if prefix.len > 0:
-              span(
-                `data-property-row-prefix` = "true",
-                `aria-hidden` = "true",
-                min_width = prPrefixWidth,
-                color = prPrefixColor,
-                font_size = prPrefixFont,
-                user_select = "none",
-                flex_shrink = "0",
-                white_space = "nowrap"):
-                text prefix
+            # The field's own label, inside the well, as Figma's are: `X 0`,
+            # `W 600`, `Opacity 100%`. It is also the SCRUB TARGET -- the
+            # drag handle now sits where the name is, which is where a hand
+            # reaches for it, rather than in a gutter outside the control.
+            span(
+              ref = fieldLabelNode,
+              `data-property-row-prefix` = "true",
+              `data-property-row-field-label` = "true",
+              title = cfg.name,
+              color = prPrefixColor,
+              font_size = prPrefixFont,
+              user_select = "none",
+              flex_shrink = "0",
+              white_space = "nowrap",
+              overflow = "hidden",
+              text_overflow = "ellipsis",
+              max_width = "58%",
+              cursor = (if cfg.kind == prkNumeric: "col-resize"
+                        else: "default")):
+              # A one- or two-letter glyph where the catalogue has one (X, Y,
+              # W, H) because Figma uses those too and they read faster than
+              # the word; the full name otherwise.
+              text (if prefix.len > 0: prefix else: cfg.name)
             input(
               ref = inputNode,
               `data-property-row-input` = "true",
@@ -1188,9 +1199,13 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
           # pointer; the source is written once, when the hand stops.
           if dragMoved:
             commitValue()
-        r.addPointerListener(labelNode, "mousedown", scrubStart)
-        r.addPointerListener(labelNode, "mousemove", applyScrub)
-        r.addPointerListener(labelNode, "mouseup", scrubEnd)
+        # On the in-field label, and on the legacy gutter node too: the
+        # gutter is display:none now, but the headless scrub tests resolve
+        # `label-scrubber` and firing at it must still drive the drag.
+        for handle in [fieldLabelNode, labelNode]:
+          r.addPointerListener(handle, "mousedown", scrubStart)
+          r.addPointerListener(handle, "mousemove", applyScrub)
+          r.addPointerListener(handle, "mouseup", scrubEnd)
 
       of prkColor:
         var swatchNode: E
@@ -1205,6 +1220,17 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
                 border = prInputBorder,
                 border_radius = prInputRadius,
                 overflow = "hidden"):
+            # Its name, like every other field. The swatch says "a colour";
+            # it does not say WHICH colour -- a Stroke section with two of
+            # them had one row reading `Color` in the old outside gutter and
+            # nothing at all once the gutter went.
+            span(`data-property-row-field-label` = "true",
+                  title = cfg.name,
+                  color = prPrefixColor, font_size = prPrefixFont,
+                  user_select = "none", flex_shrink = "0",
+                  white_space = "nowrap", overflow = "hidden",
+                  text_overflow = "ellipsis", max_width = "40%"):
+              text cfg.name
             tdiv(
               ref = swatchNode,
               role = "button",
@@ -1277,14 +1303,36 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
             initialIdx = i
             break
         let vm = createSegmentedChoiceVM(labels, initialIndex = initialIdx)
+        # A choice row gets the same in-well label as a numeric one. Without
+        # it, decoration / transform / list style all read "None" and named
+        # nothing -- three consecutive rows saying the same word.
+        var choiceWrap: E
+        let wrapped = ui(r):
+          tdiv(ref = choiceWrap,
+                display = "flex", flex = "1", align_items = "center",
+                gap = "6px", min_width = "0",
+                height = prInputHeight,
+                padding = prInputPadding,
+                background_color = prInputBg,
+                border_radius = prInputRadius,
+                overflow = "hidden"):
+            span(`data-property-row-field-label` = "true",
+                  title = cfg.name,
+                  color = prPrefixColor, font_size = prPrefixFont,
+                  user_select = "none", flex_shrink = "0",
+                  white_space = "nowrap", overflow = "hidden",
+                  text_overflow = "ellipsis", max_width = "52%"):
+              text cfg.name
+        r.appendChild(valueSlot, wrapped)
         let host = ui(r):
           tdiv(
             `data-property-row-choice-host` = "true",
             display = "flex",
             flex = "1",
             align_items = "center",
+            justify_content = "flex-end",
             min_width = "0")
-        r.appendChild(valueSlot, host)
+        r.appendChild(choiceWrap, host)
         let onPick = proc(i: int) {.closure.} =
           if i >= 0 and i < values.len:
             cfg.choiceValue.val = values[i]
@@ -1319,9 +1367,11 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
         var pillWidth = 0.0
         for opt in cfg.choiceOptions:
           pillWidth += float(opt.label.len) * 5.0 + 34.0
-        # Minus the label gutter when this row writes its own name: 76px
-        # instead of 22px leaves 54px less for pills.
-        let roomForPills = 196.0 - (if writesOwnLabel: 66.0 else: 0.0)
+        # The well holds the label now, so the pills share the field rather
+        # than the row. Measured at the default 320px panel: the choice host
+        # inside the well is ~118px once the label and the bind/more
+        # affordances have taken theirs.
+        let roomForPills = 118.0
         if pillWidth > roomForPills:
           r.mountChevronChoice(host, vm, onPick, variant = cgvTransparent)
         else:
@@ -1341,7 +1391,7 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
         var inputNode: E
         let row = ui(r):
           tdiv(display = "flex", flex = "1",
-                align_items = "center",
+                align_items = "center", gap = "6px",
                 min_width = "0",
                 height = prInputHeight,
                 padding = prInputPadding,
@@ -1349,6 +1399,17 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
                 border = prInputBorder,
                 border_radius = prInputRadius,
                 overflow = "hidden"):
+            # Its name, like every other field. Without it Font family
+            # rendered as a bare font stack -- `-apple-system, "Segoe UI",
+            # system-u` -- overflowing a well that said nothing about what
+            # it was.
+            span(`data-property-row-field-label` = "true",
+                  title = cfg.name,
+                  color = prPrefixColor, font_size = prPrefixFont,
+                  user_select = "none", flex_shrink = "0",
+                  white_space = "nowrap", overflow = "hidden",
+                  text_overflow = "ellipsis", max_width = "46%"):
+              text cfg.name
             input(
               ref = inputNode,
               `data-property-row-input` = "true",
@@ -1361,6 +1422,8 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
               color = prInputColor,
               font_size = prInputFont,
               font_family = "inherit",
+              text_align = "right",
+              text_overflow = "ellipsis",
               padding = "0",
               height = "100%")
         r.appendChild(valueSlot, row)
@@ -1556,3 +1619,26 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
 
   r.appendChild(parent, root)
   result = root
+
+proc mountPropertyRowPair*[R, E](r: R; parent: E;
+    left, right: PropertyRowConfig): tuple[left: E, right: E] =
+  ## Two fields side by side, as Figma pairs X|Y, W|H and opacity|radius.
+  ##
+  ## Pairing is not decoration. A 320px panel showing one full-width field
+  ## per line spends most of its width on empty space and most of its height
+  ## on rows -- the Typography section alone ran to eleven of them, so the
+  ## sections below it were off screen. Two columns halves that, and the
+  ## pairs are the ones a designer reads together anyway: a width without
+  ## its height is half a question.
+  var leftHost, rightHost: E
+  let row = ui(r):
+    tdiv(`data-property-row-pair` = "true",
+          display = "flex", flex_direction = "row",
+          align_items = "flex-start", gap = "6px",
+          width = "100%"):
+      tdiv(ref = leftHost, display = "flex", flex = "1 1 0",
+            min_width = "0", flex_direction = "column")
+      tdiv(ref = rightHost, display = "flex", flex = "1 1 0",
+            min_width = "0", flex_direction = "column")
+  r.appendChild(parent, row)
+  (r.mountPropertyRow(leftHost, left), r.mountPropertyRow(rightHost, right))

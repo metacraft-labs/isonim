@@ -214,14 +214,16 @@ proc mountSectionPosition*[R, E](r: R; parent: E; vm: EditorVM) =
   r.appendChild(parent, alignmentRow)
 
   # ----- X / Y / rotation property rows ---------------------------- #
-  discard r.mountPropertyRow(parent, propertyRowNumeric(
+  # X and Y read together -- a position is a pair.
+  discard r.mountPropertyRowPair(parent,
+    propertyRowNumeric(
     name = "X", value = xValue, unit = xUnit,
     units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("left"),
     onBindRequest = vm.inspectorBindRequestHandler("left"),
     onDetachRequest = vm.inspectorDetachRequestHandler("left"),
-    wiring = vm.inspectorRowWiring("left")))
-  discard r.mountPropertyRow(parent, propertyRowNumeric(
+    wiring = vm.inspectorRowWiring("left")),
+    propertyRowNumeric(
     name = "Y", value = yValue, unit = yUnit,
     units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("top"),

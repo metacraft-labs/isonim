@@ -360,8 +360,10 @@ suite "Phase D property_row prkChoice":
       check findByAttr(root, "data-property-row-kind", "choice") != nil
       check findByAttr(root, "data-choice-group", "chevron") != nil
       check findByAttr(root, "data-choice-group", "segmented") == nil
-      # The row is named even though no pill is showing the name.
-      let label = findByAttr(root, "data-property-row-slot", "label-scrubber")
+      # The row is named even though no pill is showing the name. The name
+      # lives INSIDE the field well now, as Figma's does, rather than in an
+      # outside gutter -- `data-property-row-field-label`.
+      let label = findByAttr(root, "data-property-row-field-label", "true")
       check label != nil
       check textContent(label) == "Display"
       dispose()

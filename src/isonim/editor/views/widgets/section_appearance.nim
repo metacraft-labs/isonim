@@ -53,15 +53,17 @@ proc mountSectionAppearance*[R, E](r: R; parent: E; vm: EditorVM) =
     radiusBL.val = parseLeadingFloat(findPropertyValue(props,
       "border-bottom-left-radius", $radius.val), radius.val)
 
-  discard r.mountPropertyRow(parent, propertyRowNumeric(
+  # The two things Figma puts on one line under Appearance.
+  discard r.mountPropertyRowPair(parent,
+    propertyRowNumeric(
     name = "Opacity", value = opacity, unit = opacityUnit,
     units = @[pctUnit],
     minValue = some(0.0), maxValue = some(100.0), step = 1.0,
     bindingReactive = vm.inspectorBindingThunk("opacity"),
     onBindRequest = vm.inspectorBindRequestHandler("opacity"),
     onDetachRequest = vm.inspectorDetachRequestHandler("opacity"),
-    wiring = vm.inspectorRowWiring("opacity")))
-  discard r.mountPropertyRow(parent, propertyRowNumeric(
+    wiring = vm.inspectorRowWiring("opacity")),
+    propertyRowNumeric(
     name = "Corner radius", value = radius, unit = radiusUnit,
     units = @[pxUnit], minValue = some(0.0),
     bindingReactive = vm.inspectorBindingThunk("border-radius"),

@@ -136,13 +136,15 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
   # Two numeric rows + a placeholder constraint glyph. The glyph is a
   # data marker for the per-section test; Phase G+1 wires a real
   # constraint editor.
-  discard r.mountPropertyRow(parent, propertyRowNumeric(
+  # A width without its height is half a question.
+  discard r.mountPropertyRowPair(parent,
+    propertyRowNumeric(
     name = "W", value = width, unit = widthUnit, units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("width"),
     onBindRequest = vm.inspectorBindRequestHandler("width"),
     onDetachRequest = vm.inspectorDetachRequestHandler("width"),
-    wiring = vm.inspectorRowWiring("width")))
-  discard r.mountPropertyRow(parent, propertyRowNumeric(
+    wiring = vm.inspectorRowWiring("width")),
+    propertyRowNumeric(
     name = "H", value = height, unit = heightUnit, units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("height"),
     onBindRequest = vm.inspectorBindRequestHandler("height"),
