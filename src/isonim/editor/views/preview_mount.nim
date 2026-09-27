@@ -90,7 +90,37 @@ proc mountNow[E](frame: E; story: StoryRef; hook: PreviewMountHook;
     createRoot proc(dispose: proc()) =
       state.dispose = dispose
       hook(story, host)
-    {.emit: [body, ".replaceChildren(", host, ");"].}
+
+    # Replace only what a previous mount put here -- NOT the whole body.
+    #
+    # `body.replaceChildren(fragment)` looks like the obvious swap and it
+    # destroys the editor's own furniture. The selection bridge is injected
+    # before `</body>`, so its `<style id="isonim-editor-selection-style">`
+    # lives IN the body -- and that style is the entire mechanism by which a
+    # selected element gets its outline. Mounting over it left the attribute
+    # meaning nothing: the borders around the selected element in Edit and
+    # Comment mode simply stopped being drawn. The overlay divs come back
+    # because the bridge recreates them lazily; a removed `<style>` does not.
+    #
+    # Inserted at the FRONT, so the bridge's absolutely-positioned overlays
+    # stay after the content in DOM order and therefore on top of it. That is
+    # the order the injected document has always had.
+    #
+    # The node list is kept on the frame's own window rather than in this
+    # module's state: it describes that document, it has to die with it, and a
+    # frame that reloads must not be cleaned up against a list of nodes that no
+    # longer exist.
+    {.emit: [
+      "(function (frame, body, fragment) {",
+      "  const w = frame.contentWindow;",
+      "  const previous = (w && w.__isonimMountedNodes) || [];",
+      "  previous.forEach(function (node) {",
+      "    if (node.parentNode === body) body.removeChild(node);",
+      "  });",
+      "  const added = Array.prototype.slice.call(fragment.childNodes);",
+      "  body.insertBefore(fragment, body.firstChild);",
+      "  if (w) w.__isonimMountedNodes = added;",
+      "})(", frame, ", ", body, ", ", host, ");"].}
 
     # Re-apply pending stylesheet declarations, AFTER the mount.
     #
