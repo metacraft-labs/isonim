@@ -313,6 +313,15 @@ type
     viewport*: Signal[PreviewViewport]
     responsiveBreakpoints*: Signal[seq[ResponsiveBreakpoint]]
       ## Supplied by the workspace; see `EditorWorkspace.responsiveBreakpoints`.
+    previewStyleEdits*: Signal[seq[PreviewStyleEdit]]
+      ## The last set of stylesheet swaps the preview should apply, published
+      ## the moment a write lands. The preview view watches this; see
+      ## `PreviewStyleEdit` for why it exists at all.
+      ##
+      ## Replaced rather than appended: each entry carries the whole `before`
+      ## text it expects to find, so a stale one cannot match twice and an
+      ## unapplied one is not worth retrying against a preview that has since
+      ## been rebuilt from source.
     previewRenderedWidth*: Signal[int]
       ## The width in CSS pixels the preview iframe is ACTUALLY laid out at,
       ## or 0 before anything has measured it.
@@ -8217,6 +8226,21 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
       fullReload = fullReload or write.fullReload
       written.add patch
 
+  # The fast path, published the moment the bytes are on disk.
+  #
+  # Deliberately before formatting, regeneration and compilation: those are the
+  # slow half, and the point of this is that the user stops waiting for them to
+  # see what they just did. A formatter that rewrites whitespace can make the
+  # `before` text stop matching, in which case the swap simply does not apply
+  # and the preview updates when the rebuild lands -- the old behaviour, which
+  # is the right thing to degrade to.
+  var previewIsUpToDate = false
+  if adapter.previewStyleEdits != nil and written.len > 0:
+    let styleEdits = adapter.previewStyleEdits(written)
+    if styleEdits.len > 0:
+      editor.previewStyleEdits.val = styleEdits
+      previewIsUpToDate = true
+
   if adapter.formatFiles != nil:
     editor.workspaceEditStage.val = wesFormatting
     let formatted = adapter.formatFiles(files)
@@ -8285,7 +8309,14 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
   editor.workspaceEditGeneratedArtifacts.val = generatedArtifacts
   editor.workspaceEditRequiredTestCommands.val = requiredTestCommands
   editor.workspaceEditReviewDiagnostics.val = reviewDiagnostics
-  if not adapter.stagingOnly:
+  # An adapter that returned preview style edits has asserted the preview is
+  # already showing this change, so reloading it is not merely redundant -- it
+  # is harmful. The reload rebuilds the preview from the project code COMPILED
+  # INTO the current bundle, which is still the pre-edit code until the project
+  # recompiles. Measured: it replaced a frame that had just been given the new
+  # stylesheet with one carrying the old one, and the value the user had just
+  # replaced flashed back for ~30ms before the swap was re-applied.
+  if not adapter.stagingOnly and not previewIsUpToDate:
     editor.livePreviewReloadGeneration.val = editor.livePreviewReloadGeneration.val + 1
   editor.recordEditorTiming(epbkSaveReload, 1,
     if fullReload: "preview-reload:full" else: "preview-reload:affected")
@@ -11618,6 +11649,7 @@ proc createEditorVM*(): EditorVM =
   let platform = createSignal(pbWeb)
   let viewport = createSignal(defaultViewport(pbWeb))
   let responsiveBreakpoints = createSignal[seq[ResponsiveBreakpoint]](@[])
+  let previewStyleEdits = createSignal[seq[PreviewStyleEdit]](@[])
   let previewRenderedWidth = createSignal(0)
   # The width every breakpoint question is asked at: what the preview is
   # really laid out at when that is known, and the chip's nominal width until
@@ -11741,6 +11773,7 @@ proc createEditorVM*(): EditorVM =
     platform: platform,
     viewport: viewport,
     responsiveBreakpoints: responsiveBreakpoints,
+    previewStyleEdits: previewStyleEdits,
     previewRenderedWidth: previewRenderedWidth,
     activeBreakpoint: activeBreakpoint,
     workspacePermissions: workspacePermissions,

@@ -706,6 +706,29 @@ proc patchCssDeclarationAt*(css, selector, property, newValue: string;
     content: css[0 ..< cut] & insertion & css[cut .. ^1],
     oldValue: "")
 
+func nimConstBody*(nimSource, constName: string): string =
+  ## The raw-string body of `const <constName> = """..."""`, or "".
+  ##
+  ## Exposed because a project implementing the preview fast path has to hand
+  ## the editor the stylesheet as it appears in the rendered page -- the const's
+  ## body, not the module around it. Locating it here means the fast path and
+  ## the patcher agree about where the stylesheet is, rather than each carrying
+  ## its own idea of it.
+  let decl = "const " & constName & "* = \"\"\""
+  var start = nimSource.find(decl)
+  var declLen = decl.len
+  if start < 0:
+    let unexported = "const " & constName & " = \"\"\""
+    start = nimSource.find(unexported)
+    declLen = unexported.len
+  if start < 0:
+    return ""
+  let bodyStart = start + declLen
+  let bodyEnd = nimSource.find("\"\"\"", bodyStart)
+  if bodyEnd < 0:
+    return ""
+  nimSource[bodyStart ..< bodyEnd]
+
 proc patchCssInNimConst*(nimSource, constName, selector, property,
                          newValue: string): CssPatchResult =
   ## The same edit, for a stylesheet that lives in a Nim raw-string const.

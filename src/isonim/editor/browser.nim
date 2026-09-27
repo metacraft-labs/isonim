@@ -1009,6 +1009,18 @@ proc clearPreviewStyleOverrides() =
   when defined(js):
     {.emit: """
       window.__isonimPreviewOverrides = {};
+      // `__isonimPreviewStylesheet` deliberately SURVIVES the bundle swap.
+      //
+      // It looks redundant here -- the rebuilt bundle carries the same CSS --
+      // and clearing it is wrong for the same reason clearing the overrides
+      // here is right. Rebuilds lag edits: the bundle arriving now was
+      // compiled from an EARLIER edit, so a later edit's stylesheet is still
+      // the only record of what the file actually says. Dropping it made the
+      // preview flash back to the previous value.
+      //
+      // It is a single value that each save replaces, so nothing accumulates,
+      // and adopting it is idempotent -- once the compiled CSS matches, the
+      // adopt is a no-op.
     """.}
 
 proc mountEditor*(workspace: EditorWorkspace;

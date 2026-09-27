@@ -1051,6 +1051,34 @@ __ISONIM_SCENE_GRAPH_WALK__
       });
     });
   })();
+  // Swap a chunk of the live stylesheet for the version just written to disk.
+  //
+  // This is the fast path: the authored CSS, in front of the user in
+  // milliseconds, instead of the seconds a `nim js` rebuild takes. It replaces
+  // text inside the existing `<style>` rather than appending a new rule,
+  // because appending would change the cascade -- a later rule wins ties, so
+  // an appended copy could take effect where the real one does not, and the
+  // preview would stop telling the truth about the file. Replacing in place
+  // leaves every rule exactly where the author put it.
+  const adoptStylesheet = function (css) {
+    if (typeof css !== 'string' || !css) return false;
+    const head = document.head;
+    if (!head) return false;
+    const style = head.querySelector('style');
+    if (!style) return false;
+    if (style.textContent !== css) style.textContent = css;
+    return true;
+  };
+  parent.addEventListener('isonim-preview-stylesheet', function (event) {
+    const detail = event.detail || {};
+    adoptStylesheet(String(detail.css || ''));
+  });
+  // Also on start, for a frame that was built before the latest edit. Runs in
+  // the head too (see `earlyStyleSwap`); this is the fallback for a document
+  // that has no `<head>` for the early copy to attach to.
+  (function () {
+    try { adoptStylesheet(parent.__isonimPreviewStylesheet); } catch (e) {}
+  })();
   parent.addEventListener('isonim-preview-apply-style', function (event) {
     const detail = event.detail || {};
     const id = String(detail.id || '');
@@ -1140,11 +1168,65 @@ __ISONIM_SCENE_GRAPH_WALK__
   # Comment/Edit mode on any sizeable page threw here and the preview
   # never got its selection bridge. `&` compiles to `Array.concat`,
   # which has no such limit.
-  let closing = documentHtml.rfind("</body>")
+  # A second, much smaller injection, at the END OF HEAD.
+  #
+  # The bridge above goes before `</body>`, which is the right place for
+  # everything it does and one frame too late for this. The document's
+  # stylesheet is in `<head>`; a script that runs after `</body>` runs after
+  # the body has already been parsed and painted with it. When a rebuild lags
+  # an edit -- which it always does, by seconds -- the stylesheet the document
+  # ships with is the PREVIOUS one, so that first paint shows the value the
+  # user just replaced, and only then does the bridge swap it. Measured as a
+  # visible flash 4511ms into a three-edit sequence.
+  #
+  # Running the same swap at the end of head fixes the order: the style
+  # element exists by then and nothing has rendered yet, so the document is
+  # already correct when it is first painted. The bridge's copy stays for
+  # documents that arrive without a head.
+  const earlyStyleSwap = """
+<script>
+(function () {
+  // Adopt the editor's authoritative stylesheet, before anything is painted.
+  //
+  // This runs at the end of `<head>`: the project's `<style>` has been parsed,
+  // the body has not. That ordering is the whole point. The bridge injected
+  // before `</body>` does the same thing one frame too late, and when a
+  // rebuild lags an edit -- which it always does, by seconds -- the document
+  // ships with the PREVIOUS stylesheet and that late fix is preceded by a
+  // visible flash of the value the user just replaced.
+  //
+  // It ADOPTS rather than patches. An earlier version applied a chain of
+  // before/after substring swaps, which meant reasoning about which bundle a
+  // frame came from and keeping every intermediate delta alive in case some
+  // lagging rebuild still needed it. Assigning the current text needs none of
+  // that: it is idempotent, it does not care what the frame arrived with, and
+  // there is nothing to accumulate or expire.
+  try {
+    var css = parent.__isonimPreviewStylesheet;
+    if (typeof css !== 'string' || !css) return;
+    var head = document.head;
+    if (!head) return;
+    var style = head.querySelector('style');
+    if (!style) return;
+    if (style.textContent !== css) style.textContent = css;
+  } catch (e) {}
+})();
+</script>
+"""
+  # Spliced by index for the same reason as the bridge below: on the JS
+  # backend `strutils.replace` pushes each piece with `apply`, which blows the
+  # argument limit on a document this size.
+  var withEarly = documentHtml
+  let headClose = documentHtml.find("</head>")
+  if headClose >= 0:
+    withEarly = documentHtml[0 ..< headClose] & earlyStyleSwap &
+      documentHtml[headClose .. ^1]
+
+  let closing = withEarly.rfind("</body>")
   if closing >= 0:
-    documentHtml[0 ..< closing] & injected & documentHtml[closing .. ^1]
+    withEarly[0 ..< closing] & injected & withEarly[closing .. ^1]
   else:
-    documentHtml & injected
+    withEarly & injected
 
 proc applyInspectorValue(vm: EditorVM; propName, value: string;
     scope = pesLocal)
@@ -4672,6 +4754,18 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
       tdiv(ref = scrollHost,
             flex = "1", overflow = "auto", background_color = bgPreview,
             padding = "24px",
+            # Reserve the scrollbar's width whether or not it is showing.
+            #
+            # Without this the fit calculation oscillates and the tab locks
+            # up. The chain: a taller preview makes this host overflow, the
+            # vertical scrollbar appears, `clientWidth` drops by the
+            # scrollbar's width, the scale is recomputed smaller, the frame
+            # gets shorter, the scrollbar goes away, `clientWidth` grows back
+            # -- and round again, forever, via the ResizeObserver below. It
+            # needs a content-height change to enter that regime, which is
+            # exactly what applying a stylesheet swap does, so it only showed
+            # up once the fast path started editing the live preview's CSS.
+            scrollbar_gutter = "stable",
             display = "flex", justify_content = "center",
             align_items = "flex-start"):
         tdiv(ref = fitHost,
@@ -4761,7 +4855,23 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
         let lastW = null;
         let lastH = null;
         let lastReported = 0;
+        // Runaway guard. `scrollbar-gutter: stable` above removes the
+        // oscillation this counts, and the counter stays because the failure
+        // mode is a frozen tab rather than a visible glitch: a fit that cannot
+        // settle must give up and leave the preview slightly wrong, not spin.
+        // Reset on every settled frame, so ordinary resizing never trips it.
+        let burst = 0;
+        let burstFrame = 0;
+        host.__isonimFitApplies = 0;
         const apply = function () {
+          host.__isonimFitApplies++;
+          const frame = Math.floor(performance.now() / 16);
+          if (frame === burstFrame) {
+            if (++burst > 30) return;
+          } else {
+            burstFrame = frame;
+            burst = 0;
+          }
           const style = getComputedStyle(host);
           const padding = parseFloat(style.paddingLeft || '0') +
                           parseFloat(style.paddingRight || '0');
@@ -4871,6 +4981,72 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
       srcdocGeneration.val = srcdocGeneration.val + 1
     r.setStyle(projectFrame, "min-height", "320px")
     r.setStyle(projectFrame, "overflow", "hidden")
+
+  # Push stylesheet swaps into the live preview as soon as a write lands.
+  #
+  # `dispatchEvent` on this window is the same channel the selection bridge
+  # already uses in the other direction; the injected script listens on
+  # `parent`. Nothing here waits for a rebuild.
+  when defined(js):
+    createRenderEffect proc() =
+      let edits = vm.previewStyleEdits.val
+      if edits.len == 0:
+        return
+      # APPEND, do not replace.
+      #
+      # Rebuilds lag edits. Make two edits in quick succession and the bundle
+      # that arrives during the second one was compiled from the FIRST, so the
+      # frame it brings carries edit 1's stylesheet. Only a swap whose `before`
+      # is edit 1's text can carry it forward to edit 2 -- and replacing the
+      # list threw exactly that away, so the preview flashed back to the
+      # previous value. Measured at 941ms into a two-edit sequence.
+      #
+      # Kept as a chain, applied in order: from whatever CSS a frame happens to
+      # arrive with, the matching link moves it one step forward, and the rest
+      # no-op. Capped because each link holds two copies of the stylesheet, and
+      # anything older than the last few is certain to be dead: a rebuild that
+      # far behind has long since landed.
+      for edit in edits:
+        let css = edit.after.cstring
+        {.emit: ["""
+          (function (css) {
+            // One value, replaced each time: the stylesheet as the project
+            // last wrote it. A frame rebuilt from a lagging bundle reads this
+            // on start and adopts it, so there is no chain of deltas to keep
+            // alive and no way for an old one to be applied out of order.
+            window.__isonimPreviewStylesheet = css;
+            window.dispatchEvent(new CustomEvent('isonim-preview-stylesheet', {
+              detail: { css: css }
+            }));
+          })(""", css, ");"].}
+      # Hand over from the optimistic override to the authored CSS, now.
+      #
+      # The override exists to cover the gap between moving a control and the
+      # source being able to show the result. The swap above just closed that
+      # gap, so from here the override is not a bridge -- it is an inline
+      # `!important` sitting on top of the real stylesheet, outranking it and
+      # showing the requested value whether or not the CSS produces it.
+      #
+      # Removing it here is safe in a way it was NOT before this existed: the
+      # frame on screen has already had the new stylesheet swapped in, so what
+      # is revealed underneath is the same value, not the pre-edit one. When it
+      # is NOT the same value, that is a declaration the cascade discards and
+      # showing it immediately is the entire point.
+      {.emit: """
+        (function () {
+          const store = window.__isonimPreviewOverrides;
+          window.__isonimPreviewOverrides = {};
+          if (!store) return;
+          Object.keys(store).forEach(function (id) {
+            const props = store[id] || {};
+            Object.keys(props).forEach(function (property) {
+              window.dispatchEvent(new CustomEvent(
+                'isonim-preview-apply-style',
+                { detail: { id: id, property: property, value: '' } }));
+            });
+          });
+        })();
+      """.}
 
   # Selection restore, on its own. Reads a string memo and an int, so a click
   # costs one ElementRef copy rather than a rebuild of the whole document.

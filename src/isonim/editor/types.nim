@@ -1463,6 +1463,32 @@ type
     patch*: WorkspaceFilePatch
     diagnostics*: seq[WorkspaceEditDiagnostic]
 
+  PreviewStyleEdit* = object
+    ## A stylesheet swap to apply to the LIVE preview, without rebuilding.
+    ##
+    ## The editor's writes are real source edits, so seeing them normally means
+    ## waiting for the project to recompile -- measured at 2.8-4.4s for `nim js`
+    ## over this editor, and 7.3s end to end. That is far too long to sit
+    ## between moving a slider and seeing the result, and the gap used to be
+    ## covered by pushing an inline `!important` style into the preview.
+    ##
+    ## An inline override is fast and it lies. It outranks every rule, so the
+    ## preview shows the requested value whether or not the stylesheet the
+    ## editor just wrote actually produces it. That is how a `font-size`
+    ## written into a rule whose `@media` twin resets it looked correct for
+    ## seven seconds and then reverted.
+    ##
+    ## This carries the authored CSS instead: `before` is the exact text
+    ## currently in the preview's `<style>`, `after` is what the project just
+    ## wrote to disk. Applying it puts the real stylesheet in front of the user
+    ## in milliseconds, cascade and all -- so a declaration the cascade
+    ## discards looks discarded immediately, which is the honest answer and
+    ## the useful one.
+    ##
+    ## The rebuild still happens; it just stops being what the user waits for.
+    before*: string
+    after*: string
+
   WorkspaceReviewResult* = object
     ok*: bool
     violations*: seq[Violation]
@@ -1499,6 +1525,23 @@ type
     reloadPreview*: proc(stories: seq[StoryRef];
       fullReload: bool): WorkspaceOperationResult {.closure.}
     review*: proc(patches: seq[WorkspaceFilePatch]): WorkspaceReviewResult {.closure.}
+    previewStyleEdits*: proc(patches: seq[WorkspaceFilePatch]): seq[PreviewStyleEdit] {.closure.}
+      ## Optional fast path: turn the patches just written into stylesheet
+      ## swaps the live preview can apply without a rebuild.
+      ##
+      ## Project-owned because only the project knows where its CSS lives --
+      ## grip keeps it in a Nim raw-string const, another project might use a
+      ## `.css` file or a theme object. Returning an empty seq (or leaving the
+      ## hook nil) means "no fast path for this edit", and the preview then
+      ## updates when the rebuild lands, exactly as before.
+      ##
+      ## **Returning any edits asserts that they fully account for what these
+      ## patches change on screen.** The framework takes that as permission to
+      ## skip its post-write preview reload, because the reload would rebuild
+      ## the preview from project code that has not recompiled yet and would
+      ## undo the very swap this returned. An adapter that can only cover part
+      ## of a transaction should return nothing for that transaction and let
+      ## the reload do its job.
 
   # --- Design-system schema and source ownership ---
   DesignSchemaNodeKind* = enum
