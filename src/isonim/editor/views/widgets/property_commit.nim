@@ -165,24 +165,44 @@ proc firstDiagnosticMessage(diagnostics: seq[PropertyEditDiagnostic];
       return d.message
   fallback
 
-proc applyPreviewStyle(elementId, property, value: string) =
+proc applyPreviewStyle(elementId, domPath, property, value: string) =
   ## Show the change in the preview, now.
   ##
-  ## Without this the editor accepted a value, staged it, wrote it to source
-  ## -- and the thing you were looking at did not move. Every part of the
-  ## pipeline worked and the one signal a person actually reads was missing,
-  ## which is indistinguishable from nothing having happened.
+  ## Without this the editor accepted a value, staged it, wrote it to source --
+  ## and the thing you were looking at did not move. Every part of the pipeline
+  ## worked and the one signal a person actually reads was missing, which is
+  ## indistinguishable from nothing having happened.
   ##
-  ## An inline style on the element, deliberately. grip's preview is a
-  ## COMPILE-TIME SSR render: its `documentHtml` is baked when the project
-  ## builds, so a change to `styles.nim` does not reach it until the Nim
-  ## build re-runs. Waiting for that would make every keystroke cost a
-  ## rebuild. The inline style is the optimistic half; the source is the
-  ## durable half; a rebuild reconciles them.
+  ## **On the rule, not on the element.** This used to set an inline style with
+  ## `!important`, which was fast and which lied: an inline `!important`
+  ## outranks every rule, so the preview showed the requested value whether or
+  ## not the stylesheet could produce it. That is how a `font-size` written
+  ## into a rule whose `@media` twin resets it looked correct for seven seconds
+  ## and then reverted when the rebuild landed -- the editor agreeing with you
+  ## about a change the site would not show.
   ##
-  ## `important`, because the declaration this is previewing may itself be
-  ## losing to a more specific selector -- and a preview that silently did
-  ## nothing for those properties would be the same defect again.
+  ## The preview now resolves the rule the cascade is actually using for this
+  ## element and property, and sets the declaration there, through the CSSOM.
+  ## Measured at ~4ms from the call to the recalculated pixels. Two
+  ## consequences follow, and both are the point:
+  ##
+  ## * it no longer waits for the file. The value is on screen before the
+  ##   auto-save debounce has finished, never mind the ~3s `nim js` rebuild;
+  ## * a declaration the cascade discards now looks discarded, immediately,
+  ##   because it is being applied where the cascade can discard it.
+  ##
+  ## The DOM path travels with the element id because a frame that has just
+  ## loaded has NEITHER. `data-isonim-element-id` is stamped lazily by the
+  ## scene-graph walk, so a document rebuilt by a rebuild carries no ids until
+  ## something walks it -- which happens after the body is parsed, and
+  ## therefore after it has been painted with the old value. The path is
+  ## resolvable immediately, which is what lets the re-apply happen before the
+  ## first paint rather than visibly after it.
+  ##
+  ## Recorded as well as dispatched, keyed by element and property, so a frame
+  ## rebuilt before the source catches up gets the edit back on start. The
+  ## records are short strings rather than the whole stylesheet, so there is
+  ## nothing to cap or expire, and re-applying is idempotent.
   when defined(js):
     {.emit: ["""
       (function () {
@@ -190,27 +210,17 @@ proc applyPreviewStyle(elementId, property, value: string) =
         ? String.fromCharCode.apply(null, raw)
         : String(raw || '');
       const id = toJsString(""", elementId, """);
+      const path = toJsString(""", domPath, """);
       const property = toJsString(""", property, """);
       const value = toJsString(""", value, """);
-      // Remember it, not just apply it.
-      //
-      // Saving reloads the preview, and the reload re-renders from the
-      // project's COMPILE-TIME html -- which still holds the old value,
-      // because reaching the new one needs the Nim build to run again. So
-      // the style landed, the save fired ~900ms later, and the reload threw
-      // it away: the user saw the right value flash and then revert, which
-      // reads as nothing having happened.
-      //
-      // The overrides outlive the frame. The bridge re-applies them when it
-      // starts, so an edit survives every reload until the source can
-      // actually supply it.
-      const store = window.__isonimPreviewOverrides ||
-        (window.__isonimPreviewOverrides = {});
-      const forElement = store[id] || (store[id] = {});
-      if (value === '') delete forElement[property];
-      else forElement[property] = value;
-      window.dispatchEvent(new CustomEvent('isonim-preview-apply-style', {
-        detail: { id: id, property: property, value: value }
+      if (!id || !property) return;
+      const store = window.__isonimPreviewDeclarations ||
+        (window.__isonimPreviewDeclarations = {});
+      const key = id + '|' + property;
+      if (value === '') delete store[key];
+      else store[key] = { id: id, path: path, property: property, value: value };
+      window.dispatchEvent(new CustomEvent('isonim-preview-set-declaration', {
+        detail: { id: id, path: path, property: property, value: value }
       }));
       })();
     """].}
@@ -291,7 +301,9 @@ proc commitInspectorValue*(vm: EditorVM; property, rawValue: string;
     elif selected.sourceKey.len > 0: selected.sourceKey
     else: selected.schemaKey
   if previewId.len > 0:
-    applyPreviewStyle(previewId, property, normalized)
+    applyPreviewStyle(previewId, selected.domPath, property, normalized)
+    # The write that follows must not reload the preview out from under this.
+    vm.previewShowsPendingEdits.val = true
 
   # The edit is staged; the browser layer debounces it into a write. Placed
   # after every refusal so a rejected edit never schedules one.

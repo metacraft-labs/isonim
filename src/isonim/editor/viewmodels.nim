@@ -313,15 +313,15 @@ type
     viewport*: Signal[PreviewViewport]
     responsiveBreakpoints*: Signal[seq[ResponsiveBreakpoint]]
       ## Supplied by the workspace; see `EditorWorkspace.responsiveBreakpoints`.
-    previewStyleEdits*: Signal[seq[PreviewStyleEdit]]
-      ## The last set of stylesheet swaps the preview should apply, published
-      ## the moment a write lands. The preview view watches this; see
-      ## `PreviewStyleEdit` for why it exists at all.
+    previewShowsPendingEdits*: Signal[bool]
+      ## Set when a commit has already put its value on screen, by setting the
+      ## declaration on the rule the cascade uses (see `applyPreviewStyle`).
       ##
-      ## Replaced rather than appended: each entry carries the whole `before`
-      ## text it expects to find, so a stale one cannot match twice and an
-      ## unapplied one is not worth retrying against a preview that has since
-      ## been rebuilt from source.
+      ## Read by `applyWorkspaceEdits` to skip its post-write preview reload.
+      ## That reload rebuilds the preview from project code that has not
+      ## recompiled yet, so it would replace a frame showing the new value with
+      ## one showing the old -- and the user would watch their edit flash away
+      ## a second after making it.
     previewRenderedWidth*: Signal[int]
       ## The width in CSS pixels the preview iframe is ACTUALLY laid out at,
       ## or 0 before anything has measured it.
@@ -8234,12 +8234,14 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
   # `before` text stop matching, in which case the swap simply does not apply
   # and the preview updates when the rebuild lands -- the old behaviour, which
   # is the right thing to degrade to.
-  var previewIsUpToDate = false
-  if adapter.previewStyleEdits != nil and written.len > 0:
-    let styleEdits = adapter.previewStyleEdits(written)
-    if styleEdits.len > 0:
-      editor.previewStyleEdits.val = styleEdits
-      previewIsUpToDate = true
+  # Did the commit already put this on screen?
+  #
+  # `applyPreviewStyle` sets the declaration on the rule the cascade uses, at
+  # commit time, in about 4ms -- long before this write. When it did, the
+  # preview is current and reloading it is not merely redundant but harmful,
+  # for the reason on `previewShowsPendingEdits`.
+  let previewIsUpToDate = editor.previewShowsPendingEdits.val
+  editor.previewShowsPendingEdits.val = false
 
   if adapter.formatFiles != nil:
     editor.workspaceEditStage.val = wesFormatting
@@ -11649,7 +11651,7 @@ proc createEditorVM*(): EditorVM =
   let platform = createSignal(pbWeb)
   let viewport = createSignal(defaultViewport(pbWeb))
   let responsiveBreakpoints = createSignal[seq[ResponsiveBreakpoint]](@[])
-  let previewStyleEdits = createSignal[seq[PreviewStyleEdit]](@[])
+  let previewShowsPendingEdits = createSignal(false)
   let previewRenderedWidth = createSignal(0)
   # The width every breakpoint question is asked at: what the preview is
   # really laid out at when that is known, and the chip's nominal width until
@@ -11773,7 +11775,7 @@ proc createEditorVM*(): EditorVM =
     platform: platform,
     viewport: viewport,
     responsiveBreakpoints: responsiveBreakpoints,
-    previewStyleEdits: previewStyleEdits,
+    previewShowsPendingEdits: previewShowsPendingEdits,
     previewRenderedWidth: previewRenderedWidth,
     activeBreakpoint: activeBreakpoint,
     workspacePermissions: workspacePermissions,

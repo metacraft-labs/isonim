@@ -1038,6 +1038,26 @@ __ISONIM_SCENE_GRAPH_WALK__
   // dependency was invisible and the symptom looked like a selection bug.
   (function () {
     try { layerTree(null); } catch (e) {}
+    // Re-apply the edits this document was built too early to know about.
+    //
+    // After the stamping above, because a declaration is addressed by element
+    // and a freshly parsed document carries no `data-isonim-element-id` until
+    // the walk assigns them. Before the parser paints, because this script is
+    // the last thing in `<body>` -- which is why it is here rather than in the
+    // head script that defines the resolver: there, the body does not exist
+    // yet.
+    //
+    // Short records rather than a stylesheet, so there is nothing to cap or
+    // expire, and applying twice is a no-op.
+    try {
+      const pending = parent.__isonimPreviewDeclarations;
+      if (pending) {
+        Object.keys(pending).forEach(function (key) {
+          const d = pending[key];
+          window.__isonimSetDeclaration(d.id, d.path, d.property, d.value);
+        });
+      }
+    } catch (e) {}
     let store = null;
     try { store = parent.__isonimPreviewOverrides; } catch (e) { return; }
     if (!store || !Object.keys(store).length) return;
@@ -1060,25 +1080,17 @@ __ISONIM_SCENE_GRAPH_WALK__
   // an appended copy could take effect where the real one does not, and the
   // preview would stop telling the truth about the file. Replacing in place
   // leaves every rule exactly where the author put it.
-  const adoptStylesheet = function (css) {
-    if (typeof css !== 'string' || !css) return false;
-    const head = document.head;
-    if (!head) return false;
-    const style = head.querySelector('style');
-    if (!style) return false;
-    if (style.textContent !== css) style.textContent = css;
-    return true;
-  };
-  parent.addEventListener('isonim-preview-stylesheet', function (event) {
-    const detail = event.detail || {};
-    adoptStylesheet(String(detail.css || ''));
+  // The resolver lives in the head script (see `declarationRuntime`), which
+  // runs before this document is painted. This is only the channel.
+  parent.addEventListener('isonim-preview-set-declaration', function (event) {
+    const d = event.detail || {};
+    try {
+      window.__isonimSetDeclaration(String(d.id || ''), String(d.path || ''),
+                                    String(d.property || ''),
+                                    String(d.value == null ? '' : d.value));
+    } catch (e) {}
   });
-  // Also on start, for a frame that was built before the latest edit. Runs in
-  // the head too (see `earlyStyleSwap`); this is the fallback for a document
-  // that has no `<head>` for the early copy to attach to.
-  (function () {
-    try { adoptStylesheet(parent.__isonimPreviewStylesheet); } catch (e) {}
-  })();
+
   parent.addEventListener('isonim-preview-apply-style', function (event) {
     const detail = event.detail || {};
     const id = String(detail.id || '');
@@ -1168,65 +1180,164 @@ __ISONIM_SCENE_GRAPH_WALK__
   # Comment/Edit mode on any sizeable page threw here and the preview
   # never got its selection bridge. `&` compiles to `Array.concat`,
   # which has no such limit.
-  # A second, much smaller injection, at the END OF HEAD.
-  #
-  # The bridge above goes before `</body>`, which is the right place for
-  # everything it does and one frame too late for this. The document's
-  # stylesheet is in `<head>`; a script that runs after `</body>` runs after
-  # the body has already been parsed and painted with it. When a rebuild lags
-  # an edit -- which it always does, by seconds -- the stylesheet the document
-  # ships with is the PREVIOUS one, so that first paint shows the value the
-  # user just replaced, and only then does the bridge swap it. Measured as a
-  # visible flash 4511ms into a three-edit sequence.
-  #
-  # Running the same swap at the end of head fixes the order: the style
-  # element exists by then and nothing has rendered yet, so the document is
-  # already correct when it is first painted. The bridge's copy stays for
-  # documents that arrive without a head.
-  const earlyStyleSwap = """
-<script>
-(function () {
-  // Adopt the editor's authoritative stylesheet, before anything is painted.
-  //
-  // This runs at the end of `<head>`: the project's `<style>` has been parsed,
-  // the body has not. That ordering is the whole point. The bridge injected
-  // before `</body>` does the same thing one frame too late, and when a
-  // rebuild lags an edit -- which it always does, by seconds -- the document
-  // ships with the PREVIOUS stylesheet and that late fix is preceded by a
-  // visible flash of the value the user just replaced.
-  //
-  // It ADOPTS rather than patches. An earlier version applied a chain of
-  // before/after substring swaps, which meant reasoning about which bundle a
-  // frame came from and keeping every intermediate delta alive in case some
-  // lagging rebuild still needed it. Assigning the current text needs none of
-  // that: it is idempotent, it does not care what the frame arrived with, and
-  // there is nothing to accumulate or expire.
-  try {
-    var css = parent.__isonimPreviewStylesheet;
-    if (typeof css !== 'string' || !css) return;
-    var head = document.head;
-    if (!head) return;
-    var style = head.querySelector('style');
-    if (!style) return;
-    if (style.textContent !== css) style.textContent = css;
-  } catch (e) {}
-})();
-</script>
-"""
   # Spliced by index for the same reason as the bridge below: on the JS
   # backend `strutils.replace` pushes each piece with `apply`, which blows the
   # argument limit on a document this size.
-  var withEarly = documentHtml
+  # Injected at the END OF HEAD, and the position is the whole point.
+  #
+  # The bridge below goes before `</body>`. That is right for everything else
+  # it does and one frame too late for this: a rebuild always lags the edit
+  # that caused it, so the document arriving after a save carries the PREVIOUS
+  # rule values, and a re-apply that runs after the body has been painted shows
+  # the user the value they just replaced first. Measured as a visible flash
+  # 8655ms into a three-edit sequence, which is the rebuild landing, not the
+  # edit.
+  #
+  # Running here, the rules exist (the stylesheet is above) and nothing has
+  # rendered yet, so the document is correct the first time it is painted.
+  #
+  # It also owns the resolver, and the bridge calls back into it, so there is
+  # one implementation of "which rule does the cascade use for this property"
+  # rather than two that can disagree.
+  const declarationRuntime = """
+<script>
+(function () {
+  var SHORTHANDS = {
+    'font-size': ['font'], 'font-family': ['font'], 'font-weight': ['font'],
+    'font-style': ['font'], 'line-height': ['font'],
+    'margin-top': ['margin'], 'margin-right': ['margin'],
+    'margin-bottom': ['margin'], 'margin-left': ['margin'],
+    'padding-top': ['padding'], 'padding-right': ['padding'],
+    'padding-bottom': ['padding'], 'padding-left': ['padding'],
+    'background-color': ['background'], 'background-image': ['background'],
+    'border-width': ['border'], 'border-style': ['border'],
+    'border-color': ['border'],
+    'flex-grow': ['flex'], 'flex-shrink': ['flex'], 'flex-basis': ['flex'],
+    'row-gap': ['gap'], 'column-gap': ['gap'],
+    'overflow-x': ['overflow'], 'overflow-y': ['overflow']
+  };
+
+  // The rule the cascade is actually using for this element and property.
+  //
+  // Resolved from the browser's own view rather than supplied by the editor:
+  // it already knows which rules match and which media conditions hold at this
+  // width, and asking it needs no project knowledge. The same question is
+  // answered in Nim (`editTargetAtWidth`) to decide where the FILE is patched,
+  // so the instant path and the durable one agree by construction.
+  //
+  // Last match wins, because equal specificity is broken by document order. A
+  // rule that sets the property through a shorthand counts: a longhand written
+  // anywhere earlier would be reset by it.
+  function governingRule(el, property) {
+    var resetters = [property].concat(SHORTHANDS[property] || []);
+    var winner = null, fallback = null;
+    function visit(rules, holds) {
+      for (var i = 0; i < rules.length; i++) {
+        var rule = rules[i];
+        // Branch on TYPE. Chrome defines `cssRules` on CSSStyleRule too, for
+        // CSS nesting, so duck-typing on it skips every style rule.
+        if (rule.type === CSSRule.MEDIA_RULE) {
+          var m = false;
+          try { m = matchMedia(rule.conditionText).matches; } catch (e) {}
+          visit(rule.cssRules, holds && m);
+          continue;
+        }
+        if (rule.type === CSSRule.SUPPORTS_RULE) {
+          visit(rule.cssRules, holds);
+          continue;
+        }
+        if (rule.type !== CSSRule.STYLE_RULE || !rule.selectorText) continue;
+        if (!holds) continue;
+        var matches = false;
+        try { matches = el.matches(rule.selectorText); } catch (e) {}
+        if (!matches) continue;
+        // Any matching rule is a home for a declaration nothing currently
+        // makes; one that already decides the property is a better one.
+        fallback = rule;
+        for (var r = 0; r < resetters.length; r++) {
+          var name = resetters[r];
+          if (rule.style.getPropertyValue(name) !== '' ||
+              Array.prototype.indexOf.call(rule.style, name) >= 0) {
+            winner = rule;
+            break;
+          }
+        }
+      }
+    }
+    var sheets = document.styleSheets;
+    for (var s = 0; s < sheets.length; s++) {
+      // Skip the editor's own chrome.
+      //
+      // The bridge injects `#isonim-editor-selection-style` to draw the
+      // selection outline, and it is injected LAST -- so its
+      // `[data-isonim-selected="true"]` rule matches the selected element and
+      // wins the last-match contest against the rule the author wrote. The
+      // user's font-size went into the editor's outline rule, which is not
+      // theirs to edit and is not where the file write goes: the Nim side
+      // correctly chose `.tagline-clause` while this chose the outline. A
+      // stylesheet the editor injected is never a home for a project edit.
+      var owner = null;
+      try { owner = sheets[s].ownerNode; } catch (e) {}
+      if (owner && owner.id && owner.id.indexOf('isonim-editor') === 0) continue;
+      var rules;
+      try { rules = sheets[s].cssRules; } catch (e) { continue; }
+      visit(rules, true);
+    }
+    return winner || fallback;
+  }
+
+  window.__isonimSetDeclaration = function (id, path, property, value) {
+    if (!property) return false;
+    // Id first, DOM path second. On a freshly loaded document there are no
+    // ids at all -- the scene-graph walk stamps them lazily and has not run
+    // yet -- so the path is the only handle that works before the first paint,
+    // which is the moment that matters here.
+    var el = null;
+    if (id) {
+      el = document.querySelector(
+        '[data-isonim-element-id="' + CSS.escape(id) + '"]');
+    }
+    if (!el && path) {
+      try { el = document.querySelector(path); } catch (e) {}
+    }
+    if (!el) return false;
+    var rule = governingRule(el, property);
+    if (!rule) {
+      // Nothing in the cascade reaches this element for this property. An
+      // inline style is the only place left -- and it is also what the file
+      // edit will not be able to express, so this case is worth looking
+      // different.
+      if (value === '') el.style.removeProperty(property);
+      else el.style.setProperty(property, value);
+      return true;
+    }
+    if (value === '') rule.style.removeProperty(property);
+    else rule.style.setProperty(property, value);
+    return true;
+  };
+
+  // The re-apply deliberately does NOT happen here, only the definition.
+  //
+  // This script sits at the end of `<head>`, so the body has not been parsed
+  // yet and there is no element to resolve -- by stamped id or by DOM path,
+  // both come back null. An earlier version tried it here and the preview
+  // still flashed the previous value, which read as the re-apply being broken
+  // rather than impossible. It runs from the bridge instead, at the end of
+  // `<body>`, where the elements exist and the parser has not painted yet.
+})();
+</script>
+"""
+  var withRuntime = documentHtml
   let headClose = documentHtml.find("</head>")
   if headClose >= 0:
-    withEarly = documentHtml[0 ..< headClose] & earlyStyleSwap &
+    withRuntime = documentHtml[0 ..< headClose] & declarationRuntime &
       documentHtml[headClose .. ^1]
 
-  let closing = withEarly.rfind("</body>")
+  let closing = withRuntime.rfind("</body>")
   if closing >= 0:
-    withEarly[0 ..< closing] & injected & withEarly[closing .. ^1]
+    withRuntime[0 ..< closing] & injected & withRuntime[closing .. ^1]
   else:
-    withEarly & injected
+    withRuntime & injected
 
 proc applyInspectorValue(vm: EditorVM; propName, value: string;
     scope = pesLocal)
@@ -4981,72 +5092,6 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
       srcdocGeneration.val = srcdocGeneration.val + 1
     r.setStyle(projectFrame, "min-height", "320px")
     r.setStyle(projectFrame, "overflow", "hidden")
-
-  # Push stylesheet swaps into the live preview as soon as a write lands.
-  #
-  # `dispatchEvent` on this window is the same channel the selection bridge
-  # already uses in the other direction; the injected script listens on
-  # `parent`. Nothing here waits for a rebuild.
-  when defined(js):
-    createRenderEffect proc() =
-      let edits = vm.previewStyleEdits.val
-      if edits.len == 0:
-        return
-      # APPEND, do not replace.
-      #
-      # Rebuilds lag edits. Make two edits in quick succession and the bundle
-      # that arrives during the second one was compiled from the FIRST, so the
-      # frame it brings carries edit 1's stylesheet. Only a swap whose `before`
-      # is edit 1's text can carry it forward to edit 2 -- and replacing the
-      # list threw exactly that away, so the preview flashed back to the
-      # previous value. Measured at 941ms into a two-edit sequence.
-      #
-      # Kept as a chain, applied in order: from whatever CSS a frame happens to
-      # arrive with, the matching link moves it one step forward, and the rest
-      # no-op. Capped because each link holds two copies of the stylesheet, and
-      # anything older than the last few is certain to be dead: a rebuild that
-      # far behind has long since landed.
-      for edit in edits:
-        let css = edit.after.cstring
-        {.emit: ["""
-          (function (css) {
-            // One value, replaced each time: the stylesheet as the project
-            // last wrote it. A frame rebuilt from a lagging bundle reads this
-            // on start and adopts it, so there is no chain of deltas to keep
-            // alive and no way for an old one to be applied out of order.
-            window.__isonimPreviewStylesheet = css;
-            window.dispatchEvent(new CustomEvent('isonim-preview-stylesheet', {
-              detail: { css: css }
-            }));
-          })(""", css, ");"].}
-      # Hand over from the optimistic override to the authored CSS, now.
-      #
-      # The override exists to cover the gap between moving a control and the
-      # source being able to show the result. The swap above just closed that
-      # gap, so from here the override is not a bridge -- it is an inline
-      # `!important` sitting on top of the real stylesheet, outranking it and
-      # showing the requested value whether or not the CSS produces it.
-      #
-      # Removing it here is safe in a way it was NOT before this existed: the
-      # frame on screen has already had the new stylesheet swapped in, so what
-      # is revealed underneath is the same value, not the pre-edit one. When it
-      # is NOT the same value, that is a declaration the cascade discards and
-      # showing it immediately is the entire point.
-      {.emit: """
-        (function () {
-          const store = window.__isonimPreviewOverrides;
-          window.__isonimPreviewOverrides = {};
-          if (!store) return;
-          Object.keys(store).forEach(function (id) {
-            const props = store[id] || {};
-            Object.keys(props).forEach(function (property) {
-              window.dispatchEvent(new CustomEvent(
-                'isonim-preview-apply-style',
-                { detail: { id: id, property: property, value: '' } }));
-            });
-          });
-        })();
-      """.}
 
   # Selection restore, on its own. Reads a string memo and an int, so a click
   # costs one ElementRef copy rather than a rebuild of the whole document.
