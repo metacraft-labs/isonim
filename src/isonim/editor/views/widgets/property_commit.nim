@@ -166,7 +166,7 @@ proc firstDiagnosticMessage(diagnostics: seq[PropertyEditDiagnostic];
       return d.message
   fallback
 
-proc applyPreviewStyle(elementId, domPath, property, value: string) =
+proc applyPreviewStyle*(elementId, domPath, property, value: string) =
   ## Show the change in the preview, now.
   ##
   ## Without this the editor accepted a value, staged it, wrote it to source --

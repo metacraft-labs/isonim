@@ -11,6 +11,7 @@ import isonim/editor/viewmodels
 import isonim/editor/types
 import isonim/editor/views/choice_row
 import isonim/editor/views/preview_mount
+import isonim/editor/views/widgets/property_commit
 import isonim/editor/views/scene_graph_walk
 import isonim/editor/style_provenance_decode
 
@@ -5093,6 +5094,32 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
                        mountState, srcdocChanged)
     r.setStyle(projectFrame, "min-height", "320px")
     r.setStyle(projectFrame, "overflow", "hidden")
+
+  # Undo and redo change what the file should say; this is what makes the
+  # preview follow.
+  #
+  # The ViewModels cannot touch a DOM, so `undoCssPropertyEdit` publishes a
+  # request and this applies it -- through `applyPreviewStyle`, the same path a
+  # fresh edit takes, so an undone value lands on the rule the cascade uses or
+  # the cell it came from exactly as the original did.
+  when defined(js):
+    var lastPreviewRequest = 0
+    createRenderEffect proc() =
+      let request = vm.inspector.previewValueRequest.val
+      if request.generation == 0 or request.generation == lastPreviewRequest:
+        return
+      lastPreviewRequest = request.generation
+      applyPreviewStyle(request.elementId, request.domPath,
+                        request.property, request.value)
+      # The write that follows must not reload the preview out from under it,
+      # for the same reason a commit sets this.
+      vm.previewShowsPendingEdits.val = true
+      # And schedule the write. An undo that only moves the preview and the
+      # inspector leaves the file saying what the user just took back -- which
+      # is how this looked before: the value returned to 40px on screen while
+      # the stylesheet still read 55px, and the next rebuild would have put it
+      # back. Undoing after a save is itself an edit, so it saves like one.
+      vm.noteCommitForAutoSave()
 
   # Selection restore, on its own. Reads a string memo and an int, so a click
   # costs one ElementRef copy rather than a rebuild of the whole document.

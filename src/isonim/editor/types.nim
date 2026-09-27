@@ -1258,6 +1258,14 @@ type
     sourceEdit*: SourceEditPlan
     beforeElement*: ElementRef
     afterElement*: ElementRef
+    saved*: bool
+      ## Has this edit reached disk?
+      ##
+      ## Recorded per transaction rather than inferred from the journal,
+      ## because the journal is keyed by edit SLOT: a saved `padding` edit and
+      ## a later pending `padding` edit occupy the same slot, so asking "is
+      ## there a pending plan matching this one" said yes for both and
+      ## Revert threw away work the user had already saved.
 
   AgentEditProposalStatus* = enum
     aepsProposed

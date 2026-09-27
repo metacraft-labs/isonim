@@ -78,9 +78,28 @@ type
     selectedItem*: Signal[int]  ## Index into canvasItems (-1 = none)
     hoveredItem*: Signal[int]
 
+  PreviewValueRequest* = object
+    ## "Put this value on the element in the preview."
+    ##
+    ## Undo and redo change what the file should say, and the thing the user is
+    ## looking at has to follow -- but the ViewModels cannot touch a DOM, and
+    ## the code that can (`views/widgets/property_commit`) is a per-row widget
+    ## with no business being driven by a global command. So the VM publishes
+    ## the request and the preview view applies it, through exactly the same
+    ## path a fresh edit takes.
+    ##
+    ## `generation` is what makes a repeat fire. Undoing and redoing the same
+    ## property lands on values that alternate, and a signal comparing equal
+    ## payloads would drop every second one.
+    generation*: int
+    elementId*, domPath*, property*, value*: string
+
   InspectorVM* = ref object of ViewModel
     designSystemSchema*: Signal[DesignSystemSchema]
     selectedElement*: Signal[ElementRef]
+    previewValueRequest*: Signal[PreviewValueRequest]
+      ## Set by undo/redo; applied by the preview view. See
+      ## `PreviewValueRequest`.
     breadcrumbTrail*: Signal[seq[BreadcrumbEntry]]
       ## The status-bar element path. Display state, not selection:
       ## it is the ancestor chain of the last selection that arrived
@@ -3388,6 +3407,10 @@ proc panVectorCanvas*(editor: EditorVM; dx, dy: float) =
   editor.vectorEditor.panX.val = editor.vectorEditor.panX.val + dx
   editor.vectorEditor.panY.val = editor.vectorEditor.panY.val + dy
 
+proc discardCssPropertyEdits*(inspector: InspectorVM)
+  ## Forward-declared: `runEditorCommand`'s Revert arm delegates to it, and it
+  ## is defined further down with the rest of the edit-history machinery.
+
 proc runEditorCommand*(editor: EditorVM;
     kind: EditorCommandKind): EditorCommandState {.discardable.} =
   ## Dispatch a framework-owned editor command with deterministic state.
@@ -3412,9 +3435,13 @@ proc runEditorCommand*(editor: EditorVM;
   of eckApply:
     discard
   of eckRevert, eckDiscard:
-    let stack = editor.inspector.undoStack.val
-    if stack.len > 0:
-      editor.inspector.selectedElement.val = stack[0].beforeElement
+    # The inspector's half is `discardCssPropertyEdits`, not a second copy of
+    # it. This block used to inline the same rule -- revert to
+    # `stack[0].beforeElement`, then clear both stacks -- and the two drifted
+    # apart the moment the history started surviving saves: the inlined copy
+    # kept reverting to the start of the SESSION and throwing away edits that
+    # were already on disk.
+    editor.inspector.discardCssPropertyEdits()
     let foundationStack = editor.foundations.undoStack.val
     if foundationStack.len > 0:
       var updatedTokens = editor.foundations.tokens.val
@@ -3441,9 +3468,6 @@ proc runEditorCommand*(editor: EditorVM;
     let vectorStack = editor.vectorEditor.undoStack.val
     if vectorStack.len > 0:
       editor.vectorEditor.document.val = vectorStack[0].beforeDocument
-    editor.inspector.clearSourceEditJournal()
-    editor.inspector.undoStack.val = @[]
-    editor.inspector.redoStack.val = @[]
     editor.foundations.undoStack.val = @[]
     editor.foundations.redoStack.val = @[]
     editor.foundations.impacts.val = @[]
@@ -4208,7 +4232,47 @@ proc applyPendingSourceEdits*(inspector: InspectorVM;
   if remaining.len == 0:
     inspector.clearSourceEditJournal()
 
+func invertPlan(plan: SourceEditPlan): SourceEditPlan =
+  ## The edit that puts the file back the way it was.
+  ##
+  ## Same target, values swapped. `expectedOldValue` becomes what the original
+  ## edit wrote, because that is what is on disk now -- the conflict check has
+  ## to be told the truth about the state it is overwriting, or an undo would
+  ## be refused as a stale write.
+  result = plan
+  result.oldValue = plan.newValue
+  result.newValue = plan.oldValue
+  result.previewBefore = plan.previewAfter
+  result.previewAfter = plan.previewBefore
+  result.expectedOldValue = plan.newValue
+
+proc requestPreviewValue(inspector: InspectorVM; element: ElementRef;
+                         property, value: string) =
+  ## Ask the preview view to show `value`. See `PreviewValueRequest`.
+  let elementId =
+    if element.id.len > 0: element.id
+    elif element.sourceKey.len > 0: element.sourceKey
+    else: element.schemaKey
+  if elementId.len == 0 or property.len == 0: return
+  inspector.previewValueRequest.val = PreviewValueRequest(
+    generation: inspector.previewValueRequest.val.generation + 1,
+    elementId: elementId, domPath: element.domPath,
+    property: property, value: value)
+
 proc undoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
+  ## Walk one edit back: in the model, in the preview, and in the file.
+  ##
+  ## All three, because undoing only the first two is what "Ctrl+Z did nothing"
+  ## looked like from the outside. The previous implementation restored the
+  ## element snapshot and dropped the edit from the journal, which is a correct
+  ## undo ONLY while the edit is still pending -- and under auto-save it never
+  ## is. The value stayed on disk and stayed on screen.
+  ##
+  ## Journalling the inverse works in both cases. The journal is keyed by edit
+  ## slot, so when the original edit is still pending the inverse replaces it
+  ## and nothing is ever written; when it has already been saved, the inverse
+  ## is a new edit that auto-save writes, which is exactly what undoing after a
+  ## save means.
   let stack = inspector.undoStack.val
   if stack.len == 0:
     return false
@@ -4220,10 +4284,22 @@ proc undoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
       CSSPropertyEditTransaction] =
     result = prev
     result.add txn
-  inspector.removeJournaledSourceEdit(txn.sourceEdit)
+  # An edit that has not been written yet is undone by dropping it -- the file
+  # never changed, so there is nothing to put back and journalling an inverse
+  # would queue a pointless write. Once it HAS been written, the inverse is the
+  # only way back, and auto-save will carry it to disk.
+  if not txn.saved:
+    inspector.removeJournaledSourceEdit(txn.sourceEdit)
+  else:
+    inspector.journalSourceEdit(txn.sourceEdit.invertPlan())
+  inspector.requestPreviewValue(txn.beforeElement, txn.sourceEdit.property,
+                                txn.sourceEdit.oldValue)
   true
 
 proc redoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
+  ## The same, forwards. Symmetric with `undoCssPropertyEdit` on purpose: redo
+  ## is an edit like any other, so it journals the original plan and shows the
+  ## value it restores.
   let stack = inspector.redoStack.val
   if stack.len == 0:
     return false
@@ -4236,20 +4312,54 @@ proc redoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
     result = prev
     result.add txn
   inspector.journalSourceEdit(txn.sourceEdit)
+  inspector.requestPreviewValue(txn.afterElement, txn.sourceEdit.property,
+                                txn.sourceEdit.newValue)
   true
 
 proc discardCssPropertyEdits*(inspector: InspectorVM) =
+  ## Throw the work away: the element, the journal AND the history.
+  ##
+  ## Discard means "drop the work that is not on disk", so it reverts to where
+  ## the first UNSAVED edit found the element -- not to where the session
+  ## started. Those were the same thing only while saving cleared the history;
+  ## now that it does not, reverting to `stack[0]` would silently throw away
+  ## edits the user had already saved.
+  ##
+  ## The saved entries stay in the history, because they are still things the
+  ## user did and still things Ctrl+Z should walk back through. What is
+  ## discarded stops being redoable, which is what discarding it means.
   let stack = inspector.undoStack.val
-  if stack.len > 0:
-    inspector.selectedElement.val = stack[0].beforeElement
+  var firstUnsaved = -1
+  for idx, txn in stack:
+    if not txn.saved:
+      firstUnsaved = idx
+      break
+  if firstUnsaved >= 0:
+    inspector.selectedElement.val = stack[firstUnsaved].beforeElement
+    inspector.undoStack.val = stack[0 ..< firstUnsaved]
   inspector.clearSourceEditJournal()
-  inspector.undoStack.val = @[]
   inspector.redoStack.val = @[]
 
 proc markCssPropertyEditsSaved*(inspector: InspectorVM) =
+  ## The journal is what is UNSAVED, so a successful save empties it.
+  ##
+  ## The undo and redo stacks are not, and they used to be cleared here too.
+  ## That was survivable while saving was something a person chose to do; it
+  ## stopped being survivable the moment saving became automatic, because
+  ## auto-save fires 900ms after every edit and a person reaching for Ctrl+Z
+  ## always arrives too late. The command was refused with "There is no edit to
+  ## undo" and nothing happened -- which is not what undo does in any editor
+  ## anyone has used.
+  ##
+  ## Undo is independent of save. It walks back through what the user did; save
+  ## is a separate concern about what is on disk, and undoing after a save is
+  ## simply another edit that will itself be saved.
   inspector.clearSourceEditJournal()
-  inspector.undoStack.val = @[]
-  inspector.redoStack.val = @[]
+  inspector.undoStack.update proc(prev: seq[CSSPropertyEditTransaction]): seq[
+      CSSPropertyEditTransaction] =
+    result = prev
+    for i in 0 ..< result.len:
+      result[i].saved = true
 
 proc actualConflictMatchesPlan(actual: CSSSourceConflict;
     plan: SourceEditPlan): bool =
@@ -9914,7 +10024,17 @@ proc createInspectorVM*(designSystemSchema: Signal[DesignSystemSchema] = nil;
   )
 
   let isDirty = createMemo[bool](proc(): bool =
-    pendingSourceEdits.val.len > 0 or undoStack.val.len > 0
+    ## UNSAVED work, and nothing else.
+    ##
+    ## This used to be "unsaved or has history", which fused two different
+    ## questions and is why saving had to clear the undo stack: with the stack
+    ## counting towards dirtiness, a saved document that still remembered what
+    ## you did would have claimed to be unsaved forever.
+    ##
+    ## They are not the same thing. The journal is what is not on disk; the
+    ## undo stack is what you did this session. Saving empties the first and
+    ## must not touch the second.
+    pendingSourceEdits.val.len > 0
   )
 
   let denseRowContract = createMemo[InspectorDenseRowContract](
@@ -9959,6 +10079,7 @@ proc createInspectorVM*(designSystemSchema: Signal[DesignSystemSchema] = nil;
   InspectorVM(
     designSystemSchema: schemaSignal,
     selectedElement: selectedElement,
+    previewValueRequest: createSignal(PreviewValueRequest()),
     breadcrumbTrail: createSignal[seq[BreadcrumbEntry]](@[]),
     breadcrumbWalkId: createSignal(""),
     layers: layers,

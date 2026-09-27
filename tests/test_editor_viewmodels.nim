@@ -1034,7 +1034,13 @@ suite "Editor ViewModels (M26 source-backed CSS property editors)":
         true)
       check savedPlans.len == 1
       check vm.inspector.pendingSourceEdits.val.len == 0
-      check vm.inspector.undoStack.val.len == 0
+      # The history SURVIVES the save. Undo is independent of it: saving is
+      # about what is on disk, and a saved document still remembers what you
+      # did. Clearing the stack here is what made Ctrl+Z do nothing once
+      # auto-save started firing 900ms after every edit.
+      check vm.inspector.undoStack.val.len == 1
+      # ...and the document is clean, because "dirty" means unsaved, not
+      # "has history".
       check not vm.inspector.isDirty.val
 
       let local = vm.editCssProperty("padding", "32px", pesLocal)
@@ -1360,13 +1366,18 @@ suite "Editor ViewModels (M26 source-backed CSS property editors)":
       check savedPlans.anyIt(it.property == "border-radius")
       check savedPlans.anyIt(it.property == "transition-timing-function")
       check vm.inspector.pendingSourceEdits.val.len == 0
-      check vm.inspector.undoStack.val.len == 0
+      # Saving empties the journal and leaves the history alone; see
+      # `markCssPropertyEditsSaved`.
+      check vm.inspector.undoStack.val.len == 7
 
       discard vm.editCssProperty("padding", "18px", pesLocal)
 
       vm.inspector.discardCssPropertyEdits()
       check vm.inspector.pendingSourceEdits.val.len == 0
-      check vm.inspector.undoStack.val.len == 0
+      # Only the UNSAVED edit is discarded. The seven already written stay
+      # undoable, because discarding unsaved work is not the same as forgetting
+      # what was saved.
+      check vm.inspector.undoStack.val.len == 7
       check vm.inspector.selectedElement.val.properties.anyIt(
         it.name == "padding" and it.value == "16px")
       dispose()
@@ -2502,7 +2513,10 @@ suite "Editor ViewModels (M27 workspace file writes)":
       let reverted = vm.runEditorCommand(eckRevert)
       check reverted.status == ecsSucceeded
       check vm.inspector.pendingSourceEdits.val.len == 0
-      check vm.inspector.undoStack.val.len == 0
+      # These four edits were SAVED above, so Revert has nothing unsaved to
+      # throw away and the history stands. Reverting is about work that is not
+      # on disk; what is on disk is walked back with Undo instead.
+      check vm.inspector.undoStack.val.len == 4
       check vm.workspaceEditStage.val == wesClean
       dispose()
 
