@@ -7360,3 +7360,123 @@ suite "Editor ViewModels (the selection-header actions)":
       vm.toggleSelectionVisible()
       check vm.inspector.selectionVisible.val == start
       dispose()
+
+suite "Editor ViewModels (refreshing project data without losing the session)":
+  ## The editor has to pick up a source change from ANY cause -- its own
+  ## write, a hand edit, another agent, a `git checkout` -- and redraw. The
+  ## only way to refresh what it knew was `applyWorkspace`, which also
+  ## resets the selected story, the selected element, the selected token,
+  ## every search filter and every undo stack. So picking up a change meant
+  ## losing your place, which is why nothing picked up changes.
+  ##
+  ## `loadProjectData` is the half that is safe to re-run.
+
+  proc twoStoryWorkspace(storyName: string;
+      tokens: seq[FoundationTokenEntry] = @[]): EditorWorkspace =
+    newEditorWorkspace(
+      title = "refresh",
+      storyGroups = @[StoryGroup(name: "G", items: @[
+        StoryItem(name: storyName, kind: skComponent, group: "G"),
+        StoryItem(name: "Second", kind: skComponent, group: "G")])],
+      foundationTokens = tokens,
+      permissions = EditorWorkspacePermissions(readSource: true))
+
+  test "re-loading project data keeps the selected story":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM(twoStoryWorkspace("First"))
+      discard vm.selectStory(StoryRef(group: "G", name: "Second",
+                                      kind: skComponent))
+      check vm.selectedStory.val.name == "Second"
+
+      # The project changed on disk: the first story was renamed.
+      vm.loadProjectData(twoStoryWorkspace("Renamed"))
+
+      check vm.sidebar.groups.val[0].items[0].name == "Renamed"
+      check vm.selectedStory.val.name == "Second"
+      dispose()
+
+  test "re-loading project data keeps the selected element":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM(twoStoryWorkspace("First"))
+      discard vm.selectInspectorElement(taglineElement())
+      let selected = vm.inspector.selectedElement.val.id
+      check selected.len > 0
+
+      vm.loadProjectData(twoStoryWorkspace("First"))
+      check vm.inspector.selectedElement.val.id == selected
+      dispose()
+
+  test "re-loading project data keeps section expansion":
+    ## Expansion is a working state the user built up by clicking. A source
+    ## change is not a reason to collapse it.
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM(twoStoryWorkspace("First"))
+      vm.inspector.toggleSectionExpanded(isSource)
+      let expanded = vm.inspector.expandedSections.val
+
+      vm.loadProjectData(twoStoryWorkspace("First"))
+      check vm.inspector.expandedSections.val == expanded
+      dispose()
+
+  test "re-loading project data keeps staged edits":
+    ## A rebuild landing between an edit and its save must not silently
+    ## discard the edit -- that is data loss with no message.
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("refresh-pending")
+      defer: removeDir(root)
+      let file = root / "styles.nim"
+      atomicWrite(file, "const structureCssText* = \"\"\"\n" &
+        "  .tagline { margin-bottom:30px; }\n\"\"\"\n")
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "refresh", storyGroups = cssStoryGroups(),
+        initialStory = some(cssStory),
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true),
+        editAdapter = cssAdapter(file), sourceAdapterReady = true))
+      discard vm.selectInspectorElement(taglineElement())
+      check vm.commitInspectorValue("margin-bottom", "40px",
+        sskLocalInstance).ok
+      check vm.inspector.pendingSourceEdits.val.len == 1
+
+      vm.loadProjectData(newEditorWorkspace(
+        title = "refresh", storyGroups = cssStoryGroups(),
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true),
+        editAdapter = cssAdapter(file), sourceAdapterReady = true))
+
+      check vm.inspector.pendingSourceEdits.val.len == 1
+      dispose()
+
+  test "applyWorkspace still resets the session, because switching should":
+    ## The destructive half is not a bug -- opening a different workspace
+    ## SHOULD forget the old one's selection. The two just needed separating.
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM(twoStoryWorkspace("First"))
+      discard vm.selectStory(StoryRef(group: "G", name: "Second",
+                                      kind: skComponent))
+      check vm.selectedStory.val.name == "Second"
+      vm.applyWorkspace(twoStoryWorkspace("First"))
+      check vm.selectedStory.val.name != "Second"
+      dispose()
+
+  test "re-loading picks up new stories, tokens and permissions":
+    ## The point of the exercise: what the project says HAS to change.
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM(twoStoryWorkspace("First"))
+      check vm.foundations.tokens.val.len == 0
+      check not vm.workspacePermissions.val.writeSource
+
+      var grown = twoStoryWorkspace("First", tokens = @[
+        FoundationTokenEntry(key: "sys.color.text.primary", value: "#111")])
+      grown.permissions = EditorWorkspacePermissions(readSource: true,
+        writeSource: true)
+      grown.storyGroups = @[StoryGroup(name: "G", items: @[
+        StoryItem(name: "First", kind: skComponent, group: "G"),
+        StoryItem(name: "Second", kind: skComponent, group: "G"),
+        StoryItem(name: "Third", kind: skComponent, group: "G")])]
+      vm.loadProjectData(grown)
+
+      check vm.sidebar.groups.val[0].items.len == 3
+      check vm.foundations.tokens.val.len == 1
+      check vm.workspacePermissions.val.writeSource
+      dispose()

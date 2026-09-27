@@ -783,6 +783,97 @@ proc exposeWindowEditorHandle*(vm: EditorVM) =
   let cbPending = proc(): int =
     vm.inspector.pendingSourceEdits.val.len
 
+  # ---- Source changed on disk: rebuild arrived, redraw ------------------ #
+  #
+  # The dev server watches the project, rebuilds when anything changes and
+  # broadcasts over the same SSE channel isonim's HMR uses
+  # (`/__isonim/hmr`, `update` / `error`). This is the client half.
+  #
+  # Why a reload rather than an in-place swap: grip's preview HTML is
+  # produced by the project's own render code COMPILED INTO this bundle, so
+  # reaching a changed `styles.nim` means a new bundle, not new data. The
+  # honest version of "apply the new bundle" is therefore to load it, and
+  # `applyBundleByScriptTag` would re-run this module's top level and mount a
+  # second editor over the first.
+  #
+  # What makes the reload acceptable is that the session survives it. The
+  # story is already in the URL; the element, the expanded sections and the
+  # scroll positions are carried across in `sessionStorage`. `loadProjectData`
+  # exists so that the day the swap IS in-place, the refresh can skip the
+  # reload entirely and keep even the undo stacks.
+  when defined(js):
+    let selectedElementId = proc(): cstring =
+      vm.inspector.selectedElement.val.id.cstring
+    let restoreElement = proc(id: cstring) =
+      if id.len > 0:
+        discard vm.selectInspectorElementById($id)
+    let buildFailed = proc(message: cstring) =
+      vm.workspaceEditStage.val = wesFailed
+      vm.workspaceEditDiagnostics.val = @[WorkspaceEditDiagnostic(
+        kind: wedCompileFailed,
+        message: "The project failed to rebuild: " & $message)]
+    {.emit: ["""
+      (function (currentElement, restoreElement, buildFailed) {
+        const KEY = 'isonim:editor:session';
+
+        // Put it back. Runs on every load, not only after a rebuild, so a
+        // refresh the user triggers themselves keeps their place too.
+        try {
+          const raw = window.sessionStorage.getItem(KEY);
+          if (raw) {
+            window.sessionStorage.removeItem(KEY);
+            const saved = JSON.parse(raw);
+            // After the first render: the rows have to exist to be scrolled
+            // and the element has to be in the tree to be selected.
+            setTimeout(function () {
+              if (saved.element) restoreElement(saved.element);
+              (saved.scroll || []).forEach(function (entry) {
+                const el = document.querySelector(entry.selector);
+                if (el) el.scrollTop = entry.top;
+              });
+            }, 600);
+          }
+        } catch (e) {}
+
+        function rememberSession() {
+          try {
+            const scroll = ['[data-scene-graph-rows]',
+                            '[data-sidebar-story-tree]',
+                            '[data-inspector-section-list]']
+              .map(function (selector) {
+                const el = document.querySelector(selector);
+                return el ? { selector: selector, top: el.scrollTop } : null;
+              })
+              .filter(Boolean);
+            window.sessionStorage.setItem(KEY, JSON.stringify({
+              element: String(currentElement() || ''),
+              scroll: scroll
+            }));
+          } catch (e) {}
+        }
+
+        let source = null;
+        function connect() {
+          try {
+            source = new EventSource('/__isonim/hmr');
+          } catch (e) {
+            return;
+          }
+          source.addEventListener('update', function () {
+            rememberSession();
+            window.location.reload();
+          });
+          source.addEventListener('error', function (event) {
+            // A Nim error is the single most useful thing a person can see
+            // here. Swallowing it makes a broken build look like a hung
+            // editor -- the change lands, nothing moves, nothing says why.
+            const text = (event && event.data) ? String(event.data) : '';
+            if (text) buildFailed(text);
+          });
+        }
+        connect();
+      })(""", selectedElementId, ", ", restoreElement, ", ", buildFailed, ");"].}
+
   # Auto-save. The VM bumps a generation when a commit stages an edit; the
   # debounce lives here because the VM has no timer and should not grow one
   # -- a commit that wrote immediately would write once per keystroke in a

@@ -258,19 +258,48 @@ proc loadBindingSidecar*(workspace: var EditorWorkspace; raw: string) =
   workspace.variableBindings = parsed.bindings
   workspace.variableBindingHistory = parsed.history
 
-proc applyWorkspace*(vm: EditorVM; workspace: EditorWorkspace) =
-  ## Load project workspace data into an existing editor VM.
+proc loadProjectData*(vm: EditorVM; workspace: EditorWorkspace) =
+  ## Everything in the VM that comes from the PROJECT, and nothing that
+  ## comes from the session.
+  ##
+  ## Split out of `applyWorkspace` so a source change can refresh what the
+  ## editor knows without discarding what the user is doing. `applyWorkspace`
+  ## resets the selected story, the selected element, the selected token, the
+  ## search filters and every undo stack -- correct when you are switching to
+  ## a different workspace, and catastrophic as a response to somebody saving
+  ## a file. Re-running it was the only way to pick up a change, so picking up
+  ## a change meant losing your place.
+  ##
+  ## Safe to call repeatedly. Nothing here reads the current session, so the
+  ## result depends only on `workspace`.
   vm.sidebar.groups.val = workspace.storyGroups
   vm.storyboard.canvasItems.val = workspace.canvasItems
   vm.storyboard.connections.val = workspace.connections
   vm.flowPlayer.steps.val = workspace.flowSteps
   vm.vectorEditor.symbols.val = workspace.vectorSymbols
+  vm.foundations.tokens.val = workspace.foundationTokens
+  vm.variants.variants.val = workspace.componentVariants
+  vm.designSystemSchema.val = workspace.designSystemSchema
+  vm.preview.hook = workspace.previewHook
+  vm.workspacePermissions.val = workspace.permissions
+  vm.workspaceEditAdapter = workspace.editAdapter
+  vm.sourceAdapterReady.val = workspace.sourceAdapterReady or
+    not workspace.editAdapter.isNil
+  vm.allowedPlatforms = workspace.allowedPlatforms
+  vm.chat.configureAgentAdapters(workspace.agentPromptAdapter,
+                                  workspace.agentCancelAdapter,
+                                  workspace.agentBackend)
+
+proc applyWorkspace*(vm: EditorVM; workspace: EditorWorkspace) =
+  ## Load project data AND reset the session. Use when the editor is opening
+  ## a workspace; use `loadProjectData` when the same workspace changed on
+  ## disk.
+  vm.loadProjectData(workspace)
   vm.vectorEditor.document.val = VectorDocument()
   vm.vectorEditor.diagnostics.val = @[]
   vm.vectorEditor.undoStack.val = @[]
   vm.vectorEditor.redoStack.val = @[]
   vm.vectorEditor.adapter.val = selectedVectorAdapter()
-  vm.foundations.tokens.val = workspace.foundationTokens
   vm.foundations.selectedCategory.val = ftkColorPalette
   vm.foundations.storyCategories.val = {}
   vm.foundations.selectedTokenKey.val =
@@ -281,12 +310,9 @@ proc applyWorkspace*(vm: EditorVM; workspace: EditorWorkspace) =
   vm.foundations.diagnostics.val = @[]
   vm.foundations.undoStack.val = @[]
   vm.foundations.redoStack.val = @[]
-  vm.variants.variants.val = workspace.componentVariants
   vm.variants.selectedVariant.val = -1
   vm.variants.diagnostics.val = @[]
   vm.variants.stateDiagnostics.val = @[]
-  vm.designSystemSchema.val = workspace.designSystemSchema
-  vm.preview.hook = workspace.previewHook
   vm.selectedStory.val = StoryRef()
   vm.storyboard.selectedItem.val = -1
   vm.inspector.selectedElement.val = ElementRef()
@@ -325,17 +351,9 @@ proc applyWorkspace*(vm: EditorVM; workspace: EditorWorkspace) =
   vm.chat.toolCalls.val = @[]
   vm.chat.stopReason.val = ""
   vm.chat.lastPromptContext.val = AgentPromptContext()
-  vm.chat.configureAgentAdapters(workspace.agentPromptAdapter,
-                                  workspace.agentCancelAdapter,
-                                  workspace.agentBackend)
-  vm.workspacePermissions.val = workspace.permissions
-  vm.workspaceEditAdapter = workspace.editAdapter
-  vm.sourceAdapterReady.val = workspace.sourceAdapterReady or
-    not workspace.editAdapter.isNil
   vm.flowPlayer.currentStep.val = 0
   vm.activeView.val = workspace.initialView
   vm.inspector.activeSection.val = workspace.initialInspectorSection
-  vm.allowedPlatforms = workspace.allowedPlatforms
   # M1: when a project restricts platforms and its declared active platform is
   # not in the allow-list, fall back to the first allowed backend in canonical
   # order (the PreviewBackend enum order matches `backendsForLeftEdge`).
