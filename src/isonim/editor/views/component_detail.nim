@@ -867,6 +867,18 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
 
   var lastProjectSrcdoc = ""
   var lastRestoredDetailSelection = ""
+  # The selected element is read in its own effect below rather than in the
+  # srcdoc effect, for the reason spelled out in component_edit.nim: this
+  # effect builds the project's whole preview document, and on the JS backend
+  # a Nim `string` is an array of char codes, so re-running it for a click
+  # copied and compared a ~700_000-element array. Same bug, same shape, same
+  # fix -- the two views share the document rule via `detailPreviewDocument`,
+  # and now they share the dependency rule too.
+  let detailSelectedElementId = createMemo(proc(): string =
+    vm.inspector.selectedElement.val.id)
+  # Bumped when the frame is actually reloaded, so a restore still happens
+  # even though the selected id did not change.
+  let detailSrcdocGeneration = createSignal(0)
   when defined(js):
     let bridgeBinding = newBridgeBinding()
   createRenderEffect proc() =
@@ -920,11 +932,13 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
           "\n<!-- isonim-reload:" & $reloadGeneration & " -->"
       else:
         ""
-    var projectSrcdocChanged = false
-    if nextProjectSrcdoc != lastProjectSrcdoc:
+    # Length first: `!=` on a Nim string walks two char arrays element by
+    # element, and two documents of different length cannot be equal.
+    if nextProjectSrcdoc.len != lastProjectSrcdoc.len or
+        nextProjectSrcdoc != lastProjectSrcdoc:
       r.setAttribute(projectFrame, "srcdoc", nextProjectSrcdoc)
       lastProjectSrcdoc = nextProjectSrcdoc
-      projectSrcdocChanged = true
+      detailSrcdocGeneration.val = detailSrcdocGeneration.val + 1
     r.setStyle(projectFrame, "width", "100%")
     r.setStyle(projectFrame, "min-height", "1px")
     r.setStyle(projectFrame, "overflow", "hidden")
@@ -933,11 +947,6 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
     # gone; without this the Layers panel keeps showing a selection that the
     # preview no longer draws. Guarded on a CHANGE in either the document or
     # the id so an unrelated re-render does not re-enter the bridge.
-    let detailSelectedId = vm.inspector.selectedElement.val.id
-    if detailSelectedId.len > 0 and
-       (projectSrcdocChanged or detailSelectedId != lastRestoredDetailSelection):
-      lastRestoredDetailSelection = detailSelectedId
-      r.restorePreviewSelection(projectFrame, detailSelectedId)
     # RS-M11: iframe stays for Web, canvas takes over for non-Web.
     r.setStyle(projectFrame, "display",
                if useCanvas: "none" else: "block")
@@ -1116,6 +1125,16 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
   # implementation lives in the shared `canvas_mount` helper so
   # page_preview.nim / foundations_page.nim get the same overlay
   # behaviour without copy-pasting.
+  # Selection restore, split out of the srcdoc effect above: reads a string
+  # memo and an int, so a click no longer rebuilds the preview document.
+  createRenderEffect proc() =
+    let detailSelectedId = detailSelectedElementId.val
+    let generation = detailSrcdocGeneration.val
+    let stamp = detailSelectedId & "@" & $generation
+    if detailSelectedId.len > 0 and stamp != lastRestoredDetailSelection:
+      lastRestoredDetailSelection = stamp
+      r.restorePreviewSelection(projectFrame, detailSelectedId)
+
   bindCanvasOverlayEffect(r, vm, canvasMnt)
 
   # === Props / API Table ===

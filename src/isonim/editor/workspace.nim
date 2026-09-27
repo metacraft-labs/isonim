@@ -37,6 +37,11 @@ type
     initialVectorSymbol*: Option[int]
     initialReviewBaseline*: Option[seq[Violation]]
     previewHook*: ProjectPreviewHook
+    responsiveBreakpoints*: seq[ResponsiveBreakpoint]
+      ## The width-based `@media` blocks this project's stylesheet defines,
+      ## narrowest first. Empty means the project is not responsive, or has
+      ## not opted in, and the editor then says nothing about breakpoints
+      ## rather than inventing one.
     agentPromptAdapter*: AgentPromptAdapter
     agentCancelAdapter*: AgentCancelAdapter
     agentBackend*: AgentBackendSelection
@@ -123,6 +128,7 @@ proc newEditorWorkspace*(title: string;
                           initialVectorSymbol = none(int);
                           initialReviewBaseline = none(seq[Violation]);
                           previewHook: ProjectPreviewHook = defaultPreviewHook;
+                          responsiveBreakpoints: seq[ResponsiveBreakpoint] = @[];
                           agentPromptAdapter: AgentPromptAdapter = nil;
                           agentCancelAdapter: AgentCancelAdapter = nil;
                           agentBackend = absUnconfigured;
@@ -158,6 +164,7 @@ proc newEditorWorkspace*(title: string;
     initialVectorSymbol: initialVectorSymbol,
     initialReviewBaseline: initialReviewBaseline,
     previewHook: previewHook,
+    responsiveBreakpoints: responsiveBreakpoints,
     agentPromptAdapter: agentPromptAdapter,
     agentCancelAdapter: agentCancelAdapter,
     agentBackend: agentBackend,
@@ -286,6 +293,7 @@ proc loadProjectData*(vm: EditorVM; workspace: EditorWorkspace) =
   vm.variants.variants.val = workspace.componentVariants
   vm.designSystemSchema.val = workspace.designSystemSchema
   vm.preview.hook = workspace.previewHook
+  vm.responsiveBreakpoints.val = workspace.responsiveBreakpoints
   vm.workspacePermissions.val = workspace.permissions
   vm.workspaceEditAdapter = workspace.editAdapter
   vm.sourceAdapterReady.val = workspace.sourceAdapterReady or
@@ -294,6 +302,13 @@ proc loadProjectData*(vm: EditorVM; workspace: EditorWorkspace) =
   vm.chat.configureAgentAdapters(workspace.agentPromptAdapter,
                                   workspace.agentCancelAdapter,
                                   workspace.agentBackend)
+  # Last, and after `preview.hook`: every assignment above writes a SIGNAL, so
+  # the reactive graph already knows about it. `preview.hook` is a plain field
+  # holding a closure, so replacing it changes what the preview would render
+  # without changing anything the preview memo tracked. This is the poke that
+  # tells it. It goes last so that a recomputation triggered here sees every
+  # other field already updated.
+  vm.preview.sourceGeneration.val = vm.preview.sourceGeneration.val + 1
 
 proc applyWorkspace*(vm: EditorVM; workspace: EditorWorkspace) =
   ## Load project data AND reset the session. Use when the editor is opening

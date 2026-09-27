@@ -243,6 +243,16 @@ type
   ProjectPreviewVM* = ref object of ViewModel
     hook*: ProjectPreviewHook
     current*: Memo[ProjectPreview]
+    sourceGeneration*: Signal[int]
+      ## Bumped when the PROJECT's code is replaced under a running editor --
+      ## a hot bundle swap. `hook` is a closure compiled from project source,
+      ## and `current` reads it as a plain field, so replacing the closure
+      ## cannot invalidate the memo on its own: nothing the memo tracked
+      ## changed. This signal is what the memo tracks in order to be told.
+      ##
+      ## It is deliberately not a hash of the project's output. The editor
+      ## cannot know whether a new bundle renders differently without running
+      ## it, and running it is the thing being triggered.
 
   FlowPlayerVM* = ref object of ViewModel
     steps*: Signal[seq[FlowStep]]
@@ -301,6 +311,26 @@ type
       ## Empty set = ALL platforms (default). When non-empty, the
       ## left-edge backend strip only surfaces the listed backends.
     viewport*: Signal[PreviewViewport]
+    responsiveBreakpoints*: Signal[seq[ResponsiveBreakpoint]]
+      ## Supplied by the workspace; see `EditorWorkspace.responsiveBreakpoints`.
+    previewRenderedWidth*: Signal[int]
+      ## The width in CSS pixels the preview iframe is ACTUALLY laid out at,
+      ## or 0 before anything has measured it.
+      ##
+      ## Not the same as `viewport.width`, and the difference is not a detail.
+      ## `viewport` is the chip the user picked -- Desktop is 1440 -- while the
+      ## iframe is however wide the centre column leaves it, measured at 840.
+      ## Media queries are evaluated by the browser against the real width, so
+      ## at "Desktop" this project renders inside its own
+      ## `@media (max-width:1080px)` block. Any question of the form "which
+      ## rule is deciding this property" has to be asked at the width the
+      ## browser is using, or the answer describes a page nobody is looking at.
+    activeBreakpoint*: Memo[ResponsiveBreakpoint]
+      ## The breakpoint the current preview width falls into, or one with an
+      ## empty `condition` meaning the base. Ambient state, read by the
+      ## chrome bar: a person editing at 850px is editing inside a media
+      ## query whether or not they remember it, and the editor saying so is
+      ## the difference between a scoped change and a surprise.
     workspacePermissions*: Signal[EditorWorkspacePermissions]
     sourceAdapterReady*: Signal[bool]
     workspaceEditStage*: Signal[WorkspaceEditStage]
@@ -8031,7 +8061,19 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
   var drafts: seq[WorkspaceFileDraft] = @[]
   var fullReload = false
 
-  for plan in pending:
+  for basePlan in pending:
+    # Stamp the width the preview is showing, so a responsive stylesheet can
+    # be edited at all. Without it an adapter has only a selector and a
+    # property, and a responsive stylesheet has no single answer to "which
+    # rule owns this" -- it has one per width. Stamped here rather than when
+    # the edit was journaled because this is the single funnel every plan
+    # passes through; the cost is that switching viewport during the
+    # auto-save debounce targets the NEW width, which is also the width whose
+    # rendering the user is looking at when the write lands.
+    var plan = basePlan
+    plan.viewportWidth =
+      if editor.previewRenderedWidth.val > 0: editor.previewRenderedWidth.val
+      else: editor.viewport.val.width
     let resolved = adapter.resolveWorkspaceSchema(plan)
     if not resolved.ok:
       diagnostics.add workspaceDiagnostic(wedMissingSchema,
@@ -11504,8 +11546,14 @@ proc createReviewResultsVM*(): ReviewResultsVM =
 
 proc createProjectPreviewVM*(selectedStory: Signal[StoryRef];
     platform: Signal[Platform]): ProjectPreviewVM =
-  let preview = ProjectPreviewVM(hook: defaultPreviewHook)
+  let preview = ProjectPreviewVM(hook: defaultPreviewHook,
+                                 sourceGeneration: createSignal(0))
   preview.current = createMemo[ProjectPreview](proc(): ProjectPreview =
+    # Tracked but unused: this read is the whole reason the signal exists.
+    # `hook` is a field, not a signal, so a hot swap that installs a new
+    # closure leaves this memo valid and the preview showing output from
+    # code that is no longer on disk.
+    discard preview.sourceGeneration.val
     preview.hook(selectedStory.val, platform.val)
   )
   preview
@@ -11569,6 +11617,27 @@ proc createEditorVM*(): EditorVM =
   let rightSidebarTab = createSignal(rstManual)
   let platform = createSignal(pbWeb)
   let viewport = createSignal(defaultViewport(pbWeb))
+  let responsiveBreakpoints = createSignal[seq[ResponsiveBreakpoint]](@[])
+  let previewRenderedWidth = createSignal(0)
+  # The width every breakpoint question is asked at: what the preview is
+  # really laid out at when that is known, and the chip's nominal width until
+  # it is.
+  let effectiveWidth = createMemo[int](proc(): int =
+    let measured = previewRenderedWidth.val
+    if measured > 0: measured else: viewport.val.width)
+  # Narrowest-first order is the workspace's contract, so "the first one that
+  # matches" is also "the tightest one that matches" -- which is what the
+  # cascade does when overlapping `max-width` blocks all apply.
+  let activeBreakpoint = createMemo[ResponsiveBreakpoint](
+    proc(): ResponsiveBreakpoint =
+      let width = effectiveWidth.val
+      for bp in responsiveBreakpoints.val:
+        let underMax = bp.maxWidth < 0 or width <= bp.maxWidth
+        let overMin = bp.minWidth < 0 or width >= bp.minWidth
+        if underMax and overMin:
+          return bp
+      ResponsiveBreakpoint(label: "", condition: "", minWidth: -1,
+                           maxWidth: -1))
   let workspacePermissions = createSignal(defaultWorkspacePermissions())
   let sourceAdapterReady = createSignal(false)
   let workspaceEditStage = createSignal(wesClean)
@@ -11671,6 +11740,9 @@ proc createEditorVM*(): EditorVM =
     rightSidebarTab: rightSidebarTab,
     platform: platform,
     viewport: viewport,
+    responsiveBreakpoints: responsiveBreakpoints,
+    previewRenderedWidth: previewRenderedWidth,
+    activeBreakpoint: activeBreakpoint,
     workspacePermissions: workspacePermissions,
     sourceAdapterReady: sourceAdapterReady,
     workspaceEditStage: workspaceEditStage,

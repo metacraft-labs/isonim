@@ -824,6 +824,8 @@ test-editor:
     nim c -r tests/test_editor_streaming_preview.nim
     nim c -r tests/test_streaming_preview_element_tree_delta.nim
     nim c -r tests/test_scene_graph_hooks.nim
+    nim c -r tests/test_editor_css_patch.nim
+    nim c -r tests/test_editor_css_shadow.nim
     nim c -r tests/test_style_provenance.nim
 
 # Run packaged editor browser tests.

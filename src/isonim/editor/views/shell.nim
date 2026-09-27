@@ -3842,6 +3842,63 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
          user_select = "none"):
       text "\xE2\x96\xBE"  # ▾
   r.appendChild(viewportClusterWrapper, viewportChevronWrap)
+
+  # The active breakpoint, immediately right of the screen-size chips.
+  #
+  # Ambient on purpose. Somebody editing an 840px-wide preview is editing
+  # inside `@media (max-width:1080px)` whether or not they remember writing
+  # it, and every property that block redeclares is written THERE -- so the
+  # change applies below 1080px and nowhere else. Told afterwards, that reads
+  # as the editor having done something surprising; shown continuously, it is
+  # just where you are. It sits next to the screen-size chips because that is
+  # the control that moves it.
+  #
+  # Silent when no query matches, because then there is nothing to say: edits
+  # are global, and a chip reading "Base" through every ordinary edit is noise
+  # that teaches people to stop reading the chip.
+  #
+  # The width it reports is the MEASURED one. On this layout the "Desktop"
+  # chip renders at ~840px, so the chip's nominal 1440 would name a breakpoint
+  # the user is not in -- which is exactly the confusion this is here to end.
+  var breakpointChip: E
+  var breakpointLabel: E
+  breakpointChip = ui(r):
+    tdiv(ref = breakpointChip,
+         `data-active-breakpoint` = "true",
+         display = "none", align_items = "center", gap = "4px",
+         min_height = "22px", padding = "2px 7px",
+         font_size = "10px", line_height = "1",
+         border_radius = "4px",
+         border = "1px solid rgba(99,102,241,0.55)",
+         background_color = "rgba(99,102,241,0.16)",
+         color = "#C7C9FF",
+         white_space = "nowrap",
+         cursor = "default",
+         user_select = "none"):
+      span(font_size = "9px", opacity = "0.7",
+           letter_spacing = "0.05em"):
+        text "SCOPE"
+      span(ref = breakpointLabel, font_weight = "600"):
+        text ""
+  r.appendChild(viewportClusterWrapper, breakpointChip)
+
+  createRenderEffect proc() =
+    let bp = capturedVm.activeBreakpoint.val
+    let width = capturedVm.previewRenderedWidth.val
+    let inBreakpoint = bp.condition.len > 0
+    r.setStyle(breakpointChip, "display",
+               if inBreakpoint: "inline-flex" else: "none")
+    r.setAttribute(breakpointChip, "data-active-breakpoint-condition",
+                   bp.condition)
+    if inBreakpoint:
+      r.setTextContent(breakpointLabel, bp.label)
+      # The consequence lives in the tooltip: it is the part that matters and
+      # it will not fit in a chip this size.
+      r.setAttribute(breakpointChip, "title",
+        "The preview is " & $width & "px wide, which matches " &
+        bp.condition & ". Changes to properties this breakpoint defines are " &
+        "written into it, so they apply at " & bp.label &
+        " and not at wider sizes.")
   block:
     let openSig = viewportDropdownOpen
     let toggleHandler = proc() = openSig.val = not openSig.val

@@ -789,67 +789,77 @@ proc exposeWindowEditorHandle*(vm: EditorVM) =
   # broadcasts over the same SSE channel isonim's HMR uses
   # (`/__isonim/hmr`, `update` / `error`). This is the client half.
   #
-  # Why a reload rather than an in-place swap: grip's preview HTML is
-  # produced by the project's own render code COMPILED INTO this bundle, so
-  # reaching a changed `styles.nim` means a new bundle, not new data. The
-  # honest version of "apply the new bundle" is therefore to load it, and
-  # `applyBundleByScriptTag` would re-run this module's top level and mount a
-  # second editor over the first.
+  # **This loads the new bundle. It does not reload the page.** The first
+  # version did reload, and it was wrong for the case that matters most: the
+  # editor writes files itself, so every property you changed in the inspector
+  # rebuilt the bundle, broadcast an update, and reloaded the editor out from
+  # under you. An editor that restarts each time you nudge a value is not
+  # usable, and no amount of session-snapshotting makes it feel otherwise --
+  # the reload also threw away the undo stacks, the focused input and every
+  # piece of state nobody had thought to snapshot.
   #
-  # What makes the reload acceptable is that the session survives it. The
-  # story is already in the URL; the element, the expanded sections and the
-  # scroll positions are carried across in `sessionStorage`. `loadProjectData`
-  # exists so that the day the swap IS in-place, the refresh can skip the
-  # reload entirely and keep even the undo stacks.
+  # What replaces it is isonim's own mechanism, which `hmr_livereload.nim`
+  # already routes every JS change through: append a `<script>` for the fresh
+  # bundle and let it re-run the project's entry point. `mountEditor` sees a
+  # live editor and calls `loadProjectData` on it instead of mounting a second
+  # one, so the new bundle's project procs replace the old ones inside the
+  # running editor and the reactive graph recomputes what depended on them.
+  # Nothing is torn down, so nothing needs restoring.
+  #
+  # The old bundle's code stays resident -- this is a dev-mode swap, not a
+  # module system -- and its closures are simply no longer reachable from the
+  # VM once `loadProjectData` has replaced them. What makes that safe is that
+  # Nim's JS backend compiles top-level vars to globals, so the reactive
+  # graph's `Owner` / `Listener` / `Effects` / `Updates` are shared by name
+  # between the two bundles rather than duplicated; see `liveEditorVM`.
   when defined(js):
-    let selectedElementId = proc(): cstring =
-      vm.inspector.selectedElement.val.id.cstring
-    let restoreElement = proc(id: cstring) =
-      if id.len > 0:
-        discard vm.selectInspectorElementById($id)
     let buildFailed = proc(message: cstring) =
       vm.workspaceEditStage.val = wesFailed
       vm.workspaceEditDiagnostics.val = @[WorkspaceEditDiagnostic(
         kind: wedCompileFailed,
         message: "The project failed to rebuild: " & $message)]
+    let buildRecovered = proc() =
+      # A failed build leaves the status bar saying so. Clear it on the next
+      # success, or the editor keeps reporting a compile error that has been
+      # fixed -- which teaches people to ignore the status bar.
+      if vm.workspaceEditStage.val == wesFailed:
+        vm.workspaceEditStage.val = wesClean
+        vm.workspaceEditDiagnostics.val = @[]
     {.emit: ["""
-      (function (currentElement, restoreElement, buildFailed) {
-        const KEY = 'isonim:editor:session';
+      (function (buildFailed, buildRecovered) {
+        let applying = false;
+        let queued = null;
 
-        // Put it back. Runs on every load, not only after a rebuild, so a
-        // refresh the user triggers themselves keeps their place too.
-        try {
-          const raw = window.sessionStorage.getItem(KEY);
-          if (raw) {
-            window.sessionStorage.removeItem(KEY);
-            const saved = JSON.parse(raw);
-            // After the first render: the rows have to exist to be scrolled
-            // and the element has to be in the tree to be selected.
-            setTimeout(function () {
-              if (saved.element) restoreElement(saved.element);
-              (saved.scroll || []).forEach(function (entry) {
-                const el = document.querySelector(entry.selector);
-                if (el) el.scrollTop = entry.top;
-              });
-            }, 600);
-          }
-        } catch (e) {}
-
-        function rememberSession() {
-          try {
-            const scroll = ['[data-scene-graph-rows]',
-                            '[data-sidebar-story-tree]',
-                            '[data-inspector-section-list]']
-              .map(function (selector) {
-                const el = document.querySelector(selector);
-                return el ? { selector: selector, top: el.scrollTop } : null;
-              })
-              .filter(Boolean);
-            window.sessionStorage.setItem(KEY, JSON.stringify({
-              element: String(currentElement() || ''),
-              scroll: scroll
-            }));
-          } catch (e) {}
+        function applyBundle(url) {
+          // One swap at a time. A burst of saves can deliver several updates
+          // while a script is still evaluating, and two bundles evaluating
+          // concurrently would race on the globals they share. The last URL
+          // wins, because it is the only one whose bytes match the tree.
+          if (applying) { queued = url; return; }
+          applying = true;
+          const script = document.createElement('script');
+          // Cache-bust: the server already varies the URL per build, but a
+          // client that reconnected and replayed an older URL would otherwise
+          // be served from cache.
+          script.src = url + (url.indexOf('?') < 0 ? '?' : '&') +
+            'hot=' + Date.now();
+          script.async = false;
+          script.onload = function () {
+            // The bundle has re-run the project entry point by now, which
+            // means `mountEditor` has already adopted the live VM.
+            script.remove();
+            applying = false;
+            buildRecovered();
+            const next = queued;
+            queued = null;
+            if (next) applyBundle(next);
+          };
+          script.onerror = function () {
+            script.remove();
+            applying = false;
+            buildFailed('the rebuilt bundle could not be loaded from ' + url);
+          };
+          document.head.appendChild(script);
         }
 
         let source = null;
@@ -859,9 +869,10 @@ proc exposeWindowEditorHandle*(vm: EditorVM) =
           } catch (e) {
             return;
           }
-          source.addEventListener('update', function () {
-            rememberSession();
-            window.location.reload();
+          source.addEventListener('update', function (event) {
+            // Per isonim/web/hmr_sse.nim the payload IS the bundle URL.
+            const url = (event && event.data) ? String(event.data) : '';
+            if (url) applyBundle(url);
           });
           source.addEventListener('error', function (event) {
             // A Nim error is the single most useful thing a person can see
@@ -872,7 +883,7 @@ proc exposeWindowEditorHandle*(vm: EditorVM) =
           });
         }
         connect();
-      })(""", selectedElementId, ", ", restoreElement, ", ", buildFailed, ");"].}
+      })(""", buildFailed, ", ", buildRecovered, ");"].}
 
   # Auto-save. The VM bumps a generation when a commit stages an edit; the
   # debounce lives here because the VM has no timer and should not grow one
@@ -943,6 +954,63 @@ proc exposeWindowEditorHandle*(vm: EditorVM) =
     })();
   """].}
 
+proc liveEditorVM(): EditorVM =
+  ## The VM of an editor already mounted in this document, or nil.
+  ##
+  ## Stashed on `globalThis` rather than in a module-level `var` on purpose: a
+  ## hot bundle swap re-runs the whole bundle, which re-initialises every
+  ## module-level var, so a module-level handle would always read nil and every
+  ## swap would mount a second editor. `globalThis` is the one place both the
+  ## old and the new bundle can see.
+  ##
+  ## Reading a VM built by the PREVIOUS bundle and then driving it with THIS
+  ## bundle's code is sound for the same reason the rest of isonim's HMR is:
+  ## the JS backend compiles field names deterministically from the source, so
+  ## two builds of the same declarations agree on them, and it compiles
+  ## top-level vars to globals, so `Owner`, `Listener`, `Effects` and `Updates`
+  ## are shared by name rather than duplicated. The reactive graph the old
+  ## bundle built is the graph this bundle writes to. If the editor's own type
+  ## declarations change, that assumption breaks -- and so does every other
+  ## HMR swap, which is why a changed editor needs a real reload.
+  when defined(js):
+    {.emit: [result, " = globalThis.__isonimEditorVm || null;"].}
+  else:
+    nil
+
+proc rememberLiveEditorVM(vm: EditorVM) =
+  when defined(js):
+    {.emit: ["globalThis.__isonimEditorVm = ", vm, ";"].}
+  else:
+    discard vm
+
+proc clearPreviewStyleOverrides() =
+  ## Forget the optimistic preview overrides, without touching the frame that
+  ## is currently on screen.
+  ##
+  ## The overrides bridge the gap between making an edit and the rebuild that
+  ## makes it real -- see `applyPreviewStyle` in widgets/property_commit.nim.
+  ## Once the rebuilt source carries the value they are not merely redundant:
+  ## they are applied inline with `!important`, so they outrank the stylesheet,
+  ## and an override that outlives its rebuild makes the editor show a value
+  ## the saved source does not produce.
+  ##
+  ## **Only the store is cleared.** An earlier version also removed the inline
+  ## styles from the live frame, and that was visibly wrong: the swap replaces
+  ## the preview document asynchronously, so for the few hundred milliseconds
+  ## between clearing and the new frame painting, the OLD frame was on screen
+  ## with the override gone and the old stylesheet still compiled in. The value
+  ## flickered back to what it had been before the edit and then forward again
+  ## -- measured at 434ms of showing the user the number they had just replaced.
+  ##
+  ## Clearing the store alone is enough, because the store exists to re-apply
+  ## overrides to a NEW frame. The frame being replaced keeps its inline styles
+  ## for the rest of its short life, and the frame that replaces it is built
+  ## from source that already has the value.
+  when defined(js):
+    {.emit: """
+      window.__isonimPreviewOverrides = {};
+    """.}
+
 proc mountEditor*(workspace: EditorWorkspace;
                   root: Element = document.body;
                   useHashRoute = true;
@@ -951,6 +1019,35 @@ proc mountEditor*(workspace: EditorWorkspace;
   ##
   ## The returned VM is useful for tests and host-app integrations that need to
   ## drive the editor after mount.
+  ##
+  ## **Called a second time in the same document, this does not mount a second
+  ## editor.** That is not a defensive nicety, it is the hot-reload path. When
+  ## a source file changes, the dev server rebuilds the bundle and the client
+  ## loads it with a script tag, which re-runs the project's entry point --
+  ## `newGripEditorWorkspace()` and then this proc. The project's entry point
+  ## needs to know nothing about any of that: building a workspace and handing
+  ## it to `mountEditor` is the same code path on a first load and on the
+  ## thousandth rebuild. Only the outcome differs.
+  ##
+  ## On a swap the editor keeps its VM and takes only the PROJECT's data from
+  ## the new bundle, via `loadProjectData`. Nothing is torn down, so there is
+  ## nothing to restore: the selection, the scroll positions, the expanded
+  ## sections, the undo stacks and the focused input are all still where they
+  ## were, because they were never destroyed. That is the difference between
+  ## this and the `location.reload()` it replaced -- a reload could put the
+  ## user's place back approximately, from a sessionStorage snapshot, and only
+  ## the parts somebody had remembered to snapshot.
+  when defined(js):
+    let live = liveEditorVM()
+    if live != nil:
+      # Before `loadProjectData`, which bumps `preview.sourceGeneration` and so
+      # rebuilds the preview: the overrides must be gone by the time the new
+      # frame asks for them, or the frame-start re-apply puts them straight
+      # back on top of the source that now carries the same values.
+      clearPreviewStyleOverrides()
+      live.loadProjectData(workspace)
+      return live
+
   if injectStyles:
     injectEditorStyles()
 
@@ -993,4 +1090,7 @@ proc mountEditor*(workspace: EditorWorkspace;
     # workspace).  The handle is intentionally minimal — production
     # consumers should not rely on it.
     exposeWindowEditorHandle(vm)
+    # Last thing on the first-mount path: from here on a re-run of this bundle
+    # is a swap, and `liveEditorVM` above is how it finds out.
+    rememberLiveEditorVM(vm)
   mounted

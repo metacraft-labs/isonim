@@ -1020,19 +1020,27 @@ __ISONIM_SCENE_GRAPH_WALK__
     const target = document.querySelector('[data-isonim-element-id="' + CSS.escape(id) + '"]');
     if (target) selectElement(target);
   });
-  // Re-apply everything the editor has changed since the project was last
-  // built. The frame is new; the edits are not.
+  // Stamp this frame's elements with their identities, then re-apply anything
+  // the editor changed since the project was last built.
+  //
+  // The stamping is UNCONDITIONAL and must stay that way. `identityFor`
+  // assigns `data-isonim-element-id` lazily, as the walk visits each node, so
+  // a frame that has just loaded carries no ids at all; selection then walks
+  // up from the clicked element looking for one and lands on whatever
+  // ancestor a previous walk happened to stamp. Clicking the heading selects
+  // `div.page-width`.
+  //
+  // This used to sit BELOW the "no overrides, nothing to do" early return, and
+  // got away with it only because an override always existed by the time it
+  // mattered. When overrides began being cleared on every hot swap -- they are
+  // obsolete once the rebuilt source carries the value -- the early return
+  // started firing on every frame and took the stamping with it. The
+  // dependency was invisible and the symptom looked like a selection bug.
   (function () {
+    try { layerTree(null); } catch (e) {}
     let store = null;
     try { store = parent.__isonimPreviewOverrides; } catch (e) { return; }
     if (!store || !Object.keys(store).length) return;
-    // Stamp first. `identityFor` assigns `data-isonim-element-id` LAZILY, as
-    // the walk visits each node -- so on a frame that has just loaded,
-    // nothing carries an id yet and every override would look like it
-    // belonged to an element that is not there. One walk fixes that, and
-    // the walk is what assigns the ids the overrides are keyed by in the
-    // first place.
-    try { layerTree(null); } catch (e) {}
     Object.keys(store).forEach(function (id) {
       const target = document.querySelector(
         '[data-isonim-element-id="' + CSS.escape(id) + '"]');
@@ -4631,18 +4639,58 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
           min_width = "0", height = "100%",
           background_color = bgBase)
 
+  # The editable preview is sized by the SCREEN-SIZE CHIPS, like the
+  # read-only one in page_preview.nim already was.
+  #
+  # It was not, and the consequence was not cosmetic. The iframe was
+  # `width:100%` of whatever the centre column left it -- about 840px -- so
+  # Desktop, Laptop, Tablet and Phone all rendered identically, at a width
+  # that happens to sit inside this project's `@media (max-width:1080px)`
+  # block. The chips looked like they worked because the label changed. Every
+  # responsive rule was permanently in its compact state and there was no way
+  # to see, or edit, the wide one.
+  #
+  # Three nested elements, each with one job:
+  #   * `scrollHost` -- the scrollable, padded area the frame sits in.
+  #   * `fitHost`    -- carries the scale transform, so a 1440px viewport is
+  #                     legible inside an 840px column instead of demanding a
+  #                     horizontal scrollbar.
+  #   * `deviceFrame`-- the viewport itself, at its true CSS width. The iframe
+  #                     fills it, so the page inside is laid out at the
+  #                     viewport's width whatever the transform does visually.
+  #
+  # Scaling rather than shrinking is what keeps this honest: the iframe's
+  # layout width stays 1440 when 1440 is selected, so the media queries the
+  # browser evaluates are the ones for 1440. A transform changes how big it
+  # looks, never what it computes.
+  var scrollHost: E
+  var fitHost: E
+  var deviceFrame: E
   let preview = ui(r):
     tdiv(flex = "1", display = "flex", flex_direction = "column",
           min_width = "0"):
-      tdiv(flex = "1", overflow = "auto", background_color = bgPreview,
-            padding = "24px"):
-        iframe(ref = projectFrame,
-          title = "Editable component preview",
-          width = "100%",
-          height = "480",
-          border = "0",
-          background_color = "#FFFFFF",
-          `data-component-edit-frame` = "true")
+      tdiv(ref = scrollHost,
+            flex = "1", overflow = "auto", background_color = bgPreview,
+            padding = "24px",
+            display = "flex", justify_content = "center",
+            align_items = "flex-start"):
+        tdiv(ref = fitHost,
+              position = "relative",
+              flex = "0 0 auto"):
+          tdiv(ref = deviceFrame,
+                position = "absolute", top = "0", left = "0",
+                transform_origin = "top left",
+                background_color = "#FFFFFF",
+                border_radius = "8px",
+                overflow = "hidden",
+                `data-component-edit-device-frame` = "true"):
+            iframe(ref = projectFrame,
+              title = "Editable component preview",
+              width = "100%",
+              height = "480",
+              border = "0",
+              background_color = "#FFFFFF",
+              `data-component-edit-frame` = "true")
 
   # The rich property inspector now lives in the right sidebar's
   # Manual tab (``shell.nim``), not as a centre-column panel. The
@@ -4653,6 +4701,132 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
   r.appendChild(container, preview)
 
   installPreviewSelectionBridge[R, E](r, projectFrame, vm)
+
+  # Size the viewport, fit it to the column, and report the width the page
+  # inside is actually being laid out at.
+  #
+  # The reported width is `clientWidth`, NOT `getBoundingClientRect().width`:
+  # the rect is post-transform, so a scaled-down 1440px viewport would report
+  # ~820 and every breakpoint question would be answered for a width the page
+  # inside is not using. `clientWidth` is the layout width, which is the one
+  # the browser evaluates media queries against.
+  when defined(js):
+    let reportWidth = proc(width: int) =
+      if vm.previewRenderedWidth.val != width:
+        vm.previewRenderedWidth.val = width
+
+    createRenderEffect proc() =
+      let vp = vm.viewport.val
+      let width = max(vp.width, 1)
+      r.setStyle(deviceFrame, "width", $width & "px")
+      r.setStyle(deviceFrame, "min-width", $width & "px")
+      r.setAttribute(deviceFrame, "data-preview-viewport-width", $width)
+      # A cells-based (TUI) viewport has no pixel width to honour; leave it
+      # filling the column rather than rendering an 80px-wide frame.
+      if vp.isCells:
+        r.setStyle(deviceFrame, "width", "100%")
+        r.setStyle(deviceFrame, "min-width", "0")
+      # Refit now that the device is its new size. The observer below watches
+      # the scroll host, which a width change inside it does not necessarily
+      # resize, so waiting for it would leave a 1440px frame unscaled in an
+      # 840px column until something else moved.
+      when defined(js):
+        {.emit: ["""
+          (function (host) {
+            if (host && host.__isonimApplyFit) host.__isonimApplyFit();
+          })(""", scrollHost, ");"].}
+
+    {.emit: ["""
+      (function (host, fit, frame, device, report) {
+        if (!host || host.__isonimViewportFitInstalled) return;
+        host.__isonimViewportFitInstalled = true;
+        // `device` is absolutely positioned inside `fit`, and `fit` is sized
+        // to the SCALED box.
+        //
+        // The obvious arrangement -- device in normal flow, transform on the
+        // wrapper -- does not work, and the way it fails is instructive. A
+        // transform does not affect layout, so a 1440px device still claims
+        // 1440px of width inside an 850px column. That overflow propagates up
+        // the flex chain and squeezes the very element whose width is being
+        // measured to compute the scale, so `available` came back as ~344
+        // instead of ~850 and everything rendered at a fifth of its size.
+        // Taking the device out of flow means nothing ever overflows and the
+        // measurement is of the real column.
+        //
+        // Every write is also guarded by "did this actually change". Without
+        // that, `apply` sets a size on `fit`, which resizes `host`, which
+        // fires the observer, which calls `apply`: an infinite loop that
+        // freezes the tab rather than merely looking wrong.
+        let lastScale = null;
+        let lastW = null;
+        let lastH = null;
+        let lastReported = 0;
+        const apply = function () {
+          const style = getComputedStyle(host);
+          const padding = parseFloat(style.paddingLeft || '0') +
+                          parseFloat(style.paddingRight || '0');
+          const available = host.clientWidth - padding;
+          const natural = device.clientWidth;
+          const naturalH = device.offsetHeight;
+          if (!natural || available <= 0) return;
+          // Only ever scale DOWN. Blowing a 390px phone up to fill the column
+          // would misrepresent it as badly as cropping it.
+          // Quantised so sub-pixel jitter cannot produce an endless series of
+          // "changed" values that each retrigger the observer.
+          const scale = Math.min(1, Math.floor(available / natural * 1000) / 1000);
+          if (scale !== lastScale) {
+            lastScale = scale;
+            device.style.transform = scale < 1 ? 'scale(' + scale + ')' : '';
+          }
+          const w = Math.round(natural * scale);
+          const h = Math.round(naturalH * scale);
+          if (w !== lastW) { lastW = w; fit.style.width = w + 'px'; }
+          if (h !== lastH) { lastH = h; fit.style.height = h + 'px'; }
+          if (natural !== lastReported) {
+            lastReported = natural;
+            report(natural);
+          }
+        };
+        if (typeof ResizeObserver !== 'undefined') {
+          // `host` only. `device` and `fit` are both written to above, so
+          // observing either is the shortest path back into the loop.
+          new ResizeObserver(apply).observe(host);
+        } else {
+          window.addEventListener('resize', apply);
+        }
+        frame.addEventListener('load', apply);
+        // The viewport effect calls this after it changes the device width. A
+        // polling timer would also work and would be worse: either slower than
+        // the change, or still running long after it.
+        host.__isonimApplyFit = apply;
+        apply();
+      })(""", scrollHost, ", ", fitHost, ", ", projectFrame, ", ",
+      deviceFrame, ", ", reportWidth, ");"].}
+
+  # Why the selected element is NOT read in the srcdoc effect below.
+  #
+  # `componentEditPreviewDocument` ignores `selected` entirely whenever the
+  # project supplies its own `documentHtml`, which every real project does;
+  # the selection only feeds the SYNTHESIZED fallback document. Reading the
+  # selection unconditionally therefore made every click rebuild the whole
+  # preview document for no change in its bytes -- and on the JS backend a
+  # Nim `string` is an array of char codes, so for the grip pilot's 650KB
+  # document that meant copying a 650_000-element array several times per
+  # click and then comparing two of them element by element. Measured cost:
+  # ~1_000_000 `nimCopy` calls and 18-120 seconds of frozen main thread for a
+  # single selection, a third of it in GC. Selecting an element is the most
+  # common thing anyone does in this editor, so this is the one dependency
+  # that had to go.
+  #
+  # The selection still has to reach the iframe, so it moves to its own
+  # effect below, which depends on a memo over the element's `id` alone. That
+  # keeps the ElementRef copy to once per selection instead of once per
+  # reader, and leaves the 650KB document untouched.
+  let selectedElementId = createMemo(proc(): string =
+    vm.inspector.selectedElement.val.id)
+  # Bumped whenever the iframe is actually reloaded, so the restore effect
+  # below re-runs even when the selected id has not changed.
+  let srcdocGeneration = createSignal(0)
 
   createRenderEffect proc() =
     let previewState = vm.preview.current.val
@@ -4672,24 +4846,40 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
       if vm.platform.val != pbWeb:
         ""
       else:
-        let previewDocument = componentEditPreviewDocument(previewState,
-          vm.inspector.selectedElement.val)
+        # Only the synthesized fallback needs the selection, and only that
+        # branch reads it: dependencies here are dynamic, so NOT reading the
+        # signal is what keeps this effect off the selection path.
+        let previewDocument =
+          if previewState.documentHtml.len > 0 or
+              previewState.bodyText.len == 0:
+            componentEditPreviewDocument(previewState, ElementRef())
+          else:
+            componentEditPreviewDocument(previewState,
+              vm.inspector.selectedElement.val)
         if vm.editMode.val == emView:
           previewDocument & "\n<!-- isonim-reload:" & $reloadGeneration & " -->"
         else:
           editablePreviewDocument(previewDocument, metadata, vm.editMode.val) &
             "\n<!-- isonim-reload:" & $reloadGeneration & " -->"
-    var srcdocChanged = false
-    if nextSrcdoc != lastSrcdoc:
+    # Length first: `!=` on a Nim string is an element-wise walk of two char
+    # arrays, and two documents of different length cannot be equal.
+    if nextSrcdoc.len != lastSrcdoc.len or nextSrcdoc != lastSrcdoc:
       lastSrcdoc = nextSrcdoc
-      srcdocChanged = true
       r.setAttribute(projectFrame, "srcdoc", nextSrcdoc)
+      # Reloading the frame drops the selection outline, so ask for a restore
+      # even when the selected element itself did not change.
+      srcdocGeneration.val = srcdocGeneration.val + 1
     r.setStyle(projectFrame, "min-height", "320px")
     r.setStyle(projectFrame, "overflow", "hidden")
-    let selectedId = vm.inspector.selectedElement.val.id
-    if selectedId.len > 0 and (srcdocChanged or selectedId !=
-        lastRestoredSelection):
-      lastRestoredSelection = selectedId
+
+  # Selection restore, on its own. Reads a string memo and an int, so a click
+  # costs one ElementRef copy rather than a rebuild of the whole document.
+  createRenderEffect proc() =
+    let selectedId = selectedElementId.val
+    let generation = srcdocGeneration.val
+    let stamp = selectedId & "@" & $generation
+    if selectedId.len > 0 and stamp != lastRestoredSelection:
+      lastRestoredSelection = stamp
       r.restorePreviewSelection(projectFrame, selectedId)
 
   container
