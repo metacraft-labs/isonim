@@ -29,6 +29,14 @@ type
       ## "ArrowLeft"). Empty by default — tests that exercise key-aware
       ## handlers should populate it on a ``MockEvent`` passed to
       ## ``fireEventWith``.
+    clientX*, clientY*: float
+      ## Pointer position, for handlers that scrub. A drag is a direction
+      ## and a distance, and a mock that omitted them could only test that
+      ## *something* happened per event -- which is how the property row's
+      ## scrub came to add one step per `mousemove` regardless of which way
+      ## the pointer went.
+    shiftKey*, altKey*, metaKey*, ctrlKey*: bool
+      ## Modifiers. Scrub speed and nudge size both depend on them.
 
   MockNode* = ref object
     id*: int                              ## Unique node ID (for hashing)
@@ -41,6 +49,10 @@ type
     parent*: MockNode                     ## Parent reference
     eventListeners*: Table[string, seq[proc()]]              ## No-arg handlers
     eventHandlers*: Table[string, seq[proc(ev: MockEvent)]]  ## Event-arg handlers
+    pointerHandlers*: Table[string, seq[proc(x, y: float; shift, alt: bool)]]
+      ## Handlers registered through `addPointerListener` — the drag API the
+      ## views use, so a view can be written once against this renderer and
+      ## the browser one.
 
   MockRenderer* = object
     ## Mock renderer backend for unit testing.
@@ -203,6 +215,16 @@ proc getAttribute*(r: MockRenderer; node: MockNode; name: string): string =
   # reads an attribute pays for the name going out and the value coming in.
   noteOp(boGetAttribute, 1, name, result)
 
+proc addPointerListener*(r: MockRenderer; node: MockNode; event: string;
+    handler: proc(x, y: float; shift, alt: bool)) =
+  ## Mirror of `DomRenderer.addPointerListener`. `fireEventWith` dispatches
+  ## to these using the event's `clientX` / `clientY` / modifiers, so a test
+  ## can express a drag as the direction and distance it actually is.
+  noteOp(boAddEventListener, 2, event)
+  if event notin node.pointerHandlers:
+    node.pointerHandlers[event] = @[]
+  node.pointerHandlers[event].add(handler)
+
 proc addEventListener*(r: MockRenderer; node: MockNode; event: string; handler: proc()) =
   noteOp(boAddEventListener, 2, event)
   if event notin node.eventListeners:
@@ -248,6 +270,7 @@ proc clearEventListeners*(r: MockRenderer; node: MockNode) =
   ## Remove all event listeners from a mock node.
   node.eventListeners.clear()
   node.eventHandlers.clear()
+  node.pointerHandlers.clear()
 
 # ---- Test helpers ----
 
@@ -280,6 +303,9 @@ proc fireEventWith*(node: MockNode; event: string; ev: MockEvent) =
   if event in node.eventHandlers:
     for handler in node.eventHandlers[event]:
       handler(ev)
+  if event in node.pointerHandlers:
+    for handler in node.pointerHandlers[event]:
+      handler(ev.clientX, ev.clientY, ev.shiftKey, ev.altKey)
 
 proc textContent*(node: MockNode): string =
   ## Returns the concatenated text content of a node and its descendants.

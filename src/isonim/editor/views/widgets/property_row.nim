@@ -315,6 +315,7 @@ proc skipSpaces(p: var MathParser) =
     inc p.pos
 
 proc parseExpr(p: var MathParser): Option[float]
+proc parsePower(p: var MathParser): Option[float]
 
 proc parseNumber(p: var MathParser): Option[float] =
   skipSpaces(p)
@@ -347,15 +348,38 @@ proc parsePrimary(p: var MathParser): Option[float] =
     return inner
   parseNumber(p)
 
+proc parsePower(p: var MathParser): Option[float] =
+  ## `^`, right-associative, binding tighter than `*` and `/`.
+  ##
+  ## Figma's fields accept it (help.figma.com, "Adjust alignment, rotation,
+  ## position and dimensions": the operators are `+ - * / ^` and
+  ## parentheses), and a designer typing `2^4` for a spacing step is doing
+  ## something the field should understand rather than reject.
+  let base = parsePrimary(p)
+  if base.isNone: return base
+  skipSpaces(p)
+  if p.peek != '^': return base
+  inc p.pos
+  # Right-associative: `2^3^2` is 2^(3^2), which is what every other
+  # calculator does.
+  let exponent = parsePower(p)
+  if exponent.isNone: return none(float)
+  try:
+    let value = pow(base.get, exponent.get)
+    if value != value: return none(float)  # NaN, e.g. (-8) ^ 0.5
+    some(value)
+  except CatchableError:
+    none(float)
+
 proc parseMulDiv(p: var MathParser): Option[float] =
-  var left = parsePrimary(p)
+  var left = parsePower(p)
   if left.isNone: return left
   while true:
     skipSpaces(p)
     let op = p.peek
     if op != '*' and op != '/': break
     inc p.pos
-    let right = parsePrimary(p)
+    let right = parsePower(p)
     if right.isNone: return none(float)
     case op
     of '*': left = some(left.get * right.get)
@@ -380,6 +404,44 @@ proc parseExpr(p: var MathParser): Option[float] =
     of '-': left = some(left.get - right.get)
     else: discard
   left
+
+func scrubSpeed*(dy: float): float =
+  ## Figma's four scrub speeds, chosen by how far the pointer has moved
+  ## VERTICALLY from where the drag began:
+  ##
+  ##   near the row   2x     coarse, for getting somewhere
+  ##   a little below 1x     the default
+  ##   further        1/2    fine
+  ##   furthest       1/4    finest
+  ##
+  ## Vertical distance rather than a modifier because a drag is already
+  ## holding the mouse button: the hand is committed, and reaching for a
+  ## key mid-drag is the thing this replaces. Documented at
+  ## help.figma.com "Adjust alignment, rotation, position and dimensions".
+  let d = abs(dy)
+  if d < 16.0: 2.0
+  elif d < 48.0: 1.0
+  elif d < 96.0: 0.5
+  else: 0.25
+
+func scrubbedValue*(startValue, dx, dy, step: float; shift, alt: bool;
+                    minValue, maxValue: Option[float]): float =
+  ## Where a scrub drag has taken the value. Pure, so the arithmetic is
+  ## testable without a pointer.
+  ##
+  ## Right increases and left decreases, which is the direction every
+  ## design tool uses and the direction the previous implementation did not
+  ## have at all -- it added one step per `mousemove` whichever way the
+  ## pointer went.
+  var unit = step
+  if unit <= 0.0: unit = 1.0
+  # Shift is Figma's "big nudge"; Alt is this editor's own fine step, kept
+  # because the arrow keys already spell it that way.
+  if shift: unit *= 10.0
+  if alt: unit /= 10.0
+  result = startValue + dx * unit * scrubSpeed(dy)
+  if minValue.isSome and result < minValue.get: result = minValue.get
+  if maxValue.isSome and result > maxValue.get: result = maxValue.get
 
 proc evalMathExpr*(raw: string): Option[float] =
   ## Evaluate ``raw`` as a tiny arithmetic expression. Returns
@@ -1089,26 +1151,46 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
         # ``mouseup`` disarms. The Nim-side handlers update the signal
         # on every move so callers can observe the value transition
         # without leaving the test process.
+        # Scrub-drag on the label. Figma's model: drag right to increase,
+        # left to decrease, with four speeds chosen by how far the pointer
+        # has strayed vertically.
         var dragArmed = false
-        let scrubStart = proc() =
-          dragArmed = true
-        let scrubMove = proc() =
+        var dragStartX = 0.0
+        var dragStartY = 0.0
+        var dragStartValue = 0.0
+        var dragMoved = false
+
+        let applyScrub = proc(x, y: float; shift, alt: bool) =
           if not dragArmed: return
-          var step = cfg.numericStep
-          if step <= 0.0: step = 1.0
-          var v = cfg.numericValue.val + step
-          if cfg.numericMin.isSome and v < cfg.numericMin.get:
-            v = cfg.numericMin.get
-          if cfg.numericMax.isSome and v > cfg.numericMax.get:
-            v = cfg.numericMax.get
+          dragMoved = true
+          let v = scrubbedValue(dragStartValue,
+            x - dragStartX, y - dragStartY,
+            cfg.numericStep, shift, alt,
+            cfg.numericMin, cfg.numericMax)
           cfg.numericValue.val = v
           r.setInputValue(inputNode, formatNumber(v))
-          commitValue()
-        let scrubEnd = proc() =
+
+        let scrubStart = proc(x, y: float; shift, alt: bool) =
+          dragArmed = true
+          dragMoved = false
+          dragStartX = x
+          dragStartY = y
+          dragStartValue = cfg.numericValue.val
+        let scrubEnd = proc(x, y: float; shift, alt: bool) =
+          if not dragArmed: return
           dragArmed = false
-        r.addEventListener(labelNode, "mousedown", scrubStart)
-        r.addEventListener(labelNode, "mousemove", scrubMove)
-        r.addEventListener(labelNode, "mouseup", scrubEnd)
+          # ONE commit, at the end.
+          #
+          # The previous version committed on every `mousemove`, which was
+          # survivable while saving was manual and is not now: a scrub
+          # across a 400px panel would stage and write several hundred
+          # edits. The signal updates live so the preview follows the
+          # pointer; the source is written once, when the hand stops.
+          if dragMoved:
+            commitValue()
+        r.addPointerListener(labelNode, "mousedown", scrubStart)
+        r.addPointerListener(labelNode, "mousemove", applyScrub)
+        r.addPointerListener(labelNode, "mouseup", scrubEnd)
 
       of prkColor:
         var swatchNode: E

@@ -102,6 +102,15 @@ suite "Phase D property_row evalMathExpr":
 
   test "malformed returns none":
     check evalMathExpr("").isNone
+    # `^`, right-associative and binding tighter than `*` — the operator
+    # set Figma's fields accept is `+ - * / ^` with parentheses.
+    check evalMathExpr("2^4") == some(16.0)
+    check evalMathExpr("2*3^2") == some(18.0)
+    check evalMathExpr("2^3^2") == some(512.0)
+    check evalMathExpr("(1+1)^3") == some(8.0)
+    # A power with no real answer is refused rather than reported as NaN,
+    # which would otherwise reach the input as the literal text "nan".
+    check evalMathExpr("(0-8)^0.5").isNone
     check evalMathExpr("abc").isNone
     check evalMathExpr("100/0").isNone
 
@@ -150,16 +159,114 @@ suite "Phase D property_row prkNumeric":
         "label-scrubber")
       check labelNode != nil
 
-      # Mousedown arms; each mousemove nudges by step.
-      fireEvent(labelNode, "mousedown")
-      fireEvent(labelNode, "mousemove")
-      fireEvent(labelNode, "mousemove")
-      fireEvent(labelNode, "mousemove")
-      check value.val == 56.0
-      fireEvent(labelNode, "mouseup")
-      # Disarmed: a subsequent mousemove is a no-op.
-      fireEvent(labelNode, "mousemove")
-      check value.val == 56.0
+      proc drag(node: MockNode; event: string; x, y: float;
+                shift = false; alt = false) =
+        fireEventWith(node, event, MockEvent(`type`: event, clientX: x,
+          clientY: y, shiftKey: shift, altKey: alt))
+
+      # Drag RIGHT increases. 10px at step 2, near the row so the speed is
+      # 2x: 50 + 10 * 2 * 2 = 90.
+      drag(labelNode, "mousedown", 100.0, 100.0)
+      drag(labelNode, "mousemove", 110.0, 100.0)
+      check value.val == 90.0
+
+      # Drag LEFT decreases -- the direction the old implementation did not
+      # have at all, since it added a step per event whichever way it went.
+      drag(labelNode, "mousemove", 90.0, 100.0)
+      check value.val == 10.0
+
+      # Absolute, not incremental: back to the start means back to the
+      # starting value, however many events happened on the way.
+      drag(labelNode, "mousemove", 100.0, 100.0)
+      check value.val == 50.0
+
+      drag(labelNode, "mouseup", 100.0, 100.0)
+      # Disarmed: a later move is a no-op.
+      drag(labelNode, "mousemove", 200.0, 100.0)
+      check value.val == 50.0
+      dispose()
+
+  test "scrub speed falls off with vertical distance":
+    ## Figma's four speeds, picked by how far the pointer has strayed from
+    ## the row it started on: 2x near, then 1x, 1/2, 1/4.
+    check scrubSpeed(0.0) == 2.0
+    check scrubSpeed(15.0) == 2.0
+    check scrubSpeed(16.0) == 1.0
+    check scrubSpeed(47.0) == 1.0
+    check scrubSpeed(48.0) == 0.5
+    check scrubSpeed(95.0) == 0.5
+    check scrubSpeed(96.0) == 0.25
+    check scrubSpeed(400.0) == 0.25
+    # Symmetric: dragging above the row is as fine as dragging below it.
+    check scrubSpeed(-96.0) == 0.25
+
+  test "scrub honours modifiers and clamps to the row's range":
+    let none0 = none(float)
+    # Shift is the big nudge: ten times the step.
+    check scrubbedValue(0.0, 1.0, 0.0, 1.0, shift = true, alt = false,
+      none0, none0) == 20.0   # 1px * (1*10) * 2x
+    # Alt is the fine step.
+    check scrubbedValue(0.0, 10.0, 0.0, 1.0, shift = false, alt = true,
+      none0, none0) == 2.0    # 10px * (1/10) * 2x
+    # A step of zero would make a drag inert; treated as 1.
+    check scrubbedValue(0.0, 1.0, 0.0, 0.0, false, false, none0, none0) == 2.0
+    # Range is respected, so a scrub cannot push opacity past 100.
+    check scrubbedValue(90.0, 100.0, 0.0, 1.0, false, false,
+      some(0.0), some(100.0)) == 100.0
+    check scrubbedValue(10.0, -100.0, 0.0, 1.0, false, false,
+      some(0.0), some(100.0)) == 0.0
+
+  test "a scrub commits once, at the end":
+    ## It used to commit on every `mousemove`. That was survivable while
+    ## saving was manual; with automatic saving a drag across the panel
+    ## would stage and write several hundred edits.
+    createRoot do (dispose: proc()):
+      let value = createSignal(10.0)
+      let unit = createSignal(pxUnit)
+      var commits = 0
+      var cfg = propertyRowNumeric(
+        name = "Gap", value = value, unit = unit, units = @[pxUnit])
+      cfg.onCommitValue = proc(v: string) = commits += 1
+
+      let (r, root) = mkRoot()
+      discard r.mountPropertyRow(root, cfg)
+      let labelNode = findByAttr(root, "data-property-row-slot",
+        "label-scrubber")
+
+      proc drag(event: string; x, y: float) =
+        fireEventWith(labelNode, event, MockEvent(`type`: event,
+          clientX: x, clientY: y))
+
+      drag("mousedown", 0.0, 0.0)
+      for i in 1 .. 25:
+        drag("mousemove", float(i), 0.0)
+      # The value tracked the pointer the whole way: 25px at the default
+      # step of 1, at the 2x speed, from 10.
+      check value.val == 60.0
+      # ...and nothing was written yet.
+      check commits == 0
+      drag("mouseup", 25.0, 0.0)
+      check commits == 1
+      dispose()
+
+  test "a click on the label with no movement commits nothing":
+    createRoot proc(dispose: proc()) =
+      let value = createSignal(10.0)
+      let unit = createSignal(pxUnit)
+      var commits = 0
+      var cfg = propertyRowNumeric(
+        name = "Gap", value = value, unit = unit, units = @[pxUnit])
+      cfg.onCommitValue = proc(v: string) = commits += 1
+      let (r, root) = mkRoot()
+      discard r.mountPropertyRow(root, cfg)
+      let labelNode = findByAttr(root, "data-property-row-slot",
+        "label-scrubber")
+      fireEventWith(labelNode, "mousedown",
+        MockEvent(`type`: "mousedown", clientX: 5.0, clientY: 5.0))
+      fireEventWith(labelNode, "mouseup",
+        MockEvent(`type`: "mouseup", clientX: 5.0, clientY: 5.0))
+      check commits == 0
+      check value.val == 10.0
       dispose()
 
   test "prkNumeric typed math expression commits to numericValue":

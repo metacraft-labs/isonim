@@ -52,6 +52,21 @@ proc setInnerHtml*(r: DomRenderer; node: DomElement; html: string) =
   let h = html.cstring
   {.emit: [node, ".innerHTML = ", h].}
 
+proc addPointerListener*(r: DomRenderer; node: DomElement; event: string;
+    handler: proc(x, y: float; shift, alt: bool)) =
+  ## A pointer event reduced to what a drag needs: where it is and which
+  ## modifiers are down.
+  ##
+  ## Exists so a generic view can handle a drag without naming the browser's
+  ## `Event` type -- the mock renderer offers the same proc over its own
+  ## event, and the view is written once against both. Without it a view
+  ## could only take a no-argument handler, which is how the property row's
+  ## scrub ended up adding a fixed step per `mousemove` with no idea which
+  ## way the pointer had gone.
+  node.addEventListener(event.cstring, proc(e: Event) =
+    let me = cast[MouseEvent](e)
+    handler(me.clientX.float, me.clientY.float, me.shiftKey, me.altKey))
+
 proc getAttribute*(r: DomRenderer; node: DomElement; name: string): string =
   ## Read an attribute. Returns the empty string when absent so the
   ## brief tab's copy-button locator behaves the same as the mock.
