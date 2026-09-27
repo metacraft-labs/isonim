@@ -826,6 +826,10 @@ test-editor:
     nim c -r tests/test_scene_graph_hooks.nim
     nim c -r tests/test_editor_css_patch.nim
     nim c -r tests/test_editor_css_shadow.nim
+    # Twice on purpose: the edit regime's claim is that a production build does
+    # not emit it, which only the un-flagged run can check.
+    nim c -r tests/test_editor_edit_regime.nim
+    nim c -r -d:isonimEditor tests/test_editor_edit_regime.nim
     nim c -r tests/test_style_provenance.nim
 
 # Run packaged editor browser tests.

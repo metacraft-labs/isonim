@@ -43,6 +43,21 @@ import ./style_binding
 
 var gensymCounter {.compileTime.} = 0
 
+var editRegimeActive {.compileTime.} = false
+  ## Is the block being expanded right now one the editor may edit?
+  ##
+  ## Per BLOCK, not per build, and the difference is not a nicety. The editor's
+  ## own chrome is client-mode DSL compiled into the same bundle as the project
+  ## it edits, so a regime keyed on `-d:isonimEditor` turned every button and
+  ## panel in the editor into editable cells: wasteful, meaningless -- the
+  ## editor's toolbar is not the user's document -- and it broke the build,
+  ## because every view module would have needed the cell registry in scope.
+  ##
+  ## `uiEditable` sets this for the extent of one expansion; plain `ui` leaves
+  ## it alone. Save-and-restore rather than set-and-clear because ui blocks
+  ## nest, and an inner plain block inside an editable one must not turn the
+  ## rest of the outer block off.
+
 proc attrNameStr(node: NimNode): string {.compileTime.} =
   ## Extract an attribute name from an attribute key node.
   ##
@@ -181,6 +196,35 @@ proc emitNoteElement(stmts, elSym: NimNode; tag: string;
                       newStrLitNode(id), newStrLitNode(tag),
                       newStrLitNode(loc), newStrLitNode(parentId)))
   result = id
+
+proc emitEditableAssign(stmts, rendererSym, elSym: NimNode;
+                        setter, id, property: string;
+                        literal: NimNode) {.compileTime.} =
+  ## Emit an assignment whose value the editor can change at runtime.
+  ##
+  ## In the edit regime an authored literal becomes a cell, and the assignment
+  ## that consumes it moves inside a render effect. Writing the cell then
+  ## invalidates that effect and nothing else: the element updates through the
+  ## framework's own reactive path, not through a second mechanism maintained
+  ## beside it.
+  ##
+  ## `editableValue` is emitted UNBOUND, like `createRenderEffect` beside it,
+  ## so it resolves where the ui block is written rather than where this macro
+  ## is defined. That is what keeps the reactive core out of the DSL's own
+  ## dependencies; see `editor/editable_cells.nim`.
+  if editRegimeEnabled and editRegimeActive:
+    let cellSym = genName("cell")
+    stmts.add(newLetStmt(cellSym,
+      newCall(ident"editableValue", newStrLitNode(id),
+              newStrLitNode(property), literal)))
+    stmts.add(newCall(ident"createRenderEffect", newProc(
+      params = [newEmptyNode()],
+      body = newStmtList(
+        newCall(newDotExpr(rendererSym, ident(setter)), elSym,
+                newStrLitNode(property), newDotExpr(cellSym, ident"val"))))))
+  else:
+    stmts.add(newCall(newDotExpr(rendererSym, ident(setter)),
+                      elSym, newStrLitNode(property), literal))
 
 # ---------------------------------------------------------------------------
 # Void elements (shared between client and SSR modes)
@@ -331,10 +375,19 @@ proc processChildren(rendererSym, parentSym: NimNode; body: NimNode;
       # or refactor the proc into an element-returning helper that the
       # DSL macro can recognise. See the deep-review unified-diff hunk
       # renderer in codetracer for a worked example.
-      let childNode = processNode(rendererSym, child, stmts)
-      if childNode != nil:
-        stmts.add(newCall(newDotExpr(rendererSym, ident"appendChild"),
-                          parentSym, childNode))
+      # `raw <expr>`: pre-rendered HTML dropped in where it appears. Handled
+      # here rather than in `processNode` because the fragment may be any
+      # number of sibling nodes, so there is nothing to return and append --
+      # it has to append itself, into the parent only this scope knows.
+      if child.kind in {nnkCall, nnkCommand} and child.len == 2 and
+          child[0].kind == nnkIdent and child[0].strVal == "raw":
+        stmts.add(newCall(newDotExpr(rendererSym, ident"appendRawHtml"),
+                          parentSym, child[1]))
+      else:
+        let childNode = processNode(rendererSym, child, stmts)
+        if childNode != nil:
+          stmts.add(newCall(newDotExpr(rendererSym, ident"appendChild"),
+                            parentSym, childNode))
     of nnkIdent:
       # Bare identifier — check if it's a known HTML void element (e.g. `br`, `hr`)
       let tagName = resolveTagName(child.strVal)
@@ -375,8 +428,26 @@ proc processNode(rendererSym: NimNode; node: NimNode;
 
       if not isDynamic(arg):
         # Static text
-        stmts.add(newLetStmt(txtSym,
-          newCall(newDotExpr(rendererSym, ident"createTextNode"), arg)))
+        if editRegimeEnabled and editRegimeActive:
+          # Keyed on the TEXT's own source position, not the parent element's:
+          # one element can hold several text literals (`h1: text "a"; text "b"`)
+          # and keying on the parent would make them one cell, so editing either
+          # would change both.
+          let cellSym = genName("cell")
+          stmts.add(newLetStmt(cellSym,
+            newCall(ident"editableValue", newStrLitNode(sceneElementId(node)),
+                    newStrLitNode("text"), arg)))
+          stmts.add(newLetStmt(txtSym,
+            newCall(newDotExpr(rendererSym, ident"createTextNode"),
+                    newStrLitNode(""))))
+          stmts.add(newCall(ident"createRenderEffect", newProc(
+            params = [newEmptyNode()],
+            body = newStmtList(
+              newCall(newDotExpr(rendererSym, ident"setTextContent"), txtSym,
+                      newDotExpr(cellSym, ident"val"))))))
+        else:
+          stmts.add(newLetStmt(txtSym,
+            newCall(newDotExpr(rendererSym, ident"createTextNode"), arg)))
         return txtSym
       else:
         # Dynamic text - create text node then wrap update in effect
@@ -422,6 +493,25 @@ proc processNode(rendererSym: NimNode; node: NimNode;
     let sceneId = emitNoteElement(stmts, elSym, htmlTag, node)
     parentIdStack.add sceneId
 
+    # Stamp the source location, as SSR mode already does.
+    #
+    # `noteElement` records the tree in memory, which is enough to answer
+    # "what is nested in what" and not enough to answer "where is this
+    # written" from a DOM node the user just clicked. SSR has always carried
+    # `data-isonim-src` in the markup for exactly that, and the editor's walk
+    # reads it; a client-mounted preview without it produced element ids
+    # beginning `::`, with the file and line simply missing.
+    #
+    # Editor builds only. In production `sceneGraphEnabled` is false, the
+    # branch is not taken, and the attribute does not exist.
+    if sceneGraphEnabled:
+      stmts.add(newCall(newDotExpr(rendererSym, ident"setAttribute"),
+                        elSym, newStrLitNode("data-isonim-src"),
+                        newStrLitNode(sceneId)))
+      stmts.add(newCall(newDotExpr(rendererSym, ident"setAttribute"),
+                        elSym, newStrLitNode("data-isonim-tag"),
+                        newStrLitNode(htmlTag)))
+
     # The authored styling of this element, recorded as the attributes are
     # walked. A computed style cannot answer "was this a binding?"; this can,
     # and only here.
@@ -454,9 +544,8 @@ proc processNode(rendererSym: NimNode; node: NimNode;
           elif attrName == "class" and not isDynamic(attrVal):
             # Static class attribute — always set as attribute (for CSS/debugging),
             # AND expand recognized Tailwind utilities to setStyle calls on native.
-            stmts.add(newCall(
-              newDotExpr(rendererSym, ident"setAttribute"),
-              elSym, newStrLitNode("class"), attrVal))
+            emitEditableAssign(stmts, rendererSym, elSym, "setAttribute",
+                               sceneId, "class", attrVal)
             when not defined(js):
               let classStr = attrVal.strVal
               let styles = expandTailwindClassesCompileTime(classStr)
@@ -468,9 +557,8 @@ proc processNode(rendererSym: NimNode; node: NimNode;
             # CSS style property: emit setStyle instead of setAttribute
             let cssName = toStyleName(attrName)
             if not isDynamic(attrVal):
-              stmts.add(newCall(
-                newDotExpr(rendererSym, ident"setStyle"),
-                elSym, newStrLitNode(cssName), attrVal))
+              emitEditableAssign(stmts, rendererSym, elSym, "setStyle",
+                                 sceneId, cssName, attrVal)
             else:
               let effectBody = newProc(
                 params = [newEmptyNode()],
@@ -482,9 +570,8 @@ proc processNode(rendererSym: NimNode; node: NimNode;
               stmts.add(newCall(ident"createRenderEffect", effectBody))
           elif not isDynamic(attrVal):
             # Static attribute
-            stmts.add(newCall(
-              newDotExpr(rendererSym, ident"setAttribute"),
-              elSym, newStrLitNode(attrName), attrVal))
+            emitEditableAssign(stmts, rendererSym, elSym, "setAttribute",
+                               sceneId, attrName, attrVal)
           else:
             # Dynamic attribute - wrap in effect
             let effectBody = newProc(
@@ -523,18 +610,8 @@ proc processNode(rendererSym: NimNode; node: NimNode;
 
   return nil
 
-macro ui*(renderer: untyped; body: untyped): untyped =
-  ## Karax-style DSL macro (client mode). Takes a renderer and a body block,
-  ## produces code that creates a tree of elements via the renderer API.
-  ##
-  ## Usage:
-  ##   let root = ui(myRenderer):
-  ##     tdiv(class = "container"):
-  ##       h1: text "Hello"
-  ##       span: text $count.val
-  ##       button(onclick = handler):
-  ##         text "Click me"
-
+proc buildClientTree(renderer, body: NimNode): NimNode {.compileTime.} =
+  ## The client arm's code generation, shared by `ui` and `uiEditable`.
   let stmts = newStmtList()
   var rootSym: NimNode = nil
 
@@ -567,6 +644,43 @@ macro ui*(renderer: untyped; body: untyped): untyped =
     stmts.add(rootSym)
 
   result = newBlockStmt(stmts)
+
+macro ui*(renderer: untyped; body: untyped): untyped =
+  ## Karax-style DSL macro (client mode). Takes a renderer and a body block,
+  ## produces code that creates a tree of elements via the renderer API.
+  ##
+  ## Usage:
+  ##   let root = ui(myRenderer):
+  ##     tdiv(class = "container"):
+  ##       h1: text "Hello"
+  ##       span: text $count.val
+  ##       button(onclick = handler):
+  ##         text "Click me"
+
+  buildClientTree(renderer, body)
+
+
+macro uiEditable*(renderer: untyped; body: untyped): untyped =
+  ## `ui(renderer)`, with every authored literal compiled into a cell the
+  ## editor can write.
+  ##
+  ## The third compilation regime. Where `ui:` produces a string and
+  ## `ui(r):` produces a live element tree, this produces a tree whose
+  ## authored values are reactive: the editor writes the cell, the render
+  ## effect that reads it re-runs, and that element updates. Nothing else in
+  ## the block is touched and nothing is rebuilt.
+  ##
+  ## Opt-in per block because the editor's own chrome is client-mode DSL in the
+  ## same bundle, and it is not the document being edited. `uiIsomorphic` uses
+  ## this for its client arm, so a project writes its layout once and gets the
+  ## editable version without naming it.
+  ##
+  ## Outside an editor build (`-d:isonimEditor`) this is exactly `ui(renderer)`:
+  ## the cells are compiled out, not disabled at runtime.
+  let prev = editRegimeActive
+  editRegimeActive = true
+  result = buildClientTree(renderer, body)
+  editRegimeActive = prev
 
 # ---------------------------------------------------------------------------
 # SSR mode (string concatenation)

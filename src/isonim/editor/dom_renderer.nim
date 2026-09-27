@@ -8,14 +8,28 @@ import std/dom
 
 type
   DomRenderer* = object
+    doc*: Document
+      ## Which document new nodes are created in. `nil` means the editor's own.
+      ##
+      ## The preview is an iframe, and an element created by the editor's
+      ## `document` cannot be appended into the frame's: same-origin or not,
+      ## a node belongs to the document that made it. So mounting a project's
+      ## UI into the preview needs a renderer pointed at
+      ## `frame.contentDocument`, which is what this field is for.
+      ##
+      ## Defaulted rather than required so every existing `DomRenderer()` keeps
+      ## working and keeps meaning "the editor's own document".
   DomElement* = Element
 
+proc ownerDoc(r: DomRenderer): Document {.inline.} =
+  if r.doc.isNil: document else: r.doc
+
 proc createElement*(r: DomRenderer; tag: string): DomElement =
-  document.createElement(tag.cstring)
+  r.ownerDoc.createElement(tag.cstring)
 
 proc createTextNode*(r: DomRenderer; text: string): DomElement =
   # DOM createTextNode returns a Node, but we cast to Element for interface compat
-  cast[Element](document.createTextNode(text.cstring))
+  cast[Element](r.ownerDoc.createTextNode(text.cstring))
 
 proc appendChild*(r: DomRenderer; parent, child: DomElement) =
   parent.appendChild(child)
@@ -51,6 +65,23 @@ proc setInnerHtml*(r: DomRenderer; node: DomElement; html: string) =
   ## The brief tab uses this for the rendered markdown body.
   let h = html.cstring
   {.emit: [node, ".innerHTML = ", h].}
+
+proc appendRawHtml*(r: DomRenderer; parent: DomElement; html: string) =
+  ## Parse `html` and append the resulting nodes to `parent`, with NO wrapper.
+  ##
+  ## The DSL's `raw` node drops an HTML string in at the position it appears.
+  ## SSR does that by concatenation, so there is no extra element; client mode
+  ## has to match, or the same block renders two different trees and every
+  ## selector written against one is wrong against the other. A `<template>`
+  ## parses the fragment without adopting it into the layout, and appending
+  ## `.content` moves the parsed children in as siblings.
+  let h = html.cstring
+  {.emit: [
+    "(function (parent, html) {",
+    "  const tpl = parent.ownerDocument.createElement('template');",
+    "  tpl.innerHTML = html;",
+    "  parent.appendChild(tpl.content);",
+    "})(", parent, ", ", h, ");"].}
 
 proc addPointerListener*(r: DomRenderer; node: DomElement; event: string;
     handler: proc(x, y: float; shift, alt: bool)) =
@@ -145,4 +176,8 @@ proc focus*(r: DomRenderer; node: DomElement) =
 
 proc activeElement*(r: DomRenderer): DomElement =
   ## Returns the currently-focused DOM element (or nil).
-  cast[Element](document.activeElement)
+  ##
+  ## Focus is per-document, so this follows `doc` for the same reason node
+  ## creation does: a renderer pointed at the preview frame asking the editor's
+  ## document what is focused would answer about the wrong window.
+  cast[Element](r.ownerDoc.activeElement)

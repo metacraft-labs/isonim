@@ -208,6 +208,13 @@ proc setInnerHtml*(r: MockRenderer; node: MockNode; html: string) =
   node.children.add(textNode)
   node.attributes["data-inner-html"] = html
 
+proc appendRawHtml*(r: MockRenderer; parent: MockNode; html: string) =
+  ## The mock has no HTML parser, so the fragment is recorded rather than
+  ## expanded. Enough to assert that a `raw` node reached the renderer and
+  ## with what; a test that needs the parsed tree needs a real DOM.
+  let holder = MockNode(kind: mnkText, text: html)
+  parent.children.add holder
+
 proc getAttribute*(r: MockRenderer; node: MockNode; name: string): string =
   ## Look up an attribute or return the empty string when absent.
   result = if name in node.attributes: node.attributes[name] else: ""

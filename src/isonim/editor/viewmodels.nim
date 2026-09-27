@@ -10,6 +10,35 @@ import isonim/viewmodel
 import isonim/editor/types
 import isonim/editor/element_semantics
 import isonim/editor/streaming_preview
+
+when defined(js):
+  # `Element` only. A plain `import std/dom` collides with this module's own
+  # `NodeType`, and a whole DOM namespace is more than one field's type needs.
+  from std/dom import Element
+
+## Where a project mounts a story's UI, and the hook that does it.
+##
+## A real DOM element in the browser, and a stand-in everywhere else. The
+## editor's ViewModels compile natively for their tests, so this cannot name
+## `std/dom` unconditionally -- but the field must exist on both backends, or
+## the record's shape would differ between them.
+when defined(js):
+  type PreviewMountHost* = Element
+else:
+  type PreviewMountHost* = RootRef
+
+type PreviewMountHook* = proc(story: StoryRef; host: PreviewMountHost) {.closure.}
+  ## Mount a story's UI into `host`, live.
+  ##
+  ## The project's alternative to handing the editor a string of HTML. A string
+  ## cannot be edited without rewriting and recompiling the source that produced
+  ## it; a mounted tree can, because the values in it are cells the editor
+  ## writes and the framework's own reactivity carries the change to the DOM.
+  ##
+  ## The project keeps ownership of what it renders: it is handed an element
+  ## inside the preview frame and decides what goes in it. The editor never
+  ## parses, rewrites or re-serialises the project's markup.
+
 import isonim/editor/style_provenance_decode
 
 export types
@@ -406,6 +435,9 @@ type
       ## still references it keep compiling; no renderer observes it.
     review*: ReviewResultsVM
     preview*: ProjectPreviewVM
+    previewMount*: PreviewMountHook
+      ## Set from the workspace. Nil for a project that has not adopted
+      ## mounting, whose preview then comes from `documentHtml` as before.
     flowPlayer*: FlowPlayerVM
     streamingPreview*: StreamingPreviewVM
       ## Optional handle to the M57 streaming-preview ViewModel. When

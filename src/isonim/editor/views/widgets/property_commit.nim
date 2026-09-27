@@ -30,6 +30,7 @@ import std/options
 import isonim/core/signals
 import isonim/editor/types
 import isonim/editor/viewmodels
+import isonim/editor/editable_cells
 import isonim/editor/views/choice_row
 
 # --------------------------------------------------------------------------- #
@@ -173,7 +174,8 @@ proc applyPreviewStyle(elementId, domPath, property, value: string) =
   ## worked and the one signal a person actually reads was missing, which is
   ## indistinguishable from nothing having happened.
   ##
-  ## **On the rule, not on the element.** This used to set an inline style with
+  ## **Through the project's own reactivity where it can be, on the rule where
+  ## it cannot.** This used to set an inline style with
   ## `!important`, which was fast and which lied: an inline `!important`
   ## outranks every rule, so the preview showed the requested value whether or
   ## not the stylesheet could produce it. That is how a `font-size` written
@@ -204,8 +206,24 @@ proc applyPreviewStyle(elementId, domPath, property, value: string) =
   ## records are short strings rather than the whole stylesheet, so there is
   ## nothing to cap or expire, and re-applying is idempotent.
   when defined(js):
+    # The cell first, the rule second.
+    #
+    # A value the DSL authored -- `padding = "12px"`, the text of a heading --
+    # is a cell in this bundle's registry, and writing it is a signal write:
+    # the render effect that reads it re-runs and updates that node. Nothing is
+    # patched, nothing is re-serialised, and the preview is showing the
+    # project's own render of the new value.
+    #
+    # Most of a design system is not authored that way. `.tagline`'s size comes
+    # from a rule in the stylesheet, and no cell exists for it, so those fall
+    # through to setting the declaration on the rule the cascade uses. The
+    # fallback is not a lesser path -- it is the right answer for a value that
+    # lives in CSS rather than in the block.
+    let writeCell = proc(sceneId: cstring): bool =
+      if sceneId.len == 0: return false
+      setEditableValue($sceneId, property, value)
     {.emit: ["""
-      (function () {
+      (function (writeCell) {
       const toJsString = (raw) => Array.isArray(raw)
         ? String.fromCharCode.apply(null, raw)
         : String(raw || '');
@@ -214,6 +232,31 @@ proc applyPreviewStyle(elementId, domPath, property, value: string) =
       const property = toJsString(""", property, """);
       const value = toJsString(""", value, """);
       if (!id || !property) return;
+
+      // Resolve once, here, and hand the scene id to the cell registry.
+      // `data-isonim-src` is the key the `ui` macro registered the cell under,
+      // stamped on the element by the same macro pass.
+      const frames = [...document.querySelectorAll('iframe')];
+      let target = null;
+      for (const frame of frames) {
+        let doc = null;
+        try { doc = frame.contentDocument; } catch (e) { continue; }
+        if (!doc) continue;
+        target = doc.querySelector(
+          '[data-isonim-element-id="' + CSS.escape(id) + '"]');
+        if (!target && path) {
+          try { target = doc.querySelector(path); } catch (e) {}
+        }
+        if (target) break;
+      }
+      if (target && writeCell(target.getAttribute('data-isonim-src') || '')) {
+        return;
+      }
+
+      // No cell: the value lives in the stylesheet. Remember it as well as
+      // applying it, so a frame rebuilt before the source catches up gets it
+      // back on start. Short records rather than a stylesheet, so there is
+      // nothing to cap or expire, and applying twice is a no-op.
       const store = window.__isonimPreviewDeclarations ||
         (window.__isonimPreviewDeclarations = {});
       const key = id + '|' + property;
@@ -222,8 +265,7 @@ proc applyPreviewStyle(elementId, domPath, property, value: string) =
       window.dispatchEvent(new CustomEvent('isonim-preview-set-declaration', {
         detail: { id: id, path: path, property: property, value: value }
       }));
-      })();
-    """].}
+      })(""", writeCell, ");"].}
   else:
     discard elementId
     discard property

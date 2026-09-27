@@ -16,6 +16,20 @@
 
 const sceneGraphEnabled* = defined(isonimEditor)
 
+const editRegimeEnabled* = defined(isonimEditor)
+  ## Compile the DSL's authored literals into cells the editor can write.
+  ##
+  ## The same flag as `sceneGraphEnabled`, named separately because it is a
+  ## different claim: one records what the tree IS, the other makes what it
+  ## SAYS changeable at runtime. They are enabled together today because both
+  ## exist to serve the editor, and a project that wanted one without the other
+  ## would be asking for a build the editor cannot drive.
+  ##
+  ## In a production build this is false and the macro emits exactly what it
+  ## always did -- the literal, in place, with no cell, no effect and no
+  ## registry lookup. The edit regime costs a shipped page nothing because it
+  ## is not in it.
+
 when sceneGraphEnabled:
   import ../editor/scene_graph_hooks
   export scene_graph_hooks

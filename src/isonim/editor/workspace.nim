@@ -37,6 +37,10 @@ type
     initialVectorSymbol*: Option[int]
     initialReviewBaseline*: Option[seq[Violation]]
     previewHook*: ProjectPreviewHook
+    previewMount*: PreviewMountHook
+      ## Mount a story's UI into the preview, instead of describing it with a
+      ## string. See `PreviewMountHook`. Optional: a project that leaves this
+      ## nil gets the `documentHtml` path unchanged.
     responsiveBreakpoints*: seq[ResponsiveBreakpoint]
       ## The width-based `@media` blocks this project's stylesheet defines,
       ## narrowest first. Empty means the project is not responsive, or has
@@ -128,6 +132,7 @@ proc newEditorWorkspace*(title: string;
                           initialVectorSymbol = none(int);
                           initialReviewBaseline = none(seq[Violation]);
                           previewHook: ProjectPreviewHook = defaultPreviewHook;
+                          previewMount: PreviewMountHook = nil;
                           responsiveBreakpoints: seq[ResponsiveBreakpoint] = @[];
                           agentPromptAdapter: AgentPromptAdapter = nil;
                           agentCancelAdapter: AgentCancelAdapter = nil;
@@ -164,6 +169,7 @@ proc newEditorWorkspace*(title: string;
     initialVectorSymbol: initialVectorSymbol,
     initialReviewBaseline: initialReviewBaseline,
     previewHook: previewHook,
+    previewMount: previewMount,
     responsiveBreakpoints: responsiveBreakpoints,
     agentPromptAdapter: agentPromptAdapter,
     agentCancelAdapter: agentCancelAdapter,
@@ -293,6 +299,7 @@ proc loadProjectData*(vm: EditorVM; workspace: EditorWorkspace) =
   vm.variants.variants.val = workspace.componentVariants
   vm.designSystemSchema.val = workspace.designSystemSchema
   vm.preview.hook = workspace.previewHook
+  vm.previewMount = workspace.previewMount
   vm.responsiveBreakpoints.val = workspace.responsiveBreakpoints
   vm.workspacePermissions.val = workspace.permissions
   vm.workspaceEditAdapter = workspace.editAdapter

@@ -14,6 +14,7 @@ import isonim/editor/streaming_preview
 import isonim/editor/types
 import isonim/editor/viewmodels
 import isonim/editor/workspace
+import isonim/editor/editable_cells
 import isonim/editor/views/shell
 import isonim/editor/design_review/editor_agent_adapter
 
@@ -754,6 +755,19 @@ proc exposeWindowEditorHandle*(vm: EditorVM) =
   # 2026-05-28: drag-resize handles for the left sidebar and the right
   # panel call into these closures so the JS-side mousemove handler
   # can push the new width back through the VM (which clamps).
+  proc cellKeysJson(): cstring =
+    var acc = "["
+    var first = true
+    for key in editableCellKeys():
+      if not first: acc.add ","
+      first = false
+      acc.add "\"" & key.replace("\\", "\\\\").replace("\"", "\\\"") & "\""
+    acc.add "]"
+    acc.cstring
+
+  proc setCell(id, property, value: cstring): bool =
+    setEditableValue($id, $property, $value)
+
   proc setLeftSidebar(width: int) =
     capturedVm.setLeftSidebarWidth(width)
   proc setRightPanel(width: int) =
@@ -776,6 +790,8 @@ proc exposeWindowEditorHandle*(vm: EditorVM) =
   # into a field: the keydown handler returns early for an editable target,
   # so the shortcut a person uses after typing a value is the one path a
   # browser test cannot exercise.
+  let cbCells = cellKeysJson
+  let cbSetCell = setCell
   let cbSave = proc(): cstring =
     let state = vm.runEditorCommand(eckSave)
     if state.diagnostic.len > 0: state.diagnostic.cstring
@@ -924,6 +940,8 @@ proc exposeWindowEditorHandle*(vm: EditorVM) =
       const fnLeftW = """, cbLeftWidth, """;
       const fnRightW = """, cbRightWidth, """;
       const fnSave = """, cbSave, """;
+      const fnCells = """, cbCells, """;
+      const fnSetCell = """, cbSetCell, """;
       const fnPending = """, cbPending, """;
       window.__isonimEditor = window.__isonimEditor || {};
       window.__isonimEditor.selectStoryByName = function (group, name) {
@@ -933,6 +951,17 @@ proc exposeWindowEditorHandle*(vm: EditorVM) =
       window.__isonimEditor.setEditMode = function (modeIndex) {
         fnMode(modeIndex | 0);
         return true;
+      };
+      // The DSL's authored values, as the editor sees them. Test affordance:
+      // the cells are the mechanism that makes a mounted preview editable, and
+      // nothing in the DOM reveals whether a change came through one or
+      // through a stylesheet rule -- which is exactly the distinction a test
+      // of this has to make.
+      window.__isonimEditor.editableCells = function () {
+        return fnCells();
+      };
+      window.__isonimEditor.setEditableValue = function (id, property, value) {
+        return fnSetCell(id, property, value);
       };
       window.__isonimEditor.setLeftSidebarWidth = function (width) {
         fnLeftW(width | 0);
@@ -983,45 +1012,37 @@ proc rememberLiveEditorVM(vm: EditorVM) =
   else:
     discard vm
 
-proc clearPreviewStyleOverrides() =
-  ## Forget the optimistic preview overrides, without touching the frame that
-  ## is currently on screen.
+proc onProjectCodeReplaced() =
+  ## What survives a hot swap, and why it is everything.
   ##
-  ## The overrides bridge the gap between making an edit and the rebuild that
-  ## makes it real -- see `applyPreviewStyle` in widgets/property_commit.nim.
-  ## Once the rebuilt source carries the value they are not merely redundant:
-  ## they are applied inline with `!important`, so they outrank the stylesheet,
-  ## and an override that outlives its rebuild makes the editor show a value
-  ## the saved source does not produce.
+  ## The obvious move here is to drop the editor's pending state -- the cells
+  ## were seeded from literals in the OLD bundle, and the pending stylesheet
+  ## declarations were applied to rules it compiled. Both were cleared, and
+  ## both had to be put back, because the assumption underneath is wrong:
+  ## **a rebuild lags the edit that caused it.**
   ##
-  ## **Only the store is cleared.** An earlier version also removed the inline
-  ## styles from the live frame, and that was visibly wrong: the swap replaces
-  ## the preview document asynchronously, so for the few hundred milliseconds
-  ## between clearing and the new frame painting, the OLD frame was on screen
-  ## with the override gone and the old stylesheet still compiled in. The value
-  ## flickered back to what it had been before the edit and then forward again
-  ## -- measured at 434ms of showing the user the number they had just replaced.
+  ## The bundle arriving now was compiled from the source as it stood seconds
+  ## ago. An edit made since is still pending, and the editor's overlay is the
+  ## only record of it. Clearing on arrival therefore does not reconcile the
+  ## preview with the source -- it reverts the preview to a moment before the
+  ## user's most recent change. Measured: a third edit flashed back to the
+  ## second one's value 1119ms after it was made, when the second one's rebuild
+  ## landed.
   ##
-  ## Clearing the store alone is enough, because the store exists to re-apply
-  ## overrides to a NEW frame. The frame being replaced keeps its inline styles
-  ## for the rest of its short life, and the frame that replaces it is built
-  ## from source that already has the value.
-  when defined(js):
-    {.emit: """
-      window.__isonimPreviewOverrides = {};
-      // `__isonimPreviewStylesheet` deliberately SURVIVES the bundle swap.
-      //
-      // It looks redundant here -- the rebuilt bundle carries the same CSS --
-      // and clearing it is wrong for the same reason clearing the overrides
-      // here is right. Rebuilds lag edits: the bundle arriving now was
-      // compiled from an EARLIER edit, so a later edit's stylesheet is still
-      // the only record of what the file actually says. Dropping it made the
-      // preview flash back to the previous value.
-      //
-      // It is a single value that each save replaces, so nothing accumulates,
-      // and adopting it is idempotent -- once the compiled CSS matches, the
-      // adopt is a no-op.
-    """.}
+  ## Keeping both is safe because both are idempotent overlays. Once the source
+  ## catches up, the cell holds the value the new literal would have seeded and
+  ## the declaration matches the rule it is written to, so applying them
+  ## changes nothing. They converge instead of fighting.
+  ##
+  ## The cost is that an edit made to the file by someone ELSE, to a value the
+  ## user has also touched here, stays masked by the local edit until the next
+  ## time it is set. That is the same trade `mergeTokensPreservingLocalEdits`
+  ## already makes for tokens, and it is the right way round: losing somebody's
+  ## unsaved work is worse than delaying somebody else's saved work.
+  ##
+  ## `resetEditableCells` still exists for an explicit "reload from source",
+  ## which is a deliberate act rather than a side effect of compiling.
+  discard
 
 proc mountEditor*(workspace: EditorWorkspace;
                   root: Element = document.body;
@@ -1056,7 +1077,7 @@ proc mountEditor*(workspace: EditorWorkspace;
       # rebuilds the preview: the overrides must be gone by the time the new
       # frame asks for them, or the frame-start re-apply puts them straight
       # back on top of the source that now carries the same values.
-      clearPreviewStyleOverrides()
+      onProjectCodeReplaced()
       live.loadProjectData(workspace)
       return live
 

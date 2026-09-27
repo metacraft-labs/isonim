@@ -1058,28 +1058,7 @@ __ISONIM_SCENE_GRAPH_WALK__
         });
       }
     } catch (e) {}
-    let store = null;
-    try { store = parent.__isonimPreviewOverrides; } catch (e) { return; }
-    if (!store || !Object.keys(store).length) return;
-    Object.keys(store).forEach(function (id) {
-      const target = document.querySelector(
-        '[data-isonim-element-id="' + CSS.escape(id) + '"]');
-      if (!target) return;
-      const props = store[id] || {};
-      Object.keys(props).forEach(function (property) {
-        target.style.setProperty(property, props[property], 'important');
-      });
-    });
   })();
-  // Swap a chunk of the live stylesheet for the version just written to disk.
-  //
-  // This is the fast path: the authored CSS, in front of the user in
-  // milliseconds, instead of the seconds a `nim js` rebuild takes. It replaces
-  // text inside the existing `<style>` rather than appending a new rule,
-  // because appending would change the cascade -- a later rule wins ties, so
-  // an appended copy could take effect where the real one does not, and the
-  // preview would stop telling the truth about the file. Replacing in place
-  // leaves every rule exactly where the author put it.
   // The resolver lives in the head script (see `declarationRuntime`), which
   // runs before this document is painted. This is only the channel.
   parent.addEventListener('isonim-preview-set-declaration', function (event) {
@@ -1091,21 +1070,6 @@ __ISONIM_SCENE_GRAPH_WALK__
     } catch (e) {}
   });
 
-  parent.addEventListener('isonim-preview-apply-style', function (event) {
-    const detail = event.detail || {};
-    const id = String(detail.id || '');
-    const property = String(detail.property || '');
-    if (!id || !property) return;
-    const target = document.querySelector(
-      '[data-isonim-element-id="' + CSS.escape(id) + '"]');
-    if (!target) return;
-    const value = String(detail.value == null ? '' : detail.value);
-    if (value === '') {
-      target.style.removeProperty(property);
-    } else {
-      target.style.setProperty(property, value, 'important');
-    }
-  });
   parent.addEventListener('isonim-preview-element-visibility', function (event) {
     const id = String(event.detail && event.detail.id || '');
     if (!id) return;
@@ -4824,6 +4788,87 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
   var projectFrame: E
   var lastSrcdoc = ""
   var lastRestoredSelection = ""
+  var lastMountedStory = StoryRef()
+  var disposeMount: proc() = nil
+
+  # ---- mounting the project's UI into the preview frame ----------------- #
+
+  proc whenFrameReady(frame: E; reloaded: bool; then: proc()) =
+    ## Run `then` once the frame's document is the one we just asked for.
+    ##
+    ## A srcdoc write reloads the frame asynchronously, so mounting straight
+    ## after it would build into a document about to be thrown away. When
+    ## nothing was rewritten the current document is already the right one and
+    ## `then` runs now -- which is the common case, because selecting a
+    ## different story inside the same shell reloads nothing.
+    when defined(js):
+      let cb = then
+      {.emit: ["""
+        (function (frame, reloaded, cb) {
+          if (!reloaded) { cb(); return; }
+          frame.addEventListener('load', function onLoad() {
+            frame.removeEventListener('load', onLoad);
+            cb();
+          });
+        })(""", frame, ", ", reloaded, ", ", cb, ");"].}
+    else:
+      discard frame
+      discard reloaded
+      then()
+
+  proc mountIntoFrame(frame: E; story: StoryRef; hook: PreviewMountHook) =
+    ## Hand the project an element inside the frame and let it render.
+    ##
+    ## The renderer is bound to the FRAME's document, not the editor's: a node
+    ## belongs to the document that created it, so an element the editor's
+    ## `document` made cannot be appended inside the iframe. That is what
+    ## `DomRenderer.doc` exists for.
+    ##
+    ## Wrapped in `createRoot` so the mount owns its effects and can be torn
+    ## down when the story changes. Without that, every story switch would
+    ## leave the previous story's render effects alive, still subscribed to the
+    ## cells they read.
+    when defined(js):
+      var host: PreviewMountHost = nil
+      {.emit: [host, " = ", frame, ".contentDocument && ",
+               frame, ".contentDocument.body;"].}
+      if host.isNil: return
+      # The project renders the body's contents; anything already there is the
+      # previous story's.
+      {.emit: [host, ".innerHTML = '';"].}
+      createRoot proc(dispose: proc()) =
+        disposeMount = dispose
+        hook(story, host)
+      # Re-apply pending stylesheet declarations, AFTER the mount.
+      #
+      # The injected bridge also does this on frame start, and that is now too
+      # early: the bridge runs at the end of `<body>`, which for a mounted
+      # preview is an EMPTY body -- the project has not rendered yet, so there
+      # is no element for a declaration to resolve against and the edit is
+      # silently dropped. It reached the user as the preview flashing back to
+      # the old value about a second after an edit, once the write triggered a
+      # reload.
+      #
+      # Here the tree exists. Idempotent, so the bridge's earlier attempt
+      # costing nothing is fine.
+      {.emit: """
+        (function () {
+          const pending = window.__isonimPreviewDeclarations;
+          if (!pending) return;
+          Object.keys(pending).forEach(function (key) {
+            const d = pending[key];
+            window.dispatchEvent(new CustomEvent(
+              'isonim-preview-set-declaration', { detail: d }));
+          });
+        })();
+      """.}
+    else:
+      # Native builds have no DOM to mount into. `discard hook` would CALL it
+      # (a parameterless proc discards its result), so the parameters are
+      # referenced without invoking anything.
+      discard frame
+      discard story
+      discard hook.isNil
 
   let container = ui(r):
     tdiv(class = "editor-preview",
@@ -5084,12 +5129,47 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
             "\n<!-- isonim-reload:" & $reloadGeneration & " -->"
     # Length first: `!=` on a Nim string is an element-wise walk of two char
     # arrays, and two documents of different length cannot be equal.
-    if nextSrcdoc.len != lastSrcdoc.len or nextSrcdoc != lastSrcdoc:
+    let srcdocChanged =
+      nextSrcdoc.len != lastSrcdoc.len or nextSrcdoc != lastSrcdoc
+    if srcdocChanged:
       lastSrcdoc = nextSrcdoc
       r.setAttribute(projectFrame, "srcdoc", nextSrcdoc)
       # Reloading the frame drops the selection outline, so ask for a restore
       # even when the selected element itself did not change.
       srcdocGeneration.val = srcdocGeneration.val + 1
+
+    # Mount the project's UI into the frame, when the project offers one.
+    #
+    # The alternative -- and what this replaces -- is the project serialising
+    # its UI to a string and the editor injecting it. A string cannot be
+    # edited: changing a value in it means rewriting the source that produced
+    # it and recompiling, which is why every fast path before this one was a
+    # way of patching the rendered output behind the project's back.
+    #
+    # A mounted tree needs none of that. The values in it are cells (see
+    # `dsl/isomorphic` and `editor/editable_cells`), so an edit is a signal
+    # write and the framework's own reactivity updates the node that showed
+    # it. The editor stops being a thing that rewrites the project's markup.
+    #
+    # Still inside the iframe, deliberately. The frame is what keeps the
+    # project's CSS off the editor's chrome, and what makes the preview's width
+    # the width media queries are evaluated against -- both of which a div in
+    # the editor's own document would lose.
+    if not vm.previewMount.isNil and vm.platform.val == pbWeb:
+      let story = vm.selectedStory.val
+      let mountHook = vm.previewMount
+      if srcdocChanged or story != lastMountedStory:
+        lastMountedStory = story
+        # The frame reloads asynchronously after a srcdoc write, so the mount
+        # waits for `load`. When the document is already the one we want, the
+        # callback runs immediately instead -- a story change inside an
+        # unchanged shell reloads nothing.
+        let doMount = proc() =
+          if not disposeMount.isNil:
+            disposeMount()
+            disposeMount = nil
+          mountIntoFrame(projectFrame, story, mountHook)
+        whenFrameReady(projectFrame, srcdocChanged, doMount)
     r.setStyle(projectFrame, "min-height", "320px")
     r.setStyle(projectFrame, "overflow", "hidden")
 
