@@ -13,6 +13,7 @@ import isonim/editor/streaming_preview
 import isonim/editor/views/canvas_mount
 import isonim/editor/views/component_edit
 import isonim/editor/views/choice_row
+import isonim/editor/views/preview_mount
 
 const
   bgBase = "#0D0E14"
@@ -867,6 +868,7 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
 
   var lastProjectSrcdoc = ""
   var lastRestoredDetailSelection = ""
+  let mountState = newPreviewMountState()
   # The selected element is read in its own effect below rather than in the
   # srcdoc effect, for the reason spelled out in component_edit.nim: this
   # effect builds the project's whole preview document, and on the JS backend
@@ -934,11 +936,24 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
         ""
     # Length first: `!=` on a Nim string walks two char arrays element by
     # element, and two documents of different length cannot be equal.
-    if nextProjectSrcdoc.len != lastProjectSrcdoc.len or
-        nextProjectSrcdoc != lastProjectSrcdoc:
+    let projectSrcdocChanged =
+      nextProjectSrcdoc.len != lastProjectSrcdoc.len or
+      nextProjectSrcdoc != lastProjectSrcdoc
+    if projectSrcdocChanged:
       r.setAttribute(projectFrame, "srcdoc", nextProjectSrcdoc)
       lastProjectSrcdoc = nextProjectSrcdoc
       detailSrcdocGeneration.val = detailSrcdocGeneration.val + 1
+
+    # Mount the project's UI, exactly as the edit view does.
+    #
+    # This view is where the editor LANDS, so a project that supplies a mount
+    # hook and an empty shell -- which is what adopting mounting means --
+    # showed a blank white rectangle here until this existed. The edit view had
+    # it and this one did not, which is the same way these two views drifted
+    # apart before; `views/preview_mount` is now the single copy of the rule.
+    if showProject and vm.platform.val == pbWeb:
+      mountPreviewInto(projectFrame, story, vm.previewMount, mountState,
+                       projectSrcdocChanged)
     r.setStyle(projectFrame, "width", "100%")
     r.setStyle(projectFrame, "min-height", "1px")
     r.setStyle(projectFrame, "overflow", "hidden")

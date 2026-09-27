@@ -10,6 +10,7 @@ import isonim/dsl/ui
 import isonim/editor/viewmodels
 import isonim/editor/types
 import isonim/editor/views/choice_row
+import isonim/editor/views/preview_mount
 import isonim/editor/views/scene_graph_walk
 import isonim/editor/style_provenance_decode
 
@@ -4788,102 +4789,7 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
   var projectFrame: E
   var lastSrcdoc = ""
   var lastRestoredSelection = ""
-  var lastMountedStory = StoryRef()
-  var disposeMount: proc() = nil
-
-  # ---- mounting the project's UI into the preview frame ----------------- #
-
-  proc whenFrameReady(frame: E; reloaded: bool; then: proc()) =
-    ## Run `then` once the frame's document is the one we just asked for.
-    ##
-    ## A srcdoc write reloads the frame asynchronously, so mounting straight
-    ## after it would build into a document about to be thrown away. When
-    ## nothing was rewritten the current document is already the right one and
-    ## `then` runs now -- which is the common case, because selecting a
-    ## different story inside the same shell reloads nothing.
-    when defined(js):
-      let cb = then
-      {.emit: ["""
-        (function (frame, reloaded, cb) {
-          if (!reloaded) { cb(); return; }
-          frame.addEventListener('load', function onLoad() {
-            frame.removeEventListener('load', onLoad);
-            cb();
-          });
-        })(""", frame, ", ", reloaded, ", ", cb, ");"].}
-    else:
-      discard frame
-      discard reloaded
-      then()
-
-  proc mountIntoFrame(frame: E; story: StoryRef; hook: PreviewMountHook) =
-    ## Hand the project an element inside the frame and let it render.
-    ##
-    ## The renderer is bound to the FRAME's document, not the editor's: a node
-    ## belongs to the document that created it, so an element the editor's
-    ## `document` made cannot be appended inside the iframe. That is what
-    ## `DomRenderer.doc` exists for.
-    ##
-    ## Wrapped in `createRoot` so the mount owns its effects and can be torn
-    ## down when the story changes. Without that, every story switch would
-    ## leave the previous story's render effects alive, still subscribed to the
-    ## cells they read.
-    when defined(js):
-      var body: PreviewMountHost = nil
-      {.emit: [body, " = ", frame, ".contentDocument && ",
-               frame, ".contentDocument.body;"].}
-      if body.isNil: return
-
-      # Build into a detached fragment, then swap it in as one mutation.
-      #
-      # Clearing the body and rendering into it leaves a window -- however
-      # short -- in which the document holds a partial tree, and the editor's
-      # scene-graph reader polls that document. It sampled mid-mount and
-      # labelled the selected element `h1` instead of `h1.tagline`, because the
-      # element existed and its class effect had not run yet. Reactive
-      # attributes make that window wider than it used to be: an attribute is
-      # no longer set as part of creating the element.
-      #
-      # A fragment has an `ownerDocument`, so the project still derives its
-      # renderer from the host exactly as before, and node identity survives
-      # the swap, so the effects created during the mount keep working once
-      # their nodes are in the document.
-      var host: PreviewMountHost = nil
-      {.emit: [host, " = ", frame, ".contentDocument.createDocumentFragment();"].}
-      createRoot proc(dispose: proc()) =
-        disposeMount = dispose
-        hook(story, host)
-      {.emit: [body, ".replaceChildren(", host, ");"].}
-      # Re-apply pending stylesheet declarations, AFTER the mount.
-      #
-      # The injected bridge also does this on frame start, and that is now too
-      # early: the bridge runs at the end of `<body>`, which for a mounted
-      # preview is an EMPTY body -- the project has not rendered yet, so there
-      # is no element for a declaration to resolve against and the edit is
-      # silently dropped. It reached the user as the preview flashing back to
-      # the old value about a second after an edit, once the write triggered a
-      # reload.
-      #
-      # Here the tree exists. Idempotent, so the bridge's earlier attempt
-      # costing nothing is fine.
-      {.emit: """
-        (function () {
-          const pending = window.__isonimPreviewDeclarations;
-          if (!pending) return;
-          Object.keys(pending).forEach(function (key) {
-            const d = pending[key];
-            window.dispatchEvent(new CustomEvent(
-              'isonim-preview-set-declaration', { detail: d }));
-          });
-        })();
-      """.}
-    else:
-      # Native builds have no DOM to mount into. `discard hook` would CALL it
-      # (a parameterless proc discards its result), so the parameters are
-      # referenced without invoking anything.
-      discard frame
-      discard story
-      discard hook.isNil
+  let mountState = newPreviewMountState()
 
   let container = ui(r):
     tdiv(class = "editor-preview",
@@ -5170,21 +5076,9 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
     # project's CSS off the editor's chrome, and what makes the preview's width
     # the width media queries are evaluated against -- both of which a div in
     # the editor's own document would lose.
-    if not vm.previewMount.isNil and vm.platform.val == pbWeb:
-      let story = vm.selectedStory.val
-      let mountHook = vm.previewMount
-      if srcdocChanged or story != lastMountedStory:
-        lastMountedStory = story
-        # The frame reloads asynchronously after a srcdoc write, so the mount
-        # waits for `load`. When the document is already the one we want, the
-        # callback runs immediately instead -- a story change inside an
-        # unchanged shell reloads nothing.
-        let doMount = proc() =
-          if not disposeMount.isNil:
-            disposeMount()
-            disposeMount = nil
-          mountIntoFrame(projectFrame, story, mountHook)
-        whenFrameReady(projectFrame, srcdocChanged, doMount)
+    if vm.platform.val == pbWeb:
+      mountPreviewInto(projectFrame, vm.selectedStory.val, vm.previewMount,
+                       mountState, srcdocChanged)
     r.setStyle(projectFrame, "min-height", "320px")
     r.setStyle(projectFrame, "overflow", "hidden")
 
