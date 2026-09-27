@@ -5076,7 +5076,19 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
     # project's CSS off the editor's chrome, and what makes the preview's width
     # the width media queries are evaluated against -- both of which a div in
     # the editor's own document would lose.
-    if vm.platform.val == pbWeb:
+    # Only the ACTIVE view mounts and restores.
+    #
+    # Both preview views are mounted at once and display-toggled, so without
+    # this the hidden one also mounts the story and also calls
+    # `restorePreviewSelection` on its own frame. That frame's bridge answers
+    # by dispatching a selection back into the same VM, the other view sees a
+    # new selection and restores in turn, and the selection oscillates between
+    # elements -- observed cycling between `h1.tagline` and two of its spans,
+    # and eventually wedging the tab.
+    #
+    # Reading `activeView` also makes this effect re-run on a view switch,
+    # which is what mounts the story into the view the user just moved to.
+    if vm.platform.val == pbWeb and vm.activeView.val == evComponentEdit:
       mountPreviewInto(projectFrame, vm.selectedStory.val, vm.previewMount,
                        mountState, srcdocChanged)
     r.setStyle(projectFrame, "min-height", "320px")
@@ -5088,7 +5100,9 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
     let selectedId = selectedElementId.val
     let generation = srcdocGeneration.val
     let stamp = selectedId & "@" & $generation
-    if selectedId.len > 0 and stamp != lastRestoredSelection:
+    # Active view only; see the note on the mount above.
+    if vm.activeView.val == evComponentEdit and
+        selectedId.len > 0 and stamp != lastRestoredSelection:
       lastRestoredSelection = stamp
       r.restorePreviewSelection(projectFrame, selectedId)
 

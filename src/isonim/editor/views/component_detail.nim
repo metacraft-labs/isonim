@@ -951,7 +951,20 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
     # showed a blank white rectangle here until this existed. The edit view had
     # it and this one did not, which is the same way these two views drifted
     # apart before; `views/preview_mount` is now the single copy of the rule.
-    if showProject and vm.platform.val == pbWeb:
+    # Only the ACTIVE view mounts and restores.
+    #
+    # Both preview views are mounted at once and display-toggled, so without
+    # this the hidden one also mounts the story and also calls
+    # `restorePreviewSelection` on its own frame. That frame's bridge answers
+    # by dispatching a selection back into the same VM, the other view sees a
+    # new selection and restores in turn, and the selection oscillates between
+    # elements -- observed cycling between `h1.tagline` and two of its spans,
+    # and eventually wedging the tab.
+    #
+    # Reading `activeView` also makes this effect re-run on a view switch,
+    # which is what mounts the story into the view the user just moved to.
+    if showProject and vm.platform.val == pbWeb and
+        vm.activeView.val == evComponentDetail:
       mountPreviewInto(projectFrame, story, vm.previewMount, mountState,
                        projectSrcdocChanged)
     r.setStyle(projectFrame, "width", "100%")
@@ -1146,7 +1159,9 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
     let detailSelectedId = detailSelectedElementId.val
     let generation = detailSrcdocGeneration.val
     let stamp = detailSelectedId & "@" & $generation
-    if detailSelectedId.len > 0 and stamp != lastRestoredDetailSelection:
+    # Active view only; see the note on the mount above.
+    if vm.activeView.val == evComponentDetail and
+        detailSelectedId.len > 0 and stamp != lastRestoredDetailSelection:
       lastRestoredDetailSelection = stamp
       r.restorePreviewSelection(projectFrame, detailSelectedId)
 
