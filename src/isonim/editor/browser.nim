@@ -843,6 +843,21 @@ proc exposeWindowEditorHandle*(vm: EditorVM) =
         vm.workspaceEditDiagnostics.val = @[]
     {.emit: ["""
       (function (buildFailed, buildRecovered) {
+        // Install once per DOCUMENT, not once per bundle.
+        //
+        // A hot swap loads a new copy of the whole bundle, which re-runs this
+        // top level -- so every swap opened ANOTHER EventSource on the same
+        // page. Each one then answered the next rebuild with its own
+        // `applyBundle`, so one file write produced several bundle loads, each
+        // of which added another listener. The editor degraded over a handful
+        // of edits and then stopped responding, which is exactly what it looks
+        // like from the outside: not a crash, a slide.
+        //
+        // The server saw it too, reporting two and three "clients" for a
+        // single open tab.
+        if (window.__isonimHmrInstalled) return;
+        window.__isonimHmrInstalled = true;
+
         let applying = false;
         let queued = null;
 

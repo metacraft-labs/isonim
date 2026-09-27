@@ -30,9 +30,16 @@ type
     ## does not tear the preview down and build it again.
     dispose*: proc()
     lastStory*: StoryRef
+    generation*: int
+      ## Bumped on every mount request. A pending mount that is waiting for a
+      ## frame `load` compares against it and gives up if another request has
+      ## arrived since -- without this, two callbacks both run, both call
+      ## `createRoot`, and the second overwrites `dispose` so the first root is
+      ## never torn down. Its effects stay subscribed to the cells they read,
+      ## so every later edit does their work again as well as the real one.
 
 proc newPreviewMountState*(): PreviewMountState =
-  PreviewMountState(dispose: nil, lastStory: StoryRef())
+  PreviewMountState(dispose: nil, lastStory: StoryRef(), generation: 0)
 
 proc whenFrameReady[E](frame: E; reloaded: bool; then: proc()) =
   ## Run `then` once the frame's document is the one we just asked for.
@@ -160,8 +167,25 @@ proc mountPreviewInto*[E](frame: E; story: StoryRef; hook: PreviewMountHook;
   if hook.isNil: return
   if not reloaded and story == state.lastStory: return
   state.lastStory = story
+  state.generation = state.generation + 1
+
+  # Only the LATEST request may mount.
+  #
+  # A srcdoc rewrite makes the mount wait for the frame's `load`, and edits can
+  # arrive faster than rebuilds: each one writes the file, each write triggers a
+  # rebuild, and each rebuild reloads the frame. Several mounts were then in
+  # flight at once, every one of them calling `createRoot` and overwriting
+  # `dispose` -- so all but the last root leaked, still subscribed to the cells
+  # it read. Each subsequent edit ran every orphaned root's effects as well as
+  # the live one's, which is why the editor degraded over a handful of edits
+  # and then stopped responding rather than failing outright.
+  #
+  # Reproduced at ten edits 1.5s apart: the preview and the inspector desynced
+  # at the fifth and the tab wedged at the seventh.
   let captured = state
   let capturedHook = hook
   let capturedStory = story
+  let mine = state.generation
   whenFrameReady(frame, reloaded, proc() =
-    mountNow(frame, capturedStory, capturedHook, captured))
+    if captured.generation == mine:
+      mountNow(frame, capturedStory, capturedHook, captured))
