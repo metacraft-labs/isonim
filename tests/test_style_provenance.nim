@@ -25,6 +25,13 @@ import isonim/editor/viewmodels
 const
   repoRoot = currentSourcePath().parentDir.parentDir
   srcPath = repoRoot / "src"
+  # `-d:isonimEditor` now reaches the reactive core: the edit regime compiles
+  # authored literals into cells, and `dsl/scene_graph`'s editor arm imports
+  # the registry that holds them. `core/graph` and `core/batch` import
+  # `platform`, which lives in nim-everywhere -- so an editor-flagged compile
+  # needs the sibling on its path, exactly as `tests/config.nims` already
+  # provides for the ordinary test compiles this fixture shells out around.
+  siblingPaths = " --path:" & (repoRoot.parentDir / "nim-everywhere" / "src")
   fixture = repoRoot / "tests" / "fixtures" / "style_provenance_fixture.nim"
 
   # --- The sentinels -------------------------------------------------------
@@ -47,7 +54,7 @@ const
 
 proc buildJs(defines, outFile, cacheDir: string): tuple[ok: bool, js: string] =
   removeDir(cacheDir)
-  let cmd = &"nim js --hints:off --verbosity:0 --path:{srcPath} {defines} " &
+  let cmd = &"nim js --hints:off --verbosity:0 --path:{srcPath}{siblingPaths} {defines} " &
             &"--nimcache:{cacheDir} -o:{outFile} {fixture}"
   let (_, code) = execCmdEx(cmd)
   if code != 0 or not fileExists(outFile):
@@ -57,7 +64,7 @@ proc buildJs(defines, outFile, cacheDir: string): tuple[ok: bool, js: string] =
 proc runNative(): string =
   let exe = getTempDir() / "style_provenance_native"
   let (output, code) = execCmdEx(
-    &"nim c -r --hints:off --verbosity:0 --path:{srcPath} -d:isonimEditor " &
+    &"nim c -r --hints:off --verbosity:0 --path:{srcPath}{siblingPaths} -d:isonimEditor " &
     &"-o:{exe} {fixture}")
   if code != 0:
     return ""

@@ -27,9 +27,11 @@
 ## The client arm is also where the editor's regime lives. Under
 ## `-d:isonimEditor` the `ui` macro compiles a literal attribute into a cell the
 ## editor can write, so mounting this block gives a surface that reacts to an
-## edit through the ordinary reactive path rather than by being rebuilt. The
-## SSR arm is untouched by that and compiles exactly as before, which is what
-## keeps the flag off the shipped page.
+## edit through the ordinary reactive path rather than by being rebuilt. That
+## happens because the block is PROJECT code, not because this macro asked for
+## it -- see `isFrameworkBlock` in `ui.nim`. The SSR arm is untouched and
+## compiles exactly as before, which is what keeps the flag off the shipped
+## page.
 
 import std/macros
 
@@ -50,13 +52,6 @@ export escape
 import ../core/[signals, computation]
 export signals, computation
 
-when defined(isonimEditor):
-  # The client arm compiles authored literals into cells, and the macro emits
-  # `editableValue` unbound so it resolves here rather than in the DSL. Exported
-  # so a project writing `uiIsomorphic` gets the registry without importing it
-  # -- and only in an editor build, so a shipped page never links it.
-  import ../editor/editable_cells
-  export editable_cells
 
 macro uiIsomorphic*(name: untyped; body: untyped): untyped =
   ## Define `name(): string` and `nameMount(r, parent)` from one DSL block.
@@ -97,9 +92,7 @@ macro uiIsomorphic*(name: untyped; body: untyped): untyped =
   # the proc costs nothing until a client build instantiates it.
   let r = ident"r"
   let parent = ident"parent"
-  # `uiEditable`, not `ui`: this is the arm the editor drives, so its authored
-  # literals become cells. Outside an editor build the two are identical.
-  let clientCall = newCall(ident"uiEditable", r, dsl.copyNimTree)
+  let clientCall = newCall(ident"ui", r, dsl.copyNimTree)
   let mountProc = newProc(
     name = mountName,
     params = [newEmptyNode(),

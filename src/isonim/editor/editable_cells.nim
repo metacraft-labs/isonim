@@ -25,7 +25,19 @@
 ## using `uiIsomorphic` gets it without knowing it exists.
 
 import std/tables
-import ../core/signals
+import ../core/[signals, computation]
+
+# Re-exported so the `ui` macro can `bindSym` `createRenderEffect` rather than
+# emitting it unbound.
+#
+# An unbound identifier inside a GENERIC proc resolves at the instantiation
+# site, not where the block is written. `uiIsomorphic`'s mount proc is generic
+# over the renderer, so the effects the edit regime emits went looking for
+# `createRenderEffect` in whichever module happened to call the mount -- which
+# is not where the author imported anything. Binding it here resolves it once,
+# in the DSL, and no project has to know. `signals` travels with it for the
+# same reason: reading a cell is `val`, and that lookup has the same problem.
+export signals, computation
 
 var cells = initTable[string, Signal[string]]()
   ## Keyed `<element id>|<property>`. A plain global for the same reason the

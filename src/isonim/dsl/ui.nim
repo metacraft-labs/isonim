@@ -24,6 +24,14 @@
 ##   string concatenation which the Nim compiler handles, or element
 ##   creation which has no meaningful merge semantics.
 ##
+## Under `-d:isonimEditor` the client arm gains a fourth behaviour rather than
+## a fourth entry point: an authored literal in PROJECT code compiles into a
+## cell the editor can write (`editor/editable_cells`), so an edit reaches the
+## DOM through the framework's own reactivity instead of through a mechanism
+## maintained beside it. Framework code is excluded by `isFrameworkBlock`,
+## because the editor's own chrome is client-mode DSL in the same build and is
+## not the document being edited.
+##
 ## The three backends intentionally have separate codegen implementations
 ## rather than sharing an IR, because they have fundamentally different
 ## output structures:
@@ -34,7 +42,7 @@
 ## Sharing an IR would add complexity without benefit — each backend's
 ## optimisations are specific to its output target.
 
-import std/macros
+import std/[macros, os, strutils]
 import transform
 import tailwind
 import ./scene_graph
@@ -43,20 +51,36 @@ import ./style_binding
 
 var gensymCounter {.compileTime.} = 0
 
-var editRegimeActive {.compileTime.} = false
-  ## Is the block being expanded right now one the editor may edit?
+const frameworkSourceRoot = block:
+  ## isonim's own source tree, derived from this file's location.
   ##
-  ## Per BLOCK, not per build, and the difference is not a nicety. The editor's
-  ## own chrome is client-mode DSL compiled into the same bundle as the project
-  ## it edits, so a regime keyed on `-d:isonimEditor` turned every button and
-  ## panel in the editor into editable cells: wasteful, meaningless -- the
-  ## editor's toolbar is not the user's document -- and it broke the build,
-  ## because every view module would have needed the cell registry in scope.
+  ## `ui.nim` lives at `<root>/src/isonim/dsl/ui.nim`, so three parents up is
+  ## `<root>/src/isonim` -- everything the framework itself is made of, and
+  ## nothing a project writes.
+  const here = currentSourcePath().replace('\\', '/')
+  here.parentDir().parentDir()
+
+proc isFrameworkBlock(node: NimNode): bool {.compileTime.} =
+  ## Is this ui block part of the FRAMEWORK rather than the project?
   ##
-  ## `uiEditable` sets this for the extent of one expansion; plain `ui` leaves
-  ## it alone. Save-and-restore rather than set-and-clear because ui blocks
-  ## nest, and an inner plain block inside an editable one must not turn the
-  ## rest of the outer block off.
+  ## The editor is an IsoNim application, so its chrome is client-mode DSL
+  ## compiled into the same `nim js` invocation as the project it edits. Both
+  ## reach this macro and only one of them is the user's document: a toolbar
+  ## button is not something the user edits, and compiling its label into a
+  ## writable cell is at best waste and at worst an invitation to change the
+  ## editor by accident.
+  ##
+  ## A PREFIX test on the directory, not a substring test on the name. A
+  ## project may well have `isonim` in its own path -- the pilot this was built
+  ## against lives at `web-site-prototypes/grip/isonim/src/pages/home.nim` --
+  ## and a substring test would classify it as framework code and silently
+  ## leave it uneditable.
+  ##
+  ## Derived from `currentSourcePath()` rather than configured, so it stays
+  ## true for a vendored copy, a nimble install or a sibling checkout without
+  ## anything being declared anywhere.
+  let file = node.lineInfoObj.filename.replace('\\', '/')
+  file.startsWith(frameworkSourceRoot & "/")
 
 proc attrNameStr(node: NimNode): string {.compileTime.} =
   ## Extract an attribute name from an attribute key node.
@@ -197,7 +221,7 @@ proc emitNoteElement(stmts, elSym: NimNode; tag: string;
                       newStrLitNode(loc), newStrLitNode(parentId)))
   result = id
 
-proc emitEditableAssign(stmts, rendererSym, elSym: NimNode;
+proc emitEditableAssign(stmts, rendererSym, elSym, node: NimNode;
                         setter, id, property: string;
                         literal: NimNode) {.compileTime.} =
   ## Emit an assignment whose value the editor can change at runtime.
@@ -212,19 +236,20 @@ proc emitEditableAssign(stmts, rendererSym, elSym: NimNode;
   ## so it resolves where the ui block is written rather than where this macro
   ## is defined. That is what keeps the reactive core out of the DSL's own
   ## dependencies; see `editor/editable_cells.nim`.
-  if editRegimeEnabled and editRegimeActive:
-    let cellSym = genName("cell")
-    stmts.add(newLetStmt(cellSym,
-      newCall(ident"editableValue", newStrLitNode(id),
-              newStrLitNode(property), literal)))
-    stmts.add(newCall(ident"createRenderEffect", newProc(
-      params = [newEmptyNode()],
-      body = newStmtList(
-        newCall(newDotExpr(rendererSym, ident(setter)), elSym,
-                newStrLitNode(property), newDotExpr(cellSym, ident"val"))))))
-  else:
-    stmts.add(newCall(newDotExpr(rendererSym, ident(setter)),
-                      elSym, newStrLitNode(property), literal))
+  when editRegimeEnabled:
+    if not node.isFrameworkBlock():
+      let cellSym = genName("cell")
+      stmts.add(newLetStmt(cellSym,
+        newCall(bindSym"editableValue", newStrLitNode(id),
+                newStrLitNode(property), literal)))
+      stmts.add(newCall(bindSym"createRenderEffect", newProc(
+        params = [newEmptyNode()],
+        body = newStmtList(
+          newCall(newDotExpr(rendererSym, ident(setter)), elSym,
+                  newStrLitNode(property), newCall(bindSym"val", cellSym))))))
+      return
+  stmts.add(newCall(newDotExpr(rendererSym, ident(setter)),
+                    elSym, newStrLitNode(property), literal))
 
 # ---------------------------------------------------------------------------
 # Void elements (shared between client and SSR modes)
@@ -428,24 +453,32 @@ proc processNode(rendererSym: NimNode; node: NimNode;
 
       if not isDynamic(arg):
         # Static text
-        if editRegimeEnabled and editRegimeActive:
-          # Keyed on the TEXT's own source position, not the parent element's:
-          # one element can hold several text literals (`h1: text "a"; text "b"`)
-          # and keying on the parent would make them one cell, so editing either
-          # would change both.
-          let cellSym = genName("cell")
-          stmts.add(newLetStmt(cellSym,
-            newCall(ident"editableValue", newStrLitNode(sceneElementId(node)),
-                    newStrLitNode("text"), arg)))
-          stmts.add(newLetStmt(txtSym,
-            newCall(newDotExpr(rendererSym, ident"createTextNode"),
-                    newStrLitNode(""))))
-          stmts.add(newCall(ident"createRenderEffect", newProc(
-            params = [newEmptyNode()],
-            body = newStmtList(
-              newCall(newDotExpr(rendererSym, ident"setTextContent"), txtSym,
-                      newDotExpr(cellSym, ident"val"))))))
-        else:
+        var emitted = false
+        when editRegimeEnabled:
+          if not node.isFrameworkBlock():
+            # Keyed on the TEXT's own source position, not the parent
+            # element's: one element can hold several text literals
+            # (`h1: text "a"; text "b"`), and keying on the parent would make
+            # them one cell, so editing either would change both.
+            let cellSym = genName("cell")
+            stmts.add(newLetStmt(cellSym,
+              newCall(bindSym"editableValue",
+                      newStrLitNode(sceneElementId(node)),
+                      newStrLitNode("text"), arg)))
+            stmts.add(newLetStmt(txtSym,
+              newCall(newDotExpr(rendererSym, ident"createTextNode"),
+                      newStrLitNode(""))))
+            stmts.add(newCall(bindSym"createRenderEffect", newProc(
+              params = [newEmptyNode()],
+              body = newStmtList(
+                newCall(newDotExpr(rendererSym, ident"setTextContent"),
+                        txtSym, newCall(bindSym"val", cellSym))))))
+            emitted = true
+        # The plain form, for framework blocks and for production builds. It
+        # has to stay reachable in BOTH: a `when/else` here compiled the
+        # fallback out of editor builds, so a framework block emitted no text
+        # node at all and the generated code referenced an undeclared symbol.
+        if not emitted:
           stmts.add(newLetStmt(txtSym,
             newCall(newDotExpr(rendererSym, ident"createTextNode"), arg)))
         return txtSym
@@ -544,7 +577,7 @@ proc processNode(rendererSym: NimNode; node: NimNode;
           elif attrName == "class" and not isDynamic(attrVal):
             # Static class attribute — always set as attribute (for CSS/debugging),
             # AND expand recognized Tailwind utilities to setStyle calls on native.
-            emitEditableAssign(stmts, rendererSym, elSym, "setAttribute",
+            emitEditableAssign(stmts, rendererSym, elSym, node, "setAttribute",
                                sceneId, "class", attrVal)
             when not defined(js):
               let classStr = attrVal.strVal
@@ -557,7 +590,7 @@ proc processNode(rendererSym: NimNode; node: NimNode;
             # CSS style property: emit setStyle instead of setAttribute
             let cssName = toStyleName(attrName)
             if not isDynamic(attrVal):
-              emitEditableAssign(stmts, rendererSym, elSym, "setStyle",
+              emitEditableAssign(stmts, rendererSym, elSym, node, "setStyle",
                                  sceneId, cssName, attrVal)
             else:
               let effectBody = newProc(
@@ -570,7 +603,7 @@ proc processNode(rendererSym: NimNode; node: NimNode;
               stmts.add(newCall(ident"createRenderEffect", effectBody))
           elif not isDynamic(attrVal):
             # Static attribute
-            emitEditableAssign(stmts, rendererSym, elSym, "setAttribute",
+            emitEditableAssign(stmts, rendererSym, elSym, node, "setAttribute",
                                sceneId, attrName, attrVal)
           else:
             # Dynamic attribute - wrap in effect
@@ -611,7 +644,7 @@ proc processNode(rendererSym: NimNode; node: NimNode;
   return nil
 
 proc buildClientTree(renderer, body: NimNode): NimNode {.compileTime.} =
-  ## The client arm's code generation, shared by `ui` and `uiEditable`.
+  ## The client arm's code generation.
   let stmts = newStmtList()
   var rootSym: NimNode = nil
 
@@ -659,28 +692,6 @@ macro ui*(renderer: untyped; body: untyped): untyped =
 
   buildClientTree(renderer, body)
 
-
-macro uiEditable*(renderer: untyped; body: untyped): untyped =
-  ## `ui(renderer)`, with every authored literal compiled into a cell the
-  ## editor can write.
-  ##
-  ## The third compilation regime. Where `ui:` produces a string and
-  ## `ui(r):` produces a live element tree, this produces a tree whose
-  ## authored values are reactive: the editor writes the cell, the render
-  ## effect that reads it re-runs, and that element updates. Nothing else in
-  ## the block is touched and nothing is rebuilt.
-  ##
-  ## Opt-in per block because the editor's own chrome is client-mode DSL in the
-  ## same bundle, and it is not the document being edited. `uiIsomorphic` uses
-  ## this for its client arm, so a project writes its layout once and gets the
-  ## editable version without naming it.
-  ##
-  ## Outside an editor build (`-d:isonimEditor`) this is exactly `ui(renderer)`:
-  ## the cells are compiled out, not disabled at runtime.
-  let prev = editRegimeActive
-  editRegimeActive = true
-  result = buildClientTree(renderer, body)
-  editRegimeActive = prev
 
 # ---------------------------------------------------------------------------
 # SSR mode (string concatenation)

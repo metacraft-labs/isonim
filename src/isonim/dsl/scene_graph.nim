@@ -33,6 +33,16 @@ const editRegimeEnabled* = defined(isonimEditor)
 when sceneGraphEnabled:
   import ../editor/scene_graph_hooks
   export scene_graph_hooks
+  # The edit regime's registry, reached through the same seam for the same
+  # reason: the `ui` macro emits one uniform call and has no idea an editor
+  # exists. `bindSym` resolves it here, so a project writing client-mode DSL
+  # needs no import of its own.
+  #
+  # This is the one place the DSL touches the reactive core, and only in an
+  # editor build -- `sceneGraphEnabled` is false in production, the import does
+  # not happen, and a shipped page links none of it.
+  import ../editor/editable_cells
+  export editable_cells
 else:
   import ./scene_graph_hooks_off
   export scene_graph_hooks_off

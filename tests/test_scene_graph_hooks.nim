@@ -14,12 +14,19 @@ import std/[unittest, os, osproc, strutils, strformat]
 const
   repoRoot = currentSourcePath().parentDir.parentDir
   srcPath = repoRoot / "src"
+  # `-d:isonimEditor` now reaches the reactive core: the edit regime compiles
+  # authored literals into cells, and `dsl/scene_graph`'s editor arm imports
+  # the registry that holds them. `core/graph` and `core/batch` import
+  # `platform`, which lives in nim-everywhere -- so an editor-flagged compile
+  # needs the sibling on its path, exactly as `tests/config.nims` already
+  # provides for the ordinary test compiles this fixture shells out around.
+  siblingPaths = " --path:" & (repoRoot.parentDir / "nim-everywhere" / "src")
 
 proc buildFixture(defines, outFile, cacheDir: string): tuple[ok: bool, js: string] =
   ## Compile the fixture to JS and return its text.
   let fixture = repoRoot / "tests" / "fixtures" / "scene_graph_fixture.nim"
   removeDir(cacheDir)
-  let cmd = &"nim js --hints:off --verbosity:0 --path:{srcPath} {defines} " &
+  let cmd = &"nim js --hints:off --verbosity:0 --path:{srcPath}{siblingPaths} {defines} " &
             &"--nimcache:{cacheDir} -o:{outFile} {fixture}"
   let (_, code) = execCmdEx(cmd)
   if code != 0 or not fileExists(outFile):
@@ -69,7 +76,7 @@ suite "SGR-M1 scene-graph seam":
     let exe = getTempDir() / "sgr_native"
     let fixture = repoRoot / "tests" / "fixtures" / "scene_graph_fixture.nim"
     let (output, code) = execCmdEx(
-      &"nim c -r --hints:off --verbosity:0 --path:{srcPath} -d:isonimEditor " &
+      &"nim c -r --hints:off --verbosity:0 --path:{srcPath}{siblingPaths} -d:isonimEditor " &
       &"-o:{exe} {fixture}")
     check code == 0
     # root div -> (span, row div); row div -> cell div. Four elements, and

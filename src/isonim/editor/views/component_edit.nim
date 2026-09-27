@@ -4829,16 +4829,31 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
     ## leave the previous story's render effects alive, still subscribed to the
     ## cells they read.
     when defined(js):
-      var host: PreviewMountHost = nil
-      {.emit: [host, " = ", frame, ".contentDocument && ",
+      var body: PreviewMountHost = nil
+      {.emit: [body, " = ", frame, ".contentDocument && ",
                frame, ".contentDocument.body;"].}
-      if host.isNil: return
-      # The project renders the body's contents; anything already there is the
-      # previous story's.
-      {.emit: [host, ".innerHTML = '';"].}
+      if body.isNil: return
+
+      # Build into a detached fragment, then swap it in as one mutation.
+      #
+      # Clearing the body and rendering into it leaves a window -- however
+      # short -- in which the document holds a partial tree, and the editor's
+      # scene-graph reader polls that document. It sampled mid-mount and
+      # labelled the selected element `h1` instead of `h1.tagline`, because the
+      # element existed and its class effect had not run yet. Reactive
+      # attributes make that window wider than it used to be: an attribute is
+      # no longer set as part of creating the element.
+      #
+      # A fragment has an `ownerDocument`, so the project still derives its
+      # renderer from the host exactly as before, and node identity survives
+      # the swap, so the effects created during the mount keep working once
+      # their nodes are in the document.
+      var host: PreviewMountHost = nil
+      {.emit: [host, " = ", frame, ".contentDocument.createDocumentFragment();"].}
       createRoot proc(dispose: proc()) =
         disposeMount = dispose
         hook(story, host)
+      {.emit: [body, ".replaceChildren(", host, ");"].}
       # Re-apply pending stylesheet declarations, AFTER the mount.
       #
       # The injected bridge also does this on frame start, and that is now too

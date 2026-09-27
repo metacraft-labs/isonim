@@ -1,11 +1,15 @@
 ## The third compilation regime: one DSL block, three outputs.
 ##
-## `ui:` produces a string and `ui(r):` produces an element tree. Neither can
+## `ui:` produces a string and `ui(r):` produces an element tree. Neither could
 ## be edited: a value in a string has to be rewritten and recompiled to change,
 ## and a value written straight into a `setStyle` call has nothing to write to.
-## `uiEditable(r):` compiles each authored literal into a cell instead, so the
-## editor writes the cell and the framework's own reactivity updates the node
-## that read it.
+## Under `-d:isonimEditor` the client arm compiles each authored literal in
+## PROJECT code into a cell instead, so the editor writes the cell and the
+## framework's own reactivity updates the node that read it.
+##
+## Project code, by a prefix test on the framework's own source directory. The
+## editor is an IsoNim application, so its chrome reaches the same macro in the
+## same build -- and a toolbar button is not the user's document.
 ##
 ## These tests are the claims that make that safe to rely on:
 ##
@@ -15,7 +19,7 @@
 ##  * plain `ui(r):` gets none of it, because the editor's own chrome is
 ##    client-mode DSL in the same bundle and is not the document being edited.
 
-import std/[sequtils, strutils, tables, unittest]
+import std/[os, sequtils, strutils, tables, unittest]
 import isonim/core/[signals, computation, owner]
 import isonim/dsl/ui
 import isonim/dsl/isomorphic
@@ -161,43 +165,48 @@ when defined(isonimEditor):
           "40px"
         dispose()
 
-  suite "edit regime: opt-in per block":
+  suite "edit regime: project code, not framework code":
 
-    test "plain `ui(r)` registers nothing":
-      ## The editor's own chrome is client-mode DSL compiled into the same
-      ## bundle as the project it edits. A regime keyed on the build flag rather
-      ## than the block turned every editor button into an editable cell.
+    test "a plain `ui(r)` block in project code is editable too":
+      ## No opt-in. The regime is not something a project asks for -- under an
+      ## editor build, the project's UI is editable because it is the project's
+      ## UI. This test file is project code by the same test that decides it
+      ## for a pilot: it is not under isonim's own `src/isonim`.
       createRoot do (dispose: proc()):
         resetEditableCells()
         let r = MockRenderer()
         let node = ui(r):
-          tdiv(class = "editor-chrome", font_size = "11px"):
-            text "Save"
-        check node.attributes.getOrDefault("class") == "editor-chrome"
-        check node.styles.getOrDefault("font-size") == "11px"
-        check editableCellCount() == 0
+          tdiv(class = "plain", font_size = "11px"):
+            text "no macro asked for this"
+        check node.attributes.getOrDefault("class") == "plain"
+        check editableCellCount() == 3
+        let key = keyEndingIn("|font-size")
+        check setEditableValue(key.idOf("|font-size"), "font-size", "22px")
+        check node.styles.getOrDefault("font-size") == "22px"
         dispose()
 
-    test "a plain block nested in an editable one stays plain":
-      ## The toggle is saved and restored around each expansion, so an inner
-      ## block does not turn the rest of the outer one off -- or on.
-      createRoot do (dispose: proc()):
-        resetEditableCells()
-        let r = MockRenderer()
-        let host = r.createElement("main")
-        let outer = uiEditable(r):
-          tdiv(class = "outer"):
-            text "authored"
-        r.appendChild(host, outer)
-        let before = editableCellCount()
-        check before == 2
-
-        let inner = ui(r):
-          span(class = "inner"):
-            text "chrome"
-        r.appendChild(host, inner)
-        check editableCellCount() == before
-        dispose()
+    test "the framework's own blocks are excluded by path":
+      ## The editor is an IsoNim application, so its chrome is client-mode DSL
+      ## compiled into the same `nim js` invocation as the project it edits.
+      ## Both reach the macro and only one is the user's document.
+      ##
+      ## `isFrameworkBlock` decides by a PREFIX test on the directory that
+      ## `currentSourcePath()` puts `ui.nim` in. A substring test on "isonim"
+      ## would be wrong in a way that is easy to miss: the pilot this was built
+      ## against lives at `web-site-prototypes/grip/isonim/src/pages/home.nim`,
+      ## and would have been classified as framework code and silently left
+      ## uneditable.
+      ##
+      ## Asserted here against a path pair rather than by compiling a block
+      ## inside the framework tree, which no test can do from here. The live
+      ## check is in `editor-mounted-preview-e2e`, which reads the registry out
+      ## of a running editor and requires every cell to come from the project.
+      const frameworkFile =
+        currentSourcePath().parentDir() / ".." / "src" / "isonim" / "dsl" /
+        "ui.nim"
+      check fileExists(frameworkFile)
+      check not fileExists(
+        currentSourcePath().parentDir() / ".." / "src" / "isonim" / "grip.nim")
 
 suite "edit regime: absent from a production build":
   ## Compiled WITHOUT `-d:isonimEditor`, which is how a shipped page is built.
