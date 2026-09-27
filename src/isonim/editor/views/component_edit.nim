@@ -1020,6 +1020,44 @@ __ISONIM_SCENE_GRAPH_WALK__
     const target = document.querySelector('[data-isonim-element-id="' + CSS.escape(id) + '"]');
     if (target) selectElement(target);
   });
+  // Re-apply everything the editor has changed since the project was last
+  // built. The frame is new; the edits are not.
+  (function () {
+    let store = null;
+    try { store = parent.__isonimPreviewOverrides; } catch (e) { return; }
+    if (!store || !Object.keys(store).length) return;
+    // Stamp first. `identityFor` assigns `data-isonim-element-id` LAZILY, as
+    // the walk visits each node -- so on a frame that has just loaded,
+    // nothing carries an id yet and every override would look like it
+    // belonged to an element that is not there. One walk fixes that, and
+    // the walk is what assigns the ids the overrides are keyed by in the
+    // first place.
+    try { layerTree(null); } catch (e) {}
+    Object.keys(store).forEach(function (id) {
+      const target = document.querySelector(
+        '[data-isonim-element-id="' + CSS.escape(id) + '"]');
+      if (!target) return;
+      const props = store[id] || {};
+      Object.keys(props).forEach(function (property) {
+        target.style.setProperty(property, props[property], 'important');
+      });
+    });
+  })();
+  parent.addEventListener('isonim-preview-apply-style', function (event) {
+    const detail = event.detail || {};
+    const id = String(detail.id || '');
+    const property = String(detail.property || '');
+    if (!id || !property) return;
+    const target = document.querySelector(
+      '[data-isonim-element-id="' + CSS.escape(id) + '"]');
+    if (!target) return;
+    const value = String(detail.value == null ? '' : detail.value);
+    if (value === '') {
+      target.style.removeProperty(property);
+    } else {
+      target.style.setProperty(property, value, 'important');
+    }
+  });
   parent.addEventListener('isonim-preview-element-visibility', function (event) {
     const id = String(event.detail && event.detail.id || '');
     if (!id) return;

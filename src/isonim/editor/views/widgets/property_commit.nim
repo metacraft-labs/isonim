@@ -165,6 +165,60 @@ proc firstDiagnosticMessage(diagnostics: seq[PropertyEditDiagnostic];
       return d.message
   fallback
 
+proc applyPreviewStyle(elementId, property, value: string) =
+  ## Show the change in the preview, now.
+  ##
+  ## Without this the editor accepted a value, staged it, wrote it to source
+  ## -- and the thing you were looking at did not move. Every part of the
+  ## pipeline worked and the one signal a person actually reads was missing,
+  ## which is indistinguishable from nothing having happened.
+  ##
+  ## An inline style on the element, deliberately. grip's preview is a
+  ## COMPILE-TIME SSR render: its `documentHtml` is baked when the project
+  ## builds, so a change to `styles.nim` does not reach it until the Nim
+  ## build re-runs. Waiting for that would make every keystroke cost a
+  ## rebuild. The inline style is the optimistic half; the source is the
+  ## durable half; a rebuild reconciles them.
+  ##
+  ## `important`, because the declaration this is previewing may itself be
+  ## losing to a more specific selector -- and a preview that silently did
+  ## nothing for those properties would be the same defect again.
+  when defined(js):
+    {.emit: ["""
+      (function () {
+      const toJsString = (raw) => Array.isArray(raw)
+        ? String.fromCharCode.apply(null, raw)
+        : String(raw || '');
+      const id = toJsString(""", elementId, """);
+      const property = toJsString(""", property, """);
+      const value = toJsString(""", value, """);
+      // Remember it, not just apply it.
+      //
+      // Saving reloads the preview, and the reload re-renders from the
+      // project's COMPILE-TIME html -- which still holds the old value,
+      // because reaching the new one needs the Nim build to run again. So
+      // the style landed, the save fired ~900ms later, and the reload threw
+      // it away: the user saw the right value flash and then revert, which
+      // reads as nothing having happened.
+      //
+      // The overrides outlive the frame. The bridge re-applies them when it
+      // starts, so an edit survives every reload until the source can
+      // actually supply it.
+      const store = window.__isonimPreviewOverrides ||
+        (window.__isonimPreviewOverrides = {});
+      const forElement = store[id] || (store[id] = {});
+      if (value === '') delete forElement[property];
+      else forElement[property] = value;
+      window.dispatchEvent(new CustomEvent('isonim-preview-apply-style', {
+        detail: { id: id, property: property, value: value }
+      }));
+      })();
+    """].}
+  else:
+    discard elementId
+    discard property
+    discard value
+
 proc commitInspectorValue*(vm: EditorVM; property, rawValue: string;
     scope: SourceScopeChoiceKind): PropertyCommitOutcome =
   ## Commit ``rawValue`` for ``property`` at ``scope``.
@@ -229,9 +283,18 @@ proc commitInspectorValue*(vm: EditorVM; property, rawValue: string;
       message: "Staged, but no source edit adapter is ready to write it.",
       scope: scope, committedValue: normalized)
 
-  # The edit is staged. If the user has asked for auto-save, say so; the
-  # browser layer debounces it into a write. Placed after every refusal so a
-  # rejected edit never schedules one.
+  # Show it. Before anything is written, before anything is debounced: the
+  # value is accepted, so the preview should already look like it.
+  let selected = vm.inspector.selectedElement.val
+  let previewId =
+    if selected.id.len > 0: selected.id
+    elif selected.sourceKey.len > 0: selected.sourceKey
+    else: selected.schemaKey
+  if previewId.len > 0:
+    applyPreviewStyle(previewId, property, normalized)
+
+  # The edit is staged; the browser layer debounces it into a write. Placed
+  # after every refusal so a rejected edit never schedules one.
   vm.noteCommitForAutoSave()
 
   PropertyCommitOutcome(ok: true, message: "", scope: scope,
