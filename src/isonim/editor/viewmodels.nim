@@ -304,6 +304,14 @@ type
     workspacePermissions*: Signal[EditorWorkspacePermissions]
     sourceAdapterReady*: Signal[bool]
     workspaceEditStage*: Signal[WorkspaceEditStage]
+    locallyEditedTokens*: Signal[seq[string]]
+      ## Token keys the user has changed in this session but whose new value
+      ## is not yet reflected in what the project reports.
+      ##
+      ## `loadProjectData` re-seeds tokens from source. Without this it would
+      ## re-seed ALL of them, so a rebuild landing while someone was midway
+      ## through a palette would silently revert their work -- the same
+      ## failure as a default that re-asserts itself, one layer down.
     autoSaveGeneration*: Signal[int]
       ## Bumped every time a commit stages an edit. The browser layer watches
       ## this and debounces the actual write; the VM does not own a timer, so
@@ -6474,6 +6482,50 @@ proc hasAliasCycle(tokens: seq[FoundationTokenEntry]; startKey,
     seen.add lowered
     current = tokens.aliasTarget(current)
 
+proc noteTokenEditedLocally*(editor: EditorVM; key: string) =
+  ## Mark a token as carrying an unsaved local value.
+  var edited = editor.locallyEditedTokens.val
+  for existing in edited:
+    if existing.sameTokenKey(key):
+      return
+  edited.add key
+  editor.locallyEditedTokens.val = edited
+
+proc clearLocalTokenEdits*(editor: EditorVM) =
+  ## Called once a save has made source agree with the editor. After that a
+  ## refresh SHOULD take the file's values -- they are the user's own, now
+  ## written down.
+  editor.locallyEditedTokens.val = @[]
+
+func mergeTokensPreservingLocalEdits*(fromSource: seq[FoundationTokenEntry];
+    current: seq[FoundationTokenEntry];
+    locallyEdited: seq[string]): seq[FoundationTokenEntry] =
+  ## What the token list becomes when the project reports new values.
+  ##
+  ## Source wins for every token the user has not touched -- that is the
+  ## whole point of refreshing. The user wins for the ones they have, because
+  ## the alternative is a rebuild quietly discarding work in progress, and
+  ## because they can still see what the file says by saving or reverting.
+  ##
+  ## A token the user edited that has DISAPPEARED from source is dropped: it
+  ## no longer exists, and keeping a local edit to a deleted token would show
+  ## a row that nothing can write.
+  result = fromSource
+  if locallyEdited.len == 0:
+    return
+  for i, token in result:
+    var isLocal = false
+    for key in locallyEdited:
+      if key.sameTokenKey(token.key):
+        isLocal = true
+        break
+    if not isLocal:
+      continue
+    for existing in current:
+      if existing.key.sameTokenKey(token.key):
+        result[i] = existing
+        break
+
 proc foundationImpact*(editor: EditorVM; tokenKey: string): FoundationTokenImpact =
   result.tokenKey = tokenKey
   for prop in editor.inspector.selectedElement.val.properties:
@@ -6643,6 +6695,9 @@ proc editFoundationToken*(editor: EditorVM; key, newValue: string): FoundationEd
     updatedTokens[tokenIndex].aliasOf = ""
   let afterToken = updatedTokens[tokenIndex]
   editor.foundations.tokens.val = updatedTokens
+  # Remember that this one is the user's, so a refresh from source does not
+  # take it back.
+  editor.noteTokenEditedLocally(afterToken.key)
 
   let impact = editor.foundationImpact(key)
   editor.foundations.impacts.val = @[impact]
@@ -11619,6 +11674,7 @@ proc createEditorVM*(): EditorVM =
     workspacePermissions: workspacePermissions,
     sourceAdapterReady: sourceAdapterReady,
     workspaceEditStage: workspaceEditStage,
+    locallyEditedTokens: createSignal[seq[string]](@[]),
     autoSaveGeneration: createSignal(0),
     workspaceEditDiagnostics: workspaceEditDiagnostics,
     workspaceBridgeRecovered: workspaceBridgeRecovered,

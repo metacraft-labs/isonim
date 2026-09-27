@@ -277,7 +277,12 @@ proc loadProjectData*(vm: EditorVM; workspace: EditorWorkspace) =
   vm.storyboard.connections.val = workspace.connections
   vm.flowPlayer.steps.val = workspace.flowSteps
   vm.vectorEditor.symbols.val = workspace.vectorSymbols
-  vm.foundations.tokens.val = workspace.foundationTokens
+  # Source wins, except where the user is mid-edit. See
+  # `mergeTokensPreservingLocalEdits`: a rebuild landing while somebody is
+  # working through a palette must not take their values back.
+  vm.foundations.tokens.val = mergeTokensPreservingLocalEdits(
+    workspace.foundationTokens, vm.foundations.tokens.val,
+    vm.locallyEditedTokens.val)
   vm.variants.variants.val = workspace.componentVariants
   vm.designSystemSchema.val = workspace.designSystemSchema
   vm.preview.hook = workspace.previewHook

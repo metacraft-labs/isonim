@@ -7480,3 +7480,90 @@ suite "Editor ViewModels (refreshing project data without losing the session)":
       check vm.foundations.tokens.val.len == 1
       check vm.workspacePermissions.val.writeSource
       dispose()
+
+suite "Editor ViewModels (a refresh does not take back a local edit)":
+  ## `loadProjectData` re-seeds tokens from source. Re-seeding ALL of them
+  ## means a rebuild landing while somebody is working through a palette
+  ## silently reverts their work -- the same failure as a default that
+  ## re-asserts itself, one layer down.
+
+  proc tok(key, value: string): FoundationTokenEntry =
+    FoundationTokenEntry(key: key, value: value)
+
+  test "source wins for a token the user has not touched":
+    let merged = mergeTokensPreservingLocalEdits(
+      fromSource = @[tok("sys.color.text.primary", "#111")],
+      current = @[tok("sys.color.text.primary", "#000")],
+      locallyEdited = @[])
+    check merged.len == 1
+    check merged[0].value == "#111"
+
+  test "the user wins for a token they are mid-edit on":
+    let merged = mergeTokensPreservingLocalEdits(
+      fromSource = @[tok("sys.color.text.primary", "#111")],
+      current = @[tok("sys.color.text.primary", "#ABCDEF")],
+      locallyEdited = @["sys.color.text.primary"])
+    check merged[0].value == "#ABCDEF"
+
+  test "one edited token does not freeze the rest":
+    let merged = mergeTokensPreservingLocalEdits(
+      fromSource = @[tok("a", "1"), tok("b", "2"), tok("c", "3")],
+      current = @[tok("a", "mine"), tok("b", "old"), tok("c", "old")],
+      locallyEdited = @["a"])
+    check merged[0].value == "mine"
+    check merged[1].value == "2"
+    check merged[2].value == "3"
+
+  test "a token added by the rebuild arrives":
+    let merged = mergeTokensPreservingLocalEdits(
+      fromSource = @[tok("a", "1"), tok("new", "9")],
+      current = @[tok("a", "mine")],
+      locallyEdited = @["a"])
+    check merged.len == 2
+    check merged[1].key == "new"
+
+  test "a token deleted at source goes, even if it was edited":
+    ## Keeping a local edit to a token that no longer exists would show a
+    ## row nothing can write.
+    let merged = mergeTokensPreservingLocalEdits(
+      fromSource = @[tok("a", "1")],
+      current = @[tok("a", "mine"), tok("gone", "mine too")],
+      locallyEdited = @["a", "gone"])
+    check merged.len == 1
+    check merged[0].value == "mine"
+
+  test "the editor records which tokens are its own":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "tokens", storyGroups = cssStoryGroups(),
+        foundationTokens = @[tok("sys.color.text.primary", "#111")],
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true)))
+      check vm.locallyEditedTokens.val.len == 0
+      vm.noteTokenEditedLocally("sys.color.text.primary")
+      check vm.locallyEditedTokens.val == @["sys.color.text.primary"]
+      # Idempotent: editing the same token twice records it once.
+      vm.noteTokenEditedLocally("sys.color.text.primary")
+      check vm.locallyEditedTokens.val.len == 1
+      # And a save clears the claim, because source then agrees.
+      vm.clearLocalTokenEdits()
+      check vm.locallyEditedTokens.val.len == 0
+      dispose()
+
+  test "a refresh keeps the edited token and updates its neighbours":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "tokens", storyGroups = cssStoryGroups(),
+        foundationTokens = @[tok("a", "1"), tok("b", "2")],
+        permissions = EditorWorkspacePermissions(readSource: true)))
+      vm.foundations.tokens.val = @[tok("a", "mine"), tok("b", "2")]
+      vm.noteTokenEditedLocally("a")
+
+      vm.loadProjectData(newEditorWorkspace(
+        title = "tokens", storyGroups = cssStoryGroups(),
+        foundationTokens = @[tok("a", "1"), tok("b", "rebuilt")],
+        permissions = EditorWorkspacePermissions(readSource: true)))
+
+      check vm.foundations.tokens.val[0].value == "mine"
+      check vm.foundations.tokens.val[1].value == "rebuilt"
+      dispose()
