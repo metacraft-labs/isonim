@@ -71,6 +71,10 @@ type
     sectionSearch*: Signal[string]
     expandedSections*: Signal[seq[InspectorSection]]
     sectionsUserSet*: Signal[seq[InspectorSection]]
+    revealSectionRequest*: Signal[int]
+      ## Bumped when something asks for the Source section to be scrolled
+      ## into view. A counter rather than a bool because the same request
+      ## can be made twice and must work the second time.
       ## Sections whose open/closed state the USER decided, by clicking the
       ## header. Per-kind defaults are applied only to sections absent from
       ## this list, so selecting a second element never reverses a choice the
@@ -2306,10 +2310,23 @@ proc switchInspectorSection*(editor: EditorVM; section: InspectorSection) =
 # ---------------------------------------------------------------------------
 
 proc openSourceForSelection*(editor: EditorVM) =
-  ## Phase B no-op. Later phases route this through the source
-  ## bridge to open ``vm.inspector.selectedElement``'s
-  ## ``sourceFile``/``sourceLine`` in the editor pane.
-  discard
+  ## Reveal where the selection comes from: expand the Source section and
+  ## put it in view.
+  ##
+  ## It was a no-op ("Phase B"), which made it a button that did nothing --
+  ## and the panel already knows the answer, because `Source` reports the
+  ## file, the line and the cascade that produced each value. Opening an
+  ## external editor is a capability this build does not have; showing what
+  ## it would open is one it does.
+  editor.inspector.setSectionExpanded(isSource, true)
+  # Mark it as a user decision so the per-kind defaults do not close it
+  # again on the next selection -- the person asked for this section.
+  var touched = editor.inspector.sectionsUserSet.val
+  if isSource notin touched:
+    touched.add isSource
+    editor.inspector.sectionsUserSet.val = touched
+  editor.inspector.revealSectionRequest.val =
+    editor.inspector.revealSectionRequest.val + 1
 
 proc toggleSelectionVisible*(editor: EditorVM) =
   ## Flip the selection-header visibility toggle. Owned here (not
@@ -2319,13 +2336,17 @@ proc toggleSelectionVisible*(editor: EditorVM) =
     not editor.inspector.selectionVisible.val
 
 proc duplicateSelection*(editor: EditorVM) =
-  ## Phase B no-op. Later phases route through the workspace edit
-  ## adapter to clone the selected element in source.
+  ## Still unimplemented -- cloning an element means writing new source,
+  ## which is a different capability from editing a declaration.
+  ##
+  ## The BUTTON is now hidden unless `permissions.duplicate` is true, so
+  ## nothing offers this until something can do it. Kept as a named seam so
+  ## the day it lands there is one place to put it.
   discard
 
 proc showSelectionMore*(editor: EditorVM) =
-  ## Phase B no-op. Later phases open the overflow popover anchored
-  ## to the ``⫶⫶`` button.
+  ## Still unimplemented -- there is no overflow menu to open. The button is
+  ## hidden; see `duplicateSelection` for why the proc stays.
   discard
 
 func fallbackElementId(element: ElementRef): string =
@@ -9783,6 +9804,7 @@ proc createInspectorVM*(designSystemSchema: Signal[DesignSystemSchema] = nil;
     sectionSearch: sectionSearch,
     expandedSections: expandedSections,
     sectionsUserSet: createSignal[seq[InspectorSection]](@[]),
+    revealSectionRequest: createSignal(0),
     focusedControlId: focusedControlId,
     commandPaletteHooksReady: commandPaletteHooksReady,
     expandedLayerIds: expandedLayerIds,

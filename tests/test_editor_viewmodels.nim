@@ -7307,3 +7307,56 @@ suite "Editor ViewModels (the reported silent failures)":
       check ind.label == "Not saved"
       check ind.detail.len > 0
       dispose()
+
+suite "Editor ViewModels (the selection-header actions)":
+  ## Reported: "what's the purpose of the buttons at the very top of the
+  ## right sidebar? They don't seem to be doing anything when I click them."
+  ##
+  ## They were not. Three were `discard` with a "Phase B no-op" comment and
+  ## the fourth recoloured itself. A button that does nothing is worse than
+  ## one that is absent: it spends a click and teaches the reader that the
+  ## corner is dead.
+
+  test "opening source expands the Source section":
+    createRoot proc(dispose: proc()) =
+      let vm = indicatorVm()
+      vm.inspector.setSectionExpanded(isSource, false)
+      check isSource notin vm.inspector.expandedSections.val
+      vm.openSourceForSelection()
+      check isSource in vm.inspector.expandedSections.val
+      dispose()
+
+  test "opening source asks the view to scroll to it":
+    ## A counter, not a flag: asking twice has to work the second time.
+    createRoot proc(dispose: proc()) =
+      let vm = indicatorVm()
+      let before = vm.inspector.revealSectionRequest.val
+      vm.openSourceForSelection()
+      check vm.inspector.revealSectionRequest.val == before + 1
+      vm.openSourceForSelection()
+      check vm.inspector.revealSectionRequest.val == before + 2
+      dispose()
+
+  test "a section opened this way survives the next selection":
+    ## The per-kind defaults close Source for most elements. Someone who
+    ## pressed the button asked for it, and a default that overrules the
+    ## request is the request not working.
+    createRoot proc(dispose: proc()) =
+      let vm = indicatorVm()
+      vm.openSourceForSelection()
+      check isSource in vm.inspector.expandedSections.val
+      vm.inspector.applyKindDefaultExpansion(
+        ElementRef(tag: "p", id: "other",
+          properties: @[PropertyInfo(name: "position", value: "static")]))
+      check isSource in vm.inspector.expandedSections.val
+      dispose()
+
+  test "visibility toggles, and reports which way":
+    createRoot proc(dispose: proc()) =
+      let vm = indicatorVm()
+      let start = vm.inspector.selectionVisible.val
+      vm.toggleSelectionVisible()
+      check vm.inspector.selectionVisible.val == not start
+      vm.toggleSelectionVisible()
+      check vm.inspector.selectionVisible.val == start
+      dispose()

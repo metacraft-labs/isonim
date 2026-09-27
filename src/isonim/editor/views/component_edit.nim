@@ -1020,6 +1020,21 @@ __ISONIM_SCENE_GRAPH_WALK__
     const target = document.querySelector('[data-isonim-element-id="' + CSS.escape(id) + '"]');
     if (target) selectElement(target);
   });
+  parent.addEventListener('isonim-preview-element-visibility', function (event) {
+    const id = String(event.detail && event.detail.id || '');
+    if (!id) return;
+    const target = document.querySelector(
+      '[data-isonim-element-id="' + CSS.escape(id) + '"]');
+    if (!target) return;
+    // `visibility`, not `display`: the element keeps its box, so hiding it
+    // answers "what does this look like without this" without reflowing
+    // everything around it into a different page.
+    if (event.detail && event.detail.visible) {
+      target.style.removeProperty('visibility');
+    } else {
+      target.style.setProperty('visibility', 'hidden', 'important');
+    }
+  });
   parent.addEventListener('isonim-hover-preview-element-id', function (event) {
     if (editorMode === 'view') return;
     const id = String(event.detail && event.detail.id || '');

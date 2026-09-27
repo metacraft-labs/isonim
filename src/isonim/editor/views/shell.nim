@@ -689,6 +689,28 @@ proc dispatchPreviewAncestorSelection(index: int) =
   else:
     discard index
 
+proc dispatchPreviewElementVisibility(id: string; visible: bool) =
+  ## Show or hide the selected element in the preview.
+  ##
+  ## Preview-only and not written to source: this is the "what would it look
+  ## like without this" gesture, and a source edit is a different intent
+  ## that the inspector already has rows for.
+  when defined(js):
+    let shown = visible
+    {.emit: ["""
+      (function () {
+      const toJsString = (raw) => Array.isArray(raw)
+        ? String.fromCharCode.apply(null, raw)
+        : String(raw || '');
+      window.dispatchEvent(new CustomEvent('isonim-preview-element-visibility', {
+        detail: { id: toJsString(""", id, """), visible: """, shown, """ }
+      }));
+      })();
+    """].}
+  else:
+    discard id
+    discard visible
+
 proc dispatchPreviewElementHover(id: string) =
   ## Tell the preview which element the pointer is over, or "" for none.
   ##
@@ -2665,6 +2687,28 @@ proc renderSelectionHeader[R, E](r: R; vm: EditorVM): E =
       if visible: "true" else: "false")
     r.setStyle(visBtn, "color",
       if visible: textPrimary else: textMuted)
+    # And actually hide it in the preview. The signal used to recolour this
+    # button and nothing else, which is the definition of a control that
+    # does not work: it had a pressed state and no effect.
+    let selected = vm.inspector.selectedElement.val
+    let targetId =
+      if selected.id.len > 0: selected.id
+      elif selected.sourceKey.len > 0: selected.sourceKey
+      else: selected.schemaKey
+    dispatchPreviewElementVisibility(targetId, visible)
+
+  # A button that does nothing is worse than a button that is not there:
+  # it spends a click and teaches the user that this corner is dead.
+  #
+  # `duplicate` needs to write NEW source, which is a different capability
+  # from editing a declaration and one no workspace here grants -- so it
+  # follows `permissions.duplicate`. `more` has no menu behind it at all,
+  # so it is hidden outright rather than gated on something that might
+  # accidentally become true.
+  createRenderEffect proc() =
+    r.setStyle(dupBtn, "display",
+      if vm.workspacePermissions.val.duplicate: "flex" else: "none")
+  r.setStyle(moreBtn, "display", "none")
 
   # Click wiring. The "code" / "duplicate" / "more" actions hit the
   # Phase B placeholder procs on ``EditorVM``; the "visibility"
@@ -2939,6 +2983,35 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
          display = "flex", flex_direction = "column",
          flex = "1", min_height = "0", min_width = "0",
          overflow_y = "auto", overflow_x = "hidden")
+
+  # `openSourceForSelection` expands the Source section and asks for it to
+  # be brought into view; the scroll is here because only the view knows
+  # where the section landed.
+  when defined(js):
+    let revealVm = vm
+    var lastReveal = 0
+    createRenderEffect proc() =
+      let generation = revealVm.inspector.revealSectionRequest.val
+      if generation == lastReveal: return
+      lastReveal = generation
+      {.emit: ["""
+        requestAnimationFrame(function () {
+          var el = document.querySelector('[data-inspector-section-source]')
+            || document.querySelector('[data-inspector-section="source"]');
+          if (!el) {
+            var heads = document.querySelectorAll('[data-inspector-section-title]');
+            for (var i = 0; i < heads.length; i++) {
+              if (/^source$/i.test(heads[i].textContent.trim())) {
+                el = heads[i];
+                break;
+              }
+            }
+          }
+          if (el && el.scrollIntoView) {
+            el.scrollIntoView({ block: 'nearest' });
+          }
+        });
+      """].}
 
   for (slug, displayName) in inspectorPlaceholderSections:
     let frame = renderSectionFrame[R, E](r, vm, slug, displayName)
