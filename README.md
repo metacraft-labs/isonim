@@ -427,6 +427,35 @@ just editor-build
 just editor-serve
 ```
 
+The shared editor server exposes the browser and agent API on the same port.
+It builds `isonim-review` and detects an optional `agent-harbor` checkout beside
+this IsoNim checkout. When present, Reprobuild resolves and builds Harbor's exported executable
+from the local checkout in its own development environment. The daemon uses
+the executable through the `nim-agents` REST backend. A local build failure
+is reported instead of selecting an older installed binary. Without the private
+checkout, the existing agent configuration is retained.
+
+Explicit agent backends, commands, and `ISONIM_ACP_AGENT_CMD` take precedence.
+Set `ISONIM_LOCAL_HARBOR=0` to disable detection, or
+`ISONIM_AGENT_HARBOR_SIBLING=/path/to/agent-harbor` to select a checkout explicitly.
+For an already running REST service, set `ISONIM_HARBOR_URL`; optional
+`ISONIM_HARBOR_TOKEN` and `ISONIM_HARBOR_AGENT` configure authentication and agent
+software (default `claude`). These settings stay in the daemon process.
+
+`tools/editor_server.py` accepts `--bind`, `--port`, `--directory`, and
+`--project-root`. It retains `~/.isonim/config.toml` and accepts an explicit
+`--config`; it overrides only the daemon's loopback listener and project root.
+`--daemon-url http://host:port` uses an independently managed editor daemon.
+`--daemon-binary` uses an already built daemon instead of rebuilding it.
+SIGINT and SIGTERM shut down the launcher and its owned services. A custom
+`--command` can preserve a consumer's write or WebSocket bridge while receiving
+the daemon endpoint in its server environment. `--frontend-command` keeps a native
+consumer frontend on loopback and proxies its existing HTTP and WebSocket routes
+alongside the agent API.
+
+This launcher enables agent routes without a PostgreSQL review database. Harbor
+REST prompts currently support text; image blocks produce an explicit error.
+
 The editor maturity gate is documented in
 `docs/editor-dogfood-release.md`. The machine-checkable feature matrix lives in
 `docs/editor-feature-matrix.json` and is verified by

@@ -819,6 +819,11 @@ package isonim:
     testBuildActions.add(reviewToolEdge.action)
 
     testExecuteActions.add(pythonUnittest.run(
+      source = "tests/test_editor_server.py",
+      actionId = "isonim.chat_execute.editor_server",
+      after = @[reviewToolEdge.action],
+      extraInputs = @["tests/test_editor_server.py", "tools/editor_server.py", "tools/editor_shutdown.json", drReviewBin]))
+    testExecuteActions.add(pythonUnittest.run(
       source = "tests/test_agent_session_launcher.py",
       actionId = "isonim.chat_execute.launcher",
       extraInputs = @["tests/test_agent_session_launcher.py", "tools/agent_session_launcher.py"]))

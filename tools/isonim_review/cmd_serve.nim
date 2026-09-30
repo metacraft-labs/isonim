@@ -26,12 +26,13 @@
 ## the next request boundary.  No fancy connection drain — this is a
 ## stub.
 
-import std/[asyncdispatch, asynchttpserver, json, os, posix, strutils,
+import std/[asyncdispatch, asynchttpserver, atomics, json, os, posix, strutils,
             tables, times]
 
 import nim_agents
 
 import ./config
+import ./local_harbor
 import ./cmd_db_health
 
 import isonim/editor/design_review/agent_routes
@@ -63,15 +64,12 @@ type
 
 # ----- Lifecycle signal handling -------------------------------------------
 
-var GlobalStopFlag {.threadvar.}: bool
-  ## The signal handler can't reach into the ReviewServer instance
-  ## directly (signal callbacks are C-level, no closure context), so
-  ## we route the flag through a threadvar.  ``runReviewServer`` polls
-  ## it after every accepted request and propagates the value back
-  ## onto ``server.stopRequested`` before deciding to bail.
+var GlobalStopFlag: Atomic[bool]
+  ## Process-directed signals may be delivered to a prompt worker. The main
+  ## loop and startup poll share this lock-free flag across every thread.
 
 proc onTerm(sig: cint) {.noconv.} =
-  GlobalStopFlag = true
+  GlobalStopFlag.store(true)
 
 proc installSignalHandlers*() =
   ## Trap SIGTERM and SIGINT so a Ctrl-C or ``kill -TERM`` from the
@@ -293,7 +291,7 @@ proc runReviewServer*(srv: ReviewServer) =
   # on.  We don't block on accept() so SIGTERM gets serviced within
   # one poll quantum.
   while not srv.stopRequested:
-    if GlobalStopFlag:
+    if GlobalStopFlag.load():
       srv.stopRequested = true
       break
     try:
@@ -417,7 +415,12 @@ proc cmdServe*(cfg: ReviewConfig; migDir: string = "";
   ## a Postgres connection) so Phase B agent-route tests can spin up
   ## the daemon without a PG cluster.  Production callers always
   ## leave it ``false`` — the editor needs design-review APIs too.
-  let srv = newReviewServer(cfg, migDir)
+  installSignalHandlers()
+  var effectiveConfig = cfg
+  var harbor = prepareLocalHarbor(effectiveConfig, proc(): bool = GlobalStopFlag.load())
+  defer: harbor.stop()
+  let srv = newReviewServer(effectiveConfig, migDir)
+  defer: srv.agentRegistry.shutdownAll()
   if not agentRoutesOnly:
     try:
       mountDesignReviewRoutes(srv)

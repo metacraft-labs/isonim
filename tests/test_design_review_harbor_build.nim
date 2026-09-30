@@ -3,7 +3,7 @@
 ## mocked Repro runner: it lets us mutate/fail a producer without editing the
 ## developer's private Harbor checkout. No build, filesystem or process calls
 ## are mocked. A separate deployment check builds and runs the real Harbor CLI.
-import std/[os, osproc, tempfiles, unittest, strtabs, strutils]
+import std/[os, osproc, tempfiles, unittest, strtabs, strutils, monotimes, times, net]
 import ../tools/isonim_review/local_harbor
 
 proc main() =
@@ -19,10 +19,12 @@ proc main() =
   writeFile(producer / "repro.nim", """
 import repro_project_dsl
 import repro_dsl_stdlib/packages/sh
+import repro_dsl_stdlib/packages/python3
 package testHarbor:
   defaultToolProvisioning "path"
   uses:
     "sh"
+    "python3 >=3.9"
   executable ah:
     name: "ah"
   build:
@@ -31,7 +33,7 @@ package testHarbor:
       extraOutputs = @["build/bin/ah"], cacheable = false)
 """)
   writeFile(producer / "build.sh",
-    "set -eu\ncmp -s main.sh build/bin/ah || cp main.sh build/bin/ah\nchmod +x build/bin/ah\n")
+    "set -eu\npython3 -c 'import time; time.sleep(.3)'\ncmp -s main.sh build/bin/ah || cp main.sh build/bin/ah\nchmod +x build/bin/ah\n")
   writeFile(producer / "main.sh", "#!/bin/sh\nprintf 'LOCAL_V1\\n'\n")
   # A poison installed binary must never satisfy selected-local admission.
   let ambient = root / "ambient"
@@ -40,9 +42,21 @@ package testHarbor:
   setFilePermissions(ambient / "ah", {fpUserRead, fpUserWrite, fpUserExec})
   env["PATH"] = ambient & $PathSep & env["PATH"]
   suite "Repro source-built Harbor selection":
+    test "startup interruption stops the owned build without publishing output":
+      var polls = 0
+      try:
+        discard buildLocalHarbor(producer, consumer, env, proc(): bool =
+          inc polls
+          polls > 1)
+        check false
+      except IOError as e:
+        check e.msg == "Local Agent Harbor build interrupted"
+      check not fileExists(consumer / "harbor-executable")
     test "builds missing output and preserves idempotent producer output":
       check not fileExists(producer / "build/bin/ah")
+      let started = getMonoTime()
       let binary = buildLocalHarbor(producer, consumer, env)
+      check (getMonoTime() - started).inMilliseconds >= 300
       check binary == producer / "build/bin/ah"
       check execProcess(binary).strip() == "LOCAL_V1"
       let mtime = getLastModificationTime(binary)
@@ -52,6 +66,40 @@ package testHarbor:
       check getLastModificationTime(binary) == mtime
       check getLastModificationTime(consumer / "repro.nim") == recipeMtime
       check getLastModificationTime(consumer / ".repro/develop-overrides.toml") == overrideMtime
+    test "cancellation stops a listener launched by the actual producer":
+      let original = readFile(producer / "build.sh")
+      let listenerFile = producer / "listener-port"
+      writeFile(producer / "listener.py", "import socket,time,sys\nfrom pathlib import Path\ns=socket.socket(); s.bind(('127.0.0.1',0)); s.listen()\nPath(sys.argv[1] if len(sys.argv)>1 else 'listener-port').write_text(str(s.getsockname()[1]))\ntime.sleep(120)\n")
+      var other: LocalHarbor
+      other.startOwnedProcess("python3", @[producer / "listener.py", "unrelated-port"],
+        workingDir = producer)
+      defer: other.stop()
+      for attempt in 0 ..< 100:
+        if fileExists(producer / "unrelated-port"): break
+        sleep(10)
+      require fileExists(producer / "unrelated-port")
+      let otherPort = Port(parseInt(readFile(producer / "unrelated-port")))
+      writeFile(producer / "build.sh", "set -eu\npython3 listener.py\n")
+      defer: writeFile(producer / "build.sh", original)
+      var listenerPort = Port(0)
+      try:
+        discard buildLocalHarbor(producer, consumer, env, proc(): bool =
+          if not fileExists(listenerFile): return false
+          listenerPort = Port(parseInt(readFile(listenerFile)))
+          let before = newSocket()
+          before.connect("127.0.0.1", listenerPort)
+          before.close()
+          true)
+        check false
+      except IOError as e:
+        check e.msg == "Local Agent Harbor build interrupted"
+      require listenerPort != Port(0)
+      let after = newSocket()
+      defer: after.close()
+      expect OSError: after.connect("127.0.0.1", listenerPort)
+      let unaffected = newSocket()
+      unaffected.connect("127.0.0.1", otherPort)
+      unaffected.close()
     test "uncommitted producer source edits change the executed artifact":
       writeFile(producer / "main.sh", "#!/bin/sh\nprintf 'LOCAL_V2\\n'\n")
       let binary = buildLocalHarbor(producer, consumer, env)

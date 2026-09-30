@@ -2,15 +2,19 @@
 ## Detect the sibling relative to this editor binary, build via the producer's
 ## entry point, and use its reported output path. No checkout is required for
 ## standalone installations or developers without access to Agent Harbor.
-import std/[os, osproc, strutils, strtabs, net, httpclient, tempfiles, json, times]
+import std/[monotimes, os, osproc, strutils, strtabs, net, httpclient, tempfiles, json, times]
 when defined(posix): import std/posix
 import ./config
+import ../../src/isonim/editor/shutdown_policy
 
 type LocalHarbor* = object
   process*: Process
   stateDir*: string
   executable*: string
   processGroup*: int
+  psExecutable: string
+  knownMembers: seq[tuple[pid, group: int]]
+  enumerationFailed: bool
 
 proc findHarborSibling*(editorPath: string; explicitPath = ""): string =
   if explicitPath.len > 0:
@@ -27,17 +31,100 @@ proc findHarborSibling*(editorPath: string; explicitPath = ""): string =
       return ""
     root = root.parentDir
 
+when defined(posix):
+  let enumerationPython = findExe("python3")
+  proc enumeratePids(executable: string): string =
+    # A regular-file capture has no EOF dependency on inherited child pipes.
+    # The bounded supervisor owns a separate ps group and reclaims its children
+    # on success or timeout. No reader thread can outlive enumeration.
+    let (capture, path) = createTempFile("isonim-ps-", ".txt")
+    capture.close()
+    defer: removeFile(path)
+    let statusPath = path & ".status"
+    defer:
+      if fileExists(statusPath): removeFile(statusPath)
+    let script = "import os,signal,subprocess,sys,pathlib\nos.setsid()\n" &
+      "try:\n" &
+      " with open(sys.argv[2],'wb') as output:\n" &
+      "  p=subprocess.Popen([sys.argv[1],'-e','-o','pid='],stdout=output,stderr=subprocess.STDOUT)\n" &
+      "  try:\n   code=p.wait(timeout=float(sys.argv[3]))\n" &
+      "  except subprocess.TimeoutExpired:\n   code=124\n" &
+      "  pathlib.Path(sys.argv[2]+'.status').write_text(str(code))\n" &
+      "finally:\n os.killpg(os.getpid(),signal.SIGKILL)\n"
+    let process = startProcess(enumerationPython,
+      args = @["-c", script, executable, path, $(EnumerationTimeoutMs.float / 1000)],
+      options = {poParentStreams})
+    defer: process.close()
+    let deadline = getMonoTime() + initDuration(milliseconds = EnumerationTimeoutMs + 500)
+    while process.running and getMonoTime() < deadline: sleep(10)
+    if process.running:
+      # Signal before wait/reap while the owned leader's PID is still reserved.
+      # Also cover an unexpectedly delayed or failed capture supervisor.
+      if posix.getsid(Pid(process.processID)) == Pid(process.processID):
+        discard posix.kill(Pid(-process.processID), SIGKILL)
+      else: process.kill()
+    let exitCode = process.waitForExit()
+    if not fileExists(statusPath):
+      raise newException(IOError, "ps supervisor failed or timed out: " & $exitCode)
+    let code = parseInt(readFile(statusPath))
+    if code != 0:
+      raise newException(IOError, "ps failed or timed out: " & $code)
+    result = readFile(path)
+
+  proc ownedSessionGroups(runtime: var LocalHarbor): seq[int] =
+    let sessionId = runtime.processGroup
+    # Repro action workers can create a PG distinct from their wrapper while
+    # remaining in its uniquely owned POSIX session. Enumerate numeric PIDs
+    # only, then use kernel identities to avoid touching another instance.
+    # Revalidate kernel membership before each signal. A dead group's cached
+    # numeric ID may have been reused by an unrelated process.
+    for member in runtime.knownMembers:
+      if posix.getsid(Pid(member.pid)) == Pid(sessionId) and
+          int(posix.getpgid(Pid(member.pid))) == member.group:
+        if member.group notin result: result.add(member.group)
+    if posix.getsid(Pid(sessionId)) == Pid(sessionId) and sessionId notin result:
+      result.add(sessionId)
+    if runtime.enumerationFailed: return
+    var pids: string
+    try:
+      pids = enumeratePids(runtime.psExecutable)
+    except CatchableError as e:
+      runtime.enumerationFailed = true
+      stderr.writeLine("Local Harbor process enumeration failed; signalling known groups: " & e.msg)
+      return
+    for line in pids.splitLines():
+      var pid: int
+      try: pid = parseInt(line.strip())
+      except ValueError: continue
+      let owner = posix.getsid(Pid(pid))
+      if owner < 0 and errno != ESRCH:
+        stderr.writeLine("Local Harbor cannot inspect PID " & $pid & ": " & $osLastError())
+      if owner == Pid(sessionId):
+        let group = int(posix.getpgid(Pid(pid)))
+        if group > 0:
+          if group notin result: result.add(group)
+          if (pid, group) notin runtime.knownMembers:
+            runtime.knownMembers.add((pid, group))
+
 proc stop*(runtime: var LocalHarbor) =
   if runtime.process != nil:
+    let teardownDeadline = getMonoTime() + initDuration(milliseconds = HarborTeardownTimeoutMs)
     when defined(posix):
       if runtime.processGroup > 0:
-        # Repro's exec runner waits for its child. Signal the owned group so
-        # stopping the wrapper cannot orphan the Harbor server.
-        discard posix.kill(Pid(-runtime.processGroup), SIGTERM)
-        for attempt in 0 ..< 50:
-          if posix.kill(Pid(-runtime.processGroup), 0) != 0: break
+        # Own the whole isolated session, including Repro action worker PGs.
+        for group in ownedSessionGroups(runtime):
+          discard posix.kill(Pid(-group), SIGTERM)
+        let deadline = teardownDeadline - initDuration(milliseconds = HarborTeardownTimeoutMs div 2)
+        while getMonoTime() < deadline:
+          let groups = ownedSessionGroups(runtime)
+          if not runtime.process.running and groups.len == 1: break
+          var live = false
+          for group in groups:
+            if posix.kill(Pid(-group), 0) == 0: live = true
+          if not live: break
           sleep(100)
-        discard posix.kill(Pid(-runtime.processGroup), SIGKILL)
+        for group in ownedSessionGroups(runtime):
+          discard posix.kill(Pid(-group), SIGKILL)
       elif runtime.process.running:
         runtime.process.terminate()
     else:
@@ -46,7 +133,7 @@ proc stop*(runtime: var LocalHarbor) =
           "/T", "/F"], options = {poUsePath, poParentStreams})
         discard killer.waitForExit()
         killer.close()
-    if runtime.process.waitForExit(5000) == -1:
+    if runtime.process.waitForExit(max(1, int((teardownDeadline - getMonoTime()).inMilliseconds))) == -1:
       runtime.process.kill()
       discard runtime.process.waitForExit()
     runtime.process.close()
@@ -57,6 +144,12 @@ proc stop*(runtime: var LocalHarbor) =
 proc startOwnedProcess*(runtime: var LocalHarbor; command: string;
     args: seq[string]; workingDir = ""; env: StringTableRef = nil) =
   when defined(posix):
+    runtime.enumerationFailed = false
+    runtime.knownMembers = @[]
+    runtime.psExecutable = findExe("ps")
+    if runtime.psExecutable.len == 0:
+      raise newException(IOError, "Owned Harbor processes require the POSIX ps executable")
+    discard enumeratePids(runtime.psExecutable)
     # osproc.poDaemon does not create a group on Nim's fork backend. Create
     # the session before exec instead; no child can escape before ownership.
     runtime.process = startProcess("python3", workingDir = workingDir, env = env,
@@ -87,7 +180,8 @@ proc writeBuildInput(path, contents: string) =
   finally:
     if fileExists(temporary): removeFile(temporary)
 
-proc buildLocalHarbor*(repo, buildDir: string; env: StringTableRef): string =
+proc buildLocalHarbor*(repo, buildDir: string; env: StringTableRef;
+    shouldStop: proc(): bool = nil): string =
   # This private dependency belongs only to the selected runtime, never the
   # public editor package. The build consumer asks Repro to resolve the local
   # producer and materialize its executable export before launching anything.
@@ -138,12 +232,17 @@ finally:
     "[[override]]\npackage = \"ah\"\nlocal_path = " &
     $(%relativePath(repo, buildDir)) & "\nstate = \"editable\"\ncreated_at = " & createdAt & "\n")
   stderr.writeLine("IsoNim: building workspace Agent Harbor with Reprobuild from " & repo)
-  let build = startProcess("repro", workingDir = buildDir, args = @["build", "--daemon=off"],
-    env = env, options = {poUsePath, poParentStreams})
-  let code = build.waitForExit()
-  build.close()
+  var build: LocalHarbor
+  build.startOwnedProcess("repro", workingDir = buildDir,
+    args = @["build", "--daemon=off"], env = env)
+  defer: build.stop()
+  while build.process.running:
+    if shouldStop != nil and shouldStop():
+      raise newException(IOError, "Local Agent Harbor build interrupted")
+    sleep(100)
+  let code = build.process.waitForExit()
   if code != 0:
-    raise newException(IOError, "Local Agent Harbor build failed; refusing an installed fallback")
+    raise newException(IOError, "Local Agent Harbor build failed (exit " & $code & "); refusing an installed fallback")
   let artifactFile = buildDir / "harbor-executable"
   if not fileExists(artifactFile):
     raise newException(IOError, "Reprobuild did not report an Agent Harbor executable")
@@ -156,7 +255,8 @@ finally:
     raise newException(IOError, "Reprobuild selected an unexpected Harbor executable: " & binary)
   result = binary
 
-proc prepareLocalHarbor*(cfg: var ReviewConfig): LocalHarbor =
+proc prepareLocalHarbor*(cfg: var ReviewConfig;
+    shouldStop: proc(): bool = nil): LocalHarbor =
   if cfg.agent.backendExplicit or cfg.agent.command.len > 0 or
       cfg.agent.args.len > 0 or getEnv("ISONIM_ACP_AGENT_CMD").len > 0 or
       getEnv("ISONIM_LOCAL_HARBOR") == "0": return
@@ -175,7 +275,9 @@ proc prepareLocalHarbor*(cfg: var ReviewConfig): LocalHarbor =
   env.del("CARGO_TARGET_DIR")
   env.del("RUSTC_WORKSPACE_WRAPPER")
   result.stateDir = createTempDir("isonim-harbor-", "")
-  let binary = buildLocalHarbor(repo, repo / ".repro" / "isonim-runtime", env)
+  let binary = buildLocalHarbor(repo, repo / ".repro" / "isonim-runtime", env, shouldStop)
+  if shouldStop != nil and shouldStop():
+    raise newException(IOError, "Local Agent Harbor startup interrupted")
   result.executable = binary
   let probe = newSocket()
   probe.bindAddr(Port(0), "127.0.0.1")
@@ -200,6 +302,7 @@ proc prepareLocalHarbor*(cfg: var ReviewConfig): LocalHarbor =
   var ready = false
   # The producer environment may need a cold Repro provider compilation.
   for attempt in 0 ..< 6000:
+    if shouldStop != nil and shouldStop(): break
     if not result.process.running: break
     let http = newHttpClient(timeout = 500)
     try:

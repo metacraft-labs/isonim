@@ -15,6 +15,7 @@ import db_connector/db_postgres
 import nim_acp
 import nim_agents
 
+import ../shutdown_policy
 import ./log_setup
 import ./brief_format
 import std/oids
@@ -48,6 +49,8 @@ type
     ## pass per-session argv tail to ``claude-agent-acp``.
     lock: Lock
     sessions: Table[string, AgentSessionState]
+    activeCreations: Atomic[int]
+    shuttingDown: bool
     backend*: AcpAgentKind
     harborUrl*, harborToken*, harborAgent*, harborModel*: string
     customCmd*: string
@@ -169,13 +172,41 @@ proc shutdownAndRelease*(reg: AgentRegistry; sessionId: string) =
         sessionId = sessionId, reason = e.msg
       acquire(reg.lock)
       try:
-        reg.sessions[sessionId] = state
+        if not reg.shuttingDown: reg.sessions[sessionId] = state
       finally:
         release(reg.lock)
       raise
   else:
     info "agent client shutdown skipped (not in registry)",
       sessionId = sessionId
+
+proc shutdownAll*(reg: AgentRegistry) =
+  ## Stop admission atomically with the snapshot. Close independent sessions
+  ## concurrently: N sessions must not multiply the native 30s HTTP deadline.
+  ## Creation may consume 30s followed by its late-session stop's 30s. The
+  ## supervisor reserves both operations plus owned Harbor teardown (75s).
+  var ids: seq[string]
+  acquire(reg.lock)
+  try:
+    reg.shuttingDown = true
+    for id in reg.sessions.keys: ids.add(id)
+  finally:
+    release(reg.lock)
+  type CloseArgs = tuple[registry: AgentRegistry, id: string]
+  proc closeOne(args: CloseArgs) {.thread, gcsafe.} =
+    {.cast(gcsafe).}:
+      try: args.registry.shutdownAndRelease(args.id)
+      except CatchableError as e:
+        warn "agent shutdown failed", sessionId = args.id, reason = e.msg
+  var closers = newSeq[Thread[CloseArgs]](ids.len)
+  for i, id in ids:
+    createThread(closers[i], closeOne, (reg, id))
+  for closer in closers.mitems: joinThread(closer)
+  # Do not wait for event streams: their provider has been closed above. Do
+  # wait for admitted creation AND its compensating close to actually finish.
+  # A shorter independent drain timer would abandon a newly returned ID.
+  while reg.activeCreations.load() != 0:
+    sleep(10)
 
 proc getState*(reg: AgentRegistry; sessionId: string): Option[AgentSessionState] =
   acquire(reg.lock)
@@ -188,16 +219,23 @@ proc getState*(reg: AgentRegistry; sessionId: string): Option[AgentSessionState]
     release(reg.lock)
 
 proc storeSession(reg: AgentRegistry; state: AgentSessionState) =
+  var rejected = false
   acquire(reg.lock)
   try:
-    reg.sessions[state.sessionId] = state
+    rejected = reg.shuttingDown
+    if not rejected: reg.sessions[state.sessionId] = state
   finally:
     release(reg.lock)
+  if rejected:
+    var client = state.client
+    if not state.isDraft: client.closeSession(state.session)
+    shutdown(client)
+    raise newException(AgentBackendUnavailableError, "Editor daemon is shutting down")
 
 proc storeExistingSession(reg: AgentRegistry; state: AgentSessionState): bool =
   acquire(reg.lock)
   try:
-    if not reg.sessions.hasKey(state.sessionId): return false
+    if reg.shuttingDown or not reg.sessions.hasKey(state.sessionId): return false
     reg.sessions[state.sessionId] = state
     return true
   finally:
@@ -207,7 +245,7 @@ proc setTurnWorking(reg: AgentRegistry; id: string; working: bool): bool =
   acquire(reg.lock)
   try:
     if not reg.sessions.hasKey(id): return false
-    if working and reg.sessions[id].turnWorking: return false
+    if working and (reg.shuttingDown or reg.sessions[id].turnWorking): return false
     reg.sessions[id].turnWorking = working
     return true
   finally:
@@ -238,6 +276,12 @@ proc createAcpSession*(reg: AgentRegistry; cwd = "";
   ## benign here — per-session state lives entirely inside the cached
   ## :type:`AgentClient`, which never escapes this thread.
   {.gcsafe.}:
+    acquire(reg.lock)
+    try:
+      if reg.shuttingDown:
+        raise newException(AgentBackendUnavailableError, "Editor daemon is shutting down")
+    finally:
+      release(reg.lock)
     var client: AgentClient
     let root = if cwd.len > 0: cwd
                elif reg.workspaceRoot.len > 0: reg.workspaceRoot
@@ -245,7 +289,9 @@ proc createAcpSession*(reg: AgentRegistry; cwd = "";
     if reg.harborUrl.len > 0:
       let auth = if reg.harborToken.len > 0: bearerAuth(reg.harborToken)
                  else: HarborAuth(kind: akNone)
-      client = fromHarbor(newNativeHarborClient(reg.harborUrl, auth))
+      var harbor = newNativeHarborClient(reg.harborUrl, auth)
+      harbor.transport = nativeHarborTransport(AgentHttpTimeoutMs)
+      client = fromHarbor(harbor)
       # This is a local conversation draft, not a fabricated Harbor session.
       # The first user message creates the real backend session.
       let id = "draft-" & $genOid()
@@ -930,12 +976,22 @@ proc runAgentTurn*(reg: AgentRegistry; state: AgentSessionState;
       workspace.workingCopyMode = "in_place"
       let config = AgentStartMode(workspace: workspace, allowNetwork: true,
         prompt: promptBlocks, acpAgent: acpAgentConfig(binary, providerArgs, model = reg.harborModel))
-      active.session = client.createSession(config)
-      active.isDraft = false
-      active.client = client
-      if not reg.storeExistingSession(active):
-        client.closeSession(active.session)
-        raise newException(HarborError, "Conversation closed while backend session was being created")
+      acquire(reg.lock)
+      try:
+        if reg.shuttingDown:
+          raise newException(HarborError, "Editor daemon is shutting down")
+        discard reg.activeCreations.fetchAdd(1)
+      finally:
+        release(reg.lock)
+      try:
+        active.session = client.createSession(config)
+        active.isDraft = false
+        active.client = client
+        if not reg.storeExistingSession(active):
+          client.closeSession(active.session)
+          raise newException(HarborError, "Conversation closed while backend session was being created")
+      finally:
+        discard reg.activeCreations.fetchSub(1)
       turn = streamAgentTurn(client, active.session, onEvent)
     else:
       turn = sendPromptStreaming(client, active.session,

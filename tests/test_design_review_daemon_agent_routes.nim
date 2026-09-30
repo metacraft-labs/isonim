@@ -6,7 +6,7 @@
 ## once as ``build/bin/fake-acp-agent`` and lives at
 ## ``tests/helpers/fake_acp_agent.nim``.
 
-import std/[json, net, os, strutils, times, unittest]
+import std/[options, json, net, os, strutils, times, unittest]
 
 import helpers/agent_routes_fixture
 
@@ -338,3 +338,21 @@ test "test_prompt_with_non_png_returns_400":
   check node{"error"}.getStr("") == "bad_png_attachment"
   check node{"path"}.getStr("") == fakePng
   check node{"reason"}.getStr("").contains("not a valid PNG")
+
+# Registry admission uses its real draft implementation and a deliberately
+# unreachable REST endpoint. No HTTP transport is replaced: shutdown admission
+# must reject before any provider operation is attempted.
+import isonim/editor/design_review/agent_routes as registry_routes
+import nim_agents
+
+test "shutdown registry rejects new drafts and late backend admission":
+  let registry = registry_routes.newAgentRegistry(harborUrl = "http://127.0.0.1:1",
+    customCmd = "/unused/provider", primerEnabled = false)
+  let draft = registry.createAcpSession()
+  registry.shutdownAll()
+  check registry.getState(draft.sessionId).isNone
+  expect registry_routes.AgentBackendUnavailableError:
+    discard registry.createAcpSession()
+  expect HarborError:
+    discard registry.runAgentTurn(draft, @[], nil)
+  check registry.getState(draft.sessionId).isNone

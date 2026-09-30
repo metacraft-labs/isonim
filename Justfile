@@ -474,7 +474,11 @@ test-design-review-harbor-persistent provider harbor="../agent-harbor":
     nim c --out:build/bin/test-harbor-persistent-live --path:src --path:../nim-everywhere/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src ../nim-agents/tests/test_harbor_persistent_live.nim
     python3 tests/run_harbor_persistent_live.py --harbor-repo "$(realpath '{{harbor}}')" --ah "$(realpath '{{harbor}}/build/bin/ah')" --provider "{{provider}}" --driver "$(realpath build/bin/test-harbor-persistent-live)"
 
+test-editor-server: isonim-review-build
+    python3 tests/test_editor_server.py
+
 test-design-review-chat: isonim-review-build fake-acp-agent-build
+    python3 tests/test_editor_server.py
     python3 tests/test_agent_session_launcher.py
     python3 tests/test_harbor_route_lifecycle.py
     nim js -r --path:src tests/test_browser_agent_lifecycle.nim
@@ -806,7 +810,7 @@ test-design-review-gallery-production: isonim-review-build editor-build
 # Build and serve the editor
 editor-serve: editor-build
     @echo "Serving editor on http://localhost:8090"
-    cd build/editor && python3 -m http.server 8090
+    python3 tools/editor_server.py --directory build/editor --project-root examples/wanderlust --port 8090
 
 # Screenshot all views at all sizes → build/editor/screenshots/
 editor-screenshot:

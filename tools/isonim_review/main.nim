@@ -364,7 +364,23 @@ proc dispatchDbHealth(rest: seq[string]): int =
   cmdDbHealth(cfg, asJson, migDir)
 
 proc dispatchServe(rest: seq[string]): int =
-  let (cfg, migDir) = resolveConfigAndDir(rest)
+  var (cfg, migDir) = resolveConfigAndDir(rest)
+  let bindFlag = parseSubArgs(rest, "bind")
+  let portFlag = parseSubArgs(rest, "port")
+  let workspaceFlag = parseSubArgs(rest, "workspace")
+  let promptDefault = parseSubArgs(rest, "default-assistant-prompt")
+  if bindFlag.len > 0: cfg.server.bindAddr = bindFlag
+  if portFlag.len > 0:
+    try: cfg.server.port = parseInt(portFlag)
+    except ValueError:
+      stderr.writeLine("isonim-review: invalid --port")
+      return 2
+    if cfg.server.port < 0 or cfg.server.port > 65535:
+      stderr.writeLine("isonim-review: --port must be between 0 and 65535")
+      return 2
+  if cfg.agent.assistantPromptPath.len == 0 and promptDefault.len > 0:
+    cfg.agent.assistantPromptPath = absolutePath(promptDefault)
+  if workspaceFlag.len > 0: cfg.workspace.root = absolutePath(workspaceFlag)
   let agentRoutesOnly = hasFlag(rest, "agent-routes-only")
   cmdServe(cfg, migDir, agentRoutesOnly)
 
