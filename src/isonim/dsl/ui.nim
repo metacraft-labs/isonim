@@ -153,7 +153,12 @@ proc genName(prefix: string): NimNode {.compileTime.} =
 #
 #   proc noteElement*(el: MyNode; id, tag, loc, parentId: string)
 #
-# where `loc` is "file:line:column" of the element in the template. The call
+# where `loc` is "file:line:column" of the element's tag in the template
+# (0-based column, as Nim reports it): the element start, for the `tag(args)`
+# form as well as the `tag:` form. The scene-graph call below it receives the
+# call node's position instead (the `(` of `tag(args)`), because the editor's
+# element id is derived from that position; the two agree on file and line
+# and differ only in the column of the `tag(args)` form. The call
 # is an open symbol choice over the default below (a no-op template with an
 # untyped element, erased like the production seam) and whatever `noteElement`
 # overloads are visible at the `ui` call site; overload resolution prefers the
@@ -249,6 +254,14 @@ proc reportUnresolved(bindings: seq[StyleBinding]; node: NimNode) {.compileTime.
   else:
     discard
 
+proc tagNode(node: NimNode): NimNode {.compileTime.} =
+  ## The node naming an element's tag: the callee of a `tag(args)` /
+  ## `tag args` / `tag:` call, or the node itself for anything else.
+  if node.kind in {nnkCall, nnkCommand} and node.len > 0:
+    node[0]
+  else:
+    node
+
 proc emitNoteElement(stmts, elSym: NimNode; tag: string;
                      node: NimNode): string {.compileTime.} =
   ## Emit the hook for `elSym` and return the id, so the caller can push it as
@@ -259,15 +272,24 @@ proc emitNoteElement(stmts, elSym: NimNode; tag: string;
     let loc = info.filename & ":" & $info.line & ":" & $info.column
     let parentId = if parentIdStack.len > 0: parentIdStack[^1] else: ""
     # The scene-graph seam: bound closed, so a call site cannot divert it.
+    # Its `loc` is the call node's position, the same position the element
+    # id is derived from, and is left that way: the editor keys elements,
+    # their `data-isonim-src` stamps and their editable cells on that id.
     stmts.add(newCall(bindSym("noteSceneElement", brClosed), elSym,
                       newStrLitNode(id), newStrLitNode(tag),
                       newStrLitNode(loc), newStrLitNode(parentId)))
     # The backend element hook: an open choice, so a backend's typed
     # `noteElement` overload visible at the call site wins over the no-op
     # default. Independent of the seam above; see "Backend element hook".
+    # Its `loc` is the position of the element's TAG, so it points at the
+    # element start in both the `tag(args)` form (whose call node Nim
+    # anchors at the `(`) and the `tag:` form.
+    let tagInfo = tagNode(node).lineInfoObj
+    let tagLoc = tagInfo.filename & ":" & $tagInfo.line & ":" &
+                 $tagInfo.column
     stmts.add(newCall(bindSym("noteElement", brForceOpen), elSym,
                       newStrLitNode(id), newStrLitNode(tag),
-                      newStrLitNode(loc), newStrLitNode(parentId)))
+                      newStrLitNode(tagLoc), newStrLitNode(parentId)))
   result = id
 
 proc emitEditableAssign(stmts, rendererSym, elSym, node: NimNode;

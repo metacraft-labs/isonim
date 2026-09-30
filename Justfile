@@ -209,6 +209,9 @@ test-c:
     # is what kept the missing provisioning invisible. It compiles and passes
     # 10/10 on the C target, so it gets a normal entry. C only: it calls
     nim c -r tests/test_resource_async.nim
+    # Resources register with their owner; a root enumerates the live ones
+    # created under it (`ownedResourceStates`).
+    nim c -r tests/test_resource_registry.nim
     # NH-M0 & NH-M5 / HX-S-0: Native HCR shim tests (inactive path & active linked path)
     nim c -r tests/test_native_hcr_shim.nim
     # NH-M2: the native HMR runtime, in BOTH its gating configurations.
@@ -263,6 +266,7 @@ test-js: build-tailwind
     nim js -r tests/test_effects.nim
     nim js -r tests/test_clock.nim
     nim js -r tests/test_context.nim
+    nim js -r tests/test_resource_registry.nim
     nim js -r tests/test_rxcore.nim
     nim js -r tests/test_dsl.nim
     nim js -r tests/test_web.nim
@@ -295,6 +299,8 @@ test-clock:
 test-context:
     nim c -r tests/test_context.nim
     nim js -r tests/test_context.nim
+    nim c -r tests/test_resource_registry.nim
+    nim js -r tests/test_resource_registry.nim
 
 # Run only effect/memo/owner/batch tests
 test-effects:

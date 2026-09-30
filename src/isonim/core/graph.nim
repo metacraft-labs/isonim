@@ -24,6 +24,13 @@ type
     cleanups*: seq[proc()]            ## Cleanup callbacks
     owner*: OwnerBase                 ## Parent owner
     contextTable*: ContextTable       ## Context values keyed by ContextId
+    resourceStates*: seq[SignalStateBase]
+      ## State signals of the resources created while this node was the
+      ## current owner (every `createResource` / `createDeferredResource`
+      ## overload registers here). Empty, and allocation-free, for owners
+      ## that create none. Cleared with the node, so a computation that
+      ## re-runs drops what its previous run created. Enumerated through
+      ## `resource.ownedResourceStates`.
 
   ComputationBase* = ref object of OwnerBase
     ## Type-erased base for computations.
@@ -92,6 +99,7 @@ proc cleanNode*(node: OwnerBase) =
   for child in node.owned:
     cleanNode(child)
   node.owned.setLen(0)
+  node.resourceStates.setLen(0)
 
   # Run cleanup callbacks
   for cleanup in node.cleanups:

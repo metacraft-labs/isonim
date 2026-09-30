@@ -84,6 +84,7 @@ tests/smoke_design_review_pg_dump_restore
 # above -- these two were the whole remainder.
 tests/test_flexbox
 tests/test_resource_async
+tests/test_resource_registry
 # TBAR-M1: list-history e2e against real daemon
 tests/test_design_review_list_history_e2e
 # TBAR-M2: ChoiceGroup widget tests

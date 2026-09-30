@@ -2,8 +2,10 @@
 ##
 ## A backend that declares `noteElement` typed on its own element handle is
 ## called once per element with that element and the element's source
-## location ("file:line:column" in the template). Backends without such an
-## overload are unaffected (every other DSL suite covers that).
+## location ("file:line:column" in the template, the column being the
+## element's tag in both the `tag(args)` and the `tag:` form). Backends
+## without such an overload are unaffected (every other DSL suite covers
+## that).
 ##
 ## Run in both configurations (the Justfile's `test-dsl` does):
 ##
@@ -12,6 +14,8 @@
 ##   overload BOTH run for every element. The scene graph must not lose
 ##   elements because a backend declared an overload, and the backend must
 ##   not lose its hook because the editor is on.
+##   The scene graph keeps the call node's position (the `(` of
+##   `tag(args)`), from which the editor's element ids are derived.
 ##
 ## MOCK POLICY (workspace rule: every mock justified in the header).
 ## `HookRenderer` forwards every backend call to MockRenderer, the
@@ -20,7 +24,7 @@
 ## built tree only needs to be real enough to compare element identities.
 ## A production backend would test its own use of the location, not the
 ## seam that delivers it.
-import std/[strutils, unittest]
+import std/[sequtils, strutils, unittest]
 import isonim/core/owner
 import isonim/testing/mock_dom
 import isonim/dsl/ui
@@ -118,3 +122,47 @@ suite "backend element hook":
             check g.nodes[i].tag == noted[i].tag
             check g.nodes[i].line == locLine(noted[i].loc)
             check g.nodes[i].parentId == noted[i].parentId
+
+  test "the location's column is the element's tag, in every call form":
+    # Nim reports 0-based columns. The `ui` block below is laid out so the
+    # tags start at fixed columns: `tdiv` at 8, the children at 10.
+    noted.setLen(0)
+    when defined(isonimEditor):
+      resetSceneGraph()
+    createRoot do (dispose: proc()):
+      let r = HookRenderer()
+      const base = lineHere()
+      discard ui(r):
+        tdiv(class = "outer"):
+          span: text "a"
+          p(class = "x"): text "b"
+          em(class = "y")
+
+      proc locCol(loc: string): int =
+        parseInt(loc.rsplit(':', maxsplit = 2)[2])
+
+      check noted.len == 4
+      if noted.len == 4:
+        check noted.mapIt(it.tag) == @["div", "span", "p", "em"]
+        check noted.mapIt(locLine(it.loc)) ==
+          @[base + 2, base + 3, base + 4, base + 5]
+        # `tag(args):` and `tag(args)`: the tag, not the `(`.
+        check locCol(noted[0].loc) == 8
+        check locCol(noted[2].loc) == 10
+        check locCol(noted[3].loc) == 10
+        # `tag:`
+        check locCol(noted[1].loc) == 10
+
+      when defined(isonimEditor):
+        # The scene graph keeps the call node's position, from which the
+        # editor's element id is derived: the `(` for the `tag(args)` forms.
+        let g = sceneGraph()
+        check g.nodes.len == 4
+        if g.nodes.len == 4:
+          check g.nodes.mapIt(it.column) == @[8 + "tdiv".len, 10,
+                                              10 + "p".len, 10 + "em".len]
+          for i in 0 ..< 4:
+            check g.nodes[i].line == locLine(noted[i].loc)
+            check g.nodes[i].id.endsWith(":" & $g.nodes[i].line & ":" &
+                                         $g.nodes[i].column)
+      dispose()
