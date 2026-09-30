@@ -195,9 +195,11 @@ proc applyAgentEvent*(chat: AgentChatVM; event: AgentEvent) =
       chat.addContextMessage(event.text)
     chat.sessionStatus.val = asLoading
   of aekStatus:
+    # Neutral activity has no backend status. It must not start a turn or
+    # replace connection state, including after raw metadata is dropped on wire.
     if event.status.len > 0:
       chat.connectionState.val = event.status
-    chat.sessionStatus.val = asLoading
+      chat.sessionStatus.val = asLoading
   of aekError:
     chat.connectionState.val = $acsError
     chat.sessionStatus.val = asError

@@ -251,12 +251,12 @@
 ##         workspace-ready → connected state + note) and qualifying the
 ##         now-ambiguous ``types.AgentFileDiff`` (the sibling grew a colliding
 ##         ``AgentFileDiff``). Re-included in ``isonimDesignReviewSpecs``.
-##         (``tests/test_editor_agent_harbor.nim`` +
-##         ``tests/test_editor_viewmodels.nim`` reach the same enum fix and now
-##         COMPILE, but each has a SEPARATE unrelated failure — a runtime
-##         ``KeyError: workingCopyMode`` and a test-file-level ``AgentFileDiff``
-##         ambiguity at ``:4725`` respectively — so they stay deferred, out of
-##         FUP-J scope.)
+##         ELH-M3 re-includes ``tests/test_editor_agent_harbor.nim`` as native
+##         and JS build+execute edges: its three adapter/wire/ViewModel tests
+##         pass on both backends, including neutral typed human input state.
+##         ``tests/test_editor_viewmodels.nim`` remains deferred: the current
+##         full native run has 73 passes and one pre-existing presentation-string
+##         guard failure (``flex-`` / ``text-`` in unchanged ViewModel source).
 ##       - **FUP-J stale-assertion fix (RE-INCLUDED):**
 ##         ``tests/test_design_review_cli_init.nim`` hardcoded
 ##         ``countMigrations(f) == 8`` / "applied 8 migration(s)" /
@@ -484,6 +484,7 @@ const isonimTestSpecs: seq[IsonimTestSpec] = @[
   #     ``uses:`` edges — each compiles a sibling ``src/`` root threaded via
   #     the ``nimPathDirs`` channel), FULL build+execute (headless-runnable):
   spec("test_editor_agent_context"),          # import nim_acp
+  spec("test_editor_agent_harbor"),           # common wire + production ViewModel
   spec("test_streaming_preview_element_tree_delta"),  # import isonim_render_serve
 ]
 
@@ -523,6 +524,7 @@ const isonimCompileOnlySpecs: seq[IsonimTestSpec] = @[
 # back-end. It is a ``nim js`` COMPILE-ONLY recipe entry (``-o:`` without
 # ``-r``), so it is modelled as a BUILD-only edge (no node run).
 const isonimJsTestSpecs: seq[string] = @[
+  "test_editor_agent_harbor",
   "test_browser_agent_lifecycle",
   # Reactive core (dual-backend; also in the native corpus above).
   "test_signals", "test_effects", "test_clock", "test_context", "test_rxcore",
@@ -832,6 +834,21 @@ package isonim:
       actionId = "isonim.chat_execute.route_lifecycle",
       after = @[reviewToolEdge.action],
       extraInputs = @["tests/test_harbor_route_lifecycle.py", drReviewBin]))
+    testExecuteActions.add(pythonUnittest.run(
+      source = "tests/test_editor_process_observer.py",
+      actionId = "isonim.chat_execute.process_observer",
+      extraInputs = @["tests/test_editor_process_observer.py", "tests/helpers/editor_process_observer.py",
+        "tests/test_editor_harbor_scenario.py"]))
+    # Optional private producer acceptance. With the sibling present, the built
+    # official scenario provider must be configured and all real boundaries run.
+    # The script delegates producer compilation/environment to the local launcher.
+    testExecuteActions.add(pythonUnittest.run(
+      source = "tests/test_editor_harbor_scenario.py",
+      actionId = "isonim.chat_execute.harbor_scenario",
+      after = @[reviewToolEdge.action],
+      extraInputs = @["tests/test_editor_harbor_scenario.py",
+        "tests/helpers/editor_process_observer.py",
+        "tests/scenarios/agent-harbor/editor-session-continuity.yaml", drReviewBin]))
 
     let fakeAcpToolEdge = buildNimUnittest.build(
       source = "tests/helpers/fake_acp_agent.nim",

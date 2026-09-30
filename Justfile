@@ -477,10 +477,21 @@ test-design-review-harbor-persistent provider harbor="../agent-harbor":
 test-editor-server: isonim-review-build
     python3 tests/test_editor_server.py
 
+# Real editor routes and sibling producer, official deterministic agent only.
+# Public workspaces skip only when the optional private checkout is absent.
+# Private workspaces set ISONIM_HARBOR_SCENARIO_PROVIDER to built mock-agent.
+test-editor-harbor-scenario: isonim-review-build
+    python3 tests/test_editor_process_observer.py
+    python3 tests/test_editor_harbor_scenario.py
+
 test-design-review-chat: isonim-review-build fake-acp-agent-build
+    nim c -r tests/test_editor_agent_harbor.nim
+    nim js -r tests/test_editor_agent_harbor.nim
     python3 tests/test_editor_server.py
     python3 tests/test_agent_session_launcher.py
     python3 tests/test_harbor_route_lifecycle.py
+    python3 tests/test_editor_process_observer.py
+    python3 tests/test_editor_harbor_scenario.py
     nim js -r --path:src tests/test_browser_agent_lifecycle.nim
     nim c -r --path:. --path:src \
         --path:vendor/db_connector/src --path:vendor/chronicles \
