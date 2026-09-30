@@ -1,0 +1,145 @@
+<html><head><meta charset="utf-8" /><script id="docs-theme-bootstrap">(function(){try{var k='isonim-docs-theme';var a='data-theme';var t=localStorage.getItem(k);if(t!=='light'&&t!=='dark'){t=(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light';}document.documentElement.setAttribute(a,t);}catch(e){}})();</script><title>Editor Workspace Model — IsoNim</title><meta name="description" content="The EditorWorkspace data contract a consuming project supplies to the IsoNim editor." /><link rel="stylesheet" href="/isonim/assets/style.32bc81bee3.css" /><link rel="canonical" href="https://metacraft-labs.github.io/isonim/editor/workspace" /><meta property="og:title" content="Editor Workspace Model — IsoNim" /><meta property="og:description" content="The EditorWorkspace data contract a consuming project supplies to the IsoNim editor." /><meta property="og:type" content="article" /><meta property="og:url" content="https://metacraft-labs.github.io/isonim/editor/workspace" /><meta property="og:site_name" content="IsoNim" /><meta name="twitter:card" content="summary" /><meta name="twitter:title" content="Editor Workspace Model — IsoNim" /><meta name="twitter:description" content="The EditorWorkspace data contract a consuming project supplies to the IsoNim editor." /><script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","headline":"Editor Workspace Model — IsoNim","description":"The EditorWorkspace data contract a consuming project supplies to the IsoNim editor.","url":"https://metacraft-labs.github.io/isonim/editor/workspace","publisher":{"@type":"Organization","name":"IsoNim"}}</script></head><body><div class="docs-frame"><a class="docs-skip-link" href="#docs-region-main">Skip to content</a><header id="docs-region-header" class="docs-header"><div class="docs-search" role="search"><input type="text" id="docs-search-input" class="docs-search-input" placeholder="Search docs…" aria-label="Search documentation" value=""><div id="docs-search-results-wrapper"><ul class="docs-search-results" role="listbox"></ul></div></div><nav class="docs-header-nav"><a class="docs-header-nav-btn" href="https://github.com/metacraft-labs/isonim/issues">Support</a><a class="docs-header-nav-btn" href="/isonim/faq">FAQ</a></nav></header><nav id="docs-region-nav" class="docs-nav"><div class="docs-navigation"><button type="button" class="docs-nav-drawer-toggle" aria-expanded="false" aria-controls="docs-nav-drawer-body" aria-label="Menu">Menu</button><div class="docs-nav-drawer-body" id="docs-nav-drawer-body" data-open="false"><nav class="docs-nav-breadcrumbs" aria-label="breadcrumbs"><ol class="docs-nav-breadcrumb-list"><li class="docs-nav-breadcrumb"><a href="/isonim/">Home</a></li><li class="docs-nav-breadcrumb"><a href="/isonim/editor">Editor</a></li><li class="docs-nav-breadcrumb"><span class="docs-nav-breadcrumb-current" aria-current="page">Editor Workspace Model</span></li></ol></nav><nav class="docs-nav-sidebar" aria-label="sidebar"><div class="docs-nav-section docs-nav-section-expanded" data-nav-key=""><ul class="docs-nav-section-list"><li class="docs-nav-item"><a href="/isonim/getting-started">Getting Started</a></li><li class="docs-nav-item"><a href="/isonim/">Welcome to the IsoNim docs</a></li><li class="docs-nav-item"><a href="/isonim/faq">FAQ</a></li></ul></div><div class="docs-nav-section docs-nav-section-expanded" data-nav-key="editor"><button type="button" class="docs-nav-section-title" aria-expanded="true">Editor</button><ul class="docs-nav-section-list"><li class="docs-nav-item"><a href="/isonim/editor/overview">Editor Overview</a></li><li class="docs-nav-item docs-nav-item-active"><a href="/isonim/editor/workspace" aria-current="page">Editor Workspace Model</a></li><li class="docs-nav-item"><a href="/isonim/editor/browser-mount">Editor Browser Mount Contract</a></li><li class="docs-nav-item"><a href="/isonim/editor/integration">Editor Consumer Integration</a></li></ul></div><div class="docs-nav-section" data-nav-key="guide"><button type="button" class="docs-nav-section-title" aria-expanded="false">Guide</button><ul class="docs-nav-section-list"><li class="docs-nav-item"><a href="/isonim/guide/install-setup">Install &amp; Setup</a></li><li class="docs-nav-item"><a href="/isonim/guide/signals-effects">Signals &amp; Effects</a></li><li class="docs-nav-item"><a href="/isonim/guide/dsl">The ui DSL</a></li><li class="docs-nav-item"><a href="/isonim/guide/ssr-basics">SSR Basics</a></li><li class="docs-nav-item"><a href="/isonim/guide/testing-strategy">Testing Strategy</a></li></ul></div><div class="docs-sidebar-extras"><a class="docs-sidebar-link" href="https://github.com/metacraft-labs/isonim" target="_blank" rel="noopener"><img class="docs-sidebar-link-icon" src="/isonim/assets/img/icon__github.svg" alt="" /><span>Github</span></a><div class="docs-theme-switch-wrap"><button type="button" id="docs-theme-toggle" class="docs-theme-toggle" data-theme="light" aria-pressed="false" aria-label="Switch to dark theme">☀</button></div></div></nav><nav class="docs-nav-toc" aria-label="table of contents"><ul class="docs-nav-toc-list"><li class="docs-nav-toc-item"><a href="#editorworkspace">EditorWorkspace</a></li><li class="docs-nav-toc-item"><a href="#building-a-workspace">Building a workspace</a></li><li class="docs-nav-toc-item"><a href="#updating-a-live-workspace">Updating a live workspace</a></li></ul></nav></div></div></nav><main id="docs-region-main" class="docs-main" tabindex="-1"><h1 class="docs-md-title">Editor Workspace Model</h1><div class="docs-md-body"><p class="docs-md-paragraph">The IsoNim editor package owns the framework, view models, and rendering; a consuming project owns its own **workspace**: the data contract that tells the editor what to show and how it may be edited.</p><h2 class="docs-md-heading" id="editorworkspace">EditorWorkspace</h2><p class="docs-md-paragraph"><code>EditorWorkspace</code> (from <code>isonim/editor/workspace</code>) is a plain object, not a signal or a live view model -- it's the project-supplied snapshot the editor's own live <code>EditorVM</code> is built from:</p><div class="docs-md-code-block"><button type="button" class="docs-md-code-copy" aria-label="Copy code" data-copied="false">Copy code</button><pre class="docs-md-code-fence"><code class="language-nim"><span class="tok-keyword">type</span>
+  EditorWorkspace* = <span class="tok-keyword">object</span>
+    id*, title*, version*, description*: string
+    storyGroups*: seq[StoryGroup]
+    canvasItems*: seq[CanvasItem]
+    connections*: seq[FlowConnection]
+    flowSteps*: seq[FlowStep]
+    vectorSymbols*: seq[VectorSymbol]
+    foundationTokens*: seq[FoundationTokenEntry]
+    componentVariants*: seq[ComponentVariantDefinition]
+    designSystemSchema*: DesignSystemSchema
+    initialView*: EditorView
+    permissions*: EditorWorkspacePermissions
+    panels*: PanelVisibility
+    <span class="tok-comment"># ... plus initial-selection and agent-adapter fields.</span></code></pre></div><p class="docs-md-paragraph"><code>storyGroups</code>/<code>canvasItems</code>/<code>connections</code>/<code>flowSteps</code> are the project's own component stories, canvas layout, and flow-diagram data; <code>permissions</code> and <code>panels</code> control what the mounted editor allows an end user to do (source read/write, story/variant creation, deletion) and which chrome panels start visible.</p><h2 class="docs-md-heading" id="building-a-workspace">Building a workspace</h2><p class="docs-md-paragraph">Two constructors cover the common cases:</p><div class="docs-md-code-block"><button type="button" class="docs-md-code-copy" aria-label="Copy code" data-copied="false">Copy code</button><pre class="docs-md-code-fence"><code class="language-nim runnable">import isonim/editor
+
+let empty = emptyEditorWorkspace()          # production defaults, no content
+let mine = newEditorWorkspace(
+  title = "My Design System",
+  storyGroups = empty.storyGroups)          # everything else defaults</code></pre></div><p class="docs-md-paragraph"><code>newEditorWorkspace</code> takes every field as a named default parameter, so a project only ever states the fields it actually owns.</p><h2 class="docs-md-heading" id="updating-a-live-workspace">Updating a live workspace</h2><p class="docs-md-paragraph"><code>applyWorkspace(vm, workspace)</code> pushes a new <code>EditorWorkspace</code> snapshot into an already-mounted <code>EditorVM</code> -- the same signal-backed update path every other IsoNim ViewModel uses, not a re-mount:</p><div class="docs-md-code-block"><button type="button" class="docs-md-code-copy" aria-label="Copy code" data-copied="false">Copy code</button><pre class="docs-md-code-fence"><code class="language-nim">applyWorkspace(vm, newEditorWorkspace(title = <span class="tok-string">"My Design System"</span>,
+                                       storyGroups = updatedGroups))</code></pre></div><p class="docs-md-paragraph">Consumers read the mounted VM's own signal-backed state (e.g. the active story, the current canvas selection) the same way they'd read any other IsoNim <code>ViewModel</code> -- see <a href="/isonim/editor/browser-mount">Browser Mount Contract</a> for how that VM comes to exist in the first place. Back to <a href="/isonim/">the site index</a>.</p></div></main><nav class="docs-nav-adjacent" aria-label="pagination"><a class="docs-nav-prev" href="/isonim/editor/overview">Editor Overview</a><a class="docs-nav-next" href="/isonim/editor/browser-mount">Editor Browser Mount Contract</a></nav><section class="docs-need-help"><div class="docs-need-help-heading">Need some help?</div><a class="docs-need-help-link" href="https://github.com/metacraft-labs/isonim/issues"><img class="docs-need-help-link-icon" src="/isonim/assets/img/icon__support.svg" alt="" /><span>Contact our support</span></a><a class="docs-need-help-link" href="/isonim/faq"><img class="docs-need-help-link-icon" src="/isonim/assets/img/icon__faq.svg" alt="" /><span>Frequently asked questions</span></a></section><footer id="docs-region-footer" class="docs-footer">Built by <a href="https://github.com/metacraft-labs">metacraft-labs</a> — 2026</footer><div class="docs-search-overlay" id="docs-search-overlay" role="dialog" aria-modal="true" aria-label="Search documentation" data-search-index-url="/isonim/search-index.02f295f7c6.json" data-search-mode="client" data-open="false" hidden><div class="docs-search-overlay-dialog"><input type="text" id="docs-search-overlay-input" class="docs-search-overlay-input" placeholder="Search docs…" aria-label="Search documentation" value=""><div id="docs-search-overlay-results"><ul class="docs-search-results" role="listbox"></ul></div><div class="docs-search-overlay-hint">Press Esc to close</div></div></div></div><script id="docs-image-viewer">(function(){
+try{
+if(typeof document==='undefined'||!document.addEventListener){return;}
+var FIG='docs-md-figure';
+var IMG='docs-md-image';
+var EXP='docs-md-image-expand';
+var ZOOM='data-zoomable';
+var OPEN='data-open';
+var LOCK='data-docs-image-viewer-open';
+var DIALOG_LABEL='Image viewer';
+var CLOSE_LABEL='Close image viewer';
+var overlay=null,overlayImg=null,overlayCaption=null,closeBtn=null,lastFocused=null;
+var savedScrollX=0,savedScrollY=0;
+function figureImage(fig){return fig.querySelector('.'+IMG);}
+function measure(fig){
+  var img=figureImage(fig);
+  if(!img){return;}
+  var natural=img.naturalWidth||0;
+  var shown=img.clientWidth||0;
+  var zoomable=(natural>0&&shown>0&&natural>shown+1)?'true':'false';
+  if(fig.getAttribute(ZOOM)!==zoomable){fig.setAttribute(ZOOM,zoomable);}
+}
+function measureAll(){
+  var list=document.querySelectorAll('.'+FIG);
+  for(var i=0;i<list.length;i++){measure(list[i]);}
+}
+var pending=false;
+function scheduleMeasure(){
+  if(pending){return;}
+  pending=true;
+  var run=function(){pending=false;measureAll();};
+  if(typeof requestAnimationFrame==='function'){requestAnimationFrame(run);}
+  else{setTimeout(run,16);}
+}
+function isOpen(){return !!overlay&&overlay.getAttribute(OPEN)==='true';}
+function closeViewer(){
+  if(!isOpen()){return;}
+  overlay.setAttribute(OPEN,'false');
+  overlay.hidden=true;
+  overlayImg.removeAttribute('src');
+  try{document.documentElement.removeAttribute(LOCK);}catch(e){}
+  var target=lastFocused;
+  lastFocused=null;
+  if(target&&target.focus&&document.contains(target)){
+    try{target.focus({preventScroll:true});}catch(e){target.focus();}
+  }
+  if(typeof window!=='undefined'&&window.scrollTo){window.scrollTo(savedScrollX,savedScrollY);}
+}
+function buildOverlay(){
+  if(overlay){return;}
+  overlay=document.createElement('div');
+  overlay.className='docs-image-overlay';
+  overlay.setAttribute('role','dialog');
+  overlay.setAttribute('aria-modal','true');
+  overlay.setAttribute('aria-label',DIALOG_LABEL);
+  overlay.setAttribute('tabindex','-1');
+  overlay.setAttribute(OPEN,'false');
+  overlay.hidden=true;
+  closeBtn=document.createElement('button');
+  closeBtn.setAttribute('type','button');
+  closeBtn.className='docs-image-overlay-close';
+  closeBtn.setAttribute('aria-label',CLOSE_LABEL);
+  closeBtn.appendChild(document.createTextNode('\u00d7'));
+  overlay.appendChild(closeBtn);
+  overlayImg=document.createElement('img');
+  overlayImg.className='docs-image-overlay-image';
+  overlay.appendChild(overlayImg);
+  overlayCaption=document.createElement('p');
+  overlayCaption.className='docs-image-overlay-caption';
+  overlay.appendChild(overlayCaption);
+  closeBtn.addEventListener('click',function(ev){ev.preventDefault();closeViewer();});
+  overlay.addEventListener('click',function(ev){if(ev.target===overlay){closeViewer();}});
+  document.body.appendChild(overlay);
+}
+function openViewer(src,alt){
+  buildOverlay();
+  lastFocused=document.activeElement;
+  savedScrollX=(typeof window!=='undefined'&&window.pageXOffset)||0;
+  savedScrollY=(typeof window!=='undefined'&&window.pageYOffset)||0;
+  overlayImg.setAttribute('src',src);
+  overlayImg.setAttribute('alt',alt||'');
+  overlay.setAttribute('aria-label',alt?(DIALOG_LABEL+': '+alt):DIALOG_LABEL);
+  overlayCaption.textContent=alt||'';
+  overlayCaption.hidden=!alt;
+  overlay.hidden=false;
+  overlay.setAttribute(OPEN,'true');
+  try{document.documentElement.setAttribute(LOCK,'true');}catch(e){}
+  closeBtn.focus();
+}
+document.addEventListener('click',function(ev){
+  if(ev.defaultPrevented){return;}
+  if(ev.metaKey||ev.ctrlKey||ev.shiftKey||ev.altKey){return;}
+  if(typeof ev.button==='number'&&ev.button!==0){return;}
+  var t=ev.target;
+  if(!t||!t.closest){return;}
+  var fig=t.closest('.'+FIG);
+  if(!fig){return;}
+  if(fig.getAttribute(ZOOM)!=='true'){return;}
+  var img=figureImage(fig);
+  if(!img){return;}
+  if(t!==img&&!t.closest('.'+EXP)){return;}
+  ev.preventDefault();
+  openViewer(img.currentSrc||img.getAttribute('src')||'',img.getAttribute('alt')||'');
+});
+document.addEventListener('keydown',function(ev){
+  if(!isOpen()){return;}
+  var k=ev.key;
+  if(k==='Escape'||k==='Esc'){ev.preventDefault();closeViewer();return;}
+  if(k==='Tab'){ev.preventDefault();if(closeBtn&&closeBtn.focus){closeBtn.focus();}}
+},true);
+document.addEventListener('load',function(ev){
+  var t=ev.target;
+  if(t&&t.classList&&t.classList.contains(IMG)){scheduleMeasure();}
+},true);
+if(typeof window!=='undefined'&&window.addEventListener){
+  window.addEventListener('resize',scheduleMeasure);
+  window.addEventListener('load',scheduleMeasure);
+}
+if(typeof MutationObserver==='function'&&document.body){
+  try{new MutationObserver(scheduleMeasure).observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['hidden','src']});}catch(e){}
+}
+document.addEventListener('DOMContentLoaded',scheduleMeasure);
+scheduleMeasure();
+}catch(e){}
+})();</script></body></html>

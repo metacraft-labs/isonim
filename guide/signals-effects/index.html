@@ -1,0 +1,134 @@
+<html><head><meta charset="utf-8" /><script id="docs-theme-bootstrap">(function(){try{var k='isonim-docs-theme';var a='data-theme';var t=localStorage.getItem(k);if(t!=='light'&&t!=='dark'){t=(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light';}document.documentElement.setAttribute(a,t);}catch(e){}})();</script><title>Signals &amp; Effects — IsoNim</title><meta name="description" content="How IsoNim's reactive core tracks state and reacts to changes." /><link rel="stylesheet" href="/isonim/assets/style.32bc81bee3.css" /><link rel="canonical" href="https://metacraft-labs.github.io/isonim/guide/signals-effects" /><meta property="og:title" content="Signals &amp; Effects — IsoNim" /><meta property="og:description" content="How IsoNim's reactive core tracks state and reacts to changes." /><meta property="og:type" content="article" /><meta property="og:url" content="https://metacraft-labs.github.io/isonim/guide/signals-effects" /><meta property="og:site_name" content="IsoNim" /><meta name="twitter:card" content="summary" /><meta name="twitter:title" content="Signals &amp; Effects — IsoNim" /><meta name="twitter:description" content="How IsoNim's reactive core tracks state and reacts to changes." /><script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","headline":"Signals & Effects — IsoNim","description":"How IsoNim's reactive core tracks state and reacts to changes.","url":"https://metacraft-labs.github.io/isonim/guide/signals-effects","publisher":{"@type":"Organization","name":"IsoNim"}}</script></head><body><div class="docs-frame"><a class="docs-skip-link" href="#docs-region-main">Skip to content</a><header id="docs-region-header" class="docs-header"><div class="docs-search" role="search"><input type="text" id="docs-search-input" class="docs-search-input" placeholder="Search docs…" aria-label="Search documentation" value=""><div id="docs-search-results-wrapper"><ul class="docs-search-results" role="listbox"></ul></div></div><nav class="docs-header-nav"><a class="docs-header-nav-btn" href="https://github.com/metacraft-labs/isonim/issues">Support</a><a class="docs-header-nav-btn" href="/isonim/faq">FAQ</a></nav></header><nav id="docs-region-nav" class="docs-nav"><div class="docs-navigation"><button type="button" class="docs-nav-drawer-toggle" aria-expanded="false" aria-controls="docs-nav-drawer-body" aria-label="Menu">Menu</button><div class="docs-nav-drawer-body" id="docs-nav-drawer-body" data-open="false"><nav class="docs-nav-breadcrumbs" aria-label="breadcrumbs"><ol class="docs-nav-breadcrumb-list"><li class="docs-nav-breadcrumb"><a href="/isonim/">Home</a></li><li class="docs-nav-breadcrumb"><a href="/isonim/guide">Guide</a></li><li class="docs-nav-breadcrumb"><span class="docs-nav-breadcrumb-current" aria-current="page">Signals &amp; Effects</span></li></ol></nav><nav class="docs-nav-sidebar" aria-label="sidebar"><div class="docs-nav-section docs-nav-section-expanded" data-nav-key=""><ul class="docs-nav-section-list"><li class="docs-nav-item"><a href="/isonim/getting-started">Getting Started</a></li><li class="docs-nav-item"><a href="/isonim/">Welcome to the IsoNim docs</a></li><li class="docs-nav-item"><a href="/isonim/faq">FAQ</a></li></ul></div><div class="docs-nav-section" data-nav-key="editor"><button type="button" class="docs-nav-section-title" aria-expanded="false">Editor</button><ul class="docs-nav-section-list"><li class="docs-nav-item"><a href="/isonim/editor/overview">Editor Overview</a></li><li class="docs-nav-item"><a href="/isonim/editor/workspace">Editor Workspace Model</a></li><li class="docs-nav-item"><a href="/isonim/editor/browser-mount">Editor Browser Mount Contract</a></li><li class="docs-nav-item"><a href="/isonim/editor/integration">Editor Consumer Integration</a></li></ul></div><div class="docs-nav-section docs-nav-section-expanded" data-nav-key="guide"><button type="button" class="docs-nav-section-title" aria-expanded="true">Guide</button><ul class="docs-nav-section-list"><li class="docs-nav-item"><a href="/isonim/guide/install-setup">Install &amp; Setup</a></li><li class="docs-nav-item docs-nav-item-active"><a href="/isonim/guide/signals-effects" aria-current="page">Signals &amp; Effects</a></li><li class="docs-nav-item"><a href="/isonim/guide/dsl">The ui DSL</a></li><li class="docs-nav-item"><a href="/isonim/guide/ssr-basics">SSR Basics</a></li><li class="docs-nav-item"><a href="/isonim/guide/testing-strategy">Testing Strategy</a></li></ul></div><div class="docs-sidebar-extras"><a class="docs-sidebar-link" href="https://github.com/metacraft-labs/isonim" target="_blank" rel="noopener"><img class="docs-sidebar-link-icon" src="/isonim/assets/img/icon__github.svg" alt="" /><span>Github</span></a><div class="docs-theme-switch-wrap"><button type="button" id="docs-theme-toggle" class="docs-theme-toggle" data-theme="light" aria-pressed="false" aria-label="Switch to dark theme">☀</button></div></div></nav><nav class="docs-nav-toc" aria-label="table of contents"><ul class="docs-nav-toc-list"><li class="docs-nav-toc-item"><a href="#creating-a-signal">Creating a signal</a></li><li class="docs-nav-toc-item"><a href="#reacting-with-effects">Reacting with effects</a></li><li class="docs-nav-toc-item"><a href="#primitive-cheat-sheet">Primitive cheat sheet</a></li></ul></nav></div></div></nav><main id="docs-region-main" class="docs-main" tabindex="-1"><h1 class="docs-md-title">Signals &amp; Effects</h1><div class="docs-md-body"><p class="docs-md-paragraph">IsoNim's reactive core is built on two primitives: **signals**, which hold a piece of state, and **effects**, which re-run automatically whenever a signal they read from changes. Together they give isonim-docs (and every IsoNim app) fine-grained updates without a virtual DOM diff.</p><h2 class="docs-md-heading" id="creating-a-signal">Creating a signal</h2><p class="docs-md-paragraph">A signal is created with <code>createSignal(initialValue)</code> and read/written through its <code>.val</code> accessor. Renderers and consuming code import the reactive core through <code>isonim/rxcore</code> -- the one stable adapter seam, never <code>isonim/core/*</code> directly:</p><div class="docs-md-code-block"><button type="button" class="docs-md-code-copy" aria-label="Copy code" data-copied="false">Copy code</button><pre class="docs-md-code-fence"><code class="language-nim runnable">import isonim/rxcore
+
+let count = createSignal(0)
+echo count.val # 0
+count.val = count.val + 1
+echo count.val # 1</code></pre></div><h2 class="docs-md-heading" id="reacting-with-effects">Reacting with effects</h2><p class="docs-md-paragraph"><code>createRenderEffect</code> (or the lower-level <code>effect</code> proc) re-runs its body every time a signal it reads changes value:</p><div class="docs-md-code-block"><button type="button" class="docs-md-code-copy" aria-label="Copy code" data-copied="false">Copy code</button><pre class="docs-md-code-fence"><code class="language-nim runnable">import isonim/rxcore
+
+let count = createSignal(0)
+createRenderEffect(proc() =
+  echo "count is now ", count.val)</code></pre></div><div class="docs-md-admonition docs-md-admonition-tip"><strong>Tip</strong><p>Effects track their dependencies automatically -- there is no manual subscription list to maintain. Reading <code>count.val</code> inside the effect body is what registers the dependency.</p></div><div class="docs-md-admonition docs-md-admonition-warning"><strong>Warning</strong><p>Don't mutate a signal from inside its own effect without a guard condition; it will re-trigger the effect and can loop forever.</p></div><h2 class="docs-md-heading" id="primitive-cheat-sheet">Primitive cheat sheet</h2><table class="docs-md-table"><thead><tr><th>Primitive</th><th>Purpose</th></tr></thead><tbody><tr><td>`createSignal`</td><td>Holds one piece of reactive state.</td></tr><tr><td>`effect`</td><td>Re-runs a side effect when its dependencies change.</td></tr><tr><td>`createRenderEffect`</td><td>The render-focused effect the `ui` DSL wires up automatically.</td></tr></tbody></table><p class="docs-md-paragraph">See the <a href="/isonim/guide/dsl">DSL guide</a> for how <code>ui(r): ...</code> blocks turn signal reads inside <code>text</code>/attribute expressions into these effects automatically, and <a href="/isonim/guide/ssr-basics">SSR basics</a> for how the same components render without any reactivity at all on the server. Back to <a href="/isonim/">the site index</a>.</p></div></main><nav class="docs-nav-adjacent" aria-label="pagination"><a class="docs-nav-prev" href="/isonim/guide/install-setup">Install &amp; Setup</a><a class="docs-nav-next" href="/isonim/guide/dsl">The ui DSL</a></nav><section class="docs-need-help"><div class="docs-need-help-heading">Need some help?</div><a class="docs-need-help-link" href="https://github.com/metacraft-labs/isonim/issues"><img class="docs-need-help-link-icon" src="/isonim/assets/img/icon__support.svg" alt="" /><span>Contact our support</span></a><a class="docs-need-help-link" href="/isonim/faq"><img class="docs-need-help-link-icon" src="/isonim/assets/img/icon__faq.svg" alt="" /><span>Frequently asked questions</span></a></section><footer id="docs-region-footer" class="docs-footer">Built by <a href="https://github.com/metacraft-labs">metacraft-labs</a> — 2026</footer><div class="docs-search-overlay" id="docs-search-overlay" role="dialog" aria-modal="true" aria-label="Search documentation" data-search-index-url="/isonim/search-index.02f295f7c6.json" data-search-mode="client" data-open="false" hidden><div class="docs-search-overlay-dialog"><input type="text" id="docs-search-overlay-input" class="docs-search-overlay-input" placeholder="Search docs…" aria-label="Search documentation" value=""><div id="docs-search-overlay-results"><ul class="docs-search-results" role="listbox"></ul></div><div class="docs-search-overlay-hint">Press Esc to close</div></div></div></div><script id="docs-image-viewer">(function(){
+try{
+if(typeof document==='undefined'||!document.addEventListener){return;}
+var FIG='docs-md-figure';
+var IMG='docs-md-image';
+var EXP='docs-md-image-expand';
+var ZOOM='data-zoomable';
+var OPEN='data-open';
+var LOCK='data-docs-image-viewer-open';
+var DIALOG_LABEL='Image viewer';
+var CLOSE_LABEL='Close image viewer';
+var overlay=null,overlayImg=null,overlayCaption=null,closeBtn=null,lastFocused=null;
+var savedScrollX=0,savedScrollY=0;
+function figureImage(fig){return fig.querySelector('.'+IMG);}
+function measure(fig){
+  var img=figureImage(fig);
+  if(!img){return;}
+  var natural=img.naturalWidth||0;
+  var shown=img.clientWidth||0;
+  var zoomable=(natural>0&&shown>0&&natural>shown+1)?'true':'false';
+  if(fig.getAttribute(ZOOM)!==zoomable){fig.setAttribute(ZOOM,zoomable);}
+}
+function measureAll(){
+  var list=document.querySelectorAll('.'+FIG);
+  for(var i=0;i<list.length;i++){measure(list[i]);}
+}
+var pending=false;
+function scheduleMeasure(){
+  if(pending){return;}
+  pending=true;
+  var run=function(){pending=false;measureAll();};
+  if(typeof requestAnimationFrame==='function'){requestAnimationFrame(run);}
+  else{setTimeout(run,16);}
+}
+function isOpen(){return !!overlay&&overlay.getAttribute(OPEN)==='true';}
+function closeViewer(){
+  if(!isOpen()){return;}
+  overlay.setAttribute(OPEN,'false');
+  overlay.hidden=true;
+  overlayImg.removeAttribute('src');
+  try{document.documentElement.removeAttribute(LOCK);}catch(e){}
+  var target=lastFocused;
+  lastFocused=null;
+  if(target&&target.focus&&document.contains(target)){
+    try{target.focus({preventScroll:true});}catch(e){target.focus();}
+  }
+  if(typeof window!=='undefined'&&window.scrollTo){window.scrollTo(savedScrollX,savedScrollY);}
+}
+function buildOverlay(){
+  if(overlay){return;}
+  overlay=document.createElement('div');
+  overlay.className='docs-image-overlay';
+  overlay.setAttribute('role','dialog');
+  overlay.setAttribute('aria-modal','true');
+  overlay.setAttribute('aria-label',DIALOG_LABEL);
+  overlay.setAttribute('tabindex','-1');
+  overlay.setAttribute(OPEN,'false');
+  overlay.hidden=true;
+  closeBtn=document.createElement('button');
+  closeBtn.setAttribute('type','button');
+  closeBtn.className='docs-image-overlay-close';
+  closeBtn.setAttribute('aria-label',CLOSE_LABEL);
+  closeBtn.appendChild(document.createTextNode('\u00d7'));
+  overlay.appendChild(closeBtn);
+  overlayImg=document.createElement('img');
+  overlayImg.className='docs-image-overlay-image';
+  overlay.appendChild(overlayImg);
+  overlayCaption=document.createElement('p');
+  overlayCaption.className='docs-image-overlay-caption';
+  overlay.appendChild(overlayCaption);
+  closeBtn.addEventListener('click',function(ev){ev.preventDefault();closeViewer();});
+  overlay.addEventListener('click',function(ev){if(ev.target===overlay){closeViewer();}});
+  document.body.appendChild(overlay);
+}
+function openViewer(src,alt){
+  buildOverlay();
+  lastFocused=document.activeElement;
+  savedScrollX=(typeof window!=='undefined'&&window.pageXOffset)||0;
+  savedScrollY=(typeof window!=='undefined'&&window.pageYOffset)||0;
+  overlayImg.setAttribute('src',src);
+  overlayImg.setAttribute('alt',alt||'');
+  overlay.setAttribute('aria-label',alt?(DIALOG_LABEL+': '+alt):DIALOG_LABEL);
+  overlayCaption.textContent=alt||'';
+  overlayCaption.hidden=!alt;
+  overlay.hidden=false;
+  overlay.setAttribute(OPEN,'true');
+  try{document.documentElement.setAttribute(LOCK,'true');}catch(e){}
+  closeBtn.focus();
+}
+document.addEventListener('click',function(ev){
+  if(ev.defaultPrevented){return;}
+  if(ev.metaKey||ev.ctrlKey||ev.shiftKey||ev.altKey){return;}
+  if(typeof ev.button==='number'&&ev.button!==0){return;}
+  var t=ev.target;
+  if(!t||!t.closest){return;}
+  var fig=t.closest('.'+FIG);
+  if(!fig){return;}
+  if(fig.getAttribute(ZOOM)!=='true'){return;}
+  var img=figureImage(fig);
+  if(!img){return;}
+  if(t!==img&&!t.closest('.'+EXP)){return;}
+  ev.preventDefault();
+  openViewer(img.currentSrc||img.getAttribute('src')||'',img.getAttribute('alt')||'');
+});
+document.addEventListener('keydown',function(ev){
+  if(!isOpen()){return;}
+  var k=ev.key;
+  if(k==='Escape'||k==='Esc'){ev.preventDefault();closeViewer();return;}
+  if(k==='Tab'){ev.preventDefault();if(closeBtn&&closeBtn.focus){closeBtn.focus();}}
+},true);
+document.addEventListener('load',function(ev){
+  var t=ev.target;
+  if(t&&t.classList&&t.classList.contains(IMG)){scheduleMeasure();}
+},true);
+if(typeof window!=='undefined'&&window.addEventListener){
+  window.addEventListener('resize',scheduleMeasure);
+  window.addEventListener('load',scheduleMeasure);
+}
+if(typeof MutationObserver==='function'&&document.body){
+  try{new MutationObserver(scheduleMeasure).observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['hidden','src']});}catch(e){}
+}
+document.addEventListener('DOMContentLoaded',scheduleMeasure);
+scheduleMeasure();
+}catch(e){}
+})();</script></body></html>
