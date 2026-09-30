@@ -254,11 +254,12 @@ proc applyAgentBackendOverride(cfg: var ReviewConfig; rest: seq[string]) =
     # is one of the recognised ACP kinds; otherwise it belongs to
     # ``run-review``'s reviewer-pipeline selector.
     if agentBackendFlag.toLowerAscii() in
-        ["claude", "codex", "custom",
+        ["claude", "codex", "custom", "harbor",
          "claude-code-acp", "claude-agent-acp", "codex-acp"]:
       override = agentBackendFlag
   if override.len > 0:
     cfg.agent.backend = override
+    cfg.agent.backendExplicit = true
     try:
       validateAgentConfig(cfg)
     except AgentConfigError as e:

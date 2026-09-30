@@ -108,6 +108,10 @@ type
     ##     :proc:`claudeExtraArgs` for how they reach the spawned ACP
     ##     binary's argv.
     backend*: string
+    backendExplicit*: bool
+    harborUrl*: string
+    harborToken*: string
+    harborAgent*: string
     command*: string
     args*: seq[string]
     extraArgs*: seq[string]
@@ -481,8 +485,16 @@ proc applyToml(cfg: var ReviewConfig; content: string) =
         stderr.writeLine("isonim-review config: unknown key [backend]." & key)
     of "agent":
       case key
+      of "harbor_url":
+        if v.kind == tvkString: cfg.agent.harborUrl = v.s
+      of "harbor_token":
+        if v.kind == tvkString: cfg.agent.harborToken = v.s
+      of "harbor_agent":
+        if v.kind == tvkString: cfg.agent.harborAgent = v.s
       of "backend":
-        if v.kind == tvkString: cfg.agent.backend = v.s
+        if v.kind == tvkString:
+          cfg.agent.backend = v.s
+          cfg.agent.backendExplicit = true
       of "command":
         if v.kind == tvkString: cfg.agent.command = v.s
       of "args":
@@ -537,17 +549,21 @@ proc agentBackendKind*(cfg: ReviewConfig): AcpAgentKind =
     aakClaude
   of "codex", "codex-acp":
     aakCodex
-  of "custom":
+  of "custom", "harbor":
     aakCustom
   else:
     raise newException(AgentConfigError,
       "isonim-review config: unknown [agent].backend = \"" &
-      cfg.agent.backend & "\" (expected one of: claude, codex, custom)")
+      cfg.agent.backend & "\" (expected one of: claude, codex, custom, harbor)")
 
 proc validateAgentConfig*(cfg: ReviewConfig) =
   ## Cross-check the ``[agent]`` keys for consistency. Called from
   ## :proc:`loadConfig` so the failure surfaces at config load.
   let kind = agentBackendKind(cfg)
+  if cfg.agent.backend == "harbor":
+    if cfg.agent.harborUrl.len == 0:
+      raise newException(AgentConfigError, "Harbor backend requires [agent].harbor_url")
+    return
   if kind == aakCustom and cfg.agent.command.len == 0:
     raise newException(AgentConfigError,
       "isonim-review config: [agent].backend = \"custom\" requires " &
@@ -634,9 +650,16 @@ proc loadConfig*(explicitPath: string = ""): ReviewConfig =
   # smoke targets in this repo's Justfile).  Setting it to a known
   # value here keeps ``agentBackendKind(cfg)`` and the CLI flag in
   # sync.
+  let harborUrl = getEnv("ISONIM_HARBOR_URL")
+  if harborUrl.len > 0: result.agent.harborUrl = harborUrl
+  let harborToken = getEnv("ISONIM_HARBOR_TOKEN")
+  if harborToken.len > 0: result.agent.harborToken = harborToken
+  let harborAgent = getEnv("ISONIM_HARBOR_AGENT")
+  if harborAgent.len > 0: result.agent.harborAgent = harborAgent
   let envBackend = getEnv("ISONIM_AGENT_BACKEND")
   if envBackend.len > 0:
     result.agent.backend = envBackend
+    result.agent.backendExplicit = true
 
   # Follow-up 2 — per-backend model env overrides.  These win over
   # TOML but lose to ``--codex-model=`` / ``--claude-model=`` on the

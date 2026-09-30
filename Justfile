@@ -452,6 +452,22 @@ fake-acp-agent-build:
 
 # Phase B — run every chat / agent-route test.  No PG required;
 # ``isonim-review serve --agent-routes-only`` is used throughout.
+test-design-review-local-harbor:
+    mkdir -p build/bin
+    nim c -r --out:build/bin/test-design-review-local-harbor --path:src --path:../nim-everywhere/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src --hints:off tests/test_design_review_local_harbor.nim
+
+# Real Repro producer/consumer build, source mutation, and failure boundaries.
+test-design-review-harbor-build:
+    mkdir -p build/bin
+    nim c -r --out:build/bin/test-design-review-harbor-build --path:src --path:../nim-everywhere/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src --hints:off tests/test_design_review_harbor_build.nim
+
+
+# Private-repository acceptance: explicitly requires the selected local checkout.
+test-design-review-harbor-live:
+    mkdir -p build/bin
+    nim c -r --out:build/bin/test-design-review-harbor-live --path:src --path:../nim-everywhere/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src --hints:off tests/test_design_review_harbor_live.nim
+
+
 test-design-review-chat: isonim-review-build fake-acp-agent-build
     nim c -r --path:. --path:src \
         --path:vendor/db_connector/src --path:vendor/chronicles \
@@ -808,7 +824,7 @@ editor-screenshot-list:
     node tools/editor-screenshot.mjs --list
 
 # Run editor ViewModel tests
-test-editor:
+test-editor: test-design-review-local-harbor test-design-review-harbor-build
     nim c -r tests/test_editor_workspace.nim
     nim c -r tests/test_editor_public_api.nim
     nim js --path:src -o:build/test_editor_public_browser_imports.js tests/test_editor_public_browser_imports.nim

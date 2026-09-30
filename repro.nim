@@ -564,6 +564,10 @@ proc dr(stem: string; needs: set[DrNeed] = {}): DrSpec =
   DrSpec(stem: stem, needs: needs)
 
 const isonimDesignReviewSpecs: seq[DrSpec] = @[
+  # Optional local-runtime selection and actual public Repro producer fixtures.
+  # The private-repository live acceptance target is explicit in the Justfile.
+  dr("test_design_review_local_harbor"),
+  dr("test_design_review_harbor_build"),
   # PostgreSQL fixture (initdb ephemeral cluster) — self-provisioning, no bin.
   dr("test_design_review_pg_schema"),
   dr("test_design_review_pg_routines"),
