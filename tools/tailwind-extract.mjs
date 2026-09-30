@@ -11,6 +11,7 @@
 //
 // Usage: node tools/tailwind-extract.mjs [--input src/input.css] [--out-dir build]
 //                                        [--content '<glob>' ...]
+//                                        [--variants sm,dark,hover]
 //
 // `--content` (repeatable) adds explicit @source directives so consuming
 // apps can drive the extract from their own repo. Tailwind v4's default
@@ -18,6 +19,16 @@
 // (no `.nim`), so callers from sibling repos MUST pass `--content` to
 // have their source files scanned. Each pattern is emitted verbatim as
 // a `@source "<pattern>";` line in a generated input CSS.
+//
+// `--variants sm,dark,hover` (variants mode) records each
+// listed variant class under its full name with a `variant` field, and
+// records the pre-strip unit of every px-stripped value in a `units`
+// field. Without the flag there are no `variant`/`units` keys and
+// minified pseudo-suffixed rules are still dropped; every other entry is
+// unchanged except nested variant rules whose @media/& prelude contains
+// a colon (`dark:`/`hover:`-style nesting), which previously captured
+// the prelude as garbage props and now parse to the same flat
+// declarations as `sm:`/`md:`.
 
 import { execSync } from 'child_process';
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
@@ -31,6 +42,7 @@ const projectRoot = join(__dirname, '..');
 let inputCss = null;
 let outDir = join(projectRoot, 'build');
 let contentPatterns = [];
+let variantList = [];
 
 for (let i = 2; i < process.argv.length; i++) {
   if (process.argv[i] === '--input' && process.argv[i + 1]) {
@@ -39,8 +51,17 @@ for (let i = 2; i < process.argv.length; i++) {
     outDir = process.argv[++i];
   } else if (process.argv[i] === '--content' && process.argv[i + 1]) {
     contentPatterns.push(process.argv[++i]);
+  } else if (process.argv[i] === '--variants' && process.argv[i + 1]) {
+    variantList = process.argv[++i].split(',').map(s => s.trim()).filter(Boolean);
   }
 }
+
+// Resolve caller-relative paths up front: the Tailwind CLI runs with
+// isonim's root as cwd while the file reads/writes run in the caller's
+// cwd, so a relative --out-dir/--input would otherwise land in two
+// different places for cross-repo callers (which pass --out-dir build/).
+outDir = resolve(process.cwd(), outDir);
+if (inputCss) inputCss = resolve(process.cwd(), inputCss);
 
 mkdirSync(outDir, { recursive: true });
 
@@ -202,29 +223,32 @@ function oklchToHex(value) {
   });
 }
 
-// Full resolution pipeline
+// Full resolution pipeline (the `px` strip lives in parseDeclarations so
+// the stripped unit can be recorded in variants mode; values are unchanged).
 function resolveValue(value) {
   let v = resolveVar(value);
   v = resolveCalc(v);
   v = oklchToHex(v);
   v = remToPx(v);
-  // Strip px suffix for numeric values (native platforms use raw numbers)
-  v = v.replace(/^([\d.]+)px$/, '$1');
   return v;
 }
 
 // Parse utility rules from @layer utilities
 const styleMap = {};
 
-// Match .classname { declarations } — handles both minified and formatted CSS
-const ruleRe = /\.([\w-]+(?:\\:[\w-]+)*)\s*\{([^}]+)\}/g;
-let ruleMatch;
+const wantVariants = variantList.length > 0;
 
-while ((ruleMatch = ruleRe.exec(css)) !== null) {
-  const className = ruleMatch[1].replace(/\\/g, ''); // unescape
-  const declarations = ruleMatch[2];
-
+// Parse a declaration block into {props, units}. With `wantUnits` (variants
+// mode) the pre-strip unit of every single-valued px declaration
+// is recorded in `units`.
+function parseDeclarations(declarations, wantUnits) {
+  // Non-minified v4 nests declarations inside `@media … {` / `&:… {`
+  // blocks. Strip those openers so only real declarations parse; without
+  // this the @media preamble becomes a garbage property. Nested variants
+  // then record flat (condition dropped), the md: precedent.
+  declarations = declarations.replace(/@[^{};]+\{/g, '').replace(/&[^{};]+\{/g, '');
   const props = {};
+  const units = {};
   const declRe = /([\w-]+)\s*:\s*([^;]+)/g;
   let declMatch;
   while ((declMatch = declRe.exec(declarations)) !== null) {
@@ -236,37 +260,79 @@ while ((ruleMatch = ruleRe.exec(css)) !== null) {
     // Resolve and skip properties with unresolvable vars
     val = resolveValue(val);
     if (val.includes('var(')) continue;
+    // Strip px suffix for numeric values (native platforms use raw numbers);
+    // in variants mode the original unit is recorded alongside.
+    const pxm = val.match(/^([\d.]+)px$/);
+    if (pxm) {
+      if (wantUnits) units[prop] = 'px';
+      val = pxm[1];
+    }
 
     props[prop] = val;
   }
+  return { props, units };
+}
 
-  if (Object.keys(props).length > 0) {
-    styleMap[className] = props;
+function addRule(className, declarations) {
+  const { props, units } = parseDeclarations(declarations, wantVariants);
+  if (Object.keys(props).length == 0) return;
+  const entry = { ...props };
+  if (wantVariants) {
+    // Variants mode: only the first `:` segment is read, so stacked variants
+    // (sm:hover:…) keep their outermost condition only.
+    const prefix = className.split(':')[0];
+    if (className.includes(':') && variantList.includes(prefix)) {
+      entry.variant = prefix;
+    }
+    if (Object.keys(units).length > 0) entry.units = units;
+  }
+  styleMap[className] = entry;
+}
+
+// Match .classname { declarations } — handles both minified and formatted CSS
+const ruleRe = /\.([\w-]+(?:\\:[\w-]+)*)\s*\{([^}]+)\}/g;
+let ruleMatch;
+
+while ((ruleMatch = ruleRe.exec(css)) !== null) {
+  const className = ruleMatch[1].replace(/\\/g, ''); // unescape
+  addRule(className, ruleMatch[2]);
+}
+
+// Variants mode only: also match variant rules carrying a pseudo-class
+// or pseudo-element suffix (`.hover\:underline:hover`). The plain rule
+// above cannot match those, so they are dropped entirely without the flag.
+// Suffixes with nested parens (`:where(& > :not(…))`) stay dropped.
+if (wantVariants) {
+  const pseudoRe = /\.((?:[\w-]+\\:)+[\w-]+):{1,2}[\w-]+(?:\([^)]*\))?\s*\{([^}]+)\}/g;
+  let pseudoMatch;
+  while ((pseudoMatch = pseudoRe.exec(css)) !== null) {
+    const className = pseudoMatch[1].replace(/\\/g, '');
+    if (className in styleMap) continue;
+    if (!variantList.includes(className.split(':')[0])) continue;
+    addRule(className, pseudoMatch[2]);
   }
 }
 
 // Also handle Tailwind v4 padding-inline/padding-block → padding-left/right/top/bottom
+const logicalProps = [
+  ['padding-inline', ['padding-left', 'padding-right']],
+  ['padding-block', ['padding-top', 'padding-bottom']],
+  ['margin-inline', ['margin-left', 'margin-right']],
+  ['margin-block', ['margin-top', 'margin-bottom']],
+];
 for (const [cls, props] of Object.entries(styleMap)) {
-  if (props['padding-inline']) {
-    props['padding-left'] = props['padding-inline'];
-    props['padding-right'] = props['padding-inline'];
-    delete props['padding-inline'];
+  const units = props.units;
+  for (const [src, dsts] of logicalProps) {
+    if (props[src]) {
+      for (const d of dsts) {
+        props[d] = props[src];
+        if (units !== undefined && units[src] !== undefined) units[d] = units[src];
+      }
+      delete props[src];
+      if (units !== undefined) delete units[src];
+    }
   }
-  if (props['padding-block']) {
-    props['padding-top'] = props['padding-block'];
-    props['padding-bottom'] = props['padding-block'];
-    delete props['padding-block'];
-  }
-  if (props['margin-inline']) {
-    props['margin-left'] = props['margin-inline'];
-    props['margin-right'] = props['margin-inline'];
-    delete props['margin-inline'];
-  }
-  if (props['margin-block']) {
-    props['margin-top'] = props['margin-block'];
-    props['margin-bottom'] = props['margin-block'];
-    delete props['margin-block'];
-  }
+  if (units !== undefined && Object.keys(units).length == 0) delete props.units;
 }
 
 // ---------------------------------------------------------------------------

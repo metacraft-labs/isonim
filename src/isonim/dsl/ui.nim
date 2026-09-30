@@ -45,6 +45,7 @@
 import std/[macros, os, strutils]
 import transform
 import tailwind
+import vocabulary
 import ./scene_graph
 import ./style_provenance
 import ./style_binding
@@ -148,6 +149,11 @@ var parentIdStack {.compileTime.}: seq[string] = @[]
   ## in the DSL's recursion; macro expansion is single-threaded, so a
   ## module-level stack is safe here in a way it would not be at runtime.
 
+var vocabParentStack {.compileTime.}: seq[string] = @[]
+  ## Parent tags for the static-vocabulary check, mirroring
+  ## parentIdStack. Empty when the element being walked is top-level;
+  ## the emitted check then passes "" as the parent tag.
+
 proc sceneElementId(node: NimNode): string {.compileTime.} =
   ## Identity for one element, derived from its source position.
   ##
@@ -216,7 +222,12 @@ proc emitNoteElement(stmts, elSym: NimNode; tag: string;
     let info = node.lineInfoObj
     let loc = info.filename & ":" & $info.line & ":" & $info.column
     let parentId = if parentIdStack.len > 0: parentIdStack[^1] else: ""
-    stmts.add(newCall(bindSym"noteElement", elSym,
+    # Open choice, not a closed bind: a renderer backend may declare a more
+    # specific `noteElement` overload (typed on its own element handle) and
+    # overload resolution prefers it over the untyped seam template, so the
+    # backend learns each element's source location. Call sites without such
+    # an overload resolve exactly as before, to the single seam template.
+    stmts.add(newCall(bindSym("noteElement", brForceOpen), elSym,
                       newStrLitNode(id), newStrLitNode(tag),
                       newStrLitNode(loc), newStrLitNode(parentId)))
   result = id
@@ -305,6 +316,81 @@ proc isElementCall(name: string; node: NimNode): bool {.compileTime.} =
       return true
 
   return false
+
+# ---------------------------------------------------------------------------
+# Static-vocabulary check: per-element compile-time validation
+# ---------------------------------------------------------------------------
+
+proc setVocabLineInfo(n, src: NimNode) {.compileTime.} =
+  ## Point generated check nodes at the element, so a static failure cites
+  ## the offending node's line rather than the `ui` call site.
+  copyLineInfo(n, src)
+  for child in n:
+    setVocabLineInfo(child, src)
+
+proc makeVocabCall(rendererSym: NimNode): NimNode {.compileTime.} =
+  ## Fresh `staticVocabulary(typeof(renderer))` nodes. Built per use so the
+  ## `compiles` guard and the `checkElement` call never share AST objects.
+  ## `staticVocabulary` stays an unbound ident: it resolves in the caller's
+  ## scope to the renderer's opt-in proc, and `compiles` is false when the
+  ## renderer declares none.
+  newCall(ident"staticVocabulary", newCall(ident"typeof", rendererSym))
+
+proc emitVocabCheck(stmts, rendererSym: NimNode; tag: string;
+    styleAttrs, attrs: seq[string]; parentTag: string;
+    srcNode: NimNode) {.compileTime.} =
+  ## Emit the per-element static-vocabulary check:
+  ##
+  ##   when compiles(staticVocabulary(typeof(r))):
+  ##     static:
+  ##       failVocabCheck(checkElement(staticVocabulary(typeof(r)),
+  ##                                   "tag", ["style", ...], ["attr", ...],
+  ##                                   "parent"))
+  ##
+  ## `checkElement`/`failVocabCheck` are bound to `dsl/vocabulary`;
+  ## everything else resolves in the caller's scope. For renderers without
+  ## the hook the `when` folds away and no code is emitted.
+  let cond = newCall(ident"compiles", makeVocabCall(rendererSym))
+  var styleArr = newNimNode(nnkBracket)
+  for a in styleAttrs:
+    styleArr.add newStrLitNode(a)
+  var attrsArr = newNimNode(nnkBracket)
+  for a in attrs:
+    attrsArr.add newStrLitNode(a)
+  let checkCall = newCall(bindSym"checkElement", makeVocabCall(rendererSym),
+    newStrLitNode(tag), styleArr, attrsArr, newStrLitNode(parentTag))
+  let failCall = newCall(bindSym"failVocabCheck", checkCall)
+  let staticBody = newStmtList(failCall)
+  let staticStmt = newNimNode(nnkStaticStmt).add(staticBody)
+  let branchBody = newStmtList(staticStmt)
+  let whenStmt = newNimNode(nnkWhenStmt).add(
+    newNimNode(nnkElifBranch).add(cond, branchBody))
+  setVocabLineInfo(whenStmt, srcNode)
+  stmts.add(whenStmt)
+
+proc emitProcCheck(stmts, rendererSym: NimNode; tagIdent: string;
+    elSym: NimNode; srcNode: NimNode) {.compileTime.} =
+  ## Emit the E-VOCAB-PROC-AS-ELEMENT probe:
+  ##
+  ##   when compiles(staticVocabulary(typeof(r))):
+  ##     when declared(<name-as-written>):
+  ##       checkNotProcAsElement(<name-as-written>, <element>)
+  ##
+  ## Guarded by the same hook as the tag check, so renderers without a
+  ## vocabulary see no change. Uses the as-written name (`tdiv` stays
+  ## `tdiv`), since only it can resolve to a caller-scope proc.
+  let cond = newCall(ident"compiles", makeVocabCall(rendererSym))
+  let nameNode = ident(tagIdent)
+  let declaredCond = newCall(ident"declared", ident(tagIdent))
+  let probeCall = newCall(bindSym"checkNotProcAsElement", nameNode, elSym)
+  let innerBody = newStmtList(probeCall)
+  let innerWhen = newNimNode(nnkWhenStmt).add(
+    newNimNode(nnkElifBranch).add(declaredCond, innerBody))
+  let branchBody = newStmtList(innerWhen)
+  let whenStmt = newNimNode(nnkWhenStmt).add(
+    newNimNode(nnkElifBranch).add(cond, branchBody))
+  setVocabLineInfo(whenStmt, srcNode)
+  stmts.add(whenStmt)
 
 # ---------------------------------------------------------------------------
 # Client mode (renderer-based element creation)
@@ -418,6 +504,9 @@ proc processChildren(rendererSym, parentSym: NimNode; body: NimNode;
       let tagName = resolveTagName(child.strVal)
       if isVoidElement(tagName):
         let elSym = genName("el")
+        let vocabParent = if vocabParentStack.len > 0: vocabParentStack[^1] else: ""
+        emitVocabCheck(stmts, rendererSym, tagName, @[], @[], vocabParent,
+          child)
         stmts.add(newLetStmt(elSym,
           newCall(newDotExpr(rendererSym, ident"createElement"), newStrLitNode(tagName))))
         stmts.add(newCall(newDotExpr(rendererSym, ident"appendChild"),
@@ -516,8 +605,35 @@ proc processNode(rendererSym: NimNode; node: NimNode;
     let htmlTag = resolveTagName(tagIdent)
     let elSym = genName("el")
 
+    # Per-element static vocabulary check. Collects the attribute names
+    # (skipping `ref`, which is a macro directive, and `on*` handlers,
+    # which route to addEventListener, not to an attribute slot), split by
+    # the same style/attr routing the codegen below uses, and emits a
+    # `when compiles` guard that folds away for renderers without the hook.
+    let vocabParent = if vocabParentStack.len > 0: vocabParentStack[^1] else: ""
+    var vocabStyles: seq[string] = @[]
+    var vocabAttrs: seq[string] = @[]
+    for i in 1 ..< node.len:
+      let arg = node[i]
+      if arg.kind == nnkExprEqExpr and arg[0].kind != nnkRefTy:
+        let attrName = attrNameStr(arg[0])
+        if isEventHandler(attrName):
+          continue
+        if isStyleProperty(attrName):
+          vocabStyles.add attrName
+        else:
+          vocabAttrs.add attrName
     stmts.add(newLetStmt(elSym,
       newCall(newDotExpr(rendererSym, ident"createElement"), newStrLitNode(htmlTag))))
+
+    # Static vocabulary: proc-as-element probe first (a hit reports here, before the tag
+    # check, so the actionable error leads; the sibling unknown-tag error
+    # still follows, and both are true), then the tag/attribute/nesting
+    # check. Bare identifiers cannot be proc calls, so the void-ident path
+    # in processChildren needs no probe.
+    emitProcCheck(stmts, rendererSym, tagIdent, elSym, node)
+    emitVocabCheck(stmts, rendererSym, htmlTag, vocabStyles, vocabAttrs,
+      vocabParent, node)
 
     # SGR-M1: record this element, then make it the parent of everything its
     # body nests. Pushed before the argument walk and popped after, so a
@@ -525,6 +641,7 @@ proc processNode(rendererSym: NimNode; node: NimNode;
     # from this proc after the push goes through the pop below.
     let sceneId = emitNoteElement(stmts, elSym, htmlTag, node)
     parentIdStack.add sceneId
+    vocabParentStack.add htmlTag
 
     # Stamp the source location, as SSR mode already does.
     #
@@ -639,6 +756,7 @@ proc processNode(rendererSym: NimNode; node: NimNode;
 
     # SGR-M1: children are walked; this element is no longer the parent.
     discard parentIdStack.pop()
+    discard vocabParentStack.pop()
     return elSym
 
   return nil

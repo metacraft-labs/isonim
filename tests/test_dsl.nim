@@ -1,3 +1,13 @@
+## DSL macro tests over the framework's in-memory mock DOM.
+##
+## MOCK POLICY (workspace rule: every mock justified in the header).
+## MockRenderer/MockNode (`isonim/testing/mock_dom`) is the framework's
+## shipped in-memory `RendererBackend`, not a hand-rolled stub: these
+## tests pin macro expansion and tree shape, and the mock DOM is the
+## real boundary for that — the same backend contract production
+## renderers implement. End-to-end confidence comes from the
+## per-renderer suites (web, native, TUI); a real browser or native
+## widget here would test the renderer, not the macro.
 import unittest
 import std/[tables, sugar]
 import isonim/core/[signals, computation, owner, batch, graph]

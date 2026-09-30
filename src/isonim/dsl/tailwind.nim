@@ -51,15 +51,31 @@ else:
     const tailwindJsonStr = "{}"
     const hasTailwindStyles* = false
 
-proc buildStyleMap(): Table[string, seq[tuple[prop, val: string]]] {.compileTime.} =
+proc buildStyleMap(): tuple[
+    styles: Table[string, seq[tuple[prop, val: string]]];
+    variants: Table[string, string];
+    units: Table[string, seq[tuple[prop, unit: string]]]
+] {.compileTime.} =
   let j = parseJson(tailwindJsonStr)
   for className, propsNode in j:
     var styles: seq[tuple[prop, val: string]]
     for prop, val in propsNode:
-      styles.add((prop, val.getStr()))
-    result[className] = styles
+      if prop == "variant":
+        result.variants[className] = val.getStr()
+      elif prop == "units":
+        for uprop, uval in val:
+          result.units.mgetOrPut(className, @[]).add((uprop, uval.getStr()))
+      else:
+        styles.add((prop, val.getStr()))
+    result.styles[className] = styles
 
-const tailwindStyles* = buildStyleMap()
+const tailwindMap = buildStyleMap()
+const tailwindStyles* = tailwindMap.styles
+const tailwindVariants* = tailwindMap.variants
+  ## Variants mode: class name → variant (`sm`, `dark`, `hover`), only for entries the
+  ## extractor tagged with `--variants`. Empty without the flag.
+const tailwindUnits* = tailwindMap.units
+  ## Variants mode: class name → stripped `px` units per prop. Empty without the flag.
 
 # ===========================================================================
 # Public API — called by the DSL macro at compile time
@@ -80,9 +96,40 @@ proc expandTailwindClasses*(classStr: string): seq[tuple[prop, val: string]] =
     let styles = parseTailwindClass(cls)
     result.add(styles)
 
+when defined(isonimTailwindVariants):
+  proc isBareNumber(s: string): bool {.compileTime.} =
+    ## True when the extractor's px-strip pattern could have produced `s`
+    ## (`^[\d.]+$`, mirroring `tailwind-extract.mjs`), so a recorded unit
+    ## may be appended.
+    if s.len == 0:
+      return false
+    for c in s:
+      if c notin {'0' .. '9', '.'}:
+        return false
+    return true
+
 proc expandTailwindClassesCompileTime*(classStr: string): seq[tuple[prop, val: string]]
     {.compileTime.} =
   ## Compile-time version for use inside macros.
-  for cls in classStr.splitWhitespace():
-    if cls in tailwindStyles:
-      result.add(tailwindStyles[cls])
+  when defined(isonimTailwindVariants):
+    # Variants opt-in: the switch is the global `-d:isonimTailwindVariants`
+    # the email build sets in config.nims — not a per-renderer hook
+    # like the static vocabulary — because the expansion runs once at macro-expansion
+    # time, before any renderer type is known.
+    for cls in classStr.splitWhitespace():
+      if cls in tailwindStyles:
+        var prefix = ""
+        if cls in tailwindVariants:
+          prefix = "@" & tailwindVariants[cls] & ":"
+        for (prop, val) in tailwindStyles[cls]:
+          var v = val
+          if isBareNumber(v) and cls in tailwindUnits:
+            for u in tailwindUnits[cls]:
+              if u.prop == prop:
+                v = v & u.unit
+                break
+          result.add((prefix & prop, v))
+  else:
+    for cls in classStr.splitWhitespace():
+      if cls in tailwindStyles:
+        result.add(tailwindStyles[cls])

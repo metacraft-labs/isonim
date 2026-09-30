@@ -1,6 +1,14 @@
 ## Tests for the bare `ui:` form (SSR mode DSL) and isomorphicUi.
 ## Verifies that the same DSL syntax generates correct HTML strings
 ## for server-side rendering.
+##
+## MOCK POLICY (workspace rule: every mock justified in the header).
+## The string-mode tests use no mocks (pure `ui:` → HTML). The single
+## `isomorphicUi` client-mode test builds its tree with MockRenderer,
+## the framework's shipped in-memory `RendererBackend`
+## (`isonim/testing/mock_dom`) — the real boundary for asserting tree
+## shape; a production renderer here would test the renderer, not the
+## client/server mode split.
 
 import unittest
 import std/[strutils, tables]

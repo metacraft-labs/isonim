@@ -311,6 +311,12 @@ test-dsl: build-tailwind
     nim c -r tests/test_dsl.nim
     nim js -r tests/test_dsl.nim
     nim c -r tests/test_dsl_ssr.nim
+    # Static vocabulary checks. C only: shells out to `nim check`.
+    nim c -r tests/test_dsl_vocabulary.nim
+    # Variant-preserving Tailwind expansion, both modes against the fixture
+    # map. C only: class expansion to setStyle calls is native-only.
+    nim c -r -d:tailwindStylesPathOverride={{justfile_directory()}}/tests/dsl/tailwind/variant-styles.json tests/test_dsl_tailwind_variants.nim
+    nim c -r -d:tailwindStylesPathOverride={{justfile_directory()}}/tests/dsl/tailwind/variant-styles.json -d:isonimTailwindVariants tests/test_dsl_tailwind_variants.nim
 
 # Run only server function tests
 test-server:
