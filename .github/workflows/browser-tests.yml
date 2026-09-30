@@ -36,7 +36,7 @@ name: Browser tests (Playwright)
 
 on:
   push:
-    branches: [agents, main, dev, stable]
+    branches: [main, dev, stable]
   pull_request:
     branches: [main, dev, stable]
   schedule:
@@ -46,8 +46,8 @@ on:
   workflow_dispatch: {}
 
 concurrency:
-  group: browser-tests-${{ github.repository }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   smoke:

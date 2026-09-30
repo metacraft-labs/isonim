@@ -93,8 +93,9 @@ repro exec -- just test-browser-smoke   # the subset CI gates on
 the `just` recipe that builds it, rather than skipping the project. Ports,
 the `metacraft-web` sibling requirement, and the currently-red tests (with
 their diagnoses) are documented in `tests/browser/README.md`. `.github/
-workflows/browser-tests.yml` runs a fast subset on every push and the full
-in-repo suite nightly.
+workflows/browser-tests.yml` runs a fast subset on every push to `dev`,
+`stable` and `main` and on pull requests into them (never on `agents`, which
+has no CI), and the full in-repo suite nightly.
 
 Before running metacraft-web consumer browser tests, rebuild the consumer bundle
 from the sibling repo when the editor framework or workspace integration
