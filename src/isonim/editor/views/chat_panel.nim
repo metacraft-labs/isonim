@@ -3,7 +3,8 @@
 ## Ever-present panel on the right side of every screen.
 ## Renders explicit chat state from the editor ViewModel.
 
-import std/[sequtils, strutils]
+import std/[json, sequtils, strutils]
+import isonim/editor/control
 
 import isonim/core/[signals, computation]
 import isonim/viewmodel
@@ -175,6 +176,65 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
       span(ref = statusTextNode):
         text statusLabel & " / " & connectionLabel
   r.appendChild(panel, header)
+  var approvalSetting: E
+  let controlSettings = ui(r):
+    tdiv(padding = "8px 12px", border_bottom = "1px solid " & borderFaint):
+      label(display = "flex", align_items = "center", gap = "8px", color = textSecondary, font_size = "12px"):
+        input(ref = approvalSetting, `type` = "checkbox",
+          `data-editor-control-approval` = "true")
+        text "Approve agent navigation"
+  r.addEventListener(approvalSetting, "change", proc() =
+    vm.agentControlApproval.val = not vm.agentControlApproval.val
+    discard vm.refreshControlRevision())
+  createRenderEffect proc() =
+    r.setAttribute(approvalSetting, "aria-checked", $vm.agentControlApproval.val)
+    when defined(js):
+      let checked = vm.agentControlApproval.val
+      {.emit: [approvalSetting, ".checked = ", checked, ";"].}
+  r.appendChild(panel, controlSettings)
+  var controlHistory: E
+  controlHistory = ui(r):
+    tdiv(`data-editor-control-history` = "true", max_height = "160px", overflow_y = "auto")
+  r.appendChild(panel, controlHistory)
+  proc appendControlOperation(operation: JsonNode) =
+    # Each row owns its callback scope; loop locals otherwise share a JS closure.
+    let conversation = operation{"request", "conversation"}.getStr()
+    let id = operation{"operationId"}.getStr()
+    let status = operation{"status"}.getStr()
+    let caption = (if conversation.len == 0: "Editor automation: " else: "This conversation: ") &
+      operation{"request", "command"}.getStr() & " " &
+      operation{"request", "target"}.getStr(operation{"request", "storyId"}.getStr())
+    let row = ui(r):
+      tdiv(`data-editor-control-operation` = id, `data-operation-status` = status,
+           padding = "8px 12px", font_size = "12px", color = textSecondary,
+           border_bottom = "1px solid " & borderFaint):
+        text caption & " — " & status
+    if status == "pending":
+      let approveId = id
+      let approve = ui(r):
+        button(`data-editor-control-approve` = id, margin_top = "6px", margin_right = "8px",
+          onclick = proc() =
+            if vm.requestControlApproval != nil: vm.requestControlApproval(approveId, true)
+            else: discard vm.resolveControlApproval(approveId, true)):
+          text "Approve"
+      let reject = ui(r):
+        button(`data-editor-control-reject` = id, margin_top = "6px",
+          onclick = proc() =
+            if vm.requestControlApproval != nil: vm.requestControlApproval(approveId, false)
+            else: discard vm.resolveControlApproval(approveId, false)):
+          text "Reject"
+      r.appendChild(row, approve)
+      r.appendChild(row, reject)
+    r.appendChild(controlHistory, row)
+  createRenderEffect proc() =
+    r.clearChildren(controlHistory)
+    for operation in vm.controlActivity.val:
+      let conversation = operation{"request", "conversation"}.getStr()
+      # Scoped activity belongs to its originating chat. Explicit user automation
+      # has no conversation owner and is labelled separately.
+      if conversation.len > 0 and conversation != vm.chat.controlConversationId.val:
+        continue
+      appendControlOperation(operation)
   # Suppress unused-warning for statusColor — still computed for the
   # Assistant tab status indicator wired in shell.nim.
   discard statusColor
@@ -704,6 +764,7 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   let promptInput = ui(r):
     input(
       class = "editor-input",
+      `data-editor-control-focus` = "composer",
       flex = "1",
       height = "34px",
       background_color = bgInput,

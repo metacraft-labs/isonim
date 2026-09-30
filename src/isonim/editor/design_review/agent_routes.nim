@@ -16,6 +16,7 @@ import nim_acp
 import nim_agents
 
 import ../shutdown_policy
+import ./control_routes
 import ./log_setup
 import ./brief_format
 import std/oids
@@ -34,6 +35,8 @@ type
     cwd*: string
     isDraft*: bool
     turnWorking*: bool
+    controlScope*: ControlScope
+    controlEnvFile*: string
 
   AgentRegistry* = ref object
     ## Cache of active ACP sessions, keyed by the session id returned to
@@ -47,6 +50,7 @@ type
     ## TOML section (and the ``--agent-backend`` CLI flag) at daemon
     ## startup.  ``extraArgs`` stays for callers that just need to
     ## pass per-session argv tail to ``claude-agent-acp``.
+    controlRegistry*: EditorControlRegistry
     lock: Lock
     sessions: Table[string, AgentSessionState]
     activeCreations: Atomic[int]
@@ -176,6 +180,13 @@ proc shutdownAndRelease*(reg: AgentRegistry; sessionId: string) =
       finally:
         release(reg.lock)
       raise
+    if reg.controlRegistry != nil: reg.controlRegistry.revokeConversation(sessionId)
+    try:
+      if state.controlEnvFile.len > 0 and fileExists(state.controlEnvFile):
+        removeFile(state.controlEnvFile)
+        removeDir(state.controlEnvFile.parentDir)
+    except OSError as error:
+      warn "closed agent control environment cleanup failed", sessionId = sessionId, reason = error.msg
   else:
     info "agent client shutdown skipped (not in registry)",
       sessionId = sessionId
@@ -255,8 +266,28 @@ proc setTurnWorking(reg: AgentRegistry; id: string; working: bool): bool =
 #  Session creation.                                                          #
 # --------------------------------------------------------------------------- #
 
+proc prepareControlEnvironment(reg: AgentRegistry; scope: ControlScope; id: string): string =
+  let runtime = getTempDir() / ("isonim-control-" & id)
+  createDir(runtime)
+  setFilePermissions(runtime, {fpUserRead, fpUserWrite, fpUserExec})
+  result = runtime / "environment.json"
+  writeFile(result, $(%* {
+    "ISONIM_EDITOR_ENDPOINT": reg.controlRegistry.endpoint,
+    "ISONIM_EDITOR_WORKSPACE": scope.workspace,
+    "ISONIM_EDITOR_INSTANCE": scope.instance,
+    "ISONIM_EDITOR_EPOCH": scope.epoch,
+    "ISONIM_EDITOR_TOKEN": scope.token,
+    "ISONIM_EDITOR_CLI_DIR": currentSourcePath().parentDir.parentDir.parentDir.parentDir.parentDir / "build" / "bin"}))
+  setFilePermissions(result, {fpUserRead, fpUserWrite})
+
+proc controlLaunchPrefix(environment: string): seq[string] =
+  let python = findExe("python3")
+  if python.len == 0: raise newException(AgentBackendUnavailableError, "Python control launch boundary unavailable")
+  @[python, currentSourcePath().parentDir.parentDir.parentDir.parentDir.parentDir /
+    "tools" / "editor_agent_env.py", "--environment", environment, "--"]
+
 proc createAcpSession*(reg: AgentRegistry; cwd = "";
-    idleTimeoutMs: int = -1): AgentSessionState {.gcsafe.} =
+    idleTimeoutMs: int = -1; controlScope = ControlScope()): AgentSessionState {.gcsafe.} =
   ## Spawn the ACP agent, run ``initialize`` + ``session/new`` and stash
   ## the resulting :type:`AgentClient` in the registry.  The agent
   ## selection comes from ``reg.backend`` (set by the daemon from
@@ -298,17 +329,43 @@ proc createAcpSession*(reg: AgentRegistry; cwd = "";
       result = AgentSessionState(sessionId: id, client: client, cwd: root, isDraft: true,
         session: AgentSession(backend: abkHarbor),
         capabilities: AgentCapabilities(streaming: true, text: true))
+      if controlScope.instance.len > 0:
+        result.controlScope = reg.controlRegistry.bindConversation(controlScope, id)
       reg.storeSession(result)
       return
+    var scoped: ControlScope
+    var environment: string
+    var prefix: seq[string]
+    var accepted = false
+    defer:
+      if not accepted:
+        if client.backend == abkAcp:
+          try: shutdown(client)
+          except CatchableError: discard
+        if scoped.token.len > 0: reg.controlRegistry.revokeConversation(scoped.conversation)
+        try:
+          if environment.len > 0 and fileExists(environment): removeFile(environment)
+          if environment.len > 0 and dirExists(environment.parentDir): removeDir(environment.parentDir)
+        except OSError as cleanupError:
+          warn "failed creation control environment cleanup", reason = cleanupError.msg
+    if controlScope.instance.len > 0:
+      let launchId = "launch-" & $genOid()
+      scoped = reg.controlRegistry.bindConversation(controlScope, launchId)
+      environment = reg.prepareControlEnvironment(scoped, launchId)
+      prefix = controlLaunchPrefix(environment)
     try:
       if idleTimeoutMs > 0:
         client = fromAcpAgent(reg.backend, reg.extraArgs,
                              cmd = reg.customCmd, args = reg.customArgs,
-                             idleTimeoutMs = idleTimeoutMs)
+                             idleTimeoutMs = idleTimeoutMs, launchPrefix = prefix)
       else:
         client = fromAcpAgent(reg.backend, reg.extraArgs,
-                             cmd = reg.customCmd, args = reg.customArgs)
+                             cmd = reg.customCmd, args = reg.customArgs, launchPrefix = prefix)
     except AcpError as e:
+      if scoped.token.len > 0:
+        reg.controlRegistry.revokeConversation(scoped.conversation)
+        if fileExists(environment): removeFile(environment)
+        if dirExists(environment.parentDir): removeDir(environment.parentDir)
       error "agent backend unavailable", reason = e.msg,
         backend = $reg.backend
       raise newException(AgentBackendUnavailableError, e.msg)
@@ -322,8 +379,11 @@ proc createAcpSession*(reg: AgentRegistry; cwd = "";
       sessionId: session.id,
       client: client,
       session: session,
-      capabilities: initResp.agentCapabilities)
+      capabilities: initResp.agentCapabilities, controlEnvFile: environment)
+    if scoped.token.len > 0:
+      result.controlScope = reg.controlRegistry.rebindConversation(scoped, result.sessionId)
     reg.storeSession(result)
+    accepted = true
     info "agent session created", sessionId = session.id,
       cwd = resolvedCwd
 
@@ -795,7 +855,7 @@ proc respondJson*(req: Request; code: HttpCode; body: string)
     ("Cache-Control", "no-store"),
     ("Access-Control-Allow-Origin", "*"),
     ("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
-    ("Access-Control-Allow-Headers", "Content-Type"),
+    ("Access-Control-Allow-Headers", "Content-Type, X-IsoNim-Control"),
   ])
   await req.respond(code, body, headers)
 
@@ -822,17 +882,29 @@ proc handleSessions*(reg: AgentRegistry; req: Request)
     return
   var cwd = ""
   var projectRoot = ""
+  var scope: ControlScope
   if req.body.len > 0:
     try:
       let node = parseJson(req.body)
       cwd = node{"cwd"}.getStr("")
       projectRoot = node{"projectRoot"}.getStr("")
+      if node{"editor"} != nil:
+        if reg.controlRegistry == nil: raise newException(ControlError, "control_unavailable")
+        scope = reg.controlRegistry.validateBrowserScope(node["editor"],
+          req.headers.getOrDefault("X-IsoNim-Control"))
+        if (cwd.len > 0 and cwd != reg.workspaceRoot) or
+            (projectRoot.len > 0 and projectRoot != reg.workspaceRoot):
+          raise newException(ControlError, "scoped_workspace_root_mismatch")
     except JsonParsingError:
-      await respondJson(req, Http400,
-        $(%* {"error": "invalid_json"}))
+      await respondJson(req, Http400, $(%* {"error": "invalid_json"}))
+      return
+    except ControlError as error:
+      await respondJson(req, Http403, $(%* {"error": error.msg}))
       return
   try:
-    let state = createAcpSession(reg, cwd)
+    var state: AgentSessionState
+    {.cast(gcsafe).}:
+      state = createAcpSession(reg, cwd, controlScope = scope)
     if reg.primerEnabled:
       primeAcpSession(reg, state, projectRoot)
     else:
@@ -881,6 +953,7 @@ proc handleClose*(reg: AgentRegistry; req: Request) {.async, gcsafe.} =
   try:
     {.cast(gcsafe).}:
       reg.shutdownAndRelease(id)
+      if reg.controlRegistry != nil: reg.controlRegistry.revokeConversation(id)
     await respondJson(req, Http200, $(%* {"closed": true}))
   except CatchableError as error:
     await respondJson(req, Http502, $(%* {"error": "session_close_failed", "reason": error.msg}))
@@ -939,6 +1012,22 @@ proc emitUpdates(reg: AgentRegistry; sessionId: string;
       return false
   return true
 
+proc cleanupAbortedControlEnvironment(reg: AgentRegistry; state: AgentSessionState) =
+  if state.controlEnvFile.len == 0: return
+  acquire(reg.lock)
+  try:
+    # A still-registered draft owns this file for a legitimate provider retry.
+    # Cleanup belongs only to the aborted launch whose owner has disappeared.
+    if reg.sessions.hasKey(state.sessionId) and
+        reg.sessions[state.sessionId].controlEnvFile == state.controlEnvFile: return
+    try:
+      if fileExists(state.controlEnvFile): removeFile(state.controlEnvFile)
+      if dirExists(state.controlEnvFile.parentDir): removeDir(state.controlEnvFile.parentDir)
+    except OSError as error:
+      warn "aborted agent control environment cleanup failed", sessionId = state.sessionId, reason = error.msg
+  finally:
+    release(reg.lock)
+
 proc runAgentTurn*(reg: AgentRegistry; state: AgentSessionState;
     promptBlocks: seq[ContentBlock]; onEvent: AgentEventCallback): PromptTurn {.gcsafe.} =
   {.cast(gcsafe).}:
@@ -946,6 +1035,17 @@ proc runAgentTurn*(reg: AgentRegistry; state: AgentSessionState;
     var active = state
     var turn: PromptTurn
     if client.backend == abkHarbor and active.isDraft:
+      var launchAccepted = false
+      defer:
+        if not launchAccepted: reg.cleanupAbortedControlEnvironment(active)
+      acquire(reg.lock)
+      try:
+        if reg.shuttingDown or not reg.sessions.hasKey(active.sessionId):
+          raise newException(HarborError, "Conversation closed before provider launch")
+        if not reg.sessions[active.sessionId].isDraft:
+          raise newException(HarborError, "Conversation changed before provider launch")
+      finally:
+        release(reg.lock)
       let software = if reg.harborAgent.len > 0: reg.harborAgent else: "claude"
       var binary = reg.customCmd
       var providerArgs = reg.customArgs
@@ -972,14 +1072,32 @@ proc runAgentTurn*(reg: AgentRegistry; state: AgentSessionState;
         binary = findExe("python3")
         if binary.len == 0:
           raise newException(AgentBackendUnavailableError, "Python is required for provider instruction delivery")
+      if active.controlScope.instance.len > 0:
+        # No credential in launch argv or instructions. The private handoff file
+        # provides child environment; only its random path enters provider args.
+        acquire(reg.lock)
+        try:
+          if reg.shuttingDown or not reg.sessions.hasKey(active.sessionId):
+            raise newException(HarborError, "Conversation closed before provider launch")
+          if not reg.sessions[active.sessionId].isDraft:
+            raise newException(HarborError, "Conversation changed before provider launch")
+          # Preparation and ownership transfer are atomic against session close.
+          active.controlEnvFile = getTempDir() / ("isonim-control-" & active.sessionId) / "environment.json"
+          discard reg.prepareControlEnvironment(active.controlScope, active.sessionId)
+          reg.sessions[active.sessionId] = active
+        finally:
+          release(reg.lock)
+        let prefix = controlLaunchPrefix(active.controlEnvFile)
+        providerArgs = prefix[1 .. ^1] & @[binary] & providerArgs
+        binary = prefix[0]
       var workspace = defaultWorkspaceContext(active.cwd)
       workspace.workingCopyMode = "in_place"
       let config = AgentStartMode(workspace: workspace, allowNetwork: true,
         prompt: promptBlocks, acpAgent: acpAgentConfig(binary, providerArgs, model = reg.harborModel))
       acquire(reg.lock)
       try:
-        if reg.shuttingDown:
-          raise newException(HarborError, "Editor daemon is shutting down")
+        if reg.shuttingDown or not reg.sessions.hasKey(active.sessionId):
+          raise newException(HarborError, "Conversation closed before provider launch")
         discard reg.activeCreations.fetchAdd(1)
       finally:
         release(reg.lock)
@@ -993,6 +1111,7 @@ proc runAgentTurn*(reg: AgentRegistry; state: AgentSessionState;
       finally:
         discard reg.activeCreations.fetchSub(1)
       turn = streamAgentTurn(client, active.session, onEvent)
+      launchAccepted = true
     else:
       turn = sendPromptStreaming(client, active.session,
         promptBlocks, onEvent)

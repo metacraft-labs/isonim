@@ -189,6 +189,7 @@ type
     hasDiagnostics*: Memo[bool]
 
   AgentChatVM* = ref object of ViewModel
+    controlConversationId*: Signal[string]
     messages*: Signal[seq[ChatMessage]]
     sessionStatus*: Signal[AsyncState]
     accumulatedEdits*: Signal[seq[EditRecord]]
@@ -292,6 +293,20 @@ type
       ## Empty set = ALL platforms (default). When non-empty, the
       ## left-edge backend strip only surfaces the listed backends.
     viewport*: Signal[PreviewViewport]
+    workspaceId*: string
+    controlInstanceId*: string
+    controlFocusAdapter*: proc(target: string): bool {.closure.}
+    controlHighlightAdapter*: proc(target: string): bool {.closure.}
+    controlSelectionAdapter*: proc(target: string; focus, highlight: bool): bool {.closure.}
+    controlConnected*: bool
+    requestControlApproval*: proc(id: string; approve: bool) {.closure.}
+    controlRevision*: int
+    controlFingerprint*: string
+    agentControlApproval*: Signal[bool]
+    controlActivity*: Signal[seq[JsonNode]]
+    controlFocusTarget*: Signal[string]
+    controlHighlightTarget*: Signal[string]
+    controlOperations*: Table[string, JsonNode]
     workspacePermissions*: Signal[EditorWorkspacePermissions]
     sourceAdapterReady*: Signal[bool]
     workspaceEditStage*: Signal[WorkspaceEditStage]
@@ -618,6 +633,12 @@ func commandLabel*(kind: EditorCommandKind): string =
   of eckOpenCommandPalette: "Open command palette"
   of eckNavigateLayersUp: "Navigate layers up"
   of eckNavigateLayersDown: "Navigate layers down"
+  of eckOpenStory: "Open story"
+  of eckSetViewport: "Choose viewport"
+  of eckOpenPanel: "Open panel"
+  of eckSelectItem: "Select item"
+  of eckFocusTarget: "Move focus"
+  of eckHighlightItem: "Highlight item"
 
 func allEditorCommandKinds*(): seq[EditorCommandKind] =
   @[
@@ -677,6 +698,7 @@ func commandShortcut*(kind: EditorCommandKind): string =
   of eckOpenCommandPalette: "Mod+K"
   of eckNavigateLayersUp: "ArrowUp"
   of eckNavigateLayersDown: "ArrowDown"
+  of eckOpenStory, eckSetViewport, eckOpenPanel, eckSelectItem, eckFocusTarget, eckHighlightItem: ""
 
 func commandScope*(kind: EditorCommandKind): string =
   case kind
@@ -720,6 +742,12 @@ func commandDescription*(kind: EditorCommandKind): string =
   of eckOpenCommandPalette: "Open the command palette."
   of eckNavigateLayersUp: "Move upward in the visible layer tree."
   of eckNavigateLayersDown: "Move downward in the visible layer tree."
+  of eckOpenStory: "Open a named story in the workspace."
+  of eckSetViewport: "Choose a supported preview viewport."
+  of eckOpenPanel: "Open an editor panel."
+  of eckSelectItem: "Select a named element without moving keyboard focus."
+  of eckFocusTarget: "Move keyboard focus to a named editor control."
+  of eckHighlightItem: "Highlight a named element independently of selection."
 
 func allEditorShortcutBindings*(): seq[EditorShortcutBinding] =
   for kind in allEditorCommandKinds():
@@ -2978,6 +3006,10 @@ proc commandRequirementFailure(editor: EditorVM;
   let permissions = editor.workspacePermissions.val
   let source = editor.selectedSourceContext()
 
+  if kind in {eckOpenStory, eckSetViewport, eckOpenPanel, eckSelectItem,
+      eckFocusTarget, eckHighlightItem}:
+    return "This command requires a typed target payload."
+
   if kind in {eckOpenCommandPalette, eckToggleSidebar, eckToggleInspector,
       eckFocusInspector}:
     return ""
@@ -3088,7 +3120,8 @@ proc commandRequirementFailure(editor: EditorVM;
   of eckSelectPrevious, eckSelectNext, eckSelectParent, eckSelectChild,
       eckFocusInspector, eckIncrementProperty, eckDecrementProperty, eckUndo,
       eckRedo, eckToggleSidebar, eckToggleInspector, eckOpenCommandPalette,
-      eckNavigateLayersUp, eckNavigateLayersDown:
+      eckNavigateLayersUp, eckNavigateLayersDown, eckOpenStory, eckSetViewport,
+      eckOpenPanel, eckSelectItem, eckFocusTarget, eckHighlightItem:
     ""
 
 proc evaluateCommand*(editor: EditorVM;
@@ -3222,6 +3255,8 @@ proc runEditorCommand*(editor: EditorVM;
   of eckInspect:
     editor.setEditMode(emView)
     editor.recordEditorTiming(epbkModeSwitch, 1, "command:view")
+  of eckOpenStory, eckSetViewport, eckOpenPanel, eckSelectItem, eckFocusTarget, eckHighlightItem:
+    return editor.failCommand(kind, "This command requires a typed target payload.")
   of eckApply:
     discard
   of eckRevert, eckDiscard:
@@ -11077,6 +11112,7 @@ proc createAgentChatVM*(): AgentChatVM =
   let messageCount = createMemo[int](proc(): int = messages.val.len)
 
   AgentChatVM(
+    controlConversationId: createSignal(""),
     messages: messages,
     sessionStatus: sessionStatus,
     accumulatedEdits: accumulatedEdits,
@@ -11291,6 +11327,12 @@ proc createEditorVM*(): EditorVM =
     rightSidebarTab: rightSidebarTab,
     platform: platform,
     viewport: viewport,
+    controlConnected: true,
+    agentControlApproval: createSignal(false),
+    controlActivity: createSignal(newSeq[JsonNode]()),
+    controlFocusTarget: createSignal(""),
+    controlHighlightTarget: createSignal(""),
+    controlOperations: initTable[string, JsonNode](),
     workspacePermissions: workspacePermissions,
     sourceAdapterReady: sourceAdapterReady,
     workspaceEditStage: workspaceEditStage,

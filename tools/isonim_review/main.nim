@@ -32,6 +32,7 @@ import isonim/editor/design_review/brief_index
 import isonim/editor/design_review/log_setup
 
 import ./config
+import ./cmd_editor
 import ./cmd_init
 import ./cmd_db_health
 import ./cmd_serve
@@ -768,10 +769,11 @@ proc main(): int =
     return 2
 
   if rawArgs.len == 0 or rawArgs[0] in ["--help", "-h"]:
-    echo Usage
+    echo (if getAppFilename().extractFilename() == "isonim": EditorUsage else: Usage)
     return 0
 
   case rawArgs[0]
+  of "editor": return cmdEditor(rawArgs[1 .. ^1])
   of "briefs":
     if rawArgs.len < 2 or rawArgs[1] != "check":
       stderr.write("isonim-review briefs: unknown sub-subcommand\n")

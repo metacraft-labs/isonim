@@ -34,7 +34,7 @@
 ## VM tests inject a ``FakeBrowserAgentClient`` (in ``viewmodels``)
 ## that bypasses the network entirely.
 
-import std/[strutils]
+import std/[strutils, json]
 
 type
   BrowserAgentClientCallback* = proc(payload: cstring) {.closure.}
@@ -43,6 +43,10 @@ type
 
   BrowserAgentClient* = ref object
     baseUrl*: string
+    editorScopeJson*: string
+    editorControlToken*: string
+    onControlClosed*: proc(conversation: string) {.closure.}
+    bindEditor*: proc(done: proc(ok: bool) {.closure.}) {.closure.}
     activeSessionId*: string
     canCancelTurn*: bool
     canCloseSession*: bool
@@ -81,7 +85,7 @@ type
     ## ``sessionId`` is an empty cstring when the POST failed (the
     ## ``onError`` callback will have been invoked separately).
 
-proc createSession*(c: BrowserAgentClient; cb: CreateSessionCallback) =
+proc createBoundSession(c: BrowserAgentClient; cb: CreateSessionCallback) =
   ## ``POST /api/agent/sessions`` — mint a fresh ACP session id and
   ## cache it on the client.  ``cb`` is invoked exactly once.
   when defined(js):
@@ -89,12 +93,14 @@ proc createSession*(c: BrowserAgentClient; cb: CreateSessionCallback) =
     let url = urlStr.cstring
     let onErr = c.onError
     let captured = c
+    let binding = c.editorScopeJson.cstring
+    let controlToken = c.editorControlToken.cstring
     {.emit: ["""
       try {
         fetch(""", url, """, {
           method: 'POST', credentials: 'omit',
-          headers: { 'Content-Type': 'application/json' },
-          body: '{}'
+          headers: { 'Content-Type': 'application/json', 'X-IsoNim-Control': """, controlToken, """ },
+          body: """, binding, """ ? JSON.stringify({editor: JSON.parse(""", binding, """)}) : '{}'
         })
           .then(function(resp) {
             return resp.text().then(function(body) {
@@ -142,6 +148,17 @@ proc createSession*(c: BrowserAgentClient; cb: CreateSessionCallback) =
   else:
     # Native shim — tests inject a fake client at the VM layer.
     cb("".cstring)
+
+proc createSession*(c: BrowserAgentClient; cb: CreateSessionCallback) =
+  ## A mounted editor binds its registered browser scope before session creation.
+  ## Legacy CLI/transport callers without a binding preserve their existing API.
+  if c.bindEditor != nil:
+    c.bindEditor(proc(ok: bool) =
+      if ok: c.createBoundSession(cb)
+      else:
+        if c.onError != nil: c.onError("Editor control registration is unavailable.".cstring)
+        cb("".cstring))
+  else: c.createBoundSession(cb)
 
 # ---------------------------------------------------------------------------
 # Prompt submission with SSE streaming via ``fetch`` ReadableStream.
@@ -279,6 +296,7 @@ proc closeSession*(c: BrowserAgentClient; sessionId: string;
   c.sessionOperation(sessionId, "close", proc(ok: bool; message: cstring) =
     if ok:
       c.closed = true
+      if c.onControlClosed != nil: c.onControlClosed(sessionId)
       c.activeSessionId = ""
     cb(ok, message))
 

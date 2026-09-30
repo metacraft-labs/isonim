@@ -128,6 +128,17 @@ type
     eckOpenCommandPalette
     eckNavigateLayersUp
     eckNavigateLayersDown
+    eckOpenStory
+    eckSetViewport
+    eckOpenPanel
+    eckSelectItem
+    eckFocusTarget
+    eckHighlightItem
+
+  EditorCommandRequest* = object
+    kind*: EditorCommandKind
+    storyId*, target*, viewportSlug*: string
+    select*, focus*, highlight*: bool
 
   EditorCommandStatus* = enum
     ecsAvailable

@@ -9,6 +9,7 @@ when not defined(js):
 import std/[dom, strutils]
 
 import isonim/core/[computation, owner, signals]
+import isonim/editor/control_browser
 import isonim/editor/dom_renderer
 import isonim/editor/streaming_preview
 import isonim/editor/types
@@ -789,9 +790,7 @@ proc mountEditor*(workspace: EditorWorkspace;
     # ``/api/agent/*`` routes via the resolved base URL.  This is the
     # production wiring; VM tests inject a fake client via
     # ``configureAgentAdaptersWithClient`` instead.
-    vm.configureChat = proc(chat: AgentChatVM) =
-      discard configureDaemonAgentAdapters(chat)
-    vm.configureChat(vm.chat)
+
     vm.setTelemetryOverlayVisible(editorDebugEnabled())
     if useHashRoute:
       installEditorHistorySync(vm)
@@ -803,6 +802,11 @@ proc mountEditor*(workspace: EditorWorkspace;
     {.emit: [shell, ".style.inset='0'"].}
     {.emit: [shell, ".style.overflow='hidden'"].}
     root.appendChild(shell)
+    let controlBridge = vm.installControlBridge(shell)
+    vm.configureChat = proc(chat: AgentChatVM) =
+      let client = configureDaemonAgentAdapters(chat)
+      controlBridge.bindClient(client)
+    for session in vm.chats.val: vm.configureChat(session.vm)
     # REV-M2: expose a tiny window-level handle so Playwright e2e
     # tests can drive story selection without having to scrape the
     # sidebar DOM (which omits stories that aren't part of the demo

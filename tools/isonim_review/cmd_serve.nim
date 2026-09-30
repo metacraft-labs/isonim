@@ -35,6 +35,7 @@ import ./config
 import ./local_harbor
 import ./cmd_db_health
 
+import isonim/editor/design_review/control_routes
 import isonim/editor/design_review/agent_routes
 import isonim/editor/design_review/api_handlers
 import isonim/editor/design_review/api_handlers_briefs
@@ -59,6 +60,7 @@ type
     port*: int
     stopRequested*: bool
     onLifecycle*: proc(message: string) {.gcsafe.}
+    controlRegistry*: EditorControlRegistry
     agentRegistry*: AgentRegistry
     campaignRegistry*: CampaignRegistry
 
@@ -83,7 +85,8 @@ proc installSignalHandlers*() =
 
 # ----- Public construction API ---------------------------------------------
 
-proc newReviewServer*(cfg: ReviewConfig; migDir: string = ""): ReviewServer =
+proc newReviewServer*(cfg: ReviewConfig; migDir: string = "";
+    browserBootstrap = getEnv("ISONIM_EDITOR_BROWSER_BOOTSTRAP")): ReviewServer =
   ## Build (do not start) a server bound to the configured address.
   ## REV-M7 will call ``registerHandler`` between ``new`` and ``run``
   ## to wire its routes in.
@@ -136,6 +139,8 @@ proc newReviewServer*(cfg: ReviewConfig; migDir: string = ""): ReviewServer =
       harborAgent = cfg.agent.harborAgent,
       harborModel = cfg.agent.model),
   )
+  result.controlRegistry = newEditorControlRegistry(browserBootstrap)
+  result.agentRegistry.controlRegistry = result.controlRegistry
   info "review server constructed", agentBackend = $backend,
     customCmd = cfg.agent.command, model = resolvedModel,
     extraArgs = resolvedExtraArgs,
@@ -200,7 +205,7 @@ proc dispatch(srv: ReviewServer; req: Request) {.async, gcsafe.} =
   if req.reqMethod == HttpOptions and
      (path.startsWith("/api/design-review/") or
       path.startsWith("/api/agent/") or
-      path.startsWith("/api/campaign/")):
+      path.startsWith("/api/campaign/") or path.startsWith("/api/editor/")):
     await respondCorsPreflight(req)
     info "http response", topics = "http", path = path, status = 204,
       durationMs = int((epochTime() - startedAt) * 1000)
@@ -260,6 +265,7 @@ proc runReviewServer*(srv: ReviewServer) =
   # ``srv.port`` is 0 here and ``getPort`` returns the chosen port).
   srv.server.listen(Port(srv.port), srv.bindAddr)
   srv.port = int(srv.server.getPort())
+  srv.controlRegistry.endpoint = "http://127.0.0.1:" & $srv.port
 
   # READY handshake for test fixtures — must be the first stderr line
   # of the form ``READY <port>``.  Goes to stderr so it doesn't
@@ -392,6 +398,7 @@ proc mountDesignReviewRoutes*(srv: ReviewServer) =
     promptPath = resolvedPromptPath
 
 proc mountAgentRoutes*(srv: ReviewServer) =
+  srv.registerHandler(ControlRoute, makeControlHandler(srv.controlRegistry))
   ## Phase B — wire the ``/api/agent/*`` endpoints against ``srv``.  Each
   ## handler bridges an HTTP call to the cached :type:`AgentRegistry`,
   ## which holds the live ACP transports.
@@ -416,10 +423,14 @@ proc cmdServe*(cfg: ReviewConfig; migDir: string = "";
   ## the daemon without a PG cluster.  Production callers always
   ## leave it ``false`` — the editor needs design-review APIs too.
   installSignalHandlers()
+  let browserBootstrap = getEnv("ISONIM_EDITOR_BROWSER_BOOTSTRAP")
+  # The owned Harbor and every provider inherit ordinary credentials, never the
+  # browser registration authority retained only in the control registry.
+  delEnv("ISONIM_EDITOR_BROWSER_BOOTSTRAP")
   var effectiveConfig = cfg
   var harbor = prepareLocalHarbor(effectiveConfig, proc(): bool = GlobalStopFlag.load())
   defer: harbor.stop()
-  let srv = newReviewServer(effectiveConfig, migDir)
+  let srv = newReviewServer(effectiveConfig, migDir, browserBootstrap)
   defer: srv.agentRegistry.shutdownAll()
   if not agentRoutesOnly:
     try:

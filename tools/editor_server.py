@@ -19,6 +19,7 @@ import re
 import select
 import socket
 import signal
+import secrets
 import threading
 import sys
 from contextlib import contextmanager
@@ -176,10 +177,14 @@ def await_daemon(process, lines, timeout):
     raise TimeoutError("Editor daemon did not become ready; see startup output")
 
 
-def inject_origin_meta(html):
+def inject_origin_meta(html, browser_bootstrap=""):
     meta = ('<script>const apiMeta=document.createElement("meta");'
             'apiMeta.name="isonim-review-api";apiMeta.content=location.origin;'
             'document.head.appendChild(apiMeta);</script>')
+    if browser_bootstrap:
+        meta += ('<script>const controlMeta=document.createElement("meta");'
+                 'controlMeta.name="isonim-editor-bootstrap";controlMeta.content='
+                 + json.dumps(browser_bootstrap) + ';document.head.appendChild(controlMeta);</script>')
     html = re.sub(r'<meta\b[^>]*\bname=["\']isonim-review-api["\'][^>]*>',
                   '', html, flags=re.IGNORECASE)
     return re.sub(r'</head>', meta + '</head>', html, count=1, flags=re.IGNORECASE).encode()
@@ -192,19 +197,23 @@ class EditorHTTPServer(http.server.ThreadingHTTPServer):
 class EditorHandler(http.server.SimpleHTTPRequestHandler):
     daemon_url: str
     frontend_url: str = ""
+    browser_bootstrap: str = ""
 
     def api_request(self, target_url=None, inject_meta=False) -> None:
         endpoint = urllib.parse.urlsplit(target_url or self.daemon_url)
         conn = http.client.HTTPConnection(endpoint.hostname, endpoint.port, timeout=1800)
         body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
         headers = {"Content-Type": self.headers.get("Content-Type", "application/json")}
+        # Forward only the editor control credential, never backend credentials.
+        if self.headers.get("X-IsoNim-Control"):
+            headers["X-IsoNim-Control"] = self.headers["X-IsoNim-Control"]
         headers_sent = False
         try:
             conn.request(self.command, self.path, body, headers)
             response = conn.getresponse()
             page = None
             if inject_meta and response.status == 200 and 'text/html' in response.getheader('Content-Type', ''):
-                page = inject_origin_meta(response.read().decode())
+                page = inject_origin_meta(response.read().decode(), self.browser_bootstrap)
             self.send_response(response.status)
             self.send_header("Content-Type", response.getheader("Content-Type", "application/json"))
             for name in ("Content-Length", "Allow", "Retry-After"):
@@ -242,7 +251,7 @@ class EditorHandler(http.server.SimpleHTTPRequestHandler):
             return self.api_request(self.frontend_url, inject_meta=path in ("/", "/index.html"))
         if path in ("/", "/index.html"):
             data = (Path(self.directory) / "index.html").read_text()
-            data = inject_origin_meta(data)
+            data = inject_origin_meta(data, self.browser_bootstrap)
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
@@ -316,6 +325,8 @@ def serve(directory: Path, project_root: Path, port: int, bind: str = "0.0.0.0",
             if config:
                 args += ["--config", str(config.resolve())]
             env = dict(os.environ)
+            browser_bootstrap = secrets.token_hex(32)
+            env["ISONIM_EDITOR_BROWSER_BOOTSTRAP"] = browser_bootstrap
             with owned_process(args, cwd=project_root, env=env, stderr=subprocess.PIPE,
                                text=True, bufsize=1) as daemon:
                 lines = queue.Queue()
@@ -327,12 +338,12 @@ def serve(directory: Path, project_root: Path, port: int, bind: str = "0.0.0.0",
                             lines.put(line)
                 threading.Thread(target=relay, daemon=True).start()
                 ready_url = await_daemon(daemon, lines, startup_timeout)
-                serve_frontend(directory, project_root, port, bind, ready_url, command, daemon, frontend_command)
+                serve_frontend(directory, project_root, port, bind, ready_url, command, daemon, frontend_command, browser_bootstrap)
         else:
-            serve_frontend(directory, project_root, port, bind, daemon_url, command, frontend_command=frontend_command)
+            serve_frontend(directory, project_root, port, bind, daemon_url, command, frontend_command=frontend_command, browser_bootstrap=os.environ.get("ISONIM_EDITOR_BROWSER_BOOTSTRAP", ""))
 
 
-def serve_frontend(directory, project_root, port, bind, daemon_url, command, daemon=None, frontend_command=None):
+def serve_frontend(directory, project_root, port, bind, daemon_url, command, daemon=None, frontend_command=None, browser_bootstrap=""):
     if frontend_command:
         # An existing write/live-reload frontend remains private behind the
         # common origin. A bind collision is a startup error, never a fallback.
@@ -351,7 +362,7 @@ def serve_frontend(directory, project_root, port, bind, daemon_url, command, dae
                         if response.status == 200: break
                 except OSError: time.sleep(.1)
             else: raise TimeoutError('Editor frontend did not become ready')
-            return serve_proxy(directory, port, bind, daemon_url, daemon, frontend_url, frontend)
+            return serve_proxy(directory, port, bind, daemon_url, daemon, frontend_url, frontend, browser_bootstrap)
 
     if command:
         endpoint = urllib.parse.urlsplit(daemon_url)
@@ -366,11 +377,11 @@ def serve_frontend(directory, project_root, port, bind, daemon_url, command, dae
             if frontend.returncode:
                 raise RuntimeError(f"Editor frontend exited with {frontend.returncode}")
         return
-    return serve_proxy(directory, port, bind, daemon_url, daemon)
+    return serve_proxy(directory, port, bind, daemon_url, daemon, browser_bootstrap=browser_bootstrap)
 
 
-def serve_proxy(directory, port, bind, daemon_url, daemon=None, frontend_url='', frontend=None):
-    handler = type("InstanceHandler", (EditorHandler,), {"daemon_url": daemon_url, "frontend_url": frontend_url})
+def serve_proxy(directory, port, bind, daemon_url, daemon=None, frontend_url='', frontend=None, browser_bootstrap=''):
+    handler = type("InstanceHandler", (EditorHandler,), {"daemon_url": daemon_url, "frontend_url": frontend_url, "browser_bootstrap": browser_bootstrap})
     with EditorHTTPServer(
             (bind, port), functools.partial(handler, directory=str(directory))) as server:
         print(f"Editor listening on http://{bind}:{server.server_port}/", flush=True)

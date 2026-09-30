@@ -185,6 +185,7 @@ proc configureAgentAdaptersWithClient*(chat: AgentChatVM;
           # VM in the failed state.
           return
         capturedClient.activeSessionId = sid
+        capturedChat.controlConversationId.val = sid
         if pendingClose != nil:
           capturedChat.promptInFlight = false
           let done = pendingClose

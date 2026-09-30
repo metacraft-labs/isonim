@@ -390,6 +390,7 @@ import repro_dsl_stdlib/foreign_env
 # per-suite results and exits non-zero on failure.
 import ct_test_nim_unittest
 import repro_dsl_stdlib/packages/python_unittest_runner
+import repro_dsl_stdlib/packages/sh as sh
 
 type
   IsonimTestSpec = object
@@ -410,6 +411,9 @@ proc spec(stem: string): IsonimTestSpec =
 # files are DEFERRED per the module docstring (sets A / B / C); none is run
 # off its backend and none is weakened.
 const isonimTestSpecs: seq[IsonimTestSpec] = @[
+  spec("test_editor_control"),
+  spec("test_editor_control_routes"),
+  spec("test_editor_agent_launch_cleanup"),
   # --- Reactive core: signals / effects / clock / context / rxcore ---
   spec("test_signals"),
   spec("test_effects"),
@@ -524,6 +528,7 @@ const isonimCompileOnlySpecs: seq[IsonimTestSpec] = @[
 # back-end. It is a ``nim js`` COMPILE-ONLY recipe entry (``-o:`` without
 # ``-r``), so it is modelled as a BUILD-only edge (no node run).
 const isonimJsTestSpecs: seq[string] = @[
+  "test_editor_control",
   "test_editor_agent_harbor",
   "test_browser_agent_lifecycle",
   # Reactive core (dual-backend; also in the native corpus above).
@@ -819,6 +824,30 @@ package isonim:
       actionId = "isonim.tool_build.isonim_review",
       extraInputs = @["src", "tools", "db", "isonim.nimble"])
     testBuildActions.add(reviewToolEdge.action)
+
+    let controlCliEdge = sh.shell(
+      command = "cp build/bin/isonim-review build/bin/isonim",
+      actionId = "isonim.tool_build.isonim",
+      after = @[reviewToolEdge.action],
+      extraInputs = @[drReviewBin], extraOutputs = @["build/bin/isonim"])
+    testBuildActions.add(controlCliEdge)
+    let controlBrowserEdge = sh.shell(
+      command = "just editor-control-build",
+      actionId = "isonim.control_build.browser",
+      extraInputs = @["src", "tests/helpers/editor_control_workspace.nim", "Justfile", "package.json"],
+      extraOutputs = @["build/editor-control"])
+    testBuildActions.add(controlBrowserEdge)
+    testExecuteActions.add(pythonUnittest.run(
+      source = "tests/test_editor_agent_env.py",
+      actionId = "isonim.control_execute.agent_env",
+      after = @[reviewToolEdge.action],
+      extraInputs = @["tools/editor_agent_env.py", "tests/test_editor_agent_env.py", drReviewBin]))
+    testExecuteActions.add(node(
+      args = @["tests/test_editor_control_gui.mjs"],
+      actionId = "isonim.control_execute.gui_cli",
+      after = @[controlCliEdge, controlBrowserEdge],
+      extraInputs = @["tests/test_editor_control_gui.mjs", "tests/helpers/editor_control_peer.py",
+        "tools/editor_server.py", "tools/editor_agent_env.py", "build/bin/isonim", "build/editor-control"]))
 
     testExecuteActions.add(pythonUnittest.run(
       source = "tests/test_editor_server.py",

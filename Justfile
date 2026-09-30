@@ -260,6 +260,7 @@ test-hcr-shim:
 # hiding: this lane never got past `test_signals` while the siblings were
 # missing, so it had never reached `test_dsl` to fail there.
 test-js: build-tailwind
+    nim js -r --out:build/test_editor_control.js tests/test_editor_control.nim
     nim js -r tests/test_signals.nim
     nim js -r tests/test_effects.nim
     nim js -r tests/test_clock.nim
@@ -367,7 +368,8 @@ isonim-review-build:
         -d:chronicles_runtime_filtering=on \
         -d:chronicles_log_level=TRACE \
         --hints:off --out:build/bin/isonim-review tools/isonim_review/main.nim
-    @echo "Built: build/bin/isonim-review"
+    cp build/bin/isonim-review build/bin/isonim
+    @echo "Built: build/bin/isonim-review and build/bin/isonim"
 
 # Run REV-M1's design-review unit + integration tests.
 test-design-review: isonim-review-build
@@ -848,7 +850,7 @@ editor-screenshot-list:
     node tools/editor-screenshot.mjs --list
 
 # Run editor ViewModel tests
-test-editor: test-design-review-local-harbor test-design-review-harbor-build
+test-editor: test-design-review-local-harbor test-design-review-harbor-build test-editor-control
     nim c -r tests/test_editor_workspace.nim
     nim c -r tests/test_editor_public_api.nim
     nim js --path:src -o:build/test_editor_public_browser_imports.js tests/test_editor_public_browser_imports.nim
@@ -1177,3 +1179,22 @@ bench-all: bench-build demo-build build-web-components
 # the linting story is ready.
 lint:
     @echo "isonim: lint placeholder (Nim style enforced inside test recipes)"
+
+# Shared typed command host, native scoped RPC and real mounted browser/CLI gate.
+test-editor-control: isonim-review-build editor-control-build
+    nim c -r tests/test_editor_control.nim
+    nim js -r --out:build/test_editor_control.js tests/test_editor_control.nim
+    nim c -r tests/test_editor_control_routes.nim
+    nim c -r tests/test_editor_agent_launch_cleanup.nim
+    python3 tests/test_editor_agent_env.py
+    node tests/test_editor_control_gui.mjs
+
+# Isolated mounted control acceptance bundle; does not bake/alter project briefs.
+editor-control-build:
+    mkdir -p build/editor-control
+    nim js --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/editor-control/editor.js tests/helpers/editor_control_workspace.nim
+    node --check build/editor-control/editor.js
+    cp src/isonim/editor/index.html build/editor-control/index.html
+    cp node_modules/fabric/dist/index.min.js build/editor-control/fabric.min.js
+    cp node_modules/paper/dist/paper-core.min.js build/editor-control/paper-core.min.js
+    cp node_modules/svgo/dist/svgo.browser.js build/editor-control/svgo.browser.js

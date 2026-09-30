@@ -259,6 +259,7 @@ proc loadBindingSidecar*(workspace: var EditorWorkspace; raw: string) =
   workspace.variableBindingHistory = parsed.history
 
 proc applyWorkspace*(vm: EditorVM; workspace: EditorWorkspace) =
+  vm.workspaceId = workspace.id
   ## Load project workspace data into an existing editor VM.
   vm.sidebar.groups.val = workspace.storyGroups
   vm.storyboard.canvasItems.val = workspace.canvasItems
