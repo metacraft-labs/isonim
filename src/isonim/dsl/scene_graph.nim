@@ -1,6 +1,6 @@
 ## Scene-graph seam selector.
 ##
-## The `ui` macro emits `noteElement(...)` per element and imports this module,
+## The `ui` macro emits `noteSceneElement(...)` per element and imports this module,
 ## which resolves to exactly one implementation:
 ##
 ##   production (default)   -> `scene_graph_hooks_off`  (no-op; arguments erased)

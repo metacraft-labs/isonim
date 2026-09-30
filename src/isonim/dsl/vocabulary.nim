@@ -14,12 +14,32 @@
 ## `VocabularyRef` answers four queries: `hasTag`, `attrKind`,
 ## `forbiddenReason`, `allowedChild`. `checkElement` runs all four and
 ## returns "" when the element is valid, else a diagnostic message carrying
-## the stable diagnostic code (E-VOCAB-UNKNOWN-TAG, E-VOCAB-FORBIDDEN-TAG,
-## E-VOCAB-UNKNOWN-ATTR, E-STRUCT-NESTING). The caller passes the result
-## to `failVocabCheck` inside a `static:` block whose lineinfo points at
-## the element, so the error is reported at the offending node.
+## the stable diagnostic code (E-VOCAB-UNKNOWN-TAG, E-VOCAB-FORBIDDEN-TAG
+## or the forbidden entry's own code, E-VOCAB-UNKNOWN-ATTR,
+## E-STRUCT-NESTING).
+##
+## Reporting. `ui.nim` evaluates the message into a `const` and, when it is
+## non-empty, emits an `{.error: msg.}` pragma carrying the element's line
+## info. The compiler then reports the error at the template's own
+## `file(line, col)`, preceded only by the `ui` call's instantiation line in
+## the same file: no VM stack trace, and nothing attributed to this module.
+## (`macros.error` from a compile-time proc or a macro prints a
+## `stack trace:` header first, so neither is used for reporting.)
+##
+## Parent at the top of a block. Each `ui(r)` block is checked on its own,
+## and the parent of its top-level elements is unknown: the block may be the
+## body of a proc whose result a caller appends inside some other element.
+## `ui` therefore passes `parentKnown = false` for top-level elements and
+## the nesting rule is skipped for them. A tag whose only allowed parent is
+## `""` (the document root) is still rejected when it is nested below
+## another element, so "must be the top-level element" keeps holding. A
+## renderer that re-checks the assembled tree at run time calls
+## `checkElement` with `parentKnown = true` and parent `""` for the tree's
+## root.
 
 import std/macros
+
+const DefaultForbiddenCode* = "E-VOCAB-FORBIDDEN-TAG"
 
 type
   AttrKind* = enum
@@ -40,9 +60,16 @@ type
     attrs*: seq[AttrDef]
     allowedParents*: seq[string]
       ## Empty means the tag may appear anywhere (including the top level).
-      ## Non-empty restricts the parent tag to this list; the top level
-      ## (parent "") then fails, since "" is never listed — so `@[""]`
-      ## means top-level-only (used by `mailDocument`).
+      ## Non-empty restricts the parent tag to this list; `""` in the list
+      ## stands for the document root, so `@[""]` means "only ever the
+      ## top-level element" (a document element). With a known parent of
+      ## `""` (a run-time check of an assembled tree) an element whose list
+      ## lacks `""` fails; at the top of a `ui` block the parent is unknown
+      ## and the rule is skipped (see the module doc).
+    nestingAlternative*: string
+      ## Optional hint named by an E-STRUCT-NESTING violation for this tag
+      ## ("Use '<alternative>' instead."), e.g. the vocabulary element that
+      ## replaces a bare HTML tag in the wrong place. "" names none.
     allowAnyStyle*: bool
       ## When true, style-keyword attributes (the macro's `styleAttrs`
       ## array) skip the schema: HTML leaves accept any style keyword plus
@@ -54,6 +81,11 @@ type
     reason*: string
     alternative*: string
       ## "" when the element is not expressible at all.
+    code*: string = DefaultForbiddenCode
+      ## The diagnostic code the violation reports. Defaults to
+      ## E-VOCAB-FORBIDDEN-TAG; a vocabulary may give a family of forbidden
+      ## tags a more specific code (e.g. an accessibility code for
+      ## sectioning elements). "" also means the default.
 
   VocabularyRef* = ref object
     tags*: seq[TagDef]
@@ -91,6 +123,14 @@ proc forbiddenReason*(v: VocabularyRef; tag: string): tuple[found: bool;
     if f.tag == tag:
       return (true, f.reason, f.alternative)
   return (false, "", "")
+
+proc forbiddenCode*(v: VocabularyRef; tag: string): string =
+  ## The diagnostic code for a forbidden `tag` ("" when it is not
+  ## forbidden).
+  for f in v.forbidden:
+    if f.tag == tag:
+      return (if f.code.len > 0: f.code else: DefaultForbiddenCode)
+  return ""
 
 proc allowedChild*(v: VocabularyRef; parent, child: string): bool =
   for t in v.tags:
@@ -163,21 +203,66 @@ proc unknownAttrMsg(v: VocabularyRef; tag, attr: string): string =
     return "E-VOCAB-UNKNOWN-ATTR: '" & tag & "' has no attribute '" &
       attr & "'."
 
+proc tagDef(v: VocabularyRef; tag: string): tuple[found: bool; def: TagDef] =
+  for t in v.tags:
+    if t.name == tag:
+      return (true, t)
+  return (false, TagDef())
+
+proc isDocumentRootOnly(t: TagDef): bool =
+  ## True when the tag's only allowed parent is the document root.
+  if t.allowedParents.len == 0:
+    return false
+  for p in t.allowedParents:
+    if p.len > 0:
+      return false
+  return true
+
+proc nestingMsg(v: VocabularyRef; tag, parentTag: string): string =
+  let (_, t) = v.tagDef(tag)
+  var allowed = ""
+  for i, p in t.allowedParents:
+    if i > 0:
+      allowed.add(", ")
+    if p.len == 0:
+      allowed.add("the top level")
+    else:
+      allowed.add("'" & p & "'")
+  if parentTag.len == 0:
+    result = "E-STRUCT-NESTING: '" & tag &
+      "' must not appear at the top level (allowed parents: " &
+      allowed & ")."
+  elif t.isDocumentRootOnly:
+    result = "E-STRUCT-NESTING: '" & tag &
+      "' must be the top-level element of its ui block; it must not be a " &
+      "child of '" & parentTag & "'."
+  else:
+    result = "E-STRUCT-NESTING: '" & tag & "' must not be a child of '" &
+      parentTag & "' (allowed parents: " & allowed & ")."
+  if t.nestingAlternative.len > 0:
+    result.add(" Use '" & t.nestingAlternative & "' instead.")
+
 proc checkElement*(v: VocabularyRef; tag: string;
-    styleAttrs, attrs: openArray[string]; parentTag: string): string =
+    styleAttrs, attrs: openArray[string]; parentTag: string;
+    parentKnown = true): string =
   ## Validate one element. Returns "" when valid, else a diagnostic
   ## message with the stable diagnostic code. Pure and VM-safe: the caller
-  ## evaluates it inside `static:` and asserts the result is "".
+  ## evaluates it at compile time and reports a non-empty result.
   ## `styleAttrs` holds the macro-routed style keywords, `attrs` the plain
   ## attributes; `class` always passes (the Tailwind vehicle, which a
   ## renderer may strip or rewrite itself, so no schema lists it).
+  ##
+  ## `parentTag` is the enclosing element's tag, `""` for the document
+  ## root. With `parentKnown = false` (the top level of a `ui` block, whose
+  ## result a caller may append anywhere) the nesting rule is skipped.
   let (isForbidden, reason, alternative) = v.forbiddenReason(tag)
   if isForbidden:
+    let code = v.forbiddenCode(tag)
     if alternative.len > 0:
-      return "E-VOCAB-FORBIDDEN-TAG: '" & tag & "' is forbidden (" &
+      return code & ": '" & tag & "' is forbidden (" &
         reason & "). Use '" & alternative & "' instead."
     else:
-      return "E-VOCAB-FORBIDDEN-TAG: '" & tag & "' is forbidden (" &
+      return code & ": '" & tag & "' is forbidden (" &
         reason & "). It is not expressible here."
   if not v.hasTag(tag):
     let suggestion = v.nearestTag(tag)
@@ -193,30 +278,33 @@ proc checkElement*(v: VocabularyRef; tag: string;
   for attr in attrs:
     if attr != "class" and v.attrKind(tag, attr) == akUnknown:
       return v.unknownAttrMsg(tag, attr)
-  if not v.allowedChild(parentTag, tag):
-    var allowed = ""
-    for t in v.tags:
-      if t.name == tag:
-        for i, p in t.allowedParents:
-          if i > 0:
-            allowed.add(", ")
-          allowed.add("'" & p & "'")
-        break
-    if parentTag.len == 0:
-      return "E-STRUCT-NESTING: '" & tag &
-        "' must not appear at the top level (allowed parents: " &
-        allowed & ")."
-    else:
-      return "E-STRUCT-NESTING: '" & tag & "' must not be a child of '" &
-        parentTag & "' (allowed parents: " & allowed & ")."
+  if parentKnown and not v.allowedChild(parentTag, tag):
+    return v.nestingMsg(tag, parentTag)
   return ""
 
 proc failVocabCheck*(msg: string) {.compileTime.} =
-  ## Raise the `checkElement` message as a compile error. Called inside the
-  ## generated `static:` block; a macros `error` (unlike `doAssert`) renders
-  ## as a plain `Error:` without a VM stack trace or `AssertionDefect`.
+  ## Raise a `checkElement` message as a compile error from inside a
+  ## `static:` block. Kept for callers that validate outside `ui`; the
+  ## `ui` macro itself does not use it, because a compile-time `error`
+  ## prints a VM `stack trace:` ahead of the message and attributes the
+  ## error to this module (see the module doc for what `ui` emits instead).
   if msg != "":
     error(msg)
+
+proc setLineInfoDeep(n, src: NimNode) =
+  copyLineInfo(n, src)
+  for child in n:
+    setLineInfoDeep(child, src)
+
+proc errorPragmaAt*(msg: NimNode | string; src: NimNode): NimNode =
+  ## `{.error: msg.}` as a statement whose every node carries `src`'s line
+  ## info. `msg` is a string literal or a constant string expression. The
+  ## compiler reports it as `file(line, col) Error: msg` at `src`, with no
+  ## VM stack trace (the pragma is semantic, not evaluated in the VM).
+  let msgNode = when msg is string: newStrLitNode(msg) else: msg
+  result = newNimNode(nnkPragma).add(
+    newNimNode(nnkExprColonExpr).add(ident"error", msgNode))
+  setLineInfoDeep(result, src)
 
 macro checkProcOverloads*(resolved, elem: typed; src: untyped): untyped =
   ## Inner half of the E-VOCAB-PROC-AS-ELEMENT probe: `resolved` is the
@@ -271,12 +359,16 @@ macro checkProcOverloads*(resolved, elem: typed; src: untyped): untyped =
         break
     except Exception:
       continue
-  # The `error` sits outside every `try`: a probe failure degrades to the
+  # The report sits outside every `try`: a probe failure degrades to the
   # plain unknown-tag error from the sibling check. A hit reports here
   # first (the probe is emitted before the tag check for this); the
   # sibling unknown-tag error still follows, and both are true.
+  #
+  # Reported by returning an `{.error.}` pragma carrying `src`'s line info
+  # rather than calling `error` here: `error` from a macro prints a VM
+  # `stack trace:` header naming this module ahead of the message.
   if hit.len > 0:
-    error("E-VOCAB-PROC-AS-ELEMENT: '" & hit &
+    result.add errorPragmaAt("E-VOCAB-PROC-AS-ELEMENT: '" & hit &
       "' is a proc returning the renderer's element type, but it was " &
       "called with named arguments or a block, so the ui macro parsed it " &
       "as an element. Either call it positionally — " & hit &

@@ -313,6 +313,14 @@ test-dsl: build-tailwind
     nim c -r tests/test_dsl_ssr.nim
     # Static vocabulary checks. C only: shells out to `nim check`.
     nim c -r tests/test_dsl_vocabulary.nim
+    # Backend element hook (a renderer's typed `noteElement` overload), alone
+    # and alongside the editor's scene-graph recording, which must both run.
+    nim c -r tests/test_dsl_element_hook.nim
+    nim c -r -d:isonimEditor tests/test_dsl_element_hook.nim
+    # Without --variants the Tailwind extractor's JSON is byte-identical to
+    # the pre-variants extractor (vendored under tests/fixtures/), on the
+    # auto-scan and --content paths. Needs node_modules (build-tailwind).
+    nim c -r tests/test_tailwind_extract_golden.nim
     # Variant-preserving Tailwind expansion, both modes against the fixture
     # map. C only: class expansion to setStyle calls is native-only.
     nim c -r -d:tailwindStylesPathOverride={{justfile_directory()}}/tests/dsl/tailwind/variant-styles.json tests/test_dsl_tailwind_variants.nim

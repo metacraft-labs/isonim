@@ -1,6 +1,6 @@
 ## Production scene-graph hooks: the seam, wired to nothing.
 ##
-## The `ui` macro emits one `noteElement` call per element. In a production
+## The `ui` macro emits one `noteSceneElement` call per element. In a production
 ## build this module is what that call resolves to, and every parameter is
 ## unused — so Nim never evaluates the arguments and nothing reaches the
 ## backend. The element's source location, its parent's id and the tag string
@@ -15,14 +15,14 @@
 ## of the two is in scope, selected by `-d:isonimEditor` in
 ## `isonim/dsl/scene_graph.nim`.
 
-template noteElement*(el: untyped; id: static string; tag: static string;
-                      loc: static string; parentId: static string) =
+template noteSceneElement*(el: untyped; id: static string; tag: static string;
+                           loc: static string; parentId: static string) =
   ## No-op. Every parameter is deliberately unused; see the module doc.
   discard
 
 template noteProperties*(el: untyped; id: static string;
                          bindings: static string) =
-  ## No-op, on the same terms as `noteElement`. `bindings` is the encoded
+  ## No-op, on the same terms as `noteSceneElement`. `bindings` is the encoded
   ## style provenance for this element (`dsl/style_provenance.nim`); it is a
   ## compile-time constant, it is never referenced here, and it therefore
   ## does not reach the emitted JS or C. `tests/test_scene_graph_hooks.nim`

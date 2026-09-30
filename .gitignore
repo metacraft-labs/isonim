@@ -19,6 +19,8 @@ test_web
 test_demo_vm
 test_dsl_ssr
 test_dsl_vocabulary
+test_dsl_element_hook
+test_tailwind_extract_golden
 test_dsl_tailwind_variants
 test_hydration
 test_nginx_module

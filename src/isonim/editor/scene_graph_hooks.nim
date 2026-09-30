@@ -70,7 +70,7 @@ proc recordProperties*(id, bindings: string) =
   ## DSL's expansion should carry a call, not a body.
   ##
   ## An id with no node is dropped rather than creating one. The macro always
-  ## emits `noteElement` before `noteProperties` for the same element, so a
+  ## emits `noteSceneElement` before `noteProperties` for the same element, so a
   ## miss means the two got out of step, and inventing a node here would hide
   ## that behind a parentless entry in the tree.
   if not current.byId.hasKey(id):
@@ -94,8 +94,8 @@ proc sceneUnresolvedBindings*(): seq[tuple[id: string; binding: StyleBinding]] =
       if b.kind == sbkUnresolved:
         result.add (node.id, b)
 
-template noteElement*(el: untyped; id: static string; tag: static string;
-                      loc: static string; parentId: static string) =
+template noteSceneElement*(el: untyped; id: static string; tag: static string;
+                           loc: static string; parentId: static string) =
   ## Record one element. `el` — the renderer's element handle — is
   ## deliberately unused: its lifetime belongs to the renderer, and the graph
   ## must not keep it alive.
@@ -104,5 +104,5 @@ template noteElement*(el: untyped; id: static string; tag: static string;
 template noteProperties*(el: untyped; id: static string;
                          bindings: static string) =
   ## Record one element's authored style provenance. `el` is unused here for
-  ## the same reason it is unused in `noteElement`.
+  ## the same reason it is unused in `noteSceneElement`.
   recordProperties(id, bindings)

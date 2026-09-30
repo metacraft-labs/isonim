@@ -1,0 +1,8 @@
+<!-- Content set for the extractor golden test
+     (tests/test_tailwind_extract_golden.nim). Plain, responsive (sm:, md:),
+     dark: and hover: classes, including a pseudo-suffixed hover rule and
+     rem/px values whose units the extractor strips. -->
+<div class="p-4 px-6 py-2 m-2 text-lg font-bold rounded-md bg-white text-gray-900">
+  <p class="dark:bg-gray-900 dark:text-white hover:underline hover:bg-blue-500">x</p>
+  <p class="sm:p-2 sm:text-sm md:p-8 md:text-xl sm:hover:bg-red-500">y</p>
+</div>

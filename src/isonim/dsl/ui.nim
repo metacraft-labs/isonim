@@ -125,7 +125,7 @@ proc genName(prefix: string): NimNode {.compileTime.} =
 # Scene-graph emission (SGR-M1)
 # ---------------------------------------------------------------------------
 #
-# The macro emits one `noteElement` call per element, unconditionally. In a
+# The macro emits one `noteSceneElement` call per element, unconditionally. In a
 # production build that call resolves to a template whose parameters are all
 # unused, so the call AND its arguments are erased: the emitted JS is
 # byte-for-byte the same size as a build from before this feature existed, and
@@ -142,6 +142,38 @@ proc genName(prefix: string): NimNode {.compileTime.} =
 # With compile time not deciding it, the seam wins on structure: the DSL emits
 # one uniform call and has no idea an editor exists. The `when` branch lives in
 # `./scene_graph`, which is the module whose job is choosing.
+#
+# Backend element hook. Next to the scene-graph call the macro emits a second,
+# independent one per element:
+#
+#   noteElement(el, id, tag, loc, parentId)
+#
+# A renderer backend that wants each element's source location declares an
+# overload typed on its own element handle, for example
+#
+#   proc noteElement*(el: MyNode; id, tag, loc, parentId: string)
+#
+# where `loc` is "file:line:column" of the element in the template. The call
+# is an open symbol choice over the default below (a no-op template with an
+# untyped element, erased like the production seam) and whatever `noteElement`
+# overloads are visible at the `ui` call site; overload resolution prefers the
+# typed overload, so a backend that declares one gets it and every other
+# backend compiles to nothing.
+#
+# The two calls never compete. The scene-graph call is bound closed to
+# `./scene_graph` (it cannot be overridden from a call site), and the backend
+# call cannot reach it because the seam is named differently. So with
+# `-d:isonimEditor` AND a backend overload, both run, scene graph first: the
+# editor records every element exactly as it does for renderers without an
+# overload, and the backend still learns each element's location.
+# `tests/test_dsl_element_hook.nim` pins this in both configurations.
+
+template noteElement*(el: untyped; id: static string; tag: static string;
+                      loc: static string; parentId: static string) =
+  ## Default backend element hook: a no-op whose parameters are all unused,
+  ## so the call and its arguments are erased. A backend overrides it by
+  ## declaring a `noteElement` typed on its element handle (see above).
+  discard
 
 var parentIdStack {.compileTime.}: seq[string] = @[]
   ## Parent ids during the compile-time walk. A stack rather than a threaded
@@ -151,8 +183,12 @@ var parentIdStack {.compileTime.}: seq[string] = @[]
 
 var vocabParentStack {.compileTime.}: seq[string] = @[]
   ## Parent tags for the static-vocabulary check, mirroring
-  ## parentIdStack. Empty when the element being walked is top-level;
-  ## the emitted check then passes "" as the parent tag.
+  ## parentIdStack. Empty when the element being walked is at the top of
+  ## its `ui` block. Its parent is then unknown -- the block may be the body
+  ## of a proc whose result a caller appends inside some other element --
+  ## so the emitted check skips the nesting rule for it
+  ## (`parentKnown = false`). Nesting below the top level is checked here;
+  ## nesting across composition is the renderer's own run-time concern.
 
 proc sceneElementId(node: NimNode): string {.compileTime.} =
   ## Identity for one element, derived from its source position.
@@ -222,11 +258,13 @@ proc emitNoteElement(stmts, elSym: NimNode; tag: string;
     let info = node.lineInfoObj
     let loc = info.filename & ":" & $info.line & ":" & $info.column
     let parentId = if parentIdStack.len > 0: parentIdStack[^1] else: ""
-    # Open choice, not a closed bind: a renderer backend may declare a more
-    # specific `noteElement` overload (typed on its own element handle) and
-    # overload resolution prefers it over the untyped seam template, so the
-    # backend learns each element's source location. Call sites without such
-    # an overload resolve exactly as before, to the single seam template.
+    # The scene-graph seam: bound closed, so a call site cannot divert it.
+    stmts.add(newCall(bindSym("noteSceneElement", brClosed), elSym,
+                      newStrLitNode(id), newStrLitNode(tag),
+                      newStrLitNode(loc), newStrLitNode(parentId)))
+    # The backend element hook: an open choice, so a backend's typed
+    # `noteElement` overload visible at the call site wins over the no-op
+    # default. Independent of the seam above; see "Backend element hook".
     stmts.add(newCall(bindSym("noteElement", brForceOpen), elSym,
                       newStrLitNode(id), newStrLitNode(tag),
                       newStrLitNode(loc), newStrLitNode(parentId)))
@@ -337,19 +375,30 @@ proc makeVocabCall(rendererSym: NimNode): NimNode {.compileTime.} =
   newCall(ident"staticVocabulary", newCall(ident"typeof", rendererSym))
 
 proc emitVocabCheck(stmts, rendererSym: NimNode; tag: string;
-    styleAttrs, attrs: seq[string]; parentTag: string;
-    srcNode: NimNode) {.compileTime.} =
+    styleAttrs, attrs: seq[string]; srcNode: NimNode) {.compileTime.} =
   ## Emit the per-element static-vocabulary check:
   ##
   ##   when compiles(staticVocabulary(typeof(r))):
-  ##     static:
-  ##       failVocabCheck(checkElement(staticVocabulary(typeof(r)),
-  ##                                   "tag", ["style", ...], ["attr", ...],
-  ##                                   "parent"))
+  ##     const msg = checkElement(staticVocabulary(typeof(r)),
+  ##                              "tag", ["style", ...], ["attr", ...],
+  ##                              "parent", parentKnown)
+  ##     when msg != "":
+  ##       {.error: msg.}
   ##
-  ## `checkElement`/`failVocabCheck` are bound to `dsl/vocabulary`;
-  ## everything else resolves in the caller's scope. For renderers without
-  ## the hook the `when` folds away and no code is emitted.
+  ## Every node carries the element's line info, so a violation is reported
+  ## as `<template file>(line, col) Error: <code>: ...` at the element --
+  ## the only line before it is the `ui` call's own instantiation line in
+  ## the same file. An `{.error.}` pragma is used rather than
+  ## `macros.error` because the latter, run in the VM, prints a
+  ## `stack trace:` header naming the vocabulary module first.
+  ##
+  ## The parent comes from `vocabParentStack`; at the top of the block it is
+  ## unknown and the nesting rule is skipped (see the stack's comment).
+  ## `checkElement` is bound to `dsl/vocabulary`; everything else resolves
+  ## in the caller's scope. For renderers without the hook the `when` folds
+  ## away and no code is emitted.
+  let parentKnown = vocabParentStack.len > 0
+  let parentTag = if parentKnown: vocabParentStack[^1] else: ""
   let cond = newCall(ident"compiles", makeVocabCall(rendererSym))
   var styleArr = newNimNode(nnkBracket)
   for a in styleAttrs:
@@ -358,11 +407,16 @@ proc emitVocabCheck(stmts, rendererSym: NimNode; tag: string;
   for a in attrs:
     attrsArr.add newStrLitNode(a)
   let checkCall = newCall(bindSym"checkElement", makeVocabCall(rendererSym),
-    newStrLitNode(tag), styleArr, attrsArr, newStrLitNode(parentTag))
-  let failCall = newCall(bindSym"failVocabCheck", checkCall)
-  let staticBody = newStmtList(failCall)
-  let staticStmt = newNimNode(nnkStaticStmt).add(staticBody)
-  let branchBody = newStmtList(staticStmt)
+    newStrLitNode(tag), styleArr, attrsArr, newStrLitNode(parentTag),
+    newLit(parentKnown))
+  let msgSym = genSym(nskConst, "vocabMsg")
+  let constSec = newNimNode(nnkConstSection).add(
+    newNimNode(nnkConstDef).add(msgSym, newEmptyNode(), checkCall))
+  let reportWhen = newNimNode(nnkWhenStmt).add(
+    newNimNode(nnkElifBranch).add(
+      infix(msgSym, "!=", newStrLitNode("")),
+      newStmtList(errorPragmaAt(msgSym, srcNode))))
+  let branchBody = newStmtList(constSec, reportWhen)
   let whenStmt = newNimNode(nnkWhenStmt).add(
     newNimNode(nnkElifBranch).add(cond, branchBody))
   setVocabLineInfo(whenStmt, srcNode)
@@ -504,9 +558,7 @@ proc processChildren(rendererSym, parentSym: NimNode; body: NimNode;
       let tagName = resolveTagName(child.strVal)
       if isVoidElement(tagName):
         let elSym = genName("el")
-        let vocabParent = if vocabParentStack.len > 0: vocabParentStack[^1] else: ""
-        emitVocabCheck(stmts, rendererSym, tagName, @[], @[], vocabParent,
-          child)
+        emitVocabCheck(stmts, rendererSym, tagName, @[], @[], child)
         stmts.add(newLetStmt(elSym,
           newCall(newDotExpr(rendererSym, ident"createElement"), newStrLitNode(tagName))))
         stmts.add(newCall(newDotExpr(rendererSym, ident"appendChild"),
@@ -610,7 +662,6 @@ proc processNode(rendererSym: NimNode; node: NimNode;
     # which route to addEventListener, not to an attribute slot), split by
     # the same style/attr routing the codegen below uses, and emits a
     # `when compiles` guard that folds away for renderers without the hook.
-    let vocabParent = if vocabParentStack.len > 0: vocabParentStack[^1] else: ""
     var vocabStyles: seq[string] = @[]
     var vocabAttrs: seq[string] = @[]
     for i in 1 ..< node.len:
@@ -633,7 +684,7 @@ proc processNode(rendererSym: NimNode; node: NimNode;
     # in processChildren needs no probe.
     emitProcCheck(stmts, rendererSym, tagIdent, elSym, node)
     emitVocabCheck(stmts, rendererSym, htmlTag, vocabStyles, vocabAttrs,
-      vocabParent, node)
+      node)
 
     # SGR-M1: record this element, then make it the parent of everything its
     # body nests. Pushed before the argument walk and popped after, so a
@@ -645,7 +696,7 @@ proc processNode(rendererSym: NimNode; node: NimNode;
 
     # Stamp the source location, as SSR mode already does.
     #
-    # `noteElement` records the tree in memory, which is enough to answer
+    # `noteSceneElement` records the tree in memory, which is enough to answer
     # "what is nested in what" and not enough to answer "where is this
     # written" from a DOM node the user just clicked. SSR has always carried
     # `data-isonim-src` in the markup for exactly that, and the editor's walk
@@ -748,7 +799,7 @@ proc processNode(rendererSym: NimNode; node: NimNode;
 
     # DSE: one provenance payload per element, emitted after the attribute
     # walk so it describes every attribute, and through the same seam as
-    # `noteElement` so production erases it on the same terms.
+    # `noteSceneElement` so production erases it on the same terms.
     reportUnresolved(styleBindings, node)
     stmts.add(newCall(bindSym"noteProperties", elSym,
                       newStrLitNode(sceneId),
