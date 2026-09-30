@@ -4,6 +4,7 @@ import std/[options, unittest, strutils, sequtils, os]
 import nim_agents
 import isonim/core/[signals, computation, owner]
 import isonim/viewmodel
+import isonim/editor/types as editorTypes
 import isonim/editor/agent_context
 import isonim/editor/agent_harbor
 import isonim/editor/viewmodels
@@ -4722,7 +4723,7 @@ suite "Editor ViewModels (M27 workspace file writes)":
           planFor(schemaFile, "margin", "8px", "12px",
             "components.card.margin")
         ],
-        diffs: @[AgentFileDiff(file: schemaFile, beforeText: "padding=16px",
+        diffs: @[editorTypes.AgentFileDiff(file: schemaFile, beforeText: "padding=16px",
           afterText: "padding=24px", summary: "padding update")]))
 
       var rerunPrompt = ""
@@ -5715,7 +5716,7 @@ suite "Editor ViewModels (M27 workspace file writes)":
         summary: "padding shared schema scope",
         sourceEdits: @[planFor(schemaFile, "padding", "16px", "24px",
           "components.card.padding")],
-        diffs: @[AgentFileDiff(file: schemaFile, beforeText: "padding=16px",
+        diffs: @[editorTypes.AgentFileDiff(file: schemaFile, beforeText: "padding=16px",
           afterText: "padding=24px", summary: "padding 16px -> 24px")],
         impact: AgentProposalImpact(summary: "Updates Card default padding.",
           affectedStories: @[writeStory],
@@ -5742,7 +5743,7 @@ suite "Editor ViewModels (M27 workspace file writes)":
         summary: "padding against current schema scope",
         sourceEdits: @[planFor(schemaFile, "padding", "24px", "32px",
           "components.card.padding")],
-        diffs: @[AgentFileDiff(file: schemaFile, beforeText: "padding=24px",
+        diffs: @[editorTypes.AgentFileDiff(file: schemaFile, beforeText: "padding=24px",
           afterText: "padding=32px", summary: "padding 24px -> 32px")],
         tests: @["compile DestinationCard/Default"]))
       let manual = vm.editCssProperty("padding", "28px", pesShared)

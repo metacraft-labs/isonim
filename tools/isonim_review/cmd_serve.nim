@@ -132,7 +132,11 @@ proc newReviewServer*(cfg: ReviewConfig; migDir: string = ""): ReviewServer =
       customArgs = cfg.agent.args,
       assistantPromptPath = resolvedAssistantPath,
       primerEnabled = cfg.agent.primerEnabled,
-      workspaceRoot = cfg.workspace.root),
+      workspaceRoot = cfg.workspace.root,
+      harborUrl = (if cfg.agent.backend == "harbor": cfg.agent.harborUrl else: ""),
+      harborToken = cfg.agent.harborToken,
+      harborAgent = cfg.agent.harborAgent,
+      harborModel = cfg.agent.model),
   )
   info "review server constructed", agentBackend = $backend,
     customCmd = cfg.agent.command, model = resolvedModel,
@@ -399,6 +403,8 @@ proc mountAgentRoutes*(srv: ReviewServer) =
                       makePromptsHandler(srv.agentRegistry))
   srv.registerHandler(AgentCancelRoute,
                       makeCancelHandler(srv.agentRegistry))
+  srv.registerHandler(AgentCloseRoute,
+                      makeCloseHandler(srv.agentRegistry))
   info "agent routes mounted", topics = "daemon",
     sessions = AgentSessionsRoute, prompts = AgentPromptsRoute,
     cancel = AgentCancelRoute

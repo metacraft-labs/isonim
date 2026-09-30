@@ -389,6 +389,7 @@ import repro_dsl_stdlib/foreign_env
 # the exit-0 verification this corpus needs — Nim ``unittest`` prints
 # per-suite results and exits non-zero on failure.
 import ct_test_nim_unittest
+import repro_dsl_stdlib/packages/python_unittest_runner
 
 type
   IsonimTestSpec = object
@@ -522,6 +523,7 @@ const isonimCompileOnlySpecs: seq[IsonimTestSpec] = @[
 # back-end. It is a ``nim js`` COMPILE-ONLY recipe entry (``-o:`` without
 # ``-r``), so it is modelled as a BUILD-only edge (no node run).
 const isonimJsTestSpecs: seq[string] = @[
+  "test_browser_agent_lifecycle",
   # Reactive core (dual-backend; also in the native corpus above).
   "test_signals", "test_effects", "test_clock", "test_context", "test_rxcore",
   # DSL / SSR-hydration / web-component / router / server-fn / data-loading.
@@ -688,6 +690,7 @@ package isonim:
     # its ``uses:`` block powers its ``node(...)`` webpack/stylus edges). The
     # ``nim.js`` typed-tool comes from the already-declared ``nim`` above.
     "node >=20"
+    "python3 >=3.9"
 
     # The five landed sibling Nim-library producers (SC-11 develop-mode
     # from-source consumption). ``src/isonim/editor/*`` import each of these;
@@ -814,6 +817,16 @@ package isonim:
       actionId = "isonim.tool_build.isonim_review",
       extraInputs = @["src", "tools", "db", "isonim.nimble"])
     testBuildActions.add(reviewToolEdge.action)
+
+    testExecuteActions.add(pythonUnittest.run(
+      source = "tests/test_agent_session_launcher.py",
+      actionId = "isonim.chat_execute.launcher",
+      extraInputs = @["tests/test_agent_session_launcher.py", "tools/agent_session_launcher.py"]))
+    testExecuteActions.add(pythonUnittest.run(
+      source = "tests/test_harbor_route_lifecycle.py",
+      actionId = "isonim.chat_execute.route_lifecycle",
+      after = @[reviewToolEdge.action],
+      extraInputs = @["tests/test_harbor_route_lifecycle.py", drReviewBin]))
 
     let fakeAcpToolEdge = buildNimUnittest.build(
       source = "tests/helpers/fake_acp_agent.nim",

@@ -774,6 +774,21 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   r.appendChild(inputRow, sendBtn)
   r.appendChild(inputRow, cancelBtn)
   r.appendChild(inputArea, inputRow)
+  # Explicit closure is also recovery when a stream is interrupted. The VM
+  # waits for acknowledgement before replacing the final conversation.
+  let closeBtn = r.createElement("button")
+  r.setAttribute(closeBtn, "type", "button")
+  r.setAttribute(closeBtn, "aria-label", "Close conversation")
+  r.setAttribute(closeBtn, "data-agent-close", "true")
+  r.setTextContent(closeBtn, "Close conversation")
+  r.setStyle(closeBtn, "margin-top", "8px")
+  r.setStyle(closeBtn, "padding", "6px 10px")
+  r.setStyle(closeBtn, "color", textSecondary)
+  r.setStyle(closeBtn, "background-color", bgSurface)
+  r.setStyle(closeBtn, "border", "1px solid " & border)
+  r.addEventListener(closeBtn, "click", proc() =
+    discard vm.closeChat(vm.activeChatId.val))
+  r.appendChild(inputArea, closeBtn)
   r.appendChild(panel, inputArea)
 
   panel

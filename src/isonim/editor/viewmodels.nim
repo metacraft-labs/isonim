@@ -207,6 +207,11 @@ type
     messageCount*: Memo[int]
     promptAdapter*: AgentPromptAdapter
     cancelAdapter*: AgentCancelAdapter
+    asyncAgentAdapter*: bool
+    promptInFlight*: bool
+    closingSession*: bool
+    cancelAsyncAdapter*: proc() {.closure.}
+    closeAdapter*: proc(done: proc(ok: bool) {.closure.}) {.closure.}
 
   ChatSession* = ref object
     ## One Assistant-tab chat. Each session owns its own ``AgentChatVM``
@@ -319,6 +324,9 @@ type
       ## in ``activeChatId``; the read-only ``chat`` accessor below
       ## returns the matching ``AgentChatVM`` so existing call sites
       ## continue to work unchanged.
+    nextChatNumber: int
+    chatClosePending: bool
+    configureChat*: proc(chat: AgentChatVM) {.closure.}
     activeChatId*: Signal[string]
       ## Identifier of the currently active chat session. Used by the
       ## Assistant-tab strip in ``shell.nim`` to highlight the active
@@ -443,15 +451,16 @@ proc createChatSession*(id: string; title = ""): ChatSession =
 
 proc createNewChat*(vm: EditorVM): string {.discardable.} =
   ## Append a fresh chat session, activate it, and return its id.
-  ## The session id is the 1-based position of the new session at the
-  ## time of creation prefixed with ``"chat-"`` to keep ids stable for
-  ## tests and DOM attributes. Titles follow the ``"New chat"`` /
+  ## Session ids use a monotonically increasing number prefixed with
+  ## ``"chat-"`` so removing a tab never reuses a surviving id. Titles follow the ``"New chat"`` /
   ## ``"New chat 2"`` / … convention so users can distinguish sessions
   ## at a glance until they rename them.
   let nextIndex = vm.chats.val.len
-  let id = "chat-" & $(nextIndex + 1)
+  vm.nextChatNumber = max(vm.nextChatNumber + 1, nextIndex + 1)
+  let id = "chat-" & $vm.nextChatNumber
   let title = defaultChatTitleFor(nextIndex)
   let session = createChatSession(id, title)
+  if vm.configureChat != nil: vm.configureChat(session.vm)
   vm.chats.update proc(prev: seq[ChatSession]): seq[ChatSession] =
     result = prev
     result.add session
@@ -486,7 +495,7 @@ proc setChatTitle*(vm: EditorVM; sessionId: string;
       return true
   false
 
-proc closeChat*(vm: EditorVM; id: string): bool {.discardable.} =
+proc removeClosedChat(vm: EditorVM; id: string): bool {.discardable.} =
   ## Remove a chat session by id. The last remaining chat is never
   ## removed — we guarantee ``vm.chats.val.len >= 1`` at all times so
   ## ``vm.chat`` always resolves to something. When the active chat is
@@ -517,6 +526,22 @@ proc closeChat*(vm: EditorVM; id: string): bool {.discardable.} =
         ""
     vm.activeChatId.val = nextActive
   true
+
+proc closeChat*(vm: EditorVM; id: string): bool {.discardable.} =
+  if vm.chatClosePending: return false
+  for session in vm.chats.val:
+    if session.id == id:
+      if session.vm.closeAdapter != nil:
+        vm.chatClosePending = true
+        session.vm.closeAdapter(proc(ok: bool) =
+          vm.chatClosePending = false
+          if ok:
+            if vm.chats.val.len == 1:
+              discard vm.createNewChat()
+            discard vm.removeClosedChat(id))
+        return true
+      return vm.removeClosedChat(id)
+  false
 
 proc activeChatSession*(vm: EditorVM): ChatSession =
   ## Return the active ``ChatSession`` (the wrapper with id + title),
@@ -8582,6 +8607,9 @@ proc rebaseAgentProposedEdit*(editor: EditorVM; id: string): bool {.discardable.
   false
 
 proc sendAgentPrompt*(editor: EditorVM): bool {.discardable.} =
+  if editor.chat.asyncAgentAdapter and
+      (editor.chat.promptInFlight or editor.chat.closingSession):
+    return false
   let prompt = editor.chat.inputText.val.strip()
   if prompt.len == 0:
     return false
@@ -8602,6 +8630,7 @@ proc sendAgentPrompt*(editor: EditorVM): bool {.discardable.} =
   let context = editor.buildAgentPromptContext()
   editor.chat.lastPromptContext.val = context
   if editor.chat.promptAdapter(prompt, context):
+    if editor.chat.asyncAgentAdapter: return true
     if editor.chat.sessionStatus.val == asLoading:
       editor.chat.sessionStatus.val = asReady
     if editor.chat.connectionState.val == "streaming":
@@ -8613,6 +8642,9 @@ proc sendAgentPrompt*(editor: EditorVM): bool {.discardable.} =
   false
 
 proc cancelAgentPrompt*(editor: EditorVM): bool {.discardable.} =
+  if editor.chat.cancelAsyncAdapter != nil:
+    editor.chat.cancelAsyncAdapter()
+    return true
   if editor.chat.cancelAdapter == nil:
     return false
   result = editor.chat.cancelAdapter()

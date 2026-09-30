@@ -468,7 +468,16 @@ test-design-review-harbor-live:
     nim c -r --out:build/bin/test-design-review-harbor-live --path:src --path:../nim-everywhere/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src --hints:off tests/test_design_review_harbor_live.nim
 
 
+# Opt-in live private Harbor/provider acceptance; the producer CLI must be built.
+test-design-review-harbor-persistent provider harbor="../agent-harbor":
+    mkdir -p build/bin
+    nim c --out:build/bin/test-harbor-persistent-live --path:src --path:../nim-everywhere/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src ../nim-agents/tests/test_harbor_persistent_live.nim
+    python3 tests/run_harbor_persistent_live.py --harbor-repo "$(realpath '{{harbor}}')" --ah "$(realpath '{{harbor}}/build/bin/ah')" --provider "{{provider}}" --driver "$(realpath build/bin/test-harbor-persistent-live)"
+
 test-design-review-chat: isonim-review-build fake-acp-agent-build
+    python3 tests/test_agent_session_launcher.py
+    python3 tests/test_harbor_route_lifecycle.py
+    nim js -r --path:src tests/test_browser_agent_lifecycle.nim
     nim c -r --path:. --path:src \
         --path:vendor/db_connector/src --path:vendor/chronicles \
         --path:vendor/serialization --path:vendor/json_serialization \

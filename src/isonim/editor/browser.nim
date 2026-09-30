@@ -789,7 +789,9 @@ proc mountEditor*(workspace: EditorWorkspace;
     # ``/api/agent/*`` routes via the resolved base URL.  This is the
     # production wiring; VM tests inject a fake client via
     # ``configureAgentAdaptersWithClient`` instead.
-    discard configureDaemonAgentAdapters(vm.chat)
+    vm.configureChat = proc(chat: AgentChatVM) =
+      discard configureDaemonAgentAdapters(chat)
+    vm.configureChat(vm.chat)
     vm.setTelemetryOverlayVisible(editorDebugEnabled())
     if useHashRoute:
       installEditorHistorySync(vm)

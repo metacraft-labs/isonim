@@ -1,28 +1,13 @@
-## Phase B — HTTP routes that bridge the editor daemon to an ACP agent.
-##
-## Three endpoints are exposed:
-##
-##   * ``POST /api/agent/sessions`` — initialise an ACP backend, allocate a
-##     fresh session id, cache the client + session id server-side.  The
-##     response carries the session id and the agent's capability bag from
-##     the ACP ``initialize`` reply.
-##   * ``POST /api/agent/prompts``  — submit a prompt for the cached
-##     session.  The server emits a ``text/event-stream`` response, one
-##     ``session/update`` per SSE event, terminated by an ``event: end``
-##     with the stop reason.
-##   * ``POST /api/agent/cancel``  — fire-and-forget ``session/cancel``.
-##
-## The transport itself is Phase A's :type:`NativeStdioAcpTransport`
-## wrapped by :proc:`fromClaudeCodeAcp` from ``nim-agents``.  Concurrency
-## is single-tenant (one client per session id) — the daemon binds to
-## ``127.0.0.1`` only and serves a single user.  REV-M11+ may revisit
-## once multi-user editing lands.
-##
-## Cancellation: when the SSE client disconnects mid-stream, the daemon
-## sends ``session/cancel`` to the agent and reaps the session entry.
-## See the ``test_post_cancel_signals_agent`` test for verification.
+## HTTP bridge from editor conversations to nim-agents.
+## Harbor conversations begin as explicit local drafts; their first user message
+## creates a standalone persistent REST session. Follow-ups reuse that session.
+## Streams run on a worker while the daemon remains available for editor commands.
+## POST /api/agent/close ends the session. Cancellation is a separate capability;
+## Harbor currently rejects it because REST has no process-preserving cancel route.
+## A disconnected response stream is drained without closing the conversation.
+## Explicit direct ACP backends retain their existing initialization behavior.
 
-import std/[asyncdispatch, asyncnet, asynchttpserver, base64, json, locks,
+import std/[asyncdispatch, asyncnet, asynchttpserver, atomics, base64, json, locks,
             options, os, strutils, tables, times]
 
 import db_connector/db_postgres
@@ -32,6 +17,7 @@ import nim_agents
 
 import ./log_setup
 import ./brief_format
+import std/oids
 import ./brief_index
 import ./db as dr_db
 
@@ -44,6 +30,9 @@ type
     client*: AgentClient
     session*: AgentSession
     capabilities*: AgentCapabilities
+    cwd*: string
+    isDraft*: bool
+    turnWorking*: bool
 
   AgentRegistry* = ref object
     ## Cache of active ACP sessions, keyed by the session id returned to
@@ -60,6 +49,7 @@ type
     lock: Lock
     sessions: Table[string, AgentSessionState]
     backend*: AcpAgentKind
+    harborUrl*, harborToken*, harborAgent*, harborModel*: string
     customCmd*: string
     customArgs*: seq[string]
     extraArgs: seq[string]
@@ -82,6 +72,7 @@ const
   AgentSessionsRoute* = "/api/agent/sessions"
   AgentPromptsRoute* = "/api/agent/prompts"
   AgentCancelRoute* = "/api/agent/cancel"
+  AgentCloseRoute* = "/api/agent/close"
 
 # --------------------------------------------------------------------------- #
 #  Registry helpers.                                                          #
@@ -94,7 +85,8 @@ proc newAgentRegistry*(extraArgs: seq[string] = @[];
     assistantPromptPath: string = "";
     primerEnabled: bool = true;
     workspaceRoot: string = "";
-    db: ReviewDb = nil): AgentRegistry =
+    db: ReviewDb = nil;
+    harborUrl = ""; harborToken = ""; harborAgent = ""; harborModel = ""): AgentRegistry =
   ## Allocate an empty session cache. The defaults match the
   ## pre-Phase-C contract (claude-agent-acp without explicit args)
   ## so existing callers keep working untouched.
@@ -110,6 +102,8 @@ proc newAgentRegistry*(extraArgs: seq[string] = @[];
   result = AgentRegistry(
     sessions: initTable[string, AgentSessionState](),
     backend: backend,
+    harborUrl: harborUrl, harborToken: harborToken,
+    harborAgent: harborAgent, harborModel: harborModel,
     customCmd: customCmd,
     customArgs: customArgs,
     extraArgs: extraArgs,
@@ -165,11 +159,20 @@ proc shutdownAndRelease*(reg: AgentRegistry; sessionId: string) =
   if found:
     info "agent client shutdown begin", sessionId = sessionId
     try:
+      if state.client.backend == abkHarbor and not state.isDraft:
+        {.cast(gcsafe).}:
+          state.client.closeSession(state.session)
       shutdown(state.client)
       info "agent client shutdown end", sessionId = sessionId
     except CatchableError as e:
       warn "agent client shutdown raised",
         sessionId = sessionId, reason = e.msg
+      acquire(reg.lock)
+      try:
+        reg.sessions[sessionId] = state
+      finally:
+        release(reg.lock)
+      raise
   else:
     info "agent client shutdown skipped (not in registry)",
       sessionId = sessionId
@@ -188,6 +191,25 @@ proc storeSession(reg: AgentRegistry; state: AgentSessionState) =
   acquire(reg.lock)
   try:
     reg.sessions[state.sessionId] = state
+  finally:
+    release(reg.lock)
+
+proc storeExistingSession(reg: AgentRegistry; state: AgentSessionState): bool =
+  acquire(reg.lock)
+  try:
+    if not reg.sessions.hasKey(state.sessionId): return false
+    reg.sessions[state.sessionId] = state
+    return true
+  finally:
+    release(reg.lock)
+
+proc setTurnWorking(reg: AgentRegistry; id: string; working: bool): bool =
+  acquire(reg.lock)
+  try:
+    if not reg.sessions.hasKey(id): return false
+    if working and reg.sessions[id].turnWorking: return false
+    reg.sessions[id].turnWorking = working
+    return true
   finally:
     release(reg.lock)
 
@@ -217,6 +239,21 @@ proc createAcpSession*(reg: AgentRegistry; cwd = "";
   ## :type:`AgentClient`, which never escapes this thread.
   {.gcsafe.}:
     var client: AgentClient
+    let root = if cwd.len > 0: cwd
+               elif reg.workspaceRoot.len > 0: reg.workspaceRoot
+               else: getCurrentDir()
+    if reg.harborUrl.len > 0:
+      let auth = if reg.harborToken.len > 0: bearerAuth(reg.harborToken)
+                 else: HarborAuth(kind: akNone)
+      client = fromHarbor(newNativeHarborClient(reg.harborUrl, auth))
+      # This is a local conversation draft, not a fabricated Harbor session.
+      # The first user message creates the real backend session.
+      let id = "draft-" & $genOid()
+      result = AgentSessionState(sessionId: id, client: client, cwd: root, isDraft: true,
+        session: AgentSession(backend: abkHarbor),
+        capabilities: AgentCapabilities(streaming: true, text: true))
+      reg.storeSession(result)
+      return
     try:
       if idleTimeoutMs > 0:
         client = fromAcpAgent(reg.backend, reg.extraArgs,
@@ -233,7 +270,7 @@ proc createAcpSession*(reg: AgentRegistry; cwd = "";
       protocolVersion: 1,
       clientInfo: ClientInfo(name: "isonim-review", version: "0.1"),
       clientCapabilities: ClientCapabilities(streaming: true)))
-    let resolvedCwd = if cwd.len > 0: cwd else: getCurrentDir()
+    let resolvedCwd = root
     let session = client.startSession(resolvedCwd)
     result = AgentSessionState(
       sessionId: session.id,
@@ -482,6 +519,8 @@ proc primeAcpSession*(reg: AgentRegistry; state: AgentSessionState;
   ## arrives late and is dropped (the SSE consumer hasn't connected
   ## yet).
   {.gcsafe.}:
+    if state.client.backend == abkHarbor:
+      return # Harbor provider instructions are injected at session launch, not as a user turn.
     let resolvedRoot =
       if projectRoot.len > 0: projectRoot
       elif reg.workspaceRoot.len > 0: reg.workspaceRoot
@@ -755,6 +794,10 @@ proc handleSessions*(reg: AgentRegistry; req: Request)
         sessionId = state.sessionId
     let body = $(%* {
       "sessionId": state.sessionId,
+      "backendSessionId": state.session.id,
+      "sessionState": (if state.isDraft: "draft" else: "ready"),
+      "sessionCapabilities": {"persistent": true,
+        "cancelTurn": state.client.backend == abkAcp, "closeSession": true},
       "agentCapabilities": capabilityJson(state.capabilities),
     })
     await respondJson(req, Http200, body)
@@ -771,10 +814,30 @@ proc cancelSession(reg: AgentRegistry; sessionId: string) {.gcsafe.} =
     if not opt.isSome: return
     var state = opt.get
     try:
-      state.client.acp.cancel(sessionId)
+      state.client.cancelSession(state.session)
       info "agent session cancelled", sessionId = sessionId
     except CatchableError as e:
       warn "agent cancel failed", sessionId = sessionId, reason = e.msg
+
+proc handleClose*(reg: AgentRegistry; req: Request) {.async, gcsafe.} =
+  if req.reqMethod != HttpPost:
+    await respondJson(req, Http405, $(%* {"error": "method_not_allowed"}))
+    return
+  var id: string
+  try:
+    id = parseJson(req.body){"sessionId"}.getStr()
+  except CatchableError:
+    await respondJson(req, Http400, $(%* {"error": "invalid_json"}))
+    return
+  if id.len == 0 or reg.getState(id).isNone:
+    await respondJson(req, Http404, $(%* {"error": "unknown_session"}))
+    return
+  try:
+    {.cast(gcsafe).}:
+      reg.shutdownAndRelease(id)
+    await respondJson(req, Http200, $(%* {"closed": true}))
+  except CatchableError as error:
+    await respondJson(req, Http502, $(%* {"error": "session_close_failed", "reason": error.msg}))
 
 proc handleCancel*(reg: AgentRegistry; req: Request)
     {.async, gcsafe.} =
@@ -794,6 +857,11 @@ proc handleCancel*(reg: AgentRegistry; req: Request)
   if sessionId.len == 0:
     await respondJson(req, Http400,
       $(%* {"error": "missing_sessionId"}))
+    return
+  let state = reg.getState(sessionId)
+  if state.isSome and state.get.client.backend == abkHarbor:
+    await respondJson(req, Http409, $(%* {"error": "unsupported_capability",
+      "reason": "This provider cannot cancel a turn without closing its session"}))
     return
   cancelSession(reg, sessionId)
   await respondJson(req, Http202, $(%* {"accepted": true}))
@@ -816,13 +884,63 @@ proc emitUpdates(reg: AgentRegistry; sessionId: string;
     if not stateOpt.isSome:
       return true
     var state = stateOpt.get
-    updates = state.client.acp.drainUpdates()
+    if state.client.backend == abkAcp:
+      updates = state.client.acp.drainUpdates()
   for update in updates:
     let evt = encodeSseEvent("session/update",
                              $sessionUpdateJson(update))
     if not await sendSseLine(sock, evt):
       return false
   return true
+
+proc runAgentTurn*(reg: AgentRegistry; state: AgentSessionState;
+    promptBlocks: seq[ContentBlock]; onEvent: AgentEventCallback): PromptTurn {.gcsafe.} =
+  {.cast(gcsafe).}:
+    var client = state.client
+    var active = state
+    var turn: PromptTurn
+    if client.backend == abkHarbor and active.isDraft:
+      let software = if reg.harborAgent.len > 0: reg.harborAgent else: "claude"
+      var binary = reg.customCmd
+      var providerArgs = reg.customArgs
+      if binary.len == 0:
+        case software
+        of "claude":
+          binary = findExe("claude-agent-acp")
+          if binary.len == 0: binary = findExe("claude-code-acp")
+        of "codex": binary = findExe("codex-acp")
+        else:
+          raise newException(AgentBackendUnavailableError,
+            "Persistent Harbor provider requires an explicit ACP launch command")
+      if binary.len == 0:
+        raise newException(AgentBackendUnavailableError, "Persistent ACP provider is unavailable: " & software)
+      if reg.primerEnabled:
+        if software != "claude":
+          raise newException(AgentBackendUnavailableError,
+            "System instruction delivery is not supported for this provider")
+        let launcher = currentSourcePath().parentDir.parentDir.parentDir.parentDir.parentDir /
+          "tools" / "agent_session_launcher.py"
+        if not fileExists(launcher) or not fileExists(reg.assistantPromptPath):
+          raise newException(AgentBackendUnavailableError, "IsoNim session instructions or launcher is missing")
+        providerArgs = @[launcher, "--instructions", reg.assistantPromptPath, "--", binary] & providerArgs
+        binary = findExe("python3")
+        if binary.len == 0:
+          raise newException(AgentBackendUnavailableError, "Python is required for provider instruction delivery")
+      var workspace = defaultWorkspaceContext(active.cwd)
+      workspace.workingCopyMode = "in_place"
+      let config = AgentStartMode(workspace: workspace, allowNetwork: true,
+        prompt: promptBlocks, acpAgent: acpAgentConfig(binary, providerArgs, model = reg.harborModel))
+      active.session = client.createSession(config)
+      active.isDraft = false
+      active.client = client
+      if not reg.storeExistingSession(active):
+        client.closeSession(active.session)
+        raise newException(HarborError, "Conversation closed while backend session was being created")
+      turn = streamAgentTurn(client, active.session, onEvent)
+    else:
+      turn = sendPromptStreaming(client, active.session,
+        promptBlocks, onEvent)
+    return turn
 
 proc handlePrompts*(reg: AgentRegistry; req: Request)
     {.async, gcsafe.} =
@@ -869,7 +987,12 @@ proc handlePrompts*(reg: AgentRegistry; req: Request)
     await respondJson(req, Http404,
       $(%* {"error": "unknown_session", "sessionId": sessionId}))
     return
+  if not reg.setTurnWorking(sessionId, true):
+    await respondJson(req, Http409, $(%* {"error": "turn_already_running"}))
+    return
+  defer: discard reg.setTurnWorking(sessionId, false)
   var state = stateOpt.get
+  state.turnWorking = true
 
   var textBlocks = 0
   var imageBlocks = 0
@@ -953,30 +1076,19 @@ proc handlePrompts*(reg: AgentRegistry; req: Request)
     sessionId: string
     prompt: seq[ContentBlock]
     client: AgentClient
+    state: AgentSessionState
+    registry: AgentRegistry
     response: PromptResponse
     error: string
-    done: bool
+    done: Atomic[bool]
     callback: AgentEventCallback
 
   let onEvent: AgentEventCallback = proc(ev: AgentEvent) {.gcsafe.} =
     {.cast(gcsafe).}:
-      # When we have the raw JSON straight from the ACP transport, send
-      # it verbatim — it already matches the SSE wire schema the editor
-      # expects (mirrors :proc:`sessionUpdateJson`'s preferred branch).
-      var payload: JsonNode
-      if ev.raw != nil:
-        payload = ev.raw
-      else:
-        payload = %* {
-          "sessionId": ev.sessionId,
-          "update": {
-            "sessionUpdate": $ev.kind,
-            "content": {"type": "text", "text": ev.text},
-            "toolCallId": ev.toolCallId,
-            "title": ev.toolName,
-            "status": ev.status,
-          },
-        }
+      # Preserve the common library event rather than leaking ACP or Harbor
+      # wire shapes into browser code. The browser also accepts older ACP frames.
+      let payload = if ev.raw != nil and ev.raw.hasKey("update"):
+                      ev.raw else: toJson(ev)
       let frame = encodeSseEvent("session/update", $payload)
       debug "agent.streaming.chunk", sessionId = ev.sessionId,
         kind = $ev.kind, bytes = frame.len
@@ -985,40 +1097,34 @@ proc handlePrompts*(reg: AgentRegistry; req: Request)
   proc runPrompt(args: PromptArgs) {.thread, gcsafe.} =
     {.cast(gcsafe).}:
       try:
-        var client = args.client
-        let turn = sendPromptStreaming(client,
-          AgentSession(id: args.sessionId, backend: abkAcp),
-          args.prompt, args.callback)
+        let turn = runAgentTurn(args.registry, args.state, args.prompt, args.callback)
         args.response = PromptResponse(sessionId: args.sessionId,
                                        stopReason: turn.stopReason)
       except CatchableError as e:
         args.error = e.msg
-      args.done = true
+      args.done.store(true)
 
   var args = PromptArgs(sessionId: sessionId, prompt: prompt,
-                        client: state.client, callback: onEvent)
+                        client: state.client, state: state, registry: reg, callback: onEvent)
   var worker: Thread[PromptArgs]
   createThread(worker, runPrompt, args)
 
   # Async pump: while the worker is running, periodically flush any
   # frames the callback enqueued onto the SSE socket.
-  while not args.done:
+  var disconnected = false
+  while not args.done.load():
     let pending = popFrames()
-    var disconnected = false
-    for frame in pending:
-      if not await sendSseLine(req.client, frame):
-        disconnected = true
-        break
-    if disconnected:
-      # Surface a cancel to the agent so the ACP child can wind down,
-      # then wait for the worker to finish — we still need to join the
-      # thread or the daemon leaks resources.
-      cancelSession(reg, sessionId)
-      joinThread(worker)
-      return
+    if not disconnected:
+      for frame in pending:
+        if not await sendSseLine(req.client, frame):
+          disconnected = true
+          break
+    # A disconnected response stream does not close a persistent session.
+    # Continue draining without blocking the daemon's other HTTP/RPC handlers.
     await sleepAsync(10)
 
   joinThread(worker)
+  if disconnected: return
   promptDone = true
   promptResp = args.response
   if args.error.len > 0:
@@ -1043,7 +1149,8 @@ proc handlePrompts*(reg: AgentRegistry; req: Request)
     let stOpt = reg.getState(sessionId)
     if stOpt.isSome:
       var s = stOpt.get
-      discard s.client.acp.drainUpdates()
+      if s.client.backend == abkAcp:
+        discard s.client.acp.drainUpdates()
 
   if promptError.len > 0:
     let errEvent = encodeSseEvent("error",
@@ -1078,3 +1185,7 @@ proc makePromptsHandler*(reg: AgentRegistry): AgentHandlerProc =
 proc makeCancelHandler*(reg: AgentRegistry): AgentHandlerProc =
   result = proc(req: Request): Future[void] {.async, gcsafe.} =
     await handleCancel(reg, req)
+
+proc makeCloseHandler*(reg: AgentRegistry): AgentHandlerProc =
+  result = proc(req: Request): Future[void] {.async, gcsafe.} =
+    await handleClose(reg, req)

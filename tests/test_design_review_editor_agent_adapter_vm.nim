@@ -109,8 +109,11 @@ suite "Phase C editor agent adapter VM":
       discard chat.promptAdapter("hold on", AgentPromptContext())
       emitSessionUpdate(client, "I will...")
 
-      check chat.cancelAdapter != nil
-      check chat.cancelAdapter() == true
+      chat.connectionState.val = "streaming"
+      check chat.cancelAsyncAdapter != nil
+      chat.cancelAsyncAdapter()
+      check chat.connectionState.val == "streaming"
+      check chat.messages.val[^1].text.contains("does not support")
       # The fake cancel does nothing visible, but the real daemon
       # would send ``session/cancel`` and follow it up with an
       # ``event: end`` carrying ``stopReason == "cancelled"``.  We

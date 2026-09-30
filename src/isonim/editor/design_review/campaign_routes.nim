@@ -498,6 +498,8 @@ type
     sessionId: string
     prompt: seq[ContentBlock]
     client: AgentClient
+    state: AgentSessionState
+    registry: AgentRegistry
     response: PromptResponse
     error: string
     done: bool
@@ -506,10 +508,7 @@ type
 proc runPromptThread(args: PromptArgs) {.thread, gcsafe.} =
   {.cast(gcsafe).}:
     try:
-      var client = args.client
-      let turn = sendPromptStreaming(client,
-        AgentSession(id: args.sessionId, backend: abkAcp),
-        args.prompt, args.callback)
+      let turn = runAgentTurn(args.registry, args.state, args.prompt, args.callback)
       args.response = PromptResponse(sessionId: args.sessionId,
                                      stopReason: turn.stopReason)
     except CatchableError as e:
@@ -608,26 +607,17 @@ proc streamPromptToSocket(reg: CampaignRegistry;
   let onEvent: AgentEventCallback = proc(ev: AgentEvent) {.gcsafe.} =
     {.cast(gcsafe).}:
       var payload: JsonNode
-      if ev.raw != nil:
+      if ev.raw != nil and ev.raw.hasKey("update"):
         payload = ev.raw
       else:
-        payload = %* {
-          "sessionId": ev.sessionId,
-          "update": {
-            "sessionUpdate": $ev.kind,
-            "content": {"type": "text", "text": ev.text},
-            "toolCallId": ev.toolCallId,
-            "title": ev.toolName,
-            "status": ev.status,
-          },
-        }
+        payload = toJson(ev)
       let frame = encodeSseEvent("session/update", $payload)
       pushFrame(frame)
       if ev.kind == aekMessageChunk and ev.text.len > 0:
         pushText(ev.text)
 
   var args = PromptArgs(sessionId: sessionId, prompt: prompt,
-                        client: state.client, callback: onEvent)
+                        client: state.client, state: state, registry: reg.agents, callback: onEvent)
   var worker: Thread[PromptArgs]
   createThread(worker, runPromptThread, args)
 
@@ -662,7 +652,8 @@ proc streamPromptToSocket(reg: CampaignRegistry;
     let stOpt = reg.agents.getState(sessionId)
     if stOpt.isSome:
       var s = stOpt.get
-      discard s.client.acp.drainUpdates()
+      if s.client.backend == abkAcp:
+        discard s.client.acp.drainUpdates()
 
   let stopReason =
     if args.error.len > 0: "error"
@@ -944,7 +935,7 @@ proc handleStop*(reg: CampaignRegistry; req: Request) {.async, gcsafe.} =
       if stateOpt.isSome:
         var state = stateOpt.get
         try:
-          state.client.acp.cancel(sessionId)
+          state.client.cancelSession(state.session)
         except CatchableError as e:
           warn "campaign stop: acp.cancel failed",
             sessionId = sessionId, reason = e.msg

@@ -87,11 +87,11 @@ suite "editor Agent Harbor adapter":
     check node["repo"]["branch"].getStr() == "feature/m22"
     check node["repo"]["commit"].getStr() == "abc123"
     check node["workspace"]["executionHostId"].getStr() == "linux-build-01"
-    check node["workspace"]["workingCopyMode"].getStr() == "overlay"
-    check node["prompt"].getElems().anyIt(it{"text"}.getStr("").contains("Make it clearer"))
-    check node["prompt"].getElems().anyIt(it{"text"}.getStr("").contains("story: TaskRow/Active"))
-    check node["prompt"].getElems().anyIt(it{"uri"}.getStr("").contains("Button.nim#L42"))
-    check node["agents"][0]["agent"]["software"].getStr() == "acp"
+    check node["working_copy_mode"].getStr() == "overlay"
+    check node["prompt"].getStr().contains("Make it clearer")
+    check node["prompt"].getStr().contains("story: TaskRow/Active")
+    check node["prompt"].getStr().contains("Button.nim#L42")
+    check node["agents"][0]["type"].getStr() == "acp"
     check node["agents"][0]["acpStdioLaunchCommand"]["binary"].getStr() == "mock-agent"
 
   test "editor_agent_harbor_stream_updates_chat_state":

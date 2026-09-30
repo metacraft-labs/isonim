@@ -43,6 +43,8 @@ proc agentEventFromSseJson*(node: JsonNode): AgentEvent =
   ## daemon's ``sessionUpdateJson``) into an :type:`AgentEvent`.
   ## Mirrors :proc:`nim_agents.readAgentEvents`'s ACP branch but
   ## operates on a parsed ``JsonNode`` instead of a transport drain.
+  if node.hasKey("kind"):
+    return nim_agents.agentEventFromJson(node)
   result.sessionId = node{"sessionId"}.getStr("")
   result.raw = node
   let update = node{"update"}
@@ -96,9 +98,12 @@ proc installAdapterCallbacks*(client: BrowserAgentClient; chat: AgentChatVM) =
   ## so the VM tests can call this against a fake client.
   let capturedChat = chat
   client.onUpdate = proc(payload: cstring) {.closure.} =
+    if client.closed: return
     let evt = agentEventFromSse($payload)
     capturedChat.applyAgentEvent(evt)
   client.onEnd = proc(stopReason: cstring) {.closure.} =
+    if client.closed: return
+    capturedChat.promptInFlight = false
     capturedChat.stopReason.val = $stopReason
     capturedChat.sessionStatus.val = asReady
     if $stopReason == "cancelled":
@@ -108,7 +113,19 @@ proc installAdapterCallbacks*(client: BrowserAgentClient; chat: AgentChatVM) =
       capturedChat.sessionStatus.val = asError
     else:
       capturedChat.connectionState.val = $acsCompleted
+  client.onInterrupted = proc(message: cstring) {.closure.} =
+    if client.closed: return
+    # EOF is not evidence that the backend turn ended. Keep prompt admission
+    # blocked while allowing explicit chat closure through the normal adapter.
+    capturedChat.promptInFlight = true
+    capturedChat.connectionState.val = "interrupted"
+    capturedChat.sessionStatus.val = asError
+    capturedChat.messages.update proc(prev: seq[ChatMessage]): seq[ChatMessage] =
+      result = prev
+      result.add ChatMessage(kind: cmkError, text: $message, timestamp: 0.0)
   client.onError = proc(message: cstring) {.closure.} =
+    if client.closed: return
+    capturedChat.promptInFlight = false
     capturedChat.connectionState.val = "failed"
     capturedChat.sessionStatus.val = asError
     capturedChat.messages.update proc(prev: seq[ChatMessage]): seq[ChatMessage] =
@@ -124,6 +141,18 @@ proc configureAgentAdaptersWithClient*(chat: AgentChatVM;
   installAdapterCallbacks(client, chat)
   let capturedClient = client
   let capturedChat = chat
+  var creating = false
+  var pendingClose: proc(ok: bool) {.closure.}
+  proc operationError(message: cstring) =
+    capturedChat.messages.update proc(prev: seq[ChatMessage]): seq[ChatMessage] =
+      result = prev
+      result.add ChatMessage(kind: cmkError, text: $message, timestamp: 0.0)
+  proc closeBackend(done: proc(ok: bool) {.closure.}) =
+    capturedClient.closeSession(capturedClient.activeSessionId,
+      proc(ok: bool; message: cstring) =
+        capturedChat.closingSession = false
+        if not ok: operationError(message)
+        done(ok))
 
   let promptAdapter: AgentPromptAdapter =
     proc(prompt: string; context: AgentPromptContext): bool {.closure.} =
@@ -131,6 +160,9 @@ proc configureAgentAdaptersWithClient*(chat: AgentChatVM;
       ## reuse it for the rest of the editor's lifetime.  ``submitPrompt``
       ## is non-blocking; ``true`` is returned the moment the request is
       ## dispatched.
+      if capturedClient.closed or capturedChat.promptInFlight or
+          capturedChat.closingSession: return false
+      capturedChat.promptInFlight = true
       if capturedClient.activeSessionId.len > 0:
         capturedChat.connectionState.val = $acsStreaming
         capturedClient.submitPrompt(
@@ -138,26 +170,54 @@ proc configureAgentAdaptersWithClient*(chat: AgentChatVM;
         return true
       capturedChat.connectionState.val = $acsConnecting
       let promptCopy = prompt
+      creating = true
       capturedClient.createSession(proc(sessionId: cstring) {.closure.} =
+        creating = false
         let sid = $sessionId
         if sid.len == 0:
+          if pendingClose != nil:
+            let done = pendingClose
+            pendingClose = nil
+            capturedChat.closingSession = false
+            done(true)
           # The error path was already invoked from inside
           # ``createSession`` (onError fired); we just have to leave the
           # VM in the failed state.
           return
         capturedClient.activeSessionId = sid
+        if pendingClose != nil:
+          capturedChat.promptInFlight = false
+          let done = pendingClose
+          pendingClose = nil
+          closeBackend(done)
+          return
         capturedChat.connectionState.val = $acsStreaming
         capturedClient.submitPrompt(sid, promptCopy))
       true
 
-  let cancelAdapter: AgentCancelAdapter =
-    proc(): bool {.closure.} =
-      if capturedClient.activeSessionId.len == 0:
-        return false
-      capturedClient.cancel(capturedClient.activeSessionId)
-      true
-
-  chat.configureAgentAdapters(promptAdapter, cancelAdapter, backend)
+  chat.configureAgentAdapters(promptAdapter, nil, backend)
+  chat.asyncAgentAdapter = true
+  chat.cancelAsyncAdapter = proc() =
+    if capturedClient.activeSessionId.len == 0:
+      operationError("No active agent session to cancel.")
+      return
+    capturedClient.cancel(capturedClient.activeSessionId,
+      proc(ok: bool; message: cstring) =
+        if not ok: operationError(message)
+        elif capturedChat.connectionState.val == "streaming":
+          capturedChat.connectionState.val = "cancelling"
+        # Only the stream's terminal event establishes turn cancellation.
+      )
+  chat.closeAdapter = proc(done: proc(ok: bool) {.closure.}) =
+    capturedChat.closingSession = true
+    if creating:
+      pendingClose = done
+    elif capturedClient.activeSessionId.len > 0:
+      closeBackend(done)
+    else:
+      capturedClient.closed = true
+      capturedChat.closingSession = false
+      done(true)
   chat.connectionState.val = "idle"
 
 proc configureDaemonAgentAdapters*(chat: AgentChatVM): BrowserAgentClient
