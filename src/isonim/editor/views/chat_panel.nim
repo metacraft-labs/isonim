@@ -154,7 +154,8 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   r.appendChild(panel, controlSettings)
   var controlHistory: E
   controlHistory = ui(r):
-    tdiv(`data-editor-control-history` = "true", max_height = "160px", overflow_y = "auto")
+    tdiv(`data-editor-control-history` = "true", max_height = "160px",
+      flex_shrink = "0", overflow_y = "auto")
   # Control history is inserted into the conversation scroll area below.
   proc appendControlOperation(operation: JsonNode) =
     # Each row owns its callback scope; loop locals otherwise share a JS closure.

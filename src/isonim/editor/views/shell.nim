@@ -3263,8 +3263,8 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
   ## dedicated chrome-bar tab strip would duplicate the sidebar's role.
   ##
   ## Replaces the M57 left/right edge strips and the per-view
-  ## breadcrumb / "Edit | Code" toolbars. Wraps to a second row on
-  ## narrow viewports so the three groups stay readable at 1440x900.
+  ## breadcrumb / "Edit | Code" toolbars. The single row scrolls
+  ## horizontally within its column when the controls do not fit.
   # M-EVP-3: explicit `gap = "14px"` (centred in the spec's 12-16 px
   # band) gives every adjacent chip cluster a clearly-visible breathing
   # gap; `padding-right = "12px"` keeps the rightmost (mode) cluster
@@ -3289,7 +3289,8 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
   let toolbar = ui(r):
     tdiv(display = "flex", align_items = "center",
           justify_content = "flex-start",
-          gap = "12px",
+          gap = "12px", flex_shrink = "0",
+          overflow_x = "auto", overflow_y = "hidden",
           height = "44px", min_height = "44px",
           box_sizing = "border-box",
           padding_top = "0", padding_right = "12px",
@@ -3363,6 +3364,7 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
          `data-preview-edge-group` = "backend",
          `data-toolbar-cluster` = "backend",
          display = "inline-flex", align_items = "center",
+         flex_shrink = "0",
          `aria-label` = "Preview backend")
 
   var backendInitialIndex = 0
@@ -3524,7 +3526,7 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
          `data-preview-edge-group` = "viewport",
          `data-preview-viewport-strip` = "true",
          display = "inline-flex", align_items = "center",
-         gap = "4px",
+         gap = "4px", flex_shrink = "0",
          position = "relative")
 
   # Inner host — the strip (``mountSegmentedChoice`` mounts here). Kept
@@ -3538,6 +3540,9 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
 
   # Overflow dropdown open signal — flipped by the chevron button.
   let viewportDropdownOpen = createSignal(false)
+  let viewportPopupPositionRevision = createSignal(0)
+  r.addEventListener(toolbar, "scroll", proc() =
+    viewportPopupPositionRevision.val = viewportPopupPositionRevision.value + 1)
 
   # Chevron button — last element in the strip. Opens the dropdown of
   # the popup-only viewports. Pill chrome chosen to read as the same
@@ -3571,11 +3576,14 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
     let openSig = viewportDropdownOpen
     let toggleHandler = proc() = openSig.val = not openSig.val
     r.addEventListener(viewportChevronBtn, "click", toggleHandler)
-    r.addEventListener(viewportChevronBtn, "keydown", toggleHandler)
+    when not defined(js):
+      r.addEventListener(viewportChevronBtn, "keydown", toggleHandler)
+    r.addEventListener(viewportChevronBtn, "isonim-close-viewport", proc() = openSig.val = false)
 
   # Overflow dropdown — listbox of popup viewport options. Anchored
-  # below the cluster wrapper (position: absolute on the dropdown,
-  # position: relative on the wrapper, see above). The dropdown is
+  # below the cluster wrapper using its measured viewport coordinates.
+  # Fixed positioning keeps it outside the horizontal scrolling clip.
+  # The dropdown is
   # rebuilt on backend-flip alongside the strip.
   var viewportDropdownEl: E
   let viewportDropdownNode = ui(r):
@@ -3583,7 +3591,7 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
          `role` = "listbox",
          `aria-label` = "More viewport sizes",
          `data-preview-viewport-dropdown` = "true",
-         position = "absolute",
+         position = "fixed",
          left = "0", top = "100%",
          margin_top = "4px",
          min_width = "160px",
@@ -3605,6 +3613,23 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
     let openSig = viewportDropdownOpen
     createRenderEffect proc() =
       let open = openSig.val
+      discard viewportPopupPositionRevision.val
+      when defined(js):
+        if open:
+          let cluster = viewportClusterWrapper
+          var popupLeft = 0.0
+          var popupTop = 0.0
+          {.emit: ["""
+            if (""", cluster, """.getBoundingClientRect) {
+              var clusterBox = """, cluster, """.getBoundingClientRect();
+              var column = """, cluster, """.closest('[data-preview-center-column]');
+              var columnBox = column ? column.getBoundingClientRect() : {left: 0, right: window.innerWidth};
+              """, popupLeft, """ = Math.max(columnBox.left, Math.min(clusterBox.left, columnBox.right - 170));
+              """, popupTop, """ = clusterBox.bottom;
+            }
+          """].}
+          r.setStyle(dropdown, "left", $popupLeft & "px")
+          r.setStyle(dropdown, "top", $popupTop & "px")
       r.setStyle(dropdown, "display", if open: "block" else: "none")
       r.setAttribute(chevron, "aria-expanded",
         if open: "true" else: "false")
@@ -3653,9 +3678,60 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
           cvm.changeViewport(vp)
           openSig.val = false
         r.addEventListener(entry, "click", pickHandler)
-        r.addEventListener(entry, "keydown", pickHandler)
+        when not defined(js):
+          r.addEventListener(entry, "keydown", pickHandler)
 
   rebuildViewportDropdown(viewportDropdownEl, viewportPopup)
+
+  when defined(js):
+    let trigger = viewportChevronBtn
+    let dropdown = viewportDropdownEl
+    {.emit: ["""
+      (function (bar, trigger, dropdown) {
+        if (!trigger || !trigger.addEventListener) return;
+        function close(returnFocus) {
+          trigger.dispatchEvent(new Event('isonim-close-viewport'));
+          if (returnFocus) trigger.focus();
+        }
+        function outside(event) {
+          if (!trigger.contains(event.target) && !dropdown.contains(event.target)) close(false);
+        }
+        function escape(event) {
+          if (event.key === 'Escape' && trigger.getAttribute('aria-expanded') === 'true') {
+            event.preventDefault(); close(true);
+          }
+        }
+        function moved() { close(false); }
+        trigger.addEventListener('keydown', function (event) {
+          if (event.key !== 'Enter' && event.key !== ' ') return;
+          event.preventDefault(); trigger.click();
+          if (trigger.getAttribute('aria-expanded') === 'true') {
+            var first = dropdown.querySelector('[role=option]');
+            if (first) first.focus();
+          }
+        });
+        dropdown.addEventListener('keydown', function (event) {
+          var options = Array.from(dropdown.querySelectorAll('[role=option]'));
+          var index = options.indexOf(document.activeElement);
+          if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+            event.preventDefault();
+            if (options.length) options[(index + (event.key === 'ArrowDown' ? 1 : options.length - 1)) % options.length].focus();
+          } else if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault(); if (index >= 0) { options[index].click(); trigger.focus(); }
+          }
+        });
+        document.addEventListener('mousedown', outside);
+        document.addEventListener('keydown', escape);
+        window.addEventListener('resize', moved);
+        bar.__isonimViewportCleanup = function () {
+          document.removeEventListener('mousedown', outside);
+          document.removeEventListener('keydown', escape);
+          window.removeEventListener('resize', moved);
+        };
+      })(""", toolbar, """, """, trigger, """, """, dropdown, """);
+    """].}
+    onCleanup proc() =
+      {.emit: ["if (", toolbar, ".__isonimViewportCleanup) ", toolbar, ".__isonimViewportCleanup();"].}
 
   # Reactive rebuild — when the backend flips, BOTH the strip's pinned
   # set AND the dropdown's popup set change. We rebuild both in the
@@ -3789,6 +3865,7 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
          `data-toolbar-cluster` = "mode",
          `data-toolbar-cluster-docked` = "right",
          display = "inline-flex", align_items = "center",
+         flex_shrink = "0",
          `aria-label` = "Preview mode")
 
   var modeInitialIndex = 0
@@ -4381,6 +4458,9 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
           # sidebar stays mounted so the user can keep talking to the
           # assistant.
           position = "relative",
+          # Keep chrome and center overlays in this column's stacking
+          # context. Dropdowns remain unclipped inside the preview.
+          z_index = "0",
           `data-preview-center-column` = "true")
   let viewStack = ui(r):
     tdiv(display = "flex", flex = "1", min_width = "0", min_height = "0",
