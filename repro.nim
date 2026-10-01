@@ -462,6 +462,7 @@ const isonimTestSpecs: seq[IsonimTestSpec] = @[
   spec("test_editor_viewport_resize_publisher"),
   spec("test_editor_widget_property_row"),
   spec("test_editor_surface_toggle_vm"),
+  spec("test_editor_chat_activity"),
   spec("test_editor_chat_tabs_vm"),
   spec("test_editor_choice_group_vm"),
   spec("test_editor_choice_group_no_setstyle"),
@@ -529,6 +530,7 @@ const isonimCompileOnlySpecs: seq[IsonimTestSpec] = @[
 # back-end. It is a ``nim js`` COMPILE-ONLY recipe entry (``-o:`` without
 # ``-r``), so it is modelled as a BUILD-only edge (no node run).
 const isonimJsTestSpecs: seq[string] = @[
+  "test_editor_chat_activity",
   "test_editor_control",
   "test_editor_workspace_refresh",
   "test_editor_agent_harbor",
@@ -839,6 +841,17 @@ package isonim:
       extraInputs = @["src", "tests/helpers/editor_control_workspace.nim", "Justfile", "package.json"],
       extraOutputs = @["build/editor-control"])
     testBuildActions.add(controlBrowserEdge)
+    let chatBrowserEdge = sh.shell(
+      command = "just editor-chat-build",
+      actionId = "isonim.chat_activity_build.browser",
+      extraInputs = @["src", "tests/helpers/editor_chat_workspace.nim", "Justfile", "package.json"],
+      extraOutputs = @["build/editor-chat"])
+    testBuildActions.add(chatBrowserEdge)
+    testExecuteActions.add(node(
+      args = @["tests/test_editor_chat_activity_gui.mjs"],
+      actionId = "isonim.chat_activity_execute.gui",
+      after = @[chatBrowserEdge],
+      extraInputs = @["tests/test_editor_chat_activity_gui.mjs", "tests/fixtures/chat-session-events.json", "build/editor-chat"]))
     let sourceBrowserEdge = sh.shell(
       command = "just source-editor-build",
       actionId = "isonim.source_build.browser",

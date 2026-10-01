@@ -10,19 +10,9 @@ import isonim/core/[signals, computation]
 import isonim/viewmodel
 import isonim/dsl/ui
 import isonim/editor/viewmodels
+import ./chat_activity
 
-const
-  bgSurface = "#1E293B"
-  bgSidebar = "#111827"
-  bgInput = "#0F172A"
-  border = "#334155"
-  borderFaint = "#1E293B"
-  textPrimary = "#F1F5F9"
-  textSecondary = "#94A3B8"
-  textDim = "#475569"
-  accent = "#3B82F6"
-  gold = "#F59E0B"
-  green = "#22C55E"
+import ./chat_theme
 
 proc bindRightPanelWidth[R, E](r: R; node: E; vm: EditorVM) =
   createRenderEffect proc() =
@@ -50,37 +40,6 @@ proc proposalStatusText(status: AgentEditProposalStatus): string
 proc permissionStatusText(status: AgentPermissionStatus): string
 proc annotationStateText(state: ReviewAnnotationState): string
 proc proposalValidityText(validity: AgentEditProposalValidity): string
-
-proc chatTranscriptText(vm: EditorVM): string =
-  var parts: seq[string] = @[]
-  for msg in vm.chat.messages.val:
-    let sender = case msg.kind
-      of cmkUser: "You"
-      of cmkAgent: "AI Designer"
-      of cmkContext: "Context"
-      of cmkError: "Error"
-    parts.add sender & ": " & msg.text
-  if vm.chat.toolCalls.val.len > 0:
-    parts.add "Tools: " & vm.chat.toolCalls.val.join(", ")
-  if vm.chat.proposedEdits.val.len > 0:
-    var proposalParts: seq[string] = @[]
-    for proposal in vm.chat.proposedEdits.val:
-      proposalParts.add proposal.id & "=" & proposalStatusText(proposal.status)
-    parts.add "Proposals: " & proposalParts.join(", ")
-  if vm.review.annotations.val.len > 0:
-    var annotationParts: seq[string] = @[]
-    for annotation in vm.review.annotations.val:
-      annotationParts.add annotation.id & "=" & annotationStateText(annotation.state) &
-        (if annotation.includedInPrompt: ":included" else: ":excluded")
-    parts.add "Review annotations: " & annotationParts.join(", ")
-  if vm.chat.permissionRequests.val.len > 0:
-    var permissionParts: seq[string] = @[]
-    for request in vm.chat.permissionRequests.val:
-      permissionParts.add request.id & "=" & permissionStatusText(request.status)
-    parts.add "Permissions: " & permissionParts.join(", ")
-  if vm.chat.stopReason.val.len > 0:
-    parts.add "Stop: " & vm.chat.stopReason.val
-  parts.join(" | ")
 
 proc proposalStatusText(status: AgentEditProposalStatus): string =
   case status
@@ -111,14 +70,14 @@ proc proposalValidityText(validity: AgentEditProposalValidity): string =
   of aepvStale: "stale"
 
 proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
-  let messages = signals.val(vm.chat.messages)
-  let agentState = signals.val(vm.chat.sessionStatus)
+  let chat = vm.chat
+  let agentState = signals.val(chat.sessionStatus)
   let statusLabel = case agentState
     of asIdle: "Empty"
     of asLoading: "Loading"
     of asReady: "Connected"
     of asError: "Error"
-  let connectionLabel = vm.chat.connectionState.val
+  let connectionLabel = chat.connectionState.val
   # Idle uses textSecondary (not textDim) so the connection-status dot reads
   # as an actual indicator, not body text. Loading/ready/error keep their
   # semantic colours.
@@ -143,6 +102,7 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
       min_height = "0",
       width = "100%",
       overflow_x = "hidden")
+  r.setAttribute(panel, "data-chat-local-id", vm.activeChatId.val)
   r.bindRightPanelWidth(panel, vm)
 
   var statusTextNode: E
@@ -188,14 +148,14 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
     discard vm.refreshControlRevision())
   createRenderEffect proc() =
     r.setAttribute(approvalSetting, "aria-checked", $vm.agentControlApproval.val)
-    when defined(js):
+    when defined(js) and compiles(panel.ownerDocument):
       let checked = vm.agentControlApproval.val
       {.emit: [approvalSetting, ".checked = ", checked, ";"].}
   r.appendChild(panel, controlSettings)
   var controlHistory: E
   controlHistory = ui(r):
     tdiv(`data-editor-control-history` = "true", max_height = "160px", overflow_y = "auto")
-  r.appendChild(panel, controlHistory)
+  # Control history is inserted into the conversation scroll area below.
   proc appendControlOperation(operation: JsonNode) =
     # Each row owns its callback scope; loop locals otherwise share a JS closure.
     let conversation = operation{"request", "conversation"}.getStr()
@@ -232,7 +192,7 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
       let conversation = operation{"request", "conversation"}.getStr()
       # Scoped activity belongs to its originating chat. Explicit user automation
       # has no conversation owner and is labelled separately.
-      if conversation.len > 0 and conversation != vm.chat.controlConversationId.val:
+      if conversation.len > 0 and conversation != chat.controlConversationId.val:
         continue
       appendControlOperation(operation)
   # Suppress unused-warning for statusColor — still computed for the
@@ -272,17 +232,11 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
       padding = "10px 10px 6px 10px",
       display = "flex",
       flex_direction = "column",
-      gap = "8px")
+      gap = "8px",
+      `data-chat-scroll` = "true")
+  r.appendChild(messagesArea, controlHistory)
 
-  # 2026-05-28: intro + suggestions render UNCONDITIONALLY at the top
-  # of messagesArea, not gated on ``messages.len == 0``. The user's
-  # mental model is: help text sits at the top of the scroll area;
-  # when you send chats, the messages append below and the help is
-  # pushed up — eventually scrolling out of view, which feels natural
-  # rather than dramatic (the help "disappears" gradually instead of
-  # blinking out at len == 0 → len == 1). The auto-scroll-to-bottom
-  # reactive effect below ensures the most recent message stays in
-  # view on each new arrival.
+  # Empty guidance is local presentation, dismissed on attempted send.
   let empty = ui(r):
     tdiv(
       display = "flex",
@@ -301,10 +255,7 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
         text "Manual Edit mode opens the source-backed inspector in this same sidebar space."
   r.appendChild(messagesArea, empty)
 
-  # Suggested prompts: starting points that surface above the
-  # transcript so the user always has a one-tap entry into the chat
-  # even after a few rounds. They scroll off the top naturally as the
-  # transcript grows.
+  # Inserting a suggestion edits the draft; it does not submit a turn.
   let suggestionsHeading = ui(r):
     tdiv(
       display = "flex",
@@ -328,10 +279,12 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
     "Trace where this padding value is shared across the design system",
     "Generate a missing variant story for this component"
   ]
+  var suggestionNodes: seq[E] = @[]
   for prompt in suggestions:
     let promptText = $prompt
     let chip = ui(r):
-      tdiv(
+      button(
+        `type` = "button",
         `role` = "button",
         tabindex = "0",
         `aria-label` = "Insert suggested prompt",
@@ -352,47 +305,29 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
               overflow = "hidden"):
           text promptText
     r.addEventListener(chip, "click", proc() =
-      vm.chat.inputText.val = promptText)
-    r.addEventListener(chip, "keydown", proc() =
-      vm.chat.inputText.val = promptText)
+      chat.inputText.val = promptText)
     r.appendChild(messagesArea, chip)
+    suggestionNodes.add chip
 
-  for msg in messages:
-    let isUser = msg.kind == cmkUser
-    let msgText = msg.text
-    let sender = case msg.kind
-      of cmkUser: "You"
-      of cmkAgent: "AI Designer"
-      of cmkContext: "Context"
-      of cmkError: "Error"
-    let bubbleColor = case msg.kind
-      of cmkUser: accent
-      of cmkError: gold
-      else: bgSurface
-    let bubble = ui(r):
-      tdiv(
-        display = "flex",
-        flex_direction = "column",
-        align_items = (if isUser: "flex-end" else: "flex-start")):
-        # Sender label
-        span(
-          font_size = "9px",
-          color = textDim,
-          margin_bottom = "3px",
-          font_weight = "500"):
-          text sender
-        # Bubble
-        tdiv(
-          max_width = "92%",
-          padding = "8px 10px",
-          border_radius = (
-            if isUser: "10px 10px 2px 10px" else: "10px 10px 10px 2px"),
-          background_color = bubbleColor,
-          font_size = "11px",
-          line_height = "1.5",
-          color = (if isUser: textPrimary else: textSecondary)):
-          text msgText
-    r.appendChild(messagesArea, bubble)
+  createRenderEffect proc() =
+    let hidden = chat.placeholdersDismissed.val or chat.messages.val.len > 0
+    r.setStyle(empty, "display", if hidden: "none" else: "flex")
+    r.setStyle(suggestionsHeading, "display", if hidden: "none" else: "flex")
+    for node in suggestionNodes:
+      r.setStyle(node, "display", if hidden: "none" else: "flex")
+  r.renderActivityTimeline(messagesArea, chat)
+  # Adapter/admission errors that predate the normalized activity path remain
+  # recognizable, without flattening assistant chunks or duplicating context.
+  var errorCount = 0
+  createRenderEffect proc() =
+    let errors = chat.messages.val.filterIt(it.kind == cmkError and not it.activityRepresented)
+    for index in errorCount ..< errors.len:
+      let error = ui(r):
+        tdiv(`data-chat-send-error` = "true", color = textError,
+             font_size = "12px", padding = "8px 12px", white_space = "pre-wrap"):
+          text errors[index].text
+      r.appendChild(messagesArea, error)
+    errorCount = errors.len
 
   r.appendChild(panel, messagesArea)
 
@@ -431,8 +366,8 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   proc syncReviewLoop() =
     r.clearChildren(reviewLoopArea)
     let totalActivity = vm.review.annotations.val.len +
-      vm.chat.permissionRequests.val.len +
-      vm.chat.proposedEdits.val.len
+      chat.permissionRequests.val.len +
+      chat.proposedEdits.val.len
     if totalActivity == 0:
       # Per-user 2026-05-27: drop the "Activity / No review comments…"
       # placeholder. The Assistant pane should not be split into upper
@@ -475,7 +410,8 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
         let actions = ui(r):
           tdiv(display = "flex", gap = "6px", flex_wrap = "wrap")
         let includeBtn = ui(r):
-          tdiv(
+          button(
+            `type` = "button",
             `role` = "button",
             tabindex = "0",
             `aria-label` = (if included:
@@ -493,7 +429,8 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
           discard vm.review.setReviewAnnotationPromptIncluded(annotationId,
             not included))
         let resolveBtn = ui(r):
-          tdiv(
+          button(
+            `type` = "button",
             `role` = "button",
             tabindex = "0",
             `aria-label` = "Resolve review comment " & annotationId,
@@ -507,7 +444,8 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
         r.addEventListener(resolveBtn, "click", proc() =
           discard vm.review.resolveReviewAnnotation(annotationId))
         let dismissBtn = ui(r):
-          tdiv(
+          button(
+            `type` = "button",
             `role` = "button",
             tabindex = "0",
             `aria-label` = "Dismiss review comment " & annotationId,
@@ -528,10 +466,10 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
         r.appendChild(reviewLoopArea, card)
 
     appendReviewHeading("Permission Requests")
-    if vm.chat.permissionRequests.val.len == 0:
+    if chat.permissionRequests.val.len == 0:
       appendReviewSummary("No pending agent permissions")
     else:
-      for request in vm.chat.permissionRequests.val:
+      for request in chat.permissionRequests.val:
         let requestId = request.id
         let requestSummary = request.title & " - " &
           permissionStatusText(request.status)
@@ -544,7 +482,8 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
         let actions = ui(r):
           tdiv(display = "flex", gap = "6px")
         let allowBtn = ui(r):
-          tdiv(
+          button(
+            `type` = "button",
             `role` = "button",
             tabindex = "0",
             `aria-label` = "Allow agent permission " & requestId,
@@ -556,9 +495,10 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
             cursor = "pointer"):
             text "Allow"
         r.addEventListener(allowBtn, "click", proc() =
-          discard vm.chat.setAgentPermissionStatus(requestId, apsGranted))
+          discard chat.setAgentPermissionStatus(requestId, apsGranted))
         let denyBtn = ui(r):
-          tdiv(
+          button(
+            `type` = "button",
             `role` = "button",
             tabindex = "0",
             `aria-label` = "Deny agent permission " & requestId,
@@ -570,17 +510,17 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
             cursor = "pointer"):
             text "Deny"
         r.addEventListener(denyBtn, "click", proc() =
-          discard vm.chat.setAgentPermissionStatus(requestId, apsDenied))
+          discard chat.setAgentPermissionStatus(requestId, apsDenied))
         r.appendChild(actions, allowBtn)
         r.appendChild(actions, denyBtn)
         r.appendChild(row, actions)
         r.appendChild(reviewLoopArea, row)
 
     appendReviewHeading("Agent Proposed Edits")
-    if vm.chat.proposedEdits.val.len == 0:
+    if chat.proposedEdits.val.len == 0:
       appendReviewSummary("No proposed agent edits")
     else:
-      for proposal in vm.chat.proposedEdits.val:
+      for proposal in chat.proposedEdits.val:
         let proposalId = proposal.id
         let proposalSummary = proposal.summary & " - " &
           proposalStatusText(proposal.status) & " - " &
@@ -619,7 +559,8 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
         let actions = ui(r):
           tdiv(display = "flex", gap = "6px", flex_wrap = "wrap")
         let acceptBtn = ui(r):
-          tdiv(
+          button(
+            `type` = "button",
             `role` = "button",
             tabindex = "0",
             `aria-label` = "Accept agent edit " & proposalId,
@@ -633,7 +574,8 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
         r.addEventListener(acceptBtn, "click", proc() =
           discard vm.acceptAgentProposedEdit(proposalId))
         let rejectBtn = ui(r):
-          tdiv(
+          button(
+            `type` = "button",
             `role` = "button",
             tabindex = "0",
             `aria-label` = "Reject agent edit " & proposalId,
@@ -647,7 +589,8 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
         r.addEventListener(rejectBtn, "click", proc() =
           discard vm.rejectAgentProposedEdit(proposalId))
         let revertBtn = ui(r):
-          tdiv(
+          button(
+            `type` = "button",
             `role` = "button",
             tabindex = "0",
             `aria-label` = "Revert agent edit " & proposalId,
@@ -661,7 +604,8 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
         r.addEventListener(revertBtn, "click", proc() =
           discard vm.revertAgentProposedEdit(proposalId))
         let rerunBtn = ui(r):
-          tdiv(
+          button(
+            `type` = "button",
             `role` = "button",
             tabindex = "0",
             `aria-label` = "Re-run agent edit " & proposalId,
@@ -675,7 +619,8 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
         r.addEventListener(rerunBtn, "click", proc() =
           discard vm.rerunAgentProposedEdit(proposalId))
         let rebaseBtn = ui(r):
-          tdiv(
+          button(
+            `type` = "button",
             `role` = "button",
             tabindex = "0",
             `aria-label` = "Rebase agent edit " & proposalId,
@@ -700,56 +645,67 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   syncReviewLoop()
   createRenderEffect proc() =
     syncReviewLoop()
-  r.appendChild(panel, reviewLoopArea)
+  r.appendChild(messagesArea, reviewLoopArea)
   # 2026-05-28: bottomSpacer (the "Ready when you are" placeholder
   # band) is gone. The user explicitly rejected the upper/lower split
   # it created — an empty chat now shows only intro + suggested
   # prompts in the messagesArea (flex:1), with the composer pinned at
   # the bottom. Once messages arrive, the transcript fills naturally.
 
-  # 2026-05-28: auto-scroll to the bottom whenever the active chat's
-  # message list grows. The chat panel is re-mounted from the shell
-  # when the active session changes, so reading the active chat's
-  # message-count signal here tracks the right session.
-  when defined(js):
-    let captMessages = messagesArea
-    let captMsgSignal = vm.chat.messages
+  let latestButton = r.createElement("button")
+  r.setAttribute(latestButton, "type", "button")
+  r.setAttribute(latestButton, "data-chat-latest", "true")
+  r.setTextContent(latestButton, "New output · Return to latest")
+  r.setStyle(latestButton, "display", "none")
+  r.setStyle(latestButton, "background-color", bgSurface)
+  r.setStyle(latestButton, "color", textPrimary)
+  r.setStyle(latestButton, "border", "1px solid " & border)
+  r.setStyle(latestButton, "padding", "7px")
+  r.setStyle(latestButton, "flex-shrink", "0")
+  r.appendChild(panel, latestButton)
+  when defined(js) and compiles(panel.ownerDocument):
+    let target = messagesArea
+    let latest = latestButton
+    let savedPosition = chat.scrollPosition
+    let followInitially = chat.followOutput
+    {.emit: ["""
+      (function(el, position, follow) {
+        requestAnimationFrame(function() {
+          if (el.isConnected && !follow) el.scrollTop = position;
+        });
+      })(""", target, ",", savedPosition, ",", followInitially, ");"].}
+    r.addEventListener(messagesArea, "scroll", proc() =
+      var position, remaining: float
+      {.emit: [position, " = ", target, ".scrollTop;", remaining, " = ",
+        target, ".scrollHeight - ", target, ".scrollTop - ", target, ".clientHeight;"].}
+      chat.scrollPosition = position
+      chat.followOutput = remaining <= 24
+      if chat.followOutput: r.setStyle(latest, "display", "none"))
+    r.addEventListener(latestButton, "click", proc() =
+      chat.followOutput = true
+      r.setStyle(latest, "display", "none")
+      {.emit: [target, ".scrollTop = ", target, ".scrollHeight;"].})
+    let isFollowing = proc(): bool = chat.followOutput
+    var previousOutputRevision = -1
+    var previousErrorCount = -1
     createRenderEffect proc() =
-      # Track the message-list length so the effect re-fires on every
-      # ``messages.val = newSeq`` mutation. The empty-state intro
-      # + suggestions get pushed off the top as the transcript grows.
-      let total = captMsgSignal.val.len
-      discard total
-      let target = captMessages
+      let outputRevision = chat.activity.val.revision
+      let errorCount = chat.messages.val.filterIt(it.kind == cmkError and not it.activityRepresented).len
+      let initial = previousOutputRevision < 0
+      let changed = outputRevision != previousOutputRevision or errorCount != previousErrorCount
+      previousOutputRevision = outputRevision
+      previousErrorCount = errorCount
+      if not initial and not changed: return
+      let notifyLatest = not initial and changed
       {.emit: ["""
-        (function (el) {
-          if (!el) return;
-          // Schedule the scroll after the layout flush so we observe
-          // the new message's height.
-          if (typeof requestAnimationFrame === 'function') {
-            requestAnimationFrame(function () {
-              el.scrollTop = el.scrollHeight;
-            });
-          } else {
-            el.scrollTop = el.scrollHeight;
-          }
-        })(""", target, """);
-      """].}
+        (function(el, latest, following, changed) {
+          requestAnimationFrame(function () {
+            if (!el.isConnected) return;
+            if (following()) el.scrollTop = el.scrollHeight;
+            else if (changed) latest.style.display = 'block';
+          });
+        })(""", target, ",", latest, ",", isFollowing, ",", notifyLatest, ");"].}
 
-  var transcriptTextNode: E
-  let transcript = ui(r):
-    tdiv(
-      ref = transcriptTextNode,
-      padding = "8px 12px",
-      border_top = "1px solid " & borderFaint,
-      font_size = "10px",
-      line_height = "1.45",
-      color = textSecondary)
-  r.setTextContent(transcriptTextNode, chatTranscriptText(vm))
-  createRenderEffect proc() =
-    r.setTextContent(statusTextNode, chatStatusText(vm))
-    r.setTextContent(transcriptTextNode, chatTranscriptText(vm))
-  r.appendChild(panel, transcript)
 
   # Input area
   let inputArea = ui(r):
@@ -757,36 +713,42 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
       padding = "10px 12px 12px 12px",
       border_top = "1px solid " & border,
       background_color = bgSidebar,
-      box_shadow = "0 -8px 16px -8px rgba(15, 23, 42, 0.55)")
+      box_shadow = "0 -8px 16px -8px rgba(15, 23, 42, 0.55)",
+      flex_shrink = "0")
 
   let inputRow = ui(r):
     tdiv(display = "flex", align_items = "center", gap = "8px")
   let promptInput = ui(r):
-    input(
+    textarea(
       class = "editor-input",
       `data-editor-control-focus` = "composer",
       flex = "1",
-      height = "34px",
+      min_height = "64px",
+      max_height = "180px",
+      resize = "vertical",
+      min_width = "0",
+      line_height = "1.5",
       background_color = bgInput,
       border = "1px solid " & borderFaint,
       border_radius = "8px",
-      padding = "0 10px",
+      padding = "8px 10px",
       font_size = "12px",
       color = textPrimary,
       outline = "none",
       placeholder = "Ask the AI\xE2\x80\xA6")
   r.setAttribute(promptInput, "aria-label", "Agent prompt")
-  r.setInputValue(promptInput, vm.chat.inputText.val)
+  r.setInputValue(promptInput, chat.inputText.val)
   createRenderEffect proc() =
-    if r.inputValue(promptInput) != vm.chat.inputText.val:
-      r.setInputValue(promptInput, vm.chat.inputText.val)
+    if r.inputValue(promptInput) != chat.inputText.val:
+      r.setInputValue(promptInput, chat.inputText.val)
   r.addEventListener(promptInput, "input", proc() =
-    vm.chat.inputText.val = r.inputValue(promptInput))
+    chat.inputText.val = r.inputValue(promptInput))
   r.addEventListener(promptInput, "change", proc() =
-    vm.chat.inputText.val = r.inputValue(promptInput))
+    chat.inputText.val = r.inputValue(promptInput))
 
   let sendBtn = ui(r):
-    tdiv(
+    button(
+      `type` = "button",
       display = "flex",
       align_items = "center",
       justify_content = "center",
@@ -803,16 +765,35 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   r.setAttribute(sendBtn, "tabindex", "0")
   r.setAttribute(sendBtn, "aria-label", "Send agent prompt")
   r.addEventListener(sendBtn, "click", proc() =
-    vm.chat.inputText.val = r.inputValue(promptInput)
+    chat.inputText.val = r.inputValue(promptInput)
     discard vm.sendAgentPrompt()
-    r.setInputValue(promptInput, vm.chat.inputText.val))
-  r.addEventListener(sendBtn, "keydown", proc() =
-    vm.chat.inputText.val = r.inputValue(promptInput)
-    discard vm.sendAgentPrompt()
-    r.setInputValue(promptInput, vm.chat.inputText.val))
+    r.setInputValue(promptInput, chat.inputText.val))
+  createRenderEffect proc() =
+    let busy = chat.sessionStatus.val == asLoading or chat.closingSession
+    r.setAttribute(sendBtn, "aria-disabled", $busy)
+    r.setStyle(sendBtn, "opacity", if busy: "0.45" else: "1")
+    when defined(js) and compiles(panel.ownerDocument):
+      {.emit: [sendBtn, ".disabled = ", busy, ";"].}
+  when defined(js) and compiles(panel.ownerDocument):
+    let submit = proc() =
+      chat.inputText.val = r.inputValue(promptInput)
+      discard vm.sendAgentPrompt()
+    let submitCallback = submit
+    {.emit: ["""
+      (function(el, submit) {
+        let composing = false;
+        el.addEventListener('compositionstart', function() { composing = true; });
+        el.addEventListener('compositionend', function() { composing = false; });
+        el.addEventListener('keydown', function(event) {
+          if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && !composing && event.keyCode !== 229) {
+            event.preventDefault(); submit();
+          }
+        });
+      })(""", promptInput, ",", submitCallback, ");"].}
 
   let cancelBtn = ui(r):
-    tdiv(
+    button(
+      `type` = "button",
       display = "flex",
       align_items = "center",
       justify_content = "center",
@@ -829,10 +810,12 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   r.setAttribute(cancelBtn, "tabindex", "0")
   r.setAttribute(cancelBtn, "aria-label", "Cancel agent prompt")
   r.addEventListener(cancelBtn, "click", proc() = discard vm.cancelAgentPrompt())
-  r.addEventListener(cancelBtn, "keydown", proc() = discard vm.cancelAgentPrompt())
 
   r.appendChild(inputRow, promptInput)
   r.appendChild(inputRow, sendBtn)
+  createRenderEffect proc() =
+    let supported = chat.cancelSupported.val or chat.cancelAdapter != nil
+    r.setStyle(cancelBtn, "display", if supported: "flex" else: "none")
   r.appendChild(inputRow, cancelBtn)
   r.appendChild(inputArea, inputRow)
   # Explicit closure is also recovery when a stream is interrupted. The VM
@@ -849,6 +832,14 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   r.setStyle(closeBtn, "border", "1px solid " & border)
   r.addEventListener(closeBtn, "click", proc() =
     discard vm.closeChat(vm.activeChatId.val))
+  r.setStyle(closeBtn, "font-size", "10px")
+  let sessionLabel = r.createElement("span")
+  r.setStyle(sessionLabel, "color", textSecondary)
+  r.setStyle(sessionLabel, "font-size", "10px")
+  r.setStyle(sessionLabel, "margin-right", "8px")
+  createRenderEffect proc() =
+    r.setTextContent(sessionLabel, chatStatusText(vm))
+  r.appendChild(inputArea, sessionLabel)
   r.appendChild(inputArea, closeBtn)
   r.appendChild(panel, inputArea)
 

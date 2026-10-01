@@ -104,6 +104,7 @@ proc installAdapterCallbacks*(client: BrowserAgentClient; chat: AgentChatVM) =
   client.onEnd = proc(stopReason: cstring) {.closure.} =
     if client.closed: return
     capturedChat.promptInFlight = false
+    capturedChat.pendingPromptText = ""
     capturedChat.stopReason.val = $stopReason
     capturedChat.sessionStatus.val = asReady
     if $stopReason == "cancelled":
@@ -126,6 +127,8 @@ proc installAdapterCallbacks*(client: BrowserAgentClient; chat: AgentChatVM) =
   client.onError = proc(message: cstring) {.closure.} =
     if client.closed: return
     capturedChat.promptInFlight = false
+    if capturedChat.inputText.val.len == 0:
+      capturedChat.inputText.val = capturedChat.pendingPromptText
     capturedChat.connectionState.val = "failed"
     capturedChat.sessionStatus.val = asError
     capturedChat.messages.update proc(prev: seq[ChatMessage]): seq[ChatMessage] =
@@ -184,6 +187,7 @@ proc configureAgentAdaptersWithClient*(chat: AgentChatVM;
           # ``createSession`` (onError fired); we just have to leave the
           # VM in the failed state.
           return
+        capturedChat.cancelSupported.val = capturedClient.canCancelTurn
         capturedClient.activeSessionId = sid
         capturedChat.controlConversationId.val = sid
         if pendingClose != nil:

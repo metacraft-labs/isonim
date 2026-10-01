@@ -852,7 +852,7 @@ editor-screenshot-list:
     node tools/editor-screenshot.mjs --list
 
 # Run editor ViewModel tests
-test-editor: test-design-review-local-harbor test-design-review-harbor-build test-editor-control test-editor-source
+test-editor: test-design-review-local-harbor test-design-review-harbor-build test-editor-control test-editor-source test-editor-chat-activity
     nim c -r tests/test_editor_workspace.nim
     nim c -r tests/test_editor_public_api.nim
     nim js --path:src -o:build/test_editor_public_browser_imports.js tests/test_editor_public_browser_imports.nim
@@ -1222,3 +1222,18 @@ test-editor-source: isonim-review-build source-editor-build
     python3 tests/test_editor_source_project.py
     python3 tests/test_editor_native_acp_shutdown.py
     node tests/test_editor_source_gui.mjs
+
+# Production mounted chat state/keyboard/layout verification, isolated assets.
+editor-chat-build:
+    mkdir -p build/editor-chat
+    nim js --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/editor-chat/editor.js tests/helpers/editor_chat_workspace.nim
+    node --check build/editor-chat/editor.js
+    cp src/isonim/editor/index.html build/editor-chat/index.html
+    cp node_modules/fabric/dist/index.min.js build/editor-chat/fabric.min.js
+    cp node_modules/paper/dist/paper-core.min.js build/editor-chat/paper-core.min.js
+    cp node_modules/svgo/dist/svgo.browser.js build/editor-chat/svgo.browser.js
+
+test-editor-chat-activity: editor-chat-build
+    nim c -r tests/test_editor_chat_activity.nim
+    nim js -r --out:build/test_editor_chat_activity.js tests/test_editor_chat_activity.nim
+    node tests/test_editor_chat_activity_gui.mjs

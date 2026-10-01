@@ -1080,6 +1080,7 @@ type
     cmkError   ## Error message
 
   ChatMessage* = object
+    activityRepresented*: bool
     kind*: ChatMessageKind
     text*: string
     timestamp*: float

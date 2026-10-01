@@ -1,6 +1,7 @@
 ## IsoNim-owned adapter from editor context to the shared agent client model.
 
 import nim_agents
+import nim_agents/activity
 import isonim/core/signals
 import isonim/viewmodel
 import isonim/editor/agent_context
@@ -63,7 +64,7 @@ proc addContextMessage(chat: AgentChatVM; text: string) =
 proc addErrorMessage(chat: AgentChatVM; text: string) =
   chat.messages.update proc(prev: seq[ChatMessage]): seq[ChatMessage] =
     result = prev
-    result.add ChatMessage(kind: cmkError, text: text, timestamp: 0.0)
+    result.add ChatMessage(kind: cmkError, text: text, timestamp: 0.0, activityRepresented: true)
 
 proc fileEditRecord(event: AgentEvent): EditRecord =
   EditRecord(
@@ -106,6 +107,11 @@ proc addReviewViolation(review: ReviewResultsVM; event: AgentEvent) =
       autoFixable: event.kind == aekReview and event.status == "fixable")
 
 proc applyAgentEvent*(chat: AgentChatVM; event: AgentEvent) =
+  var accepted = false
+  chat.activity.update proc(previous: ActivityTimeline): ActivityTimeline =
+    result = previous
+    accepted = result.reduce(event)
+  if not accepted: return
   case event.kind
   of aekConnection:
     chat.connectionState.val = $event.state
@@ -121,7 +127,7 @@ proc applyAgentEvent*(chat: AgentChatVM; event: AgentEvent) =
     else:
       chat.sessionStatus.val = asLoading
   of aekMessageChunk:
-    chat.addAgentResponse(event.text)
+    chat.addAgentResponse(event.text, recordActivity = false)
     chat.sessionStatus.val = asLoading
   of aekThoughtChunk:
     chat.addContextMessage(event.text)

@@ -3963,11 +3963,20 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
         discard
   let panelRoot = result
 
-  # Mount the existing chat panel inside the content host. The chat
-  # panel reads ``vm.activeChat()`` so switching tabs (which flips
-  # ``activeChatId``) automatically swaps the visible chat content.
-  let chatPanel = renderChatPanel[R, E](r, vm)
-  r.appendChild(chatContentHost, chatPanel)
+  # Each active conversation owns a disposable view scope. Switching tabs
+  # rebinds every composer/activity effect to that conversation, while its VM
+  # retains the draft, transcript, backend identity and scroll position.
+  var disposeChatView: proc()
+  onCleanup proc() =
+    if disposeChatView != nil: disposeChatView()
+  createRenderEffect proc() =
+    discard vm.activeChatId.val
+    if disposeChatView != nil: disposeChatView()
+    r.clearChildren(chatContentHost)
+    createRoot proc(dispose: proc()) =
+      disposeChatView = dispose
+      let chatPanel = renderChatPanel[R, E](r, vm)
+      r.appendChild(chatContentHost, chatPanel)
 
   # Width binding — mirror the inspector's bindRightPanelWidth so
   # both right-sidebar surfaces occupy the same horizontal slot.

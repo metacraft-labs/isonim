@@ -9,6 +9,7 @@ import isonim/core/[signals, computation]
 import isonim/viewmodel
 import isonim/editor/types
 import isonim/editor/streaming_preview
+import nim_agents/activity
 
 export types
 export streaming_preview
@@ -189,6 +190,12 @@ type
     hasDiagnostics*: Memo[bool]
 
   AgentChatVM* = ref object of ViewModel
+    cancelSupported*: Signal[bool]
+    activity*: Signal[ActivityTimeline]
+    placeholdersDismissed*: Signal[bool]
+    scrollPosition*: float
+    followOutput*: bool
+    pendingPromptText*: string
     controlConversationId*: Signal[string]
     messages*: Signal[seq[ChatMessage]]
     sessionStatus*: Signal[AsyncState]
@@ -8282,12 +8289,20 @@ proc buildAgentPromptContext*(editor: EditorVM): AgentPromptContext =
     editor.variants.variants.val, result.selectedStory, result.selectedElement)
 
 proc addUserMessage*(chat: AgentChatVM; text: string) =
+  chat.placeholdersDismissed.val = true
+  chat.activity.update proc(previous: ActivityTimeline): ActivityTimeline =
+    result = previous
+    result.beginTurn(text)
   chat.messages.update proc(prev: seq[ChatMessage]): seq[ChatMessage] =
     result = prev
     result.add ChatMessage(kind: cmkUser, text: text, timestamp: 0.0)
   chat.inputText.val = ""
 
-proc addAgentResponse*(chat: AgentChatVM; text: string) =
+proc addAgentResponse*(chat: AgentChatVM; text: string; recordActivity = true) =
+  if recordActivity:
+    chat.activity.update proc(previous: ActivityTimeline): ActivityTimeline =
+      result = previous
+      result.appendAssistant(text)
   chat.messages.update proc(prev: seq[ChatMessage]): seq[ChatMessage] =
     result = prev
     result.add ChatMessage(kind: cmkAgent, text: text, timestamp: 0.0)
@@ -8650,6 +8665,8 @@ proc rebaseAgentProposedEdit*(editor: EditorVM; id: string): bool {.discardable.
   false
 
 proc sendAgentPrompt*(editor: EditorVM): bool {.discardable.} =
+  if editor.chat.inputText.val.strip.len > 0:
+    editor.chat.placeholdersDismissed.val = true
   if editor.chat.asyncAgentAdapter and
       (editor.chat.promptInFlight or editor.chat.closingSession):
     return false
@@ -8657,11 +8674,14 @@ proc sendAgentPrompt*(editor: EditorVM): bool {.discardable.} =
   if prompt.len == 0:
     return false
 
+  let originalDraft = editor.chat.inputText.val
+  editor.chat.pendingPromptText = originalDraft
   editor.chat.addUserMessage(prompt)
   editor.chat.sessionStatus.val = asLoading
   editor.chat.connectionState.val = "streaming"
 
   if editor.chat.promptAdapter == nil:
+    editor.chat.inputText.val = originalDraft
     editor.chat.sessionStatus.val = asError
     editor.chat.connectionState.val = "adapter-missing"
     editor.chat.messages.update proc(prev: seq[ChatMessage]): seq[ChatMessage] =
@@ -8680,6 +8700,7 @@ proc sendAgentPrompt*(editor: EditorVM): bool {.discardable.} =
       editor.chat.connectionState.val = "ready"
     return true
 
+  if editor.chat.inputText.val.len == 0: editor.chat.inputText.val = originalDraft
   editor.chat.sessionStatus.val = asError
   editor.chat.connectionState.val = "error"
   false
@@ -11120,6 +11141,10 @@ proc createAgentChatVM*(): AgentChatVM =
   let messageCount = createMemo[int](proc(): int = messages.val.len)
 
   AgentChatVM(
+    cancelSupported: createSignal(false),
+    activity: createSignal(ActivityTimeline()),
+    placeholdersDismissed: createSignal(false),
+    followOutput: true,
     controlConversationId: createSignal(""),
     messages: messages,
     sessionStatus: sessionStatus,
