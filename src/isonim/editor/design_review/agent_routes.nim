@@ -196,11 +196,13 @@ proc shutdownAll*(reg: AgentRegistry) =
   ## concurrently: N sessions must not multiply the native 30s HTTP deadline.
   ## Creation may consume 30s followed by its late-session stop's 30s. The
   ## supervisor reserves both operations plus owned Harbor teardown (75s).
-  var ids: seq[string]
+  var ids, acpIds: seq[string]
   acquire(reg.lock)
   try:
     reg.shuttingDown = true
-    for id in reg.sessions.keys: ids.add(id)
+    for id, state in reg.sessions:
+      if state.client.backend == abkAcp: acpIds.add(id)
+      else: ids.add(id)
   finally:
     release(reg.lock)
   type CloseArgs = tuple[registry: AgentRegistry, id: string]
@@ -212,6 +214,12 @@ proc shutdownAll*(reg: AgentRegistry) =
   var closers = newSeq[Thread[CloseArgs]](ids.len)
   for i, id in ids:
     createThread(closers[i], closeOne, (reg, id))
+  # ACP transport callbacks and captured state belong to the daemon thread.
+  # Release them here; independent blocking REST closes remain concurrent above.
+  for id in acpIds:
+    try: reg.shutdownAndRelease(id)
+    except CatchableError as e:
+      warn "agent shutdown failed", sessionId = id, reason = e.msg
   for closer in closers.mitems: joinThread(closer)
   # Do not wait for event streams: their provider has been closed above. Do
   # wait for admitted creation AND its compensating close to actually finish.

@@ -110,7 +110,7 @@ proc revokeConversation*(reg: EditorControlRegistry; conversation: string) {.gcs
       for instance in reg.instances.values:
         for id, operation in instance.operations.mpairs:
           if operation{"request", "conversation"}.getStr() == conversation and
-              operation{"status"}.getStr() in ["queued", "pending", "approved"]:
+              operation{"status"}.getStr() in ["queued", "pending", "approved", "running"]:
             operation["status"] = %"rejected"
             operation["error"] = %"conversation_closed"
     finally: release(reg.lock)
@@ -147,7 +147,7 @@ proc rpcDispatch*(reg: EditorControlRegistry; request: JsonNode; token: string):
         "browserToken": browserToken, "controlToken": scope.token, "leaseSeconds": BrowserLeaseSeconds}
     else:
       let instance = reg.requireInstance(params)
-      if methodName in ["editor.poll", "editor.ack", "editor.disconnect", "editor.preference", "editor.approve"]:
+      if methodName in ["editor.poll", "editor.ack", "editor.disconnect", "editor.preference", "editor.approve", "editor.source-authorize"]:
         instance.browserAuthorized(token)
       else: discard reg.agentAuthorized(instance, token)
       case methodName
@@ -167,16 +167,35 @@ proc rpcDispatch*(reg: EditorControlRegistry; request: JsonNode; token: string):
         instance.publishSnapshot(params{"state"})
         var commands = newJArray()
         for operation in instance.operations.values:
-          if operation{"status"}.getStr() in ["queued", "pending", "approved"] or
+          if operation{"status"}.getStr() in ["queued", "pending", "approved", "running"] or
               (operation{"status"}.getStr() in ["rejected", "failed"] and
                 operation{"operationId"}.getStr() notin instance.acknowledgedOperations): commands.add operation
         output = %* {"commands": commands}
+      of "editor.source-authorize":
+        instance.browserAuthorized(token)
+        let id = params{"operationId"}.getStr()
+        if not instance.operations.hasKey(id): raise newException(ControlError, "unknown_operation")
+        let operation = instance.operations[id]
+        if operation{"status"}.getStr() notin ["queued", "running"] or
+            operation{"request", "command"}.getStr() notin ["create-story", "build"]:
+          raise newException(ControlError, "source_operation_not_running")
+        if not instance.snapshot{"permissions", "writeSource"}.getBool() or
+            (operation{"request", "command"}.getStr() == "create-story" and
+              not instance.snapshot{"permissions", "createStory"}.getBool()):
+          raise newException(ControlError, "source_permission_denied")
+        if params{"admit"} != nil and params["admit"].kind != JBool:
+          raise newException(ControlError, "invalid_source_admission")
+        if params{"admit"}.getBool():
+          operation["sourcePhase"] = %"admitted"
+        elif operation{"sourcePhase"}.getStr() != "admitted":
+          operation["sourcePhase"] = %"waiting"
+        output = operation["request"]
       of "editor.command":
         let scope = reg.agentAuthorized(instance, token)
         let commandId = params{"commandId"}.getStr()
         if commandId.len == 0: raise newException(ControlError, "missing_command_id")
         for key, value in params:
-          if key notin ["workspace", "instance", "epoch", "commandId", "command", "storyId", "target", "viewport", "select", "focus", "highlight", "expectedRevision"]:
+          if key notin ["workspace", "instance", "epoch", "commandId", "command", "storyId", "target", "viewport", "select", "focus", "highlight", "component", "variantKey", "stateKey", "expectedRevision"]:
             raise newException(ControlError, "unknown_command_field")
           if key in ["select", "focus", "highlight"] and value.kind != JBool:
             raise newException(ControlError, "invalid_command_field_type")
@@ -208,7 +227,7 @@ proc rpcDispatch*(reg: EditorControlRegistry; request: JsonNode; token: string):
         let previous = instance.operations[commandId]
         if previous["request"] != operation{"request"}:
           raise newException(ControlError, "acknowledgement_request_mismatch")
-        if operation{"status"}.getStr() notin ["pending", "applied", "failed", "rejected"]:
+        if operation{"status"}.getStr() notin ["pending", "running", "applied", "failed", "rejected"]:
           raise newException(ControlError, "invalid_application_status")
         # Revocation or a previous final ack cannot be overwritten by a late browser.
         if previous{"status"}.getStr() in ["applied", "failed", "rejected"] or
@@ -218,6 +237,8 @@ proc rpcDispatch*(reg: EditorControlRegistry; request: JsonNode; token: string):
           output = operation.copy()
           if previous{"approvalDecision"} != nil:
             output["approvalDecision"] = previous["approvalDecision"]
+          if previous{"sourcePhase"} != nil:
+            output["sourcePhase"] = previous["sourcePhase"]
           instance.operations[commandId] = output
         # A late contradictory ACK cannot acknowledge a revocation the browser
         # has not consumed. Stop terminal redelivery only after matching the

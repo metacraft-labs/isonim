@@ -267,3 +267,45 @@ suite "Editor JSON-RPC scopes and acknowledgement":
     approve["approve"] = %true
     check rpc(reg, "editor.approve", approve, browser["browserToken"].getStr())["error"]["message"].getStr == "operation_not_pending"
     check rpc(reg, "editor.poll", target(browser), browser["browserToken"].getStr())["result"]["commands"][0]["error"].getStr == "conversation_closed"
+
+suite "Source transaction authorization":
+  test "only matching browser operation with current source permissions can run a producer":
+    let reg = newEditorControlRegistry("browser-bootstrap")
+    let browser = register(reg)
+    var build = target(browser)
+    build["commandId"] = %"source-build"
+    build["command"] = %"build"
+    build["expectedRevision"] = %0
+    let queued = rpc(reg, "editor.command", build, browser["controlToken"].getStr())["result"]
+    var authorization = target(browser)
+    authorization["operationId"] = %"source-build"
+    check rpc(reg, "editor.source-authorize", authorization, browser["controlToken"].getStr())["error"]["message"].getStr() == "browser_credential_required"
+    check rpc(reg, "editor.source-authorize", authorization, browser["browserToken"].getStr())["error"]["message"].getStr() == "source_permission_denied"
+    var ack = target(browser)
+    var running = queued.copy()
+    running["status"] = %"running"
+    ack["operation"] = running
+    ack["state"] = %* {"revision":1, "permissions":{"writeSource":true,"createStory":true}}
+    check rpc(reg, "editor.ack", ack, browser["browserToken"].getStr())["result"]["status"].getStr() == "running"
+    check rpc(reg, "editor.source-authorize", authorization, browser["browserToken"].getStr())["result"] == queued["request"]
+    var query = target(browser)
+    query["operationId"] = %"source-build"
+    check rpc(reg, "editor.wait", query, browser["controlToken"].getStr())["result"]["sourcePhase"].getStr() == "waiting"
+    authorization["admit"] = %true
+    check rpc(reg, "editor.source-authorize", authorization, browser["browserToken"].getStr())["result"] == queued["request"]
+    check rpc(reg, "editor.wait", query, browser["controlToken"].getStr())["result"]["sourcePhase"].getStr() == "admitted"
+    discard rpc(reg, "editor.ack", ack, browser["browserToken"].getStr())
+    check rpc(reg, "editor.wait", query, browser["controlToken"].getStr())["result"]["sourcePhase"].getStr() == "admitted"
+    running["status"] = %"failed"
+    ack["operation"] = running
+    discard rpc(reg, "editor.ack", ack, browser["browserToken"].getStr())
+    check rpc(reg, "editor.source-authorize", authorization, browser["browserToken"].getStr())["error"]["message"].getStr() == "source_operation_not_running"
+
+  test "typed creation fields cannot carry scalar or null values":
+    let reg = newEditorControlRegistry("browser-bootstrap")
+    let browser = register(reg)
+    for invalid in [%42, newJNull(), %true]:
+      var request = command(browser, "bad-creation")
+      request["command"] = %"create-story"
+      request["component"] = invalid
+      check rpc(reg, "editor.command", request, browser["controlToken"].getStr())["error"]["message"].getStr() == "invalid_command_field_type"

@@ -8,6 +8,7 @@ import std/[strutils, math, strformat]
 import isonim/core/[signals, computation]
 import isonim/dsl/ui
 import isonim/editor/viewmodels
+import isonim/editor/preview_identity
 import isonim/editor/types
 import isonim/editor/views/choice_row
 import isonim/editor/views/scene_graph_walk
@@ -4573,10 +4574,9 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
         let previewDocument = componentEditPreviewDocument(previewState,
           vm.inspector.selectedElement.val)
         if vm.editMode.val == emView:
-          previewDocument & "\n<!-- isonim-reload:" & $reloadGeneration & " -->"
+          identifiedPreviewDocument(previewDocument, vm.selectedStory.val, reloadGeneration)
         else:
-          editablePreviewDocument(previewDocument, metadata, vm.editMode.val) &
-            "\n<!-- isonim-reload:" & $reloadGeneration & " -->"
+          identifiedPreviewDocument(editablePreviewDocument(previewDocument, metadata, vm.editMode.val), vm.selectedStory.val, reloadGeneration)
     var srcdocChanged = false
     if nextSrcdoc != lastSrcdoc:
       lastSrcdoc = nextSrcdoc

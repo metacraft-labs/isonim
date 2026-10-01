@@ -32,6 +32,7 @@ import isonim/editor/design_review/brief_index
 import isonim/editor/design_review/log_setup
 
 import ./config
+import ./cmd_source_project
 import ./cmd_editor
 import ./cmd_init
 import ./cmd_db_health
@@ -773,6 +774,7 @@ proc main(): int =
     return 0
 
   case rawArgs[0]
+  of "source-project": return cmdSourceProject(rawArgs[1 .. ^1])
   of "editor": return cmdEditor(rawArgs[1 .. ^1])
   of "briefs":
     if rawArgs.len < 2 or rawArgs[1] != "check":

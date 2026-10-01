@@ -130,7 +130,7 @@ def signal_owned_session(session_id, signum, ps_executable=None, known_groups=No
 
 
 @contextmanager
-def owned_process(args, **kwargs):
+def owned_process(args, require_clean_exit=False, **kwargs):
     ps_executable = shutil.which("ps")
     if not ps_executable:
         raise RuntimeError("Owned editor processes require the POSIX ps executable")
@@ -155,6 +155,8 @@ def owned_process(args, **kwargs):
         finally:
             # Command wrappers may exit before descendants; reclaim their group.
             signal_owned_session(process.pid, signal.SIGKILL, ps_executable, known_groups)
+        if require_clean_exit and process.returncode != 0:
+            raise RuntimeError(f"Owned editor daemon did not exit cleanly: {process.returncode}")
 
 
 def await_daemon(process, lines, timeout):
@@ -193,11 +195,41 @@ def inject_origin_meta(html, browser_bootstrap=""):
 class EditorHTTPServer(http.server.ThreadingHTTPServer):
     daemon_threads = True
 
+    def __init__(self, *args, **kwargs):
+        self.source_jobs = set()
+        self.source_jobs_lock = threading.Lock()
+        self.source_recovery = None
+        self.source_closing = False
+        super().__init__(*args, **kwargs)
+
+    def server_close(self):
+        # Source producers belong to this editor service, including jobs whose
+        # browser disconnected. Reclaim their process groups before recovery.
+        with self.source_jobs_lock:
+            self.source_closing = True
+            jobs = list(self.source_jobs)
+        for process in jobs:
+            if process.poll() is None:
+                try: os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError: pass
+            process.wait(timeout=5)
+        if jobs and self.source_recovery:
+            root, binary = self.source_recovery
+            recovered = subprocess.run([str(binary), "source-project", str(root), "--recover"],
+                capture_output=True, text=True, timeout=5)
+            if recovered.returncode:
+                print("Interrupted source transaction recovery failed: " + recovered.stdout, file=sys.stderr)
+        super().server_close()
+
 
 class EditorHandler(http.server.SimpleHTTPRequestHandler):
     daemon_url: str
     frontend_url: str = ""
     browser_bootstrap: str = ""
+    source_root: Path | None = None
+    source_binary: Path | None = None
+    source_lock = threading.Lock()
+    source_results: dict = {}
 
     def api_request(self, target_url=None, inject_meta=False) -> None:
         endpoint = urllib.parse.urlsplit(target_url or self.daemon_url)
@@ -243,6 +275,29 @@ class EditorHandler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = urllib.parse.urlsplit(self.path).path
+        if path == "/api/editor/source/catalog" and self.source_root:
+            manifest_path = self.source_root / ".isonim/source-project.json"
+            if not manifest_path.exists() and not manifest_path.is_symlink():
+                return self.send_error(404, "Project source bridge unavailable")
+            try:
+                manifest = json.loads(manifest_path.read_text())
+                catalog_path = (self.source_root / manifest["catalog"]).resolve()
+                if not catalog_path.is_relative_to(self.source_root):
+                    raise ValueError("Catalog path escapes workspace")
+                output = {"catalog": json.loads(catalog_path.read_text()),
+                    "manifest": {key: manifest.get(key, []) for key in ("workspace", "title", "fixtures")}}
+                status = 200
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                output = {"ok": False, "diagnostic": "Source project contract is invalid: " + str(error)}
+                status = 400
+            data = json.dumps(output).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if path.startswith("/api/"):
             return self.api_request()
         if self.frontend_url:
@@ -261,7 +316,83 @@ class EditorHandler(http.server.SimpleHTTPRequestHandler):
             return
         super().do_GET()
 
+    def source_operation(self) -> None:
+        # Only the registered browser's ACK credential authorizes source work.
+        # Resolve the command from the registry rather than trust posted edits,
+        # paths, templates, compiler arguments or a caller's claimed permissions.
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length < 1 or length > 65536: raise ValueError("Invalid source request size")
+            params = json.loads(self.rfile.read(length))
+            if not isinstance(params, dict): raise ValueError("Object required")
+            def authorize(admit=False):
+                admission = dict(params)
+                admission["admit"] = admit
+                request = urllib.request.Request(self.daemon_url + "/api/editor/rpc",
+                    data=json.dumps({"jsonrpc": "2.0", "id": "source", "method": "editor.source-authorize", "params": admission}).encode(),
+                    headers={"Content-Type": "application/json", "X-IsoNim-Control": self.headers.get("X-IsoNim-Control", "")})
+                with urllib.request.urlopen(request, timeout=3) as response:
+                    authorization = json.load(response)
+                if "error" in authorization: raise ValueError(authorization["error"]["message"])
+                return authorization["result"]
+            authorize()
+            key = (params["instance"], params["epoch"], params["operationId"])
+            # Serialize real project transactions and cache successful or failed
+            # results so a lost response cannot create/build the same operation twice.
+            with self.source_lock:
+                if key in self.source_results:
+                    output = self.source_results[key]
+                else:
+                    # Waiting is not admission. Re-check terminal revocation and
+                    # current permissions only after acquiring the project lock.
+                    command = authorize(admit=True)
+                    with tempfile.TemporaryDirectory(prefix="isonim-source-") as temporary:
+                        payload = Path(temporary) / "request.json"
+                        payload.write_text(json.dumps(command))
+                        with self.server.source_jobs_lock:
+                            if self.server.source_closing: raise ValueError("Editor source service is shutting down")
+                            process = subprocess.Popen([str(self.source_binary), "source-project", str(self.source_root), str(payload)],
+                                cwd=self.source_root, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+                            self.server.source_jobs.add(process)
+                            self.server.source_recovery = (self.source_root, self.source_binary)
+                        try:
+                            stdout, stderr = process.communicate(timeout=120)
+                        except subprocess.TimeoutExpired:
+                            try: os.killpg(process.pid, signal.SIGKILL)
+                            except ProcessLookupError: pass
+                            stdout, stderr = process.communicate()
+                            recovered = subprocess.run([str(self.source_binary), "source-project", str(self.source_root), "--recover"],
+                                capture_output=True, text=True, timeout=5)
+                            output = {"ok": False, "diagnostic": "Project compiler exceeded 120 seconds" +
+                                ("; recovery failed: " + recovered.stdout if recovered.returncode else "")}
+                        else:
+                            try: output = json.loads(stdout)
+                            except json.JSONDecodeError: output = {"ok": False, "diagnostic": "Source worker failed: " + stderr[-16000:]}
+                        finally:
+                            # Reclaim build descendants even if their wrapper exited.
+                            try: os.killpg(process.pid, signal.SIGKILL)
+                            except ProcessLookupError: pass
+                            with self.server.source_jobs_lock: self.server.source_jobs.discard(process)
+                    if output.get("manifest"):
+                        output["manifest"] = {name: output["manifest"].get(name, []) for name in ("workspace", "title", "fixtures")}
+                    self.source_results[key] = output
+            data = json.dumps(output).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        except (KeyError, ValueError, OSError, urllib.error.URLError, subprocess.SubprocessError) as error:
+            data = json.dumps({"ok": False, "diagnostic": str(error)}).encode()
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
     def do_POST(self) -> None:
+        if self.path == "/api/editor/source/operation" and self.source_root and self.source_binary:
+            return self.source_operation()
         if self.path.startswith("/api/"):
             return self.api_request()
         if self.frontend_url:
@@ -327,7 +458,7 @@ def serve(directory: Path, project_root: Path, port: int, bind: str = "0.0.0.0",
             env = dict(os.environ)
             browser_bootstrap = secrets.token_hex(32)
             env["ISONIM_EDITOR_BROWSER_BOOTSTRAP"] = browser_bootstrap
-            with owned_process(args, cwd=project_root, env=env, stderr=subprocess.PIPE,
+            with owned_process(args, require_clean_exit=True, cwd=project_root, env=env, stderr=subprocess.PIPE,
                                text=True, bufsize=1) as daemon:
                 lines = queue.Queue()
                 def relay():
@@ -338,12 +469,12 @@ def serve(directory: Path, project_root: Path, port: int, bind: str = "0.0.0.0",
                             lines.put(line)
                 threading.Thread(target=relay, daemon=True).start()
                 ready_url = await_daemon(daemon, lines, startup_timeout)
-                serve_frontend(directory, project_root, port, bind, ready_url, command, daemon, frontend_command, browser_bootstrap)
+                serve_frontend(directory, project_root, port, bind, ready_url, command, daemon, frontend_command, browser_bootstrap, daemon_binary)
         else:
-            serve_frontend(directory, project_root, port, bind, daemon_url, command, frontend_command=frontend_command, browser_bootstrap=os.environ.get("ISONIM_EDITOR_BROWSER_BOOTSTRAP", ""))
+            serve_frontend(directory, project_root, port, bind, daemon_url, command, frontend_command=frontend_command, browser_bootstrap=os.environ.get("ISONIM_EDITOR_BROWSER_BOOTSTRAP", ""), source_binary=daemon_binary)
 
 
-def serve_frontend(directory, project_root, port, bind, daemon_url, command, daemon=None, frontend_command=None, browser_bootstrap=""):
+def serve_frontend(directory, project_root, port, bind, daemon_url, command, daemon=None, frontend_command=None, browser_bootstrap="", source_binary=None):
     if frontend_command:
         # An existing write/live-reload frontend remains private behind the
         # common origin. A bind collision is a startup error, never a fallback.
@@ -362,7 +493,7 @@ def serve_frontend(directory, project_root, port, bind, daemon_url, command, dae
                         if response.status == 200: break
                 except OSError: time.sleep(.1)
             else: raise TimeoutError('Editor frontend did not become ready')
-            return serve_proxy(directory, port, bind, daemon_url, daemon, frontend_url, frontend, browser_bootstrap)
+            return serve_proxy(directory, port, bind, daemon_url, daemon, frontend_url, frontend, browser_bootstrap, project_root, source_binary)
 
     if command:
         endpoint = urllib.parse.urlsplit(daemon_url)
@@ -377,11 +508,11 @@ def serve_frontend(directory, project_root, port, bind, daemon_url, command, dae
             if frontend.returncode:
                 raise RuntimeError(f"Editor frontend exited with {frontend.returncode}")
         return
-    return serve_proxy(directory, port, bind, daemon_url, daemon, browser_bootstrap=browser_bootstrap)
+    return serve_proxy(directory, port, bind, daemon_url, daemon, browser_bootstrap=browser_bootstrap, source_root=project_root, source_binary=source_binary)
 
 
-def serve_proxy(directory, port, bind, daemon_url, daemon=None, frontend_url='', frontend=None, browser_bootstrap=''):
-    handler = type("InstanceHandler", (EditorHandler,), {"daemon_url": daemon_url, "frontend_url": frontend_url, "browser_bootstrap": browser_bootstrap})
+def serve_proxy(directory, port, bind, daemon_url, daemon=None, frontend_url='', frontend=None, browser_bootstrap='', source_root=None, source_binary=None):
+    handler = type("InstanceHandler", (EditorHandler,), {"daemon_url": daemon_url, "frontend_url": frontend_url, "browser_bootstrap": browser_bootstrap, "source_root": source_root, "source_binary": source_binary or REPO / "build/bin/isonim-review", "source_lock": threading.Lock(), "source_results": {}})
     with EditorHTTPServer(
             (bind, port), functools.partial(handler, directory=str(directory))) as server:
         print(f"Editor listening on http://{bind}:{server.server_port}/", flush=True)

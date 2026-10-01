@@ -258,7 +258,41 @@ proc loadBindingSidecar*(workspace: var EditorWorkspace; raw: string) =
   workspace.variableBindings = parsed.bindings
   workspace.variableBindingHistory = parsed.history
 
+proc refreshWorkspaceCatalog*(vm: EditorVM; workspace: EditorWorkspace) =
+  ## A successful build replaces project data without recreating the user's
+  ## conversations, launch adapters, draft, edit journal or viewport. Initial
+  ## workspace selection/settings are only applied on a project switch.
+  if vm.workspaceId != workspace.id:
+    raise newException(ValueError, "Catalog refresh requires the current workspace.")
+  let selected = vm.selectedStory.val
+  vm.sidebar.groups.val = workspace.storyGroups
+  vm.storyboard.canvasItems.val = workspace.canvasItems
+  vm.storyboard.connections.val = workspace.connections
+  vm.flowPlayer.steps.val = workspace.flowSteps
+  vm.preview.hook = workspace.previewHook
+  if vm.inspector.pendingSourceEdits.val.len == 0:
+    vm.variants.variants.val = workspace.componentVariants
+    vm.designSystemSchema.val = workspace.designSystemSchema
+    vm.foundations.tokens.val = workspace.foundationTokens
+  # Stable story identity excludes list indices. Reordering a generated catalog
+  # must not navigate the user to a different story.
+  for group in workspace.storyGroups:
+    for index, item in group.items:
+      if item.group == selected.group and item.name == selected.name and item.kind == selected.kind:
+        vm.selectedStory.val = StoryRef(group: item.group, name: item.name, kind: item.kind, index: index)
+  vm.livePreviewReloadGeneration.val = vm.livePreviewReloadGeneration.val + 1
+
 proc applyWorkspace*(vm: EditorVM; workspace: EditorWorkspace) =
+  if vm.workspaceId.len > 0 and vm.workspaceId == workspace.id:
+    vm.refreshWorkspaceCatalog(workspace)
+    return
+  if vm.workspaceId.len > 0:
+    for conversation in vm.chats.val:
+      if conversation.vm.controlConversationId.val.len > 0:
+        raise newException(ValueError,
+          "Close active agent conversations before switching projects.")
+  vm.controlSourceFixtures = @[]
+  vm.controlAsyncCommandAdapter = nil
   vm.workspaceId = workspace.id
   ## Load project workspace data into an existing editor VM.
   vm.sidebar.groups.val = workspace.storyGroups

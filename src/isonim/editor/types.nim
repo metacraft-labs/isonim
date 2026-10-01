@@ -134,10 +134,13 @@ type
     eckSelectItem
     eckFocusTarget
     eckHighlightItem
+    eckBuildProject
+    eckCapturePreview
 
   EditorCommandRequest* = object
     kind*: EditorCommandKind
     storyId*, target*, viewportSlug*: string
+    component*, variantKey*, stateKey*: string
     select*, focus*, highlight*: bool
 
   EditorCommandStatus* = enum
@@ -1440,6 +1443,10 @@ type
     ## Project-owned implementation for source reads, writes, codegen, and review.
     ## The framework owns transaction ordering and rollback around these callbacks.
     stagingOnly*: bool
+    durableSourceControl*: bool
+      ## Explicit opt-in for typed create/build commands. The adapter must persist
+      ## source, compile and publish the requested catalog before success.
+      ## Legacy interactive editing callbacks do not grant this capability.
     bridgeLabel*: string
     allowMissingExpectedOldValue*: bool
     schema*: seq[WorkspaceEditableSchemaEntry]

@@ -4,6 +4,7 @@
 
 import isonim/core/[computation, signals]
 import isonim/dsl/ui
+import isonim/editor/preview_identity
 import isonim/editor/types
 import isonim/editor/viewmodels
 import isonim/editor/streaming_preview
@@ -239,7 +240,7 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
         else:
           editablePreviewDocument(preview.documentHtml, preview.metadata,
             vm.editMode.val)
-      r.setAttribute(previewFrame, "srcdoc", srcdoc)
+      r.setAttribute(previewFrame, "srcdoc", identifiedPreviewDocument(srcdoc, vm.selectedStory.val, vm.livePreviewReloadGeneration.val))
       r.setStyle(fallbackPanel, "display", "none")
       r.setStyle(previewFrame, "display", "block")
     else:

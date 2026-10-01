@@ -9,6 +9,8 @@ Operations:
   open-story <story-id> | viewport <slug> | open-panel <name>
   select <element-id> [--focus] [--highlight] | highlight <element-id> | focus <target>
   command <view|edit|comment|save|revert|undo|redo>
+  create-story <component> --variant <key> --state <key>
+  build | capture-preview (returns mounted HTML, viewport and readiness)
   wait <operation-id>
 Options:
   --endpoint <url> --workspace <id> --instance <id> --epoch <connection-id>
@@ -44,7 +46,7 @@ proc cmdEditor*(args: seq[string]): int =
   var instance = getEnv("ISONIM_EDITOR_INSTANCE")
   var epoch = getEnv("ISONIM_EDITOR_EPOCH")
   let token = getEnv("ISONIM_EDITOR_TOKEN")
-  var commandId, operand: string
+  var commandId, operand, variantKey, stateKey: string
   var expectedRevision = -1
   var timeout = 5000
   var waitRequested, highlight, focus: bool
@@ -65,6 +67,8 @@ proc cmdEditor*(args: seq[string]): int =
         of "--workspace": workspace = value
         of "--instance": instance = value
         of "--epoch": epoch = value
+        of "--variant": variantKey = value
+        of "--state": stateKey = value
         of "--command-id": commandId = value
         of "--expected-revision": expectedRevision = parseInt(value)
         of "--timeout-ms": timeout = parseInt(value)
@@ -87,13 +91,17 @@ proc cmdEditor*(args: seq[string]): int =
       params["operationId"] = %operand
       methodName = "editor.wait"
       waitRequested = true
-    of "open-story", "viewport", "open-panel", "select", "highlight", "focus", "command":
-      if commandId.len == 0 or operand.len == 0:
+    of "create-story", "build", "capture-preview", "open-story", "viewport", "open-panel", "select", "highlight", "focus", "command":
+      if commandId.len == 0 or (operand.len == 0 and operation notin ["build", "capture-preview"]):
         raise newException(ValueError, "Mutation requires a target and --command-id.")
       methodName = "editor.command"
       params["commandId"] = %commandId
       params["command"] = %(if operation == "command": operand else: operation)
       case operation
+      of "create-story":
+        params["component"] = %operand
+        params["variantKey"] = %variantKey
+        params["stateKey"] = %stateKey
       of "open-story": params["storyId"] = %operand
       of "viewport": params["viewport"] = %operand
       of "open-panel", "select", "highlight", "focus": params["target"] = %operand
@@ -120,7 +128,7 @@ proc cmdEditor*(args: seq[string]): int =
       params = %* {"workspace": workspace, "instance": instance, "epoch": epoch,
         "operationId": output{"operationId"}.getStr()}
     if waitRequested and methodName in ["editor.command", "editor.wait"]:
-      while output{"status"}.getStr() in ["queued", "pending", "approved"]:
+      while output{"status"}.getStr() in ["queued", "pending", "approved", "running"]:
         if int((getMonoTime() - started).inMilliseconds) >= timeout:
           echo $(%* {"error": "control_timeout", "operation": output})
           return 5

@@ -448,6 +448,7 @@ const isonimTestSpecs: seq[IsonimTestSpec] = @[
   spec("test_demo_vm"),
   # --- Editor / ViewModel (headless) — no PG / bridge / agent ---
   spec("test_editor_workspace"),
+  spec("test_editor_workspace_refresh"),
   spec("test_editor_public_api"),
   spec("test_editor_shell_views"),
   spec("test_editor_task_views"),
@@ -529,6 +530,7 @@ const isonimCompileOnlySpecs: seq[IsonimTestSpec] = @[
 # ``-r``), so it is modelled as a BUILD-only edge (no node run).
 const isonimJsTestSpecs: seq[string] = @[
   "test_editor_control",
+  "test_editor_workspace_refresh",
   "test_editor_agent_harbor",
   "test_browser_agent_lifecycle",
   # Reactive core (dual-backend; also in the native corpus above).
@@ -837,6 +839,30 @@ package isonim:
       extraInputs = @["src", "tests/helpers/editor_control_workspace.nim", "Justfile", "package.json"],
       extraOutputs = @["build/editor-control"])
     testBuildActions.add(controlBrowserEdge)
+    let sourceBrowserEdge = sh.shell(
+      command = "just source-editor-build",
+      actionId = "isonim.source_build.browser",
+      extraInputs = @["src", "examples/source_project", "tools/build_source_catalog.py", "Justfile", "package.json"],
+      extraOutputs = @["build/editor-source", "examples/source_project/.isonim/catalog.json"])
+    testBuildActions.add(sourceBrowserEdge)
+    testExecuteActions.add(pythonUnittest.run(
+      source = "tests/test_editor_source_project.py",
+      actionId = "isonim.source_execute.native",
+      after = @[controlCliEdge],
+      extraInputs = @["tests/test_editor_source_project.py", "examples/source_project", "tools/build_source_catalog.py", "build/bin/isonim"]))
+    testExecuteActions.add(pythonUnittest.run(
+      source = "tests/test_editor_native_acp_shutdown.py",
+      actionId = "isonim.source_execute.native_acp_shutdown",
+      after = @[controlCliEdge],
+      extraInputs = @["tests/test_editor_native_acp_shutdown.py", "tests/helpers/editor_control_peer.py",
+        "tools/editor_agent_env.py", "build/bin/isonim"]))
+    testExecuteActions.add(node(
+      args = @["tests/test_editor_source_gui.mjs"],
+      actionId = "isonim.source_execute.gui_cli",
+      after = @[controlCliEdge, sourceBrowserEdge],
+      extraInputs = @["tests/test_editor_source_gui.mjs", "tests/helpers/editor_control_peer.py", "examples/source_project",
+        "tools/editor_server.py", "build/bin/isonim", "build/editor-source"]))
+
     testExecuteActions.add(pythonUnittest.run(
       source = "tests/test_editor_agent_env.py",
       actionId = "isonim.control_execute.agent_env",

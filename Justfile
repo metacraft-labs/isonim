@@ -260,6 +260,7 @@ test-hcr-shim:
 # hiding: this lane never got past `test_signals` while the siblings were
 # missing, so it had never reached `test_dsl` to fail there.
 test-js: build-tailwind
+    nim js -r --out:build/test_editor_workspace_refresh.js tests/test_editor_workspace_refresh.nim
     nim js -r --out:build/test_editor_control.js tests/test_editor_control.nim
     nim js -r tests/test_signals.nim
     nim js -r tests/test_effects.nim
@@ -478,6 +479,7 @@ test-design-review-harbor-persistent provider harbor="../agent-harbor":
 
 test-editor-server: isonim-review-build
     python3 tests/test_editor_server.py
+    python3 tests/test_editor_native_acp_shutdown.py
 
 # Real editor routes and sibling producer, official deterministic agent only.
 # Public workspaces skip only when the optional private checkout is absent.
@@ -850,7 +852,7 @@ editor-screenshot-list:
     node tools/editor-screenshot.mjs --list
 
 # Run editor ViewModel tests
-test-editor: test-design-review-local-harbor test-design-review-harbor-build test-editor-control
+test-editor: test-design-review-local-harbor test-design-review-harbor-build test-editor-control test-editor-source
     nim c -r tests/test_editor_workspace.nim
     nim c -r tests/test_editor_public_api.nim
     nim js --path:src -o:build/test_editor_public_browser_imports.js tests/test_editor_public_browser_imports.nim
@@ -1198,3 +1200,25 @@ editor-control-build:
     cp node_modules/fabric/dist/index.min.js build/editor-control/fabric.min.js
     cp node_modules/paper/dist/paper-core.min.js build/editor-control/paper-core.min.js
     cp node_modules/svgo/dist/svgo.browser.js build/editor-control/svgo.browser.js
+
+# Real source-project consumer, isolated from all existing editor assets.
+source-editor-build:
+    mkdir -p build/editor-source
+    python3 tools/build_source_catalog.py examples/source_project
+    nim js --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/editor-source/editor.js examples/source_project/editor.nim
+    node --check build/editor-source/editor.js
+    cp src/isonim/editor/index.html build/editor-source/index.html
+    cp node_modules/fabric/dist/index.min.js build/editor-source/fabric.min.js
+    cp node_modules/paper/dist/paper-core.min.js build/editor-source/paper-core.min.js
+    cp node_modules/svgo/dist/svgo.browser.js build/editor-source/svgo.browser.js
+
+source-editor-serve: isonim-review-build source-editor-build
+    python3 tools/editor_server.py --directory build/editor-source --project-root examples/source_project --port 8095
+
+# Native persistence/compiler and full mounted GUI acceptance, no substitute compiler.
+test-editor-source: isonim-review-build source-editor-build
+    nim c -r tests/test_editor_workspace_refresh.nim
+    nim js -r --out:build/test_editor_workspace_refresh.js tests/test_editor_workspace_refresh.nim
+    python3 tests/test_editor_source_project.py
+    python3 tests/test_editor_native_acp_shutdown.py
+    node tests/test_editor_source_gui.mjs

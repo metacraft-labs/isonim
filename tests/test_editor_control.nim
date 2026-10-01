@@ -1,10 +1,19 @@
-## Production headless editor-control acceptance. No mocked dispatcher, workspace,
-## filesystem or compiler: this suite exercises real EditorVM signal state and
+## Production headless editor-control acceptance. No mocked dispatcher or workspace;
+## this suite exercises real EditorVM signal state and
 ## command implementation. One focus-renderer invocation counter substitutes DOM
 ## solely to detect repeated side effects under duplicate approval delivery; an
-## unchanged viewport alone would not detect that bug. Other tests omit rendering.
+## unchanged viewport alone would not detect that bug. Controlled async job
+## completion callbacks additionally prove immediate/deferred/closure races and
+## a throwing scheduler proves transport setup failure. Legacy source callback
+## traps model a success-only interactive adapter solely to verify unsupported
+## typed admission calls none of its callbacks; they never stand in for a build;
+## real source/compiler coverage lives in the registered source suite.
+## Build completion callbacks deliberately substitute compiler/publication outcomes
+## to isolate compile versus publication failure and exception ordering. They do
+## not prove filesystem/compiler behavior; registered source tests use the actual
+## Nim producer and a real unwritable output directory for that boundary.
 ## Full GUI acceptance separately proves actual DOM focus/highlight and CLI/HTTP.
-import std/[json, unittest, tables]
+import std/[json, unittest, tables, strutils]
 import isonim/core/[signals, owner]
 import isonim/editor/[control, viewmodels, workspace]
 
@@ -249,6 +258,45 @@ suite "Editor control":
         check vm.controlState() == state
       dispose()
 
+  test "legacy success-only source callbacks cannot admit typed durable commands":
+    createRoot proc(dispose: proc()) =
+      var invocations = 0
+      let adapter = WorkspaceEditAdapter()
+      adapter.readFile = proc(file: string): WorkspaceReadResult =
+        inc invocations
+        WorkspaceReadResult(ok: true, content: "legacy source")
+      adapter.writeFile = proc(file, content: string): WorkspaceOperationResult =
+        inc invocations
+        WorkspaceOperationResult(ok: true)
+      adapter.compile = proc(stories: seq[StoryRef]): WorkspaceOperationResult =
+        inc invocations
+        WorkspaceOperationResult(ok: true)
+      adapter.reloadPreview = proc(stories: seq[StoryRef]; fullReload: bool): WorkspaceOperationResult =
+        inc invocations
+        WorkspaceOperationResult(ok: true)
+      let vm = createEditorVM(newEditorWorkspace("Legacy", @[], id = "test", editAdapter = adapter,
+        permissions = EditorWorkspacePermissions(readSource: true, writeSource: true, createStory: true)))
+      vm.controlInstanceId = "one"
+      let before = vm.controlSnapshot()
+      check %"build" notin before["capabilities"].elems
+      check %"create-story" notin before["capabilities"].elems
+      for command in ["build", "create-story"]:
+        let request = %* {"workspace":"test", "instance":"one", "commandId":command,
+          "command":command, "component":"Card", "variantKey":"default", "stateKey":"busy",
+          "expectedRevision": before["revision"]}
+        let failed = vm.admitControlOperation(request)
+        check failed["status"].getStr() == "failed"
+        check failed["diagnostic"].getStr().contains("explicitly durable")
+        check vm.controlState() == before
+      check invocations == 0
+      adapter.durableSourceControl = true
+      check %"build" in vm.controlSnapshot()["capabilities"].elems
+      check vm.evaluateCommand(EditorCommandRequest(kind: eckBuildProject)).status == ecsAvailable
+      adapter.compile = nil
+      check %"build" notin vm.controlSnapshot()["capabilities"].elems
+      check vm.evaluateCommand(EditorCommandRequest(kind: eckBuildProject)).status == ecsDisabled
+      dispose()
+
   test "selection is independent from focus and highlight":
     createRoot proc(dispose: proc()) =
       let vm = createEditorVM()
@@ -290,3 +338,137 @@ suite "Editor control":
       request["highlight"] = %"true"
       expect ValueError: discard commandRequest(request)
       dispose()
+
+suite "Editor source operation completion":
+  # Controlled completion callbacks substitute only the asynchronous project
+  # job scheduler to cover callback races deterministically. They never claim
+  # filesystem/compiler coverage; test_editor_source_project.py and the GUI suite
+  # exercise the actual native producer and production transport separately.
+  test "immediate and deferred completion share deduplication and terminal state":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      vm.workspaceId = "project"
+      vm.controlInstanceId = "one"
+      vm.workspacePermissions.val = EditorWorkspacePermissions(writeSource: true, createStory: true)
+      var invocations = 0
+      vm.controlAsyncCommandAdapter = proc(request: JsonNode; done: proc(ok: bool; data: JsonNode) {.closure.}) =
+        inc invocations
+        done(true, %* {"boundary": "durable"})
+      let request = %* {"workspace":"project", "instance":"one", "commandId":"immediate",
+        "command":"build", "expectedRevision":vm.controlSnapshot()["revision"]}
+      check vm.admitControlOperation(request)["status"].getStr() == "applied"
+      check vm.admitControlOperation(request)["status"].getStr() == "applied"
+      check invocations == 1
+      var finish: proc(ok: bool; data: JsonNode) {.closure.}
+      vm.controlAsyncCommandAdapter = proc(request: JsonNode; done: proc(ok: bool; data: JsonNode) {.closure.}) =
+        inc invocations
+        finish = done
+      var deferred = request.copy()
+      deferred["commandId"] = %"deferred"
+      deferred["expectedRevision"] = vm.controlSnapshot()["revision"]
+      check vm.admitControlOperation(deferred)["status"].getStr() == "running"
+      check vm.admitControlOperation(deferred)["status"].getStr() == "running"
+      check invocations == 2
+      finish(false, %* {"diagnostic":"actual worker failure"})
+      check vm.controlOperations["deferred"]["status"].getStr() == "failed"
+      check vm.controlOperations["deferred"]["diagnostic"].getStr() == "actual worker failure"
+      finish(true, %* {"boundary":"late"})
+      check vm.controlOperations["deferred"]["status"].getStr() == "failed"
+      dispose()
+
+  test "closure revokes running operation and late completion cannot resurrect it":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      vm.workspaceId = "project"
+      vm.controlInstanceId = "one"
+      vm.workspacePermissions.val = EditorWorkspacePermissions(writeSource: true)
+      var invocations = 0
+      var finish: proc(ok: bool; data: JsonNode) {.closure.}
+      vm.controlAsyncCommandAdapter = proc(request: JsonNode; done: proc(ok: bool; data: JsonNode) {.closure.}) =
+        inc invocations
+        finish = done
+      let request = %* {"workspace":"project", "instance":"one", "conversation":"chat",
+        "commandId":"closed-build", "command":"build", "expectedRevision":vm.controlSnapshot()["revision"]}
+      check vm.admitControlOperation(request)["status"].getStr() == "running"
+      let closed = vm.deliverControlOperation(%* {"status":"rejected", "error":"conversation_closed", "request":request})
+      check closed["error"].getStr() == "conversation_closed"
+      finish(true, %* {"boundary":"durable"})
+      check vm.controlOperations["closed-build"]["status"].getStr() == "rejected"
+      check vm.deliverControlOperation(%* {"status":"running", "request":request}) == closed
+      check invocations == 1
+      dispose()
+
+
+suite "Source adapter failures":
+  # This throwing scheduler substitutes only delivery setup failure. Registered
+  # native/GUI suites retain real filesystem and compiler boundaries.
+  test "an immediate source transport exception is terminal and cannot restart work":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      vm.workspaceId = "project"
+      vm.controlInstanceId = "one"
+      vm.workspacePermissions.val = EditorWorkspacePermissions(writeSource: true)
+      var invocations = 0
+      vm.controlAsyncCommandAdapter = proc(request: JsonNode; done: proc(ok: bool; data: JsonNode) {.closure.}) =
+        inc invocations
+        raise newException(IOError, "Source transport could not start")
+      let request = %* {"workspace":"project", "instance":"one", "commandId":"setup-failure", "command":"build",
+        "expectedRevision":vm.controlSnapshot()["revision"]}
+      let failed = vm.admitControlOperation(request)
+      check failed["status"].getStr() == "failed"
+      check failed["diagnostic"].getStr() == "Source transport could not start"
+      check vm.admitControlOperation(request) == failed
+      check invocations == 1
+      dispose()
+
+
+suite "Durable build publication":
+  for fault in ["compile-false", "compile-exception", "publication-false", "publication-exception", "success"]:
+    test "typed build requires publication: " & fault:
+      createRoot proc(dispose: proc()) =
+        let adapter = WorkspaceEditAdapter(durableSourceControl: true)
+        let vm = createEditorVM(newEditorWorkspace("Build", @[], id = "build", editAdapter = adapter,
+          permissions = EditorWorkspacePermissions(readSource: true, writeSource: true, createStory: true)))
+        var compileCalls, publicationCalls = 0
+        var published = "previous usable preview"
+        let generation = vm.livePreviewReloadGeneration.val
+        adapter.compile = proc(stories: seq[StoryRef]): WorkspaceOperationResult =
+          inc compileCalls
+          check vm.workspaceEditStage.val == wesCompiling
+          check stories.len == 0
+          check published == "previous usable preview"
+          if fault == "compile-exception": raise newException(ValueError, "Compiler threw")
+          if fault == "compile-false":
+            return WorkspaceOperationResult(ok: false, message: "Compiler rejected source")
+          WorkspaceOperationResult(ok: true)
+        adapter.reloadPreview = proc(stories: seq[StoryRef]; fullReload: bool): WorkspaceOperationResult =
+          inc publicationCalls
+          check vm.workspaceEditStage.val == wesReloading
+          check compileCalls == 1
+          check stories.len == 0
+          check not fullReload
+          if fault == "publication-exception": raise newException(ValueError, "Publication threw")
+          if fault == "publication-false":
+            return WorkspaceOperationResult(ok: false, diagnostics: @[
+              WorkspaceEditDiagnostic(kind: wedReloadFailed, message: "Publication refused")])
+          published = "new usable preview"
+          WorkspaceOperationResult(ok: true)
+        let outcome = vm.runEditorCommand(EditorCommandRequest(kind: eckBuildProject))
+        check compileCalls == 1
+        check publicationCalls == (if fault in ["compile-false", "compile-exception"]: 0 else: 1)
+        if fault == "success":
+          check outcome.status == ecsSucceeded
+          check outcome.diagnostic.len == 0
+          check vm.workspaceEditStage.val == wesClean
+          check vm.workspaceEditDiagnostics.val.len == 0
+          check vm.livePreviewReloadGeneration.val == generation + 1
+          check published == "new usable preview"
+        else:
+          check outcome.status == ecsFailed
+          check outcome.diagnostic.contains(if fault.startsWith("compile"): "Compiler" else: "Publication")
+          check vm.workspaceEditStage.val == wesFailed
+          check vm.workspaceEditDiagnostics.val.len == 1
+          check vm.workspaceEditDiagnostics.val[0].kind == (if fault.startsWith("compile"): wedCompileFailed else: wedReloadFailed)
+          check vm.livePreviewReloadGeneration.val == generation
+          check published == "previous usable preview"
+        dispose()

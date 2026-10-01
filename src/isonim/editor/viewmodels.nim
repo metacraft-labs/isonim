@@ -298,6 +298,10 @@ type
     controlFocusAdapter*: proc(target: string): bool {.closure.}
     controlHighlightAdapter*: proc(target: string): bool {.closure.}
     controlSelectionAdapter*: proc(target: string; focus, highlight: bool): bool {.closure.}
+    controlSourceFixtures*: seq[ComponentVariantDefinition]
+    controlAsyncCommandAdapter*: proc(request: JsonNode; done: proc(ok: bool; data: JsonNode) {.closure.}) {.closure.}
+    controlSourceTransport*: proc(request: JsonNode; done: proc(data: JsonNode) {.closure.}) {.closure.}
+    controlCaptureAdapter*: proc(): JsonNode {.closure.}
     controlConnected*: bool
     requestControlApproval*: proc(id: string; approve: bool) {.closure.}
     controlRevision*: int
@@ -618,6 +622,8 @@ func commandLabel*(kind: EditorCommandKind): string =
   of eckDelete: "Delete"
   of eckCreateVariant: "Create variant"
   of eckCreateStory: "Create story"
+  of eckBuildProject: "Build project"
+  of eckCapturePreview: "Capture preview"
   of eckOpenSource: "Open source"
   of eckSelectPrevious: "Select previous element"
   of eckSelectNext: "Select next element"
@@ -698,7 +704,7 @@ func commandShortcut*(kind: EditorCommandKind): string =
   of eckOpenCommandPalette: "Mod+K"
   of eckNavigateLayersUp: "ArrowUp"
   of eckNavigateLayersDown: "ArrowDown"
-  of eckOpenStory, eckSetViewport, eckOpenPanel, eckSelectItem, eckFocusTarget, eckHighlightItem: ""
+  of eckOpenStory, eckSetViewport, eckOpenPanel, eckSelectItem, eckFocusTarget, eckHighlightItem, eckBuildProject, eckCapturePreview: ""
 
 func commandScope*(kind: EditorCommandKind): string =
   case kind
@@ -747,6 +753,8 @@ func commandDescription*(kind: EditorCommandKind): string =
   of eckOpenPanel: "Open an editor panel."
   of eckSelectItem: "Select a named element without moving keyboard focus."
   of eckFocusTarget: "Move keyboard focus to a named editor control."
+  of eckBuildProject: "Build the current project and refresh its story catalog."
+  of eckCapturePreview: "Capture the mounted preview document."
   of eckHighlightItem: "Highlight a named element independently of selection."
 
 func allEditorShortcutBindings*(): seq[EditorShortcutBinding] =
@@ -3121,7 +3129,7 @@ proc commandRequirementFailure(editor: EditorVM;
       eckFocusInspector, eckIncrementProperty, eckDecrementProperty, eckUndo,
       eckRedo, eckToggleSidebar, eckToggleInspector, eckOpenCommandPalette,
       eckNavigateLayersUp, eckNavigateLayersDown, eckOpenStory, eckSetViewport,
-      eckOpenPanel, eckSelectItem, eckFocusTarget, eckHighlightItem:
+      eckOpenPanel, eckSelectItem, eckFocusTarget, eckHighlightItem, eckBuildProject, eckCapturePreview:
     ""
 
 proc evaluateCommand*(editor: EditorVM;
@@ -3255,7 +3263,7 @@ proc runEditorCommand*(editor: EditorVM;
   of eckInspect:
     editor.setEditMode(emView)
     editor.recordEditorTiming(epbkModeSwitch, 1, "command:view")
-  of eckOpenStory, eckSetViewport, eckOpenPanel, eckSelectItem, eckFocusTarget, eckHighlightItem:
+  of eckOpenStory, eckSetViewport, eckOpenPanel, eckSelectItem, eckFocusTarget, eckHighlightItem, eckBuildProject, eckCapturePreview:
     return editor.failCommand(kind, "This command requires a typed target payload.")
   of eckApply:
     discard
@@ -11159,9 +11167,10 @@ proc createReviewResultsVM*(): ReviewResultsVM =
     hasIssues: hasIssues)
 
 proc createProjectPreviewVM*(selectedStory: Signal[StoryRef];
-    platform: Signal[Platform]): ProjectPreviewVM =
+    platform: Signal[Platform]; reloadGeneration: Signal[int] = nil): ProjectPreviewVM =
   let preview = ProjectPreviewVM(hook: defaultPreviewHook)
   preview.current = createMemo[ProjectPreview](proc(): ProjectPreview =
+    if reloadGeneration != nil: discard reloadGeneration.val
     preview.hook(selectedStory.val, platform.val)
   )
   preview
@@ -11297,7 +11306,7 @@ proc createEditorVM*(): EditorVM =
     if storedOpen != 0:
       aiDrawerOpen.val = true
   let review = createReviewResultsVM()
-  let preview = createProjectPreviewVM(selectedStory, platform)
+  let preview = createProjectPreviewVM(selectedStory, platform, livePreviewReloadGeneration)
   let flowPlayer = createFlowPlayerVM()
   # M57 contract: ``streamingPreview`` is documented as an optional
   # handle (see the type doc on ``EditorVM.streamingPreview``). The

@@ -8,6 +8,7 @@ import std/strutils
 import isonim/core/[computation, signals]
 import isonim/dsl/ui
 import isonim/editor/viewmodels
+import isonim/editor/preview_identity
 import isonim/editor/types
 import isonim/editor/streaming_preview
 import isonim/editor/views/canvas_mount
@@ -877,8 +878,7 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
     # isn't active the section stays hidden via ``showProject``.
     let nextProjectSrcdoc =
       if showProject and vm.platform.val == pbWeb:
-        preview.documentHtml & "\n<!-- isonim-reload:" & $reloadGeneration &
-          " -->"
+        identifiedPreviewDocument(preview.documentHtml, story, reloadGeneration)
       else:
         ""
     if nextProjectSrcdoc != lastProjectSrcdoc:

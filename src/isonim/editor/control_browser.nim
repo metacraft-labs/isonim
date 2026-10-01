@@ -207,6 +207,52 @@ proc installControlBridge*(vm: EditorVM; root: Element): BrowserControlBridge =
     controlShell.addEventListener('focusin',shellFocus);
     controlShell.__isonimControlCleanups.push(() => controlShell.removeEventListener('focusin',shellFocus));
   """].}
+  vm.controlSourceTransport = proc(request: JsonNode; done: proc(data: JsonNode) {.closure.}) =
+    if bridge.disposed or not bridge.connected:
+      done(%* {"ok": false, "diagnostic": "Editor control connection unavailable."})
+      return
+    var params = bridge.scope()
+    params["operationId"] = request{"commandId"}
+    let sourceUrl = (bridge.endpoint & "/api/editor/source/operation").cstring
+    let sourceAuth = bridge.browserToken.cstring
+    let sourceBody = ($params).cstring
+    proc receiveSource(raw: cstring) =
+      if bridge.disposed: return
+      try: done(parseJson($raw))
+      except CatchableError: done(%* {"ok": false, "diagnostic": "Source bridge returned an invalid response."})
+    let receiveSourceCallback = receiveSource
+    {.emit: ["""
+      fetch(""", sourceUrl, """, {method:'POST',credentials:'omit',headers:{
+        'Content-Type':'application/json','X-IsoNim-Control':""", sourceAuth, """},body:""", sourceBody, """})
+        .then(r=>r.text()).then(""", receiveSourceCallback, """)
+        .catch(()=>""", receiveSourceCallback, """('{"ok":false,"diagnostic":"Source bridge connection failed."}'));
+    """].}
+  vm.controlCaptureAdapter = proc(): JsonNode =
+    let captureShell = root
+    let expectedStory = controlStoryId(vm.selectedStory.val).cstring
+    let expectedGeneration = vm.livePreviewReloadGeneration.val
+    var capture: cstring
+    {.emit: ["""
+      const candidates = [...""", captureShell, """.querySelectorAll(
+        'iframe[data-component-project-frame],iframe[data-component-edit-frame],iframe[data-page-project-frame],iframe[data-foundation-project-frame]')]
+        .filter(frame=>frame.getClientRects().length);
+      let captureResult={ready:false,format:'text/html',diagnostic:'The current preview document is not rendered yet.'};
+      for(const frame of candidates) {
+        try {
+          const doc=frame.contentDocument;
+          const story=doc && doc.querySelector('meta[name=isonim-rendered-story]');
+          const generation=doc && doc.querySelector('meta[name=isonim-rendered-generation]');
+          if(doc && doc.readyState==='complete' && doc.body && doc.body.childElementCount &&
+              story && story.content===""", expectedStory, """ && generation && Number(generation.content)===""", expectedGeneration, """) {
+            captureResult={ready:true,format:'text/html',documentHtml:'<!doctype html>\n'+doc.documentElement.outerHTML,
+              storyId:story.content,previewGeneration:Number(generation.content),width:frame.clientWidth,height:frame.clientHeight};
+            break;
+          }
+        } catch(_) {}
+      }
+      """, capture, """ = JSON.stringify(captureResult);
+    """].}
+    parseJson($capture)
   proc consumeDelivery(operation: JsonNode) =
     if not bridge.connected or bridge.disposed: return
     if operation{"status"}.getStr() in ["approved", "rejected"]:
@@ -268,6 +314,10 @@ proc installControlBridge*(vm: EditorVM; root: Element): BrowserControlBridge =
         schedulePoll())
   proc pollBrowser() =
     if bridge.disposed: return
+    if bridge.connected and bridge.scope(){"workspace"}.getStr() != vm.workspaceId:
+      bridge.fetchRpc("editor.disconnect", bridge.scope(), proc(reply: JsonNode) = discard)
+      bridge.connected = false
+      vm.controlConnected = false
     if not bridge.connected:
       register()
       return

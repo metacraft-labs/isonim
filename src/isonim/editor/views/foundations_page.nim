@@ -4,6 +4,7 @@ import std/[sequtils, strutils]
 
 import isonim/core/[computation, signals]
 import isonim/dsl/ui
+import isonim/editor/preview_identity
 import isonim/editor/types
 import isonim/editor/viewmodels
 import isonim/editor/streaming_preview
@@ -169,7 +170,7 @@ proc renderFoundationsPage*[R, E](r: R; vm: EditorVM): E =
     # canvas path has something to show.
     let showFoundationProject = showIframe or useCanvas
     let nextSrcdoc =
-      if showIframe: preview.documentHtml
+      if showIframe: identifiedPreviewDocument(preview.documentHtml, story, vm.livePreviewReloadGeneration.val)
       else: ""
     if nextSrcdoc != lastFoundationSrcdoc:
       r.setAttribute(foundationProjectFrame, "srcdoc", nextSrcdoc)
