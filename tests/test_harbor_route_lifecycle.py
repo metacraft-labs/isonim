@@ -190,6 +190,31 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(self.post('/api/agent/close', {'sessionId': self.session})[0], 200)
         self.assertTrue(self.stopped.wait(5))
 
+    def test_close_after_terminal_completion_is_not_repeated(self):
+        self.allow_create.set()
+        self.allow_finish.set()
+        status, raw = self.post('/api/agent/prompts', self.prompt())
+        self.assertEqual(status, 200)
+        self.assertIn('event: end', raw)
+        self.assertEqual(self.post('/api/agent/close', {'sessionId': self.session})[0], 200)
+        self.assertTrue(self.stopped.wait(5))
+        self.assertEqual(self.post('/api/agent/close', {'sessionId': self.session})[0], 404)
+        self.assertEqual(self.post('/api/agent/sessions', {})[0], 200)
+
+    def test_shutdown_drains_disconnected_active_http_worker(self):
+        self.allow_create.set()
+        connection = http.client.HTTPConnection('127.0.0.1', self.port, timeout=5)
+        connection.request('POST', '/api/agent/prompts', json.dumps(self.prompt()))
+        response = connection.getresponse()
+        self.assertEqual(response.status, 200)
+        self.assertTrue(self.streamed.wait(5))
+        response.close()
+        connection.close()
+        self.assertEqual(self.post('/api/agent/prompts', self.prompt())[0], 409)
+        self.daemon.terminate()
+        self.assertEqual(self.daemon.wait(timeout=10), 0)
+        self.assertTrue(self.stopped.is_set(), 'Shutdown did not close admitted backend')
+
 
 if __name__ == '__main__':
     unittest.main()

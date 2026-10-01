@@ -53,6 +53,9 @@ type
     controlRegistry*: EditorControlRegistry
     lock: Lock
     sessions: Table[string, AgentSessionState]
+    activePrompts: Table[string, bool]
+    activePromptStates: Table[string, ptr AgentSessionState]
+    retiredSessions: Table[string, AgentSessionState]
     activeCreations: Atomic[int]
     shuttingDown: bool
     backend*: AcpAgentKind
@@ -108,6 +111,9 @@ proc newAgentRegistry*(extraArgs: seq[string] = @[];
   ## campaigns block (nil → skip that section).
   result = AgentRegistry(
     sessions: initTable[string, AgentSessionState](),
+    activePrompts: initTable[string, bool](),
+    activePromptStates: initTable[string, ptr AgentSessionState](),
+    retiredSessions: initTable[string, AgentSessionState](),
     backend: backend,
     harborUrl: harborUrl, harborToken: harborToken,
     harborAgent: harborAgent, harborModel: harborModel,
@@ -158,7 +164,7 @@ proc shutdownAndRelease*(reg: AgentRegistry; sessionId: string) =
   acquire(reg.lock)
   try:
     if reg.sessions.hasKey(sessionId):
-      state = reg.sessions[sessionId]
+      state = move(reg.sessions[sessionId])
       reg.sessions.del(sessionId)
       found = true
   finally:
@@ -176,7 +182,9 @@ proc shutdownAndRelease*(reg: AgentRegistry; sessionId: string) =
         sessionId = sessionId, reason = e.msg
       acquire(reg.lock)
       try:
-        if not reg.shuttingDown: reg.sessions[sessionId] = state
+        if not reg.shuttingDown: reg.sessions[sessionId] = move(state)
+        elif reg.activePrompts.hasKey(sessionId):
+          reg.retiredSessions[sessionId] = move(state)
       finally:
         release(reg.lock)
       raise
@@ -187,6 +195,16 @@ proc shutdownAndRelease*(reg: AgentRegistry; sessionId: string) =
         removeDir(state.controlEnvFile.parentDir)
     except OSError as error:
       warn "closed agent control environment cleanup failed", sessionId = sessionId, reason = error.msg
+    # Closing the backend can return before its stream worker finishes. Move
+    # the owner without changing reference counts; the post-join handler alone
+    # disposes it. Check current membership under the same lock: a worker that
+    # already joined while close was pending needs no retired holder.
+    acquire(reg.lock)
+    try:
+      if reg.activePrompts.hasKey(sessionId):
+        reg.retiredSessions[sessionId] = move(state)
+    finally:
+      release(reg.lock)
   else:
     info "agent client shutdown skipped (not in registry)",
       sessionId = sessionId
@@ -200,8 +218,10 @@ proc shutdownAll*(reg: AgentRegistry) =
   acquire(reg.lock)
   try:
     reg.shuttingDown = true
-    for id, state in reg.sessions:
-      if state.client.backend == abkAcp: acpIds.add(id)
+    # Classify with scalar metadata only: copying a live state here would
+    # touch worker-owned transport reference counts during shutdown.
+    for id in reg.sessions.keys:
+      if reg.sessions[id].client.backend == abkAcp: acpIds.add(id)
       else: ids.add(id)
   finally:
     release(reg.lock)
@@ -226,6 +246,15 @@ proc shutdownAll*(reg: AgentRegistry) =
   # A shorter independent drain timer would abandon a newly returned ID.
   while reg.activeCreations.load() != 0:
     sleep(10)
+  # The daemon calls shutdown here on its event-loop thread. Let admitted HTTP
+  # handlers finish their channel drain/final join before disposing the registry.
+  # Backend closure above terminates their streams; no new admission is allowed.
+  while true:
+    acquire(reg.lock)
+    let pending = reg.activePrompts.len
+    release(reg.lock)
+    if pending == 0: break
+    poll(10)
 
 proc getState*(reg: AgentRegistry; sessionId: string): Option[AgentSessionState] =
   acquire(reg.lock)
@@ -234,6 +263,32 @@ proc getState*(reg: AgentRegistry; sessionId: string): Option[AgentSessionState]
       return some(reg.sessions[sessionId])
     else:
       return none(AgentSessionState)
+  finally:
+    release(reg.lock)
+
+proc sessionBackend(reg: AgentRegistry; sessionId: string): Option[AgentBackendKind] =
+  # Scalar metadata reads must not copy client/session reference graphs while
+  # the provider worker is using them.
+  acquire(reg.lock)
+  try:
+    if reg.sessions.hasKey(sessionId): return some(reg.sessions[sessionId].client.backend)
+    return none(AgentBackendKind)
+  finally:
+    release(reg.lock)
+
+type PromptAdmission = enum paUnknown, paBusy, paAccepted
+proc admitPromptState(reg: AgentRegistry; sessionId: string):
+    tuple[admission: PromptAdmission, state: AgentSessionState] =
+  acquire(reg.lock)
+  try:
+    if not reg.sessions.hasKey(sessionId): return (paUnknown, AgentSessionState())
+    if reg.shuttingDown or reg.sessions[sessionId].turnWorking:
+      return (paBusy, AgentSessionState())
+    # The previous HTTP handler clears this flag only after joining its worker.
+    # Take the managed input snapshot while no provider worker can use it.
+    reg.sessions[sessionId].turnWorking = true
+    reg.activePrompts[sessionId] = true
+    result = (paAccepted, reg.sessions[sessionId])
   finally:
     release(reg.lock)
 
@@ -263,6 +318,9 @@ proc storeExistingSession(reg: AgentRegistry; state: AgentSessionState): bool =
 proc setTurnWorking(reg: AgentRegistry; id: string; working: bool): bool =
   acquire(reg.lock)
   try:
+    if not working:
+      reg.activePrompts.del(id)
+      reg.retiredSessions.del(id)
     if not reg.sessions.hasKey(id): return false
     if working and (reg.shuttingDown or reg.sessions[id].turnWorking): return false
     reg.sessions[id].turnWorking = working
@@ -936,9 +994,20 @@ proc handleSessions*(reg: AgentRegistry; req: Request)
 
 proc cancelSession(reg: AgentRegistry; sessionId: string) {.gcsafe.} =
   {.gcsafe.}:
-    let opt = reg.getState(sessionId)
-    if not opt.isSome: return
-    var state = opt.get
+    var idleState: AgentSessionState
+    var state: ptr AgentSessionState
+    acquire(reg.lock)
+    try:
+      if not reg.sessions.hasKey(sessionId): return
+      if reg.activePromptStates.hasKey(sessionId):
+        # This manually owned record is stable through the final worker join.
+        state = reg.activePromptStates[sessionId]
+      else:
+        # No worker has started, so taking a temporary owned copy is safe.
+        idleState = reg.sessions[sessionId]
+        state = addr idleState
+    finally:
+      release(reg.lock)
     try:
       state.client.cancelSession(state.session)
       info "agent session cancelled", sessionId = sessionId
@@ -955,7 +1024,7 @@ proc handleClose*(reg: AgentRegistry; req: Request) {.async, gcsafe.} =
   except CatchableError:
     await respondJson(req, Http400, $(%* {"error": "invalid_json"}))
     return
-  if id.len == 0 or reg.getState(id).isNone:
+  if id.len == 0 or reg.sessionBackend(id).isNone:
     await respondJson(req, Http404, $(%* {"error": "unknown_session"}))
     return
   try:
@@ -985,8 +1054,8 @@ proc handleCancel*(reg: AgentRegistry; req: Request)
     await respondJson(req, Http400,
       $(%* {"error": "missing_sessionId"}))
     return
-  let state = reg.getState(sessionId)
-  if state.isSome and state.get.client.backend == abkHarbor:
+  let backend = reg.sessionBackend(sessionId)
+  if backend.isSome and backend.get == abkHarbor:
     await respondJson(req, Http409, $(%* {"error": "unsupported_capability",
       "reason": "This provider cannot cancel a turn without closing its session"}))
     return
@@ -1125,6 +1194,56 @@ proc runAgentTurn*(reg: AgentRegistry; state: AgentSessionState;
         promptBlocks, onEvent)
     return turn
 
+type
+  AgentPromptCompletion = object
+    response: PromptResponse
+    error: string
+  AgentStreamBridge = object
+    frames: Channel[string]
+    completion: Channel[AgentPromptCompletion]
+  AgentPromptWork = object
+    # Borrow the main-owned registry and input only until the final join.
+    # The work record itself has no reference-counted owner shared by threads.
+    registry: ptr AgentRegistry
+    state: AgentSessionState
+    prompt: seq[ContentBlock]
+    bridge: ptr AgentStreamBridge
+    done: Atomic[bool]
+
+proc streamBridgeCallback(bridge: ptr AgentStreamBridge): AgentEventCallback =
+  # This factory MUST remain outside the async HTTP handler: the callback's
+  # environment owns only this pointer, never an async Future/request graph.
+  result = proc(ev: AgentEvent) {.gcsafe.} =
+    {.cast(gcsafe).}:
+      let payload = if ev.raw != nil and ev.raw.hasKey("update"):
+                      ev.raw else: toJson(ev)
+      let frame = encodeSseEvent("session/update", $payload)
+      debug "agent.streaming.chunk", sessionId = ev.sessionId,
+        kind = $ev.kind, bytes = frame.len
+      bridge.frames.send(frame)
+
+proc popStreamFrames(bridge: ptr AgentStreamBridge): seq[string] =
+  while true:
+    let message = bridge.frames.tryRecv()
+    if not message.dataAvailable: break
+    result.add message.msg
+
+proc runPromptWorker(work: ptr AgentPromptWork) {.thread, gcsafe.} =
+  {.cast(gcsafe).}:
+    var completion: AgentPromptCompletion
+    try:
+      # Callback creation and destruction belong entirely to this worker.
+      let callback = streamBridgeCallback(work.bridge)
+      let turn = runAgentTurn(work.registry[], work.state, work.prompt, callback)
+      completion.response = PromptResponse(sessionId: work.state.sessionId,
+                                           stopReason: turn.stopReason)
+    except CatchableError as error:
+      completion.error = error.msg
+    # Channels transfer managed message ownership; the worker never writes
+    # strings/references into the live main-thread async frame.
+    work.bridge.completion.send(completion)
+    work.done.store(true)
+
 proc handlePrompts*(reg: AgentRegistry; req: Request)
     {.async, gcsafe.} =
   ## ``POST /api/agent/prompts`` handler.  Emits the SSE stream.
@@ -1165,16 +1284,16 @@ proc handlePrompts*(reg: AgentRegistry; req: Request)
     await respondJson(req, Http400,
       $(%* {"error": "empty_prompt"}))
     return
-  let stateOpt = reg.getState(sessionId)
-  if not stateOpt.isSome:
+  let admitted = reg.admitPromptState(sessionId)
+  if admitted.admission == paUnknown:
     await respondJson(req, Http404,
       $(%* {"error": "unknown_session", "sessionId": sessionId}))
     return
-  if not reg.setTurnWorking(sessionId, true):
+  if admitted.admission == paBusy:
     await respondJson(req, Http409, $(%* {"error": "turn_already_running"}))
     return
   defer: discard reg.setTurnWorking(sessionId, false)
-  var state = stateOpt.get
+  var state = admitted.state
   state.turnWorking = true
 
   var textBlocks = 0
@@ -1227,76 +1346,51 @@ proc handlePrompts*(reg: AgentRegistry; req: Request)
     cancelSession(reg, sessionId)
     return
 
-  # Streaming bridge between the synchronous ACP reader thread (which
-  # invokes the callback inline) and the async HTTP socket writer.  The
-  # callback runs inside ``sendPrompt`` which we drive on a worker
-  # thread; the main async loop polls the buffer between sleeps and
-  # writes each pending frame to the socket as soon as it lands.
-  type StreamBuffer = ref object
-    lock: Lock
-    frames: seq[string]
-  let streamBuf = new StreamBuffer
-  initLock(streamBuf.lock)
-  defer: deinitLock(streamBuf.lock)
-  proc pushFrame(frame: string) {.gcsafe.} =
-    {.cast(gcsafe).}:
-      acquire(streamBuf.lock)
-      streamBuf.frames.add frame
-      release(streamBuf.lock)
-  proc popFrames(): seq[string] {.gcsafe.} =
-    {.cast(gcsafe).}:
-      acquire(streamBuf.lock)
-      result = streamBuf.frames
-      streamBuf.frames = @[]
-      release(streamBuf.lock)
+  # Keep the async Future/request graph on the event-loop thread. Native
+  # channels transfer frame/completion ownership from the provider worker.
+  # Their manually owned pointers stay alive until every worker exit is joined.
+  let streamBridge = cast[ptr AgentStreamBridge](allocShared0(sizeof(AgentStreamBridge)))
+  streamBridge.frames.open()
+  streamBridge.completion.open()
+  let work = cast[ptr AgentPromptWork](allocShared0(sizeof(AgentPromptWork)))
+  work.registry = unsafeAddr(reg)
+  work.state = state
+  work.prompt = prompt
+  work.bridge = streamBridge
+  var worker: Thread[ptr AgentPromptWork]
+  var workerStarted = false
+  defer:
+    if workerStarted: joinThread(worker)
+    acquire(reg.lock)
+    reg.activePromptStates.del(sessionId)
+    release(reg.lock)
+    # Channel.close frees its raw queue, so drain typed payloads explicitly on
+    # every path (including disconnected streams and exceptional pump exits).
+    discard popStreamFrames(streamBridge)
+    while true:
+      let remaining = streamBridge.completion.tryRecv()
+      if not remaining.dataAvailable: break
+    reset(work[])
+    deallocShared(work)
+    streamBridge.frames.close()
+    streamBridge.completion.close()
+    deallocShared(streamBridge)
+  acquire(reg.lock)
+  reg.activePromptStates[sessionId] = addr work.state
+  release(reg.lock)
+  createThread(worker, runPromptWorker, work)
+  workerStarted = true
 
   var stopReason = "error"
   var promptError = ""
   var promptDone = false
   var promptResp: PromptResponse
 
-  type PromptArgs = ref object
-    sessionId: string
-    prompt: seq[ContentBlock]
-    client: AgentClient
-    state: AgentSessionState
-    registry: AgentRegistry
-    response: PromptResponse
-    error: string
-    done: Atomic[bool]
-    callback: AgentEventCallback
-
-  let onEvent: AgentEventCallback = proc(ev: AgentEvent) {.gcsafe.} =
-    {.cast(gcsafe).}:
-      # Preserve the common library event rather than leaking ACP or Harbor
-      # wire shapes into browser code. The browser also accepts older ACP frames.
-      let payload = if ev.raw != nil and ev.raw.hasKey("update"):
-                      ev.raw else: toJson(ev)
-      let frame = encodeSseEvent("session/update", $payload)
-      debug "agent.streaming.chunk", sessionId = ev.sessionId,
-        kind = $ev.kind, bytes = frame.len
-      pushFrame(frame)
-
-  proc runPrompt(args: PromptArgs) {.thread, gcsafe.} =
-    {.cast(gcsafe).}:
-      try:
-        let turn = runAgentTurn(args.registry, args.state, args.prompt, args.callback)
-        args.response = PromptResponse(sessionId: args.sessionId,
-                                       stopReason: turn.stopReason)
-      except CatchableError as e:
-        args.error = e.msg
-      args.done.store(true)
-
-  var args = PromptArgs(sessionId: sessionId, prompt: prompt,
-                        client: state.client, state: state, registry: reg, callback: onEvent)
-  var worker: Thread[PromptArgs]
-  createThread(worker, runPrompt, args)
-
   # Async pump: while the worker is running, periodically flush any
   # frames the callback enqueued onto the SSE socket.
   var disconnected = false
-  while not args.done.load():
-    let pending = popFrames()
+  while not work.done.load():
+    let pending = popStreamFrames(streamBridge)
     if not disconnected:
       for frame in pending:
         if not await sendSseLine(req.client, frame):
@@ -1307,17 +1401,19 @@ proc handlePrompts*(reg: AgentRegistry; req: Request)
     await sleepAsync(10)
 
   joinThread(worker)
+  workerStarted = false
   if disconnected: return
   promptDone = true
-  promptResp = args.response
-  if args.error.len > 0:
-    promptError = args.error
+  let completion = streamBridge.completion.recv()
+  promptResp = completion.response
+  if completion.error.len > 0:
+    promptError = completion.error
     error "agent prompt failed", sessionId = sessionId, reason = promptError
   else:
     stopReason = $promptResp.stopReason
 
   # Final flush — any frames that arrived right before the response.
-  let trailing = popFrames()
+  let trailing = popStreamFrames(streamBridge)
   for frame in trailing:
     if not await sendSseLine(req.client, frame):
       cancelSession(reg, sessionId)

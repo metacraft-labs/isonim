@@ -239,11 +239,17 @@ proc acceptLoop(srv: ReviewServer;
   ## the OS-assigned port for the test-fixture READY handshake before
   ## any client can connect).  Uses the public ``acceptRequest`` helper
   ## so we don't depend on private ``processClient`` symbols.
-  while true:
-    if srv.server.shouldAcceptRequest():
-      await srv.server.acceptRequest(cb)
-    else:
-      poll()
+  while not srv.stopRequested:
+    try:
+      if srv.server.shouldAcceptRequest():
+        await srv.server.acceptRequest(cb)
+      else:
+        poll()
+    except OSError:
+      # Closing the listener wakes its pending accept during the final HTTP
+      # worker drain. Only the owned shutdown path treats that wakeup as EOF.
+      if srv.stopRequested: return
+      raise
 
 proc runReviewServer*(srv: ReviewServer) =
   ## Start the server and block until SIGTERM / SIGINT.  This is the
