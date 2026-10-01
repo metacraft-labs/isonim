@@ -46,7 +46,8 @@ proc publishSnapshot(instance: ControlInstance; snapshot: JsonNode) =
       (instance.snapshot == nil or snapshot{"revision"}.getInt(-1) >= instance.snapshot{"revision"}.getInt(-1)):
     instance.snapshot = snapshot
 
-proc requireInstance(reg: EditorControlRegistry; params: JsonNode): ControlInstance =
+proc requireInstance(reg: EditorControlRegistry; params: JsonNode;
+    allowExpiredLease = false): ControlInstance =
   let id = params{"instance"}.getStr()
   if id.len == 0: raise newException(ControlError, "ambiguous_target: explicit instance required")
   if not reg.instances.hasKey(id): raise newException(ControlError, "stale_instance")
@@ -55,7 +56,8 @@ proc requireInstance(reg: EditorControlRegistry; params: JsonNode): ControlInsta
     raise newException(ControlError, "wrong_workspace")
   if params{"epoch"}.getStr() != result.scope.epoch:
     raise newException(ControlError, "stale_connection_epoch")
-  if not result.connected(): raise newException(ControlError, "disconnected_instance")
+  if not result.connected or (not allowExpiredLease and not result.connected()):
+    raise newException(ControlError, "disconnected_instance")
 
 proc browserAuthorized(instance: ControlInstance; token: string) =
   if token.len == 0 or token != instance.browserToken:
@@ -146,7 +148,10 @@ proc rpcDispatch*(reg: EditorControlRegistry; request: JsonNode; token: string):
       output = %* {"workspace": scope.workspace, "instance": scope.instance, "epoch": scope.epoch,
         "browserToken": browserToken, "controlToken": scope.token, "leaseSeconds": BrowserLeaseSeconds}
     else:
-      let instance = reg.requireInstance(params)
+      # A still-mounted tab may renew an expired transport lease with its exact
+      # browser credential. Explicit disconnect/replacement remains revoked;
+      # agents cannot renew leases and remain denied until a successful poll.
+      let instance = reg.requireInstance(params, allowExpiredLease = methodName == "editor.poll")
       if methodName in ["editor.poll", "editor.ack", "editor.disconnect", "editor.preference", "editor.approve", "editor.source-authorize"]:
         instance.browserAuthorized(token)
       else: discard reg.agentAuthorized(instance, token)

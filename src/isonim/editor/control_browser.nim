@@ -325,10 +325,14 @@ proc installControlBridge*(vm: EditorVM; root: Element): BrowserControlBridge =
     params["state"] = vm.controlSnapshot()
     bridge.fetchRpc("editor.poll", params, proc(reply: JsonNode) =
       if reply{"result"} == nil:
-        bridge.connected = false
+        # A transport loss preserves this mounted tab's identity and provider
+        # scope. An authenticated poll can renew its expired lease. A real RPC
+        # rejection still revokes this binding and registers a replacement.
+        if reply != nil and reply{"error"} != nil: bridge.connected = false
         vm.controlConnected = false
         schedulePoll()
         return
+      vm.controlConnected = true
       for operation in reply{"result", "commands"}:
         consumeDelivery(operation)
       schedulePoll())

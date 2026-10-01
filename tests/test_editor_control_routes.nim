@@ -216,15 +216,20 @@ suite "Editor JSON-RPC scopes and acknowledgement":
     let reg = newEditorControlRegistry("browser-bootstrap")
     let old = register(reg)
     check rpc(reg, "editor.disconnect", target(old), old["browserToken"].getStr())["result"]["disconnected"].getBool
+    check rpc(reg, "editor.poll", target(old), old["browserToken"].getStr())["error"]["message"].getStr == "disconnected_instance"
     let replacement = register(reg)
     check rpc(reg, "editor.command", command(old), old["controlToken"].getStr())["error"]["message"].getStr == "disconnected_instance"
     check rpc(reg, "editor.poll", target(replacement), replacement["browserToken"].getStr())["result"]["commands"].len == 0
 
-  test "real lease timeout rejects an abandoned browser":
+  test "real lease timeout denies agents and only exact mounted browser can resume":
     let reg = newEditorControlRegistry("browser-bootstrap")
     let browser = register(reg)
     sleep(int(BrowserLeaseSeconds * 1000) + 100)
     check rpc(reg, "editor.command", command(browser), browser["controlToken"].getStr())["error"]["message"].getStr == "disconnected_instance"
+    check rpc(reg, "editor.poll", target(browser), browser["controlToken"].getStr())["error"]["message"].getStr == "browser_credential_required"
+    check rpc(reg, "editor.command", command(browser), browser["controlToken"].getStr())["error"]["message"].getStr == "disconnected_instance"
+    check rpc(reg, "editor.poll", target(browser), browser["browserToken"].getStr())["result"]["commands"].len == 0
+    check rpc(reg, "editor.command", command(browser), browser["controlToken"].getStr())["result"]["status"].getStr == "queued"
 
   test "unknown request fields never enter stored operation activity":
     let reg = newEditorControlRegistry("browser-bootstrap")
