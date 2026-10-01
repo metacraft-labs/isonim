@@ -4,7 +4,9 @@
 No mocks: invoke the production wrapper, real Python child and actual private
 files. Verify exact args/ordinary credentials, scoped control vars, CLI PATH,
 browser-authority stripping and refusal of broad permissions or unknown values.
-This proves launch delivery, not a model's use of the CLI (covered by EAC-M6).
+Route text fixtures exercise the pure recognizer without replacing OS APIs;
+official Harbor scenarios separately prove the actual isolated network callback.
+This proves launch delivery; model tool use is covered by the scenario suites.
 """
 import json
 import http.client
@@ -16,11 +18,36 @@ import tempfile
 import queue
 import threading
 import unittest
+import importlib.util
 
 REPO = Path(__file__).resolve().parents[1]
 WRAPPER = REPO / "tools/editor_agent_env.py"
+module_spec = importlib.util.spec_from_file_location("editor_agent_env", WRAPPER)
+wrapper_module = importlib.util.module_from_spec(module_spec)
+module_spec.loader.exec_module(wrapper_module)
+SLIRP_ROUTES = ("Iface Destination Gateway Flags RefCnt Use Metric Mask MTU Window IRTT\n"
+    "tap0 00000000 0202000A 0003 0 0 0 00000000 0 0 0\n"
+    "tap0 0002000A 00000000 0001 0 0 0 00FFFFFF 0 0 0\n")
 
 class ControlEnvironmentTests(unittest.TestCase):
+    def test_only_observed_supported_slirp_loopback_is_translated(self):
+        for host in ('127.0.0.1','localhost','[::1]'):
+            endpoint='https://'+host+':4321/callback/path?preserve=yes#fragment'
+            self.assertEqual(wrapper_module.endpoint_for_routes(endpoint,SLIRP_ROUTES,'linux'),
+                'https://10.0.2.2:4321/callback/path?preserve=yes#fragment')
+        literal='http://127.0.0.1:4321/path'
+        for routes in ('', 'malformed', SLIRP_ROUTES.replace('Iface','invalid'),
+                       SLIRP_ROUTES.replace('0202000A','0102000A'),
+                       SLIRP_ROUTES.replace('tap0','eth0'), SLIRP_ROUTES.replace('0003','0001'),
+                       SLIRP_ROUTES.replace('00FFFFFF','0000FFFF'),
+                       SLIRP_ROUTES+SLIRP_ROUTES.splitlines()[1]+'\n'):
+            self.assertEqual(wrapper_module.endpoint_for_routes(literal,routes,'linux'),literal)
+        for endpoint in ('http://editor.example:4321/path', 'http://192.168.1.2:4321',
+                         'http://10.0.2.2:4321', 'http://localhost:invalid',
+                         'http://localhost', 'http://user@localhost:4321', 'broken['):
+            self.assertEqual(wrapper_module.endpoint_for_routes(endpoint,SLIRP_ROUTES,'linux'),endpoint)
+        self.assertEqual(wrapper_module.endpoint_for_routes(literal,SLIRP_ROUTES,'darwin'),literal)
+
     def test_failed_scoped_provider_creation_removes_private_handoff(self):
         with tempfile.TemporaryDirectory() as temp:
             config = Path(temp) / 'editor.toml'
