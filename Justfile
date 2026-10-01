@@ -489,6 +489,8 @@ test-editor-harbor-scenario: isonim-review-build
     python3 tests/test_editor_harbor_scenario.py
 
 test-design-review-chat: isonim-review-build fake-acp-agent-build
+    nim c -r tests/test_editor_scenario_protocol.nim
+    nim c -r --path:src --path:vendor/db_connector/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src tests/test_editor_agent_route_ownership.nim
     nim c -r tests/test_editor_agent_harbor.nim
     nim js -r tests/test_editor_agent_harbor.nim
     python3 tests/test_editor_server.py
@@ -1237,3 +1239,19 @@ test-editor-chat-activity: editor-chat-build
     nim c -r tests/test_editor_chat_activity.nim
     nim js -r --out:build/test_editor_chat_activity.js tests/test_editor_chat_activity.nim
     node tests/test_editor_chat_activity_gui.mjs
+
+# Optional private Harbor acceptance: absence is the only allowed automatic skip.
+# When the sibling exists, missing/broken official provider and builds fail.
+editor-scenario-host-build:
+    nim c --out:build/bin/editor-scenario-host tests/test_editor_scenario_host.nim
+
+test-editor-scenarios-native: isonim-review-build source-editor-build editor-scenario-host-build
+    python3 tests/test_editor_scenarios.py
+
+test-editor-scenarios-gui: isonim-review-build source-editor-build
+    python3 tests/run_editor_scenarios_gui.py
+
+test-editor-scenarios-stress: isonim-review-build source-editor-build editor-scenario-host-build
+    python3 tests/test_editor_scenario_stress.py
+
+test-editor-scenarios: test-editor-scenarios-native test-editor-scenarios-gui test-editor-scenarios-stress

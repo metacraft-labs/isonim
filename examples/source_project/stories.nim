@@ -13,6 +13,7 @@ proc card(title: string): string =
         main:
           h1: text title
           button(id = "action", `data-isonim-element-id` = "action"): text "Continue"
+          button(id = "secondary-action", `data-isonim-element-id` = "secondary-action"): text "Review"
 
 var stories = newJArray()
 stories.add(%* {"group": "Card", "name": "default ready", "kind": "component", "documentHtml": card("Ready card")})

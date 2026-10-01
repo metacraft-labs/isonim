@@ -650,6 +650,8 @@ const isonimDesignReviewSpecs: seq[DrSpec] = @[
   dr("e2e_pipeline_refuses_dirty_workspace",      {drNeedsReview}),
   # Chat / agent-routes / campaigns — serve daemon + fake-acp-agent stdio.
   dr("test_design_review_daemon_agent_routes",    {drNeedsReview, drNeedsFakeAcp}),
+  dr("test_editor_agent_route_ownership",         {}),
+  dr("test_editor_scenario_protocol",             {}),
   dr("test_design_review_cli_chat",               {drNeedsReview, drNeedsFakeAcp}),
   dr("test_design_review_streaming_sse",          {drNeedsReview, drNeedsFakeAcp}),
   dr("test_design_review_chat_priming",           {drNeedsReview, drNeedsFakeAcp}),
@@ -858,6 +860,46 @@ package isonim:
       extraInputs = @["src", "examples/source_project", "tools/build_source_catalog.py", "Justfile", "package.json"],
       extraOutputs = @["build/editor-source", "examples/source_project/.isonim/catalog.json"])
     testBuildActions.add(sourceBrowserEdge)
+    # Official private Harbor scenarios: absence of the sibling is optional;
+    # provider/build/runtime failure when present remains a real failed test.
+    let scenarioHostEdge = buildNimUnittest.build(
+      source = "tests/test_editor_scenario_host.nim",
+      binary = "build/bin/editor-scenario-host",
+      defines = isonimDefines,
+      paths = isonimPaths,
+      actionId = "isonim.scenario_build.native_host",
+      extraInputs = @["src", "tests/test_editor_scenario_host.nim"])
+    testBuildActions.add(scenarioHostEdge.action)
+    testExecuteActions.add(pythonUnittest.run(
+      source = "tests/test_editor_scenarios.py",
+      actionId = "isonim.scenario_execute.native",
+      after = @[controlCliEdge, sourceBrowserEdge, scenarioHostEdge.action],
+      extraInputs = @["tests/test_editor_scenarios.py", "tests/helpers/editor_scenario_runtime.py",
+        "tests/helpers/editor_scenario_provider.py", "tests/helpers/editor_scenario_barrier.py",
+        "tests/helpers/editor_scenario_network_probe.py",
+        "tests/scenarios/agent-harbor/editor-workflows.yaml", "tests/scenarios/agent-harbor/README.md", "tools/editor_server.py",
+        "tools/editor_agent_env.py", "examples/source_project", "build/bin/editor-scenario-host",
+        "build/bin/isonim", "build/editor-source"]))
+    testExecuteActions.add(pythonUnittest.run(
+      source = "tests/test_editor_scenario_stress.py",
+      actionId = "isonim.scenario_execute.stream_ownership",
+      after = @[controlCliEdge, sourceBrowserEdge, scenarioHostEdge.action],
+      extraInputs = @["tests/test_editor_scenario_stress.py", "tests/helpers/editor_scenario_runtime.py",
+        "tests/helpers/editor_scenario_provider.py", "tests/helpers/editor_scenario_barrier.py",
+        "tests/helpers/editor_scenario_network_probe.py", "tests/scenarios/agent-harbor/editor-workflows.yaml",
+        "tests/scenarios/agent-harbor/README.md", "tools/editor_server.py", "tools/editor_agent_env.py",
+        "examples/source_project", "build/bin/editor-scenario-host", "build/bin/isonim", "build/editor-source"]))
+    testExecuteActions.add(pythonUnittest.run(
+      source = "tests/run_editor_scenarios_gui.py",
+      actionId = "isonim.scenario_execute.gui",
+      after = @[controlCliEdge, sourceBrowserEdge],
+      extraInputs = @["tests/run_editor_scenarios_gui.py", "tests/test_editor_scenarios_gui.mjs",
+        "tests/helpers/editor_scenario_runtime.py", "tests/helpers/editor_scenario_provider.py",
+        "tests/helpers/editor_scenario_barrier.py", "tests/helpers/editor_scenario_network_probe.py",
+        "tests/scenarios/agent-harbor/editor-workflows.yaml", "tests/scenarios/agent-harbor/README.md",
+        "tools/editor_server.py", "tools/editor_agent_env.py", "examples/source_project",
+        "build/bin/isonim", "build/editor-source"]))
+
     testExecuteActions.add(pythonUnittest.run(
       source = "tests/test_editor_source_project.py",
       actionId = "isonim.source_execute.native",
