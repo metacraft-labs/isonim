@@ -1191,6 +1191,7 @@ test-editor-control: isonim-review-build editor-control-build
     nim c -r tests/test_editor_control_routes.nim
     nim c -r tests/test_editor_agent_launch_cleanup.nim
     python3 tests/test_editor_agent_env.py
+    python3 tests/test_editor_cli_wait.py
     node tests/test_editor_control_gui.mjs
 
 # Isolated mounted control acceptance bundle; does not bake/alter project briefs.

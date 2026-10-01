@@ -923,6 +923,11 @@ package isonim:
       actionId = "isonim.control_execute.agent_env",
       after = @[reviewToolEdge.action],
       extraInputs = @["tools/editor_agent_env.py", "tests/test_editor_agent_env.py", drReviewBin]))
+    testExecuteActions.add(pythonUnittest.run(
+      source = "tests/test_editor_cli_wait.py",
+      actionId = "isonim.control_execute.cli_wait",
+      after = @[controlCliEdge],
+      extraInputs = @["tests/test_editor_cli_wait.py", "tools/isonim_review/cmd_editor.nim", "build/bin/isonim"]))
     testExecuteActions.add(node(
       args = @["tests/test_editor_control_gui.mjs"],
       actionId = "isonim.control_execute.gui_cli",

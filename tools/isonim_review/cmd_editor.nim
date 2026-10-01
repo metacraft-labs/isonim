@@ -50,6 +50,7 @@ proc cmdEditor*(args: seq[string]): int =
   var expectedRevision = -1
   var timeout = 5000
   var waitRequested, highlight, focus: bool
+  var observedOperation: JsonNode
   var index = 1
   try:
     while index < args.len:
@@ -128,6 +129,7 @@ proc cmdEditor*(args: seq[string]): int =
       params = %* {"workspace": workspace, "instance": instance, "epoch": epoch,
         "operationId": output{"operationId"}.getStr()}
     if waitRequested and methodName in ["editor.command", "editor.wait"]:
+      observedOperation = output
       while output{"status"}.getStr() in ["queued", "pending", "approved", "running"]:
         if int((getMonoTime() - started).inMilliseconds) >= timeout:
           echo $(%* {"error": "control_timeout", "operation": output})
@@ -137,6 +139,7 @@ proc cmdEditor*(args: seq[string]): int =
           echo $(%* {"error": "control_timeout", "operation": output})
           return 5
         output = call("editor.wait", params)
+        observedOperation = output
     echo $output
     if output{"status"}.getStr() in ["failed", "rejected"]:
       if output{"error"}.getStr() in ["revision_conflict", "command_id_collision"]: return 6
@@ -148,7 +151,11 @@ proc cmdEditor*(args: seq[string]): int =
   except CatchableError as error:
     # Exceptions never contain request headers or environment values.
     let message = error.msg
+    if message == "control_timeout":
+      var failure = %* {"error": message}
+      if observedOperation != nil: failure["operation"] = observedOperation
+      echo $failure
+      return 5
     echo $(%* {"error": message})
-    if message == "control_timeout": return 5
     if "revision_conflict" in message or "command_id_collision" in message: return 6
     return 3
