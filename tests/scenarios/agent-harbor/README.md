@@ -11,8 +11,14 @@ Run `just test-editor-scenarios-native`, `just test-editor-scenarios-stress` or
 `ISONIM_HARBOR_SCENARIO_PROVIDER` pointing to the official built Rust `mock-agent`.
 Only an absent private Harbor checkout can skip. A present checkout with missing
 provider, failed build or failed workflow fails. All three commands use private owned
-launcher/Harbor/SQLite/provider instances and retain `/tmp/eac-m5-*` artifacts
-(under Repro's private temporary directory when applicable).
+launcher/Harbor/SQLite/provider instances and retain artifacts under
+`/tmp/eac-m5-*/project/.scenario` (under Repro's temporary directory when applicable).
+The `.scenario` directory is fixture execution state, separate from source and
+catalog inputs. Placing it inside the bound project preserves Harbor's private
+`/tmp`; no parent directory or global host temporary files are exposed. Source
+non-mutation checks cover every project file outside this fixture directory.
+Production launch handoffs use privately owned application data outside hidden
+host `/tmp` and runtime IPC, and remain read-only to the isolated provider.
 
 The native suite is one stateful integration test, with named workflow outcomes;
 the GUI runner records its own named outcomes. These are workflow checks, not
@@ -54,3 +60,11 @@ Artifacts include actual host/browser logs, named outcomes, provider identities
 and prompt traces, private Harbor SQLite event export, source diff and catalog,
 compiler diagnostics, mounted HTML results and separately named PNGs. A screenshot
 is retained evidence; automated checks do not constitute visual acceptance.
+
+The fixture reads its own Harbor service's persisted ACP launch configuration,
+matching the exact bound project and wrapper. It privately records the original
+production handoff path. Every real terminal CLI command consumes that original
+application-data file; native and GUI checks also verify its exact path, six-key
+shape, scope equality and 0600/0700 modes inside the actual terminal. The fixture
+copy is retained only for host-side authenticated observations. No additional
+privileged environment key or host temporary mount is introduced.

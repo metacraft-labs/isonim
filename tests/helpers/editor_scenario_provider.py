@@ -3,7 +3,8 @@
 
 Model decisions are in the shared Scenario-Format YAML. This wrapper only records
 process launch identity and writes the allowed six production environment values
-into a private file for ACP terminal commands (which receive literal args.env).
+into a private snapshot for host-side authenticated observations. Actual ACP
+terminal commands use the original production handoff from current session metadata.
 No credential is placed in YAML, traces, system prompts or daemon-global env.
 """
 import json
@@ -18,9 +19,11 @@ keys = {'ISONIM_EDITOR_ENDPOINT','ISONIM_EDITOR_WORKSPACE','ISONIM_EDITOR_INSTAN
         'ISONIM_EDITOR_EPOCH','ISONIM_EDITOR_TOKEN','ISONIM_EDITOR_CLI_DIR'}
 values = {key: os.environ[key] for key in keys}
 filename = private / 'provider-scope.json'
-fd = os.open(filename, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+temporary = private / '.provider-scope.pending'
+fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
 with os.fdopen(fd, 'w') as stream:
     json.dump(values, stream)
+os.replace(temporary, filename)
 with (root / 'provider-launch.jsonl').open('a') as stream:
     stream.write(json.dumps({'pid':os.getpid(),'provider':str(provider),'scenario':str(scenario),
                             'network_namespace':os.readlink('/proc/self/ns/net') if Path('/proc/self/ns/net').exists() else None,

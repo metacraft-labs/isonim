@@ -359,7 +359,14 @@ try {
         const queued=(await request(scope,'editor.poll',{},scope.browserToken)).result.commands.find(operation=>operation.operationId===probeResult.operationId);
         assert.equal(queued.status,'queued','Actual provider CLI command must be revoked before any browser delivery');
         assert.equal(queued.request.expectedRevision,beforeInitial.revision,'Queued command has the settled real VM revision; denial alone prevents execution');
+        // A DOM click dispatches the asynchronous close request. Observe its
+        // actual successful completion before inspecting persisted revocation;
+        // initial command delivery remains held throughout this barrier.
+        const closeReply=page.waitForResponse(response=>response.url().endsWith('/api/agent/close') && response.request().method()==='POST');
         await page.locator('[data-agent-close]').click();
+        const closed=await closeReply;
+        assert.equal(closed.status(),200);
+        assert.deepEqual(await closed.json(),{closed:true});
         terminal=(await request(scope,'editor.poll',{},scope.browserToken)).result.commands.find(operation=>operation.operationId===probeResult.operationId);
         assert.equal(terminal.error,'conversation_closed');
       } finally {await releaseInitial();}

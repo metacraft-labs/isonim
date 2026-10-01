@@ -8,6 +8,10 @@ Absence of the optional private sibling is the only automatic skip. When present
 ISONIM_HARBOR_SCENARIO_PROVIDER must name its already-built official mock-agent.
 POSIX native PID/starttime/argv/executable checks prove continuity. Linux also
 requires kernel start ticks and the provider's exact NSpid namespace mapping.
+Execution inputs live in the bound project because supported isolation hides
+host temporary/cache directories. The official provider is copied byte-for-byte
+and both that copy and the actual executed process are checked against its
+source SHA; no provider decisions or protocol behavior are replaced.
 """
 import hashlib
 import http.client
@@ -17,6 +21,7 @@ from pathlib import Path
 import queue
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -58,28 +63,36 @@ class EditorHarborScenario(unittest.TestCase):
         if not optional_sibling_available(HARBOR):
             self.skipTest('optional private Agent Harbor sibling absent')
         OBSERVER = process_observer()
-        provider = Path(os.environ.get('ISONIM_HARBOR_SCENARIO_PROVIDER', '/missing-provider')).resolve()
-        self.assertTrue(provider.is_file() and os.access(provider, os.X_OK),
+        provider_source = Path(os.environ.get('ISONIM_HARBOR_SCENARIO_PROVIDER', '/missing-provider')).resolve()
+        self.assertTrue(provider_source.is_file() and os.access(provider_source, os.X_OK),
                         'Set ISONIM_HARBOR_SCENARIO_PROVIDER to the built official Harbor mock-agent')
         daemon = ROOT / 'build/bin/isonim-review'
         self.assertTrue(daemon.is_file(), 'Build with just isonim-review-build')
-        artifacts = Path(tempfile.mkdtemp(prefix='isonim-editor-harbor-scenario-'))
+        artifacts = Path(tempfile.mkdtemp(prefix='isonim-editor-harbor-scenario-')).resolve()
         print('Acceptance artifacts:', artifacts, flush=True)
         self.artifacts = artifacts
         workspace = artifacts / 'workspace'
         workspace.mkdir()
+        fixture = workspace / '.scenario'
+        fixture.mkdir(mode=0o700)
+        provider = fixture / 'mock-agent'
+        shutil.copyfile(provider_source, provider)
+        provider.chmod(0o755)
+        provider_sha = hashlib.sha256(provider_source.read_bytes()).hexdigest()
+        self.assertEqual(hashlib.sha256(provider.read_bytes()).hexdigest(), provider_sha,
+                         'The sandbox-visible provider must be the exact official build')
         (workspace / 'isonim.nimble').write_text('# actual isolated project boundary\n')
         config = artifacts / 'empty.toml'
         config.write_text('')  # Defaults: no explicit backend, command or endpoint.
-        bindir = artifacts / 'bin'
+        bindir = fixture / 'bin'
         bindir.mkdir()
         scenario_paths = []
         for index in range(2):
-            scenario = artifacts / f'chat{index}.yaml'
+            scenario = fixture / f'chat{index}.yaml'
             scenario.write_text(SCENARIO.read_text().replace('ISONIM_CONTEXT_7309', f'ISONIM_CONTEXT_7309_{index}')
                                 .replace('isonim-persistent-session', f'isonim-persistent-session-{index}'))
             scenario_paths.append(str(scenario))
-        chooser = artifacts / 'choose_scenario.py'
+        chooser = fixture / 'choose_scenario.py'
         chooser.write_text('''import fcntl, json, os, pathlib, sys
 root = pathlib.Path(sys.argv[1])
 provider = sys.argv[2]
@@ -102,7 +115,7 @@ os.environ.pop('MOCK_AGENT_PROMPT_LOG', None)
 os.execv(provider, [provider, '--scenario', scenarios[index], '--disable-follower'])
 ''')
         wrapper = bindir / 'claude-agent-acp'
-        wrapper.write_text('#!/bin/sh\nexec ' + shlex.join([sys.executable, str(chooser), str(artifacts),
+        wrapper.write_text('#!/bin/sh\nexec ' + shlex.join([sys.executable, str(chooser), str(fixture),
                                                           str(provider), json.dumps(scenario_paths)]) + '\n')
         wrapper.chmod(0o755)
         env = dict(os.environ)
@@ -120,6 +133,9 @@ os.execv(provider, [provider, '--scenario', scenarios[index], '--disable-followe
                                     'diff_sha256': hashlib.sha256(subprocess.check_output(['git', 'diff', 'HEAD'], cwd=repo)).hexdigest()}
         identities['daemon_sha256'] = hashlib.sha256(daemon.read_bytes()).hexdigest()
         identities['provider_sha256'] = hashlib.sha256(provider.read_bytes()).hexdigest()
+        identities['provider_source_sha256'] = provider_sha
+        identities['provider_source'] = str(provider_source)
+        identities['provider_executed_path'] = str(provider)
         identities['scenario_sha256'] = hashlib.sha256(SCENARIO.read_bytes()).hexdigest()
         identities['acceptance_sha256'] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
         identities['observer_sha256'] = hashlib.sha256((ROOT / 'tests/helpers/editor_process_observer.py').read_bytes()).hexdigest()
@@ -204,7 +220,7 @@ os.execv(provider, [provider, '--scenario', scenarios[index], '--disable-followe
                               and table[pid][2][0] == str(provider)}
                 self.assertEqual(len(set(candidates) - before), 1, 'each chat needs its own actual playback process')
                 chat_workers.append(next(iter(set(candidates) - before)))
-                launched = json.loads((artifacts / f'provider-launch-{index}.json').read_text())
+                launched = json.loads((fixture / f'provider-launch-{index}.json').read_text())
                 # Harbor may isolate the provider in a PID namespace. Ground
                 # its exec-before-playback PID in our proc mount's kernel mapping.
                 if sys.platform == 'linux':
@@ -219,10 +235,17 @@ os.execv(provider, [provider, '--scenario', scenarios[index], '--disable-followe
                     provider_pid = chat_workers[index]
                 self.assertEqual(launched, {'pid': provider_pid, 'scenario': scenario_paths[index]})
                 self.assertEqual(Path(candidates[chat_workers[index]][3]).resolve(), provider)
+                actual_executable = (Path(f'/proc/{chat_workers[index]}/exe')
+                                     if sys.platform == 'linux'
+                                     else Path(candidates[chat_workers[index]][3]))
+                loaded_sha = hashlib.sha256(actual_executable.read_bytes()).hexdigest()
+                self.assertEqual(loaded_sha, provider_sha,
+                                 'Actual running provider must load the exact official bytes')
                 (artifacts / f'provider-identity-{index}.json').write_text(json.dumps(
                     {'backend_id': backend_ids[index], 'observer_pid': chat_workers[index],
                      'starttime': candidates[chat_workers[index]][1], 'starttime_kind': OBSERVER.starttime_kind,
-                     'executable': candidates[chat_workers[index]][3], 'namespace_pids': namespace_pids,
+                     'executable': candidates[chat_workers[index]][3], 'executable_sha256': loaded_sha,
+                     'provider_source_sha256': provider_sha, 'namespace_pids': namespace_pids,
                      'scenario': scenario_paths[index]}, indent=2))
                 self.assertIn(scenario_paths[index], candidates[chat_workers[index]][2])
                 workers.update(candidates)
@@ -238,7 +261,7 @@ os.execv(provider, [provider, '--scenario', scenarios[index], '--disable-followe
                 self.assertEqual(event_ids, {backend_ids[index]}, 'followup must reach this same backend session')
                 self.assertEqual({s['id'] for s in self.sessions()}, set(backend_ids))
                 self.observe_idle_workers(workers)
-                trace = [json.loads(line) for line in (artifacts / f'provider-prompts-{index}.jsonl').read_text().splitlines()]
+                trace = [json.loads(line) for line in (fixture / f'provider-prompts-{index}.jsonl').read_text().splitlines()]
                 self.assertEqual(trace, [FIRST.replace('ISONIM_CONTEXT_7309', f'ISONIM_CONTEXT_7309_{index}'), SECOND],
                                  'exactly two actual provider requests in this conversation, without a hidden primer')
                 # Accepted/acknowledged delivery can reach the provider before

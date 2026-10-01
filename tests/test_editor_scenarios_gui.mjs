@@ -69,6 +69,34 @@ const page=await browserContext.newPage();
 const errors=[];page.on('pageerror',error=>errors.push(error.message));
 const promptRequests=[];page.on('request',request=>{if(request.url().endsWith('/api/agent/prompts'))promptRequests.push(request.postDataJSON());});
 let registrations=0;page.on('request',request=>{if(request.url().endsWith('/api/editor/rpc')&&request.postDataJSON()?.method==='editor.register')registrations++;});
+// Read-only observation of actual successful browser publication. Record public
+// target state only; authentication headers and registration credentials stay
+// out of these artifacts. No fake response or request interception is used.
+let acknowledgedControlState;
+const controlPublications=[];
+const controlFields=['revision','storyId','previewGeneration','elements','buildStage','focus','selection','highlight','viewport','view','mode','panels','surface','rightSidebarTab','buildDiagnostics'];
+let acknowledgedBinding;
+page.on('response',async response=>{
+ const request=response.request();
+ if(!response.url().endsWith('/api/editor/rpc')||request.postDataJSON()?.method!=='editor.poll'||!response.ok())return;
+ let reply;
+ try{reply=await response.json();}catch{
+  // A closing/offline page may dispose a response body. It cannot establish
+  // readiness; subsequent real acknowledged publication is still required.
+  return;
+ }
+ if(!reply.result)return;
+ const params=request.postDataJSON().params,state=params.state;if(!state)return;
+ const binding=params.instance+':'+params.epoch;
+ const published=Object.fromEntries(controlFields.map(field=>[field,state[field]]));
+ if(binding===acknowledgedBinding&&acknowledgedControlState&&published.revision<acknowledgedControlState.revision)return;
+ const changed=controlFields.filter(field=>binding!==acknowledgedBinding||JSON.stringify(acknowledgedControlState?.[field])!==JSON.stringify(published[field]));
+ acknowledgedBinding=binding;acknowledgedControlState=published;
+ if(changed.length){
+  controlPublications.push({time:Date.now(),state:published,changed});
+  writeFileSync(path.join(artifacts,'control-publications.json'),JSON.stringify(controlPublications,null,2));
+ }
+});
 const composer=page.locator('[data-editor-control-focus="composer"]');
 const send=page.getByRole('button',{name:'Send agent prompt',exact:true});
 const preview=()=>page.frameLocator('iframe[data-component-project-frame="true"]');
@@ -79,7 +107,40 @@ async function sendPhase(number,text){
  await until(()=>promptRequests.length===count+1,'real prompt admitted');
 }
 async function turnEnded(){await until(()=>send.getAttribute('aria-disabled').then(value=>value==='false'),'actual terminal restores composer admission');}
-async function mounted(text){await preview().locator('h1').filter({hasText:text}).waitFor();}
+const mountedReadiness=[];
+async function mounted(text,buildStage='wesClean'){
+ // Visible text can precede iframe load/inspector publication. Release the real
+ // tool barrier only after this completed document's exact story, generation
+ // and element tree have reached the daemon through a successful browser poll.
+ const observed=[];
+ await until(async()=>{
+  const documentState=await page.evaluate(()=>{
+   const frame=document.querySelector('iframe[data-component-project-frame="true"]');
+   const doc=frame?.contentDocument,h1=doc?.querySelector('h1');
+   return {readyState:doc?.readyState,heading:h1?.textContent,visible:!!h1?.getClientRects().length,
+    storyId:doc?.querySelector('meta[name=isonim-rendered-story]')?.content,
+    previewGeneration:Number(doc?.querySelector('meta[name=isonim-rendered-generation]')?.content),
+    elements:doc?[...doc.querySelectorAll('[data-isonim-element-id]')].map(node=>node.getAttribute('data-isonim-element-id')).sort():[]};
+  });
+  const published=acknowledgedControlState;
+  const observation={document:documentState,published};
+  if(JSON.stringify(observed.at(-1))!==JSON.stringify(observation))observed.push(observation);
+  if(documentState.readyState!=='complete'||!documentState.visible||!documentState.heading?.includes(text)||
+     !published||acknowledgedBinding!==scope.instance+':'+scope.epoch||published.buildStage!==buildStage||published.storyId!==documentState.storyId||
+     published.previewGeneration!==documentState.previewGeneration||!documentState.elements.length||
+     JSON.stringify(published.elements.map(row=>row.id).sort())!==JSON.stringify(documentState.elements))return false;
+  // Preserve Playwright's original heading visibility contract, including
+  // hidden outer iframe ancestors, within this same readiness deadline.
+  if(!await preview().locator('h1').filter({hasText:text}).isVisible())return false;
+  const current=await cli(['state']);
+  if(current.revision!==published.revision||current.storyId!==published.storyId||
+     current.previewGeneration!==published.previewGeneration||
+     JSON.stringify(current.elements.map(row=>row.id).sort())!==JSON.stringify(documentState.elements))return false;
+  mountedReadiness.push({heading:text,observed,completed:{document:documentState,published,cliRevision:current.revision}});
+  writeFileSync(path.join(artifacts,'mounted-readiness.json'),JSON.stringify(mountedReadiness,null,2));
+  return true;
+ },'completed mounted preview and acknowledged current element/story/generation state',30000);
+}
 async function shot(name){await page.screenshot({path:path.join(artifacts,name+'.png')});}
 async function selectChat(id){
  const tab=page.locator(`[data-ai-assistant-tab="${id}"]`);
@@ -120,6 +181,14 @@ try{
  evidence(10,'Shift+Enter multiline and composing Enter cannot submit');
  phase(1);await composer.fill('Create the busy Card story, compile it, open it and capture its HTML.');await composer.press('Enter');
  await until(()=>existsSync(path.join(artifacts,'entered-1')),'official runCmd executing barrier');
+ const originalHandoff=JSON.parse(readFileSync(path.join(artifacts,'private/original-handoff.json'),'utf8'));
+ const terminalHandoff=JSON.parse(readFileSync(path.join(artifacts,'terminal-network.json'),'utf8')).original_handoff;
+ assert.equal(terminalHandoff.path,originalHandoff.environment);
+ assert.equal(terminalHandoff.session,originalHandoff.session);
+ assert.deepEqual(terminalHandoff.allowed_keys,['ISONIM_EDITOR_CLI_DIR','ISONIM_EDITOR_ENDPOINT','ISONIM_EDITOR_EPOCH',
+  'ISONIM_EDITOR_INSTANCE','ISONIM_EDITOR_TOKEN','ISONIM_EDITOR_WORKSPACE']);
+ assert.equal(terminalHandoff.provider_scope_matches,true);
+ assert.equal(terminalHandoff.file_mode,'0600');assert.equal(terminalHandoff.directory_mode,'0700');
  await page.getByText('ISONIM_M5_STREAM_BEGIN.',{exact:false}).first().waitFor();
  assert.equal(await send.getAttribute('aria-disabled'),'true');
  await composer.fill('Next browser draft during live output and tools');
@@ -193,7 +262,7 @@ try{
  await sendPhase(3,'Attempt invalid error fixture and expose real compiler failure.');await turnEnded();
  const failed=await cli(['wait','fail-compile'],4);assert(failed.diagnostic.includes('type mismatch'));
  assert.equal(readFileSync(path.join(project,'stories.nim'),'utf8'),source);assert.equal(readFileSync(path.join(project,'.isonim/catalog.json'),'utf8'),catalog);
- await mounted('Followup card');
+ await mounted('Followup card','wesFailed');
  const failedCard=page.locator('[data-chat-entry]').filter({has:page.locator('[data-chat-activity-status]').filter({hasText:/^failed$/})}).last();
  await failedCard.locator('[data-chat-activity-status]').waitFor();
  await failedCard.locator('summary').click();

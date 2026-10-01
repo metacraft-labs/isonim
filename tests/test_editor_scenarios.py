@@ -31,6 +31,14 @@ class EditorScenarios(unittest.TestCase):
             wait(lambda:(runtime.artifacts/'entered-1').exists(),'actual provider tool entered')
             wait(lambda:any('ISONIM_M5_STREAM_BEGIN' in message['text'] for message in runtime.active()['messages']),'incremental real SSE reaches VM')
             self.assertTrue(runtime.active()['busy'])
+            terminal=json.loads((runtime.artifacts/'terminal-network.json').read_text())['original_handoff']
+            original=json.loads((runtime.private/'original-handoff.json').read_text())
+            self.assertEqual(terminal['path'],original['environment'])
+            self.assertEqual(terminal['session'],original['session'])
+            self.assertEqual(terminal['allowed_keys'],sorted(['ISONIM_EDITOR_ENDPOINT','ISONIM_EDITOR_WORKSPACE',
+                'ISONIM_EDITOR_INSTANCE','ISONIM_EDITOR_EPOCH','ISONIM_EDITOR_TOKEN','ISONIM_EDITOR_CLI_DIR']))
+            self.assertTrue(terminal['provider_scope_matches'])
+            self.assertEqual((terminal['file_mode'],terminal['directory_mode']),('0600','0700'))
             runtime.action(action='draft',text='Compose my next request while actual tools run')
             sid=runtime.active()['backend']; self.assertTrue(sid)
             identity=runtime.providerIdentity()
@@ -90,7 +98,7 @@ class EditorScenarios(unittest.TestCase):
             checked(8,'same commandId retry has byte-identical terminal result; stale revision denied')
             def project_files():
                 return {str(path.relative_to(runtime.project)):{'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'mtime_ns':path.stat().st_mtime_ns}
-                        for path in runtime.project.rglob('*') if path.is_file()}
+                        for path in runtime.project.rglob('*') if path.is_file() and '.scenario' not in path.relative_to(runtime.project).parts}
             denied_files=project_files()
             runtime.turn(8,'Reject unsupported eval-script without changing source.')
             self.assertEqual(runtime.cli(['wait','unsupported'],4)['error'],'unsupported_capability')

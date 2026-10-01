@@ -6,6 +6,7 @@ and artifacts contain no credentials. Failure logs, catalog/source diff and real
 provider identity/prompt traces are retained. Cleanup targets owned descendants.
 """
 import hashlib
+from contextlib import closing
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ import re
 import shlex
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -41,13 +43,20 @@ class Runtime:
     def __init__(self, host):
         if not optional_sibling_available(HARBOR): raise FileNotFoundError('optional private Agent Harbor sibling absent')
         self.observer = process_observer()
+        self.daemon = (ROOT/'build/bin/isonim-review').resolve()
+        if self.daemon.parent!=(ROOT/'build/bin').resolve() or not self.daemon.is_file() or not os.access(self.daemon,os.X_OK):
+            raise AssertionError('Scenario daemon must be an executable in this workspace build/bin')
         self.provider = Path(os.environ.get('ISONIM_HARBOR_SCENARIO_PROVIDER','/missing-provider')).resolve()
         if not self.provider.is_file() or not os.access(self.provider,os.X_OK): raise AssertionError('Set ISONIM_HARBOR_SCENARIO_PROVIDER to the built official Rust mock-agent')
-        self.artifacts = Path(tempfile.mkdtemp(prefix='eac-m5-'+host+'-'))
-        self.artifacts.chmod(0o700)
-        self.private = self.artifacts/'private'; self.private.mkdir(mode=0o700)
-        self.project = self.artifacts/'project'
+        root = Path(tempfile.mkdtemp(prefix='eac-m5-'+host+'-')).resolve()
+        root.chmod(0o700)
+        self.project = root/'project'
         shutil.copytree(ROOT/'examples/source_project',self.project,ignore=shutil.ignore_patterns('catalog-producer*','catalog.json'))
+        # Only the bound workspace crosses Harbor's private /tmp. Keep fixture
+        # execution, barriers and artifacts apart from source/catalog inputs.
+        self.artifacts = self.project/'.scenario'
+        self.artifacts.mkdir(mode=0o700)
+        self.private = self.artifacts/'private'; self.private.mkdir(mode=0o700)
         self.before = (self.project/'stories.nim').read_text()
         self.env = dict(os.environ)
         for key in list(self.env):
@@ -69,11 +78,12 @@ class Runtime:
         self.env['PATH']=str(bindir)+os.pathsep+self.env['PATH']
         config=self.artifacts/'empty.toml'; config.write_text('')
         self.handles=[]; self.children=[]; self.readers=[]; self.readerErrors=[]
+        self.handoffStop=threading.Event()
         self.lines=queue.Queue()
         self.harborBefore=set(Path(tempfile.gettempdir()).glob('isonim-harbor-*'))
         self.server=self.spawn([sys.executable,str(ROOT/'tools/editor_server.py'),'--directory',str(ROOT/'build/editor-source'),
             '--project-root',str(self.project),'--port','0','--bind','127.0.0.1','--config',str(config),
-            '--daemon-binary',str(ROOT/'build/bin/isonim-review')],'launcher')
+            '--daemon-binary',str(self.daemon)],'launcher')
         def ready():
             if self.server.poll() is not None: raise AssertionError('Real launcher exited')
             while not self.lines.empty():
@@ -123,6 +133,7 @@ class Runtime:
             self.harborUrl = match[1]
             actual_binary=Path('/proc')/str(self.harborPid)/'exe' if sys.platform=='linux' else Path(self.harborIdentity[3])
             (self.artifacts/'owned-harbor.json').write_text(json.dumps({'state':str(self.harborState),'pid':self.harborPid,'identity':self.harborIdentity,'executable_sha256':hashlib.sha256(actual_binary.read_bytes()).hexdigest(),'rest':self.harborUrl}))
+            self.recordOriginalHandoff()
             self.host=None;self.hostOrigin=None;self.scope=None
             if host=='native':
                 html=urllib.request.urlopen(self.origin).read().decode()
@@ -142,6 +153,11 @@ class Runtime:
                 self.scope=json.loads((self.private/'registration.json').read_text())
             identity={repo.name:{'head':subprocess.check_output(['git','rev-parse','HEAD'],cwd=repo,text=True).strip(),
                  'diff_sha256':hashlib.sha256(subprocess.check_output(['git','diff','HEAD'],cwd=repo)).hexdigest()} for repo in (ROOT,HARBOR,ROOT.parent/'nim-agents')}
+            daemonPids=[pid for pid,row in owned.items() if pid in pids and row[2] and row[2][0]==str(self.daemon)]
+            if len(daemonPids)!=1:raise AssertionError('Exactly one actual selected daemon required')
+            daemonPid=daemonPids[0]
+            loaded=Path('/proc')/str(daemonPid)/'exe' if sys.platform=='linux' else self.daemon
+            identity['daemon']={'pid':daemonPid,'identity':owned[daemonPid],'binary':str(self.daemon),'loaded_sha256':hashlib.sha256(loaded.read_bytes()).hexdigest()}
             identity['provider_sha256']=hashlib.sha256(self.provider.read_bytes()).hexdigest()
             (self.artifacts/'identities.json').write_text(json.dumps(identity,indent=2))
             (self.artifacts/'context.json').write_text(json.dumps({'origin':self.origin,'project':str(self.project),'repo':str(ROOT),'artifacts':str(self.artifacts)}))
@@ -149,6 +165,49 @@ class Runtime:
         except BaseException:
             self.close()
             raise
+    def recordOriginalHandoff(self):
+        # Read only THIS owned service's actual persisted launch configuration.
+        # Match the exact bound project and provider wrapper, never host file
+        # globs or an older successful session. Publish a non-secret filepath
+        # privately so real ACP terminals can consume the original handoff.
+        def observe():
+            try:
+                while not self.handoffStop.is_set():
+                    with closing(sqlite3.connect(self.harborState/'daemon.sqlite')) as database:
+                        rows=database.execute('select id, workspace_path, agent_config from sessions').fetchall()
+                    snapshot=self.private/'provider-scope.json'
+                    if not snapshot.exists():
+                        self.handoffStop.wait(.03);continue
+                    current=json.loads(snapshot.read_text())
+                    matches=[]
+                    for sid,workspace,configuration in rows:
+                        if workspace!=str(self.project):continue
+                        launch=json.loads(configuration or '{}').get('acp_stdio_launch_command',{})
+                        args=launch.get('args',[])
+                        if str(self.artifacts/'bin/claude-agent-acp') not in args:continue
+                        if args.count('--environment')!=1:raise AssertionError('Exact scoped launch configuration required')
+                        filename=Path(args[args.index('--environment')+1])
+                        if not filename.is_absolute() or filename.name!='environment.json':
+                            raise AssertionError('Actual absolute production handoff required')
+                        try: original=json.loads(filename.read_text())
+                        except FileNotFoundError:continue
+                        # The exact current provider's private scope selects its
+                        # session even when this project has other chat rows.
+                        if {key:value for key,value in original.items() if key!='ISONIM_EDITOR_ENDPOINT'} != {
+                            key:value for key,value in current.items() if key!='ISONIM_EDITOR_ENDPOINT'}:continue
+                        matches.append({'session':sid,'environment':str(filename),'current_provider_scope_matches':True})
+                    if len(matches)>1:raise AssertionError('Exactly one current actual provider launch required')
+                    if matches:
+                        filename=self.private/'.original-handoff.pending'
+                        fd=os.open(filename,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+                        with os.fdopen(fd,'w') as output:json.dump(matches[0],output)
+                        os.replace(filename,self.private/'original-handoff.json')
+                        return
+                    self.handoffStop.wait(.03)
+            except BaseException as error:self.readerErrors.append(repr(error))
+        reader=threading.Thread(target=observe,daemon=True)
+        self.readers.append(reader);reader.start()
+
     def spawn(self,args,name,env=None):
         log=(self.artifacts/(name+'.log')).open('w');self.handles.append(log)
         child=subprocess.Popen(args,env=env or self.env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,start_new_session=True)
@@ -204,6 +263,7 @@ class Runtime:
         (self.artifacts/'provider-identity.json').write_text(json.dumps(result,indent=2))
         return result
     def close(self):
+        self.handoffStop.set()
         # Save actual final source/catalog even on a failed assertion.
         if self.project.exists():
             import difflib
@@ -218,7 +278,7 @@ class Runtime:
             owned.update(added)
         if hasattr(self,'harborState'):
             import sqlite3
-            with sqlite3.connect(self.harborState/'daemon.sqlite') as database:
+            with closing(sqlite3.connect(self.harborState/'daemon.sqlite')) as database:
                 events=[{'session':sid,'kind':kind,'payload':json.loads(payload)}
                         for sid,kind,payload in database.execute('select session_id,kind,payload from session_events')]
             (self.artifacts/'harbor-events.json').write_text(json.dumps(events,indent=2))

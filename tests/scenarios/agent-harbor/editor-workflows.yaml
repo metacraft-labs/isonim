@@ -20,10 +20,12 @@ timeline:
         cmd: |
           set -eu
           phase=$(cat '@ARTIFACTS@/phase')
-          tool() { '@PYTHON@' '@WRAPPER@' --environment '@PRIVATE@/provider-scope.json' -- '@CLI@' editor "$@"; }
+          '@PYTHON@' '@BARRIER@' '@PRIVATE@/original-handoff.json'
+          environment=$('@PYTHON@' -c 'import json,sys;print(json.load(open(sys.argv[1]))["environment"])' '@PRIVATE@/original-handoff.json')
+          tool() { '@PYTHON@' '@WRAPPER@' --environment "$environment" -- '@CLI@' editor "$@"; }
           case "$phase" in
             1)
-              '@PYTHON@' '@NETPROBE@' '@PRIVATE@/provider-scope.json' '@ARTIFACTS@/terminal-network.json'
+              '@PYTHON@' '@NETPROBE@' '@PRIVATE@/provider-scope.json' '@ARTIFACTS@/terminal-network.json' '@PRIVATE@/original-handoff.json' '@WRAPPER@'
               touch '@ARTIFACTS@/entered-1'
               '@PYTHON@' '@BARRIER@' '@ARTIFACTS@/release-1'
               tool capabilities
