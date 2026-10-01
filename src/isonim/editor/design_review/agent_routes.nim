@@ -8,7 +8,7 @@
 ## Explicit direct ACP backends retain their existing initialization behavior.
 
 import std/[asyncdispatch, asyncnet, asynchttpserver, atomics, base64, json, locks,
-            options, os, strutils, tables, times]
+            options, os, osproc, sequtils, streams, strutils, tables, times]
 
 import db_connector/db_postgres
 
@@ -87,6 +87,18 @@ const
 # --------------------------------------------------------------------------- #
 #  Registry helpers.                                                          #
 # --------------------------------------------------------------------------- #
+
+proc cleanupControlEnvironment(filename: string) =
+  if filename.len == 0: return
+  let python = findExe("python3")
+  if python.len == 0: raise newException(OSError, "Python control cleanup boundary unavailable")
+  let helper = currentSourcePath().parentDir.parentDir.parentDir.parentDir.parentDir /
+    "tools" / "editor_agent_env.py"
+  let process = startProcess(python, args = @[helper, "--cleanup", filename], options = {})
+  defer: process.close()
+  process.inputStream.close()
+  if process.waitForExit() != 0:
+    raise newException(OSError, "Private control environment cleanup failed")
 
 proc newAgentRegistry*(extraArgs: seq[string] = @[];
     backend: AcpAgentKind = aakClaude;
@@ -190,9 +202,7 @@ proc shutdownAndRelease*(reg: AgentRegistry; sessionId: string) =
       raise
     if reg.controlRegistry != nil: reg.controlRegistry.revokeConversation(sessionId)
     try:
-      if state.controlEnvFile.len > 0 and fileExists(state.controlEnvFile):
-        removeFile(state.controlEnvFile)
-        removeDir(state.controlEnvFile.parentDir)
+      cleanupControlEnvironment(state.controlEnvFile)
     except OSError as error:
       warn "closed agent control environment cleanup failed", sessionId = sessionId, reason = error.msg
     # Closing the backend can return before its stream worker finishes. Move
@@ -332,19 +342,35 @@ proc setTurnWorking(reg: AgentRegistry; id: string; working: bool): bool =
 #  Session creation.                                                          #
 # --------------------------------------------------------------------------- #
 
+proc controlEnvironmentPath*(id: string): string =
+  ## Application data stays visible read-only inside Harbor's supported sandbox.
+  ## Host /tmp, runtime IPC and mutable cache overlays are deliberately excluded.
+  if id.len == 0 or id.anyIt(it notin {'a'..'z', 'A'..'Z', '0'..'9', '-'}):
+    raise newException(IOError, "Invalid control environment identity")
+  when defined(macosx):
+    let data = getHomeDir() / "Library" / "Application Support"
+  else:
+    let data = getHomeDir() / ".local" / "share"
+  data / "isonim" / "editor-control" / ("isonim-control-" & id) / "environment.json"
+
 proc prepareControlEnvironment(reg: AgentRegistry; scope: ControlScope; id: string): string =
-  let runtime = getTempDir() / ("isonim-control-" & id)
-  createDir(runtime)
-  setFilePermissions(runtime, {fpUserRead, fpUserWrite, fpUserExec})
-  result = runtime / "environment.json"
-  writeFile(result, $(%* {
+  result = controlEnvironmentPath(id)
+  let python = findExe("python3")
+  if python.len == 0: raise newException(IOError, "Python control launch boundary unavailable")
+  let helper = currentSourcePath().parentDir.parentDir.parentDir.parentDir.parentDir /
+    "tools" / "editor_agent_env.py"
+  let process = startProcess(python, args = @[helper, "--prepare", result], options = {})
+  defer: process.close()
+  process.inputStream.write($(%* {
     "ISONIM_EDITOR_ENDPOINT": reg.controlRegistry.endpoint,
     "ISONIM_EDITOR_WORKSPACE": scope.workspace,
     "ISONIM_EDITOR_INSTANCE": scope.instance,
     "ISONIM_EDITOR_EPOCH": scope.epoch,
     "ISONIM_EDITOR_TOKEN": scope.token,
     "ISONIM_EDITOR_CLI_DIR": currentSourcePath().parentDir.parentDir.parentDir.parentDir.parentDir / "build" / "bin"}))
-  setFilePermissions(result, {fpUserRead, fpUserWrite})
+  process.inputStream.close()
+  if process.waitForExit() != 0:
+    raise newException(IOError, "Private control environment preparation failed")
 
 proc controlLaunchPrefix(environment: string): seq[string] =
   let python = findExe("python3")
@@ -410,8 +436,7 @@ proc createAcpSession*(reg: AgentRegistry; cwd = "";
           except CatchableError: discard
         if scoped.token.len > 0: reg.controlRegistry.revokeConversation(scoped.conversation)
         try:
-          if environment.len > 0 and fileExists(environment): removeFile(environment)
-          if environment.len > 0 and dirExists(environment.parentDir): removeDir(environment.parentDir)
+          cleanupControlEnvironment(environment)
         except OSError as cleanupError:
           warn "failed creation control environment cleanup", reason = cleanupError.msg
     if controlScope.instance.len > 0:
@@ -430,8 +455,7 @@ proc createAcpSession*(reg: AgentRegistry; cwd = "";
     except AcpError as e:
       if scoped.token.len > 0:
         reg.controlRegistry.revokeConversation(scoped.conversation)
-        if fileExists(environment): removeFile(environment)
-        if dirExists(environment.parentDir): removeDir(environment.parentDir)
+        cleanupControlEnvironment(environment)
       error "agent backend unavailable", reason = e.msg,
         backend = $reg.backend
       raise newException(AgentBackendUnavailableError, e.msg)
@@ -1098,8 +1122,7 @@ proc cleanupAbortedControlEnvironment(reg: AgentRegistry; state: AgentSessionSta
     if reg.sessions.hasKey(state.sessionId) and
         reg.sessions[state.sessionId].controlEnvFile == state.controlEnvFile: return
     try:
-      if fileExists(state.controlEnvFile): removeFile(state.controlEnvFile)
-      if dirExists(state.controlEnvFile.parentDir): removeDir(state.controlEnvFile.parentDir)
+      cleanupControlEnvironment(state.controlEnvFile)
     except OSError as error:
       warn "aborted agent control environment cleanup failed", sessionId = state.sessionId, reason = error.msg
   finally:
@@ -1159,7 +1182,7 @@ proc runAgentTurn*(reg: AgentRegistry; state: AgentSessionState;
           if not reg.sessions[active.sessionId].isDraft:
             raise newException(HarborError, "Conversation changed before provider launch")
           # Preparation and ownership transfer are atomic against session close.
-          active.controlEnvFile = getTempDir() / ("isonim-control-" & active.sessionId) / "environment.json"
+          active.controlEnvFile = controlEnvironmentPath(active.sessionId)
           discard reg.prepareControlEnvironment(active.controlScope, active.sessionId)
           reg.sessions[active.sessionId] = active
         finally:

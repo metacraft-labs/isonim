@@ -9,17 +9,17 @@ when the daemon receives SIGTERM. Registration uses a minimal fixture snapshot
 because this test isolates ownership; the registered source GUI suite exercises
 actual mounted views, state snapshots and renderer integration.
 """
-import http.client,json,os,queue,signal,subprocess,tempfile,threading,unittest
+import http.client,json,os,sys,queue,signal,subprocess,tempfile,threading,unittest
 from pathlib import Path
 ROOT=Path(__file__).resolve().parent.parent
 
 class NativeAcpShutdown(unittest.TestCase):
     def test_idle_live_acp_session_shuts_down_with_clean_native_exit(self):
         with tempfile.TemporaryDirectory(prefix='isonim-acp-shutdown-') as temp:
-            root=Path(temp); config=root/'agent.toml'
-            previous_environments=set(Path(tempfile.gettempdir()).glob('isonim-control-*/environment.json'))
+            root=Path(temp).resolve(); config=root/'agent.toml'
+            previous_environments=set((root/('Library/Application Support' if sys.platform=='darwin' else '.local/share')/'isonim/editor-control').glob('isonim-control-*/environment.json'))
             config.write_text('[agent]\nbackend="custom"\ncommand="python3"\nargs='+json.dumps([str(ROOT/'tests/helpers/editor_control_peer.py')])+'\nprimer_enabled=false\n')
-            daemon=subprocess.Popen([str(ROOT/'build/bin/isonim-review'),'serve','--agent-routes-only','--port','0','--bind','127.0.0.1','--workspace',str(root),'--config',str(config)],stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,text=True,start_new_session=True,env={**os.environ,'ISONIM_EDITOR_BROWSER_BOOTSTRAP':'isolated-shutdown-bootstrap','CONTROL_PROBE_DIR':str(root)})
+            daemon=subprocess.Popen([str(ROOT/'build/bin/isonim-review'),'serve','--agent-routes-only','--port','0','--bind','127.0.0.1','--workspace',str(root),'--config',str(config)],stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,text=True,start_new_session=True,env={**os.environ,'HOME':str(root),'ISONIM_EDITOR_BROWSER_BOOTSTRAP':'isolated-shutdown-bootstrap','CONTROL_PROBE_DIR':str(root)})
             lines=queue.Queue(); log=[]
             def drain():
                 for line in daemon.stderr:
@@ -55,7 +55,7 @@ class NativeAcpShutdown(unittest.TestCase):
                     if len(fields)==3 and int(fields[1])==daemon.pid and str(ROOT/'tests/helpers/editor_control_peer.py') in fields[2]: providers.append(int(fields[0]))
                 self.assertEqual(len(providers),2,'Two actual initialized stdio provider processes must remain available')
                 environments=[]
-                for environment in set(Path(tempfile.gettempdir()).glob('isonim-control-*/environment.json'))-previous_environments:
+                for environment in set((root/('Library/Application Support' if sys.platform=='darwin' else '.local/share')/'isonim/editor-control').glob('isonim-control-*/environment.json'))-previous_environments:
                     payload=json.loads(environment.read_text())
                     if payload.get('ISONIM_EDITOR_INSTANCE')==scope['instance']: environments.append((environment,payload))
                 self.assertEqual(len(environments),2,'Actual scoped native launch creates two private environment files')

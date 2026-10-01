@@ -6,6 +6,7 @@ Harbor/provider integration. No editor dispatcher or process is mocked.
 """
 import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import sys
 import json
 import os
 from pathlib import Path
@@ -75,7 +76,7 @@ class LifecycleTests(unittest.TestCase):
         threading.Thread(target=self.peer.serve_forever, daemon=True).start()
         config = Path(self.temp.name) / 'editor.toml'
         config.write_text('[agent]\nbackend = "harbor"\ncommand = "/bin/true"\nprimer_enabled = false\n')
-        env = dict(os.environ, ISONIM_AGENT_BACKEND='harbor', ISONIM_LOCAL_HARBOR='0',
+        env = dict(os.environ, HOME=str(Path(self.temp.name).resolve()), ISONIM_AGENT_BACKEND='harbor', ISONIM_LOCAL_HARBOR='0',
             ISONIM_HARBOR_URL=f'http://127.0.0.1:{self.peer.server_port}', ISONIM_REVIEW_PORT='0',
             ISONIM_EDITOR_BROWSER_BOOTSTRAP='lifecycle-browser-bootstrap')
         env.pop('ISONIM_ACP_AGENT_CMD', None)
@@ -130,7 +131,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertTrue(self.created.wait(5))
         self.allow_create.set()
         self.assertTrue(self.streamed.wait(5))
-        environment = Path(tempfile.gettempdir()) / ('isonim-control-' + self.session) / 'environment.json'
+        environment = Path(self.temp.name).resolve() / ('Library/Application Support' if sys.platform == 'darwin' else '.local/share') / 'isonim/editor-control' / ('isonim-control-' + self.session) / 'environment.json'
         self.assertTrue(environment.is_file())
         self.assertEqual(environment.stat().st_mode & 0o777, 0o600)
         token = json.loads(environment.read_text())['ISONIM_EDITOR_TOKEN']

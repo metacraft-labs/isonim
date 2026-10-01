@@ -15,12 +15,12 @@ proc scope(controls: EditorControlRegistry): ControlScope =
 
 suite "Scoped provider launch cleanup":
   test "closed captured draft cannot prepare files or resurrect scope":
-    let directory = createTempDir("isonim-control-close-", "")
-    let oldTmp = getEnv("TMPDIR")
-    putEnv("TMPDIR", directory)
+    let directory = expandFilename(createTempDir("isonim-control-close-", ""))
+    let oldTmp = getEnv("HOME")
+    putEnv("HOME", directory)
     defer:
-      if oldTmp.len > 0: putEnv("TMPDIR", oldTmp)
-      else: delEnv("TMPDIR")
+      if oldTmp.len > 0: putEnv("HOME", oldTmp)
+      else: delEnv("HOME")
       removeDir(directory)
     let controls = newEditorControlRegistry("bootstrap")
     let registry = newAgentRegistry(customCmd = "/bin/true", primerEnabled = false,
@@ -37,26 +37,30 @@ suite "Scoped provider launch cleanup":
         check "closed before provider launch" in error.msg
       check rejected
       check registry.getState(captured.sessionId).isNone
-      check not dirExists(directory / ("isonim-control-" & captured.sessionId))
+      check not dirExists(controlEnvironmentPath(captured.sessionId).parentDir)
       expect ControlError:
         discard controls.rebindConversation(captured.controlScope, "resurrected")
 
   test "preparation failure before ownership transfer removes only aborted private directory":
-    let directory = createTempDir("isonim-control-prepare-", "")
-    let oldTmp = getEnv("TMPDIR")
-    putEnv("TMPDIR", directory)
+    let directory = expandFilename(createTempDir("isonim-control-prepare-", ""))
+    let oldTmp = getEnv("HOME")
+    putEnv("HOME", directory)
     defer:
-      if oldTmp.len > 0: putEnv("TMPDIR", oldTmp)
-      else: delEnv("TMPDIR")
+      if oldTmp.len > 0: putEnv("HOME", oldTmp)
+      else: delEnv("HOME")
       removeDir(directory)
     let controls = newEditorControlRegistry("bootstrap")
     let registry = newAgentRegistry(customCmd = "/bin/true", primerEnabled = false,
       workspaceRoot = directory, harborUrl = "http://127.0.0.1:1")
     registry.controlRegistry = controls
     let draft = registry.createAcpSession(controlScope = controls.scope())
-    let runtime = directory / ("isonim-control-" & draft.sessionId)
+    let runtime = controlEnvironmentPath(draft.sessionId).parentDir
     # Real filesystem failure: a directory occupies the handoff file's path.
     createDir(runtime / "environment.json")
+    # The injected file-path obstruction is inside legitimately owned private
+    # directories, matching production preparation before its atomic publish.
+    for privateDir in [runtime.parentDir.parentDir, runtime.parentDir, runtime]:
+      setFilePermissions(privateDir, {fpUserRead, fpUserWrite, fpUserExec})
     expect IOError: discard registry.runAgentTurn(draft, @[], nil)
     check not dirExists(runtime)
     check registry.getState(draft.sessionId).get().controlEnvFile.len == 0
@@ -68,12 +72,12 @@ suite "Scoped provider launch cleanup":
     check not dirExists(runtime)
 
   test "failed live draft retains retry file and unrelated session cleanup cannot remove it":
-    let directory = createTempDir("isonim-control-retry-", "")
-    let oldTmp = getEnv("TMPDIR")
-    putEnv("TMPDIR", directory)
+    let directory = expandFilename(createTempDir("isonim-control-retry-", ""))
+    let oldTmp = getEnv("HOME")
+    putEnv("HOME", directory)
     defer:
-      if oldTmp.len > 0: putEnv("TMPDIR", oldTmp)
-      else: delEnv("TMPDIR")
+      if oldTmp.len > 0: putEnv("HOME", oldTmp)
+      else: delEnv("HOME")
       removeDir(directory)
     let controls = newEditorControlRegistry("bootstrap")
     let registry = newAgentRegistry(customCmd = "/bin/true", primerEnabled = false,
@@ -83,7 +87,7 @@ suite "Scoped provider launch cleanup":
     let live = registry.createAcpSession(controlScope = browserScope)
     let closed = registry.createAcpSession(controlScope = browserScope)
     registry.shutdownAndRelease(closed.sessionId)
-    let file = directory / ("isonim-control-" & live.sessionId) / "environment.json"
+    let file = controlEnvironmentPath(live.sessionId)
     for attempt in 0 .. 1:
       expect HarborError: discard registry.runAgentTurn(live, @[], nil)
       check registry.getState(live.sessionId).get().isDraft
@@ -93,7 +97,7 @@ suite "Scoped provider launch cleanup":
       let bytes = readFile(file)
       expect HarborError: discard registry.runAgentTurn(closed, @[], nil)
       check readFile(file) == bytes
-      check not dirExists(directory / ("isonim-control-" & closed.sessionId))
+      check not dirExists(controlEnvironmentPath(closed.sessionId).parentDir)
     registry.shutdownAndRelease(live.sessionId)
     check not fileExists(file)
     check not dirExists(file.parentDir)
