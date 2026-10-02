@@ -5,6 +5,7 @@ import isonim/server/handler
 import isonim/server/render_stream
 import isonim/dsl/ui
 import isonim/ssr/escape
+import isonim/ssr/markers
 import faststreams/inputs as fsInputs
 import faststreams/outputs as fsOutputs
 
@@ -250,6 +251,38 @@ suite "uiWrite (streaming SSR codegen)":
     let streamResult = fsOutputs.getOutput(output.s, string)
 
     check htmlString == streamResult
+
+  test "test_stream_codegen_emits_the_same_hydration_keys_as_string_mode":
+    # Inside a hydratable render both SSR modes key every element in
+    # document order, so a streamed page hydrates like a string one.
+    let items = @["a", "b"]
+    var htmlString = ""
+    withHydrationKeys(""):
+      htmlString = ui:
+        tdiv(class = "c", hydrate = true):
+          for it in items:
+            p: text it
+          br
+    let output = fsOutputs.memoryOutput()
+    withHydrationKeys(""):
+      uiWrite(output.s):
+        tdiv(class = "c", hydrate = true):
+          for it in items:
+            p: text it
+          br
+    let streamResult = fsOutputs.getOutput(output.s, string)
+    check streamResult == htmlString
+    check streamResult == "<div data-hk=\"1\" class=\"c\"><p data-hk=\"2\">a</p>" &
+      "<p data-hk=\"3\">b</p><br data-hk=\"4\" /></div>"
+
+  test "test_stream_codegen_hydrate_true_keys_outside_a_render":
+    # `hydrate = true` asks for a key even outside a hydratable render.
+    let output = fsOutputs.memoryOutput()
+    resetHydrationCounter()
+    uiWrite(output.s):
+      tdiv(hydrate = true):
+        p: text "x"
+    check fsOutputs.getOutput(output.s, string) == "<div data-hk=\"1\"><p>x</p></div>"
 
   test "test_stream_codegen_with_dynamic_content":
     let name = "Alice"

@@ -91,12 +91,16 @@ const specs: ServerSpec[] = [
     needs: "just demo-build",
   },
   {
+    // The SSR -> hydrate -> interact round trip (IFP-M3): pages rendered by
+    // real nginx with the real ngx-isonim module (tests/nginx, the same
+    // fixture as nginx-rpc), hydrated by tests/nginx/hydration_client.nim.
     project: "ssr-hydration",
     testMatch: "ssr-hydration.spec.ts",
     basePort: 8081,
-    command: (p) => staticServer(resolve(here, "dist"), p),
-    requires: resolve(here, "dist/main.js"),
-    needs: "just build-ssr-test-all",
+    command: (p) =>
+      `bash ${JSON.stringify(resolve(repoRoot, "tests/nginx/serve_fixture.sh"))} ${p}`,
+    requires: resolve(repoRoot, "build/nginx-fixture/www/hydrate.js"),
+    needs: "just build-nginx-fixture",
   },
   {
     project: "hmr",
@@ -136,6 +140,16 @@ const specs: ServerSpec[] = [
       `bash ${JSON.stringify(resolve(repoRoot, "tests/nginx/serve_fixture.sh"))} ${p}`,
     requires: resolve(repoRoot, "build/nginx-fixture/ngx_http_isonim_module.so"),
     needs: "just build-nginx-fixture",
+  },
+  {
+    // The Web Worker build target (IFP-M3): a worker chunk, the page script
+    // that drives it, and the in-thread negative control.
+    project: "web-worker",
+    testMatch: "web-worker.spec.ts",
+    basePort: 8086,
+    command: (p) => staticServer(resolve(repoRoot, "build/web-worker-fixture"), p),
+    requires: resolve(repoRoot, "build/web-worker-fixture/bundle-manifest.json"),
+    needs: "just build-web-worker-fixture",
   },
   {
     project: "editor-example",

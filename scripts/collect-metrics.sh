@@ -192,6 +192,29 @@ collect_sizes() {
     echo "Warning: Web components bundle not found: $wc_bundle" >&2
   fi
 
+  # Chunks recorded by tools/isonim-bundle.mjs: the Web Worker target's
+  # fixture, one metric per chunk, so a worker chunk is counted on its own
+  # and not inside the page script that loads it.
+  local chunk_dir="build/web-worker-fixture"
+  if [[ ! -f "$chunk_dir/bundle-manifest.json" ]]; then
+    echo "Building web worker fixture chunks..." >&2
+    just build-web-worker-fixture >&2
+  fi
+  if [[ -f "$chunk_dir/bundle-manifest.json" ]]; then
+    local chunk_lines
+    chunk_lines=$(node tools/isonim-bundle.mjs report "$chunk_dir" --json | node -e '
+      const r = JSON.parse(require("fs").readFileSync(0, "utf8"));
+      for (const c of r.chunks) console.log([c.file, c.kind, c.bytes, c.gzipBytes].join(" "));')
+    while read -r file kind bytes gzip_bytes; do
+      [[ -n "$file" ]] || continue
+      output_metric "isonim-chunk-${file}" "$bytes" "bytes" \
+        "$(format_bytes "$bytes") ($kind chunk, $(format_bytes "$gzip_bytes") gzipped)" "$is_first"
+      is_first="false"
+    done <<< "$chunk_lines"
+  else
+    echo "Warning: no chunk manifest in $chunk_dir" >&2
+  fi
+
   echo ""
   echo "]"
 }

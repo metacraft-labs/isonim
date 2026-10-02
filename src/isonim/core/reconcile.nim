@@ -33,8 +33,11 @@ proc reconcileArrays*[R, N](
 
   # Fast path: all new
   if cLen == 0:
-    for node in newNodes:
-      renderer.appendChild(parent, node)
+    # By index: an `items` over a JS-array NativeSeq is not found when this
+    # generic is instantiated from another one (`forEachKeyed`) whose caller
+    # does not import nim_everywhere's collections.
+    for i in 0 ..< nLen:
+      renderer.appendChild(parent, newNodes[i])
     currentNodes = newNodes
     return
 

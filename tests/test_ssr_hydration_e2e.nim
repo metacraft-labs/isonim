@@ -748,9 +748,9 @@ suite "SSR-Hydration E2E - List":
 
     # Verify SSR output
     check "data-hk=" in ssrHtml
-    check "<li>alpha</li>" in ssrHtml
-    check "<li>beta</li>" in ssrHtml
-    check "<li>gamma</li>" in ssrHtml
+    check "<li data-hk=\"2\">alpha</li>" in ssrHtml
+    check "<li data-hk=\"3\">beta</li>" in ssrHtml
+    check "<li data-hk=\"4\">gamma</li>" in ssrHtml
 
     # Parse into DOM
     let container = makeSSRContainer(cstring(ssrHtml))

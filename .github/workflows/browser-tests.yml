@@ -13,21 +13,25 @@ name: Browser tests (Playwright)
 #     (25 tests) via `just test-browser-smoke`. Measured end to end from
 #     deleted artifacts on an M-series laptop: 56s, of which 4s is browser
 #     time and the rest is four Nim compiles. This is the gate.
-#   * `full` nightly and on demand -- `just test-browser-all`: the six in-repo
-#     projects (55 tests), including `editor-example`, whose 14 screenshot and
+#   * `full` nightly and on demand -- `just test-browser-all`: the six static
+#     in-repo projects (51 tests), including `editor-example`, whose 14 screenshot and
 #     layout tests take ~4 minutes on their own and dominate the wall clock.
 #
 # Both jobs go through `just` rather than spelling the Playwright invocation
 # out here, so CI and a developer's terminal cannot drift apart.
 #
-# WHY THE GATE IS 25 TESTS AND NOT 41. `demo-app` and `ssr-hydration` are
-# currently red on real product defects, diagnosed in `tests/browser/README.md`
-# (a JS-backend closure-capture bug in the demo's filter buttons; an SSR
-# hydration round-trip that emits no `data-hk` markers and has never worked).
-# Neither test is weakened or skipped -- both run in `full`, where their result
-# is visible. Move them into `smoke` the moment they are fixed; a permanently
-# red required gate teaches people to ignore CI, which is how a suite rots
-# twice.
+# WHY THE GATE IS 25 TESTS AND NOT 33. `demo-app` is currently red on a real
+# product defect, diagnosed in `tests/browser/README.md` (a JS-backend
+# closure-capture bug in the demo's filter buttons). It is not weakened or
+# skipped -- it runs in `full`, where its result is visible. Move it into
+# `smoke` the moment it is fixed; a permanently red required gate teaches
+# people to ignore CI, which is how a suite rots twice.
+#
+# `web-worker` (the Web Worker build target, IFP-M3) runs in `full`.
+#
+# `ssr-hydration` (the SSR -> hydrate round trip, IFP-M3) is in neither job:
+# it runs against real nginx with the ngx-isonim module, in nginx-tests.yml
+# (`just test-nginx`), with `nginx-rpc`.
 #
 # `metacraft-web-editor` (22 tests) is in neither job. It serves a bundle built
 # from the `metacraft-web` sibling repo, which is not in this checkout and not
@@ -103,7 +107,7 @@ jobs:
           retention-days: 7
 
   full:
-    name: Full (six in-repo projects, 55 tests)
+    name: Full (six static in-repo projects, 51 tests)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: [self-hosted, linux, x64]
     steps:

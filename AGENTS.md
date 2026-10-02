@@ -66,18 +66,19 @@ repro exec -- nim c -r tests/test_editor_shell_views.nim
 repro exec -- bash -lc 'cd tests/browser && npx playwright test --project=metacraft-web-editor'
 ```
 
-## Server functions and the route manifest against nginx
+## Server functions, the route manifest and SSR hydration against nginx
 
-`just test-nginx` runs server functions over HTTP and the typed route
-manifest against real nginx with the real `ngx-isonim` module (the sibling
-checkout, built in its own dev shell, so it needs nix): the fixture is
-`tests/nginx` (see its README), the tests are `tests/test_route_manifest.nim`,
-the `nginx-rpc` Playwright project and `tests/nginx/run_mutants.sh`.  It is
-not part of `just test`.
+`just test-nginx` runs server functions over HTTP, the typed route manifest
+and the SSR -> hydrate -> interact round trip against real nginx with the
+real `ngx-isonim` module (the sibling checkout, built in its own dev shell,
+so it needs nix): the fixture is `tests/nginx` (see its README), the tests
+are `tests/test_route_manifest.nim`, the `nginx-rpc` and `ssr-hydration`
+Playwright projects and `tests/nginx/run_mutants.sh`.  It is not part of
+`just test`.
 
 ## Browser tests
 
-`tests/browser` holds 77 Playwright tests in 7 spec files. They are runnable
+`tests/browser` holds 98 Playwright tests in 10 spec files. They are runnable
 from a clean checkout after two one-time steps, both of which reach the
 network and so are not done by `just`:
 
@@ -94,7 +95,7 @@ is no ambient node.
 Then:
 
 ```sh
-repro exec -- just test-browser-all     # build every artifact, run 55 tests
+repro exec -- just test-browser-all     # build every artifact, run 51 tests
 repro exec -- just test-browser-smoke   # the subset CI gates on
 ```
 

@@ -1,12 +1,13 @@
 name: nginx tests (real ngx-isonim)
 
-# `just test-nginx`: server functions over HTTP and the typed route manifest
-# against real nginx with the real ngx-isonim module (IFP-M2 of
-# isonim-specs/milestones/2026-10-02-isonim-forum-prerequisites.milestones.org).
+# `just test-nginx`: server functions over HTTP, the typed route manifest
+# (IFP-M2) and the SSR -> hydrate -> interact round trip (IFP-M3 of
+# isonim-specs/milestones/2026-10-02-isonim-forum-prerequisites.milestones.org)
+# against real nginx with the real ngx-isonim module.
 # It builds the nginx fixture (tests/nginx/README.md), runs
 # tests/test_route_manifest.nim (whose generated policy tests go over HTTP to
-# that nginx), the `nginx-rpc` Playwright project, and the falsifying
-# mutations of tests/nginx/run_mutants.sh. Neither ci.yml nor
+# that nginx), the `nginx-rpc` and `ssr-hydration` Playwright projects, and
+# the falsifying mutations of tests/nginx/run_mutants.sh. Neither ci.yml nor
 # browser-tests.yml runs it.
 #
 # SIBLINGS. The module is ngx-isonim's: tests/nginx/build_fixture.sh builds it
@@ -40,8 +41,8 @@ jobs:
   test-nginx:
     name: test-nginx (linux-x64)
     runs-on: [self-hosted, linux, x64]
-    # Measured locally: ~8 minutes (the fixture module, three mutant builds
-    # and their Playwright runs). Wide margin for a cold Nix store.
+    # Measured locally: ~12 minutes (the fixture module, four mutant module
+    # builds, three client mutants and their Playwright runs). Wide margin for a cold Nix store.
     timeout-minutes: 60
     steps:
       - name: Generate CI token

@@ -159,12 +159,12 @@ when defined(useFaststreams):
     ## Shell HTML is flushed immediately. Suspense boundaries flush
     ## as they resolve. No intermediate string copy beyond what the
     ## component tree produces.
-    resetHydrationCounter()
     let ctx = newStreamContext(fsOutput, options)
     currentStreamContext = ctx
 
     # Render the shell synchronously
-    ctx.shell = fn(ctx)
+    withHydrationKeys(""):
+      ctx.shell = fn(ctx)
 
     # Emit shell immediately
     ctx.emitShell()
@@ -182,12 +182,12 @@ proc renderToStream*(fn: proc(ctx: StreamContext): string;
   ## Streaming SSR entry point. Renders the component tree, emitting
   ## the shell HTML first. Returns a StreamResult that allows resolving
   ## Suspense boundaries as data becomes available.
-  resetHydrationCounter()
   let ctx = newStreamContext(options)
   currentStreamContext = ctx
 
   # Render the shell synchronously
-  ctx.shell = fn(ctx)
+  withHydrationKeys(""):
+    ctx.shell = fn(ctx)
 
   # Emit shell immediately
   ctx.emitShell()
@@ -209,12 +209,12 @@ proc renderToStringAsync*(fn: proc(ctx: StreamContext): string;
   ##
   ## Uses callback-based resolution -- callers must resolve boundaries
   ## before this returns. For real async, integrate with event loop.
-  resetHydrationCounter()
   let ctx = newStreamContext(options)
   currentStreamContext = ctx
 
   # Render shell
-  ctx.shell = fn(ctx)
+  withHydrationKeys(""):
+    ctx.shell = fn(ctx)
   ctx.emitShell()
 
   # If no boundaries, done

@@ -240,7 +240,9 @@ tests/test_nimcache_is_worktree_local
 tests/browser/test-results/
 tests/browser/playwright-report/
 tests/browser/dist/
-tests/browser/generate_ssr
+# Hand-written worker-side helper of the web-worker fixture (not a build
+# output); the `*.js` rule above would otherwise hide it.
+!tests/browser/web_worker_fixture/beacon.js
 
 # Visual baselines are LINUX-only on purpose: `editor-example`'s screenshot
 # gates are compared on the Linux runner, and Playwright silently *writes* a

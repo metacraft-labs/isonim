@@ -1,15 +1,17 @@
 # Browser tests (Playwright)
 
-86 tests in 9 spec files. They are the executable specification for the
-packaged editor, the SSR/hydration round-trip, the HMR transports, and
-server functions and request contexts over real nginx.
+98 tests in 10 spec files. They are the executable specification for the
+packaged editor, the SSR/hydration round-trip over real nginx, the HMR
+transports, the Web Worker build target, and server functions and request
+contexts over real nginx.
 
 ```
 specs/demo-app.spec.ts               8 tests   demo-app              :8080
-specs/ssr-hydration.spec.ts          8 tests   ssr-hydration         :8081
+specs/ssr-hydration.spec.ts         16 tests   ssr-hydration         :8081 (8 cases x 2 SSR modes)
 specs/hmr.spec.ts                   11 tests   hmr                   :8082
 specs/hmr_transport.spec.ts          3 tests   hmr-transport         :8083
 specs/hmr_parametric.spec.ts        11 tests   hmr-parametric        :8084
+specs/web-worker.spec.ts             4 tests   web-worker            :8086
 specs/rpc-over-nginx.spec.ts         4 tests   nginx-rpc             :8095
 specs/request-context-generation.spec.ts
                                      8 tests   nginx-rpc             :8095 (+ :8096, its slow-body upstream)
@@ -35,7 +37,7 @@ repro exec -- just browser-test-install
 ## Running
 
 ```sh
-repro exec -- just test-browser-all     # build every artifact, then run 55 tests
+repro exec -- just test-browser-all     # build every artifact, then run 51 tests
 repro exec -- just test-browser-smoke   # the 25-test subset CI gates on (~56s cold)
 ```
 
@@ -83,15 +85,19 @@ ISONIM_BROWSER_REUSE_SERVER=1   npx playwright test --project=hmr   # opt back i
 | project | serves | built by |
 | --- | --- | --- |
 | `demo-app` | `demos/isonim-replica/dist` | `just demo-build` |
-| `ssr-hydration` | `tests/browser/dist` | `just build-ssr-test-all` |
+| `ssr-hydration` | nginx + the ngx-isonim module with the hydration app, and `build/nginx-fixture/www/hydrate.js` (see `tests/nginx/README.md`) | `just build-nginx-fixture` |
 | `hmr` | `tests/browser/hmr_fixture` | `just build-hmr-fixture` |
 | `hmr-transport` | `build/isonim_test_server` (a Nim dev server) | `just build-hmr-transport-fixture` |
 | `hmr-parametric` | `tests/browser/hmr_parametric_fixture` | `just build-hmr-parametric-fixture` |
+| `web-worker` | `build/web-worker-fixture` (a worker chunk, its page script, the in-thread control, `bundle-manifest.json`) | `just build-web-worker-fixture` |
 | `nginx-rpc` | nginx + the ngx-isonim module (`build/nginx-fixture`, see `tests/nginx/README.md`) | `just build-nginx-fixture` |
 | `editor-example` | `build/editor` | `just editor-build` |
 | `metacraft-web-editor` | `../metacraft-web/dist/back-office-editor` | `(cd ../metacraft-web && just build-back-office-editor)` |
 
-`just browser-test-deps` builds the first six. The seventh is a **sibling
+`just browser-test-deps` builds the static ones (`demo-app`, the three HMR
+projects, `web-worker`, `editor-example`). `nginx-rpc` and `ssr-hydration` share the nginx
+fixture, built by `just build-nginx-fixture` (it needs the `ngx-isonim`
+sibling and nix) and run by `just test-nginx`. The last is a **sibling
 repo**, `metacraft-labs/metacraft-web`, which is not part of this checkout and
 is not listed in `.github/sibling-repos`; see the note below.
 
@@ -112,15 +118,6 @@ standing ones as of the last sweep.
   share the last value. `createRenderEffect do:` in the same loop is bound
   per-iteration on its first run and shares the environment thereafter, which
   is why only the "completed" button ever shows `.selected`.
-- **`ssr-hydration`, 7 of 8** — red. The SSR markup carries no `data-hk`
-  attributes (`ui:` emits them only for an element with an explicit
-  `hydrate`/`needsId` attribute, and neither `renderFullPageSsr` nor
-  `hydrate_entry.nim` sets one), and `hydrate_entry.nim` builds its tree with
-  `document.createElement` rather than `getNextElement`, so `hydrate()` cannot
-  reuse a single server-rendered node. It renders a second copy instead —
-  hence `toHaveCount(3)` seeing 6. This round-trip has never worked; the specs
-  were added in 1552585 and the fixture stopped compiling in ddcb5bd, so
-  nothing was watching.
 - **`metacraft-web-editor`, all 22** — red, and two layers of the failure are
   in the sibling repo rather than here.
 

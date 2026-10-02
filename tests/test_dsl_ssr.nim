@@ -176,10 +176,80 @@ suite "SSR + renderToString integration":
             p: text "Footer"
     )
 
-    check "<div class=\"page\">" in html
-    check "<header><h1>My App</h1></header>" in html
-    check "<main><p>Content here</p></main>" in html
-    check "<footer><p>Footer</p></footer>" in html
+    # A hydratable render: every element carries its key, numbered in
+    # document order (IsoNim.md § Hydration).
+    check html == "<div data-hk=\"1\" class=\"page\">" &
+      "<header data-hk=\"2\"><h1 data-hk=\"3\">My App</h1></header>" &
+      "<main data-hk=\"4\"><p data-hk=\"5\">Content here</p></main>" &
+      "<footer data-hk=\"6\"><p data-hk=\"7\">Footer</p></footer></div>"
+
+  test "hydration_keys_follow_document_order_through_control_flow":
+    ## Keys through `for`, `if`, `case`, void elements and nested blocks
+    ## are numbered as the client's createElement calls are: pre-order.
+    let items = @["a", "b"]
+    let html = renderToString(proc(): string =
+      ui:
+        ul(class = "list"):
+          for it in items:
+            li:
+              span: text it
+          if items.len > 1:
+            li(class = "more"):
+              br
+          case items.len
+          of 2:
+            li: text "two"
+          else:
+            li: text "other"
+    )
+    check html == "<ul data-hk=\"1\" class=\"list\">" &
+      "<li data-hk=\"2\"><span data-hk=\"3\">a</span></li>" &
+      "<li data-hk=\"4\"><span data-hk=\"5\">b</span></li>" &
+      "<li data-hk=\"6\" class=\"more\"><br data-hk=\"7\" /></li>" &
+      "<li data-hk=\"8\">two</li></ul>"
+
+  test "hydration_keys_on_a_multi_root_block_start_at_its_wrapper":
+    ## Several top-level nodes are wrapped in a div on both sides; the
+    ## wrapper is the first element the client creates.
+    let html = renderToString(proc(): string =
+      ui:
+        p: text "x"
+        hr
+    )
+    check html == "<div data-hk=\"1\"><p data-hk=\"2\">x</p><hr data-hk=\"3\" /></div>"
+
+  test "no_hydration_keys_outside_a_hydratable_render":
+    ## An e-mail body or a fragment built with `ui:` is not hydrated.
+    let html = ui:
+      tdiv(class = "x"):
+        p: text "y"
+    check html == "<div class=\"x\"><p>y</p></div>"
+    check not hydrationKeysActive()
+
+  test "with_hydration_keys_prefixes_and_restores":
+    ## `withHydrationKeys` makes a render hydratable for a renderer that
+    ## does not go through renderToString; the render id prefixes the keys,
+    ## and the enclosing state comes back afterwards.
+    var html = ""
+    withHydrationKeys("r1-"):
+      html = ui:
+        tdiv:
+          p: text "z"
+    check html == "<div data-hk=\"r1-1\"><p data-hk=\"r1-2\">z</p></div>"
+    check not hydrationKeysActive()
+    let after = ui:
+      p: text "plain"
+    check after == "<p>plain</p>"
+
+  test "ref_is_ignored_on_the_server":
+    ## `ref = x` binds the client's element; the server renders nothing for it.
+    var el: int
+    let html = renderToString(proc(): string =
+      ui:
+        tdiv(class = "a", ref = el):
+          text "r"
+    )
+    check html == "<div data-hk=\"1\" class=\"a\">r</div>"
 
   test "ui_with_signals_in_renderToString":
     ## Signals work correctly in SSR context

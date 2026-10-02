@@ -49,6 +49,10 @@ import vocabulary
 import ./scene_graph
 import ./style_provenance
 import ./style_binding
+# Bound, not left for the caller to import: every element of a `ui:` block
+# asks for its hydration key, and a consumer that never hydrates should not
+# have to know the module exists.
+import ../ssr/markers
 
 var gensymCounter {.compileTime.} = 0
 
@@ -116,6 +120,11 @@ proc attrNameStr(node: NimNode): string {.compileTime.} =
   else:
     error("DSL attribute name must be an ident, accent-quoted ident, or " &
           "(open|closed) sym choice; got " & $node.kind, node)
+
+proc isHydrationFlag(attrName: string): bool {.compileTime.} =
+  ## `hydrate = true` / `needsId = true`: not an attribute, a request for a
+  ## hydration key on the server (ssr/markers.nim).
+  attrName == "hydrate" or attrName == "needsId"
 
 proc genName(prefix: string): NimNode {.compileTime.} =
   inc gensymCounter
@@ -690,7 +699,7 @@ proc processNode(rendererSym: NimNode; node: NimNode;
       let arg = node[i]
       if arg.kind == nnkExprEqExpr and arg[0].kind != nnkRefTy:
         let attrName = attrNameStr(arg[0])
-        if isEventHandler(attrName):
+        if isEventHandler(attrName) or isHydrationFlag(attrName):
           continue
         if isStyleProperty(attrName):
           vocabStyles.add attrName
@@ -758,7 +767,11 @@ proc processNode(rendererSym: NimNode; node: NimNode;
           let attrVal = arg[1]
           collectAttrBindings(styleBindings, attrName, attrVal)
 
-          if isEventHandler(attrName):
+          if isHydrationFlag(attrName):
+            # `hydrate = true` is a server-side request for a key; the
+            # client counts every element anyway.
+            discard
+          elif isEventHandler(attrName):
             # Event handler: onclick = proc() = ...
             let evName = eventName(attrName)
             stmts.add(newCall(
@@ -890,6 +903,12 @@ macro ui*(renderer: untyped; body: untyped): untyped =
 
 proc ssrNodeExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.}
 
+proc ssrVoidElementExpr(tagName: string): NimNode {.compileTime.} =
+  ## A bare void element (`br`, `hr`): `<br />`, with its hydration key.
+  newCall(ident"&", newCall(ident"&", newStrLitNode("<" & tagName),
+                            newCall(bindSym"ssrHydrationKey", newLit(false))),
+          newStrLitNode(" />"))
+
 proc ssrChildrenExpr(body: NimNode; stmts: NimNode): NimNode {.compileTime.} =
   ## Generates a string expression for a list of SSR children.
   ## Returns a NimNode representing the concatenated HTML string.
@@ -906,7 +925,7 @@ proc ssrChildrenExpr(body: NimNode; stmts: NimNode): NimNode {.compileTime.} =
       # Bare identifier — check if it's a known HTML void element (e.g. `br`, `hr`, `img`)
       let tagName = resolveTagName(child.strVal)
       if isVoidElement(tagName):
-        parts.add(newStrLitNode("<" & tagName & " />"))
+        parts.add(ssrVoidElementExpr(tagName))
       else:
         # Not a void element — pass through as Nim code
         stmts.add(child)
@@ -1066,6 +1085,12 @@ proc ssrNodeExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.} =
     # Build the opening tag as a string expression
     var tagParts: seq[NimNode] = @[]
     tagParts.add(newStrLitNode("<" & htmlTag))
+    # The element's hydration key (markers.nim). Taken here, before the
+    # children's, so that keys follow document order as the client's
+    # `createElement` calls do. The force flag is patched in below once the
+    # arguments have been read.
+    let keyCall = newCall(bindSym"ssrHydrationKey", newLit(false))
+    tagParts.add(keyCall)
 
     # SGR-M1b: in an editor build, carry the source location in the markup.
     # String mode has no renderer to call and no element handle to hand a
@@ -1101,6 +1126,9 @@ proc ssrNodeExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.} =
       let arg = node[i]
       case arg.kind
       of nnkExprEqExpr:
+        if arg[0].kind == nnkRefTy:
+          # `ref = x` binds the client's element; there is none on the server.
+          continue
         let attrName = attrNameStr(arg[0])
         let attrVal = arg[1]
         collectAttrBindings(styleBindings, attrName, attrVal)
@@ -1147,9 +1175,9 @@ proc ssrNodeExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.} =
           " data-isonim-props=\"" &
           htmlAttrEscape(encodeStyleBindings(styleBindings)) & "\""))
 
-    # Add hydration key if needed
+    # `hydrate = true` asks for a key even outside a hydratable render.
     if hasHydrationKey:
-      tagParts.add(newCall(ident"ssrHydrationKey"))
+      keyCall[1] = newLit(true)
 
     if isVoid:
       tagParts.add(newStrLitNode(" />"))
@@ -1220,7 +1248,7 @@ proc ssrTopLevelExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.} =
   # Bare void-element idents (`br`, `hr`) are legal children; accept them as
   # roots too rather than rejecting a form the nested path already allows.
   if node.kind == nnkIdent and isVoidElement(resolveTagName(node.strVal)):
-    return newStrLitNode("<" & resolveTagName(node.strVal) & " />")
+    return ssrVoidElementExpr(resolveTagName(node.strVal))
 
   result = ssrNodeExpr(node, stmts)
   if result == nil:
@@ -1238,8 +1266,11 @@ proc uiSsrImpl(body: NimNode): NimNode {.compileTime.} =
     if body.len == 1:
       resultExpr = ssrTopLevelExpr(body[0], stmts)
     else:
-      # Multiple top-level nodes: wrap in a div
-      var parts: seq[NimNode] = @[newStrLitNode("<div>")]
+      # Multiple top-level nodes: wrap in a div. The client wraps them in a
+      # div too (`buildClientTree`), so the wrapper takes the first key.
+      var parts: seq[NimNode] = @[newCall(ident"&", newCall(ident"&",
+        newStrLitNode("<div"), newCall(bindSym"ssrHydrationKey", newLit(false))),
+        newStrLitNode(">"))]
       for child in body:
         let expr = ssrTopLevelExpr(child, stmts)
         if expr != nil:
@@ -1291,7 +1322,7 @@ type
     sokEscapedHtml  ## Dynamic text content (needs HTML escaping)
     sokEscapedAttr  ## Dynamic attribute value (needs attr escaping)
     sokRaw          ## Raw expression (no escaping, e.g. raw "...")
-    sokHydrationKey ## Insert hydration key marker
+    sokHydrationKey ## The element's hydration key (markers.nim)
     sokNimStmt      ## Pass-through Nim statement (let, var, discard, etc.)
     sokIf           ## if/elif/else control flow
     sokFor          ## for loop
@@ -1304,7 +1335,7 @@ type
     of sokEscapedHtml, sokEscapedAttr, sokRaw:
       expr*: NimNode
     of sokHydrationKey:
-      discard
+      forceKey*: bool  ## `hydrate = true`: a key even outside a hydratable render
     of sokNimStmt:
       stmt*: NimNode
     of sokIf:
@@ -1344,7 +1375,9 @@ proc collectChildren(body: NimNode; ops: var seq[StreamOp]) {.compileTime.} =
     of nnkIdent:
       let tagName = resolveTagName(child.strVal)
       if isVoidElement(tagName):
-        ops.add(StreamOp(kind: sokStatic, text: "<" & tagName & " />"))
+        ops.add(StreamOp(kind: sokStatic, text: "<" & tagName))
+        ops.add(StreamOp(kind: sokHydrationKey))
+        ops.add(StreamOp(kind: sokStatic, text: " />"))
       else:
         ops.add(StreamOp(kind: sokNimStmt, stmt: child))
     of nnkStmtList:
@@ -1416,23 +1449,27 @@ proc collectNode(node: NimNode; ops: var seq[StreamOp]) {.compileTime.} =
     var childBody: NimNode = nil
 
     # We accumulate static parts into openTag and flush when a dynamic
-    # part or hydration key is encountered.
+    # part is encountered. The hydration key comes first, right after the
+    # tag name (document order, as in string mode).
     var pendingOps: seq[StreamOp]
+    pendingOps.add(StreamOp(kind: sokStatic, text: openTag))
+    openTag = ""
+    let keyOp = StreamOp(kind: sokHydrationKey)
+    pendingOps.add(keyOp)
 
     for i in 1 ..< node.len:
       let arg = node[i]
       case arg.kind
       of nnkExprEqExpr:
+        if arg[0].kind == nnkRefTy:
+          continue  # `ref = x` binds the client's element
         let attrName = attrNameStr(arg[0])
         let attrVal = arg[1]
 
         if isEventHandler(attrName):
           discard # Ignored in SSR
         elif attrName == "needsId" or attrName == "hydrate":
-          # Flush accumulated static text, emit hydration key
-          pendingOps.add(StreamOp(kind: sokStatic, text: openTag))
-          openTag = ""
-          pendingOps.add(StreamOp(kind: sokHydrationKey))
+          keyOp.forceKey = true
         elif not isDynamic(attrVal):
           # Static attribute — concatenate into the opening tag string
           # Escape the value at compile time for HTML attribute context
@@ -1529,7 +1566,7 @@ proc emit(ops: seq[StreamOp]; streamSym: NimNode;
       stmts.add(newCall(newDotExpr(streamSym, ident"write"), op.expr))
     of sokHydrationKey:
       stmts.add(newCall(newDotExpr(streamSym, ident"write"),
-        newCall(ident"ssrHydrationKey")))
+        newCall(bindSym"ssrHydrationKey", newLit(op.forceKey))))
     of sokNimStmt:
       stmts.add(op.stmt)
     of sokIf:
@@ -1583,7 +1620,9 @@ proc uiStreamImpl*(streamSym: NimNode; body: NimNode): NimNode {.compileTime.} =
     if body.len == 1:
       collectNode(body[0], ops)
     else:
-      ops.add(StreamOp(kind: sokStatic, text: "<div>"))
+      ops.add(StreamOp(kind: sokStatic, text: "<div"))
+      ops.add(StreamOp(kind: sokHydrationKey))
+      ops.add(StreamOp(kind: sokStatic, text: ">"))
       for child in body:
         collectNode(child, ops)
       ops.add(StreamOp(kind: sokStatic, text: "</div>"))

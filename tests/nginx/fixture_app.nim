@@ -9,6 +9,9 @@
 ## `fixture` (`isonim_rpc on; isonim_rpc_app fixture;`), and with it the
 ## server functions of fixture_rpc.nim under `/api/v1/rpc`.
 ##
+## It also serves the SSR -> hydrate round trip of hydration_app.nim (the
+## string and streaming renderers `hydration` and `hydration-stream`).
+##
 ## Sessions: the cookie `sid=user|staff|admin` is a session with that role,
 ## whose CSRF token is `csrf-<sid>`.  Signatures: `X-Signature:
 ## valid-<route>`.  The instance's incarnation is `inc-1`.
@@ -23,6 +26,7 @@ from app_registry import registerAsyncApp  # ngx-isonim (src/app_registry.nim)
 import isonim/server/[context, rpc]
 import isonim/routing/client_context
 import fixture_manifest
+import hydration_app
 
 const
   instanceId* = "fixture-instance"
@@ -113,3 +117,4 @@ proc fixtureApp*(): RequestHandler =
 proc registerApps*() =
   installHooks()
   registerAsyncApp("fixture", fixtureApp())
+  registerHydrationApps()

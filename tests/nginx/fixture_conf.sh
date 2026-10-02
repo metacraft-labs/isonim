@@ -10,6 +10,11 @@
 # request-context-generation.spec.ts runs to send response headers and hold
 # the body back.  Only that spec's slow-body test calls it.
 #
+# /ssr.html and /ssr-stream.html: the SSR -> hydrate round trip
+# (hydration_app.nim), rendered by the string and the streaming renderer,
+# with the module's _$HY bootstrap appended (isonim_ssr_hydration, on by
+# default) on its default streaming transport.
+#
 # One worker process: every request of a test is served by the same worker,
 # which is what makes "the worker was not blocked" observable.
 
@@ -46,6 +51,14 @@ http {
   server {
     listen 127.0.0.1:${PORT};
     location /static/ { alias ${WWW}/; }
+    location = /ssr.html {
+      isonim_ssr on;
+      isonim_ssr_app hydration;
+    }
+    location = /ssr-stream.html {
+      isonim_ssr on;
+      isonim_ssr_app hydration-stream;
+    }
     ${SLOW_BODY}
     location / {
       isonim_rpc on;

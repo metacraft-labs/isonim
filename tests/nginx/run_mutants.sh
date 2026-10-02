@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
 # The falsifying mutations of the nginx fixture's browser tests
-# (tests/browser/specs/rpc-over-nginx.spec.ts and
-# request-context-generation.spec.ts).  Each mutant is built from a copy of
+# (tests/browser/specs/rpc-over-nginx.spec.ts,
+# request-context-generation.spec.ts and ssr-hydration.spec.ts).  Each mutant is built from a copy of
 # the sources with one exact text replacement, served by the nginx fixture,
 # and the spec's guarded tests must FAIL against it while its negative
 # controls still pass.  Exits 0 when every mutant is caught.
@@ -25,6 +25,11 @@
 #                  before authentication: the generated
 #                  pcAuthBeforeCanonical tests of tests/test_route_manifest.nim
 #                  fail (a 301 with Location instead of 401/403).
+#   no-data-hk     SSR without hydration keys (ssr/markers.nim): the
+#                  identity assertions of ssr-hydration.spec.ts fail.
+#   redispatch-replay
+#                  hydrate replaying a recorded event by re-dispatching the
+#                  original: the replay test of ssr-hydration.spec.ts fails.
 #
 # Needs what build_fixture.sh needs, and Playwright with a Chromium
 # (PLAYWRIGHT_CHROMIUM_EXECUTABLE, or `chromium` on PATH).
@@ -36,6 +41,10 @@ NGX="${ISONIM_NGX_ISONIM_DIR:-${ROOT}/../ngx-isonim}"
 WS="$(cd "${ROOT}/.." && pwd)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/isonim-nginx-mutants.XXXXXX")"
 trap 'rm -rf "${WORK}"' EXIT
+# A JS build of the DSL reads <src>/../build/tailwind-styles.json (just
+# build-tailwind); the mutated copies of src/ live in ${WORK}.
+mkdir -p "${WORK}/build"
+cp "${ROOT}/build/tailwind-styles.json" "${WORK}/build/"
 export PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium || true)}"
 
 mutate() {
@@ -52,13 +61,13 @@ PY
 }
 
 run_spec() {
-  # run_spec <log> <grep> [env...]: runs the nginx-rpc project; returns
-  # Playwright's exit code.
+  # run_spec <log> <grep> [env...]: runs the nginx-rpc project (or
+  # SPEC_PROJECT); returns Playwright's exit code.
   local log="$1" grep="$2"
   shift 2
   (cd "${ROOT}/tests/browser" &&
-    env "$@" npx playwright test --project=nginx-rpc --reporter=line \
-      --grep "${grep}" >"${log}" 2>&1)
+    env "$@" npx playwright test --project="${SPEC_PROJECT:-nginx-rpc}" \
+      --reporter=line --grep "${grep}" >"${log}" 2>&1)
 }
 
 caught=0
@@ -223,6 +232,52 @@ else
     "$(grep -c 'pcAuthBeforeCanonical' "${WORK}/canonical-first.log") pcAuthBeforeCanonical failures"
   caught=$((caught + 1))
 fi
+
+# --- no-data-hk --------------------------------------------------------------
+# The module (server) from a mutated isonim whose SSR emits no hydration
+# keys: the client finds nothing to adopt and builds a second copy, so the
+# identity assertions of ssr-hydration.spec.ts fail (in both SSR modes),
+# while the page still renders without JavaScript.
+rm -rf "${WORK}/no-data-hk-src"
+cp -r "${ROOT}/src" "${WORK}/no-data-hk-src"
+mutate "${WORK}/no-data-hk-src/isonim/ssr/markers.nim" \
+  "  if hydrationActive or force:" "  if false:"
+ISONIM_FIXTURE_SRC="${WORK}/no-data-hk-src" ISONIM_FIXTURE_OUT="${WORK}/no-data-hk" \
+  bash "${HERE}/build_fixture.sh" --module-only >"${WORK}/no-data-hk-build.log" 2>&1 ||
+  { tail -30 "${WORK}/no-data-hk-build.log"; exit 1; }
+if SPEC_PROJECT=ssr-hydration run_spec "${WORK}/no-data-hk.log" "preserves SSR content" \
+    ISONIM_NGINX_MODULE="${WORK}/no-data-hk/ngx_http_isonim_module.so"; then
+  echo "MISSED no-data-hk: the identity check passed without hydration keys"
+  missed=$((missed + 1))
+else
+  grep -q "2 failed" "${WORK}/no-data-hk.log" && grep -q "unmarked" "${WORK}/no-data-hk.log" ||
+    { cat "${WORK}/no-data-hk.log"; exit 1; }
+  echo "caught no-data-hk: the hydrated nodes were not the server's (both SSR modes)"
+  caught=$((caught + 1))
+fi
+SPEC_PROJECT=ssr-hydration run_spec "${WORK}/no-data-hk-control.log" "without JavaScript" \
+  ISONIM_NGINX_MODULE="${WORK}/no-data-hk/ngx_http_isonim_module.so" ||
+  { echo "the no-data-hk mutant fails the no-JS render:"; cat "${WORK}/no-data-hk-control.log"; exit 1; }
+
+# --- redispatch-replay -------------------------------------------------------
+# The client replaying a recorded event by re-dispatching the original (a
+# trusted MouseEvent click): the checkbox's activation behaviour runs a
+# second time, so the replay test sees the click applied twice.
+client_mutant redispatch-replay isonim/web/hydration.nim \
+  '      target.dispatchEvent(replay);' '      target.dispatchEvent(""", ev, """);'
+if SPEC_PROJECT=ssr-hydration run_spec "${WORK}/redispatch-replay.log" "event replay" \
+    ISONIM_FIXTURE_WWW="${WORK}/redispatch-replay/www"; then
+  echo "MISSED redispatch-replay: the replayed click was applied once anyway"
+  missed=$((missed + 1))
+else
+  grep -q "2 failed" "${WORK}/redispatch-replay.log" ||
+    { cat "${WORK}/redispatch-replay.log"; exit 1; }
+  echo "caught redispatch-replay: the click recorded before hydration was not replayed exactly once"
+  caught=$((caught + 1))
+fi
+SPEC_PROJECT=ssr-hydration run_spec "${WORK}/redispatch-replay-control.log" "toggle task" \
+  ISONIM_FIXTURE_WWW="${WORK}/redispatch-replay/www" ||
+  { echo "the redispatch-replay mutant fails the toggle:"; cat "${WORK}/redispatch-replay-control.log"; exit 1; }
 
 echo "mutants caught: ${caught}, missed: ${missed}"
 [ "${missed}" -eq 0 ]

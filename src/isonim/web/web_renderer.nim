@@ -18,6 +18,8 @@ when not defined(js):
   {.error: "isonim/web/web_renderer requires the JS backend".}
 
 import isonim/web/dom_api
+import isonim/web/hydration
+import isonim/rxcore
 import isonim/core/boundary_meter
 export boundary_meter
 
@@ -33,7 +35,15 @@ type
 
 proc createElement*(r: WebRenderer; tag: string): Element =
   ## Create a real DOM element via `document.createElement`.
+  ##
+  ## While `hydrate` runs, returns the server-rendered element whose
+  ## `data-hk` key is this element's count instead (`claimElement`), so a
+  ## `ui(r):` tree adopts the page it was rendered into.
   noteOp(boCreateElement, 1, tag)
+  if isHydrating():
+    let adopted = claimElement(cstring(tag))
+    if not adopted.isNodeNil:
+      return Element(adopted)
   dom_api.document.createElement(cstring(tag))
 
 proc createTextNode*(r: WebRenderer; text: string): Node =
@@ -48,16 +58,22 @@ proc createTextNode*(r: WebRenderer; text: string): Node =
 proc appendChild*(r: WebRenderer; parent: Element, child: Element) =
   ## Append a child element to a parent element.
   noteOp(boAppendChild, 2)
+  if isHydrating() and hydrationAppend(Node(parent), Node(child)):
+    return
   dom_api.appendChild(Node(parent), Node(child))
 
 proc appendChild*(r: WebRenderer; parent: Element, child: Node) =
   ## Append a child node to a parent element.
   noteOp(boAppendChild, 2)
+  if isHydrating() and hydrationAppend(Node(parent), child):
+    return
   dom_api.appendChild(Node(parent), child)
 
 proc appendChild*(r: WebRenderer; parent: Node, child: Node) =
   ## Append a child node to a parent node.
   noteOp(boAppendChild, 2)
+  if isHydrating() and hydrationAppend(parent, child):
+    return
   dom_api.appendChild(parent, child)
 
 # ---------------------------------------------------------------------------

@@ -5,6 +5,7 @@
 #   ngx_http_isonim_module.so  ngx-isonim (the sibling checkout) with
 #                              fixture_app.nim compiled in
 #   www/client.js              the browser client (fixture_client.nim)
+#   www/hydrate.js             the hydration client (hydration_client.nim)
 #   env.sh                     NGINX_BIN: the --with-compat nginx the module
 #                              is built for
 #
@@ -68,4 +69,8 @@ if [ "${what}" != "module" ]; then
     --nimcache:"${OUT}/.nimcache-js" "${PREFIX_DEFINE}" \
     --path:"${SRC}" --path:"${WS}/nim-everywhere/src" "$@" \
     -o:"${OUT}/www/client.js" "${HERE}/fixture_client.nim"
+  nim js --hints:off --skipParentCfg --skipProjCfg \
+    --nimcache:"${OUT}/.nimcache-js-hydrate" \
+    --path:"${SRC}" --path:"${WS}/nim-everywhere/src" "$@" \
+    -o:"${OUT}/www/hydrate.js" "${HERE}/hydration_client.nim"
 fi

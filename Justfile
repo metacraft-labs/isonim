@@ -288,6 +288,8 @@ test-js: build-tailwind
     nim js -r tests/test_server_functions.nim
     nim js -r tests/test_form_actions.nim
     nim js -r tests/test_data_loading.nim
+    # The Web Worker target's message codec and build guard (IFP-M3).
+    nim js -r tests/test_web_worker.nim
 
 # Run only signal tests
 test-signals:
@@ -1056,19 +1058,22 @@ demo-build:
     nim js --path:../nim-everywhere/src -o:demos/isonim-replica/dist/main.js demos/isonim-replica/src/main.nim
 
 # Build the nginx fixture (tests/nginx/README.md): the sibling ngx-isonim
-# module with the fixture's route manifest and server functions compiled in
-# (built in ngx-isonim's dev shell), and the fixture's browser client.
-build-nginx-fixture:
+# module with the fixture's route manifest, server functions and SSR
+# hydration app compiled in (built in ngx-isonim's dev shell), and the
+# fixture's browser clients. `build-tailwind`: the hydration client is a
+# JS build of the DSL (see `test-js`).
+build-nginx-fixture: build-tailwind
     bash tests/nginx/build_fixture.sh
 
-# Server functions over HTTP and the typed route manifest against real nginx
-# with the real ngx-isonim module (IFP-M2): the route-manifest test (its
-# generated policy tests run against nginx), the nginx-rpc Playwright
-# project, and the falsifying mutations of that project.  Needs the
+# Server functions over HTTP, the typed route manifest (IFP-M2) and the SSR
+# -> hydrate -> interact round trip (IFP-M3) against real nginx with the
+# real ngx-isonim module: the route-manifest test (its generated policy
+# tests run against nginx), the nginx-rpc and ssr-hydration Playwright
+# projects, and the falsifying mutations of those projects.  Needs the
 # ngx-isonim sibling checkout and nix; not part of `just test`.
 test-nginx: build-nginx-fixture
     nim c -r -d:isonimRpcPrefix=/api/v1/rpc tests/test_route_manifest.nim
-    cd tests/browser && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=nginx-rpc
+    cd tests/browser && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=nginx-rpc --project=ssr-hydration
     bash tests/nginx/run_mutants.sh
 
 # CI: `just test-nginx`, its full output also in test-logs/test-nginx.log
@@ -1078,19 +1083,6 @@ ci-test-nginx:
     set -euo pipefail
     mkdir -p test-logs
     just test-nginx 2>&1 | tee test-logs/test-nginx.log
-
-# Build SSR test HTML (C target: generates tests/browser/dist/ssr.html)
-build-ssr-test:
-    mkdir -p tests/browser/dist
-    nim c --path:../nim-everywhere/src -d:isServer -r tests/browser/generate_ssr.nim
-
-# Build hydration entry point (JS target: tests/browser/dist/main.js)
-build-hydrate:
-    mkdir -p tests/browser/dist
-    nim js --path:../nim-everywhere/src -o:tests/browser/dist/main.js tests/browser/hydrate_entry.nim
-
-# Build all SSR test assets
-build-ssr-test-all: build-ssr-test build-hydrate
 
 # Build the HMR fixture bundle (JS target with -d:isonimHmr).
 build-hmr-fixture:
@@ -1146,17 +1138,18 @@ test-browser: test-browser-demo test-browser-ssr test-browser-hmr test-browser-h
 # Without the submodule `repro exec` itself fails, and `repro exec` is what
 # puts node on PATH. See tests/browser/README.md.
 
-# Build every artifact the six in-repo Playwright projects serve.
+# Build every artifact the six static in-repo Playwright projects serve.
 # (`metacraft-web-editor` is excluded: it serves a bundle from the
-# metacraft-web sibling repo — see `test-browser-editor-consumer`.)
+# metacraft-web sibling repo — see `test-browser-editor-consumer`;
+# `nginx-rpc` and `ssr-hydration` run against real nginx in `test-nginx`.)
 #
 # `build-tailwind` first, for the reason spelled out above `test-js`: every
 # `nim js` compile below reaches `build/tailwind-styles.json` through an
 # uncatchable `staticRead`. On a warm working copy that file already exists,
 # which is exactly why its absence would only ever have bitten a cold runner.
 
-# Build every artifact the six in-repo Playwright projects serve.
-browser-test-deps: build-tailwind demo-build build-ssr-test-all build-hmr-fixture build-hmr-parametric-fixture build-hmr-transport-fixture editor-build
+# Build every artifact the six static in-repo Playwright projects serve.
+browser-test-deps: build-tailwind demo-build build-hmr-fixture build-hmr-parametric-fixture build-hmr-transport-fixture build-web-worker-fixture editor-build
 
 # Separate from `browser-test-deps` because it is the only step here that
 # touches the network.
@@ -1166,18 +1159,19 @@ browser-test-install:
     npm --prefix tests/browser install
     npx --prefix tests/browser playwright install chromium
 
-# Build everything, then run the six in-repo Playwright projects (55 tests).
+# Build everything, then run the six static in-repo Playwright projects (51 tests).
 test-browser-all: browser-test-deps
-    cd tests/browser && npx playwright test --project=demo-app --project=ssr-hydration --project=hmr --project=hmr-parametric --project=hmr-transport --project=editor-example
+    cd tests/browser && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=demo-app --project=hmr --project=hmr-parametric --project=hmr-transport --project=web-worker --project=editor-example
 
 # The gate run on every push: the three HMR projects, 25 tests, ~20s of
 # browser time once the Nim fixtures are built.
 #
-# `demo-app` and `ssr-hydration` are deliberately NOT here, and are not
-# skipped either — they run in `test-browser-all`, and they are currently red
-# on real product defects diagnosed in tests/browser/README.md. A permanently
-# red required gate teaches people to ignore CI, which is how this suite came
-# to rot in the first place. Move them in as soon as they are fixed.
+# `demo-app` is deliberately NOT here, and is not skipped either — it runs in
+# `test-browser-all`, and it is currently red on a real product defect
+# diagnosed in tests/browser/README.md. A permanently red required gate
+# teaches people to ignore CI, which is how this suite came to rot in the
+# first place. Move it in as soon as it is fixed. (`ssr-hydration` needs
+# real nginx and runs in `test-nginx`.)
 #
 # `editor-example` is out for cost, not colour: its 14 screenshot and layout
 # tests take ~4 minutes on their own, against a runner pool that is small and
@@ -1191,9 +1185,28 @@ test-browser-smoke: build-tailwind build-hmr-fixture build-hmr-parametric-fixtur
 test-browser-demo: demo-build
     cd tests/browser && npx playwright test --project=demo-app
 
-# Run Playwright SSR hydration tests (requires: just build-ssr-test-all)
-test-browser-ssr: build-ssr-test-all
-    cd tests/browser && npx playwright test --project=ssr-hydration
+# The Web Worker build target's fixture (IFP-M3; IsoNim.md § Web Worker
+# Target): a compile module built as a worker chunk (preview.worker.js), the
+# page script that drives it through a WorkerBridge (main.js), and the
+# negative control with the same module linked into the page script
+# (main.inline.js), each recorded in the directory's bundle manifest, whose
+# size report closes the recipe.
+build-web-worker-fixture:
+    rm -rf build/web-worker-fixture
+    node tools/isonim-bundle.mjs build --kind worker --minify --entry tests/browser/web_worker_fixture/preview_worker.nim --out build/web-worker-fixture/preview.worker.js -- --path:src --path:../nim-everywhere/src
+    node tools/isonim-bundle.mjs build --kind main --minify --entry tests/browser/web_worker_fixture/main.nim --out build/web-worker-fixture/main.js -- --path:src --path:../nim-everywhere/src
+    node tools/isonim-bundle.mjs build --kind main --minify --entry tests/browser/web_worker_fixture/main.nim --out build/web-worker-fixture/main.inline.js -- -d:previewInline --path:src --path:../nim-everywhere/src
+    cp tests/browser/web_worker_fixture/index.html tests/browser/web_worker_fixture/inline.html tests/browser/web_worker_fixture/beacon.js build/web-worker-fixture/
+    node tools/isonim-bundle.mjs report build/web-worker-fixture
+
+# Run the Web Worker target's Playwright spec.
+test-browser-web-worker: build-web-worker-fixture
+    cd tests/browser && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=web-worker
+
+# Run the Playwright SSR hydration round trip against real nginx (the nginx
+# fixture; needs the ngx-isonim sibling and nix, as `test-nginx` does)
+test-browser-ssr: build-nginx-fixture
+    cd tests/browser && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=ssr-hydration
 
 # Build and serve SolidJS demo
 demo-solid:
