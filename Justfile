@@ -197,6 +197,8 @@ test-c:
     nim c -r tests/test_router.nim
     nim c -r tests/test_ssr_routing.nim
     nim c -r tests/test_server_functions.nim
+    nim c -r tests/test_form_actions.nim
+    nim c -r tests/test_rpc_dispatch.nim
     nim c -r tests/test_static_dist_dev_server.nim
     nim c -r tests/test_data_loading.nim
     nim c -r tests/test_file_routes.nim
@@ -284,6 +286,7 @@ test-js: build-tailwind
     nim js -r tests/test_accessibility.nim
     nim js -r tests/test_router.nim
     nim js -r tests/test_server_functions.nim
+    nim js -r tests/test_form_actions.nim
     nim js -r tests/test_data_loading.nim
 
 # Run only signal tests
@@ -337,6 +340,9 @@ test-dsl: build-tailwind
 test-server:
     nim c -r tests/test_server_functions.nim
     nim js -r tests/test_server_functions.nim
+    nim c -r tests/test_form_actions.nim
+    nim js -r tests/test_form_actions.nim
+    nim c -r tests/test_rpc_dispatch.nim
     nim c -r tests/test_static_dist_dev_server.nim
 
 # Run data loading (server resource) tests
@@ -1048,6 +1054,30 @@ test-app-e2e:
 # Build demo app for browser testing
 demo-build:
     nim js --path:../nim-everywhere/src -o:demos/isonim-replica/dist/main.js demos/isonim-replica/src/main.nim
+
+# Build the nginx fixture (tests/nginx/README.md): the sibling ngx-isonim
+# module with the fixture's route manifest and server functions compiled in
+# (built in ngx-isonim's dev shell), and the fixture's browser client.
+build-nginx-fixture:
+    bash tests/nginx/build_fixture.sh
+
+# Server functions over HTTP and the typed route manifest against real nginx
+# with the real ngx-isonim module (IFP-M2): the route-manifest test (its
+# generated policy tests run against nginx), the nginx-rpc Playwright
+# project, and the falsifying mutations of that project.  Needs the
+# ngx-isonim sibling checkout and nix; not part of `just test`.
+test-nginx: build-nginx-fixture
+    nim c -r -d:isonimRpcPrefix=/api/v1/rpc tests/test_route_manifest.nim
+    cd tests/browser && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=nginx-rpc
+    bash tests/nginx/run_mutants.sh
+
+# CI: `just test-nginx`, its full output also in test-logs/test-nginx.log
+# (.github/workflows/nginx-tests.yml uploads that directory).
+ci-test-nginx:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p test-logs
+    just test-nginx 2>&1 | tee test-logs/test-nginx.log
 
 # Build SSR test HTML (C target: generates tests/browser/dist/ssr.html)
 build-ssr-test:

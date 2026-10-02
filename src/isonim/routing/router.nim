@@ -10,6 +10,7 @@
 import ../core/[signals, computation]
 when defined(js):
   import ../core/owner
+  import client_context
 import match, params, outlet
 export params, outlet
 
@@ -166,6 +167,9 @@ proc createRouter*(routes: seq[RouteEntry]): Router =
     if hasWindow():
       # Listen for browser back/forward
       let popstateHandler = proc(e: JsRoot) =
+        # A navigation: responses to navigation-scoped requests sent
+        # before it are dropped (URL-Schema.md §5.4).
+        bumpNavigationGeneration()
         router.currentPath.val = getWindowPathname()
 
       window.addEventListener(cstring"popstate", popstateHandler)
@@ -178,7 +182,11 @@ proc createRouter*(routes: seq[RouteEntry]): Router =
 proc navigate*(router: Router; path: string; replace = false) =
   ## Navigate to a new path. Updates currentPath signal.
   ## On JS (in browser): pushState/replaceState. On C or Node.js: just updates the signal.
+  ## On JS every navigation also advances the client's navigation generation,
+  ## so responses to navigation-scoped requests sent before it are dropped
+  ## (client_context.nim).
   when defined(js):
+    bumpNavigationGeneration()
     if hasWindow():
       if replace:
         window.history.replaceState(nil, cstring"", cstring(path))

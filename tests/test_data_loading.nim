@@ -1,17 +1,21 @@
 ## test_data_loading.nim
 ##
-## Tests for M6: createServerResource — data loading via server functions.
+## createServerResource: data loading through (asynchronous) server
+## functions.
 ##
-## C target tests verify:
-##   - Server functions resolve synchronously (rsReady immediately)
-##   - Correct values are returned
-##   - Multiple resources in one render all resolve
-##   - Integration with renderToString produces HTML with server data
-##   - Integration with SSR routing (renderRoute) includes fetched data
+## C target:
+##   - a server function whose future is already complete resolves the
+##     resource before rendering continues (rsReady immediately), so SSR
+##     HTML contains the data (renderToString, renderRoute);
+##   - one that really suspends leaves the resource rsPending until the
+##     event loop completes it;
+##   - errors give rsErrored; the source variant refetches and only the
+##     latest fetch may update the resource.
 ##
-## JS target tests verify:
-##   - Server function + createServerResource compiles correctly
-##   - Resource types are correct
+## JS target: the resource follows the server function's promise
+## (rsPending, then rsReady / rsErrored).  The promises are made here; the
+## fetch stub itself is tested in test_server_functions.nim and against
+## nginx in tests/browser.
 
 import unittest
 import std/[json, strutils]
@@ -32,19 +36,19 @@ type
     title: string
     body: string
 
-proc getUser(id: int): User {.server.} =
-  User(id: id, name: "User " & $id)
+proc getUser(id: int): Future[User] {.server.} =
+  return User(id: id, name: "User " & $id)
 
-proc getPost(id: int): Post {.server.} =
-  Post(id: id, title: "Post " & $id, body: "Body of post " & $id)
+proc getPost(id: int): Future[Post] {.server.} =
+  return Post(id: id, title: "Post " & $id, body: "Body of post " & $id)
 
-proc getCount(): int {.server.} =
-  42
+proc getCount(): Future[int] {.server.} =
+  return 42
 
-proc getUserName(id: int): string {.server.} =
-  "User " & $id
+proc getUserName(id: int): Future[string] {.server.} =
+  return "User " & $id
 
-proc failingFetch(): string {.server.} =
+proc failingFetch(): Future[string] {.server.} =
   raise newException(CatchableError, "server error")
 
 # ---------------------------------------------------------------------------
@@ -61,7 +65,7 @@ when not defined(js):
     test "server function resource resolves immediately":
       createRoot do (dispose: proc()):
         let r = createServerResource[User](
-          proc(): User = getUser(1)
+          proc(): Future[User] = getUser(1)
         )
         check r.state.val == rsReady
         check r.val.id == 1
@@ -70,7 +74,7 @@ when not defined(js):
     test "zero-arg server function resource":
       createRoot do (dispose: proc()):
         let r = createServerResource[int](
-          proc(): int = getCount()
+          proc(): Future[int] = getCount()
         )
         check r.state.val == rsReady
         check r.val == 42
@@ -78,7 +82,7 @@ when not defined(js):
     test "string-returning server function":
       createRoot do (dispose: proc()):
         let r = createServerResource[string](
-          proc(): string = getUserName(7)
+          proc(): Future[string] = getUserName(7)
         )
         check r.state.val == rsReady
         check r.val == "User 7"
@@ -86,14 +90,14 @@ when not defined(js):
     test "resource is not loading after synchronous resolve":
       createRoot do (dispose: proc()):
         let r = createServerResource[int](
-          proc(): int = getCount()
+          proc(): Future[int] = getCount()
         )
         check r.loading == false
 
     test "failing server function produces errored resource":
       createRoot do (dispose: proc()):
         let r = createServerResource[string](
-          proc(): string = failingFetch()
+          proc(): Future[string] = failingFetch()
         )
         check r.state.val == rsErrored
         check "server error" in r.error.val
@@ -101,13 +105,13 @@ when not defined(js):
     test "multiple resources in one scope all resolve":
       createRoot do (dispose: proc()):
         let userRes = createServerResource[User](
-          proc(): User = getUser(10)
+          proc(): Future[User] = getUser(10)
         )
         let postRes = createServerResource[Post](
-          proc(): Post = getPost(5)
+          proc(): Future[Post] = getPost(5)
         )
         let countRes = createServerResource[int](
-          proc(): int = getCount()
+          proc(): Future[int] = getCount()
         )
         check userRes.state.val == rsReady
         check postRes.state.val == rsReady
@@ -120,7 +124,7 @@ when not defined(js):
     test "resource data appears in rendered HTML":
       let html = renderToString do () -> string:
         let user = createServerResource[User](
-          proc(): User = getUser(42)
+          proc(): Future[User] = getUser(42)
         )
         ui:
           h1: text user.val.name
@@ -132,10 +136,10 @@ when not defined(js):
     test "multiple resources in rendered HTML":
       let html = renderToString do () -> string:
         let user = createServerResource[User](
-          proc(): User = getUser(1)
+          proc(): Future[User] = getUser(1)
         )
         let post = createServerResource[Post](
-          proc(): Post = getPost(99)
+          proc(): Future[Post] = getPost(99)
         )
         ui:
           tdiv:
@@ -150,7 +154,7 @@ when not defined(js):
     test "resource error handled in rendered HTML":
       let html = renderToString do () -> string:
         let r = createServerResource[string](
-          proc(): string = failingFetch()
+          proc(): Future[string] = failingFetch()
         )
         if r.state.val == rsErrored:
           ui:
@@ -171,7 +175,7 @@ when not defined(js):
           component: proc(): string =
             let id = rp.get("id").val
             let user = createServerResource[User](
-              proc(): User = getUser(parseInt(id))
+              proc(): Future[User] = getUser(parseInt(id))
             )
             ui:
               h1: text user.val.name
@@ -189,10 +193,10 @@ when not defined(js):
           pattern: parsePattern("/dashboard"),
           component: proc(): string =
             let user = createServerResource[User](
-              proc(): User = getUser(1)
+              proc(): Future[User] = getUser(1)
             )
             let count = createServerResource[int](
-              proc(): int = getCount()
+              proc(): Future[int] = getCount()
             )
             ui:
               tdiv(class = "dashboard"):
@@ -224,7 +228,7 @@ when not defined(js):
               component: proc(): string =
                 let id = rp.get("id").val
                 let user = createServerResource[User](
-                  proc(): User = getUser(parseInt(id))
+                  proc(): Future[User] = getUser(parseInt(id))
                 )
                 ui:
                   section:
@@ -246,7 +250,7 @@ when not defined(js):
         let id = createSignal(5)
         let r = createServerResource[int, User](
           proc(): int = id.val,
-          proc(i: int): User = getUser(i)
+          proc(i: int): Future[User] = getUser(i)
         )
         check r.state.val == rsReady
         check r.val.name == "User 5"
@@ -257,7 +261,7 @@ when not defined(js):
         var fetchCount = 0
         let r = createServerResource[int, User](
           proc(): int = id.val,
-          proc(i: int): User =
+          proc(i: int): Future[User] =
             inc fetchCount
             getUser(i)
         )
@@ -268,34 +272,87 @@ when not defined(js):
         check r.val.name == "User 3"
         check fetchCount == 2
 
+  proc slowUser(id: int; ms: int): Future[User] {.async.} =
+    await sleepAsync(ms)
+    return User(id: id, name: "Slow " & $id)
+
+  suite "createServerResource — suspending server functions (C target)":
+    test "a suspended fetch is pending until the event loop completes it":
+      createRoot do (dispose: proc()):
+        let r = createServerResource[User](
+          proc(): Future[User] = slowUser(3, 20)
+        )
+        check r.state.val == rsPending
+        while r.state.value == rsPending:
+          poll(5)
+        check r.state.val == rsReady
+        check r.val.name == "Slow 3"
+
+    test "only the latest fetch of the source variant may update":
+      createRoot do (dispose: proc()):
+        let id = createSignal(1)
+        let r = createServerResource[int, User](
+          proc(): int = id.val,
+          proc(i: int): Future[User] = slowUser(i, (if i == 1: 60 else: 10))
+        )
+        id.val = 2          # the fetch for 1 is still in flight
+        while hasPendingOperations():
+          poll(5)
+        check r.state.val == rsReady
+        check r.val.id == 2  # the late result for 1 was discarded
+
 # ---------------------------------------------------------------------------
-# JS target: compilation and type checks
+# JS target
 # ---------------------------------------------------------------------------
 
 else:
-  suite "createServerResource — JS target":
-    test "server function + createServerResource compiles":
-      # On JS, server functions become RPC stubs.
-      # We verify that createServerResource compiles with the stub.
-      check declared(getUser)
-      check declared(getPost)
-      check declared(getCount)
-      check declared(getUserName)
-      check declared(createServerResource)
+  import std/asyncjs
 
-    test "resource type is correct":
-      # Verify the return type is Resource[T]
-      # (can't actually call RPC without a server, but types must match)
-      when compiles(createServerResource[int](proc(): int = 0)):
-        check true
-      else:
-        check false
+  var resolvers: seq[proc(u: User)]
+  var rejecters: seq[proc(msg: cstring)]
 
-    test "source variant compiles":
-      when compiles(createServerResource[int, string](
-        proc(): int = 0,
-        proc(i: int): string = ""
-      )):
-        check true
-      else:
-        check false
+  proc pendingUser(): Future[User] =
+    ## A promise this test settles by hand.
+    var res: proc(u: User)
+    var rej: proc(msg: cstring)
+    {.emit: """`result` = new Promise((a, b) => {
+      `res` = a; `rej` = (m) => b(new Error(m)); });""".}
+    resolvers.add res
+    rejecters.add rej
+
+  proc tick(): Future[void] =
+    newPromise(proc(resolve: proc()) =
+      {.emit: "setTimeout(`resolve`, 0);".})
+
+  proc main() {.async.} =
+    var r: Resource[User]
+    createRoot do (dispose: proc()):
+      r = createServerResource[User](proc(): Future[User] = pendingUser())
+    doAssert r.state.value == rsPending
+    resolvers[0](User(id: 9, name: "Nine"))
+    await tick()
+    doAssert r.state.value == rsReady
+    doAssert r.data.value.name == "Nine"
+
+    var e: Resource[User]
+    createRoot do (dispose: proc()):
+      e = createServerResource[User](proc(): Future[User] = pendingUser())
+    rejecters[1](cstring"nope")
+    await tick()
+    doAssert e.state.value == rsErrored
+    doAssert "nope" in e.error.value
+
+    # A future that never settles (a dropped stale response) leaves the
+    # resource as it was.
+    var d: Resource[User]
+    createRoot do (dispose: proc()):
+      d = createServerResource[User](proc(): Future[User] = pendingUser(),
+                                     User(id: 1, name: "kept"))
+    await tick()
+    doAssert d.state.value == rsPending
+    doAssert d.data.value.name == "kept"
+
+    doAssert getUserUrl == "/api/test_data_loading/getUser"
+    echo "[OK] createServerResource follows the server function's promise (JS)"
+
+  discard main()

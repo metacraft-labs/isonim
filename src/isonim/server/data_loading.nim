@@ -1,48 +1,91 @@
 ## isonim/server/data_loading.nim
 ##
-## Combines server functions with createResource for declarative data fetching.
+## `createServerResource`: a resource whose data comes from a server
+## function.
 ##
-## On C target (SSR): the server function executes synchronously, so the
-## resource resolves immediately (state == rsReady) before the shell is rendered.
+## Server functions return `Future[T]` on both targets:
 ##
-## On JS target (browser): the server function is an RPC stub, so
-## createResource wraps it with loading/error states that integrate
-## with Suspense boundaries.
+## * on the C target (SSR) the server function runs in-process; when its
+##   future is already complete (it awaited nothing, or only completed
+##   futures), the resource is `rsReady` before rendering continues, so the
+##   SSR HTML contains the data.  Otherwise the resource is `rsPending` and
+##   becomes ready when the future completes (on the server's event loop).
+## * on the JS target the server function is the `fetch` stub: the resource
+##   starts `rsPending` (Suspense shows its fallback) and becomes `rsReady`
+##   or `rsErrored` when the response arrives.  A response the client drops
+##   as stale (URL-Schema.md §5.4) never settles the future, so the
+##   resource keeps what it had.
 ##
-## Usage:
-##   proc getUser(id: int): User {.server.} =
-##     db.query("SELECT * FROM users WHERE id = ?", id)
+## The source variant refetches whenever the source signal changes; a late
+## result of an older fetch is discarded.
 ##
-##   let user = createServerResource(proc(): User = getUser(42))
-##   # SSR: user.state == rsReady, user.val is populated
-##   # Browser: user.state == rsPending until RPC completes
+## ```nim
+## proc getUser(id: int): Future[User] {.server.} = ...
+## let user = createServerResource(proc(): Future[User] = getUser(42))
+## ```
 
-import ../core/resource
+import ../core/[resource, computation]
+
+when defined(js):
+  import std/asyncjs
+else:
+  import std/asyncdispatch
+
+proc settle[T](fut: Future[T]; current: proc(): bool;
+               resolve: proc(value: T); reject: proc(msg: string)) =
+  when defined(js):
+    proc ok(value: T) =
+      if current(): resolve(value)
+    proc failed(err: Error) =
+      if current(): reject($err.message)
+    discard fut.then(ok, failed)
+  else:
+    if fut.finished:
+      # Synchronous resolution: what SSR relies on.
+      if fut.failed: reject(fut.error.msg)
+      else: resolve(fut.read)
+    else:
+      fut.addCallback(proc() {.gcsafe.} =
+        {.cast(gcsafe).}:
+          # The resource's closures touch signals; nginx and the test
+          # loops run single-threaded.
+          if current():
+            if fut.failed: reject(fut.error.msg)
+            else: resolve(fut.read))
 
 proc createServerResource*[T](
-    serverFn: proc(): T;
+    serverFn: proc(): Future[T];
     initialValue: T = default(T)): Resource[T] =
-  ## Creates a resource that fetches data via a server function.
-  ##
-  ## On C (SSR): calls the server function directly (synchronous).
-  ## The resource is immediately in rsReady state, so renderToString
-  ## produces HTML with the data already populated -- no Suspense needed.
-  ##
-  ## On JS (browser): the server function is already an RPC stub,
-  ## so createResource wraps it with loading/error states. The resource
-  ## starts as rsPending and transitions to rsReady when the RPC completes.
-  createResource(serverFn, initialValue)
+  ## A resource holding the result of `serverFn()`.
+  let d = createDeferredResource[T](initialValue)
+  var fut: Future[T]
+  try:
+    fut = serverFn()
+  except CatchableError as e:
+    d.reject(e.msg)
+    return d.resource
+  settle(fut, proc(): bool = true, d.resolve, d.reject)
+  d.resource
 
 proc createServerResource*[S, T](
     source: proc(): S;
-    serverFn: proc(s: S): T;
+    serverFn: proc(s: S): Future[T];
     initialValue: T = default(T)): Resource[T] =
-  ## Creates a resource that refetches via a server function when the
-  ## source signal changes.
-  ##
-  ## On C (SSR): the server function runs synchronously for the initial
-  ## source value, producing an immediately-ready resource.
-  ##
-  ## On JS (browser): the resource refetches (via RPC) whenever the
-  ## source value changes, with proper loading/error state tracking.
-  createResource(source, serverFn, initialValue)
+  ## A resource holding the result of `serverFn(source())`, refetched when
+  ## the source changes.  Only the latest fetch may update it.
+  let d = createDeferredResource[T](initialValue)
+  let generation = new(int)
+  createEffect proc() =
+    let s = source()  # tracked
+    inc generation[]
+    let mine = generation[]
+    d.resource.state.val = (if d.resource.state.value == rsReady: rsRefreshing
+                            else: rsPending)
+    var fut: Future[T]
+    try:
+      fut = serverFn(s)
+    except CatchableError as e:
+      d.reject(e.msg)
+      return
+    settle(fut, proc(): bool = mine == generation[], d.resolve, d.reject)
+  d.resource

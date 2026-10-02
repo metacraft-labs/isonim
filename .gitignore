@@ -45,6 +45,8 @@ tests/test_static_dist_dev_server
 tests/test_server_functions
 tests/test_ssr_routing
 tests/test_form_actions
+tests/test_rpc_dispatch
+tests/test_route_manifest
 tests/test_file_routes
 benchmarks/runner/
 benchmarks/results/
@@ -252,3 +254,6 @@ tests/browser/specs/*-snapshots/*-win32.png
 # web-site-prototypes/grip/isonim's calibration test).
 __pycache__/
 *.pyc
+
+# CI logs (just ci-test-nginx)
+/test-logs/

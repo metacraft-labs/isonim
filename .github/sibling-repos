@@ -114,3 +114,13 @@ isonim-cocoa=69d835c9cff51ac394908397fdb7b68cf4a129ea
 # a bare entry would resolve to the fork branch, not to 83eb115 -- worth
 # checking that is what isonim wants before dropping the `=`.
 nim-stew=83eb1157963b7f49351dbdd858355fa990bbe23c
+
+# ngx-isonim: `just test-nginx` (.github/workflows/nginx-tests.yml) builds the
+# nginx fixture's module from it (tests/nginx/build_fixture.sh runs its
+# scripts/build-module.sh in its dev shell). Nothing in tests/config.nims
+# reaches it; the fixture's server side is compiled by that build.
+#
+# LANDING IFP-M2: 1d31f8e is ngx-isonim's `agents` tip before IFP-M2 and has
+# no `isonim_rpc`. Advance this pin to the ngx-isonim commit that carries
+# IFP-M2 when both land (that commit in turn pins this repo's IFP-M2 commit).
+ngx-isonim=1d31f8e22b3ea0ec85bcadcbb95376e41ca6f19f

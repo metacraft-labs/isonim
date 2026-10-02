@@ -1,0 +1,117 @@
+name: nginx tests (real ngx-isonim)
+
+# `just test-nginx`: server functions over HTTP and the typed route manifest
+# against real nginx with the real ngx-isonim module (IFP-M2 of
+# isonim-specs/milestones/2026-10-02-isonim-forum-prerequisites.milestones.org).
+# It builds the nginx fixture (tests/nginx/README.md), runs
+# tests/test_route_manifest.nim (whose generated policy tests go over HTTP to
+# that nginx), the `nginx-rpc` Playwright project, and the falsifying
+# mutations of tests/nginx/run_mutants.sh. Neither ci.yml nor
+# browser-tests.yml runs it.
+#
+# SIBLINGS. The module is ngx-isonim's: tests/nginx/build_fixture.sh builds it
+# with ngx-isonim's own scripts/build-module.sh inside ngx-isonim's dev shell
+# (`nix develop` in ../ngx-isonim, its flake inputs overridden with the
+# sibling checkouts ../nim-faststreams, ../nim-stew, ../nim-everywhere and this
+# checkout, so nothing is fetched), compiled against THIS checkout's src/.
+# `ngx-isonim` is therefore declared in .github/sibling-repos alongside the
+# others, and `setup-dev-env` clones it. A missing sibling fails the build;
+# nothing is skipped.
+#
+# ONE LEG, linux-x64. ngx-isonim is an nginx dynamic module built and tested
+# on Linux only (its dev shell's `nginxCompat`, the e2e harness); linux-arm64
+# and macos-arm64 are skipped for that reason and for runner capacity (the
+# self-hosted pool is saturated, see browser-tests.yml); Windows has no nginx
+# dynamic modules. Headless Chromium needs no extra runner label.
+
+on:
+  push:
+    branches: [main, dev, stable]
+  pull_request:
+    branches: [main, dev, stable]
+
+# Cancel superseded PR runs only; every other event gets a group unique to
+# its run, so it is never cancelled and never cancels anything.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test-nginx:
+    name: test-nginx (linux-x64)
+    runs-on: [self-hosted, linux, x64]
+    # Measured locally: ~8 minutes (the fixture module, three mutant builds
+    # and their Playwright runs). Wide margin for a cold Nix store.
+    timeout-minutes: 60
+    steps:
+      - name: Generate CI token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.CI_TOKEN_PROVIDER_APP_ID }}
+          private-key: ${{ secrets.CI_TOKEN_PROVIDER_PRIVATE_KEY }}
+          owner: metacraft-labs
+
+      # `submodules: recursive`: without the yoga submodule `repro exec`, and
+      # with it node, is unavailable (see browser-tests.yml).
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup dev env (clones .github/sibling-repos, ngx-isonim included)
+        uses: metacraft-labs/metacraft-github-actions/setup-dev-env@dev
+        with:
+          env-flavor: nix
+          gh-token: ${{ steps.app-token.outputs.token }}
+          substituters: ${{ vars.SUBSTITUTERS }}
+          trusted-public-keys: ${{ vars.TRUSTED_PUBLIC_KEYS }}
+
+      - name: Verify submodules are provisioned
+        run: dev-exec just check-submodules
+
+      - name: Verify cross-repo siblings are provisioned
+        run: dev-exec just check-siblings
+
+      - name: Install Playwright and chromium
+        run: dev-exec just browser-test-install
+
+      # Builds the fixture and runs the route-manifest test, the nginx-rpc
+      # project and the mutants; the full output goes to test-logs/ as well.
+      - name: just test-nginx
+        run: dev-exec just ci-test-nginx
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-nginx-linux-x64
+          path: |
+            test-logs/
+            tests/browser/test-results
+          retention-days: 1
+          if-no-files-found: warn
+
+      - name: Mirror artifacts to S3 (non-blocking)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          MCL_S3_ARTIFACTS_ENDPOINT: ${{ vars.MCL_S3_ARTIFACTS_ENDPOINT }}
+          MCL_S3_ARTIFACTS_BUCKET: ${{ vars.MCL_S3_ARTIFACTS_BUCKET }}
+          MCL_S3_ARTIFACTS_REGION: ${{ vars.MCL_S3_ARTIFACTS_REGION }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.MCL_S3_ARTIFACTS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.MCL_S3_ARTIFACTS_SECRET_ACCESS_KEY }}
+          AWS_EC2_METADATA_DISABLED: "true"
+          S3_OBJECT_PREFIX: test-logs/${{ github.run_id }}
+        run: |
+          set -u
+          if [[ -z "${AWS_ACCESS_KEY_ID:-}" || -z "${MCL_S3_ARTIFACTS_ENDPOINT:-}" ]]; then
+            echo "S3 artifact store not configured for this repo; skipping mirror."
+            exit 0
+          fi
+          nix shell nixpkgs#awscli2 -c \
+            aws --endpoint-url "$MCL_S3_ARTIFACTS_ENDPOINT" \
+                --region "${MCL_S3_ARTIFACTS_REGION:-garage}" \
+                s3 cp --recursive test-logs/ \
+                "s3://${MCL_S3_ARTIFACTS_BUCKET:-ci-artifacts}/$S3_OBJECT_PREFIX/" \
+            || echo "::warning title=S3 artifact mirror::upload failed (non-blocking)"

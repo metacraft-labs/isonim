@@ -1,7 +1,8 @@
 # Browser tests (Playwright)
 
-77 tests in 7 spec files. They are the executable specification for the
-packaged editor, the SSR/hydration round-trip and the HMR transports.
+86 tests in 9 spec files. They are the executable specification for the
+packaged editor, the SSR/hydration round-trip, the HMR transports, and
+server functions and request contexts over real nginx.
 
 ```
 specs/demo-app.spec.ts               8 tests   demo-app              :8080
@@ -9,6 +10,9 @@ specs/ssr-hydration.spec.ts          8 tests   ssr-hydration         :8081
 specs/hmr.spec.ts                   11 tests   hmr                   :8082
 specs/hmr_transport.spec.ts          3 tests   hmr-transport         :8083
 specs/hmr_parametric.spec.ts        11 tests   hmr-parametric        :8084
+specs/rpc-over-nginx.spec.ts         4 tests   nginx-rpc             :8095
+specs/request-context-generation.spec.ts
+                                     8 tests   nginx-rpc             :8095 (+ :8096, its slow-body upstream)
 specs/editor-example.spec.ts        14 tests   editor-example        :8090
 specs/metacraft-web-editor.spec.ts  22 tests   metacraft-web-editor  :8092
 ```
@@ -83,6 +87,7 @@ ISONIM_BROWSER_REUSE_SERVER=1   npx playwright test --project=hmr   # opt back i
 | `hmr` | `tests/browser/hmr_fixture` | `just build-hmr-fixture` |
 | `hmr-transport` | `build/isonim_test_server` (a Nim dev server) | `just build-hmr-transport-fixture` |
 | `hmr-parametric` | `tests/browser/hmr_parametric_fixture` | `just build-hmr-parametric-fixture` |
+| `nginx-rpc` | nginx + the ngx-isonim module (`build/nginx-fixture`, see `tests/nginx/README.md`) | `just build-nginx-fixture` |
 | `editor-example` | `build/editor` | `just editor-build` |
 | `metacraft-web-editor` | `../metacraft-web/dist/back-office-editor` | `(cd ../metacraft-web && just build-back-office-editor)` |
 

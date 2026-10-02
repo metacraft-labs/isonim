@@ -68,8 +68,8 @@ const staticServer = (root: string, port: number) =>
 
 type ServerSpec = {
   project: string;
-  /** Spec file this project runs. */
-  testMatch: string;
+  /** Spec file(s) this project runs. */
+  testMatch: string | RegExp;
   /** Base port before `ISONIM_BROWSER_PORT_OFFSET`. */
   basePort: number;
   command: (port: number) => string;
@@ -125,6 +125,17 @@ const specs: ServerSpec[] = [
     command: (p) => staticServer(resolve(here, "hmr_parametric_fixture"), p),
     requires: resolve(here, "hmr_parametric_fixture/main.js"),
     needs: "just build-hmr-parametric-fixture",
+  },
+  {
+    // Real nginx with the real ngx-isonim module (sibling checkout) serving
+    // the route manifest and server functions of tests/nginx (IFP-M2).
+    project: "nginx-rpc",
+    testMatch: /(rpc-over-nginx|request-context-generation)\.spec\.ts/,
+    basePort: 8095,
+    command: (p) =>
+      `bash ${JSON.stringify(resolve(repoRoot, "tests/nginx/serve_fixture.sh"))} ${p}`,
+    requires: resolve(repoRoot, "build/nginx-fixture/ngx_http_isonim_module.so"),
+    needs: "just build-nginx-fixture",
   },
   {
     project: "editor-example",
