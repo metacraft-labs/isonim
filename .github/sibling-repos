@@ -120,6 +120,7 @@ nim-stew=83eb1157963b7f49351dbdd858355fa990bbe23c
 # scripts/build-module.sh in its dev shell). Nothing in tests/config.nims
 # reaches it; the fixture's server side is compiled by that build.
 #
-# The pin is ngx-isonim@agents e37966b, the commit that carries IFP-M2
-# (`isonim_rpc`); it in turn pins this repo's IFP-M2 commit 78567d8.
-ngx-isonim=e37966b28f277a2da5b9048d2fdb658796ff0093
+# The pin is ngx-isonim@agents b9c65ec, the commit that carries IFP-M3 (it
+# serves this repo's hydration bootstrap, which the SSR hydration round trip
+# replays); it in turn pins this repo's IFP-M3 commit bd31893.
+ngx-isonim=b9c65ec0aa97af204ec3dcbd90a289c09f537a3c
