@@ -26,8 +26,11 @@ cpSync(path.join(repo,'examples/source_project'),project,{recursive:true,filter:
 // Actual compiler output carries authored comments, quoted head attributes and
 // executable raw script/style text. These bytes must survive identity stamping.
 const authored=path.join(project,'stories.nim');
+// Large authored CSS is compiled/persisted/rendered in full; operation summaries
+// must have a size independent of these real producer bytes.
+const largeCss='/* concise-operation-'+ 'x'.repeat(256*1024) +' */';
 const authoredWrapper = `proc card(title: string): string =
-  "\\xEF\\xBB\\xBF<?xml version=\\"1.0\\"?><!doctype html><!-- valid documentation: <head> and <header> -->" & cardDocument(title).replace("<head>", """<HeAd data-authored-double="1 > 0" data-authored-single='2 > 1'><script>window.authoredPreviewLiteral="<head>";window.authoredPreviewCounter=(window.authoredPreviewCounter||0)+1;</script><style>body::before{content:"<head>";display:none}</style>""")
+  "\\xEF\\xBB\\xBF<?xml version=\\"1.0\\"?><!doctype html><!-- valid documentation: <head> and <header> -->" & cardDocument(title).replace("<head>", """<HeAd data-authored-double="1 > 0" data-authored-single='2 > 1'><script>window.authoredPreviewLiteral="<head>";window.authoredPreviewCounter=(window.authoredPreviewCounter||0)+1;</script><style>body::before{content:"<head>";display:none}</style><style data-large-source>${largeCss}</style>""")
 
 `;
 writeFileSync(authored,readFileSync(authored,'utf8').replace('import std/json','import std/[json, strutils]').replace('proc card(title:', 'proc cardDocument(title:').replace('var stories =',authoredWrapper+'var stories ='));
@@ -66,6 +69,18 @@ async function cliAsync(scope,args,expected=0){
   process.once('error',error=>{clearTimeout(timeout);reject(error);});
   process.once('exit',code=>{clearTimeout(timeout);try{assert.equal(code,expected,stdout+' '+stderr);resolve(JSON.parse(stdout));}catch(error){reject(error);}});
  });
+}
+function successfulSourceSummary(scope,operation,storyId){
+ const catalog=JSON.parse(readFileSync(path.join(project,'.isonim/catalog.json'),'utf8'));
+ assert.equal(operation.status,'applied');
+ assert.deepEqual(operation.result,{ok:true,storyId,compiledStoryCount:catalog.stories.length},
+  'Public success must report the validated compiled outcome without catalog/manifest HTML');
+ assert(Buffer.byteLength(JSON.stringify(operation.result))<256,'Summary size is independent of compiled HTML/CSS');
+ assert.equal(operation.request.workspace,scope.workspace);
+ assert.equal(operation.request.instance,scope.instance);
+ assert.equal(operation.request.epoch,scope.epoch);
+ assert(Number.isInteger(operation.revision));
+ return catalog;
 }
 async function stable(scope){
  let revision=-1,count=0;
@@ -144,6 +159,13 @@ try{
  await stable(scope);
  const created=cli(scope,['create-story','Card','--variant','default','--state','busy','--command-id','create-busy','--wait','--timeout-ms','60000']);
  assert.equal(created.status,'applied');assert.equal(created.result.storyId,'Card / default busy');
+ const createdCatalog=successfulSourceSummary(scope,created,'Card / default busy');
+ assert(createdCatalog.stories.every(story=>story.documentHtml.includes(largeCss)));
+ const createdProducerTime=statSync(path.join(project,'.isonim/catalog-producer'),{bigint:true}).mtimeNs;
+ const repeatedCreate={...created.request};delete repeatedCreate.conversation;
+ const duplicateCreate=(await request(scope,'editor.command',repeatedCreate)).result;
+ assert.deepEqual(duplicateCreate.result,created.result);assert.equal(duplicateCreate.operationId,created.operationId);
+ assert.equal(statSync(path.join(project,'.isonim/catalog-producer'),{bigint:true}).mtimeNs,createdProducerTime);
  assert(readFileSync(path.join(project,'stories.nim'),'utf8').includes('card("Busy card")'));
  assert.equal(await composer.inputValue(),'Preserve my draft across source compilation');
  assert.equal(cli(scope,['state']).conversations.find(chat=>chat.id===conversation.id).backendSessionId,conversation.backendSessionId);
@@ -154,6 +176,8 @@ try{
  const capture=cli(scope,['capture-preview','--command-id','capture-busy','--wait']);
  assert.equal(capture.status,'applied');assert.equal(capture.result.format,'text/html');
  assert.equal(capture.result.storyId,'Card / default busy');assert(capture.result.documentHtml.includes('Busy card') && !capture.result.documentHtml.includes('Ready card'));
+ assert(capture.result.documentHtml.includes(largeCss));
+ assert.equal(capture.result.documentHtml,'<!doctype html>\n'+await page.frameLocator('iframe[data-component-project-frame="true"]').locator('html').evaluate(root=>root.ownerDocument.documentElement.outerHTML));
  await page.locator('iframe:visible').first().screenshot({path:path.join(artifacts,'busy-preview.png')});
  const manifestPath=path.join(project,'.isonim/source-project.json');
  const manifest=JSON.parse(readFileSync(manifestPath,'utf8'));
@@ -217,11 +241,26 @@ try{
  } finally { chmodSync(path.join(project,'.isonim'),0o755); }
  manifest.build=['python3','build_catalog.py'];writeFileSync(manifestPath,JSON.stringify(manifest));
  await stable(scope);
- cli(scope,['build','--command-id','general-edit-build','--wait','--timeout-ms','60000']);
+ const built=cli(scope,['build','--command-id','general-edit-build','--wait','--timeout-ms','60000']);
+ const builtCatalog=successfulSourceSummary(scope,built,'');
+ assert(builtCatalog.stories.every(story=>story.documentHtml.includes(largeCss)));
+ const builtProducerTime=statSync(path.join(project,'.isonim/catalog-producer'),{bigint:true}).mtimeNs;
+ const repeatedBuild={...built.request};delete repeatedBuild.conversation;
+ const duplicateBuild=(await request(scope,'editor.command',repeatedBuild)).result;
+ assert.deepEqual(duplicateBuild.result,built.result);assert.equal(duplicateBuild.operationId,built.operationId);
+ assert.equal(statSync(path.join(project,'.isonim/catalog-producer'),{bigint:true}).mtimeNs,builtProducerTime);
+ const staleBuild=cli(scope,['build','--command-id','stale-summary-build','--expected-revision',String(built.revision-1),'--wait'],6);
+ assert.equal(staleBuild.status,'failed');assert.equal(staleBuild.error,'revision_conflict');
+ assert.equal(statSync(path.join(project,'.isonim/catalog-producer'),{bigint:true}).mtimeNs,builtProducerTime);
  await page.frameLocator('iframe[data-component-project-frame="true"]').locator('h1').filter({hasText:'Agent revised card'}).waitFor();
  assert.equal(await page.frameLocator('iframe[data-component-project-frame="true"]').locator('head').getAttribute('data-authored-double'),'1 > 0');
  assert.equal(await page.frameLocator('iframe[data-component-project-frame="true"]').locator('body').evaluate(body=>body.ownerDocument.defaultView.authoredPreviewLiteral),'<head>');
  await stable(scope);
+ const builtCapture=cli(scope,['capture-preview','--command-id','capture-concise-build','--wait']);
+ assert.equal(builtCapture.result.ready,true);assert.equal(builtCapture.result.storyId,'Card / default busy');
+ assert(builtCapture.result.documentHtml.includes(largeCss));
+ assert(builtCapture.result.documentHtml.includes('Agent revised card'));
+ assert.equal(builtCapture.result.documentHtml,'<!doctype html>\n'+await page.frameLocator('iframe[data-component-project-frame="true"]').locator('html').evaluate(root=>root.ownerDocument.documentElement.outerHTML));
  // Scripting-enabled iframe noscript is raw/inactive, including '<head>'.
  // Compile a real headless fragment and capture it before restoring the document.
  const fragmentWrapper = `proc card(title: string): string =
@@ -355,5 +394,5 @@ try{
  assert(!readFileSync(path.join(artifacts,'server.log'),'utf8').includes('SIGSEGV'),'Native teardown must not crash');
 }
 
-writeFileSync(path.join(artifacts,'results.json'),JSON.stringify({cases:15,passed:true,renderedCapture:'busy-preview.png',nativeCleanup:true},null,2));
+writeFileSync(path.join(artifacts,'results.json'),JSON.stringify({cases:19,passed:true,renderedCapture:'busy-preview.png',nativeCleanup:true},null,2));
 console.log('Source GUI acceptance passed; artifacts '+artifacts);

@@ -31,7 +31,11 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace) =
               applyCatalog(data)
               vm.workspaceEditStage.val = wesClean
               vm.workspaceEditDiagnostics.val = @[]
-              done(true, data)
+              # The full catalog stays in the applied preview workspace. Public
+              # operation completion describes the build, without copying every
+              # compiled document into the agent's tool response.
+              done(true, %* {"ok": true, "storyId": data{"storyId"}.getStr(),
+                "compiledStoryCount": data["catalog"]["stories"].len})
             except CatchableError as error:
               vm.workspaceEditStage.val = wesFailed
               done(false, %* {"diagnostic": error.msg})
