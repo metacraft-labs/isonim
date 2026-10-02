@@ -103,7 +103,8 @@ try{
  const scope=await mounted(page);
  let state=await stable(scope);
  assert(state.fixtures.some(f=>f.component==='Card'&&f.state==='busy'));
- assert(state.capabilities.includes('capture-preview-html'));
+ assert(state.capabilities.includes('capture-preview'));
+ assert(!state.capabilities.includes('capture-preview-html'));
  cli(scope,['open-story','Card / default ready','--command-id','open-ready','--wait']);
  await page.frameLocator('iframe[data-component-project-frame="true"]').locator('h1').filter({hasText:'Ready card'}).waitFor();
  const authoredDocument = await page.frameLocator('iframe[data-component-project-frame="true"]').locator('body').evaluate(body=>({

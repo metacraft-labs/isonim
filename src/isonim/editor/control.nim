@@ -40,7 +40,7 @@ proc controlState*(vm: EditorVM): JsonNode =
   if vm.hasDurableSourceControl() and vm.workspacePermissions.val.writeSource:
     capabilities.add %"build"
     if vm.workspacePermissions.val.createStory: capabilities.add %"create-story"
-  if vm.controlCaptureAdapter != nil and vm.platform.val == pbWeb: capabilities.add %"capture-preview-html"
+  if vm.controlCaptureAdapter != nil and vm.platform.val == pbWeb: capabilities.add %"capture-preview"
   var fixtures = newJArray()
   for variant in vm.controlSourceFixtures:
     for state in variant.stateControls:

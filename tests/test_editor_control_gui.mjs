@@ -206,6 +206,30 @@ try {
   await frame.locator('body').waitFor();
   assert((await frame.locator('body').innerText()).trim().length>0,'Actual preview content is required');
   await settled(a);
+  const capabilities=cli(a,['capabilities']);
+  assert.deepEqual(capabilities.filter(name=>name.startsWith('capture-')),['capture-preview'],
+    'Discovery must advertise a command executable by the actual CLI and RPC');
+  const captureCommand=capabilities.find(name=>name.startsWith('capture-'));
+  async function verifyMountedCapture(operation) {
+    assert.equal(operation.status,'applied');
+    const capture=operation.result;
+    assert.equal(capture.ready,true);
+    assert.equal(capture.format,'text/html');
+    assert.equal(capture.storyId,pageStory.id);
+    assert.equal(capture.documentHtml,'<!doctype html>\n'+await frame.locator('html').evaluate(node=>node.outerHTML),
+      'Capture returns the actual mounted preview document');
+    const mounted=await preview.evaluate(node=>({width:node.clientWidth,height:node.clientHeight}));
+    assert.deepEqual({width:capture.width,height:capture.height},mounted);
+    const identity=await frame.locator('meta[name="isonim-rendered-generation"]').getAttribute('content');
+    assert.equal(capture.previewGeneration,Number(identity));
+    assert(capture.width>0 && capture.height>0);
+  }
+  await verifyMountedCapture(cli(a,[captureCommand,'--command-id','discoveredCaptureCli','--wait']));
+  const captureState=await settled(a);
+  const rpcCapture=await request(a,'editor.command',{command:captureCommand,
+    commandId:'discoveredCaptureRpc',expectedRevision:captureState.revision});
+  assert(rpcCapture.result,'Actual RPC accepts the advertised capture operation');
+  await verifyMountedCapture(cli(a,['wait',rpcCapture.result.operationId]));
   const composer=first.locator('[data-editor-control-focus="composer"]');
   const focus=cli(a,['focus','composer','--command-id','focus1','--wait']);
   assert.equal(focus.status,'applied');
@@ -397,7 +421,7 @@ try {
   await new Promise(resolve=>setTimeout(resolve,500));
   assert.equal(cli(b,['viewport','phone','--command-id','detached'],3).error,'disconnected_instance');
   assert.deepEqual(pageErrors,[]);
-  writeFileSync(path.join(artifacts,'results.json'),JSON.stringify({status:'passed',cases:23,
+  writeFileSync(path.join(artifacts,'results.json'),JSON.stringify({status:'passed',cases:25,
     browserVersion:browser.version(),instanceCount:2,credentialsRecorded:false},null,2));
   console.log(`Editor GUI/CLI acceptance passed; artifacts ${artifacts}`);
 } finally {

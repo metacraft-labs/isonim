@@ -13,11 +13,65 @@
 ## not prove filesystem/compiler behavior; registered source tests use the actual
 ## Nim producer and a real unwritable output directory for that boundary.
 ## Full GUI acceptance separately proves actual DOM focus/highlight and CLI/HTTP.
+## A small capture callback isolates renderer capability discovery and readiness
+## admission; it does not prove mounted HTML. The registered GUI suite compares
+## captures from the advertised operation with the actual iframe document.
 import std/[json, unittest, tables, strutils]
 import isonim/core/[signals, owner]
 import isonim/editor/[control, viewmodels, workspace]
 
 suite "Editor control":
+  test "advertised preview capture executes and disabled renderers reject it":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      vm.workspaceId = "test"
+      vm.controlInstanceId = "one"
+      var captures = 0
+      var ready = true
+      vm.controlCaptureAdapter = proc(): JsonNode =
+        inc captures
+        %* {"ready": ready, "format": "text/html", "documentHtml": "<html><body>Capture</body></html>"}
+      let before = vm.controlSnapshot()
+      var advertisedCapture = ""
+      for capability in before["capabilities"]:
+        if capability.getStr().startsWith("capture-"):
+          check advertisedCapture.len == 0
+          advertisedCapture = capability.getStr()
+      check advertisedCapture == "capture-preview"
+      let request = %* {"workspace": "test", "instance": "one", "commandId": "captureReady",
+        "command": advertisedCapture, "expectedRevision": before["revision"]}
+      let applied = vm.admitControlOperation(request)
+      check applied["status"].getStr() == "applied"
+      check applied{"result", "ready"}.getBool()
+      check applied{"result", "format"}.getStr() == "text/html"
+      check captures == 1
+      check vm.admitControlOperation(request) == applied
+      check captures == 1
+      ready = false
+      var unready = request.copy()
+      unready["commandId"] = %"captureUnready"
+      unready["expectedRevision"] = vm.controlSnapshot()["revision"]
+      let notReady = vm.admitControlOperation(unready)
+      check notReady["status"].getStr() == "failed"
+      check notReady["error"].getStr() == "preview_not_ready"
+      check notReady{"result", "ready"}.getBool(true) == false
+      check captures == 2
+      for platform in [pbTui, pbWeb]:
+        vm.platform.val = platform
+        if platform == pbWeb: vm.controlCaptureAdapter = nil
+        let disabled = vm.controlSnapshot()
+        check %"capture-preview" notin disabled["capabilities"].elems
+        check %"capture-preview-html" notin disabled["capabilities"].elems
+        var unavailable = request.copy()
+        unavailable["commandId"] = %($platform)
+        unavailable["expectedRevision"] = disabled["revision"]
+        let failed = vm.admitControlOperation(unavailable)
+        check failed["status"].getStr() == "failed"
+        check failed["error"].getStr() == "capability_or_permission"
+        check captures == 2
+        check vm.controlState() == disabled
+      dispose()
+
   test "duplicate recovered approval invokes the renderer exactly once":
     createRoot proc(dispose: proc()) =
       let vm = createEditorVM()
