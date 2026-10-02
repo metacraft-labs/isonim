@@ -104,6 +104,41 @@ suite "SSR Routing — renderRoute":
     let html = renderRoute(routes, "/anything")
     check "404" in html
 
+suite "SSR Routing — matchesRoute":
+  test "matchesRoute is true exactly when renderRoute renders a component":
+    let routes = @[
+      SsrRouteEntry(pattern: parsePattern("/"), component: IndexPage),
+      SsrRouteEntry(pattern: parsePattern("/users/:id"),
+        component: proc(): string = UserPage("x")),
+    ]
+    for path in ["/", "/users/7"]:
+      check matchesRoute(routes, path)
+      check "404" notin renderRoute(routes, path)
+    for path in ["/nonexistent", "/users", "/users/7/extra"]:
+      check not matchesRoute(routes, path)
+      check "404 Not Found" in renderRoute(routes, path)
+
+  test "matchesRoute sees nested children and the parent's exact match":
+    let routes = @[
+      SsrRouteEntry(
+        pattern: parsePattern("/users"),
+        component: IndexPage,
+        layout: UsersLayout,
+        children: @[
+          SsrRouteEntry(pattern: parsePattern("/:id"),
+            component: proc(): string = UserDetailPage("1")),
+        ],
+      ),
+    ]
+    check matchesRoute(routes, "/users/1")
+    check matchesRoute(routes, "/users")
+    check not matchesRoute(routes, "/users/1/2")
+    check not matchesRoute(routes, "/other")
+
+  test "empty route table matches nothing":
+    let routes: seq[SsrRouteEntry] = @[]
+    check not matchesRoute(routes, "/")
+
 suite "SSR Routing — nested routes with layout":
   test "nested /users/:id renders layout wrapping child":
     let rp = newRouteParams()

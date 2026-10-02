@@ -273,6 +273,33 @@ suite "OutputStream":
       let fullOutput = sr.getFullOutput()
       check "<template id=\"fast-1\"><p>Fast resolved</p></template>" in fullOutput
 
+  test "stream_scripts_carry_the_csp_nonce":
+    ## Under a nonce-based CSP only nonced inline scripts run, so the $df
+    ## definition and every boundary's $df call carry StreamOptions.nonce.
+    let sr = renderToStream(proc(ctx: StreamContext): string =
+      ssrElement("div", children =
+        ctx.ssrSuspense(fallback = "<p>Loading</p>",
+          content = proc(): string = "", boundaryId = "n1") &
+        ctx.ssrSuspense(fallback = "<p>Loading</p>",
+          content = proc(): string = "", boundaryId = "n2"))
+    , StreamOptions(nonce: "Zm9vYmFyYmF6"))
+    sr.ctx.resolveBoundary("n1", "<p>one</p>")
+    sr.ctx.resolveBoundary("n2", "<p>two</p>")
+    let output = sr.getFullOutput()
+    check output.count("<script") == 3
+    check output.count("<script nonce=\"Zm9vYmFyYmF6\">") == 3
+    check "<script nonce=\"Zm9vYmFyYmF6\">function $df(id)" in output
+    check "<script nonce=\"Zm9vYmFyYmF6\">$df(\"n2\")</script>" in output
+
+  test "stream_scripts_without_nonce_have_no_nonce_attribute":
+    let sr = renderToStream(proc(ctx: StreamContext): string =
+      ctx.ssrSuspense(fallback = "<p>Loading</p>",
+        content = proc(): string = "", boundaryId = "m1"))
+    sr.ctx.resolveBoundary("m1", "<p>one</p>")
+    let output = sr.getFullOutput()
+    check output.count("<script>") == 2
+    check "nonce=" notin output
+
   test "no_suspense_completes_immediately":
     ## When there are no Suspense boundaries, both shell and all
     ## complete callbacks fire during renderToStream.

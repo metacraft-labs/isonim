@@ -38,10 +38,17 @@ type
 
 var currentStreamContext* {.threadvar.}: StreamContext
 
-proc generateDfScript(): string =
+proc scriptOpenTag(nonce: string): string =
+  ## `<script>`, with the response's CSP nonce when there is one.  A page
+  ## served under a nonce-based Content-Security-Policy runs only inline
+  ## scripts that carry it, so every script the streamer emits needs it.
+  if nonce.len > 0: "<script nonce=\"" & nonce & "\">" else: "<script>"
+
+proc generateDfScript(nonce: string): string =
   ## Returns the $df function definition that replaces Suspense placeholders
   ## with resolved content on the client.
-  result = """<script>function $df(id){var t=document.getElementById(id);""" &
+  result = scriptOpenTag(nonce) &
+    """function $df(id){var t=document.getElementById(id);""" &
     """var p=document.getElementById("pl-"+id);""" &
     """if(t&&p){var c=t.content;var r=document.createRange();""" &
     """r.setStartBefore(p);var n=p.nextSibling;""" &
@@ -75,7 +82,7 @@ proc emitShell*(ctx: StreamContext) =
     ctx.shellEmitted = true
     # Include $df script if there are Suspense boundaries
     if ctx.boundaries.len > 0:
-      ctx.shell.add generateDfScript()
+      ctx.shell.add generateDfScript(ctx.nonce)
     ctx.output.write(ctx.shell)
     ctx.chunks.add(ctx.shell)
     ctx.output.flush()
@@ -101,7 +108,7 @@ proc resolveBoundary*(ctx: StreamContext; id: string; html: string) =
     return
   ctx.resolvedBoundaries[id] = html
   let chunk = "<template id=\"" & id & "\">" & html & "</template>" &
-    "<script>$df(\"" & id & "\")</script>"
+    scriptOpenTag(ctx.nonce) & "$df(\"" & id & "\")</script>"
   ctx.output.write(chunk)
   ctx.chunks.add(chunk)
   ctx.output.flush()
