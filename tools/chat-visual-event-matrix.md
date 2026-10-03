@@ -1,0 +1,76 @@
+# Chat activity coverage boundaries
+
+Authority: Agent Harbor `b40f6090`, public REST `SessionEvent` in
+`crates/ah-rest-api-contract/src/types.rs` (34 variants). The domain enum differs.
+All46 public frames are validated against the actual production Rust SessionEvent serde, with missing-required and invalid-enum controls. Synthetic public DTOs go through the real parser → nim-agents safe projection →
+wire codec → shared reducer → full mounted production editor. This boundary
+coverage does not emulate a server and does not prove infrastructure execution.
+Official scenario integration remains `test-editor-scenarios-native`, stress and
+GUI over real Harbor REST and its Rust mock-agent (persistent sessions, source,
+compiler, mounted preview, CLI navigation/approval and close/reap).
+
+| Public discriminator | Named view | Deterministic boundary | Official REST scenario |
+|---|---|---|---|
+| agent_question | question | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| anti_halting_resume_confirmed | recovery | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| context_files | model-context | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| context_injection | model-context | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| delegation | delegation | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| diff | files | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| dispatcher_restarted | recovery | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| error | error | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| file_edit | files | Full typed projection + mounted production GUI | Existing persistent authoring scenario |
+| file_read | files | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| fleet_fence | workspace | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| fleet_host | workspace | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| link_spans | participants | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| llm_request | model-context | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| log | conversation, long-content, completed | Full typed projection + mounted production GUI | Existing persistent authoring scenario |
+| login_required | login | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| orchestration | delegation | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| participant | participants | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| plan | plan | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| proxy_credential_rotated | recovery | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| proxy_rate_limit_absorbed | recovery | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| session_awaiting_input | lifecycle, question, login | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| session_ended | lifecycle | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| session_leadership_migrated | recovery | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| session_resumed | lifecycle | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| session_started | lifecycle | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| status | error | Full typed projection + mounted production GUI | Existing persistent authoring scenario |
+| sub_agent | delegation | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| thought | conversation, completed | Full typed projection + mounted production GUI | Existing persistent authoring scenario |
+| tool_result | tools | Full typed projection + mounted production GUI | Existing persistent authoring scenario |
+| tool_use | tools, long-content | Full typed projection + mounted production GUI | Existing persistent authoring scenario |
+| turn_complete | plan, completed | Full typed projection + mounted production GUI | Existing persistent authoring scenario |
+| user_input | conversation | Full typed projection + mounted production GUI | Existing persistent authoring scenario |
+| workspace | workspace | Full typed projection + mounted production GUI | Existing persistent authoring scenario |
+
+## Existing behavioral integration retained
+
+Actual first-send suggestion removal, rejected-send draft preservation, tab
+separation, streaming selection/scrollback, cancel availability, CLI/RPC
+navigation, approval/rejection/stale targets, source/preview focus and highlight
+remain in the original headless and full GUI suites. They are not replaced by
+these visual fixtures. Additional visual scenes for these combinations remain
+required before campaign completion.
+
+## Question delivery investigation
+
+Harbor supports `Session::deliver` through its prompt endpoint. The common
+streaming client reserves one active turn and the editor daemon rejects a second
+prompt while that worker is active. A native question parks within that active
+turn. Consequently a correlated answer needs a dedicated guarded delivery action
+through nim-agents, registry state and the browser client; a generic busy bypass
+or fabricated answer button would be incorrect. Current question cards expose
+prompt, choices and request identity with the actual editor capability limit.
+Question park/delivery/stale correlation automation is still outstanding.
+
+Public REST tool status is started/completed/failed. Companion tool-waiting and
+ tool-running views use normalized common AgentEvent data (not public REST DTOs).
+Their production codec/reducer/rendering boundary is explicit. The thought-settled
+view verifies genuine typed completion settles an earlier streamed thought.
+
+### Contract and visible-frame evidence
+
+The fixture is exported by actual b40 `SessionEvent` deserialize/serialize; every supplied field must survive the roundtrip identically, with required-field and enum negative controls. Separate injected unknown/private fields test safe editor projection and are not producer fixture data. Per-event captures assert their card heading lies inside the actual conversation viewport. The event-log-bottom companion exposes the end of the long code block; grouped views may need their named event-* companions to inspect earlier cards.

@@ -4,6 +4,7 @@
 import std/[strutils, tables]
 import nim_agents
 import nim_agents/activity
+import nim_agents/activity_presentation
 import isonim/core/[signals, computation]
 import isonim/editor/viewmodels
 import ./chat_theme
@@ -100,7 +101,7 @@ proc detailContent(entry: ActivityEntry): string =
       (if event.outputTokens >= 0: $event.outputTokens else: "unknown") & " output tokens" &
       (if event.usageSource.len > 0: " · " & event.usageSource else: "") else: "")
   of aekStatus:
-    if event.question.len > 0: "This session does not expose a question response action."
+    if event.question.len > 0: "This session does not expose a question response action. Harbor supports delivery; correlated editor answering is not wired yet."
     elif event.sourceType == "login_required": "Sign in through the provider's supported login surface."
     elif event.sourceType == "session_awaiting_input": "Waiting for a supported delivery from the session owner."
     elif event.presentationFields.len == 0: event.sourceType
@@ -141,7 +142,8 @@ proc updateStableText[R, E](r: R; node: E; value: string) =
 
 proc renderActivityTimeline*[R, E](r: R; host: E; chat: AgentChatVM) =
   type Row = object
-    node, title, body, detail, detailText, status: E
+    node, title, body, detail, detailText, status, facts, header: E
+    factRows, factLabels, factValues: seq[E]
     blocks: seq[E]
     kinds: seq[string]
   var rows = initTable[string, Row]()
@@ -166,16 +168,31 @@ proc renderActivityTimeline*[R, E](r: R; host: E; chat: AgentChatVM) =
           r.setStyle(row.node, "border", "1px solid " & border)
         elif entry.role == arActivity:
           r.setStyle(row.node, "border-left", "2px solid " & border)
+        row.header = r.createElement("div")
+        r.setStyle(row.header, "display", "flex")
+        r.setStyle(row.header, "align-items", "baseline")
+        r.setStyle(row.header, "justify-content", "space-between")
+        r.setStyle(row.header, "gap", "8px")
+        r.appendChild(row.node, row.header)
         row.title = r.createElement("div")
         r.setStyle(row.title, "font-size", "11px")
         r.setStyle(row.title, "font-weight", "600")
         r.setStyle(row.title, "color", textSecondary)
-        r.appendChild(row.node, row.title)
+        r.appendChild(row.header, row.title)
         row.status = r.createElement("span")
         r.setAttribute(row.status, "data-chat-activity-status", "true")
         r.setStyle(row.status, "font-size", "10px")
+        r.setStyle(row.status, "border-radius", "4px")
+        r.setStyle(row.status, "padding", "1px 5px")
+        r.setStyle(row.status, "background-color", bgInput)
         r.setStyle(row.status, "color", textSecondary)
-        r.appendChild(row.node, row.status)
+        r.appendChild(row.header, row.status)
+        row.facts = r.createElement("div")
+        r.setAttribute(row.facts, "data-chat-facts", "true")
+        r.setStyle(row.facts, "display", "grid")
+        r.setStyle(row.facts, "gap", "5px")
+        r.setStyle(row.facts, "margin-top", "8px")
+        r.appendChild(row.node, row.facts)
         row.body = r.createElement("div")
         r.appendChild(row.node, row.body)
         row.detail = r.createElement("details")
@@ -195,15 +212,59 @@ proc renderActivityTimeline*[R, E](r: R; host: E; chat: AgentChatVM) =
         r.appendChild(row.detail, content)
         r.appendChild(row.node, row.detail)
         r.appendChild(host, row.node)
+      r.setAttribute(row.node, "data-chat-source", entry.data.sourceType)
+      let presentation = activityPresentation(entry)
+      r.setAttribute(row.node, "data-chat-surface", presentation.surface)
+      r.setStyle(row.node, "background-color", if entry.role == arUser: bgSurface
+        elif entry.role == arActivity: "#151F31" else: "transparent")
+      # Square human cards keep their border, fill and content while avoiding
+      # unstable rounded-border edge rasterization in the pinned renderer.
+      # Agent/activity surfaces retain their rounded visual hierarchy.
+      r.setStyle(row.node, "border-radius", if entry.role == arUser: "0px" else: "10px")
+      r.setStyle(row.node, "border-left-color", if presentation.tone == "error": errorAccent
+        elif presentation.tone == "attention": gold
+        elif presentation.tone == "success": green else: border)
+      for index, fact in presentation.facts:
+        if index >= row.factRows.len:
+          let factRow = r.createElement("div")
+          let label = r.createElement("span")
+          let value = r.createElement("span")
+          r.setStyle(factRow, "display", "flex")
+          r.setStyle(factRow, "align-items", "baseline")
+          r.setStyle(factRow, "gap", "8px")
+          r.setStyle(factRow, "min-width", "0")
+          r.setStyle(label, "color", textSecondary)
+          r.setStyle(label, "font-size", "11px")
+          r.setStyle(label, "flex-shrink", "0")
+          r.setStyle(value, "color", textPrimary)
+          r.setStyle(value, "font-size", "11px")
+          r.setStyle(value, "overflow-wrap", "anywhere")
+          r.setStyle(value, "white-space", "pre-wrap")
+          r.setStyle(value, "flex", "1")
+          r.setStyle(value, "min-width", "0")
+          r.appendChild(factRow, label)
+          r.appendChild(factRow, value)
+          r.appendChild(row.facts, factRow)
+          row.factRows.add factRow
+          row.factLabels.add label
+          row.factValues.add value
+        r.setAttribute(row.factRows[index], "data-chat-fact", fact.label)
+        r.updateStableText(row.factLabels[index], fact.label)
+        r.updateStableText(row.factValues[index], fact.value)
+        r.setStyle(row.factRows[index], "display", "flex")
+        r.setStyle(row.factValues[index], "color", if fact.tone == "success": green
+          elif fact.tone == "error": textError elif fact.tone == "attention": "#FCD34D" else: textPrimary)
+      for index in presentation.facts.len ..< row.factRows.len:
+        r.setStyle(row.factRows[index], "display", "none")
+      r.setStyle(row.facts, "display", if presentation.facts.len > 0: "grid" else: "none")
       r.updateStableText(row.title, activityTitle(entry))
-      r.updateStableText(row.status, entry.status)
+      r.updateStableText(row.status, entry.status.replace("_", " "))
+      r.setStyle(row.status, "display", if entry.status.len > 0: "inline-block" else: "none")
       r.setStyle(row.status, "color", if entry.status in ["failed", "error"] or
         entry.kind == aekError: textError else: textSecondary)
-      r.setStyle(row.node, "border-left-color", if entry.kind == aekError:
-        errorAccent else: border)
       r.setStyle(row.detail, "display", if activityDetail(entry).len > 0: "block" else: "none")
       r.updateStableText(row.detailText, activityDetail(entry))
-      let blocks = chatMarkdownBlocks(activityBody(entry))
+      let blocks = chatMarkdownBlocks(if entry.kind == aekPlan and presentation.facts.len > 0: "" else: activityBody(entry))
       for index, item in blocks:
         if index >= row.blocks.len:
           let node = r.createElement(if item.kind == "code": "pre" else: "div")

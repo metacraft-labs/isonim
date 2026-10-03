@@ -1295,3 +1295,16 @@ test-editor-authoring-response-sequencing: isonim-review-build editor-authoring-
 
 test-editor-authoring-real: isonim-review-build editor-authoring-build test-editor-authoring-evidence test-editor-sdk-native
     python3 tests/test_editor_authoring_real.py
+
+# M7: real production browser bundle, pinned two-process canary before corpus.
+# First corpus is a candidate; human baseline acceptance remains a separate gate.
+test-editor-chat-visual output="build/chat-visual-campaign": test-editor-chat-contract editor-chat-build
+    python3 tools/chat-visual-campaign.py --output "{{output}}"
+    python3 tests/test_chat_visual_tools.py --captures "{{output}}"
+
+test-editor-chat-visual-tools output="build/chat-visual-campaign":
+    python3 tests/test_chat_visual_tools.py --captures "{{output}}"
+
+# Optional private contract authority; when present malformed DTOs fail.
+test-editor-chat-contract:
+    python3 tools/validate-chat-event-corpus.py

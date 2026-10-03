@@ -3,13 +3,18 @@
 ## force rejection or latch an unresolved turn. The generic-backend compatibility case uses the
 ## real MockRenderer backend to prove production views need no browser globals;
 ## actual DOM focus/selection is covered by the mounted GUI suite. EditorVM and
-## signals/reducer remain production code.
-import std/[unittest, strutils, tables]
+## signals/reducer remain production code. The full public DTO corpus substitutes
+## external transport timing with protocol data, not a fake service. Its frames
+## traverse the real Harbor parser, safe projection, JSON codec, reducer and
+## generic renderer; official Rust scenario E2E is separately registered.
+import std/[unittest, strutils, tables, json, sets, sequtils]
 import nim_agents
+import nim_agents/[activity, activity_presentation]
 import isonim/viewmodel
 import isonim/core/[signals, computation, owner]
 import isonim/editor/[viewmodels, agent_harbor]
 import isonim/editor/views/[chat_activity, chat_panel]
+import isonim/editor/views/chat_theme
 import isonim/testing/mock_dom
 
 proc activityNode(node: MockNode; role: string): MockNode =
@@ -18,6 +23,12 @@ proc activityNode(node: MockNode; role: string): MockNode =
     result = activityNode(child, role)
     if result != nil: return
 
+
+proc entryNode(node: MockNode; id: string): MockNode =
+  if node.attributes.getOrDefault("data-chat-entry") == id: return node
+  for child in node.children:
+    result = entryNode(child, id)
+    if result != nil: return
 
 suite "Chat activity and composition":
   test "rendered admission tracks flight and closure even when activity already looks ready":
@@ -158,3 +169,119 @@ suite "Chat activity and composition":
       check assistant.textContent.contains("partial completed")
       check vm.chat.inputText.val == "retained next draft"
       dispose()
+
+# DTO corpus is intentional boundary data, not an emulated Harbor service. Every
+# frame traverses the real public parser, safe projection, wire codec, reducer and
+# generic renderer; official Rust scenario E2E remains separately registered.
+suite "Full public Harbor event presentation":
+  test "all 34 public discriminators traverse safe production presentation":
+    const corpusText = staticRead("scenarios/chat-activity/public-session-events.json")
+    let corpus = parseJson(corpusText)
+    var sources = initHashSet[string]()
+    for name, events in corpus["scenes"]:
+      createRoot proc(dispose: proc()) =
+        let vm = createEditorVM()
+        vm.chat.addUserMessage("Improve the hero spacing.")
+        for payload in events.items:
+          sources.incl payload["type"].getStr()
+          # Unknown/private fields are projection negative controls, separate
+          # from the production-serialized public DTO corpus.
+          let contaminated = parseJson($payload)
+          contaminated["config"] = %*{"token": "PRIVATE_CAMPAIGN_SECRET"}
+          if contaminated["type"].getStr() == "tool_use":
+            contaminated["tool_args"] = %*{"token": "PRIVATE_CAMPAIGN_SECRET", "path": "stories/hero.nim"}
+          let privateProjection = harborEventToAgentEvent("presentation-session", eventFromJson(contaminated))
+          check not ($privateProjection.toJson()).contains("PRIVATE_CAMPAIGN_SECRET")
+          # Backend-local raw diagnostics remain before safe serialization;
+          # the wire excludes private bytes and the timeline drops raw entirely.
+          let privateDecoded = agentEventFromJson(privateProjection.toJson())
+          check not ($privateDecoded.raw).contains("PRIVATE_CAMPAIGN_SECRET")
+          var privateTimeline: ActivityTimeline
+          discard privateTimeline.reduce(privateDecoded)
+          for entry in privateTimeline.entries: check entry.data.raw == nil
+          let projected = harborEventToAgentEvent("presentation-session", eventFromJson(payload))
+          let wire = projected.toJson()
+          check not ($wire).contains("PRIVATE_CAMPAIGN_SECRET")
+          let decoded = agentEventFromJson(wire)
+          # Inventory is checked after the real projection/codec, not merely
+          # counted from incoming frames. Local user acknowledgement and
+          # assistant/thought chunks intentionally coalesce in the timeline.
+          check decoded.sourceType == payload["type"].getStr()
+          vm.chat.applyAgentEvent(decoded)
+          let rendered = renderChatPanel[MockRenderer, MockNode](MockRenderer(), vm)
+          proc textTree(node: MockNode): string =
+            result = node.textContent
+            for child in node.children: result.add "\n" & textTree(child)
+          let text = textTree(rendered)
+          for field in decoded.presentationFields:
+            check text.contains(field.value.replace("_", " ")) or text.contains(field.value)
+          if decoded.filePath.len > 0: check text.contains(decoded.filePath)
+          if decoded.model.len > 0: check text.contains(decoded.model)
+          if decoded.question.len > 0: check text.contains(decoded.question)
+          if decoded.toolName.len > 0: check text.contains(decoded.toolName)
+          if decoded.kind in {aekToolCall, aekToolCallUpdate}:
+            check vm.chat.activity.val.entries[^1].status == decoded.status
+            check vm.chat.activity.val.entries[^1].data.sourceType == decoded.sourceType
+            let tool = entryNode(rendered, vm.chat.activity.val.entries[^1].id)
+            check tool != nil
+            let expectedColor = if decoded.status == "started": gold
+              elif decoded.status == "completed": green else: errorAccent
+            check tool.styles.getOrDefault("border-left-color") == expectedColor
+
+        let panel = renderChatPanel[MockRenderer, MockNode](MockRenderer(), vm)
+        check panel != nil
+        for entry in vm.chat.activity.val.entries:
+          check entry.data.raw == nil
+          let presentation = activityPresentation(entry)
+          check presentation.surface.len > 0
+          if entry.kind == aekPlan:
+            check presentation.facts.len == 3
+            check presentation.facts[0].label == "completed"
+            check presentation.facts[1].tone == "attention"
+          if entry.kind == aekLlmRequest:
+            check presentation.facts.anyIt(it.label == "Input tokens" and it.value == "1260")
+            check presentation.facts.anyIt(it.label == "Output tokens" and it.value == "180")
+          if entry.data.sourceType == "agent_question":
+            check presentation.tone == "attention"
+            check presentation.facts.anyIt(it.label == "Choice" and it.value == "Comfortable")
+          if entry.data.sourceType == "file_read":
+            check presentation.facts.anyIt(it.label == "From line" and it.value == "8")
+          if entry.data.sourceType == "diff":
+            check presentation.facts.anyIt(it.label == "Before" and it.value.contains("16px"))
+            check presentation.facts.anyIt(it.label == "After" and it.value.contains("32px"))
+          if name == "completed" and entry.role == arAssistant:
+            check entry.status == "completed"
+          if name == "conversation" and entry.kind == aekThoughtChunk:
+            check entry.status == "streaming"
+        dispose()
+    check sources.len == 34
+    for source in ["status", "log", "error", "thought", "tool_use", "tool_result",
+        "file_edit", "file_read", "diff", "user_input", "plan", "turn_complete",
+        "workspace", "sub_agent", "delegation", "orchestration", "llm_request",
+        "context_files", "fleet_fence", "fleet_host", "session_started",
+        "session_awaiting_input", "session_resumed", "session_ended",
+        "proxy_credential_rotated", "proxy_rate_limit_absorbed", "dispatcher_restarted",
+        "anti_halting_resume_confirmed", "session_leadership_migrated", "agent_question",
+        "participant", "context_injection", "login_required", "link_spans"]:
+      check source in sources
+
+  test "normalized common tool states and settled thoughts remain distinct from REST DTOs":
+    const corpusText = staticRead("scenarios/chat-activity/public-session-events.json")
+    let corpus = parseJson(corpusText)
+    for name, events in corpus["normalizedScenes"]:
+      createRoot proc(dispose: proc()) =
+        let vm = createEditorVM()
+        vm.chat.addUserMessage("Inspect the hero")
+        for payload in events.items:
+          vm.chat.applyAgentEvent(agentEventFromJson(payload))
+        if name == "tool-waiting": check vm.chat.activity.val.entries[^1].status == "pending"
+        if name == "tool-running": check vm.chat.activity.val.entries[^1].status == "running"
+        if name in ["tool-waiting", "tool-running"]:
+          let panel = renderChatPanel[MockRenderer, MockNode](MockRenderer(), vm)
+          let tool = entryNode(panel, vm.chat.activity.val.entries[^1].id)
+          check tool != nil
+          check tool.styles.getOrDefault("border-left-color") == gold
+        if name == "thought-settled":
+          check vm.chat.activity.val.entries[1].kind == aekThoughtChunk
+          check vm.chat.activity.val.entries[1].status == "completed"
+        dispose()
