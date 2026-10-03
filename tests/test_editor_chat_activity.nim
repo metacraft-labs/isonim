@@ -174,6 +174,47 @@ suite "Chat activity and composition":
 # frame traverses the real public parser, safe projection, wire codec, reducer and
 # generic renderer; official Rust scenario E2E remains separately registered.
 suite "Full public Harbor event presentation":
+  test "every public question mode preserves content without unsupported answer controls":
+    const questionCorpusText = staticRead("scenarios/chat-activity/public-session-events.json")
+    let corpus = parseJson(questionCorpusText)
+    var modes = initHashSet[string]()
+    for name in ["question", "question-free-form", "question-multi-choice", "question-confirmation"]:
+      createRoot proc(dispose: proc()) =
+        let vm = createEditorVM()
+        vm.chat.inputText.val = "Retained next draft"
+        let payload = corpus["scenes"][name][0]
+        let decoded = agentEventFromJson(harborEventToAgentEvent("question-session", eventFromJson(payload)).toJson())
+        vm.chat.applyAgentEvent(decoded)
+        modes.incl payload["kind"].getStr()
+        let entry = vm.chat.activity.val.entries[^1]
+        let presentation = activityPresentation(entry)
+        check entry.data.question == payload["prompt"].getStr()
+        check presentation.facts.anyIt(it.value == payload["kind"].getStr())
+        check presentation.facts.anyIt(it.value == payload["request"].getStr())
+        for option in payload["options"]:
+          check presentation.facts.anyIt(it.label == "Choice" and it.value == option["label"].getStr())
+        let panel = renderChatPanel[MockRenderer, MockNode](MockRenderer(), vm)
+        let node = entryNode(panel, entry.id)
+        check activityDetail(entry).contains("This editor cannot answer this request.")
+        let notice = node.children.filterIt(it.attributes.getOrDefault("data-chat-availability") == "true")
+        check notice.len == 1
+        check notice[0].parent == node
+        check notice[0].tag == "p"
+        check notice[0].children.len == 1
+        check notice[0].children[0].text == "This editor cannot answer this request."
+        check notice[0].styles.getOrDefault("display") == "block"
+        let details = node.children.filterIt(it.tag == "details")
+        check details.len == 1
+        check not details[0].attributes.hasKey("open")
+        check activityDetail(entry).contains(payload["request"].getStr())
+        proc noAnswerControls(child: MockNode) =
+          check child.tag notin ["button", "input", "textarea", "select"]
+          for nested in child.children: noAnswerControls(nested)
+        noAnswerControls(node)
+        check vm.chat.inputText.val == "Retained next draft"
+        dispose()
+    check modes == ["free_form", "single_choice", "multi_choice", "confirmation"].toHashSet()
+
   test "all 34 public discriminators traverse safe production presentation":
     const corpusText = staticRead("scenarios/chat-activity/public-session-events.json")
     let corpus = parseJson(corpusText)
@@ -243,7 +284,8 @@ suite "Full public Harbor event presentation":
             check presentation.facts.anyIt(it.label == "Output tokens" and it.value == "180")
           if entry.data.sourceType == "agent_question":
             check presentation.tone == "attention"
-            check presentation.facts.anyIt(it.label == "Choice" and it.value == "Comfortable")
+            if name == "question":
+              check presentation.facts.anyIt(it.label == "Choice" and it.value == "Comfortable")
           if entry.data.sourceType == "file_read":
             check presentation.facts.anyIt(it.label == "From line" and it.value == "8")
           if entry.data.sourceType == "diff":

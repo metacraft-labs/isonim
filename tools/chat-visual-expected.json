@@ -50,7 +50,7 @@
   "question": [
     "Question Which hero spacing should I use?",
     "Comfortable and Compact options as readable choices, request question-hero",
-    "Honest explanation that correlated editor answer action is not wired; no fake answer buttons"
+    "This editor cannot answer this request.; no fake answer buttons"
   ],
   "login": [
     "Provider login required and named provider/request",
@@ -227,5 +227,22 @@
     "Bottom companion to event-log: final fenced Nim code remains readable inside the conversation viewport.",
     "The top of the assistant card may be above the viewport; consult event-log for the visible heading and initial prose.",
     "Composer retains keyboard focus and the website preview remains visible."
+  ],
+  "question-free-form": [
+    "Agent question with What should the hero say?",
+    "Visible free_form mode and request question-free-form",
+    "This editor cannot answer this request.; no answer, checkbox or confirmation actions"
+  ],
+  "question-multi-choice": [
+    "Agent question with Which layouts should I preview?",
+    "Visible multi_choice mode and request question-multi-choice",
+    "This editor cannot answer this request.; no answer, checkbox or confirmation actions",
+    "Readable Desktop choice",
+    "Readable Tablet choice"
+  ],
+  "question-confirmation": [
+    "Agent question with May I replace the hero image?",
+    "Visible confirmation mode and request question-confirmation",
+    "This editor cannot answer this request.; no answer, checkbox or confirmation actions"
   ]
 }

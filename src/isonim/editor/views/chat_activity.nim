@@ -87,6 +87,15 @@ proc activityTitle*(entry: ActivityEntry): string =
       if entry.data.sourceType.len > 0: "Session activity · " & entry.data.sourceType else: "Activity"
   of aekMessageChunk: "Assistant"
 
+proc activityAvailability*(entry: ActivityEntry): string =
+  # Availability belongs to the editor view, not shared provider semantics.
+  # This notice concerns the correlated request; ordinary chat remains available
+  # under its existing turn/session admission rules.
+  if entry.kind == aekStatus:
+    if entry.data.question.len > 0: return "This editor cannot answer this request."
+    if entry.data.sourceType == "session_awaiting_input":
+      return "Waiting for input. This editor cannot respond to this request."
+
 proc detailContent(entry: ActivityEntry): string =
   let event = entry.data
   case entry.kind
@@ -101,9 +110,9 @@ proc detailContent(entry: ActivityEntry): string =
       (if event.outputTokens >= 0: $event.outputTokens else: "unknown") & " output tokens" &
       (if event.usageSource.len > 0: " · " & event.usageSource else: "") else: "")
   of aekStatus:
-    if event.question.len > 0: "This session does not expose a question response action. Harbor supports delivery; correlated editor answering is not wired yet."
+    if event.question.len > 0: "This editor cannot answer this request."
     elif event.sourceType == "login_required": "Sign in through the provider's supported login surface."
-    elif event.sourceType == "session_awaiting_input": "Waiting for a supported delivery from the session owner."
+    elif event.sourceType == "session_awaiting_input": "Waiting for input. This editor cannot respond to this request."
     elif event.presentationFields.len == 0: event.sourceType
     else: ""
   else:
@@ -142,7 +151,7 @@ proc updateStableText[R, E](r: R; node: E; value: string) =
 
 proc renderActivityTimeline*[R, E](r: R; host: E; chat: AgentChatVM) =
   type Row = object
-    node, title, body, detail, detailText, status, facts, header: E
+    node, title, body, detail, detailText, status, facts, header, availability: E
     factRows, factLabels, factValues: seq[E]
     blocks: seq[E]
     kinds: seq[string]
@@ -195,6 +204,12 @@ proc renderActivityTimeline*[R, E](r: R; host: E; chat: AgentChatVM) =
         r.appendChild(row.node, row.facts)
         row.body = r.createElement("div")
         r.appendChild(row.node, row.body)
+        row.availability = r.createElement("p")
+        r.setAttribute(row.availability, "data-chat-availability", "true")
+        r.setStyle(row.availability, "margin", "8px 0 0")
+        r.setStyle(row.availability, "color", textPrimary)
+        r.setStyle(row.availability, "white-space", "pre-wrap")
+        r.appendChild(row.node, row.availability)
         row.detail = r.createElement("details")
         let summary = r.createElement("summary")
         r.setTextContent(summary, "Details")
@@ -262,6 +277,9 @@ proc renderActivityTimeline*[R, E](r: R; host: E; chat: AgentChatVM) =
       r.setStyle(row.status, "display", if entry.status.len > 0: "inline-block" else: "none")
       r.setStyle(row.status, "color", if entry.status in ["failed", "error"] or
         entry.kind == aekError: textError else: textSecondary)
+      let availability = activityAvailability(entry)
+      r.updateStableText(row.availability, availability)
+      r.setStyle(row.availability, "display", if availability.len > 0: "block" else: "none")
       r.setStyle(row.detail, "display", if activityDetail(entry).len > 0: "block" else: "none")
       r.updateStableText(row.detailText, activityDetail(entry))
       let blocks = chatMarkdownBlocks(if entry.kind == aekPlan and presentation.facts.len > 0: "" else: activityBody(entry))

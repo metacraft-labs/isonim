@@ -89,7 +89,7 @@ canary failures remain preserved and do not establish full-frame determinism.
 
 - Question Which hero spacing should I use?
 - Comfortable and Compact options as readable choices, request question-hero
-- Honest explanation that correlated editor answer action is not wired; no fake answer buttons
+- This editor cannot answer this request.; no fake answer buttons
 
 ### View: login
 
@@ -353,3 +353,23 @@ without `humanAcceptance`, serialized with sorted keys and compact JSON
 separators. This binds the actual review to the exact manifest. Creating this
 record requires the human quality review; neither driver nor comparator creates
 it, and test-only acceptance records cannot authorize a real campaign.
+
+### View: question-free-form
+
+- Agent question with What should the hero say?
+- Visible free_form mode and request question-free-form
+- This editor cannot answer this request.; no answer, checkbox or confirmation actions
+
+### View: question-multi-choice
+
+- Agent question with Which layouts should I preview?
+- Visible multi_choice mode and request question-multi-choice
+- This editor cannot answer this request.; no answer, checkbox or confirmation actions
+- Readable Desktop choice
+- Readable Tablet choice
+
+### View: question-confirmation
+
+- Agent question with May I replace the hero image?
+- Visible confirmation mode and request question-confirmation
+- This editor cannot answer this request.; no answer, checkbox or confirmation actions

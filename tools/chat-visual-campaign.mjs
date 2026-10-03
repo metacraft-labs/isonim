@@ -17,6 +17,7 @@ const corpus=JSON.parse(readFileSync(new URL('../tests/scenarios/chat-activity/p
 const thresholds=JSON.parse(readFileSync(new URL('./chat-visual-thresholds.json',import.meta.url)));
 const sizes={wide:{width:1440,height:900,panel:420},narrow:{width:1024,height:768,panel:240}};
 const singleEvents=Object.fromEntries(Object.values(corpus.scenes).flat().map(event=>['event-'+event.type,[event]]));
+singleEvents['event-agent_question']=[corpus.scenes.question[0]];
 const sceneEvents={...corpus.scenes,...singleEvents,...corpus.normalizedScenes,"event-log-bottom":singleEvents["event-log"]};
 const allViews=['empty',...Object.keys(sceneEvents)];
 const lineage={bundleSha256:hash(readFileSync(new URL('../build/editor-chat/editor.js',import.meta.url))),sceneSha256:hash(readFileSync(new URL('../tests/scenarios/chat-activity/public-session-events.json',import.meta.url))),captureSha256:hash(readFileSync(new URL(import.meta.url))),browserExecutableSha256:hash(readFileSync('/ms-playwright/chromium-1217/chrome-linux64/chrome')),fonts:[...new Set(execFileSync('fc-list',['--format','%{file}\n'],{encoding:'utf8'}).trim().split('\n'))].sort().map(file=>({file,sha256:hash(readFileSync(file))}))};
@@ -140,6 +141,13 @@ try{
   if(view==='files'){
     const before=panel.locator('[data-chat-fact="Before"]');assert.equal(await before.locator('span').last().innerText(),sceneEvents[view].find(event=>event.type==='diff').oldText,'diff line boundaries preserved');
     assert.equal(await before.locator('span').last().evaluate(el=>getComputedStyle(el).whiteSpace),'pre-wrap');
+  }
+  if(view==='question'||view.startsWith('question-')){
+    const question=panel.locator('[data-chat-source="agent_question"]');
+    assert.equal(await question.locator('[data-chat-availability]').innerText(),'This editor cannot answer this request.');
+    assert(await question.locator('[data-chat-availability]').isVisible());
+    assert.equal(await question.locator('details').getAttribute('open'),null,'availability precedes expansion');
+    assert.equal(await question.locator('button,input,textarea,select').count(),0,'unavailable answers have no fake controls');
   }
   const focusPaint=await input.evaluate(el=>{const s=getComputedStyle(el);return {border:s.borderColor,outline:s.outline,animation:s.animation,transition:s.transition,active:document.activeElement===el,animations:document.getAnimations().map(a=>({state:a.playState,time:a.currentTime}))};});
   const target=canary?page.locator('[data-chat-scroll]'):page;

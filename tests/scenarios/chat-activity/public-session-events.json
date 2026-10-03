@@ -442,6 +442,45 @@
         "timestamp": 1700000000,
         "type": "fleet_host"
       }
+    ],
+    "question-free-form": [
+      {
+        "type": "agent_question",
+        "kind": "free_form",
+        "prompt": "What should the hero say?",
+        "options": [],
+        "request": "question-free-form",
+        "timestamp": 1700000000
+      }
+    ],
+    "question-multi-choice": [
+      {
+        "type": "agent_question",
+        "kind": "multi_choice",
+        "prompt": "Which layouts should I preview?",
+        "options": [
+          {
+            "id": "desktop",
+            "label": "Desktop"
+          },
+          {
+            "id": "tablet",
+            "label": "Tablet"
+          }
+        ],
+        "request": "question-multi-choice",
+        "timestamp": 1700000000
+      }
+    ],
+    "question-confirmation": [
+      {
+        "type": "agent_question",
+        "kind": "confirmation",
+        "prompt": "May I replace the hero image?",
+        "options": [],
+        "request": "question-confirmation",
+        "timestamp": 1700000000
+      }
     ]
   },
   "schema": 1

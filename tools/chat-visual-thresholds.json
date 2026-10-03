@@ -52,5 +52,8 @@
   "tool-waiting": 0.001,
   "tool-running": 0.001,
   "thought-settled": 0.001,
-  "event-log-bottom": 0.001
+  "event-log-bottom": 0.001,
+  "question-free-form": 0.02,
+  "question-multi-choice": 0.02,
+  "question-confirmation": 0.02
 }

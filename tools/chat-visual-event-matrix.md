@@ -2,7 +2,7 @@
 
 Authority: Agent Harbor `b40f6090`, public REST `SessionEvent` in
 `crates/ah-rest-api-contract/src/types.rs` (34 variants). The domain enum differs.
-All46 public frames are validated against the actual production Rust SessionEvent serde, with missing-required and invalid-enum controls. Synthetic public DTOs go through the real parser → nim-agents safe projection →
+All49 public frames are validated against the actual production Rust SessionEvent serde, with missing-required and invalid-enum controls. Synthetic public DTOs go through the real parser → nim-agents safe projection →
 wire codec → shared reducer → full mounted production editor. This boundary
 coverage does not emulate a server and does not prove infrastructure execution.
 Official scenario integration remains `test-editor-scenarios-native`, stress and
@@ -52,19 +52,37 @@ Actual first-send suggestion removal, rejected-send draft preservation, tab
 separation, streaming selection/scrollback, cancel availability, CLI/RPC
 navigation, approval/rejection/stale targets, source/preview focus and highlight
 remain in the original headless and full GUI suites. They are not replaced by
-these visual fixtures. Additional visual scenes for these combinations remain
-required before campaign completion.
+these visual fixtures. Additional visual scenes for these combinations remain deferred and unaccepted.
+These captures remain deterministic VM/DOM boundary evidence; original genuine
+REST and control GUI suites remain independently mandatory.
 
 ## Question delivery investigation
 
-Harbor supports `Session::deliver` through its prompt endpoint. The common
-streaming client reserves one active turn and the editor daemon rejects a second
-prompt while that worker is active. A native question parks within that active
-turn. Consequently a correlated answer needs a dedicated guarded delivery action
-through nim-agents, registry state and the browser client; a generic busy bypass
-or fabricated answer button would be incorrect. Current question cards expose
-prompt, choices and request identity with the actual editor capability limit.
-Question park/delivery/stale correlation automation is still outstanding.
+At Harbor `b40f60901a2a438b24ff1df4c7d74b4320c425ab`, the normal editor
+REST session uses `agent.acp_stdio_launch_command`. The actual launch chain is:
+
+- `ah-rest-server/src/executor.rs:3214–3248` forwards structured events from
+  the inner ACP launcher and passes `--acp-agent-cmd`.
+- `ah-tui/src/acp_client.rs:2744–2779` creates `TuiAcpSession`.
+- `ah-agents/src/tui_session.rs:269–274` wraps `AcpAgentSession`.
+- `ah-agents/src/acp_session.rs:2935–2998` handles ACP permissions directly,
+  selecting an offered allow option. Qwen question requests choose the first
+  label (`2228–2294`); Grok custom questions also auto-answer (`3000–3058`).
+- `ah-rest-server/src/handlers/running_agent.rs:220–245,314–343` only records
+  non-prompt input/permission envelopes and returns `accepted:true`; it does not
+  invoke the provider's pending request handler. An HTTP acknowledgment cannot
+  prove park, selected-answer delivery, or resume.
+
+`Session::await_question`/`Session::deliver` exist for native PTY paths. The
+separate `RestAcpClient` blocking registry and durable asynchronous feedback
+have different controllers and semantics. Neither proves correlated question
+answering on this ACP editor route. `AgentQuestion` scenario notifications are
+not a held RPC. No transport migration, answer API, busy-state bypass or Harbor
+source repair is introduced by this campaign. All four public question modes
+(free_form, single_choice, multi_choice, confirmation) retain actual prompt,
+request, mode and offered choice labels, with plain unavailable-answer copy and
+no fabricated actions. Generic busy-prompt rejection remains intact. Native
+park/answer/resume is not claimed as supported or tested by these captures.
 
 Public REST tool status is started/completed/failed. Companion tool-waiting and
  tool-running views use normalized common AgentEvent data (not public REST DTOs).

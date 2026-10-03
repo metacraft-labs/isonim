@@ -89,7 +89,8 @@ try{
       await followLatest();
       const question=page.locator('[data-chat-kind="status"]').filter({hasText:'Which variant?'});
       await visibleText(question,'Which variant?');
-      await visibleText(question.locator('[data-chat-detail]'),'This session does not expose a question response action.');
+      await visibleText(question.locator('[data-chat-availability]'),'This editor cannot answer this request.');
+      assert.equal(await question.locator('details').getAttribute('open'),null);
       assert.equal(await question.locator('button').count(),0);
     } else if(name==='error') {
       await followLatest();
@@ -120,6 +121,39 @@ try{
     captureEvidence.push({name,width,visibleDOMAssertions:true});
     record(`visible required ${name} capture at ${width}`);
   };
+  // Public producer DTOs exercise normalization and the actual mounted view.
+  // Isolated pages keep each request visible without altering stream admission.
+  const questionCorpus=JSON.parse(readFileSync(path.join(repo,'tests/scenarios/chat-activity/public-session-events.json')));
+  for(const width of [420,240])for(const name of ['question','question-free-form','question-multi-choice','question-confirmation']){
+    const questionPage=await browser.newPage({viewport:{width:width===420?1440:1024,height:width===420?900:768}});
+    try{
+      await questionPage.goto(origin);await questionPage.waitForFunction(()=>window.__chatTest);
+      await questionPage.evaluate(value=>window.__chatTest.width(value),width);
+      const draft=questionPage.getByRole('textbox',{name:'Agent prompt'});
+      await draft.fill('Retained next draft');
+      const payload=questionCorpus.scenes[name][0];
+      await questionPage.evaluate(value=>window.__chatTest.harborEvent(JSON.stringify(value)),payload);
+      const card=questionPage.locator('[data-chat-source="agent_question"]');
+      const notice=card.locator('[data-chat-availability]');
+      assert.equal(await notice.innerText(),'This editor cannot answer this request.');
+      assert(await notice.isVisible(),'availability visible before expansion');
+      assert.equal(await notice.evaluate(el=>el.closest('details')),null);
+      assert.equal(await card.locator('details').getAttribute('open'),null);
+      const box=await notice.boundingBox();const bounds=await questionPage.locator('[data-chat-scroll]').boundingBox();
+      assert(box&&bounds&&box.y>=bounds.y&&box.y+box.height<=bounds.y+bounds.height,'notice inside visible scroll area');
+      assert((await card.innerText()).includes(payload.prompt));
+      assert((await card.innerText()).includes(payload.request));
+      assert((await card.innerText()).includes(payload.kind));
+      for(const option of payload.options)assert((await card.innerText()).includes(option.label));
+      assert.equal(await card.locator('button,input,textarea,select').count(),0);
+      assert.equal(await draft.inputValue(),'Retained next draft');
+      await card.locator('summary').click();
+      assert(await card.locator('[data-chat-detail]').isVisible());
+      assert((await card.locator('[data-chat-detail]').innerText()).includes(payload.request));
+      assert.equal(await draft.inputValue(),'Retained next draft');
+      record(`visible unavailable ${payload.kind} request at ${width}, expandable payload and draft retained`);
+    }finally{await questionPage.close();}
+  }
   await shot('empty');await shot('empty',240);
   await page.getByRole('button',{name:'Insert suggested prompt'}).first().click();
   assert((await input.inputValue()).length>0);
@@ -189,7 +223,7 @@ try{
   await input.fill('draft while streaming');
   await event({kind:'status',sourceType:'agent_question',question:'Which variant?',text:'Which variant?'});
   const question=page.locator('[data-chat-kind="status"]').filter({hasText:'Which variant?'});
-  await question.waitFor();await question.locator('summary').click();
+  await question.waitFor();
   await shot('waiting');await shot('waiting',240);
   await event({kind:'error',text:'The source build failed. Your draft is preserved.'});
   await shot('error');await shot('error',240);
