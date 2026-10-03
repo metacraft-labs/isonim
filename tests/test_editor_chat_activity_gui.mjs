@@ -18,6 +18,7 @@
  * narrow/wide overflow and composer/preview reachability; capture named states.
  */
 import assert from 'node:assert/strict';
+import {horizontalChatGuard,oldClippedChatControl} from '../tools/chat-horizontal-guard.mjs';
 import {spawn} from 'node:child_process';
 import {mkdtempSync, writeFileSync, readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
@@ -174,6 +175,7 @@ try{
     await page.evaluate(value=>window.__chatTest.width(value),width);
     await page.waitForFunction(width=>Math.abs(document.querySelector('.editor-chat').getBoundingClientRect().width-width)<30,width);
     await frames();
+    await horizontalChatGuard(page);
     if(name==='tool-heavy') {
       await page.locator('[data-chat-kind="tool_call"]').evaluate(el=>el.scrollIntoView({block:'start'}));
       await frames();
@@ -236,6 +238,12 @@ try{
       await questionPage.goto(origin);await questionPage.waitForFunction(()=>window.__chatTest);
       await questionPage.evaluate(value=>window.__chatTest.width(value),width);
       await mountedReady(questionPage,`question-${name}-${width}`);
+      await horizontalChatGuard(questionPage);
+      if(width===240&&name==='question') {
+        const restored=await oldClippedChatControl(questionPage);
+        writeFileSync(path.join(artifacts,'horizontal-clipping-control.json'),JSON.stringify({oldClippedStateRejected:true,restored},null,2));
+        record('same horizontal guard rejects original tablet clipping and accepts restored layout');
+      }
       const draft=questionPage.getByRole('textbox',{name:'Agent prompt'});
       await draft.fill('Retained next draft');
       const payload=questionCorpus.scenes[name][0];

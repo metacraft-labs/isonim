@@ -31,6 +31,21 @@ proc entryNode(node: MockNode; id: string): MockNode =
     if result != nil: return
 
 suite "Chat activity and composition":
+  test "chat content fills the rail without a second width binding":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      let panel = renderChatPanel[MockRenderer, MockNode](MockRenderer(), vm)
+      for width in [200, 240, 320, 420]:
+        vm.setRightPanelWidth(width)
+        check vm.rightPanelWidth.val == width
+        check panel.styles.getOrDefault("width") == "100%"
+        check panel.styles.getOrDefault("min-width") == "0"
+        check panel.styles.getOrDefault("max-width") == "100%"
+        check panel.styles.getOrDefault("flex") == "1"
+        check "flex-basis" notin panel.styles
+        check "data-right-panel-width" notin panel.attributes
+      dispose()
+
   test "rendered admission tracks flight and closure even when activity already looks ready":
     createRoot proc(dispose: proc()) =
       let vm = createEditorVM()

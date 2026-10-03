@@ -62,6 +62,7 @@ class CaptureGuards(unittest.TestCase):
   output=source[:8]+b''.join(chunk(tag,data) for tag,data in chunks if tag!=b'IEND')+chunk(b'IDAT',zlib.compress(inflated))+chunk(b'IEND',b'')
   bad=self.root/'invalid-filter.png';bad.write_bytes(output)
   with self.assertRaisesRegex(ValueError,'invalid PNG row filter'):png(bad)
+ def test_lineage_horizontal_guard(self):self.rejected(lambda m:m['lineage'].update(horizontalGuardSha256='0'*64))
  def test_lineage_source(self):self.rejected(lambda m:m['lineage'].update(captureSha256='0'*64))
  def test_lineage_fonts(self):self.rejected(lambda m:m['lineage'].update(fonts=[]))
  def test_lineage_font_hash(self):self.rejected(lambda m:m['lineage']['fonts'][0].update(sha256='0'*64))

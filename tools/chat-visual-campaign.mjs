@@ -10,6 +10,7 @@
  * Run inside the pinned capture container via chat-visual-campaign.py.
  */
 import assert from 'node:assert/strict';
+import {horizontalChatGuard,oldClippedChatControl} from './chat-horizontal-guard.mjs';
 import {execFileSync} from 'node:child_process';
 import {createServer} from 'node:http';
 import {readFileSync,writeFileSync,mkdirSync,readdirSync,rmSync,existsSync} from 'node:fs';
@@ -29,6 +30,7 @@ const allViews=['empty',...Object.keys(sceneEvents),...Object.keys(corpus.behavi
 const lineage={bundleSha256:hash(readFileSync(new URL('../build/editor-chat/editor.js',import.meta.url))),sceneSha256:hash(readFileSync(new URL('../tests/scenarios/chat-activity/public-session-events.json',import.meta.url))),captureSha256:hash(readFileSync(new URL(import.meta.url))),browserExecutableSha256:hash(readFileSync('/ms-playwright/chromium-1217/chrome-linux64/chrome')),fonts:[...new Set(execFileSync('fc-list',['--format','%{file}\n'],{encoding:'utf8'}).trim().split('\n'))].sort().map(file=>({file,sha256:hash(readFileSync(file))}))};
 const flags=['--no-sandbox','--disable-gpu','--force-color-profile=srgb','--font-render-hinting=none','--disable-lcd-text'];
 const environment={deviceScaleFactor:1,locale:'en-US',timezoneId:'UTC',colorScheme:'dark',reducedMotion:'reduce'};
+lineage.horizontalGuardSha256=hash(readFileSync(new URL('./chat-horizontal-guard.mjs',import.meta.url)));
 lineage.expectedSha256=hash(readFileSync(new URL('./chat-visual-expected.json',import.meta.url)));
 lineage.thresholdsSha256=hash(readFileSync(new URL('./chat-visual-thresholds.json',import.meta.url)));
 const expected=JSON.parse(readFileSync(new URL('./chat-visual-expected.json',import.meta.url)));
@@ -62,6 +64,7 @@ async function composerGuard(page,viewport){
  const input=page.getByRole('textbox',{name:'Agent prompt'});
  assert.equal(await input.count(),1,'required composer missing');assert(await input.isVisible(),'composer visible');
  const box=await input.boundingBox();assert(box&&box.y>=0&&box.y+box.height<=viewport.height,'anchored composer');
+ await horizontalChatGuard(page);
  return input;
 }
 async function controlReady(page,view,size){
@@ -228,6 +231,10 @@ try{
   await page.evaluate(async()=>{await document.fonts.ready;await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));});
   const panel=page.locator('.editor-chat');await panel.waitFor({state:'visible'});
   const input=await composerGuard(page,viewport);
+  if(view==='empty'&&size==='narrow'){
+   const restored=await oldClippedChatControl(page);
+   writeFileSync(path.join(output,'horizontal-clipping-control.json'),JSON.stringify({oldClippedStateRejected:true,guard:'horizontalChatGuard used by every composerGuard',restored},null,2));
+  }
   const layout=await panel.evaluate(el=>{
    const box=el.getBoundingClientRect();const composer=el.querySelector('textarea').getBoundingClientRect();
    const overflow=[...el.querySelectorAll('[data-chat-entry], [data-chat-facts], [data-chat-markdown]')].filter(node=>node.scrollWidth>node.clientWidth+1).map(node=>node.getAttribute('data-chat-entry')||node.getAttribute('data-chat-markdown'));

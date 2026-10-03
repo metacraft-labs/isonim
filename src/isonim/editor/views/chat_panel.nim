@@ -14,15 +14,6 @@ import ./chat_activity
 
 import ./chat_theme
 
-proc bindRightPanelWidth[R, E](r: R; node: E; vm: EditorVM) =
-  createRenderEffect proc() =
-    let width = $vm.rightPanelWidth.val & "px"
-    r.setStyle(node, "width", width)
-    r.setStyle(node, "flex-basis", width)
-    r.setStyle(node, "min-width", "240px")
-    r.setStyle(node, "max-width", "420px")
-    r.setAttribute(node, "data-right-panel-width", $vm.rightPanelWidth.val)
-
 proc rememberPanelFocus(vm: EditorVM; id: string): proc() =
   let captured = id
   result = proc() =
@@ -101,9 +92,10 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
       flex = "1",
       min_height = "0",
       width = "100%",
+      min_width = "0",
+      max_width = "100%",
       overflow_x = "hidden")
   r.setAttribute(panel, "data-chat-local-id", vm.activeChatId.val)
-  r.bindRightPanelWidth(panel, vm)
 
   var statusTextNode: E
   var narrowButton: E

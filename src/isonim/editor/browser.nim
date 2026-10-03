@@ -114,7 +114,6 @@ proc injectEditorStyles*() =
     @media (max-width: 1024px) and (min-width: 769px) {
       .editor-sidebar { width: 220px !important; min-width: 220px !important; }
       .editor-inspector,
-      .editor-chat,
       .editor-manual-inspector { width: min(320px, 38vw) !important; min-width: min(320px, 38vw) !important; max-width: min(320px, 38vw) !important; }
       .editor-tabbar > div { padding: 0 6px !important; font-size: 10px !important; }
     }
