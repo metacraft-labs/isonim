@@ -417,12 +417,14 @@ test-design-review-cli: isonim-review-build
     nim c -r --path:. --path:src --path:vendor/db_connector/src --path:vendor/chronicles --path:vendor/serialization --path:vendor/json_serialization --path:../nim-faststreams --path:../nim-stew --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -d:nimOldCaseObjects --hints:off tests/test_design_review_cli_seed_run.nim
 
 # REV-M5: run every REV-M5 capture-pipeline test.  Unit tests boot
-# fake WebSocket servers + ephemeral git workspaces; the idempotency
-# and e2e tests use the REV-M3 PgFixture + a real `isonim-review`
-# subprocess.  All paths use the same `--path:` set the CLI build uses.
+# fake WebSocket servers + ephemeral reprobuild workspaces (the gate and
+# the workspace pin read them through `repro`, which must be on PATH or
+# named by $ISONIM_REVIEW_REPRO); the idempotency and e2e tests use the
+# REV-M3 PgFixture + a real `isonim-review` subprocess.  All paths use
+# the same `--path:` set the CLI build uses.
 test-design-review-capture: isonim-review-build
     nim c -r --path:. --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off tests/test_design_review_clean_tree.nim
-    nim c -r --path:. --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off tests/test_design_review_manifest_hash.nim
+    nim c -r --path:. --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off tests/test_design_review_workspace_pin.nim
     nim c -r --path:. --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off tests/test_design_review_capture_store.nim
     nim c -r --path:. --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off tests/test_design_review_bridge_client.nim
     nim c -r --path:. --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off tests/test_design_review_capture_native_dimensions.nim

@@ -593,8 +593,12 @@ const isonimDesignReviewSpecs: seq[DrSpec] = @[
   dr("test_no_dangling_references_to_old_brief_path"),
   dr("test_design_review_cli_config"),
   # Capture pipeline — in-process FakeBridge + PgFixture, no CLI subprocess.
+  # The clean-tree gate, workspace-pin and brief_at_revision tests build
+  # hermetic reprobuild workspaces and read them through ``repro``
+  # (``repro workspace status`` / ``list``), which must be on PATH or
+  # named by ``ISONIM_REVIEW_REPRO``.
   dr("test_design_review_clean_tree"),
-  dr("test_design_review_manifest_hash"),
+  dr("test_design_review_workspace_pin"),
   dr("test_design_review_capture_store"),
   dr("test_design_review_bridge_client"),
   dr("test_design_review_capture_native_dimensions"),

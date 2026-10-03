@@ -38,7 +38,7 @@ proc newCaptureStore*(rootDir: string): CaptureStore =
 
 proc sha256OfBytes(bytes: openArray[byte]): string =
   ## sha256(bytes) → lowercase hex.  Shell-out matches the rest of
-  ## the codebase (cmd_init.nim, manifest_hash.nim).  We use
+  ## the codebase (cmd_init.nim).  We use
   ## stdin/stdout instead of a temp file so the data never lands on
   ## disk except via the store itself.
   let exe = findExe("shasum")

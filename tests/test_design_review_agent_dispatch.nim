@@ -5,48 +5,23 @@
 ## DB boundary; the agent backend is the only fixture surface, and
 ## that's the documented contract (REV-M6's *Out of scope*).
 
-import std/[os, osproc, strutils, times, unittest]
+import std/[os, strutils, times, unittest]
 
 import db_connector/db_postgres
 
 import isonim/editor/design_review/agent_dispatch
 import isonim/editor/design_review/brief_format
 import isonim/editor/design_review/db as dr_db
-import isonim/editor/design_review/manifest_hash
+import isonim/editor/design_review/pin_db
+import isonim/editor/design_review/workspace_pin
 import isonim/editor/types
 
 import helpers/design_review_pg_fixture
+import helpers/repro_workspace_fixture
 
 # --------------------------------------------------------------------------- #
 #  Workspace + brief fixtures.
 # --------------------------------------------------------------------------- #
-
-proc runOrFail(cmd: string; cwd: string): string =
-  let res = execCmdEx(cmd, workingDir = cwd)
-  if res.exitCode != 0:
-    raise newException(IOError, cmd & " failed (" & $res.exitCode & "):\n" &
-                       res.output)
-  res.output
-
-proc gitInit(repoPath: string) =
-  createDir(repoPath)
-  discard runOrFail("git init -q -b main && " &
-                    "git config user.email 'test@test' && " &
-                    "git config user.name 'tester' && " &
-                    "git config commit.gpgsign false", repoPath)
-
-proc gitCommit(repoPath, message: string): string =
-  discard runOrFail("git add -A && git commit -q -m '" & message & "'",
-                    repoPath)
-  return runOrFail("git rev-parse HEAD", repoPath).strip()
-
-proc writeManifest(workspaceRoot, repoName, sha: string) =
-  let repoDir = workspaceRoot / ".repo"
-  createDir(repoDir)
-  writeFile(repoDir / "manifest.xml",
-    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<manifest>\n" &
-    "  <project name=\"" & repoName & "\" path=\"" & repoName &
-    "\" revision=\"" & sha & "\"/>\n</manifest>\n")
 
 const FixtureBriefYaml = """---
 briefId: render.fixture
@@ -65,32 +40,32 @@ scoringDimensions:
 brief body fixture
 """
 
-proc tmpWorkspaceWithBrief(suffix: string): tuple[ws, manifestHash: string;
+proc tmpWorkspaceWithBrief(suffix: string): tuple[ws: string; pin: WorkspacePin;
                                                   brief: Brief] =
-  let ws = getTempDir() / ("isonim_ad_" & suffix & "_" & $epochTime().int)
-  removeDir(ws)
-  createDir(ws)
-  let repoA = ws / "repo-a"
-  gitInit(repoA)
-  createDir(repoA / "briefs" / "render")
-  writeFile(repoA / "briefs" / "render" / "fixture.md", FixtureBriefYaml)
-  let sha = gitCommit(repoA, "initial brief")
-  writeManifest(ws, "repo-a", sha)
-  let hash = captureManifestHash(ws)
+  ## A hermetic reprobuild workspace whose ``repo-a`` has the brief
+  ## committed and published, pinned the way capture pins it.  ``ws`` is
+  ## the workspace root; remove ``ws.parentDir`` to clean up.
+  let fx = newReproWorkspace("ad_" & suffix, ["repo-a"],
+    files = [("repo-a", "briefs/render/fixture.md", FixtureBriefYaml)])
+  let ws = fx.root
+  let pin = captureWorkspacePin(ws)
   # Also write the brief under the workspace root's working-tree
   # briefs/ dir so the dispatcher's type-level brief read finds it.
   createDir(ws / "briefs" / "render")
   writeFile(ws / "briefs" / "render" / "fixture.md", FixtureBriefYaml)
   let brief = parseBrief(ws / "briefs" / "render" / "fixture.md")
-  result = (ws, hash, brief)
+  result = (ws, pin, brief)
 
 # --------------------------------------------------------------------------- #
 #  DB helpers (raw SQL, mirroring the capture module's pattern).
 # --------------------------------------------------------------------------- #
 
-proc startRunSql(db: ReviewDb; briefId, manifestHash, who: string): string =
+proc startRunSql(db: ReviewDb; briefId: string; pin: WorkspacePin;
+                 who: string): string =
+  ## Record the pin, then open the run against it — what capture does.
+  recordWorkspacePin(db, pin, who)
   let escB = briefId.replace("'", "''")
-  let escH = manifestHash.replace("'", "''")
+  let escH = pin.pin.replace("'", "''")
   let escW = who.replace("'", "''")
   db.conn.getValue(sql(
     "SELECT design_review.start_run('" & escB & "', '" & escH &
@@ -161,8 +136,9 @@ suite "REV-M6 agent dispatch":
   test "test_record_agent_report_idempotent_on_natural_key":
     let pgf = newPgFixture()
     defer: pgf.shutdown()
-    let (ws, hash, brief) = tmpWorkspaceWithBrief("idem")
-    defer: removeDir(ws)
+    let (ws, pin, brief) = tmpWorkspaceWithBrief("idem")
+    defer: removeDir(ws.parentDir)
+    let hash = pin.pin
 
     let appConn = open("", "design_review_app", "",
                        "host=127.0.0.1 port=" & $pgf.port &
@@ -176,7 +152,7 @@ suite "REV-M6 agent dispatch":
                        " dbname=isonim_design_review user=design_review_migrator")
     defer: migConn.close()
 
-    let runId = startRunSql(db, "render.fixture", hash, "tester")
+    let runId = startRunSql(db, "render.fixture", pin, "tester")
     let previewId = canonicalPreviewId(brief.coversPreviews[0].storyRef, pbWeb)
     discard recordCaptureSql(db, runId, previewId, "web", "tablet",
                              "sha1", "/tmp/x.png", 32, 32)
@@ -205,8 +181,9 @@ suite "REV-M6 agent dispatch":
   test "test_record_agent_report_transitions_run_status":
     let pgf = newPgFixture()
     defer: pgf.shutdown()
-    let (ws, hash, brief) = tmpWorkspaceWithBrief("trans")
-    defer: removeDir(ws)
+    let (ws, pin, brief) = tmpWorkspaceWithBrief("trans")
+    defer: removeDir(ws.parentDir)
+    let hash = pin.pin
 
     let appConn = open("", "design_review_app", "",
                        "host=127.0.0.1 port=" & $pgf.port &
@@ -220,7 +197,7 @@ suite "REV-M6 agent dispatch":
                        " dbname=isonim_design_review user=design_review_migrator")
     defer: migConn.close()
 
-    let runId = startRunSql(db, "render.fixture", hash, "tester")
+    let runId = startRunSql(db, "render.fixture", pin, "tester")
     let previewId = canonicalPreviewId(brief.coversPreviews[0].storyRef, pbWeb)
     discard recordCaptureSql(db, runId, previewId, "web", "tablet",
                              "sha1", "/tmp/x.png", 32, 32)
@@ -247,8 +224,9 @@ suite "REV-M6 agent dispatch":
   test "test_record_agent_report_rejects_pre_capture_complete":
     let pgf = newPgFixture()
     defer: pgf.shutdown()
-    let (ws, hash, brief) = tmpWorkspaceWithBrief("early")
-    defer: removeDir(ws)
+    let (ws, pin, brief) = tmpWorkspaceWithBrief("early")
+    defer: removeDir(ws.parentDir)
+    let hash = pin.pin
 
     let appConn = open("", "design_review_app", "",
                        "host=127.0.0.1 port=" & $pgf.port &
@@ -262,7 +240,7 @@ suite "REV-M6 agent dispatch":
                        " dbname=isonim_design_review user=design_review_migrator")
     defer: migConn.close()
 
-    let runId = startRunSql(db, "render.fixture", hash, "tester")
+    let runId = startRunSql(db, "render.fixture", pin, "tester")
     # NOTE: do not record any captures or finish — run stays in 'capturing'.
     check runStatusSql(migConn, runId) == "capturing"
 
