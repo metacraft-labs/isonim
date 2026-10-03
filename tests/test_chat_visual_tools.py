@@ -54,6 +54,19 @@ class CaptureGuards(unittest.TestCase):
     self.assertEqual(record['accepted']['type'],kind)
     self.assertIn(literal,record['accepted']['text'])
     self.assertEqual(record['guard'],'isolatedContentGuard before every isolated capture')
+ def test_mounted_preview_readiness_controls(self):
+  for size in ('wide','narrow'):
+   record=json.loads((self.corpus/f'preview-readiness-control-{size}.json').read_text())
+   self.assertEqual(record['size'],size);self.assertTrue(record['absentPublishedRowsRejected']);self.assertTrue(record['wrongActualPreviewRejected'])
+   self.assertEqual(record['guard'],'mountedPreviewReady used by every capture and controlReady')
+   for phase in ('before','restored'):
+    self.assertEqual(record[phase]['previewHeading'],'Website preview')
+    self.assertTrue({'primary','secondary'}.issubset(record[phase]['sceneGraphRows']))
+    self.assertTrue({'primary','secondary'}.issubset(row['id'] for row in record[phase]['state']['elements']))
+ def test_readiness_missing_rows_and_wrong_preview_rejected(self):
+  self.rejected(lambda m:m['views'][0]['sceneReadiness']['state'].update(elements=[]))
+  shutil.copyfile(CAP/'corpus/manifest.json',self.corpus/'manifest.json')
+  self.rejected(lambda m:m['views'][0]['sceneReadiness'].update(previewHeading='Wrong selected preview'))
  def test_inventory_empty(self):self.rejected(lambda m:m.update(views=[]),inventory=True)
  def test_inventory_omission(self):self.rejected(lambda m:m['views'].pop(),inventory=True)
  def test_inventory_duplicate(self):self.rejected(lambda m:m['views'].append(m['views'][0]),inventory=True)

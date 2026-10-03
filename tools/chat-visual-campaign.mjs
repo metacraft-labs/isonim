@@ -5,7 +5,12 @@
  * admission/approval and production DOM adapters remain installed. Initial control
  * admission requires complete visible preview/documents, loaded fonts, actual DOM
  * targets in the production published scene graph (300ms/700ms scanner), then two
- * normal frames. No revision polling/rebasing, forced result or mutation retry.
+ * normal frames. Every capture shares this readiness boundary. Negative controls
+ * temporarily replace the read-only fixture snapshot with missing published rows
+ * (a stalled-publication timing substitute) and change the real preview heading
+ * (a wrong-document substitute); they use the same predicate and restore both.
+ * No VM/renderer/scanner is mocked or invoked by these controls.
+ * No revision polling/rebasing, forced result or mutation retry.
  * Read-only stored-operation diagnostics persist before assertions.
  * Run inside the pinned capture container via chat-visual-campaign.py.
  */
@@ -171,26 +176,58 @@ async function wrongIsolatedControl(context,url,type,size){
   return {type,size,wrongPayload:wrong,rendered,rejected:true,guard:'isolatedContentGuard before every isolated capture'};
  }finally{await page.close();}
 }
-async function controlReady(page,view,size){
- await page.waitForFunction(()=>{
-   if(!window.__chatTest || document.readyState!=='complete' || document.fonts.status!=='loaded')return false;
-   const frames=Array.from(document.querySelectorAll('iframe[data-page-project-frame="true"]'))
-     .filter(frame=>frame.getClientRects().length && frame.offsetParent!==null);
-   if(frames.length!==1)return false;
-   const doc=frames[0].contentDocument;
-   if(!doc || doc.readyState!=='complete' || doc.fonts.status!=='loaded')return false;
-   const state=JSON.parse(window.__chatTest.controlState());
-   return ['primary','secondary'].every(id=>doc.querySelector(`[data-isonim-element-id="${id}"]`) && state.elements.some(row=>row.id===id));
- },null,{timeout:5000});
+// Read only the selected mounted fixture and the sole production reader's output.
+// Loaded fonts/two frames alone can precede its first 300ms scan.
+function mountedPreviewReady(){
+ if(!window.__chatTest || document.readyState!=='complete' || document.fonts.status!=='loaded')return false;
+ const frames=Array.from(document.querySelectorAll('iframe[data-page-project-frame="true"]'))
+   .filter(frame=>frame.getClientRects().length && frame.offsetParent!==null);
+ if(frames.length!==1)return false;
+ const doc=frames[0].contentDocument;
+ if(!doc || doc.readyState!=='complete' || doc.fonts.status!=='loaded' || doc.title!=='Chat preview' || doc.querySelector('h1')?.textContent!=='Website preview')return false;
+ const state=JSON.parse(window.__chatTest.controlState());
+ if(state.workspace!=='chat-acceptance' || !['Pages / Home','Pages / Details'].includes(state.storyId))return false;
+ return [['primary','Primary action'],['secondary','Secondary action']].every(([id,text])=>{
+   const element=doc.querySelector(`[data-isonim-element-id="${id}"]`);
+   const row=state.elements.find(row=>row.id===id);
+   const published=document.querySelector(`[data-scene-graph-row="${id}"]`);
+   return element?.textContent===text && element.getClientRects().length>0 &&
+     row?.tag==='button' && row.label.includes(text) && published?.getClientRects().length>0;
+ }) && !document.querySelector('[data-scene-graph-empty]');
+}
+async function captureReady(page){
+ await page.waitForFunction(mountedPreviewReady,null,{timeout:5000});
  const readiness=await page.evaluate(async()=>{
    const frameTimes=await new Promise(resolve=>requestAnimationFrame(first=>requestAnimationFrame(second=>resolve([first,second]))));
    const frame=Array.from(document.querySelectorAll('iframe[data-page-project-frame="true"]')).find(frame=>frame.getClientRects().length && frame.offsetParent!==null);
    return {frameTimes,documentReadyState:document.readyState,fontStatus:document.fonts.status,
      previewReadyState:frame.contentDocument.readyState,previewFontStatus:frame.contentDocument.fonts.status,
+     previewTitle:frame.contentDocument.title,previewHeading:frame.contentDocument.querySelector('h1').textContent,
+     sceneGraphRows:Array.from(document.querySelectorAll('[data-scene-graph-row]')).map(row=>row.dataset.sceneGraphRow),
      state:JSON.parse(window.__chatTest.controlState())};
  });
+ assert(await page.evaluate(mountedPreviewReady),'mounted preview and published scene remain ready after normal frames');
+ return readiness;
+}
+async function controlReady(page,view,size){
+ const readiness=await captureReady(page);
  writeFileSync(path.join(output,`control-${view}-${size}-readiness.json`),JSON.stringify(readiness,null,2));
  return readiness;
+}
+async function previewReadinessControls(page,size){
+ const before=await captureReady(page);
+ await page.evaluate(()=>{window.__originalControlSnapshot=window.__chatTest.controlState;
+   window.__chatTest.controlState=()=>{const state=JSON.parse(window.__originalControlSnapshot());state.elements=[];return JSON.stringify(state);};});
+ try{assert.equal(await page.evaluate(mountedPreviewReady),false,'same capture predicate rejects absent published scene rows');}
+ finally{await page.evaluate(()=>{window.__chatTest.controlState=window.__originalControlSnapshot;delete window.__originalControlSnapshot;});}
+ await captureReady(page);
+ const heading=await page.evaluate(()=>{const h=document.querySelector('iframe[data-page-project-frame="true"]').contentDocument.querySelector('h1');const text=h.textContent;h.textContent='Wrong selected preview';return text;});
+ try{assert.equal(await page.evaluate(mountedPreviewReady),false,'same capture predicate rejects wrong real preview despite published rows');}
+ finally{await page.evaluate(text=>{document.querySelector('iframe[data-page-project-frame="true"]').contentDocument.querySelector('h1').textContent=text;},heading);}
+ const restored=await captureReady(page);
+ writeFileSync(path.join(output,`preview-readiness-control-${size}.json`),JSON.stringify({size,before,
+   absentPublishedRowsRejected:true,wrongActualPreviewRejected:true,restored,
+   guard:'mountedPreviewReady used by every capture and controlReady'},null,2));
 }
 async function controlDiagnostic(page,id,size,phase){
  const actual=JSON.parse(await page.evaluate(id=>window.__chatTest.controlDiagnostics(id),id));
@@ -329,7 +366,8 @@ try{
   else if(view!=='empty'){
    await admitScene(page,sceneEvents[view]);
   }
-  await page.evaluate(async()=>{await document.fonts.ready;await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));});
+  await captureReady(page);
+  if(view==='empty'&&!canary)await previewReadinessControls(page,size);
   const panel=page.locator('.editor-chat');await panel.waitFor({state:'visible'});
   const input=await composerGuard(page,viewport);
   const expectedLogins=(sceneEvents[view]??[]).filter(event=>event.type==='login_required');
@@ -446,6 +484,7 @@ try{
       for(const label of ['completed','in progress','pending'])await panel.getByText(label,{exact:true}).waitFor({state:'visible'});
     }
   }
+  const sceneReadiness=await captureReady(page);
   const file=`${view}-${size}.png`;const png=await target.screenshot({path:path.join(output,file),animations:'disabled',caret:'hide'});
   let positiveControl=null;
   if(canary){
@@ -456,7 +495,7 @@ try{
     assert(!changed.equals(png),'exact image gate must reject changed actual prose/plan');
     positiveControl={changedSha256:hash(changed),mutation:'actual production event alters conversation/plan'};
   }
-  manifest.push({view,size,file,behaviorEvidence,positiveControl,contentVerified:canary,dimensions:[png.readUInt32BE(16),png.readUInt32BE(20)],scope:canary?'actual production conversation scroll surface; excludes editor chrome, preview and composer':'full editor viewport',sha256:createHash('sha256').update(png).digest('hex'),layout,geometry,contrast,focusPaint,boundary:corpus.boundary,events:(sceneEvents[view]||[]).map(e=>e.type||e.kind),baseline:'candidate; human acceptance pending',perceptualThreshold:{maximumChangedPixelRatio:thresholds[view]},browser:browser.version()});
+  manifest.push({view,size,file,sceneReadiness,behaviorEvidence,positiveControl,contentVerified:canary,dimensions:[png.readUInt32BE(16),png.readUInt32BE(20)],scope:canary?'actual production conversation scroll surface; excludes editor chrome, preview and composer':'full editor viewport',sha256:createHash('sha256').update(png).digest('hex'),layout,geometry,contrast,focusPaint,boundary:corpus.boundary,events:(sceneEvents[view]||[]).map(e=>e.type||e.kind),baseline:'candidate; human acceptance pending',perceptualThreshold:{maximumChangedPixelRatio:thresholds[view]},browser:browser.version()});
   if(args.includes('--missing-element-control')&&view==='empty'&&size==='wide'){
     await input.evaluate(el=>el.remove());
     await assert.rejects(()=>composerGuard(page,viewport),/required composer missing/,'same positive composer guard rejects removed composer');

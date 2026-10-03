@@ -54,6 +54,11 @@ def guard(directory,canary=False,current=False):
         file=directory/row['file'];require(file.is_file() and digest(file)==row.get('sha256'),'missing or tampered capture PNG')
         dimensions=png(file);require(row.get('dimensions')==list(dimensions),'PNG dimensions differ from manifest')
         require(row.get('browser')==m['browser'],'row browser mismatch')
+        ready=row.get('sceneReadiness',{});state=ready.get('state',{})
+        require(ready.get('documentReadyState')=='complete' and ready.get('fontStatus')=='loaded' and ready.get('previewReadyState')=='complete' and ready.get('previewFontStatus')=='loaded' and ready.get('previewTitle')=='Chat preview' and ready.get('previewHeading')=='Website preview','missing mounted preview readiness')
+        require(state.get('workspace')=='chat-acceptance' and state.get('storyId') in ('Pages / Home','Pages / Details'),'wrong selected preview readiness')
+        require({'primary','secondary'}.issubset(ready.get('sceneGraphRows',[])) and {'primary','secondary'}.issubset(x.get('id') for x in state.get('elements',[])),'missing published scene rows')
+        frames=ready.get('frameTimes',[]);require(len(frames)==2 and all(type(t) in (int,float) for t in frames) and frames[1]>frames[0],'missing normal readiness frames')
         require(row.get('perceptualThreshold')=={'maximumChangedPixelRatio':thresholds[key[0]]},'threshold mismatch')
         if canary:
             require(row.get('scope')==SCOPE and row.get('contentVerified') is True and row.get('events') and dimensions[0]>100 and dimensions[1]>100,'empty or wrong canary scope/content')
