@@ -9,22 +9,40 @@ sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[1]/'tools'))
 from chat_visual_guard import guard, exact_canary, exact_bytes, accepted, png
 p=argparse.ArgumentParser();p.add_argument('--captures',required=True);args,rest=p.parse_known_args();CAP=pathlib.Path(args.captures)
 spec=importlib.util.spec_from_file_location('campaign',pathlib.Path(__file__).resolve().parents[1]/'tools/chat-visual-campaign.py');campaign=importlib.util.module_from_spec(spec);spec.loader.exec_module(campaign)
+ORIGINAL_VIEWS=('empty', 'conversation', 'tools', 'plan', 'files', 'model-context', 'workspace', 'delegation', 'lifecycle', 'recovery', 'question', 'login', 'participants', 'error', 'long-content', 'completed', 'event-user_input', 'event-log', 'event-thought', 'event-tool_use', 'event-tool_result', 'event-plan', 'event-turn_complete', 'event-file_edit', 'event-file_read', 'event-diff', 'event-llm_request', 'event-context_files', 'event-context_injection', 'event-workspace', 'event-fleet_fence', 'event-fleet_host', 'event-sub_agent', 'event-delegation', 'event-orchestration', 'event-session_started', 'event-session_awaiting_input', 'event-session_resumed', 'event-session_ended', 'event-proxy_credential_rotated', 'event-proxy_rate_limit_absorbed', 'event-dispatcher_restarted', 'event-anti_halting_resume_confirmed', 'event-session_leadership_migrated', 'event-agent_question', 'event-login_required', 'event-participant', 'event-link_spans', 'event-status', 'event-error', 'tool-waiting', 'tool-running', 'thought-settled', 'event-log-bottom')
 class CaptureGuards(unittest.TestCase):
+ # Read the production expected-elements authority directly, rather than the
+ # captured manifest or definitions()/guard() output. Named exact keys also
+ # detect duplicates, omissions and unknown rows even when counts agree.
+ def expected_keys(self):
+  expected=json.loads((pathlib.Path(__file__).resolve().parents[1]/'tools/chat-visual-expected.json').read_text())
+  self.assertTrue(expected,'expected view inventory must be nonempty')
+  original_views=set(ORIGINAL_VIEWS)
+  self.assertTrue(original_views.issubset(expected),'an original required view was removed')
+  for name,elements in expected.items():
+   self.assertIsInstance(name,str);self.assertTrue(name.strip())
+   self.assertIsInstance(elements,list);self.assertTrue(elements)
+   self.assertTrue(all(isinstance(element,str) and element.strip() for element in elements))
+  return sorted(name+'/'+size for name in expected for size in ('wide','narrow'))
+ def assert_exact_inventory(self,rows):
+  self.assertEqual(sorted(row['view']+'/'+row['size'] for row in rows),self.expected_keys())
  def setUp(self):
   self.temp=tempfile.TemporaryDirectory();self.root=pathlib.Path(self.temp.name);self.corpus=self.root/'corpus';shutil.copytree(CAP/'corpus',self.corpus)
  def tearDown(self):self.temp.cleanup()
  def edit(self,fn):
   path=self.corpus/'manifest.json';m=json.loads(path.read_text());fn(m);path.write_text(json.dumps(m))
- def rejected(self,fn):
+ def rejected(self,fn,inventory=False):
   self.edit(fn)
+  if inventory:
+   with self.assertRaises(AssertionError):self.assert_exact_inventory(json.loads((self.corpus/'manifest.json').read_text())['views'])
   with self.assertRaises(ValueError):guard(self.corpus,current=True)
  def test_full_positive_and_pending_artifacts(self):
-  self.assertEqual(len(guard(self.corpus,current=True)['views']),108);campaign.artifacts(self.corpus)
+  self.assert_exact_inventory(guard(self.corpus,current=True)['views']);campaign.artifacts(self.corpus)
   self.assertIn('Empty multiline composer',(self.corpus/'review.html').read_text());self.assertEqual(json.loads((self.corpus/'perceptual-gates.json').read_text())['status'],'pending-human-baseline')
- def test_inventory_empty(self):self.rejected(lambda m:m.update(views=[]))
- def test_inventory_omission(self):self.rejected(lambda m:m['views'].pop())
- def test_inventory_duplicate(self):self.rejected(lambda m:m['views'].append(m['views'][0]))
- def test_inventory_unknown(self):self.rejected(lambda m:m['views'][0].update(view='unknown'))
+ def test_inventory_empty(self):self.rejected(lambda m:m.update(views=[]),inventory=True)
+ def test_inventory_omission(self):self.rejected(lambda m:m['views'].pop(),inventory=True)
+ def test_inventory_duplicate(self):self.rejected(lambda m:m['views'].append(m['views'][0]),inventory=True)
+ def test_inventory_unknown(self):self.rejected(lambda m:m['views'][0].update(view='unknown'),inventory=True)
  def test_missing_png(self):
   (self.corpus/'empty-wide.png').unlink()
   with self.assertRaises(ValueError):guard(self.corpus,current=True)
@@ -57,7 +75,7 @@ class CaptureGuards(unittest.TestCase):
  def test_comparator_complete_bound_record_control(self):
   baseline=self.root/'controlled-baseline';shutil.copytree(self.corpus,baseline);m=json.loads((baseline/'manifest.json').read_text());bound=hashlib.sha256(json.dumps(m,sort_keys=True,separators=(',',':')).encode()).hexdigest()
   m['humanAcceptance']={'decision':'accepted','reviewer':'controlled metadata fixture; no actual human claim','reviewedAt':'2026-10-03T00:00:00+00:00','evidence':'test implementation header justifies this controlled approval metadata','manifestSha256':bound,'reviewedViews':sorted(v['view']+'/'+v['size'] for v in m['views']),'unresolvedP1P2':0};(baseline/'manifest.json').write_text(json.dumps(m));accepted(m)
-  command=[sys.executable,str(pathlib.Path(__file__).resolve().parents[1]/'tools/chat-visual-compare.py'),str(self.corpus),'--baseline',str(baseline),'--report',str(self.root/'report.json')];result=subprocess.run(command,capture_output=True);self.assertEqual(result.returncode,0,result.stderr);self.assertEqual(len(json.loads((self.root/'report.json').read_text())['views']),108)
+  command=[sys.executable,str(pathlib.Path(__file__).resolve().parents[1]/'tools/chat-visual-compare.py'),str(self.corpus),'--baseline',str(baseline),'--report',str(self.root/'report.json')];result=subprocess.run(command,capture_output=True);self.assertEqual(result.returncode,0,result.stderr);self.assert_exact_inventory(json.loads((self.root/'report.json').read_text())['views'])
   self.edit(lambda candidate:candidate['views'].pop());result=subprocess.run(command,capture_output=True);self.assertNotEqual(result.returncode,0);self.assertEqual(json.loads((self.root/'report.json').read_text())['status'],'failed-capture-validation')
  def test_acceptance_boolean(self):
   m=guard(self.corpus);m['humanAcceptance']=True
