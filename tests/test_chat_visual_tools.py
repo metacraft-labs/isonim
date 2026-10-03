@@ -39,6 +39,21 @@ class CaptureGuards(unittest.TestCase):
  def test_full_positive_and_pending_artifacts(self):
   self.assert_exact_inventory(guard(self.corpus,current=True)['views']);campaign.artifacts(self.corpus)
   self.assertIn('Empty multiline composer',(self.corpus/'review.html').read_text());self.assertEqual(json.loads((self.corpus/'perceptual-gates.json').read_text())['status'],'pending-human-baseline')
+ def test_wrong_same_type_rendered_controls(self):
+  # These records come from actual extra mounted pages and the same semantic
+  # guard used before accepted captures, not a DTO/type-only substitution.
+  for kind,literal in {'thought':'Verified the mounted preview.',
+      'tool_use':'isonim inspect','session_awaiting_input':'login-provider',
+      'turn_complete':'end_turn'}.items():
+   for size in ('wide','narrow'):
+    record=json.loads((self.corpus/f'isolated-semantic-control-{kind}-{size}.json').read_text())
+    self.assertEqual(record['type'],kind);self.assertEqual(record['size'],size)
+    self.assertEqual(record['wrongPayload']['type'],kind)
+    self.assertTrue(record['rejected']);self.assertTrue(record['rendered'].strip())
+    self.assertNotIn(literal,record['rendered'])
+    self.assertEqual(record['accepted']['type'],kind)
+    self.assertIn(literal,record['accepted']['text'])
+    self.assertEqual(record['guard'],'isolatedContentGuard before every isolated capture')
  def test_inventory_empty(self):self.rejected(lambda m:m.update(views=[]),inventory=True)
  def test_inventory_omission(self):self.rejected(lambda m:m['views'].pop(),inventory=True)
  def test_inventory_duplicate(self):self.rejected(lambda m:m['views'].append(m['views'][0]),inventory=True)

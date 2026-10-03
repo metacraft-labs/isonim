@@ -23,8 +23,63 @@ const hash=buffer=>createHash('sha256').update(buffer).digest('hex');
 const corpus=JSON.parse(readFileSync(new URL('../tests/scenarios/chat-activity/public-session-events.json',import.meta.url)));
 const thresholds=JSON.parse(readFileSync(new URL('./chat-visual-thresholds.json',import.meta.url)));
 const sizes={wide:{width:1440,height:900,panel:420},narrow:{width:1024,height:768,panel:240}};
-const singleEvents=Object.fromEntries(Object.values(corpus.scenes).flat().map(event=>['event-'+event.type,[event]]));
-singleEvents['event-agent_question']=[corpus.scenes.question[0]];
+// Explicit representatives follow the independent expected-elements briefs.
+// Repeated event types must never depend on fixture object/insertion order.
+const isolatedReferences={
+ user_input:['conversation',0],log:['long-content',0],thought:['completed',1],
+ tool_use:['long-content',1],tool_result:['tools',5],plan:['plan',0],
+ turn_complete:['completed',2],file_edit:['files',0],file_read:['files',1],diff:['files',2],
+ llm_request:['model-context',0],context_files:['model-context',1],context_injection:['model-context',2],
+ workspace:['workspace',0],fleet_fence:['workspace',1],fleet_host:['workspace',2],
+ sub_agent:['delegation',0],delegation:['delegation',1],orchestration:['delegation',2],
+ session_started:['lifecycle',0],session_awaiting_input:['login',1],session_resumed:['lifecycle',2],session_ended:['lifecycle',3],
+ proxy_credential_rotated:['recovery',0],proxy_rate_limit_absorbed:['recovery',1],dispatcher_restarted:['recovery',2],
+ anti_halting_resume_confirmed:['recovery',3],session_leadership_migrated:['recovery',4],
+ agent_question:['question',0],login_required:['login',0],participant:['participants',0],link_spans:['participants',1],
+ status:['error',0],error:['error',1]
+};
+assert.deepEqual(Object.keys(isolatedReferences).sort(),[...new Set(Object.values(corpus.scenes).flat().map(event=>event.type))].sort(),'exact isolated REST type inventory');
+const singleEvents=Object.fromEntries(Object.entries(isolatedReferences).map(([type,[scene,index]])=>{
+ const event=corpus.scenes[scene][index];assert.equal(event.type,type,'named isolated representative type');
+ return ['event-'+type,[event]];
+}));
+// Literal visible facts audited against chat-visual-expected.json, not derived
+// from the selected DTO, production normalization, or captured manifest.
+const isolatedContent={
+ user_input:['You','Improve the hero spacing.'],
+ log:['Assistant','Long source identifiers remain readable:'],
+ thought:['Thinking','Verified the mounted preview.','streaming'],
+ tool_use:['isonim inspect','started'],
+ tool_result:['isonim build','failed','stories/hero.nim:42: undeclared identifier spacingLarge','Exit code','1'],
+ plan:['Plan','Inspect the current hero','Create the spacious variant','Check tablet layout','completed','in progress','pending'],
+ turn_complete:['Turn complete','Stop reason','end_turn','Input tokens','1260','Output tokens','180'],
+ file_edit:['File change · stories/hero.nim','+4 / −2 lines','Use shared spacing and preserve the title.'],
+ file_read:['File read','theme/spacing.nim','From line','8','To line','20'],
+ diff:['Diff · stories/hero.nim','Before','After','padding = "16px"','gap = "8px"','padding = "32px"','gap = "16px"'],
+ llm_request:['Model request','Sonnet','1260','180','provider_reported','Messages','6','Tool calls','true'],
+ context_files:['Context files','added','Files in context','2','stories/hero.nim','theme/spacing.nim'],
+ context_injection:['Session context','attribution','Website author requested a spacious hero.'],
+ workspace:['Workspace ready','/workspace/website','local'],
+ fleet_fence:['Workspace synchronization','fence_complete','preview-sync','240'],
+ fleet_host:['Host execution','host_complete','preview-host','linux','isonim build','Exit code','0','stdout','Compiled the website preview.'],
+ sub_agent:['Sub-agent','layout-review','website-session','thought','Checking the tablet hero layout.'],
+ delegation:['Delegation','completed','Active agents','0','Total agents','1','Layout review completed.'],
+ orchestration:['Orchestration','review_requested','layout-review','Review the selected hero story.'],
+ session_started:['Session started'],
+ session_awaiting_input:['Waiting for input','Request','login-provider','Waiting for input. This editor cannot respond to this request.'],
+ session_resumed:['Session resumed','Deliverer','human'],session_ended:['Session ended','Outcome','completed'],
+ proxy_credential_rotated:['Provider access recovered','anthropic','Provider status','401'],
+ proxy_rate_limit_absorbed:['Provider throttling recovered','Retry attempts','2','Wait (ms)','1200'],
+ dispatcher_restarted:['Agent restarted','Restart','2'],anti_halting_resume_confirmed:['Agent progress resumed','Recovered stall','idle'],
+ session_leadership_migrated:['Session moved to another executor','authoring-host','preview-host','linux','Flushed sequence','40'],
+ agent_question:['Agent question','Which hero spacing should I use?','question-hero','Comfortable','Compact','This editor cannot answer this request.'],
+ login_required:['Provider login required','anthropic','login-provider',"Sign in through the provider's supported login surface."],
+ participant:['Participant activity','Website author','owner','joined'],link_spans:['Source references','stories/hero.nim'],
+ status:['Session','running'],error:['Error','Build failed. The last successful preview is still available.']
+};
+assert.deepEqual(Object.keys(isolatedContent).sort(),Object.keys(isolatedReferences).sort(),'exact independent semantic oracle inventory');
+const wrongIsolated={thought:corpus.scenes.conversation[3],tool_use:corpus.scenes.tools[4],
+ session_awaiting_input:corpus.scenes.question[1],turn_complete:corpus.scenes.plan[1]};
 const sceneEvents={...corpus.scenes,...singleEvents,...corpus.normalizedScenes,"event-log-bottom":singleEvents["event-log"]};
 const allViews=['empty',...Object.keys(sceneEvents),...Object.keys(corpus.behaviorScenes)];
 const lineage={bundleSha256:hash(readFileSync(new URL('../build/editor-chat/editor.js',import.meta.url))),sceneSha256:hash(readFileSync(new URL('../tests/scenarios/chat-activity/public-session-events.json',import.meta.url))),captureSha256:hash(readFileSync(new URL(import.meta.url))),browserExecutableSha256:hash(readFileSync('/ms-playwright/chromium-1217/chrome-linux64/chrome')),fonts:[...new Set(execFileSync('fc-list',['--format','%{file}\n'],{encoding:'utf8'}).trim().split('\n'))].sort().map(file=>({file,sha256:hash(readFileSync(file))}))};
@@ -84,6 +139,37 @@ async function loginGuidanceGuard(page,wholeNotice=false,expected=[]){
    assert(inside,'whole supported login notice inside conversation bounds');
   }
  }
+}
+async function isolatedContentGuard(page,type){
+ const selector=type==='user_input'?'[data-chat-role="arUser"]':type==='log'?'[data-chat-role="arAssistant"]':`[data-chat-source="${type}"]`;
+ const card=page.locator('.editor-chat '+selector);
+ assert.equal(await card.count(),1,`isolated ${type} card count`);
+ assert(await card.isVisible(),`isolated ${type} visible card`);
+ const title=await card.locator(':scope > div').first().locator(':scope > div').first().innerText();
+ const text=await card.innerText();
+ assert.equal(title,isolatedContent[type][0],`isolated ${type} semantic heading`);
+ for(const literal of isolatedContent[type].slice(1))assert(text.includes(literal),`isolated ${type} semantic content missing: ${literal}`);
+ assert.equal(await card.locator('details[open]').count(),0,'isolated semantics visible before Details');
+ return {type,title,text};
+}
+async function admitScene(page,events){
+ await page.evaluate(()=>window.__chatTest.backend(true));
+ await page.getByRole('textbox',{name:'Agent prompt'}).fill('Improve the hero spacing.');
+ await page.getByRole('button',{name:'Send agent prompt',exact:true}).click();
+ for(const event of events)await page.evaluate(payload=>payload.type?window.__chatTest.harborEvent(JSON.stringify(payload)):window.__chatTest.event(JSON.stringify(payload)),event);
+}
+async function wrongIsolatedControl(context,url,type,size){
+ const wrong=wrongIsolated[type];assert.equal(wrong.type,type,'negative has the SAME public DTO type');
+ const page=await context.newPage();
+ try{
+  await page.goto(url);await page.waitForFunction(()=>window.__chatTest);
+  await page.evaluate(panel=>window.__chatTest.width(panel),sizes[size].panel);
+  await admitScene(page,[wrong]);
+  await page.evaluate(async()=>{await document.fonts.ready;await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));});
+  const rendered=await page.locator(`[data-chat-source="${type}"]`).innerText();
+  await assert.rejects(()=>isolatedContentGuard(page,type),/semantic (heading|content missing)/,'same rendered semantic guard rejects wrong same-type DTO');
+  return {type,size,wrongPayload:wrong,rendered,rejected:true,guard:'isolatedContentGuard before every isolated capture'};
+ }finally{await page.close();}
 }
 async function controlReady(page,view,size){
  await page.waitForFunction(()=>{
@@ -241,10 +327,7 @@ try{
   let behaviorEvidence=null;
   if(corpus.behaviorScenes[view])behaviorEvidence=await behavioralScene(page,view,size);
   else if(view!=='empty'){
-   await page.evaluate(()=>window.__chatTest.backend(true));
-   await page.getByRole('textbox',{name:'Agent prompt'}).fill('Improve the hero spacing.');
-   await page.getByRole('button',{name:'Send agent prompt',exact:true}).click();
-   for(const event of sceneEvents[view])await page.evaluate(payload=>payload.type?window.__chatTest.harborEvent(JSON.stringify(payload)):window.__chatTest.event(JSON.stringify(payload)),event);
+   await admitScene(page,sceneEvents[view]);
   }
   await page.evaluate(async()=>{await document.fonts.ready;await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));});
   const panel=page.locator('.editor-chat');await panel.waitFor({state:'visible'});
@@ -307,6 +390,16 @@ try{
   await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
   if(view.startsWith('event-')){
     const bottom=view==='event-log-bottom';
+    const type=bottom?'log':view.slice(6);
+    // The long log has a separately verified bottom companion; its heading and
+    // initial prose are intentionally checked only in the top frame.
+    if(!bottom){
+      const accepted=await isolatedContentGuard(page,type);
+      if(wrongIsolated[type]){
+        const rejected=await wrongIsolatedControl(context,`http://127.0.0.1:${server.address().port}/`,type,size);
+        writeFileSync(path.join(output,`isolated-semantic-control-${type}-${size}.json`),JSON.stringify({...rejected,accepted},null,2));
+      }
+    }
     await panel.locator('[data-chat-scroll]').evaluate((el,bottom)=>{el.scrollTop=bottom?el.scrollHeight:0;},bottom);
     await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
     const source=bottom?'log':view.slice(6);
@@ -319,7 +412,17 @@ try{
       const card=cards.at(-1);const box=card.getBoundingClientRect();
       return {viewport:{top:viewport.top,bottom:viewport.bottom},card:{top:box.top,bottom:box.bottom},bottom};
     },bottom);
-    if(bottom)assert(visibleContent.card.bottom<=visibleContent.viewport.bottom+1,'bottom companion shows final content');
+    if(bottom){
+      assert(visibleContent.card.bottom<=visibleContent.viewport.bottom+1,'bottom companion shows final content');
+      const code=panel.locator('[data-chat-role="arAssistant"] [data-chat-markdown="code"]');
+      assert((await code.innerText()).endsWith('setStyle(hero, "padding", "32px") # line 11'),'independent bottom companion final Nim line');
+      const finalLineVisible=await code.evaluate(el=>{
+        const text=el.firstChild,range=document.createRange();range.setStart(text,text.textContent.lastIndexOf('setStyle'));range.setEnd(text,text.textContent.length);
+        const box=range.getBoundingClientRect(),scroll=el.closest('[data-chat-scroll]').getBoundingClientRect();
+        return box.width>0&&box.height>0&&box.top>=scroll.top&&box.bottom<=scroll.bottom;
+      });
+      assert(finalLineVisible,'bottom companion final Nim line inside visible conversation');
+    }
     else assert(visibleContent.card.top>=visibleContent.viewport.top-1&&visibleContent.card.top<visibleContent.viewport.bottom-20,'event card heading inside actual visible frame');
   }
   if(view==='files'){
