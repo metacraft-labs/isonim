@@ -21,6 +21,27 @@ import isonim/core/[signals, owner]
 import isonim/editor/[control, viewmodels, workspace]
 
 suite "Editor control":
+  test "disconnected approval cannot apply a pending request":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      vm.workspaceId = "test"
+      vm.controlInstanceId = "one"
+      vm.agentControlApproval.val = true
+      let before = vm.controlSnapshot()
+      let request = %* {"workspace": "test", "instance": "one", "commandId": "disconnectedApproval",
+        "command": "viewport", "viewport": "phone", "expectedRevision": before["revision"]}
+      let pending = vm.admitControlOperation(request)
+      check pending["status"].getStr() == "pending"
+      vm.controlConnected = false
+      for approve in [true, false]:
+        check vm.resolveControlApproval("disconnectedApproval", approve)["error"].getStr() == "disconnected_instance"
+        check vm.controlOperations["disconnectedApproval"] == pending
+        check vm.controlSnapshot() == before
+      vm.controlConnected = true
+      check vm.resolveControlApproval("disconnectedApproval", true)["status"].getStr() == "applied"
+      check vm.viewport.val.slug == "phone"
+      dispose()
+
   test "advertised preview capture executes and disabled renderers reject it":
     createRoot proc(dispose: proc()) =
       let vm = createEditorVM()

@@ -55,5 +55,21 @@
   "event-log-bottom": 0.001,
   "question-free-form": 0.02,
   "question-multi-choice": 0.02,
-  "question-confirmation": 0.02
+  "question-confirmation": 0.02,
+  "navigation-pending": 0.02,
+  "navigation-approved": 0.02,
+  "navigation-rejected": 0.02,
+  "navigation-stale": 0.02,
+  "navigation-auto": 0.02,
+  "focus-auto": 0.02,
+  "selection-highlight-auto": 0.02,
+  "highlight-auto": 0.02,
+  "chat-first-send": 0.02,
+  "chat-send-failed": 0.02,
+  "chat-draft-streaming": 0.02,
+  "chat-independent-first": 0.02,
+  "chat-independent-second": 0.02,
+  "chat-scroll-back": 0.02,
+  "chat-scroll-latest": 0.02,
+  "chat-selection-streaming": 0.02
 }

@@ -3,8 +3,18 @@
  * injects normalized external events and admission outcomes to make stream timing
  * deterministic; EditorVM, reducer, renderer, DOM, keyboard, scroll and previews
  * are real. This is presentation coverage, not a substitute for the registered
- * real REST/official scenario integration. No browser/VM/RPC mocks. Assert stable
- * turn/tool nodes, unsafe text, IME, drafts/tabs, focus/selection, scrollback,
+ * real REST/official scenario integration. No browser/VM/RPC mocks.
+ * A local control-host fixture explicitly substitutes connected transport state;
+ * its negative case retains genuine disconnected rejection before actual approval.
+ * Admission starts after the visible production preview is complete and its
+ * primary/secondary DOM identities appear in the real parent-side scene graph
+ * (shell.nim polls at 300ms/700ms). Fonts and two normal frames settle before
+ * admission; no revision polling, mutation retry or expected-revision rebasing.
+ * Stored-operation diagnostics are read-only and never resolve pending work.
+ * Geometry checks wait for font layout and two browser animation frames because
+ * the real chat view follows output in requestAnimationFrame. This observes its
+ * scheduled scroll; it does not scroll, focus, modify DOM or relax visible bounds.
+ * Assert stable turn/tool nodes, unsafe text, IME, drafts/tabs, focus/selection, scrollback,
  * narrow/wide overflow and composer/preview reachability; capture named states.
  */
 import assert from 'node:assert/strict';
@@ -25,11 +35,107 @@ const startup=new Promise((resolve,reject)=>{
 });
 let browser;let count=0;
 const record=name=>{count++;process.stdout.write(`PASS ${name}\n`);};
+// Observe concrete initial mount completion, rather than the helper's existence:
+// __chatTest is published synchronously before iframe load and scene-graph scan.
+async function mountedReady(page, name) {
+  await page.waitForFunction(()=>{
+    if (!window.__chatTest || document.readyState!=='complete' || document.fonts.status!=='loaded') return false;
+    const frames=Array.from(document.querySelectorAll('iframe[data-page-project-frame="true"]'))
+      .filter(frame=>frame.getClientRects().length && frame.offsetParent!==null);
+    if(frames.length!==1) return false;
+    const doc=frames[0].contentDocument;
+    if(!doc || doc.readyState!=='complete' || doc.fonts.status!=='loaded') return false;
+    const state=JSON.parse(window.__chatTest.controlState());
+    return ['primary','secondary'].every(id=>doc.querySelector(`[data-isonim-element-id="${id}"]`) && state.elements.some(row=>row.id===id));
+  },null,{timeout:5000});
+  const ready=await page.evaluate(async()=>{
+    const frameTimes=await new Promise(resolve=>requestAnimationFrame(first=>requestAnimationFrame(second=>resolve([first,second]))));
+    const frame=Array.from(document.querySelectorAll('iframe[data-page-project-frame="true"]')).find(frame=>frame.getClientRects().length&&frame.offsetParent!==null);
+    return {frameTimes,documentReadyState:document.readyState,fontStatus:document.fonts.status,
+      previewReadyState:frame.contentDocument.readyState,previewFontStatus:frame.contentDocument.fonts.status,
+      state:JSON.parse(window.__chatTest.controlState())};
+  });
+  writeFileSync(path.join(artifacts,`mounted-ready-${name}.json`),JSON.stringify(ready,null,2));
+  return ready;
+}
+async function controlDiagnostic(page,id,phase) {
+  const actual=JSON.parse(await page.evaluate(id=>window.__chatTest.controlDiagnostics(id),id));
+  actual.phase=phase;
+  writeFileSync(path.join(artifacts,`control-${id}-${phase}.json`),JSON.stringify(actual,null,2));
+  return actual;
+}
+
 try{
   await startup;
   browser=await chromium.launch({headless:true, executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ?? '/nix/store/1id5xlj91r8d5cj5ks4a5byrxdvr4b50-chromium-143.0.7499.192/bin/chromium', env:{...process.env,LD_LIBRARY_PATH:''},args:['--no-sandbox']});
   const page=await browser.newPage({viewport:{width:1440,height:900}});
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
+  // Separate mounted host: direct admission uses the real shared controller,
+  // then the actual chat Approve button applies only after transport is ready.
+  const controlPage=await browser.newPage({viewport:{width:1440,height:900}});
+  await controlPage.goto(origin);await controlPage.waitForFunction(()=>window.__chatTest);
+  await controlPage.evaluate(()=>window.__chatTest.localApprovals(false));
+  await controlPage.getByRole('checkbox',{name:'Approve agent navigation'}).check();
+  await mountedReady(controlPage,'disconnected-approval');
+  const controlBefore=JSON.parse(await controlPage.evaluate(()=>window.__chatTest.controlState()));
+  const admitted=JSON.parse(await controlPage.evaluate(()=>{
+    const state=JSON.parse(window.__chatTest.controlState());
+    return window.__chatTest.control(JSON.stringify({commandId:'fixture-disconnected',command:'open-story',storyId:state.stories.find(row=>row.name==='Details').id}));
+  }));
+  const admittedEvidence=await controlDiagnostic(controlPage,'fixture-disconnected','admitted');
+  assert.equal(admitted.status,'pending',JSON.stringify(admittedEvidence));
+  assert.deepEqual(admittedEvidence.operation,admitted);
+  const denied=JSON.parse(await controlPage.evaluate(()=>window.__chatTest.approval('fixture-disconnected',true)));
+  assert.equal(denied.error,'disconnected_instance');
+  assert.equal(JSON.parse(await controlPage.evaluate(()=>window.__chatTest.controlState())).storyId,controlBefore.storyId);
+  const pendingRow=controlPage.locator('[data-editor-control-operation="fixture-disconnected"]');
+  assert.equal(await pendingRow.getAttribute('data-operation-status'),'pending');
+  await controlPage.evaluate(()=>window.__chatTest.localApprovals(true));
+  const beforeClick=await controlDiagnostic(controlPage,'fixture-disconnected','before-click');
+  await controlPage.locator('[data-editor-control-approve="fixture-disconnected"]').click();
+  const afterClick=await controlDiagnostic(controlPage,'fixture-disconnected','after-click');
+  assert.equal(await pendingRow.getAttribute('data-operation-status'),'applied',JSON.stringify({admitted,beforeClick,afterClick}));
+  assert.equal(afterClick.operation.status,'applied');
+  const controlAfter=JSON.parse(await controlPage.evaluate(()=>window.__chatTest.controlState()));
+  assert.equal(controlAfter.storyId,controlBefore.stories.find(row=>row.name==='Details').id);
+  await controlPage.close();record('local transport boundary preserves disconnected rejection and real mounted approval');
+  // Real mounted hidden/visible documents have the same element IDs. Commands
+  // must affect the visible production page, without touching the retained hidden
+  // document; this is the negative control for URL-order frame selection.
+  for(const [width,panelWidth] of [[1440,420],[1024,240]]){
+    const previewPage=await browser.newPage({viewport:{width,height:900}});
+    await previewPage.goto(origin);await previewPage.waitForFunction(()=>window.__chatTest);
+    await previewPage.evaluate(value=>{window.__chatTest.width(value);window.__chatTest.localApprovals(true);},panelWidth);
+    await previewPage.getByRole('checkbox',{name:'Approve agent navigation'}).uncheck();
+    await mountedReady(previewPage,`visible-preview-${width}`);
+    const visible=previewPage.locator('iframe[data-page-project-frame="true"]:visible');
+    assert.equal(await visible.count(),1);
+    const visibleElement=await visible.elementHandle();const visibleFrame=await visibleElement.contentFrame();assert(visibleFrame);
+    const hiddenFrame=previewPage.frames().find(frame=>frame!==previewPage.mainFrame()&&frame.url()==='about:srcdoc');
+    assert(hiddenFrame&&hiddenFrame!==visibleFrame,'old first-srcdoc selection identifies another document');
+    const hiddenElement=await hiddenFrame.frameElement();
+    assert.equal(await hiddenElement.isVisible(),false,'retained duplicate document is hidden');
+    const hiddenPrimary=hiddenFrame.locator('[data-isonim-element-id="primary"]');assert.equal(await hiddenPrimary.count(),1);
+    for(const [command,target,focus] of [['select','primary',true],['highlight','secondary',false]]){
+      const before=JSON.parse(await previewPage.evaluate(()=>window.__chatTest.controlState()));
+      const result=JSON.parse(await previewPage.evaluate(request=>window.__chatTest.control(JSON.stringify(request)),{commandId:`visible-${width}-${command}`,command,target,focus,highlight:true}));
+      assert.equal(result.status,'applied');
+      const node=visibleFrame.locator(`[data-isonim-element-id="${target}"]`);
+      assert.equal(await node.getAttribute('data-editor-agent-highlight'),'true');
+      assert.equal(await node.evaluate(el=>getComputedStyle(el).outlineWidth),'2px');
+      const after=JSON.parse(await previewPage.evaluate(()=>window.__chatTest.controlState()));
+      if(command==='select'){
+        assert(await node.evaluate(el=>el.ownerDocument.activeElement===el));assert.equal(after.selection,'primary');
+      }else{
+        assert.equal(after.selection,before.selection,'highlight alone preserves existing primary selection');
+        assert(await visibleFrame.locator('[data-isonim-element-id="primary"]').evaluate(el=>el.ownerDocument.activeElement===el),'highlight alone preserves focus');
+      }
+      assert.equal(after.highlight,target);
+      assert.equal(await hiddenFrame.locator(`[data-isonim-element-id="${target}"]`).getAttribute('data-editor-agent-highlight'),null,'hidden duplicate remains untouched');
+      assert.equal(await hiddenPrimary.evaluate(el=>el.ownerDocument.activeElement===el),false);
+    }
+    await previewPage.close();record(`visible production preview identity and hidden negative at ${width}`);
+  }
   await page.goto(origin);await page.waitForFunction(()=>window.__chatTest);
   const input=page.getByRole('textbox',{name:'Agent prompt'});
   const event=payload=>page.evaluate(value=>window.__chatTest.event(JSON.stringify(value)),payload);
@@ -129,6 +235,7 @@ try{
     try{
       await questionPage.goto(origin);await questionPage.waitForFunction(()=>window.__chatTest);
       await questionPage.evaluate(value=>window.__chatTest.width(value),width);
+      await mountedReady(questionPage,`question-${name}-${width}`);
       const draft=questionPage.getByRole('textbox',{name:'Agent prompt'});
       await draft.fill('Retained next draft');
       const payload=questionCorpus.scenes[name][0];
@@ -139,8 +246,23 @@ try{
       assert(await notice.isVisible(),'availability visible before expansion');
       assert.equal(await notice.evaluate(el=>el.closest('details')),null);
       assert.equal(await card.locator('details').getAttribute('open'),null);
+      // Render effects synchronously insert the card, but the production chat
+      // schedules follow-output in RAF. Wait through that callback and the next
+      // frame after font layout, then retain the exact whole-notice bounds check.
+      // Match the existing visible-text readiness budget; missing/stuck fonts
+      // fail explicitly rather than leaving an unbounded document.fonts.ready.
+      await questionPage.waitForFunction(()=>document.fonts.status==='loaded',null,{timeout:5000});
+      const readiness=await questionPage.evaluate(async()=>{
+        const frameTimes=await new Promise(resolve=>requestAnimationFrame(first=>requestAnimationFrame(second=>resolve([first,second]))));
+        const scroll=document.querySelector('[data-chat-scroll]');
+        return {frameTimes,fontStatus:document.fonts.status,documentReadyState:document.readyState,
+          scrollTop:scroll.scrollTop,scrollHeight:scroll.scrollHeight,clientHeight:scroll.clientHeight};
+      });
       const box=await notice.boundingBox();const bounds=await questionPage.locator('[data-chat-scroll]').boundingBox();
-      assert(box&&bounds&&box.y>=bounds.y&&box.y+box.height<=bounds.y+bounds.height,'notice inside visible scroll area');
+      const geometry={name,width,box,bounds,readiness};
+      writeFileSync(path.join(artifacts,`question-layout-${name}-${width}.json`),JSON.stringify(geometry,null,2));
+      assert(box&&bounds&&box.y>=bounds.y&&box.y+box.height<=bounds.y+bounds.height,
+        `notice inside visible scroll area: ${JSON.stringify(geometry)}`);
       assert((await card.innerText()).includes(payload.prompt));
       assert((await card.innerText()).includes(payload.request));
       assert((await card.innerText()).includes(payload.kind));

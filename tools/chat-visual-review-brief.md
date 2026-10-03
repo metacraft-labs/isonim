@@ -373,3 +373,114 @@ it, and test-only acceptance records cannot authorize a real campaign.
 - Agent question with May I replace the hero image?
 - Visible confirmation mode and request question-confirmation
 - This editor cannot answer this request.; no answer, checkbox or confirmation actions
+
+### View: navigation-pending
+
+- Checked Approve agent navigation preference
+- Pending open-story request with Approve and Reject controls
+- Home remains in the preview until approval
+
+
+### View: navigation-approved
+
+- Applied open-story history row without pending controls
+- Details is selected in the real story browser
+- Website preview remains visible
+
+
+### View: navigation-rejected
+
+- Rejected open-story history row without pending controls
+- Home remains selected; no navigation was applied
+- Approval preference remains enabled
+
+
+### View: navigation-stale
+
+- Failed request history after a real user viewport change
+- Home remains selected after the stale approval
+- No pending approval controls remain
+
+
+### View: navigation-auto
+
+- Unchecked Approve agent navigation preference
+- Applied open-story history row and Details selected
+- No approval controls are shown
+
+
+### View: focus-auto
+
+- Applied focus sidebar-search history row
+- Sidebar search holds actual keyboard focus
+- Website preview and composer remain visible
+
+
+### View: selection-highlight-auto
+
+- Applied select primary history row
+- Primary action in the preview has a visible highlight and actual focus
+- Selected element is primary in production inspector state
+
+
+### View: highlight-auto
+
+- Applied highlight secondary history row
+- Secondary action in the preview has a visible highlight
+- Selection stays unchanged; highlighting does not imply selection
+
+
+### View: chat-first-send
+
+- One actual user message Improve the hero spacing.
+- Introduction and suggested prompt chips are gone
+- Composer is empty after accepted send
+
+
+### View: chat-send-failed
+
+- Retry this website request. remains in the composer
+- Suggested prompt chips and introduction are gone after attempted send
+- No fabricated successful assistant response
+
+
+### View: chat-draft-streaming
+
+- Streaming assistant Website update is visible
+- Next website change. remains in the composer
+- Send is disabled during the unresolved turn
+
+
+### View: chat-independent-first
+
+- First conversation has its actual user and assistant content
+- First conversation draft remains in its composer
+- Suggested prompts do not return to this sent conversation
+
+
+### View: chat-independent-second
+
+- Second independent conversation shows its own draft
+- Second conversation retains introduction and suggested prompts
+- No first-conversation transcript appears
+
+
+### View: chat-scroll-back
+
+- Earlier assistant History 0 remains at the top of scrollback
+- New output · Return to latest control is visible
+- Draft stays intact and streaming does not force a jump
+
+
+### View: chat-scroll-latest
+
+- Latest assistant Newest website activity is visible
+- Return to latest indicator has disappeared
+- Composer draft remains intact
+
+
+### View: chat-selection-streaming
+
+- Selected heading Website update remains selected after another chunk
+- Streaming continuation is visible
+- Composer and website preview remain visible

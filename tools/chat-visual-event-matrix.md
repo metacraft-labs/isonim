@@ -52,7 +52,8 @@ Actual first-send suggestion removal, rejected-send draft preservation, tab
 separation, streaming selection/scrollback, cancel availability, CLI/RPC
 navigation, approval/rejection/stale targets, source/preview focus and highlight
 remain in the original headless and full GUI suites. They are not replaced by
-these visual fixtures. Additional visual scenes for these combinations remain deferred and unaccepted.
+these visual fixtures. The named wide/narrow companions below retain the same
+production boundaries; their independent acceptance is recorded separately.
 These captures remain deterministic VM/DOM boundary evidence; original genuine
 REST and control GUI suites remain independently mandatory.
 
@@ -92,3 +93,21 @@ view verifies genuine typed completion settles an earlier streamed thought.
 ### Contract and visible-frame evidence
 
 The fixture is exported by actual b40 `SessionEvent` deserialize/serialize; every supplied field must survive the roundtrip identically, with required-field and enum negative controls. Separate injected unknown/private fields test safe editor projection and are not producer fixture data. Per-event captures assert their card heading lies inside the actual conversation viewport. The event-log-bottom companion exposes the end of the long code block; grouped views may need their named event-* companions to inspect earlier cards.
+
+## Behavioral scene matrix
+
+All companions run the production mounted editor. Request injection replaces
+external transport timing and explicitly owns the local host connection state.
+Native/executed-JS and mounted negative controls prove disconnected approval is
+rejected before any application. Shared command validation, revision checks, approval
+resolution, DOM focus/highlight/selection and chat reducer remain real. Source
+authoring/compiler/CLI/REST execution remains in the original official suites.
+
+| Views (wide and narrow) | Production boundary | Original integration coverage |
+|---|---|---|
+| navigation-pending / approved / rejected / stale / auto | Shared admission, actual preference checkbox and approval buttons, real story selection; stale approval after a changed viewport | Native control plus genuine REST scenario/control GUI |
+| focus-auto / selection-highlight-auto / highlight-auto | Installed DOM focus/selection/highlight adapters, real preview document and inspector IDs | Genuine control GUI and official scenario GUI |
+| chat-first-send / send-failed / draft-streaming | Actual composer send, rejected admission, suggestion dismissal, retained draft, active-turn send guard | Native/executed-JS chat and original mounted GUI |
+| chat-independent-first / second | Actual new-chat/switch commands, independent drafts/transcripts and placeholder state | Original mounted GUI and official scenario GUI |
+| chat-scroll-back / latest / selection-streaming | Actual scroll handler/latest button and browser Range selection across production streamed updates | Original mounted GUI |
+| question-free-form / multi-choice / confirmation and question(single-choice) | Valid public DTO → safe projection → codec → reducer → real view; no unavailable response controls | Native/executed-JS all-mode assertion plus mounted capture; no park/resume infrastructure claim |

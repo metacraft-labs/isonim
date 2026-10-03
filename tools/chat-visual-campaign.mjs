@@ -1,6 +1,12 @@
 /** Production mounted editor campaign. Synthetic DTO corpus substitutes external
  * transport timing only; actual normalization/reducer/VM/view/DOM are unchanged.
  * Real Rust mock REST scenarios are separately required, never claimed here.
+ * Local control-host fixture substitutes connected transport timing only; real
+ * admission/approval and production DOM adapters remain installed. Initial control
+ * admission requires complete visible preview/documents, loaded fonts, actual DOM
+ * targets in the production published scene graph (300ms/700ms scanner), then two
+ * normal frames. No revision polling/rebasing, forced result or mutation retry.
+ * Read-only stored-operation diagnostics persist before assertions.
  * Run inside the pinned capture container via chat-visual-campaign.py.
  */
 import assert from 'node:assert/strict';
@@ -19,7 +25,7 @@ const sizes={wide:{width:1440,height:900,panel:420},narrow:{width:1024,height:76
 const singleEvents=Object.fromEntries(Object.values(corpus.scenes).flat().map(event=>['event-'+event.type,[event]]));
 singleEvents['event-agent_question']=[corpus.scenes.question[0]];
 const sceneEvents={...corpus.scenes,...singleEvents,...corpus.normalizedScenes,"event-log-bottom":singleEvents["event-log"]};
-const allViews=['empty',...Object.keys(sceneEvents)];
+const allViews=['empty',...Object.keys(sceneEvents),...Object.keys(corpus.behaviorScenes)];
 const lineage={bundleSha256:hash(readFileSync(new URL('../build/editor-chat/editor.js',import.meta.url))),sceneSha256:hash(readFileSync(new URL('../tests/scenarios/chat-activity/public-session-events.json',import.meta.url))),captureSha256:hash(readFileSync(new URL(import.meta.url))),browserExecutableSha256:hash(readFileSync('/ms-playwright/chromium-1217/chrome-linux64/chrome')),fonts:[...new Set(execFileSync('fc-list',['--format','%{file}\n'],{encoding:'utf8'}).trim().split('\n'))].sort().map(file=>({file,sha256:hash(readFileSync(file))}))};
 const flags=['--no-sandbox','--disable-gpu','--force-color-profile=srgb','--font-render-hinting=none','--disable-lcd-text'];
 const environment={deviceScaleFactor:1,locale:'en-US',timezoneId:'UTC',colorScheme:'dark',reducedMotion:'reduce'};
@@ -58,6 +64,142 @@ async function composerGuard(page,viewport){
  const box=await input.boundingBox();assert(box&&box.y>=0&&box.y+box.height<=viewport.height,'anchored composer');
  return input;
 }
+async function controlReady(page,view,size){
+ await page.waitForFunction(()=>{
+   if(!window.__chatTest || document.readyState!=='complete' || document.fonts.status!=='loaded')return false;
+   const frames=Array.from(document.querySelectorAll('iframe[data-page-project-frame="true"]'))
+     .filter(frame=>frame.getClientRects().length && frame.offsetParent!==null);
+   if(frames.length!==1)return false;
+   const doc=frames[0].contentDocument;
+   if(!doc || doc.readyState!=='complete' || doc.fonts.status!=='loaded')return false;
+   const state=JSON.parse(window.__chatTest.controlState());
+   return ['primary','secondary'].every(id=>doc.querySelector(`[data-isonim-element-id="${id}"]`) && state.elements.some(row=>row.id===id));
+ },null,{timeout:5000});
+ const readiness=await page.evaluate(async()=>{
+   const frameTimes=await new Promise(resolve=>requestAnimationFrame(first=>requestAnimationFrame(second=>resolve([first,second]))));
+   const frame=Array.from(document.querySelectorAll('iframe[data-page-project-frame="true"]')).find(frame=>frame.getClientRects().length && frame.offsetParent!==null);
+   return {frameTimes,documentReadyState:document.readyState,fontStatus:document.fonts.status,
+     previewReadyState:frame.contentDocument.readyState,previewFontStatus:frame.contentDocument.fonts.status,
+     state:JSON.parse(window.__chatTest.controlState())};
+ });
+ writeFileSync(path.join(output,`control-${view}-${size}-readiness.json`),JSON.stringify(readiness,null,2));
+ return readiness;
+}
+async function controlDiagnostic(page,id,size,phase){
+ const actual=JSON.parse(await page.evaluate(id=>window.__chatTest.controlDiagnostics(id),id));
+ actual.phase=phase;
+ writeFileSync(path.join(output,`control-${id}-${size}-${phase}.json`),JSON.stringify(actual,null,2));
+ return actual;
+}
+async function behavioralScene(page,view,size){
+ const input=page.getByRole('textbox',{name:'Agent prompt'});
+ const panel=page.locator('.editor-chat');
+ const inject=payload=>page.evaluate(value=>window.__chatTest.event(JSON.stringify(value)),payload);
+ const state=async()=>JSON.parse(await page.evaluate(()=>window.__chatTest.controlState()));
+ const command=payload=>page.evaluate(value=>JSON.parse(window.__chatTest.control(JSON.stringify(value))),payload);
+ const settle=async()=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+ await page.evaluate(()=>window.__chatTest.localApprovals(true));
+ if(view.startsWith('navigation-')||['focus-auto','selection-highlight-auto','highlight-auto'].includes(view)){
+   await input.focus();await settle();
+   const approval=page.getByRole('checkbox',{name:'Approve agent navigation'});
+   if(view!=='navigation-auto'&&view.startsWith('navigation-'))await approval.check();else await approval.uncheck();
+   const readiness=await controlReady(page,view,size);
+   const initial=await state();
+   let request={commandId:view,command:'open-story',storyId:initial.stories.find(row=>row.name==='Details').id};
+   if(view==='focus-auto')request={commandId:view,command:'focus',target:'sidebar-search'};
+   if(['selection-highlight-auto','highlight-auto'].includes(view)){
+     await page.waitForFunction(()=>JSON.parse(window.__chatTest.controlState()).elements.some(row=>row.id==='primary'));
+     request={commandId:view,command:view==='highlight-auto'?'highlight':'select',target:view==='highlight-auto'?'secondary':'primary',focus:view!=='highlight-auto',highlight:true};
+   }
+   const admitted=await command(request);
+   const admittedDiagnostic=await controlDiagnostic(page,view,size,'admitted');
+   assert.deepEqual(admittedDiagnostic.operation,admitted,'stored actual admission');
+   assert.equal(admitted.status,view.startsWith('navigation-')&&view!=='navigation-auto'?'pending':'applied','actual command admission '+JSON.stringify(admittedDiagnostic));
+   const beforeClick=await controlDiagnostic(page,view,size,'before-click');
+   if(view==='navigation-approved')await page.locator(`[data-editor-control-approve="${view}"]`).click();
+   if(view==='navigation-rejected')await page.locator(`[data-editor-control-reject="${view}"]`).click();
+   if(view==='navigation-stale'){
+      assert.equal((await command({commandId:'human-viewport-change',command:'viewport',viewport:'tablet',expectedRevision:(await state()).revision})).status,'pending');
+      await page.locator('[data-editor-control-approve="human-viewport-change"]').click();
+      await page.locator(`[data-editor-control-approve="${view}"]`).click();
+   }
+   const afterClick=await controlDiagnostic(page,view,size,'after-click');
+   const expectedStatus=view==='navigation-pending'?'pending':view==='navigation-rejected'?'rejected':view==='navigation-stale'?'failed':'applied';
+   const row=panel.locator(`[data-editor-control-operation="${view}"]`);await row.waitFor();
+   assert.equal(await row.getAttribute('data-operation-status'),expectedStatus,'rendered shared command result '+JSON.stringify({readiness,admitted,beforeClick,afterClick}));
+   assert.equal(await row.locator('button').count(),expectedStatus==='pending'?2:0,'only live approval controls');
+   const final=await state();
+   if(view.startsWith('navigation-'))assert.equal(final.storyId,initial.stories.find(row=>row.name===(['navigation-approved','navigation-auto'].includes(view)?'Details':'Home')).id,'actual selected story');
+   if(view==='focus-auto')assert(await page.locator('.editor-sidebar input').evaluate(el=>document.activeElement===el),'actual sidebar focus');
+   if(['selection-highlight-auto','highlight-auto'].includes(view)){
+      // The shell retains hidden preview documents. Identify the visible production
+      // page iframe first, then use its associated frame, never frame URL order.
+      const preview=page.locator('iframe[data-page-project-frame="true"]:visible');
+      assert.equal(await preview.count(),1,'one visible mounted page preview');
+      const previewElement=await preview.elementHandle();
+      const frame=await previewElement.contentFrame();assert(frame,'actual visible preview document');
+      const target=frame.locator(`[data-isonim-element-id="${request.target}"]`);
+      assert.equal(await target.getAttribute('data-editor-agent-highlight'),'true','actual preview highlight');
+      if(view==='selection-highlight-auto'){
+        assert(await target.evaluate(el=>el.ownerDocument.activeElement===el),'actual preview element focus');
+        assert.equal(final.selection,'primary','actual selection');
+      }else assert.equal(final.selection,initial.selection,'highlight preserves selection');
+   }
+   return {admission:admitted.status,status:expectedStatus,selectedStory:final.storyId,focus:final.focus,selectedElement:final.selection,highlight:final.highlight};
+ }
+ await page.evaluate(value=>window.__chatTest.backend(value),view!=='chat-send-failed');
+ const send=async(text)=>{await input.fill(text);await page.getByRole('button',{name:'Send agent prompt',exact:true}).click();};
+ if(view==='chat-send-failed'){
+   await send('Retry this website request.');assert.equal(await input.inputValue(),'Retry this website request.');
+   assert.equal(await panel.getByRole('button',{name:'Insert suggested prompt'}).count(),0);return {draftPreserved:true,suggestionsDismissed:true};
+ }
+ await send('Improve the hero spacing.');
+ assert.equal(await panel.locator('[data-chat-role="arUser"]').count(),1);
+ assert.equal(await panel.getByRole('button',{name:'Insert suggested prompt'}).count(),0);
+ if(view==='chat-first-send')return {actualUserCount:1,suggestionsDismissed:true};
+ if(view.startsWith('chat-independent-')){
+   await inject({kind:'message_chunk',text:'First conversation website update.'});
+   await input.fill('First conversation draft.');
+   const second=await page.evaluate(()=>window.__chatTest.newChat());await input.fill('Second conversation draft.');
+   if(view==='chat-independent-first'){
+     await page.evaluate(()=>window.__chatTest.switchChat('chat-1'));
+     assert.equal(await input.inputValue(),'First conversation draft.');assert.equal(await panel.locator('[data-chat-role="arUser"]').count(),1);
+     assert.equal(await panel.getByRole('button',{name:'Insert suggested prompt'}).count(),0);
+   }else{
+     assert.equal(await input.inputValue(),'Second conversation draft.');assert.equal(await panel.locator('[data-chat-entry]').count(),0);
+     assert(await panel.getByRole('button',{name:'Insert suggested prompt'}).first().isVisible());
+   }
+   return {active:(JSON.parse(await page.evaluate(()=>window.__chatTest.state()))).active,second,draftsRetained:true};
+ }
+ await page.evaluate(()=>window.__chatTest.busy(true));await input.fill('Next website change.');
+ if(view.startsWith('chat-scroll-')){
+   for(let index=0;index<26;index++){
+      await inject({kind:'message_chunk',text:`# History ${index}\nWebsite activity ${index}.`});await inject({kind:'completed',stopReason:'end_turn'});
+   }
+   const scroll=panel.locator('[data-chat-scroll]');await scroll.evaluate(el=>{el.scrollTop=0;el.dispatchEvent(new Event('scroll'));});await settle();
+   const before=await scroll.evaluate(el=>el.scrollTop);
+   await inject({kind:'message_chunk',text:'# Newest website activity\nPreview compilation finished.'});await settle();
+   assert.equal(await scroll.evaluate(el=>el.scrollTop),before,'scrollback retained');
+   await panel.locator('[data-chat-latest]').waitFor({state:'visible'});
+   if(view==='chat-scroll-latest'){
+      await panel.locator('[data-chat-latest]').click();await settle();
+      assert.equal(await panel.locator('[data-chat-latest]').isVisible(),false);
+      assert(await panel.getByText('Newest website activity',{exact:true}).isVisible());
+      assert(await scroll.evaluate(el=>el.scrollTop+el.clientHeight>=el.scrollHeight-2),'latest scroll position');
+   }
+   assert.equal(await input.inputValue(),'Next website change.');return {scrollbackRetained:true,latest:view==='chat-scroll-latest',draftRetained:true};
+ }
+ await inject({kind:'message_chunk',text:'# Website update\nThe hero remains spacious.'});
+ if(view==='chat-selection-streaming'){
+   const heading=panel.locator('[data-chat-markdown="heading"]');
+   await heading.evaluate(el=>{const range=document.createRange();range.selectNodeContents(el);const selection=window.getSelection();selection.removeAllRanges();selection.addRange(range);});
+   const selected=await page.evaluate(()=>getSelection().toString());assert.equal(selected,'Website update');
+   await inject({kind:'message_chunk',text:'\nStreaming continuation preserves the selected text.'});assert.equal(await page.evaluate(()=>getSelection().toString()),selected);
+   return {selectedText:selected,selectionRetained:true};
+ }
+ assert.equal(await page.getByRole('button',{name:'Send agent prompt',exact:true}).isDisabled(),true);
+ assert.equal(await input.inputValue(),'Next website change.');return {draftRetained:true,busySendDisabled:true};
+}
 const root=path.resolve(path.dirname(new URL(import.meta.url).pathname),'../build/editor-chat');
 const server=createServer((req,res)=>{
  const target=path.resolve(root,'.'+decodeURIComponent(req.url.split('?')[0]==='/'?'/index.html':req.url.split('?')[0]));
@@ -75,7 +217,9 @@ try{
   // No content, state, selection, outlines or controls are hidden.
   await page.addStyleTag({content:'*,*::before,*::after { transition-duration: 0s !important; animation-duration: 0s !important; }'});
   await page.evaluate(panel=>window.__chatTest.width(panel),viewport.panel);
-  if(view!=='empty'){
+  let behaviorEvidence=null;
+  if(corpus.behaviorScenes[view])behaviorEvidence=await behavioralScene(page,view,size);
+  else if(view!=='empty'){
    await page.evaluate(()=>window.__chatTest.backend(true));
    await page.getByRole('textbox',{name:'Agent prompt'}).fill('Improve the hero spacing.');
    await page.getByRole('button',{name:'Send agent prompt',exact:true}).click();
@@ -119,7 +263,8 @@ try{
   if(view==='files')assert(await panel.getByText('Before',{exact:true}).isVisible(),'visible before/after diff');
   // Keyboard reachability uses the actual composer and native focus styling.
   await page.mouse.move(0,0);
-  await input.focus();assert(await input.evaluate(el=>document.activeElement===el),'composer keyboard focus');
+  const preserveFocus=['focus-auto','selection-highlight-auto','chat-selection-streaming'].includes(view);
+  if(!preserveFocus){await input.focus();assert(await input.evaluate(el=>document.activeElement===el),'composer keyboard focus');}
   await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
   if(view.startsWith('event-')){
     const bottom=view==='event-log-bottom';
@@ -169,7 +314,7 @@ try{
     assert(!changed.equals(png),'exact image gate must reject changed actual prose/plan');
     positiveControl={changedSha256:hash(changed),mutation:'actual production event alters conversation/plan'};
   }
-  manifest.push({view,size,file,positiveControl,contentVerified:canary,dimensions:[png.readUInt32BE(16),png.readUInt32BE(20)],scope:canary?'actual production conversation scroll surface; excludes editor chrome, preview and composer':'full editor viewport',sha256:createHash('sha256').update(png).digest('hex'),layout,geometry,contrast,focusPaint,boundary:corpus.boundary,events:(sceneEvents[view]||[]).map(e=>e.type||e.kind),baseline:'candidate; human acceptance pending',perceptualThreshold:{maximumChangedPixelRatio:thresholds[view]},browser:browser.version()});
+  manifest.push({view,size,file,behaviorEvidence,positiveControl,contentVerified:canary,dimensions:[png.readUInt32BE(16),png.readUInt32BE(20)],scope:canary?'actual production conversation scroll surface; excludes editor chrome, preview and composer':'full editor viewport',sha256:createHash('sha256').update(png).digest('hex'),layout,geometry,contrast,focusPaint,boundary:corpus.boundary,events:(sceneEvents[view]||[]).map(e=>e.type||e.kind),baseline:'candidate; human acceptance pending',perceptualThreshold:{maximumChangedPixelRatio:thresholds[view]},browser:browser.version()});
   if(args.includes('--missing-element-control')&&view==='empty'&&size==='wide'){
     await input.evaluate(el=>el.remove());
     await assert.rejects(()=>composerGuard(page,viewport),/required composer missing/,'same positive composer guard rejects removed composer');
