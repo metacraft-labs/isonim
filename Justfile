@@ -489,6 +489,7 @@ test-editor-harbor-scenario: isonim-review-build
     python3 tests/test_editor_harbor_scenario.py
 
 test-design-review-chat: isonim-review-build fake-acp-agent-build
+    nim c -r --path:src tests/test_design_review_class_quota.nim
     nim c -r tests/test_editor_scenario_protocol.nim
     nim c -r --path:src --path:vendor/db_connector/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src tests/test_editor_agent_route_ownership.nim
     nim c -r tests/test_editor_agent_harbor.nim
@@ -1240,6 +1241,7 @@ test-editor-chat-activity: editor-chat-build
     nim c -r tests/test_editor_chat_activity.nim
     nim js -r --out:build/test_editor_chat_activity.js tests/test_editor_chat_activity.nim
     node tests/test_editor_chat_activity_gui.mjs
+    node tests/test_editor_admission_gui.mjs
 
 # Optional private Harbor acceptance: absence is the only allowed automatic skip.
 # When the sibling exists, missing/broken official provider and builds fail.
@@ -1256,3 +1258,40 @@ test-editor-scenarios-stress: isonim-review-build source-editor-build editor-sce
     python3 tests/test_editor_scenario_stress.py
 
 test-editor-scenarios: test-editor-scenarios-native test-editor-scenarios-gui test-editor-scenarios-stress
+
+
+# Opt-in real Claude authoring acceptance; missing credentials/provider FAIL this
+# explicitly requested gate. It never substitutes playback for model inference.
+editor-authoring-build:
+    mkdir -p build/editor-authoring
+    nim js --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/editor-authoring/editor.js tests/helpers/editor_authoring_workspace.nim
+    node --check build/editor-authoring/editor.js
+    cp src/isonim/editor/index.html build/editor-authoring/index.html
+    cp node_modules/fabric/dist/index.min.js build/editor-authoring/fabric.min.js
+    cp node_modules/paper/dist/paper-core.min.js build/editor-authoring/paper-core.min.js
+    cp node_modules/svgo/dist/svgo.browser.js build/editor-authoring/svgo.browser.js
+
+test-editor-authoring-evidence:
+    python3 tests/test_editor_authoring_evidence.py
+    python3 tests/test_editor_scenario_cleanup.py
+    node tests/test_editor_close_ack.mjs
+    python3 tests/test_editor_authoring_responses.py
+    python3 tests/test_editor_authoring_assistant_evidence.py
+    python3 tests/test_editor_provider_closure.py
+    node tests/test_editor_sdk_protocol_observer.mjs
+    node tests/test_editor_sdk_kernel_evidence.mjs
+
+# Fresh runtime fact: ambient explicit provider is rederived and hashed. An old
+# dev-shell provider is a clear failure; no guessed private store path or skip.
+editor-authoring-runtime:
+    python3 tests/helpers/editor_sdk_runtime.py build/editor-sdk-runtime.json
+
+test-editor-sdk-native: editor-authoring-runtime
+    python3 tests/test_editor_sdk_runtime.py
+    python3 tests/test_editor_sdk_native_controls.py
+
+test-editor-authoring-response-sequencing: isonim-review-build editor-authoring-build test-editor-authoring-evidence
+    python3 tests/test_editor_authoring_response_sequencing.py
+
+test-editor-authoring-real: isonim-review-build editor-authoring-build test-editor-authoring-evidence test-editor-sdk-native
+    python3 tests/test_editor_authoring_real.py

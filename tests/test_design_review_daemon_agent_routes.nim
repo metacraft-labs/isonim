@@ -271,13 +271,16 @@ test "test_prompt_with_pngs_forwards_image_blocks":
     sleep(50)
   check entry != nil
   check entry["sessionId"].getStr == sessionId
-  check entry["promptBlocks"].getInt == 3
-  check entry["textBlocks"].getInt == 1
+  check entry["promptBlocks"].getInt == 4
+  check entry["textBlocks"].getInt == 2
   check entry["imageBlocks"].getInt == 2
   let blocks = entry["blocks"]
   check blocks.kind == JArray
-  check blocks.len == 3
+  check blocks.len == 4
   check blocks[0]["type"].getStr == "text"
+  check blocks[0]["textLen"].getInt == "review these".len
+  check blocks[3]["type"].getStr == "text"
+  check blocks[3]["textLen"].getInt > 100 # separate current project context
   check blocks[1]["type"].getStr == "image"
   check blocks[1]["mimeType"].getStr == "image/png"
   check blocks[1]["dataLen"].getInt > 0

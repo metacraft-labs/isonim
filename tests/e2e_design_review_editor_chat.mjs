@@ -6,6 +6,10 @@
 // Full Harbor REST/provider scenarios are separately registered in the chat suite.
 // Launcher clean exit proves its owned daemon/provider teardown; no live ports or
 // served developer assets are needed. Legacy covered-story assertions remain.
+// The new failure cases transparently clone only their real SSE response for
+// raw wire assertions after the production reader cancels at its terminal frame.
+// They await that clone to EOF before context close; this observer is not proof
+// of production reader cleanup. Existing uninstrumented lifecycle cases remain.
 
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, mkdtempSync, writeFileSync, createWriteStream } from "node:fs";
@@ -54,7 +58,7 @@ function skipIfPrereqsMissing(t) {
   return false;
 }
 
-async function startEditor() {
+async function startEditor(providerEnv = {}) {
   actualSessions = [];
   artifacts = mkdtempSync(join(tmpdir(), 'isonim-http-chat-'));
   const config = join(artifacts, 'review.toml');
@@ -63,7 +67,7 @@ async function startEditor() {
   editorProc = spawn('python3', [join(projectRoot,'tools/editor_server.py'),
     '--directory',editorDir,'--project-root',artifacts,'--port',String(EDITOR_PORT),
     '--bind','127.0.0.1','--config',config,'--daemon-binary',reviewBin],
-    {cwd:projectRoot,env:{...process.env,FAKE_ACP_REPLY:'M4_HTTP_HELLO_REPLY'},stdio:['ignore','pipe','pipe']});
+    {cwd:projectRoot,env:{...process.env,FAKE_ACP_REPLY:'M4_HTTP_HELLO_REPLY',...providerEnv},stdio:['ignore','pipe','pipe']});
   launcherExit = once(editorProc, 'exit');
   editorProc.stderr.pipe(log);
   console.log(`HTTP chat artifacts ${artifacts}`);
@@ -108,7 +112,12 @@ async function ensureBrowser() {
     chromium = mod.chromium;
   }
   if (browser === null) {
+    const chromiumEnv = {...process.env};
+    // Chromium owns its Nix closure; the compiler shell's dynamic-library path
+    // must not replace that closure's libc/ALSA dependencies.
+    delete chromiumEnv.LD_LIBRARY_PATH;
     browser = await chromium.launch({
+      env: chromiumEnv,
       headless: true,
       timeout: 30000,
       ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE
@@ -118,13 +127,23 @@ async function ensureBrowser() {
   return browser;
 }
 
-async function openEditor() {
+async function openEditor(observeWire = false) {
   const b = await ensureBrowser();
   const context = await b.newContext({
     viewport: { width: 1440, height: 900 },
   });
   try {
   const page = await context.newPage();
+  if(observeWire)await page.addInitScript(()=>{
+    const actualFetch=window.fetch.bind(window);
+    // Observe an unchanged clone of the real response, because production
+    // correctly cancels its own reader at the terminal frame and DevTools may
+    // then discard response.text(). No response/request is substituted.
+    window.fetch=(...args)=>actualFetch(...args).then(response=>{
+      if(new URL(response.url).pathname==='/api/agent/prompts')window.__chatAdmissionWire=response.clone().text().catch(error=>{window.__chatAdmissionError=String(error);return null;});
+      return response;
+    });
+  });
   const registered = page.waitForResponse(response =>
     new URL(response.url()).pathname === '/api/editor/rpc' &&
     response.request().postDataJSON()?.method === 'editor.register', {timeout:30000});
@@ -259,6 +278,48 @@ test("e2e_editor_review_this_preview_button_submits_context_loaded_prompt", asyn
     await stopEditor();
   }
 });
+
+for (const newerDraft of [false,true]) {
+ test(`EAC-M6 real provider error before output preserves ${newerDraft?'newer in-flight draft':'exact submitted draft'}`, async () => {
+  assert.ok(existsSync(reviewBin)&&existsSync(fakeAcpBin)&&existsSync(join(editorDir,'editor.js')),'Required built runtime');
+  try {
+   await startEditor({FAKE_ACP_STOP_REASON_ERROR_AT:'1',FAKE_ACP_SLOW_PROMPT_MS:'1000'});
+   const {page,context}=await openEditor(true);
+   try {
+    const input=page.locator("textarea[aria-label='Agent prompt']");
+    const send=page.locator("[aria-label='Send agent prompt']");
+    await input.waitFor();
+    const draft='  exact rejected draft\nsecond line  ';
+    await input.fill(draft);
+    const creation=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/agent/sessions');
+    const prompt=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/agent/prompts');
+    const submitted=page.waitForRequest(r=>new URL(r.url()).pathname==='/api/agent/prompts');
+    await send.click();
+    const session=await (await creation).json();actualSessions.push(session.sessionId);
+    const request=(await submitted).postDataJSON();
+    assert.equal(request.messages[0].content[0].text,draft.trim());
+    assert.equal(request.context.backend,'absAcp');
+    for(const field of ['accumulatedEdits','sourceMap','renderedComponentTree','availableTailwindClasses','themeTokens','activeThemeContext','platform'])assert(field in request.context);
+    if(newerDraft)await input.fill('newer unsent draft');
+    const response=await prompt;assert.equal(response.status(),200);
+    const stream=await bounded(page.evaluate(()=>window.__chatAdmissionWire),30000,'Observed real SSE reader EOF');
+    assert.equal(typeof stream,'string','Clone observer must reach real response EOF');
+    const frames=stream.trim().split(/\r?\n\r?\n/).map(frame=>{
+     const lines=frame.split(/\r?\n/);return {event:lines.find(line=>line.startsWith('event: '))?.slice(7),data:JSON.parse(lines.filter(line=>line.startsWith('data: ')).map(line=>line.slice(6)).join('\n'))};
+    });
+    assert.deepEqual(frames.filter(frame=>frame.event==='end').map(frame=>frame.data),[{stopReason:'error'}],
+     'Actual provider error completion must be the exact terminal reason');
+    assert.equal(frames.at(-1).event,'end');
+    assert.equal(frames.filter(frame=>frame.event==='session/update'&&['message_chunk','tool_call','tool_call_update'].includes(frame.data.kind)).length,0,
+     'Provider failed before initialized output/tool acknowledgement');
+    assert.doesNotMatch(stream,/event: admitted/,'Failed completion before output cannot admit this turn');
+    await page.waitForFunction(()=>document.querySelector("[aria-label='Send agent prompt']")?.getAttribute('aria-disabled')==='false');
+    assert.equal(await input.inputValue(),newerDraft?'newer unsent draft':draft);
+    assert.equal(await page.locator('[data-chat-role="arAssistant"]').count(),0,'No invented provider response');
+   } finally {await bounded(context.close(),30000,'Owned failed-turn browser shutdown');}
+  } finally {await stopEditor();}
+ });
+}
 
 test.after(async () => {
   if (browser) {

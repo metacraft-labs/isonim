@@ -12,6 +12,7 @@
  * files only. HTML captures and actual screenshots are separate artifacts.
  */
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import {readFileSync,writeFileSync,existsSync} from 'node:fs';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
@@ -67,6 +68,8 @@ const browser=await chromium.launch({headless:true,env,executablePath:process.en
 const browserContext=await browser.newContext({viewport:{width:1440,height:1000}});
 const page=await browserContext.newPage();
 const errors=[];page.on('pageerror',error=>errors.push(error.message));
+// Opt-in read-only actual handler observations: no draft, credentials or waits.
+await page.addInitScript(()=>{window.admissionObservations=[];window.__isonimObserveAgentAdmission=value=>window.admissionObservations.push({...value,time:Date.now()});});
 const promptRequests=[];page.on('request',request=>{if(request.url().endsWith('/api/agent/prompts'))promptRequests.push(request.postDataJSON());});
 let registrations=0;page.on('request',request=>{if(request.url().endsWith('/api/editor/rpc')&&request.postDataJSON()?.method==='editor.register')registrations++;});
 // Read-only observation of actual successful browser publication. Record public
@@ -105,6 +108,7 @@ async function sendPhase(number,text){
  const count=promptRequests.length;
  phase(number);await composer.fill(text);await send.click();
  await until(()=>promptRequests.length===count+1,'real prompt admitted');
+ writeFileSync(path.join(artifacts,'admission-observations.json'),JSON.stringify(await page.evaluate(()=>window.admissionObservations),null,2));
 }
 async function turnEnded(){await until(()=>send.getAttribute('aria-disabled').then(value=>value==='false'),'actual terminal restores composer admission');}
 const mountedReadiness=[];
@@ -212,7 +216,45 @@ try{
  await mounted('Followup card');touch('capture-ready-2');await turnEnded();
  assert.equal((await cli(['state'])).conversations.find(row=>row.active).backendSessionId,session);
  assert.equal(readFileSync(path.join(artifacts,'provider-launch.jsonl'),'utf8'),launch,'Same real provider process');
- evidence(2,'same provider/session followup compiles second source change');evidence(4,'truthful unsupported cancel then later prompt same session');
+ const firstContext=promptRequests[0].context,followupContext=promptRequests[1].context;
+ for(const context of [firstContext,followupContext]) {
+  assert.equal(context.backend,'absAgentHarbor');assert.equal(context.platform,'pbWeb');
+  for(const field of ['selectedStory','selectedElement','accumulatedEdits','pendingSourceEdits','sourceMap','designSystemSchema','selectedSchemaNodes','tokenContext','componentVariantContext','reviewAnnotations','screenshotRefs','domSnapshots','designSystemConstraints','diagnostics','currentFileDiffs','renderedComponentTree','availableTailwindClasses','tailwindClassTotal','themeTokens','activeThemeContext','contextAvailability'])assert(field in context);
+  assert(context.availableTailwindClasses.includes('p-4'));
+  assert(context.tailwindClassTotal>=context.availableTailwindClasses.length);
+ }
+ assert.equal(followupContext.selectedStory.group,'Card');assert.equal(followupContext.selectedStory.name,'default busy');
+ assert(followupContext.renderedComponentTree.length>0,'Actual mounted document tree is delivered on follow-up');
+ assert(followupContext.renderedComponentTree.some(row=>row.id==='action'&&row.depth>0&&row.parentId));
+ const providerTurns=readFileSync(path.join(artifacts,'provider-prompts.jsonl'),'utf8').trim().split('\n').map(line=>JSON.parse(line));
+ function deliveredContext(turn){const after=turn.split('EDITOR CONTEXT:\n')[1];assert(after);return JSON.parse(after.split('\n\nPROJECT CONTEXT:')[0]);}
+ assert.deepEqual(deliveredContext(providerTurns[0]),firstContext,'Exact first context crosses real REST/provider boundary');
+ const followupWire=deliveredContext(providerTurns[1]);
+ const firstDelivered=deliveredContext(providerTurns[0]);
+ assert.equal(followupWire.fromContext,createHash('sha1').update(JSON.stringify(firstDelivered)).digest('hex').toUpperCase(),'Envelope identifies exact actual admitted context');
+ assert.deepEqual(followupWire.boundedInherited??[],[],'Full first/followup equality cannot claim a bounded subset');
+ const resolved={...firstDelivered};
+ const protectedFields=['accumulatedEdits','pendingSourceEdits','designSystemConstraints','currentFileDiffs','selectedStory','selectedElement'];
+ if('protectedV1' in followupWire){
+  const values=followupWire.protectedV1;assert.equal(values.length,6);values.forEach(value=>assert(Array.isArray(value)));
+  assert.equal(values[4].length,4);values[4].forEach((value,i)=>assert(i<2?typeof value==='string':Number.isInteger(value)));
+  const elementFields=['id','sourceKey','domPath','schemaKey','tag','sourceFile','sourceLine','sourceColumn','properties','children','ancestors','ancestorIds','depth'];
+  assert.equal(values[5].length,13);values[5].forEach((value,i)=>assert(i<6?typeof value==='string':[6,7,12].includes(i)?Number.isInteger(value):Array.isArray(value)));
+  protectedFields.slice(0,4).forEach((field,i)=>resolved[field]=values[i]);
+  resolved.selectedStory={group:values[4][0],name:values[4][1],kind:values[4][2],index:values[4][3]};resolved.selectedElement=Object.fromEntries(elementFields.map((field,i)=>[field,values[5][i]]));
+  protectedFields.forEach(field=>assert(!(field in followupWire.current),'Protected values have one exact representation'));
+ }else protectedFields.forEach(field=>assert(field in followupWire.current,'Protected current fields stay explicit'));
+ for(const [field,value] of Object.entries(followupWire.current)){
+  if(value&&typeof value==='object'&&!Array.isArray(value)&&'fromPreviousItems' in value){
+   assert(Array.isArray(firstDelivered[field]));
+   resolved[field]=value.fromPreviousItems.map(item=>{
+    if('reuse' in item){assert.deepEqual(Object.keys(item),['reuse']);assert(Number.isInteger(item.reuse)&&item.reuse>=0&&item.reuse<firstDelivered[field].length);return firstDelivered[field][item.reuse];}
+    assert.deepEqual(Object.keys(item),['value']);return item.value;
+   });
+  }else resolved[field]=value;
+ }
+ assert.deepEqual(resolved,followupContext,'Exact full current follow-up context crosses same provider boundary via verified representations');
+ evidence(2,'same provider/session followup compiles second source change; complete first/follow-up context arrives at official provider');evidence(4,'truthful unsupported cancel then later prompt same session');
  await sendPhase(4,'Select and highlight action automatically, then focus the composer.');await turnEnded();
  await until(async()=> (await cli(['state'])).selection==='action','automatic real selection');
  assert.equal(await preview().locator('#action').getAttribute('data-editor-agent-highlight'),'true');
@@ -308,7 +350,13 @@ try{
  await page.setViewportSize({width:1440,height:1000});
  await composer.fill('first chat independent draft');await page.locator('[data-ai-assistant-new-chat]').click();
  assert.equal(await page.locator('[data-chat-entry]').count(),0);
- await composer.fill('second chat independent draft');const secondTab=(await cli(['state'])).conversations.find(row=>row.active).id;
+ const secondTab=await until(async()=>{
+  const visible=await page.locator('[data-chat-local-id]').getAttribute('data-chat-local-id');
+  const published=(await cli(['state'])).conversations.find(row=>row.active).id;
+  return visible!==firstTab&&published===visible?visible:false;
+ },'new second chat identity published from actual mounted chat');
+ assert.notEqual(secondTab,firstTab);
+ await composer.fill('second chat independent draft');
  await selectChat(firstTab);assert.equal(await composer.inputValue(),'first chat independent draft');
  assert.equal((await cli(['state'])).conversations.find(row=>row.active).backendSessionId,session);
  assert.deepEqual(await page.locator('[data-chat-entry]').allTextContents(),firstHistory);
@@ -316,8 +364,13 @@ try{
  await selectChat(secondTab);assert.equal(await composer.inputValue(),'second chat independent draft');
  await page.setViewportSize({width:900,height:720});
  await page.locator('[data-ai-assistant-new-chat]').click();
+ const thirdTab=await until(async()=>{
+  const visible=await page.locator('[data-chat-local-id]').getAttribute('data-chat-local-id');
+  const published=(await cli(['state'])).conversations.find(row=>row.active).id;
+  return visible!==secondTab&&visible!==firstTab&&published===visible?visible:false;
+ },'new third chat identity published from actual mounted chat');
+ assert.notEqual(thirdTab,firstTab);assert.notEqual(thirdTab,secondTab);
  await composer.fill('third narrow chat independent draft');
- const thirdTab=(await cli(['state'])).conversations.find(row=>row.active).id;
  assert.equal(await page.locator('[data-chat-entry]').count(),0);
  await selectChat(secondTab);assert.equal(await composer.inputValue(),'second chat independent draft');
  await selectChat(thirdTab);assert.equal(await composer.inputValue(),'third narrow chat independent draft');
@@ -375,5 +428,5 @@ try{
  await shot('persisted-reloaded-story');evidence(1,'real browser reload opens/captures persisted compiled Followup story');
  writeFileSync(path.join(artifacts,'outcomes.json'),JSON.stringify(outcomes,null,2));
  console.log('PASS M5 GUI workflows '+outcomes.length+' outcomes; '+artifacts);
-}catch(error){await shot('failure').catch(()=>{});writeFileSync(path.join(artifacts,'failure.txt'),String(error.stack));throw error;}
+}catch(error){writeFileSync(path.join(artifacts,'admission-observations.json'),JSON.stringify(await page.evaluate(()=>window.admissionObservations).catch(()=>[]),null,2));await shot('failure').catch(()=>{});writeFileSync(path.join(artifacts,'failure.txt'),String(error.stack));throw error;}
 finally{await browser.close();}

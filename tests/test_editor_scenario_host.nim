@@ -65,7 +65,10 @@ proc sourceJob(payload: JsonNode; done: proc(ok: bool; data: JsonNode) {.closure
     vm.workspaceEditStage.val = wesFailed
     done(false, %*{"ok":false,"diagnostic":error.msg})
 
-proc prompt(chat: AgentChatVM; text: string) {.async.} =
+proc prompt(chat: AgentChatVM; text: string; context: AgentPromptContext) {.async.} =
+  let generation = chat.promptGeneration
+  var submitted: seq[EditRecord]
+  for edit in context.accumulatedEdits: submitted.add edit
   let socket = newAsyncSocket(buffered = false)
   defer: socket.close()
   var accepted = false
@@ -80,7 +83,7 @@ proc prompt(chat: AgentChatVM; text: string) {.async.} =
     let endpoint = parseUri(origin)
     if endpoint.scheme != "http": raise newException(IOError,"Native host requires private HTTP endpoint")
     await socket.connect(endpoint.hostname, Port(parseInt(endpoint.port)))
-    let body = $(%*{"sessionId":sid,"messages":[{"role":"user","content":[{"type":"text","text":text}]}]})
+    let body = $(%*{"sessionId":sid,"context":context.agentPromptContextJson,"messages":[{"role":"user","content":[{"type":"text","text":text}]}]})
     await socket.send("POST /api/agent/prompts HTTP/1.1\r\nHost: " & endpoint.hostname & ":" & endpoint.port &
       "\r\nContent-Type: application/json\r\nAccept: text/event-stream\r\nConnection: close\r\nContent-Length: " & $body.len & "\r\n\r\n" & body)
     var headers = ""
@@ -142,16 +145,24 @@ proc prompt(chat: AgentChatVM; text: string) {.async.} =
             if data.len > 0: data.add "\n"
             data.add line[5..^1].strip()
         echo "SSE ", event, " ", data
-        if event == "end":
+        if event == "admitted":
+          if not parseJson(data){"accepted"}.getBool: raise newException(ValueError,"Invalid provider admission")
+          chat.acknowledgeAgentPrompt(generation, submitted)
+        elif event == "end":
           let reason = parseJson(data){"stopReason"}.getStr()
           if reason notin ["end_turn","cancelled","max_tokens","error"]: raise newException(ValueError,"Invalid terminal reason")
           terminal = true
           chat.promptInFlight = false
+          if not chat.promptAdmitted and chat.inputText.val.len == 0:
+            chat.inputText.val = chat.pendingPromptText
           chat.stopReason.val = reason
           chat.connectionState.val = if reason == "error": "error" else: "completed"
           chat.sessionStatus.val = if reason == "error": asError else: asReady
           if reason == "error": transportErrors.add "Provider returned terminal error"
-        elif event == "error": raise newException(IOError,data)
+        elif event == "error":
+          # An error frame followed by a trustworthy terminal event is a known
+          # failed turn. Continue reading; EOF alone still leaves state unknown.
+          transportErrors.add data
         elif data.len > 0: chat.applyAgentEvent(agentEventFromSse(data))
     if not terminal: raise newException(IOError,"SSE EOF without terminal; provider state unknown")
   except CatchableError as error:
@@ -168,7 +179,7 @@ proc configure(chat: AgentChatVM) =
   chat.configureAgentAdapters(proc(text: string; context: AgentPromptContext): bool =
     if chat.promptInFlight: return false
     chat.promptInFlight = true
-    asyncCheck prompt(chat,text)
+    asyncCheck prompt(chat,text,context)
     true, nil, absAgentHarbor)
   chat.asyncAgentAdapter = true
 vm.configureChat = configure
@@ -237,9 +248,15 @@ proc handle(req: Request) {.async, gcsafe.} =
     for session in vm.chats.val:
       var messages = newJArray()
       for message in session.vm.messages.val: messages.add %*{"kind": $message.kind,"text":message.text}
-      chats.add %*{"id":session.id,"draft":session.vm.inputText.val,"busy":session.vm.promptInFlight,
+      var activity = newJArray()
+      for entry in session.vm.activity.val.entries:
+        activity.add(%* {"text":entry.text,"sourceType":entry.data.sourceType,
+          "presentationFields":entry.data.presentationFields})
+      chats.add %*{"activity":activity,"id":session.id,"draft":session.vm.inputText.val,"busy":session.vm.promptInFlight,
         "backend":session.vm.controlConversationId.val,"messages":messages,"tools":session.vm.toolCalls.val,
-        "placeholdersDismissed":session.vm.placeholdersDismissed.val}
+        "placeholdersDismissed":session.vm.placeholdersDismissed.val,
+        "admitted":session.vm.promptAdmitted,"pendingDraft":session.vm.pendingPromptText,
+        "context":session.vm.lastPromptContext.val.agentPromptContextJson}
     await req.respond(Http200,$(%*{"state":vm.controlSnapshot(),"active":vm.activeChatId.val,"chats":chats,"errors":transportErrors}))
 
 proc main() {.async.} =

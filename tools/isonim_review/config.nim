@@ -154,22 +154,17 @@ type
       ##   * TOML: ``[agent].campaign_hard_deadline_ms = <int>``
       ##   * Env:  ``ISONIM_CAMPAIGN_HARD_DEADLINE_MS=<int>``
     assistantPromptPath*: string
-      ## CMP-M5 — absolute path to the AI Assistant system prompt
-      ## file that the daemon prepends to every chat session via the
-      ## "primer" round-trip on ``POST /api/agent/sessions``.  When
-      ## empty (the default) the daemon resolves it to
-      ## ``<workspace>/isonim/prompts/ai-assistant.md``.  When the
-      ## resolved file doesn't exist the daemon logs a warning and
-      ## falls back to a tiny built-in placeholder — chat sessions
-      ## stay functional even on broken installs.  Operator overrides:
+      ## Path to the complete AI Assistant role instructions. The default uses
+      ## the project framework copy when present, otherwise the installed
+      ## framework's bundled prompt. Explicit missing/empty files fail with an
+      ## actionable error; no small placeholder silently replaces the guidance.
       ##   * TOML: ``[agent].assistant_prompt_path = "<abs path>"``
-      ##   * Env:  ``ISONIM_ASSISTANT_PROMPT_PATH=<abs path>``
+      ##   * Env: ``ISONIM_ASSISTANT_PROMPT_PATH=<abs path>``
     primerEnabled*: bool
-      ## CMP-M5 — when true (default) every chat ACP session created
-      ## via ``POST /api/agent/sessions`` is primed with the AI
-      ## Assistant system prompt + project context before the
-      ## sessionId is returned to the caller.  Set to false to skip
-      ## the primer round-trip — useful for CLI-only callers and
+      ## Legacy option name controlling genuine role instructions (default true).
+      ## Direct ACP installs instructions at session/new; Harbor installs them
+      ## when its reserved provider starts on the first user prompt. False omits
+      ## role instructions — useful for callers with provider-owned guidance and
       ## tests that want to drive a raw agent.  Operator overrides:
       ##   * TOML: ``[agent].primer_enabled = true|false``
       ##   * Env:  ``ISONIM_ASSISTANT_PRIMER_ENABLED=0|1``
@@ -752,8 +747,11 @@ proc resolveAssistantPromptPath*(cfg: ReviewConfig): string =
   if cfg.agent.assistantPromptPath.len > 0:
     return cfg.agent.assistantPromptPath
   if cfg.workspace.root.len > 0:
-    return cfg.workspace.root / DefaultAssistantPromptRelPath
-  ""
+    let projectPrompt = cfg.workspace.root / DefaultAssistantPromptRelPath
+    if fileExists(projectPrompt): return projectPrompt
+  # A served project need not contain a copy of the editor framework. The
+  # bundled guidance belongs to this build; an explicit missing path still fails.
+  currentSourcePath().parentDir.parentDir.parentDir / "prompts" / "ai-assistant.md"
 
 proc daemonBaseUrl*(cfg: ReviewConfig): string =
   ## URL the CLI's ``chat`` subcommand defaults to.  Honors an explicit

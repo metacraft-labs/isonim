@@ -8,7 +8,9 @@
 ## Explicit direct ACP backends retain their existing initialization behavior.
 
 import std/[asyncdispatch, asyncnet, asynchttpserver, atomics, base64, json, locks,
-            options, os, osproc, sequtils, streams, strutils, tables, times]
+            options, os, osproc, sequtils, streams, strutils, tables, times, sha1]
+
+from std/unicode import runeLen
 
 import db_connector/db_postgres
 
@@ -18,6 +20,7 @@ import nim_agents
 import ../shutdown_policy
 import ./control_routes
 import ./log_setup
+import ./context_budget
 import ./brief_format
 import std/oids
 import ./brief_index
@@ -35,7 +38,10 @@ type
     cwd*: string
     isDraft*: bool
     turnWorking*: bool
+    editorInstructions*: bool
     controlScope*: ControlScope
+    deliveredContextJson*, deliveredContextSources*, deliveredProjectContext*: string
+    contextCacheEpoch*, contextHistoryCount*: int
     controlEnvFile*: string
 
   AgentRegistry* = ref object
@@ -63,12 +69,12 @@ type
     customCmd*: string
     customArgs*: seq[string]
     extraArgs: seq[string]
-    ## CMP-M5 — AI Assistant primer knobs.  ``assistantPromptPath`` is
+    ## AI Assistant role-instruction configuration (legacy primer option names).  ``assistantPromptPath`` is
     ## the absolute path the daemon reads for the system prompt;
-    ## ``primerEnabled`` toggles the primer round-trip on session
+    ## ``primerEnabled`` controls provider role instructions on session
     ## creation.  ``workspaceRoot`` is the fallback project root used
     ## when ``POST /api/agent/sessions`` doesn't carry ``projectRoot``.
-    ## ``db`` is optional — when nil the primer simply skips the
+    ## ``db`` is optional — when nil project context skips the
     ## active-campaigns section.
     assistantPromptPath*: string
     primerEnabled*: bool
@@ -113,14 +119,10 @@ proc newAgentRegistry*(extraArgs: seq[string] = @[];
   ## pre-Phase-C contract (claude-agent-acp without explicit args)
   ## so existing callers keep working untouched.
   ##
-  ## CMP-M5 — additional optional parameters configure the primer
-  ## round-trip on session creation.  ``primerEnabled = false`` makes
-  ## :proc:`handleSessions` skip the primer entirely (back to
-  ## pre-CMP-M5 behaviour); ``assistantPromptPath`` overrides the
-  ## file the primer's first block is read from; ``workspaceRoot``
-  ## is the fallback project root when the request body doesn't
-  ## carry ``projectRoot``; ``db`` is used to pull the active
-  ## campaigns block (nil → skip that section).
+  ## ``primerEnabled`` is the retained configuration name for provider role
+  ## instructions; false deliberately disables them. ``assistantPromptPath``
+  ## selects the complete instruction file. ``workspaceRoot`` is the fallback
+  ## project root and ``db`` provides active campaigns for per-turn project data.
   result = AgentRegistry(
     sessions: initTable[string, AgentSessionState](),
     activePrompts: initTable[string, bool](),
@@ -149,10 +151,10 @@ proc newAgentRegistry*(extraArgs: seq[string] = @[];
 proc attachDb*(reg: AgentRegistry; db: ReviewDb) =
   ## CMP-M5 — late-bind the design-review DB handle onto the agent
   ## registry.  Called by ``mountDesignReviewRoutes`` after it opens
-  ## the long-lived ``ReviewDb`` connection.  When set, the primer's
+  ## the long-lived ``ReviewDb`` connection.  When set, project context's
   ## "Active campaigns" section is populated from
   ## ``design_review.list_campaigns('active', 50, 0)``; when nil the
-  ## primer simply omits the section.
+  ## project context simply omits the section.
   reg.db = db
 
 proc release*(reg: AgentRegistry; sessionId: string) =
@@ -379,7 +381,8 @@ proc controlLaunchPrefix(environment: string): seq[string] =
     "tools" / "editor_agent_env.py", "--environment", environment, "--"]
 
 proc createAcpSession*(reg: AgentRegistry; cwd = "";
-    idleTimeoutMs: int = -1; controlScope = ControlScope()): AgentSessionState {.gcsafe.} =
+    idleTimeoutMs: int = -1; controlScope = ControlScope();
+    editorInstructions = false): AgentSessionState {.gcsafe.} =
   ## Spawn the ACP agent, run ``initialize`` + ``session/new`` and stash
   ## the resulting :type:`AgentClient` in the registry.  The agent
   ## selection comes from ``reg.backend`` (set by the daemon from
@@ -419,12 +422,22 @@ proc createAcpSession*(reg: AgentRegistry; cwd = "";
       # The first user message creates the real backend session.
       let id = "draft-" & $genOid()
       result = AgentSessionState(sessionId: id, client: client, cwd: root, isDraft: true,
-        session: AgentSession(backend: abkHarbor),
+        session: AgentSession(backend: abkHarbor), editorInstructions: editorInstructions,
         capabilities: AgentCapabilities(streaming: true, text: true))
       if controlScope.instance.len > 0:
         result.controlScope = reg.controlRegistry.bindConversation(controlScope, id)
       reg.storeSession(result)
       return
+    var instructions = ""
+    if editorInstructions and reg.primerEnabled:
+      if reg.backend != aakClaude:
+        raise newException(AgentBackendUnavailableError,
+          "System instruction delivery is unsupported for the selected ACP provider; configure a supported provider or explicitly disable instructions")
+      if reg.assistantPromptPath.len == 0 or not fileExists(reg.assistantPromptPath):
+        raise newException(AgentBackendUnavailableError, "IsoNim system instruction file is missing")
+      instructions = readFile(reg.assistantPromptPath)
+      if instructions.strip.len == 0:
+        raise newException(AgentBackendUnavailableError, "IsoNim system instruction file is empty")
     var scoped: ControlScope
     var environment: string
     var prefix: seq[string]
@@ -464,12 +477,13 @@ proc createAcpSession*(reg: AgentRegistry; cwd = "";
       clientInfo: ClientInfo(name: "isonim-review", version: "0.1"),
       clientCapabilities: ClientCapabilities(streaming: true)))
     let resolvedCwd = root
-    let session = client.startSession(resolvedCwd)
+    let session = client.startSession(resolvedCwd, systemInstructions = instructions)
     result = AgentSessionState(
       sessionId: session.id,
       client: client,
       session: session,
-      capabilities: initResp.agentCapabilities, controlEnvFile: environment)
+      capabilities: initResp.agentCapabilities, controlEnvFile: environment,
+      cwd: resolvedCwd, editorInstructions: editorInstructions)
     if scoped.token.len > 0:
       result.controlScope = reg.controlRegistry.rebindConversation(scoped, result.sessionId)
     reg.storeSession(result)
@@ -478,50 +492,21 @@ proc createAcpSession*(reg: AgentRegistry; cwd = "";
       cwd = resolvedCwd
 
 # --------------------------------------------------------------------------- #
-#  CMP-M5 — AI Assistant primer assembly.                                     #
-#                                                                              #
-#  Every chat session opened via ``POST /api/agent/sessions`` gets a single   #
-#  "primer" ``session/prompt`` immediately after ``session/new``.  The primer #
-#  carries the AI Assistant system prompt (from                                #
-#  ``isonim/prompts/ai-assistant.md``) plus a project-context block built      #
-#  from four sources:                                                          #
-#    1. Project root (CWD-style absolute path).                                #
-#    2. ``AGENTS.md`` (or ``CLAUDE.md``) at the project root, truncated to    #
-#       :const:`MaxAgentsMdBytes` (head + middle ellipsis + tail).            #
-#    3. Brief index summary from ``<projectRoot>/briefs/``.                   #
-#    4. Active campaigns from ``design_review.list_campaigns('active', ...)``. #
-#                                                                              #
-#  The primer round-trip is invisible to callers — :proc:`handleSessions`     #
-#  drains the agent's acknowledgement before returning the sessionId.         #
+# Separate project context for actual user turns. Role instructions are delivered
+# at session/new; no hidden session/prompt or acknowledgement turn is sent.
 # --------------------------------------------------------------------------- #
 
 const
   MaxAgentsMdBytes* = 4_096
-    ## Cap on the AGENTS.md/CLAUDE.md body included in the primer.
+    ## Cap on the AGENTS.md/CLAUDE.md body included in project context.
     ## Longer files are head+tail truncated with an ellipsis marker so
     ## the system prompt still fits inside the agent's context budget.
   PrimerHeadKeepBytes* = 2_048
   PrimerTailKeepBytes* = 2_048
   PrimerTruncMarker* = "\n\n[…truncated…]\n\n"
-  FallbackAssistantPrompt* = "You are a coding assistant.  No special " &
-    "IsoNim Assistant context could be loaded — operate as a vanilla " &
-    "coding assistant for the user's current project."
-    ## CMP-M5 — emergency prompt used when the configured
-    ## ``[agent].assistant_prompt_path`` file is missing or unreadable.
-    ## The daemon logs a warning and keeps the chat session alive.
-  PrimerInstruction* = "INSTRUCTION:\n" &
-    "Acknowledge briefly that you've received your system context and " &
-    "are ready to help.  Do not produce a long preamble.\n"
-  PrimerIdleTimeoutMs* = 30_000
-    ## Cap on how long :proc:`handleSessions` waits for the primer
-    ## acknowledgement before logging a warning and returning the
-    ## sessionId anyway.  Subsequent user prompts still work; the
-    ## acknowledgement may simply arrive a little late.
 
 proc readAssistantPromptBody*(path: string): string =
-  ## CMP-M5 — read the AI Assistant system prompt off disk.  Returns
-  ## the verbatim body on success; ``""`` when the file is missing or
-  ## unreadable (the caller substitutes :const:`FallbackAssistantPrompt`).
+  ## Read role instructions verbatim; missing content is an actionable error.
   if path.len == 0:
     return ""
   if not fileExists(path):
@@ -594,7 +579,7 @@ proc renderActiveCampaigns*(reg: AgentRegistry): string =
   ##   ``<campaignId> — <briefRefs> — round=<latest>``
   ## Returns empty when no DB handle is attached or no campaigns
   ## exist.  Database errors are swallowed (logged at debug) — the
-  ## primer is best-effort.
+  ## project-context listing is best-effort.
   if reg == nil or reg.db == nil:
     return ""
   try:
@@ -634,21 +619,11 @@ proc renderActiveCampaigns*(reg: AgentRegistry): string =
     debug "active campaign listing failed", reason = e.msg
     return ""
 
-proc assemblePrimerPrompt*(assistantPrompt, projectRoot: string;
+proc assembleProjectContext*(projectRoot: string;
     agentsMdPresent: bool; agentsMdBody: string;
-    briefIndexSummary: string;
-    activeCampaigns: string): string =
-  ## CMP-M5 — build the composite first-turn prompt for a freshly-opened
-  ## chat ACP session.  The format mirrors the campaign orchestrator's
-  ## first-prompt layout so the agent sees a familiar shape.
-  let promptBody =
-    if assistantPrompt.len > 0: assistantPrompt
-    else: FallbackAssistantPrompt
-  result = "SYSTEM CONTEXT — IsoNim AI Assistant prompt:\n\n"
-  result.add promptBody
-  if not promptBody.endsWith("\n"):
-    result.add "\n"
-  result.add "\nPROJECT CONTEXT:\n\n"
+    briefIndexSummary, activeCampaigns: string): string =
+  ## Project data remains separate from provider role instructions.
+  result = "PROJECT CONTEXT:\n\n"
   result.add "Project root: "
   if projectRoot.len > 0:
     result.add projectRoot
@@ -680,93 +655,6 @@ proc assemblePrimerPrompt*(assistantPrompt, projectRoot: string;
   result.add "- `isonim-review capture --brief <id>` (requires clean workspace)\n"
   result.add "- `isonim-review briefs check --project <path>`\n"
   result.add "- `isonim-review db-health [--json]`\n\n"
-  result.add PrimerInstruction
-
-proc logPrimerPrompt*(sessionId, promptText: string) =
-  ## CMP-M5 test hook — when ``$FAKE_ACP_CONTENT_LOG`` is set, append
-  ## the primer prompt text as a JSON-summary line so the test fixtures
-  ## (which already inspect this log for the prompt routes) can assert
-  ## the primer's body shape.  Mirrors :proc:`logCampaignPrompt` in
-  ## ``campaign_routes.nim``.
-  let contentLog = getEnv("FAKE_ACP_CONTENT_LOG")
-  if contentLog.len == 0: return
-  let summary = %* {
-    "source": "primer",
-    "sessionId": sessionId,
-    "promptText": promptText,
-    "promptLen": promptText.len,
-  }
-  try:
-    let f = open(contentLog, fmAppend)
-    defer: f.close()
-    f.write($summary & "\n")
-  except IOError:
-    discard
-
-proc primeAcpSession*(reg: AgentRegistry; state: AgentSessionState;
-                      projectRoot: string) {.gcsafe.} =
-  ## CMP-M5 — send the AI Assistant primer prompt on the freshly-opened
-  ## ACP session and drain the agent's acknowledgement.  Runs
-  ## synchronously inside :proc:`handleSessions`; the caller blocks on
-  ## the primer round-trip before returning the sessionId.  Capped at
-  ## :const:`PrimerIdleTimeoutMs` of wall-clock time — if the agent
-  ## takes longer the daemon logs a warning and proceeds; subsequent
-  ## user prompts on the same session still work, the ACK simply
-  ## arrives late and is dropped (the SSE consumer hasn't connected
-  ## yet).
-  {.gcsafe.}:
-    if state.client.backend == abkHarbor:
-      return # Harbor provider instructions are injected at session launch, not as a user turn.
-    let resolvedRoot =
-      if projectRoot.len > 0: projectRoot
-      elif reg.workspaceRoot.len > 0: reg.workspaceRoot
-      else: getCurrentDir()
-    let assistantPath =
-      if reg.assistantPromptPath.len > 0: reg.assistantPromptPath
-      else: ""
-    let assistantBody = readAssistantPromptBody(assistantPath)
-    if assistantPath.len > 0 and assistantBody.len == 0:
-      warn "assistant prompt missing — using built-in fallback",
-        path = assistantPath
-    let agentsMd = readAgentsMd(resolvedRoot)
-    let briefSummary = renderBriefIndexSummary(resolvedRoot)
-    let campaigns = renderActiveCampaigns(reg)
-    let primer = assemblePrimerPrompt(assistantBody, resolvedRoot,
-      agentsMd.present, agentsMd.body, briefSummary, campaigns)
-    info "agent session primer assembled", sessionId = state.sessionId,
-      projectRoot = resolvedRoot, primerBytes = primer.len,
-      assistantPromptLen = assistantBody.len,
-      agentsMdPresent = agentsMd.present,
-      briefSummaryLen = briefSummary.len,
-      campaignsLen = campaigns.len
-    logPrimerPrompt(state.sessionId, primer)
-    var client = state.client
-    let startedAt = epochTime()
-    let onEvent: AgentEventCallback = proc(ev: AgentEvent) {.gcsafe.} =
-      discard
-    try:
-      let turn = sendPromptStreaming(client,
-        AgentSession(id: state.sessionId, backend: abkAcp),
-        @[textBlock(primer)], onEvent)
-      info "agent session primer complete",
-        sessionId = state.sessionId,
-        stopReason = $turn.stopReason,
-        elapsedMs = int((epochTime() - startedAt) * 1000)
-    except CatchableError as e:
-      warn "agent session primer failed (continuing)",
-        sessionId = state.sessionId, reason = e.msg,
-        elapsedMs = int((epochTime() - startedAt) * 1000)
-    # Drain any residual updates buffered while the primer was in flight
-    # so the first user-prompt SSE stream doesn't replay the primer's
-    # acknowledgement frames.
-    try:
-      discard client.acp.drainUpdates()
-    except CatchableError:
-      discard
-
-# --------------------------------------------------------------------------- #
-#  JSON shapes the routes serialise to / from.                                #
-# --------------------------------------------------------------------------- #
 
 proc capabilityJson*(c: AgentCapabilities): JsonNode =
   result = %* {
@@ -961,9 +849,8 @@ proc handleSessions*(reg: AgentRegistry; req: Request)
     {.async, gcsafe.} =
   ## ``POST /api/agent/sessions`` handler.
   ##
-  ## CMP-M5 — when ``reg.primerEnabled`` is true, the handler primes
-  ## the freshly-opened ACP session with the AI Assistant system
-  ## prompt + project-context block before returning the sessionId.
+  ## Enabled role instructions use session/new metadata for supported ACP;
+  ## Harbor drafts inject them at provider launch. No user primer is sent.
   ## The request body may carry ``projectRoot`` to override the
   ## daemon's workspace-root fallback.
   if req.reqMethod != HttpPost:
@@ -994,15 +881,13 @@ proc handleSessions*(reg: AgentRegistry; req: Request)
   try:
     var state: AgentSessionState
     {.cast(gcsafe).}:
-      state = createAcpSession(reg, cwd, controlScope = scope)
-    if reg.primerEnabled:
-      primeAcpSession(reg, state, projectRoot)
-    else:
-      debug "agent session primer skipped (primerEnabled=false)",
-        sessionId = state.sessionId
+      state = createAcpSession(reg,
+        (if cwd.len > 0: cwd elif projectRoot.len > 0: projectRoot else: ""),
+        controlScope = scope, editorInstructions = true)
     let body = $(%* {
       "sessionId": state.sessionId,
       "backendSessionId": state.session.id,
+      "backend": (if state.client.backend == abkHarbor: "harbor" else: "acp"),
       "sessionState": (if state.isDraft: "draft" else: "ready"),
       "sessionCapabilities": {"persistent": true,
         "cancelTurn": state.client.backend == abkAcp, "closeSession": true},
@@ -1129,11 +1014,83 @@ proc cleanupAbortedControlEnvironment(reg: AgentRegistry; state: AgentSessionSta
     release(reg.lock)
 
 proc runAgentTurn*(reg: AgentRegistry; state: AgentSessionState;
-    promptBlocks: seq[ContentBlock]; onEvent: AgentEventCallback): PromptTurn {.gcsafe.} =
+    promptBlocks: seq[ContentBlock]; onEvent: AgentEventCallback;
+    editorContextIndex = -1; projectContextIndex = -1): PromptTurn {.gcsafe.} =
   {.cast(gcsafe).}:
     var client = state.client
     var active = state
     var turn: PromptTurn
+    let wasDraft = active.isDraft
+    const RestartEvents = ["session_started", "dispatcher_restarted", "dispatch_restart",
+      "session_leadership_migrated"]
+    if client.backend == abkHarbor and not active.isDraft and
+        (active.deliveredContextJson.len > 0 or active.deliveredProjectContext.len > 0):
+      var continuous = false
+      try:
+        let history = client.eventHistoryPage(active.session, limit = 200)
+        let added = history.totalCount - active.contextHistoryCount
+        continuous = added >= 0 and added <= history.events.len
+        if continuous:
+          for i in 0 ..< added:
+            if history.events[i].sourceType in RestartEvents: continuous = false
+      except CatchableError:
+        discard # missing continuity proof means full data, never references
+      if not continuous:
+        active.deliveredContextJson = ""
+        active.deliveredContextSources = ""
+        active.deliveredProjectContext = ""
+        acquire(reg.lock)
+        try:
+          if reg.sessions.hasKey(active.sessionId):
+            inc active.contextCacheEpoch
+            var invalidated = reg.sessions[active.sessionId]
+            invalidated.contextCacheEpoch = active.contextCacheEpoch
+            invalidated.deliveredContextJson = ""
+            invalidated.deliveredContextSources = ""
+            invalidated.deliveredProjectContext = ""
+            reg.sessions[active.sessionId] = invalidated
+        finally: release(reg.lock)
+    var restarted = false
+    var starts = 0
+    var hadReferences = false
+    defer:
+      if restarted:
+        acquire(reg.lock)
+        try:
+          if reg.sessions.hasKey(active.sessionId):
+            var invalidated = reg.sessions[active.sessionId]
+            inc invalidated.contextCacheEpoch
+            invalidated.deliveredContextJson = ""
+            invalidated.deliveredContextSources = ""
+            invalidated.deliveredProjectContext = ""
+            reg.sessions[active.sessionId] = invalidated
+        finally: release(reg.lock)
+    let eventCallback: AgentEventCallback = proc(event: AgentEvent) {.gcsafe.} =
+      {.cast(gcsafe).}:
+        if event.sourceType == "session_started": inc starts
+        if event.sourceType in RestartEvents and
+            (event.sourceType != "session_started" or not wasDraft or starts > 1):
+          restarted = true
+        if onEvent != nil: onEvent(event)
+        if restarted and hadReferences:
+          raise newException(HarborError, "Provider restarted during context-reference delivery; acceptance is uncertain. Start a new conversation with full current context.")
+    var deliveredBlocks: seq[ContentBlock]
+    for item in promptBlocks: deliveredBlocks.add item
+    let priorContext = if active.deliveredContextJson.len > 0:
+      parseJson(active.deliveredContextJson) else: newJObject()
+    var currentContextSources = newJObject()
+    let priorSources = if active.deliveredContextSources.len > 0:
+      parseJson(active.deliveredContextSources) else: newJObject()
+    if editorContextIndex >= 0:
+      let context = parseJson(promptBlocks[editorContextIndex].text[EditorContextLabel.len .. ^1])
+      deliveredBlocks[editorContextIndex] = textBlock(EditorContextLabel & $referenceContext(context, priorContext, priorSources))
+      currentContextSources = contextSourceIdentities(context)
+      hadReferences = deliveredBlocks[editorContextIndex].text != promptBlocks[editorContextIndex].text
+    if projectContextIndex >= 0 and active.deliveredProjectContext.len > 0 and
+        promptBlocks[projectContextIndex].text == active.deliveredProjectContext:
+      hadReferences = true
+      deliveredBlocks[projectContextIndex] = textBlock("PROJECT CONTEXT: same " &
+        $secureHash(active.deliveredProjectContext))
     if client.backend == abkHarbor and active.isDraft:
       var launchAccepted = false
       defer:
@@ -1160,18 +1117,25 @@ proc runAgentTurn*(reg: AgentRegistry; state: AgentSessionState;
             "Persistent Harbor provider requires an explicit ACP launch command")
       if binary.len == 0:
         raise newException(AgentBackendUnavailableError, "Persistent ACP provider is unavailable: " & software)
-      if reg.primerEnabled:
-        if software != "claude":
-          raise newException(AgentBackendUnavailableError,
-            "System instruction delivery is not supported for this provider")
-        let launcher = currentSourcePath().parentDir.parentDir.parentDir.parentDir.parentDir /
-          "tools" / "agent_session_launcher.py"
-        if not fileExists(launcher) or not fileExists(reg.assistantPromptPath):
-          raise newException(AgentBackendUnavailableError, "IsoNim session instructions or launcher is missing")
-        providerArgs = @[launcher, "--instructions", reg.assistantPromptPath, "--", binary] & providerArgs
+      let instructionEnabled = active.editorInstructions and reg.primerEnabled
+      if instructionEnabled and software != "claude":
+        raise newException(AgentBackendUnavailableError,
+          "System instruction delivery is not supported for this provider")
+      let launcher = currentSourcePath().parentDir.parentDir.parentDir.parentDir.parentDir /
+        "tools" / "agent_session_launcher.py"
+      if instructionEnabled and not fileExists(reg.assistantPromptPath):
+        raise newException(AgentBackendUnavailableError, "IsoNim session instructions are missing")
+      if instructionEnabled or active.controlScope.instance.len > 0 or reg.harborModel.len > 0:
+        if not fileExists(launcher):
+          raise newException(AgentBackendUnavailableError, "IsoNim provider launcher is missing")
+        var launcherArgs = @[launcher]
+        if instructionEnabled: launcherArgs.add @["--instructions", reg.assistantPromptPath]
+        if active.controlScope.instance.len > 0:
+          launcherArgs.add @["--environment", controlEnvironmentPath(active.sessionId)]
+        providerArgs = launcherArgs & @["--", binary] & providerArgs
         binary = findExe("python3")
         if binary.len == 0:
-          raise newException(AgentBackendUnavailableError, "Python is required for provider instruction delivery")
+          raise newException(AgentBackendUnavailableError, "Python is required for provider instructions and scoped terminals")
       if active.controlScope.instance.len > 0:
         # No credential in launch argv or instructions. The private handoff file
         # provides child environment; only its random path enters provider args.
@@ -1193,7 +1157,7 @@ proc runAgentTurn*(reg: AgentRegistry; state: AgentSessionState;
       var workspace = defaultWorkspaceContext(active.cwd)
       workspace.workingCopyMode = "in_place"
       let config = AgentStartMode(workspace: workspace, allowNetwork: true,
-        prompt: promptBlocks, acpAgent: acpAgentConfig(binary, providerArgs, model = reg.harborModel))
+        prompt: deliveredBlocks, acpAgent: acpAgentConfig(binary, providerArgs, model = reg.harborModel))
       acquire(reg.lock)
       try:
         if reg.shuttingDown or not reg.sessions.hasKey(active.sessionId):
@@ -1210,17 +1174,92 @@ proc runAgentTurn*(reg: AgentRegistry; state: AgentSessionState;
           raise newException(HarborError, "Conversation closed while backend session was being created")
       finally:
         discard reg.activeCreations.fetchSub(1)
-      turn = streamAgentTurn(client, active.session, onEvent)
+      turn = streamAgentTurn(client, active.session, eventCallback)
       launchAccepted = true
     else:
-      turn = sendPromptStreaming(client, active.session,
-        promptBlocks, onEvent)
+      var retryBlocks: seq[ContentBlock]
+      try:
+        turn = sendPromptStreaming(client, active.session, deliveredBlocks, eventCallback)
+      except PromptRejectedError as rejection:
+        let quota = rejection.response
+        if client.backend != abkHarbor or not quota.noOperation or
+            quota.stopReason != "context_limit" or quota.remainingChars <= 0 or quota.sessionId != active.session.id:
+          raise
+        # Only a complete, validated no-operation rejection permits this single
+        # intentional retry. All user/resource/project blocks remain exact.
+        # Provenance belongs to the handler's constructed block, never a
+        # user-authored string which happens to start with the same label.
+        let contextIndex = editorContextIndex
+        if contextIndex < 0 or contextIndex >= deliveredBlocks.len or
+            deliveredBlocks[contextIndex].kind != cbText: raise
+        let wireContext = parseJson(deliveredBlocks[contextIndex].text[EditorContextLabel.len .. ^1])
+        let source = parseJson(promptBlocks[contextIndex].text[EditorContextLabel.len .. ^1])
+        let original = deliveredContext(wireContext, priorContext, source)
+        var compacted: seq[ContentBlock]
+        for item in deliveredBlocks: compacted.add item
+        compacted[contextIndex] = textBlock(EditorContextLabel)
+        let fixedChars = runeLen(harborPromptText(compacted))
+        let bounded = compactEditorContext(original, quota.remainingChars - fixedChars, priorContext)
+        if bounded.isNone: raise
+        compacted[contextIndex] = textBlock(EditorContextLabel & $referenceContext(bounded.get, priorContext, nil))
+        if runeLen(harborPromptText(compacted)) > quota.remainingChars: raise
+        acquire(reg.lock)
+        try:
+          if reg.shuttingDown or not reg.sessions.hasKey(active.sessionId):
+            raise newException(HarborError, "Conversation closed before context quota retry")
+        finally:
+          release(reg.lock)
+        # A budget status is never provider admission. The actual retry's output
+        # or successful completion establishes delivery of all protected edits.
+        if onEvent != nil:
+          var fields = @[AgentPresentationField(name: "Remaining Unicode characters", value: $quota.remainingChars)]
+          for marker in bounded.get["contextAvailability"]:
+            if marker.getStr().contains("quota truncated"):
+              fields.add AgentPresentationField(name: "Optional context", value: marker.getStr())
+          onEvent(AgentEvent(kind: aekStatus, sessionId: active.session.id,
+            sourceType: "editor_context_budget",
+            text: "Backend quota rejected this turn before delivery. Retrying once with bounded optional context; exact user text and pending edits are retained.",
+            presentationFields: fields))
+        retryBlocks = compacted
+      # Leave the rejected request's exception frame before executing the one
+      # genuine delivery retry; a second rejection propagates normally.
+      if retryBlocks.len > 0:
+        deliveredBlocks = retryBlocks
+        turn = sendPromptStreaming(client, active.session, retryBlocks, eventCallback)
+    if turn.stopReason in {srEndTurn, srMaxTokens} and not restarted:
+      var historyCount = 0
+      var historyKnown = client.backend != abkHarbor
+      if client.backend == abkHarbor:
+        try:
+          historyCount = client.eventHistoryPage(active.session, limit = 1).totalCount
+          historyKnown = true
+        except CatchableError: discard
+      # Only this actual provider's successful turn advances delivered cache.
+      # Registry ownership and provider identity must still match after close.
+      acquire(reg.lock)
+      try:
+        if not reg.shuttingDown and reg.sessions.hasKey(active.sessionId) and
+            reg.sessions[active.sessionId].session.id == active.session.id and
+            reg.sessions[active.sessionId].contextCacheEpoch == active.contextCacheEpoch and historyKnown:
+          var updated = reg.sessions[active.sessionId]
+          updated.contextHistoryCount = historyCount
+          if editorContextIndex >= 0:
+            let wire = parseJson(deliveredBlocks[editorContextIndex].text[EditorContextLabel.len .. ^1])
+            let original = parseJson(promptBlocks[editorContextIndex].text[EditorContextLabel.len .. ^1])
+            updated.deliveredContextJson = $deliveredContext(wire, priorContext, original)
+            updated.deliveredContextSources = $currentContextSources
+          if projectContextIndex >= 0:
+            updated.deliveredProjectContext = promptBlocks[projectContextIndex].text
+          reg.sessions[active.sessionId] = updated
+      finally:
+        release(reg.lock)
     return turn
 
 type
   AgentPromptCompletion = object
     response: PromptResponse
     error: string
+    rejectionDetails: string
   AgentStreamBridge = object
     frames: Channel[string]
     completion: Channel[AgentPromptCompletion]
@@ -1230,14 +1269,28 @@ type
     registry: ptr AgentRegistry
     state: AgentSessionState
     prompt: seq[ContentBlock]
+    editorContextIndex, projectContextIndex: int
     bridge: ptr AgentStreamBridge
     done: Atomic[bool]
 
-proc streamBridgeCallback(bridge: ptr AgentStreamBridge): AgentEventCallback =
+proc streamBridgeCallback(bridge: ptr AgentStreamBridge; backend: AgentBackendKind): AgentEventCallback =
   # This factory MUST remain outside the async HTTP handler: the callback's
   # environment owns only this pointer, never an async Future/request graph.
+  var providerObserved = false
   result = proc(ev: AgentEvent) {.gcsafe.} =
     {.cast(gcsafe).}:
+      # A draft, REST reservation, durable user_input and SSE prelude can all
+      # precede a failed provider launch. This turn's actual provider output (or
+      # successful completion) proves delivery to the initialized provider.
+      # Harbor log events also include harness/startup logs, so they cannot
+      # establish provider admission. Direct ACP message notifications belong to
+      # the active prompt callback; tools/thoughts and successful responses are
+      # provider evidence on both transports.
+      if not providerObserved and ((backend == abkAcp and ev.kind == aekMessageChunk) or
+          ev.kind in {aekThoughtChunk, aekToolCall, aekToolCallUpdate} or
+          (ev.kind == aekCompleted and ev.stopReason in {srEndTurn, srMaxTokens})):
+        providerObserved = true
+        bridge.frames.send(encodeSseEvent("admitted", $(%* {"accepted": true})))
       let payload = if ev.raw != nil and ev.raw.hasKey("update"):
                       ev.raw else: toJson(ev)
       let frame = encodeSseEvent("session/update", $payload)
@@ -1256,10 +1309,27 @@ proc runPromptWorker(work: ptr AgentPromptWork) {.thread, gcsafe.} =
     var completion: AgentPromptCompletion
     try:
       # Callback creation and destruction belong entirely to this worker.
-      let callback = streamBridgeCallback(work.bridge)
-      let turn = runAgentTurn(work.registry[], work.state, work.prompt, callback)
+      let callback = streamBridgeCallback(work.bridge, work.state.client.backend)
+      let turn = runAgentTurn(work.registry[], work.state, work.prompt, callback, work.editorContextIndex, work.projectContextIndex)
+      if turn.stopReason in {srEndTurn, srMaxTokens}:
+        # ACP may return a successful response without any output notification.
+        # This is still an actual provider response, never a reservation ACK.
+        work.bridge.frames.send(encodeSseEvent("admitted", $(%* {"accepted": true})))
       completion.response = PromptResponse(sessionId: work.state.sessionId,
                                            stopReason: turn.stopReason)
+    except PromptRejectedError as rejection:
+      completion.error = rejection.msg
+      let response = rejection.response
+      var details = %* {"stopReason": response.stopReason,
+        "operationId": (if response.operationIdNull: newJNull() else: %response.operationId),
+        "noOperation": response.noOperation, "deliveryState": (if response.deliveryStateNull: newJNull() else: %response.deliveryState),
+        "limitChars": response.limitChars, "usedChars": response.usedChars,
+        "currentChars": response.currentChars, "remainingChars": response.remainingChars,
+        "overLimitBy": response.overLimitBy}
+      if not response.operationIdPresent: details.delete("operationId")
+      if not response.deliveryStatePresent: details.delete("deliveryState")
+      else: details["deliveryStateType"] = %response.deliveryStateType
+      completion.rejectionDetails = $details
     except CatchableError as error:
       completion.error = error.msg
     # Channels transfer managed message ownership; the worker never writes
@@ -1283,10 +1353,20 @@ proc handlePrompts*(reg: AgentRegistry; req: Request)
     return
   var sessionId: string
   var prompt: seq[ContentBlock]
+  var editorContextIndex = -1
+  var projectContextIndex = -1
   try:
     let parsed = parsePromptFromBody(req.body)
     sessionId = parsed.sessionId
     prompt = parsed.prompt
+    let body = parseJson(req.body)
+    if body{"context"} != nil:
+      let context = body["context"]
+      if context.kind != JObject or ($context).len > 262144:
+        await respondJson(req, Http400, $(%* {"error": "invalid_editor_context"}))
+        return
+      editorContextIndex = prompt.len
+      prompt.add textBlock(EditorContextLabel & $context)
   except JsonParsingError:
     await respondJson(req, Http400,
       $(%* {"error": "invalid_json"}))
@@ -1318,6 +1398,13 @@ proc handlePrompts*(reg: AgentRegistry; req: Request)
   defer: discard reg.setTurnWorking(sessionId, false)
   var state = admitted.state
   state.turnWorking = true
+  {.cast(gcsafe).}:
+    if state.editorInstructions:
+      let agentsMd = readAgentsMd(state.cwd)
+      var project = assembleProjectContext(state.cwd, agentsMd.present,
+        agentsMd.body, renderBriefIndexSummary(state.cwd), renderActiveCampaigns(reg))
+      projectContextIndex = prompt.len
+      prompt.add textBlock(project)
 
   var textBlocks = 0
   var imageBlocks = 0
@@ -1379,6 +1466,8 @@ proc handlePrompts*(reg: AgentRegistry; req: Request)
   work.registry = unsafeAddr(reg)
   work.state = state
   work.prompt = prompt
+  work.editorContextIndex = editorContextIndex
+  work.projectContextIndex = projectContextIndex
   work.bridge = streamBridge
   var worker: Thread[ptr AgentPromptWork]
   var workerStarted = false
@@ -1456,7 +1545,8 @@ proc handlePrompts*(reg: AgentRegistry; req: Request)
 
   if promptError.len > 0:
     let errEvent = encodeSseEvent("error",
-      $(%* {"sessionId": sessionId, "reason": promptError}))
+      $(%* {"sessionId": sessionId, "reason": promptError,
+        "rejection": (if completion.rejectionDetails.len > 0: parseJson(completion.rejectionDetails) else: newJNull())}))
     discard await sendSseLine(req.client, errEvent)
   let endEvent = encodeSseEvent("end", $(%* {"stopReason": stopReason}))
   discard await sendSseLine(req.client, endEvent)

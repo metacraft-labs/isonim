@@ -51,6 +51,8 @@ type
     canCancelTurn*: bool
     canCloseSession*: bool
     closed*: bool
+    backend*: string
+    onAdmitted*: proc() {.closure.}
     onUpdate*: BrowserAgentClientCallback
       ## Called once per ``event: session/update`` frame with the JSON
       ## payload as a cstring.  The caller is responsible for parsing
@@ -93,6 +95,7 @@ proc createBoundSession(c: BrowserAgentClient; cb: CreateSessionCallback) =
     let url = urlStr.cstring
     let onErr = c.onError
     let captured = c
+    let setBackend = proc(value: cstring) = captured.backend = $value
     let binding = c.editorScopeJson.cstring
     let controlToken = c.editorControlToken.cstring
     {.emit: ["""
@@ -118,6 +121,7 @@ proc createBoundSession(c: BrowserAgentClient; cb: CreateSessionCallback) =
             }
             try {
               var parsed = JSON.parse(out.body);
+              """, setBackend, """(parsed.backend || 'unknown');
               var caps = parsed.sessionCapabilities || {};
               """, captured, """.canCancelTurn = caps.cancelTurn === true;
               """, captured, """.canCloseSession = caps.closeSession === true;
@@ -164,7 +168,7 @@ proc createSession*(c: BrowserAgentClient; cb: CreateSessionCallback) =
 # Prompt submission with SSE streaming via ``fetch`` ReadableStream.
 # ---------------------------------------------------------------------------
 
-proc submitPrompt*(c: BrowserAgentClient; sessionId, prompt: string) =
+proc submitPrompt*(c: BrowserAgentClient; sessionId, prompt: string; contextJson = "{}") =
   ## ``POST /api/agent/prompts`` — open the SSE stream and drive the
   ## three callbacks (``onUpdate`` / ``onEnd`` / ``onError``) as
   ## events arrive.  Returns immediately; the actual streaming runs
@@ -182,12 +186,14 @@ proc submitPrompt*(c: BrowserAgentClient; sessionId, prompt: string) =
     let url = urlStr.cstring
     let sid: cstring = sessionId
     let p: cstring = prompt
+    let context: cstring = contextJson
+    let onAdmitted = c.onAdmitted
     let onUpd = c.onUpdate
     let onEnd = c.onEnd
     let onErr = c.onError
     let onInterrupted = c.onInterrupted
     {.emit: ["""
-      var terminal = false, failed = false;
+      var terminal = false, failed = false, admitted = false;
       function report(message) {
         if (""", onInterrupted, """) """, onInterrupted, """(message);
         else if (""", onErr, """) """, onErr, """(message);
@@ -206,18 +212,25 @@ proc submitPrompt*(c: BrowserAgentClient; sessionId, prompt: string) =
             terminal = true;
             if (""", onEnd, """) """, onEnd, """(reason);
           },
-          function(message) { if (!terminal && !failed) report(message); });
+          function(message) { if (!terminal && !failed) report(message); },
+          function() {
+            if (!terminal && !failed && !admitted) {
+              admitted = true;
+              if (""", onAdmitted, """) """, onAdmitted, """();
+            }
+          });
       }
       Promise.resolve().then(function() {
         return fetch(""", url, """, {
           method: 'POST', credentials: 'omit',
           headers: {'Content-Type':'application/json', 'Accept':'text/event-stream'},
-          body: JSON.stringify({sessionId: """, sid, """, messages:[{
+          body: JSON.stringify({sessionId: """, sid, """, context: JSON.parse(""", context, """), messages:[{
             role:'user', content:[{type:'text', text: """, p, """}]}]})
         });
       }).then(async function(resp) {
         if (resp.status < 200 || resp.status >= 300) {
-          fail('HTTP ' + resp.status + ': ' + await resp.text());
+          failed = true;
+          if (""", onErr, """) """, onErr, """('HTTP ' + resp.status + ': ' + await resp.text());
           return;
         }
         var buf = '';
@@ -313,7 +326,7 @@ when defined(js):
     ## inside ``submitPrompt`` has a global parser to call.
     {.emit: ["""
       if (!window.__isonimAgentDispatchEvents) {
-        window.__isonimAgentDispatchEvents = function(raw, onUpd, onEnd, onErr) {
+        window.__isonimAgentDispatchEvents = function(raw, onUpd, onEnd, onErr, onAdmitted) {
           var frames = raw.split('\n\n');
           for (var i = 0; i < frames.length; i++) {
             var frame = frames[i];
@@ -330,7 +343,11 @@ when defined(js):
                 data += line.substring(5).replace(/^ /, '');
               }
             }
-            if (eventType === 'end') {
+            if (eventType === 'admitted') {
+              var admission = JSON.parse(data);
+              if (admission.accepted !== true) throw new Error('Invalid admission event');
+              if (onAdmitted) onAdmitted();
+            } else if (eventType === 'end') {
               var parsed;
               try { parsed = JSON.parse(data); }
               catch (e) { throw new Error('Malformed terminal event JSON'); }

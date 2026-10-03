@@ -1194,6 +1194,12 @@ type
     property*: string
 
   AgentPromptContext* = object
+    renderedComponentTree*: seq[ElementLayerRow]
+    availableTailwindClasses*: seq[string]
+    tailwindClassTotal*: int
+    themeTokens*: seq[FoundationTokenEntry]
+    activeThemeContext*: seq[string]
+    contextAvailability*: seq[string]
     selectedStory*: StoryRef
     selectedElement*: ElementRef
     accumulatedEdits*: seq[EditRecord]

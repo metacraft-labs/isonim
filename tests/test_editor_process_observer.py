@@ -150,6 +150,7 @@ class ProcessObserverTests(unittest.TestCase):
             source = Path(__file__).parent
             shutil.copyfile(source / 'test_editor_harbor_scenario.py', tests / 'test_editor_harbor_scenario.py')
             shutil.copyfile(source / 'helpers/editor_process_observer.py', tests / 'helpers/editor_process_observer.py')
+            shutil.copyfile(source / 'helpers/editor_context_evidence.py', tests / 'helpers/editor_context_evidence.py')
             absent = subprocess.run([sys.executable, str(tests / 'test_editor_harbor_scenario.py')],
                                     capture_output=True, text=True, timeout=10)
             self.assertEqual(absent.returncode, 0, absent.stderr)

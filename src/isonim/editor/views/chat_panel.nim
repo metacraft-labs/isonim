@@ -765,21 +765,29 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   r.setAttribute(sendBtn, "role", "button")
   r.setAttribute(sendBtn, "tabindex", "0")
   r.setAttribute(sendBtn, "aria-label", "Send agent prompt")
-  r.addEventListener(sendBtn, "click", proc() =
+  proc submitPrompt() =
     chat.inputText.val = r.inputValue(promptInput)
-    discard vm.sendAgentPrompt()
-    r.setInputValue(promptInput, chat.inputText.val))
+    let active = vm.chat
+    let generation = active.promptGeneration
+    let ready = active.agentPromptReady()
+    let inFlight = active.promptInFlight
+    let closing = active.closingSession
+    let sameChat = active == chat
+    let accepted = vm.sendAgentPrompt()
+    when defined(js) and compiles(panel.ownerDocument):
+      {.emit: ["if (typeof window.__isonimObserveAgentAdmission === 'function') window.__isonimObserveAgentAdmission({generation:", generation,
+        ", ready:", ready, ", inFlight:", inFlight, ", closing:", closing,
+        ", sameChat:", sameChat, ", accepted:", accepted, "});"].}
+    r.setInputValue(promptInput, chat.inputText.val)
+  r.addEventListener(sendBtn, "click", submitPrompt)
   createRenderEffect proc() =
-    let busy = chat.sessionStatus.val == asLoading or chat.closingSession
+    let busy = not chat.agentPromptReady()
     r.setAttribute(sendBtn, "aria-disabled", $busy)
     r.setStyle(sendBtn, "opacity", if busy: "0.45" else: "1")
     when defined(js) and compiles(panel.ownerDocument):
       {.emit: [sendBtn, ".disabled = ", busy, ";"].}
   when defined(js) and compiles(panel.ownerDocument):
-    let submit = proc() =
-      chat.inputText.val = r.inputValue(promptInput)
-      discard vm.sendAgentPrompt()
-    let submitCallback = submit
+    let submitCallback = submitPrompt
     {.emit: ["""
       (function(el, submit) {
         let composing = false;

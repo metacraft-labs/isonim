@@ -601,6 +601,7 @@ const isonimDesignReviewSpecs: seq[DrSpec] = @[
   # ``nim_agents`` sibling defines (and qualifies the newly-ambiguous
   # ``types.AgentFileDiff``). Pure VM test, no service.
   dr("test_design_review_editor_agent_adapter_vm"),
+  dr("test_design_review_class_quota"),
   dr("test_migrated_task_app_brief_parses"),
   dr("test_migrated_settings_app_brief_parses"),
   # FUP-J — stale-assertion fix: the migrated chrome-brief corpus grew to
@@ -854,12 +855,117 @@ package isonim:
       actionId = "isonim.chat_activity_execute.gui",
       after = @[chatBrowserEdge],
       extraInputs = @["tests/test_editor_chat_activity_gui.mjs", "tests/fixtures/chat-session-events.json", "build/editor-chat"]))
+    let admissionGuiEdge = sh.shell(
+      command = "node tests/test_editor_admission_gui.mjs", cacheable = false,
+      actionId = "isonim.chat_activity_execute.admission_gui",
+      after = @[chatBrowserEdge],
+      extraInputs = @["tests/test_editor_admission_gui.mjs", "build/editor-chat"])
+    testExecuteActions.add(admissionGuiEdge)
+    discard collect("test-editor-admission", @[admissionGuiEdge])
     let sourceBrowserEdge = sh.shell(
       command = "just source-editor-build",
       actionId = "isonim.source_build.browser",
       extraInputs = @["src", "examples/source_project", "tools/build_source_catalog.py", "Justfile", "package.json"],
       extraOutputs = @["build/editor-source", "examples/source_project/.isonim/catalog.json"])
     testBuildActions.add(sourceBrowserEdge)
+    # Explicit real-account acceptance target: no automatic availability skip and
+    # no model playback. Keep account-dependent inference out of the default suite.
+    let authoringBrowserEdge = sh.shell(
+      command = "just editor-authoring-build",
+      actionId = "isonim.authoring_build.browser",
+      extraInputs = @["src", "tests/helpers/editor_authoring_workspace.nim", "Justfile", "package.json"],
+      extraOutputs = @["build/editor-authoring"])
+    let authoringEvidenceEdge = pythonUnittest.run(
+      source = "tests/test_editor_authoring_evidence.py",
+      actionId = "isonim.authoring_execute.evidence",
+      extraInputs = @["tests/test_editor_authoring_evidence.py", "tests/helpers/editor_authoring_evidence.py"])
+    testExecuteActions.add(authoringEvidenceEdge)
+    let scenarioCleanupEdge = pythonUnittest.run(
+      source = "tests/test_editor_scenario_cleanup.py",
+      actionId = "isonim.authoring_execute.cleanup",
+      extraInputs = @["tests/helpers/editor_scenario_runtime.py", "tests/helpers/editor_process_observer.py"])
+    let closeAckEdge = node(
+      args = @["tests/test_editor_close_ack.mjs"],
+      actionId = "isonim.authoring_execute.close_ack",
+      extraInputs = @["tests/test_editor_close_ack.mjs", "tests/helpers/editor_close_ack.mjs"])
+    testExecuteActions.add(scenarioCleanupEdge)
+    testExecuteActions.add(closeAckEdge)
+    let authoringResponsesEdge = pythonUnittest.run(
+      source = "tests/test_editor_authoring_responses.py",
+      actionId = "isonim.authoring_execute.responses",
+      extraInputs = @["tests/helpers/editor_authoring_responses.py"])
+    let assistantEvidenceEdge = pythonUnittest.run(
+      source = "tests/test_editor_authoring_assistant_evidence.py",
+      actionId = "isonim.authoring_execute.assistant_text",
+      extraInputs = @["tests/helpers/editor_authoring_assistant_evidence.py", "tests/helpers/editor_authoring_evidence.py"])
+    testExecuteActions.add(assistantEvidenceEdge)
+    let providerClosureEdge = pythonUnittest.run(
+      source = "tests/test_editor_provider_closure.py",
+      actionId = "isonim.authoring_execute.provider_closure",
+      extraInputs = @["tests/helpers/editor_provider_closure.py", "tests/helpers/editor_provider_wire.py"])
+    testExecuteActions.add(providerClosureEdge)
+    let sdkProtocolEdge = node(
+      args = @["tests/test_editor_sdk_protocol_observer.mjs"],
+      actionId = "isonim.authoring_execute.sdk_protocol",
+      extraInputs = @["tests/test_editor_sdk_protocol_observer.mjs", "tests/helpers/editor_sdk_native_observer.mjs"])
+    let sdkKernelEdge = node(
+      args = @["tests/test_editor_sdk_kernel_evidence.mjs"],
+      actionId = "isonim.authoring_execute.sdk_kernel",
+      extraInputs = @["tests/test_editor_sdk_kernel_evidence.mjs", "tests/helpers/editor_sdk_kernel_evidence.mjs"])
+    testExecuteActions.add(sdkKernelEdge)
+    testExecuteActions.add(authoringResponsesEdge)
+    testExecuteActions.add(sdkProtocolEdge)
+    discard collect("test-editor-authoring-evidence", @[authoringEvidenceEdge, scenarioCleanupEdge, closeAckEdge, authoringResponsesEdge, assistantEvidenceEdge, sdkProtocolEdge, sdkKernelEdge, providerClosureEdge])
+    # Runtime selection is a fresh host fact, never a cached pass. The consumer
+    # actually authenticates this declared output and every selected package byte.
+    # Explicit provider selection stays caller-owned; missing/incompatible fails.
+    let sdkRuntimeEdge = sh.shell(
+      command = "python3 tests/helpers/editor_sdk_runtime.py build/editor-sdk-runtime.json",
+      actionId = "isonim.authoring_runtime.sdk_closure", cacheable = false,
+      extraInputs = @["tests/helpers/editor_sdk_runtime.py"],
+      extraOutputs = @["build/editor-sdk-runtime.json"])
+    let sdkRuntimeValidationEdge = sh.shell(
+      command = "python3 tests/test_editor_sdk_runtime.py",
+      actionId = "isonim.authoring_execute.sdk_runtime_validation", cacheable = false,
+      after = @[sdkRuntimeEdge],
+      extraInputs = @["build/editor-sdk-runtime.json", "tests/test_editor_sdk_runtime.py", "tests/helpers/editor_sdk_runtime.py"])
+    let sdkNativeEdge = sh.shell(
+      command = "python3 tests/test_editor_sdk_native_controls.py",
+      actionId = "isonim.authoring_execute.sdk_native", cacheable = false,
+      after = @[sdkRuntimeValidationEdge, sdkProtocolEdge, sdkKernelEdge],
+      extraInputs = @["build/editor-sdk-runtime.json", "tests/test_editor_sdk_native_controls.py",
+        "tests/helpers/editor_sdk_native_initialization.mjs", "tests/helpers/editor_sdk_runtime.py",
+        "tests/helpers/editor_sdk_native_observer.mjs", "tests/helpers/editor_sdk_delivery_evidence.mjs", "tests/helpers/editor_sdk_kernel_evidence.mjs",
+        "tests/helpers/editor_real_provider.py", "tests/helpers/editor_provider_wire.py", "tests/helpers/editor_provider_closure.py", "tools/agent_session_launcher.py", "prompts/ai-assistant.md"])
+    discard collect("editor-authoring-runtime", @[sdkRuntimeEdge])
+    discard collect("test-editor-sdk-native", @[sdkNativeEdge])
+    let responseSequencingEdge = sh.shell(
+      command = "python3 tests/test_editor_authoring_response_sequencing.py",
+      actionId = "isonim.authoring_execute.response_sequencing", cacheable = false,
+      after = @[controlCliEdge, authoringBrowserEdge, authoringResponsesEdge, assistantEvidenceEdge],
+      extraInputs = @["tests/test_editor_authoring_response_sequencing.py", "tests/test_editor_scripted_terminal_fence.py", "tests/test_editor_authoring_real_gui.mjs",
+        "tests/scenarios/agent-harbor/authoring-response-sequencing.yaml", "tests/helpers/editor_authoring_operations.py",
+        "tests/helpers/editor_authoring_responses.py", "tests/helpers/editor_authoring_assistant_evidence.py", "tests/helpers/editor_close_ack.mjs",
+        "tests/helpers/editor_scenario_runtime.py", "tests/helpers/editor_scenario_provider.py", "tests/helpers/editor_provider_wire.py", "tests/helpers/editor_provider_closure.py",
+        "tests/helpers/editor_sdk_runtime.py", "tests/helpers/editor_process_observer.py", "tests/helpers/editor_scenario_barrier.py",
+        "tools/editor_agent_env.py", "tools/editor_server.py", "build/bin/isonim", "build/editor-authoring",
+        "../web-site-prototypes/grip/isonim/src", "../web-site-prototypes/grip/isonim/tools",
+        "../web-site-prototypes/grip/isonim/.isonim/source-project.json"])
+    discard collect("test-editor-authoring-response-sequencing", @[responseSequencingEdge])
+    let authoringRealEdge = sh.shell(
+      command = "python3 tests/test_editor_authoring_real.py", cacheable = false,
+      actionId = "isonim.authoring_execute.real_claude",
+      after = @[controlCliEdge, authoringBrowserEdge, authoringEvidenceEdge, scenarioCleanupEdge, closeAckEdge, authoringResponsesEdge, assistantEvidenceEdge, sdkNativeEdge],
+      extraInputs = @["build/editor-sdk-runtime.json", "tests/test_editor_authoring_real.py", "tests/test_editor_authoring_real_gui.mjs",
+        "tests/helpers/editor_sdk_runtime.py", "tests/helpers/editor_sdk_native_observer.mjs", "tests/helpers/editor_sdk_delivery_evidence.mjs", "tests/helpers/editor_sdk_kernel_evidence.mjs",
+        "tests/helpers/editor_authoring_operations.py", "tests/helpers/editor_authoring_responses.py", "tests/helpers/editor_authoring_assistant_evidence.py",
+        "tests/helpers/editor_authoring_evidence.py", "tests/helpers/editor_close_ack.mjs",
+        "tests/helpers/editor_real_provider.py", "tests/helpers/editor_provider_wire.py", "tests/helpers/editor_provider_closure.py", "tests/helpers/editor_scenario_runtime.py",
+        "tests/helpers/editor_process_observer.py", "prompts/ai-assistant.md",
+        "tools/agent_session_launcher.py", "tools/editor_agent_env.py", "tools/editor_server.py",
+        "build/bin/isonim", "build/editor-authoring", "../web-site-prototypes/grip/isonim/src",
+        "../web-site-prototypes/grip/isonim/tools", "../web-site-prototypes/grip/isonim/.isonim/source-project.json"])
+    discard collect("test-editor-authoring-real", @[authoringRealEdge])
     # Official private Harbor scenarios: absence of the sibling is optional;
     # provider/build/runtime failure when present remains a real failed test.
     let scenarioHostEdge = buildNimUnittest.build(
@@ -874,7 +980,7 @@ package isonim:
       source = "tests/test_editor_scenarios.py",
       actionId = "isonim.scenario_execute.native",
       after = @[controlCliEdge, sourceBrowserEdge, scenarioHostEdge.action],
-      extraInputs = @["tests/test_editor_scenarios.py", "tests/helpers/editor_scenario_runtime.py",
+      extraInputs = @["tests/test_editor_scenarios.py", "tests/helpers/editor_context_evidence.py", "tests/helpers/editor_scenario_runtime.py",
         "tests/helpers/editor_scenario_provider.py", "tests/helpers/editor_scenario_barrier.py",
         "tests/helpers/editor_scenario_network_probe.py",
         "tests/scenarios/agent-harbor/editor-workflows.yaml", "tests/scenarios/agent-harbor/README.md", "tools/editor_server.py",
@@ -894,7 +1000,7 @@ package isonim:
       actionId = "isonim.scenario_execute.gui",
       after = @[controlCliEdge, sourceBrowserEdge],
       extraInputs = @["tests/run_editor_scenarios_gui.py", "tests/test_editor_scenarios_gui.mjs",
-        "tests/helpers/editor_scenario_runtime.py", "tests/helpers/editor_scenario_provider.py",
+        "tests/helpers/editor_scenario_runtime.py", "tests/helpers/editor_scenario_provider.py", "tests/helpers/editor_provider_wire.py", "tests/helpers/editor_provider_closure.py",
         "tests/helpers/editor_scenario_barrier.py", "tests/helpers/editor_scenario_network_probe.py",
         "tests/scenarios/agent-harbor/editor-workflows.yaml", "tests/scenarios/agent-harbor/README.md",
         "tools/editor_server.py", "tools/editor_agent_env.py", "examples/source_project",
@@ -948,12 +1054,14 @@ package isonim:
       source = "tests/test_harbor_route_lifecycle.py",
       actionId = "isonim.chat_execute.route_lifecycle",
       after = @[reviewToolEdge.action],
-      extraInputs = @["tests/test_harbor_route_lifecycle.py", drReviewBin]))
+      extraInputs = @["tests/test_harbor_route_lifecycle.py", "tests/helpers/editor_context_snapshot.nim",
+        "tests/helpers/editor_context_evidence.py", "tests/helpers/editor_context_wire.nim",
+        "tests/test_design_review_class_quota.nim", "tools/tailwind-extract.mjs", "package.json", "src", drReviewBin]))
     testExecuteActions.add(pythonUnittest.run(
       source = "tests/test_editor_process_observer.py",
       actionId = "isonim.chat_execute.process_observer",
       extraInputs = @["tests/test_editor_process_observer.py", "tests/helpers/editor_process_observer.py",
-        "tests/test_editor_harbor_scenario.py"]))
+        "tests/helpers/editor_context_evidence.py", "tests/test_editor_harbor_scenario.py"]))
     # Optional private producer acceptance. With the sibling present, the built
     # official scenario provider must be configured and all real boundaries run.
     # The script delegates producer compilation/environment to the local launcher.
@@ -962,6 +1070,7 @@ package isonim:
       actionId = "isonim.chat_execute.harbor_scenario",
       after = @[reviewToolEdge.action],
       extraInputs = @["tests/test_editor_harbor_scenario.py",
+        "tests/helpers/editor_context_evidence.py",
         "tests/helpers/editor_process_observer.py",
         "tests/scenarios/agent-harbor/editor-session-continuity.yaml", drReviewBin]))
 

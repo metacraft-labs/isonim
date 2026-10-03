@@ -22,6 +22,7 @@ import tempfile
 import threading
 import time
 import urllib.request
+from helpers.editor_sdk_runtime import materialize
 from helpers.editor_process_observer import process_observer, optional_sibling_available
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -39,49 +40,82 @@ def post(url, data, token=''):
     req = urllib.request.Request(url, data=json.dumps(data).encode(),headers={'Content-Type':'application/json','X-IsoNim-Control':token})
     with urllib.request.urlopen(req,timeout=70) as response: return json.load(response)
 
+def private_credentials(data):
+    """Find named credentials in mapping or array protocol evidence.
+
+    Tool traces are arrays, while registrations and scope files are mappings.
+    Scalars elsewhere are legitimate JSON; a named credential must be a string
+    (or null/empty when absent), so malformed evidence fails explicitly.
+    """
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if key in ('ISONIM_EDITOR_TOKEN', 'browserToken', 'controlToken'):
+                if value is not None and not isinstance(value, str):
+                    raise AssertionError('Malformed private credential: '+key)
+                if value:
+                    yield value
+            else:
+                yield from private_credentials(value)
+    elif isinstance(data, list):
+        for value in data:
+            yield from private_credentials(value)
+
 class Runtime:
-    def __init__(self, host):
+    def __init__(self, host, *, real_provider=None, project_source=None,
+                 editor_directory=None, source_file="stories.nim", instructions_path=None, real_model=None, scenario_path=None, observe_scenario_wire=False):
+        self.source_file = source_file
         if not optional_sibling_available(HARBOR): raise FileNotFoundError('optional private Agent Harbor sibling absent')
         self.observer = process_observer()
         self.daemon = (ROOT/'build/bin/isonim-review').resolve()
         if self.daemon.parent!=(ROOT/'build/bin').resolve() or not self.daemon.is_file() or not os.access(self.daemon,os.X_OK):
             raise AssertionError('Scenario daemon must be an executable in this workspace build/bin')
-        self.provider = Path(os.environ.get('ISONIM_HARBOR_SCENARIO_PROVIDER','/missing-provider')).resolve()
+        self.provider = Path(real_provider or os.environ.get('ISONIM_HARBOR_SCENARIO_PROVIDER','/missing-provider')).resolve()
         if not self.provider.is_file() or not os.access(self.provider,os.X_OK): raise AssertionError('Set ISONIM_HARBOR_SCENARIO_PROVIDER to the built official Rust mock-agent')
         root = Path(tempfile.mkdtemp(prefix='eac-m5-'+host+'-')).resolve()
         root.chmod(0o700)
         self.project = root/'project'
-        shutil.copytree(ROOT/'examples/source_project',self.project,ignore=shutil.ignore_patterns('catalog-producer*','catalog.json'))
+        shutil.copytree(project_source or ROOT/'examples/source_project',self.project,ignore=shutil.ignore_patterns('catalog-producer*','catalog.json','build','node_modules','.git'))
         # Only the bound workspace crosses Harbor's private /tmp. Keep fixture
         # execution, barriers and artifacts apart from source/catalog inputs.
         self.artifacts = self.project/'.scenario'
         self.artifacts.mkdir(mode=0o700)
         self.private = self.artifacts/'private'; self.private.mkdir(mode=0o700)
-        self.before = (self.project/'stories.nim').read_text()
+        self.before = (self.project/self.source_file).read_text()
         self.env = dict(os.environ)
         for key in list(self.env):
             if key.startswith('ISONIM_') or key.startswith('MOCK_AGENT_'): del self.env[key]
         self.env['ISONIM_SOURCE_FRAMEWORK'] = str(ROOT)
-        build = subprocess.run([sys.executable,str(ROOT/'tools/build_source_catalog.py'),str(self.project)],env=self.env,text=True,capture_output=True,timeout=120)
+        build_argv = [sys.executable,str(ROOT/'tools/build_source_catalog.py'),str(self.project)]
+        build = subprocess.run(build_argv,cwd=self.project,env=self.env,text=True,capture_output=True,timeout=120)
         (self.artifacts/'initial-build.log').write_text(build.stdout+build.stderr)
         if build.returncode: raise AssertionError('Real initial source build failed: '+str(self.artifacts))
-        scenario = (ROOT/'tests/scenarios/agent-harbor/editor-workflows.yaml').read_text()
+        scenario = Path(scenario_path or ROOT/'tests/scenarios/agent-harbor/editor-workflows.yaml').read_text()
         values = {'PROJECT':self.project,'ARTIFACTS':self.artifacts,'PYTHON':Path(sys.executable),
                   'WRAPPER':ROOT/'tools/editor_agent_env.py','PRIVATE':self.private,'CLI':ROOT/'build/bin/isonim',
                   'BARRIER':ROOT/'tests/helpers/editor_scenario_barrier.py','NETPROBE':ROOT/'tests/helpers/editor_scenario_network_probe.py'}
         for key,value in values.items(): scenario=scenario.replace('@'+key+'@',str(value))
         self.scenario = self.artifacts/'scenario.yaml'; self.scenario.write_text(scenario)
+        if real_provider:
+            self.sdk_manifest,self.sdk_runtime=materialize(self.private,self.provider)
         bindir=self.artifacts/'bin'; bindir.mkdir()
         wrapper=bindir/'claude-agent-acp'
-        wrapper.write_text('#!/bin/sh\nexec '+shlex.join([sys.executable,str(ROOT/'tests/helpers/editor_scenario_provider.py'),str(self.artifacts),str(self.provider),str(self.scenario)])+'\n')
+        wrapper_args = ([sys.executable,str(ROOT/'tests/helpers/editor_real_provider.py'),str(self.artifacts),str(self.provider),str(self.sdk_manifest)] if real_provider else
+                        [sys.executable,str(ROOT/'tests/helpers/editor_scenario_provider.py'),str(self.artifacts),str(self.provider),str(self.scenario)]+(['--observe-wire'] if observe_scenario_wire else []))
+        wrapper.write_text('#!/bin/sh\nexec '+shlex.join(wrapper_args)+'\n')
         wrapper.chmod(0o755)
         self.env['PATH']=str(bindir)+os.pathsep+self.env['PATH']
-        config=self.artifacts/'empty.toml'; config.write_text('')
+        config=self.artifacts/'empty.toml'
+        scoped_instructions = self.private/'instructions.md'
+        if real_provider:
+            shutil.copyfile(instructions_path or ROOT/'prompts/ai-assistant.md', scoped_instructions)
+            scoped_instructions.chmod(0o600)
+        config.write_text(('[agent]\nassistant_prompt_path='+json.dumps(str(scoped_instructions))+'\n'+
+            ('model='+json.dumps(real_model)+'\n' if real_model is not None else '')) if real_provider else '')
         self.handles=[]; self.children=[]; self.readers=[]; self.readerErrors=[]
         self.handoffStop=threading.Event()
         self.lines=queue.Queue()
         self.harborBefore=set(Path(tempfile.gettempdir()).glob('isonim-harbor-*'))
-        self.server=self.spawn([sys.executable,str(ROOT/'tools/editor_server.py'),'--directory',str(ROOT/'build/editor-source'),
+        self.server=self.spawn([sys.executable,str(ROOT/'tools/editor_server.py'),'--directory',str(editor_directory or ROOT/'build/editor-source'),
             '--project-root',str(self.project),'--port','0','--bind','127.0.0.1','--config',str(config),
             '--daemon-binary',str(self.daemon)],'launcher')
         def ready():
@@ -185,8 +219,11 @@ class Runtime:
                         launch=json.loads(configuration or '{}').get('acp_stdio_launch_command',{})
                         args=launch.get('args',[])
                         if str(self.artifacts/'bin/claude-agent-acp') not in args:continue
-                        if args.count('--environment')!=1:raise AssertionError('Exact scoped launch configuration required')
-                        filename=Path(args[args.index('--environment')+1])
+                        positions=[index for index,arg in enumerate(args) if arg=='--environment']
+                        if len(positions)!=2 or any(index+1>=len(args) for index in positions):raise AssertionError('Provider and terminal launcher scoped boundaries required')
+                        filenames=[args[index+1] for index in positions]
+                        if len(set(filenames))!=1:raise AssertionError('Provider and real terminals must use the SAME original private handoff')
+                        filename=Path(filenames[0])
                         if not filename.is_absolute() or filename.name!='environment.json':
                             raise AssertionError('Actual absolute production handoff required')
                         try: original=json.loads(filename.read_text())
@@ -267,7 +304,7 @@ class Runtime:
         # Save actual final source/catalog even on a failed assertion.
         if self.project.exists():
             import difflib
-            (self.artifacts/'source.diff').write_text(''.join(difflib.unified_diff(self.before.splitlines(True),(self.project/'stories.nim').read_text().splitlines(True))))
+            (self.artifacts/'source.diff').write_text(''.join(difflib.unified_diff(self.before.splitlines(True),(self.project/self.source_file).read_text().splitlines(True))))
         owned=set()
         table=self.observer.snapshot()
         for child in self.children: owned.add(child.pid)
@@ -315,7 +352,7 @@ class Runtime:
         if hasattr(self,'bootstrap'):secrets.append(self.bootstrap)
         for filename in self.private.glob('*.json'):
             data=json.loads(filename.read_text())
-            secrets.extend(value for key,value in data.items() if key in ('ISONIM_EDITOR_TOKEN','browserToken','controlToken') and value)
+            secrets.extend(private_credentials(data))
         scanned=[]
         for filename in self.artifacts.iterdir():
             if filename.is_file() and filename.suffix in ('.json','.jsonl','.yaml','.log','.txt'):
@@ -323,3 +360,111 @@ class Runtime:
                 if any(secret in contents for secret in secrets):raise AssertionError('Credential leaked into public artifact: '+filename.name)
                 scanned.append(filename.name)
         (self.artifacts/'cleanup.json').write_text(json.dumps({'owned_processes':len(owned),'readers':len(self.readers),'reaped':True,'public_secret_scan':scanned},indent=2))
+
+
+def scripted_terminal_fence(wire, turn):
+    """Actual per-turn runCmd completion; None means the producer is still busy.
+
+    This parser never supplies RPC replies or invents terminal completion. Its
+    caller authenticates the current fully forwarded, zero-inflight ACP journal.
+    Official playback currently emits no release request; every emitted release
+    is nevertheless required to have its original successful response.
+    """
+    sha=lambda value:hashlib.sha256(json.dumps(value,sort_keys=True).encode()).hexdigest()
+    prompts=[(i,row['message']) for i,row in enumerate(wire) if row['direction']=='request' and row['message'].get('method')=='session/prompt']
+    if len(prompts)>turn:raise AssertionError('Later turn cannot satisfy a scripted terminal fence')
+    if len(prompts)<turn:return None
+    start,prompt=prompts[-1];sid=prompt.get('params',{}).get('sessionId')
+    if type(sid) is not str or not sid or any(message.get('params',{}).get('sessionId')!=sid for _,message in prompts):raise AssertionError('Same actual scripted session required')
+    def reply(index,request,direction):
+        identity=request.get('id')
+        if type(identity) not in (int,str) or identity=='':raise AssertionError('Typed actual RPC request ID required')
+        found=[(i,row['message']) for i,row in enumerate(wire) if i>index and row['direction']==direction and 'method' not in row['message'] and 'id' in row['message'] and type(row['message']['id']) is type(identity) and row['message']['id']==identity]
+        if len(found)>1:raise AssertionError('Duplicate actual scripted RPC reply')
+        if not found:return None
+        if 'error' in found[0][1] or type(found[0][1].get('result')) is not dict:raise AssertionError('Actual scripted RPC failed')
+        return found[0]
+    new=[(i,row['message']) for i,row in enumerate(wire) if row['direction']=='request' and row['message'].get('method')=='session/new']
+    if len(new)!=1:raise AssertionError('One actual scripted session creation required')
+    new_reply=reply(new[0][0],new[0][1],'response')
+    if new_reply is None:return None
+    if new_reply[1]['result'].get('sessionId')!=sid:raise AssertionError('Scripted terminal must use actual created session')
+    prompt_reply=reply(start,prompt,'response')
+    if prompt_reply is None:return None
+    if prompt_reply[1]['result'].get('stopReason')!='end_turn':raise AssertionError('Actual scripted prompt did not end successfully')
+    declarations=[];creates=[];updates=[]
+    for i,row in enumerate(wire[start+1:],start+1):
+        message=row['message'];params=message.get('params',{})
+        if row['direction']!='response':continue
+        method=message.get('method')
+        if method=='terminal/create':
+            if params.get('sessionId')!=sid:raise AssertionError('Terminal create targets another session')
+            creates.append((i,message))
+        elif method=='session/update':
+            update=params.get('update',{})
+            if update.get('sessionUpdate') in ('tool_call','tool_call_update'):
+                if params.get('sessionId')!=sid:raise AssertionError('Scripted tool targets another session')
+                if update.get('sessionUpdate')=='tool_call' and any(item.get('type')=='terminal' for item in update.get('content',[])):declarations.append((i,update))
+                elif update.get('sessionUpdate')=='tool_call_update':updates.append((i,update))
+    if not declarations or not creates:return None
+    if len(declarations)!=1 or len(creates)!=1:raise AssertionError('Exactly one actual scripted terminal per turn required')
+    declaration_order,declaration=declarations[0];create_order,create=creates[0]
+    if declaration_order>=create_order:raise AssertionError('Actual terminal declaration must precede create')
+    created=reply(create_order,create,'request')
+    if created is None:return None
+    terminal=created[1]['result'].get('terminalId');tool=declaration.get('toolCallId')
+    if any(type(value) is not str or not value for value in (terminal,tool)):raise AssertionError('Actual terminal and tool identities required')
+    raw=declaration.get('rawInput');params=create.get('params');content=declaration.get('content')
+    if type(raw) is not dict or type(params) is not dict or type(content) is not list:raise AssertionError('Typed actual terminal declaration required')
+    terminals=[item for item in content if type(item) is dict and item.get('type')=='terminal']
+    args=params.get('args')
+    if declaration.get('kind')!='execute' or declaration.get('title')!='runCmd' or len(terminals)!=1 or terminals[0].get('terminalId')!=tool:raise AssertionError('Actual declared runCmd tool identity required')
+    if type(args) is not list or not args or any(type(value) is not str for value in args) or type(raw.get('cmd')) is not str or raw['cmd']!=args[-1] or type(raw.get('cwd')) is not str or raw['cwd']!=params.get('cwd'):raise AssertionError('Actual declared command/cwd must match terminal create')
+    for i,row in enumerate(wire[:start]):
+        message=row['message']
+        if row['direction']=='response' and message.get('method')=='terminal/create':
+            previous=reply(i,message,'request')
+            if previous and previous[1]['result'].get('terminalId')==terminal:raise AssertionError('Previous turn terminal cannot satisfy current turn')
+    output=[];release=[];successful_exits=[]
+    for i,row in enumerate(wire[start+1:],start+1):
+        message=row['message'];method=message.get('method')
+        if row['direction']!='response' or method not in ('terminal/output','terminal/release'):continue
+        params=message.get('params',{})
+        if params.get('sessionId')!=sid or params.get('terminalId')!=terminal:raise AssertionError('Actual RPC targets wrong scripted terminal/session')
+        result=reply(i,message,'request')
+        if result is None:return None
+        (output if method=='terminal/output' else release).append({'requestOrder':i,'replyOrder':result[0],'requestIdSha256':sha(message['id'])})
+        if method=='terminal/output':
+            value=result[1]['result'];status=value.get('exitStatus')
+            if status is not None:
+                if type(status) is not dict or type(status.get('exitCode')) is not int or status['exitCode']!=0 or value.get('isComplete') is not True:raise AssertionError('Actual scripted terminal did not exit successfully')
+                successful_exits.append(result[0])
+    if not output or not successful_exits:return None
+    completed=[i for i,update in updates if update.get('toolCallId')==tool and update.get('status')=='completed']
+    if any(update.get('toolCallId')==tool and update.get('status') in ('failed','cancelled') for _,update in updates):raise AssertionError('Actual scripted tool failed')
+    if not completed:return None
+    if len(completed)!=1 or completed[0]<=successful_exits[-1]:raise AssertionError('Actual completed tool update must follow successful terminal reply')
+    return {'complete':True,'turn':turn,'sessionIdSha256':sha(sid),'promptRequestIdSha256':sha(prompt['id']),
+        'toolCallIdSha256':sha(tool),'terminalIdSha256':sha(terminal),'promptRequestOrder':start,'promptReplyOrder':prompt_reply[0],
+        'createRequestOrder':create_order,'createReplyOrder':created[0],'successfulExitReplyOrder':successful_exits[-1],
+        'completedToolOrder':completed[0],'outputReplies':output,'releaseReplies':release}
+
+
+def authenticated_scripted_terminal_fence(private, turn, writers):
+    """Live actual journal authentication, not an unjournaled JSON snapshot."""
+    from helpers.editor_provider_closure import authenticate_progress
+    try:
+        progress=authenticate_progress(private,writers['observer'])
+    except (AssertionError,FileNotFoundError,json.JSONDecodeError):
+        # A concurrently growing journal or still-unforwarded observation is
+        # not ready. The existing absolute turn deadline bounds this polling;
+        # final close independently requires strict complete authentication.
+        return None
+    data=(private/'real-provider-wire.jsonl').read_bytes()
+    if hashlib.sha256(data).hexdigest()!=progress['traceSha256']:return None
+    proof=scripted_terminal_fence([json.loads(line) for line in data.splitlines()],turn)
+    if proof is None:return None
+    proof.update(frames=progress['frames'],traceSha256=progress['traceSha256'],progressChain=progress['chain'],
+        ingressChain=progress['ingress']['chain'],writers=writers,
+        sourceSha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
+    return proof

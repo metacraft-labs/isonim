@@ -29,4 +29,8 @@ with (root / 'provider-launch.jsonl').open('a') as stream:
                             'network_namespace':os.readlink('/proc/self/ns/net') if Path('/proc/self/ns/net').exists() else None,
                             'routes':Path('/proc/net/route').read_text() if Path('/proc/net/route').exists() else None})+'\n')
 os.environ['MOCK_AGENT_PROMPT_TRACE'] = str(root / 'provider-prompts.jsonl')
-os.execv(str(provider), [str(provider),'--scenario',str(scenario),'--disable-follower','--log-file',str(root/'provider.log'),'--log-level','debug'])
+argv=[str(provider),'--scenario',str(scenario),'--disable-follower','--log-file',str(root/'provider.log'),'--log-level','debug']
+if sys.argv[4:]==['--observe-wire']:
+    from editor_provider_wire import observe_provider
+    sys.exit(observe_provider(root,provider,argv))
+os.execv(str(provider),argv)

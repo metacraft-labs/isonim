@@ -30,13 +30,23 @@ const authored=path.join(project,'stories.nim');
 // must have a size independent of these real producer bytes.
 const largeCss='/* concise-operation-'+ 'x'.repeat(256*1024) +' */';
 const authoredWrapper = `proc card(title: string): string =
-  "\\xEF\\xBB\\xBF<?xml version=\\"1.0\\"?><!doctype html><!-- valid documentation: <head> and <header> -->" & cardDocument(title).replace("<head>", """<HeAd data-authored-double="1 > 0" data-authored-single='2 > 1'><script>window.authoredPreviewLiteral="<head>";window.authoredPreviewCounter=(window.authoredPreviewCounter||0)+1;</script><style>body::before{content:"<head>";display:none}</style><style data-large-source>${largeCss}</style>""")
+  "\\xEF\\xBB\\xBF<?xml version=\\"1.0\\"?><!doctype html><!-- valid documentation: <head> and <header> -->" & cardDocument(title).replace("<body>", """<body><!-- <i class='flex'> --><script>window.phantomMarkup=\"<i class='flex'>\";</script><style>body::after{content: \"<i class='text-sm'>\";display:none}</style><title><i class='flex'></title><textarea hidden><i class='text-sm'></textarea><noscript><i class='flex'></noscript><template><i class='text-sm'></i></template><div data-class-relevance title='1 > 0' =class='flex' CLASS='p&#45;4&Tab;w&#x2d;12' class='flex'></div><div data-class-entity-oracle class='&OverBar; &UnderBar; &race;'></div>""").replace("<head>", """<HeAd data-authored-double="1 > 0" data-authored-single='2 > 1'><script>window.authoredPreviewLiteral="<head>";window.authoredPreviewCounter=(window.authoredPreviewCounter||0)+1;</script><style>body::before{content:"<head>";display:none}</style><style data-large-source>${largeCss}</style>""")
 
 `;
 writeFileSync(authored,readFileSync(authored,'utf8').replace('import std/json','import std/[json, strutils]').replace('proc card(title:', 'proc cardDocument(title:').replace('var stories =',authoredWrapper+'var stories ='));
 rmSync(path.join(project,'.isonim/catalog.json'),{force:true});
 const initialCatalog=spawnSync('python3',[path.join(repo,'tools/build_source_catalog.py'),project],{encoding:'utf8',timeout:70000,env:{...process.env,ISONIM_SOURCE_FRAMEWORK:repo}});
 assert.equal(initialCatalog.status,0,initialCatalog.stdout+' '+initialCatalog.stderr);
+// Compile the actual headless producer against the same framework/style inputs.
+// Its extraction output is compared with real compiled/mounted DOM, never a
+// synthetic successful capture or a reconstructed renderer.
+const classOracle=path.join(artifacts,'actual-preview-class-oracle');
+const oracleBuild=spawnSync('nim',['c','--path:src','--path:../nim-everywhere/src',
+ '--path:../nim-acp/src','--path:../nim-agent-harbor/src','--path:../nim-agents/src',
+ '--path:../isonim-render-serve/src','--out:'+classOracle,'tests/helpers/editor_context_snapshot.nim'],
+ {cwd:repo,encoding:'utf8',timeout:70000});
+assert.equal(oracleBuild.status,0,oracleBuild.stdout+' '+oracleBuild.stderr);
+
 
 const config=path.join(artifacts,'agent.toml');
 writeFileSync(config,'[agent]\nbackend="custom"\ncommand="python3"\nargs='+JSON.stringify([path.join(repo,'tests/helpers/editor_control_peer.py')])+'\nprimer_enabled=false\n');
@@ -126,21 +136,30 @@ try{
   compatMode:body.ownerDocument.compatMode,double:body.ownerDocument.head.getAttribute('data-authored-double'),
   single:body.ownerDocument.head.getAttribute('data-authored-single'),literal:body.ownerDocument.defaultView.authoredPreviewLiteral,
   executions:body.ownerDocument.defaultView.authoredPreviewCounter,style:body.ownerDocument.querySelector('style')?.textContent,
-  text:body.innerText
+  text:body.innerText,classes:[...new Set([...body.ownerDocument.querySelectorAll('[class]')].flatMap(element=>[...element.classList]))]
  }));
  assert.equal(authoredDocument.compatMode,'CSS1Compat');
  assert.equal(authoredDocument.double,'1 > 0');assert.equal(authoredDocument.single,'2 > 1');
  assert.equal(authoredDocument.literal,'<head>');assert.equal(authoredDocument.executions,1);
  assert.equal(authoredDocument.style,'body::before{content:"<head>";display:none}');
  assert(authoredDocument.text.includes('Ready card'));
+ assert.deepEqual(authoredDocument.classes,['p-4','w-12','‾','_','∽̱'],'Actual mounted DOM ignores inactive markup, uses first duplicate class and decodes corrected WHATWG names');
  const rawReady=JSON.parse(readFileSync(path.join(project,'.isonim/catalog.json'),'utf8')).stories.find(story=>story.group==='Card'&&story.name==='default ready').documentHtml;
  assert(rawReady.startsWith('\uFEFF<?xml version="1.0"?><!doctype html>'));
+ const extractedClasses=spawnSync(classOracle,['--preview-classes'],{input:rawReady,encoding:'utf8',timeout:70000});
+ assert.equal(extractedClasses.status,0,extractedClasses.stderr);
+ assert.deepEqual(JSON.parse(extractedClasses.stdout),authoredDocument.classes,
+  'Actual production extractor and real mounted DOM must agree on genuine compiler HTML');
+ const compiledStyles=JSON.parse(readFileSync(path.join(repo,'build/tailwind-styles.json'),'utf8'));
+ const mountedCompiledClasses=authoredDocument.classes.filter(name=>Object.hasOwn(compiledStyles,name));
+ assert.deepEqual(mountedCompiledClasses,['p-4','w-12']);
+
  const unstampedReadyOracle=await page.evaluate(async html=>{
   const frame=document.createElement('iframe');frame.style.cssText='position:fixed;left:-10000px;width:1000px;height:1000px';
   const loaded=new Promise(resolve=>frame.onload=resolve);frame.srcdoc=html;document.body.append(frame);await loaded;
   const doc=frame.contentDocument;const win=frame.contentWindow;
   const result={compatMode:doc.compatMode,double:doc.head.getAttribute('data-authored-double'),single:doc.head.getAttribute('data-authored-single'),
-   literal:win.authoredPreviewLiteral,executions:win.authoredPreviewCounter,style:doc.querySelector('style')?.textContent,text:doc.body.innerText};
+   literal:win.authoredPreviewLiteral,executions:win.authoredPreviewCounter,style:doc.querySelector('style')?.textContent,text:doc.body.innerText,classes:[...new Set([...doc.querySelectorAll('[class]')].flatMap(element=>[...element.classList]))]};
   frame.remove();return result;
  },rawReady);
  assert.deepEqual(authoredDocument,unstampedReadyOracle,'Leading BOM/PI/doctype/comments and head attributes must preserve actual authored rendering/execution');
@@ -150,7 +169,11 @@ try{
  assert(authoredCapture.result.documentHtml.includes('Ready card'));
  const composer=page.locator('[data-editor-control-focus="composer"]');
  await composer.fill('Keep this real conversation across source compilation');
+ const contextRequest=page.waitForRequest(request=>request.url().endsWith('/api/agent/prompts')&&request.method()==='POST');
  await page.getByRole('button',{name:'Send agent prompt',exact:true}).click();
+ const submittedContext=(await contextRequest).postDataJSON().context;
+ assert.deepEqual(submittedContext.availableTailwindClasses.slice(0,2),mountedCompiledClasses,'Actual production preview context follows mounted DOM classes before unrelated compiled inventory');
+ assert(submittedContext.availableTailwindClasses.includes('flex')&&submittedContext.availableTailwindClasses.includes('text-sm'),'Phantoms are genuinely compiled but must not take relevance priority');
  await page.getByText('CONTROL_SCOPE_OK',{exact:false}).first().waitFor();
  await stable(scope);
  const conversation=cli(scope,['state']).conversations.find(chat=>chat.active);
@@ -394,5 +417,5 @@ try{
  assert(!readFileSync(path.join(artifacts,'server.log'),'utf8').includes('SIGSEGV'),'Native teardown must not crash');
 }
 
-writeFileSync(path.join(artifacts,'results.json'),JSON.stringify({cases:19,passed:true,renderedCapture:'busy-preview.png',nativeCleanup:true},null,2));
+writeFileSync(path.join(artifacts,'results.json'),JSON.stringify({cases:20,passed:true,htmlClassOracle:true,renderedCapture:'busy-preview.png',nativeCleanup:true},null,2));
 console.log('Source GUI acceptance passed; artifacts '+artifacts);

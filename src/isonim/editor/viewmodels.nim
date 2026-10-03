@@ -5,11 +5,16 @@
 ## Created via withViewModel inside createRoot.
 
 import std/[algorithm, hashes, json, math, options, sequtils, strutils, tables]
+from std/unicode import runeLen, runeSubStr
 import isonim/core/[signals, computation]
 import isonim/viewmodel
 import isonim/editor/types
+import isonim/editor/html_classes
+import isonim/editor/design_review/context_policy
 import isonim/editor/streaming_preview
 import nim_agents/activity
+import isonim/dsl/tailwind
+import isonim/theming/theme
 
 export types
 export streaming_preview
@@ -196,6 +201,8 @@ type
     scrollPosition*: float
     followOutput*: bool
     pendingPromptText*: string
+    promptAdmitted*: bool
+    promptGeneration*: int
     controlConversationId*: Signal[string]
     messages*: Signal[seq[ChatMessage]]
     sessionStatus*: Signal[AsyncState]
@@ -216,8 +223,8 @@ type
     promptAdapter*: AgentPromptAdapter
     cancelAdapter*: AgentCancelAdapter
     asyncAgentAdapter*: bool
-    promptInFlight*: bool
-    closingSession*: bool
+    promptInFlightState: Signal[bool]
+    closingSessionState: Signal[bool]
     cancelAsyncAdapter*: proc() {.closure.}
     closeAdapter*: proc(done: proc(ok: bool) {.closure.}) {.closure.}
 
@@ -410,6 +417,28 @@ proc setSectionExpanded*(inspector: InspectorVM; section: InspectorSection;
 proc recordEditorTiming*(editor: EditorVM; kind: EditorPerformanceBudgetKind;
     durationMs: int; detail: string)
 proc detachStyleClass*(editor: EditorVM; property: string): StyleOperationResult {.discardable.}
+proc promptInFlight*(chat: AgentChatVM): bool =
+  ## Preserve bool reads/writes while tracking every lifecycle transition.
+  if chat.promptInFlightState == nil: chat.promptInFlightState = createSignal(false)
+  chat.promptInFlightState.val
+
+proc `promptInFlight=`*(chat: AgentChatVM; value: bool) =
+  if chat.promptInFlightState == nil: chat.promptInFlightState = createSignal(false)
+  chat.promptInFlightState.val = value
+
+proc closingSession*(chat: AgentChatVM): bool =
+  if chat.closingSessionState == nil: chat.closingSessionState = createSignal(false)
+  chat.closingSessionState.val
+
+proc `closingSession=`*(chat: AgentChatVM; value: bool) =
+  if chat.closingSessionState == nil: chat.closingSessionState = createSignal(false)
+  chat.closingSessionState.val = value
+
+proc agentPromptReady*(chat: AgentChatVM): bool =
+  ## Turn completion, not a ready-looking activity update, releases admission.
+  not chat.promptInFlight and not chat.closingSession and
+    chat.sessionStatus.val != asLoading
+
 proc createAgentChatVM*(): AgentChatVM
 
 # ===========================================================================
@@ -8246,6 +8275,170 @@ func componentVariantContext(variants: seq[ComponentVariantDefinition];
           result.add "state " & state.key & "=" & state.value &
             " schema=" & state.schemaKey
 
+proc previewClassNames*(html: string): seq[string] =
+  ## Current compiled preview classes share the native/JS HTML tokenizer.
+  htmlClassNames(html)
+
+const AgentContextNominalChars* = 3500
+
+proc boundAgentPromptContext*(context: AgentPromptContext;
+    maxChars = AgentContextNominalChars; preserveTailwind = 0): AgentPromptContext =
+  ## Editor policy, independent of any provider's cumulative quota. Keep whole
+  ## structured records and every field. User constraints, pending edits and
+  ## diffs remain exact: an oversized required snapshot must be rejected by the
+  ## backend without admission, rather than acknowledged after data loss.
+  result = context
+  # Rebinding uses the current inventory/relevance arguments, not stale policy
+  # declarations from an earlier snapshot. Ordinary availability prose remains.
+  result.contextAvailability = result.contextAvailability.filterIt(
+    not it.startsWith("availableTailwindClasses: required minimum"))
+  let classMinimum = compiledClassMinimum(context.availableTailwindClasses.len, preserveTailwind)
+  if classMinimum > 128:
+    let marker = compiledClassMinimumMarker(classMinimum)
+    if marker notin result.contextAvailability: result.contextAvailability.add marker
+  proc boundedText(text: string; limit: int): string =
+    let count = runeLen(text)
+    if count <= limit: return text
+    result = runeSubStr(text, 0, limit div 2) &
+      "\n[truncated " & $count & " Unicode characters by editor context budget]\n" &
+      runeSubStr(text, count - limit div 2, limit div 2)
+  # Retain the current edited/selected ownership records before generic schema
+  # inventory, and one actionable diagnostic per source/category. Bounded
+  # context must not hide the very edit or diagnostic the user is discussing.
+  var schemaPriority, mapPriority, treePriority: int
+  var schemaFirst, schemaRest: seq[AgentDesignSystemSchemaEntry]
+  for entry in result.designSystemSchema:
+    let relevant = result.pendingSourceEdits.anyIt(it.schemaKey.len > 0 and it.schemaKey == entry.key) or
+      result.accumulatedEdits.anyIt(it.property == entry.property and (it.file.len == 0 or it.file == entry.file)) or
+      result.selectedSchemaNodes.anyIt(it.key == entry.key)
+    if relevant: schemaFirst.add entry
+    else: schemaRest.add entry
+  schemaPriority = schemaFirst.len
+  result.designSystemSchema = schemaFirst & schemaRest
+  var mapFirst, mapRest: seq[AgentSourceMapEntry]
+  for entry in result.sourceMap:
+    if result.accumulatedEdits.anyIt(it.property == entry.property) or
+        result.pendingSourceEdits.anyIt(it.schemaKey.len > 0 and it.schemaKey == entry.schemaKey):
+      mapFirst.add entry
+    else: mapRest.add entry
+  mapPriority = mapFirst.len
+  result.sourceMap = mapFirst & mapRest
+  # A lone root conveys no current hierarchy. Keep small published trees and
+  # selected/edited descendants with their actual ancestor chain. Preserve
+  # source order within each part; rows retain their real IDs/depth/properties.
+  var treeIds: seq[string]
+  for i, row in result.renderedComponentTree:
+    let relevant = i < 8 or row.selected or
+      (result.selectedElement.id.len > 0 and row.id == result.selectedElement.id) or
+      row.id in result.selectedElement.ancestorIds or
+      result.pendingSourceEdits.anyIt(it.schemaKey.len > 0 and it.schemaKey == row.schemaKey) or
+      result.accumulatedEdits.anyIt(it.file.len > 0 and it.file == row.sourceFile and it.line == row.sourceLine)
+    if relevant and row.id notin treeIds: treeIds.add row.id
+  var addedAncestor = true
+  while addedAncestor:
+    addedAncestor = false
+    for row in result.renderedComponentTree:
+      if row.id in treeIds and row.parentId.len > 0 and row.parentId notin treeIds:
+        treeIds.add row.parentId
+        addedAncestor = true
+  var treeFirst, treeRest: seq[ElementLayerRow]
+  for row in result.renderedComponentTree:
+    if row.id in treeIds: treeFirst.add row
+    else: treeRest.add row
+  treePriority = treeFirst.len
+  result.renderedComponentTree = treeFirst & treeRest
+  for id in treeIds:
+    if not result.renderedComponentTree.anyIt(it.id == id):
+      result.contextAvailability.add "renderedComponentTree: a required ancestor is unavailable in the published tree"
+      break
+  var diagnosticGroups: seq[string]
+  var diagnosticFirst, diagnosticRest: seq[AgentDiagnosticSnapshot]
+  for entry in result.diagnostics:
+    let group = entry.source & ":" & entry.category
+    if group notin diagnosticGroups:
+      diagnosticGroups.add group
+      diagnosticFirst.add entry
+    else: diagnosticRest.add entry
+  result.diagnostics = diagnosticFirst & diagnosticRest
+  proc minimumRecords(field: string): int =
+    case field
+    of "designSystemSchema": max(1, schemaPriority)
+    of "sourceMap": max(1, mapPriority)
+    of "diagnostics": max(1, diagnosticGroups.len)
+    of "selectedSchemaNodes": max(1, context.selectedSchemaNodes.len)
+    of "renderedComponentTree": max(1, treePriority)
+    of "availableTailwindClasses": classMinimum
+    else: 1
+  var diagnostics: seq[AgentDiagnosticSnapshot]
+  for diagnostic in result.diagnostics:
+    var entry = diagnostic
+    entry.message = boundedText(entry.message, 512)
+    if entry.message != diagnostic.message:
+      let marker = "diagnostics.message: within-record Unicode text truncated; location/severity/category preserved"
+      if marker notin result.contextAvailability: result.contextAvailability.add marker
+    diagnostics.add entry
+  result.diagnostics = diagnostics
+  var snapshots: seq[string]
+  for snapshot in result.domSnapshots:
+    let bounded = boundedText(snapshot, 1024)
+    if bounded != snapshot:
+      let marker = "domSnapshots: within-record Unicode text truncated; partial HTML context, use capture-preview for full mounted document"
+      if marker notin result.contextAvailability: result.contextAvailability.add marker
+    snapshots.add bounded
+  result.domSnapshots = snapshots
+  template cap(field: untyped; budget: int) =
+    block:
+      let before = result.field.len
+      while result.field.len > minimumRecords(astToStr(field)) and runeLen($(%result.field)) > budget:
+        result.field = result.field[0 ..< result.field.len - 1]
+      if result.field.len != before:
+        result.contextAvailability.add astToStr(field) & ": truncated to " &
+          $result.field.len & " of " & $before & " complete records (editor context budget)"
+  cap(diagnostics, 1024)
+  cap(designSystemSchema, 2048)
+  cap(selectedSchemaNodes, 2048)
+  cap(componentVariantContext, 1024)
+  cap(renderedComponentTree, 2048)
+  cap(themeTokens, 2048)
+  cap(sourceMap, 1024)
+  cap(reviewAnnotations, 2048)
+  cap(domSnapshots, 2048)
+  cap(screenshotRefs, 1024)
+  cap(tokenContext, 1024)
+  cap(availableTailwindClasses, 2048)
+  # Reduce remaining optional arrays fairly while keeping at least one complete
+  # record per populated field. Protected user/edit data is never consumed here.
+  var changed = true
+  while runeLen($(%result)) > maxChars and changed:
+    changed = false
+    template trim(field: untyped) =
+      if runeLen($(%result)) > maxChars and result.field.len > minimumRecords(astToStr(field)):
+        let before = result.field.len
+        result.field = result.field[0 ..< before - 1]
+        let marker = astToStr(field) & ": bounded further by total editor context budget"
+        if marker notin result.contextAvailability: result.contextAvailability.add marker
+        changed = true
+    trim(diagnostics)
+    trim(designSystemSchema)
+    trim(componentVariantContext)
+    trim(renderedComponentTree)
+    trim(themeTokens)
+    trim(sourceMap)
+    trim(reviewAnnotations)
+    trim(domSnapshots)
+    trim(screenshotRefs)
+    trim(tokenContext)
+    trim(availableTailwindClasses)
+    trim(selectedSchemaNodes)
+  if runeLen($(%result)) > maxChars:
+    let protected = %* {"selectedStory": result.selectedStory, "selectedElement": result.selectedElement,
+      "accumulatedEdits": result.accumulatedEdits, "pendingSourceEdits": result.pendingSourceEdits,
+      "designSystemConstraints": result.designSystemConstraints, "currentFileDiffs": result.currentFileDiffs}
+    if runeLen($protected) > maxChars:
+      result.contextAvailability.add "required context exceeds nominal editor budget; exact user constraints, edits and diffs retained for truthful backend admission"
+    else:
+      result.contextAvailability.add "optional context identities or complete records exceed nominal editor budget; preserved rather than corrupted, backend quota may reject this snapshot"
+
 proc buildAgentPromptContext*(editor: EditorVM): AgentPromptContext =
   let schemaEntries = designSystemSchemaSnapshot(editor.designSystemSchema.val) &
     schemaSnapshot(editor.workspaceEditAdapter) &
@@ -8283,10 +8476,76 @@ proc buildAgentPromptContext*(editor: EditorVM): AgentPromptContext =
       workspacePatchDiffs(editor.workspaceEditPatches.val),
     platform: editor.platform.val,
     backend: editor.chat.backend.val)
+  # The published inspector rows describe the current mounted document. Empty
+  # data is reported honestly instead of substituting the selected schema.
+  result.renderedComponentTree = editor.inspector.layers.val
+  if result.renderedComponentTree.len == 0:
+    result.contextAvailability.add "renderedComponentTree: unavailable (preview not published)"
+  for name in tailwindStyles.keys:
+    result.availableTailwindClasses.add name
+  result.availableTailwindClasses.sort()
+  result.tailwindClassTotal = result.availableTailwindClasses.len
+  var usedClasses: seq[string]
+  let previewHtml = editor.preview.current.val.documentHtml
+  var relevantClasses = previewClassNames(previewHtml)
+  for prop in editor.inspector.selectedElement.val.properties:
+    let name = prop.originDetail.classNameFromOriginDetail()
+    if name.len > 0: relevantClasses.add name
+    if prop.name in ["class", "className"]: relevantClasses.add prop.value.splitWhitespace()
+  for edit in editor.inspector.pendingSourceEdits.val:
+    let name = edit.originDetail.classNameFromOriginDetail()
+    if name.len > 0: relevantClasses.add name
+    if edit.property in ["class", "className"]:
+      relevantClasses.add edit.oldValue.splitWhitespace()
+      relevantClasses.add edit.newValue.splitWhitespace()
+  for name in relevantClasses:
+    if name in result.availableTailwindClasses and name notin usedClasses: usedClasses.add name
+  var remainingClasses: seq[string]
+  for name in result.availableTailwindClasses:
+    if name notin usedClasses: remainingClasses.add name
+  result.availableTailwindClasses = usedClasses & remainingClasses
+  if result.tailwindClassTotal == 0:
+    result.contextAvailability.add "availableTailwindClasses: unavailable (no compiled tailwind-styles.json)"
+  elif result.tailwindClassTotal > max(512, usedClasses.len):
+    result.availableTailwindClasses.setLen(max(512, usedClasses.len))
+    result.contextAvailability.add "availableTailwindClasses: truncated to " &
+      $result.availableTailwindClasses.len & " current-preview/selected/edited-prioritized compiled classes"
+  # This is the renderer framework's actual selected theme, separately labelled
+  # from source-backed project foundation tokens. Native mode has no color /
+  # spacing override; do not invent branded project values in that mode.
+  result.activeThemeContext.add "name=" & activeTheme.name
+  result.activeThemeContext.add "mode=" & $activeTheme.mode
+  result.activeThemeContext.add "dark=" & $isDarkMode
+  if activeTheme.mode != tmNative:
+    for name in ["primary", "secondary", "accent", "background", "surface",
+        "error", "on-primary", "on-secondary", "on-background", "on-surface",
+        "on-error", "border", "text-primary", "text-secondary", "text-disabled"]:
+      result.activeThemeContext.add "color." & name & "=" & themeColor(name)
+    for name in ["xs", "sm", "md", "lg", "xl", "xxl"]:
+      result.activeThemeContext.add "spacing." & name & "=" & $themeSpacing(name)
+    for name in ["none", "sm", "md", "lg", "xl", "full"]:
+      result.activeThemeContext.add "radius." & name & "=" & $themeRadius(name)
+  else:
+    result.contextAvailability.add "activeThemeContext: native platform defaults (no color/spacing override)"
+  for name in ["large-title", "title", "headline", "body", "callout", "caption", "footnote"]:
+    let style = themeTypography(name)
+    if style.size > 0 or style.weight.len > 0:
+      result.activeThemeContext.add "typography." & name & ".size=" & $style.size
+      result.activeThemeContext.add "typography." & name & ".weight=" & style.weight
+      result.activeThemeContext.add "typography." & name & ".letterSpacing=" & $style.letterSpacing
+    else:
+      result.contextAvailability.add "activeThemeContext.typography." & name & ": native platform default (no override)"
+  result.themeTokens = editor.foundations.tokens.val
+  if result.themeTokens.len == 0:
+    result.contextAvailability.add "themeTokens: unavailable (project has published no foundation tokens)"
+  elif result.themeTokens.len > 512:
+    result.themeTokens.setLen(512)
+    result.contextAvailability.add "themeTokens: truncated to 512 project tokens"
   result.selectedSchemaNodes = result.selectedSchemaSnapshot()
   result.tokenContext = tokenContext(result.selectedElement, schemaEntries)
   result.componentVariantContext = componentVariantContext(
     editor.variants.variants.val, result.selectedStory, result.selectedElement)
+  result = boundAgentPromptContext(result, preserveTailwind = usedClasses.len)
 
 proc addUserMessage*(chat: AgentChatVM; text: string) =
   chat.placeholdersDismissed.val = true
@@ -8664,18 +8923,28 @@ proc rebaseAgentProposedEdit*(editor: EditorVM; id: string): bool {.discardable.
       return editor.sendAgentPrompt()
   false
 
+proc acknowledgeAgentPrompt*(chat: AgentChatVM; generation: int;
+    submitted: seq[EditRecord]) =
+  ## Called only after this exact turn reaches the provider/durable input boundary.
+  if not chat.promptInFlight or chat.closingSession or
+      chat.promptGeneration != generation or chat.promptAdmitted: return
+  chat.promptAdmitted = true
+  let current = chat.accumulatedEdits.val
+  if submitted.len <= current.len and current[0 ..< submitted.len] == submitted:
+    chat.accumulatedEdits.val = current[submitted.len ..< current.len]
+
 proc sendAgentPrompt*(editor: EditorVM): bool {.discardable.} =
   if editor.chat.inputText.val.strip.len > 0:
     editor.chat.placeholdersDismissed.val = true
-  if editor.chat.asyncAgentAdapter and
-      (editor.chat.promptInFlight or editor.chat.closingSession):
-    return false
+  if not editor.chat.agentPromptReady(): return false
   let prompt = editor.chat.inputText.val.strip()
   if prompt.len == 0:
     return false
 
   let originalDraft = editor.chat.inputText.val
   editor.chat.pendingPromptText = originalDraft
+  editor.chat.promptAdmitted = false
+  inc editor.chat.promptGeneration
   editor.chat.addUserMessage(prompt)
   editor.chat.sessionStatus.val = asLoading
   editor.chat.connectionState.val = "streaming"
@@ -11141,6 +11410,8 @@ proc createAgentChatVM*(): AgentChatVM =
   let messageCount = createMemo[int](proc(): int = messages.val.len)
 
   AgentChatVM(
+    promptInFlightState: createSignal(false),
+    closingSessionState: createSignal(false),
     cancelSupported: createSignal(false),
     activity: createSignal(ActivityTimeline()),
     placeholdersDismissed: createSignal(false),

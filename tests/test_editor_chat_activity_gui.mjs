@@ -169,6 +169,24 @@ try{
   await page.locator('[data-chat-kind="diff"] summary').click();
   await page.locator('[data-chat-kind="llm_request"] summary').click();
   await shot('activity-details');await shot('activity-details',240);
+  await input.fill('newer in-flight draft 保持😀');await setBusy(true);
+  const beforeBudget=JSON.parse(await page.evaluate(()=>window.__chatTest.state()));
+  await event({kind:'status',sourceType:'editor_context_budget',
+    text:'Backend quota rejected this turn before delivery. Retrying once with bounded optional context; exact user text and pending edits are retained.',
+    presentationFields:[{name:'Remaining Unicode characters',value:'4260'},
+      {name:'Optional context',value:'diagnostics: 1/80 records; quota truncated'}]});
+  const budget=page.locator('[data-chat-kind="status"]').filter({hasText:'Backend quota rejected this turn before delivery'});
+  await budget.waitFor();await budget.locator('summary').click();
+  assert((await budget.innerText()).includes('4260'));
+  assert((await budget.innerText()).includes('diagnostics: 1/80 records; quota truncated'));
+  const afterBudget=JSON.parse(await page.evaluate(()=>window.__chatTest.state()));
+  assert.deepEqual(afterBudget,beforeBudget,'Neutral safe status cannot admit or alter draft/edits/busy state');
+  assert.equal(await input.inputValue(),'newer in-flight draft 保持😀');
+  await shot('context-budget');await shot('context-budget',240);await setBusy(false);
+  record('quota status and explicit availability render without changing admission/draft/edits');
+  // Reestablish the original later error scenario's user draft through the
+  // actual composer. The budget scenario's newer draft was asserted above.
+  await input.fill('draft while streaming');
   await event({kind:'status',sourceType:'agent_question',question:'Which variant?',text:'Which variant?'});
   const question=page.locator('[data-chat-kind="status"]').filter({hasText:'Which variant?'});
   await question.waitFor();await question.locator('summary').click();

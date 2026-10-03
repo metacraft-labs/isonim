@@ -1,6 +1,6 @@
 ## Production chat VM + pure reducer and safe block parser, native and JS.
-## A synchronous admission closure substitutes only the external provider request
-## boundary to force rejection. The generic-backend compatibility case uses the
+## Controlled admission closures substitute only external request dispatch to
+## force rejection or latch an unresolved turn. The generic-backend compatibility case uses the
 ## real MockRenderer backend to prove production views need no browser globals;
 ## actual DOM focus/selection is covered by the mounted GUI suite. EditorVM and
 ## signals/reducer remain production code.
@@ -20,6 +20,48 @@ proc activityNode(node: MockNode; role: string): MockNode =
 
 
 suite "Chat activity and composition":
+  test "rendered admission tracks flight and closure even when activity already looks ready":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      var dispatched: seq[string]
+      vm.chat.configureAgentAdapters(proc(prompt: string; context: AgentPromptContext): bool =
+        dispatched.add prompt
+        vm.chat.promptInFlight = true
+        true, nil)
+      vm.chat.asyncAgentAdapter = true
+      vm.chat.inputText.val = "exact next draft"
+      vm.chat.promptInFlight = true
+      vm.chat.sessionStatus.val = asReady
+      let panel = renderChatPanel[MockRenderer, MockNode](MockRenderer(), vm)
+      proc send(node: MockNode): MockNode =
+        if node.attributes.getOrDefault("aria-label") == "Send agent prompt": return node
+        for child in node.children:
+          result = send(child)
+          if result != nil: return
+      let control = send(panel)
+      check control != nil
+      check control.attributes.getOrDefault("aria-disabled") == "true"
+      check not vm.sendAgentPrompt()
+      check dispatched.len == 0
+      check vm.chat.inputText.val == "exact next draft"
+      vm.chat.promptInFlight = false
+      check control.attributes.getOrDefault("aria-disabled") == "false"
+      vm.chat.closingSession = true
+      check control.attributes.getOrDefault("aria-disabled") == "true"
+      check not vm.sendAgentPrompt()
+      vm.chat.closingSession = false
+      check control.attributes.getOrDefault("aria-disabled") == "false"
+      check vm.sendAgentPrompt()
+      check dispatched == @["exact next draft"]
+      vm.chat.inputText.val = "newer unsent draft"
+      vm.chat.applyAgentEvent(AgentEvent(kind: aekCompleted, stopReason: srEndTurn))
+      check control.attributes.getOrDefault("aria-disabled") == "true"
+      vm.chat.sessionStatus.val = asError
+      check control.attributes.getOrDefault("aria-disabled") == "true"
+      check not vm.sendAgentPrompt()
+      check vm.chat.inputText.val == "newer unsent draft"
+      check dispatched.len == 1
+      dispose()
   test "attempted missing-adapter send dismisses guidance and preserves retry draft":
     createRoot proc(dispose: proc()) =
       let vm = createEditorVM()

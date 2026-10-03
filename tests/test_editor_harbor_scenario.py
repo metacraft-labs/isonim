@@ -29,6 +29,7 @@ import tempfile
 import threading
 import time
 import unittest
+from helpers.editor_context_evidence import resolve_context, identity as context_identity
 import urllib.error
 import urllib.request
 from helpers.editor_process_observer import process_observer, optional_sibling_available
@@ -82,6 +83,8 @@ class EditorHarborScenario(unittest.TestCase):
         self.assertEqual(hashlib.sha256(provider.read_bytes()).hexdigest(), provider_sha,
                          'The sandbox-visible provider must be the exact official build')
         (workspace / 'isonim.nimble').write_text('# actual isolated project boundary\n')
+        (workspace / 'AGENTS.md').write_text('Current project guidance: first turn.\n')
+        self.submitted_contexts = {}
         config = artifacts / 'empty.toml'
         config.write_text('')  # Defaults: no explicit backend, command or endpoint.
         bindir = fixture / 'bin'
@@ -257,13 +260,33 @@ os.execv(provider, [provider, '--scenario', scenarios[index], '--disable-followe
             # Reuse conversation handles in reverse order: no backend restart.
             for index in (1, 0):
                 self.assert_workers(workers)
+                (workspace / 'AGENTS.md').write_text(f'Current project guidance: followup chat {index}.\n')
                 event_ids = self.turn(drafts[index]['sessionId'], SECOND, f'ISONIM_CONTEXT_7309_{index}', f'chat{index}-second')
                 self.assertEqual(event_ids, {backend_ids[index]}, 'followup must reach this same backend session')
                 self.assertEqual({s['id'] for s in self.sessions()}, set(backend_ids))
                 self.observe_idle_workers(workers)
                 trace = [json.loads(line) for line in (fixture / f'provider-prompts-{index}.jsonl').read_text().splitlines()]
-                self.assertEqual(trace, [FIRST.replace('ISONIM_CONTEXT_7309', f'ISONIM_CONTEXT_7309_{index}'), SECOND],
-                                 'exactly two actual provider requests in this conversation, without a hidden primer')
+                self.assertEqual(len(trace), 2, 'exactly two real user turns; no hidden primer')
+                prior_delivered = None
+                for turn_index, user in enumerate((FIRST.replace('ISONIM_CONTEXT_7309', f'ISONIM_CONTEXT_7309_{index}'), SECOND)):
+                    editor_label = '\n\nEDITOR CONTEXT:\n'
+                    user_text, context_and_project = trace[turn_index].split(editor_label, 1)
+                    self.assertEqual(user_text, user)
+                    editor_context, project_context = context_and_project.split('\n\nPROJECT CONTEXT:\n\n', 1)
+                    wire_context = json.loads(editor_context)
+                    if turn_index == 1 and 'fromContext' in wire_context:
+                        self.assertEqual(wire_context['fromContext'], context_identity(prior_delivered),
+                            'Reference must identify this exact prior provider transcript, not observer state')
+                    delivered = resolve_context(wire_context, prior_delivered)
+                    self.assertEqual(delivered, self.submitted_contexts[f'chat{index}-' + ('first' if turn_index == 0 else 'second')],
+                        'Every original current context value must cross the actual provider transport')
+                    prior_delivered = delivered
+                    self.assertIn('Project root: ' + str(workspace), project_context)
+                    guidance = 'first turn.' if turn_index == 0 else f'followup chat {index}.'
+                    self.assertIn('Current project guidance: ' + guidance, project_context)
+                    self.assertIn('Brief index (loaded from <project>/briefs/):', project_context)
+                    self.assertIn('Active campaigns:', project_context)
+                    self.assertNotIn((ROOT / 'prompts/ai-assistant.md').read_text(), trace[turn_index])
                 # Accepted/acknowledged delivery can reach the provider before
                 # canonical history projection. Harbor's production recovery
                 # worker finalizes these records on its five-second cadence.
@@ -345,7 +368,12 @@ os.execv(provider, [provider, '--scenario', scenarios[index], '--disable-followe
         host, port = self.base.removeprefix('http://').split(':')
         client = http.client.HTTPConnection(host, int(port), timeout=60)
         try:
-            client.request('POST', '/api/agent/prompts', json.dumps({'sessionId': draft, 'text': text}),
+            context = {'backend': 'absAgentHarbor', 'selectedStoryName': name,
+                       'themeTokens': [{'id': 'project.accent', 'value': '#123456' if name.endswith('first') else '#abcdef'}],
+                       'renderedComponentTree': [{'id': name, 'parentId': '', 'depth': 0}],
+                       'availableTailwindClasses': ['p-4'], 'tailwindClassTotal': 1}
+            self.submitted_contexts[name] = context
+            client.request('POST', '/api/agent/prompts', json.dumps({'sessionId': draft, 'text': text, 'context': context}),
                            {'Content-Type': 'application/json'})
             response = client.getresponse()
             self.assertEqual(response.status, 200)

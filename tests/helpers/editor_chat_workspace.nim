@@ -39,7 +39,9 @@ proc state(): cstring =
   var chats = newJArray()
   for session in vm.chats.val:
     chats.add %*{"id": session.id, "draft": session.vm.inputText.val}
-  cstring($(%*{"active": vm.activeChatId.val, "chats": chats}))
+  cstring($(%*{"active": vm.activeChatId.val, "chats": chats,
+    "busy":vm.chat.promptInFlight,"admitted":vm.chat.promptAdmitted,
+    "pendingEdits":vm.chat.accumulatedEdits.val}))
 proc width(value: int) = vm.setRightPanelWidth(value)
 {.emit: ["window.__chatTest = {event:", event, ", harborEvent:", harborEvent, ", backend:", backend,
   ", busy:", busy, ", newChat:", newChat, ", switchChat:", switchChat,

@@ -22,7 +22,7 @@
 ## via :proc:`editor_daemon_url.resolveDaemonUrl` and then delegates
 ## to :proc:`configureAgentAdaptersWithClient`.
 
-import std/json
+import std/[json, jsonutils]
 
 import nim_agents
 import isonim/core/signals
@@ -92,19 +92,29 @@ proc agentEventFromSse*(payload: string): AgentEvent =
 #  Adapter installation.                                                      #
 # --------------------------------------------------------------------------- #
 
-proc installAdapterCallbacks*(client: BrowserAgentClient; chat: AgentChatVM) =
+proc agentPromptContextJson*(context: AgentPromptContext): JsonNode =
+  ## Preserve every supported typed field. Human-facing enum metadata is named,
+  ## avoiding ordinal values that lose platform/backend meaning on the wire.
+  result = context.toJson
+  result["platform"] = %($context.platform)
+  result["backend"] = %($context.backend)
+
+proc installAdapterCallbacks*(client: BrowserAgentClient; chat: AgentChatVM;
+    generation = -1) =
   ## Wire ``client.onUpdate`` / ``onEnd`` / ``onError`` to push
   ## :type:`AgentEvent` instances through ``applyAgentEvent``.  Exposed
   ## so the VM tests can call this against a fake client.
   let capturedChat = chat
   client.onUpdate = proc(payload: cstring) {.closure.} =
-    if client.closed: return
+    if client.closed or (generation >= 0 and capturedChat.promptGeneration != generation): return
     let evt = agentEventFromSse($payload)
     capturedChat.applyAgentEvent(evt)
   client.onEnd = proc(stopReason: cstring) {.closure.} =
-    if client.closed: return
+    if client.closed or (generation >= 0 and capturedChat.promptGeneration != generation): return
     capturedChat.promptInFlight = false
-    capturedChat.pendingPromptText = ""
+    if not capturedChat.promptAdmitted and capturedChat.inputText.val.len == 0:
+      capturedChat.inputText.val = capturedChat.pendingPromptText
+    if capturedChat.promptAdmitted: capturedChat.pendingPromptText = ""
     capturedChat.stopReason.val = $stopReason
     capturedChat.sessionStatus.val = asReady
     if $stopReason == "cancelled":
@@ -115,7 +125,7 @@ proc installAdapterCallbacks*(client: BrowserAgentClient; chat: AgentChatVM) =
     else:
       capturedChat.connectionState.val = $acsCompleted
   client.onInterrupted = proc(message: cstring) {.closure.} =
-    if client.closed: return
+    if client.closed or (generation >= 0 and capturedChat.promptGeneration != generation): return
     # EOF is not evidence that the backend turn ended. Keep prompt admission
     # blocked while allowing explicit chat closure through the normal adapter.
     capturedChat.promptInFlight = true
@@ -125,9 +135,9 @@ proc installAdapterCallbacks*(client: BrowserAgentClient; chat: AgentChatVM) =
       result = prev
       result.add ChatMessage(kind: cmkError, text: $message, timestamp: 0.0)
   client.onError = proc(message: cstring) {.closure.} =
-    if client.closed: return
+    if client.closed or (generation >= 0 and capturedChat.promptGeneration != generation): return
     capturedChat.promptInFlight = false
-    if capturedChat.inputText.val.len == 0:
+    if not capturedChat.promptAdmitted and capturedChat.inputText.val.len == 0:
       capturedChat.inputText.val = capturedChat.pendingPromptText
     capturedChat.connectionState.val = "failed"
     capturedChat.sessionStatus.val = asError
@@ -166,13 +176,21 @@ proc configureAgentAdaptersWithClient*(chat: AgentChatVM;
       if capturedClient.closed or capturedChat.promptInFlight or
           capturedChat.closingSession: return false
       capturedChat.promptInFlight = true
+      let generation = capturedChat.promptGeneration
+      installAdapterCallbacks(capturedClient, capturedChat, generation)
+      var submitted: seq[EditRecord]
+      for edit in context.accumulatedEdits: submitted.add edit
+      capturedClient.onAdmitted = proc() =
+        if capturedClient.closed: return
+        capturedChat.acknowledgeAgentPrompt(generation, submitted)
       if capturedClient.activeSessionId.len > 0:
         capturedChat.connectionState.val = $acsStreaming
         capturedClient.submitPrompt(
-          capturedClient.activeSessionId, prompt)
+          capturedClient.activeSessionId, prompt, $context.agentPromptContextJson)
         return true
       capturedChat.connectionState.val = $acsConnecting
       let promptCopy = prompt
+      let contextCopy = $context.agentPromptContextJson
       creating = true
       capturedClient.createSession(proc(sessionId: cstring) {.closure.} =
         creating = false
@@ -187,6 +205,10 @@ proc configureAgentAdaptersWithClient*(chat: AgentChatVM;
           # ``createSession`` (onError fired); we just have to leave the
           # VM in the failed state.
           return
+        capturedChat.backend.val =
+          if capturedClient.backend == "harbor": absAgentHarbor
+          elif capturedClient.backend == "acp": absAcp
+          else: absUnconfigured
         capturedChat.cancelSupported.val = capturedClient.canCancelTurn
         capturedClient.activeSessionId = sid
         capturedChat.controlConversationId.val = sid
@@ -197,7 +219,11 @@ proc configureAgentAdaptersWithClient*(chat: AgentChatVM;
           closeBackend(done)
           return
         capturedChat.connectionState.val = $acsStreaming
-        capturedClient.submitPrompt(sid, promptCopy))
+        # Session metadata is authoritative even on the first turn, whose
+        # context was collected before the asynchronous creation response.
+        var delivered = parseJson(contextCopy)
+        delivered["backend"] = %($capturedChat.backend.val)
+        capturedClient.submitPrompt(sid, promptCopy, $delivered))
       true
 
   chat.configureAgentAdapters(promptAdapter, nil, backend)
@@ -234,5 +260,5 @@ proc configureDaemonAgentAdapters*(chat: AgentChatVM): BrowserAgentClient
   installAgentDispatcher()
   let url = resolveDaemonUrl()
   let client = newBrowserAgentClient(url)
-  chat.configureAgentAdaptersWithClient(client, absAcp)
+  chat.configureAgentAdaptersWithClient(client, absUnconfigured)
   client

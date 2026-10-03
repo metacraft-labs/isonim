@@ -15,6 +15,7 @@ import sys
 import unittest
 from helpers.editor_scenario_runtime import Runtime, wait, post, ROOT, HARBOR
 from helpers.editor_process_observer import optional_sibling_available
+from helpers.editor_context_evidence import resolve_context, identity as context_identity
 
 class EditorScenarios(unittest.TestCase):
     def test_native_real_authoring_sessions_streaming_conflicts_and_denial(self):
@@ -67,7 +68,23 @@ class EditorScenarios(unittest.TestCase):
             runtime.turn(2,'Change Busy card to Followup card in the same conversation and compile it.')
             self.assertEqual(runtime.active()['backend'],sid);self.assertEqual(runtime.providerIdentity(),identity)
             self.assertIn('Followup card',json.loads((runtime.artifacts/'capture-followup.json').read_text())['result']['documentHtml'])
-            checked(2,'follow-up same provider and conversation; second real source build')
+            actual_turns=[json.loads(line) for line in (runtime.artifacts/'provider-prompts.jsonl').read_text().splitlines()]
+            def context_from(turn):
+                return json.loads(turn.split('EDITOR CONTEXT:\n',1)[1].split('\n\nPROJECT CONTEXT:',1)[0])
+            first_context=context_from(actual_turns[0]);followup_wire=context_from(actual_turns[1])
+            followup_context=resolve_context(followup_wire,first_context)
+            self.assertEqual(followup_wire['fromContext'],context_identity(first_context), "Actual unchanged fields inherit a hash-verified admitted representation")
+            for context in (first_context,followup_context):
+                self.assertEqual(context['backend'],'absAgentHarbor')
+                for field in ('selectedStory','selectedElement','accumulatedEdits','pendingSourceEdits','sourceMap','designSystemSchema','selectedSchemaNodes','tokenContext','componentVariantContext','reviewAnnotations','screenshotRefs','domSnapshots','designSystemConstraints','diagnostics','currentFileDiffs','renderedComponentTree','availableTailwindClasses','tailwindClassTotal','themeTokens','activeThemeContext','contextAvailability','platform'):
+                    self.assertIn(field,context)
+                self.assertIn('p-4',context['availableTailwindClasses'])
+            self.assertEqual(followup_context,runtime.active()['context'])
+            self.assertNotEqual(first_context['selectedStory'],followup_context['selectedStory'])
+            self.assertEqual(followup_context['selectedStory']['group'],'Card')
+            self.assertEqual(followup_context['selectedStory']['name'],'default busy')
+            self.assertTrue(runtime.active()['admitted'])
+            checked(2,'follow-up same provider and conversation; real source build and exact complete first/follow-up context')
             checked(4,'unsupported cancellation preserves provider; later prompt succeeds')
             catalog=(runtime.project/'.isonim/catalog.json').read_bytes()
             source=(runtime.project/'stories.nim').read_text()
