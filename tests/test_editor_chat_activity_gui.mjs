@@ -399,6 +399,31 @@ try{
   // decoder and reducer. Deliberate event data is not a transport replacement.
   const corpus=JSON.parse(readFileSync(path.join(repo,'tests/fixtures/chat-session-events.json'),'utf8'));
   assert.equal(corpus.events.length,34);
+  // Provider-supported recovery is readable with Details closed, at both real
+  // mounted rail widths. No invented login action or credential input is offered.
+  for(const [width,panelWidth] of [[1440,420],[1024,240]]){
+    const loginPage=await browser.newPage({viewport:{width,height:768}});
+    await loginPage.goto(origin);await loginPage.waitForFunction(()=>window.__chatTest);
+    await loginPage.evaluate(value=>window.__chatTest.width(value),panelWidth);
+    await loginPage.getByRole('textbox',{name:'Agent prompt'}).fill('Retained login draft');
+    const loginPayload=corpus.events.find(event=>event.type==='login_required');assert(loginPayload);
+    await loginPage.evaluate(payload=>window.__chatTest.harborEvent(JSON.stringify(payload)),loginPayload);
+    await loginPage.evaluate(async()=>{await document.fonts.ready;await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));});
+    const row=loginPage.locator('[data-chat-entry]').filter({hasText:'Provider login required'});
+    const notice=row.locator('[data-chat-availability]');
+    assert((await row.locator('[data-chat-fact="Request"]').innerText()).includes(loginPayload.request));
+    assert((await row.locator('[data-chat-facts]').innerText()).includes(loginPayload.provider));
+    assert((await notice.innerText()).includes("Sign in through the provider's supported login surface."));
+    assert(await notice.isVisible());assert.equal(await row.locator('details').getAttribute('open'),null);
+    const bounds=await notice.evaluate(el=>{
+      const box=el.getBoundingClientRect(),scroll=el.closest('[data-chat-scroll]').getBoundingClientRect();
+      return {inside:box.width>0&&box.height>0&&box.left>=scroll.left&&box.right<=scroll.right&&box.top>=scroll.top&&box.bottom<=scroll.bottom,box:{left:box.left,right:box.right,top:box.top,bottom:box.bottom}};
+    });
+    assert(bounds.inside,JSON.stringify(bounds));await horizontalChatGuard(loginPage);
+    assert.equal(await row.locator('button,input,textarea,select,a').count(),0);
+    assert.equal(await loginPage.getByRole('textbox',{name:'Agent prompt'}).inputValue(),'Retained login draft');
+    await loginPage.close();record(`visible supported login guidance and whole notice bounds at ${panelWidth}`);
+  }
   await page.evaluate(()=>window.__chatTest.newChat());
   for(const payload of corpus.events){
     await page.evaluate(payload=>window.__chatTest.harborEvent(JSON.stringify(payload)),payload);

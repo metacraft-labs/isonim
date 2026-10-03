@@ -230,6 +230,36 @@ suite "Full public Harbor event presentation":
         dispose()
     check modes == ["free_form", "single_choice", "multi_choice", "confirmation"].toHashSet()
 
+  test "login recovery stays visible before details with correlated request availability":
+    const corpusText = staticRead("scenarios/chat-activity/public-session-events.json")
+    let payload = parseJson(corpusText)["scenes"]["login"][0]
+    for correlated in [false, true]:
+      createRoot proc(dispose: proc()) =
+        let vm = createEditorVM()
+        vm.chat.inputText.val = "Retained login draft"
+        var decoded = agentEventFromJson(harborEventToAgentEvent("login-session", eventFromJson(payload)).toJson())
+        if correlated: decoded.question = "Provider authentication request"
+        vm.chat.applyAgentEvent(decoded)
+        let entry = vm.chat.activity.val.entries[^1]
+        let panel = renderChatPanel[MockRenderer, MockNode](MockRenderer(), vm)
+        let node = entryNode(panel, entry.id)
+        let notice = node.children.filterIt(it.attributes.getOrDefault("data-chat-availability") == "true")
+        check notice.len == 1
+        check notice[0].parent == node
+        check notice[0].styles.getOrDefault("display") == "block"
+        check notice[0].children[0].text.contains("Sign in through the provider's supported login surface.")
+        check notice[0].children[0].text.contains("This editor cannot answer this request.") == correlated
+        let details = node.children.filterIt(it.tag == "details")
+        check details.len == 1
+        check not details[0].attributes.hasKey("open")
+        var pending = @[node]
+        while pending.len > 0:
+          let child = pending.pop()
+          check child.tag notin ["button", "input", "textarea", "select", "a"]
+          for nested in child.children: pending.add nested
+        check vm.chat.inputText.val == "Retained login draft"
+        dispose()
+
   test "all 34 public discriminators traverse safe production presentation":
     const corpusText = staticRead("scenarios/chat-activity/public-session-events.json")
     let corpus = parseJson(corpusText)

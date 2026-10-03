@@ -92,6 +92,9 @@ proc activityAvailability*(entry: ActivityEntry): string =
   # This notice concerns the correlated request; ordinary chat remains available
   # under its existing turn/session admission rules.
   if entry.kind == aekStatus:
+    if entry.data.sourceType == "login_required":
+      return "Sign in through the provider's supported login surface." &
+        (if entry.data.question.len > 0: " This editor cannot answer this request." else: "")
     if entry.data.question.len > 0: return "This editor cannot answer this request."
     if entry.data.sourceType == "session_awaiting_input":
       return "Waiting for input. This editor cannot respond to this request."

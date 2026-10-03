@@ -67,6 +67,24 @@ async function composerGuard(page,viewport){
  await horizontalChatGuard(page);
  return input;
 }
+async function loginGuidanceGuard(page,wholeNotice=false,expected=[]){
+ const rows=page.locator('[data-chat-entry][data-chat-source="login_required"]');
+ assert.equal(await rows.count(),expected.length,'required login card count');
+ for(let index=0;index<await rows.count();index++){
+  const row=rows.nth(index),notice=row.locator('[data-chat-availability]');
+  assert((await row.locator('[data-chat-fact="Request"]').innerText()).includes(expected[index].request),'actual login request identity');
+  assert((await row.locator('[data-chat-fact="Provider"]').innerText()).includes(expected[index].provider),'actual login provider identity');
+  assert.equal(await notice.count(),1,'required supported login guidance missing');
+  assert((await notice.innerText()).includes("Sign in through the provider's supported login surface."),'required supported login guidance missing');
+  assert(await notice.isVisible(),'supported login guidance visible before Details');
+  assert.equal(await notice.locator('xpath=ancestor::details').count(),0,'login guidance outside Details');
+  if(wholeNotice){
+   assert.equal(await row.locator('details').getAttribute('open'),null,'login guidance precedes expansion');
+   const inside=await notice.evaluate(el=>{const box=el.getBoundingClientRect(),scroll=el.closest('[data-chat-scroll]').getBoundingClientRect();return box.width>0&&box.height>0&&box.left>=scroll.left&&box.right<=scroll.right&&box.top>=scroll.top&&box.bottom<=scroll.bottom;});
+   assert(inside,'whole supported login notice inside conversation bounds');
+  }
+ }
+}
 async function controlReady(page,view,size){
  await page.waitForFunction(()=>{
    if(!window.__chatTest || document.readyState!=='complete' || document.fonts.status!=='loaded')return false;
@@ -231,6 +249,20 @@ try{
   await page.evaluate(async()=>{await document.fonts.ready;await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));});
   const panel=page.locator('.editor-chat');await panel.waitFor({state:'visible'});
   const input=await composerGuard(page,viewport);
+  const expectedLogins=(sceneEvents[view]??[]).filter(event=>event.type==='login_required');
+  await loginGuidanceGuard(page,['login','event-login_required'].includes(view),expectedLogins);
+  if(view==='login'){
+   const notice=page.locator('[data-chat-entry][data-chat-source="login_required"] [data-chat-availability]');
+   const original=await notice.textContent();await notice.evaluate(el=>{el.textContent='This editor cannot answer this request.';});
+   await assert.rejects(()=>loginGuidanceGuard(page,true,expectedLogins),/required supported login guidance missing/,'same semantic guard rejects absent supported recovery');
+   await notice.evaluate((el,text)=>{el.textContent=text;},original);await loginGuidanceGuard(page,true,expectedLogins);
+   await page.evaluate(()=>{const node=document.querySelector('[data-chat-entry][data-chat-source="login_required"]');window.__loginCardControl={node,parent:node.parentNode,next:node.nextSibling};node.remove();});
+   await assert.rejects(()=>loginGuidanceGuard(page,true,expectedLogins),/required login card count/,'same semantic guard rejects missing login card');
+   await page.evaluate(()=>{const {node,parent,next}=window.__loginCardControl;parent.insertBefore(node,next);delete window.__loginCardControl;});
+   await loginGuidanceGuard(page,true,expectedLogins);
+   writeFileSync(path.join(output,`login-guidance-control-${size}.json`),JSON.stringify({missingGuidanceRejected:true,missingLoginCardRejected:true,restored:true,guard:'loginGuidanceGuard used before every capture'},null,2));
+  }
+
   if(view==='empty'&&size==='narrow'){
    const restored=await oldClippedChatControl(page);
    writeFileSync(path.join(output,'horizontal-clipping-control.json'),JSON.stringify({oldClippedStateRejected:true,guard:'horizontalChatGuard used by every composerGuard',restored},null,2));
