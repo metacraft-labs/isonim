@@ -1240,6 +1240,8 @@ editor-chat-build:
 test-editor-chat-activity: editor-chat-build
     nim c -r tests/test_editor_chat_activity.nim
     nim js -r --out:build/test_editor_chat_activity.js tests/test_editor_chat_activity.nim
+    nim c -r tests/test_editor_preview_toolbar.nim
+    nim js -r --out:build/test_editor_preview_toolbar.js tests/test_editor_preview_toolbar.nim
     node tests/test_editor_chat_activity_gui.mjs
     node tests/test_editor_admission_gui.mjs
 

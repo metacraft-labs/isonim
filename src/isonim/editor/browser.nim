@@ -53,6 +53,27 @@ proc injectEditorStyles*() =
     .editor-manual-inspector details:not([open]) > *:not(summary) {
       display: none !important;
     }
+    /* Adapt to the preview column, including a resizable chat/inspector.
+       The full chip strip remains unchanged when there is room. */
+    [data-preview-center-column] { container-type: inline-size; container-name: preview-chrome; }
+    [data-preview-viewport-pinned-option="true"] { display: none !important; }
+    @container preview-chrome (max-width: 1000px) {
+      [data-preview-chrome-bar] { gap: 4px !important; padding-left: 4px !important; padding-right: 4px !important; }
+      [data-preview-toolbar-spacer] { min-width: 0 !important; }
+      [data-preview-chrome-bar] [data-choice-group-has-icon="true"] {
+        min-width: 24px !important; width: 24px !important;
+        box-sizing: border-box; padding: 2px !important;
+      }
+      [data-preview-viewport-strip-host] [data-choice-group-pill] {
+        min-width: 0 !important; padding: 2px 6px !important;
+      }
+    }
+    @container preview-chrome (max-width: 640px) {
+      [data-preview-viewport-strip-host] { display: none !important; }
+      [data-preview-viewport-current] { display: inline !important; }
+      [data-preview-viewport-overflow] { gap: 4px; }
+      [data-preview-viewport-pinned-option="true"] { display: flex !important; }
+    }
     /* Per-row "More" disclosure: hidden by default, revealed on row hover. */
     [data-inspector-control] > details > summary {
       display: none;

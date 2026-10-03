@@ -319,29 +319,64 @@ try{
   await page.setViewportSize({width,height:width===900?720:1000});
   const toolbar=page.locator('[data-preview-chrome-bar]');
   assert.equal((await toolbar.boundingBox()).height,44,'Single-row chrome preserves header alignment');
-  await toolbar.locator('[data-toolbar-cluster=viewport] [role=button]').first().click();
+  const strip=toolbar.locator('[data-preview-viewport-strip-host]');
   const trigger=page.locator('[data-preview-viewport-overflow]');
+  const current=toolbar.locator('[data-preview-viewport-current]');
   const dropdown=page.locator('[data-preview-viewport-dropdown]');
+  const compact=width===900;
+  assert.equal(await strip.isVisible(),!compact,'Wide pinned strip and narrow current-size selector');
+  assert.equal(await current.isVisible(),compact);
+  if(compact){
+   await trigger.click();await dropdown.waitFor({state:'visible'});
+   const desktop=dropdown.locator('[data-preview-viewport-dropdown-option="desktop"]');
+   assert(await desktop.isVisible(),'Common sizes remain reachable through the compact selector');
+   await desktop.click();await dropdown.waitFor({state:'hidden'});
+  }else{
+   await strip.getByRole('button',{name:'Desktop',exact:true}).click();
+  }
+  await until(async()=> (await cli(['state'])).viewport==='desktop','normal common viewport selection '+width);
+  if(compact)assert.equal(await current.innerText(),'Desktop');
   await trigger.click();await dropdown.waitFor({state:'visible'});
+  for(const slug of ['desktop','laptop','tablet','phone']){
+   assert.equal(await dropdown.locator(`[data-preview-viewport-dropdown-option="${slug}"]`).isVisible(),compact,
+    'Pinned choices belong in the wide strip or compact menu: '+slug);
+  }
   const columnBox=await page.locator('[data-preview-center-column]').boundingBox();
   const popupBox=await dropdown.boundingBox();
   assert(popupBox.x>=columnBox.x&&popupBox.x+popupBox.width<=columnBox.x+columnBox.width,
    'Anchored viewport menu stays within the center column');
+  writeFileSync(path.join(artifacts,`toolbar-${width}.json`),JSON.stringify({compact,columnBox,popupBox,
+   geometry:await toolbar.evaluate(bar=>({width:bar.clientWidth,scrollWidth:bar.scrollWidth,scrollLeft:bar.scrollLeft}))},null,2));
   await page.keyboard.press('Escape');await dropdown.waitFor({state:'hidden'});
   assert(await trigger.evaluate(node=>node===document.activeElement));
   await page.keyboard.press('Enter');await dropdown.waitFor({state:'visible'});
-  assert(await dropdown.locator('[role=option]').first().evaluate(node=>node===document.activeElement));
+  const firstSlug=compact?'desktop':'wide';
+  const nextSlug=compact?'laptop':'ultrawide';
+  const firstVisible=dropdown.locator(`[data-preview-viewport-dropdown-option="${firstSlug}"]`);
+  assert(await firstVisible.isVisible());
+  assert(await firstVisible.evaluate(node=>node===document.activeElement),'Keyboard focuses the independently expected first VISIBLE option');
+  assert(await dropdown.locator('[role=option]').evaluateAll(nodes=>nodes.every(node=>node.getClientRects().length||node!==document.activeElement)),
+   'Hidden pinned options never receive keyboard focus');
+  await page.keyboard.press('ArrowDown');
+  assert(await dropdown.locator(`[data-preview-viewport-dropdown-option="${nextSlug}"]`).evaluate(node=>node===document.activeElement));
+  await page.keyboard.press('ArrowUp');
+  assert(await firstVisible.evaluate(node=>node===document.activeElement));
+  await page.keyboard.press('Enter');await dropdown.waitFor({state:'hidden'});
+  await until(async()=> (await cli(['state'])).viewport===firstSlug,'normal keyboard viewport selection '+width);
+  assert(await trigger.evaluate(node=>node===document.activeElement));
+  await page.keyboard.press('Enter');await dropdown.waitFor({state:'visible'});
   await page.keyboard.press('Escape');await dropdown.waitFor({state:'hidden'});
   await trigger.click();await composer.click();await dropdown.waitFor({state:'hidden'});
   await trigger.click();await page.setViewportSize({width:width-1,height:width===900?720:1000});
   await dropdown.waitFor({state:'hidden'});
   await page.setViewportSize({width,height:width===900?720:1000});
   await trigger.click();
-  const option=page.locator('[data-preview-viewport-dropdown-option]').first();
-  const slug=await option.getAttribute('data-preview-viewport-dropdown-option');
-  await option.click();
-  await until(async()=> (await cli(['state'])).viewport===slug,'normal viewport dropdown selection '+width);
-  await toolbar.locator('[data-toolbar-cluster=mode] [role=button]').nth(1).click();
+  const option=dropdown.locator('[data-preview-viewport-dropdown-option="wide"]');
+  assert(await option.isVisible(),'Explicit long-tail size remains visible at both widths');
+  await option.click();await dropdown.waitFor({state:'hidden'});
+  await until(async()=> (await cli(['state'])).viewport==='wide','normal viewport dropdown selection '+width);
+  if(compact)assert.equal(await current.innerText(),'Wide');
+  await toolbar.locator('[data-toolbar-cluster=mode]').getByRole('button',{name:'View',exact:true}).click();
   await until(async()=> (await cli(['state'])).mode==='emView','normal View mode selection '+width);
  }
  evidence(10,'wide/narrow 44px scrolling toolbar, anchored viewport dropdown, keyboard/ESC/outside-click/resize and View controls remain reachable');

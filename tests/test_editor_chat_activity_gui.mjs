@@ -11,6 +11,9 @@
  * (shell.nim polls at 300ms/700ms). Fonts and two normal frames settle before
  * admission; no revision polling, mutation retry or expected-revision rebasing.
  * Stored-operation diagnostics are read-only and never resolve pending work.
+ * The toolbar negative control disables only its CSS size-container to expose
+ * the retained original full strip at narrow width; it proves the bounds guard
+ * rejects the original clipped controls, then restores the production container.
  * Geometry checks wait for font layout and two browser animation frames because
  * the real chat view follows output in requestAnimationFrame. This observes its
  * scheduled scroll; it does not scroll, focus, modify DOM or relax visible bounds.
@@ -137,6 +140,96 @@ try{
     }
     await previewPage.close();record(`visible production preview identity and hidden negative at ${width}`);
   }
+  // Actual production toolbar, sized by the available preview column rather
+  // than the browser width. All backend/mode affordances remain reachable.
+  const toolbarPage=await browser.newPage({viewport:{width:1440,height:900}});
+  await toolbarPage.goto(origin);await toolbarPage.waitForFunction(()=>window.__chatTest);
+  async function toolbarGeometry() {
+    return toolbarPage.evaluate(()=>{
+      const bar=document.querySelector('[data-preview-chrome-bar]');
+      const b=bar.getBoundingClientRect();
+      const controls=Array.from(bar.querySelectorAll('[role="button"]')).filter(el=>el.getClientRects().length);
+      return {height:b.height,width:b.width,scrollWidth:bar.scrollWidth,
+        controls:controls.map(el=>{const r=el.getBoundingClientRect();return {
+          label:el.getAttribute('aria-label')||el.title,width:r.width,height:r.height, inside:r.width>0&&r.height>0&&r.left>=b.left&&r.right<=b.right&&r.top>=b.top&&r.bottom<=b.bottom,
+          hit:el.contains(document.elementFromPoint(r.left+r.width/2,r.top+r.height/2))};})};
+    });
+  }
+  async function settleToolbar() {
+    await toolbarPage.evaluate(async()=>{await document.fonts.ready;await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));});
+  }
+  const bar=toolbarPage.locator('[data-preview-chrome-bar]');
+  const overflow=bar.locator('[data-preview-viewport-overflow]');
+  const pinned=bar.locator('[data-preview-viewport-strip-host]');
+  for(const [width,height,rail] of [[1440,900,420],[1024,768,240]]) {
+    await toolbarPage.setViewportSize({width,height});await toolbarPage.evaluate(rail=>window.__chatTest.width(rail),rail);await settleToolbar();
+    const compact=width===1024;
+    assert.equal(await pinned.isVisible(),!compact);
+    const geometry=await toolbarGeometry();
+    assert.equal(geometry.height,44);
+    assert(geometry.scrollWidth<=geometry.width,JSON.stringify(geometry));
+    assert(geometry.controls.every(row=>row.inside&&row.hit),JSON.stringify(geometry));
+    // Full set still exists; compacting does not remove backend/Mode choices.
+    assert.deepEqual(await bar.locator('[data-toolbar-cluster="backend"] [data-choice-group-label]').evaluateAll(nodes=>nodes.map(n=>n.getAttribute('data-choice-group-label'))),['Web','TUI','GPUI','Freya','Cocoa','Android','iOS']);
+    assert.deepEqual(await bar.locator('[data-toolbar-cluster="mode"] [data-choice-group-label]').evaluateAll(nodes=>nodes.map(n=>n.getAttribute('data-choice-group-label'))),['Spec','View','Comment','Edit']);
+    for(const slug of ['desktop','laptop','tablet','phone']) {
+      if(compact) {
+        await overflow.click();
+        const option=bar.locator(`[data-preview-viewport-dropdown-option="${slug}"]`);
+        assert(await option.isVisible());await option.click();
+        assert.equal(await overflow.getAttribute('aria-expanded'),'false');
+      } else {
+        await pinned.locator(`[data-choice-group-label="${slug[0].toUpperCase()+slug.slice(1)}"]`).click();
+      }
+      assert.equal(JSON.parse(await toolbarPage.evaluate(()=>window.__chatTest.controlState())).viewport,slug);
+      if(compact) assert.equal(await bar.locator('[data-preview-viewport-current]').innerText(),slug[0].toUpperCase()+slug.slice(1));
+    }
+    await overflow.click();
+    const options=bar.locator('[data-preview-viewport-dropdown-option]:visible');
+    const slugs=await options.evaluateAll(nodes=>nodes.map(n=>n.getAttribute('data-preview-viewport-dropdown-option')));
+    assert(slugs.length>0);
+    assert.equal(slugs.includes('desktop'),compact);
+    for(const slug of slugs) {
+      await bar.locator(`[data-preview-viewport-dropdown-option="${slug}"]`).click();
+      assert.equal(JSON.parse(await toolbarPage.evaluate(()=>window.__chatTest.controlState())).viewport,slug);
+      const selectedGeometry=await toolbarGeometry();
+      assert(selectedGeometry.controls.every(row=>row.inside&&row.hit),JSON.stringify({slug,selectedGeometry}));
+      assert(selectedGeometry.scrollWidth<=selectedGeometry.width,JSON.stringify({slug,selectedGeometry}));
+      await overflow.click();
+    }
+    await toolbarPage.keyboard.press('Escape');
+    assert(await overflow.evaluate(el=>el.ownerDocument.activeElement===el));
+    await toolbarPage.keyboard.press('Enter');
+    assert(await options.first().evaluate(el=>el.ownerDocument.activeElement===el),'keyboard opening focuses first VISIBLE option');
+    const firstSlug=await options.first().getAttribute('data-preview-viewport-dropdown-option');
+    await toolbarPage.keyboard.press('ArrowDown');await toolbarPage.keyboard.press('ArrowUp');await toolbarPage.keyboard.press('Enter');
+    assert.equal(JSON.parse(await toolbarPage.evaluate(()=>window.__chatTest.controlState())).viewport,firstSlug);
+    assert.equal(await overflow.getAttribute('aria-expanded'),'false');
+    const modes=bar.locator('[data-toolbar-cluster="mode"]');
+    await modes.getByRole('button',{name:'Spec',exact:true}).click();
+    assert.equal(JSON.parse(await toolbarPage.evaluate(()=>window.__chatTest.controlState())).mode,'emSpec');
+    await modes.getByRole('button',{name:'View',exact:true}).click();
+    assert.equal(JSON.parse(await toolbarPage.evaluate(()=>window.__chatTest.controlState())).mode,'emView');
+    await settleToolbar();
+    writeFileSync(path.join(artifacts,`preview-toolbar-${width}.json`),JSON.stringify({geometry,slugs,firstSlug},null,2));
+    await toolbarPage.screenshot({path:path.join(artifacts,`preview-toolbar-${width}.png`)});
+    record(`production toolbar visible viewport choices, keyboard and mode behavior at ${width}`);
+  }
+  // Original full controls are retained in production. Removing the container
+  // query at the real narrow column reproduces clipping, without a fake widget.
+  await toolbarPage.locator('[data-preview-center-column]').evaluate(el=>el.style.containerType='normal');await settleToolbar();
+  const oldGeometry=await toolbarGeometry();
+  assert(oldGeometry.controls.some(row=>!row.inside),JSON.stringify(oldGeometry));
+  assert(oldGeometry.scrollWidth>oldGeometry.width);
+  await toolbarPage.locator('[data-preview-center-column]').evaluate(el=>el.style.removeProperty('container-type'));await settleToolbar();
+  const restoredGeometry=await toolbarGeometry();
+  assert(restoredGeometry.controls.every(row=>row.inside&&row.hit),JSON.stringify(restoredGeometry));
+  writeFileSync(path.join(artifacts,'preview-toolbar-negative.json'),JSON.stringify({oldGeometry,restoredGeometry},null,2));
+  // Resize reversibility: the original wide strip and popup-only menu return.
+  await toolbarPage.setViewportSize({width:1440,height:900});await toolbarPage.evaluate(()=>window.__chatTest.width(420));await settleToolbar();
+  assert(await pinned.isVisible());await overflow.click();
+  assert.equal(await bar.locator('[data-preview-viewport-dropdown-option="desktop"]').isVisible(),false);
+  await toolbarPage.close();record('toolbar clipping negative control and resize restoration');
   await page.goto(origin);await page.waitForFunction(()=>window.__chatTest);
   const input=page.getByRole('textbox',{name:'Agent prompt'});
   const event=payload=>page.evaluate(value=>window.__chatTest.event(JSON.stringify(value)),payload);

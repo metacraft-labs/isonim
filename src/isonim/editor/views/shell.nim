@@ -3545,11 +3545,13 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
     viewportPopupPositionRevision.val = viewportPopupPositionRevision.value + 1)
 
   # Chevron button — last element in the strip. Opens the dropdown of
-  # the popup-only viewports. Pill chrome chosen to read as the same
+  # all viewports in a compact column, or popup-only viewports when the
+  # pinned strip fits. Pill chrome chosen to read as the same
   # family as the segmented pills (transparent body, same border-
   # radius, small chevron glyph). ``data-preview-viewport-overflow``
   # is the canonical e2e selector.
   var viewportChevronBtn: E
+  var viewportCurrentLabel: E
   let viewportChevronWrap = ui(r):
     tdiv(ref = viewportChevronBtn,
          `role` = "button", tabindex = "0",
@@ -3570,7 +3572,13 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
          border_radius = "4px",
          cursor = "pointer",
          user_select = "none"):
+      tspan(ref = viewportCurrentLabel,
+            `data-preview-viewport-current` = "true",
+            display = "none", white_space = "nowrap"):
+        text capturedVm.viewport.value.label
       text "\xE2\x96\xBE"  # ▾
+  createRenderEffect proc() =
+    r.setTextContent(viewportCurrentLabel, capturedVm.viewport.val.label)
   r.appendChild(viewportClusterWrapper, viewportChevronWrap)
   block:
     let openSig = viewportDropdownOpen
@@ -3580,7 +3588,9 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
       r.addEventListener(viewportChevronBtn, "keydown", toggleHandler)
     r.addEventListener(viewportChevronBtn, "isonim-close-viewport", proc() = openSig.val = false)
 
-  # Overflow dropdown — listbox of popup viewport options. Anchored
+  # Overflow dropdown — listbox of every viewport option. CSS keeps pinned
+  # entries in the strip at wide column widths and exposes them here when
+  # the strip becomes the compact current-viewport selector. Anchored
   # below the cluster wrapper using its measured viewport coordinates.
   # Fixed positioning keeps it outside the horizontal scrolling clip.
   # The dropdown is
@@ -3662,6 +3672,8 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
           tdiv(ref = entry,
                `role` = "option", tabindex = "-1",
                `aria-selected` = "false",
+               `data-preview-viewport-pinned-option` =
+                 (if vp in pinnedViewports(cvm.platform.value): "true" else: "false"),
                `data-preview-viewport-dropdown-option` = vp.slug,
                `data-preview-viewport-dropdown-option-label` = lbl,
                display = "flex", align_items = "center",
@@ -3681,7 +3693,7 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
         when not defined(js):
           r.addEventListener(entry, "keydown", pickHandler)
 
-  rebuildViewportDropdown(viewportDropdownEl, viewportPopup)
+  rebuildViewportDropdown(viewportDropdownEl, viewportOptionList(capturedVm.platform.value))
 
   when defined(js):
     let trigger = viewportChevronBtn
@@ -3706,12 +3718,12 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
           if (event.key !== 'Enter' && event.key !== ' ') return;
           event.preventDefault(); trigger.click();
           if (trigger.getAttribute('aria-expanded') === 'true') {
-            var first = dropdown.querySelector('[role=option]');
+            var first = Array.from(dropdown.querySelectorAll('[role=option]')).find(function (option) { return option.getClientRects().length; });
             if (first) first.focus();
           }
         });
         dropdown.addEventListener('keydown', function (event) {
-          var options = Array.from(dropdown.querySelectorAll('[role=option]'));
+          var options = Array.from(dropdown.querySelectorAll('[role=option]')).filter(function (option) { return option.getClientRects().length; });
           var index = options.indexOf(document.activeElement);
           if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
             event.preventDefault();
@@ -3806,9 +3818,9 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
           variant = cgvTransparent))
     else:
       viewportPinned = newPinned
-    if viewportSlugSeq(newPopup) != viewportSlugSeq(viewportPopup):
+    if needsRebuild or viewportSlugSeq(newPopup) != viewportSlugSeq(viewportPopup):
       viewportPopup = newPopup
-      rebuildViewportDropdown(viewportDropdownEl, viewportPopup)
+      rebuildViewportDropdown(viewportDropdownEl, viewportOptionList(backend))
     else:
       viewportPopup = newPopup
 
