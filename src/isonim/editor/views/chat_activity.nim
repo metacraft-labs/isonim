@@ -5,7 +5,7 @@ import std/[strutils, tables]
 import nim_agents
 import nim_agents/activity
 import nim_agents/activity_presentation
-import isonim/core/[signals, computation]
+import isonim/core/[signals, computation, owner]
 import isonim/editor/viewmodels
 import ./chat_theme
 
@@ -158,7 +158,11 @@ proc renderActivityTimeline*[R, E](r: R; host: E; chat: AgentChatVM) =
     factRows, factLabels, factValues: seq[E]
     blocks: seq[E]
     kinds: seq[string]
-  var rows = initTable[string, Row]()
+  # Retain the registry through render-effect disposal, then release its rows
+  # while the owner is still alive. The host's reference release can enter
+  # native cycle collection; it must not trace partially destroyed row storage.
+  let rows = newTable[string, Row]()
+  onCleanup proc() = rows.clear()
   createRenderEffect proc() =
     for entry in chat.activity.val.entries:
       var row: Row
@@ -276,9 +280,9 @@ proc renderActivityTimeline*[R, E](r: R; host: E; chat: AgentChatVM) =
         r.setStyle(row.factRows[index], "display", "none")
       r.setStyle(row.facts, "display", if presentation.facts.len > 0: "grid" else: "none")
       r.updateStableText(row.title, activityTitle(entry))
-      r.updateStableText(row.status, entry.status.replace("_", " "))
-      r.setStyle(row.status, "display", if entry.status.len > 0: "inline-block" else: "none")
-      r.setStyle(row.status, "color", if entry.status in ["failed", "error"] or
+      r.updateStableText(row.status, presentation.status.replace("_", " "))
+      r.setStyle(row.status, "display", if presentation.status.len > 0: "inline-block" else: "none")
+      r.setStyle(row.status, "color", if presentation.status in ["failed", "error"] or
         entry.kind == aekError: textError else: textSecondary)
       let availability = activityAvailability(entry)
       r.updateStableText(row.availability, availability)

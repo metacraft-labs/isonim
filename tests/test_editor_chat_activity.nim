@@ -189,6 +189,70 @@ suite "Chat activity and composition":
 # frame traverses the real public parser, safe projection, wire codec, reducer and
 # generic renderer; official Rust scenario E2E remains separately registered.
 suite "Full public Harbor event presentation":
+  test "actual file edit description and reported running status render without changing admission":
+    const corpusText = staticRead("scenarios/chat-activity/public-session-events.json")
+    let corpus = parseJson(corpusText)
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      vm.chat.inputText.val = "Retained next draft"
+      vm.chat.asyncAgentAdapter = true
+      vm.chat.promptInFlight = true
+      let admitted = vm.chat.promptAdmitted
+      let panel = renderChatPanel[MockRenderer, MockNode](MockRenderer(), vm)
+      proc matching(node: MockNode; attribute, value: string): seq[MockNode] =
+        var pending = @[node]
+        while pending.len > 0:
+          let child = pending.pop()
+          if child.attributes.getOrDefault(attribute) == value: result.add child
+          for nested in child.children: pending.add nested
+      proc textContent(node: MockNode): string =
+        var pending = @[node]
+        while pending.len > 0:
+          let child = pending.pop()
+          result.add child.text
+          for nested in child.children: pending.add nested
+      let fileEvent = agentEventFromJson(harborEventToAgentEvent("s",
+        eventFromJson(corpus["scenes"]["files"][0])).toJson())
+      check fileEvent.text == "Use shared spacing and preserve the title."
+      vm.chat.applyAgentEvent(fileEvent)
+      let fileEntry = vm.chat.activity.val.entries[^1]
+      let fileNode = entryNode(panel, fileEntry.id)
+      let prose = matching(fileNode, "data-chat-markdown", "paragraph")
+      check prose.len == 1
+      check textContent(prose[0]) == "Use shared spacing and preserve the title."
+      check prose[0].parent.parent == fileNode
+      check prose[0].styles.getOrDefault("display") != "none"
+      check matching(fileNode, "data-chat-fact", "File").len == 1
+      check matching(fileNode, "data-chat-fact", "Changes").len == 1
+      check textContent(fileNode).contains("stories/hero.nim")
+      check textContent(fileNode).contains("+4 / −2 lines")
+      let details = fileNode.children.filterIt(it.tag == "details")
+      check details.len == 1
+      check not details[0].attributes.hasKey("open")
+      let running = agentEventFromJson(harborEventToAgentEvent("s",
+        eventFromJson(corpus["scenes"]["error"][0])).toJson())
+      check running.state == acsStreaming
+      vm.chat.applyAgentEvent(running)
+      let sessionEntry = vm.chat.activity.val.entries[^1]
+      check sessionEntry.status == "streaming"
+      check sessionEntry.data.status == "running"
+      check vm.chat.connectionState.val == "streaming"
+      check vm.chat.sessionStatus.val == asLoading
+      let sessionNode = entryNode(panel, sessionEntry.id)
+      let badge = matching(sessionNode, "data-chat-activity-status", "true")
+      check badge.len == 1
+      check textContent(badge[0]) == "running"
+      check badge[0].styles.getOrDefault("display") == "inline-block"
+      let revision = vm.chat.activity.val.revision
+      vm.chat.applyAgentEvent(running)
+      check vm.chat.activity.val.revision == revision
+      check vm.chat.promptInFlight
+      check vm.chat.promptAdmitted == admitted
+      check not vm.sendAgentPrompt()
+      check vm.chat.inputText.val == "Retained next draft"
+      check vm.chat.accumulatedEdits.val.len == 1
+      dispose()
+
   test "every public question mode preserves content without unsupported answer controls":
     const questionCorpusText = staticRead("scenarios/chat-activity/public-session-events.json")
     let corpus = parseJson(questionCorpusText)

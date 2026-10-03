@@ -399,6 +399,48 @@ try{
   // decoder and reducer. Deliberate event data is not a transport replacement.
   const corpus=JSON.parse(readFileSync(path.join(repo,'tests/fixtures/chat-session-events.json'),'utf8'));
   assert.equal(corpus.events.length,34);
+  // Actual Rust-shaped file/status DTOs traverse parser, safe wire and the
+  // production reducer/view. Provider labels must not change busy admission.
+  const publicCorpus=JSON.parse(readFileSync(path.join(repo,'tests/scenarios/chat-activity/public-session-events.json'),'utf8'));
+  for(const [width,panelWidth] of [[1440,420],[1024,240]]){
+    const projectionPage=await browser.newPage({viewport:{width,height:768}});
+    await projectionPage.goto(origin);await projectionPage.waitForFunction(()=>window.__chatTest);
+    await projectionPage.evaluate(value=>window.__chatTest.width(value),panelWidth);
+    await projectionPage.getByRole('textbox',{name:'Agent prompt'}).fill('Retained projection draft');
+    await projectionPage.evaluate(()=>window.__chatTest.busy(true));
+    const before=await projectionPage.evaluate(()=>JSON.parse(window.__chatTest.state()));
+    await projectionPage.evaluate(payload=>window.__chatTest.harborEvent(JSON.stringify(payload)),publicCorpus.scenes.files[0]);
+    await projectionPage.evaluate(payload=>window.__chatTest.harborEvent(JSON.stringify(payload)),publicCorpus.scenes.error[0]);
+    await projectionPage.evaluate(async()=>{await document.fonts.ready;await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));});
+    const file=projectionPage.locator('[data-chat-source="file_edit"]');
+    const description=file.locator('[data-chat-markdown="paragraph"]');
+    assert.equal(await description.innerText(),'Use shared spacing and preserve the title.');
+    assert(await description.isVisible());assert.equal(await description.locator('xpath=ancestor::details').count(),0);
+    assert.equal(await file.locator('details').getAttribute('open'),null);
+    assert((await file.locator('[data-chat-fact="File"]').innerText()).includes('stories/hero.nim'));
+    assert((await file.locator('[data-chat-fact="Changes"]').innerText()).includes('+4 / −2 lines'));
+    const session=projectionPage.locator('[data-chat-source="status"]');
+    assert.equal(await session.locator('[data-chat-activity-status]').innerText(),'running');
+    const badge=session.locator('[data-chat-activity-status]');assert(await badge.isVisible());
+    for(const content of [description,badge]){
+      const bounds=await content.evaluate(el=>{
+        const b=el.getBoundingClientRect(),s=el.closest('[data-chat-scroll]').getBoundingClientRect();
+        return {inside:b.width>0&&b.height>0&&b.left>=s.left&&b.right<=s.right&&b.top>=s.top&&b.bottom<=s.bottom,
+          box:{left:b.left,right:b.right,top:b.top,bottom:b.bottom},scroll:{left:s.left,right:s.right,top:s.top,bottom:s.bottom}};
+      });assert(bounds.inside,JSON.stringify(bounds));
+    }
+    await horizontalChatGuard(projectionPage);
+    const after=await projectionPage.evaluate(()=>JSON.parse(window.__chatTest.state()));
+    assert.equal(after.busy,before.busy);assert.equal(after.admitted,before.admitted);
+    assert.equal(after.connection,'streaming');assert.equal(after.sessionStatus,'asLoading');
+    assert.equal(after.pendingEdits.length,before.pendingEdits.length+1);
+    assert.equal(await projectionPage.getByRole('button',{name:'Send agent prompt'}).getAttribute('aria-disabled'),'true');
+    assert.equal(await projectionPage.getByRole('textbox',{name:'Agent prompt'}).inputValue(),'Retained projection draft');
+    const beforeHeartbeat=await session.count();
+    await projectionPage.evaluate(payload=>window.__chatTest.harborEvent(JSON.stringify(payload)),publicCorpus.scenes.error[0]);
+    assert.equal(await session.count(),beforeHeartbeat);
+    await projectionPage.close();record(`safe file description and reported running status preserve admission at ${panelWidth}`);
+  }
   // Provider-supported recovery is readable with Details closed, at both real
   // mounted rail widths. No invented login action or credential input is offered.
   for(const [width,panelWidth] of [[1440,420],[1024,240]]){

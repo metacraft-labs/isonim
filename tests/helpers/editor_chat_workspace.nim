@@ -50,6 +50,7 @@ proc state(): cstring =
     chats.add %*{"id": session.id, "draft": session.vm.inputText.val}
   cstring($(%*{"active": vm.activeChatId.val, "chats": chats,
     "busy":vm.chat.promptInFlight,"admitted":vm.chat.promptAdmitted,
+    "connection":vm.chat.connectionState.val,"sessionStatus": $vm.chat.sessionStatus.val,
     "pendingEdits":vm.chat.accumulatedEdits.val}))
 proc fixtureControlState(): cstring = cstring($vm.controlSnapshot())
 proc fixtureCommand(payload: cstring): cstring =
