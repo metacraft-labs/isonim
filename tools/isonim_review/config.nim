@@ -25,6 +25,7 @@
 ##
 ##   [workspace]
 ##   root = "~/metacraft"
+##   project = "isonim"     # reprobuild project capture gates and pins
 ##
 ## We deliberately hand-roll a minimal TOML reader (only the keys above,
 ## only string and integer scalars, only ``[section]`` blocks).  This is
@@ -58,6 +59,9 @@ type
 
   WorkspaceConfig* = object
     root*: string
+    project*: string
+      ## reprobuild project the capture gate and workspace pin cover.
+      ## Empty means the design-review default (``isonim``).
 
   BackendConfig* = object
     binaryDir*: string
@@ -471,6 +475,8 @@ proc applyToml(cfg: var ReviewConfig; content: string) =
       case key
       of "root":
         if v.kind == tvkString: cfg.workspace.root = expandTilde(v.s)
+      of "project":
+        if v.kind == tvkString: cfg.workspace.project = v.s
       else:
         stderr.writeLine("isonim-review config: unknown key [workspace]." & key)
     of "backend":

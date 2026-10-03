@@ -109,7 +109,7 @@ Usage:
                            [--agent-http-timeout-ms <int>]
                            [--dry-run [--dry-run-out <path>]]
       (REV-M6) Drive a review against a completed capture run.
-      Resolves the brief at the run's manifest pin via `git show`,
+      Resolves the brief at the run's workspace pin via `git show`,
       assembles the reviewer prompt, invokes the configured agent
       backend (canned for CI, claude-code for production), and
       persists the result via design_review.record_agent_report +

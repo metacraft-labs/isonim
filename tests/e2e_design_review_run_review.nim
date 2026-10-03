@@ -5,15 +5,18 @@
 ## canned reviewer output.  The DB layer is the real ``PgFixture``;
 ## the agent backend is the deterministic ``canned`` backend.
 
-import std/[json, os, osproc, streams, strtabs, strutils, times, unittest]
+import std/[json, os, osproc, streams, strtabs, strutils, unittest]
 
 import db_connector/db_postgres
 
 import isonim/editor/design_review/brief_format
-import isonim/editor/design_review/manifest_hash
+import isonim/editor/design_review/db as dr_db
+import isonim/editor/design_review/pin_db
+import isonim/editor/design_review/workspace_pin
 import isonim/editor/types
 
 import helpers/design_review_pg_fixture
+import helpers/repro_workspace_fixture
 
 # --------------------------------------------------------------------------- #
 #  Workspace + binary helpers.
@@ -27,34 +30,6 @@ proc shouldHave(path: string) =
     raise newException(IOError,
       "e2e_design_review_run_review: binary not found at " & path &
       ".  Build it with `just isonim-review-build`.")
-
-proc runOrFail(cmd, cwd: string): string =
-  let res = execCmdEx(cmd, workingDir = cwd)
-  if res.exitCode != 0:
-    raise newException(IOError, cmd & " failed (" & $res.exitCode & "):\n" &
-                       res.output)
-  res.output
-
-proc gitInit(repoPath: string) =
-  createDir(repoPath)
-  discard runOrFail("git init -q -b main && " &
-                    "git config user.email 'test@test' && " &
-                    "git config user.name 'tester' && " &
-                    "git config commit.gpgsign false",
-                    repoPath)
-
-proc gitCommit(repoPath, message: string): string =
-  discard runOrFail("git add -A && git commit -q -m '" & message & "'",
-                    repoPath)
-  return runOrFail("git rev-parse HEAD", repoPath).strip()
-
-proc writeManifest(workspaceRoot, repoName, sha: string) =
-  let repoDir = workspaceRoot / ".repo"
-  createDir(repoDir)
-  writeFile(repoDir / "manifest.xml",
-    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<manifest>\n" &
-    "  <project name=\"" & repoName & "\" path=\"" & repoName &
-    "\" revision=\"" & sha & "\"/>\n</manifest>\n")
 
 const FixtureBriefYaml = """---
 briefId: render.fixture
@@ -91,28 +66,25 @@ EDITED_BRIEF_BODY_MARKER
 """
 
 proc tmpWs(suffix: string): string =
-  result = getTempDir() / ("isonim_e2e_rr_" & suffix & "_" & $epochTime().int)
-  removeDir(result)
-  createDir(result)
+  ## A hermetic reprobuild workspace with one published repo, ``repo-a``.
+  ## Returns the workspace root; remove its parent to clean up.
+  newReproWorkspace("rr_" & suffix, ["repo-a"]).root
+
+proc fixtureOf(ws: string): ReproWorkspace =
+  ReproWorkspace(root: ws, scratch: ws.parentDir, repos: @["repo-a"])
 
 proc seedWorkspace(ws: string;
                    briefContent: string = FixtureBriefYaml):
-                  tuple[manifestHash, initialSha: string] =
-  ## Initialise a single-repo workspace with the committed brief.
-  ## Returns the manifest hash captured against the pinned revision
-  ## *and* the initial commit SHA so callers can later rewrite the
-  ## manifest XML to point back at it.
-  let repoA = ws / "repo-a"
-  gitInit(repoA)
-  createDir(repoA / "briefs" / "render")
-  writeFile(repoA / "briefs" / "render" / "fixture.md", briefContent)
-  let sha = gitCommit(repoA, "initial brief")
-  writeManifest(ws, "repo-a", sha)
+                  tuple[pin: WorkspacePin; initialSha: string] =
+  ## Commit + publish the brief in ``repo-a`` and pin the workspace the
+  ## way capture does.  Returns the pin and the brief commit.
+  let sha = fixtureOf(ws).commitAndPublish("repo-a", "initial brief",
+    [("briefs/render/fixture.md", briefContent)])
   # Mirror the brief to the workspace root so the dispatcher can read
   # the typed brief structure without git-history lookups.
   createDir(ws / "briefs" / "render")
   writeFile(ws / "briefs" / "render" / "fixture.md", briefContent)
-  (manifestHash: captureManifestHash(ws), initialSha: sha)
+  (pin: captureWorkspacePin(ws), initialSha: sha)
 
 proc writeConfig(workspaceRoot, storePath: string; pgPort: int): string =
   let cfgPath = workspaceRoot / "config.toml"
@@ -153,9 +125,12 @@ proc openMigConn(pgPort: int): DbConn =
        "host=127.0.0.1 port=" & $pgPort &
        " dbname=isonim_design_review user=design_review_migrator")
 
-proc seedRun(conn: DbConn; briefId, manifestHash, previewId: string): string =
+proc seedRun(conn: DbConn; briefId: string; pin: WorkspacePin;
+             previewId: string): string =
+  ## Record the pin, open a run against it, and finish its captures.
+  recordWorkspacePin(ReviewDb(conn: conn), pin, "tester")
   let escB = briefId.replace("'", "''")
-  let escH = manifestHash.replace("'", "''")
+  let escH = pin.pin.replace("'", "''")
   let runId = conn.getValue(sql(
     "SELECT design_review.start_run('" & escB & "', '" & escH &
     "', 'tester')"))
@@ -201,8 +176,9 @@ suite "REV-M6 run-review (e2e)":
     let pgf = newPgFixture()
     defer: pgf.shutdown()
     let ws = tmpWs("fixture")
-    defer: removeDir(ws)
-    let (manifestHash, _) = seedWorkspace(ws)
+    defer: removeDir(ws.parentDir)
+    let (pin, _) = seedWorkspace(ws)
+    let manifestHash = pin.pin
     let storePath = ws / "review-store"
     let cfg = writeConfig(ws, storePath, pgf.port)
 
@@ -212,7 +188,7 @@ suite "REV-M6 run-review (e2e)":
     defer: migConn.close()
     let brief = parseBrief(ws / "briefs" / "render" / "fixture.md")
     let previewId = canonicalPreviewId(brief.coversPreviews[0].storyRef, pbWeb)
-    let runId = seedRun(appConn, "render.fixture", manifestHash, previewId)
+    let runId = seedRun(appConn, "render.fixture", pin, previewId)
 
     let cannedPath = ws / "canned.md"
     writeCanned(cannedPath, runId, manifestHash, "canned", "v1", previewId)
@@ -259,8 +235,9 @@ suite "REV-M6 run-review (e2e)":
     let pgf = newPgFixture()
     defer: pgf.shutdown()
     let ws = tmpWs("histbrief")
-    defer: removeDir(ws)
-    let (manifestHashA, shaInitial) = seedWorkspace(ws)
+    defer: removeDir(ws.parentDir)
+    let (pinA, _) = seedWorkspace(ws)
+    let manifestHashA = pinA.pin
     let storePath = ws / "review-store"
     let cfg = writeConfig(ws, storePath, pgf.port)
 
@@ -270,22 +247,17 @@ suite "REV-M6 run-review (e2e)":
     defer: migConn.close()
     let brief = parseBrief(ws / "briefs" / "render" / "fixture.md")
     let previewId = canonicalPreviewId(brief.coversPreviews[0].storyRef, pbWeb)
-    let runId = seedRun(appConn, "render.fixture", manifestHashA, previewId)
+    let runId = seedRun(appConn, "render.fixture", pinA, previewId)
 
-    # Edit + recommit the brief body in repo-a — manifest hash B will
-    # capture this new commit.  After this, the workspace's manifest
-    # points at B; the run is pinned at A.  We restore manifest A
-    # before calling run-review so the brief-at-revision lookup
-    # succeeds.
+    # Edit + recommit (and publish) the brief body in repo-a: the
+    # workspace now pins B.  The run stays pinned at A, and its stored
+    # lock record carries A's revisions, so the review must still see
+    # A's brief without the workspace being moved back.
     writeFile(ws / "repo-a" / "briefs" / "render" / "fixture.md",
               FixtureBriefYamlEdited)
-    let shaB = gitCommit(ws / "repo-a", "edit brief")
-    writeManifest(ws, "repo-a", shaB)
-    let manifestHashB = captureManifestHash(ws)
+    discard fixtureOf(ws).commitAndPublish("repo-a", "edit brief")
+    let manifestHashB = captureWorkspacePin(ws).pin
     check manifestHashA != manifestHashB
-    # Restore manifest pin to A so briefAtRevision can validate the hash.
-    writeManifest(ws, "repo-a", shaInitial)
-    check captureManifestHash(ws) == manifestHashA
 
     # Run review in dry-run mode so we can inspect the prompt the
     # dispatcher assembles without needing a real reviewer output.
@@ -316,8 +288,9 @@ suite "REV-M6 run-review (e2e)":
     let pgf = newPgFixture()
     defer: pgf.shutdown()
     let ws = tmpWs("concurrent")
-    defer: removeDir(ws)
-    let (manifestHash, _) = seedWorkspace(ws)
+    defer: removeDir(ws.parentDir)
+    let (pin, _) = seedWorkspace(ws)
+    let manifestHash = pin.pin
     let storePath = ws / "review-store"
     let cfg = writeConfig(ws, storePath, pgf.port)
 
@@ -327,7 +300,7 @@ suite "REV-M6 run-review (e2e)":
     defer: migConn.close()
     let brief = parseBrief(ws / "briefs" / "render" / "fixture.md")
     let previewId = canonicalPreviewId(brief.coversPreviews[0].storyRef, pbWeb)
-    let runId = seedRun(appConn, "render.fixture", manifestHash, previewId)
+    let runId = seedRun(appConn, "render.fixture", pin, previewId)
 
     let cannedAlpha = ws / "alpha.md"
     let cannedBeta = ws / "beta.md"

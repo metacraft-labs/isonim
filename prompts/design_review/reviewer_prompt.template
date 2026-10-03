@@ -20,7 +20,7 @@ with the literal characters `---` on the first line.  No preamble, no
 for permission.  Anything emitted before the first `---` is treated as
 parser garbage and rejects the report.
 
-## Brief content (resolved at the run's manifest pin)
+## Brief content (resolved at the run's workspace pin)
 
 $brief
 
@@ -89,7 +89,7 @@ briefId: <brief id from the brief above>
 runId: <run id supplied by the dispatcher>
 agentName: <your agent identifier>
 agentVersion: <your prompt + model version>
-manifestHash: <manifest hash supplied by the dispatcher>
+manifestHash: <the run's workspace pin, supplied by the dispatcher>
 capturedAt: <ISO 8601 timestamp, UTC, ending Z>
 overall:
   score: <weighted average across dimensions, float>

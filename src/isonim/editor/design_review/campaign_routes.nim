@@ -1033,9 +1033,9 @@ proc handleFetch*(reg: CampaignRegistry; req: Request) {.async, gcsafe.} =
 
 proc sha256OfStringShellOut(s: string): string =
   ## Stream ``s`` through ``shasum -a 256`` / ``sha256sum`` and return
-  ## the lowercase-hex digest.  Mirrors the pattern used by
-  ## :proc:`manifest_hash.sha256Hex` so refreshed doc shas have the same
-  ## format as the doc_sha the CLI's ``campaign start`` writes.
+  ## the lowercase-hex digest.  Same shell-out the CLI's
+  ## ``campaign start`` uses, so refreshed doc shas have the same format
+  ## as the doc_sha it writes.
   let exe = findExe("shasum")
   let cmd =
     if exe.len > 0: "shasum -a 256"

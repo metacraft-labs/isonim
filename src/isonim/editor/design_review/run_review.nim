@@ -47,7 +47,7 @@ proc runReview*(runId, projectPath, workspaceRoot, reviewStorePath,
   ## *Why we accept ``projectPath``.*  The dispatcher needs the brief
   ## TYPE information (``scoringDimensions``, ``coversPreviews``) to
   ## validate the reviewer output.  The historical brief *body* comes
-  ## from git at the manifest pin, but the typed structure is read
+  ## from git at the workspace pin, but the typed structure is read
   ## from the current project — REV-M5 already established that the
   ## brief schema is migration-compatible (extras preserved), so a
   ## type-level read off the working tree is safe.
