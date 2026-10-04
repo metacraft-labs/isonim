@@ -87,7 +87,7 @@ const isolatedContent={
 assert.deepEqual(Object.keys(isolatedContent).sort(),Object.keys(isolatedReferences).sort(),'exact independent semantic oracle inventory');
 const wrongIsolated={thought:corpus.scenes.conversation[3],tool_use:corpus.scenes.tools[4],
  session_awaiting_input:corpus.scenes.question[1],turn_complete:corpus.scenes.plan[1]};
-const sceneEvents={...corpus.scenes,...singleEvents,...corpus.normalizedScenes,"event-log-bottom":singleEvents["event-log"],"recovery-top":corpus.scenes.recovery};
+const sceneEvents={...corpus.scenes,...singleEvents,...corpus.normalizedScenes,"event-log-bottom":singleEvents["event-log"],"recovery-top":corpus.scenes.recovery,"long-content-top":corpus.scenes["long-content"]};
 const allViews=['empty',...Object.keys(sceneEvents),...Object.keys(corpus.behaviorScenes)];
 const lineage={bundleSha256:hash(readFileSync(new URL('../build/editor-chat/editor.js',import.meta.url))),sceneSha256:hash(readFileSync(new URL('../tests/scenarios/chat-activity/public-session-events.json',import.meta.url))),captureSha256:hash(readFileSync(new URL(import.meta.url))),browserExecutableSha256:hash(readFileSync('/ms-playwright/chromium-1217/chrome-linux64/chrome')),fonts:[...new Set(execFileSync('fc-list',['--format','%{file}\n'],{encoding:'utf8'}).trim().split('\n'))].sort().map(file=>({file,sha256:hash(readFileSync(file))}))};
 const flags=['--no-sandbox','--disable-gpu','--force-color-profile=srgb','--font-render-hinting=none','--disable-lcd-text'];
@@ -102,7 +102,9 @@ assert.deepEqual(Object.keys(thresholds).sort(),allViews.slice().sort(),'exact t
 lineage.mountedAssets=['editor.js','index.html','fabric.min.js','paper-core.min.js','svgo.browser.js'].map(file=>({file,sha256:hash(readFileSync(new URL('../build/editor-chat/'+file,import.meta.url)))}));
 const canary=args.includes('--canary');const recoveryOnly=args.includes('--recovery-controls-only');
 assert(!recoveryOnly||(!filter&&!sizeFilter&&!canary),'recovery controls require their own complete paired scope');
-const views=recoveryOnly?['recovery','recovery-top']:filter?[filter]:canary?['conversation','plan']:allViews;
+const longContentOnly=args.includes('--long-content-controls-only');
+assert(!longContentOnly||(!filter&&!sizeFilter&&!canary&&!recoveryOnly),'long-content controls require their own complete paired scope');
+const views=longContentOnly?['long-content','long-content-top']:recoveryOnly?['recovery','recovery-top']:filter?[filter]:canary?['conversation','plan']:allViews;
 for(const name of views)assert(allViews.includes(name),`unknown view ${name}`);
 for(const name of sizeFilter?[sizeFilter]:Object.keys(sizes))assert(sizes[name],`unknown viewport ${name}`);
 mkdirSync(output,{recursive:true});
@@ -366,6 +368,21 @@ const recoveryVisible={
  'recovery-top':[['proxy_credential_rotated','Provider access recovered'],['proxy_credential_rotated','anthropic'],['proxy_credential_rotated','401'],['proxy_rate_limit_absorbed','Provider throttling recovered'],['proxy_rate_limit_absorbed','2'],['proxy_rate_limit_absorbed','1200']],
  recovery:[['dispatcher_restarted','Agent restarted'],['dispatcher_restarted','2'],['anti_halting_resume_confirmed','Agent progress resumed'],['anti_halting_resume_confirmed','idle'],['session_leadership_migrated','Session moved to another executor'],['session_leadership_migrated','authoring-host'],['session_leadership_migrated','preview-host'],['session_leadership_migrated','linux'],['session_leadership_migrated','40']]
 };
+async function companionViewport(scroll){
+ return scroll.evaluate(el=>{const b=el.getBoundingClientRect();return {top:b.top,bottom:b.bottom,left:b.left,right:b.right};});
+}
+async function companionVisible(node,viewport,label){
+ assert.equal(await node.count(),1,`required companion text missing ${label}`);
+ const box=await node.evaluate(el=>{const b=el.getBoundingClientRect();return {top:b.top,bottom:b.bottom,left:b.left,right:b.right,width:b.width,height:b.height};});
+ assert(box.width>0&&box.height>0&&box.top>=viewport.top-1&&box.bottom<=viewport.bottom+1&&box.left>=viewport.left-1&&box.right<=viewport.right+1,`required companion text outside visible frame ${label}`);
+ return box;
+}
+async function companionPosition(scroll,top){
+ const position=await scroll.evaluate(el=>({scrollTop:el.scrollTop,scrollHeight:el.scrollHeight,clientHeight:el.clientHeight}));
+ if(top)assert.equal(position.scrollTop,0,'top companion real scroll position');
+ else assert(position.scrollTop+position.clientHeight>=position.scrollHeight-2,'original latest companion scroll position');
+ return position;
+}
 async function recoveryContentGuard(page,view){
  const scroll=page.locator('[data-chat-scroll]');
  const cards=scroll.locator('[data-chat-entry][data-chat-role="arActivity"][data-chat-source]');
@@ -378,19 +395,65 @@ async function recoveryContentGuard(page,view){
   for(const literal of isolatedContent[source])assert(text.includes(literal),`required recovery semantics missing ${source}: ${literal}`);
   texts.push({source,text});
  }
- const viewport=await scroll.evaluate(el=>{const b=el.getBoundingClientRect();return {top:b.top,bottom:b.bottom,left:b.left,right:b.right};});
+ const viewport=await companionViewport(scroll);
  const visible=[];
  for(const [source,text] of recoveryVisible[view]){
   const node=scroll.locator(`[data-chat-source="${source}"]`).getByText(text,{exact:true});
-  assert.equal(await node.count(),1,`required recovery text missing ${source}: ${text}`);
-  const box=await node.evaluate(el=>{const b=el.getBoundingClientRect();return {top:b.top,bottom:b.bottom,left:b.left,right:b.right,width:b.width,height:b.height};});
-  assert(box.width>0&&box.height>0&&box.top>=viewport.top-1&&box.bottom<=viewport.bottom+1&&box.left>=viewport.left-1&&box.right<=viewport.right+1,`required recovery text outside visible frame ${source}: ${text}`);
+  const box=await companionVisible(node,viewport,`${source}: ${text}`);
   visible.push({source,text,box});
  }
- const position=await scroll.evaluate(el=>({scrollTop:el.scrollTop,scrollHeight:el.scrollHeight,clientHeight:el.clientHeight}));
- if(view==='recovery-top')assert.equal(position.scrollTop,0,'top companion real scroll position');
- else assert(position.scrollTop+position.clientHeight>=position.scrollHeight-2,'original latest recovery scroll position');
+ const position=await companionPosition(scroll,view==='recovery-top');
  return {parent:'recovery',companion:'recovery-top',position:view==='recovery-top'?'top':'bottom',...position,viewport,cards:texts,visible};
+}
+// Independent literals establish the same original log/tool cards at either
+// normal scroll position. The full long identifier must fit visibly and wrap.
+const longIdentifier='responsiveHeroWithSharedSpacingAndAccessiblePrimaryAction'.repeat(6);
+const longProse='Long source identifiers remain readable: '+longIdentifier;
+const longFinalLine='setStyle(hero, "padding", "32px") # line 11';
+async function longContentGuard(page,view){
+ const scroll=page.locator('[data-chat-scroll]');
+ const assistant=scroll.locator('[data-chat-entry][data-chat-role="arAssistant"]');
+ const tool=scroll.locator('[data-chat-entry][data-chat-role="arActivity"][data-chat-source="tool_use"]');
+ assert.equal(await assistant.count(),1,'same original long-content assistant card');
+ assert.equal(await tool.count(),1,'same original long-content tool card');
+ const cards=[{source:'log',text:await assistant.innerText()},{source:'tool_use',text:await tool.innerText()}];
+ for(const literal of ['Assistant',longProse,longFinalLine])assert(cards[0].text.includes(literal),`required long-content semantics missing: ${literal}`);
+ for(const literal of ['isonim inspect','started'])assert(cards[1].text.includes(literal),`required long-content semantics missing: ${literal}`);
+ const viewport=await companionViewport(scroll),visible=[];
+ const top=view==='long-content-top';
+ const nodes=top?[[assistant.getByText('Assistant',{exact:true}),'log','Assistant'],[assistant.getByText(longProse,{exact:true}),'log',longProse]]:[[tool.getByText('isonim inspect',{exact:true}),'tool_use','isonim inspect'],[tool.getByText('started',{exact:true}),'tool_use','started']];
+ for(const [node,source,text] of nodes)visible.push({source,text,box:await companionVisible(node,viewport,text)});
+ let identifierLines=null;
+ if(top){
+  identifierLines=await assistant.getByText(longProse,{exact:true}).evaluate((el,identifier)=>{
+   const walker=document.createTreeWalker(el,NodeFilter.SHOW_TEXT);let node;while(node=walker.nextNode()){
+    const offset=node.textContent.indexOf(identifier);if(offset<0)continue;
+    const range=document.createRange();range.setStart(node,offset);range.setEnd(node,offset+identifier.length);
+    return [...range.getClientRects()].map(b=>({top:b.top,bottom:b.bottom,left:b.left,right:b.right,width:b.width,height:b.height}));
+   }return [];
+  },longIdentifier);
+  assert(identifierLines.length>1,'actual long identifier wraps across multiple lines');
+  assert(identifierLines.every(b=>b.width>0&&b.height>0&&b.top>=viewport.top-1&&b.bottom<=viewport.bottom+1&&b.left>=viewport.left-1&&b.right<=viewport.right+1),'entire wrapped identifier visibly inside conversation');
+ }else{
+  const code=assistant.locator('[data-chat-markdown="code"]');
+  const box=await code.evaluate((el,line)=>{const node=el.firstChild;const offset=node.textContent.indexOf(line);if(offset<0)return null;const range=document.createRange();range.setStart(node,offset);range.setEnd(node,offset+line.length);const b=range.getBoundingClientRect();return {top:b.top,bottom:b.bottom,left:b.left,right:b.right,width:b.width,height:b.height};},longFinalLine);
+  assert(box&&box.width>0&&box.height>0&&box.top>=viewport.top-1&&box.bottom<=viewport.bottom+1&&box.left>=viewport.left-1&&box.right<=viewport.right+1,'original final code line inside visible conversation');
+  visible.push({source:'log',text:longFinalLine,box});
+ }
+ return {parent:'long-content',companion:'long-content-top',position:top?'top':'bottom',...await companionPosition(scroll,top),viewport,cards,visible,identifierLines};
+}
+async function longContentNegativeControl(page,view,size){
+ const scroll=page.locator('[data-chat-scroll]');
+ const targets=view==='long-content-top'?['Assistant',longProse]:['isonim inspect'];
+ const controls=[];
+ for(const text of targets){
+  const node=scroll.getByText(text,{exact:true}),handle=await node.elementHandle();assert(handle,'actual required long-content node');const original=await handle.textContent();
+  try{await handle.evaluate(el=>{el.textContent='Missing required long-content';});await assert.rejects(()=>longContentGuard(page,view),/required long-content semantics missing/,'same guard rejects actual missing content');}
+  finally{try{await handle.evaluate((el,text)=>{el.textContent=text;},original);}finally{await handle.dispose();}}
+  controls.push({text,rejected:true});
+ }
+ const restored=await longContentGuard(page,view);
+ writeFileSync(path.join(output,`long-content-control-${view}-${size}.json`),JSON.stringify({view,size,controls,restored,guard:'longContentGuard before both long-content captures'},null,2));
 }
 async function recoveryNegativeControl(page,view,size){
  const [source,text]=recoveryVisible[view][0];
@@ -525,6 +588,13 @@ try{
     recoveryEvidence=await recoveryContentGuard(page,view);
     await recoveryNegativeControl(page,view,size);
   }
+  let longContentEvidence=null;
+  if(view==='long-content'||view==='long-content-top'){
+    await panel.locator('[data-chat-scroll]').evaluate((el,top)=>{el.scrollTop=top?0:el.scrollHeight;el.dispatchEvent(new Event('scroll'));},view==='long-content-top');
+    await captureReady(page);
+    longContentEvidence=await longContentGuard(page,view);
+    await longContentNegativeControl(page,view,size);
+  }
   if(view==='files'){
     const before=panel.locator('[data-chat-fact="Before"]');assert.equal(await before.locator('span').last().innerText(),sceneEvents[view].find(event=>event.type==='diff').oldText,'diff line boundaries preserved');
     assert.equal(await before.locator('span').last().evaluate(el=>getComputedStyle(el).whiteSpace),'pre-wrap');
@@ -557,7 +627,7 @@ try{
     assert(!changed.equals(png),'exact image gate must reject changed actual prose/plan');
     positiveControl={changedSha256:hash(changed),mutation:'actual production event alters conversation/plan'};
   }
-  manifest.push({view,size,file,sceneReadiness,recoveryEvidence,behaviorEvidence,positiveControl,contentVerified:canary,dimensions:[png.readUInt32BE(16),png.readUInt32BE(20)],scope:canary?'actual production conversation scroll surface; excludes editor chrome, preview and composer':'full editor viewport',sha256:createHash('sha256').update(png).digest('hex'),layout,geometry,contrast,focusPaint,boundary:corpus.boundary,events:(sceneEvents[view]||[]).map(e=>e.type||e.kind),baseline:'candidate; human acceptance pending',perceptualThreshold:{maximumChangedPixelRatio:thresholds[view]},browser:browser.version()});
+  manifest.push({view,size,file,sceneReadiness,recoveryEvidence,longContentEvidence,behaviorEvidence,positiveControl,contentVerified:canary,dimensions:[png.readUInt32BE(16),png.readUInt32BE(20)],scope:canary?'actual production conversation scroll surface; excludes editor chrome, preview and composer':'full editor viewport',sha256:createHash('sha256').update(png).digest('hex'),layout,geometry,contrast,focusPaint,boundary:corpus.boundary,events:(sceneEvents[view]||[]).map(e=>e.type||e.kind),baseline:'candidate; human acceptance pending',perceptualThreshold:{maximumChangedPixelRatio:thresholds[view]},browser:browser.version()});
   if(args.includes('--missing-element-control')&&view==='empty'&&size==='wide'){
     await input.evaluate(el=>el.remove());
     await assert.rejects(()=>composerGuard(page,viewport),/required composer missing/,'same positive composer guard rejects removed composer');

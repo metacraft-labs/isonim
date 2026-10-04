@@ -66,8 +66,9 @@
     "Error is separate from assistant text"
   ],
   "long-content": [
-    "Long identifier wraps inside sidebar",
+    "Latest activity: final Nim code line and isonim inspect started remain visible",
     "Multiline Nim code remains readable and expandable",
+    "Paired long-content-top demonstrates Assistant heading and the entire wrapped long identifier",
     "No horizontal page overflow or leaked PRIVATE_CAMPAIGN_SECRET"
   ],
   "completed": [
@@ -330,5 +331,11 @@
     "Provider access recovered heading, anthropic and Provider status 401 are visible.",
     "Provider throttling recovered, Retry attempts 2 and Wait (ms) 1200 are visible.",
     "Review recovery at the same width for the retained later restart, idle recovery and executor migration cards."
+  ],
+  "long-content-top": [
+    "Same original log/tool DTOs as long-content at real scrollTop 0",
+    "Visible Assistant heading and Long source identifiers remain readable:",
+    "Entire responsiveHeroWithSharedSpacingAndAccessiblePrimaryAction repeated six times wraps visibly inside sidebar",
+    "Paired long-content retains final Nim code line and isonim inspect started"
   ]
 }

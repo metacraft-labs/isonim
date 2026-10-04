@@ -37,6 +37,12 @@ RECOVERY_VISIBLE={
  'recovery-top':[('proxy_credential_rotated','Provider access recovered'),('proxy_credential_rotated','anthropic'),('proxy_credential_rotated','401'),('proxy_rate_limit_absorbed','Provider throttling recovered'),('proxy_rate_limit_absorbed','2'),('proxy_rate_limit_absorbed','1200')],
  'recovery':[('dispatcher_restarted','Agent restarted'),('dispatcher_restarted','2'),('anti_halting_resume_confirmed','Agent progress resumed'),('anti_halting_resume_confirmed','idle'),('session_leadership_migrated','Session moved to another executor'),('session_leadership_migrated','authoring-host'),('session_leadership_migrated','preview-host'),('session_leadership_migrated','linux'),('session_leadership_migrated','40')]
 }
+def companion_geometry(box,viewport,name):
+    require(all(type(box.get(k)) in (int,float) for k in ['top','bottom','left','right','width','height']) and all(type(viewport.get(k)) in (int,float) for k in ['top','bottom','left','right']),f'missing {name} visible geometry')
+    require(box['width']>0 and box['height']>0 and box['top']>=viewport['top']-1 and box['bottom']<=viewport['bottom']+1 and box['left']>=viewport['left']-1 and box['right']<=viewport['right']+1,f'{name} required content outside visible frame')
+def companion_scroll(evidence,top,name):
+    require(all(type(evidence.get(k)) in (int,float) for k in ['scrollTop','scrollHeight','clientHeight']),f'missing {name} scroll position')
+    require(evidence['scrollTop']==0 if top else evidence['scrollTop']+evidence['clientHeight']>=evidence['scrollHeight']-2,f'wrong {name} scroll position')
 def recovery_guard(row):
     evidence=row.get('recoveryEvidence',{});view=row['view']
     require(evidence.get('parent')=='recovery' and evidence.get('companion')=='recovery-top' and evidence.get('position')==('top' if view=='recovery-top' else 'bottom'),'missing/wrong recovery companion metadata')
@@ -49,10 +55,28 @@ def recovery_guard(row):
     viewport=evidence.get('viewport',{})
     for v in visible:
         box=v.get('box',{})
-        require(all(type(box.get(k)) in (int,float) for k in ['top','bottom','left','right','width','height']) and all(type(viewport.get(k)) in (int,float) for k in ['top','bottom','left','right']),'missing recovery visible geometry')
-        require(box['width']>0 and box['height']>0 and box['top']>=viewport['top']-1 and box['bottom']<=viewport['bottom']+1 and box['left']>=viewport['left']-1 and box['right']<=viewport['right']+1,'recovery required content outside visible frame')
-    require(all(type(evidence.get(k)) in (int,float) for k in ['scrollTop','scrollHeight','clientHeight']),'missing recovery scroll position')
-    require(evidence['scrollTop']==0 if view=='recovery-top' else evidence['scrollTop']+evidence['clientHeight']>=evidence['scrollHeight']-2,'wrong recovery scroll position')
+        companion_geometry(box,viewport,'recovery')
+    companion_scroll(evidence,view=='recovery-top','recovery')
+
+LONG_IDENTIFIER='responsiveHeroWithSharedSpacingAndAccessiblePrimaryAction'*6
+LONG_PROSE='Long source identifiers remain readable: '+LONG_IDENTIFIER
+LONG_FINAL='setStyle(hero, "padding", "32px") # line 11'
+LONG_VISIBLE={'long-content-top':[('log','Assistant'),('log',LONG_PROSE)],'long-content':[('tool_use','isonim inspect'),('tool_use','started'),('log',LONG_FINAL)]}
+def long_content_guard(row):
+    evidence=row.get('longContentEvidence',{});view=row['view'];top=view=='long-content-top'
+    require(evidence.get('parent')=='long-content' and evidence.get('companion')=='long-content-top' and evidence.get('position')==('top' if top else 'bottom'),'missing/wrong long-content companion metadata')
+    require(row.get('events')==['log','tool_use'] and [c.get('source') for c in evidence.get('cards',[])]==['log','tool_use'],'long-content original events/cards changed')
+    cards=evidence['cards']
+    require(all(t in cards[0].get('text','') for t in ['Assistant',LONG_PROSE,LONG_FINAL]) and all(t in cards[1].get('text','') for t in ['isonim inspect','started']),'missing long-content card semantics')
+    visible=evidence.get('visible',[]);viewport=evidence.get('viewport',{})
+    require([(v.get('source'),v.get('text')) for v in visible]==LONG_VISIBLE[view],'missing long-content visible heading/content')
+    for v in visible:companion_geometry(v.get('box',{}),viewport,'long-content')
+    if top:
+        lines=evidence.get('identifierLines')
+        require(isinstance(lines,list) and len(lines)>1,'long-content identifier not visibly wrapped')
+        for box in lines:companion_geometry(box,viewport,'long-content identifier')
+    else:require(evidence.get('identifierLines') is None,'wrong long-content bottom identifier evidence')
+    companion_scroll(evidence,top,'long-content')
 
 def guard(directory,canary=False,current=False):
     directory=pathlib.Path(directory);m=json.loads((directory/'manifest.json').read_text());expected,thresholds=definitions()
@@ -82,6 +106,7 @@ def guard(directory,canary=False,current=False):
         require({'primary','secondary'}.issubset(ready.get('sceneGraphRows',[])) and {'primary','secondary'}.issubset(x.get('id') for x in state.get('elements',[])),'missing published scene rows')
         frames=ready.get('frameTimes',[]);require(len(frames)==2 and all(type(t) in (int,float) for t in frames) and frames[1]>frames[0],'missing normal readiness frames')
         if key[0] in RECOVERY_VISIBLE:recovery_guard(row)
+        if key[0] in LONG_VISIBLE:long_content_guard(row)
         require(row.get('perceptualThreshold')=={'maximumChangedPixelRatio':thresholds[key[0]]},'threshold mismatch')
         if canary:
             require(row.get('scope')==SCOPE and row.get('contentVerified') is True and row.get('events') and dimensions[0]>100 and dimensions[1]>100,'empty or wrong canary scope/content')
@@ -92,6 +117,10 @@ def guard(directory,canary=False,current=False):
             else:raise ValueError('canary mutation guard failed')
         else:require(row.get('scope')=='full editor viewport' and dimensions==(SIZES[key[1]]['width'],SIZES[key[1]]['height']),'full viewport scope mismatch')
     require(seen==keys,'missing required capture views')
+    if not canary:
+        pairs={(r['view'],r['size']):r for r in rows}
+        for size in SIZES:
+            require(pairs[('long-content',size)]['longContentEvidence']['cards']==pairs[('long-content-top',size)]['longContentEvidence']['cards'],'long-content paired original cards differ')
     return m
 
 def exact_bytes(first,second):

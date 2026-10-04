@@ -116,9 +116,16 @@ canary failures remain preserved and do not establish full-frame determinism.
 
 ### View: long-content
 
-- Long identifier wraps inside sidebar
-- Multiline Nim code remains readable and expandable
-- No horizontal page overflow or leaked PRIVATE_CAMPAIGN_SECRET
+- Original latest-activity frame: final Nim line `setStyle(hero, "padding", "32px") # line 11` and isonim inspect started are visible.
+- The paired long-content-top frame demonstrates the Assistant heading and entire wrapped long identifier. Both full-frame width pairs are mandatory; the original narrow frame does not claim offscreen prose is visible.
+- Multiline Nim code remains readable and expandable; no horizontal page overflow or leaked PRIVATE_CAMPAIGN_SECRET.
+
+### View: long-content-top
+
+- Same original log/tool events as long-content, genuine conversation scrollTop 0.
+- Visible Assistant heading and Long source identifiers remain readable:.
+- The full responsiveHeroWithSharedSpacingAndAccessiblePrimaryAction identifier repeated six times wraps across multiple lines, all visibly inside the conversation viewport.
+- The paired original long-content frame retains final code and tool evidence. No claim that the entire long response fits in one frame.
 
 ### View: completed
 

@@ -70,8 +70,8 @@ class CaptureGuards(unittest.TestCase):
   self.rejected(lambda m:m['views'][0]['sceneReadiness'].update(previewHeading='Wrong selected preview'))
  def test_recovery_required_pair_and_original_inventory(self):
   m=guard(self.corpus,current=True);rows={(r['view'],r['size']):r for r in m['views']}
-  self.assertEqual(set(rows),{(view,size) for view in (*ORIGINAL_CAMPAIGN_VIEWS,'recovery-top') for size in ('wide','narrow')})
-  self.assertEqual(len(rows),148)
+  self.assertEqual(set(rows),{(view,size) for view in (*ORIGINAL_CAMPAIGN_VIEWS,'recovery-top','long-content-top') for size in ('wide','narrow')})
+  self.assertEqual(len(rows),150)
   for size in ('wide','narrow'):
    top=rows[('recovery-top',size)];bottom=rows[('recovery',size)]
    self.assertEqual(top['events'],['proxy_credential_rotated','proxy_rate_limit_absorbed','dispatcher_restarted','anti_halting_resume_confirmed','session_leadership_migrated'])
@@ -100,6 +100,40 @@ class CaptureGuards(unittest.TestCase):
  def test_recovery_original_later_content_rejected(self):
   self.edit(lambda m:next(r for r in m['views'] if r['view']=='recovery')['recoveryEvidence']['cards'][-1].update(text='Missing executor migration'))
   with self.assertRaisesRegex(ValueError,'missing recovery card semantics'):guard(self.corpus,current=True)
+ def test_long_content_required_pair_and_original_inventory(self):
+  m=guard(self.corpus,current=True);rows={(r['view'],r['size']):r for r in m['views']}
+  self.assertEqual(set(rows),{(view,size) for view in (*ORIGINAL_CAMPAIGN_VIEWS,'recovery-top','long-content-top') for size in ('wide','narrow')});self.assertEqual(len(rows),150)
+  identifier='responsiveHeroWithSharedSpacingAndAccessiblePrimaryAction'*6
+  for size in ('wide','narrow'):
+   top=rows[('long-content-top',size)];bottom=rows[('long-content',size)]
+   self.assertEqual(top['events'],['log','tool_use']);self.assertEqual(top['events'],bottom['events']);self.assertEqual(top['longContentEvidence']['cards'],bottom['longContentEvidence']['cards'])
+   evidence=top['longContentEvidence'];self.assertEqual(evidence['scrollTop'],0);self.assertIn(('log','Long source identifiers remain readable: '+identifier),[(v['source'],v['text']) for v in evidence['visible']]);self.assertGreater(len(evidence['identifierLines']),1)
+   self.assertIn(('log','setStyle(hero, "padding", "32px") # line 11'),[(v['source'],v['text']) for v in bottom['longContentEvidence']['visible']])
+   for view in ('long-content','long-content-top'):
+    row=rows[(view,size)];self.assertEqual(hashlib.sha256((self.corpus/row['file']).read_bytes()).hexdigest(),row['sha256'])
+    control=json.loads((self.corpus/f'long-content-control-{view}-{size}.json').read_text());self.assertEqual((control['view'],control['size']),(view,size));self.assertEqual(control['restored'],row['longContentEvidence']);self.assertEqual(control['guard'],'longContentGuard before both long-content captures')
+    self.assertEqual([c['text'] for c in control['controls']],['Assistant','Long source identifiers remain readable: '+identifier] if view=='long-content-top' else ['isonim inspect']);self.assertTrue(all(c['rejected'] for c in control['controls']))
+ def test_long_content_missing_or_wrong_companion_metadata(self):
+  for change in (lambda r:r.pop('longContentEvidence'),lambda r:r['longContentEvidence'].update(companion='wrong-view'),lambda r:r['longContentEvidence'].update(position='bottom')):
+   self.edit(lambda m:change(next(r for r in m['views'] if r['view']=='long-content-top')))
+   with self.assertRaisesRegex(ValueError,'long-content companion metadata'):guard(self.corpus,current=True)
+   shutil.copyfile(CAP/'corpus/manifest.json',self.corpus/'manifest.json')
+ def test_long_content_identifier_missing_offscreen_or_unwrapped_rejected(self):
+  for change in (lambda e:e['visible'].pop(0),lambda e:e['identifierLines'][0].update(top=-100),lambda e:e.update(identifierLines=e['identifierLines'][:1]),lambda e:e['cards'][0].update(text='Assistant without long identifier')):
+   self.edit(lambda m:change(next(r for r in m['views'] if r['view']=='long-content-top')['longContentEvidence']))
+   with self.assertRaisesRegex(ValueError,'long-content'):guard(self.corpus,current=True)
+   shutil.copyfile(CAP/'corpus/manifest.json',self.corpus/'manifest.json')
+ def test_long_content_required_companion_capture_missing_or_tampered(self):
+  png_path=self.corpus/'long-content-top-narrow.png';png_path.unlink()
+  with self.assertRaisesRegex(ValueError,'missing.*tampered capture PNG'):guard(self.corpus,current=True)
+  shutil.copyfile(CAP/'corpus/long-content-top-narrow.png',png_path)
+  with png_path.open('ab') as f:f.write(b'changed')
+  with self.assertRaisesRegex(ValueError,'missing.*tampered capture PNG'):guard(self.corpus,current=True)
+ def test_long_content_original_code_tool_and_pair_corruption_rejected(self):
+  for change in (lambda e:e['cards'][0].update(text=e['cards'][0]['text'].replace('# line 11','# missing')),lambda e:e['cards'][1].update(text='Tool vanished'),lambda e:e['visible'][-1]['box'].update(bottom=2000),lambda e:e['cards'][0].update(text=e['cards'][0]['text']+'extra text')):
+   self.edit(lambda m:change(next(r for r in m['views'] if r['view']=='long-content')['longContentEvidence']))
+   with self.assertRaisesRegex(ValueError,'long-content'):guard(self.corpus,current=True)
+   shutil.copyfile(CAP/'corpus/manifest.json',self.corpus/'manifest.json')
  def test_inventory_empty(self):self.rejected(lambda m:m.update(views=[]),inventory=True)
  def test_inventory_omission(self):self.rejected(lambda m:m['views'].pop(),inventory=True)
  def test_inventory_duplicate(self):self.rejected(lambda m:m['views'].append(m['views'][0]),inventory=True)
