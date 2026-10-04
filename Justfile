@@ -1301,11 +1301,18 @@ test-editor-authoring-real: isonim-review-build editor-authoring-build test-edit
 # M7: real production browser bundle, pinned two-process canary before corpus.
 # First corpus is a candidate; human baseline acceptance remains a separate gate.
 test-editor-chat-visual output="build/chat-visual-campaign": test-editor-chat-contract editor-chat-build
+    just test-editor-chat-visual-readiness "{{output}}"
     python3 tools/chat-visual-campaign.py --output "{{output}}"
     python3 tests/test_chat_visual_tools.py --captures "{{output}}"
 
 test-editor-chat-visual-tools output="build/chat-visual-campaign":
+    just test-editor-chat-visual-readiness "{{output}}"
     python3 tests/test_chat_visual_tools.py --captures "{{output}}"
+
+test-editor-chat-visual-readiness output="build/chat-visual-readiness":
+    mkdir -p "{{output}}"
+    rm -f "{{output}}/readiness.cid"
+    docker run --rm --cidfile "{{output}}/readiness.cid" --platform linux/amd64 --network none --ipc private --shm-size 1g --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$(pwd):/workspace:ro" -w /workspace mcr.microsoft.com/playwright@sha256:eac9b0a5312cdab40ee8c2429df5bf19bffdccf8f3bf3c42268e173f97541645 node --test tests/test_chat_capture_frames.mjs
 
 # Optional private contract authority; when present malformed DTOs fail.
 test-editor-chat-contract:

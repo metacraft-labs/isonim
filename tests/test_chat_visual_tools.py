@@ -92,6 +92,15 @@ class CaptureGuards(unittest.TestCase):
   with self.assertRaisesRegex(ValueError,'invalid PNG row filter'):png(bad)
  def test_lineage_horizontal_guard(self):self.rejected(lambda m:m['lineage'].update(horizontalGuardSha256='0'*64))
  def test_lineage_source(self):self.rejected(lambda m:m['lineage'].update(captureSha256='0'*64))
+ def test_lineage_capture_frames_missing(self):
+  self.edit(lambda m:m['lineage'].pop('captureFramesSha256'))
+  with self.assertRaisesRegex(ValueError,'missing source/browser lineage'):guard(self.corpus,current=True)
+ def test_lineage_capture_frames_stale(self):
+  self.edit(lambda m:m['lineage'].update(captureFramesSha256='0'*64))
+  with self.assertRaisesRegex(ValueError,'stale source closure: captureFramesSha256'):guard(self.corpus,current=True)
+ def test_capture_frames_change_invalidates_review_and_preserves_findings(self):
+  campaign.artifacts(self.corpus);old=json.loads((self.corpus/'findings-ledger.json').read_text());old['views']['empty/wide']['status']='reviewed';old['views']['empty/wide']['findings']=[{'id':'frame-helper-finding','priority':'P2'}];old['lineage']['captureFramesSha256']='0'*64
+  campaign.artifacts(self.corpus,old);row=json.loads((self.corpus/'findings-ledger.json').read_text())['views']['empty/wide'];self.assertEqual(row['status'],'pending-independent-review');self.assertEqual(row['findings'],old['views']['empty/wide']['findings']);self.assertTrue(row['history'])
  def test_lineage_fonts(self):self.rejected(lambda m:m['lineage'].update(fonts=[]))
  def test_lineage_font_hash(self):self.rejected(lambda m:m['lineage']['fonts'][0].update(sha256='0'*64))
  def test_lineage_browser_hash(self):self.rejected(lambda m:m['lineage'].update(browserExecutableSha256='0'*64))

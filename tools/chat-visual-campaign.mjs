@@ -5,7 +5,8 @@
  * admission/approval and production DOM adapters remain installed. Initial control
  * admission requires complete visible preview/documents, loaded fonts, actual DOM
  * targets in the production published scene graph (300ms/700ms scanner), then two
- * normal frames. Every capture shares this readiness boundary. Negative controls
+ * advancing actual animation callback timestamps within one 5000ms deadline.
+ * Every capture shares this readiness boundary. Negative controls
  * temporarily replace the read-only fixture snapshot with missing published rows
  * (a stalled-publication timing substitute) and change the real preview heading
  * (a wrong-document substitute); they use the same predicate and restore both.
@@ -16,6 +17,7 @@
  */
 import assert from 'node:assert/strict';
 import {horizontalChatGuard,oldClippedChatControl} from './chat-horizontal-guard.mjs';
+import {waitForAdvancingFrames} from './chat-capture-frames.mjs';
 import {execFileSync} from 'node:child_process';
 import {createServer} from 'node:http';
 import {readFileSync,writeFileSync,mkdirSync,readdirSync,rmSync,existsSync} from 'node:fs';
@@ -91,6 +93,7 @@ const lineage={bundleSha256:hash(readFileSync(new URL('../build/editor-chat/edit
 const flags=['--no-sandbox','--disable-gpu','--force-color-profile=srgb','--font-render-hinting=none','--disable-lcd-text'];
 const environment={deviceScaleFactor:1,locale:'en-US',timezoneId:'UTC',colorScheme:'dark',reducedMotion:'reduce'};
 lineage.horizontalGuardSha256=hash(readFileSync(new URL('./chat-horizontal-guard.mjs',import.meta.url)));
+lineage.captureFramesSha256=hash(readFileSync(new URL('./chat-capture-frames.mjs',import.meta.url)));
 lineage.expectedSha256=hash(readFileSync(new URL('./chat-visual-expected.json',import.meta.url)));
 lineage.thresholdsSha256=hash(readFileSync(new URL('./chat-visual-thresholds.json',import.meta.url)));
 const expected=JSON.parse(readFileSync(new URL('./chat-visual-expected.json',import.meta.url)));
@@ -196,17 +199,21 @@ function mountedPreviewReady(){
  }) && !document.querySelector('[data-scene-graph-empty]');
 }
 async function captureReady(page){
- await page.waitForFunction(mountedPreviewReady,null,{timeout:5000});
- const readiness=await page.evaluate(async()=>{
-   const frameTimes=await new Promise(resolve=>requestAnimationFrame(first=>requestAnimationFrame(second=>resolve([first,second]))));
+ const deadline=performance.now()+5000;
+ const remaining=()=>{const budget=deadline-performance.now();assert(budget>0,'capture readiness deadline exceeded');return budget;};
+ await page.waitForFunction(mountedPreviewReady,null,{timeout:remaining()});
+ const frameTimes=await page.evaluate(waitForAdvancingFrames,remaining());
+ remaining();
+ const readiness=await page.evaluate(frameTimes=>{
    const frame=Array.from(document.querySelectorAll('iframe[data-page-project-frame="true"]')).find(frame=>frame.getClientRects().length && frame.offsetParent!==null);
    return {frameTimes,documentReadyState:document.readyState,fontStatus:document.fonts.status,
      previewReadyState:frame.contentDocument.readyState,previewFontStatus:frame.contentDocument.fonts.status,
      previewTitle:frame.contentDocument.title,previewHeading:frame.contentDocument.querySelector('h1').textContent,
      sceneGraphRows:Array.from(document.querySelectorAll('[data-scene-graph-row]')).map(row=>row.dataset.sceneGraphRow),
      state:JSON.parse(window.__chatTest.controlState())};
- });
+ },frameTimes);
  assert(await page.evaluate(mountedPreviewReady),'mounted preview and published scene remain ready after normal frames');
+ remaining();
  return readiness;
 }
 async function controlReady(page,view,size){
