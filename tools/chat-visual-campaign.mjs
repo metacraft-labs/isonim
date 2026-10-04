@@ -87,7 +87,7 @@ const isolatedContent={
 assert.deepEqual(Object.keys(isolatedContent).sort(),Object.keys(isolatedReferences).sort(),'exact independent semantic oracle inventory');
 const wrongIsolated={thought:corpus.scenes.conversation[3],tool_use:corpus.scenes.tools[4],
  session_awaiting_input:corpus.scenes.question[1],turn_complete:corpus.scenes.plan[1]};
-const sceneEvents={...corpus.scenes,...singleEvents,...corpus.normalizedScenes,"event-log-bottom":singleEvents["event-log"]};
+const sceneEvents={...corpus.scenes,...singleEvents,...corpus.normalizedScenes,"event-log-bottom":singleEvents["event-log"],"recovery-top":corpus.scenes.recovery};
 const allViews=['empty',...Object.keys(sceneEvents),...Object.keys(corpus.behaviorScenes)];
 const lineage={bundleSha256:hash(readFileSync(new URL('../build/editor-chat/editor.js',import.meta.url))),sceneSha256:hash(readFileSync(new URL('../tests/scenarios/chat-activity/public-session-events.json',import.meta.url))),captureSha256:hash(readFileSync(new URL(import.meta.url))),browserExecutableSha256:hash(readFileSync('/ms-playwright/chromium-1217/chrome-linux64/chrome')),fonts:[...new Set(execFileSync('fc-list',['--format','%{file}\n'],{encoding:'utf8'}).trim().split('\n'))].sort().map(file=>({file,sha256:hash(readFileSync(file))}))};
 const flags=['--no-sandbox','--disable-gpu','--force-color-profile=srgb','--font-render-hinting=none','--disable-lcd-text'];
@@ -100,7 +100,9 @@ const expected=JSON.parse(readFileSync(new URL('./chat-visual-expected.json',imp
 assert.deepEqual(Object.keys(expected).sort(),allViews.slice().sort(),'exact expected view inventory');
 assert.deepEqual(Object.keys(thresholds).sort(),allViews.slice().sort(),'exact threshold view inventory');
 lineage.mountedAssets=['editor.js','index.html','fabric.min.js','paper-core.min.js','svgo.browser.js'].map(file=>({file,sha256:hash(readFileSync(new URL('../build/editor-chat/'+file,import.meta.url)))}));
-const canary=args.includes('--canary');const views=filter?[filter]:canary?['conversation','plan']:allViews;
+const canary=args.includes('--canary');const recoveryOnly=args.includes('--recovery-controls-only');
+assert(!recoveryOnly||(!filter&&!sizeFilter&&!canary),'recovery controls require their own complete paired scope');
+const views=recoveryOnly?['recovery','recovery-top']:filter?[filter]:canary?['conversation','plan']:allViews;
 for(const name of views)assert(allViews.includes(name),`unknown view ${name}`);
 for(const name of sizeFilter?[sizeFilter]:Object.keys(sizes))assert(sizes[name],`unknown viewport ${name}`);
 mkdirSync(output,{recursive:true});
@@ -357,6 +359,52 @@ const server=createServer((req,res)=>{
  if(!target.startsWith(root+path.sep)||!existsSync(target)){res.writeHead(404);res.end();return;}
  res.setHeader('Content-Type',target.endsWith('.js')?'application/javascript':target.endsWith('.css')?'text/css':'text/html');res.end(readFileSync(target));
 });await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+// Both views use the same five original DTOs and production cards. The original
+// follows the latest activity; its top companion exposes the first recovery card.
+const recoveryTypes=['proxy_credential_rotated','proxy_rate_limit_absorbed','dispatcher_restarted','anti_halting_resume_confirmed','session_leadership_migrated'];
+const recoveryVisible={
+ 'recovery-top':[['proxy_credential_rotated','Provider access recovered'],['proxy_credential_rotated','anthropic'],['proxy_credential_rotated','401'],['proxy_rate_limit_absorbed','Provider throttling recovered'],['proxy_rate_limit_absorbed','2'],['proxy_rate_limit_absorbed','1200']],
+ recovery:[['dispatcher_restarted','Agent restarted'],['dispatcher_restarted','2'],['anti_halting_resume_confirmed','Agent progress resumed'],['anti_halting_resume_confirmed','idle'],['session_leadership_migrated','Session moved to another executor'],['session_leadership_migrated','authoring-host'],['session_leadership_migrated','preview-host'],['session_leadership_migrated','linux'],['session_leadership_migrated','40']]
+};
+async function recoveryContentGuard(page,view){
+ const scroll=page.locator('[data-chat-scroll]');
+ const cards=scroll.locator('[data-chat-entry][data-chat-role="arActivity"][data-chat-source]');
+ const sources=await cards.evaluateAll(nodes=>nodes.map(node=>node.getAttribute('data-chat-source')));
+ assert.deepEqual(sources,recoveryTypes,'same original five recovery cards');
+ const texts=[];
+ for(const source of recoveryTypes){
+  const card=scroll.locator(`[data-chat-source="${source}"]`);
+  const text=await card.innerText();
+  for(const literal of isolatedContent[source])assert(text.includes(literal),`required recovery semantics missing ${source}: ${literal}`);
+  texts.push({source,text});
+ }
+ const viewport=await scroll.evaluate(el=>{const b=el.getBoundingClientRect();return {top:b.top,bottom:b.bottom,left:b.left,right:b.right};});
+ const visible=[];
+ for(const [source,text] of recoveryVisible[view]){
+  const node=scroll.locator(`[data-chat-source="${source}"]`).getByText(text,{exact:true});
+  assert.equal(await node.count(),1,`required recovery text missing ${source}: ${text}`);
+  const box=await node.evaluate(el=>{const b=el.getBoundingClientRect();return {top:b.top,bottom:b.bottom,left:b.left,right:b.right,width:b.width,height:b.height};});
+  assert(box.width>0&&box.height>0&&box.top>=viewport.top-1&&box.bottom<=viewport.bottom+1&&box.left>=viewport.left-1&&box.right<=viewport.right+1,`required recovery text outside visible frame ${source}: ${text}`);
+  visible.push({source,text,box});
+ }
+ const position=await scroll.evaluate(el=>({scrollTop:el.scrollTop,scrollHeight:el.scrollHeight,clientHeight:el.clientHeight}));
+ if(view==='recovery-top')assert.equal(position.scrollTop,0,'top companion real scroll position');
+ else assert(position.scrollTop+position.clientHeight>=position.scrollHeight-2,'original latest recovery scroll position');
+ return {parent:'recovery',companion:'recovery-top',position:view==='recovery-top'?'top':'bottom',...position,viewport,cards:texts,visible};
+}
+async function recoveryNegativeControl(page,view,size){
+ const [source,text]=recoveryVisible[view][0];
+ const node=page.locator(`[data-chat-source="${source}"]`).getByText(text,{exact:true});
+ const handle=await node.elementHandle();assert(handle,'actual required heading node');
+ const original=await handle.textContent();
+ try{
+  await handle.evaluate(el=>{el.textContent='Wrong recovery heading';});
+  await assert.rejects(()=>recoveryContentGuard(page,view),/required recovery semantics missing/,'same recovery guard rejects genuinely missing required heading');
+ }finally{try{await handle.evaluate((el,text)=>{el.textContent=text;},original);}finally{await handle.dispose();}}
+ const restored=await recoveryContentGuard(page,view);
+ writeFileSync(path.join(output,`recovery-heading-control-${view}-${size}.json`),JSON.stringify({view,size,source,heading:text,missingHeadingRejected:true,restored,guard:'recoveryContentGuard before both recovery captures'},null,2));
+}
+
 let browser;const manifest=[];
 try{
  browser=await chromium.launch({headless:true,executablePath:'/ms-playwright/chromium-1217/chrome-linux64/chrome',args:flags});
@@ -470,6 +518,13 @@ try{
     }
     else assert(visibleContent.card.top>=visibleContent.viewport.top-1&&visibleContent.card.top<visibleContent.viewport.bottom-20,'event card heading inside actual visible frame');
   }
+  let recoveryEvidence=null;
+  if(view==='recovery'||view==='recovery-top'){
+    await panel.locator('[data-chat-scroll]').evaluate((el,top)=>{el.scrollTop=top?0:el.scrollHeight;el.dispatchEvent(new Event('scroll'));},view==='recovery-top');
+    await captureReady(page);
+    recoveryEvidence=await recoveryContentGuard(page,view);
+    await recoveryNegativeControl(page,view,size);
+  }
   if(view==='files'){
     const before=panel.locator('[data-chat-fact="Before"]');assert.equal(await before.locator('span').last().innerText(),sceneEvents[view].find(event=>event.type==='diff').oldText,'diff line boundaries preserved');
     assert.equal(await before.locator('span').last().evaluate(el=>getComputedStyle(el).whiteSpace),'pre-wrap');
@@ -502,7 +557,7 @@ try{
     assert(!changed.equals(png),'exact image gate must reject changed actual prose/plan');
     positiveControl={changedSha256:hash(changed),mutation:'actual production event alters conversation/plan'};
   }
-  manifest.push({view,size,file,sceneReadiness,behaviorEvidence,positiveControl,contentVerified:canary,dimensions:[png.readUInt32BE(16),png.readUInt32BE(20)],scope:canary?'actual production conversation scroll surface; excludes editor chrome, preview and composer':'full editor viewport',sha256:createHash('sha256').update(png).digest('hex'),layout,geometry,contrast,focusPaint,boundary:corpus.boundary,events:(sceneEvents[view]||[]).map(e=>e.type||e.kind),baseline:'candidate; human acceptance pending',perceptualThreshold:{maximumChangedPixelRatio:thresholds[view]},browser:browser.version()});
+  manifest.push({view,size,file,sceneReadiness,recoveryEvidence,behaviorEvidence,positiveControl,contentVerified:canary,dimensions:[png.readUInt32BE(16),png.readUInt32BE(20)],scope:canary?'actual production conversation scroll surface; excludes editor chrome, preview and composer':'full editor viewport',sha256:createHash('sha256').update(png).digest('hex'),layout,geometry,contrast,focusPaint,boundary:corpus.boundary,events:(sceneEvents[view]||[]).map(e=>e.type||e.kind),baseline:'candidate; human acceptance pending',perceptualThreshold:{maximumChangedPixelRatio:thresholds[view]},browser:browser.version()});
   if(args.includes('--missing-element-control')&&view==='empty'&&size==='wide'){
     await input.evaluate(el=>el.remove());
     await assert.rejects(()=>composerGuard(page,viewport),/required composer missing/,'same positive composer guard rejects removed composer');

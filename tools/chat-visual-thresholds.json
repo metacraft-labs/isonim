@@ -71,5 +71,6 @@
   "chat-independent-second": 0.02,
   "chat-scroll-back": 0.02,
   "chat-scroll-latest": 0.02,
-  "chat-selection-streaming": 0.02
+  "chat-selection-streaming": 0.02,
+  "recovery-top": 0.001
 }

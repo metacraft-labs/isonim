@@ -81,9 +81,16 @@ canary failures remain preserved and do not establish full-frame determinism.
 
 ### View: recovery
 
-- Provider access recovery (401)
-- Two retries and 1200ms waiting
-- Restart 2, idle stall recovery and executor migration with flushed sequence 40
+- Original latest-activity scroll position retains Agent restarted (Restart 2), Agent progress resumed (idle), and Session moved to another executor: authoring-host to preview-host, linux, flushed sequence 40.
+- Provider throttling recovered, two retries and 1200ms waiting are mandatory in recovery-top at the same width.
+- The first Provider access recovered heading/card is mandatory in recovery-top at the same width. Review both full frames; the first heading can be above this bottom viewport.
+
+### View: recovery-top
+
+- Top companion of recovery: the same five original events, real conversation scrollTop 0.
+- Visible Provider access recovered heading, anthropic and Provider status 401.
+- Visible Provider throttling recovered, Retry attempts 2 and Wait (ms) 1200.
+- The paired recovery frame retains the later restart, idle recovery and executor migration evidence. Both wide/narrow pairs are required; no claim that all five cards fit in one frame.
 
 ### View: question
 

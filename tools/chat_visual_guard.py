@@ -32,6 +32,28 @@ def png(path):
     require(len(inflated)==height*(1+width*channels),'invalid PNG scanlines')
     require(all(inflated[row*(1+width*channels)]<=4 for row in range(height)),'invalid PNG row filter')
     return width,height
+RECOVERY_TYPES=['proxy_credential_rotated','proxy_rate_limit_absorbed','dispatcher_restarted','anti_halting_resume_confirmed','session_leadership_migrated']
+RECOVERY_VISIBLE={
+ 'recovery-top':[('proxy_credential_rotated','Provider access recovered'),('proxy_credential_rotated','anthropic'),('proxy_credential_rotated','401'),('proxy_rate_limit_absorbed','Provider throttling recovered'),('proxy_rate_limit_absorbed','2'),('proxy_rate_limit_absorbed','1200')],
+ 'recovery':[('dispatcher_restarted','Agent restarted'),('dispatcher_restarted','2'),('anti_halting_resume_confirmed','Agent progress resumed'),('anti_halting_resume_confirmed','idle'),('session_leadership_migrated','Session moved to another executor'),('session_leadership_migrated','authoring-host'),('session_leadership_migrated','preview-host'),('session_leadership_migrated','linux'),('session_leadership_migrated','40')]
+}
+def recovery_guard(row):
+    evidence=row.get('recoveryEvidence',{});view=row['view']
+    require(evidence.get('parent')=='recovery' and evidence.get('companion')=='recovery-top' and evidence.get('position')==('top' if view=='recovery-top' else 'bottom'),'missing/wrong recovery companion metadata')
+    require(row.get('events')==RECOVERY_TYPES and [c.get('source') for c in evidence.get('cards',[])]==RECOVERY_TYPES,'recovery original events/cards changed')
+    cards={c['source']:c.get('text','') for c in evidence['cards']}
+    for source,text in RECOVERY_VISIBLE['recovery-top']+RECOVERY_VISIBLE['recovery']:
+        require(text in cards[source],f'missing recovery card semantics: {text}')
+    visible=evidence.get('visible',[])
+    require([(v.get('source'),v.get('text')) for v in visible]==RECOVERY_VISIBLE[view],'missing recovery visible heading/facts')
+    viewport=evidence.get('viewport',{})
+    for v in visible:
+        box=v.get('box',{})
+        require(all(type(box.get(k)) in (int,float) for k in ['top','bottom','left','right','width','height']) and all(type(viewport.get(k)) in (int,float) for k in ['top','bottom','left','right']),'missing recovery visible geometry')
+        require(box['width']>0 and box['height']>0 and box['top']>=viewport['top']-1 and box['bottom']<=viewport['bottom']+1 and box['left']>=viewport['left']-1 and box['right']<=viewport['right']+1,'recovery required content outside visible frame')
+    require(all(type(evidence.get(k)) in (int,float) for k in ['scrollTop','scrollHeight','clientHeight']),'missing recovery scroll position')
+    require(evidence['scrollTop']==0 if view=='recovery-top' else evidence['scrollTop']+evidence['clientHeight']>=evidence['scrollHeight']-2,'wrong recovery scroll position')
+
 def guard(directory,canary=False,current=False):
     directory=pathlib.Path(directory);m=json.loads((directory/'manifest.json').read_text());expected,thresholds=definitions()
     keys={(v,s) for v in (['conversation','plan'] if canary else expected) for s in SIZES}
@@ -59,6 +81,7 @@ def guard(directory,canary=False,current=False):
         require(state.get('workspace')=='chat-acceptance' and state.get('storyId') in ('Pages / Home','Pages / Details'),'wrong selected preview readiness')
         require({'primary','secondary'}.issubset(ready.get('sceneGraphRows',[])) and {'primary','secondary'}.issubset(x.get('id') for x in state.get('elements',[])),'missing published scene rows')
         frames=ready.get('frameTimes',[]);require(len(frames)==2 and all(type(t) in (int,float) for t in frames) and frames[1]>frames[0],'missing normal readiness frames')
+        if key[0] in RECOVERY_VISIBLE:recovery_guard(row)
         require(row.get('perceptualThreshold')=={'maximumChangedPixelRatio':thresholds[key[0]]},'threshold mismatch')
         if canary:
             require(row.get('scope')==SCOPE and row.get('contentVerified') is True and row.get('events') and dimensions[0]>100 and dimensions[1]>100,'empty or wrong canary scope/content')

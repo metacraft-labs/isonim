@@ -10,6 +10,7 @@ from chat_visual_guard import guard, exact_canary, exact_bytes, accepted, png
 p=argparse.ArgumentParser();p.add_argument('--captures',required=True);args,rest=p.parse_known_args();CAP=pathlib.Path(args.captures)
 spec=importlib.util.spec_from_file_location('campaign',pathlib.Path(__file__).resolve().parents[1]/'tools/chat-visual-campaign.py');campaign=importlib.util.module_from_spec(spec);spec.loader.exec_module(campaign)
 ORIGINAL_VIEWS=('empty', 'conversation', 'tools', 'plan', 'files', 'model-context', 'workspace', 'delegation', 'lifecycle', 'recovery', 'question', 'login', 'participants', 'error', 'long-content', 'completed', 'event-user_input', 'event-log', 'event-thought', 'event-tool_use', 'event-tool_result', 'event-plan', 'event-turn_complete', 'event-file_edit', 'event-file_read', 'event-diff', 'event-llm_request', 'event-context_files', 'event-context_injection', 'event-workspace', 'event-fleet_fence', 'event-fleet_host', 'event-sub_agent', 'event-delegation', 'event-orchestration', 'event-session_started', 'event-session_awaiting_input', 'event-session_resumed', 'event-session_ended', 'event-proxy_credential_rotated', 'event-proxy_rate_limit_absorbed', 'event-dispatcher_restarted', 'event-anti_halting_resume_confirmed', 'event-session_leadership_migrated', 'event-agent_question', 'event-login_required', 'event-participant', 'event-link_spans', 'event-status', 'event-error', 'tool-waiting', 'tool-running', 'thought-settled', 'event-log-bottom')
+ORIGINAL_CAMPAIGN_VIEWS=('chat-draft-streaming', 'chat-first-send', 'chat-independent-first', 'chat-independent-second', 'chat-scroll-back', 'chat-scroll-latest', 'chat-selection-streaming', 'chat-send-failed', 'completed', 'conversation', 'delegation', 'empty', 'error', 'event-agent_question', 'event-anti_halting_resume_confirmed', 'event-context_files', 'event-context_injection', 'event-delegation', 'event-diff', 'event-dispatcher_restarted', 'event-error', 'event-file_edit', 'event-file_read', 'event-fleet_fence', 'event-fleet_host', 'event-link_spans', 'event-llm_request', 'event-log', 'event-log-bottom', 'event-login_required', 'event-orchestration', 'event-participant', 'event-plan', 'event-proxy_credential_rotated', 'event-proxy_rate_limit_absorbed', 'event-session_awaiting_input', 'event-session_ended', 'event-session_leadership_migrated', 'event-session_resumed', 'event-session_started', 'event-status', 'event-sub_agent', 'event-thought', 'event-tool_result', 'event-tool_use', 'event-turn_complete', 'event-user_input', 'event-workspace', 'files', 'focus-auto', 'highlight-auto', 'lifecycle', 'login', 'long-content', 'model-context', 'navigation-approved', 'navigation-auto', 'navigation-pending', 'navigation-rejected', 'navigation-stale', 'participants', 'plan', 'question', 'question-confirmation', 'question-free-form', 'question-multi-choice', 'recovery', 'selection-highlight-auto', 'thought-settled', 'tool-running', 'tool-waiting', 'tools', 'workspace')
 class CaptureGuards(unittest.TestCase):
  # Read the production expected-elements authority directly, rather than the
  # captured manifest or definitions()/guard() output. Named exact keys also
@@ -67,6 +68,38 @@ class CaptureGuards(unittest.TestCase):
   self.rejected(lambda m:m['views'][0]['sceneReadiness']['state'].update(elements=[]))
   shutil.copyfile(CAP/'corpus/manifest.json',self.corpus/'manifest.json')
   self.rejected(lambda m:m['views'][0]['sceneReadiness'].update(previewHeading='Wrong selected preview'))
+ def test_recovery_required_pair_and_original_inventory(self):
+  m=guard(self.corpus,current=True);rows={(r['view'],r['size']):r for r in m['views']}
+  self.assertEqual(set(rows),{(view,size) for view in (*ORIGINAL_CAMPAIGN_VIEWS,'recovery-top') for size in ('wide','narrow')})
+  self.assertEqual(len(rows),148)
+  for size in ('wide','narrow'):
+   top=rows[('recovery-top',size)];bottom=rows[('recovery',size)]
+   self.assertEqual(top['events'],['proxy_credential_rotated','proxy_rate_limit_absorbed','dispatcher_restarted','anti_halting_resume_confirmed','session_leadership_migrated'])
+   self.assertEqual(top['events'],bottom['events']);self.assertEqual(top['recoveryEvidence']['cards'],bottom['recoveryEvidence']['cards'])
+   self.assertEqual(top['recoveryEvidence']['scrollTop'],0)
+   self.assertIn(('proxy_credential_rotated','Provider access recovered'),[(v['source'],v['text']) for v in top['recoveryEvidence']['visible']])
+   self.assertIn(('session_leadership_migrated','40'),[(v['source'],v['text']) for v in bottom['recoveryEvidence']['visible']])
+   for view in ('recovery','recovery-top'):
+    row=rows[(view,size)];self.assertEqual(hashlib.sha256((self.corpus/row['file']).read_bytes()).hexdigest(),row['sha256'])
+    control=json.loads((self.corpus/f'recovery-heading-control-{view}-{size}.json').read_text())
+    self.assertEqual((control['view'],control['size']),(view,size));self.assertTrue(control['missingHeadingRejected']);self.assertEqual(control['restored'],row['recoveryEvidence'])
+    self.assertEqual(control['guard'],'recoveryContentGuard before both recovery captures')
+ def test_recovery_missing_or_wrong_companion_metadata(self):
+  for change in (lambda r:r.pop('recoveryEvidence'),lambda r:r['recoveryEvidence'].update(companion='wrong-view'),lambda r:r['recoveryEvidence'].update(position='bottom')):
+   self.edit(lambda m:change(next(r for r in m['views'] if r['view']=='recovery-top')))
+   with self.assertRaisesRegex(ValueError,'recovery companion metadata'):guard(self.corpus,current=True)
+   shutil.copyfile(CAP/'corpus/manifest.json',self.corpus/'manifest.json')
+ def test_recovery_heading_offscreen_or_missing_rejected(self):
+  for change in (lambda r:r['recoveryEvidence']['visible'].pop(0),lambda r:r['recoveryEvidence']['visible'][0]['box'].update(top=-100),lambda r:r['recoveryEvidence']['cards'][0].update(text='Wrong recovery heading')):
+   self.edit(lambda m:change(next(r for r in m['views'] if r['view']=='recovery-top')))
+   with self.assertRaisesRegex(ValueError,'recovery'):guard(self.corpus,current=True)
+   shutil.copyfile(CAP/'corpus/manifest.json',self.corpus/'manifest.json')
+ def test_recovery_required_companion_capture_missing(self):
+  (self.corpus/'recovery-top-narrow.png').unlink()
+  with self.assertRaisesRegex(ValueError,'missing.*tampered capture PNG'):guard(self.corpus,current=True)
+ def test_recovery_original_later_content_rejected(self):
+  self.edit(lambda m:next(r for r in m['views'] if r['view']=='recovery')['recoveryEvidence']['cards'][-1].update(text='Missing executor migration'))
+  with self.assertRaisesRegex(ValueError,'missing recovery card semantics'):guard(self.corpus,current=True)
  def test_inventory_empty(self):self.rejected(lambda m:m.update(views=[]),inventory=True)
  def test_inventory_omission(self):self.rejected(lambda m:m['views'].pop(),inventory=True)
  def test_inventory_duplicate(self):self.rejected(lambda m:m['views'].append(m['views'][0]),inventory=True)

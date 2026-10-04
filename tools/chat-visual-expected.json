@@ -43,9 +43,9 @@
     "Lifecycle labels remain separate from assistant text"
   ],
   "recovery": [
-    "Provider access recovery (401)",
-    "Two retries and 1200ms waiting",
-    "Restart 2, idle stall recovery and executor migration with flushed sequence 40"
+    "Original latest-activity scroll position: Agent restarted (Restart 2), Agent progress resumed (idle) and Session moved to another executor (authoring-host to preview-host, linux, flushed sequence 40).",
+    "Provider throttling recovered, two retries and 1200ms waiting are mandatory in recovery-top at this same width.",
+    "The first Provider access recovered heading/card is mandatory in recovery-top at this same width; review the paired top companion."
   ],
   "question": [
     "Question Which hero spacing should I use?",
@@ -324,5 +324,11 @@
     "Selected heading Website update remains selected after another chunk",
     "Streaming continuation is visible",
     "Composer and website preview remain visible"
+  ],
+  "recovery-top": [
+    "Top companion of recovery over the same five original events, with real conversation scrollTop 0.",
+    "Provider access recovered heading, anthropic and Provider status 401 are visible.",
+    "Provider throttling recovered, Retry attempts 2 and Wait (ms) 1200 are visible.",
+    "Review recovery at the same width for the retained later restart, idle recovery and executor migration cards."
   ]
 }
