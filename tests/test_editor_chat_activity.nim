@@ -298,6 +298,54 @@ suite "Full public Harbor event presentation":
         dispose()
     check modes == ["free_form", "single_choice", "multi_choice", "confirmation"].toHashSet()
 
+  test "waiting-only request exposes truthful availability without changing admission":
+    const corpusText = staticRead("scenarios/chat-activity/public-session-events.json")
+    let payload = parseJson(corpusText)["scenes"]["login"][1]
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      vm.chat.addUserMessage("Help build this page")
+      vm.chat.applyAgentEvent(AgentEvent(sessionId: "waiting-session", eventId: "edit", kind: aekFileEdit,
+        filePath: "stories.nim", linesAdded: 2))
+      vm.chat.inputText.val = "Retained waiting draft"
+      vm.chat.promptInFlight = true
+      vm.chat.promptAdmitted = true
+      vm.chat.sessionStatus.val = asLoading
+      vm.chat.connectionState.val = "streaming"
+      let edits = vm.chat.accumulatedEdits.val
+      let decoded = agentEventFromSseJson(harborEventToAgentEvent("waiting-session",
+        eventFromJson(payload)).toJson())
+      vm.chat.applyAgentEvent(decoded)
+      let entry = vm.chat.activity.val.entries[^1]
+      check entry.data.sourceType == "session_awaiting_input"
+      check entry.data.question.len == 0
+      check activityTitle(entry) == "Waiting for input"
+      check activityPresentation(entry).facts.anyIt(it.label == "Request" and it.value == payload["request"].getStr())
+      let panel = renderChatPanel[MockRenderer, MockNode](MockRenderer(), vm)
+      let node = entryNode(panel, entry.id)
+      let notice = node.children.filterIt(it.attributes.getOrDefault("data-chat-availability") == "true")
+      check notice.len == 1
+      check notice[0].parent == node
+      check notice[0].tag == "p"
+      check notice[0].textContent == "Waiting for input. This editor cannot respond to this request."
+      check notice[0].styles.getOrDefault("display") == "block"
+      let details = node.children.filterIt(it.tag == "details")
+      check details.len == 1
+      check not details[0].attributes.hasKey("open")
+      check activityDetail(entry).contains(payload["request"].getStr())
+      var pending = @[node]
+      while pending.len > 0:
+        let child = pending.pop()
+        check child.tag notin ["button", "input", "textarea", "select", "a"]
+        for nested in child.children: pending.add nested
+      check not vm.sendAgentPrompt()
+      check vm.chat.promptInFlight
+      check vm.chat.promptAdmitted
+      check vm.chat.sessionStatus.val == asLoading
+      check vm.chat.connectionState.val == "streaming"
+      check vm.chat.inputText.val == "Retained waiting draft"
+      check vm.chat.accumulatedEdits.val == edits
+      dispose()
+
   test "login recovery stays visible before details with correlated request availability":
     const corpusText = staticRead("scenarios/chat-activity/public-session-events.json")
     let payload = parseJson(corpusText)["scenes"]["login"][0]

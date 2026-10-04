@@ -235,7 +235,7 @@ canary failures remain preserved and do not establish full-frame determinism.
 ### View: event-session_awaiting_input
 
 - In the conversation area below the user request, a card headed Waiting for input.
-- Request login-provider under Waiting for input, followed by the session-owner delivery explanation.
+- Request login-provider under Waiting for input, followed by the visible notice “Waiting for input. This editor cannot respond to this request.” outside closed Details. No response control is offered.
 
 ### View: event-session_resumed
 

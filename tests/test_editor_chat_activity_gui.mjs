@@ -591,6 +591,44 @@ try{
     await horizontalChatGuard(statusPage);
     await statusPage.close();record(`current agent condition and open reply remain distinct at ${panelWidth}`);
   }
+  // A waiting-only DTO has no correlated response operation in this editor.
+  // Preserve the active reply's admission and draft while exposing that fact.
+  for(const [width,panelWidth] of [[1440,420],[1024,240]]){
+    const waitingPage=await browser.newPage({viewport:{width,height:768}});
+    await waitingPage.goto(origin);await mountedReady(waitingPage,`waiting-only-${panelWidth}`);
+    await waitingPage.evaluate(value=>window.__chatTest.width(value),panelWidth);
+    const draft=waitingPage.getByRole('textbox',{name:'Agent prompt'});
+    await draft.fill('Retained waiting draft');
+    await waitingPage.evaluate(()=>window.__chatTest.busy(true));
+    const before=JSON.parse(await waitingPage.evaluate(()=>window.__chatTest.state()));
+    const payload=publicCorpus.scenes.login[1];assert.equal(payload.type,'session_awaiting_input');
+    await waitingPage.evaluate(value=>window.__chatTest.harborEvent(JSON.stringify(value)),payload);
+    await waitingPage.evaluate(async()=>{await document.fonts.ready;await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));});
+    const row=waitingPage.locator('[data-chat-entry][data-chat-source="session_awaiting_input"]');
+    assert.equal(await row.count(),1);
+    assert.equal(await row.getByText('Waiting for input',{exact:true}).innerText(),'Waiting for input');
+    assert((await row.locator('[data-chat-fact="Request"]').innerText()).includes(payload.request));
+    const notice=row.locator('[data-chat-availability]');
+    assert.equal(await notice.innerText(),'Waiting for input. This editor cannot respond to this request.');
+    assert(await notice.isVisible());assert.equal(await row.locator('details').getAttribute('open'),null);
+    assert(await notice.evaluate(el=>el.parentElement.hasAttribute('data-chat-entry')));
+    const bounds=await notice.evaluate(el=>{
+      const box=el.getBoundingClientRect(),scroll=el.closest('[data-chat-scroll]').getBoundingClientRect();
+      return {inside:box.width>0&&box.height>0&&box.left>=scroll.left&&box.right<=scroll.right&&box.top>=scroll.top&&box.bottom<=scroll.bottom,
+        box:{left:box.left,right:box.right,top:box.top,bottom:box.bottom}};
+    });
+    assert(bounds.inside,JSON.stringify(bounds));await horizontalChatGuard(waitingPage);
+    assert.equal(await row.locator('button,input,textarea,select,a').count(),0);
+    assert.equal(await waitingPage.getByRole('button',{name:'Send agent prompt'}).getAttribute('aria-disabled'),'true');
+    assert.equal(await waitingPage.locator('[data-chat-session-status]').innerText(),'Waiting for input\nReply still open');
+    await row.locator('summary').click();
+    assert.notEqual(await row.locator('details').getAttribute('open'),null);
+    assert((await row.locator('details').innerText()).includes(payload.request));
+    assert.equal(await draft.inputValue(),'Retained waiting draft');
+    const after=JSON.parse(await waitingPage.evaluate(()=>window.__chatTest.state()));
+    assert.deepEqual(after,before);
+    await waitingPage.close();record(`truthful waiting-only notice preserves admission and draft at ${panelWidth}`);
+  }
   // Provider-supported recovery is readable with Details closed, at both real
   // mounted rail widths. No invented login action or credential input is offered.
   for(const [width,panelWidth] of [[1440,420],[1024,240]]){
