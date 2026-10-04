@@ -7,12 +7,16 @@
 ## external transport timing with protocol data, not a fake service. Its frames
 ## traverse the real Harbor parser, safe projection, JSON codec, reducer and
 ## generic renderer; official Rust scenario E2E is separately registered.
+## Footer cases use those same real parser/wire/reducer and renderer boundaries,
+## with only the admitted-flight latch controlled to distinguish public reports
+## from host completion. No provider answer, sign-in or cancellation is invented.
 import std/[unittest, strutils, tables, json, sets, sequtils]
 import nim_agents
 import nim_agents/[activity, activity_presentation]
 import isonim/viewmodel
 import isonim/core/[signals, computation, owner]
 import isonim/editor/[viewmodels, agent_harbor]
+import isonim/editor/design_review/editor_agent_adapter
 import isonim/editor/views/[chat_activity, chat_panel]
 import isonim/editor/views/chat_theme
 import isonim/testing/mock_dom
@@ -436,3 +440,56 @@ suite "Full public Harbor event presentation":
           check vm.chat.activity.val.entries[1].kind == aekThoughtChunk
           check vm.chat.activity.val.entries[1].status == "completed"
         dispose()
+
+  test "footer distinguishes provider reports from the still admitted reply":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      let panel = renderChatPanel[MockRenderer, MockNode](MockRenderer(), vm)
+      proc findStatus(node: MockNode): MockNode =
+        if node.attributes.getOrDefault("data-chat-session-status") == "true": return node
+        for child in node.children:
+          result = findStatus(child)
+          if result != nil: return
+      let footer = findStatus(panel)
+      check footer != nil
+      check footer.textContent == "Start a conversation"
+      vm.chat.addUserMessage("Help build this page")
+      vm.chat.promptInFlight = true
+      vm.chat.promptAdmitted = true
+      vm.chat.sessionStatus.val = asLoading
+      vm.chat.connectionState.val = "streaming"
+      vm.chat.inputText.val = "Preserved next draft"
+      check footer.textContent == "Working"
+      proc feed(payload: JsonNode) =
+        vm.chat.applyAgentEvent(agentEventFromSseJson(harborEventToAgentEvent("s",
+          eventFromJson(payload)).toJson()))
+      feed(%*{"type": "agent_question", "kind": "free_form", "prompt": "Which page?", "request": "q"})
+      check footer.textContent == "Waiting for input\nReply still open"
+      feed(%*{"type": "login_required", "provider": "anthropic", "request": "login"})
+      feed(%*{"type": "session_awaiting_input", "request": "login"})
+      check footer.textContent == "Sign-in required\nReply still open"
+      feed(%*{"type": "session_ended", "outcome": "completed", "eventId": "end"})
+      check footer.textContent == "Agent reported completion\nReply still open"
+      feed(%*{"type": "session_ended", "outcome": "completed", "eventId": "end"})
+      check footer.textContent == "Agent reported completion\nReply still open"
+      check vm.chat.promptInFlight
+      check vm.chat.promptAdmitted
+      check vm.chat.connectionState.val == "streaming"
+      check vm.chat.sessionStatus.val == asLoading
+      check vm.chat.inputText.val == "Preserved next draft"
+      feed(%*{"type": "session_resumed", "deliverer": "human"})
+      check footer.textContent == "Working"
+      vm.chat.applyAgentEvent(AgentEvent(kind: aekCompleted))
+      check footer.textContent == "Finishing reply"
+      # Provider completion presentation is not the host's flight-release ACK.
+      check vm.chat.promptInFlight
+      vm.chat.promptInFlight = false
+      check footer.textContent == "Ready for next message"
+      vm.chat.closingSession = true
+      check footer.textContent == "Closing conversation"
+      vm.chat.closingSession = false
+      vm.chat.applyAgentEvent(AgentEvent(kind: aekError, text: "Network lost"))
+      check footer.textContent == "Reply failed"
+      vm.chat.applyAgentEvent(AgentEvent(kind: aekCancelled))
+      check footer.textContent == "Reply stopped"
+      dispose()

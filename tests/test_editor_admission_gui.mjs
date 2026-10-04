@@ -82,7 +82,7 @@ try{
  await page.goto('http://127.0.0.1:'+server.address().port);
  const composer=page.getByRole('textbox',{name:'Agent prompt'}),send=page.getByRole('button',{name:'Send agent prompt',exact:true});
  await composer.fill('first exact prompt');await send.click();await until(()=>requests.length===1);
- await page.waitForFunction(()=>document.querySelector('.editor-chat')?.textContent.includes('Connected / completed'));
+ await page.waitForFunction(()=>document.querySelector('[data-chat-session-status]')?.textContent==='Finishing reply');
  await composer.fill('exact newer unsent followup');assert.equal(await send.isDisabled(),true);assert.equal(await send.getAttribute('aria-disabled'),'true');
  await composer.press('Enter');const denied=await page.evaluate(()=>window.admission.at(-1));
  assert.equal(denied.accepted,false);assert.equal(denied.inFlight,true);assert.equal(denied.ready,false);assert.equal(denied.sameChat,true);
@@ -92,6 +92,7 @@ try{
  // must enable the existing DOM control even without a new status transition.
  streams[0].end('event: end\ndata: {"stopReason":"max_tokens"}\n\n');
  await page.waitForFunction(()=>document.querySelector('[aria-label="Send agent prompt"]')?.disabled===false);
+ assert.equal(await page.locator('[data-chat-session-status]').innerText(),'Ready for next message');
  await send.click();await until(()=>requests.length===2);
  assert.equal(sessions,1);assert.equal(requests[1].sessionId,requests[0].sessionId);
  assert.equal(requests[1].messages[0].content[0].text,'exact newer unsent followup');

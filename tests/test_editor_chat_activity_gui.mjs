@@ -534,6 +534,63 @@ try{
     assert.equal(await session.count(),beforeHeartbeat);
     await projectionPage.close();record(`safe file description and reported running status preserve admission at ${panelWidth}`);
   }
+  // Public lifecycle reports describe the agent; the admitted reply remains
+  // open until its host acknowledges completion. The footer must explain both.
+  for(const [width,panelWidth] of [[1440,420],[1024,240]]){
+    const statusPage=await browser.newPage({viewport:{width,height:768}});
+    await statusPage.goto(origin);await statusPage.waitForFunction(()=>window.__chatTest);
+    await statusPage.evaluate(value=>window.__chatTest.width(value),panelWidth);
+    const status=statusPage.locator('[data-chat-session-status]');
+    const summary=statusPage.locator('[data-chat-session-summary]');
+    assert.equal(await summary.evaluate(el=>el.getBoundingClientRect().right<0),true);
+    assert.equal(await summary.textContent(),'Start a conversation');
+    assert.equal(await status.isVisible(),true);
+    assert.equal(await status.innerText(),'Start a conversation');
+    const draft=statusPage.getByRole('textbox',{name:'Agent prompt'});
+    await draft.fill('Retained status draft');
+    await statusPage.evaluate(()=>window.__chatTest.busy(true));
+    const before=JSON.parse(await statusPage.evaluate(()=>window.__chatTest.state()));
+    const feed=async payload=>statusPage.evaluate(value=>window.__chatTest.harborEvent(JSON.stringify(value)),payload);
+    assert.equal(await status.innerText(),'Working');
+    await feed(publicCorpus.scenes.question[0]);
+    assert.equal(await status.innerText(),'Waiting for input\nReply still open');
+    await feed(publicCorpus.scenes.login[0]);await feed(publicCorpus.scenes.login[1]);
+    assert.equal(await status.innerText(),'Sign-in required\nReply still open');
+    await feed({type:'log',level:'info',message:'Resumed authoring',eventId:'footer-output-1'});
+    assert.equal(await status.innerText(),'Working');
+    await feed({type:'log',level:'info',message:' with continued output',eventId:'footer-output-2'});
+    assert.equal(await status.innerText(),'Working');
+    assert.equal(await statusPage.locator('[data-chat-role="arAssistant"]').last().locator('[data-chat-markdown="paragraph"]').innerText(),'Resumed authoring with continued output');
+    await feed(publicCorpus.scenes.question[0]);
+    assert.equal(await status.innerText(),'Waiting for input\nReply still open');
+    await feed(publicCorpus.scenes.lifecycle[2]);assert.equal(await status.innerText(),'Working');
+    const ended={...publicCorpus.scenes.lifecycle[3],eventId:'footer-end'};
+    await feed(ended);assert.equal(await status.innerText(),'Agent reported completion\nReply still open');
+    await feed(ended);assert.equal(await status.innerText(),'Agent reported completion\nReply still open');
+    assert.equal(await summary.textContent(),await status.textContent());
+    const bounds=await status.evaluate(el=>{const a=el.getBoundingClientRect(),b=el.closest('.editor-chat').getBoundingClientRect();return {visible:a.x>=b.x&&a.y>=b.y&&a.right<=b.right&&a.bottom<=b.bottom,clientWidth:el.clientWidth,scrollWidth:el.scrollWidth};});
+    assert(bounds.visible,JSON.stringify(bounds));assert(bounds.scrollWidth<=bounds.clientWidth,JSON.stringify(bounds));
+    const after=JSON.parse(await statusPage.evaluate(()=>window.__chatTest.state()));
+    for(const key of ['busy','admitted','connection','sessionStatus'])assert.equal(after[key],before[key],key);
+    assert.equal(await statusPage.getByRole('button',{name:'Send agent prompt'}).getAttribute('aria-disabled'),'true');
+    assert.equal(await draft.inputValue(),'Retained status draft');
+    await statusPage.evaluate(()=>window.__chatTest.newChat());
+    assert.equal(await statusPage.locator('[data-chat-session-status]').innerText(),'Start a conversation');
+    await statusPage.evaluate(()=>window.__chatTest.switchChat('chat-1'));
+    assert.equal(await statusPage.locator('[data-chat-session-status]').innerText(),'Agent reported completion\nReply still open');
+    assert.equal(await statusPage.getByRole('textbox',{name:'Agent prompt'}).inputValue(),'Retained status draft');
+    await statusPage.evaluate(()=>window.__chatTest.event(JSON.stringify({kind:'completed'})));
+    assert.equal(await statusPage.locator('[data-chat-session-status]').innerText(),'Finishing reply');
+    assert.equal(JSON.parse(await statusPage.evaluate(()=>window.__chatTest.state())).busy,true);
+    await statusPage.evaluate(()=>window.__chatTest.busy(false));
+    assert.equal(await statusPage.locator('[data-chat-session-status]').innerText(),'Ready for next message');
+    await statusPage.evaluate(()=>window.__chatTest.event(JSON.stringify({kind:'error',text:'Connection lost'})));
+    assert.equal(await statusPage.locator('[data-chat-session-status]').innerText(),'Reply failed');
+    await statusPage.evaluate(()=>window.__chatTest.event(JSON.stringify({kind:'cancelled'})));
+    assert.equal(await statusPage.locator('[data-chat-session-status]').innerText(),'Reply stopped');
+    await horizontalChatGuard(statusPage);
+    await statusPage.close();record(`current agent condition and open reply remain distinct at ${panelWidth}`);
+  }
   // Provider-supported recovery is readable with Details closed, at both real
   // mounted rail widths. No invented login action or credential input is offered.
   for(const [width,panelWidth] of [[1440,420],[1024,240]]){

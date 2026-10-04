@@ -4,6 +4,7 @@
 ## Renders explicit chat state from the editor ViewModel.
 
 import std/[json, sequtils, strutils]
+import nim_agents/activity_presentation
 import isonim/editor/control
 
 import isonim/core/[signals, computation]
@@ -20,12 +21,30 @@ proc rememberPanelFocus(vm: EditorVM; id: string): proc() =
     vm.inspector.rememberInspectorFocus(captured)
 
 proc chatStatusText(vm: EditorVM): string =
-  let label = case vm.chat.sessionStatus.val
-    of asIdle: "Empty"
-    of asLoading: "Loading"
-    of asReady: "Connected"
-    of asError: "Error"
-  label & " / " & vm.chat.connectionState.val
+  let chat = vm.chat
+  let reported = reportedActivityCondition(chat.activity.val)
+  let state = chat.sessionStatus.val
+  let connection = chat.connectionState.val
+  let inFlight = chat.promptInFlight
+  if chat.closingSession: return "Closing conversation"
+  var progress = "Reply still open"
+  if not inFlight:
+    progress = case state
+      of asIdle: "No active reply"
+      of asLoading: "Reply still open"
+      of asReady: "Ready for next message"
+      of asError: "Reply failed"
+  if state == asError: return "Reply failed"
+  if reported.len > 0:
+    return reported & "\n" & progress
+  case state
+  of asIdle: (if inFlight: "Waiting for reply" else: "Start a conversation")
+  of asLoading: "Working"
+  of asReady:
+    if inFlight: "Finishing reply"
+    elif connection == "cancelled": "Reply stopped"
+    else: "Ready for next message"
+  of asError: "Reply failed"
 
 proc proposalStatusText(status: AgentEditProposalStatus): string
 proc permissionStatusText(status: AgentPermissionStatus): string
@@ -63,12 +82,6 @@ proc proposalValidityText(validity: AgentEditProposalValidity): string =
 proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   let chat = vm.chat
   let agentState = signals.val(chat.sessionStatus)
-  let statusLabel = case agentState
-    of asIdle: "Empty"
-    of asLoading: "Loading"
-    of asReady: "Connected"
-    of asError: "Error"
-  let connectionLabel = chat.connectionState.val
   # Idle uses textSecondary (not textDim) so the connection-status dot reads
   # as an actual indicator, not body text. Loading/ready/error keep their
   # semantic colours.
@@ -126,8 +139,11 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
             onkeydown = proc() = vm.togglePanel(epInspector)):
         text "\xE2\x9C\x95"
       span(ref = statusTextNode):
-        text statusLabel & " / " & connectionLabel
+        text chatStatusText(vm)
   r.appendChild(panel, header)
+  r.setAttribute(statusTextNode, "data-chat-session-summary", "true")
+  createRenderEffect proc() =
+    r.setTextContent(statusTextNode, chatStatusText(vm))
   var approvalSetting: E
   let controlSettings = ui(r):
     tdiv(padding = "8px 12px", border_bottom = "1px solid " & borderFaint):
@@ -834,7 +850,13 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   r.addEventListener(closeBtn, "click", proc() =
     discard vm.closeChat(vm.activeChatId.val))
   r.setStyle(closeBtn, "font-size", "10px")
-  let sessionLabel = r.createElement("span")
+  let sessionLabel = r.createElement("div")
+  r.setAttribute(sessionLabel, "data-chat-session-status", "true")
+  r.setAttribute(sessionLabel, "role", "status")
+  r.setAttribute(sessionLabel, "aria-live", "polite")
+  r.setStyle(sessionLabel, "white-space", "pre-line")
+  r.setStyle(sessionLabel, "line-height", "1.5")
+  r.setStyle(sessionLabel, "margin-top", "8px")
   r.setStyle(sessionLabel, "color", textSecondary)
   r.setStyle(sessionLabel, "font-size", "10px")
   r.setStyle(sessionLabel, "margin-right", "8px")

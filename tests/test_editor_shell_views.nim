@@ -1,4 +1,9 @@
 ## Tests for IsoNim Editor — shell Views (M2)
+## MockRenderer provides inspectable generic nodes for headless production
+## ViewModel/view bindings without a browser. Signals, owners and editor reducers
+## are real; the registered mounted GUI suites separately verify actual DOM,
+## keyboard, geometry and preview behavior. No external provider is substituted
+## to claim REST or compiler integration in this suite.
 
 import std/[unittest, strutils, tables]
 import isonim/core/[signals, computation, owner]
@@ -1173,7 +1178,7 @@ suite "Editor Shell Views (M2)":
 
       let chat = renderChatPanel[MockRenderer, MockNode](r, vm)
       check chat.textContent.contains("Ask for design-system changes")
-      check chat.textContent.contains("Empty / disconnected")
+      check chat.textContent.contains("Start a conversation")
 
       dispose()
 
