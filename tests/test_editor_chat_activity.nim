@@ -541,3 +541,34 @@ suite "Full public Harbor event presentation":
       vm.chat.applyAgentEvent(AgentEvent(kind: aekCancelled))
       check footer.textContent == "Reply stopped"
       dispose()
+
+  test "navigation preference explains automatic control and retains readable guidance":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      vm.agentControlApproval.val = true
+      let panel = renderChatPanel[MockRenderer, MockNode](MockRenderer(), vm)
+      proc matching(node: MockNode; attribute, value: string): seq[MockNode] =
+        if node.attributes.getOrDefault(attribute) == value: result.add node
+        for child in node.children: result.add matching(child, attribute, value)
+      let setting = matching(panel, "data-editor-control-approval", "true")
+      let support = matching(panel, "data-editor-control-approval-help", "true")
+      check setting.len == 1
+      check support.len == 1
+      check panel.textContent.contains("Require approval for agent navigation")
+      check support[0].textContent == "Turn off to let the agent focus, select, and highlight items automatically."
+      check setting[0].attributes.getOrDefault("aria-describedby") == support[0].attributes.getOrDefault("id")
+      check support[0].styles.getOrDefault("color") == textSecondary
+      check setting[0].attributes.getOrDefault("aria-checked") == "true"
+      vm.agentControlApproval.val = false
+      check setting[0].attributes.getOrDefault("aria-checked") == "false"
+      var guidanceCount = 0
+      proc guidance(node: MockNode) =
+        if node.tag == "span" and node.textContent in ["Manual Edit mode opens the source-backed inspector in this same sidebar space.", "tap to insert"]:
+          inc guidanceCount
+          check node.styles.getOrDefault("color") == textSecondary
+        for child in node.children: guidance(child)
+      check panel.textContent.contains("Manual Edit mode opens the source-backed inspector in this same sidebar space.")
+      check panel.textContent.contains("tap to insert")
+      guidance(panel)
+      check guidanceCount == 2
+      dispose()

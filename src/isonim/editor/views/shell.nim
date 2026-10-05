@@ -1301,7 +1301,7 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
             flex_shrink = "0"):
         tdiv(display = "flex", align_items = "center",
               gap = "6px", width = "100%"):
-          tdiv(display = "flex", align_items = "center",
+          tdiv(`data-sidebar-search-field` = "true", display = "flex", align_items = "center",
                 background_color = bgSurface,
                 border = "1px solid " & border,
                 border_radius = "5px", padding = "0 8px", height = "28px",

@@ -17,6 +17,7 @@
  */
 import assert from 'node:assert/strict';
 import {horizontalChatGuard,oldClippedChatControl} from './chat-horizontal-guard.mjs';
+import {sidebarSearchFocusEvidence,requireSidebarSearchFocus} from './chat-focus-guard.mjs';
 import {waitForAdvancingFrames} from './chat-capture-frames.mjs';
 import {execFileSync} from 'node:child_process';
 import {createServer} from 'node:http';
@@ -93,6 +94,7 @@ const lineage={bundleSha256:hash(readFileSync(new URL('../build/editor-chat/edit
 const flags=['--no-sandbox','--disable-gpu','--force-color-profile=srgb','--font-render-hinting=none','--disable-lcd-text'];
 const environment={deviceScaleFactor:1,locale:'en-US',timezoneId:'UTC',colorScheme:'dark',reducedMotion:'reduce'};
 lineage.horizontalGuardSha256=hash(readFileSync(new URL('./chat-horizontal-guard.mjs',import.meta.url)));
+lineage.focusGuardSha256=hash(readFileSync(new URL('./chat-focus-guard.mjs',import.meta.url)));
 lineage.captureFramesSha256=hash(readFileSync(new URL('./chat-capture-frames.mjs',import.meta.url)));
 lineage.expectedSha256=hash(readFileSync(new URL('./chat-visual-expected.json',import.meta.url)));
 lineage.thresholdsSha256=hash(readFileSync(new URL('./chat-visual-thresholds.json',import.meta.url)));
@@ -256,7 +258,7 @@ async function behavioralScene(page,view,size){
  await page.evaluate(()=>window.__chatTest.localApprovals(true));
  if(view.startsWith('navigation-')||['focus-auto','selection-highlight-auto','highlight-auto'].includes(view)){
    await input.focus();await settle();
-   const approval=page.getByRole('checkbox',{name:'Approve agent navigation'});
+   const approval=page.getByRole('checkbox',{name:'Require approval for agent navigation'});
    if(view!=='navigation-auto'&&view.startsWith('navigation-'))await approval.check();else await approval.uncheck();
    const readiness=await controlReady(page,view,size);
    const initial=await state();
@@ -285,7 +287,21 @@ async function behavioralScene(page,view,size){
    assert.equal(await row.locator('button').count(),expectedStatus==='pending'?2:0,'only live approval controls');
    const final=await state();
    if(view.startsWith('navigation-'))assert.equal(final.storyId,initial.stories.find(row=>row.name===(['navigation-approved','navigation-auto'].includes(view)?'Details':'Home')).id,'actual selected story');
-   if(view==='focus-auto')assert(await page.locator('.editor-sidebar input').evaluate(el=>document.activeElement===el),'actual sidebar focus');
+   if(view==='focus-auto'){
+     const before=requireSidebarSearchFocus(await page.evaluate(sidebarSearchFocusEvidence));
+     const field=await page.locator('[data-sidebar-search-field="true"]').elementHandle();
+     const original=await field.getAttribute('style');let rejected;
+     try{
+       await field.evaluate(el=>el.style.setProperty('outline','none','important'));
+       rejected=await page.evaluate(sidebarSearchFocusEvidence);
+       assert.throws(()=>requireSidebarSearchFocus(rejected),/visible sidebar search focus ring/,'same focus guard rejects missing real ring despite activeElement');
+     }finally{
+       await field.evaluate((el,value)=>{if(value===null)el.removeAttribute('style');else el.setAttribute('style',value);},original);
+       await field.dispose();
+     }
+     const restored=requireSidebarSearchFocus(await page.evaluate(sidebarSearchFocusEvidence));
+     writeFileSync(path.join(output,`sidebar-focus-control-${size}.json`),JSON.stringify({before,rejected,restored,missingRingRejected:true},null,2));
+   }
    if(['selection-highlight-auto','highlight-auto'].includes(view)){
       // The shell retains hidden preview documents. Identify the visible production
       // page iframe first, then use its associated frame, never frame URL order.
@@ -606,6 +622,7 @@ try{
     assert.equal(await question.locator('details').getAttribute('open'),null,'availability precedes expansion');
     assert.equal(await question.locator('button,input,textarea,select').count(),0,'unavailable answers have no fake controls');
   }
+  const sidebarFocusPaint=view==='focus-auto'?requireSidebarSearchFocus(await page.evaluate(sidebarSearchFocusEvidence)):null;
   const focusPaint=await input.evaluate(el=>{const s=getComputedStyle(el);return {border:s.borderColor,outline:s.outline,animation:s.animation,transition:s.transition,active:document.activeElement===el,animations:document.getAnimations().map(a=>({state:a.playState,time:a.currentTime}))};});
   const target=canary?page.locator('[data-chat-scroll]'):page;
   if(canary){
@@ -627,7 +644,7 @@ try{
     assert(!changed.equals(png),'exact image gate must reject changed actual prose/plan');
     positiveControl={changedSha256:hash(changed),mutation:'actual production event alters conversation/plan'};
   }
-  manifest.push({view,size,file,sceneReadiness,recoveryEvidence,longContentEvidence,behaviorEvidence,positiveControl,contentVerified:canary,dimensions:[png.readUInt32BE(16),png.readUInt32BE(20)],scope:canary?'actual production conversation scroll surface; excludes editor chrome, preview and composer':'full editor viewport',sha256:createHash('sha256').update(png).digest('hex'),layout,geometry,contrast,focusPaint,boundary:corpus.boundary,events:(sceneEvents[view]||[]).map(e=>e.type||e.kind),baseline:'candidate; human acceptance pending',perceptualThreshold:{maximumChangedPixelRatio:thresholds[view]},browser:browser.version()});
+  manifest.push({view,size,file,sceneReadiness,recoveryEvidence,longContentEvidence,behaviorEvidence,positiveControl,contentVerified:canary,dimensions:[png.readUInt32BE(16),png.readUInt32BE(20)],scope:canary?'actual production conversation scroll surface; excludes editor chrome, preview and composer':'full editor viewport',sha256:createHash('sha256').update(png).digest('hex'),layout,geometry,contrast,focusPaint,sidebarFocusPaint,boundary:corpus.boundary,events:(sceneEvents[view]||[]).map(e=>e.type||e.kind),baseline:'candidate; human acceptance pending',perceptualThreshold:{maximumChangedPixelRatio:thresholds[view]},browser:browser.version()});
   if(args.includes('--missing-element-control')&&view==='empty'&&size==='wide'){
     await input.evaluate(el=>el.remove());
     await assert.rejects(()=>composerGuard(page,viewport),/required composer missing/,'same positive composer guard rejects removed composer');

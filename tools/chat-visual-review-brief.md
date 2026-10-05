@@ -390,7 +390,7 @@ it, and test-only acceptance records cannot authorize a real campaign.
 
 ### View: navigation-pending
 
-- Checked Approve agent navigation preference
+- Checked Require approval for agent navigation preference
 - Pending open-story request with Approve and Reject controls
 - Home remains in the preview until approval
 
@@ -418,7 +418,7 @@ it, and test-only acceptance records cannot authorize a real campaign.
 
 ### View: navigation-auto
 
-- Unchecked Approve agent navigation preference
+- Unchecked Require approval for agent navigation preference
 - Applied open-story history row and Details selected
 - No approval controls are shown
 
@@ -426,7 +426,7 @@ it, and test-only acceptance records cannot authorize a real campaign.
 ### View: focus-auto
 
 - Applied focus sidebar-search history row
-- Sidebar search holds actual keyboard focus
+- Sidebar search holds actual keyboard focus with a visible contrasting focus ring
 - Website preview and composer remain visible
 
 

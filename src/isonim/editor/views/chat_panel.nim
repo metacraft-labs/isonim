@@ -149,8 +149,14 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
     tdiv(padding = "8px 12px", border_bottom = "1px solid " & borderFaint):
       label(display = "flex", align_items = "center", gap = "8px", color = textSecondary, font_size = "12px"):
         input(ref = approvalSetting, `type` = "checkbox",
-          `data-editor-control-approval` = "true")
-        text "Approve agent navigation"
+          `data-editor-control-approval` = "true",
+          `aria-describedby` = "isonim-agent-navigation-help")
+        text "Require approval for agent navigation"
+      tdiv(id = "isonim-agent-navigation-help",
+          `data-editor-control-approval-help` = "true",
+          margin_top = "6px", font_size = "11px", line_height = "1.5",
+          color = textSecondary):
+        text "Turn off to let the agent focus, select, and highlight items automatically."
   r.addEventListener(approvalSetting, "change", proc() =
     vm.agentControlApproval.val = not vm.agentControlApproval.val
     discard vm.refreshControlRevision())
@@ -260,7 +266,7 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
         text "Ask for design-system changes"
       span(font_size = "11px", line_height = "1.5", color = textSecondary):
         text "Use Comment mode to collect review notes, or describe token, variant, typography, spacing, radius, shadow, and state changes here."
-      span(font_size = "11px", line_height = "1.5", color = textDim):
+      span(font_size = "11px", line_height = "1.5", color = textSecondary):
         text "Manual Edit mode opens the source-backed inspector in this same sidebar space."
   r.appendChild(messagesArea, empty)
 
@@ -278,7 +284,7 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
         text_transform = "uppercase",
         letter_spacing = "0.5px"):
         text "Suggested prompts"
-      span(font_size = "10px", color = textDim):
+      span(font_size = "11px", color = textSecondary):
         text "tap to insert"
   r.appendChild(messagesArea, suggestionsHeading)
 

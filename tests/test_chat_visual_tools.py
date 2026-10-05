@@ -205,4 +205,21 @@ class CaptureGuards(unittest.TestCase):
  def test_canary_control_not_changed_rejected(self):
   target=self.root/'canary';shutil.copytree(CAP/'canary-a',target);m=json.loads((target/'manifest.json').read_text());row=m['views'][0];file=target/f"{row['view']}-{row['size']}-positive-control.png";shutil.copyfile(target/row['file'],file);row['positiveControl']['changedSha256']=row['sha256'];(target/'manifest.json').write_text(json.dumps(m))
   with self.assertRaises(ValueError):guard(target,True,True)
+ def test_sidebar_focus_missing_ring_and_blurred_rejected(self):
+  for size in ('wide','narrow'):
+   for change in ({'outlineStyle':'none'},{'active':False},{'outlineWidth':0},{'contrast':1}):
+    with self.subTest(size=size,change=change):
+     original=(self.corpus/'manifest.json').read_bytes()
+     try:
+      self.edit(lambda m:next(row for row in m['views'] if row['view']=='focus-auto' and row['size']==size)['sidebarFocusPaint'].update(change))
+      with self.assertRaisesRegex(ValueError,'missing visible sidebar search focus ring'):guard(self.corpus,current=True)
+     finally:(self.corpus/'manifest.json').write_bytes(original)
+ def test_sidebar_focus_lineage_required_and_current(self):
+  original=(self.corpus/'manifest.json').read_bytes()
+  try:
+   self.edit(lambda m:m['lineage'].pop('focusGuardSha256'))
+   with self.assertRaisesRegex(ValueError,'missing source/browser lineage'):guard(self.corpus,current=True)
+  finally:(self.corpus/'manifest.json').write_bytes(original)
+  self.edit(lambda m:m['lineage'].update(focusGuardSha256='0'*64))
+  with self.assertRaisesRegex(ValueError,'stale source closure: focusGuardSha256'):guard(self.corpus,current=True)
 if __name__=='__main__':unittest.main(argv=[sys.argv[0],*rest])

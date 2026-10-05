@@ -488,7 +488,7 @@
     "navigation-pending": {
       "boundary": "production shared VM/commands and mounted DOM; deterministic transport timing only",
       "expected": [
-        "Checked Approve agent navigation preference",
+        "Checked Require approval for agent navigation preference",
         "Pending open-story request with Approve and Reject controls",
         "Home remains in the preview until approval"
       ]
@@ -520,7 +520,7 @@
     "navigation-auto": {
       "boundary": "production shared VM/commands and mounted DOM; deterministic transport timing only",
       "expected": [
-        "Unchecked Approve agent navigation preference",
+        "Unchecked Require approval for agent navigation preference",
         "Applied open-story history row and Details selected",
         "No approval controls are shown"
       ]

@@ -140,6 +140,12 @@ proc injectEditorStyles*() =
     }
     .editor-input::placeholder { color: #475569; }
     .editor-input:focus { border-color: #3B82F6 !important; }
+    /* Programmatic agent focus and keyboard focus use the same visible ring.
+       The search input has no border; paint its enclosing field instead. */
+    [data-sidebar-search-field="true"]:focus-within {
+      outline: 2px solid #3B82F6;
+      outline-offset: 2px;
+    }
 
     /* ---- Phase H — Property row visual polish (2026-05-28) ---- */
 

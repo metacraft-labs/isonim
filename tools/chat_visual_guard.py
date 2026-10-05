@@ -82,7 +82,7 @@ def guard(directory,canary=False,current=False):
     directory=pathlib.Path(directory);m=json.loads((directory/'manifest.json').read_text());expected,thresholds=definitions()
     keys={(v,s) for v in (['conversation','plan'] if canary else expected) for s in SIZES}
     require(m.get('schema')==2 and m.get('container')==IMAGE and m.get('flags')==FLAGS and m.get('environment')==ENV and m.get('sizes')==SIZES,'capture runtime configuration mismatch')
-    lineage=m.get('lineage',{});required=['bundleSha256','sceneSha256','captureSha256','captureFramesSha256','horizontalGuardSha256','expectedSha256','thresholdsSha256','browserExecutableSha256']
+    lineage=m.get('lineage',{});required=['bundleSha256','sceneSha256','captureSha256','captureFramesSha256','focusGuardSha256','horizontalGuardSha256','expectedSha256','thresholdsSha256','browserExecutableSha256']
     require(all(sha(lineage.get(k)) for k in required),'missing source/browser lineage')
     fonts=lineage.get('fonts');require(isinstance(fonts,list) and len(fonts)==48 and len({f.get('file') for f in fonts})==48 and all(f.get('file') and sha(f.get('sha256')) for f in fonts),'font inventory invalid')
     runtime=json.loads((ROOT/'tools/chat-visual-runtime.json').read_text())
@@ -90,7 +90,7 @@ def guard(directory,canary=False,current=False):
     assets=lineage.get('mountedAssets',[]);require([x.get('file') for x in assets]==['editor.js','index.html','fabric.min.js','paper-core.min.js','svgo.browser.js'] and all(sha(x.get('sha256')) for x in assets),'mounted asset inventory incomplete')
     if current:
         for asset in assets:require(asset['sha256']==digest(ROOT/'build/editor-chat'/asset['file']),'stale mounted assets; full regeneration required')
-        inputs={'bundleSha256':'build/editor-chat/editor.js','sceneSha256':'tests/scenarios/chat-activity/public-session-events.json','captureSha256':'tools/chat-visual-campaign.mjs','captureFramesSha256':'tools/chat-capture-frames.mjs','horizontalGuardSha256':'tools/chat-horizontal-guard.mjs','expectedSha256':'tools/chat-visual-expected.json','thresholdsSha256':'tools/chat-visual-thresholds.json'}
+        inputs={'bundleSha256':'build/editor-chat/editor.js','sceneSha256':'tests/scenarios/chat-activity/public-session-events.json','captureSha256':'tools/chat-visual-campaign.mjs','captureFramesSha256':'tools/chat-capture-frames.mjs','focusGuardSha256':'tools/chat-focus-guard.mjs','horizontalGuardSha256':'tools/chat-horizontal-guard.mjs','expectedSha256':'tools/chat-visual-expected.json','thresholdsSha256':'tools/chat-visual-thresholds.json'}
         for key,file in inputs.items():require(lineage[key]==digest(ROOT/file),f'stale source closure: {key}; full regeneration required')
     rows=m.get('views');require(isinstance(rows,list) and rows,'empty capture inventory')
     seen=set()
@@ -105,6 +105,13 @@ def guard(directory,canary=False,current=False):
         require(state.get('workspace')=='chat-acceptance' and state.get('storyId') in ('Pages / Home','Pages / Details'),'wrong selected preview readiness')
         require({'primary','secondary'}.issubset(ready.get('sceneGraphRows',[])) and {'primary','secondary'}.issubset(x.get('id') for x in state.get('elements',[])),'missing published scene rows')
         frames=ready.get('frameTimes',[]);require(len(frames)==2 and all(type(t) in (int,float) for t in frames) and frames[1]>frames[0],'missing normal readiness frames')
+        if key[0]=='focus-auto':
+            focus=row.get('sidebarFocusPaint') or {}
+            require(focus.get('active') is True and focus.get('outlineStyle')=='solid' and type(focus.get('outlineWidth')) in (int,float) and focus['outlineWidth']>=2 and type(focus.get('contrast')) in (int,float) and focus['contrast']>=3,'missing visible sidebar search focus ring')
+            box=focus.get('box',{});viewport=focus.get('viewport',{})
+            require(viewport=={'width':SIZES[key[1]]['width'],'height':SIZES[key[1]]['height']} and type(focus.get('outlineOffset')) in (int,float),'missing sidebar focus viewport')
+            pad=focus['outlineWidth']+max(0,focus['outlineOffset'])
+            companion_geometry(box,{'top':pad,'bottom':viewport['height']-pad,'left':pad,'right':viewport['width']-pad},'sidebar focus ring')
         if key[0] in RECOVERY_VISIBLE:recovery_guard(row)
         if key[0] in LONG_VISIBLE:long_content_guard(row)
         require(row.get('perceptualThreshold')=={'maximumChangedPixelRatio':thresholds[key[0]]},'threshold mismatch')

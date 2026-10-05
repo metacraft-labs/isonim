@@ -21,6 +21,7 @@
  * narrow/wide overflow and composer/preview reachability; capture named states.
  */
 import assert from 'node:assert/strict';
+import {sidebarSearchFocusEvidence,requireSidebarSearchFocus} from '../tools/chat-focus-guard.mjs';
 import {horizontalChatGuard,oldClippedChatControl} from '../tools/chat-horizontal-guard.mjs';
 import {spawn} from 'node:child_process';
 import {mkdtempSync, writeFileSync, readFileSync} from 'node:fs';
@@ -79,7 +80,7 @@ try{
   const controlPage=await browser.newPage({viewport:{width:1440,height:900}});
   await controlPage.goto(origin);await controlPage.waitForFunction(()=>window.__chatTest);
   await controlPage.evaluate(()=>window.__chatTest.localApprovals(false));
-  await controlPage.getByRole('checkbox',{name:'Approve agent navigation'}).check();
+  await controlPage.getByRole('checkbox',{name:'Require approval for agent navigation'}).check();
   await mountedReady(controlPage,'disconnected-approval');
   const controlBefore=JSON.parse(await controlPage.evaluate(()=>window.__chatTest.controlState()));
   const admitted=JSON.parse(await controlPage.evaluate(()=>{
@@ -110,7 +111,7 @@ try{
     const previewPage=await browser.newPage({viewport:{width,height:900}});
     await previewPage.goto(origin);await previewPage.waitForFunction(()=>window.__chatTest);
     await previewPage.evaluate(value=>{window.__chatTest.width(value);window.__chatTest.localApprovals(true);},panelWidth);
-    await previewPage.getByRole('checkbox',{name:'Approve agent navigation'}).uncheck();
+    await previewPage.getByRole('checkbox',{name:'Require approval for agent navigation'}).uncheck();
     await mountedReady(previewPage,`visible-preview-${width}`);
     const visible=previewPage.locator('iframe[data-page-project-frame="true"]:visible');
     assert.equal(await visible.count(),1);
@@ -139,6 +140,72 @@ try{
       assert.equal(await hiddenPrimary.evaluate(el=>el.ownerDocument.activeElement===el),false);
     }
     await previewPage.close();record(`visible production preview identity and hidden negative at ${width}`);
+  }
+  // Read the actual mounted colors and real shared control admission. The
+  // existing local transport fixture supplies connection timing only; keyboard,
+  // focus paint, revision guards and DOM remain production implementations.
+  for(const [width,height,rail] of [[1440,900,420],[1024,768,240]]) {
+    const designPage=await browser.newPage({viewport:{width,height}});
+    await designPage.goto(origin);await designPage.waitForFunction(()=>window.__chatTest);
+    await designPage.evaluate(rail=>{window.__chatTest.width(rail);window.__chatTest.localApprovals(true);},rail);
+    await mountedReady(designPage,`navigation-design-${width}`);
+    const approval=designPage.getByRole('checkbox',{name:'Require approval for agent navigation',exact:true});
+    const help=designPage.locator('[data-editor-control-approval-help="true"]');
+    const manual=designPage.getByText('Manual Edit mode opens the source-backed inspector in this same sidebar space.',{exact:true});
+    const hint=designPage.getByText('tap to insert',{exact:true});
+    assert.equal(await help.innerText(),'Turn off to let the agent focus, select, and highlight items automatically.');
+    assert.equal(await approval.getAttribute('aria-describedby'),await help.getAttribute('id'));
+    async function readable(node) {
+      assert(await node.isVisible());
+      const colors=await node.evaluate(el=>{
+        const css=getComputedStyle(el),box=el.getBoundingClientRect();let background=el;
+        while(background&&getComputedStyle(background).backgroundColor==='rgba(0, 0, 0, 0)')background=background.parentElement;
+        const rgb=value=>(value.match(/[\d.]+/g)||[]).slice(0,3).map(Number);
+        const lum=values=>values.map(v=>{v/=255;return v<=0.04045?v/12.92:((v+0.055)/1.055)**2.4;}).reduce((sum,v,i)=>sum+v*[0.2126,0.7152,0.0722][i],0);
+        const foreground=css.color,bg=getComputedStyle(background).backgroundColor,a=lum(rgb(foreground)),b=lum(rgb(bg));
+        return {foreground,background:bg,contrast:(Math.max(a,b)+0.05)/(Math.min(a,b)+0.05),fontSize:css.fontSize,opacity:css.opacity,
+          inside:box.width>0&&box.height>0&&box.left>=0&&box.top>=0&&box.right<=innerWidth&&box.bottom<=innerHeight};
+      });
+      assert(colors.inside,JSON.stringify(colors));assert.equal(colors.opacity,'1');assert(colors.contrast>=4.5,JSON.stringify(colors));return colors;
+    }
+    const contrast={manual:await readable(manual),hint:await readable(hint),support:await readable(help)};
+    const search=designPage.locator('[data-sidebar-search="true"]');
+    const composer=designPage.getByRole('textbox',{name:'Agent prompt'});
+    await composer.fill('Retained draft while agent navigates');await composer.focus();
+    await approval.check();assert(await approval.isChecked());assert.equal(await approval.getAttribute('aria-checked'),'true');
+    await composer.focus();
+    const before=JSON.parse(await designPage.evaluate(()=>window.__chatTest.controlState()));
+    const pending=JSON.parse(await designPage.evaluate(id=>window.__chatTest.control(JSON.stringify({commandId:id,command:'focus',target:'sidebar-search'})),`design-pending-${width}`));
+    assert.equal(pending.status,'pending');assert(await composer.evaluate(el=>document.activeElement===el));
+    const waiting=JSON.parse(await designPage.evaluate(()=>window.__chatTest.controlState()));
+    assert.equal(waiting.focus,before.focus);assert.equal(waiting.selection,before.selection);assert.equal(waiting.highlight,before.highlight);
+    await designPage.locator(`[data-editor-control-reject="design-pending-${width}"]`).click();
+    assert.equal(await designPage.locator(`[data-editor-control-operation="design-pending-${width}"]`).getAttribute('data-operation-status'),'rejected');
+    assert.equal(JSON.parse(await designPage.evaluate(()=>window.__chatTest.controlState())).focus,before.focus);
+    await approval.uncheck();assert.equal(await approval.isChecked(),false);assert.equal(await approval.getAttribute('aria-checked'),'false');
+    const applied=JSON.parse(await designPage.evaluate(id=>window.__chatTest.control(JSON.stringify({commandId:id,command:'focus',target:'sidebar-search'})),`design-focus-${width}`));
+    assert.equal(applied.status,'applied');
+    const rpcFocus=requireSidebarSearchFocus(await designPage.evaluate(sidebarSearchFocusEvidence));
+    const field=await designPage.locator('[data-sidebar-search-field="true"]').elementHandle();
+    const original=await field.getAttribute('style');let missingRing;
+    try {
+      await field.evaluate(el=>el.style.setProperty('outline','none','important'));
+      missingRing=await designPage.evaluate(sidebarSearchFocusEvidence);
+      assert.equal(missingRing.active,true);assert.throws(()=>requireSidebarSearchFocus(missingRing),/visible sidebar search focus ring/);
+    } finally {
+      await field.evaluate((el,value)=>{if(value===null)el.removeAttribute('style');else el.setAttribute('style',value);},original);await field.dispose();
+    }
+    requireSidebarSearchFocus(await designPage.evaluate(sidebarSearchFocusEvidence));
+    await search.press('Tab');
+    const blurred=await designPage.evaluate(sidebarSearchFocusEvidence);
+    assert.equal(blurred.active,false);assert.equal(blurred.outlineStyle,'none');
+    await designPage.keyboard.press('Shift+Tab');
+    const keyboardFocus=requireSidebarSearchFocus(await designPage.evaluate(sidebarSearchFocusEvidence));
+    assert.equal(await composer.inputValue(),'Retained draft while agent navigates');
+    const after=JSON.parse(await designPage.evaluate(()=>window.__chatTest.controlState()));
+    assert.equal(after.selection,before.selection);assert.equal(after.highlight,before.highlight);
+    writeFileSync(path.join(artifacts,`navigation-focus-intro-${width}.json`),JSON.stringify({contrast,pending,applied,rpcFocus,missingRing,blurred,keyboardFocus},null,2));
+    await designPage.close();record(`navigation preference semantics, RPC and keyboard focus paint, blur and readable guidance at ${width}`);
   }
   // Actual production toolbar, sized by the available preview column rather
   // than the browser width. All backend/mode affordances remain reachable.
