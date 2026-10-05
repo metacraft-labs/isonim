@@ -7,7 +7,8 @@ Use CodeTracer agent activity and Harbor activity as semantic references.
 
 ## Required verification before aesthetics
 
-Every full view has a story browser, visible Website preview, Assistant sidebar,
+Every original standard full view (all 150 existing named captures) has a story
+browser, visible Website preview, Assistant sidebar,
 conversation controls and an anchored multiline Agent prompt composer. Wide is
 1440×900 with a 420px sidebar; narrow is 1024×768 (production responsive rules
 may constrain the configured 240px sidebar). Verify the specific elements below
@@ -15,6 +16,9 @@ before judging spacing, alignment, typography, semantic colors and readability.
 A missing expected element is the first finding and a rating of at most 4/10.
 Scroll content may exceed the viewport: inspect the DOM manifest and companion
 captures rather than claiming clipped content is visually demonstrated.
+The added expanded-code view uses its explicit modal expectations below: the
+larger reading dialog partly occludes the editor and makes its background inert.
+The original standard views retain all their preview and composer obligations.
 
 ## Canary scope
 
@@ -126,6 +130,14 @@ canary failures remain preserved and do not establish full-frame determinism.
 - Visible Assistant heading and Long source identifiers remain readable:.
 - The full responsiveHeroWithSharedSpacingAndAccessiblePrimaryAction identifier repeated six times wraps across multiple lines, all visibly inside the conversation viewport.
 - The paired original long-content frame retains final code and tool evidence. No claim that the entire long response fits in one frame.
+
+### View: expanded-code
+
+- Actual fenced-block Expand code opens a larger native modal reading dialog.
+- Expanded code · nim and Close code are visible; Close code has keyboard focus.
+- All twelve exact `setStyle(hero, "padding", "32px")` lines 0 through 11 fit readably in the larger code surface at both widths.
+- Editor story browser and Website preview remain behind the reading dialog, intentionally partly occluded and inert. The anchored composer is also behind the modal; its next draft survives.
+- Close code and Escape return to the associated Expand code control; no horizontal page overflow or interpreted HTML.
 
 ### View: completed
 
@@ -498,3 +510,15 @@ it, and test-only acceptance records cannot authorize a real campaign.
 - Selected heading Website update remains selected after another chunk
 - Streaming continuation is visible
 - Composer and website preview remain visible
+
+
+### View: tool-code-details
+
+- Open Details retains full safe public tool output in its scrollable pane
+- Final first-fence line FINAL tool line 23 beyond excerpt and second fenced sh block are visibly readable
+- Visible labelled Expand code block 2 · sh control belongs to full Details and opens the exact second block
+- Close or Escape restores that Details control; ordinary activity excerpt remains compact
+- Normal editor story browser, Website preview and anchored Agent prompt composer stay visible
+- No horizontal page overflow or interpreted HTML-looking code
+
+This additive view uses the shared genuine public tool_use/tool_result scenario. The Details text pane is scrolled to the complete output tail so both the final Nim line and the second sh fence are visible beside its meaningful reading control. The modal is closed in this frame. Existing 152 view contracts remain unchanged.

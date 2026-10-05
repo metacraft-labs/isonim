@@ -20,6 +20,13 @@
  * A forwarding scrollIntoView observer records actual delegated destinations for
  * selection/unmount microtask races; it calls the unchanged browser implementation
  * and is restored in finally. It does not substitute navigation or scroll layout.
+ * The additive code-reading fixture is shared with native/executed-JS tests.
+ * Its long-tool scenario injects genuine public tool_use/tool_result DTO timing
+ * through the real Harbor parser/projection/codec/reducer and mounted view;
+ * independent literal code expectations cover excerpt growth and late-tail updates.
+ * Synthetic restored-transcript replacement/removal uses the real activity signal
+ * to exercise lifecycle kinds that append-only provider chunks cannot produce;
+ * it adds no provider discriminator or fake browser control.
  * Assert stable turn/tool nodes, unsafe text, IME, drafts/tabs, focus/selection, scrollback,
  * narrow/wide overflow and composer/preview reachability; capture named states.
  */
@@ -32,6 +39,7 @@ import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {chromium} from '../node_modules/playwright/index.mjs';
+const codeReadingScenario=JSON.parse(readFileSync(new URL('./scenarios/chat-activity/code-reading.json',import.meta.url)));
 const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const artifacts=mkdtempSync(path.join(tmpdir(),'isonim-chat-activity-'));
 const server=spawn('python3',['-u','-m','http.server','0','--bind','127.0.0.1','--directory',path.join(repo,'build/editor-chat')],{stdio:['ignore','pipe','pipe']});
@@ -855,6 +863,167 @@ try{
     await horizontalChatGuard(locationPage);
     await locationPage.close();record(`named Harbor login location and operator fallback without opaque surface at ${panelWidth}`);
   }
+  // Real per-block reading interactions on full mounted editors; event timing is
+  // injected through the same documented production reducer boundary as above.
+  for(const [width,height,rail] of [[1440,900,420],[1024,768,240]]) {
+    const readerPage=await browser.newPage({viewport:{width,height}});
+    await readerPage.goto(origin);await readerPage.waitForFunction(()=>window.__chatTest);
+    await readerPage.evaluate(rail=>window.__chatTest.width(rail),rail);
+    await mountedReady(readerPage,`code-reader-${width}`);
+    const firstChat=JSON.parse(await readerPage.evaluate(()=>window.__chatTest.state())).active;
+    const draft=readerPage.getByRole('textbox',{name:'Agent prompt'});
+    await draft.fill('Retained code reading draft');await draft.focus();
+    const first='\nlet safe = "<script>保持😀"\n\necho safe';
+    assert.equal(codeReadingScenario.multiple.expected[0].text,first);
+    assert.equal(codeReadingScenario.multiple.expected[1].text,'echo second');
+    await readerPage.evaluate(event=>window.__chatTest.event(JSON.stringify(event)),codeReadingScenario.multiple.event);
+    assert(await draft.evaluate(el=>el.ownerDocument.activeElement===el),'ordinary code chunk preserves composer focus');
+    const buttons=readerPage.locator('[data-chat-code-expand]:visible');
+    const blocks=readerPage.locator('[data-chat-markdown="code"]');
+    assert.equal(await buttons.count(),2);assert.equal(await blocks.count(),2);
+    assert.equal(await blocks.nth(0).textContent(),first);assert.equal(await blocks.nth(1).textContent(),'echo second');
+    const dialog=readerPage.getByRole('dialog',{name:'Expanded code'});
+    const close=readerPage.getByRole('button',{name:'Close code',exact:true});
+    const expanded=readerPage.locator('[data-chat-code-expanded-text]');
+    await buttons.nth(0).focus();await buttons.nth(0).press('Enter');
+    assert(await dialog.isVisible());assert.equal(await expanded.textContent(),first);
+    assert.equal(await dialog.getAttribute('data-chat-code-language'),'nim');
+    assert(await close.evaluate(el=>el.ownerDocument.activeElement===el));
+    const geometry=await dialog.evaluate(el=>{const b=el.getBoundingClientRect(),code=el.querySelector('pre').getBoundingClientRect(),source=el.closest('.editor-chat').querySelector('[data-chat-markdown="code"]').getBoundingClientRect();return {dialog:{left:b.left,right:b.right,top:b.top,bottom:b.bottom,width:b.width,height:b.height},code:{width:code.width,height:code.height},source:{width:source.width,height:source.height},viewport:{width:innerWidth,height:innerHeight},overflow:document.documentElement.scrollWidth>innerWidth,modal:el.matches(':modal')};});
+    assert(geometry.modal);assert(geometry.dialog.left>=0&&geometry.dialog.right<=width&&geometry.dialog.top>=0&&geometry.dialog.bottom<=height);
+    assert(geometry.code.width>geometry.source.width*1.5&&geometry.code.height>geometry.source.height,'genuinely larger reading area');
+    assert.equal(geometry.overflow,false);
+    await close.press('Tab');assert(await expanded.evaluate(el=>el.ownerDocument.activeElement===el));
+    await expanded.press('Tab');assert(await close.evaluate(el=>el.ownerDocument.activeElement===el));
+    await close.press('Shift+Tab');assert(await expanded.evaluate(el=>el.ownerDocument.activeElement===el));
+    await expanded.press('Escape');assert.equal(await dialog.isVisible(),false);
+    assert(await buttons.nth(0).evaluate(el=>el.ownerDocument.activeElement===el));
+    await buttons.nth(1).press('Space');assert.equal(await expanded.textContent(),'echo second');
+    assert.equal(await dialog.getAttribute('data-chat-code-language'),'sh');
+    await close.click();assert(await buttons.nth(1).evaluate(el=>el.ownerDocument.activeElement===el));
+    await buttons.nth(0).click();assert.equal(await expanded.textContent(),first);
+    // Appending ordinary prose updates the message without resetting code, focus
+    // or selection in the reader's persistent text node.
+    await expanded.evaluate(el=>{const range=el.ownerDocument.createRange();range.selectNodeContents(el);const sel=el.ownerDocument.defaultView.getSelection();sel.removeAllRanges();sel.addRange(range);});
+    const selected=await readerPage.evaluate(()=>getSelection().toString());
+    await close.focus();
+    await readerPage.evaluate(()=>window.__chatTest.event(JSON.stringify({kind:'message_chunk',text:'\nContinued explanation'})));
+    assert.equal(await expanded.textContent(),first);assert.equal(await readerPage.evaluate(()=>getSelection().toString()),selected);
+    assert(await close.evaluate(el=>el.ownerDocument.activeElement===el));
+    await close.press('Escape');
+    // Open a currently streaming block, then complete it through real chunks.
+    await readerPage.evaluate(()=>window.__chatTest.event(JSON.stringify({kind:'message_chunk',text:'\n```nim\nlet pending = 1'})));
+    const streaming=readerPage.locator('[data-chat-code-expand]:visible').last();
+    await streaming.click();assert.equal(await expanded.textContent(),'let pending = 1');
+    await readerPage.evaluate(()=>window.__chatTest.event(JSON.stringify({kind:'message_chunk',text:'\necho pending\n```'})));
+    assert.equal(await expanded.textContent(),'let pending = 1\necho pending');
+    assert(await close.evaluate(el=>el.ownerDocument.activeElement===el));
+    const oldTrigger=await streaming.elementHandle();
+    const secondChat=await readerPage.evaluate(()=>window.__chatTest.newChat());
+    assert.equal(await readerPage.locator('[data-chat-code-reader]:visible').count(),0,'conversation switch disposes prior open scope');
+    await oldTrigger.evaluate(el=>el.click());
+    assert.equal(await readerPage.locator('[data-chat-code-reader]:visible').count(),0,'detached trigger cannot reopen disposed dialog');
+    await readerPage.evaluate(()=>window.__chatTest.event(JSON.stringify({kind:'message_chunk',text:'```nim\nIndependent conversation\n```'})));
+    await readerPage.locator('[data-chat-code-expand]:visible').click();assert.equal(await expanded.textContent(),'Independent conversation');
+    await close.press('Escape');
+    await readerPage.evaluate(id=>window.__chatTest.switchChat(id),firstChat);
+    assert.equal(await draft.inputValue(),'Retained code reading draft');
+    assert.equal(await readerPage.locator('[data-chat-code-reader]:visible').count(),0);
+    await readerPage.locator('[data-chat-code-expand]:visible').last().click();assert.equal(await expanded.textContent(),'let pending = 1\necho pending');
+    await close.click();
+    // Restored-transcript kind changes/removal exercise the production
+    // reconciliation, including removal of stale triggers and focus fallback.
+    const obsolete=await readerPage.locator('[data-chat-code-expand]:visible').first().elementHandle();
+    await obsolete.click();
+    await readerPage.evaluate(text=>window.__chatTest.replaceActivityText(text),codeReadingScenario.replacement.prose);
+    assert.equal(await readerPage.locator('[data-chat-code-expand]').count(),0);
+    assert.equal(await readerPage.locator('[data-chat-code-reader]:visible').count(),0);
+    assert(await draft.evaluate(el=>el.ownerDocument.activeElement===el),'kind removal returns focus to surviving composer');
+    await readerPage.evaluate(text=>window.__chatTest.replaceActivityText(text),codeReadingScenario.replacement.code);
+    await obsolete.evaluate(el=>el.click());
+    assert.equal(await readerPage.locator('[data-chat-code-reader]:visible').count(),0,'replaced trigger cannot reopen a new block at same index');
+    await readerPage.locator('[data-chat-code-expand]:visible').click();assert.equal(await expanded.textContent(),'restored code');
+    await readerPage.evaluate(()=>window.__chatTest.removeActivityEntries());
+    assert.equal(await readerPage.locator('[data-chat-code-reader]:visible').count(),0);
+    assert(await draft.evaluate(el=>el.ownerDocument.activeElement===el),'entry removal returns focus to surviving composer');
+    await obsolete.dispose();
+    assert.equal(await readerPage.locator('.editor-chat script').count(),0);
+    writeFileSync(path.join(artifacts,`code-reader-${width}.json`),JSON.stringify({geometry,firstChat,secondChat,exactText:first,streamedText:'let pending = 1\necho pending',keyboard:['Enter','Space','Tab','Shift+Tab','Escape'],disposedTriggerGuard:true},null,2));
+    await readerPage.close();record(`exact safe code reader association, keyboard, streaming and disposed conversation scopes at ${width}`);
+  }
+  // Genuine public tool DTO timing drives full output, compact cards and Details.
+  // Parser/projection/reducer/DOM stay real, including growth across the excerpt.
+  for(const [width,height,rail] of [[1440,900,420],[1024,768,240]]) {
+    const toolPage=await browser.newPage({viewport:{width,height}});
+    await toolPage.goto(origin);await toolPage.waitForFunction(()=>window.__chatTest);
+    await toolPage.evaluate(rail=>window.__chatTest.width(rail),rail);
+    await mountedReady(toolPage,`complete-tool-code-${width}`);
+    const scenario=codeReadingScenario.publicTool;
+    const feed=async event=>toolPage.evaluate(value=>window.__chatTest.harborEvent(JSON.stringify(value)),event);
+    const draft=toolPage.getByRole('textbox',{name:'Agent prompt'});
+    await draft.fill('Complete tool output retained draft');await draft.focus();
+    await feed(scenario.use);await feed(scenario.short);
+    assert(await draft.evaluate(el=>el.ownerDocument.activeElement===el));
+    const row=toolPage.locator('[data-chat-role="arActivity"][data-chat-source="tool_result"]');
+    assert.equal(await row.count(),1);
+    const first=row.getByRole('button',{name:'Expand code block 1 · nim',exact:true});
+    const second=row.getByRole('button',{name:'Expand code block 2 · sh',exact:true,includeHidden:true});
+    const dialog=toolPage.getByRole('dialog',{name:'Expanded code'});
+    const expanded=toolPage.locator('[data-chat-code-expanded-text]');
+    const close=toolPage.getByRole('button',{name:'Close code',exact:true});
+    await first.focus();await first.press('Enter');
+    assert.equal(await expanded.textContent(),'echo "short start"');
+    const firstHandle=await first.elementHandle();
+    await feed(scenario.long);
+    assert.equal(await row.count(),1);
+    assert.equal(await expanded.textContent(),scenario.expectedFirst);
+    assert((await expanded.textContent()).endsWith('echo "FINAL tool line 23 beyond excerpt"'));
+    assert.equal(await dialog.getAttribute('data-chat-code-language'),'nim');
+    assert(await close.evaluate(el=>el.ownerDocument.activeElement===el));
+    assert(await firstHandle.evaluate(el=>el.isConnected),'full-block control survives excerpt transition');
+    const compact=row.locator('[data-chat-markdown="code"]:visible');
+    assert.equal(await compact.count(),1);
+    const excerpt=await compact.textContent();
+    assert(excerpt.endsWith('…'));assert(excerpt.length<240);
+    assert.equal(excerpt.includes('FINAL tool line 23'),false);
+    assert.equal(await row.locator('details').evaluate(el=>el.open),false);
+    const details=row.locator('[data-chat-detail]');
+    assert((await details.textContent()).includes(scenario.long.tool_output));
+    assert.equal(await second.count(),1);
+    assert.equal(await second.isVisible(),false,'later fence belongs to closed full Details');
+    assert.equal(await second.textContent(),'Expand code block 2 · sh');
+    const geometry=await dialog.evaluate(el=>{const b=el.getBoundingClientRect(),p=el.querySelector('pre').getBoundingClientRect();return {left:b.left,right:b.right,top:b.top,bottom:b.bottom,codeWidth:p.width,codeHeight:p.height,modal:el.matches(':modal'),overflow:document.documentElement.scrollWidth>innerWidth};});
+    assert(geometry.modal&&geometry.left>=0&&geometry.right<=width&&geometry.top>=0&&geometry.bottom<=height);
+    assert(geometry.codeWidth>rail*1.5&&geometry.codeHeight>200);assert.equal(geometry.overflow,false);
+    await expanded.evaluate(el=>{const range=el.ownerDocument.createRange();range.setStart(el.firstChild,0);range.setEnd(el.firstChild,20);const selection=el.ownerDocument.defaultView.getSelection();selection.removeAllRanges();selection.addRange(range);});
+    const selected=await toolPage.evaluate(()=>getSelection().toString());
+    await feed(scenario.update);
+    assert.equal(await expanded.textContent(),scenario.expectedUpdated);
+    assert((await expanded.textContent()).endsWith('echo "UPDATED final tool line 23 beyond excerpt"'));
+    assert.equal(await compact.textContent(),excerpt,'late-tail update preserves compact excerpt');
+    assert((await details.textContent()).includes(scenario.update.tool_output));
+    assert.equal(await toolPage.evaluate(()=>getSelection().toString()),selected);
+    assert(await close.evaluate(el=>el.ownerDocument.activeElement===el));
+    await close.press('Escape');assert.equal(await dialog.isVisible(),false);
+    assert(await first.evaluate(el=>el.ownerDocument.activeElement===el));
+    await row.locator('summary').click();assert(await second.isVisible());
+    await second.focus();await second.press('Space');
+    assert.equal(await expanded.textContent(),"printf '<img src=x onerror=alert(1)> Ω'\necho SECOND final block");
+    assert.equal(await dialog.getAttribute('data-chat-code-language'),'sh');
+    await close.press('Tab');assert(await expanded.evaluate(el=>el.ownerDocument.activeElement===el));
+    await expanded.press('Shift+Tab');assert(await close.evaluate(el=>el.ownerDocument.activeElement===el));
+    await close.click();assert(await second.evaluate(el=>el.ownerDocument.activeElement===el));
+    await first.click();assert.equal(await expanded.textContent(),scenario.expectedUpdated);
+    const next=await toolPage.evaluate(()=>window.__chatTest.newChat());
+    assert.equal(await toolPage.locator('[data-chat-code-reader]:visible').count(),0);
+    await firstHandle.evaluate(el=>el.click());
+    assert.equal(await toolPage.locator('[data-chat-code-reader]:visible').count(),0,'disposed public-tool trigger cannot reopen');
+    assert.equal(await toolPage.locator('.editor-chat script,.editor-chat img').count(),0);
+    await firstHandle.dispose();
+    writeFileSync(path.join(artifacts,`complete-tool-code-${width}.json`),JSON.stringify({geometry,excerpt,exactFull:scenario.expectedFirst,lateTail:scenario.expectedUpdated,secondBlock:scenario.expectedSecond,publicDTOs:true,detailsAssociated:true,streamingSelection:selected,disposedChat:next},null,2));
+    await toolPage.close();record(`complete public tool fenced code, late-tail update and Details association at ${width}`);
+  }
+
   await page.evaluate(()=>window.__chatTest.newChat());
   for(const payload of corpus.events){
     await page.evaluate(payload=>window.__chatTest.harborEvent(JSON.stringify(payload)),payload);

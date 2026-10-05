@@ -78,11 +78,41 @@ def long_content_guard(row):
     else:require(evidence.get('identifierLines') is None,'wrong long-content bottom identifier evidence')
     companion_scroll(evidence,top,'long-content')
 
+EXPANDED_CODE='\n'.join(f'setStyle(hero, "padding", "32px") # line {index}' for index in range(12))
+def expanded_code_guard(row):
+    evidence=row.get('expandedCodeEvidence') or {}
+    require(row.get('events')==['log','tool_use'],'expanded-code original event sequence changed')
+    require(evidence.get('exactText')==EXPANDED_CODE and evidence.get('language')=='nim','expanded-code exact full text/language missing')
+    require(evidence.get('modal') is True and evidence.get('focus') is True and evidence.get('associated') is True and evidence.get('pageOverflow') is False,'expanded-code interaction/overflow evidence missing')
+    viewport=evidence.get('viewport',{});dialog=evidence.get('dialog',{});code=evidence.get('code',{});original=evidence.get('original',{})
+    companion_geometry(dialog,viewport,'expanded-code dialog');companion_geometry(code,dialog,'expanded-code area')
+    require(type(original.get('width')) in (int,float) and type(original.get('height')) in (int,float) and code['width']>original['width']*1.5 and code['height']>original['height'],'expanded-code reading area is not larger')
+    lines=evidence.get('lines',[]);require(len(lines)==12,'expanded-code full lines missing')
+    for index,(line,literal) in enumerate(zip(lines,EXPANDED_CODE.split('\n'))):
+        require(line.get('index')==index and line.get('text')==literal,'expanded-code ordered literal line identity missing')
+        rects=line.get('rects',[]);require(bool(rects),'expanded-code line rectangles missing')
+        for rect in rects:companion_geometry(rect,code,'expanded-code line')
+
+def tool_code_details_guard(row):
+    e=row.get('toolCodeDetailsEvidence') or {}
+    require(row.get('events')==['tool_use','tool_result'],'tool-code-details real public event sequence missing')
+    scenario=json.loads((ROOT/'tests/scenarios/chat-activity/code-reading.json').read_text())['publicTool']
+    require(scenario['expectedFirst'] in e.get('exactText','') and scenario['expectedSecond'] in e.get('exactText',''),'tool-code-details complete safe text missing')
+    require(e.get('label')=='Expand code block 2 · sh' and e.get('associated') is True and e.get('detailsOpen') is True and e.get('pageOverflow') is False,'tool-code-details association/open/overflow missing')
+    companion_geometry(e.get('scroll',{}),e.get('viewport',{}),'tool-code-details scroll')
+    companion_geometry(e.get('pane',{}),e.get('scroll',{}),'tool-code-details pane')
+    companion_geometry(e.get('control',{}),e.get('scroll',{}),'tool-code-details control')
+    literals=['echo "FINAL tool line 23 beyond excerpt"',"printf '<img src=x onerror=alert(1)> Ω'",'echo SECOND final block']
+    lines=e.get('lines',[]);require([line.get('text') for line in lines]==literals,'tool-code-details visible literal identities missing')
+    for line in lines:
+        require(bool(line.get('rects')),'tool-code-details visible line bounds missing')
+        for rect in line['rects']:companion_geometry(rect,e['pane'],'tool-code-details line')
+
 def guard(directory,canary=False,current=False):
     directory=pathlib.Path(directory);m=json.loads((directory/'manifest.json').read_text());expected,thresholds=definitions()
     keys={(v,s) for v in (['conversation','plan'] if canary else expected) for s in SIZES}
     require(m.get('schema')==2 and m.get('container')==IMAGE and m.get('flags')==FLAGS and m.get('environment')==ENV and m.get('sizes')==SIZES,'capture runtime configuration mismatch')
-    lineage=m.get('lineage',{});required=['bundleSha256','sceneSha256','captureSha256','captureFramesSha256','focusGuardSha256','horizontalGuardSha256','expectedSha256','thresholdsSha256','browserExecutableSha256']
+    lineage=m.get('lineage',{});required=['bundleSha256','sceneSha256','captureSha256','captureFramesSha256','focusGuardSha256','horizontalGuardSha256','expectedSha256','thresholdsSha256','browserExecutableSha256','codeReadingSha256']
     require(all(sha(lineage.get(k)) for k in required),'missing source/browser lineage')
     fonts=lineage.get('fonts');require(isinstance(fonts,list) and len(fonts)==48 and len({f.get('file') for f in fonts})==48 and all(f.get('file') and sha(f.get('sha256')) for f in fonts),'font inventory invalid')
     runtime=json.loads((ROOT/'tools/chat-visual-runtime.json').read_text())
@@ -90,7 +120,7 @@ def guard(directory,canary=False,current=False):
     assets=lineage.get('mountedAssets',[]);require([x.get('file') for x in assets]==['editor.js','index.html','fabric.min.js','paper-core.min.js','svgo.browser.js'] and all(sha(x.get('sha256')) for x in assets),'mounted asset inventory incomplete')
     if current:
         for asset in assets:require(asset['sha256']==digest(ROOT/'build/editor-chat'/asset['file']),'stale mounted assets; full regeneration required')
-        inputs={'bundleSha256':'build/editor-chat/editor.js','sceneSha256':'tests/scenarios/chat-activity/public-session-events.json','captureSha256':'tools/chat-visual-campaign.mjs','captureFramesSha256':'tools/chat-capture-frames.mjs','focusGuardSha256':'tools/chat-focus-guard.mjs','horizontalGuardSha256':'tools/chat-horizontal-guard.mjs','expectedSha256':'tools/chat-visual-expected.json','thresholdsSha256':'tools/chat-visual-thresholds.json'}
+        inputs={'bundleSha256':'build/editor-chat/editor.js','sceneSha256':'tests/scenarios/chat-activity/public-session-events.json','captureSha256':'tools/chat-visual-campaign.mjs','captureFramesSha256':'tools/chat-capture-frames.mjs','focusGuardSha256':'tools/chat-focus-guard.mjs','horizontalGuardSha256':'tools/chat-horizontal-guard.mjs','expectedSha256':'tools/chat-visual-expected.json','thresholdsSha256':'tools/chat-visual-thresholds.json','codeReadingSha256':'tests/scenarios/chat-activity/code-reading.json'}
         for key,file in inputs.items():require(lineage[key]==digest(ROOT/file),f'stale source closure: {key}; full regeneration required')
     rows=m.get('views');require(isinstance(rows,list) and rows,'empty capture inventory')
     seen=set()
@@ -114,6 +144,8 @@ def guard(directory,canary=False,current=False):
             companion_geometry(box,{'top':pad,'bottom':viewport['height']-pad,'left':pad,'right':viewport['width']-pad},'sidebar focus ring')
         if key[0] in RECOVERY_VISIBLE:recovery_guard(row)
         if key[0] in LONG_VISIBLE:long_content_guard(row)
+        if key[0]=='expanded-code':expanded_code_guard(row)
+        if key[0]=='tool-code-details':tool_code_details_guard(row)
         require(row.get('perceptualThreshold')=={'maximumChangedPixelRatio':thresholds[key[0]]},'threshold mismatch')
         if canary:
             require(row.get('scope')==SCOPE and row.get('contentVerified') is True and row.get('events') and dimensions[0]>100 and dimensions[1]>100,'empty or wrong canary scope/content')

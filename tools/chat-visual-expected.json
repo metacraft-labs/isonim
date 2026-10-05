@@ -339,5 +339,21 @@
     "Visible Assistant heading and Long source identifiers remain readable:",
     "Entire responsiveHeroWithSharedSpacingAndAccessiblePrimaryAction repeated six times wraps visibly inside sidebar",
     "Paired long-content retains final Nim code line and isonim inspect started"
+  ],
+  "expanded-code": [
+    "Real larger modal code reading view opened with the fenced block Expand code control",
+    "Expanded code \u00b7 nim and Close code are visible with keyboard focus on Close code",
+    "All twelve exact multiline setStyle(hero, \"padding\", \"32px\") lines 0 through 11 are readable inside the larger surface",
+    "Editor story browser and Website preview remain behind the modal reading view, intentionally partly occluded and inert",
+    "Composer remains anchored behind the modal; Close code or Escape returns focus to the associated Expand code control",
+    "No horizontal page overflow or unsafe rendered HTML"
+  ],
+  "tool-code-details": [
+    "Open Details retains full safe public tool output in its scrollable pane",
+    "Final first-fence line FINAL tool line 23 beyond excerpt and second fenced sh block are visibly readable",
+    "Visible labelled Expand code block 2 \u00b7 sh control belongs to full Details and opens the exact second block",
+    "Close or Escape restores that Details control; ordinary activity excerpt remains compact",
+    "Normal editor story browser, Website preview and anchored Agent prompt composer stay visible",
+    "No horizontal page overflow or interpreted HTML-looking code"
   ]
 }

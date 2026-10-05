@@ -29,6 +29,7 @@ const args=process.argv.slice(2);const option=(name,fallback)=>args.includes(nam
 const output=option('--output','/captures'); const filter=option('--view','');const sizeFilter=option('--size','');
 const hash=buffer=>createHash('sha256').update(buffer).digest('hex');
 const corpus=JSON.parse(readFileSync(new URL('../tests/scenarios/chat-activity/public-session-events.json',import.meta.url)));
+const codeReading=JSON.parse(readFileSync(new URL('../tests/scenarios/chat-activity/code-reading.json',import.meta.url)));
 const thresholds=JSON.parse(readFileSync(new URL('./chat-visual-thresholds.json',import.meta.url)));
 const sizes={wide:{width:1440,height:900,panel:420},narrow:{width:1024,height:768,panel:240}};
 // Explicit representatives follow the independent expected-elements briefs.
@@ -88,7 +89,7 @@ const isolatedContent={
 assert.deepEqual(Object.keys(isolatedContent).sort(),Object.keys(isolatedReferences).sort(),'exact independent semantic oracle inventory');
 const wrongIsolated={thought:corpus.scenes.conversation[3],tool_use:corpus.scenes.tools[4],
  session_awaiting_input:corpus.scenes.question[1],turn_complete:corpus.scenes.plan[1]};
-const sceneEvents={...corpus.scenes,...singleEvents,...corpus.normalizedScenes,"event-log-bottom":singleEvents["event-log"],"recovery-top":corpus.scenes.recovery,"long-content-top":corpus.scenes["long-content"]};
+const sceneEvents={...corpus.scenes,...singleEvents,...corpus.normalizedScenes,"event-log-bottom":singleEvents["event-log"],"recovery-top":corpus.scenes.recovery,"long-content-top":corpus.scenes["long-content"],"expanded-code":corpus.scenes["long-content"],"tool-code-details":[codeReading.publicTool.use,codeReading.publicTool.long]};
 const allViews=['empty',...Object.keys(sceneEvents),...Object.keys(corpus.behaviorScenes)];
 const lineage={bundleSha256:hash(readFileSync(new URL('../build/editor-chat/editor.js',import.meta.url))),sceneSha256:hash(readFileSync(new URL('../tests/scenarios/chat-activity/public-session-events.json',import.meta.url))),captureSha256:hash(readFileSync(new URL(import.meta.url))),browserExecutableSha256:hash(readFileSync('/ms-playwright/chromium-1217/chrome-linux64/chrome')),fonts:[...new Set(execFileSync('fc-list',['--format','%{file}\n'],{encoding:'utf8'}).trim().split('\n'))].sort().map(file=>({file,sha256:hash(readFileSync(file))}))};
 const flags=['--no-sandbox','--disable-gpu','--force-color-profile=srgb','--font-render-hinting=none','--disable-lcd-text'];
@@ -96,6 +97,7 @@ const environment={deviceScaleFactor:1,locale:'en-US',timezoneId:'UTC',colorSche
 lineage.horizontalGuardSha256=hash(readFileSync(new URL('./chat-horizontal-guard.mjs',import.meta.url)));
 lineage.focusGuardSha256=hash(readFileSync(new URL('./chat-focus-guard.mjs',import.meta.url)));
 lineage.captureFramesSha256=hash(readFileSync(new URL('./chat-capture-frames.mjs',import.meta.url)));
+lineage.codeReadingSha256=hash(readFileSync(new URL('../tests/scenarios/chat-activity/code-reading.json',import.meta.url)));
 lineage.expectedSha256=hash(readFileSync(new URL('./chat-visual-expected.json',import.meta.url)));
 lineage.thresholdsSha256=hash(readFileSync(new URL('./chat-visual-thresholds.json',import.meta.url)));
 const expected=JSON.parse(readFileSync(new URL('./chat-visual-expected.json',import.meta.url)));
@@ -471,6 +473,9 @@ async function longContentGuard(page,view){
  const tool=scroll.locator('[data-chat-entry][data-chat-role="arActivity"][data-chat-source="tool_use"]');
  assert.equal(await assistant.count(),1,'same original long-content assistant card');
  assert.equal(await tool.count(),1,'same original long-content tool card');
+ const expand=assistant.locator('[data-chat-code-expand]');
+ assert.equal(await expand.count(),1,'actual fenced-code expansion control');
+ assert.equal(await expand.innerText(),'Expand code','discoverable fenced-code expansion label');
  const cards=[{source:'log',text:await assistant.innerText()},{source:'tool_use',text:await tool.innerText()}];
  for(const literal of ['Assistant',longProse,longFinalLine])assert(cards[0].text.includes(literal),`required long-content semantics missing: ${literal}`);
  for(const literal of ['isonim inspect','started'])assert(cards[1].text.includes(literal),`required long-content semantics missing: ${literal}`);
@@ -521,6 +526,106 @@ async function recoveryNegativeControl(page,view,size){
  }finally{try{await handle.evaluate((el,text)=>{el.textContent=text;},original);}finally{await handle.dispose();}}
  const restored=await recoveryContentGuard(page,view);
  writeFileSync(path.join(output,`recovery-heading-control-${view}-${size}.json`),JSON.stringify({view,size,source,heading:text,missingHeadingRejected:true,restored,guard:'recoveryContentGuard before both recovery captures'},null,2));
+}
+
+const expandedCodeText=Array.from({length:12},(_,index)=>`setStyle(hero, "padding", "32px") # line ${index}`).join('\n');
+async function expandedCodeGuard(page){
+ const trigger=page.locator('[data-chat-entry][data-chat-role="arAssistant"] [data-chat-code-expand]');
+ assert.equal(await trigger.count(),1,'required real Expand code control');
+ assert.equal(await trigger.innerText(),'Expand code','required real Expand code control label');
+ assert(await trigger.evaluate(el=>el.previousElementSibling?.getAttribute('data-chat-markdown')==='code'),'Expand control associated with fenced block');
+ const dialog=page.getByRole('dialog',{name:'Expanded code'}),code=page.locator('[data-chat-code-expanded-text]');
+ assert(await dialog.isVisible(),'required larger code reading view');
+ assert.equal(await dialog.getAttribute('data-chat-code-language'),'nim','expanded language identity');
+ assert.equal(await code.textContent(),expandedCodeText,'expanded exact full multiline code');
+ const close=page.getByRole('button',{name:'Close code',exact:true});
+ assert(await close.isVisible(),'required real Close code control');
+ assert(await close.evaluate(el=>el.ownerDocument.activeElement===el),'reading view keyboard focus');
+ const evidence=await dialog.evaluate(el=>{
+  const box=el.getBoundingClientRect(),text=el.querySelector('pre'),code=text.getBoundingClientRect(),original=el.closest('.editor-chat').querySelector('[data-chat-markdown="code"]').getBoundingClientRect();
+  const geometry=b=>({left:b.left,right:b.right,top:b.top,bottom:b.bottom,width:b.width,height:b.height});
+  // Select each actual literal line without its newline delimiter: selecting
+  // the whole pre also returns zero-width caret boxes for the line breaks.
+  const node=text.firstChild,lines=[];let offset=0;
+  for(const line of node.data.split('\n')){
+   const range=document.createRange();range.setStart(node,offset);range.setEnd(node,offset+line.length);
+   lines.push({index:lines.length,text:line,rects:[...range.getClientRects()].map(geometry)});offset+=line.length+1;
+  }
+  return {dialog:geometry(box),code:geometry(code),original:geometry(original),lines,viewport:{left:0,top:0,right:innerWidth,bottom:innerHeight},modal:el.matches(':modal'),pageOverflow:document.documentElement.scrollWidth>innerWidth,exactText:text.textContent,language:el.getAttribute('data-chat-code-language')};
+ });
+ assert(evidence.modal,'browser dialog really makes background inert');assert.equal(evidence.pageOverflow,false,'reader cannot force page overflow');
+ const b=evidence.dialog;assert(b.left>=0&&b.top>=0&&b.right<=evidence.viewport.right&&b.bottom<=evidence.viewport.bottom,'reader bounded by viewport');
+ assert(evidence.code.width>evidence.original.width*1.5&&evidence.code.height>evidence.original.height,'genuinely larger code reading area');
+ assert(evidence.lines.length===12&&evidence.lines.every((line,index)=>line.index===index&&line.text===expandedCodeText.split('\n')[index]&&line.rects.length>0&&line.rects.every(rect=>rect.width>0&&rect.height>0&&rect.left>=evidence.code.left&&rect.right<=evidence.code.right&&rect.top>=evidence.code.top&&rect.bottom<=evidence.code.bottom)),'full readable code inside larger view');
+ return {...evidence,focus:true,associated:true};
+}
+async function expandedCodeScene(page,size){
+ const trigger=page.locator('[data-chat-code-expand]');await trigger.focus();await trigger.press('Enter');
+ const before=await expandedCodeGuard(page);
+ const close=page.getByRole('button',{name:'Close code',exact:true});
+ await close.press('Escape');assert.equal(await page.locator('[data-chat-code-reader]:visible').count(),0,'Escape closes real reader');
+ assert(await trigger.evaluate(el=>el.ownerDocument.activeElement===el),'Escape restores trigger focus');
+ await trigger.press('Space');await expandedCodeGuard(page);await close.click();
+ assert(await trigger.evaluate(el=>el.ownerDocument.activeElement===el),'Close restores trigger focus');
+ await trigger.click();await expandedCodeGuard(page);
+ const triggerHandle=await trigger.elementHandle();
+ await triggerHandle.evaluate(el=>{window.__codeControl={parent:el.parentNode,next:el.nextSibling};el.remove();});
+ try{await assert.rejects(()=>expandedCodeGuard(page),/required real Expand code control/,'same expanded guard rejects missing actual source control');}
+ finally{await triggerHandle.evaluate(el=>{const {parent,next}=window.__codeControl;parent.insertBefore(el,next);delete window.__codeControl;});}
+ const code=page.locator('[data-chat-code-expanded-text]'),handle=await code.elementHandle();
+ const original=await handle.textContent();
+ try{await handle.evaluate(el=>{el.textContent='Missing expanded code';});await assert.rejects(()=>expandedCodeGuard(page),/expanded exact full multiline code/,'same expanded guard rejects actual lost code');}
+ finally{await handle.evaluate((el,text)=>{el.textContent=text;},original);}
+ const restored=await expandedCodeGuard(page);
+ writeFileSync(path.join(output,`expanded-code-control-${size}.json`),JSON.stringify({missingControlRejected:true,missingCodeRejected:true,escapeReturned:true,closeReturned:true,before,restored,guard:'expandedCodeGuard before every expanded-code capture'},null,2));
+ await handle.dispose();await triggerHandle.dispose();return restored;
+}
+
+async function toolCodeDetailsGuard(page){
+ const row=page.locator('[data-chat-role="arActivity"][data-chat-source="tool_result"]');
+ assert.equal(await row.count(),1,'required complete tool row');
+ const detail=row.locator('details'),text=row.locator('[data-chat-detail]');
+ assert(await detail.evaluate(el=>el.open),'required open full Details');
+ const control=detail.getByRole('button',{name:'Expand code block 2 · sh',exact:true});
+ assert.equal(await control.count(),1,'required associated later fence control');
+ assert(await control.isVisible(),'required visible later fence control');
+ const full=await text.textContent();
+ assert(full.includes(codeReading.publicTool.expectedFirst)&&full.includes(codeReading.publicTool.expectedSecond),'required complete safe tool output');
+ assert(await control.evaluate(el=>el.parentElement.tagName==='DETAILS'&&el.parentElement.querySelector('[data-chat-detail]')),'later fence associated with actual full Details');
+ const literals=['echo "FINAL tool line 23 beyond excerpt"',"printf '<img src=x onerror=alert(1)> Ω'",'echo SECOND final block'];
+ const evidence=await text.evaluate((el,literals)=>{
+  const geometry=b=>({left:b.left,right:b.right,top:b.top,bottom:b.bottom,width:b.width,height:b.height});
+  const lines=literals.map(literal=>{const node=el.firstChild,index=node.data.indexOf(literal);if(index<0)return {text:literal,rects:[]};const range=document.createRange();range.setStart(node,index);range.setEnd(node,index+literal.length);return {text:literal,rects:[...range.getClientRects()].map(geometry)};});
+  const root=el.closest('.editor-chat'),scroll=root.querySelector('[data-chat-scroll]');
+  return {pane:geometry(el.getBoundingClientRect()),scroll:geometry(scroll.getBoundingClientRect()),lines,viewport:{left:0,top:0,right:innerWidth,bottom:innerHeight},pageOverflow:document.documentElement.scrollWidth>innerWidth,exactText:el.textContent};
+ },literals);
+ evidence.control=await control.boundingBox();
+ evidence.control={left:evidence.control.x,top:evidence.control.y,right:evidence.control.x+evidence.control.width,bottom:evidence.control.y+evidence.control.height,width:evidence.control.width,height:evidence.control.height};
+ const bounded=(box,parent)=>box.width>0&&box.height>0&&box.left>=parent.left&&box.right<=parent.right&&box.top>=parent.top&&box.bottom<=parent.bottom;
+ assert(bounded(evidence.pane,evidence.scroll)&&bounded(evidence.control,evidence.scroll),'full Details pane/control visibly bounded by transcript');
+ assert(bounded(evidence.scroll,evidence.viewport)&&!evidence.pageOverflow,'tool Details cannot overflow viewport');
+ assert(evidence.lines.every(line=>line.rects.length&&line.rects.every(rect=>bounded(rect,evidence.pane))),'full tool tail and second fence visibly readable');
+ return {...evidence,label:'Expand code block 2 · sh',associated:true,detailsOpen:true};
+}
+async function toolCodeDetailsScene(page,size){
+ const row=page.locator('[data-chat-role="arActivity"][data-chat-source="tool_result"]');
+ await row.locator('summary').click();
+ await row.locator('[data-chat-detail]').evaluate(el=>{el.scrollTop=el.scrollHeight;});
+ await page.locator('[data-chat-scroll]').evaluate(el=>{el.scrollTop=el.scrollHeight;el.dispatchEvent(new Event('scroll'));});
+ await captureReady(page);
+ const second=row.getByRole('button',{name:'Expand code block 2 · sh',exact:true});
+ await second.focus();await second.press('Enter');
+ assert.equal(await page.locator('[data-chat-code-expanded-text]').textContent(),codeReading.publicTool.expectedSecond,'actual Details control opens its complete second fence');
+ assert.equal(await page.locator('[data-chat-code-reader]').getAttribute('data-chat-code-language'),'sh');
+ await page.getByRole('button',{name:'Close code',exact:true}).press('Escape');
+ assert(await second.evaluate(el=>el.ownerDocument.activeElement===el),'Details reader returns focus');
+ const before=await toolCodeDetailsGuard(page),handle=await second.elementHandle();
+ await handle.evaluate(el=>{window.__detailsControl={parent:el.parentNode,next:el.nextSibling};el.remove();});
+ try{await assert.rejects(()=>toolCodeDetailsGuard(page),/required associated later fence control/,'same guard rejects actual missing Details control');}
+ finally{await handle.evaluate(el=>{const {parent,next}=window.__detailsControl;parent.insertBefore(el,next);delete window.__detailsControl;el.focus({preventScroll:true});});}
+ const restored=await toolCodeDetailsGuard(page);assert.deepEqual(restored,before,'restore exact actual Details state');
+ writeFileSync(path.join(output,`tool-code-details-control-${size}.json`),JSON.stringify({missingControlRejected:true,secondFenceExact:true,escapeReturned:true,before,restored,guard:'toolCodeDetailsGuard before every tool-code-details capture'},null,2));
+ await handle.dispose();return restored;
 }
 
 let browser;const manifest=[];
@@ -636,6 +741,8 @@ try{
     }
     else assert(visibleContent.card.top>=visibleContent.viewport.top-1&&visibleContent.card.top<visibleContent.viewport.bottom-20,'event card heading inside actual visible frame');
   }
+  const expandedCodeEvidence=view==='expanded-code'?await expandedCodeScene(page,size):null;
+  const toolCodeDetailsEvidence=view==='tool-code-details'?await toolCodeDetailsScene(page,size):null;
   let recoveryEvidence=null;
   if(view==='recovery'||view==='recovery-top'){
     await panel.locator('[data-chat-scroll]').evaluate((el,top)=>{el.scrollTop=top?0:el.scrollHeight;el.dispatchEvent(new Event('scroll'));},view==='recovery-top');
@@ -683,7 +790,7 @@ try{
     assert(!changed.equals(png),'exact image gate must reject changed actual prose/plan');
     positiveControl={changedSha256:hash(changed),mutation:'actual production event alters conversation/plan'};
   }
-  manifest.push({view,size,file,sceneReadiness,recoveryEvidence,longContentEvidence,behaviorEvidence,positiveControl,contentVerified:canary,dimensions:[png.readUInt32BE(16),png.readUInt32BE(20)],scope:canary?'actual production conversation scroll surface; excludes editor chrome, preview and composer':'full editor viewport',sha256:createHash('sha256').update(png).digest('hex'),layout,geometry,contrast,focusPaint,sidebarFocusPaint,boundary:corpus.boundary,events:(sceneEvents[view]||[]).map(e=>e.type||e.kind),baseline:'candidate; human acceptance pending',perceptualThreshold:{maximumChangedPixelRatio:thresholds[view]},browser:browser.version()});
+  manifest.push({view,size,file,sceneReadiness,recoveryEvidence,longContentEvidence,expandedCodeEvidence,toolCodeDetailsEvidence,behaviorEvidence,positiveControl,contentVerified:canary,dimensions:[png.readUInt32BE(16),png.readUInt32BE(20)],scope:canary?'actual production conversation scroll surface; excludes editor chrome, preview and composer':'full editor viewport',sha256:createHash('sha256').update(png).digest('hex'),layout,geometry,contrast,focusPaint,sidebarFocusPaint,boundary:corpus.boundary,events:(sceneEvents[view]||[]).map(e=>e.type||e.kind),baseline:'candidate; human acceptance pending',perceptualThreshold:{maximumChangedPixelRatio:thresholds[view]},browser:browser.version()});
   if(args.includes('--missing-element-control')&&view==='empty'&&size==='wide'){
     await input.evaluate(el=>el.remove());
     await assert.rejects(()=>composerGuard(page,viewport),/required composer missing/,'same positive composer guard rejects removed composer');

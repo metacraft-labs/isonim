@@ -40,6 +40,41 @@ class CaptureGuards(unittest.TestCase):
  def test_full_positive_and_pending_artifacts(self):
   self.assert_exact_inventory(guard(self.corpus,current=True)['views']);campaign.artifacts(self.corpus)
   self.assertIn('Empty multiline composer',(self.corpus/'review.html').read_text());self.assertEqual(json.loads((self.corpus/'perceptual-gates.json').read_text())['status'],'pending-human-baseline')
+ def test_expanded_code_actual_controls_and_original_subset(self):
+  m=guard(self.corpus,current=True);rows={(r['view'],r['size']):r for r in m['views']}
+  self.assertTrue({(view,size) for view in (*ORIGINAL_CAMPAIGN_VIEWS,'recovery-top','long-content-top') for size in ('wide','narrow')}.issubset(rows))
+  for size in ('wide','narrow'):
+   control=json.loads((self.corpus/f'expanded-code-control-{size}.json').read_text())
+   self.assertTrue(all(control[k] for k in ('missingControlRejected','missingCodeRejected','escapeReturned','closeReturned')))
+   self.assertEqual(control['guard'],'expandedCodeGuard before every expanded-code capture')
+   self.assertEqual(control['restored'],rows[('expanded-code',size)]['expandedCodeEvidence'])
+ def test_expanded_code_corrupted_content_or_interaction_rejected(self):
+  for key,value in [('exactText','Missing code'),('language','html'),('focus',False),('associated',False),('modal',False),('pageOverflow',True),('lines',[])]:
+   shutil.copyfile(CAP/'corpus/manifest.json',self.corpus/'manifest.json')
+   self.rejected(lambda m:next(r for r in m['views'] if r['view']=='expanded-code')['expandedCodeEvidence'].update({key:value}))
+
+ def test_expanded_code_duplicate_or_omitted_literal_line_rejected(self):
+  for mutation in ('duplicate','omitted'):
+   shutil.copyfile(CAP/'corpus/manifest.json',self.corpus/'manifest.json')
+   def corrupt(m):
+    evidence=next(r for r in m['views'] if r['view']=='expanded-code')['expandedCodeEvidence']
+    if mutation=='duplicate':evidence['lines'][1]=copy.deepcopy(evidence['lines'][0])
+    else:evidence['lines'].pop(1)
+   self.rejected(corrupt)
+
+ def test_tool_code_details_real_controls_and_restoration(self):
+  rows={(r['view'],r['size']):r for r in guard(self.corpus,current=True)['views']}
+  for size in ('wide','narrow'):
+   c=json.loads((self.corpus/f'tool-code-details-control-{size}.json').read_text())
+   self.assertTrue(all(c[k] for k in ('missingControlRejected','secondFenceExact','escapeReturned')))
+   self.assertEqual(c['restored'],c['before'])
+   self.assertEqual(c['restored'],rows[('tool-code-details',size)]['toolCodeDetailsEvidence'])
+   self.assertEqual(c['guard'],'toolCodeDetailsGuard before every tool-code-details capture')
+ def test_tool_code_details_missing_content_identity_or_bounds_rejected(self):
+  for key,value in [('exactText','Missing complete code'),('associated',False),('detailsOpen',False),('label','Expand unrelated code'),('lines',[]),('control',{})]:
+   shutil.copyfile(CAP/'corpus/manifest.json',self.corpus/'manifest.json')
+   self.rejected(lambda m:next(r for r in m['views'] if r['view']=='tool-code-details')['toolCodeDetailsEvidence'].update({key:value}))
+
  def test_wrong_same_type_rendered_controls(self):
   # These records come from actual extra mounted pages and the same semantic
   # guard used before accepted captures, not a DTO/type-only substitution.
@@ -70,8 +105,8 @@ class CaptureGuards(unittest.TestCase):
   self.rejected(lambda m:m['views'][0]['sceneReadiness'].update(previewHeading='Wrong selected preview'))
  def test_recovery_required_pair_and_original_inventory(self):
   m=guard(self.corpus,current=True);rows={(r['view'],r['size']):r for r in m['views']}
-  self.assertEqual(set(rows),{(view,size) for view in (*ORIGINAL_CAMPAIGN_VIEWS,'recovery-top','long-content-top') for size in ('wide','narrow')})
-  self.assertEqual(len(rows),150)
+  self.assertEqual(set(rows),{(view,size) for view in (*ORIGINAL_CAMPAIGN_VIEWS,'recovery-top','long-content-top','expanded-code','tool-code-details') for size in ('wide','narrow')})
+  self.assertEqual(len(rows),154)
   for size in ('wide','narrow'):
    top=rows[('recovery-top',size)];bottom=rows[('recovery',size)]
    self.assertEqual(top['events'],['proxy_credential_rotated','proxy_rate_limit_absorbed','dispatcher_restarted','anti_halting_resume_confirmed','session_leadership_migrated'])
@@ -102,7 +137,7 @@ class CaptureGuards(unittest.TestCase):
   with self.assertRaisesRegex(ValueError,'missing recovery card semantics'):guard(self.corpus,current=True)
  def test_long_content_required_pair_and_original_inventory(self):
   m=guard(self.corpus,current=True);rows={(r['view'],r['size']):r for r in m['views']}
-  self.assertEqual(set(rows),{(view,size) for view in (*ORIGINAL_CAMPAIGN_VIEWS,'recovery-top','long-content-top') for size in ('wide','narrow')});self.assertEqual(len(rows),150)
+  self.assertEqual(set(rows),{(view,size) for view in (*ORIGINAL_CAMPAIGN_VIEWS,'recovery-top','long-content-top','expanded-code','tool-code-details') for size in ('wide','narrow')});self.assertEqual(len(rows),154)
   identifier='responsiveHeroWithSharedSpacingAndAccessiblePrimaryAction'*6
   for size in ('wide','narrow'):
    top=rows[('long-content-top',size)];bottom=rows[('long-content',size)]

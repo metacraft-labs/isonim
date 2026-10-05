@@ -7,11 +7,16 @@
 ## explicitly owns the connected/disconnected transport state for this local host;
 ## it does not change the production approval guard or inject completion results.
 ## The mounted negative control proves a disconnected pending request cannot apply.
+## Code-reading reconciliation also reseeds this synthetic transcript through the
+## real activity signal for restored-block replacement/removal; append-only
+## public provider events cannot exercise these view disposal paths. No new event
+## discriminator or test-only rendered control is introduced.
 ## These substitute external event timing, not the EditorVM,
 ## reducer, signals, DOM, preview renderer or keyboard/scroll implementation. Real
 ## REST/official-provider integration remains in the registered chat/control suites.
 import std/[json, tables]
 import nim_agents
+import nim_agents/activity
 import isonim/editor
 import isonim/editor/browser
 import isonim/editor/control
@@ -36,6 +41,16 @@ proc event(payload: cstring) =
 proc harborEvent(payload: cstring) =
   let normalized = harborEventToAgentEvent("fixture-session", eventFromJson(parseJson($payload)))
   vm.chat.applyAgentEvent(agentEventFromSseJson(normalized.toJson()))
+proc replaceActivityText(text: cstring) =
+  var state = vm.chat.activity.val
+  for index in 0 ..< state.entries.len:
+    if state.entries[index].role == arAssistant: state.entries[index].text = $text
+  vm.chat.activity.val = state
+proc removeActivityEntries() =
+  var state = vm.chat.activity.val
+  state.entries.setLen(0)
+  vm.chat.activity.val = state
+
 proc backend(accept: bool) =
   vm.chat.configureAgentAdapters(proc(prompt: string; context: AgentPromptContext): bool = accept, nil)
 proc busy(value: bool) =
@@ -77,4 +92,5 @@ proc width(value: int) = vm.setRightPanelWidth(value)
   ", busy:", busy, ", newChat:", newChat, ", switchChat:", switchChat,
   ", state:", state, ", controlState:", fixtureControlState, ", control:", fixtureCommand,
   ", controlDiagnostics:", fixtureControlDiagnostics, ", localApprovals:", localApprovals, ", approval:", fixtureApproval,
+  ", replaceActivityText:", replaceActivityText, ", removeActivityEntries:", removeActivityEntries,
   ", repeatStoryReveal:", repeatStoryReveal, ", width:", width, "};"].}

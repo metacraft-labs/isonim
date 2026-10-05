@@ -7,6 +7,12 @@
 ## external transport timing with protocol data, not a fake service. Its frames
 ## traverse the real Harbor parser, safe projection, JSON codec, reducer and
 ## generic renderer; official Rust scenario E2E is separately registered.
+## Code reading cases drive actual renderer buttons through streamed fenced code,
+## replacement/removal, independent timelines and disposal; MockRenderer substitutes
+## browser DOM only, and mounted tests separately prove geometry/keyboard behavior.
+## Long tool reading injects genuine public tool_use/tool_result DTO delivery,
+## through the real Harbor parser, projection, codec and reducer, including
+## crossing the excerpt boundary and updating code beyond it; full Details remains.
 ## Footer cases use those same real parser/wire/reducer and renderer boundaries,
 ## with only the admitted-flight latch controlled to distinguish public reports
 ## from host completion. No provider answer, sign-in or cancellation is invented.
@@ -21,6 +27,9 @@ import isonim/editor/views/[chat_activity, chat_panel]
 import isonim/editor/views/chat_theme
 import isonim/testing/mock_dom
 
+const codeReadingScenarioText = staticRead("scenarios/chat-activity/code-reading.json")
+let codeReadingScenario = parseJson(codeReadingScenarioText)
+
 proc activityNode(node: MockNode; role: string): MockNode =
   if node.attributes.getOrDefault("data-chat-role") == role: return node
   for child in node.children:
@@ -34,7 +43,182 @@ proc entryNode(node: MockNode; id: string): MockNode =
     result = entryNode(child, id)
     if result != nil: return
 
+proc markedNode(node: MockNode; name: string): MockNode =
+  if name in node.attributes: return node
+  for child in node.children:
+    result = markedNode(child, name)
+    if result != nil: return
+
 suite "Chat activity and composition":
+  test "fenced code reader uses exact live text and closes when its block changes":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      let r = MockRenderer()
+      let host = r.createElement("div")
+      vm.chat.applyAgentEvent(agentEventFromJson(codeReadingScenario["streaming"]["open"]))
+      r.renderActivityTimeline(host, vm.chat)
+      let trigger = markedNode(host, "data-chat-code-expand")
+      let overlay = markedNode(host, "data-chat-code-reader")
+      let content = markedNode(host, "data-chat-code-expanded-text")
+      let close = markedNode(host, "data-chat-code-close")
+      check trigger != nil
+      check trigger.styles["display"] == "inline-block"
+      trigger.fireEvent("click")
+      check overlay.styles["display"] == "flex"
+      check content.textContent == "\nlet safe = \"<script>保持😀\"\n\n"
+      check r.activeElement() == close
+      vm.chat.applyAgentEvent(agentEventFromJson(codeReadingScenario["streaming"]["append"]))
+      check content.textContent == "\nlet safe = \"<script>保持😀\"\n\necho safe"
+      check r.activeElement() == close
+      close.fireEvent("click")
+      check overlay.styles["display"] == "none"
+      check content.textContent == ""
+      check r.activeElement() == trigger
+      check trigger.attributes["aria-expanded"] == "false"
+      trigger.fireEvent("click")
+      var state = vm.chat.activity.val
+      state.entries[0].text = codeReadingScenario["replacement"]["prose"].getStr()
+      vm.chat.activity.val = state
+      check overlay.styles["display"] == "none"
+      check markedNode(host, "data-chat-code-expand") == nil
+      trigger.fireEvent("click")
+      check overlay.styles["display"] == "none"
+      dispose()
+      trigger.fireEvent("click")
+      close.fireEvent("click")
+      check markedNode(host, "data-chat-code-reader") == nil
+
+  test "multiple fenced blocks keep distinct real trigger bindings after reconciliation":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      let r = MockRenderer()
+      let host = r.createElement("div")
+      vm.chat.applyAgentEvent(agentEventFromJson(codeReadingScenario["multiple"]["event"]))
+      r.renderActivityTimeline(host, vm.chat)
+      let row = activityNode(host, "arAssistant")
+      var triggers: seq[MockNode]
+      proc collect(node: MockNode) =
+        if "data-chat-code-expand" in node.attributes: triggers.add node
+        for child in node.children: collect(child)
+      collect(row)
+      check triggers.len == 2
+      triggers[0].fireEvent("click")
+      check markedNode(host, "data-chat-code-expanded-text").textContent == "\nlet safe = \"<script>保持😀\"\n\necho safe"
+      check markedNode(host, "data-chat-code-reader").attributes["data-chat-code-language"] == "nim"
+      markedNode(host, "data-chat-code-close").fireEvent("click")
+      triggers[1].fireEvent("click")
+      check markedNode(host, "data-chat-code-expanded-text").textContent == "echo second"
+      check markedNode(host, "data-chat-code-reader").attributes["data-chat-code-language"] == "sh"
+      var state = vm.chat.activity.val
+      state.entries[0].text = codeReadingScenario["replacement"]["prose"].getStr()
+      vm.chat.activity.val = state
+      check markedNode(host, "data-chat-code-expand") == nil
+      state.entries[0].text = codeReadingScenario["replacement"]["code"].getStr()
+      vm.chat.activity.val = state
+      triggers[0].fireEvent("click")
+      check markedNode(host, "data-chat-code-reader").styles["display"] == "none"
+      let fresh = markedNode(host, "data-chat-code-expand")
+      check fresh != nil
+      fresh.fireEvent("click")
+      check markedNode(host, "data-chat-code-expanded-text").textContent == "restored code"
+      dispose()
+
+  test "code readers remain isolated through entry removal and disposed remounts":
+    for iteration in 0 ..< 4:
+      createRoot proc(dispose: proc()) =
+        let vm = createEditorVM()
+        let r = MockRenderer()
+        let first = r.createElement("div")
+        let second = r.createElement("div")
+        let original = vm.chat
+        original.applyAgentEvent(AgentEvent(kind: aekMessageChunk, text: "```nim\nfirst code\n```"))
+        r.renderActivityTimeline(first, original)
+        discard vm.createNewChat()
+        vm.chat.applyAgentEvent(AgentEvent(kind: aekMessageChunk, text: "```nim\nsecond code\n```"))
+        r.renderActivityTimeline(second, vm.chat)
+        let firstTrigger = markedNode(first, "data-chat-code-expand")
+        let secondTrigger = markedNode(second, "data-chat-code-expand")
+        firstTrigger.fireEvent("click")
+        secondTrigger.fireEvent("click")
+        check markedNode(first, "data-chat-code-expanded-text").textContent == "first code"
+        check markedNode(second, "data-chat-code-expanded-text").textContent == "second code"
+        var state = original.activity.val
+        state.entries.setLen(0)
+        original.activity.val = state
+        check markedNode(first, "data-chat-code-reader").styles["display"] == "none"
+        check markedNode(second, "data-chat-code-reader").styles["display"] == "flex"
+        firstTrigger.fireEvent("click")
+        check markedNode(first, "data-chat-code-reader").styles["display"] == "none"
+        dispose()
+        firstTrigger.fireEvent("click")
+        secondTrigger.fireEvent("click")
+        check first.children.len == 0 or markedNode(first, "data-chat-code-reader") == nil
+        check markedNode(second, "data-chat-code-reader") == nil
+
+  test "public long tool code stays complete across excerpt growth and late tail updates":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      let r = MockRenderer()
+      let host = r.createElement("div")
+      let scenario = codeReadingScenario["publicTool"]
+      proc feed(key: string) =
+        let projected = harborEventToAgentEvent("complete-code-session", eventFromJson(scenario[key]))
+        vm.chat.applyAgentEvent(agentEventFromJson(projected.toJson()))
+      feed("use")
+      feed("short")
+      r.renderActivityTimeline(host, vm.chat)
+      check vm.chat.activity.val.entries.len == 1
+      let row = activityNode(host, "arActivity")
+      var buttons: seq[MockNode]
+      proc collect(node: MockNode) =
+        if "data-chat-code-expand" in node.attributes: buttons.add node
+        for child in node.children: collect(child)
+      collect(row)
+      check buttons.len == 2
+      let first = buttons[0]
+      let second = buttons[1]
+      let overlay = markedNode(host, "data-chat-code-reader")
+      let content = markedNode(host, "data-chat-code-expanded-text")
+      let close = markedNode(host, "data-chat-code-close")
+      first.fireEvent("click")
+      check content.textContent == "echo \"short start\""
+      feed("long")
+      check vm.chat.activity.val.entries.len == 1
+      check content.textContent == scenario["expectedFirst"].getStr()
+      check content.textContent.endsWith("echo \"FINAL tool line 23 beyond excerpt\"")
+      check overlay.attributes["data-chat-code-language"] == "nim"
+      check r.activeElement() == close
+      let compact = markedNode(row, "data-chat-markdown")
+      check compact.textContent == "Tool output follows."
+      var excerpt = ""
+      for node in first.parent.children:
+        if node.attributes.getOrDefault("data-chat-markdown") == "code" and node.styles.getOrDefault("display") == "block": excerpt = node.textContent
+      check excerpt.endsWith("…")
+      check excerpt.len < 240
+      check not excerpt.contains("FINAL tool line 23")
+      let details = markedNode(row, "data-chat-detail")
+      check details.textContent.contains(scenario["long"]["tool_output"].getStr())
+      check second.parent.tag == "details"
+      check second.textContent == "Expand code block 2 · sh"
+      feed("update")
+      check content.textContent == scenario["expectedUpdated"].getStr()
+      check content.textContent.endsWith("echo \"UPDATED final tool line 23 beyond excerpt\"")
+      check r.activeElement() == close
+      check details.textContent.contains(scenario["update"]["tool_output"].getStr())
+      close.fireEvent("click")
+      check r.activeElement() == first
+      second.fireEvent("click")
+      check content.textContent == "printf '<img src=x onerror=alert(1)> Ω'\necho SECOND final block"
+      check overlay.attributes["data-chat-code-language"] == "sh"
+      close.fireEvent("click")
+      check r.activeElement() == second
+      first.fireEvent("click")
+      check content.textContent == scenario["expectedUpdated"].getStr()
+      dispose()
+      first.fireEvent("click")
+      second.fireEvent("click")
+      check markedNode(host, "data-chat-code-reader") == nil
+
   test "chat content fills the rail without a second width binding":
     createRoot proc(dispose: proc()) =
       let vm = createEditorVM()
