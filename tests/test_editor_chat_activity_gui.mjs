@@ -710,7 +710,7 @@ try{
     const notice=row.locator('[data-chat-availability]');
     assert((await row.locator('[data-chat-fact="Request"]').innerText()).includes(loginPayload.request));
     assert((await row.locator('[data-chat-facts]').innerText()).includes(loginPayload.provider));
-    assert((await notice.innerText()).includes("Sign in through the provider's supported login surface."));
+    assert((await notice.innerText()).includes("Open the matching LOGIN REQUIRED card in Agent Harbor WebUI task details or Inbox, if available. This editor cannot open sign-in. If you cannot access Harbor, ask this editor's operator to open the request."));
     assert(await notice.isVisible());assert.equal(await row.locator('details').getAttribute('open'),null);
     const bounds=await notice.evaluate(el=>{
       const box=el.getBoundingClientRect(),scroll=el.closest('[data-chat-scroll]').getBoundingClientRect();
@@ -720,6 +720,41 @@ try{
     assert.equal(await row.locator('button,input,textarea,select,a').count(),0);
     assert.equal(await loginPage.getByRole('textbox',{name:'Agent prompt'}).inputValue(),'Retained login draft');
     await loginPage.close();record(`visible supported login guidance and whole notice bounds at ${panelWidth}`);
+  }
+  // Existing protocol timing substitution only; the real parser, safe DTO
+  // projection, reducer and mounted view receive an opaque-surface negative control.
+  for(const [width,panelWidth] of [[1440,420],[1024,240]]){
+    const locationPage=await browser.newPage({viewport:{width,height:768}});
+    await locationPage.goto(origin);await locationPage.waitForFunction(()=>window.__chatTest);
+    await locationPage.evaluate(value=>window.__chatTest.width(value),panelWidth);
+    const draft=locationPage.getByRole('textbox',{name:'Agent prompt'});
+    await draft.fill('Login location retained draft');
+    const payload={...corpus.events.find(event=>event.type==='login_required'),provider:'openai',request:'request-visible-42',surface:'https://private-login.invalid/OPAQUE_LOGIN_SECRET'};
+    await locationPage.evaluate(payload=>window.__chatTest.harborEvent(JSON.stringify(payload)),payload);
+    await locationPage.evaluate(async()=>{await document.fonts.ready;await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));});
+    const row=locationPage.locator('[data-chat-entry][data-chat-source="login_required"]');
+    const notice=row.locator('[data-chat-availability]');
+    assert((await notice.innerText()).includes('LOGIN REQUIRED card in Agent Harbor WebUI task details or Inbox, if available.'));
+    assert((await notice.innerText()).includes('This editor cannot open sign-in.'));
+    assert((await notice.innerText()).includes("If you cannot access Harbor, ask this editor's operator to open the request."));
+    assert((await row.locator('[data-chat-fact="Request"]').innerText()).includes(payload.request));
+    assert((await row.locator('[data-chat-fact="Provider"]').innerText()).includes(payload.provider));
+    assert.equal(await row.locator('details').getAttribute('open'),null);
+    for(const element of [notice,row.locator('[data-chat-fact="Request"]'),row.locator('[data-chat-fact="Provider"]')]){
+      assert(await element.isVisible());
+      const bounds=await element.evaluate(el=>{const b=el.getBoundingClientRect(),s=el.closest('[data-chat-scroll]').getBoundingClientRect();return {inside:b.width>0&&b.height>0&&b.left>=s.left&&b.right<=s.right&&b.top>=s.top&&b.bottom<=s.bottom,box:{left:b.left,right:b.right,top:b.top,bottom:b.bottom}};});
+      assert(bounds.inside,JSON.stringify(bounds));
+    }
+    assert.equal(await notice.locator('xpath=ancestor::details').count(),0);
+    assert.equal(await row.locator('button,input,textarea,select,a,iframe').count(),0);
+    assert.equal((await locationPage.locator('.editor-chat').textContent()).includes('OPAQUE_LOGIN_SECRET'),false);
+    assert.equal((await locationPage.locator('.editor-chat').textContent()).includes('private-login.invalid'),false);
+    await row.locator('summary').click();
+    assert((await row.locator('details').innerText()).includes(payload.request));
+    assert.equal((await row.innerText()).includes('OPAQUE_LOGIN_SECRET'),false);
+    assert.equal(await draft.inputValue(),'Login location retained draft');
+    await horizontalChatGuard(locationPage);
+    await locationPage.close();record(`named Harbor login location and operator fallback without opaque surface at ${panelWidth}`);
   }
   await page.evaluate(()=>window.__chatTest.newChat());
   for(const payload of corpus.events){

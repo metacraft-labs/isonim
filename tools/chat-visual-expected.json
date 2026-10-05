@@ -54,7 +54,7 @@
   ],
   "login": [
     "Provider login required and named provider/request",
-    "Supported provider sign-in surface explanation; no credential contents or fake login link"
+    "Named LOGIN REQUIRED card in Agent Harbor WebUI task details or Inbox, if available; editor cannot open sign-in, with operator fallback if Harbor is inaccessible. No credential contents or fake login link"
   ],
   "participants": [
     "Website author joined as a human participant",
@@ -194,7 +194,7 @@
   ],
   "event-login_required": [
     "In the conversation area below the user request, a card headed Provider login required.",
-    "Provider anthropic and Request login-provider; an explanation of the supported provider sign-in surface, without a fabricated link."
+    "Provider anthropic and Request login-provider; the matching LOGIN REQUIRED card in Agent Harbor WebUI task details or Inbox, if available. This editor cannot open sign-in; ask the editor operator to open the request if Harbor is inaccessible. No fabricated link."
   ],
   "event-participant": [
     "In the conversation area below the user request, a card headed Participant activity.",

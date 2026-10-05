@@ -90,10 +90,12 @@ proc activityTitle*(entry: ActivityEntry): string =
 proc activityAvailability*(entry: ActivityEntry): string =
   # Availability belongs to the editor view, not shared provider semantics.
   # This notice concerns the correlated request; ordinary chat remains available
-  # under its existing turn/session admission rules.
+  # under its existing turn/session admission rules. Harbor owns the durable
+  # LOGIN REQUIRED card in WebUI task details/Inbox; the editor has no viewer
+  # endpoint contract and never exposes the event's opaque login surface.
   if entry.kind == aekStatus:
     if entry.data.sourceType == "login_required":
-      return "Sign in through the provider's supported login surface." &
+      return "Open the matching LOGIN REQUIRED card in Agent Harbor WebUI task details or Inbox, if available. This editor cannot open sign-in. If you cannot access Harbor, ask this editor's operator to open the request." &
         (if entry.data.question.len > 0: " This editor cannot answer this request." else: "")
     if entry.data.question.len > 0: return "This editor cannot answer this request."
     if entry.data.sourceType == "session_awaiting_input":
@@ -114,7 +116,7 @@ proc detailContent(entry: ActivityEntry): string =
       (if event.usageSource.len > 0: " · " & event.usageSource else: "") else: "")
   of aekStatus:
     if event.question.len > 0: "This editor cannot answer this request."
-    elif event.sourceType == "login_required": "Sign in through the provider's supported login surface."
+    elif event.sourceType == "login_required": "Open the matching LOGIN REQUIRED card in Agent Harbor WebUI task details or Inbox, if available. This editor cannot open sign-in. If you cannot access Harbor, ask this editor's operator to open the request."
     elif event.sourceType == "session_awaiting_input": "Waiting for input. This editor cannot respond to this request."
     elif event.presentationFields.len == 0: event.sourceType
     else: ""

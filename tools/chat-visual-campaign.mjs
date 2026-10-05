@@ -81,7 +81,7 @@ const isolatedContent={
  dispatcher_restarted:['Agent restarted','Restart','2'],anti_halting_resume_confirmed:['Agent progress resumed','Recovered stall','idle'],
  session_leadership_migrated:['Session moved to another executor','authoring-host','preview-host','linux','Flushed sequence','40'],
  agent_question:['Agent question','Which hero spacing should I use?','question-hero','Comfortable','Compact','This editor cannot answer this request.'],
- login_required:['Provider login required','anthropic','login-provider',"Sign in through the provider's supported login surface."],
+ login_required:['Provider login required','anthropic','login-provider',"Open the matching LOGIN REQUIRED card in Agent Harbor WebUI task details or Inbox, if available. This editor cannot open sign-in. If you cannot access Harbor, ask this editor's operator to open the request."],
  participant:['Participant activity','Website author','owner','joined'],link_spans:['Source references','stories/hero.nim'],
  status:['Session','running'],error:['Error','Build failed. The last successful preview is still available.']
 };
@@ -144,7 +144,7 @@ async function loginGuidanceGuard(page,wholeNotice=false,expected=[]){
   assert((await row.locator('[data-chat-fact="Request"]').innerText()).includes(expected[index].request),'actual login request identity');
   assert((await row.locator('[data-chat-fact="Provider"]').innerText()).includes(expected[index].provider),'actual login provider identity');
   assert.equal(await notice.count(),1,'required supported login guidance missing');
-  assert((await notice.innerText()).includes("Sign in through the provider's supported login surface."),'required supported login guidance missing');
+  assert((await notice.innerText()).includes("Open the matching LOGIN REQUIRED card in Agent Harbor WebUI task details or Inbox, if available. This editor cannot open sign-in. If you cannot access Harbor, ask this editor's operator to open the request."),'required supported login guidance missing');
   assert(await notice.isVisible(),'supported login guidance visible before Details');
   assert.equal(await notice.locator('xpath=ancestor::details').count(),0,'login guidance outside Details');
   if(wholeNotice){

@@ -363,7 +363,7 @@ suite "Full public Harbor event presentation":
         check notice.len == 1
         check notice[0].parent == node
         check notice[0].styles.getOrDefault("display") == "block"
-        check notice[0].children[0].text.contains("Sign in through the provider's supported login surface.")
+        check notice[0].children[0].text.contains("Open the matching LOGIN REQUIRED card in Agent Harbor WebUI task details or Inbox, if available. This editor cannot open sign-in. If you cannot access Harbor, ask this editor's operator to open the request.")
         check notice[0].children[0].text.contains("This editor cannot answer this request.") == correlated
         let details = node.children.filterIt(it.tag == "details")
         check details.len == 1
@@ -572,3 +572,48 @@ suite "Full public Harbor event presentation":
       guidance(panel)
       check guidanceCount == 2
       dispose()
+
+  test "login location and operator fallback retain identity and hide opaque surfaces":
+    const corpusText = staticRead("scenarios/chat-activity/public-session-events.json")
+    for provider in ["anthropic", "openai"]:
+      createRoot proc(dispose: proc()) =
+        let payload = parseJson(corpusText)["scenes"]["login"][0]
+        payload["provider"] = %provider
+        payload["request"] = %"request-visible-42"
+        payload["surface"] = %"https://private-login.invalid/OPAQUE_LOGIN_SECRET"
+        let projected = harborEventToAgentEvent("login-location-session", eventFromJson(payload))
+        check not ($projected.toJson()).contains("OPAQUE_LOGIN_SECRET")
+        let decoded = agentEventFromJson(projected.toJson())
+        let vm = createEditorVM()
+        vm.chat.inputText.val = "Login location retained draft"
+        vm.chat.applyAgentEvent(decoded)
+        let entry = vm.chat.activity.val.entries[^1]
+        let panel = renderChatPanel[MockRenderer, MockNode](MockRenderer(), vm)
+        let node = entryNode(panel, entry.id)
+        check node != nil
+        let notice = node.children.filterIt(it.attributes.getOrDefault("data-chat-availability") == "true")
+        check notice.len == 1
+        let text = notice[0].children[0].text
+        check text.contains("LOGIN REQUIRED card in Agent Harbor WebUI task details or Inbox, if available.")
+        check text.contains("This editor cannot open sign-in.")
+        check text.contains("If you cannot access Harbor, ask this editor's operator to open the request.")
+        check notice[0].parent == node
+        check notice[0].styles.getOrDefault("display") == "block"
+        let details = node.children.filterIt(it.tag == "details")
+        check details.len == 1
+        check not details[0].attributes.hasKey("open")
+        check activityDetail(entry).contains(provider)
+        check activityDetail(entry).contains("request-visible-42")
+        var pending = @[node]
+        var rendered = ""
+        while pending.len > 0:
+          let child = pending.pop()
+          rendered.add child.text
+          check child.tag notin ["button", "input", "textarea", "select", "a", "iframe"]
+          for nested in child.children: pending.add nested
+        check rendered.contains(provider)
+        check rendered.contains("request-visible-42")
+        check not rendered.contains("OPAQUE_LOGIN_SECRET")
+        check not rendered.contains("private-login.invalid")
+        check vm.chat.inputText.val == "Login location retained draft"
+        dispose()
