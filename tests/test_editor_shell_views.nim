@@ -1609,3 +1609,47 @@ suite "Phase N — left sidebar drag resize":
       vm.setLeftSidebarWidth(9_999)
       check vm.leftSidebarWidth.val == 420
       dispose()
+
+suite "Agent navigation sidebar binding lifetime":
+  test "search binding follows live state and stops writing after actual scope disposal":
+    let r = MockRenderer()
+    var oldVm: EditorVM
+    var oldInput: MockNode
+    var disposeOld: proc()
+    createRoot proc(dispose: proc()) =
+      disposeOld = dispose
+      oldVm = createEditorVM()
+      let sidebar = renderSidebar[MockRenderer, MockNode](r, oldVm)
+      oldInput = findByAttr(sidebar, "data-sidebar-search", "true")
+      check oldInput != nil
+      oldVm.sidebar.setSearch("live search")
+      check r.inputValue(oldInput) == "live search"
+      # Human typing updates the same value before the input event reaches VM.
+      r.setInputValue(oldInput, "typed search")
+      oldInput.fireEvent("input")
+      check oldVm.sidebar.searchQuery.val == "typed search"
+      oldVm.sidebar.setSearch("")
+      check r.inputValue(oldInput) == ""
+      oldVm.sidebar.setSearch("before disposal")
+      check r.inputValue(oldInput) == "before disposal"
+    disposeOld()
+    oldVm.sidebar.searchQuery.val = "after disposal"
+    check r.inputValue(oldInput) == "before disposal"
+    var freshVm: EditorVM
+    var freshInput: MockNode
+    var disposeFresh: proc()
+    createRoot proc(dispose: proc()) =
+      disposeFresh = dispose
+      freshVm = createEditorVM()
+      freshVm.sidebar.setSearch("fresh mount")
+      let sidebar = renderSidebar[MockRenderer, MockNode](r, freshVm)
+      freshInput = findByAttr(sidebar, "data-sidebar-search", "true")
+      check r.inputValue(freshInput) == "fresh mount"
+      freshVm.sidebar.setSearch("fresh update")
+      check r.inputValue(freshInput) == "fresh update"
+      check r.inputValue(oldInput) == "before disposal"
+    disposeFresh()
+    freshVm.sidebar.searchQuery.val = "after fresh disposal"
+    oldVm.sidebar.searchQuery.val = "obsolete update after remount"
+    check r.inputValue(freshInput) == "fresh update"
+    check r.inputValue(oldInput) == "before disposal"

@@ -1343,6 +1343,10 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
         r.addEventListener(searchInput, "input", onSearch)
         r.addEventListener(searchInput, "change", onSearch)
         r.addEventListener(searchInput, "keyup", onSearch)
+        createRenderEffect proc() =
+          let query = vm.sidebar.searchQuery.val
+          if r.inputValue(searchInput) != query: r.setInputValue(searchInput, query)
+
 
       # M-EVP-9: Quick-navigation strip — one icon per canonical
       # design-system category. Click an icon to focus that category

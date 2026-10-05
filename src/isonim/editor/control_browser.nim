@@ -73,6 +73,21 @@ proc installControlBridge*(vm: EditorVM; root: Element): BrowserControlBridge =
   result = bridge
   # DOM focus requires a visible control in this exact mounted editor. Human focus
   # events update the same signal, including focus within its preview iframe.
+  vm.controlStoryRevealAdapter = proc() =
+    # A microtask follows synchronous reactive tree updates without stealing
+    # keyboard focus. A newer selection or unmount invalidates the queued scroll.
+    let shell = root
+    let selected = (vm.selectedStory.val.group & "/" & vm.selectedStory.val.name).cstring
+    proc stillMounted(): bool = not bridge.disposed
+    let live = stillMounted
+    {.emit: ["""
+      queueMicrotask(function() {
+        if (!""", live, """() || !""", shell, """.isConnected) return;
+        const row = Array.from(""", shell, """.querySelectorAll('[data-story-row][aria-current="true"]'))
+          .find(node => node.getAttribute('data-story-row') === """, selected, """);
+        if (row && row.getClientRects().length) row.scrollIntoView({block:'nearest',inline:'nearest'});
+      });
+    """].}
   vm.controlFocusAdapter = proc(target: string): bool =
     let shell = root
     let name = target.cstring

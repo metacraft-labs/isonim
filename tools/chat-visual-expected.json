@@ -157,7 +157,7 @@
   ],
   "event-session_awaiting_input": [
     "In the conversation area below the user request, a card headed Waiting for input.",
-    "Request login-provider under Waiting for input, followed by the visible notice “Waiting for input. This editor cannot respond to this request.” outside closed Details. No response control is offered."
+    "Request login-provider under Waiting for input, followed by the visible notice \u201cWaiting for input. This editor cannot respond to this request.\u201d outside closed Details. No response control is offered."
   ],
   "event-session_resumed": [
     "In the conversation area below the user request, a card headed Session resumed.",
@@ -249,7 +249,8 @@
   "navigation-pending": [
     "Checked Require approval for agent navigation preference",
     "Pending open-story request with Approve and Reject controls",
-    "Home remains in the preview until approval"
+    "Home remains in the preview until approval",
+    "Approve and Reject form a themed, comfortably sized action row"
   ],
   "navigation-approved": [
     "Applied open-story history row without pending controls",
@@ -264,7 +265,8 @@
   "navigation-stale": [
     "Failed request history after a real user viewport change",
     "Home remains selected after the stale approval",
-    "No pending approval controls remain"
+    "No pending approval controls remain",
+    "The reason explains that the editor changed and a fresh request is needed"
   ],
   "navigation-auto": [
     "Unchecked Require approval for agent navigation preference",

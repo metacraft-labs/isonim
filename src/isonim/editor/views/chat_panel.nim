@@ -184,22 +184,45 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
            padding = "8px 12px", font_size = "12px", color = textSecondary,
            border_bottom = "1px solid " & borderFaint):
         text caption & " — " & status
+    if status == "failed":
+      let error = operation{"error"}.getStr()
+      let diagnostic = operation{"diagnostic"}.getStr()
+      let reason = if error == "revision_conflict":
+          "The editor changed after this request. Ask the agent to make a fresh request."
+        elif diagnostic.len > 0: diagnostic
+        elif error.len > 0: error
+        else: "The requested action could not be completed."
+      let failure = ui(r):
+        tdiv(`data-editor-control-failure` = error, margin_top = "6px",
+          line_height = "1.5", overflow_wrap = "anywhere", color = textPrimary):
+          text reason
+      r.appendChild(row, failure)
     if status == "pending":
+      let actions = ui(r):
+        tdiv(`data-editor-control-actions` = id, display = "flex", gap = "8px",
+          flex_wrap = "wrap", margin_top = "8px")
       let approveId = id
       let approve = ui(r):
-        button(`data-editor-control-approve` = id, margin_top = "6px", margin_right = "8px",
+        button(`data-editor-control-approve` = id, type = "button",
+          min_height = "32px", padding = "6px 12px", font_size = "12px",
+          background_color = bgInput, color = textPrimary, border = "1px solid " & accent,
+          border_radius = "5px", cursor = "pointer",
           onclick = proc() =
             if vm.requestControlApproval != nil: vm.requestControlApproval(approveId, true)
             else: discard vm.resolveControlApproval(approveId, true)):
           text "Approve"
       let reject = ui(r):
-        button(`data-editor-control-reject` = id, margin_top = "6px",
+        button(`data-editor-control-reject` = id, type = "button",
+          min_height = "32px", padding = "6px 12px", font_size = "12px",
+          background_color = bgSurface, color = textPrimary, border = "1px solid " & border,
+          border_radius = "5px", cursor = "pointer",
           onclick = proc() =
             if vm.requestControlApproval != nil: vm.requestControlApproval(approveId, false)
             else: discard vm.resolveControlApproval(approveId, false)):
           text "Reject"
-      r.appendChild(row, approve)
-      r.appendChild(row, reject)
+      r.appendChild(actions, approve)
+      r.appendChild(actions, reject)
+      r.appendChild(row, actions)
     r.appendChild(controlHistory, row)
   createRenderEffect proc() =
     r.clearChildren(controlHistory)

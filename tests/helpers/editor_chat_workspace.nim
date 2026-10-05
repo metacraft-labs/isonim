@@ -71,9 +71,10 @@ proc localApprovals(connected: bool = true) =
   vm.controlConnected = connected
 proc fixtureApproval(id: cstring; approve: bool): cstring =
   cstring($vm.resolveControlApproval($id, approve))
+proc repeatStoryReveal() = vm.controlStoryRevealAdapter()
 proc width(value: int) = vm.setRightPanelWidth(value)
 {.emit: ["window.__chatTest = {event:", event, ", harborEvent:", harborEvent, ", backend:", backend,
   ", busy:", busy, ", newChat:", newChat, ", switchChat:", switchChat,
   ", state:", state, ", controlState:", fixtureControlState, ", control:", fixtureCommand,
   ", controlDiagnostics:", fixtureControlDiagnostics, ", localApprovals:", localApprovals, ", approval:", fixtureApproval,
-  ", width:", width, "};"].}
+  ", repeatStoryReveal:", repeatStoryReveal, ", width:", width, "};"].}

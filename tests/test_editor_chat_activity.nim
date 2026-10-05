@@ -15,7 +15,7 @@ import nim_agents
 import nim_agents/[activity, activity_presentation]
 import isonim/viewmodel
 import isonim/core/[signals, computation, owner]
-import isonim/editor/[viewmodels, agent_harbor]
+import isonim/editor/[viewmodels, agent_harbor, control]
 import isonim/editor/design_review/editor_agent_adapter
 import isonim/editor/views/[chat_activity, chat_panel]
 import isonim/editor/views/chat_theme
@@ -617,3 +617,38 @@ suite "Full public Harbor event presentation":
         check not rendered.contains("private-login.invalid")
         check vm.chat.inputText.val == "Login location retained draft"
         dispose()
+
+  test "real control history themes pending actions and renders the actual stale reason":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      vm.workspaceId = "navigation-history"
+      vm.controlInstanceId = "one"
+      vm.controlConnected = true
+      vm.agentControlApproval.val = true
+      let panel = renderChatPanel[MockRenderer, MockNode](MockRenderer(), vm)
+      proc find(node: MockNode; attribute, value: string): MockNode =
+        if node.attributes.getOrDefault(attribute) == value: return node
+        for child in node.children:
+          result = find(child, attribute, value)
+          if result != nil: return
+      let request = %* {"workspace": vm.workspaceId, "instance": "one", "commandId": "history",
+        "command": "viewport", "viewport": "phone", "expectedRevision": vm.controlSnapshot()["revision"]}
+      check vm.admitControlOperation(request)["status"].getStr == "pending"
+      let actions = find(panel, "data-editor-control-actions", "history")
+      check actions != nil
+      if actions != nil:
+        check actions.styles.getOrDefault("display") == "flex"
+        check actions.styles.getOrDefault("gap") == "8px"
+        check actions.children.len == 2
+        for action in actions.children:
+          check action.styles.getOrDefault("min-height") == "32px"
+          check action.styles.getOrDefault("color") == textPrimary
+      vm.changeViewport(builtinViewportFromSlug("tablet"))
+      let failed = vm.resolveControlApproval("history", true)
+      check failed["error"].getStr == "revision_conflict"
+      check find(panel, "data-editor-control-actions", "history") == nil
+      let reason = find(panel, "data-editor-control-failure", "revision_conflict")
+      check reason != nil
+      if reason != nil:
+        check reason.textContent == "The editor changed after this request. Ask the agent to make a fresh request."
+      dispose()

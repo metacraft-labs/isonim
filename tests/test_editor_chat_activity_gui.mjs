@@ -17,6 +17,9 @@
  * Geometry checks wait for font layout and two browser animation frames because
  * the real chat view follows output in requestAnimationFrame. This observes its
  * scheduled scroll; it does not scroll, focus, modify DOM or relax visible bounds.
+ * A forwarding scrollIntoView observer records actual delegated destinations for
+ * selection/unmount microtask races; it calls the unchanged browser implementation
+ * and is restored in finally. It does not substitute navigation or scroll layout.
  * Assert stable turn/tool nodes, unsafe text, IME, drafts/tabs, focus/selection, scrollback,
  * narrow/wide overflow and composer/preview reachability; capture named states.
  */
@@ -206,6 +209,102 @@ try{
     assert.equal(after.selection,before.selection);assert.equal(after.highlight,before.highlight);
     writeFileSync(path.join(artifacts,`navigation-focus-intro-${width}.json`),JSON.stringify({contrast,pending,applied,rpcFocus,missingRing,blurred,keyboardFocus},null,2));
     await designPage.close();record(`navigation preference semantics, RPC and keyboard focus paint, blur and readable guidance at ${width}`);
+  }
+  // Genuine controller outcomes begin with a collapsed Pages tree. No fixture
+  // pre-expansion: only a successfully applied open-story may reveal Details.
+  for(const [width,height,rail] of [[1440,900,420],[1024,768,240]]) {
+    const nav=await browser.newPage({viewport:{width,height}});
+    await nav.goto(origin);await nav.waitForFunction(()=>window.__chatTest);
+    await nav.evaluate(rail=>{window.__chatTest.width(rail);window.__chatTest.localApprovals(true);},rail);
+    await mountedReady(nav,`navigation-outcomes-${width}`);
+    const composer=nav.getByRole('textbox',{name:'Agent prompt'});
+    await composer.fill('Keep my draft through navigation');
+    const preference=nav.getByRole('checkbox',{name:'Require approval for agent navigation',exact:true});
+    await preference.check();
+    const before=JSON.parse(await nav.evaluate(()=>window.__chatTest.controlState()));
+    const details=nav.locator('[data-story-row="Pages/Details"]');
+    assert.equal(await details.isVisible(),false,'actual initial collapsed Pages hides destination');
+    const command=async request=>JSON.parse(await nav.evaluate(request=>window.__chatTest.control(JSON.stringify(request)),request));
+    const destination=before.stories.find(story=>story.name==='Details').id;
+    const search=nav.getByRole('textbox',{name:'Search stories',exact:true});
+    await search.fill('Home');await search.press('End');
+    assert(await search.evaluate(el=>document.activeElement===el&&el.selectionStart===4&&el.selectionEnd===4),'ordinary search typing preserves caret and focus');
+    const pending=await command({commandId:`outcomes-reject-${width}`,command:'open-story',storyId:destination});
+    assert.equal(pending.status,'pending');assert.equal(await details.isVisible(),false);assert.equal(await search.inputValue(),'Home');
+    const actions=nav.locator(`[data-editor-control-actions="outcomes-reject-${width}"]`);
+    const approve=actions.getByRole('button',{name:'Approve',exact:true});
+    const reject=actions.getByRole('button',{name:'Reject',exact:true});
+    const geometry=await actions.evaluate(el=>{
+      const group=el.getBoundingClientRect();return [...el.querySelectorAll('button')].map(button=>{
+        const rect=button.getBoundingClientRect(),css=getComputedStyle(button);
+        return {width:rect.width,height:rect.height,top:rect.top,inside:rect.left>=group.left&&rect.right<=group.right,
+          background:css.backgroundColor,color:css.color,fontSize:css.fontSize};
+      });
+    });
+    assert.equal(geometry.length,2);assert.equal(geometry[0].top,geometry[1].top);
+    for(const box of geometry){assert(box.height>=32&&box.width>=60&&box.inside,JSON.stringify(geometry));assert.equal(box.fontSize,'12px');assert.notEqual(box.background,'rgb(239, 239, 239)');}
+    await approve.focus();await nav.keyboard.press('Tab');assert(await reject.evaluate(el=>document.activeElement===el));
+    await nav.keyboard.press('Enter');
+    assert.equal(await nav.locator(`[data-editor-control-operation="outcomes-reject-${width}"]`).getAttribute('data-operation-status'),'rejected');
+    assert.equal(await details.isVisible(),false);assert.equal(await search.inputValue(),'Home');assert.equal(JSON.parse(await nav.evaluate(()=>window.__chatTest.controlState())).storyId,before.storyId);
+    assert.equal((await command({commandId:`outcomes-stale-${width}`,command:'open-story',storyId:destination})).status,'pending');
+    assert.equal((await command({commandId:`outcomes-viewport-${width}`,command:'viewport',viewport:'tablet'})).status,'pending');
+    await nav.locator(`[data-editor-control-approve="outcomes-viewport-${width}"]`).click();
+    await nav.locator(`[data-editor-control-approve="outcomes-stale-${width}"]`).click();
+    const failed=nav.locator(`[data-editor-control-operation="outcomes-stale-${width}"]`);
+    assert.equal(await failed.getAttribute('data-operation-status'),'failed');
+    assert.equal(await failed.locator('[data-editor-control-failure="revision_conflict"]').innerText(),'The editor changed after this request. Ask the agent to make a fresh request.');
+    assert.equal(await details.isVisible(),false);assert.equal(await search.inputValue(),'Home');assert.equal(JSON.parse(await nav.evaluate(()=>window.__chatTest.controlState())).storyId,before.storyId);
+    assert.equal((await command({commandId:`outcomes-approve-${width}`,command:'open-story',storyId:destination})).status,'pending');
+    await nav.locator(`[data-editor-control-approve="outcomes-approve-${width}"]`).focus();await nav.keyboard.press('Enter');
+    await details.waitFor({state:'visible'});assert.equal(await details.getAttribute('aria-current'),'true');
+    const visibleDestination=await details.evaluate(el=>{
+      const row=el.getBoundingClientRect(),sidebar=el.closest('[data-editor-sidebar]').getBoundingClientRect();
+      return {inside:row.width>0&&row.height>0&&row.left>=sidebar.left&&row.right<=sidebar.right&&row.top>=sidebar.top&&row.bottom<=sidebar.bottom};
+    });assert(visibleDestination.inside,'selected destination is inside the actual sidebar clip');
+    const state=JSON.parse(await nav.evaluate(()=>window.__chatTest.controlState()));assert.equal(state.storyId,destination);
+    assert.equal(await composer.inputValue(),'Keep my draft through navigation');
+    assert.equal(state.selection,before.selection);assert.equal(state.highlight,before.highlight);
+    await preference.uncheck();
+    await nav.getByRole('button',{name:'Toggle Pages section',exact:true}).click();
+    assert.equal(await details.isVisible(),false,'ordinary user collapse stays collapsed');
+    await search.fill('Home');
+    assert.equal(await search.inputValue(),'Home');assert.equal(await details.isVisible(),false);
+    await composer.focus();
+    const automatic=await command({commandId:`outcomes-auto-${width}`,command:'open-story',storyId:destination});
+    assert.equal(automatic.status,'applied');assert.equal(await search.inputValue(),'');
+    await details.waitFor({state:'visible'});assert.equal(await details.getAttribute('aria-current'),'true');
+    assert(await composer.evaluate(el=>document.activeElement===el),'automatic reveal preserves composer focus');
+    await search.fill('Details');await composer.focus();
+    assert.equal((await command({commandId:`matching-filter-${width}`,command:'open-story',storyId:destination})).status,'applied');
+    assert.equal(await search.inputValue(),'Details','matching filter remains displayed');
+    assert(await composer.evaluate(el=>document.activeElement===el));await search.fill('');
+    const lifecycle=await nav.evaluate(async width=>{
+      const calls=[],original=Element.prototype.scrollIntoView;
+      Element.prototype.scrollIntoView=function(...args){calls.push(this.getAttribute('data-story-row'));return original.apply(this,args);};
+      const command=(id,name)=>{
+        const state=JSON.parse(window.__chatTest.controlState());
+        return JSON.parse(window.__chatTest.control(JSON.stringify({commandId:id,command:'open-story',storyId:state.stories.find(s=>s.name===name).id})));
+      };
+      try {
+        const a=command(`race-details-${width}`,'Details'),b=command(`race-home-${width}`,'Home');
+        await Promise.resolve();const newerSelection=[...calls];calls.length=0;
+        const detached=command(`race-detach-${width}`,'Details');
+        const shell=document.querySelector('[data-shell-row]').parentElement;shell.remove();
+        await Promise.resolve();const unmounted=[...calls];calls.length=0;
+        window.dispatchEvent(new Event('pagehide'));window.__chatTest.repeatStoryReveal();
+        document.body.appendChild(shell);await Promise.resolve();
+        return {a,b,detached,newerSelection,unmounted,disposed:[...calls]};
+      } finally {Element.prototype.scrollIntoView=original;}
+    },width);
+    assert.equal(lifecycle.a.status,'applied');assert.equal(lifecycle.b.status,'applied');assert.equal(lifecycle.detached.status,'applied');
+    assert.deepEqual(lifecycle.newerSelection,['Pages/Home']);assert.deepEqual(lifecycle.unmounted,[]);assert.deepEqual(lifecycle.disposed,[]);
+    await nav.reload();await nav.waitForFunction(()=>window.__chatTest);await mountedReady(nav,`navigation-remount-${width}`);
+    await nav.evaluate(()=>window.__chatTest.localApprovals(true));
+    assert.equal((await command({commandId:`remount-${width}`,command:'open-story',storyId:destination})).status,'applied');
+    await nav.locator('[data-story-row="Pages/Details"]').waitFor({state:'visible'});
+    writeFileSync(path.join(artifacts,`navigation-outcomes-${width}.json`),JSON.stringify({before,pending,geometry,state,automatic,lifecycle},null,2));
+    await nav.close();record(`real navigation approval, rejection, stale reason, keyboard actions and visible destination at ${width}`);
   }
   // Actual production toolbar, sized by the available preview column rather
   // than the browser width. All backend/mode affordances remain reachable.

@@ -268,7 +268,9 @@ proc runEditorCommand*(vm: EditorVM; request: EditorCommandRequest): EditorComma
       return
   of eckCapturePreview: discard
   of eckOpenStory:
-    discard vm.selectStory(vm.findControlStory(request.storyId).get)
+    let story = vm.findControlStory(request.storyId).get
+    discard vm.selectStory(story)
+    vm.revealControlStory(story)
   of eckSetViewport:
     vm.changeViewport(builtinViewportFromSlug(request.viewportSlug))
   of eckOpenPanel:

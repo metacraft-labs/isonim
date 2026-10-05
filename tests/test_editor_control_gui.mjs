@@ -11,6 +11,9 @@
  * decision HTTP response after the real daemon persists it. This proves recovery
  * under a lost response; server dispatch, proxy, VM, filesystem and provider
  * process remain real. The barrier permits deterministic human/closure negatives.
+ * Read-only RPC response diagnostics keep only methods, HTTP status, operation
+ * IDs/status/error and revision; registration bodies/tokens/transcripts are excluded.
+ * They observe failures without holding requests or changing waits/dispatch.
  */
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
@@ -45,6 +48,8 @@ const startup = new Promise((resolve,reject)=>{
   setTimeout(()=>reject(new Error(`Launcher startup timeout; ${artifacts}`)),30000).unref();
 });
 let browser;
+const controlDiagnostics=[];
+const observedPageErrors=[];
 const pollActivity=new WeakMap();
 function cli(scope, args, expected=0) {
   const result=spawnSync(path.join(repo,'build/bin/isonim'), ['editor',...args],{
@@ -186,6 +191,20 @@ try {
   const pageErrors=[];
   first.on('pageerror',error=>{pageErrors.push(error.message);console.error('Browser runtime:',error.message);});
   second.on('pageerror',error=>{pageErrors.push(error.message);console.error('Browser runtime:',error.message);});
+  // Read-only failure diagnostics; retain no request headers or credentials.
+  for(const page of [first,second]) {
+    page.on('pageerror',error=>observedPageErrors.push(error.message));
+    page.on('response',async response=>{
+      if(!response.url().endsWith('/api/editor/rpc'))return;
+      const method=response.request().postDataJSON()?.method;
+      if(method==='editor.register')return;
+      try {
+        const body=await response.json(),result=body.result;
+        controlDiagnostics.push({method,httpStatus:response.status(),error:body.error?.message,
+          revision:result?.revision,commands:Array.isArray(result?.commands)?result.commands.map(row=>({operationId:row.operationId,status:row.status,error:row.error})):undefined});
+      } catch(error) {controlDiagnostics.push({method,httpStatus:response.status(),responseError:error.message});}
+    });
+  }
   const a=await registered(first), b=await registered(second);
   assert.notEqual(a.instance,b.instance);
   const baselineB=cli(b,['state']);
@@ -424,6 +443,10 @@ try {
   writeFileSync(path.join(artifacts,'results.json'),JSON.stringify({status:'passed',cases:25,
     browserVersion:browser.version(),instanceCount:2,credentialsRecorded:false},null,2));
   console.log(`Editor GUI/CLI acceptance passed; artifacts ${artifacts}`);
+} catch(error) {
+  writeFileSync(path.join(artifacts,'failure-diagnostics.json'),JSON.stringify({failure:error.message,pageErrors:observedPageErrors,responses:controlDiagnostics},null,2));
+  console.error(`Failure diagnostics ${path.join(artifacts,'failure-diagnostics.json')}`);
+  throw error;
 } finally {
   if(browser) await browser.close();
   server.kill('SIGTERM');

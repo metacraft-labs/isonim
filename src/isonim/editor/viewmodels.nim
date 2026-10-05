@@ -309,6 +309,8 @@ type
     viewport*: Signal[PreviewViewport]
     workspaceId*: string
     controlInstanceId*: string
+    controlStoryRevealAdapter*: proc() {.closure.}
+      ## Mounted-shell scrolling after explicit successful agent story navigation.
     controlFocusAdapter*: proc(target: string): bool {.closure.}
     controlHighlightAdapter*: proc(target: string): bool {.closure.}
     controlSelectionAdapter*: proc(target: string; focus, highlight: bool): bool {.closure.}
@@ -3529,6 +3531,27 @@ proc setActiveCategory*(sidebar: SidebarVM; kind: StoryKind;
     sidebar.sections.val = next
   else:
     sidebar.setSectionExpanded(section, true)
+
+proc revealControlStory*(editor: EditorVM; story: StoryRef) =
+  ## Explicit navigation reveals its destination; ordinary selection and manual
+  ## disclosure keep their existing behavior. Clear a filter before expanding:
+  ## setSearch restores the user's saved disclosure state on clear.
+  let visible = editor.sidebar.filteredItems.val
+  var destinationMatches = false
+  for group in visible:
+    if group.name == story.group and group.kind == story.kind:
+      for item in group.items:
+        if item.name == story.name: destinationMatches = true
+  if not destinationMatches: editor.sidebar.setSearch("")
+  editor.sidebar.setActiveCategory(story.kind, collapseSiblings = false)
+  editor.sidebar.groups.update proc(previous: seq[StoryGroup]): seq[StoryGroup] =
+    result = previous
+    for i in 0 ..< result.len:
+      if result[i].name == story.group and result[i].kind == story.kind:
+        result[i].expanded = true
+  let panels = editor.panels.val
+  editor.panels.val = PanelVisibility(sidebar: true, inspector: panels.inspector)
+  if editor.controlStoryRevealAdapter != nil: editor.controlStoryRevealAdapter()
 
 proc categoryHasStories*(sidebar: SidebarVM; kind: StoryKind): bool =
   ## M-EVP-9: returns true if at least one workspace has a story of

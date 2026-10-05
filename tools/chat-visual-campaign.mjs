@@ -287,6 +287,45 @@ async function behavioralScene(page,view,size){
    assert.equal(await row.locator('button').count(),expectedStatus==='pending'?2:0,'only live approval controls');
    const final=await state();
    if(view.startsWith('navigation-'))assert.equal(final.storyId,initial.stories.find(row=>row.name===(['navigation-approved','navigation-auto'].includes(view)?'Details':'Home')).id,'actual selected story');
+   // Real rendered destinations/actions/errors, in addition to retained VM facts.
+   const navigationEvidence={};
+   if(['navigation-approved','navigation-auto'].includes(view)) {
+     const selected=page.locator('[data-story-row="Pages/Details"]');
+     const destinationEvidence=async()=>selected.evaluate(el=>{
+       const box=el.getBoundingClientRect(),clip=el.closest('[data-editor-sidebar]').getBoundingClientRect();
+       return {selected:el.getAttribute('aria-current')==='true',inside:box.width>0&&box.height>0&&box.left>=clip.left&&box.right<=clip.right&&box.top>=clip.top&&box.bottom<=clip.bottom};
+     });
+     const requireDestination=evidence=>assert(evidence.selected&&evidence.inside,'selected destination visible within actual sidebar clip');
+     const before=await destinationEvidence();requireDestination(before);
+     const node=await selected.elementHandle(),original=await node.getAttribute('style');let hidden;
+     try {
+       await node.evaluate(el=>el.style.setProperty('display','none','important'));
+       hidden=await destinationEvidence();assert.throws(()=>requireDestination(hidden),/selected destination visible/);
+     } finally {
+       await node.evaluate((el,style)=>{if(style===null)el.removeAttribute('style');else el.setAttribute('style',style);},original);await node.dispose();
+     }
+     const restored=await destinationEvidence();requireDestination(restored);
+     navigationEvidence.destination={before,hidden,restored,missingSelectedRowRejected:true};
+   }
+   if(view==='navigation-pending') {
+     const actions=row.locator(`[data-editor-control-actions="${view}"]`);
+     const boxes=await actions.evaluate(el=>{
+       const bounds=el.getBoundingClientRect();return [...el.querySelectorAll('button')].map(button=>{
+         const box=button.getBoundingClientRect(),css=getComputedStyle(button);return {width:box.width,height:box.height,top:box.top,inside:box.left>=bounds.left&&box.right<=bounds.right,fontSize:css.fontSize,background:css.backgroundColor};
+       });
+     });
+     assert.equal(boxes.length,2);assert.equal(boxes[0].top,boxes[1].top);
+     for(const box of boxes){assert(box.width>=60&&box.height>=32&&box.inside,JSON.stringify(boxes));assert.equal(box.fontSize,'12px');assert.notEqual(box.background,'rgb(239, 239, 239)');}
+     navigationEvidence.actions=boxes;
+   }
+   if(view==='navigation-stale') {
+     assert.equal(afterClick.operation.error,'revision_conflict');
+     const reason=row.locator('[data-editor-control-failure="revision_conflict"]');
+     assert.equal(await reason.innerText(),'The editor changed after this request. Ask the agent to make a fresh request.');
+     assert(await reason.isVisible());navigationEvidence.failure={error:afterClick.operation.error,text:await reason.innerText()};
+   }
+   if(view.startsWith('navigation-'))writeFileSync(path.join(output,`navigation-outcomes-${view}-${size}.json`),JSON.stringify(navigationEvidence,null,2));
+
    if(view==='focus-auto'){
      const before=requireSidebarSearchFocus(await page.evaluate(sidebarSearchFocusEvidence));
      const field=await page.locator('[data-sidebar-search-field="true"]').elementHandle();

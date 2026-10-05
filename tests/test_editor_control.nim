@@ -16,7 +16,7 @@
 ## A small capture callback isolates renderer capability discovery and readiness
 ## admission; it does not prove mounted HTML. The registered GUI suite compares
 ## captures from the advertised operation with the actual iframe document.
-import std/[json, unittest, tables, strutils]
+import std/[json, unittest, tables, strutils, options]
 import isonim/core/[signals, owner]
 import isonim/editor/[control, viewmodels, workspace]
 
@@ -547,3 +547,60 @@ suite "Durable build publication":
           check vm.livePreviewReloadGeneration.val == generation
           check published == "previous usable preview"
         dispose()
+
+  test "explicit approved story navigation reveals destination while rejected and stale requests preserve disclosure":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM(newEditorWorkspace("Test", @[
+        StoryGroup(name: "Pages", kind: skPage, expanded: false, items: @[
+          StoryItem(name: "Home", group: "Pages", kind: skPage),
+          StoryItem(name: "Next", group: "Pages", kind: skPage)])], id = "test"))
+      vm.controlInstanceId = "one"
+      vm.controlConnected = true
+      vm.agentControlApproval.val = true
+      vm.sidebar.setSectionExpanded(ssPages, false)
+      vm.sidebar.setSearch("Home")
+      vm.panels.val = PanelVisibility(sidebar: false, inspector: true)
+      let sections = vm.sidebar.sections.val
+      let groups = vm.sidebar.groups.val
+      proc request(id: string): JsonNode =
+        %* {"workspace": "test", "instance": "one", "commandId": id,
+          "command": "open-story", "storyId": vm.controlState()["stories"][1]["id"],
+          "expectedRevision": vm.controlSnapshot()["revision"]}
+      let reject = vm.admitControlOperation(request("rejectReveal"))
+      check reject["status"].getStr == "pending"
+      check vm.sidebar.groups.val == groups
+      check vm.resolveControlApproval("rejectReveal", false)["status"].getStr == "rejected"
+      check vm.sidebar.sections.val == sections
+      check vm.sidebar.searchQuery.val == "Home"
+      check not vm.panels.val.sidebar
+      discard vm.admitControlOperation(request("staleReveal"))
+      vm.changeViewport(builtinViewportFromSlug("phone"))
+      check vm.resolveControlApproval("staleReveal", true)["error"].getStr == "revision_conflict"
+      check vm.sidebar.groups.val == groups
+      check vm.sidebar.searchQuery.val == "Home"
+      check not vm.panels.val.sidebar
+      discard vm.admitControlOperation(request("approveReveal"))
+      check vm.resolveControlApproval("approveReveal", true)["status"].getStr == "applied"
+      check vm.selectedStory.val.name == "Next"
+      check vm.sidebar.searchQuery.val == ""
+      check vm.sidebar.sections.val.pages
+      check vm.sidebar.groups.val[0].expanded
+      check vm.panels.val.sidebar
+      check vm.panels.val.inspector
+      check vm.sidebar.priorExpansion.val.isNone
+      check vm.sidebar.sections.val.components == sections.components
+      check vm.controlStoryRevealAdapter == nil # no new native renderer ownership
+      vm.sidebar.setSearch("Next")
+      check vm.admitControlOperation(request("matchingFilter"))["status"].getStr == "pending"
+      check vm.resolveControlApproval("matchingFilter", true)["status"].getStr == "applied"
+      check vm.sidebar.searchQuery.val == "Next"
+      vm.sidebar.setSearch("")
+      # Ordinary human selection does not reverse an intentional collapse.
+      vm.sidebar.setSectionExpanded(ssPages, false)
+      discard vm.selectStory(StoryRef(group: "Pages", name: "Home", kind: skPage))
+      check not vm.sidebar.sections.val.pages
+      vm.agentControlApproval.val = false
+      check vm.admitControlOperation(request("autoReveal"))["status"].getStr == "applied"
+      check vm.sidebar.sections.val.pages
+      check vm.selectedStory.val.name == "Next"
+      dispose()
