@@ -17,6 +17,6 @@
   "devDependencies": {
     "@solidjs/testing-library": "^0.8.10",
     "jsdom": "^29.0.1",
-    "vitest": "^4.1.2"
+    "vitest": "^4.1.11"
   }
 }
