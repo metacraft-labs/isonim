@@ -19,14 +19,15 @@ class EditorStreamOwnership(unittest.TestCase):
     def test_same_worker_streaming_and_concurrent_http_reads_release_cleanly(self):
         if not optional_sibling_available(HARBOR): self.skipTest('optional private Agent Harbor sibling absent')
         runtime = Runtime('native')
+        wait = runtime.preparationClock.wait
         errors, observations = [], []
         try:
             initial = runtime.cli(['state'])
             self.assertEqual(initial['instance'], runtime.scope['instance'])
-            begin = time.monotonic()
+            begin = time.monotonic_ns()
             identity, session = None, None
             for number in range(24):
-                self.assertLess(time.monotonic()-begin, 180, 'Bounded real callback stress')
+                self.assertLess(runtime.preparationClock.elapsed(begin), 180, 'Bounded real callback stress')
                 (runtime.artifacts/'ownership-turn').write_text(str(number))
                 runtime.phase(17)
                 previous_messages = len(runtime.active()['messages'])
@@ -66,7 +67,9 @@ class EditorStreamOwnership(unittest.TestCase):
             wait(lambda: not any(str(pid) in identity for pid in runtime.observer.snapshot()),
                  'actual ownership-regression provider reaped')
             result = {'turns':24, 'httpStateReads':len(observations), 'providerIdentity':identity,
-                      'backendSession':session, 'seconds':time.monotonic()-begin}
+                      'backendSession':session, 'seconds':runtime.preparationClock.elapsed(begin),
+                      'wallSeconds':(time.monotonic_ns()-begin)/1_000_000_000,
+                      'excludedPreparationSeconds':runtime.preparationClock.excluded_ns(begin)/1_000_000_000}
             (runtime.artifacts/'ownership-result.json').write_text(json.dumps(result,indent=2))
         finally:
             (runtime.artifacts/'ownership-observations.json').write_text(json.dumps(

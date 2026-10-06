@@ -68,21 +68,28 @@ proc startAgentDaemon*(extraEnv: openArray[(string, string)] = @[];
     args.add "--config"
     args.add configPath
   # ``poUsePath`` only — stderr must stay independently readable so
-  # the drainer can pull READY off it.
+  # the owned raw-descriptor reader can capture READY from it.
   let proc1 = startProcess(CliPath,
     args = args,
     env = env,
     options = {poUsePath})
 
-  let drainer = startStderrDrainer(proc1)
+  var drainer: DaemonStderrDrainer
   var port: int
   try:
+    drainer = startStderrDrainer(proc1)
     port = waitForReady(drainer, timeoutSecs = 15.0)
-  except IOError as e:
-    drainer.shutdown()
+  except CatchableError as e:
+    try: drainer.shutdown()
+    except CatchableError as cleanupError:
+      stderr.writeLine("stderr-reader cleanup failed: " & cleanupError.msg)
     try: discard kill(proc1.processID.Pid, SIGKILL)
     except: discard
-    proc1.close()
+    try:
+      discard proc1.waitForExit()
+      proc1.close()
+    except CatchableError as cleanupError:
+      stderr.writeLine("daemon cleanup failed: " & cleanupError.msg)
     raise newException(IOError, "agent_routes_fixture: " & e.msg)
 
   let baseUrl = "http://127.0.0.1:" & $port
@@ -92,6 +99,7 @@ proc startAgentDaemon*(extraEnv: openArray[(string, string)] = @[];
 
 proc shutdown*(f: AgentRoutesFixture) =
   if f == nil or f.proc1 == nil: return
+  var failure: ref CatchableError
   try: discard kill(f.proc1.processID.Pid, SIGTERM)
   except: discard
   let deadline = epochTime() + 2.0
@@ -101,14 +109,16 @@ proc shutdown*(f: AgentRoutesFixture) =
   if f.proc1.running():
     try: discard kill(f.proc1.processID.Pid, SIGKILL)
     except: discard
-  discard f.proc1.waitForExit()
-  f.proc1.close()
+  retainCleanupFailure(failure): discard f.proc1.waitForExit()
+  retainCleanupFailure(failure): closeAfterDrainer(f.proc1, f.drainer)
+  f.drainer = nil
   f.proc1 = nil
   if f.drainer != nil:
-    f.drainer.shutdown()
+    retainCleanupFailure(failure): f.drainer.shutdown()
     f.drainer = nil
   try: removeFile(f.cancelFile) except OSError: discard
   try: removeFile(f.contentLog) except OSError: discard
+  if failure != nil: raise failure
 
 proc agentPost*(f: AgentRoutesFixture; path, body: string;
                 timeoutMs = 10_000):

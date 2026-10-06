@@ -8,8 +8,9 @@
 ## path:
 ##
 ##   1. Spin up a real Postgres cluster via the REV-M3 ``PgFixture``.
-##   2. Build a clean tmpdir workspace with a synthetic .repo manifest
-##      and the single-backend brief from
+##   2. Build a clean, hermetic reprobuild workspace
+##      (``helpers/repro_workspace_fixture``) and the single-backend
+##      brief from
 ##      ``tests/fixtures/design_review/briefs_for_real_capture/render/
 ##      task-app-web.md``.
 ##   3. Invoke ``isonim-review capture`` *without* ``--bridge`` so the
@@ -26,13 +27,14 @@
 ## additional system setup.
 
 import std/[os, osproc, parseutils, streams, strtabs, strutils,
-            times, unittest]
+            unittest]
 
 import db_connector/db_postgres
 
 import isonim/editor/design_review/png_codec
 
 import helpers/design_review_pg_fixture
+import helpers/repro_workspace_fixture
 
 const RepoRootHere = currentSourcePath().parentDir().parentDir()
 const IsonimReviewBin = RepoRootHere / "build" / "bin" / "isonim-review"
@@ -53,43 +55,14 @@ proc shouldExist(path, hint: string) =
 # Workspace fixture builder (mirrors e2e_design_review_capture_fullsweep)
 # ---------------------------------------------------------------------------
 
-proc runOrFail(cmd: string; cwd: string) =
-  let res = execCmdEx(cmd, workingDir = cwd)
-  if res.exitCode != 0:
-    raise newException(IOError, cmd & " failed (" & $res.exitCode &
-                       "):\n" & res.output)
-
-proc initRepo(repoPath: string): string =
-  createDir(repoPath)
-  runOrFail("git init -q -b main && " &
-            "git config user.email 'test@test' && " &
-            "git config user.name 'tester' && " &
-            "git config commit.gpgsign false && " &
-            "echo hi > README.md && " &
-            "git add -A && git commit -q -m initial",
-            repoPath)
-  execCmdEx("git -C " & quoteShell(repoPath) & " rev-parse HEAD").output.strip()
-
-proc writeManifest(workspaceRoot, repoName, sha: string) =
-  let repoDir = workspaceRoot / ".repo"
-  createDir(repoDir)
-  writeFile(repoDir / "manifest.xml",
-    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<manifest>\n" &
-    "  <project name=\"" & repoName & "\" path=\"" & repoName &
-    "\" revision=\"" & sha & "\"/>\n</manifest>\n")
-
 proc copyBriefIntoWorkspace(workspaceRoot, briefSrc: string) =
   let briefsDir = workspaceRoot / "briefs" / "render"
   createDir(briefsDir)
   copyFile(briefSrc, briefsDir / "task-app-web.md")
 
 proc buildWorkspace(suffix: string): string =
-  let ws = getTempDir() / ("isonim_e2e_real_" & suffix &
-                            "_" & $epochTime().int)
-  removeDir(ws)
-  createDir(ws)
-  let sha = initRepo(ws / "repo-a")
-  writeManifest(ws, "repo-a", sha)
+  ## Returns the workspace root; remove its parent to clean up.
+  let ws = newReproWorkspace("e2e_real_" & suffix, ["repo-a"]).root
   copyBriefIntoWorkspace(ws, FixtureBrief)
   ws
 
@@ -161,7 +134,7 @@ suite "REV-M5 follow-up: capture against real isonim-examples-web":
     let pgf = newPgFixture()
     defer: pgf.shutdown()
     let ws = buildWorkspace("web")
-    defer: removeDir(ws)
+    defer: removeDir(ws.parentDir)
     let storePath = ws / "store"
     let backendDir = ExamplesRoot / "build" / "backends"
     let cfg = writeConfig(ws, storePath, backendDir, pgf.port)

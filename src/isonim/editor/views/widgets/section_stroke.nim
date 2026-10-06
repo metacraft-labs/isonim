@@ -15,6 +15,7 @@ import isonim/core/computation
 import isonim/dsl/ui
 import isonim/editor/types
 import isonim/editor/viewmodels
+import isonim/editor/views/widgets/property_commit
 import isonim/editor/views/widgets/property_row
 import isonim/editor/views/widgets/section_position
 
@@ -44,13 +45,15 @@ proc mountSectionStroke*[R, E](r: R; parent: E; vm: EditorVM) =
     name = "Color", value = strokeColor, alpha = strokeAlpha,
     bindingReactive = vm.inspectorBindingThunk("border-color"),
     onBindRequest = vm.inspectorBindRequestHandler("border-color"),
-    onDetachRequest = vm.inspectorDetachRequestHandler("border-color")))
+    onDetachRequest = vm.inspectorDetachRequestHandler("border-color"),
+    wiring = vm.inspectorRowWiring("border-color")))
   discard r.mountPropertyRow(parent, propertyRowNumeric(
     name = "Width", value = strokeWidth, unit = strokeWidthUnit,
     units = @[pxUnit], minValue = some(0.0),
     bindingReactive = vm.inspectorBindingThunk("border-width"),
     onBindRequest = vm.inspectorBindRequestHandler("border-width"),
-    onDetachRequest = vm.inspectorDetachRequestHandler("border-width")))
+    onDetachRequest = vm.inspectorDetachRequestHandler("border-width"),
+    wiring = vm.inspectorRowWiring("border-width")))
   discard r.mountPropertyRow(parent, propertyRowChoice(
     name = "Style", value = strokeStyle,
     options = @[
@@ -59,7 +62,8 @@ proc mountSectionStroke*[R, E](r: R; parent: E; vm: EditorVM) =
       (label: "Dotted", value: "dotted")],
     bindingReactive = vm.inspectorBindingThunk("border-style"),
     onBindRequest = vm.inspectorBindRequestHandler("border-style"),
-    onDetachRequest = vm.inspectorDetachRequestHandler("border-style")))
+    onDetachRequest = vm.inspectorDetachRequestHandler("border-style"),
+    wiring = vm.inspectorRowWiring("border-style")))
   discard r.mountPropertyRow(parent, propertyRowChoice(
     name = "Position", value = strokePosition,
     options = @[

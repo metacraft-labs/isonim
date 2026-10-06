@@ -29,6 +29,7 @@ suite "workspace Harbor live runtime":
     require cfg.agent.backend == "harbor"
     require cfg.agent.harborUrl.len > 0
     require runtime.process != nil
+    check getFilePermissions(runtime.stateDir) == {fpUserRead, fpUserWrite, fpUserExec}
     let client = newHttpClient(timeout = 3000)
     defer: client.close()
     check int(client.get(cfg.agent.harborUrl & "/api/v1/healthz").code) == 200
@@ -40,6 +41,7 @@ suite "workspace Harbor live runtime":
     check getLastModificationTime(second.executable) == builtTimestamp
     require secondCfg.agent.harborUrl != cfg.agent.harborUrl
     require second.stateDir != runtime.stateDir
+    check getFilePermissions(second.stateDir) == {fpUserRead, fpUserWrite, fpUserExec}
     require fileExists(runtime.stateDir / "daemon.sqlite")
     require fileExists(second.stateDir / "daemon.sqlite")
     check readFile(runtime.stateDir / "daemon.sqlite").startsWith("SQLite format 3")
@@ -56,6 +58,7 @@ suite "workspace Harbor live runtime":
     var thirdCfg = defaults()
     var third = prepareLocalHarbor(thirdCfg)
     defer: third.stop()
+    check getFilePermissions(third.stateDir) == {fpUserRead, fpUserWrite, fpUserExec}
     runtime.stop()
     check int(client.get(thirdCfg.agent.harborUrl & "/api/v1/healthz").code) == 200
     check readFile(inheritedDb) == "parent database must remain untouched"

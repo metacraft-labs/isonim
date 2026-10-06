@@ -893,8 +893,14 @@ suite "M-EVP-3 preview chrome bar density":
       # Every cluster must be a direct child of the toolbar — if a
       # future refactor nests them inside an intermediate wrapper the
       # flex `gap` no longer applies between them, so this is the
-      # invariant the visual separation rests on. Phase Q reorders
-      # to ``[backend, history, viewport, mode]``.
+      # invariant the visual separation rests on.
+      #
+      # Viewport is CENTRED, between the two flex-1 spacers, so it sits
+      # over the middle of the preview rather than over the sidebar.
+      #
+      # There is no `save` cluster: saving is automatic, so there is no
+      # state for a control to report and nothing to press. Failures go to
+      # the status bar.
       let clusterKinds = @["backend", "history", "viewport", "mode"]
       var directChildClusters: seq[string] = @[]
       for child in bar.children:

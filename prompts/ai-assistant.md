@@ -867,5 +867,10 @@ schemaKey, tag, sourceFile, sourceLine, sourceColumn, properties, children,
 ancestors, ancestorIds, depth]. Its first six values are strings, line/column/depth
 are integers, and properties/children/ancestors/ancestorIds are complete arrays.
 These values are supplied anew; they never inherit pending edits or target data.
+A `protectedV2` array has the same six protected values and order. Its selectedElement
+adds a fourteenth value, styleBindings, after depth. styleBindings is the complete
+string of source style bindings, including whitespace; preserve it exactly. A
+context envelope carries exactly one protected tuple version. Both versions
+represent current values, including explicitly empty fields.
 If the schema has unknown fields or incompatible types, the named protected
 objects are supplied in `current` instead. Use the actual complete values.

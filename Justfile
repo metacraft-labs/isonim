@@ -197,6 +197,8 @@ test-c:
     nim c -r tests/test_router.nim
     nim c -r tests/test_ssr_routing.nim
     nim c -r tests/test_server_functions.nim
+    nim c -r tests/test_form_actions.nim
+    nim c -r tests/test_rpc_dispatch.nim
     nim c -r tests/test_static_dist_dev_server.nim
     nim c -r tests/test_data_loading.nim
     nim c -r tests/test_file_routes.nim
@@ -210,6 +212,9 @@ test-c:
     # is what kept the missing provisioning invisible. It compiles and passes
     # 10/10 on the C target, so it gets a normal entry. C only: it calls
     nim c -r tests/test_resource_async.nim
+    # Resources register with their owner; a root enumerates the live ones
+    # created under it (`ownedResourceStates`).
+    nim c -r tests/test_resource_registry.nim
     # NH-M0 & NH-M5 / HX-S-0: Native HCR shim tests (inactive path & active linked path)
     nim c -r tests/test_native_hcr_shim.nim
     # NH-M2: the native HMR runtime, in BOTH its gating configurations.
@@ -266,6 +271,7 @@ test-js: build-tailwind
     nim js -r tests/test_effects.nim
     nim js -r tests/test_clock.nim
     nim js -r tests/test_context.nim
+    nim js -r tests/test_resource_registry.nim
     nim js -r tests/test_rxcore.nim
     nim js -r tests/test_dsl.nim
     nim js -r tests/test_web.nim
@@ -282,7 +288,10 @@ test-js: build-tailwind
     nim js -r tests/test_accessibility.nim
     nim js -r tests/test_router.nim
     nim js -r tests/test_server_functions.nim
+    nim js -r tests/test_form_actions.nim
     nim js -r tests/test_data_loading.nim
+    # The Web Worker target's message codec and build guard (IFP-M3).
+    nim js -r tests/test_web_worker.nim
 
 # Run only signal tests
 test-signals:
@@ -298,6 +307,8 @@ test-clock:
 test-context:
     nim c -r tests/test_context.nim
     nim js -r tests/test_context.nim
+    nim c -r tests/test_resource_registry.nim
+    nim js -r tests/test_resource_registry.nim
 
 # Run only effect/memo/owner/batch tests
 test-effects:
@@ -314,11 +325,28 @@ test-dsl: build-tailwind
     nim c -r tests/test_dsl.nim
     nim js -r tests/test_dsl.nim
     nim c -r tests/test_dsl_ssr.nim
+    # Static vocabulary checks. C only: shells out to `nim check`.
+    nim c -r tests/test_dsl_vocabulary.nim
+    # Backend element hook (a renderer's typed `noteElement` overload), alone
+    # and alongside the editor's scene-graph recording, which must both run.
+    nim c -r tests/test_dsl_element_hook.nim
+    nim c -r -d:isonimEditor tests/test_dsl_element_hook.nim
+    # Without --variants the Tailwind extractor's JSON is byte-identical to
+    # the pre-variants extractor (vendored under tests/fixtures/), on the
+    # auto-scan and --content paths. Needs node_modules (build-tailwind).
+    nim c -r tests/test_tailwind_extract_golden.nim
+    # Variant-preserving Tailwind expansion, both modes against the fixture
+    # map. C only: class expansion to setStyle calls is native-only.
+    nim c -r -d:tailwindStylesPathOverride={{justfile_directory()}}/tests/dsl/tailwind/variant-styles.json tests/test_dsl_tailwind_variants.nim
+    nim c -r -d:tailwindStylesPathOverride={{justfile_directory()}}/tests/dsl/tailwind/variant-styles.json -d:isonimTailwindVariants tests/test_dsl_tailwind_variants.nim
 
 # Run only server function tests
 test-server:
     nim c -r tests/test_server_functions.nim
     nim js -r tests/test_server_functions.nim
+    nim c -r tests/test_form_actions.nim
+    nim js -r tests/test_form_actions.nim
+    nim c -r tests/test_rpc_dispatch.nim
     nim c -r tests/test_static_dist_dev_server.nim
 
 # Run data loading (server resource) tests
@@ -392,12 +420,14 @@ test-design-review-cli: isonim-review-build
     nim c -r --path:. --path:src --path:vendor/db_connector/src --path:vendor/chronicles --path:vendor/serialization --path:vendor/json_serialization --path:../nim-faststreams --path:../nim-stew --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -d:nimOldCaseObjects --hints:off tests/test_design_review_cli_seed_run.nim
 
 # REV-M5: run every REV-M5 capture-pipeline test.  Unit tests boot
-# fake WebSocket servers + ephemeral git workspaces; the idempotency
-# and e2e tests use the REV-M3 PgFixture + a real `isonim-review`
-# subprocess.  All paths use the same `--path:` set the CLI build uses.
+# fake WebSocket servers + ephemeral reprobuild workspaces (the gate and
+# the workspace pin read them through `repro`, which must be on PATH or
+# named by $ISONIM_REVIEW_REPRO); the idempotency and e2e tests use the
+# REV-M3 PgFixture + a real `isonim-review` subprocess.  All paths use
+# the same `--path:` set the CLI build uses.
 test-design-review-capture: isonim-review-build
     nim c -r --path:. --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off tests/test_design_review_clean_tree.nim
-    nim c -r --path:. --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off tests/test_design_review_manifest_hash.nim
+    nim c -r --path:. --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off tests/test_design_review_workspace_pin.nim
     nim c -r --path:. --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off tests/test_design_review_capture_store.nim
     nim c -r --path:. --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off tests/test_design_review_bridge_client.nim
     nim c -r --path:. --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off tests/test_design_review_capture_native_dimensions.nim
@@ -458,6 +488,15 @@ fake-acp-agent-build:
 test-design-review-local-harbor:
     mkdir -p build/bin
     nim c -r --out:build/bin/test-design-review-local-harbor --path:src --path:../nim-everywhere/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src --hints:off tests/test_design_review_local_harbor.nim
+
+# Real process/socket/flood/EOF/descriptor ownership boundaries.
+test-daemon-ready-handshake:
+    mkdir -p build/bin
+    nim c -r --threads:on --out:build/bin/test-daemon-ready-handshake tests/test_daemon_ready_handshake.nim
+
+# Actual CLI and cold producer responsiveness, singleflight and teardown.
+test-design-review-harbor-preparation: isonim-review-build
+    python3 tests/test_design_review_harbor_preparation.py
 
 # Real Repro producer/consumer build, source mutation, and failure boundaries.
 test-design-review-harbor-build:
@@ -871,6 +910,14 @@ test-editor: test-design-review-local-harbor test-design-review-harbor-build tes
     nim c -r tests/test_editor_responsive.nim
     nim c -r tests/test_editor_streaming_preview.nim
     nim c -r tests/test_streaming_preview_element_tree_delta.nim
+    nim c -r tests/test_scene_graph_hooks.nim
+    nim c -r tests/test_editor_css_patch.nim
+    nim c -r tests/test_editor_css_shadow.nim
+    # Twice on purpose: the edit regime's claim is that a production build does
+    # not emit it, which only the un-flagged run can check.
+    nim c -r tests/test_editor_edit_regime.nim
+    nim c -r -d:isonimEditor tests/test_editor_edit_regime.nim
+    nim c -r tests/test_style_provenance.nim
 
 # Run packaged editor browser tests.
 test-browser-editor-example: editor-build
@@ -1068,18 +1115,32 @@ test-app-e2e:
 demo-build:
     nim js --path:../nim-everywhere/src -o:demos/isonim-replica/dist/main.js demos/isonim-replica/src/main.nim
 
-# Build SSR test HTML (C target: generates tests/browser/dist/ssr.html)
-build-ssr-test:
-    mkdir -p tests/browser/dist
-    nim c --path:../nim-everywhere/src -d:isServer -r tests/browser/generate_ssr.nim
+# Build the nginx fixture (tests/nginx/README.md): the sibling ngx-isonim
+# module with the fixture's route manifest, server functions and SSR
+# hydration app compiled in (built in ngx-isonim's dev shell), and the
+# fixture's browser clients. `build-tailwind`: the hydration client is a
+# JS build of the DSL (see `test-js`).
+build-nginx-fixture: build-tailwind
+    bash tests/nginx/build_fixture.sh
 
-# Build hydration entry point (JS target: tests/browser/dist/main.js)
-build-hydrate:
-    mkdir -p tests/browser/dist
-    nim js --path:../nim-everywhere/src -o:tests/browser/dist/main.js tests/browser/hydrate_entry.nim
+# Server functions over HTTP, the typed route manifest (IFP-M2) and the SSR
+# -> hydrate -> interact round trip (IFP-M3) against real nginx with the
+# real ngx-isonim module: the route-manifest test (its generated policy
+# tests run against nginx), the nginx-rpc and ssr-hydration Playwright
+# projects, and the falsifying mutations of those projects.  Needs the
+# ngx-isonim sibling checkout and nix; not part of `just test`.
+test-nginx: build-nginx-fixture
+    nim c -r -d:isonimRpcPrefix=/api/v1/rpc tests/test_route_manifest.nim
+    cd tests/browser && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=nginx-rpc --project=ssr-hydration
+    bash tests/nginx/run_mutants.sh
 
-# Build all SSR test assets
-build-ssr-test-all: build-ssr-test build-hydrate
+# CI: `just test-nginx`, its full output also in test-logs/test-nginx.log
+# (.github/workflows/nginx-tests.yml uploads that directory).
+ci-test-nginx:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p test-logs
+    just test-nginx 2>&1 | tee test-logs/test-nginx.log
 
 # Build the HMR fixture bundle (JS target with -d:isonimHmr).
 build-hmr-fixture:
@@ -1106,7 +1167,8 @@ test-browser-hmr-parametric: build-hmr-parametric-fixture
 # project triggers a rebuild via the dev server's POST /__isonim/trigger
 # endpoint to swap before → after at runtime.
 build-hmr-transport-fixture:
-    nim c -d:isServer --path:src --path:../nim-everywhere/src --path:../nim-faststreams --path:../nim-stew -o:/tmp/isonim_test_server tests/browser/hmr_transport_fixture/server.nim
+    mkdir -p build
+    nim c -d:isServer --path:src --path:../nim-everywhere/src --path:../nim-faststreams --path:../nim-stew -o:build/isonim_test_server tests/browser/hmr_transport_fixture/server.nim
     nim js -d:isonimHmr --path:src --path:../nim-everywhere/src -o:tests/browser/hmr_transport_fixture/before.js tests/browser/hmr_transport_fixture/app.nim
     nim js -d:isonimHmr -d:transportFixtureAfter --path:src --path:../nim-everywhere/src -o:tests/browser/hmr_transport_fixture/after.js tests/browser/hmr_transport_fixture/app.nim
     cp tests/browser/hmr_transport_fixture/before.js tests/browser/hmr_transport_fixture/main.js
@@ -1118,13 +1180,91 @@ test-browser-hmr-transport: build-hmr-transport-fixture
 # Run Playwright browser tests (requires: just demo-build && cd tests/browser && npm install)
 test-browser: test-browser-demo test-browser-ssr test-browser-hmr test-browser-hmr-parametric test-browser-hmr-transport
 
+# --- Playwright: one-shot entry points ------------------------------------
+#
+# `playwright.config.ts` refuses to start with a hard error naming the
+# missing artifact and the recipe that builds it, so these two targets are
+# the supported way in: `browser-test-deps` produces every build input the
+# in-repo Playwright projects serve, and `test-browser-all` builds then runs.
+#
+# The one-time setup that is NOT a build (do it once per checkout):
+#
+#   git submodule update --init --depth 1 src/isonim/layout/yoga
+#   repro exec -- npm --prefix tests/browser install
+#   repro exec -- npx --prefix tests/browser playwright install chromium
+#
+# Without the submodule `repro exec` itself fails, and `repro exec` is what
+# puts node on PATH. See tests/browser/README.md.
+
+# Build every artifact the six static in-repo Playwright projects serve.
+# (`metacraft-web-editor` is excluded: it serves a bundle from the
+# metacraft-web sibling repo — see `test-browser-editor-consumer`;
+# `nginx-rpc` and `ssr-hydration` run against real nginx in `test-nginx`.)
+#
+# `build-tailwind` first, for the reason spelled out above `test-js`: every
+# `nim js` compile below reaches `build/tailwind-styles.json` through an
+# uncatchable `staticRead`. On a warm working copy that file already exists,
+# which is exactly why its absence would only ever have bitten a cold runner.
+
+# Build every artifact the six static in-repo Playwright projects serve.
+browser-test-deps: build-tailwind demo-build build-hmr-fixture build-hmr-parametric-fixture build-hmr-transport-fixture build-web-worker-fixture editor-build
+
+# Separate from `browser-test-deps` because it is the only step here that
+# touches the network.
+
+# Install the browser-test npm deps + a chromium build.
+browser-test-install:
+    npm --prefix tests/browser install
+    npx --prefix tests/browser playwright install chromium
+
+# Build everything, then run the six static in-repo Playwright projects (51 tests).
+test-browser-all: browser-test-deps
+    cd tests/browser && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=demo-app --project=hmr --project=hmr-parametric --project=hmr-transport --project=web-worker --project=editor-example
+
+# The gate run on every push: the three HMR projects, 25 tests, ~20s of
+# browser time once the Nim fixtures are built.
+#
+# `demo-app` is deliberately NOT here, and is not skipped either — it runs in
+# `test-browser-all`, and it is currently red on a real product defect
+# diagnosed in tests/browser/README.md. A permanently red required gate
+# teaches people to ignore CI, which is how this suite came to rot in the
+# first place. Move it in as soon as it is fixed. (`ssr-hydration` needs
+# real nginx and runs in `test-nginx`.)
+#
+# `editor-example` is out for cost, not colour: its 14 screenshot and layout
+# tests take ~4 minutes on their own, against a runner pool that is small and
+# permanently saturated. It runs nightly.
+
+# The CI gate: the three HMR Playwright projects, 25 tests, ~56s cold.
+test-browser-smoke: build-tailwind build-hmr-fixture build-hmr-parametric-fixture build-hmr-transport-fixture
+    cd tests/browser && npx playwright test --project=hmr --project=hmr-parametric --project=hmr-transport
+
 # Run Playwright demo app tests only
-test-browser-demo:
+test-browser-demo: demo-build
     cd tests/browser && npx playwright test --project=demo-app
 
-# Run Playwright SSR hydration tests (requires: just build-ssr-test-all)
-test-browser-ssr: build-ssr-test-all
-    cd tests/browser && npx playwright test --project=ssr-hydration
+# The Web Worker build target's fixture (IFP-M3; IsoNim.md § Web Worker
+# Target): a compile module built as a worker chunk (preview.worker.js), the
+# page script that drives it through a WorkerBridge (main.js), and the
+# negative control with the same module linked into the page script
+# (main.inline.js), each recorded in the directory's bundle manifest, whose
+# size report closes the recipe.
+build-web-worker-fixture:
+    rm -rf build/web-worker-fixture
+    node tools/isonim-bundle.mjs build --kind worker --minify --entry tests/browser/web_worker_fixture/preview_worker.nim --out build/web-worker-fixture/preview.worker.js -- --path:src --path:../nim-everywhere/src
+    node tools/isonim-bundle.mjs build --kind main --minify --entry tests/browser/web_worker_fixture/main.nim --out build/web-worker-fixture/main.js -- --path:src --path:../nim-everywhere/src
+    node tools/isonim-bundle.mjs build --kind main --minify --entry tests/browser/web_worker_fixture/main.nim --out build/web-worker-fixture/main.inline.js -- -d:previewInline --path:src --path:../nim-everywhere/src
+    cp tests/browser/web_worker_fixture/index.html tests/browser/web_worker_fixture/inline.html tests/browser/web_worker_fixture/beacon.js build/web-worker-fixture/
+    node tools/isonim-bundle.mjs report build/web-worker-fixture
+
+# Run the Web Worker target's Playwright spec.
+test-browser-web-worker: build-web-worker-fixture
+    cd tests/browser && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=web-worker
+
+# Run the Playwright SSR hydration round trip against real nginx (the nginx
+# fixture; needs the ngx-isonim sibling and nix, as `test-nginx` does)
+test-browser-ssr: build-nginx-fixture
+    cd tests/browser && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=ssr-hydration
 
 # Build and serve SolidJS demo
 demo-solid:
@@ -1247,16 +1387,20 @@ test-editor-chat-activity: editor-chat-build
 
 # Optional private Harbor acceptance: absence is the only allowed automatic skip.
 # When the sibling exists, missing/broken official provider and builds fail.
+test-editor-preparation-clock:
+    python3 tests/test_editor_preparation_clock.py
+    "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_preparation_clock.mjs
+
 editor-scenario-host-build:
     nim c --out:build/bin/editor-scenario-host tests/test_editor_scenario_host.nim
 
-test-editor-scenarios-native: isonim-review-build source-editor-build editor-scenario-host-build
+test-editor-scenarios-native: test-editor-preparation-clock isonim-review-build source-editor-build editor-scenario-host-build
     python3 tests/test_editor_scenarios.py
 
-test-editor-scenarios-gui: isonim-review-build source-editor-build
+test-editor-scenarios-gui: test-editor-preparation-clock isonim-review-build source-editor-build
     python3 tests/run_editor_scenarios_gui.py
 
-test-editor-scenarios-stress: isonim-review-build source-editor-build editor-scenario-host-build
+test-editor-scenarios-stress: test-editor-preparation-clock isonim-review-build source-editor-build editor-scenario-host-build
     python3 tests/test_editor_scenario_stress.py
 
 test-editor-scenarios: test-editor-scenarios-native test-editor-scenarios-gui test-editor-scenarios-stress
@@ -1273,7 +1417,7 @@ editor-authoring-build:
     cp node_modules/paper/dist/paper-core.min.js build/editor-authoring/paper-core.min.js
     cp node_modules/svgo/dist/svgo.browser.js build/editor-authoring/svgo.browser.js
 
-test-editor-authoring-evidence:
+test-editor-authoring-evidence: test-editor-preparation-clock
     python3 tests/test_editor_authoring_evidence.py
     python3 tests/test_editor_scenario_cleanup.py
     node tests/test_editor_close_ack.mjs
@@ -1317,3 +1461,8 @@ test-editor-chat-visual-readiness output="build/chat-visual-readiness":
 # Optional private contract authority; when present malformed DTOs fail.
 test-editor-chat-contract:
     python3 tools/validate-chat-event-corpus.py
+
+# Entering the dev shell from another git repository must write nothing there.
+# Runs `nix develop`, so it is not part of the in-shell test recipes.
+test-dev-shell:
+    bash tests/test_dev_shell_writes_nothing_elsewhere.sh

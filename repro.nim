@@ -579,6 +579,7 @@ proc dr(stem: string; needs: set[DrNeed] = {}): DrSpec =
 const isonimDesignReviewSpecs: seq[DrSpec] = @[
   # Optional local-runtime selection and actual public Repro producer fixtures.
   # The private-repository live acceptance target is explicit in the Justfile.
+  dr("test_daemon_ready_handshake"),
   dr("test_design_review_local_harbor"),
   dr("test_design_review_harbor_build"),
   # PostgreSQL fixture (initdb ephemeral cluster) — self-provisioning, no bin.
@@ -611,8 +612,12 @@ const isonimDesignReviewSpecs: seq[DrSpec] = @[
   dr("test_no_dangling_references_to_old_brief_path"),
   dr("test_design_review_cli_config"),
   # Capture pipeline — in-process FakeBridge + PgFixture, no CLI subprocess.
+  # The clean-tree gate, workspace-pin and brief_at_revision tests build
+  # hermetic reprobuild workspaces and read them through ``repro``
+  # (``repro workspace status`` / ``list``), which must be on PATH or
+  # named by ``ISONIM_REVIEW_REPRO``.
   dr("test_design_review_clean_tree"),
-  dr("test_design_review_manifest_hash"),
+  dr("test_design_review_workspace_pin"),
   dr("test_design_review_capture_store"),
   dr("test_design_review_bridge_client"),
   dr("test_design_review_capture_native_dimensions"),
@@ -875,6 +880,19 @@ package isonim:
       actionId = "isonim.authoring_build.browser",
       extraInputs = @["src", "tests/helpers/editor_authoring_workspace.nim", "Justfile", "package.json"],
       extraOutputs = @["build/editor-authoring"])
+    let preparationClockPythonEdge = pythonUnittest.run(
+      source = "tests/test_editor_preparation_clock.py",
+      actionId = "isonim.scenario_execute.preparation_clock_python",
+      extraInputs = @["tests/test_editor_preparation_clock.py", "tests/helpers/editor_preparation_clock.py"])
+    # Honor the same host-selected Node used by the official browser/scenario
+    # runners. Tests always execute; an unsupported selected runtime fails.
+    let preparationClockNodeEdge = sh.shell(
+      command = "\"${ISONIM_SCENARIO_NODE:-node}\" tests/test_editor_preparation_clock.mjs", cacheable = false,
+      actionId = "isonim.scenario_execute.preparation_clock_node",
+      extraInputs = @["tests/test_editor_preparation_clock.mjs", "tests/helpers/editor_preparation_clock.mjs"])
+    testExecuteActions.add(preparationClockPythonEdge)
+    testExecuteActions.add(preparationClockNodeEdge)
+    discard collect("test-editor-preparation-clock", @[preparationClockPythonEdge, preparationClockNodeEdge])
     let authoringEvidenceEdge = pythonUnittest.run(
       source = "tests/test_editor_authoring_evidence.py",
       actionId = "isonim.authoring_execute.evidence",
@@ -883,7 +901,7 @@ package isonim:
     let scenarioCleanupEdge = pythonUnittest.run(
       source = "tests/test_editor_scenario_cleanup.py",
       actionId = "isonim.authoring_execute.cleanup",
-      extraInputs = @["tests/helpers/editor_scenario_runtime.py", "tests/helpers/editor_process_observer.py"])
+      extraInputs = @["tests/helpers/editor_scenario_runtime.py", "tests/helpers/editor_preparation_clock.py", "tests/helpers/editor_preparation_clock.mjs", "tests/helpers/editor_process_observer.py"])
     let closeAckEdge = node(
       args = @["tests/test_editor_close_ack.mjs"],
       actionId = "isonim.authoring_execute.close_ack",
@@ -915,7 +933,7 @@ package isonim:
     testExecuteActions.add(sdkKernelEdge)
     testExecuteActions.add(authoringResponsesEdge)
     testExecuteActions.add(sdkProtocolEdge)
-    discard collect("test-editor-authoring-evidence", @[authoringEvidenceEdge, scenarioCleanupEdge, closeAckEdge, authoringResponsesEdge, assistantEvidenceEdge, sdkProtocolEdge, sdkKernelEdge, providerClosureEdge])
+    discard collect("test-editor-authoring-evidence", @[preparationClockPythonEdge, preparationClockNodeEdge, authoringEvidenceEdge, scenarioCleanupEdge, closeAckEdge, authoringResponsesEdge, assistantEvidenceEdge, sdkProtocolEdge, sdkKernelEdge, providerClosureEdge])
     # Runtime selection is a fresh host fact, never a cached pass. The consumer
     # actually authenticates this declared output and every selected package byte.
     # Explicit provider selection stays caller-owned; missing/incompatible fails.
@@ -946,7 +964,7 @@ package isonim:
       extraInputs = @["tests/test_editor_authoring_response_sequencing.py", "tests/test_editor_scripted_terminal_fence.py", "tests/test_editor_authoring_real_gui.mjs",
         "tests/scenarios/agent-harbor/authoring-response-sequencing.yaml", "tests/helpers/editor_authoring_operations.py",
         "tests/helpers/editor_authoring_responses.py", "tests/helpers/editor_authoring_assistant_evidence.py", "tests/helpers/editor_close_ack.mjs",
-        "tests/helpers/editor_scenario_runtime.py", "tests/helpers/editor_scenario_provider.py", "tests/helpers/editor_provider_wire.py", "tests/helpers/editor_provider_closure.py",
+        "tests/helpers/editor_scenario_runtime.py", "tests/helpers/editor_preparation_clock.py", "tests/helpers/editor_preparation_clock.mjs", "tests/helpers/editor_scenario_provider.py", "tests/helpers/editor_provider_wire.py", "tests/helpers/editor_provider_closure.py",
         "tests/helpers/editor_sdk_runtime.py", "tests/helpers/editor_process_observer.py", "tests/helpers/editor_scenario_barrier.py",
         "tools/editor_agent_env.py", "tools/editor_server.py", "build/bin/isonim", "build/editor-authoring",
         "../web-site-prototypes/grip/isonim/src", "../web-site-prototypes/grip/isonim/tools",
@@ -960,7 +978,7 @@ package isonim:
         "tests/helpers/editor_sdk_runtime.py", "tests/helpers/editor_sdk_native_observer.mjs", "tests/helpers/editor_sdk_delivery_evidence.mjs", "tests/helpers/editor_sdk_kernel_evidence.mjs",
         "tests/helpers/editor_authoring_operations.py", "tests/helpers/editor_authoring_responses.py", "tests/helpers/editor_authoring_assistant_evidence.py",
         "tests/helpers/editor_authoring_evidence.py", "tests/helpers/editor_close_ack.mjs",
-        "tests/helpers/editor_real_provider.py", "tests/helpers/editor_provider_wire.py", "tests/helpers/editor_provider_closure.py", "tests/helpers/editor_scenario_runtime.py",
+        "tests/helpers/editor_real_provider.py", "tests/helpers/editor_provider_wire.py", "tests/helpers/editor_provider_closure.py", "tests/helpers/editor_scenario_runtime.py", "tests/helpers/editor_preparation_clock.py", "tests/helpers/editor_preparation_clock.mjs",
         "tests/helpers/editor_process_observer.py", "prompts/ai-assistant.md",
         "tools/agent_session_launcher.py", "tools/editor_agent_env.py", "tools/editor_server.py",
         "build/bin/isonim", "build/editor-authoring", "../web-site-prototypes/grip/isonim/src",
@@ -979,8 +997,8 @@ package isonim:
     testExecuteActions.add(pythonUnittest.run(
       source = "tests/test_editor_scenarios.py",
       actionId = "isonim.scenario_execute.native",
-      after = @[controlCliEdge, sourceBrowserEdge, scenarioHostEdge.action],
-      extraInputs = @["tests/test_editor_scenarios.py", "tests/helpers/editor_context_evidence.py", "tests/helpers/editor_scenario_runtime.py",
+      after = @[controlCliEdge, sourceBrowserEdge, scenarioHostEdge.action, preparationClockPythonEdge, preparationClockNodeEdge],
+      extraInputs = @["tests/test_editor_scenarios.py", "tests/helpers/editor_context_evidence.py", "tests/helpers/editor_scenario_runtime.py", "tests/helpers/editor_preparation_clock.py", "tests/helpers/editor_preparation_clock.mjs",
         "tests/helpers/editor_scenario_provider.py", "tests/helpers/editor_scenario_barrier.py",
         "tests/helpers/editor_scenario_network_probe.py",
         "tests/scenarios/agent-harbor/editor-workflows.yaml", "tests/scenarios/agent-harbor/README.md", "tools/editor_server.py",
@@ -989,8 +1007,8 @@ package isonim:
     testExecuteActions.add(pythonUnittest.run(
       source = "tests/test_editor_scenario_stress.py",
       actionId = "isonim.scenario_execute.stream_ownership",
-      after = @[controlCliEdge, sourceBrowserEdge, scenarioHostEdge.action],
-      extraInputs = @["tests/test_editor_scenario_stress.py", "tests/helpers/editor_scenario_runtime.py",
+      after = @[controlCliEdge, sourceBrowserEdge, scenarioHostEdge.action, preparationClockPythonEdge, preparationClockNodeEdge],
+      extraInputs = @["tests/test_editor_scenario_stress.py", "tests/helpers/editor_scenario_runtime.py", "tests/helpers/editor_preparation_clock.py", "tests/helpers/editor_preparation_clock.mjs",
         "tests/helpers/editor_scenario_provider.py", "tests/helpers/editor_scenario_barrier.py",
         "tests/helpers/editor_scenario_network_probe.py", "tests/scenarios/agent-harbor/editor-workflows.yaml",
         "tests/scenarios/agent-harbor/README.md", "tools/editor_server.py", "tools/editor_agent_env.py",
@@ -998,9 +1016,9 @@ package isonim:
     testExecuteActions.add(pythonUnittest.run(
       source = "tests/run_editor_scenarios_gui.py",
       actionId = "isonim.scenario_execute.gui",
-      after = @[controlCliEdge, sourceBrowserEdge],
+      after = @[controlCliEdge, sourceBrowserEdge, preparationClockPythonEdge, preparationClockNodeEdge],
       extraInputs = @["tests/run_editor_scenarios_gui.py", "tests/test_editor_scenarios_gui.mjs",
-        "tests/helpers/editor_scenario_runtime.py", "tests/helpers/editor_scenario_provider.py", "tests/helpers/editor_provider_wire.py", "tests/helpers/editor_provider_closure.py",
+        "tests/helpers/editor_scenario_runtime.py", "tests/helpers/editor_preparation_clock.py", "tests/helpers/editor_preparation_clock.mjs", "tests/helpers/editor_scenario_provider.py", "tests/helpers/editor_provider_wire.py", "tests/helpers/editor_provider_closure.py",
         "tests/helpers/editor_scenario_barrier.py", "tests/helpers/editor_scenario_network_probe.py",
         "tests/scenarios/agent-harbor/editor-workflows.yaml", "tests/scenarios/agent-harbor/README.md",
         "tools/editor_server.py", "tools/editor_agent_env.py", "examples/source_project",
@@ -1065,6 +1083,12 @@ package isonim:
     # Optional private producer acceptance. With the sibling present, the built
     # official scenario provider must be configured and all real boundaries run.
     # The script delegates producer compilation/environment to the local launcher.
+    testExecuteActions.add(pythonUnittest.run(
+      source = "tests/test_design_review_harbor_preparation.py",
+      actionId = "isonim.chat_execute.harbor_preparation",
+      after = @[controlCliEdge],
+      extraInputs = @["tests/test_design_review_harbor_preparation.py", "tools/isonim_review", drReviewBin, "build/bin/isonim"]))
+
     testExecuteActions.add(pythonUnittest.run(
       source = "tests/test_editor_harbor_scenario.py",
       actionId = "isonim.chat_execute.harbor_scenario",

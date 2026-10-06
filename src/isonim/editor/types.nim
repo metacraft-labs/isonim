@@ -977,6 +977,12 @@ type
     pedInvalidPropertyCombination
     pedSchemaViolation
     pedSourceConflict
+    pedUnresolvedStyleBinding
+      ## A styling construct the DSL captured but could not resolve to any
+      ## CSS property -- a class that is in no class index, or an attribute
+      ## whose value is computed at runtime. Carried so the inspector can say
+      ## so: a construct that silently does nothing is the defect
+      ## ``Styling-Substrate-Evaluation.md`` ranks worst, not a non-event.
 
   PropertyEditDiagnostic* = object
     kind*: PropertyEditDiagnosticKind
@@ -991,6 +997,20 @@ type
     kind*: PropertyEditKind
     scope*: PropertyEditScope
     origin*: PropertyEditOrigin
+
+  ResponsiveBreakpoint* = object
+    ## One width-based `@media` block the PROJECT's stylesheet defines.
+    ##
+    ## Supplied by the workspace rather than configured in the editor, because
+    ## the stylesheet is the only place this is actually true. A configured
+    ## list is a second home for the same fact and the two drift the first
+    ## time somebody adds a query -- and the editor shows these to tell the
+    ## user which breakpoint an edit will land in, so a stale list is a wrong
+    ## promise rather than a cosmetic bug.
+    label*: string       ## For the UI: "≤ 1080px".
+    condition*: string   ## Verbatim prelude: "@media (max-width:1080px)".
+    minWidth*: int       ## -1 when unbounded below.
+    maxWidth*: int       ## -1 when unbounded above.
 
   SourceEditPlan* = object
     ## Source patch description produced by headless editing.
@@ -1014,6 +1034,16 @@ type
     regeneratorHook*: string
     conflictKey*: string
     expectedOldValue*: string
+    viewportWidth*: int
+      ## The preview width, in CSS pixels, the edit was made at.
+      ##
+      ## Carried on the plan because a responsive stylesheet has no single
+      ## answer to "which rule owns this property" -- it has one answer per
+      ## width. `.tagline` takes its size from the base rule above 1080px and
+      ## from a `@media` block below it, so an adapter handed only the
+      ## selector and the property has to guess, and guessing wrong writes a
+      ## declaration the cascade discards. Zero means "not supplied", which
+      ## adapters read as the unconditional base-rule behaviour.
 
   SourceEditAdapter* = proc(plan: SourceEditPlan): bool {.closure.}
 
@@ -1052,6 +1082,13 @@ type
     ancestors*: seq[string] ## Breadcrumb labels from root to selected element
     ancestorIds*: seq[string] ## Breadcrumb identities from root to selected element
     depth*: int            ## Nesting depth
+    styleBindings*: string
+      ## Encoded authored style provenance for this element, exactly as the
+      ## DSL stamped it (``data-isonim-props`` in SSR, ``noteProperties`` in
+      ## client mode). Decoded by ``editor/style_provenance_decode``; see
+      ## ``dsl/style_provenance`` for the format. Empty for any selection that
+      ## did not come from an IsoNim-rendered element, and every consumer
+      ## treats empty as "no provenance available" rather than "no bindings".
 
   ElementLayerRow* = object
     ## Source-backed row in the editor-owned element/layers tree.
@@ -1242,6 +1279,14 @@ type
     sourceEdit*: SourceEditPlan
     beforeElement*: ElementRef
     afterElement*: ElementRef
+    saved*: bool
+      ## Has this edit reached disk?
+      ##
+      ## Recorded per transaction rather than inferred from the journal,
+      ## because the journal is keyed by edit SLOT: a saved `padding` edit and
+      ## a later pending `padding` edit occupy the same slot, so asking "is
+      ## there a pending plan matching this one" said yes for both and
+      ## Revert threw away work the user had already saved.
 
   AgentEditProposalStatus* = enum
     aepsProposed
@@ -1344,6 +1389,23 @@ type
     wesReviewing
     wesFailed
 
+  SaveIndicatorState* = enum
+    ## What the chrome bar's save control shows. Four states, because a save
+    ## can be refused and "refused" is not "clean" -- before this existed, an
+    ## edit that committed and an edit that was refused looked identical.
+    sisClean   ## Nothing staged; everything the user did is on disk.
+    sisDirty   ## Staged edits waiting for a write.
+    sisSaving  ## A write transaction is in flight.
+    sisFailed  ## The last save was refused; `detail` says why.
+
+  SaveIndicator* = object
+    ## The whole control in one value, so the widget renders and the tests
+    ## assert against the same thing.
+    state*: SaveIndicatorState
+    label*: string   ## Never empty. Colour never carries the state alone.
+    detail*: string  ## The refusal, when there is one.
+    pending*: int    ## How many source edits are staged.
+
   WriteBridgeClientState* = enum
     wbcsOffline
     wbcsConnecting
@@ -1383,6 +1445,7 @@ type
     wedRollbackFailed
     wedBridgeUnavailable
     wedExternalChange
+    wedWorkspaceMismatch
 
   WorkspaceEditableSchemaEntry* = object
     ## Project-owned schema/source map entry used to resolve stable edit keys.

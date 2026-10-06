@@ -10,6 +10,8 @@
 import std/[asyncdispatch, asyncnet, asynchttpserver, atomics, base64, json, locks,
             options, os, osproc, sequtils, streams, strutils, tables, times, sha1]
 
+when defined(posix): import std/posix
+
 from std/unicode import runeLen
 
 import db_connector/db_postgres
@@ -56,6 +58,7 @@ type
     ## TOML section (and the ``--agent-backend`` CLI flag) at daemon
     ## startup.  ``extraArgs`` stays for callers that just need to
     ## pass per-session argv tail to ``claude-agent-acp``.
+    prepareBackend*: proc(): Future[void] {.gcsafe.}
     controlRegistry*: EditorControlRegistry
     lock: Lock
     sessions: Table[string, AgentSessionState]
@@ -845,6 +848,17 @@ proc respondBackendUnavailable*(req: Request; reason: string)
   })
   await respondJson(req, Http503, body)
 
+proc requestPeerConnected(req: Request): bool =
+  if req.client.isClosed: return false
+  when defined(posix):
+    # The accepted AsyncSocket is nonblocking. Peek without consuming any
+    # pipelined request: EOF/reset means this pending admission has no recipient.
+    var byte: char
+    let count = posix.recv(cast[posix.SocketHandle](req.client.getFd), addr byte, 1, MSG_PEEK)
+    if count == 0: return false
+    if count < 0 and errno notin [EAGAIN, EWOULDBLOCK, EINTR]: return false
+  true
+
 proc handleSessions*(reg: AgentRegistry; req: Request)
     {.async, gcsafe.} =
   ## ``POST /api/agent/sessions`` handler.
@@ -879,6 +893,16 @@ proc handleSessions*(reg: AgentRegistry; req: Request)
       await respondJson(req, Http403, $(%* {"error": error.msg}))
       return
   try:
+    if reg.prepareBackend != nil:
+      info "agent session waiting for backend preparation", topics = "agent"
+      await reg.prepareBackend()
+      if not requestPeerConnected(req): return
+      # Preparation yields to unrelated requests. Browser authority can change
+      # during that wait; revalidate before admitting a session or instructions.
+      if scope.instance.len > 0:
+        let node = parseJson(req.body)
+        scope = reg.controlRegistry.validateBrowserScope(node["editor"],
+          req.headers.getOrDefault("X-IsoNim-Control"))
     var state: AgentSessionState
     {.cast(gcsafe).}:
       state = createAcpSession(reg,
@@ -893,7 +917,15 @@ proc handleSessions*(reg: AgentRegistry; req: Request)
         "cancelTurn": state.client.backend == abkAcp, "closeSession": true},
       "agentCapabilities": capabilityJson(state.capabilities),
     })
-    await respondJson(req, Http200, body)
+    try:
+      await respondJson(req, Http200, body)
+    except CatchableError:
+      # A newly admitted session is owned only after its identity is delivered.
+      # Compensate a failed response; disconnects on later SSE keep sessions.
+      reg.shutdownAndRelease(state.sessionId)
+      raise
+  except ControlError as error:
+    await respondJson(req, Http403, $(%* {"error": error.msg}))
   except AgentBackendUnavailableError as e:
     await respondBackendUnavailable(req, e.msg)
   except CatchableError as e:

@@ -134,8 +134,9 @@ proc runEndToEnd() =
   # 006 (campaigns + campaign routines); CMP-M2.1 added 007 (round
   # counter routines); CMP-M4 added 008 (campaign doc refresh); CMP-M7
   # added 009 (campaign restart); the REV-M6 follow-up added 010
-  # (multi-agent report).
-  check parseInt(countStr) == 10
+  # (multi-agent report); the REV-M5 workspace-pin follow-up added 011
+  # (workspace pins).
+  check parseInt(countStr) == 11
 
   let downCmd = "process-compose down --config " & ComposeFile.quoteShell &
       " --unix-socket " & sock &

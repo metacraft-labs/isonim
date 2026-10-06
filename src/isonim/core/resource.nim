@@ -2,7 +2,7 @@
 ## createResource wraps a fetcher function with reactive state tracking.
 
 import std/json
-import signals, computation
+import graph, signals, computation
 import nim_everywhere/async_compat
 
 type
@@ -35,6 +35,47 @@ type
       ## manual re-fetch via `r.refresh()` (optionally with a JsonNode payload
       ## forwarded to the fetcher via ~info.info~).
 
+# ---------------------------------------------------------------------------
+# Owner registration
+# ---------------------------------------------------------------------------
+#
+# Every overload below registers its state signal with the owner that is
+# current when it is created, so code holding a root can ask, before it
+# disposes that root, which resources were created under it and what state
+# each one is in — without the resources having been read. The record lives
+# on the owner (`OwnerBase.resourceStates`) rather than in a global
+# registry: it is scoped the way disposal is, it is dropped when the owner
+# is cleaned (a re-running computation forgets what its previous run
+# created), and an owner that creates no resource pays nothing beyond an
+# empty seq. A resource created with no current owner registers nowhere.
+
+proc registerResourceState(state: Signal[ResourceState]) =
+  if Owner != nil:
+    Owner.resourceStates.add(state)
+
+proc collectResourceStates(node: OwnerBase;
+                           acc: var seq[Signal[ResourceState]]) =
+  for s in node.resourceStates:
+    acc.add(Signal[ResourceState](s))
+  for child in node.owned:
+    collectResourceStates(child, acc)
+
+proc ownedResourceStates*(root: OwnerBase): seq[Signal[ResourceState]] =
+  ## The state signals of every live resource created under `root`: those
+  ## created while `root` itself was the current owner and those created
+  ## inside any computation it owns, at any depth, in creation order per
+  ## owner (depth-first). Read each one untracked with `.value`.
+  ##
+  ## A nested `createRoot` does NOT count. A nested root is not owned by
+  ## the owner it was created under — disposing the outer root does not
+  ## dispose it, and its lifetime is its creator's to manage — so its
+  ## resources belong to it, not to the outer root; enumerate them from
+  ## the nested root's own owner (`getOwner()` inside it).
+  ##
+  ## Call it before disposing `root`: disposal clears the record.
+  if root != nil:
+    collectResourceStates(root, result)
+
 proc createResource*[T](
   fetcher: proc(): T;
   initialValue: T = default(T)
@@ -43,6 +84,7 @@ proc createResource*[T](
   ## State transitions: unresolved -> pending -> ready (or errored)
   let data = createSignal(initialValue)
   let state = createSignal(rsUnresolved)
+  registerResourceState(state)
   let error = createSignal("")
 
   # Trigger initial fetch
@@ -66,6 +108,7 @@ proc createResource*[S, T](
   ## The source accessor is tracked -- when it changes, fetcher is re-called.
   let data = createSignal(initialValue)
   let state = createSignal(rsUnresolved)
+  registerResourceState(state)
   let error = createSignal("")
 
   createEffect proc() =
@@ -107,6 +150,7 @@ proc createDeferredResource*[T](initialValue: T = default(T)): DeferredResource[
   ## Call reject(msg) to transition to rsErrored.
   let data = createSignal(initialValue)
   let state = createSignal(rsPending)
+  registerResourceState(state)
   let error = createSignal("")
 
   let resolve = proc(value: T) =
@@ -156,6 +200,7 @@ proc createResource*[T](
   ## parameters; the convention is to name it ~_info~).
   let data = createSignal(initialValue)
   let state = createSignal(rsPending)
+  registerResourceState(state)
   let error = createSignal("")
   # Generation counter lives in a ref cell so the closures below share it
   # without it becoming a tracked signal (we don't want anyone subscribing
@@ -209,6 +254,7 @@ proc createResource*[S, T](
   ## ~r.refresh(...)~) sets ~refetching = true~.
   let data = createSignal(initialValue)
   let state = createSignal(rsUnresolved)
+  registerResourceState(state)
   let error = createSignal("")
   let generation = new(int)
   generation[] = 0

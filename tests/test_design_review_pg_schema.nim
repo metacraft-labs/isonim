@@ -12,7 +12,8 @@ import helpers/design_review_pg_fixture
 const ExpectedTables = [
   "agent_reports", "audit_events",
   "campaign_events", "campaigns",
-  "captures", "gallery_layouts", "runs"]
+  "captures", "gallery_layouts", "runs",
+  "workspace_pins"]
 
 const ExpectedIndexes = [
   "idx_audit_kind_time",

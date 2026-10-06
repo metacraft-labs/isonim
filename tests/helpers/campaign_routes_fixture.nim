@@ -121,16 +121,25 @@ proc startCampaignDaemon*(extraEnv: openArray[(string, string)] = @[]):
     env = env,
     options = {poUsePath})
 
-  let drainer = startStderrDrainer(daemon)
+  var drainer: DaemonStderrDrainer
   var port: int
   try:
+    drainer = startStderrDrainer(daemon)
     port = waitForReady(drainer, timeoutSecs = 15.0)
-  except IOError as e:
-    drainer.shutdown()
+  except CatchableError as e:
+    try: drainer.shutdown()
+    except CatchableError as cleanupError:
+      stderr.writeLine("stderr-reader cleanup failed: " & cleanupError.msg)
     try: discard kill(daemon.processID.Pid, SIGKILL)
     except: discard
-    daemon.close()
-    pg.shutdown()
+    try:
+      discard daemon.waitForExit()
+      daemon.close()
+    except CatchableError as cleanupError:
+      stderr.writeLine("daemon cleanup failed: " & cleanupError.msg)
+    try: pg.shutdown()
+    except CatchableError as cleanupError:
+      stderr.writeLine("Postgres cleanup failed: " & cleanupError.msg)
     raise newException(IOError,
       "campaign_routes_fixture: " & e.msg)
 
@@ -141,6 +150,7 @@ proc startCampaignDaemon*(extraEnv: openArray[(string, string)] = @[]):
 
 proc shutdown*(f: CampaignFixture) =
   if f == nil: return
+  var failure: ref CatchableError
   if f.daemon != nil:
     try: discard kill(f.daemon.processID.Pid, SIGTERM)
     except: discard
@@ -152,16 +162,18 @@ proc shutdown*(f: CampaignFixture) =
       try: discard kill(f.daemon.processID.Pid, SIGKILL)
       except: discard
     discard f.daemon.waitForExit()
-    f.daemon.close()
+    retainCleanupFailure(failure): closeAfterDrainer(f.daemon, f.drainer)
+    f.drainer = nil
     f.daemon = nil
   if f.drainer != nil:
-    f.drainer.shutdown()
+    retainCleanupFailure(failure): f.drainer.shutdown()
     f.drainer = nil
   if f.pg != nil:
-    f.pg.shutdown()
+    retainCleanupFailure(failure): f.pg.shutdown()
     f.pg = nil
   try: removeDir(f.promptDir) except OSError: discard
   try: removeFile(f.contentLog) except OSError: discard
+  if failure != nil: raise failure
 
 proc campaignPost*(f: CampaignFixture; path, body: string;
                    timeoutMs = 30_000):

@@ -1,15 +1,28 @@
 ## Tests for IsoNim Editor ViewModels (M0)
 
-import std/[options, unittest, strutils, sequtils, os]
+import std/[options, unittest, strutils, sequtils, os, algorithm]
 import nim_agents
 import isonim/core/[signals, computation, owner]
 import isonim/viewmodel
 import isonim/editor/types as editorTypes
 import isonim/editor/agent_context
 import isonim/editor/agent_harbor
+# ``AgentFileDiff`` is defined both by ``isonim/editor/types`` (re-exported
+# through ``isonim/editor/viewmodels``) and by the ``nim_agents`` sibling's
+# ``client`` module, so the bare name is ambiguous here. Bind the editor-side
+# module to a qualifier without importing any symbol from it, and spell the
+# editor record ``editor_types.AgentFileDiff`` at its use sites. This mirrors
+# the ``types.AgentFileDiff`` qualification already used in
+# ``src/isonim/editor/agent_harbor.nim``.
+from isonim/editor/types as editor_types import nil
 import isonim/editor/viewmodels
 import isonim/editor/workspace
 import isonim/editor/views/page_preview
+import isonim/editor/views/component_detail
+import isonim/editor/views/component_edit
+import isonim/editor/element_semantics
+import isonim/editor/css_patch
+import isonim/editor/views/widgets/property_commit
 import isonim/testing/mock_dom
 import examples/wanderlust/stories as wanderlust
 
@@ -218,12 +231,53 @@ suite "Editor ViewModels (M0)":
         continue # Skip comments
       check not line.contains("#[0-9a-fA-F]")
 
-    # No Tailwind class strings
+    # No Tailwind class strings.
+    #
+    # 2026-09-26: this check used to be a bare ``"flex-" notin vmFile``.
+    # Since the compatible-only variable picker landed (7c062b8), the
+    # ViewModels carry a CSS *property-name* classifier that legitimately
+    # names ``flex-grow`` / ``flex-shrink`` / ``flex-basis``. Those are
+    # domain data for the property editors, not presentation, so the blunt
+    # substring test reported a false positive. The check is now narrower
+    # in what it permits and stricter in what it rejects: a hyphenated
+    # ``flex-``/``text-``/``bg-`` token is allowed only when it spells a
+    # real CSS longhand property, so Tailwind utilities such as
+    # ``flex-row``, ``flex-1``, ``text-sm`` or ``bg-slate-900`` still fail.
+    const cssLonghands = [
+      "flex-grow", "flex-shrink", "flex-basis", "flex-direction",
+      "flex-wrap", "flex-flow",
+      "text-align", "text-align-last", "text-combine-upright",
+      "text-decoration", "text-decoration-color", "text-decoration-line",
+      "text-decoration-style", "text-decoration-thickness",
+      "text-emphasis", "text-emphasis-color", "text-emphasis-position",
+      "text-emphasis-style", "text-indent", "text-justify",
+      "text-orientation", "text-overflow", "text-rendering",
+      "text-shadow", "text-size-adjust", "text-transform",
+      "text-underline-offset", "text-underline-position", "text-wrap"
+    ]
+
+    proc utilityClassTokens(source: string; prefix: string): seq[string] =
+      ## Every ``prefix``-led hyphenated token in ``source`` that is not a
+      ## known CSS longhand property name.
+      var idx = source.find(prefix)
+      while idx >= 0:
+        var stop = idx + prefix.len
+        while stop < source.len and
+              (source[stop].isAlphaNumeric or source[stop] == '-'):
+          inc stop
+        let token = source[idx ..< stop]
+        if token != prefix and token notin cssLonghands and
+           token notin result:
+          result.add token
+        idx = source.find(prefix, idx + prefix.len)
+
     check "class =" notin vmFile
     check "rounded" notin vmFile
-    check "flex-" notin vmFile
-    check "bg-" notin vmFile
-    check "text-" notin vmFile.replace("setTextContent", "").replace("text:", "")
+    check utilityClassTokens(vmFile, "flex-") == newSeq[string]()
+    check utilityClassTokens(vmFile, "bg-") == newSeq[string]()
+    check utilityClassTokens(
+      vmFile.replace("setTextContent", "").replace("text:", ""),
+      "text-") == newSeq[string]()
 
     # Types file also clean
     check "class =" notin typesFile
@@ -981,7 +1035,13 @@ suite "Editor ViewModels (M26 source-backed CSS property editors)":
         true)
       check savedPlans.len == 1
       check vm.inspector.pendingSourceEdits.val.len == 0
-      check vm.inspector.undoStack.val.len == 0
+      # The history SURVIVES the save. Undo is independent of it: saving is
+      # about what is on disk, and a saved document still remembers what you
+      # did. Clearing the stack here is what made Ctrl+Z do nothing once
+      # auto-save started firing 900ms after every edit.
+      check vm.inspector.undoStack.val.len == 1
+      # ...and the document is clean, because "dirty" means unsaved, not
+      # "has history".
       check not vm.inspector.isDirty.val
 
       let local = vm.editCssProperty("padding", "32px", pesLocal)
@@ -1307,13 +1367,18 @@ suite "Editor ViewModels (M26 source-backed CSS property editors)":
       check savedPlans.anyIt(it.property == "border-radius")
       check savedPlans.anyIt(it.property == "transition-timing-function")
       check vm.inspector.pendingSourceEdits.val.len == 0
-      check vm.inspector.undoStack.val.len == 0
+      # Saving empties the journal and leaves the history alone; see
+      # `markCssPropertyEditsSaved`.
+      check vm.inspector.undoStack.val.len == 7
 
       discard vm.editCssProperty("padding", "18px", pesLocal)
 
       vm.inspector.discardCssPropertyEdits()
       check vm.inspector.pendingSourceEdits.val.len == 0
-      check vm.inspector.undoStack.val.len == 0
+      # Only the UNSAVED edit is discarded. The seven already written stay
+      # undoable, because discarding unsaved work is not the same as forgetting
+      # what was saved.
+      check vm.inspector.undoStack.val.len == 7
       check vm.inspector.selectedElement.val.properties.anyIt(
         it.name == "padding" and it.value == "16px")
       dispose()
@@ -1728,131 +1793,178 @@ suite "Editor ViewModels (M26 source-backed CSS property editors)":
       check vm.inspector.layers.val.allIt(not it.selected)
       dispose()
 
-suite "Editor ViewModels (M27 workspace file writes)":
+# ---------------------------------------------------------------------------
+# Shared workspace-edit test fixtures.
+#
+# Mocking note (workspace policy): the only stand-in below is
+# ``WorkspaceEditAdapter`` — the editor framework's own source-I/O
+# boundary, which real consumers (metacraft-web) implement themselves. It
+# is a boundary, not a mock of editor behaviour: it reads and writes real
+# files under a real temporary directory, so the plan -> patch -> write
+# transaction is exercised end to end. Everything above it (EditorVM,
+# InspectorVM, SidebarVM, FoundationsVM, ...) is the real thing.
+#
+# These lived inside the M27 suite until the cross-surface suite below
+# needed them too. They are at module scope so there is exactly ONE fake
+# adapter in this file rather than a second copy per suite.
+# ---------------------------------------------------------------------------
 
-  type WorkspaceEditRecorder = ref object
-    reloadedStories: seq[StoryRef]
-    fullReloadSeen: bool
-    reviewCount: int
+type WorkspaceEditRecorder = ref object
+  reloadedStories: seq[StoryRef]
+  fullReloadSeen: bool
+  reviewCount: int
 
-  let writeStory = StoryRef(group: "DestinationCard", name: "Default",
-    kind: skComponent, index: 0)
+let writeStory = StoryRef(group: "DestinationCard", name: "Default",
+  kind: skComponent, index: 0)
 
-  proc tempWorkspaceDir(name: string): string =
-    result = getTempDir() / ("isonim_editor_" & name & "_" & $getCurrentProcessId())
-    if dirExists(result):
-      removeDir(result)
-    createDir(result)
+proc tempWorkspaceDir(name: string): string =
+  result = getTempDir() / ("isonim_editor_" & name & "_" & $getCurrentProcessId())
+  if dirExists(result):
+    removeDir(result)
+  createDir(result)
 
-  proc okOp(message = ""; affectedStories: seq[StoryRef] = @[];
-      fullReload = false; generatedArtifacts: seq[string] = @[];
-      requiredTestCommands: seq[string] = @[];
-      reviewDiagnostics: seq[WorkspaceEditDiagnostic] = @[]): WorkspaceOperationResult =
-    WorkspaceOperationResult(ok: true, message: message,
-      affectedStories: affectedStories, fullReload: fullReload,
-      generatedArtifacts: generatedArtifacts,
-      requiredTestCommands: requiredTestCommands,
-      reviewDiagnostics: reviewDiagnostics)
+proc okOp(message = ""; affectedStories: seq[StoryRef] = @[];
+    fullReload = false; generatedArtifacts: seq[string] = @[];
+    requiredTestCommands: seq[string] = @[];
+    reviewDiagnostics: seq[WorkspaceEditDiagnostic] = @[]): WorkspaceOperationResult =
+  WorkspaceOperationResult(ok: true, message: message,
+    affectedStories: affectedStories, fullReload: fullReload,
+    generatedArtifacts: generatedArtifacts,
+    requiredTestCommands: requiredTestCommands,
+    reviewDiagnostics: reviewDiagnostics)
 
-  proc failOp(kind: WorkspaceEditDiagnosticKind; message: string;
-      file = ""): WorkspaceOperationResult =
-    WorkspaceOperationResult(ok: false, message: message,
-      diagnostics: @[WorkspaceEditDiagnostic(kind: kind, message: message,
-        file: file)])
+proc failOp(kind: WorkspaceEditDiagnosticKind; message: string;
+    file = ""): WorkspaceOperationResult =
+  WorkspaceOperationResult(ok: false, message: message,
+    diagnostics: @[WorkspaceEditDiagnostic(kind: kind, message: message,
+      file: file)])
 
-  proc planFor(file, property, oldValue, newValue, schemaKey: string;
-      planKind = cspStructuredSchemaUpdate): SourceEditPlan =
-    SourceEditPlan(
-      file: file,
-      line: 1,
-      property: property,
-      oldValue: oldValue,
-      newValue: newValue,
-      originDetail: "schema:" & schemaKey,
-      scope: pesShared,
-      sourceScope: sskSharedClass,
-      planKind: planKind,
-      schemaKey: schemaKey,
-      reversible: true,
-      previewBefore: property & ": " & oldValue,
-      previewAfter: property & ": " & newValue,
-      formatterHook: "format-test",
-      regeneratorHook: "regenerate-test",
-      conflictKey: file & ":1:" & property,
-      expectedOldValue: oldValue)
+proc planFor(file, property, oldValue, newValue, schemaKey: string;
+    planKind = cspStructuredSchemaUpdate): SourceEditPlan =
+  SourceEditPlan(
+    file: file,
+    line: 1,
+    property: property,
+    oldValue: oldValue,
+    newValue: newValue,
+    originDetail: "schema:" & schemaKey,
+    scope: pesShared,
+    sourceScope: sskSharedClass,
+    planKind: planKind,
+    schemaKey: schemaKey,
+    reversible: true,
+    previewBefore: property & ": " & oldValue,
+    previewAfter: property & ": " & newValue,
+    formatterHook: "format-test",
+    regeneratorHook: "regenerate-test",
+    conflictKey: file & ":1:" & property,
+    expectedOldValue: oldValue)
 
-  proc atomicWrite(file, content: string) =
-    let tmp = file & ".tmp"
-    writeFile(tmp, content)
-    moveFile(tmp, file)
+proc atomicWrite(file, content: string) =
+  let tmp = file & ".tmp"
+  writeFile(tmp, content)
+  moveFile(tmp, file)
 
-  proc basicPatch(plan: SourceEditPlan; content: string;
-      schema: WorkspaceEditableSchemaEntry): WorkspacePatchResult =
-    if plan.expectedOldValue.len > 0 and plan.expectedOldValue notin content:
+proc basicPatch(plan: SourceEditPlan; content: string;
+    schema: WorkspaceEditableSchemaEntry): WorkspacePatchResult =
+  if plan.expectedOldValue.len > 0 and plan.expectedOldValue notin content:
+    return WorkspacePatchResult(ok: false,
+      diagnostics: @[WorkspaceEditDiagnostic(
+        kind: wedSourceConflict,
+        message: "expected value missing",
+        file: plan.file,
+        schemaKey: schema.key,
+        property: plan.property)])
+  # A ``cspPropertyAddition`` plan has no old value by construction — it
+  # adds a property the element did not carry — so it appends instead of
+  # replacing.
+  #
+  # Otherwise the fixture needs an anchor. ``expectedOldValue`` is
+  # deliberately blank for properties the iframe DOM bridge reported
+  # (``sourcePlan`` clears it, because a computed style is not what the
+  # source literally says) and a real consumer adapter would locate the
+  # span through its own source map; this fixture has none, so it falls
+  # back to ``oldValue``. If neither anchors, it refuses. It must not patch
+  # with an empty anchor: ``strutils.replace`` would splice the new value
+  # between every character of the file and the write would still report
+  # success, which is how a shredded file used to pass as a green save.
+  var after = content
+  if plan.planKind == cspPropertyAddition:
+    if not content.endsWith("\n") and content.len > 0:
+      after.add "\n"
+    after.add plan.property & "=" & plan.newValue & "\n"
+  else:
+    let anchor =
+      if plan.expectedOldValue.len > 0: plan.expectedOldValue
+      else: plan.oldValue
+    if anchor.len == 0 or anchor notin content:
       return WorkspacePatchResult(ok: false,
         diagnostics: @[WorkspaceEditDiagnostic(
           kind: wedSourceConflict,
-          message: "expected value missing",
+          message: "no anchor for this plan in the source",
           file: plan.file,
           schemaKey: schema.key,
           property: plan.property)])
-    WorkspacePatchResult(ok: true, patch: WorkspaceFilePatch(
-      file: plan.file,
-      afterContent: content.replace(plan.expectedOldValue, plan.newValue),
-      affectedStory: schema.story,
-      fullReload: schema.kind in {wskSvgSymbol, wskJourneyMetadata}))
+    after = content.replace(anchor, plan.newValue)
+  WorkspacePatchResult(ok: true, patch: WorkspaceFilePatch(
+    file: plan.file,
+    afterContent: after,
+    affectedStory: schema.story,
+    fullReload: schema.kind in {wskSvgSymbol, wskJourneyMetadata}))
 
-  proc adapterFor(root: string; schema: seq[WorkspaceEditableSchemaEntry];
-      generatedFile = ""; failRegenerate = false;
-      recorder: WorkspaceEditRecorder): WorkspaceEditAdapter =
-    result = WorkspaceEditAdapter(schema: schema)
-    result.readFile = proc(file: string): WorkspaceReadResult =
-      try:
-        WorkspaceReadResult(ok: true, content: readFile(file))
-      except IOError as e:
-        WorkspaceReadResult(ok: false,
+proc adapterFor(root: string; schema: seq[WorkspaceEditableSchemaEntry];
+    generatedFile = ""; failRegenerate = false;
+    recorder: WorkspaceEditRecorder): WorkspaceEditAdapter =
+  result = WorkspaceEditAdapter(schema: schema)
+  result.readFile = proc(file: string): WorkspaceReadResult =
+    try:
+      WorkspaceReadResult(ok: true, content: readFile(file))
+    except IOError as e:
+      WorkspaceReadResult(ok: false,
+        diagnostics: @[WorkspaceEditDiagnostic(
+          kind: wedReadFailed, message: e.msg, file: file)])
+  result.writeFile = proc(file, content: string): WorkspaceOperationResult =
+    try:
+      atomicWrite(file, content)
+      okOp()
+    except IOError as e:
+      failOp(wedWriteFailed, e.msg, file)
+  result.patchFile = basicPatch
+  result.formatFiles = proc(files: seq[string]): WorkspaceOperationResult =
+    for file in files:
+      writeFile(file & ".formatted", "formatted")
+    okOp()
+  result.regenerate = proc(keys: seq[string]): WorkspaceOperationResult =
+    if failRegenerate:
+      return failOp(wedRegenerateFailed, "regeneration failed")
+    if generatedFile.len > 0:
+      var generated = ""
+      for entry in schema:
+        if fileExists(entry.file):
+          generated.add entry.key & "=" & readFile(entry.file).strip() & "\n"
+      atomicWrite(generatedFile, generated)
+    okOp(affectedStories = @[writeStory])
+  result.compile = proc(stories: seq[StoryRef]): WorkspaceOperationResult =
+    check stories.len > 0
+    okOp()
+  result.reloadPreview = proc(stories: seq[StoryRef];
+      fullReload: bool): WorkspaceOperationResult =
+    recorder.reloadedStories = stories
+    recorder.fullReloadSeen = fullReload
+    okOp()
+  result.review = proc(patches: seq[WorkspaceFilePatch]): WorkspaceReviewResult =
+    inc recorder.reviewCount
+    for patch in patches:
+      if patch.afterContent.contains("unsafe"):
+        return WorkspaceReviewResult(ok: false,
           diagnostics: @[WorkspaceEditDiagnostic(
-            kind: wedReadFailed, message: e.msg, file: file)])
-    result.writeFile = proc(file, content: string): WorkspaceOperationResult =
-      try:
-        atomicWrite(file, content)
-        okOp()
-      except IOError as e:
-        failOp(wedWriteFailed, e.msg, file)
-    result.patchFile = basicPatch
-    result.formatFiles = proc(files: seq[string]): WorkspaceOperationResult =
-      for file in files:
-        writeFile(file & ".formatted", "formatted")
-      okOp()
-    result.regenerate = proc(keys: seq[string]): WorkspaceOperationResult =
-      if failRegenerate:
-        return failOp(wedRegenerateFailed, "regeneration failed")
-      if generatedFile.len > 0:
-        var generated = ""
-        for entry in schema:
-          if fileExists(entry.file):
-            generated.add entry.key & "=" & readFile(entry.file).strip() & "\n"
-        atomicWrite(generatedFile, generated)
-      okOp(affectedStories = @[writeStory])
-    result.compile = proc(stories: seq[StoryRef]): WorkspaceOperationResult =
-      check stories.len > 0
-      okOp()
-    result.reloadPreview = proc(stories: seq[StoryRef];
-        fullReload: bool): WorkspaceOperationResult =
-      recorder.reloadedStories = stories
-      recorder.fullReloadSeen = fullReload
-      okOp()
-    result.review = proc(patches: seq[WorkspaceFilePatch]): WorkspaceReviewResult =
-      inc recorder.reviewCount
-      for patch in patches:
-        if patch.afterContent.contains("unsafe"):
-          return WorkspaceReviewResult(ok: false,
-            diagnostics: @[WorkspaceEditDiagnostic(
-              kind: wedReviewFailed,
-              message: "unsafe generated source",
-              file: patch.file)])
-      WorkspaceReviewResult(ok: true)
+            kind: wedReviewFailed,
+            message: "unsafe generated source",
+            file: patch.file)])
+    WorkspaceReviewResult(ok: true)
 
+
+suite "Editor ViewModels (M27 workspace file writes)":
   test "m44_telemetry_exercises_selection_preview_save_and_bridge_error_paths":
     createRoot proc(dispose: proc()) =
       let root = tempWorkspaceDir("m44-telemetry")
@@ -1914,6 +2026,16 @@ suite "Editor ViewModels (M27 workspace file writes)":
       check vm.workspaceEditStage.val == wesClean
       check vm.inspector.pendingSourceEdits.val.len == 0
       check recorder.reloadedStories.anyIt(it == story)
+      # 2026-09-26: assert the file too, not just the save status. The
+      # layer-tree navigation above (eckSelectNext/eckSelectPrevious) leaves
+      # the selected element with no properties — ``rowToElement`` only
+      # carries properties over for the row that was already selected — so
+      # the "padding" edit is planned as a ``cspPropertyAddition`` with no
+      # old value. The adapter appends it. Nothing here may shred the file.
+      let savedContent = readFile(schemaFile)
+      check savedContent.contains("padding=16px")
+      check savedContent.contains("padding=24px")
+      check savedContent.splitLines().filterIt(it.strip().len > 0).len == 2
 
       vm.inspector.pendingSourceEdits.val = @[planFor(schemaFile, "padding",
         "24px", "32px", "components.card.padding")]
@@ -2392,7 +2514,10 @@ suite "Editor ViewModels (M27 workspace file writes)":
       let reverted = vm.runEditorCommand(eckRevert)
       check reverted.status == ecsSucceeded
       check vm.inspector.pendingSourceEdits.val.len == 0
-      check vm.inspector.undoStack.val.len == 0
+      # These four edits were SAVED above, so Revert has nothing unsaved to
+      # throw away and the history stands. Reverting is about work that is not
+      # on disk; what is on disk is walked back with Undo instead.
+      check vm.inspector.undoStack.val.len == 4
       check vm.workspaceEditStage.val == wesClean
       dispose()
 
@@ -5890,4 +6015,1570 @@ suite "Editor ViewModels (M20 story flow preview runtime)":
         check projectPreview.metadata.story.kind == story.kind
         check projectPreview.metadata.renderKind.len > 0
         check projectPreview.bodyText.len > 20
+      dispose()
+
+# ===========================================================================
+# Cross-surface integration
+# ===========================================================================
+#
+# The editor's surfaces (sidebar, layers tree, breadcrumb, inspector,
+# foundations, preview, command bar) are individually covered above, mostly
+# one signal at a time. The bugs that reach users live in the seams between
+# them: a tree click that does not reach the inspector, a breadcrumb walk
+# that retargets the edit plan, a mode chip that silently drops the
+# selection, a read-only workspace that still writes to disk.
+#
+# ``createEditorVM`` builds the whole editor headlessly, so each case below
+# drives a realistic multi-surface flow with no browser: the story comes
+# from the sidebar, the tree rows and the selection payload come from the
+# preview bridge's own constructors (``previewDomLayerRows`` /
+# ``previewDomElementRef`` — the same procs the iframe bridge calls), the
+# edit goes through the inspector, and the plan lands on a real file under
+# a real temporary directory through the shared ``WorkspaceEditAdapter``
+# boundary defined at the top of this file. There is no second fake.
+
+suite "Editor ViewModels (cross-surface integration)":
+
+  const cardTreeJson = """
+[
+  {"id":"src:card","parentId":"","label":"article.card","tag":"article",
+   "sourceKey":"card.root","schemaKey":"dom.card",
+   "domPath":"article:nth-of-type(1)",
+   "sourceFile":"SRC","sourceLine":1,"depth":0,"childCount":2,
+   "expanded":true},
+  {"id":"src:media","parentId":"src:card","label":"figure.card-media",
+   "tag":"figure","sourceKey":"card.media","schemaKey":"dom.card-media",
+   "domPath":"article:nth-of-type(1) > figure:nth-of-type(1)",
+   "sourceFile":"SRC","sourceLine":2,"depth":1,"childCount":1,
+   "expanded":true},
+  {"id":"src:title","parentId":"src:media","label":"h2.card-title",
+   "tag":"h2","sourceKey":"card.title","schemaKey":"dom.card-title",
+   "domPath":"article:nth-of-type(1) > figure:nth-of-type(1) > h2:nth-of-type(1)",
+   "sourceFile":"SRC","sourceLine":3,"depth":2,"childCount":0},
+  {"id":"src:body","parentId":"src:card","label":"p.card-body","tag":"p",
+   "sourceKey":"card.body","schemaKey":"dom.card-body",
+   "domPath":"article:nth-of-type(1) > p:nth-of-type(1)",
+   "sourceFile":"SRC","sourceLine":4,"depth":1,"childCount":0}
+]
+"""
+
+  let cardStory = StoryRef(group: "DestinationCard", name: "Default",
+    kind: skComponent, index: 0)
+
+  proc cardStoryGroups(): seq[StoryGroup] =
+    @[StoryGroup(name: "DestinationCard", kind: skComponent, expanded: true,
+        items: @[StoryItem(name: "Default", description: "Card default",
+          kind: skComponent, group: "DestinationCard")]),
+      StoryGroup(name: "Foundations", kind: skFoundation, expanded: true,
+        items: @[StoryItem(name: "Colors", description: "Design tokens",
+          kind: skFoundation, group: "Foundations")])]
+
+  proc cardMetadata(sourceFile: string): StoryRenderMetadata =
+    StoryRenderMetadata(story: cardStory,
+      title: "DestinationCard / Default",
+      sourceFile: sourceFile, sourceLine: 1, renderKind: "component")
+
+  proc cardSchema(sourceFile: string): seq[WorkspaceEditableSchemaEntry] =
+    @[WorkspaceEditableSchemaEntry(key: "dom.card-title.font-size",
+        kind: wskSourceMap, file: sourceFile, path: "dom.card-title.font-size",
+        story: cardStory, property: "font-size"),
+      WorkspaceEditableSchemaEntry(key: "dom.card-media.padding",
+        kind: wskSourceMap, file: sourceFile, path: "dom.card-media.padding",
+        story: cardStory, property: "padding"),
+      WorkspaceEditableSchemaEntry(key: "dom.card.background-color",
+        kind: wskSourceMap, file: sourceFile,
+        path: "dom.card.background-color",
+        story: cardStory, property: "background-color")]
+
+  proc titleSelection(sourceFile: string; tree: string): ElementRef =
+    ## What the preview bridge posts back after the layers tree asked it to
+    ## select ``src:title``: the same element, now carrying its computed
+    ## style properties and the tree it came from.
+    previewDomElementRef(cardMetadata(sourceFile),
+      "h2", "", "card-title", "", "",
+      "article.card > figure.card-media > h2.card-title",
+      sourceFile, 3,
+      "block", "static", "", "rgb(17, 24, 39)", "", "", "", "",
+      "", "", "", "", "20px", "600", "", "", "", "", "",
+      "Santorini", "src:title", "card.title", "dom.card-title",
+      "", tree)
+
+  proc mediaSelection(sourceFile: string; tree: string): ElementRef =
+    previewDomElementRef(cardMetadata(sourceFile),
+      "figure", "", "card-media", "", "",
+      "article.card > figure.card-media",
+      sourceFile, 2,
+      "flex", "relative", "", "", "12px", "", "", "",
+      "", "", "", "", "", "", "", "", "", "", "",
+      "", "src:media", "card.media", "dom.card-media",
+      "", tree)
+
+  test "layers_tree_click_populates_inspector_and_targets_the_right_source":
+    ## Sidebar -> layers tree -> preview bridge -> inspector -> edit plan ->
+    ## workspace write. The element the tree selected is the element the
+    ## inspector shows, and the plan names that element's own file, line and
+    ## property — not the story's, and not an ancestor's.
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("xsurface-tree-to-plan")
+      defer: removeDir(root)
+
+      let sourceFile = root / "card.nim"
+      atomicWrite(sourceFile,
+        "card.background-color=#ffffff\n" &
+        "card-media.padding=12px\n" &
+        "card-title.font-size=20px\n")
+      let tree = cardTreeJson.replace("SRC", sourceFile)
+
+      let recorder = WorkspaceEditRecorder()
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "Cross-surface card workspace",
+        storyGroups = cardStoryGroups(),
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true),
+        editAdapter = adapterFor(root, cardSchema(sourceFile),
+          recorder = recorder)))
+
+      # --- Sidebar: pick the story. -------------------------------------
+      check vm.sidebar.selectStory(vm, cardStory)
+      check vm.selectedStory.val.name == "Default"
+      check vm.sidebar.filteredItems.val.len == 2
+
+      # --- Layers tree: the bridge hands over the scene graph. ----------
+      vm.inspector.setSelectionTree(previewDomLayerRows(tree))
+      check vm.inspector.layers.val.len == 4
+
+      # --- Click the leaf row. The tree alone carries source metadata
+      # but no computed style, so the inspector has the identity first
+      # and the properties once the preview answers.
+      check vm.selectInspectorElementById("src:title")
+      check vm.inspector.selectedElement.val.id == "src:title"
+      check vm.inspector.selectedElement.val.sourceLine == 3
+      check vm.inspector.layers.val.anyIt(it.id == "src:title" and it.selected)
+      check vm.inspector.selectedElement.val.ancestors ==
+        @["article.card", "figure.card-media", "h2.card-title"]
+
+      check vm.selectInspectorElement(titleSelection(sourceFile, tree))
+
+      # --- Inspector: populated with *this* element's properties. -------
+      check vm.inspector.hasElement.val
+      check vm.inspector.selectedElement.val.id == "src:title"
+      check vm.inspector.selectedElement.val.properties.anyIt(
+        it.name == "font-size" and it.value == "20px" and
+        it.schemaKey == "dom.card-title.font-size")
+      check vm.inspector.selectedElement.val.properties.anyIt(
+        it.name == "color" and it.value == "rgb(17, 24, 39)")
+      # The sibling's padding belongs to the figure, not to the h2.
+      check not vm.inspector.selectedElement.val.properties.anyIt(
+        it.name == "padding")
+
+      # --- Edit one property: the plan names file, line and property. ---
+      let edit = vm.editCssProperty("font-size", "24px", pesLocal)
+      check edit.status == pesAccepted
+      check edit.sourceEdit.file == sourceFile
+      check edit.sourceEdit.line == 3
+      check edit.sourceEdit.property == "font-size"
+      check edit.sourceEdit.oldValue == "20px"
+      check edit.sourceEdit.newValue == "24px"
+      check edit.sourceEdit.schemaKey == "dom.card-title.font-size"
+      check vm.workspaceEditStage.val == wesDirty
+      check vm.inspector.pendingSourceEdits.val.len == 1
+
+      # --- Save: the real file changes, and only the edited line. -------
+      let saved = vm.runEditorCommand(eckSave)
+      check saved.status != ecsFailed
+      let written = readFile(sourceFile)
+      check written.contains("card-title.font-size=24px")
+      check written.contains("card-media.padding=12px")
+      check written.contains("card.background-color=#ffffff")
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      # The preview was told to reload the story the sidebar had selected.
+      check recorder.reloadedStories == @[cardStory]
+      dispose()
+
+  test "breadcrumb_walk_retargets_the_inspector_then_yields_to_a_new_selection":
+    ## Breadcrumb <-> inspector <-> layers tree <-> edit plan. Clicking a
+    ## middle segment is a walk: the deeper trail is retained (dimmed) and
+    ## the inspector retargets to the ancestor, so the next edit lands on
+    ## the ancestor's source line. A selection from anywhere else replaces
+    ## the trail outright.
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("xsurface-breadcrumb")
+      defer: removeDir(root)
+
+      let sourceFile = root / "card.nim"
+      atomicWrite(sourceFile,
+        "card.background-color=#ffffff\n" &
+        "card-media.padding=12px\n" &
+        "card-title.font-size=20px\n")
+      let tree = cardTreeJson.replace("SRC", sourceFile)
+
+      let recorder = WorkspaceEditRecorder()
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "Cross-surface breadcrumb workspace",
+        storyGroups = cardStoryGroups(),
+        initialStory = some(cardStory),
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true),
+        editAdapter = adapterFor(root, cardSchema(sourceFile),
+          recorder = recorder)))
+      vm.inspector.setSelectionTree(previewDomLayerRows(tree))
+
+      # Leaf selection: the breadcrumb is the element's own ancestry.
+      check vm.selectInspectorElementById("src:title")
+      check vm.selectInspectorElement(titleSelection(sourceFile, tree))
+      var crumb = vm.inspector.breadcrumbPath()
+      check crumb.entries.mapIt(it.id) ==
+        @["src:card", "src:media", "src:title"]
+      check crumb.selectedIndex == 2
+
+      # Walk up to the middle segment. The leaf stays on the trail, below
+      # the selection — that is the "retained and dimmed" tail.
+      check vm.selectInspectorElementById("src:media", soBreadcrumb)
+      crumb = vm.inspector.breadcrumbPath()
+      check crumb.entries.mapIt(it.id) ==
+        @["src:card", "src:media", "src:title"]
+      check crumb.selectedIndex == 1
+      check vm.inspector.selectedElement.val.id == "src:media"
+      # The layers tree followed the walk.
+      check vm.inspector.layers.val.anyIt(it.id == "src:media" and it.selected)
+      check not vm.inspector.layers.val.anyIt(
+        it.id == "src:title" and it.selected)
+
+      # The preview echoes the walk back with the ancestor's properties,
+      # and the next edit targets the ancestor's line — not the leaf's.
+      check vm.selectInspectorElement(mediaSelection(sourceFile, tree))
+      crumb = vm.inspector.breadcrumbPath()
+      check crumb.selectedIndex == 1
+      check crumb.entries.len == 3
+      let edit = vm.editCssProperty("padding", "20px", pesLocal)
+      check edit.status == pesAccepted
+      check edit.sourceEdit.line == 2
+      check edit.sourceEdit.schemaKey == "dom.card-media.padding"
+
+      # An external selection (tree click, preview click, keyboard nav)
+      # is a jump, not a walk: the retained tail is dropped.
+      check vm.selectInspectorElementById("src:body")
+      crumb = vm.inspector.breadcrumbPath()
+      check crumb.entries.mapIt(it.id) == @["src:card", "src:body"]
+      check crumb.selectedIndex == 1
+      dispose()
+
+  test "mode_changes_leave_the_selection_and_the_layers_tree_alone":
+    ## Mode strip <-> layers tree <-> inspector <-> breadcrumb. Toggling
+    ## View/Comment/Edit/Spec is a chrome change: the selection, the tree's
+    ## expansion and search state, the breadcrumb and the staged edit all
+    ## survive the round trip.
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("xsurface-modes")
+      defer: removeDir(root)
+
+      let sourceFile = root / "card.nim"
+      atomicWrite(sourceFile, "card-title.font-size=20px\n")
+      let tree = cardTreeJson.replace("SRC", sourceFile)
+
+      let recorder = WorkspaceEditRecorder()
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "Cross-surface mode workspace",
+        storyGroups = cardStoryGroups(),
+        initialStory = some(cardStory),
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true),
+        editAdapter = adapterFor(root, cardSchema(sourceFile),
+          recorder = recorder)))
+      vm.inspector.setSelectionTree(previewDomLayerRows(tree))
+      check vm.selectInspectorElementById("src:title")
+      check vm.selectInspectorElement(titleSelection(sourceFile, tree))
+      vm.inspector.toggleLayerExpanded("src:media")
+
+      let edit = vm.editCssProperty("font-size", "24px", pesLocal)
+      check edit.status == pesAccepted
+
+      let selectionBefore = vm.inspector.selectedElement.val
+      let layersBefore = vm.inspector.layers.val
+      let crumbBefore = vm.inspector.breadcrumbPath()
+      let storyBefore = vm.selectedStory.val
+      let pendingBefore = vm.inspector.pendingSourceEdits.val
+
+      for mode in [emComment, emEdit, emSpec, emView]:
+        vm.setEditMode(mode)
+        check vm.editMode.val == mode
+        check vm.surfaceSig.val == (if mode == emSpec: sSpec else: sPreview)
+        check vm.inspector.selectedElement.val == selectionBefore
+        check vm.inspector.layers.val == layersBefore
+        check vm.inspector.breadcrumbPath() == crumbBefore
+        check vm.selectedStory.val == storyBefore
+        check vm.inspector.pendingSourceEdits.val == pendingBefore
+        check vm.hasSelection.val
+
+      # Back where we started, and the staged edit still saves.
+      check vm.editMode.val == emView
+      check vm.applyWorkspaceFileEdits().ok
+      check readFile(sourceFile).contains("card-title.font-size=24px")
+      dispose()
+
+  test "read_only_workspace_refuses_the_write_and_says_why":
+    ## Permissions <-> command bar <-> inspector <-> workspace adapter.
+    ## ``writeSource: false`` must not merely grey out the Save chip: every
+    ## path into the workspace transaction has to refuse, and the file on
+    ## disk has to be untouched. An agent proposal accepted in a read-only
+    ## workspace is the same transaction by another door.
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("xsurface-read-only")
+      defer: removeDir(root)
+
+      let sourceFile = root / "card.nim"
+      let original = "card-title.font-size=20px\n"
+      atomicWrite(sourceFile, original)
+      let tree = cardTreeJson.replace("SRC", sourceFile)
+
+      let recorder = WorkspaceEditRecorder()
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "Cross-surface read-only workspace",
+        storyGroups = cardStoryGroups(),
+        initialStory = some(cardStory),
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: false),
+        editAdapter = adapterFor(root, cardSchema(sourceFile),
+          recorder = recorder)))
+      vm.inspector.setSelectionTree(previewDomLayerRows(tree))
+      check vm.selectInspectorElementById("src:title")
+      check vm.selectInspectorElement(titleSelection(sourceFile, tree))
+
+      # Staging is fine — the user can see what the change would be.
+      let edit = vm.editCssProperty("font-size", "24px", pesLocal)
+      check edit.status == pesAccepted
+      check vm.inspector.pendingSourceEdits.val.len == 1
+
+      # The bridge state and the command bar both say read-only, with a
+      # reason the UI can show.
+      check vm.writeBridgeClientState() == wbcsReadOnly
+      let saveState = vm.commandState(eckSave)
+      check saveState.status == ecsDisabled
+      check saveState.diagnostic.contains("read-only")
+
+      # Running the command refuses and reports the same reason.
+      let ran = vm.runEditorCommand(eckSave)
+      check ran.status == ecsFailed
+      check ran.diagnostic.contains("read-only")
+      check readFile(sourceFile) == original
+
+      # ... and so must the transaction itself. `applyWorkspaceFileEdits`
+      # is the public entry point every other write path funnels through
+      # (`retryWorkspaceFileEdits`, `acceptAgentProposedEdit`,
+      # `revertAgentProposedEdit`), and none of those consult the
+      # permission. A workspace declared read-only must not be written to
+      # through any of them.
+      let applied = vm.applyWorkspaceFileEdits()
+      check not applied.ok
+      check applied.diagnostics.anyIt(it.message.contains("read-only"))
+      check readFile(sourceFile) == original
+
+      # The same door, opened by an accepted agent proposal. Reset the file
+      # first: the direct-apply above already wrote it, and the proposal's
+      # own ``expectedOldValue`` would then miss and mask the hole behind a
+      # source-conflict diagnostic instead of the missing permission check.
+      atomicWrite(sourceFile, original)
+      let proposalId = vm.chat.addAgentEditProposal(AgentEditProposal(
+        title: "Agent spacing proposal",
+        summary: "bump the title size",
+        sourceEdits: @[SourceEditPlan(
+          file: sourceFile, line: 1, property: "font-size",
+          oldValue: "20px", newValue: "28px",
+          originDetail: "schema:dom.card-title.font-size",
+          scope: pesLocal, sourceScope: sskLocalInstance,
+          planKind: cspStructuredSchemaUpdate,
+          schemaKey: "dom.card-title.font-size", reversible: true,
+          conflictKey: sourceFile & ":1:font-size",
+          expectedOldValue: "20px")]))
+      let accepted = vm.acceptAgentProposedEdit(proposalId)
+      check not accepted.ok
+      check readFile(sourceFile) == original
+      dispose()
+
+  test "binding_a_property_to_a_foundation_token_writes_the_binding":
+    ## Foundations <-> inspector <-> design schema <-> edit plan. Binding a
+    ## property to a token must write the *binding*, so a later change to
+    ## the token's value reaches the element; writing the token's literal
+    ## value would silently break that link.
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("xsurface-token-binding")
+      defer: removeDir(root)
+
+      let viewFile = root / "card.nim"
+      let tokenFile = root / "tokens.schema"
+      atomicWrite(viewFile, "card.background-color=#ffffff\n")
+      atomicWrite(tokenFile, "semantic.surface.raised=#f8fafc\n")
+      let tree = cardTreeJson.replace("SRC", viewFile)
+
+      let recorder = WorkspaceEditRecorder()
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "Cross-surface token workspace",
+        storyGroups = cardStoryGroups(),
+        initialStory = some(cardStory),
+        foundationTokens = @[FoundationTokenEntry(
+          key: "semantic.surface.raised", kind: ftkSemanticColor,
+          value: "#f8fafc", sourceFile: tokenFile, sourceLine: 1,
+          schemaKey: "tokens.semantic.surface.raised",
+          property: "background-color", affectedStories: @[cardStory])],
+        designSystemSchema = DesignSystemSchema(
+          schemaVersion: 1,
+          projectId: "isonim-cross-surface",
+          ownerPackage: "isonim-tests",
+          frameworkContract: "isonim-editor-design-schema-v1",
+          nodes: @[DesignSchemaNode(key: "semantic.surface.raised",
+            kind: dsnSemanticToken, name: "Raised surface",
+            property: "background-color", value: "#f8fafc",
+            sourceSpan: SourceSpan(file: viewFile, line: 1, column: 1,
+              endLine: 1, endColumn: 40))]),
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true),
+        editAdapter = adapterFor(root,
+          @[WorkspaceEditableSchemaEntry(key: "semantic.surface.raised",
+              kind: wskToken, file: viewFile, path: "semantic.surface.raised",
+              story: cardStory, property: "background-color"),
+            WorkspaceEditableSchemaEntry(
+              key: "tokens.semantic.surface.raised",
+              kind: wskToken, file: tokenFile,
+              path: "tokens.semantic.surface.raised",
+              story: cardStory, property: "semantic.surface.raised")],
+          recorder = recorder)))
+      vm.inspector.setSelectionTree(previewDomLayerRows(tree))
+
+      # Foundations: the token the user picked in the tokens panel.
+      check vm.selectFoundationToken("semantic.surface.raised")
+      check vm.foundations.selectedToken.val.value == "#f8fafc"
+
+      # Inspector: the card root, with a hard-coded colour.
+      check vm.selectInspectorElementById("src:card")
+      check vm.selectInspectorElement(ElementRef(
+        id: "src:card", sourceKey: "card.root", tag: "article",
+        schemaKey: "dom.card", sourceFile: viewFile, sourceLine: 1,
+        properties: @[PropertyInfo(name: "background-color",
+          value: "#ffffff", origin: poSetStyle,
+          originDetail: "style.background-color",
+          sourceFile: viewFile, sourceLine: 1,
+          schemaKey: "semantic.surface.raised",
+          directStyleAllowed: true)]))
+
+      # Bind, do not inline: the plan carries the token reference.
+      let bound = vm.tokenizeStyleValue("background-color",
+        vm.foundations.selectedToken.val.key)
+      check bound.status == pesAccepted
+      check bound.sourceEdit.planKind == cspTokenUpdate
+      check bound.sourceEdit.tokenName == "semantic.surface.raised"
+      check bound.sourceEdit.newValue == "token(semantic.surface.raised)"
+      check bound.sourceEdit.newValue != "#f8fafc"
+      check bound.sourceEdit.oldValue == "#ffffff"
+
+      let saved = vm.applyWorkspaceFileEdits()
+      check saved.ok
+      let written = readFile(viewFile)
+      check written.contains("token(semantic.surface.raised)")
+      check not written.contains("#f8fafc")
+
+      # The link is live: editing the token now reports the bound story.
+      let retoned = vm.editFoundationToken("semantic.surface.raised",
+        "#e2e8f0")
+      check retoned.status == pesAccepted
+      check retoned.sourceEdit.file == tokenFile
+      check retoned.sourceEdit.planKind == cspTokenUpdate
+      check retoned.impacts.anyIt(cardStory in it.affectedStories)
+      check vm.applyWorkspaceFileEdits().ok
+      check readFile(tokenFile).contains("semantic.surface.raised=#e2e8f0")
+      # The element still reads through the binding, not a stale literal.
+      check readFile(viewFile).contains("token(semantic.surface.raised)")
+      dispose()
+
+  # ------------------------------------------------------------------ #
+  #  Phase G+1 — inspector section writeback.
+  #
+  #  Phase A demolished the tabbed inspector and Phases B-H rebuilt the
+  #  chrome without the writeback: no section passed ``onChange`` to
+  #  ``mountPropertyRow``, so typing a value staged nothing and said
+  #  nothing. These cases pin the replacement — that a row commit
+  #  reaches source, that it picks the same scope the old inspector
+  #  picked, and that every path which cannot commit produces a message
+  #  rather than silence.
+  #
+  #  ``test_editor_shell_views.nim``'s
+  #  ``component_edit_inspector_explains_and_applies_design_system_scope``
+  #  is the browser-side sibling and is still ``skip()``ped pending the
+  #  section-chrome rewrite; the scope rule itself is covered here.
+  # ------------------------------------------------------------------ #
+
+  proc writebackVm(root, sourceFile, tree: string;
+      writeSource = true): EditorVM =
+    let recorder = WorkspaceEditRecorder()
+    result = createEditorVM(newEditorWorkspace(
+      title = "Section writeback workspace",
+      storyGroups = cardStoryGroups(),
+      initialStory = some(cardStory),
+      permissions = EditorWorkspacePermissions(readSource: true,
+        writeSource: writeSource),
+      editAdapter = adapterFor(root, cardSchema(sourceFile),
+        recorder = recorder)))
+    result.inspector.setSelectionTree(previewDomLayerRows(tree))
+    discard result.selectInspectorElementById("src:title")
+    discard result.selectInspectorElement(titleSelection(sourceFile, tree))
+
+  test "section_row_commit_reaches_source_through_the_edit_pipeline":
+    ## The founder's report: typing a value in the mounted inspector did
+    ## nothing. A row commit must stage a plan that names the selected
+    ## element's own file, line and property, and must survive a save.
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("writeback-commit")
+      defer: removeDir(root)
+      let sourceFile = root / "card.nim"
+      atomicWrite(sourceFile, "card-title.font-size=20px\n")
+      let tree = cardTreeJson.replace("SRC", sourceFile)
+      let vm = writebackVm(root, sourceFile, tree)
+
+      let outcome = vm.commitInspectorValue("font-size", "24px",
+        sskLocalInstance)
+      check outcome.ok
+      check outcome.message == ""
+      check outcome.committedValue == "24px"
+      check vm.inspector.pendingSourceEdits.val.len == 1
+      let plan = vm.inspector.pendingSourceEdits.val[0]
+      check plan.property == "font-size"
+      check plan.file == sourceFile
+      check plan.line == 3
+      check vm.applyWorkspaceFileEdits().ok
+      check readFile(sourceFile).contains("font-size=24px")
+      dispose()
+
+  test "section_row_commit_evaluates_expressions_and_keeps_the_unit":
+    ## ``6*4px`` is the shape the founder asked about. The parser lives
+    ## in ``normalizePrimitiveInputValue``, which the old path reached
+    ## through ``applyInspectorValue``; the section path has to reach
+    ## the same one rather than grow a second arithmetic.
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("writeback-expr")
+      defer: removeDir(root)
+      let sourceFile = root / "card.nim"
+      atomicWrite(sourceFile, "card-title.font-size=20px\n")
+      let tree = cardTreeJson.replace("SRC", sourceFile)
+      let vm = writebackVm(root, sourceFile, tree)
+
+      let outcome = vm.commitInspectorValue("font-size", "6*4px",
+        sskLocalInstance)
+      check outcome.ok
+      check outcome.committedValue == "24px"
+      check vm.inspector.pendingSourceEdits.val[0].newValue == "24px"
+      dispose()
+
+  test "section_row_scope_default_matches_the_old_inspectors_rule":
+    ## ``defaultScopeIndex`` is transcribed from
+    ## ``renderPropertyInput``. Two implementations of "which source
+    ## owns this property" would disagree precisely where nothing tests
+    ## them, so the rule is pinned directly: a shared / token-backed /
+    ## schema-owned property defaults to the first EDITABLE non-local
+    ## scope; anything else defaults to the head of the list.
+    createRoot proc(dispose: proc()) =
+      let choices = @[
+        SourceScopeChoice(kind: sskLocalInstance, label: "Local instance",
+          editable: true),
+        SourceScopeChoice(kind: sskSharedClass, label: "Shared class",
+          editable: false),
+        SourceScopeChoice(kind: sskSemanticToken, label: "Semantic token",
+          editable: true)]
+
+      # Purely local property: index 0, even though editable shared
+      # scopes exist.
+      let localProp = PropertyInfo(name: "font-size", value: "20px")
+      check defaultScopeIndex(choices, localProp) == 0
+
+      # Shared property: skips the NON-editable shared class and lands
+      # on the first editable non-local scope. Picking the shared class
+      # here would be the plausible-but-wrong rule.
+      let sharedProp = PropertyInfo(name: "font-size", value: "20px",
+        sharedCount: 7)
+      check defaultScopeIndex(choices, sharedProp) == 2
+
+      # Token-backed and schema-owned reach the same branch.
+      check defaultScopeIndex(choices,
+        PropertyInfo(name: "color", tokenName: "semantic.text")) == 2
+      check defaultScopeIndex(choices,
+        PropertyInfo(name: "color", schemaKey: "dom.card.color")) == 2
+
+      # Strip order: local first, shared class second, then the rest.
+      check orderedScopeIndexes(choices, 2) == @[0, 1, 2]
+      dispose()
+
+  test "section_row_scope_choices_are_offered_and_commit_at_that_scope":
+    ## The spec's Bind/scope slot. The row's chips come from
+    ## ``inspectorRowWiring``; each carries the same "Apply <scope>
+    ## scope for <property>" label the old inspector used, and choosing
+    ## one moves where a subsequent commit lands.
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("writeback-scope")
+      defer: removeDir(root)
+      let sourceFile = root / "card.nim"
+      atomicWrite(sourceFile, "card-title.font-size=20px\n")
+      let tree = cardTreeJson.replace("SRC", sourceFile)
+      let vm = writebackVm(root, sourceFile, tree)
+
+      let wiring = vm.inspectorRowWiring("font-size")
+      check wiring.cssProperty == "font-size"
+      let options = wiring.scopeOptions()
+      check options.len > 0
+      check options.anyIt(it.ariaLabel ==
+        "Apply local instance scope for font-size")
+      # Exactly one chip reads as selected, and the strip is ordered
+      # local-first.
+      check options.countIt(it.selected) == 1
+      check options[0].shortLabel == sourceScopeAbbrev(sskLocalInstance)
+
+      # Committing through the wiring stages at the resolved scope.
+      wiring.commit("26px")
+      check wiring.commitMessage.val == ""
+      check vm.inspector.pendingSourceEdits.val.len == 1
+      check vm.inspector.pendingSourceEdits.val[0].newValue == "26px"
+      dispose()
+
+  test "section_row_refuses_out_loud_on_a_read_only_workspace":
+    ## The founder's actual complaint was silence, and a read-only
+    ## workspace is the case with a correct sentence already written
+    ## for it. The row must say that sentence at the keystroke, not at
+    ## the Save several interactions later, and must stage nothing.
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("writeback-read-only")
+      defer: removeDir(root)
+      let sourceFile = root / "card.nim"
+      let original = "card-title.font-size=20px\n"
+      atomicWrite(sourceFile, original)
+      let tree = cardTreeJson.replace("SRC", sourceFile)
+      let vm = writebackVm(root, sourceFile, tree, writeSource = false)
+
+      let wiring = vm.inspectorRowWiring("font-size")
+      wiring.commit("24px")
+      check wiring.commitMessage.val ==
+        "This workspace is read-only for source changes."
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check readFile(sourceFile) == original
+
+      # The same refusal through the direct entry point.
+      let outcome = vm.commitInspectorValue("font-size", "24px",
+        sskLocalInstance)
+      check not outcome.ok
+      check outcome.message.contains("read-only")
+      dispose()
+
+  test "section_row_refuses_out_loud_with_no_selection_or_no_property":
+    ## Two more ways to reach a dead end. Neither produced anything
+    ## before; both have to produce a sentence.
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("writeback-no-selection")
+      defer: removeDir(root)
+      let sourceFile = root / "card.nim"
+      atomicWrite(sourceFile, "card-title.font-size=20px\n")
+      let tree = cardTreeJson.replace("SRC", sourceFile)
+
+      let recorder = WorkspaceEditRecorder()
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "No selection workspace",
+        storyGroups = cardStoryGroups(),
+        initialStory = some(cardStory),
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true),
+        editAdapter = adapterFor(root, cardSchema(sourceFile),
+          recorder = recorder)))
+
+      # Nothing selected at all.
+      let noSelection = vm.commitInspectorValue("font-size", "24px",
+        sskLocalInstance)
+      check not noSelection.ok
+      check noSelection.message.contains("Select an element")
+
+      # Selected, but the element does not expose the property. A row
+      # for a property the element has no opinion about must not
+      # invent one.
+      vm.inspector.setSelectionTree(previewDomLayerRows(tree))
+      discard vm.selectInspectorElementById("src:title")
+      discard vm.selectInspectorElement(titleSelection(sourceFile, tree))
+      let unknown = vm.commitInspectorValue("grid-auto-flow", "column",
+        sskLocalInstance)
+      check not unknown.ok
+      check unknown.message.contains("does not expose")
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      dispose()
+
+  test "section_row_commit_leaves_the_selection_and_the_layers_tree_alone":
+    ## Cross-surface: a commit must not disturb the surfaces around it.
+    ## The inspector, the layers tree and the breadcrumb all read one
+    ## selection, and an edit that silently retargeted it would be the
+    ## same class of defect by a different route.
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("writeback-selection-stable")
+      defer: removeDir(root)
+      let sourceFile = root / "card.nim"
+      atomicWrite(sourceFile, "card-title.font-size=20px\n")
+      let tree = cardTreeJson.replace("SRC", sourceFile)
+      let vm = writebackVm(root, sourceFile, tree)
+
+      let before = vm.inspector.selectedElement.val.id
+      check before == "src:title"
+      let selectedRowsBefore = vm.inspector.filteredLayers.val.len
+
+      check vm.commitInspectorValue("font-size", "24px", sskLocalInstance).ok
+      check vm.inspector.selectedElement.val.id == before
+      check vm.inspector.filteredLayers.val.len == selectedRowsBefore
+      check vm.inspector.selectedElement.val.properties.anyIt(
+        it.name == "font-size" and it.value == "24px")
+      dispose()
+
+suite "Editor ViewModels (detail-view preview wiring)":
+  ## The detail view's project frame had no selection bridge while its Layers
+  ## panel and its inspector were both live over it, so the editor presented a
+  ## full editing UI on top of a canvas where no click ever selected anything.
+  ## It is also the view that selecting a story LANDS on, so it was the first
+  ## surface a user touched.
+  ##
+  ## The browser suite cannot guard this: the packaged wanderlust example's
+  ## component detail renders a variant-matrix card and no ``documentHtml`` at
+  ## all, so its project frame is empty and the path is never taken there. The
+  ## composition rule is pure, so it is checked here instead.
+
+  const bodyHtml = "<html><body><main>ship this exactly</main></body></html>"
+
+  proc metadataFixture(): StoryRenderMetadata =
+    StoryRenderMetadata(title: "Hero", sourceFile: "src/pages/home.nim",
+      sourceLine: 85, renderKind: "component")
+
+  test "view_mode_gets_the_document_untouched":
+    ## View's contract is that it renders what ships. Byte equality, not
+    ## "contains the body" -- a bridge appended after </body> would still
+    ## satisfy the weaker check, and that is exactly how it would regress.
+    check detailPreviewDocument(bodyHtml, metadataFixture(), emView) == bodyHtml
+
+  test "edit_and_comment_modes_get_the_selection_bridge":
+    for mode in [emEdit, emComment]:
+      let doc = detailPreviewDocument(bodyHtml, metadataFixture(), mode)
+      check doc != bodyHtml
+      # The page's own markup survives injection.
+      check "ship this exactly" in doc
+      # The bridge is what was injected, identified by the elements the
+      # scene-graph walk itself excludes as editor chrome.
+      check "isonim-editor-selection-style" in doc
+
+  test "detail_and_edit_views_compose_the_same_document":
+    ## Two copies of "when may we inject" is how the two views drifted apart
+    ## in the first place. Outside View mode they must agree exactly.
+    for mode in [emEdit, emComment]:
+      check detailPreviewDocument(bodyHtml, metadataFixture(), mode) ==
+        editablePreviewDocument(bodyHtml, metadataFixture(), mode)
+
+suite "Editor ViewModels (authored properties reach the inspector)":
+  ## The DOM selection bridge captures a FIXED list of 17 computed properties.
+  ## The DSL records provenance for whatever the author wrote, and the
+  ## inspector renders rows for far more than 17. A token bound to a property
+  ## outside the 17 therefore had provenance, had a row, and still could not
+  ## light the linked chip.
+  ##
+  ## This payload is grip's, copied from `p.positioning` as the browser
+  ## serves it: `font` and `color` both bound to `sys` tokens, `margin` set
+  ## through a class. Only `color` is one of the 17.
+  const positioningProps =
+    "font|var(--sys-type-lead)|tok|class:positioning|sys-type-lead|;" &
+    "color|var(--sys-color-text-primary)|tok|class:positioning|" &
+      "sys-color-text-primary|;" &
+    "margin|0 0 var(--sys-space-gutter)|cls|class:positioning||"
+
+  proc captured(): seq[PropertyInfo] =
+    ## What the bridge captured: `color` is in the 17, `font` is not.
+    @[PropertyInfo(name: "color", value: "rgb(20, 20, 20)",
+        origin: poInherited, directStyleAllowed: true)]
+
+  test "the captured property keeps its computed value and gains its token":
+    let props = captured().withStyleProvenance(positioningProps)
+    check props.len == 1
+    check props[0].name == "color"
+    # The COMPUTED value survives -- the edit path round-trips it, and the
+    # authored form is kept separately in originDetail.
+    check props[0].value == "rgb(20, 20, 20)"
+    check props[0].tokenName == "sys-color-text-primary"
+    check props[0].isTokenBound()
+
+  test "an authored property outside the captured list still arrives":
+    let extra = captured().authoredOnlyProperties(positioningProps)
+    let names = extra.mapIt(it.name)
+    # `color` was already captured and must not be duplicated.
+    check "color" notin names
+    check "font" in names
+    check "margin" in names
+    let font = extra.filterIt(it.name == "font")[0]
+    check font.tokenName == "sys-type-lead"
+    check font.isTokenBound()
+    # No computed value was read for it, so it reports the authored one
+    # rather than inventing a number.
+    check font.value == "var(--sys-type-lead)"
+    # A class-set property arrives too, and is honestly NOT token-bound.
+    let margin = extra.filterIt(it.name == "margin")[0]
+    check not margin.isTokenBound()
+    check margin.origin == poTailwindClass
+
+  test "an element with no provenance payload is unchanged":
+    ## Every non-IsoNim preview and every hand-built fixture goes through
+    ## this path, so the empty case must cost exactly nothing.
+    check captured().authoredOnlyProperties("").len == 0
+    check captured().withStyleProvenance("") == captured()
+
+  test "both token-bound properties are now bindable, not just one":
+    ## The regression in one line: before, this was 1.
+    let all = captured().withStyleProvenance(positioningProps) &
+      captured().authoredOnlyProperties(positioningProps)
+    check all.filterIt(it.isTokenBound()).mapIt(it.name).sorted() ==
+      @["color", "font"]
+
+suite "Editor ViewModels (the inspector adapts to what is selected)":
+  ## Everything here was found by looking at the rendered panel rather than at
+  ## the DOM, and each case pins a defect that reading attributes had missed.
+
+  test "a text layer's fill is its text colour":
+    ## `p.positioning` binds `color` to `sys.color.text.primary` and has a
+    ## transparent background. Asking `background-color` reported "nothing
+    ## here" about the element's most editable property -- and, on a design
+    ## system, the one carrying the token.
+    check fillTargetProperty("p") == "color"
+    check fillTargetProperty("h1") == "color"
+    check fillTargetProperty("span") == "color"
+    check fillTargetProperty("div") == "background-color"
+    check fillTargetProperty("section") == "background-color"
+    # An unknown tag must not be guessed into the text branch: filling a
+    # `<marquee>`'s text colour when the author meant its background is a
+    # silent wrong answer, where the box default is at least the common one.
+    check fillTargetProperty("marquee") == "background-color"
+
+  test "the selection label and the fill target agree on what an element is":
+    ## Two copies of "what kind of element is this" is what put a Text label
+    ## above a background-colour Fill section. One classifier, both readers.
+    for tag in ["p", "h1", "span", "code"]:
+      check selectionDisplayName(tag) == "Text"
+      check fillTargetProperty(tag) == "color"
+    for tag in ["div", "section", "nav"]:
+      check selectionDisplayName(tag) == "Group"
+      check fillTargetProperty(tag) == "background-color"
+
+  test "an unknown tag identifies itself rather than becoming Element":
+    check selectionDisplayName("marquee") == "Marquee"
+    check selectionDisplayName("") == ""
+    check elementKind("marquee") == ekUnknown
+
+  test "a text layer opens Typography and Fill, not Position":
+    let sections = defaultExpandedSections("p", positioned = false)
+    check isTypography in sections
+    check isFill in sections
+    # Position on a static-flow element offers X / Y / rotation, which are
+    # not merely zero there -- they are inapplicable.
+    check isPosition notin sections
+
+  test "a positioned element does open Position":
+    let sections = defaultExpandedSections("p", positioned = true)
+    check isPosition in sections
+    check isTypography in sections
+
+  test "an image opens neither Typography nor Fill":
+    let sections = defaultExpandedSections("img", positioned = false)
+    check isTypography notin sections
+    check isLayout in sections
+    check isEffects in sections
+
+  test "selecting a second element does not reverse a choice the user made":
+    ## The whole reason `sectionsUserSet` exists. A default that re-asserts
+    ## itself on the next click is not a default, it is an override.
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      let textEl = ElementRef(tag: "p", id: "e1",
+        properties: @[PropertyInfo(name: "position", value: "static")])
+
+      vm.inspector.applyKindDefaultExpansion(textEl)
+      check isTypography in vm.inspector.expandedSections.val
+
+      # The user closes Typography by clicking its header.
+      vm.inspector.toggleSectionExpanded(isTypography)
+      check isTypography notin vm.inspector.expandedSections.val
+
+      # Selecting another text element must leave it closed.
+      let otherText = ElementRef(tag: "h1", id: "e2",
+        properties: @[PropertyInfo(name: "position", value: "static")])
+      vm.inspector.applyKindDefaultExpansion(otherText)
+      check isTypography notin vm.inspector.expandedSections.val
+
+      # A section the user never touched still follows the defaults.
+      check isFill in vm.inspector.expandedSections.val
+      dispose()
+
+  test "a user-opened section stays open even where it is not a default":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      let img = ElementRef(tag: "img", id: "e3",
+        properties: @[PropertyInfo(name: "position", value: "static")])
+      vm.inspector.applyKindDefaultExpansion(img)
+      check isTypography notin vm.inspector.expandedSections.val
+
+      vm.inspector.toggleSectionExpanded(isTypography)
+      check isTypography in vm.inspector.expandedSections.val
+
+      # Another image: the default would close it, the user's choice wins.
+      vm.inspector.applyKindDefaultExpansion(ElementRef(tag: "img", id: "e4",
+        properties: @[PropertyInfo(name: "position", value: "static")]))
+      check isTypography in vm.inspector.expandedSections.val
+      dispose()
+
+  test "an empty selection leaves the sections alone":
+    ## Clearing the selection should not slam every section shut underneath
+    ## someone who is mid-task.
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      vm.inspector.applyKindDefaultExpansion(ElementRef(tag: "p", id: "e5"))
+      let before = vm.inspector.expandedSections.val
+      vm.inspector.applyKindDefaultExpansion(ElementRef())
+      check vm.inspector.expandedSections.val == before
+      dispose()
+
+let cssStory = StoryRef(group: "Home / Sections", name: "Hero",
+                        kind: skComponent)
+
+proc cssStoryGroups(): seq[StoryGroup] =
+  @[StoryGroup(name: "Home / Sections", items: @[
+    StoryItem(name: "Hero", kind: skComponent, group: "Home / Sections")])]
+
+proc taglineElement(): ElementRef =
+  ## What the preview bridge produces for `h1.tagline`: provenance for the
+  ## two properties the author wrote, and a computed value for the one the
+  ## inspector offers but the stylesheet does not declare.
+  previewDomElementRef(
+    StoryRenderMetadata(title: "Hero"),
+    "h1", "", "tagline", "", "", "", "", 0,
+    "block", "static", "", "rgb(0,0,0)", "", "0px 0px 30px", "877px",
+    "158px", "", "", "", "", "34px", "700", "39px", "", "1",
+    "877", "158", "Faster than C.", "el-1", "", "", "", "",
+    "font|var(--sys-type-display)|tok|class:tagline|sys-type-display;" &
+      "margin-bottom|30px|cls|class:tagline|",
+    "letter-spacing=-0.01px;text-align=left")
+
+proc cssAdapter(file: string): WorkspaceEditAdapter =
+  ## The same shape as grip's `editor/write_bridge.nim`, with the XHR
+  ## replaced by the filesystem. What is under test is the part grip owns:
+  ## which rule a property edit means, and what the file becomes.
+  result = WorkspaceEditAdapter(
+    allowMissingExpectedOldValue: true,
+    schema: @[WorkspaceEditableSchemaEntry(
+      key: "styles", kind: wskSourceMap, file: file, property: "")])
+  result.readFile = proc(f: string): WorkspaceReadResult =
+    WorkspaceReadResult(ok: true, content: readFile(f))
+  result.writeFile = proc(f, content: string): WorkspaceOperationResult =
+    atomicWrite(f, content)
+    WorkspaceOperationResult(ok: true)
+  result.patchFile = proc(plan: SourceEditPlan; content: string;
+      schema: WorkspaceEditableSchemaEntry): WorkspacePatchResult =
+    var selector = ""
+    if plan.originDetail.startsWith("class:"):
+      selector = "." & plan.originDetail["class:".len .. ^1]
+    elif plan.schemaKey.startsWith("dom."):
+      var parts = plan.schemaKey[4 .. ^1].split('.')
+      if parts.len > 0 and parts[^1] == plan.property:
+        parts.setLen(parts.len - 1)
+      if parts.len == 1: selector = "." & parts[0]
+    if selector.len == 0:
+      return WorkspacePatchResult(ok: false, diagnostics: @[
+        WorkspaceEditDiagnostic(kind: wedPatchFailed,
+          message: "no rule owns " & plan.property)])
+    let patched = patchCssInNimConst(content, "structureCssText", selector,
+                                     plan.property, plan.newValue)
+    if not patched.ok:
+      return WorkspacePatchResult(ok: false, diagnostics: @[
+        WorkspaceEditDiagnostic(kind: wedPatchFailed,
+          message: patched.message)])
+    WorkspacePatchResult(ok: true, patch: WorkspaceFilePatch(
+      file: schema.file, afterContent: patched.content, fullReload: true))
+
+suite "Editor ViewModels (a class-based project writes its stylesheet)":
+  ## The grip pilot's shape end to end: styles in one CSS rule, provenance
+  ## naming the class, an adapter that patches the rule, and a real file on
+  ## disk afterwards. Written because the browser round trip was silent --
+  ## a commit reported success and nothing reached the file -- and a test
+  ## that fails in half a second beats a browser that says nothing.
+
+  const styleSheet = """const structureCssText* = """ & "\"\"\"" & """
+  .tagline { font:var(--sys-type-display);
+             margin-bottom:30px; }
+""" & "\"\"\"" & """
+"""
+
+
+
+
+
+
+
+
+
+  proc cssVm(file: string): EditorVM =
+    result = createEditorVM(newEditorWorkspace(
+      title = "class-based workspace",
+      storyGroups = cssStoryGroups(),
+      initialStory = some(cssStory),
+      permissions = EditorWorkspacePermissions(readSource: true,
+        writeSource: true),
+      editAdapter = cssAdapter(file),
+      sourceAdapterReady = true))
+    discard result.selectInspectorElement(taglineElement())
+
+  test "editing a property the author wrote patches that declaration":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("css-writeback-replace")
+      defer: removeDir(root)
+      let file = root / "styles.nim"
+      atomicWrite(file, styleSheet)
+      let vm = cssVm(file)
+
+      let outcome = vm.commitInspectorValue("margin-bottom", "40px",
+        sskLocalInstance)
+      check outcome.ok
+      check vm.inspector.pendingSourceEdits.val.len == 1
+      # Through the COMMAND, not straight to `applyWorkspaceFileEdits`. The
+      # command gate is a second thing that can refuse a save -- it checks
+      # `sourceAdapterReady`, which defaults to false -- and a test that
+      # calls the apply directly proves the pipeline while the product still
+      # refuses every Cmd+S.
+      let saved = vm.runEditorCommand(eckSave)
+      check saved.diagnostic == ""
+      check saved.status == ecsSucceeded
+
+      let after = readFile(file)
+      check "margin-bottom:40px;" in after
+      check "font:var(--sys-type-display);" in after
+      dispose()
+
+  test "editing a property no rule declares inserts it into the element's class":
+    ## grip writes shorthands and the inspector edits longhands: `.tagline`
+    ## declares `margin`, the panel offers Paragraph spacing, which is
+    ## `margin-bottom`. Provenance cannot name a class for it, so the
+    ## element's own class is what says where the declaration goes.
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("css-writeback-insert")
+      defer: removeDir(root)
+      let file = root / "styles.nim"
+      atomicWrite(file, styleSheet)
+      let vm = cssVm(file)
+
+      let outcome = vm.commitInspectorValue("letter-spacing", "0.05em",
+        sskLocalInstance)
+      check outcome.ok
+      check vm.applyWorkspaceFileEdits().ok
+
+      let after = readFile(file)
+      check "letter-spacing:0.05em;" in after
+      # The declarations it sits beside are untouched.
+      check "margin-bottom:30px;" in after
+      check "font:var(--sys-type-display);" in after
+      dispose()
+
+  test "a read-only workspace refuses before anything reaches the file":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("css-writeback-readonly")
+      defer: removeDir(root)
+      let file = root / "styles.nim"
+      atomicWrite(file, styleSheet)
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "read-only", storyGroups = cssStoryGroups(),
+        initialStory = some(cssStory),
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: false),
+        editAdapter = cssAdapter(file)))
+      discard vm.selectInspectorElement(taglineElement())
+
+      let outcome = vm.commitInspectorValue("margin-bottom", "40px",
+        sskLocalInstance)
+      check not outcome.ok
+      check readFile(file) == styleSheet
+      dispose()
+
+proc indicatorVm(writeSource = true; adapterReady = true): EditorVM =
+  createEditorVM(newEditorWorkspace(
+    title = "save-indicator",
+    storyGroups = cssStoryGroups(),
+    initialStory = some(cssStory),
+    permissions = EditorWorkspacePermissions(readSource: true,
+      writeSource: writeSource),
+    editAdapter = WorkspaceEditAdapter(
+      schema: @[WorkspaceEditableSchemaEntry(key: "s", kind: wskSourceMap,
+        file: "styles.nim", property: "")]),
+    sourceAdapterReady = adapterReady))
+
+suite "Editor ViewModels (the save indicator)":
+  ## There is no save CONTROL any more -- saving is automatic. The indicator
+  ## survives because the status bar shows failures, and a failure is the one
+  ## thing the user has to act on.
+
+  test "a fresh workspace reads as saved":
+    createRoot proc(dispose: proc()) =
+      let vm = indicatorVm()
+      check vm.saveIndicator().state == sisClean
+      check vm.saveIndicator().label == "Saved"
+      dispose()
+
+  test "every state carries a label, never colour alone":
+    createRoot proc(dispose: proc()) =
+      let vm = indicatorVm()
+      for stage in [wesClean, wesDirty, wesApplying, wesFormatting,
+                    wesRegenerating, wesCompiling, wesReloading,
+                    wesReviewing, wesFailed]:
+        vm.workspaceEditStage.val = stage
+        check vm.saveIndicator().label.len > 0
+      dispose()
+
+  test "a refused save reads as failed and keeps the reason":
+    ## The status bar renders exactly this, and nothing else. A successful
+    ## write is not news -- announcing it would train the eye to ignore the
+    ## corner that has to work when something goes wrong.
+    createRoot proc(dispose: proc()) =
+      let vm = indicatorVm()
+      vm.workspaceEditStage.val = wesFailed
+      vm.workspaceEditDiagnostics.val = @[WorkspaceEditDiagnostic(
+        kind: wedSourceConflict,
+        message: "Source changed before the pending edit could be applied.")]
+      let ind = vm.saveIndicator()
+      check ind.state == sisFailed
+      check "Source changed" in ind.detail
+      dispose()
+
+  test "a failed save with no diagnostic still says something":
+    createRoot proc(dispose: proc()) =
+      let vm = indicatorVm()
+      vm.workspaceEditStage.val = wesFailed
+      vm.workspaceEditDiagnostics.val = @[]
+      check vm.saveIndicator().detail.len > 0
+      dispose()
+
+  test "a dirty stage with nothing staged reads as saved":
+    createRoot proc(dispose: proc()) =
+      let vm = indicatorVm()
+      vm.workspaceEditStage.val = wesDirty
+      check vm.saveIndicator().state == sisClean
+      dispose()
+
+suite "Editor ViewModels (auto-save)":
+  ## Automatic, always, with no switch. An editor that holds your change
+  ## hostage to a second gesture has invented a state the user has to manage.
+
+  test "a commit schedules a save":
+    createRoot proc(dispose: proc()) =
+      let vm = indicatorVm()
+      discard vm.selectInspectorElement(taglineElement())
+      check vm.autoSaveGeneration.val == 0
+      check vm.commitInspectorValue("letter-spacing", "0.05em",
+        sskLocalInstance).ok
+      check vm.autoSaveGeneration.val == 1
+      dispose()
+
+  test "each further commit schedules again":
+    ## The browser layer debounces, so a burst of commits collapses into one
+    ## write -- but every commit has to ARRIVE, or the last edit in a burst
+    ## would be the one that never got saved.
+    createRoot proc(dispose: proc()) =
+      let vm = indicatorVm()
+      discard vm.selectInspectorElement(taglineElement())
+      check vm.commitInspectorValue("letter-spacing", "0.05em",
+        sskLocalInstance).ok
+      check vm.commitInspectorValue("margin-bottom", "40px",
+        sskLocalInstance).ok
+      check vm.autoSaveGeneration.val == 2
+      dispose()
+
+  test "a refused commit never schedules a save":
+    ## Staging is what auto-save writes. An edit that did not stage has
+    ## nothing to write, and scheduling one would send the status bar through
+    ## a failure for an edit the user was already told about in the row.
+    createRoot proc(dispose: proc()) =
+      let vm = indicatorVm(writeSource = false)
+      discard vm.selectInspectorElement(taglineElement())
+      check not vm.commitInspectorValue("letter-spacing", "0.05em",
+        sskLocalInstance).ok
+      check vm.autoSaveGeneration.val == 0
+      dispose()
+
+suite "Editor ViewModels (the reported silent failures)":
+  ## Reported from the running editor: select "Faster than C.", set Text
+  ## alignment to Center, set Font size to 50px -- nothing happens, and
+  ## nothing says why.
+  ##
+  ## Both edits committed. Saving refused, at three checkpoints in turn, each
+  ## for a version of the same mistake: comparing something the browser
+  ## COMPUTED against something the author WROTE. These are the cases that
+  ## would have caught it, using the element exactly as the preview bridge
+  ## reports it.
+
+  const clauseCss = """const structureCssText* = """ & "\"\"\"" & """
+  .tagline { font:var(--sys-type-display);
+             letter-spacing:var(--sys-tracking-display); }
+  .tagline-clause { display:block; }
+""" & "\"\"\"" & """
+"""
+
+  proc clauseElement(): ElementRef =
+    ## `span.tagline-clause` as the bridge reports it: a real source file for
+    ## the SPAN (it is in `home.nim`), provenance for the one property its
+    ## own class declares, and computed values for everything else.
+    previewDomElementRef(
+      StoryRenderMetadata(title: "Hero"),
+      "span", "", "tagline-clause", "", "", "",
+      "grip/isonim/src/pages/home.nim", 90,
+      "block", "static", "", "rgb(21,23,26)", "", "", "877px", "39px",
+      "", "", "", "", "34px", "700", "39px", "", "1",
+      "877", "39", "Faster than C.", "el-1", "", "", "", "",
+      "display|block|cls|class:tagline-clause|",
+      "text-align=start;letter-spacing=-0.01px")
+
+  proc clauseVm(file: string): EditorVM =
+    # `allowMissingExpectedOldValue = false`, as grip sets it: a write that
+    # cannot verify what it is overwriting should not happen. The point of
+    # these cases is that a COMPUTED value is not something to verify
+    # against, not that the verification should be turned off.
+    var strict = cssAdapter(file)
+    strict.allowMissingExpectedOldValue = false
+    result = createEditorVM(newEditorWorkspace(
+      title = "clause", storyGroups = cssStoryGroups(),
+      initialStory = some(cssStory),
+      permissions = EditorWorkspacePermissions(readSource: true,
+        writeSource: true),
+      editAdapter = strict,
+      sourceAdapterReady = true))
+    discard result.selectInspectorElement(clauseElement())
+
+  test "font size on a span whose class does not declare it reaches source":
+    ## The plan carries `home.nim`, because that is where the SPAN is. The
+    ## schema owns the stylesheet. Comparing the two and refusing answered
+    ## the commonest edit a class-based design system makes with "No project
+    ## schema or source map entry can safely represent this edit".
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("clause-font-size")
+      defer: removeDir(root)
+      let file = root / "styles.nim"
+      atomicWrite(file, clauseCss)
+      let vm = clauseVm(file)
+
+      check vm.commitInspectorValue("font-size", "50px", sskLocalInstance).ok
+      let saved = vm.runEditorCommand(eckSave)
+      check saved.diagnostic == ""
+      check "font-size:50px;" in readFile(file)
+      dispose()
+
+  test "a token-valued property is not a conflict against itself":
+    ## `letter-spacing` computes to `-0.01px`; the stylesheet says
+    ## `var(--sys-tracking-display)`. The pipeline looked for the computed
+    ## text in the file, did not find it, and reported "Source changed before
+    ## the pending edit could be applied" -- a conflict against a change
+    ## nobody made, on every token-valued property in the project.
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("clause-letter-spacing")
+      defer: removeDir(root)
+      let file = root / "styles.nim"
+      atomicWrite(file, clauseCss)
+      let vm = clauseVm(file)
+
+      check vm.commitInspectorValue("letter-spacing", "0.08em",
+        sskLocalInstance).ok
+      let saved = vm.runEditorCommand(eckSave)
+      check saved.diagnostic == ""
+      check "letter-spacing:0.08em;" in readFile(file)
+      dispose()
+
+  test "a genuine conflict is still refused":
+    ## The exemption above must not disable the check for values that WERE
+    ## authored. A property carrying real source text still has to match.
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("clause-conflict")
+      defer: removeDir(root)
+      let file = root / "styles.nim"
+      atomicWrite(file, clauseCss)
+      let vm = clauseVm(file)
+      # `display` is class-authored, so its old value is real source text.
+      check vm.commitInspectorValue("display", "flex", sskLocalInstance).ok
+      # Someone else rewrites the file underneath the staged edit.
+      atomicWrite(file, clauseCss.replace("display:block", "display:grid"))
+      let saved = vm.runEditorCommand(eckSave)
+      check saved.diagnostic != ""
+      check "display:grid" in readFile(file)
+      check "display:flex" notin readFile(file)
+      dispose()
+
+  test "the save indicator reports the refusal rather than swallowing it":
+    ## The whole reported defect in one assertion: after a refused save the
+    ## control must say so, and must carry the reason.
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("clause-indicator")
+      defer: removeDir(root)
+      let file = root / "styles.nim"
+      atomicWrite(file, clauseCss)
+      let vm = clauseVm(file)
+      check vm.commitInspectorValue("display", "flex", sskLocalInstance).ok
+      check vm.saveIndicator().state == sisDirty
+      atomicWrite(file, clauseCss.replace("display:block", "display:grid"))
+      discard vm.runEditorCommand(eckSave)
+      let ind = vm.saveIndicator()
+      check ind.state == sisFailed
+      check ind.label == "Not saved"
+      check ind.detail.len > 0
+      dispose()
+
+suite "Editor ViewModels (the selection-header actions)":
+  ## Reported: "what's the purpose of the buttons at the very top of the
+  ## right sidebar? They don't seem to be doing anything when I click them."
+  ##
+  ## They were not. Three were `discard` with a "Phase B no-op" comment and
+  ## the fourth recoloured itself. A button that does nothing is worse than
+  ## one that is absent: it spends a click and teaches the reader that the
+  ## corner is dead.
+
+  test "opening source expands the Source section":
+    createRoot proc(dispose: proc()) =
+      let vm = indicatorVm()
+      vm.inspector.setSectionExpanded(isSource, false)
+      check isSource notin vm.inspector.expandedSections.val
+      vm.openSourceForSelection()
+      check isSource in vm.inspector.expandedSections.val
+      dispose()
+
+  test "opening source asks the view to scroll to it":
+    ## A counter, not a flag: asking twice has to work the second time.
+    createRoot proc(dispose: proc()) =
+      let vm = indicatorVm()
+      let before = vm.inspector.revealSectionRequest.val
+      vm.openSourceForSelection()
+      check vm.inspector.revealSectionRequest.val == before + 1
+      vm.openSourceForSelection()
+      check vm.inspector.revealSectionRequest.val == before + 2
+      dispose()
+
+  test "a section opened this way survives the next selection":
+    ## The per-kind defaults close Source for most elements. Someone who
+    ## pressed the button asked for it, and a default that overrules the
+    ## request is the request not working.
+    createRoot proc(dispose: proc()) =
+      let vm = indicatorVm()
+      vm.openSourceForSelection()
+      check isSource in vm.inspector.expandedSections.val
+      vm.inspector.applyKindDefaultExpansion(
+        ElementRef(tag: "p", id: "other",
+          properties: @[PropertyInfo(name: "position", value: "static")]))
+      check isSource in vm.inspector.expandedSections.val
+      dispose()
+
+  test "visibility toggles, and reports which way":
+    createRoot proc(dispose: proc()) =
+      let vm = indicatorVm()
+      let start = vm.inspector.selectionVisible.val
+      vm.toggleSelectionVisible()
+      check vm.inspector.selectionVisible.val == not start
+      vm.toggleSelectionVisible()
+      check vm.inspector.selectionVisible.val == start
+      dispose()
+
+suite "Editor ViewModels (refreshing project data without losing the session)":
+  ## The editor has to pick up a source change from ANY cause -- its own
+  ## write, a hand edit, another agent, a `git checkout` -- and redraw. The
+  ## only way to refresh what it knew was `applyWorkspace`, which also
+  ## resets the selected story, the selected element, the selected token,
+  ## every search filter and every undo stack. So picking up a change meant
+  ## losing your place, which is why nothing picked up changes.
+  ##
+  ## `loadProjectData` is the half that is safe to re-run.
+
+  proc twoStoryWorkspace(storyName: string;
+      tokens: seq[FoundationTokenEntry] = @[]): EditorWorkspace =
+    newEditorWorkspace(
+      title = "refresh",
+      storyGroups = @[StoryGroup(name: "G", items: @[
+        StoryItem(name: storyName, kind: skComponent, group: "G"),
+        StoryItem(name: "Second", kind: skComponent, group: "G")])],
+      foundationTokens = tokens,
+      permissions = EditorWorkspacePermissions(readSource: true))
+
+  test "re-loading project data keeps the selected story":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM(twoStoryWorkspace("First"))
+      discard vm.selectStory(StoryRef(group: "G", name: "Second",
+                                      kind: skComponent))
+      check vm.selectedStory.val.name == "Second"
+
+      # The project changed on disk: the first story was renamed.
+      vm.loadProjectData(twoStoryWorkspace("Renamed"))
+
+      check vm.sidebar.groups.val[0].items[0].name == "Renamed"
+      check vm.selectedStory.val.name == "Second"
+      dispose()
+
+  test "re-loading project data keeps the selected element":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM(twoStoryWorkspace("First"))
+      discard vm.selectInspectorElement(taglineElement())
+      let selected = vm.inspector.selectedElement.val.id
+      check selected.len > 0
+
+      vm.loadProjectData(twoStoryWorkspace("First"))
+      check vm.inspector.selectedElement.val.id == selected
+      dispose()
+
+  test "re-loading project data keeps section expansion":
+    ## Expansion is a working state the user built up by clicking. A source
+    ## change is not a reason to collapse it.
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM(twoStoryWorkspace("First"))
+      vm.inspector.toggleSectionExpanded(isSource)
+      let expanded = vm.inspector.expandedSections.val
+
+      vm.loadProjectData(twoStoryWorkspace("First"))
+      check vm.inspector.expandedSections.val == expanded
+      dispose()
+
+  test "re-loading project data keeps staged edits":
+    ## A rebuild landing between an edit and its save must not silently
+    ## discard the edit -- that is data loss with no message.
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("refresh-pending")
+      defer: removeDir(root)
+      let file = root / "styles.nim"
+      atomicWrite(file, "const structureCssText* = \"\"\"\n" &
+        "  .tagline { margin-bottom:30px; }\n\"\"\"\n")
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "refresh", storyGroups = cssStoryGroups(),
+        initialStory = some(cssStory),
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true),
+        editAdapter = cssAdapter(file), sourceAdapterReady = true))
+      discard vm.selectInspectorElement(taglineElement())
+      check vm.commitInspectorValue("margin-bottom", "40px",
+        sskLocalInstance).ok
+      check vm.inspector.pendingSourceEdits.val.len == 1
+
+      vm.loadProjectData(newEditorWorkspace(
+        title = "refresh", storyGroups = cssStoryGroups(),
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true),
+        editAdapter = cssAdapter(file), sourceAdapterReady = true))
+
+      check vm.inspector.pendingSourceEdits.val.len == 1
+      dispose()
+
+  test "applyWorkspace still resets the session, because switching should":
+    ## The destructive half is not a bug -- opening a different workspace
+    ## SHOULD forget the old one's selection. The two just needed separating.
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM(twoStoryWorkspace("First"))
+      discard vm.selectStory(StoryRef(group: "G", name: "Second",
+                                      kind: skComponent))
+      check vm.selectedStory.val.name == "Second"
+      vm.applyWorkspace(twoStoryWorkspace("First"))
+      check vm.selectedStory.val.name != "Second"
+      dispose()
+
+  test "re-loading picks up new stories, tokens and permissions":
+    ## The point of the exercise: what the project says HAS to change.
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM(twoStoryWorkspace("First"))
+      check vm.foundations.tokens.val.len == 0
+      check not vm.workspacePermissions.val.writeSource
+
+      var grown = twoStoryWorkspace("First", tokens = @[
+        FoundationTokenEntry(key: "sys.color.text.primary", value: "#111")])
+      grown.permissions = EditorWorkspacePermissions(readSource: true,
+        writeSource: true)
+      grown.storyGroups = @[StoryGroup(name: "G", items: @[
+        StoryItem(name: "First", kind: skComponent, group: "G"),
+        StoryItem(name: "Second", kind: skComponent, group: "G"),
+        StoryItem(name: "Third", kind: skComponent, group: "G")])]
+      vm.loadProjectData(grown)
+
+      check vm.sidebar.groups.val[0].items.len == 3
+      check vm.foundations.tokens.val.len == 1
+      check vm.workspacePermissions.val.writeSource
+      dispose()
+
+suite "Editor ViewModels (a refresh does not take back a local edit)":
+  ## `loadProjectData` re-seeds tokens from source. Re-seeding ALL of them
+  ## means a rebuild landing while somebody is working through a palette
+  ## silently reverts their work -- the same failure as a default that
+  ## re-asserts itself, one layer down.
+
+  proc tok(key, value: string): FoundationTokenEntry =
+    FoundationTokenEntry(key: key, value: value)
+
+  test "source wins for a token the user has not touched":
+    let merged = mergeTokensPreservingLocalEdits(
+      fromSource = @[tok("sys.color.text.primary", "#111")],
+      current = @[tok("sys.color.text.primary", "#000")],
+      locallyEdited = @[])
+    check merged.len == 1
+    check merged[0].value == "#111"
+
+  test "the user wins for a token they are mid-edit on":
+    let merged = mergeTokensPreservingLocalEdits(
+      fromSource = @[tok("sys.color.text.primary", "#111")],
+      current = @[tok("sys.color.text.primary", "#ABCDEF")],
+      locallyEdited = @["sys.color.text.primary"])
+    check merged[0].value == "#ABCDEF"
+
+  test "one edited token does not freeze the rest":
+    let merged = mergeTokensPreservingLocalEdits(
+      fromSource = @[tok("a", "1"), tok("b", "2"), tok("c", "3")],
+      current = @[tok("a", "mine"), tok("b", "old"), tok("c", "old")],
+      locallyEdited = @["a"])
+    check merged[0].value == "mine"
+    check merged[1].value == "2"
+    check merged[2].value == "3"
+
+  test "a token added by the rebuild arrives":
+    let merged = mergeTokensPreservingLocalEdits(
+      fromSource = @[tok("a", "1"), tok("new", "9")],
+      current = @[tok("a", "mine")],
+      locallyEdited = @["a"])
+    check merged.len == 2
+    check merged[1].key == "new"
+
+  test "a token deleted at source goes, even if it was edited":
+    ## Keeping a local edit to a token that no longer exists would show a
+    ## row nothing can write.
+    let merged = mergeTokensPreservingLocalEdits(
+      fromSource = @[tok("a", "1")],
+      current = @[tok("a", "mine"), tok("gone", "mine too")],
+      locallyEdited = @["a", "gone"])
+    check merged.len == 1
+    check merged[0].value == "mine"
+
+  test "the editor records which tokens are its own":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "tokens", storyGroups = cssStoryGroups(),
+        foundationTokens = @[tok("sys.color.text.primary", "#111")],
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true)))
+      check vm.locallyEditedTokens.val.len == 0
+      vm.noteTokenEditedLocally("sys.color.text.primary")
+      check vm.locallyEditedTokens.val == @["sys.color.text.primary"]
+      # Idempotent: editing the same token twice records it once.
+      vm.noteTokenEditedLocally("sys.color.text.primary")
+      check vm.locallyEditedTokens.val.len == 1
+      # And a save clears the claim, because source then agrees.
+      vm.clearLocalTokenEdits()
+      check vm.locallyEditedTokens.val.len == 0
+      dispose()
+
+  test "a refresh keeps the edited token and updates its neighbours":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "tokens", storyGroups = cssStoryGroups(),
+        foundationTokens = @[tok("a", "1"), tok("b", "2")],
+        permissions = EditorWorkspacePermissions(readSource: true)))
+      vm.foundations.tokens.val = @[tok("a", "mine"), tok("b", "2")]
+      vm.noteTokenEditedLocally("a")
+
+      vm.loadProjectData(newEditorWorkspace(
+        title = "tokens", storyGroups = cssStoryGroups(),
+        foundationTokens = @[tok("a", "1"), tok("b", "rebuilt")],
+        permissions = EditorWorkspacePermissions(readSource: true)))
+
+      check vm.foundations.tokens.val[0].value == "mine"
+      check vm.foundations.tokens.val[1].value == "rebuilt"
       dispose()

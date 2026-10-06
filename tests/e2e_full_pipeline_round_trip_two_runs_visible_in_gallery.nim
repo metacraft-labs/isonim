@@ -15,7 +15,7 @@
 ## directly (one stored-procedure boundary call).
 
 import std/[asyncdispatch, asyncnet, nativesockets, net, os, osproc,
-            streams, strtabs, strutils, times, unittest]
+            streams, strtabs, strutils, unittest]
 
 import db_connector/db_postgres
 
@@ -24,6 +24,7 @@ import isonim_render_serve/ws_frame
 import isonim_render_serve/bridge   # computeAcceptKey
 
 import helpers/design_review_pg_fixture
+import helpers/repro_workspace_fixture
 
 # ---------------------------------------------------------------------------
 # Fake-bridge — same shape as the other REV-M10 e2e tests.
@@ -146,46 +147,17 @@ proc shouldHave(path: string) =
     raise newException(IOError,
       "REV-M10 e2e: required file not found at " & path)
 
-proc runOrFail(cmd: string; cwd: string) =
-  let res = execCmdEx(cmd, workingDir = cwd)
-  if res.exitCode != 0:
-    raise newException(IOError, cmd & " failed (" & $res.exitCode &
-                       "):\n" & res.output)
-
-proc initRepoWithBrief(repoPath: string): string =
-  createDir(repoPath)
-  createDir(repoPath / "briefs" / "render")
-  writeFile(repoPath / "briefs" / "render" / "task-app.md",
-            TaskAppBriefYaml)
-  runOrFail("git init -q -b main && " &
-            "git config user.email 'test@test' && " &
-            "git config user.name 'tester' && " &
-            "git config commit.gpgsign false && " &
-            "echo hi > README.md && " &
-            "git add -A && git commit -q -m initial",
-            repoPath)
-  execCmdEx("git -C " & quoteShell(repoPath) & " rev-parse HEAD").output.strip()
-
-proc writeManifest(workspaceRoot, repoName, sha: string) =
-  let repoDir = workspaceRoot / ".repo"
-  createDir(repoDir)
-  writeFile(repoDir / "manifest.xml",
-    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<manifest>\n" &
-    "  <project name=\"" & repoName & "\" path=\"" & repoName &
-    "\" revision=\"" & sha & "\"/>\n</manifest>\n")
-
 proc mirrorBriefToWorkspace(workspaceRoot: string) =
   let briefsDir = workspaceRoot / "briefs" / "render"
   createDir(briefsDir)
   writeFile(briefsDir / "task-app.md", TaskAppBriefYaml)
 
 proc buildWorkspace(suffix: string): string =
-  let ws = getTempDir() / ("isonim_rev_m10_" & suffix & "_" &
-                            $epochTime().int)
-  removeDir(ws)
-  createDir(ws)
-  let sha = initRepoWithBrief(ws / "repo-a")
-  writeManifest(ws, "repo-a", sha)
+  ## A hermetic reprobuild workspace whose ``repo-a`` carries the
+  ## committed, published brief.  Returns the workspace root; remove its
+  ## parent to clean up.
+  let ws = newReproWorkspace("rev_m10_" & suffix, ["repo-a"],
+    files = [("repo-a", "briefs/render/task-app.md", TaskAppBriefYaml)]).root
   mirrorBriefToWorkspace(ws)
   ws
 
@@ -246,7 +218,7 @@ suite "REV-M10 two-run round-trip (gallery acceptance)":
     defer: fb.stop()
 
     let ws = buildWorkspace("twoRun")
-    defer: removeDir(ws)
+    defer: removeDir(ws.parentDir)
     let storePath = ws / "store"
     let cfg = writeConfig(ws, storePath, pgf.port)
 

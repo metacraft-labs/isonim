@@ -41,7 +41,7 @@ provision_started=time.monotonic()
 runtime=Runtime('real-gui',real_provider=provider,project_source=ROOT.parent/'web-site-prototypes/grip/isonim',
  editor_directory=ROOT/'build/editor-authoring',source_file='src/editor/catalog.nim',instructions_path=instructions,real_model='sonnet')
 provision_seconds=time.monotonic()-provision_started
-browser_started=time.monotonic()
+browser_started=time.monotonic_ns()
 observed={}
 terminal_observations={}
 cli_observations={}
@@ -62,10 +62,10 @@ def model_identity():
  namespaces=[int(value) for value in next(line for line in (Path('/proc')/str(pid)/'status').read_text().splitlines() if line.startswith('NSpid:')).split()[1:]]
  return {'pid':pid,'namespace_pids':namespaces,'starttime':row[1],'executable':row[3],'loaded_sha256':hashlib.sha256(actual.read_bytes()).hexdigest()}
 try:
- child=runtime.spawn([os.environ.get('ISONIM_SCENARIO_NODE','node'),str(ROOT/'tests/test_editor_authoring_real_gui.mjs'),str(runtime.artifacts/'context.json')],'real-browser')
- deadline=time.monotonic()+300
+ child=runtime.spawn([os.environ.get('ISONIM_SCENARIO_NODE','node'),str(ROOT/'tests/test_editor_authoring_real_gui.mjs'),str(runtime.controllerContext)],'real-browser')
+ deadline_start=time.monotonic_ns()
  while child.poll() is None:
-  if time.monotonic()>=deadline:raise AssertionError('Actual model/browser workflow exceeded bounded 300 second lifetime')
+  if runtime.preparationClock.elapsed(deadline_start)>=300:raise AssertionError('Actual model/browser workflow exceeded bounded 300 second lifetime')
   phase=runtime.artifacts/'phase'
   value=phase.read_text() if phase.exists() else ''
   if value in ('first-start','second-start'):
@@ -168,7 +168,7 @@ try:
  print('PASS real model identity, genuine role instructions, actual tools and native retained context',flush=True)
 finally:
  (runtime.artifacts/'real-gate-timing.json').write_text(json.dumps({
-   'runtimeProvisionSeconds':provision_seconds,'browserAndProofSeconds':time.monotonic()-browser_started,
+   'runtimeProvisionSeconds':provision_seconds,'browserAndProofSeconds':runtime.preparationClock.elapsed(browser_started),'browserWallSeconds':(time.monotonic_ns()-browser_started)/1_000_000_000,'excludedPreparationSeconds':runtime.preparationClock.excluded_ns(browser_started)/1_000_000_000,
    'startupBoundSeconds':900,'browserBoundSeconds':300,'terminalWaitBoundSeconds':120,
    'mountedWaitBoundSeconds':30},indent=2))
  runtime.close()

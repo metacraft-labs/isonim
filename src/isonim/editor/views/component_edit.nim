@@ -11,7 +11,10 @@ import isonim/editor/viewmodels
 import isonim/editor/preview_identity
 import isonim/editor/types
 import isonim/editor/views/choice_row
+import isonim/editor/views/preview_mount
+import isonim/editor/views/widgets/property_commit
 import isonim/editor/views/scene_graph_walk
+import isonim/editor/style_provenance_decode
 
 const
   bgBase = "#0B1120"
@@ -138,7 +141,18 @@ proc editablePreviewDocument*(documentHtml: string;
       .replace("\n", "\\n")
       .replace("\r", "\\r")
 
+  # The inspector's editable-property list, as a JS array literal. Built from
+  # the Nim const rather than typed twice: the bridge reads these off
+  # `getComputedStyle` and the editor turns them back into properties, so the
+  # two sides drifting would silently empty rows rather than fail.
+  var editablePropsJs = "["
+  for i, name in inspectorEditableCssProperties:
+    if i > 0: editablePropsJs.add ","
+    editablePropsJs.add "\"" & name & "\""
+  editablePropsJs.add "]"
+
   let bridge = """
+<script>var ISONIM_EDITABLE_PROPS = """ & editablePropsJs & """;</script>
 <style id="isonim-editor-selection-style">
   [data-isonim-selected="true"] {
     outline: 2px solid #3B82F6 !important;
@@ -318,6 +332,7 @@ __ISONIM_SCENE_GRAPH_WALK__
   const identityFor = walk.identityFor;
   const ancestorStack = walk.ancestorStack;
   const layerTree = walk.layerTree;
+  const schemaKeyFor = walk.schemaKeyFor;
   function drillRestart(leaf) {
     drill = { target: leaf, chain: ancestorStack(leaf), index: -1 };
     return drill;
@@ -558,8 +573,9 @@ __ISONIM_SCENE_GRAPH_WALK__
     const stack = ancestorStack(el).reverse().map(stableSelector);
     const stackIds = ancestorStack(el).reverse().map(identityFor);
     const elementId = identityFor(el);
-    const schemaKey = el.getAttribute('data-isonim-schema-key') ||
-      ('dom.' + (el.getAttribute('data-testid') || el.tagName.toLowerCase()));
+    // One definition, shared with the scene-graph walk: see `schemaKeyFor`
+    // there for why the class list comes before the tag.
+    const schemaKey = schemaKeyFor(el);
     parent.dispatchEvent(new CustomEvent('isonim-preview-element-selected', {
       detail: {
         elementId: elementId,
@@ -594,7 +610,20 @@ __ISONIM_SCENE_GRAPH_WALK__
         rectWidth: String(Math.round(rect.width)),
         rectHeight: String(Math.round(rect.height)),
         textContent: String(el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 240),
-        layerTree: JSON.stringify(layerTree(el))
+        layerTree: JSON.stringify(layerTree(el)),
+        // The authored style provenance the `ui` DSL stamped at macro time.
+        // Every other style field above is a COMPUTED value, and a computed
+        // value has already lost the answer to "was this a binding?". This is
+        // the only field in the payload that still knows.
+        styleBindings: el.getAttribute('data-isonim-props') || '',
+        // Every property the inspector has a row for, from the single list in
+        // `style_provenance_decode`. The named fields above are a fixed 17;
+        // the panel renders 51 rows, and a row whose property the selection
+        // does not carry refuses the commit with "does not expose ...".
+        computedStyles: ISONIM_EDITABLE_PROPS
+          .map(function (p) {
+            return p + '=' + (style.getPropertyValue(p) || '');
+          }).join(';')
       }
     }));
   }
@@ -923,6 +952,14 @@ __ISONIM_SCENE_GRAPH_WALK__
       selectElement(target);
     }
   }, true);
+  let lastHoverReported = '';
+  document.addEventListener('mouseleave', function () {
+    if (lastHoverReported === '') return;
+    lastHoverReported = '';
+    parent.dispatchEvent(new CustomEvent('isonim-preview-element-hovered', {
+      detail: { id: '' }
+    }));
+  });
   document.addEventListener('mousemove', function (event) {
     if (editorMode === 'view') return;
     const el = ancestorStack(event.target)[0];
@@ -941,6 +978,16 @@ __ISONIM_SCENE_GRAPH_WALK__
     const rect = el.getBoundingClientRect();
     const style = window.getComputedStyle(el);
     el.setAttribute('data-isonim-hovered', 'true');
+    // Tell the editor which element the pointer is over, so the Layers
+    // panel can show it softly. Only on CHANGE: mousemove fires per pixel
+    // and the panel would re-render on every one of them.
+    const hoveredId = identityFor(el);
+    if (hoveredId !== lastHoverReported) {
+      lastHoverReported = hoveredId;
+      parent.dispatchEvent(new CustomEvent('isonim-preview-element-hovered', {
+        detail: { id: hoveredId }
+      }));
+    }
     const position = drill.index;
     label.textContent = el.tagName.toLowerCase() + ' ' +
       Math.round(rect.width) + 'x' + Math.round(rect.height) +
@@ -975,6 +1022,71 @@ __ISONIM_SCENE_GRAPH_WALK__
     layerTree(window.__isonimSelectedElement || document.body);
     const target = document.querySelector('[data-isonim-element-id="' + CSS.escape(id) + '"]');
     if (target) selectElement(target);
+  });
+  // Stamp this frame's elements with their identities, then re-apply anything
+  // the editor changed since the project was last built.
+  //
+  // The stamping is UNCONDITIONAL and must stay that way. `identityFor`
+  // assigns `data-isonim-element-id` lazily, as the walk visits each node, so
+  // a frame that has just loaded carries no ids at all; selection then walks
+  // up from the clicked element looking for one and lands on whatever
+  // ancestor a previous walk happened to stamp. Clicking the heading selects
+  // `div.page-width`.
+  //
+  // This used to sit BELOW the "no overrides, nothing to do" early return, and
+  // got away with it only because an override always existed by the time it
+  // mattered. When overrides began being cleared on every hot swap -- they are
+  // obsolete once the rebuilt source carries the value -- the early return
+  // started firing on every frame and took the stamping with it. The
+  // dependency was invisible and the symptom looked like a selection bug.
+  (function () {
+    try { layerTree(null); } catch (e) {}
+    // Re-apply the edits this document was built too early to know about.
+    //
+    // After the stamping above, because a declaration is addressed by element
+    // and a freshly parsed document carries no `data-isonim-element-id` until
+    // the walk assigns them. Before the parser paints, because this script is
+    // the last thing in `<body>` -- which is why it is here rather than in the
+    // head script that defines the resolver: there, the body does not exist
+    // yet.
+    //
+    // Short records rather than a stylesheet, so there is nothing to cap or
+    // expire, and applying twice is a no-op.
+    try {
+      const pending = parent.__isonimPreviewDeclarations;
+      if (pending) {
+        Object.keys(pending).forEach(function (key) {
+          const d = pending[key];
+          window.__isonimSetDeclaration(d.id, d.path, d.property, d.value);
+        });
+      }
+    } catch (e) {}
+  })();
+  // The resolver lives in the head script (see `declarationRuntime`), which
+  // runs before this document is painted. This is only the channel.
+  parent.addEventListener('isonim-preview-set-declaration', function (event) {
+    const d = event.detail || {};
+    try {
+      window.__isonimSetDeclaration(String(d.id || ''), String(d.path || ''),
+                                    String(d.property || ''),
+                                    String(d.value == null ? '' : d.value));
+    } catch (e) {}
+  });
+
+  parent.addEventListener('isonim-preview-element-visibility', function (event) {
+    const id = String(event.detail && event.detail.id || '');
+    if (!id) return;
+    const target = document.querySelector(
+      '[data-isonim-element-id="' + CSS.escape(id) + '"]');
+    if (!target) return;
+    // `visibility`, not `display`: the element keeps its box, so hiding it
+    // answers "what does this look like without this" without reflowing
+    // everything around it into a different page.
+    if (event.detail && event.detail.visible) {
+      target.style.removeProperty('visibility');
+    } else {
+      target.style.setProperty('visibility', 'hidden', 'important');
+    }
   });
   parent.addEventListener('isonim-hover-preview-element-id', function (event) {
     if (editorMode === 'view') return;
@@ -1035,23 +1147,177 @@ __ISONIM_SCENE_GRAPH_WALK__
   # Comment/Edit mode on any sizeable page threw here and the preview
   # never got its selection bridge. `&` compiles to `Array.concat`,
   # which has no such limit.
-  let closing = documentHtml.rfind("</body>")
+  # Spliced by index for the same reason as the bridge below: on the JS
+  # backend `strutils.replace` pushes each piece with `apply`, which blows the
+  # argument limit on a document this size.
+  # Injected at the END OF HEAD, and the position is the whole point.
+  #
+  # The bridge below goes before `</body>`. That is right for everything else
+  # it does and one frame too late for this: a rebuild always lags the edit
+  # that caused it, so the document arriving after a save carries the PREVIOUS
+  # rule values, and a re-apply that runs after the body has been painted shows
+  # the user the value they just replaced first. Measured as a visible flash
+  # 8655ms into a three-edit sequence, which is the rebuild landing, not the
+  # edit.
+  #
+  # Running here, the rules exist (the stylesheet is above) and nothing has
+  # rendered yet, so the document is correct the first time it is painted.
+  #
+  # It also owns the resolver, and the bridge calls back into it, so there is
+  # one implementation of "which rule does the cascade use for this property"
+  # rather than two that can disagree.
+  const declarationRuntime = """
+<script>
+(function () {
+  var SHORTHANDS = {
+    'font-size': ['font'], 'font-family': ['font'], 'font-weight': ['font'],
+    'font-style': ['font'], 'line-height': ['font'],
+    'margin-top': ['margin'], 'margin-right': ['margin'],
+    'margin-bottom': ['margin'], 'margin-left': ['margin'],
+    'padding-top': ['padding'], 'padding-right': ['padding'],
+    'padding-bottom': ['padding'], 'padding-left': ['padding'],
+    'background-color': ['background'], 'background-image': ['background'],
+    'border-width': ['border'], 'border-style': ['border'],
+    'border-color': ['border'],
+    'flex-grow': ['flex'], 'flex-shrink': ['flex'], 'flex-basis': ['flex'],
+    'row-gap': ['gap'], 'column-gap': ['gap'],
+    'overflow-x': ['overflow'], 'overflow-y': ['overflow']
+  };
+
+  // The rule the cascade is actually using for this element and property.
+  //
+  // Resolved from the browser's own view rather than supplied by the editor:
+  // it already knows which rules match and which media conditions hold at this
+  // width, and asking it needs no project knowledge. The same question is
+  // answered in Nim (`editTargetAtWidth`) to decide where the FILE is patched,
+  // so the instant path and the durable one agree by construction.
+  //
+  // Last match wins, because equal specificity is broken by document order. A
+  // rule that sets the property through a shorthand counts: a longhand written
+  // anywhere earlier would be reset by it.
+  function governingRule(el, property) {
+    var resetters = [property].concat(SHORTHANDS[property] || []);
+    var winner = null, fallback = null;
+    function visit(rules, holds) {
+      for (var i = 0; i < rules.length; i++) {
+        var rule = rules[i];
+        // Branch on TYPE. Chrome defines `cssRules` on CSSStyleRule too, for
+        // CSS nesting, so duck-typing on it skips every style rule.
+        if (rule.type === CSSRule.MEDIA_RULE) {
+          var m = false;
+          try { m = matchMedia(rule.conditionText).matches; } catch (e) {}
+          visit(rule.cssRules, holds && m);
+          continue;
+        }
+        if (rule.type === CSSRule.SUPPORTS_RULE) {
+          visit(rule.cssRules, holds);
+          continue;
+        }
+        if (rule.type !== CSSRule.STYLE_RULE || !rule.selectorText) continue;
+        if (!holds) continue;
+        var matches = false;
+        try { matches = el.matches(rule.selectorText); } catch (e) {}
+        if (!matches) continue;
+        // Any matching rule is a home for a declaration nothing currently
+        // makes; one that already decides the property is a better one.
+        fallback = rule;
+        for (var r = 0; r < resetters.length; r++) {
+          var name = resetters[r];
+          if (rule.style.getPropertyValue(name) !== '' ||
+              Array.prototype.indexOf.call(rule.style, name) >= 0) {
+            winner = rule;
+            break;
+          }
+        }
+      }
+    }
+    var sheets = document.styleSheets;
+    for (var s = 0; s < sheets.length; s++) {
+      // Skip the editor's own chrome.
+      //
+      // The bridge injects `#isonim-editor-selection-style` to draw the
+      // selection outline, and it is injected LAST -- so its
+      // `[data-isonim-selected="true"]` rule matches the selected element and
+      // wins the last-match contest against the rule the author wrote. The
+      // user's font-size went into the editor's outline rule, which is not
+      // theirs to edit and is not where the file write goes: the Nim side
+      // correctly chose `.tagline-clause` while this chose the outline. A
+      // stylesheet the editor injected is never a home for a project edit.
+      var owner = null;
+      try { owner = sheets[s].ownerNode; } catch (e) {}
+      if (owner && owner.id && owner.id.indexOf('isonim-editor') === 0) continue;
+      var rules;
+      try { rules = sheets[s].cssRules; } catch (e) { continue; }
+      visit(rules, true);
+    }
+    return winner || fallback;
+  }
+
+  window.__isonimSetDeclaration = function (id, path, property, value) {
+    if (!property) return false;
+    // Id first, DOM path second. On a freshly loaded document there are no
+    // ids at all -- the scene-graph walk stamps them lazily and has not run
+    // yet -- so the path is the only handle that works before the first paint,
+    // which is the moment that matters here.
+    var el = null;
+    if (id) {
+      el = document.querySelector(
+        '[data-isonim-element-id="' + CSS.escape(id) + '"]');
+    }
+    if (!el && path) {
+      try { el = document.querySelector(path); } catch (e) {}
+    }
+    if (!el) return false;
+    var rule = governingRule(el, property);
+    if (!rule) {
+      // Nothing in the cascade reaches this element for this property. An
+      // inline style is the only place left -- and it is also what the file
+      // edit will not be able to express, so this case is worth looking
+      // different.
+      if (value === '') el.style.removeProperty(property);
+      else el.style.setProperty(property, value);
+      return true;
+    }
+    if (value === '') rule.style.removeProperty(property);
+    else rule.style.setProperty(property, value);
+    return true;
+  };
+
+  // The re-apply deliberately does NOT happen here, only the definition.
+  //
+  // This script sits at the end of `<head>`, so the body has not been parsed
+  // yet and there is no element to resolve -- by stamped id or by DOM path,
+  // both come back null. An earlier version tried it here and the preview
+  // still flashed the previous value, which read as the re-apply being broken
+  // rather than impossible. It runs from the bridge instead, at the end of
+  // `<body>`, where the elements exist and the parser has not painted yet.
+})();
+</script>
+"""
+  var withRuntime = documentHtml
+  let headClose = documentHtml.find("</head>")
+  if headClose >= 0:
+    withRuntime = documentHtml[0 ..< headClose] & declarationRuntime &
+      documentHtml[headClose .. ^1]
+
+  let closing = withRuntime.rfind("</body>")
   if closing >= 0:
-    documentHtml[0 ..< closing] & injected & documentHtml[closing .. ^1]
+    withRuntime[0 ..< closing] & injected & withRuntime[closing .. ^1]
   else:
-    documentHtml & injected
+    withRuntime & injected
 
 proc applyInspectorValue(vm: EditorVM; propName, value: string;
     scope = pesLocal)
 
-proc installPreviewSelectionBridge[R, E](r: R; frame: E; vm: EditorVM) =
+proc installPreviewSelectionBridge*[R, E](r: R; frame: E; vm: EditorVM) =
   when defined(js):
     let selectFromBrowser = proc(elementId, sourceKey, schemaKey, tag, testId,
         className, role, elementPath, ancestry, ancestorIds, sourceFile,
         sourceLine, display, position, backgroundColor,
         color, padding, margin, width, height, borderRadius, borderWidth,
         borderStyle, borderColor, fontSize, fontWeight, lineHeight, boxShadow,
-        opacity, rectWidth, rectHeight, textContent, layerTreeJson: cstring) =
+        opacity, rectWidth, rectHeight, textContent, layerTreeJson,
+        styleBindings, computedStyles: cstring) =
       let line =
         try: parseInt($sourceLine)
         except ValueError: 0
@@ -1089,7 +1355,9 @@ proc installPreviewSelectionBridge[R, E](r: R; frame: E; vm: EditorVM) =
         $sourceKey,
         $schemaKey,
         $ancestorIds,
-        $layerTreeJson)
+        $layerTreeJson,
+        $styleBindings,
+        $computedStyles)
       # SGR: selecting does NOT republish the tree. `selectInspectorElement`
       # re-flags the rows the scene-graph reader already published, which is
       # the same tree walked from the same source. Publishing a second one
@@ -1123,7 +1391,8 @@ proc installPreviewSelectionBridge[R, E](r: R; frame: E; vm: EditorVM) =
             d.borderColor || '', d.fontSize || '', d.fontWeight || '',
             d.lineHeight || '', d.boxShadow || '', d.opacity || '',
             d.rectWidth || '', d.rectHeight || '', d.textContent || '',
-            d.layerTree || ''
+            d.layerTree || '', d.styleBindings || '',
+            d.computedStyles || ''
           );
         });
       }
@@ -1740,7 +2009,7 @@ proc hoverPreviewElementById[R, E](r: R; frame: E; id: string) =
     discard frame
     discard id
 
-proc restorePreviewSelection[R, E](r: R; frame: E; id: string) =
+proc restorePreviewSelection*[R, E](r: R; frame: E; id: string) =
   when defined(js):
     {.emit: ["""
       (function () {
@@ -4522,6 +4791,7 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
   var projectFrame: E
   var lastSrcdoc = ""
   var lastRestoredSelection = ""
+  let mountState = newPreviewMountState()
 
   let container = ui(r):
     tdiv(class = "editor-preview",
@@ -4530,18 +4800,70 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
           min_width = "0", height = "100%",
           background_color = bgBase)
 
+  # The editable preview is sized by the SCREEN-SIZE CHIPS, like the
+  # read-only one in page_preview.nim already was.
+  #
+  # It was not, and the consequence was not cosmetic. The iframe was
+  # `width:100%` of whatever the centre column left it -- about 840px -- so
+  # Desktop, Laptop, Tablet and Phone all rendered identically, at a width
+  # that happens to sit inside this project's `@media (max-width:1080px)`
+  # block. The chips looked like they worked because the label changed. Every
+  # responsive rule was permanently in its compact state and there was no way
+  # to see, or edit, the wide one.
+  #
+  # Three nested elements, each with one job:
+  #   * `scrollHost` -- the scrollable, padded area the frame sits in.
+  #   * `fitHost`    -- carries the scale transform, so a 1440px viewport is
+  #                     legible inside an 840px column instead of demanding a
+  #                     horizontal scrollbar.
+  #   * `deviceFrame`-- the viewport itself, at its true CSS width. The iframe
+  #                     fills it, so the page inside is laid out at the
+  #                     viewport's width whatever the transform does visually.
+  #
+  # Scaling rather than shrinking is what keeps this honest: the iframe's
+  # layout width stays 1440 when 1440 is selected, so the media queries the
+  # browser evaluates are the ones for 1440. A transform changes how big it
+  # looks, never what it computes.
+  var scrollHost: E
+  var fitHost: E
+  var deviceFrame: E
   let preview = ui(r):
     tdiv(flex = "1", display = "flex", flex_direction = "column",
           min_width = "0"):
-      tdiv(flex = "1", overflow = "auto", background_color = bgPreview,
-            padding = "24px"):
-        iframe(ref = projectFrame,
-          title = "Editable component preview",
-          width = "100%",
-          height = "480",
-          border = "0",
-          background_color = "#FFFFFF",
-          `data-component-edit-frame` = "true")
+      tdiv(ref = scrollHost,
+            flex = "1", overflow = "auto", background_color = bgPreview,
+            padding = "24px",
+            # Reserve the scrollbar's width whether or not it is showing.
+            #
+            # Without this the fit calculation oscillates and the tab locks
+            # up. The chain: a taller preview makes this host overflow, the
+            # vertical scrollbar appears, `clientWidth` drops by the
+            # scrollbar's width, the scale is recomputed smaller, the frame
+            # gets shorter, the scrollbar goes away, `clientWidth` grows back
+            # -- and round again, forever, via the ResizeObserver below. It
+            # needs a content-height change to enter that regime, which is
+            # exactly what applying a stylesheet swap does, so it only showed
+            # up once the fast path started editing the live preview's CSS.
+            scrollbar_gutter = "stable",
+            display = "flex", justify_content = "center",
+            align_items = "flex-start"):
+        tdiv(ref = fitHost,
+              position = "relative",
+              flex = "0 0 auto"):
+          tdiv(ref = deviceFrame,
+                position = "absolute", top = "0", left = "0",
+                transform_origin = "top left",
+                background_color = "#FFFFFF",
+                border_radius = "8px",
+                overflow = "hidden",
+                `data-component-edit-device-frame` = "true"):
+            iframe(ref = projectFrame,
+              title = "Editable component preview",
+              width = "100%",
+              height = "480",
+              border = "0",
+              background_color = "#FFFFFF",
+              `data-component-edit-frame` = "true")
 
   # The rich property inspector now lives in the right sidebar's
   # Manual tab (``shell.nim``), not as a centre-column panel. The
@@ -4552,6 +4874,148 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
   r.appendChild(container, preview)
 
   installPreviewSelectionBridge[R, E](r, projectFrame, vm)
+
+  # Size the viewport, fit it to the column, and report the width the page
+  # inside is actually being laid out at.
+  #
+  # The reported width is `clientWidth`, NOT `getBoundingClientRect().width`:
+  # the rect is post-transform, so a scaled-down 1440px viewport would report
+  # ~820 and every breakpoint question would be answered for a width the page
+  # inside is not using. `clientWidth` is the layout width, which is the one
+  # the browser evaluates media queries against.
+  when defined(js):
+    let reportWidth = proc(width: int) =
+      if vm.previewRenderedWidth.val != width:
+        vm.previewRenderedWidth.val = width
+
+    createRenderEffect proc() =
+      let vp = vm.viewport.val
+      let width = max(vp.width, 1)
+      r.setStyle(deviceFrame, "width", $width & "px")
+      r.setStyle(deviceFrame, "min-width", $width & "px")
+      r.setAttribute(deviceFrame, "data-preview-viewport-width", $width)
+      # A cells-based (TUI) viewport has no pixel width to honour; leave it
+      # filling the column rather than rendering an 80px-wide frame.
+      if vp.isCells:
+        r.setStyle(deviceFrame, "width", "100%")
+        r.setStyle(deviceFrame, "min-width", "0")
+      # Refit now that the device is its new size. The observer below watches
+      # the scroll host, which a width change inside it does not necessarily
+      # resize, so waiting for it would leave a 1440px frame unscaled in an
+      # 840px column until something else moved.
+      when defined(js):
+        {.emit: ["""
+          (function (host) {
+            if (host && host.__isonimApplyFit) host.__isonimApplyFit();
+          })(""", scrollHost, ");"].}
+
+    {.emit: ["""
+      (function (host, fit, frame, device, report) {
+        if (!host || host.__isonimViewportFitInstalled) return;
+        host.__isonimViewportFitInstalled = true;
+        // `device` is absolutely positioned inside `fit`, and `fit` is sized
+        // to the SCALED box.
+        //
+        // The obvious arrangement -- device in normal flow, transform on the
+        // wrapper -- does not work, and the way it fails is instructive. A
+        // transform does not affect layout, so a 1440px device still claims
+        // 1440px of width inside an 850px column. That overflow propagates up
+        // the flex chain and squeezes the very element whose width is being
+        // measured to compute the scale, so `available` came back as ~344
+        // instead of ~850 and everything rendered at a fifth of its size.
+        // Taking the device out of flow means nothing ever overflows and the
+        // measurement is of the real column.
+        //
+        // Every write is also guarded by "did this actually change". Without
+        // that, `apply` sets a size on `fit`, which resizes `host`, which
+        // fires the observer, which calls `apply`: an infinite loop that
+        // freezes the tab rather than merely looking wrong.
+        let lastScale = null;
+        let lastW = null;
+        let lastH = null;
+        let lastReported = 0;
+        // Runaway guard. `scrollbar-gutter: stable` above removes the
+        // oscillation this counts, and the counter stays because the failure
+        // mode is a frozen tab rather than a visible glitch: a fit that cannot
+        // settle must give up and leave the preview slightly wrong, not spin.
+        // Reset on every settled frame, so ordinary resizing never trips it.
+        let burst = 0;
+        let burstFrame = 0;
+        host.__isonimFitApplies = 0;
+        const apply = function () {
+          host.__isonimFitApplies++;
+          const frame = Math.floor(performance.now() / 16);
+          if (frame === burstFrame) {
+            if (++burst > 30) return;
+          } else {
+            burstFrame = frame;
+            burst = 0;
+          }
+          const style = getComputedStyle(host);
+          const padding = parseFloat(style.paddingLeft || '0') +
+                          parseFloat(style.paddingRight || '0');
+          const available = host.clientWidth - padding;
+          const natural = device.clientWidth;
+          const naturalH = device.offsetHeight;
+          if (!natural || available <= 0) return;
+          // Only ever scale DOWN. Blowing a 390px phone up to fill the column
+          // would misrepresent it as badly as cropping it.
+          // Quantised so sub-pixel jitter cannot produce an endless series of
+          // "changed" values that each retrigger the observer.
+          const scale = Math.min(1, Math.floor(available / natural * 1000) / 1000);
+          if (scale !== lastScale) {
+            lastScale = scale;
+            device.style.transform = scale < 1 ? 'scale(' + scale + ')' : '';
+          }
+          const w = Math.round(natural * scale);
+          const h = Math.round(naturalH * scale);
+          if (w !== lastW) { lastW = w; fit.style.width = w + 'px'; }
+          if (h !== lastH) { lastH = h; fit.style.height = h + 'px'; }
+          if (natural !== lastReported) {
+            lastReported = natural;
+            report(natural);
+          }
+        };
+        if (typeof ResizeObserver !== 'undefined') {
+          // `host` only. `device` and `fit` are both written to above, so
+          // observing either is the shortest path back into the loop.
+          new ResizeObserver(apply).observe(host);
+        } else {
+          window.addEventListener('resize', apply);
+        }
+        frame.addEventListener('load', apply);
+        // The viewport effect calls this after it changes the device width. A
+        // polling timer would also work and would be worse: either slower than
+        // the change, or still running long after it.
+        host.__isonimApplyFit = apply;
+        apply();
+      })(""", scrollHost, ", ", fitHost, ", ", projectFrame, ", ",
+      deviceFrame, ", ", reportWidth, ");"].}
+
+  # Why the selected element is NOT read in the srcdoc effect below.
+  #
+  # `componentEditPreviewDocument` ignores `selected` entirely whenever the
+  # project supplies its own `documentHtml`, which every real project does;
+  # the selection only feeds the SYNTHESIZED fallback document. Reading the
+  # selection unconditionally therefore made every click rebuild the whole
+  # preview document for no change in its bytes -- and on the JS backend a
+  # Nim `string` is an array of char codes, so for the grip pilot's 650KB
+  # document that meant copying a 650_000-element array several times per
+  # click and then comparing two of them element by element. Measured cost:
+  # ~1_000_000 `nimCopy` calls and 18-120 seconds of frozen main thread for a
+  # single selection, a third of it in GC. Selecting an element is the most
+  # common thing anyone does in this editor, so this is the one dependency
+  # that had to go.
+  #
+  # The selection still has to reach the iframe, so it moves to its own
+  # effect below, which depends on a memo over the element's `id` alone. That
+  # keeps the ElementRef copy to once per selection instead of once per
+  # reader, and leaves the 650KB document untouched.
+  let selectedElementId = createMemo(proc(): string =
+    vm.inspector.selectedElement.val.id)
+  # Bumped whenever the iframe is actually reloaded, so the restore effect
+  # below re-runs even when the selected id has not changed.
+  let srcdocGeneration = createSignal(0)
 
   createRenderEffect proc() =
     let previewState = vm.preview.current.val
@@ -4571,23 +5035,102 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
       if vm.platform.val != pbWeb:
         ""
       else:
-        let previewDocument = componentEditPreviewDocument(previewState,
-          vm.inspector.selectedElement.val)
+        # Only the synthesized fallback needs the selection, and only that
+        # branch reads it: dependencies here are dynamic, so NOT reading the
+        # signal is what keeps this effect off the selection path.
+        let previewDocument =
+          if previewState.documentHtml.len > 0 or
+              previewState.bodyText.len == 0:
+            componentEditPreviewDocument(previewState, ElementRef())
+          else:
+            componentEditPreviewDocument(previewState,
+              vm.inspector.selectedElement.val)
         if vm.editMode.val == emView:
           identifiedPreviewDocument(previewDocument, vm.selectedStory.val, reloadGeneration)
         else:
           identifiedPreviewDocument(editablePreviewDocument(previewDocument, metadata, vm.editMode.val), vm.selectedStory.val, reloadGeneration)
-    var srcdocChanged = false
-    if nextSrcdoc != lastSrcdoc:
+    # Length first: `!=` on a Nim string is an element-wise walk of two char
+    # arrays, and two documents of different length cannot be equal.
+    let srcdocChanged =
+      nextSrcdoc.len != lastSrcdoc.len or nextSrcdoc != lastSrcdoc
+    if srcdocChanged:
       lastSrcdoc = nextSrcdoc
-      srcdocChanged = true
       r.setAttribute(projectFrame, "srcdoc", nextSrcdoc)
+      # Reloading the frame drops the selection outline, so ask for a restore
+      # even when the selected element itself did not change.
+      srcdocGeneration.val = srcdocGeneration.val + 1
+
+    # Mount the project's UI into the frame, when the project offers one.
+    #
+    # The alternative -- and what this replaces -- is the project serialising
+    # its UI to a string and the editor injecting it. A string cannot be
+    # edited: changing a value in it means rewriting the source that produced
+    # it and recompiling, which is why every fast path before this one was a
+    # way of patching the rendered output behind the project's back.
+    #
+    # A mounted tree needs none of that. The values in it are cells (see
+    # `dsl/isomorphic` and `editor/editable_cells`), so an edit is a signal
+    # write and the framework's own reactivity updates the node that showed
+    # it. The editor stops being a thing that rewrites the project's markup.
+    #
+    # Still inside the iframe, deliberately. The frame is what keeps the
+    # project's CSS off the editor's chrome, and what makes the preview's width
+    # the width media queries are evaluated against -- both of which a div in
+    # the editor's own document would lose.
+    # Only the ACTIVE view mounts and restores.
+    #
+    # Both preview views are mounted at once and display-toggled, so without
+    # this the hidden one also mounts the story and also calls
+    # `restorePreviewSelection` on its own frame. That frame's bridge answers
+    # by dispatching a selection back into the same VM, the other view sees a
+    # new selection and restores in turn, and the selection oscillates between
+    # elements -- observed cycling between `h1.tagline` and two of its spans,
+    # and eventually wedging the tab.
+    #
+    # Reading `activeView` also makes this effect re-run on a view switch,
+    # which is what mounts the story into the view the user just moved to.
+    if vm.platform.val == pbWeb and vm.activeView.val == evComponentEdit:
+      mountPreviewInto(projectFrame, vm.selectedStory.val, vm.previewMount,
+                       mountState, srcdocChanged)
     r.setStyle(projectFrame, "min-height", "320px")
     r.setStyle(projectFrame, "overflow", "hidden")
-    let selectedId = vm.inspector.selectedElement.val.id
-    if selectedId.len > 0 and (srcdocChanged or selectedId !=
-        lastRestoredSelection):
-      lastRestoredSelection = selectedId
+
+  # Undo and redo change what the file should say; this is what makes the
+  # preview follow.
+  #
+  # The ViewModels cannot touch a DOM, so `undoCssPropertyEdit` publishes a
+  # request and this applies it -- through `applyPreviewStyle`, the same path a
+  # fresh edit takes, so an undone value lands on the rule the cascade uses or
+  # the cell it came from exactly as the original did.
+  when defined(js):
+    var lastPreviewRequest = 0
+    createRenderEffect proc() =
+      let request = vm.inspector.previewValueRequest.val
+      if request.generation == 0 or request.generation == lastPreviewRequest:
+        return
+      lastPreviewRequest = request.generation
+      applyPreviewStyle(request.elementId, request.domPath,
+                        request.property, request.value)
+      # The write that follows must not reload the preview out from under it,
+      # for the same reason a commit sets this.
+      vm.previewShowsPendingEdits.val = true
+      # And schedule the write. An undo that only moves the preview and the
+      # inspector leaves the file saying what the user just took back -- which
+      # is how this looked before: the value returned to 40px on screen while
+      # the stylesheet still read 55px, and the next rebuild would have put it
+      # back. Undoing after a save is itself an edit, so it saves like one.
+      vm.noteCommitForAutoSave()
+
+  # Selection restore, on its own. Reads a string memo and an int, so a click
+  # costs one ElementRef copy rather than a rebuild of the whole document.
+  createRenderEffect proc() =
+    let selectedId = selectedElementId.val
+    let generation = srcdocGeneration.val
+    let stamp = selectedId & "@" & $generation
+    # Active view only; see the note on the mount above.
+    if vm.activeView.val == evComponentEdit and
+        selectedId.len > 0 and stamp != lastRestoredSelection:
+      lastRestoredSelection = stamp
       r.restorePreviewSelection(projectFrame, selectedId)
 
   container

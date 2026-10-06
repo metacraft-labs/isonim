@@ -24,6 +24,14 @@
 ##   string concatenation which the Nim compiler handles, or element
 ##   creation which has no meaningful merge semantics.
 ##
+## Under `-d:isonimEditor` the client arm gains a fourth behaviour rather than
+## a fourth entry point: an authored literal in PROJECT code compiles into a
+## cell the editor can write (`editor/editable_cells`), so an edit reaches the
+## DOM through the framework's own reactivity instead of through a mechanism
+## maintained beside it. Framework code is excluded by `isFrameworkBlock`,
+## because the editor's own chrome is client-mode DSL in the same build and is
+## not the document being edited.
+##
 ## The three backends intentionally have separate codegen implementations
 ## rather than sharing an IR, because they have fundamentally different
 ## output structures:
@@ -34,12 +42,50 @@
 ## Sharing an IR would add complexity without benefit — each backend's
 ## optimisations are specific to its output target.
 
-import std/macros
+import std/[macros, os, strutils]
 import transform
 import tailwind
+import vocabulary
 import ./scene_graph
+import ./style_provenance
+import ./style_binding
+# Bound, not left for the caller to import: every element of a `ui:` block
+# asks for its hydration key, and a consumer that never hydrates should not
+# have to know the module exists.
+import ../ssr/markers
 
 var gensymCounter {.compileTime.} = 0
+
+const frameworkSourceRoot = block:
+  ## isonim's own source tree, derived from this file's location.
+  ##
+  ## `ui.nim` lives at `<root>/src/isonim/dsl/ui.nim`, so three parents up is
+  ## `<root>/src/isonim` -- everything the framework itself is made of, and
+  ## nothing a project writes.
+  const here = currentSourcePath().replace('\\', '/')
+  here.parentDir().parentDir()
+
+proc isFrameworkBlock(node: NimNode): bool {.compileTime.} =
+  ## Is this ui block part of the FRAMEWORK rather than the project?
+  ##
+  ## The editor is an IsoNim application, so its chrome is client-mode DSL
+  ## compiled into the same `nim js` invocation as the project it edits. Both
+  ## reach this macro and only one of them is the user's document: a toolbar
+  ## button is not something the user edits, and compiling its label into a
+  ## writable cell is at best waste and at worst an invitation to change the
+  ## editor by accident.
+  ##
+  ## A PREFIX test on the directory, not a substring test on the name. A
+  ## project may well have `isonim` in its own path -- the pilot this was built
+  ## against lives at `web-site-prototypes/grip/isonim/src/pages/home.nim` --
+  ## and a substring test would classify it as framework code and silently
+  ## leave it uneditable.
+  ##
+  ## Derived from `currentSourcePath()` rather than configured, so it stays
+  ## true for a vendored copy, a nimble install or a sibling checkout without
+  ## anything being declared anywhere.
+  let file = node.lineInfoObj.filename.replace('\\', '/')
+  file.startsWith(frameworkSourceRoot & "/")
 
 proc attrNameStr(node: NimNode): string {.compileTime.} =
   ## Extract an attribute name from an attribute key node.
@@ -75,6 +121,11 @@ proc attrNameStr(node: NimNode): string {.compileTime.} =
     error("DSL attribute name must be an ident, accent-quoted ident, or " &
           "(open|closed) sym choice; got " & $node.kind, node)
 
+proc isHydrationFlag(attrName: string): bool {.compileTime.} =
+  ## `hydrate = true` / `needsId = true`: not an attribute, a request for a
+  ## hydration key on the server (ssr/markers.nim).
+  attrName == "hydrate" or attrName == "needsId"
+
 proc genName(prefix: string): NimNode {.compileTime.} =
   inc gensymCounter
   result = ident(prefix & $gensymCounter)
@@ -83,7 +134,7 @@ proc genName(prefix: string): NimNode {.compileTime.} =
 # Scene-graph emission (SGR-M1)
 # ---------------------------------------------------------------------------
 #
-# The macro emits one `noteElement` call per element, unconditionally. In a
+# The macro emits one `noteSceneElement` call per element, unconditionally. In a
 # production build that call resolves to a template whose parameters are all
 # unused, so the call AND its arguments are erased: the emitted JS is
 # byte-for-byte the same size as a build from before this feature existed, and
@@ -100,12 +151,58 @@ proc genName(prefix: string): NimNode {.compileTime.} =
 # With compile time not deciding it, the seam wins on structure: the DSL emits
 # one uniform call and has no idea an editor exists. The `when` branch lives in
 # `./scene_graph`, which is the module whose job is choosing.
+#
+# Backend element hook. Next to the scene-graph call the macro emits a second,
+# independent one per element:
+#
+#   noteElement(el, id, tag, loc, parentId)
+#
+# A renderer backend that wants each element's source location declares an
+# overload typed on its own element handle, for example
+#
+#   proc noteElement*(el: MyNode; id, tag, loc, parentId: string)
+#
+# where `loc` is "file:line:column" of the element's tag in the template
+# (0-based column, as Nim reports it): the element start, for the `tag(args)`
+# form as well as the `tag:` form. The scene-graph call below it receives the
+# call node's position instead (the `(` of `tag(args)`), because the editor's
+# element id is derived from that position; the two agree on file and line
+# and differ only in the column of the `tag(args)` form. The call
+# is an open symbol choice over the default below (a no-op template with an
+# untyped element, erased like the production seam) and whatever `noteElement`
+# overloads are visible at the `ui` call site; overload resolution prefers the
+# typed overload, so a backend that declares one gets it and every other
+# backend compiles to nothing.
+#
+# The two calls never compete. The scene-graph call is bound closed to
+# `./scene_graph` (it cannot be overridden from a call site), and the backend
+# call cannot reach it because the seam is named differently. So with
+# `-d:isonimEditor` AND a backend overload, both run, scene graph first: the
+# editor records every element exactly as it does for renderers without an
+# overload, and the backend still learns each element's location.
+# `tests/test_dsl_element_hook.nim` pins this in both configurations.
+
+template noteElement*(el: untyped; id: static string; tag: static string;
+                      loc: static string; parentId: static string) =
+  ## Default backend element hook: a no-op whose parameters are all unused,
+  ## so the call and its arguments are erased. A backend overrides it by
+  ## declaring a `noteElement` typed on its element handle (see above).
+  discard
 
 var parentIdStack {.compileTime.}: seq[string] = @[]
   ## Parent ids during the compile-time walk. A stack rather than a threaded
   ## parameter so the emission does not change fourteen call-site signatures
   ## in the DSL's recursion; macro expansion is single-threaded, so a
   ## module-level stack is safe here in a way it would not be at runtime.
+
+var vocabParentStack {.compileTime.}: seq[string] = @[]
+  ## Parent tags for the static-vocabulary check, mirroring
+  ## parentIdStack. Empty when the element being walked is at the top of
+  ## its `ui` block. Its parent is then unknown -- the block may be the body
+  ## of a proc whose result a caller appends inside some other element --
+  ## so the emitted check skips the nesting rule for it
+  ## (`parentKnown = false`). Nesting below the top level is checked here;
+  ## nesting across composition is the renderer's own run-time concern.
 
 proc sceneElementId(node: NimNode): string {.compileTime.} =
   ## Identity for one element, derived from its source position.
@@ -118,6 +215,62 @@ proc sceneElementId(node: NimNode): string {.compileTime.} =
   let info = node.lineInfoObj
   result = info.filename & ":" & $info.line & ":" & $info.column
 
+proc literalText(node: NimNode): string {.compileTime.} =
+  ## The authored text of a non-dynamic attribute value, or "" if the node is
+  ## not one the macro can read. `isDynamic` already answers "can this be
+  ## read at all"; this answers "as what string".
+  case node.kind
+  of nnkStrLit, nnkRStrLit, nnkTripleStrLit: node.strVal
+  of nnkIntLit .. nnkFloat128Lit: node.repr
+  else: ""
+
+proc collectAttrBindings(bindings: var seq[StyleBinding];
+                         attrName: string; attrVal: NimNode) {.compileTime.} =
+  ## Turn one authored attribute into style-provenance records.
+  ##
+  ## This is the whole point of the feature and it is three lines of dispatch,
+  ## because the expensive part -- knowing which syntax the author used -- is
+  ## free here and unrecoverable anywhere later. Called from BOTH backends so
+  ## the client-mode hook and the SSR attribute cannot describe the same
+  ## element differently.
+  if isEventHandler(attrName):
+    return
+  if attrName == "class":
+    if isDynamic(attrVal):
+      bindings.add dynamicBinding("class", "the class attribute")
+    else:
+      bindings.add classBindings(literalText(attrVal))
+  elif attrName == "style":
+    if isDynamic(attrVal):
+      bindings.add dynamicBinding("style-attr", "the style attribute")
+    else:
+      bindings.add inlineStyleBindings(literalText(attrVal))
+  elif isStyleProperty(attrName):
+    let cssName = toStyleName(attrName)
+    if isDynamic(attrVal):
+      bindings.add dynamicBinding("attr:" & cssName,
+                                  "the `" & cssName & "` attribute")
+    else:
+      bindings.add styleAttrBinding(cssName, literalText(attrVal))
+
+proc reportUnresolved(bindings: seq[StyleBinding]; node: NimNode) {.compileTime.} =
+  ## `-d:isonimStyleBindingStrict` turns an unresolvable binding into a build
+  ## failure. Off by default; `dsl/style_binding.nim` records why.
+  when styleBindingStrict:
+    for b in bindings:
+      if b.kind == sbkUnresolved:
+        error("unresolved style binding " & b.detail & ": " & b.note, node)
+  else:
+    discard
+
+proc tagNode(node: NimNode): NimNode {.compileTime.} =
+  ## The node naming an element's tag: the callee of a `tag(args)` /
+  ## `tag args` / `tag:` call, or the node itself for anything else.
+  if node.kind in {nnkCall, nnkCommand} and node.len > 0:
+    node[0]
+  else:
+    node
+
 proc emitNoteElement(stmts, elSym: NimNode; tag: string;
                      node: NimNode): string {.compileTime.} =
   ## Emit the hook for `elSym` and return the id, so the caller can push it as
@@ -127,10 +280,56 @@ proc emitNoteElement(stmts, elSym: NimNode; tag: string;
     let info = node.lineInfoObj
     let loc = info.filename & ":" & $info.line & ":" & $info.column
     let parentId = if parentIdStack.len > 0: parentIdStack[^1] else: ""
-    stmts.add(newCall(bindSym"noteElement", elSym,
+    # The scene-graph seam: bound closed, so a call site cannot divert it.
+    # Its `loc` is the call node's position, the same position the element
+    # id is derived from, and is left that way: the editor keys elements,
+    # their `data-isonim-src` stamps and their editable cells on that id.
+    stmts.add(newCall(bindSym("noteSceneElement", brClosed), elSym,
                       newStrLitNode(id), newStrLitNode(tag),
                       newStrLitNode(loc), newStrLitNode(parentId)))
+    # The backend element hook: an open choice, so a backend's typed
+    # `noteElement` overload visible at the call site wins over the no-op
+    # default. Independent of the seam above; see "Backend element hook".
+    # Its `loc` is the position of the element's TAG, so it points at the
+    # element start in both the `tag(args)` form (whose call node Nim
+    # anchors at the `(`) and the `tag:` form.
+    let tagInfo = tagNode(node).lineInfoObj
+    let tagLoc = tagInfo.filename & ":" & $tagInfo.line & ":" &
+                 $tagInfo.column
+    stmts.add(newCall(bindSym("noteElement", brForceOpen), elSym,
+                      newStrLitNode(id), newStrLitNode(tag),
+                      newStrLitNode(tagLoc), newStrLitNode(parentId)))
   result = id
+
+proc emitEditableAssign(stmts, rendererSym, elSym, node: NimNode;
+                        setter, id, property: string;
+                        literal: NimNode) {.compileTime.} =
+  ## Emit an assignment whose value the editor can change at runtime.
+  ##
+  ## In the edit regime an authored literal becomes a cell, and the assignment
+  ## that consumes it moves inside a render effect. Writing the cell then
+  ## invalidates that effect and nothing else: the element updates through the
+  ## framework's own reactive path, not through a second mechanism maintained
+  ## beside it.
+  ##
+  ## `editableValue` is emitted UNBOUND, like `createRenderEffect` beside it,
+  ## so it resolves where the ui block is written rather than where this macro
+  ## is defined. That is what keeps the reactive core out of the DSL's own
+  ## dependencies; see `editor/editable_cells.nim`.
+  when editRegimeEnabled:
+    if not node.isFrameworkBlock():
+      let cellSym = genName("cell")
+      stmts.add(newLetStmt(cellSym,
+        newCall(bindSym"editableValue", newStrLitNode(id),
+                newStrLitNode(property), literal)))
+      stmts.add(newCall(bindSym"createRenderEffect", newProc(
+        params = [newEmptyNode()],
+        body = newStmtList(
+          newCall(newDotExpr(rendererSym, ident(setter)), elSym,
+                  newStrLitNode(property), newCall(bindSym"val", cellSym))))))
+      return
+  stmts.add(newCall(newDotExpr(rendererSym, ident(setter)),
+                    elSym, newStrLitNode(property), literal))
 
 # ---------------------------------------------------------------------------
 # Void elements (shared between client and SSR modes)
@@ -186,6 +385,97 @@ proc isElementCall(name: string; node: NimNode): bool {.compileTime.} =
       return true
 
   return false
+
+# ---------------------------------------------------------------------------
+# Static-vocabulary check: per-element compile-time validation
+# ---------------------------------------------------------------------------
+
+proc setVocabLineInfo(n, src: NimNode) {.compileTime.} =
+  ## Point generated check nodes at the element, so a static failure cites
+  ## the offending node's line rather than the `ui` call site.
+  copyLineInfo(n, src)
+  for child in n:
+    setVocabLineInfo(child, src)
+
+proc makeVocabCall(rendererSym: NimNode): NimNode {.compileTime.} =
+  ## Fresh `staticVocabulary(typeof(renderer))` nodes. Built per use so the
+  ## `compiles` guard and the `checkElement` call never share AST objects.
+  ## `staticVocabulary` stays an unbound ident: it resolves in the caller's
+  ## scope to the renderer's opt-in proc, and `compiles` is false when the
+  ## renderer declares none.
+  newCall(ident"staticVocabulary", newCall(ident"typeof", rendererSym))
+
+proc emitVocabCheck(stmts, rendererSym: NimNode; tag: string;
+    styleAttrs, attrs: seq[string]; srcNode: NimNode) {.compileTime.} =
+  ## Emit the per-element static-vocabulary check:
+  ##
+  ##   when compiles(staticVocabulary(typeof(r))):
+  ##     const msg = checkElement(staticVocabulary(typeof(r)),
+  ##                              "tag", ["style", ...], ["attr", ...],
+  ##                              "parent", parentKnown)
+  ##     when msg != "":
+  ##       {.error: msg.}
+  ##
+  ## Every node carries the element's line info, so a violation is reported
+  ## as `<template file>(line, col) Error: <code>: ...` at the element --
+  ## the only line before it is the `ui` call's own instantiation line in
+  ## the same file. An `{.error.}` pragma is used rather than
+  ## `macros.error` because the latter, run in the VM, prints a
+  ## `stack trace:` header naming the vocabulary module first.
+  ##
+  ## The parent comes from `vocabParentStack`; at the top of the block it is
+  ## unknown and the nesting rule is skipped (see the stack's comment).
+  ## `checkElement` is bound to `dsl/vocabulary`; everything else resolves
+  ## in the caller's scope. For renderers without the hook the `when` folds
+  ## away and no code is emitted.
+  let parentKnown = vocabParentStack.len > 0
+  let parentTag = if parentKnown: vocabParentStack[^1] else: ""
+  let cond = newCall(ident"compiles", makeVocabCall(rendererSym))
+  var styleArr = newNimNode(nnkBracket)
+  for a in styleAttrs:
+    styleArr.add newStrLitNode(a)
+  var attrsArr = newNimNode(nnkBracket)
+  for a in attrs:
+    attrsArr.add newStrLitNode(a)
+  let checkCall = newCall(bindSym"checkElement", makeVocabCall(rendererSym),
+    newStrLitNode(tag), styleArr, attrsArr, newStrLitNode(parentTag),
+    newLit(parentKnown))
+  let msgSym = genSym(nskConst, "vocabMsg")
+  let constSec = newNimNode(nnkConstSection).add(
+    newNimNode(nnkConstDef).add(msgSym, newEmptyNode(), checkCall))
+  let reportWhen = newNimNode(nnkWhenStmt).add(
+    newNimNode(nnkElifBranch).add(
+      infix(msgSym, "!=", newStrLitNode("")),
+      newStmtList(errorPragmaAt(msgSym, srcNode))))
+  let branchBody = newStmtList(constSec, reportWhen)
+  let whenStmt = newNimNode(nnkWhenStmt).add(
+    newNimNode(nnkElifBranch).add(cond, branchBody))
+  setVocabLineInfo(whenStmt, srcNode)
+  stmts.add(whenStmt)
+
+proc emitProcCheck(stmts, rendererSym: NimNode; tagIdent: string;
+    elSym: NimNode; srcNode: NimNode) {.compileTime.} =
+  ## Emit the E-VOCAB-PROC-AS-ELEMENT probe:
+  ##
+  ##   when compiles(staticVocabulary(typeof(r))):
+  ##     when declared(<name-as-written>):
+  ##       checkNotProcAsElement(<name-as-written>, <element>)
+  ##
+  ## Guarded by the same hook as the tag check, so renderers without a
+  ## vocabulary see no change. Uses the as-written name (`tdiv` stays
+  ## `tdiv`), since only it can resolve to a caller-scope proc.
+  let cond = newCall(ident"compiles", makeVocabCall(rendererSym))
+  let nameNode = ident(tagIdent)
+  let declaredCond = newCall(ident"declared", ident(tagIdent))
+  let probeCall = newCall(bindSym"checkNotProcAsElement", nameNode, elSym)
+  let innerBody = newStmtList(probeCall)
+  let innerWhen = newNimNode(nnkWhenStmt).add(
+    newNimNode(nnkElifBranch).add(declaredCond, innerBody))
+  let branchBody = newStmtList(innerWhen)
+  let whenStmt = newNimNode(nnkWhenStmt).add(
+    newNimNode(nnkElifBranch).add(cond, branchBody))
+  setVocabLineInfo(whenStmt, srcNode)
+  stmts.add(whenStmt)
 
 # ---------------------------------------------------------------------------
 # Client mode (renderer-based element creation)
@@ -281,15 +571,25 @@ proc processChildren(rendererSym, parentSym: NimNode; body: NimNode;
       # or refactor the proc into an element-returning helper that the
       # DSL macro can recognise. See the deep-review unified-diff hunk
       # renderer in codetracer for a worked example.
-      let childNode = processNode(rendererSym, child, stmts)
-      if childNode != nil:
-        stmts.add(newCall(newDotExpr(rendererSym, ident"appendChild"),
-                          parentSym, childNode))
+      # `raw <expr>`: pre-rendered HTML dropped in where it appears. Handled
+      # here rather than in `processNode` because the fragment may be any
+      # number of sibling nodes, so there is nothing to return and append --
+      # it has to append itself, into the parent only this scope knows.
+      if child.kind in {nnkCall, nnkCommand} and child.len == 2 and
+          child[0].kind == nnkIdent and child[0].strVal == "raw":
+        stmts.add(newCall(newDotExpr(rendererSym, ident"appendRawHtml"),
+                          parentSym, child[1]))
+      else:
+        let childNode = processNode(rendererSym, child, stmts)
+        if childNode != nil:
+          stmts.add(newCall(newDotExpr(rendererSym, ident"appendChild"),
+                            parentSym, childNode))
     of nnkIdent:
       # Bare identifier — check if it's a known HTML void element (e.g. `br`, `hr`)
       let tagName = resolveTagName(child.strVal)
       if isVoidElement(tagName):
         let elSym = genName("el")
+        emitVocabCheck(stmts, rendererSym, tagName, @[], @[], child)
         stmts.add(newLetStmt(elSym,
           newCall(newDotExpr(rendererSym, ident"createElement"), newStrLitNode(tagName))))
         stmts.add(newCall(newDotExpr(rendererSym, ident"appendChild"),
@@ -325,8 +625,34 @@ proc processNode(rendererSym: NimNode; node: NimNode;
 
       if not isDynamic(arg):
         # Static text
-        stmts.add(newLetStmt(txtSym,
-          newCall(newDotExpr(rendererSym, ident"createTextNode"), arg)))
+        var emitted = false
+        when editRegimeEnabled:
+          if not node.isFrameworkBlock():
+            # Keyed on the TEXT's own source position, not the parent
+            # element's: one element can hold several text literals
+            # (`h1: text "a"; text "b"`), and keying on the parent would make
+            # them one cell, so editing either would change both.
+            let cellSym = genName("cell")
+            stmts.add(newLetStmt(cellSym,
+              newCall(bindSym"editableValue",
+                      newStrLitNode(sceneElementId(node)),
+                      newStrLitNode("text"), arg)))
+            stmts.add(newLetStmt(txtSym,
+              newCall(newDotExpr(rendererSym, ident"createTextNode"),
+                      newStrLitNode(""))))
+            stmts.add(newCall(bindSym"createRenderEffect", newProc(
+              params = [newEmptyNode()],
+              body = newStmtList(
+                newCall(newDotExpr(rendererSym, ident"setTextContent"),
+                        txtSym, newCall(bindSym"val", cellSym))))))
+            emitted = true
+        # The plain form, for framework blocks and for production builds. It
+        # has to stay reachable in BOTH: a `when/else` here compiled the
+        # fallback out of editor builds, so a framework block emitted no text
+        # node at all and the generated code referenced an undeclared symbol.
+        if not emitted:
+          stmts.add(newLetStmt(txtSym,
+            newCall(newDotExpr(rendererSym, ident"createTextNode"), arg)))
         return txtSym
       else:
         # Dynamic text - create text node then wrap update in effect
@@ -362,8 +688,34 @@ proc processNode(rendererSym: NimNode; node: NimNode;
     let htmlTag = resolveTagName(tagIdent)
     let elSym = genName("el")
 
+    # Per-element static vocabulary check. Collects the attribute names
+    # (skipping `ref`, which is a macro directive, and `on*` handlers,
+    # which route to addEventListener, not to an attribute slot), split by
+    # the same style/attr routing the codegen below uses, and emits a
+    # `when compiles` guard that folds away for renderers without the hook.
+    var vocabStyles: seq[string] = @[]
+    var vocabAttrs: seq[string] = @[]
+    for i in 1 ..< node.len:
+      let arg = node[i]
+      if arg.kind == nnkExprEqExpr and arg[0].kind != nnkRefTy:
+        let attrName = attrNameStr(arg[0])
+        if isEventHandler(attrName) or isHydrationFlag(attrName):
+          continue
+        if isStyleProperty(attrName):
+          vocabStyles.add attrName
+        else:
+          vocabAttrs.add attrName
     stmts.add(newLetStmt(elSym,
       newCall(newDotExpr(rendererSym, ident"createElement"), newStrLitNode(htmlTag))))
+
+    # Static vocabulary: proc-as-element probe first (a hit reports here, before the tag
+    # check, so the actionable error leads; the sibling unknown-tag error
+    # still follows, and both are true), then the tag/attribute/nesting
+    # check. Bare identifiers cannot be proc calls, so the void-ident path
+    # in processChildren needs no probe.
+    emitProcCheck(stmts, rendererSym, tagIdent, elSym, node)
+    emitVocabCheck(stmts, rendererSym, htmlTag, vocabStyles, vocabAttrs,
+      node)
 
     # SGR-M1: record this element, then make it the parent of everything its
     # body nests. Pushed before the argument walk and popped after, so a
@@ -371,6 +723,31 @@ proc processNode(rendererSym: NimNode; node: NimNode;
     # from this proc after the push goes through the pop below.
     let sceneId = emitNoteElement(stmts, elSym, htmlTag, node)
     parentIdStack.add sceneId
+    vocabParentStack.add htmlTag
+
+    # Stamp the source location, as SSR mode already does.
+    #
+    # `noteSceneElement` records the tree in memory, which is enough to answer
+    # "what is nested in what" and not enough to answer "where is this
+    # written" from a DOM node the user just clicked. SSR has always carried
+    # `data-isonim-src` in the markup for exactly that, and the editor's walk
+    # reads it; a client-mounted preview without it produced element ids
+    # beginning `::`, with the file and line simply missing.
+    #
+    # Editor builds only. In production `sceneGraphEnabled` is false, the
+    # branch is not taken, and the attribute does not exist.
+    if sceneGraphEnabled:
+      stmts.add(newCall(newDotExpr(rendererSym, ident"setAttribute"),
+                        elSym, newStrLitNode("data-isonim-src"),
+                        newStrLitNode(sceneId)))
+      stmts.add(newCall(newDotExpr(rendererSym, ident"setAttribute"),
+                        elSym, newStrLitNode("data-isonim-tag"),
+                        newStrLitNode(htmlTag)))
+
+    # The authored styling of this element, recorded as the attributes are
+    # walked. A computed style cannot answer "was this a binding?"; this can,
+    # and only here.
+    var styleBindings: seq[StyleBinding] = @[]
 
     # Process arguments (attributes, event handlers) and body
     for i in 1 ..< node.len:
@@ -388,8 +765,13 @@ proc processNode(rendererSym: NimNode; node: NimNode;
           # attr = value
           let attrName = attrNameStr(arg[0])
           let attrVal = arg[1]
+          collectAttrBindings(styleBindings, attrName, attrVal)
 
-          if isEventHandler(attrName):
+          if isHydrationFlag(attrName):
+            # `hydrate = true` is a server-side request for a key; the
+            # client counts every element anyway.
+            discard
+          elif isEventHandler(attrName):
             # Event handler: onclick = proc() = ...
             let evName = eventName(attrName)
             stmts.add(newCall(
@@ -398,9 +780,8 @@ proc processNode(rendererSym: NimNode; node: NimNode;
           elif attrName == "class" and not isDynamic(attrVal):
             # Static class attribute — always set as attribute (for CSS/debugging),
             # AND expand recognized Tailwind utilities to setStyle calls on native.
-            stmts.add(newCall(
-              newDotExpr(rendererSym, ident"setAttribute"),
-              elSym, newStrLitNode("class"), attrVal))
+            emitEditableAssign(stmts, rendererSym, elSym, node, "setAttribute",
+                               sceneId, "class", attrVal)
             when not defined(js):
               let classStr = attrVal.strVal
               let styles = expandTailwindClassesCompileTime(classStr)
@@ -412,9 +793,8 @@ proc processNode(rendererSym: NimNode; node: NimNode;
             # CSS style property: emit setStyle instead of setAttribute
             let cssName = toStyleName(attrName)
             if not isDynamic(attrVal):
-              stmts.add(newCall(
-                newDotExpr(rendererSym, ident"setStyle"),
-                elSym, newStrLitNode(cssName), attrVal))
+              emitEditableAssign(stmts, rendererSym, elSym, node, "setStyle",
+                                 sceneId, cssName, attrVal)
             else:
               let effectBody = newProc(
                 params = [newEmptyNode()],
@@ -426,9 +806,8 @@ proc processNode(rendererSym: NimNode; node: NimNode;
               stmts.add(newCall(ident"createRenderEffect", effectBody))
           elif not isDynamic(attrVal):
             # Static attribute
-            stmts.add(newCall(
-              newDotExpr(rendererSym, ident"setAttribute"),
-              elSym, newStrLitNode(attrName), attrVal))
+            emitEditableAssign(stmts, rendererSym, elSym, node, "setAttribute",
+                               sceneId, attrName, attrVal)
           else:
             # Dynamic attribute - wrap in effect
             let effectBody = newProc(
@@ -453,24 +832,23 @@ proc processNode(rendererSym: NimNode; node: NimNode;
       else:
         discard
 
+    # DSE: one provenance payload per element, emitted after the attribute
+    # walk so it describes every attribute, and through the same seam as
+    # `noteSceneElement` so production erases it on the same terms.
+    reportUnresolved(styleBindings, node)
+    stmts.add(newCall(bindSym"noteProperties", elSym,
+                      newStrLitNode(sceneId),
+                      newStrLitNode(encodeStyleBindings(styleBindings))))
+
     # SGR-M1: children are walked; this element is no longer the parent.
     discard parentIdStack.pop()
+    discard vocabParentStack.pop()
     return elSym
 
   return nil
 
-macro ui*(renderer: untyped; body: untyped): untyped =
-  ## Karax-style DSL macro (client mode). Takes a renderer and a body block,
-  ## produces code that creates a tree of elements via the renderer API.
-  ##
-  ## Usage:
-  ##   let root = ui(myRenderer):
-  ##     tdiv(class = "container"):
-  ##       h1: text "Hello"
-  ##       span: text $count.val
-  ##       button(onclick = handler):
-  ##         text "Click me"
-
+proc buildClientTree(renderer, body: NimNode): NimNode {.compileTime.} =
+  ## The client arm's code generation.
   let stmts = newStmtList()
   var rootSym: NimNode = nil
 
@@ -504,11 +882,32 @@ macro ui*(renderer: untyped; body: untyped): untyped =
 
   result = newBlockStmt(stmts)
 
+macro ui*(renderer: untyped; body: untyped): untyped =
+  ## Karax-style DSL macro (client mode). Takes a renderer and a body block,
+  ## produces code that creates a tree of elements via the renderer API.
+  ##
+  ## Usage:
+  ##   let root = ui(myRenderer):
+  ##     tdiv(class = "container"):
+  ##       h1: text "Hello"
+  ##       span: text $count.val
+  ##       button(onclick = handler):
+  ##         text "Click me"
+
+  buildClientTree(renderer, body)
+
+
 # ---------------------------------------------------------------------------
 # SSR mode (string concatenation)
 # ---------------------------------------------------------------------------
 
 proc ssrNodeExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.}
+
+proc ssrVoidElementExpr(tagName: string): NimNode {.compileTime.} =
+  ## A bare void element (`br`, `hr`): `<br />`, with its hydration key.
+  newCall(ident"&", newCall(ident"&", newStrLitNode("<" & tagName),
+                            newCall(bindSym"ssrHydrationKey", newLit(false))),
+          newStrLitNode(" />"))
 
 proc ssrChildrenExpr(body: NimNode; stmts: NimNode): NimNode {.compileTime.} =
   ## Generates a string expression for a list of SSR children.
@@ -526,7 +925,7 @@ proc ssrChildrenExpr(body: NimNode; stmts: NimNode): NimNode {.compileTime.} =
       # Bare identifier — check if it's a known HTML void element (e.g. `br`, `hr`, `img`)
       let tagName = resolveTagName(child.strVal)
       if isVoidElement(tagName):
-        parts.add(newStrLitNode("<" & tagName & " />"))
+        parts.add(ssrVoidElementExpr(tagName))
       else:
         # Not a void element — pass through as Nim code
         stmts.add(child)
@@ -686,6 +1085,12 @@ proc ssrNodeExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.} =
     # Build the opening tag as a string expression
     var tagParts: seq[NimNode] = @[]
     tagParts.add(newStrLitNode("<" & htmlTag))
+    # The element's hydration key (markers.nim). Taken here, before the
+    # children's, so that keys follow document order as the client's
+    # `createElement` calls do. The force flag is patched in below once the
+    # arguments have been read.
+    let keyCall = newCall(bindSym"ssrHydrationKey", newLit(false))
+    tagParts.add(keyCall)
 
     # SGR-M1b: in an editor build, carry the source location in the markup.
     # String mode has no renderer to call and no element handle to hand a
@@ -715,13 +1120,18 @@ proc ssrNodeExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.} =
     # Collect attributes and children
     var childBody: NimNode = nil
     var hasHydrationKey = false
+    var styleBindings: seq[StyleBinding] = @[]
 
     for i in 1 ..< node.len:
       let arg = node[i]
       case arg.kind
       of nnkExprEqExpr:
+        if arg[0].kind == nnkRefTy:
+          # `ref = x` binds the client's element; there is none on the server.
+          continue
         let attrName = attrNameStr(arg[0])
         let attrVal = arg[1]
+        collectAttrBindings(styleBindings, attrName, attrVal)
 
         if isEventHandler(attrName):
           # Event handlers are ignored in SSR
@@ -752,9 +1162,22 @@ proc ssrNodeExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.} =
       else:
         discard
 
-    # Add hydration key if needed
+    # DSE: the SSR counterpart of `noteProperties`. String mode has no
+    # element handle to hand a recorder, but its output IS the HTML the Web
+    # preview loads, and the editor reads provenance off the rendered DOM --
+    # `data-isonim-props` sits beside `data-isonim-src` and is read by the
+    # same walk. Inside the same `when` for the same reason: in a production
+    # build not one byte of this is emitted.
+    reportUnresolved(styleBindings, node)
+    when sceneGraphEnabled:
+      if styleBindings.len > 0:
+        tagParts.add(newStrLitNode(
+          " data-isonim-props=\"" &
+          htmlAttrEscape(encodeStyleBindings(styleBindings)) & "\""))
+
+    # `hydrate = true` asks for a key even outside a hydratable render.
     if hasHydrationKey:
-      tagParts.add(newCall(ident"ssrHydrationKey"))
+      keyCall[1] = newLit(true)
 
     if isVoid:
       tagParts.add(newStrLitNode(" />"))
@@ -825,7 +1248,7 @@ proc ssrTopLevelExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.} =
   # Bare void-element idents (`br`, `hr`) are legal children; accept them as
   # roots too rather than rejecting a form the nested path already allows.
   if node.kind == nnkIdent and isVoidElement(resolveTagName(node.strVal)):
-    return newStrLitNode("<" & resolveTagName(node.strVal) & " />")
+    return ssrVoidElementExpr(resolveTagName(node.strVal))
 
   result = ssrNodeExpr(node, stmts)
   if result == nil:
@@ -843,8 +1266,11 @@ proc uiSsrImpl(body: NimNode): NimNode {.compileTime.} =
     if body.len == 1:
       resultExpr = ssrTopLevelExpr(body[0], stmts)
     else:
-      # Multiple top-level nodes: wrap in a div
-      var parts: seq[NimNode] = @[newStrLitNode("<div>")]
+      # Multiple top-level nodes: wrap in a div. The client wraps them in a
+      # div too (`buildClientTree`), so the wrapper takes the first key.
+      var parts: seq[NimNode] = @[newCall(ident"&", newCall(ident"&",
+        newStrLitNode("<div"), newCall(bindSym"ssrHydrationKey", newLit(false))),
+        newStrLitNode(">"))]
       for child in body:
         let expr = ssrTopLevelExpr(child, stmts)
         if expr != nil:
@@ -896,7 +1322,7 @@ type
     sokEscapedHtml  ## Dynamic text content (needs HTML escaping)
     sokEscapedAttr  ## Dynamic attribute value (needs attr escaping)
     sokRaw          ## Raw expression (no escaping, e.g. raw "...")
-    sokHydrationKey ## Insert hydration key marker
+    sokHydrationKey ## The element's hydration key (markers.nim)
     sokNimStmt      ## Pass-through Nim statement (let, var, discard, etc.)
     sokIf           ## if/elif/else control flow
     sokFor          ## for loop
@@ -909,7 +1335,7 @@ type
     of sokEscapedHtml, sokEscapedAttr, sokRaw:
       expr*: NimNode
     of sokHydrationKey:
-      discard
+      forceKey*: bool  ## `hydrate = true`: a key even outside a hydratable render
     of sokNimStmt:
       stmt*: NimNode
     of sokIf:
@@ -949,7 +1375,9 @@ proc collectChildren(body: NimNode; ops: var seq[StreamOp]) {.compileTime.} =
     of nnkIdent:
       let tagName = resolveTagName(child.strVal)
       if isVoidElement(tagName):
-        ops.add(StreamOp(kind: sokStatic, text: "<" & tagName & " />"))
+        ops.add(StreamOp(kind: sokStatic, text: "<" & tagName))
+        ops.add(StreamOp(kind: sokHydrationKey))
+        ops.add(StreamOp(kind: sokStatic, text: " />"))
       else:
         ops.add(StreamOp(kind: sokNimStmt, stmt: child))
     of nnkStmtList:
@@ -1021,23 +1449,27 @@ proc collectNode(node: NimNode; ops: var seq[StreamOp]) {.compileTime.} =
     var childBody: NimNode = nil
 
     # We accumulate static parts into openTag and flush when a dynamic
-    # part or hydration key is encountered.
+    # part is encountered. The hydration key comes first, right after the
+    # tag name (document order, as in string mode).
     var pendingOps: seq[StreamOp]
+    pendingOps.add(StreamOp(kind: sokStatic, text: openTag))
+    openTag = ""
+    let keyOp = StreamOp(kind: sokHydrationKey)
+    pendingOps.add(keyOp)
 
     for i in 1 ..< node.len:
       let arg = node[i]
       case arg.kind
       of nnkExprEqExpr:
+        if arg[0].kind == nnkRefTy:
+          continue  # `ref = x` binds the client's element
         let attrName = attrNameStr(arg[0])
         let attrVal = arg[1]
 
         if isEventHandler(attrName):
           discard # Ignored in SSR
         elif attrName == "needsId" or attrName == "hydrate":
-          # Flush accumulated static text, emit hydration key
-          pendingOps.add(StreamOp(kind: sokStatic, text: openTag))
-          openTag = ""
-          pendingOps.add(StreamOp(kind: sokHydrationKey))
+          keyOp.forceKey = true
         elif not isDynamic(attrVal):
           # Static attribute — concatenate into the opening tag string
           # Escape the value at compile time for HTML attribute context
@@ -1134,7 +1566,7 @@ proc emit(ops: seq[StreamOp]; streamSym: NimNode;
       stmts.add(newCall(newDotExpr(streamSym, ident"write"), op.expr))
     of sokHydrationKey:
       stmts.add(newCall(newDotExpr(streamSym, ident"write"),
-        newCall(ident"ssrHydrationKey")))
+        newCall(bindSym"ssrHydrationKey", newLit(op.forceKey))))
     of sokNimStmt:
       stmts.add(op.stmt)
     of sokIf:
@@ -1188,7 +1620,9 @@ proc uiStreamImpl*(streamSym: NimNode; body: NimNode): NimNode {.compileTime.} =
     if body.len == 1:
       collectNode(body[0], ops)
     else:
-      ops.add(StreamOp(kind: sokStatic, text: "<div>"))
+      ops.add(StreamOp(kind: sokStatic, text: "<div"))
+      ops.add(StreamOp(kind: sokHydrationKey))
+      ops.add(StreamOp(kind: sokStatic, text: ">"))
       for child in body:
         collectNode(child, ops)
       ops.add(StreamOp(kind: sokStatic, text: "</div>"))

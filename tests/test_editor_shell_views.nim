@@ -1225,8 +1225,12 @@ suite "Layers header search":
       check panel.attributes["aria-label"] == "Layers"
       check search != nil
       check search.attributes["placeholder"] == "Search layers"
-      check search.styles["background-color"] == "#1A1B26"
-      check search.styles["border"] == "1px solid " & border
+      let field = panel.findByAttr("data-sidebar-search-field", "layers")
+      check field != nil
+      check field.styles["background-color"] == "#1A1B26"
+      check field.styles["border"] == "1px solid " & border
+      check field.styles["height"] == "28px"
+      check search.styles["background-color"] == "transparent"
       check not panel.textContent.contains("Scene graph")
       check panel.findByAttr("data-scene-graph-row", "action") == nil
       r.setInputValue(search, "  SAVE  ")

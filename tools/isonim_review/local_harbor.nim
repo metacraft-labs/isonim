@@ -12,9 +12,38 @@ type LocalHarbor* = object
   stateDir*: string
   executable*: string
   processGroup*: int
-  psExecutable: string
+  ownedSessionRoot: int
+  psExecutable, enumerationPython: string
   knownMembers: seq[tuple[pid, group: int]]
   enumerationFailed: bool
+
+var startupEnumerationPython {.threadvar.}: string
+# Preserve the startup tool provenance when tests or callers later narrow PATH.
+# The managed value belongs to this thread; workers never read another thread's
+# reference. Each owned runtime retains its own provenance for later teardown.
+startupEnumerationPython = findExe("python3")
+
+var preparationSessionRoot: int
+  ## Set only in the isolated preparation subprocess. Nested Repro/Harbor
+  ## groups stay in this one owned session so its parent can reclaim them.
+
+proc retainPreparationSession*() =
+  when defined(posix):
+    let pid = posix.getpid()
+    if posix.getsid(pid) != pid:
+      raise newException(IOError, "Harbor preparation requires its own session")
+    preparationSessionRoot = int(pid)
+
+proc createPrivateDirectory*(prefix: string): string =
+  when defined(posix):
+    for attempt in 0 ..< 100:
+      let candidate = genTempPath(prefix, "")
+      if posix.mkdir(candidate.cstring, Mode(0o700)) == 0: return candidate
+      if errno != EEXIST: raiseOSError(osLastError())
+    raise newException(IOError, "Cannot create private editor runtime directory")
+  else:
+    result = createTempDir(prefix, "")
+    setFilePermissions(result, {fpUserRead, fpUserWrite, fpUserExec})
 
 proc findHarborSibling*(editorPath: string; explicitPath = ""): string =
   if explicitPath.len > 0:
@@ -32,8 +61,7 @@ proc findHarborSibling*(editorPath: string; explicitPath = ""): string =
     root = root.parentDir
 
 when defined(posix):
-  let enumerationPython = findExe("python3")
-  proc enumeratePids(executable: string): string =
+  proc enumeratePids(executable, python: string): string =
     # A regular-file capture has no EOF dependency on inherited child pipes.
     # The bounded supervisor owns a separate ps group and reclaims its children
     # on success or timeout. No reader thread can outlive enumeration.
@@ -51,7 +79,7 @@ when defined(posix):
       "  except subprocess.TimeoutExpired:\n   code=124\n" &
       "  pathlib.Path(sys.argv[2]+'.status').write_text(str(code))\n" &
       "finally:\n os.killpg(os.getpid(),signal.SIGKILL)\n"
-    let process = startProcess(enumerationPython,
+    let process = startProcess(python,
       args = @["-c", script, executable, path, $(EnumerationTimeoutMs.float / 1000)],
       options = {poParentStreams})
     defer: process.close()
@@ -72,7 +100,7 @@ when defined(posix):
     result = readFile(path)
 
   proc ownedSessionGroups(runtime: var LocalHarbor): seq[int] =
-    let sessionId = runtime.processGroup
+    let sessionId = if runtime.ownedSessionRoot > 0: runtime.ownedSessionRoot else: runtime.processGroup
     # Repro action workers can create a PG distinct from their wrapper while
     # remaining in its uniquely owned POSIX session. Enumerate numeric PIDs
     # only, then use kernel identities to avoid touching another instance.
@@ -82,12 +110,12 @@ when defined(posix):
       if posix.getsid(Pid(member.pid)) == Pid(sessionId) and
           int(posix.getpgid(Pid(member.pid))) == member.group:
         if member.group notin result: result.add(member.group)
-    if posix.getsid(Pid(sessionId)) == Pid(sessionId) and sessionId notin result:
+    if sessionId != preparationSessionRoot and posix.getsid(Pid(sessionId)) == Pid(sessionId) and sessionId notin result:
       result.add(sessionId)
     if runtime.enumerationFailed: return
     var pids: string
     try:
-      pids = enumeratePids(runtime.psExecutable)
+      pids = enumeratePids(runtime.psExecutable, runtime.enumerationPython)
     except CatchableError as e:
       runtime.enumerationFailed = true
       stderr.writeLine("Local Harbor process enumeration failed; signalling known groups: " & e.msg)
@@ -101,7 +129,7 @@ when defined(posix):
         stderr.writeLine("Local Harbor cannot inspect PID " & $pid & ": " & $osLastError())
       if owner == Pid(sessionId):
         let group = int(posix.getpgid(Pid(pid)))
-        if group > 0:
+        if group > 0 and group != preparationSessionRoot:
           if group notin result: result.add(group)
           if (pid, group) notin runtime.knownMembers:
             runtime.knownMembers.add((pid, group))
@@ -139,6 +167,7 @@ proc stop*(runtime: var LocalHarbor) =
     runtime.process.close()
     runtime.process = nil
     runtime.processGroup = 0
+    runtime.ownedSessionRoot = 0
   # Keep the state directory and log for postmortem inspection.
 
 proc startOwnedProcess*(runtime: var LocalHarbor; command: string;
@@ -147,18 +176,22 @@ proc startOwnedProcess*(runtime: var LocalHarbor; command: string;
     runtime.enumerationFailed = false
     runtime.knownMembers = @[]
     runtime.psExecutable = findExe("ps")
+    runtime.enumerationPython = startupEnumerationPython
+    if runtime.enumerationPython.len == 0: runtime.enumerationPython = findExe("python3")
     if runtime.psExecutable.len == 0:
       raise newException(IOError, "Owned Harbor processes require the POSIX ps executable")
-    discard enumeratePids(runtime.psExecutable)
+    discard enumeratePids(runtime.psExecutable, runtime.enumerationPython)
     # osproc.poDaemon does not create a group on Nim's fork backend. Create
     # the session before exec instead; no child can escape before ownership.
+    let isolate = if preparationSessionRoot > 0: "os.setpgrp()" else: "os.setsid()"
     runtime.process = startProcess("python3", workingDir = workingDir, env = env,
-      args = @["-c", "import os,sys; os.setsid(); os.execvp(sys.argv[1],sys.argv[1:])",
+      args = @["-c", "import os,sys; " & isolate & "; os.execvp(sys.argv[1],sys.argv[1:])",
         command] & args, options = {poUsePath, poParentStreams})
     let pid = Pid(runtime.process.processID)
     for attempt in 0 ..< 100:
       if posix.getpgid(pid) == pid:
         runtime.processGroup = int(pid)
+        runtime.ownedSessionRoot = if preparationSessionRoot > 0: preparationSessionRoot else: int(pid)
         return
       if not runtime.process.running: break
       sleep(10)
@@ -274,7 +307,7 @@ proc prepareLocalHarbor*(cfg: var ReviewConfig;
   env.del("IN_NIX_SHELL")
   env.del("CARGO_TARGET_DIR")
   env.del("RUSTC_WORKSPACE_WRAPPER")
-  result.stateDir = createTempDir("isonim-harbor-", "")
+  result.stateDir = createPrivateDirectory("isonim-harbor-")
   let binary = buildLocalHarbor(repo, repo / ".repro" / "isonim-runtime", env, shouldStop)
   if shouldStop != nil and shouldStop():
     raise newException(IOError, "Local Agent Harbor startup interrupted")

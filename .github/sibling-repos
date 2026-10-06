@@ -114,3 +114,13 @@ isonim-cocoa=69d835c9cff51ac394908397fdb7b68cf4a129ea
 # a bare entry would resolve to the fork branch, not to 83eb115 -- worth
 # checking that is what isonim wants before dropping the `=`.
 nim-stew=83eb1157963b7f49351dbdd858355fa990bbe23c
+
+# ngx-isonim: `just test-nginx` (.github/workflows/nginx-tests.yml) builds the
+# nginx fixture's module from it (tests/nginx/build_fixture.sh runs its
+# scripts/build-module.sh in its dev shell). Nothing in tests/config.nims
+# reaches it; the fixture's server side is compiled by that build.
+#
+# The pin is ngx-isonim@agents b9c65ec, the commit that carries IFP-M3 (it
+# serves this repo's hydration bootstrap, which the SSR hydration round trip
+# replays); it in turn pins this repo's IFP-M3 commit bd31893.
+ngx-isonim=b9c65ec0aa97af204ec3dcbd90a289c09f537a3c

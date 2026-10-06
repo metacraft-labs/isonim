@@ -65,6 +65,13 @@ proc findSsrMatch(routes: seq[SsrRouteEntry]; path: string):
         ], m.params)
   return (@[], @[])
 
+proc matchesRoute*(routes: seq[SsrRouteEntry]; path: string): bool =
+  ## Whether `path` matches a route of the table, that is, whether
+  ## `renderRoute` renders a component rather than its 404 fragment.
+  ## A server uses it to choose the HTTP status (ngx-isonim's `routedApp`
+  ## answers a miss with `404`).
+  findSsrMatch(routes, path)[0].len > 0
+
 proc renderRoute*(routes: seq[SsrRouteEntry]; path: string;
                   routeParams: RouteParams = nil): string =
   ## Render the matched route for the given path to an HTML string.

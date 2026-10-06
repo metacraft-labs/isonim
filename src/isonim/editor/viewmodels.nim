@@ -11,13 +11,45 @@ import isonim/viewmodel
 import isonim/editor/types
 import isonim/editor/html_classes
 import isonim/editor/design_review/context_policy
+import isonim/editor/element_semantics
 import isonim/editor/streaming_preview
 import nim_agents/activity
 import isonim/dsl/tailwind
-import isonim/theming/theme
+import isonim/editor/agent_context
+
+when defined(js):
+  # `Element` only. A plain `import std/dom` collides with this module's own
+  # `NodeType`, and a whole DOM namespace is more than one field's type needs.
+  from std/dom import Element
+
+## Where a project mounts a story's UI, and the hook that does it.
+##
+## A real DOM element in the browser, and a stand-in everywhere else. The
+## editor's ViewModels compile natively for their tests, so this cannot name
+## `std/dom` unconditionally -- but the field must exist on both backends, or
+## the record's shape would differ between them.
+when defined(js):
+  type PreviewMountHost* = Element
+else:
+  type PreviewMountHost* = RootRef
+
+type PreviewMountHook* = proc(story: StoryRef; host: PreviewMountHost) {.closure.}
+  ## Mount a story's UI into `host`, live.
+  ##
+  ## The project's alternative to handing the editor a string of HTML. A string
+  ## cannot be edited without rewriting and recompiling the source that produced
+  ## it; a mounted tree can, because the values in it are cells the editor
+  ## writes and the framework's own reactivity carries the change to the DOM.
+  ##
+  ## The project keeps ownership of what it renders: it is handed an element
+  ## inside the preview frame and decides what goes in it. The editor never
+  ## parses, rewrites or re-serialises the project's markup.
+
+import isonim/editor/style_provenance_decode
 
 export types
 export streaming_preview
+export style_provenance_decode
 
 # ===========================================================================
 # All ViewModel types (single type block for forward references)
@@ -52,9 +84,28 @@ type
     selectedItem*: Signal[int]  ## Index into canvasItems (-1 = none)
     hoveredItem*: Signal[int]
 
+  PreviewValueRequest* = object
+    ## "Put this value on the element in the preview."
+    ##
+    ## Undo and redo change what the file should say, and the thing the user is
+    ## looking at has to follow -- but the ViewModels cannot touch a DOM, and
+    ## the code that can (`views/widgets/property_commit`) is a per-row widget
+    ## with no business being driven by a global command. So the VM publishes
+    ## the request and the preview view applies it, through exactly the same
+    ## path a fresh edit takes.
+    ##
+    ## `generation` is what makes a repeat fire. Undoing and redoing the same
+    ## property lands on values that alternate, and a signal comparing equal
+    ## payloads would drop every second one.
+    generation*: int
+    elementId*, domPath*, property*, value*: string
+
   InspectorVM* = ref object of ViewModel
     designSystemSchema*: Signal[DesignSystemSchema]
     selectedElement*: Signal[ElementRef]
+    previewValueRequest*: Signal[PreviewValueRequest]
+      ## Set by undo/redo; applied by the preview view. See
+      ## `PreviewValueRequest`.
     breadcrumbTrail*: Signal[seq[BreadcrumbEntry]]
       ## The status-bar element path. Display state, not selection:
       ## it is the ancestor chain of the last selection that arrived
@@ -73,6 +124,17 @@ type
     layerSearch*: Signal[string]
     sectionSearch*: Signal[string]
     expandedSections*: Signal[seq[InspectorSection]]
+    sectionsUserSet*: Signal[seq[InspectorSection]]
+    revealSectionRequest*: Signal[int]
+      ## Bumped when something asks for the Source section to be scrolled
+      ## into view. A counter rather than a bool because the same request
+      ## can be made twice and must work the second time.
+      ## Sections whose open/closed state the USER decided, by clicking the
+      ## header. Per-kind defaults are applied only to sections absent from
+      ## this list, so selecting a second element never reverses a choice the
+      ## person just made. Same shape as the Layers panel's "seed a node open
+      ## the first time it is seen" rule, and for the same reason: a default
+      ## that re-asserts itself is not a default, it is an override.
     focusedControlId*: Signal[string]
     commandPaletteHooksReady*: Signal[bool]
     expandedLayerIds*: Signal[seq[string]]
@@ -249,6 +311,16 @@ type
   ProjectPreviewVM* = ref object of ViewModel
     hook*: ProjectPreviewHook
     current*: Memo[ProjectPreview]
+    sourceGeneration*: Signal[int]
+      ## Bumped when the PROJECT's code is replaced under a running editor --
+      ## a hot bundle swap. `hook` is a closure compiled from project source,
+      ## and `current` reads it as a plain field, so replacing the closure
+      ## cannot invalidate the memo on its own: nothing the memo tracked
+      ## changed. This signal is what the memo tracks in order to be told.
+      ##
+      ## It is deliberately not a hash of the project's output. The editor
+      ## cannot know whether a new bundle renders differently without running
+      ## it, and running it is the thing being triggered.
 
   FlowPlayerVM* = ref object of ViewModel
     steps*: Signal[seq[FlowStep]]
@@ -327,9 +399,57 @@ type
     controlFocusTarget*: Signal[string]
     controlHighlightTarget*: Signal[string]
     controlOperations*: Table[string, JsonNode]
+    responsiveBreakpoints*: Signal[seq[ResponsiveBreakpoint]]
+      ## Supplied by the workspace; see `EditorWorkspace.responsiveBreakpoints`.
+    previewShowsPendingEdits*: Signal[bool]
+      ## Set when a commit has already put its value on screen, by setting the
+      ## declaration on the rule the cascade uses (see `applyPreviewStyle`).
+      ##
+      ## Read by `applyWorkspaceEdits` to skip its post-write preview reload.
+      ## That reload rebuilds the preview from project code that has not
+      ## recompiled yet, so it would replace a frame showing the new value with
+      ## one showing the old -- and the user would watch their edit flash away
+      ## a second after making it.
+    previewRenderedWidth*: Signal[int]
+      ## The width in CSS pixels the preview iframe is ACTUALLY laid out at,
+      ## or 0 before anything has measured it.
+      ##
+      ## Not the same as `viewport.width`, and the difference is not a detail.
+      ## `viewport` is the chip the user picked -- Desktop is 1440 -- while the
+      ## iframe is however wide the centre column leaves it, measured at 840.
+      ## Media queries are evaluated by the browser against the real width, so
+      ## at "Desktop" this project renders inside its own
+      ## `@media (max-width:1080px)` block. Any question of the form "which
+      ## rule is deciding this property" has to be asked at the width the
+      ## browser is using, or the answer describes a page nobody is looking at.
+    activeBreakpoint*: Memo[ResponsiveBreakpoint]
+      ## The breakpoint the current preview width falls into, or one with an
+      ## empty `condition` meaning the base. Ambient state, read by the
+      ## chrome bar: a person editing at 850px is editing inside a media
+      ## query whether or not they remember it, and the editor saying so is
+      ## the difference between a scoped change and a surprise.
     workspacePermissions*: Signal[EditorWorkspacePermissions]
     sourceAdapterReady*: Signal[bool]
     workspaceEditStage*: Signal[WorkspaceEditStage]
+    locallyEditedTokens*: Signal[seq[string]]
+      ## Token keys the user has changed in this session but whose new value
+      ## is not yet reflected in what the project reports.
+      ##
+      ## `loadProjectData` re-seeds tokens from source. Without this it would
+      ## re-seed ALL of them, so a rebuild landing while someone was midway
+      ## through a palette would silently revert their work -- the same
+      ## failure as a default that re-asserts itself, one layer down.
+    autoSaveGeneration*: Signal[int]
+      ## Bumped every time a commit stages an edit. The browser layer watches
+      ## this and debounces the actual write; the VM does not own a timer, so
+      ## the rule stays testable without one.
+      ##
+      ## There is no manual mode and no switch. Saving is what the editor
+      ## does with an edit -- an editor that holds your change hostage to a
+      ## second gesture has invented a state the user has to manage, and the
+      ## indicator that state needed was taking up space in the chrome bar
+      ## explaining itself. Failures surface in the status bar; success needs
+      ## no announcement.
     workspaceEditDiagnostics*: Signal[seq[WorkspaceEditDiagnostic]]
     workspaceBridgeRecovered*: Signal[bool]
     workspaceEditPatches*: Signal[seq[WorkspaceFilePatch]]
@@ -377,6 +497,9 @@ type
       ## still references it keep compiling; no renderer observes it.
     review*: ReviewResultsVM
     preview*: ProjectPreviewVM
+    previewMount*: PreviewMountHook
+      ## Set from the workspace. Nil for a project that has not adopted
+      ## mounting, whose preview then comes from `documentHtml` as before.
     flowPlayer*: FlowPlayerVM
     streamingPreview*: StreamingPreviewVM
       ## Optional handle to the M57 streaming-preview ViewModel. When
@@ -1718,7 +1841,22 @@ proc sourcePlan(prop: PropertyInfo; request: PropertyEditRequest;
   let before = prop.originDetail & " " & prop.name & ": " & prop.value
   let after = prop.originDetail & " " & prop.name & ": " & normalized.canonical
   let expectedOld =
-    if prop.originDetail.startsWith("iframe-dom:"): ""
+    # A value nobody authored cannot be used to verify what was authored.
+    #
+    # `expectedOldValue` is checked by looking for it VERBATIM in the file,
+    # which only works when the property's value is the text that is in the
+    # file. For anything read off `getComputedStyle` it is not: the browser
+    # reports `letter-spacing` as `-0.01px` while the stylesheet says
+    # `var(--sys-tracking-display)`, so the check refused every such edit
+    # with "Source changed before the pending edit could be applied" -- a
+    # conflict against a change nobody made.
+    #
+    # `iframe-dom:` was already exempt for this reason. `computed:` is the
+    # same capture by a different route and needs the same exemption; it was
+    # added later and this was missed, which is exactly the kind of thing two
+    # spellings of one idea cost.
+    if prop.originDetail.startsWith("iframe-dom:") or
+       prop.originDetail.startsWith("computed:"): ""
     else: prop.value
   let variantSuffix =
     if prop.variantKey.len > 0: ":" & prop.variantKey else: ""
@@ -2369,10 +2507,23 @@ proc switchInspectorSection*(editor: EditorVM; section: InspectorSection) =
 # ---------------------------------------------------------------------------
 
 proc openSourceForSelection*(editor: EditorVM) =
-  ## Phase B no-op. Later phases route this through the source
-  ## bridge to open ``vm.inspector.selectedElement``'s
-  ## ``sourceFile``/``sourceLine`` in the editor pane.
-  discard
+  ## Reveal where the selection comes from: expand the Source section and
+  ## put it in view.
+  ##
+  ## It was a no-op ("Phase B"), which made it a button that did nothing --
+  ## and the panel already knows the answer, because `Source` reports the
+  ## file, the line and the cascade that produced each value. Opening an
+  ## external editor is a capability this build does not have; showing what
+  ## it would open is one it does.
+  editor.inspector.setSectionExpanded(isSource, true)
+  # Mark it as a user decision so the per-kind defaults do not close it
+  # again on the next selection -- the person asked for this section.
+  var touched = editor.inspector.sectionsUserSet.val
+  if isSource notin touched:
+    touched.add isSource
+    editor.inspector.sectionsUserSet.val = touched
+  editor.inspector.revealSectionRequest.val =
+    editor.inspector.revealSectionRequest.val + 1
 
 proc toggleSelectionVisible*(editor: EditorVM) =
   ## Flip the selection-header visibility toggle. Owned here (not
@@ -2382,13 +2533,17 @@ proc toggleSelectionVisible*(editor: EditorVM) =
     not editor.inspector.selectionVisible.val
 
 proc duplicateSelection*(editor: EditorVM) =
-  ## Phase B no-op. Later phases route through the workspace edit
-  ## adapter to clone the selected element in source.
+  ## Still unimplemented -- cloning an element means writing new source,
+  ## which is a different capability from editing a declaration.
+  ##
+  ## The BUTTON is now hidden unless `permissions.duplicate` is true, so
+  ## nothing offers this until something can do it. Kept as a named seam so
+  ## the day it lands there is one place to put it.
   discard
 
 proc showSelectionMore*(editor: EditorVM) =
-  ## Phase B no-op. Later phases open the overflow popover anchored
-  ## to the ``⫶⫶`` button.
+  ## Still unimplemented -- there is no overflow menu to open. The button is
+  ## hidden; see `duplicateSelection` for why the proc stays.
   discard
 
 func fallbackElementId(element: ElementRef): string =
@@ -2622,8 +2777,47 @@ proc refreshLayerFlags(inspector: InspectorVM) =
     inspector.hoveredElementId.val,
     inspector.expandedLayerIds.val)
 
+proc publishStyleProvenance(inspector: InspectorVM; next: var ElementRef) =
+  ## Carry the selection's authored provenance across a re-selection, and
+  ## publish its diagnostics.
+  ##
+  ## The same element gets selected more than once, by design. The preview
+  ## bridge selects it from the DOM -- where `data-isonim-props` lives -- and
+  ## then the selection ECHO re-selects it from a layer row, which is built
+  ## from the scene-graph tree and carries no provenance at all. Assigning
+  ## the echo's `ElementRef` verbatim would silently downgrade the selection
+  ## a few milliseconds after it arrived: the chip would appear and vanish,
+  ## and the unresolved-binding diagnostic with it. The breadcrumb already
+  ## has to defend against this same echo; this is the property-level
+  ## counterpart.
+  ##
+  ## Retention is conditional on the id matching, so selecting a DIFFERENT
+  ## element correctly clears what the previous one carried.
+  if next.styleBindings.len == 0:
+    let current = inspector.selectedElement.val
+    if current.styleBindings.len > 0 and
+        current.fallbackElementId() == next.fallbackElementId():
+      next.styleBindings = current.styleBindings
+  inspector.editDiagnostics.val = styleBindingDiagnostics(
+    next.styleBindings, next.sourceFile, next.sourceLine)
+
+proc applyKindDefaultExpansion*(inspector: InspectorVM; element: ElementRef)
+  ## Forward-declared: defined with the other section-expansion procs, but
+  ## the call site is selection, which is here.
+
+proc seedStyleProvenanceBindings(editor: EditorVM; element: ElementRef)
+  ## Forward-declared: the body needs ``resolveVariableValue`` and
+  ## ``sameTokenKey``, both defined further down this module, and the call
+  ## site is selection, which is defined here.
+
 proc selectInspectorElement*(editor: EditorVM; element: ElementRef;
     origin = soExternal): bool {.discardable.} =
+  ## Selecting an element also publishes its *authored* style provenance:
+  ## ``editDiagnostics`` gains an entry per styling construct the DSL captured
+  ## and could not resolve, and ``propertyBindings`` gains a chip for every
+  ## property whose authored form was a token reference. Both are derived from
+  ## ``element.styleBindings`` and both are empty for a selection that carries
+  ## no payload, so a non-IsoNim preview behaves exactly as it did.
   if element.tag.len == 0:
     editor.inspector.selectedElement.val = ElementRef()
     editor.inspector.editDiagnostics.val = @[]
@@ -2642,8 +2836,15 @@ proc selectInspectorElement*(editor: EditorVM; element: ElementRef;
       else: next.sourceKey
   if next.ancestorIds.len == 0:
     next.ancestorIds = @[next.id]
+  # Requirement 8 ("never fail silently"): a class that is in no class index,
+  # or a styling attribute computed at runtime, contributes NOTHING to the
+  # rendered element and used to say so nowhere. It says so here, on the same
+  # signal the inspector already renders edit diagnostics from, at the moment
+  # the user looks at the element.
+  editor.inspector.publishStyleProvenance(next)
   editor.inspector.selectedElement.val = next
-  editor.inspector.editDiagnostics.val = @[]
+  editor.seedStyleProvenanceBindings(next)
+  editor.inspector.applyKindDefaultExpansion(next)
   editor.inspector.noteBreadcrumbSelection(next, origin)
   if editor.inspector.layers.val.len == 0:
     editor.inspector.layers.val = @[next.rowFromElement()]
@@ -2659,10 +2860,22 @@ proc previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
     margin, width, height, borderRadius, borderWidth, borderStyle, borderColor,
     fontSize, fontWeight, lineHeight, boxShadow, opacity, rectWidth,
     rectHeight, textContent, elementId, sourceKey, schemaKey, ancestorIds,
-    layerTreeJson: string): ElementRef =
+    layerTreeJson: string; styleBindings = "";
+    computedStyles = ""): ElementRef =
   ## Build the generic inspector selection produced by the browser iframe DOM
   ## bridge. Projects own the preview HTML/source metadata; the editor owns the
   ## normalized ElementRef and editable property model.
+  ##
+  ## ``styleBindings`` is the element's ``data-isonim-props`` payload -- the
+  ## authored style provenance the ``ui`` DSL captured at macro time. Every
+  ## other argument here is a *computed* style read out of the preview iframe,
+  ## and a computed style cannot say whether ``12px`` was written ``p-3``,
+  ## ``padding = "12px"`` or ``var(--space-3)``. That is why every property
+  ## built below used to be stamped ``poInherited``: with only the computed
+  ## value in hand, it was the one claim that was not a guess. The payload is
+  ## the missing half, and ``withStyleProvenance`` restamps the list with it.
+  ## When it is empty -- a non-IsoNim preview document, a hand-built fixture --
+  ## the properties keep exactly the shape they had before.
   let file =
     if sourceFile.len > 0: sourceFile
     else: metadata.sourceFile
@@ -2784,10 +2997,24 @@ proc previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
     sourceLine: line,
     sourceColumn: 1,
     depth: max(0, ancestors.len - 1),
-    properties: props,
+    # The computed capture first, restamped with its provenance, then every
+    # property the author set that the capture never asked for. Order matters
+    # only in that the captured ones keep their computed values.
+    # Three sources, best first. The named capture restamped with its
+    # provenance; then what the author wrote that the capture never asked
+    # for; then every remaining property the inspector has a row for, as a
+    # bare computed value. Each later group only fills gaps the earlier ones
+    # left, so a property never loses a better origin to a worse one.
+    properties: block:
+      let named = props.withStyleProvenance(styleBindings)
+      let authored = props.authoredOnlyProperties(styleBindings,
+        schemaPrefix)
+      named & authored & (named & authored).computedStyleProperties(
+        computedStyles, schemaPrefix),
     children: children,
     ancestors: ancestors,
-    ancestorIds: parsedAncestorIds)
+    ancestorIds: parsedAncestorIds,
+    styleBindings: styleBindings)
 
 proc previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
     className, sourceFile: string; sourceLine: int; backgroundColor, color,
@@ -2810,9 +3037,13 @@ proc selectInspectorElementById*(editor: EditorVM; id: string;
       # alone reports the row as its own only ancestor, which collapsed
       # the status-bar breadcrumb to a single segment whenever the
       # selection came from a row rather than from the preview.
-      editor.inspector.selectedElement.val =
-        editor.inspector.elementFromRow(row)
-      editor.inspector.editDiagnostics.val = @[]
+      var fromRow = editor.inspector.elementFromRow(row)
+      # A layer row has no `data-isonim-props`; `publishStyleProvenance`
+      # carries it over when this is the SAME element the preview selected.
+      editor.inspector.publishStyleProvenance(fromRow)
+      editor.inspector.selectedElement.val = fromRow
+      editor.seedStyleProvenanceBindings(fromRow)
+      editor.inspector.applyKindDefaultExpansion(fromRow)
       editor.inspector.noteBreadcrumbSelection(
         editor.inspector.selectedElement.val, origin)
       editor.inspector.refreshLayerFlags()
@@ -3280,6 +3511,10 @@ proc panVectorCanvas*(editor: EditorVM; dx, dy: float) =
   editor.vectorEditor.panX.val = editor.vectorEditor.panX.val + dx
   editor.vectorEditor.panY.val = editor.vectorEditor.panY.val + dy
 
+proc discardCssPropertyEdits*(inspector: InspectorVM)
+  ## Forward-declared: `runEditorCommand`'s Revert arm delegates to it, and it
+  ## is defined further down with the rest of the edit-history machinery.
+
 proc runEditorCommand*(editor: EditorVM;
     kind: EditorCommandKind): EditorCommandState {.discardable.} =
   ## Dispatch a framework-owned editor command with deterministic state.
@@ -3306,9 +3541,13 @@ proc runEditorCommand*(editor: EditorVM;
   of eckApply:
     discard
   of eckRevert, eckDiscard:
-    let stack = editor.inspector.undoStack.val
-    if stack.len > 0:
-      editor.inspector.selectedElement.val = stack[0].beforeElement
+    # The inspector's half is `discardCssPropertyEdits`, not a second copy of
+    # it. This block used to inline the same rule -- revert to
+    # `stack[0].beforeElement`, then clear both stacks -- and the two drifted
+    # apart the moment the history started surviving saves: the inlined copy
+    # kept reverting to the start of the SESSION and throwing away edits that
+    # were already on disk.
+    editor.inspector.discardCssPropertyEdits()
     let foundationStack = editor.foundations.undoStack.val
     if foundationStack.len > 0:
       var updatedTokens = editor.foundations.tokens.val
@@ -3335,9 +3574,6 @@ proc runEditorCommand*(editor: EditorVM;
     let vectorStack = editor.vectorEditor.undoStack.val
     if vectorStack.len > 0:
       editor.vectorEditor.document.val = vectorStack[0].beforeDocument
-    editor.inspector.clearSourceEditJournal()
-    editor.inspector.undoStack.val = @[]
-    editor.inspector.redoStack.val = @[]
     editor.foundations.undoStack.val = @[]
     editor.foundations.redoStack.val = @[]
     editor.foundations.impacts.val = @[]
@@ -3586,8 +3822,8 @@ proc selectElement*(inspector: InspectorVM; element: ElementRef;
     next.sourceKey = next.id
   if next.ancestorIds.len == 0:
     next.ancestorIds = @[next.id]
+  inspector.publishStyleProvenance(next)
   inspector.selectedElement.val = next
-  inspector.editDiagnostics.val = @[]
   inspector.noteBreadcrumbSelection(next, origin)
   inspector.refreshLayerFlags()
 
@@ -3608,7 +3844,45 @@ proc setSectionExpanded*(inspector: InspectorVM; section: InspectorSection;
   inspector.expandedSections.val = next
 
 proc toggleSectionExpanded*(inspector: InspectorVM; section: InspectorSection) =
+  ## The USER path -- a header click. Records the intent so the per-kind
+  ## defaults stop deciding this section. `setSectionExpanded` stays the
+  ## neutral setter, used by the defaults themselves and by restore-from-
+  ## storage, neither of which is a statement of intent.
+  var touched = inspector.sectionsUserSet.val
+  if section notin touched:
+    touched.add section
+    inspector.sectionsUserSet.val = touched
   inspector.setSectionExpanded(section, section notin inspector.expandedSections.val)
+
+proc applyKindDefaultExpansion*(inspector: InspectorVM; element: ElementRef) =
+  ## Re-seed the untouched sections for what is now selected.
+  ##
+  ## Called on every selection change. Sections the user has opened or closed
+  ## themselves are left exactly as they are; everything else follows
+  ## `defaultExpandedSections` for the element's kind.
+  if element.tag.len == 0:
+    return
+  # Inlined rather than reaching for the widgets' `findPropertyValue`:
+  # `views/widgets/section_position` sits ABOVE this module, and importing
+  # upward to save three lines would invert the layering.
+  var positionValue = "static"
+  for prop in element.properties:
+    if prop.name == "position":
+      positionValue = prop.value
+      break
+  let positioned = positionValue notin ["", "static"]
+  let wanted = defaultExpandedSections(element.tag, positioned)
+  let touched = inspector.sectionsUserSet.val
+  var next = inspector.expandedSections.val
+  for section in InspectorSection:
+    if section in touched:
+      continue
+    let shouldOpen = section in wanted
+    if shouldOpen and section notin next:
+      next.add section
+    elif not shouldOpen and section in next:
+      next = next.filterIt(it != section)
+  inspector.expandedSections.val = next
 
 func inspectorSectionToSlug*(section: InspectorSection): string =
   ## Phase C (2026-05-28): canonical slug for an ``InspectorSection``
@@ -4042,7 +4316,7 @@ proc editInspectorProperty*(editor: EditorVM;
           of pedInvalidCssValue, pedInvalidPropertyCombination,
               pedSchemaViolation, pedSourceConflict:
             vcDirectStyle
-          of pedInvalidTokenReference:
+          of pedInvalidTokenReference, pedUnresolvedStyleBinding:
             vcDryTokens
         result.add Violation(
           severity: if d.kind in {pedSharedScopeRequired, pedMissingSelection,
@@ -4085,7 +4359,47 @@ proc applyPendingSourceEdits*(inspector: InspectorVM;
   if remaining.len == 0:
     inspector.clearSourceEditJournal()
 
+func invertPlan(plan: SourceEditPlan): SourceEditPlan =
+  ## The edit that puts the file back the way it was.
+  ##
+  ## Same target, values swapped. `expectedOldValue` becomes what the original
+  ## edit wrote, because that is what is on disk now -- the conflict check has
+  ## to be told the truth about the state it is overwriting, or an undo would
+  ## be refused as a stale write.
+  result = plan
+  result.oldValue = plan.newValue
+  result.newValue = plan.oldValue
+  result.previewBefore = plan.previewAfter
+  result.previewAfter = plan.previewBefore
+  result.expectedOldValue = plan.newValue
+
+proc requestPreviewValue(inspector: InspectorVM; element: ElementRef;
+                         property, value: string) =
+  ## Ask the preview view to show `value`. See `PreviewValueRequest`.
+  let elementId =
+    if element.id.len > 0: element.id
+    elif element.sourceKey.len > 0: element.sourceKey
+    else: element.schemaKey
+  if elementId.len == 0 or property.len == 0: return
+  inspector.previewValueRequest.val = PreviewValueRequest(
+    generation: inspector.previewValueRequest.val.generation + 1,
+    elementId: elementId, domPath: element.domPath,
+    property: property, value: value)
+
 proc undoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
+  ## Walk one edit back: in the model, in the preview, and in the file.
+  ##
+  ## All three, because undoing only the first two is what "Ctrl+Z did nothing"
+  ## looked like from the outside. The previous implementation restored the
+  ## element snapshot and dropped the edit from the journal, which is a correct
+  ## undo ONLY while the edit is still pending -- and under auto-save it never
+  ## is. The value stayed on disk and stayed on screen.
+  ##
+  ## Journalling the inverse works in both cases. The journal is keyed by edit
+  ## slot, so when the original edit is still pending the inverse replaces it
+  ## and nothing is ever written; when it has already been saved, the inverse
+  ## is a new edit that auto-save writes, which is exactly what undoing after a
+  ## save means.
   let stack = inspector.undoStack.val
   if stack.len == 0:
     return false
@@ -4097,10 +4411,22 @@ proc undoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
       CSSPropertyEditTransaction] =
     result = prev
     result.add txn
-  inspector.removeJournaledSourceEdit(txn.sourceEdit)
+  # An edit that has not been written yet is undone by dropping it -- the file
+  # never changed, so there is nothing to put back and journalling an inverse
+  # would queue a pointless write. Once it HAS been written, the inverse is the
+  # only way back, and auto-save will carry it to disk.
+  if not txn.saved:
+    inspector.removeJournaledSourceEdit(txn.sourceEdit)
+  else:
+    inspector.journalSourceEdit(txn.sourceEdit.invertPlan())
+  inspector.requestPreviewValue(txn.beforeElement, txn.sourceEdit.property,
+                                txn.sourceEdit.oldValue)
   true
 
 proc redoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
+  ## The same, forwards. Symmetric with `undoCssPropertyEdit` on purpose: redo
+  ## is an edit like any other, so it journals the original plan and shows the
+  ## value it restores.
   let stack = inspector.redoStack.val
   if stack.len == 0:
     return false
@@ -4113,20 +4439,54 @@ proc redoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
     result = prev
     result.add txn
   inspector.journalSourceEdit(txn.sourceEdit)
+  inspector.requestPreviewValue(txn.afterElement, txn.sourceEdit.property,
+                                txn.sourceEdit.newValue)
   true
 
 proc discardCssPropertyEdits*(inspector: InspectorVM) =
+  ## Throw the work away: the element, the journal AND the history.
+  ##
+  ## Discard means "drop the work that is not on disk", so it reverts to where
+  ## the first UNSAVED edit found the element -- not to where the session
+  ## started. Those were the same thing only while saving cleared the history;
+  ## now that it does not, reverting to `stack[0]` would silently throw away
+  ## edits the user had already saved.
+  ##
+  ## The saved entries stay in the history, because they are still things the
+  ## user did and still things Ctrl+Z should walk back through. What is
+  ## discarded stops being redoable, which is what discarding it means.
   let stack = inspector.undoStack.val
-  if stack.len > 0:
-    inspector.selectedElement.val = stack[0].beforeElement
+  var firstUnsaved = -1
+  for idx, txn in stack:
+    if not txn.saved:
+      firstUnsaved = idx
+      break
+  if firstUnsaved >= 0:
+    inspector.selectedElement.val = stack[firstUnsaved].beforeElement
+    inspector.undoStack.val = stack[0 ..< firstUnsaved]
   inspector.clearSourceEditJournal()
-  inspector.undoStack.val = @[]
   inspector.redoStack.val = @[]
 
 proc markCssPropertyEditsSaved*(inspector: InspectorVM) =
+  ## The journal is what is UNSAVED, so a successful save empties it.
+  ##
+  ## The undo and redo stacks are not, and they used to be cleared here too.
+  ## That was survivable while saving was something a person chose to do; it
+  ## stopped being survivable the moment saving became automatic, because
+  ## auto-save fires 900ms after every edit and a person reaching for Ctrl+Z
+  ## always arrives too late. The command was refused with "There is no edit to
+  ## undo" and nothing happened -- which is not what undo does in any editor
+  ## anyone has used.
+  ##
+  ## Undo is independent of save. It walks back through what the user did; save
+  ## is a separate concern about what is on disk, and undoing after a save is
+  ## simply another edit that will itself be saved.
   inspector.clearSourceEditJournal()
-  inspector.undoStack.val = @[]
-  inspector.redoStack.val = @[]
+  inspector.undoStack.update proc(prev: seq[CSSPropertyEditTransaction]): seq[
+      CSSPropertyEditTransaction] =
+    result = prev
+    for i in 0 ..< result.len:
+      result[i].saved = true
 
 proc actualConflictMatchesPlan(actual: CSSSourceConflict;
     plan: SourceEditPlan): bool =
@@ -6430,6 +6790,50 @@ proc hasAliasCycle(tokens: seq[FoundationTokenEntry]; startKey,
     seen.add lowered
     current = tokens.aliasTarget(current)
 
+proc noteTokenEditedLocally*(editor: EditorVM; key: string) =
+  ## Mark a token as carrying an unsaved local value.
+  var edited = editor.locallyEditedTokens.val
+  for existing in edited:
+    if existing.sameTokenKey(key):
+      return
+  edited.add key
+  editor.locallyEditedTokens.val = edited
+
+proc clearLocalTokenEdits*(editor: EditorVM) =
+  ## Called once a save has made source agree with the editor. After that a
+  ## refresh SHOULD take the file's values -- they are the user's own, now
+  ## written down.
+  editor.locallyEditedTokens.val = @[]
+
+func mergeTokensPreservingLocalEdits*(fromSource: seq[FoundationTokenEntry];
+    current: seq[FoundationTokenEntry];
+    locallyEdited: seq[string]): seq[FoundationTokenEntry] =
+  ## What the token list becomes when the project reports new values.
+  ##
+  ## Source wins for every token the user has not touched -- that is the
+  ## whole point of refreshing. The user wins for the ones they have, because
+  ## the alternative is a rebuild quietly discarding work in progress, and
+  ## because they can still see what the file says by saving or reverting.
+  ##
+  ## A token the user edited that has DISAPPEARED from source is dropped: it
+  ## no longer exists, and keeping a local edit to a deleted token would show
+  ## a row that nothing can write.
+  result = fromSource
+  if locallyEdited.len == 0:
+    return
+  for i, token in result:
+    var isLocal = false
+    for key in locallyEdited:
+      if key.sameTokenKey(token.key):
+        isLocal = true
+        break
+    if not isLocal:
+      continue
+    for existing in current:
+      if existing.key.sameTokenKey(token.key):
+        result[i] = existing
+        break
+
 proc foundationImpact*(editor: EditorVM; tokenKey: string): FoundationTokenImpact =
   result.tokenKey = tokenKey
   for prop in editor.inspector.selectedElement.val.properties:
@@ -6599,6 +7003,9 @@ proc editFoundationToken*(editor: EditorVM; key, newValue: string): FoundationEd
     updatedTokens[tokenIndex].aliasOf = ""
   let afterToken = updatedTokens[tokenIndex]
   editor.foundations.tokens.val = updatedTokens
+  # Remember that this one is the user's, so a refresh from source does not
+  # take it back.
+  editor.noteTokenEditedLocally(afterToken.key)
 
   let impact = editor.foundationImpact(key)
   editor.foundations.impacts.val = @[impact]
@@ -7646,18 +8053,50 @@ func workspacePlanKeys(plan: SourceEditPlan): seq[string] =
     result.add plan.originDetail
 
 func resolveWorkspaceSchema(adapter: WorkspaceEditAdapter;
-    plan: SourceEditPlan): tuple[ok: bool, entry: WorkspaceEditableSchemaEntry] =
+    plan: SourceEditPlan): tuple[ok: bool, entry: WorkspaceEditableSchemaEntry,
+                                 entryOwnsFile: bool] =
+  ## `entryOwnsFile` says the ENTRY's file is authoritative and the plan's is
+  ## not to be checked against it -- which is true exactly when the match was
+  ## made despite the plan naming a different file, or none.
   if adapter.isNil:
     return
   let keys = workspacePlanKeys(plan)
   for key in keys:
     for entry in adapter.schema:
       if entry.key == key:
-        return (true, entry)
+        return (true, entry, false)
+  # Exact file match first: a plan that names a file the schema owns is
+  # unambiguous and keeps its old behaviour.
   for entry in adapter.schema:
     if entry.file == plan.file and
         (entry.property == plan.property or entry.property.len == 0):
-      return (true, entry)
+      return (true, entry, false)
+
+  # Then a plan that names NO file. Provenance records which class or token
+  # set a value; which file that lives in is what the schema is here to
+  # answer, and requiring the plan to already know made the schema useful
+  # only for edits that did not need it.
+  #
+  # Then a plan whose file is the ELEMENT's rather than the value's. A
+  # property captured off the rendered DOM carries the element's source
+  # location because the capture has no other to offer -- `font-size` on a
+  # `span.tagline-clause` is set by a CSS rule while the span is in
+  # `home.nim`. Matching that path against the stylesheet's and refusing is
+  # true of the path and false of the edit, and it answered a design system's
+  # commonest edit with "No project schema or source map entry can safely
+  # represent this edit".
+  #
+  # Both fall back only to an entry with an EMPTY property -- a project
+  # saying "this file owns whatever you send me". A schema that names its
+  # properties individually keeps refusing, which is the stricter contract
+  # and still available.
+  let capturedOnly =
+    plan.originDetail.startsWith("iframe-dom:") or
+    plan.originDetail.startsWith("computed:")
+  if plan.file.len == 0 or capturedOnly:
+    for entry in adapter.schema:
+      if entry.property.len == 0:
+        return (true, entry, true)
 
 func workspaceOpFailed(op: WorkspaceOperationResult): bool =
   not op.ok
@@ -7767,6 +8206,69 @@ proc requireWorkspaceAdapter(editor: EditorVM): tuple[ok: bool,
     return
   result.ok = true
 
+proc saveIndicator*(editor: EditorVM): SaveIndicator =
+  ## What the chrome bar's save control shows right now.
+  ##
+  ## Derived rather than stored, so it cannot disagree with the pipeline it
+  ## describes. Every input is already a signal the pipeline maintains:
+  ## `workspaceEditStage` for the transaction, `pendingSourceEdits` for what
+  ## is staged, `workspaceEditDiagnostics` for why a save was refused.
+  ##
+  ## The label is never empty. Colour alone is unreadable to a colour-blind
+  ## user and invisible in a screenshot review, so each state changes the
+  ## text too.
+  let pending = editor.inspector.pendingSourceEdits.val.len
+  case editor.workspaceEditStage.val
+  of wesApplying, wesFormatting, wesRegenerating, wesCompiling,
+     wesReloading, wesReviewing:
+    SaveIndicator(state: sisSaving, label: "Saving…", pending: pending)
+  of wesFailed:
+    let detail =
+      if editor.workspaceEditDiagnostics.val.len > 0:
+        editor.workspaceEditDiagnostics.val[0].message
+      else:
+        "The last save was refused."
+    SaveIndicator(state: sisFailed, label: "Not saved", detail: detail,
+                  pending: pending)
+  of wesDirty:
+    # A dirty stage with nothing staged is clean in every way the user can
+    # see. The stage is set by several paths -- a foundation edit, a chat
+    # proposal -- that may then be reverted, and reporting "Unsaved" with
+    # nothing to save is the indicator lying in the safe direction, which is
+    # still lying.
+    if pending == 0:
+      SaveIndicator(state: sisClean, label: "Saved")
+    elif pending == 1:
+      SaveIndicator(state: sisDirty, label: "1 unsaved change", pending: 1)
+    else:
+      SaveIndicator(state: sisDirty, label: $pending & " unsaved changes",
+                    pending: pending)
+  of wesClean:
+    if pending > 0:
+      # Staged edits with a clean stage: the commit path stages before the
+      # stage signal moves. Trust the count -- it is the thing that would be
+      # lost.
+      SaveIndicator(state: sisDirty,
+        label: (if pending == 1: "1 unsaved change"
+                else: $pending & " unsaved changes"),
+        pending: pending)
+    else:
+      SaveIndicator(state: sisClean, label: "Saved")
+
+proc noteCommitForAutoSave*(editor: EditorVM) =
+  ## Called after a commit stages a plan. Bumps a generation the browser
+  ## layer debounces into an actual write.
+  ##
+  ## A generation rather than a direct call: the VM has no timer and should
+  ## not grow one, and a commit that wrote immediately would write once per
+  ## keystroke in a numeric field.
+  ##
+  ## Nothing gates this but "did anything stage". A commit that was REFUSED
+  ## stages nothing and so schedules nothing, which is the only condition
+  ## that ever mattered.
+  if editor.inspector.pendingSourceEdits.val.len > 0:
+    editor.autoSaveGeneration.val = editor.autoSaveGeneration.val + 1
+
 proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardable.} =
   ## Apply pending source plans through a project-owned adapter transaction.
   ## Files are read and patched before writes begin; failed post-write operations
@@ -7776,6 +8278,29 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
     editor.workspaceEditStage.val = wesClean
     editor.workspaceEditDiagnostics.val = @[]
     return WorkspaceEditResult(ok: true, stage: wesClean)
+
+  # The permission gate belongs HERE, not only at command dispatch.
+  #
+  # `commandRequirementFailure` refuses eckApply/eckSave on a read-only
+  # workspace, which greys out the Save chip and is what a user sees. But this
+  # proc is the public transaction entry point, and three callers reach it
+  # WITHOUT going through a command: `retryWorkspaceFileEdits`,
+  # `acceptAgentProposedEdit` and `revertAgentProposedEdit`. On a workspace
+  # declaring `writeSource: false` they each wrote to disk and reported
+  # success.
+  #
+  # The agent path is the one that matters: an AI-proposed edit, accepted in a
+  # workspace the project declared read-only, mutated source and told the user
+  # it had worked. A permission that holds at one door and not the other three
+  # is not a permission.
+  #
+  # Checked against the adapter's absence rather than instead of it: a
+  # workspace can be writable and adapterless, and that is a different
+  # diagnostic.
+  if not editor.workspacePermissions.val.writeSource:
+    return editor.failWorkspaceEdit(@[workspaceDiagnostic(wedMissingOperation,
+      "This workspace is read-only for source changes.",
+      file = "", schemaKey = "", property = "")])
 
   let ownershipDiagnostics = editor.inspector.sourceJournalOwnershipDiagnostics()
   if ownershipDiagnostics.len > 0:
@@ -7814,7 +8339,19 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
   var drafts: seq[WorkspaceFileDraft] = @[]
   var fullReload = false
 
-  for plan in pending:
+  for basePlan in pending:
+    # Stamp the width the preview is showing, so a responsive stylesheet can
+    # be edited at all. Without it an adapter has only a selector and a
+    # property, and a responsive stylesheet has no single answer to "which
+    # rule owns this" -- it has one per width. Stamped here rather than when
+    # the edit was journaled because this is the single funnel every plan
+    # passes through; the cost is that switching viewport during the
+    # auto-save debounce targets the NEW width, which is also the width whose
+    # rendering the user is looking at when the write lands.
+    var plan = basePlan
+    plan.viewportWidth =
+      if editor.previewRenderedWidth.val > 0: editor.previewRenderedWidth.val
+      else: editor.viewport.val.width
     let resolved = adapter.resolveWorkspaceSchema(plan)
     if not resolved.ok:
       diagnostics.add workspaceDiagnostic(wedMissingSchema,
@@ -7824,7 +8361,12 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
         property = plan.property)
       continue
 
-    if resolved.entry.file.len > 0 and plan.file.len > 0 and
+    # Skipped when the entry owns the file: the resolution already knew the
+    # plan named a different path and matched anyway, because the path it
+    # named is the element's rather than the value's. Re-checking it here
+    # would refuse the edit the fallback exists to allow.
+    if not resolved.entryOwnsFile and
+        resolved.entry.file.len > 0 and plan.file.len > 0 and
         resolved.entry.file != plan.file:
       diagnostics.add workspaceDiagnostic(wedUnsafeSourceMap,
         "The source plan file does not match the resolved project schema file.",
@@ -7834,7 +8376,8 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
       continue
 
     let targetFile =
-      if plan.file.len > 0: plan.file
+      if resolved.entryOwnsFile: resolved.entry.file
+      elif plan.file.len > 0: plan.file
       else: resolved.entry.file
     var draftPos = drafts.draftIndex(targetFile)
     if draftPos < 0:
@@ -7952,6 +8495,23 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
       fullReload = fullReload or write.fullReload
       written.add patch
 
+  # The fast path, published the moment the bytes are on disk.
+  #
+  # Deliberately before formatting, regeneration and compilation: those are the
+  # slow half, and the point of this is that the user stops waiting for them to
+  # see what they just did. A formatter that rewrites whitespace can make the
+  # `before` text stop matching, in which case the swap simply does not apply
+  # and the preview updates when the rebuild lands -- the old behaviour, which
+  # is the right thing to degrade to.
+  # Did the commit already put this on screen?
+  #
+  # `applyPreviewStyle` sets the declaration on the rule the cascade uses, at
+  # commit time, in about 4ms -- long before this write. When it did, the
+  # preview is current and reloading it is not merely redundant but harmful,
+  # for the reason on `previewShowsPendingEdits`.
+  let previewIsUpToDate = editor.previewShowsPendingEdits.val
+  editor.previewShowsPendingEdits.val = false
+
   if adapter.formatFiles != nil:
     editor.workspaceEditStage.val = wesFormatting
     let formatted = adapter.formatFiles(files)
@@ -8020,7 +8580,14 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
   editor.workspaceEditGeneratedArtifacts.val = generatedArtifacts
   editor.workspaceEditRequiredTestCommands.val = requiredTestCommands
   editor.workspaceEditReviewDiagnostics.val = reviewDiagnostics
-  if not adapter.stagingOnly:
+  # An adapter that returned preview style edits has asserted the preview is
+  # already showing this change, so reloading it is not merely redundant -- it
+  # is harmful. The reload rebuilds the preview from the project code COMPILED
+  # INTO the current bundle, which is still the pre-edit code until the project
+  # recompiles. Measured: it replaced a frame that had just been given the new
+  # stylesheet with one carrying the old one, and the value the user had just
+  # replaced flashed back for ~30ms before the swap was re-applied.
+  if not adapter.stagingOnly and not previewIsUpToDate:
     editor.livePreviewReloadGeneration.val = editor.livePreviewReloadGeneration.val + 1
   editor.recordEditorTiming(epbkSaveReload, 1,
     if fullReload: "preview-reload:full" else: "preview-reload:affected")
@@ -8533,31 +9100,7 @@ proc buildAgentPromptContext*(editor: EditorVM): AgentPromptContext =
     result.availableTailwindClasses.setLen(max(512, usedClasses.len))
     result.contextAvailability.add "availableTailwindClasses: truncated to " &
       $result.availableTailwindClasses.len & " current-preview/selected/edited-prioritized compiled classes"
-  # This is the renderer framework's actual selected theme, separately labelled
-  # from source-backed project foundation tokens. Native mode has no color /
-  # spacing override; do not invent branded project values in that mode.
-  result.activeThemeContext.add "name=" & activeTheme.name
-  result.activeThemeContext.add "mode=" & $activeTheme.mode
-  result.activeThemeContext.add "dark=" & $isDarkMode
-  if activeTheme.mode != tmNative:
-    for name in ["primary", "secondary", "accent", "background", "surface",
-        "error", "on-primary", "on-secondary", "on-background", "on-surface",
-        "on-error", "border", "text-primary", "text-secondary", "text-disabled"]:
-      result.activeThemeContext.add "color." & name & "=" & themeColor(name)
-    for name in ["xs", "sm", "md", "lg", "xl", "xxl"]:
-      result.activeThemeContext.add "spacing." & name & "=" & $themeSpacing(name)
-    for name in ["none", "sm", "md", "lg", "xl", "full"]:
-      result.activeThemeContext.add "radius." & name & "=" & $themeRadius(name)
-  else:
-    result.contextAvailability.add "activeThemeContext: native platform defaults (no color/spacing override)"
-  for name in ["large-title", "title", "headline", "body", "callout", "caption", "footnote"]:
-    let style = themeTypography(name)
-    if style.size > 0 or style.weight.len > 0:
-      result.activeThemeContext.add "typography." & name & ".size=" & $style.size
-      result.activeThemeContext.add "typography." & name & ".weight=" & style.weight
-      result.activeThemeContext.add "typography." & name & ".letterSpacing=" & $style.letterSpacing
-    else:
-      result.contextAvailability.add "activeThemeContext.typography." & name & ": native platform default (no override)"
+  result.captureActiveThemeContext()
   result.themeTokens = editor.foundations.tokens.val
   if result.themeTokens.len == 0:
     result.contextAvailability.add "themeTokens: unavailable (project has published no foundation tokens)"
@@ -9520,6 +10063,66 @@ proc rehydratePropertyBindings*(vm: EditorVM;
   vm.inspector.propertyBindings.val = tbl
   vm.inspector.variableBindingHistory.val = history
 
+proc seedStyleProvenanceBindings(editor: EditorVM; element: ElementRef) =
+  ## Turn the element's authored token references into inspector bindings.
+  ##
+  ## This is what makes the linked chip real. ``inspectorBindingFor`` has been
+  ## the read path since VBIND-M1 and its own doc comment says it "returns
+  ## ``none`` for every row today" because nothing seeds the table outside a
+  ## workspace sidecar. A token reference the author actually wrote --
+  ## ``padding = "var(--space-3)"`` -- is exactly such a seed, and it is one
+  ## the source can be trusted for: the DSL read it off the attribute, not off
+  ## a computed value.
+  ##
+  ## Three deliberate restraints:
+  ##
+  ## * An EXISTING entry for a key is never overwritten. A binding the user
+  ##   made, or one rehydrated from the workspace sidecar, outranks what the
+  ##   source happened to say when the page was compiled.
+  ## * ``onBindingsChanged`` is NOT fired. This table entry is derived from
+  ##   source, not a user decision, and persisting it into the sidecar would
+  ##   turn a fact the source already states into duplicated state that can
+  ##   drift from it.
+  ## * A token the foundations do not know becomes ``vbsBoundMissing`` rather
+  ##   than being dropped -- the inspector already renders that as a broken
+  ##   link, which is the whole point of requirement 8. A binding that cannot
+  ##   be resolved must be visible, not absent.
+  let elementId = element.fallbackElementId()
+  if elementId.len == 0 or element.styleBindings.len == 0:
+    return
+  var additions: seq[(PropertyBindingKey, VariableBinding)] = @[]
+  for prop in element.properties:
+    if not prop.isTokenBound():
+      continue
+    let key = PropertyBindingKey(elementId: elementId, propertyName: prop.name)
+    if editor.inspector.propertyBindings.val.hasKey(key):
+      continue
+    let resolved = editor.resolveVariableValue(prop.tokenName)
+    var binding = VariableBinding(
+      state: if resolved.len > 0: vbsBound else: vbsBoundMissing,
+      variableKey: prop.tokenName,
+      resolvedValue: if resolved.len > 0: resolved else: prop.value)
+    for token in editor.foundations.tokens.val:
+      if token.key.sameTokenKey(prop.tokenName):
+        binding.sourceFileRef = token.sourceFile
+        binding.sourceLineRef = token.sourceLine
+        break
+    additions.add (key, binding)
+  if additions.len == 0:
+    return
+  editor.inspector.propertyBindings.update(proc(
+      prev: Table[PropertyBindingKey, VariableBinding]):
+      Table[PropertyBindingKey, VariableBinding] =
+    result = prev
+    for (key, binding) in additions:
+      result[key] = binding)
+
+proc unresolvedStyleBindingsForSelection*(editor: EditorVM): seq[StyleBinding] =
+  ## Every authored styling construct on the current selection that resolved
+  ## to nothing. The per-element view of requirement 8; the whole-page view is
+  ## ``editor/scene_graph_hooks.sceneUnresolvedBindings``.
+  unresolvedStyleBindings(editor.inspector.selectedElement.val.styleBindings)
+
 proc collectWorkspaceBindingMetadata*(vm: EditorVM):
     tuple[bindings: seq[PersistedPropertyBinding],
           history: seq[PropertyBindingHistoryEntry]] =
@@ -9785,7 +10388,17 @@ proc createInspectorVM*(designSystemSchema: Signal[DesignSystemSchema] = nil;
   )
 
   let isDirty = createMemo[bool](proc(): bool =
-    pendingSourceEdits.val.len > 0 or undoStack.val.len > 0
+    ## UNSAVED work, and nothing else.
+    ##
+    ## This used to be "unsaved or has history", which fused two different
+    ## questions and is why saving had to clear the undo stack: with the stack
+    ## counting towards dirtiness, a saved document that still remembered what
+    ## you did would have claimed to be unsaved forever.
+    ##
+    ## They are not the same thing. The journal is what is not on disk; the
+    ## undo stack is what you did this session. Saving empties the first and
+    ## must not touch the second.
+    pendingSourceEdits.val.len > 0
   )
 
   let denseRowContract = createMemo[InspectorDenseRowContract](
@@ -9830,12 +10443,15 @@ proc createInspectorVM*(designSystemSchema: Signal[DesignSystemSchema] = nil;
   InspectorVM(
     designSystemSchema: schemaSignal,
     selectedElement: selectedElement,
+    previewValueRequest: createSignal(PreviewValueRequest()),
     breadcrumbTrail: createSignal[seq[BreadcrumbEntry]](@[]),
     breadcrumbWalkId: createSignal(""),
     layers: layers,
     layerSearch: layerSearch,
     sectionSearch: sectionSearch,
     expandedSections: expandedSections,
+    sectionsUserSet: createSignal[seq[InspectorSection]](@[]),
+    revealSectionRequest: createSignal(0),
     focusedControlId: focusedControlId,
     commandPaletteHooksReady: commandPaletteHooksReady,
     expandedLayerIds: expandedLayerIds,
@@ -11487,9 +12103,14 @@ proc createReviewResultsVM*(): ReviewResultsVM =
 
 proc createProjectPreviewVM*(selectedStory: Signal[StoryRef];
     platform: Signal[Platform]; reloadGeneration: Signal[int] = nil): ProjectPreviewVM =
-  let preview = ProjectPreviewVM(hook: defaultPreviewHook)
+  let preview = ProjectPreviewVM(hook: defaultPreviewHook, sourceGeneration: createSignal(0))
   preview.current = createMemo[ProjectPreview](proc(): ProjectPreview =
     if reloadGeneration != nil: discard reloadGeneration.val
+    # Tracked but unused: this read is the whole reason the signal exists.
+    # `hook` is a field, not a signal, so a hot swap that installs a new
+    # closure leaves this memo valid and the preview showing output from
+    # code that is no longer on disk.
+    discard preview.sourceGeneration.val
     preview.hook(selectedStory.val, platform.val)
   )
   preview
@@ -11553,6 +12174,28 @@ proc createEditorVM*(): EditorVM =
   let rightSidebarTab = createSignal(rstManual)
   let platform = createSignal(pbWeb)
   let viewport = createSignal(defaultViewport(pbWeb))
+  let responsiveBreakpoints = createSignal[seq[ResponsiveBreakpoint]](@[])
+  let previewShowsPendingEdits = createSignal(false)
+  let previewRenderedWidth = createSignal(0)
+  # The width every breakpoint question is asked at: what the preview is
+  # really laid out at when that is known, and the chip's nominal width until
+  # it is.
+  let effectiveWidth = createMemo[int](proc(): int =
+    let measured = previewRenderedWidth.val
+    if measured > 0: measured else: viewport.val.width)
+  # Narrowest-first order is the workspace's contract, so "the first one that
+  # matches" is also "the tightest one that matches" -- which is what the
+  # cascade does when overlapping `max-width` blocks all apply.
+  let activeBreakpoint = createMemo[ResponsiveBreakpoint](
+    proc(): ResponsiveBreakpoint =
+      let width = effectiveWidth.val
+      for bp in responsiveBreakpoints.val:
+        let underMax = bp.maxWidth < 0 or width <= bp.maxWidth
+        let overMin = bp.minWidth < 0 or width >= bp.minWidth
+        if underMax and overMin:
+          return bp
+      ResponsiveBreakpoint(label: "", condition: "", minWidth: -1,
+                           maxWidth: -1))
   let workspacePermissions = createSignal(defaultWorkspacePermissions())
   let sourceAdapterReady = createSignal(false)
   let workspaceEditStage = createSignal(wesClean)
@@ -11661,9 +12304,15 @@ proc createEditorVM*(): EditorVM =
     controlFocusTarget: createSignal(""),
     controlHighlightTarget: createSignal(""),
     controlOperations: initTable[string, JsonNode](),
+    responsiveBreakpoints: responsiveBreakpoints,
+    previewShowsPendingEdits: previewShowsPendingEdits,
+    previewRenderedWidth: previewRenderedWidth,
+    activeBreakpoint: activeBreakpoint,
     workspacePermissions: workspacePermissions,
     sourceAdapterReady: sourceAdapterReady,
     workspaceEditStage: workspaceEditStage,
+    locallyEditedTokens: createSignal[seq[string]](@[]),
+    autoSaveGeneration: createSignal(0),
     workspaceEditDiagnostics: workspaceEditDiagnostics,
     workspaceBridgeRecovered: workspaceBridgeRecovered,
     workspaceEditPatches: workspaceEditPatches,

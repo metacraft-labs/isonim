@@ -14,6 +14,7 @@ and both that copy and the actual executed process are checked against its
 source SHA; no provider decisions or protocol behavior are replaced.
 """
 import hashlib
+import concurrent.futures
 import http.client
 import json
 import os
@@ -69,7 +70,8 @@ class EditorHarborScenario(unittest.TestCase):
                         'Set ISONIM_HARBOR_SCENARIO_PROVIDER to the built official Harbor mock-agent')
         daemon = ROOT / 'build/bin/isonim-review'
         self.assertTrue(daemon.is_file(), 'Build with just isonim-review-build')
-        artifacts = Path(tempfile.mkdtemp(prefix='isonim-editor-harbor-scenario-')).resolve()
+        artifact_parent=os.environ.get('ISONIM_SCENARIO_ARTIFACT_DIR')
+        artifacts = Path(tempfile.mkdtemp(prefix='isonim-editor-harbor-scenario-', dir=artifact_parent)).resolve()
         print('Acceptance artifacts:', artifacts, flush=True)
         self.artifacts = artifacts
         workspace = artifacts / 'workspace'
@@ -165,7 +167,7 @@ os.execv(provider, [provider, '--scenario', scenarios[index], '--disable-followe
         try:
             harbor_url = None
             base = None
-            deadline = time.monotonic() + 900
+            deadline = time.monotonic() + 15
             while time.monotonic() < deadline:
                 self.assertIsNone(child.poll(), 'daemon exited; inspect daemon.log')
                 try:
@@ -184,20 +186,73 @@ os.execv(provider, [provider, '--scenario', scenarios[index], '--disable-followe
                     base = 'http://127.0.0.1:' + match[1]
                     break
             self.assertIsNotNone(base, 'bounded daemon readiness failed')
-            self.assertIsNotNone(harbor_url, 'automatic local producer REST selection was not used')
             self.base = base
+            # HTTP is ready independently of the optional producer. Trigger its
+            # actual owned preparation through the first validated session API.
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                pending = pool.submit(self.post, '/api/agent/sessions', {'cwd':str(workspace)}, 200, 900)
+                deadline = time.monotonic()+900 # Existing cold-producer bound.
+                while not pending.done() or harbor_url is None:
+                    self.assertLess(time.monotonic(),deadline,'bounded automatic producer preparation failed')
+                    self.assertIsNone(child.poll(),'daemon exited during preparation')
+                    started=time.monotonic()
+                    try: response=urllib.request.urlopen(base+'/health',timeout=1)
+                    except urllib.error.HTTPError as error: response=error
+                    with response:
+                        self.assertEqual(response.code,503) # Agent-only fixture has no PG.
+                        health=json.load(response)
+                        self.assertFalse(health['postgres_reachable'])
+                        self.assertFalse(health['schema_version_current'])
+                    self.assertLess(time.monotonic()-started,1,'owned preparation blocked unrelated HTTP')
+                    try: line=lines.get(timeout=.1)
+                    except queue.Empty:
+                        if pending.done(): first_draft=pending.result()
+                        continue
+                    match=re.search(r'IsoNim: using (.+) via REST at (http://127\.0\.0\.1:\d+)',line)
+                    if match:
+                        executable=Path(match[1]).resolve()
+                        self.assertTrue(executable.is_relative_to(HARBOR.resolve()))
+                        exported=(HARBOR/'.repro/isonim-runtime/harbor-executable').read_text().strip()
+                        self.assertEqual(executable,Path(exported).resolve())
+                        harbor_url=match[2]
+                first_draft=pending.result()
+            self.assertIsNotNone(harbor_url,'automatic local producer REST selection was not used')
             self.harbor_url = harbor_url
             owned = processes()
             services = [owned[pid][2] for pid in descendants(owned, child.pid) if pid in owned
                         and owned[pid][2] and owned[pid][2][0] == str(executable)
                         and '--rest-port' in owned[pid][2] and '--pid-file' in owned[pid][2]]
             self.assertEqual(len(services), 1, 'exactly one owned Harbor service')
+            helpers=[pid for pid in descendants(owned,child.pid) if pid in owned
+                     and owned[pid][2] and '--internal-harbor-runtime' in owned[pid][2]]
+            self.assertEqual(len(helpers),1,'automatic selection owns one isolated preparation helper')
+            helper_pid=helpers[0]
+            helper_args=owned[helper_pid][2]
+            helper_directory=Path(helper_args[-1])
+            self.assertEqual(helper_directory.stat().st_mode & 0o777,0o700)
+            ready_file=helper_directory/'ready.json'
+            self.assertEqual(ready_file.stat().st_mode & 0o777,0o600)
+            ready=json.loads(ready_file.read_text())
+            self.assertEqual(ready['pid'],helper_pid)
+            self.assertEqual(Path(ready['executable']).resolve(),executable)
+            self.assertEqual(ready['url'],harbor_url)
+            self.assertEqual(os.getsid(helper_pid),helper_pid)
+            service_pids=[pid for pid in descendants(owned,child.pid) if pid in owned
+                          and owned[pid][2] in services]
+            self.assertEqual(len(service_pids),1)
+            self.assertEqual(os.getsid(service_pids[0]),helper_pid)
+            (artifacts/'owned-preparation-proof.json').write_text(json.dumps({
+                'helperPid':helper_pid,'servicePid':service_pids[0],
+                'helperDirectoryMode':0o700,'readyFileMode':0o600,
+                'daemonSha256':identities['daemon_sha256'],
+                'producerExecutable':str(executable),'sameOwnedSession':True},indent=2))
             state_dir = Path(services[0][services[0].index('--pid-file') + 1]).parent
             self.assertNotEqual(state_dir, inherited.parent)
+            self.assertEqual(state_dir.stat().st_mode & 0o777,0o700)
             self.assertTrue((state_dir / 'daemon.sqlite').read_bytes().startswith(b'SQLite format 3\0'))
             (artifacts / 'owned-state.txt').write_text(str(state_dir) + '\n')
             self.assertEqual(self.sessions(), [])
-            drafts = [self.post('/api/agent/sessions', {'cwd': str(workspace)}) for _ in range(2)]
+            drafts = [first_draft,self.post('/api/agent/sessions', {'cwd':str(workspace)})]
             self.assertNotEqual(drafts[0]['sessionId'], drafts[1]['sessionId'])
             for draft in drafts:
                 self.assertEqual(draft['sessionState'], 'draft')
@@ -342,14 +397,17 @@ os.execv(provider, [provider, '--scenario', scenarios[index], '--disable-followe
             child.stderr.close()
             log.close()
         self.assertEqual(child.returncode, 0, 'normal owned shutdown must succeed')
+        self.assertFalse(helper_directory.exists(),'owned helper handoff must be removed')
+        self.assertNotIn(helper_pid,processes(),'owned helper must be reaped')
+        self.assertNotIn(service_pids[0],processes(),'owned Harbor service must be reaped')
         self.assertEqual(inherited.read_text(), 'parent state must remain untouched')
         (artifacts / 'PASS').write_text('production editor routes: two drafts, two isolated persistent REST sessions, same workers/starttimes, explicit closure and normal shutdown\n')
 
-    def post(self, path, payload, expected=200):
+    def post(self, path, payload, expected=200, timeout=60):
         request = urllib.request.Request(self.base + path, json.dumps(payload).encode(),
                                          {'Content-Type': 'application/json'})
         try:
-            response = urllib.request.urlopen(request, timeout=60)
+            response = urllib.request.urlopen(request, timeout=timeout)
         except urllib.error.HTTPError as error:
             response = error
         with response:

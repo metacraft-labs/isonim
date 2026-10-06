@@ -51,8 +51,8 @@ proc reasonLabel(r: DirtyRepoReason): string =
   case r
   of drUncommitted: "uncommitted changes"
   of drUntracked:   "untracked files"
-  of drUnpinnedHead: "HEAD not on manifest pin"
-  of drManifestUnreadable: "manifest unreadable"
+  of drUnpublishedHead: "HEAD is not on the declared remote"
+  of drWorkspaceUnreadable: "workspace unreadable"
 
 proc formatDirty(report: DirtyRepoReport): string =
   result = report.repoPath & ": " & reasonLabel(report.reason)
@@ -60,8 +60,15 @@ proc formatDirty(report: DirtyRepoReport): string =
     result.add " ("
     result.add report.files.join(", ")
     result.add ")"
-  if report.reason == drUnpinnedHead:
-    result.add fmt" [HEAD={report.headSha}, expected={report.expectedPin}]"
+  case report.reason
+  of drUnpublishedHead:
+    result.add fmt" [HEAD={report.headSha}; push it so the run's pin " &
+               "can be replayed elsewhere"
+    if report.detail.len > 0: result.add "; " & report.detail
+    result.add "]"
+  of drWorkspaceUnreadable:
+    result.add " [" & report.detail & "]"
+  else: discard
 
 proc stdoutReporter*(ev: CaptureProgressEvent) {.gcsafe.} =
   case ev.kind
@@ -151,6 +158,7 @@ proc cmdCapture*(cfg: ReviewConfig;
     viewportFilter: viewport,
     backendBinaryDir: resolvedBackendDir,
     backendFilter: backendFilter,
+    workspaceProject: cfg.workspace.project,
   )
 
   let connStr = connectionString(cfg, role = "app")

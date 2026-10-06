@@ -10,6 +10,7 @@ import isonim/dsl/ui
 import isonim/viewmodel  # AsyncState (asIdle/asLoading/asReady/asError)
 import isonim/editor/viewmodels
 import isonim/editor/types
+import isonim/editor/element_semantics
 import isonim/editor/views/choice_row
 import isonim/editor/views/storyboard
 import isonim/editor/views/component_detail
@@ -65,6 +66,14 @@ const
   textPrimary = "#ECEDF3"
   textSecondary = "#9CA0B0"
   textMuted = "#6B6F80"
+  # The left sidebar's type scale. TWO text sizes and one icon size, because
+  # it had eight: 9px quicknav captions, 10px section headers, 10px and 13px
+  # icons, 11px layer rows, 12px story rows, and 12px group rows with 0.1px
+  # of tracking that nothing else used. A list row and a list row two panels
+  # down were different sizes for no reason either could state.
+  sidebarCaptionFont = "10px"   ## section headers, quicknav captions
+  sidebarBodyFont    = "12px"   ## every row, and the search inputs
+  sidebarIconFont    = "12px"   ## every glyph that is not text
   textDim = "#4A4D5C"
   accent* = "#7C7AED"
     ## M-EVP-4: exported so tests (and any sibling editor view) can refer
@@ -680,6 +689,49 @@ proc dispatchPreviewAncestorSelection(index: int) =
   else:
     discard index
 
+proc dispatchPreviewElementVisibility(id: string; visible: bool) =
+  ## Show or hide the selected element in the preview.
+  ##
+  ## Preview-only and not written to source: this is the "what would it look
+  ## like without this" gesture, and a source edit is a different intent
+  ## that the inspector already has rows for.
+  when defined(js):
+    let shown = visible
+    {.emit: ["""
+      (function () {
+      const toJsString = (raw) => Array.isArray(raw)
+        ? String.fromCharCode.apply(null, raw)
+        : String(raw || '');
+      window.dispatchEvent(new CustomEvent('isonim-preview-element-visibility', {
+        detail: { id: toJsString(""", id, """), visible: """, shown, """ }
+      }));
+      })();
+    """].}
+  else:
+    discard id
+    discard visible
+
+proc dispatchPreviewElementHover(id: string) =
+  ## Tell the preview which element the pointer is over, or "" for none.
+  ##
+  ## Window-scoped like the selection event: the injected bridge listens on
+  ## `parent`, so the panel does not need a handle on the frame -- which
+  ## matters because the Layers panel lives in the left sidebar and has no
+  ## reason to know which view is currently mounting a preview.
+  when defined(js):
+    {.emit: ["""
+      (function () {
+      const toJsString = (raw) => Array.isArray(raw)
+        ? String.fromCharCode.apply(null, raw)
+        : String(raw || '');
+      window.dispatchEvent(new CustomEvent('isonim-hover-preview-element-id', {
+        detail: { id: toJsString(""", id, """) }
+      }));
+      })();
+    """].}
+  else:
+    discard id
+
 proc dispatchPreviewElementSelection(id: string) =
   when defined(js):
     {.emit: ["""
@@ -769,7 +821,59 @@ proc renderStatusBar[R, E](r: R; vm: EditorVM): E =
   # bar layout so future affordances can drop in without re-shaping
   # the status row.
   discard leftControls
-  discard rightControls
+
+  # Save failures, and only failures.
+  #
+  # Saving is automatic, so a successful write is not news -- announcing it
+  # would train the eye to ignore this corner, which is the corner that has
+  # to work when something goes wrong. A refusal is different: it is the one
+  # thing the user has to act on, it names a file they may be sharing with
+  # an agent, and it is the difference between "my edit did not take" and
+  # "my edit was silently dropped".
+  #
+  # `role="alert"` so a screen reader is told without the user having to
+  # look at a 26px strip at the bottom of the window.
+  var saveErrorEl: E
+  let saveError = ui(r):
+    tdiv(ref = saveErrorEl,
+          `data-save-error` = "true",
+          role = "alert",
+          `aria-live` = "assertive",
+          display = "none",
+          align_items = "center", gap = "6px",
+          max_width = "46vw",
+          padding = "0 8px", height = "18px",
+          border_radius = "4px",
+          background_color = "rgba(248, 113, 113, 0.12)",
+          border = "1px solid rgba(248, 113, 113, 0.34)",
+          color = "#F87171",
+          font_size = "10px",
+          white_space = "nowrap", overflow = "hidden",
+          text_overflow = "ellipsis"):
+      text ""
+  # In the RIGHT slot, immediately left of the version tag, rather than in
+  # the left slot. The left slot sits before the breadcrumb, so a message
+  # appearing there shoved the breadcrumb sideways -- the status bar moved
+  # under the reader at the exact moment it asked them to read something.
+  # The right slot is already a quiet corner and the message can grow into
+  # it without displacing anything that was being looked at.
+  r.insertBefore(rightControls, saveError, statusBadges)
+
+  createRenderEffect proc() =
+    let indicator = vm.saveIndicator()
+    if indicator.state == sisFailed:
+      let detail =
+        if indicator.detail.len > 0: indicator.detail
+        else: "The last save was refused."
+      r.setTextContent(saveErrorEl, "Not saved \xE2\x80\x94 " & detail)
+      # The full text in `title` too: the bar truncates, and the truncated
+      # half is usually the half that says what to do about it.
+      r.setAttribute(saveErrorEl, "title", detail)
+      r.setStyle(saveErrorEl, "display", "flex")
+    else:
+      r.setTextContent(saveErrorEl, "")
+      r.setAttribute(saveErrorEl, "title", "")
+      r.setStyle(saveErrorEl, "display", "none")
   createRenderEffect proc() =
     r.clearChildren(statusBadges)
     let selected = vm.inspector.selectedElement.val
@@ -884,11 +988,21 @@ proc bindSceneGraphRow[R, E](vm: EditorVM; r: R; node: E; rowId: string) =
     # helper converts, and is the same one the status-bar breadcrumb uses.
     dispatchPreviewElementSelection(capturedId)
   )
+  # Hovering a row outlines the element in the preview, dimmer than the
+  # selection. The signal alone was never enough: it flagged the ROW, and
+  # nothing told the preview, so pointing at a layer highlighted the list
+  # and not the thing the list is about.
+  #
+  # The injected bridge already listens for this and already draws it as a
+  # 1px dashed outline against the selection's 2px solid, so "dimmer than
+  # selected" needs no new styling -- only the message.
   r.addEventListener(node, "mouseenter", proc() =
-    capturedVm.inspector.hoveredElementId.val = capturedId)
+    capturedVm.inspector.setLayerHover(capturedId)
+    dispatchPreviewElementHover(capturedId))
   r.addEventListener(node, "mouseleave", proc() =
     if capturedVm.inspector.hoveredElementId.val == capturedId:
-      capturedVm.inspector.hoveredElementId.val = "")
+      capturedVm.inspector.setLayerHover("")
+      dispatchPreviewElementHover(""))
 
 proc installSceneGraphReader[R, E](vm: EditorVM; r: R; host: E) =
   ## Read the preview's element tree from the parent side. THE producer.
@@ -1095,6 +1209,35 @@ proc bindSceneGraphTwisty[R, E](vm: EditorVM; r: R; node: E; rowId: string) =
       e.stopPropagation();
     });"""].}
 
+proc renderSidebarSearchBox[R, E](r: R; dataAttr, ariaLabel,
+    placeholder: string): tuple[root: E, input: E] =
+  ## THE search box. Both of the left sidebar's searches are this proc.
+  ##
+  ## They were built separately and looked it: the story search was a
+  ## bordered 28px well with a magnifier and a transparent 12px input; the
+  ## layers search was a bare 22px field with its own background, its own
+  ## border colour, its own radius and an 11px font. Two controls doing the
+  ## same job in one column, sharing nothing.
+  var inputEl: E
+  let root = ui(r):
+    tdiv(display = "flex", align_items = "center",
+          background_color = bgSurface,
+          border = "1px solid " & border,
+          border_radius = "5px", padding = "0 8px", height = "28px",
+          flex = "1", min_width = "0"):
+      span(font_size = sidebarBodyFont, opacity = "0.5",
+            margin_right = "6px"):
+        text "\xF0\x9F\x94\x8D"
+      input(class = "editor-input",
+            ref = inputEl,
+            background_color = "transparent", border = "none",
+            font_size = sidebarBodyFont, color = textSecondary,
+            outline = "none", flex = "1", min_width = "0")
+  r.setAttribute(inputEl, dataAttr, "true")
+  r.setAttribute(inputEl, "aria-label", ariaLabel)
+  r.setAttribute(inputEl, "placeholder", placeholder)
+  (root, inputEl)
+
 proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
   ## SGR-M3: the scene graph — the rendered element hierarchy of the selected
   ## story, in the LEFT sidebar beside the storyboard.
@@ -1115,28 +1258,37 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
   let capturedVm = vm
   var rowsHost: E
   var countEl: E
-  var searchInput: E
+  var layerSearchSlot: E
+  var layerSearchEl: E
   let panel = ui(r):
     tdiv(class = "editor-scene-graph",
           `data-scene-graph` = "true",
           role = "region", `aria-label` = "Layers",
           display = "flex", flex_direction = "column",
           border_top = "1px solid " & borderFaint,
-          flex_shrink = "0",
-          max_height = "45%",
+          # A sibling of the story tree, not a child of it. `flex-shrink: 0`
+          # plus `max-height: 45%` kept it from collapsing when the tree was
+          # long; now that the tree scrolls itself the panel can simply take
+          # its share of the column.
+          flex = "1 1 45%", min_height = "0",
           overflow = "hidden"):
       tdiv(`data-scene-graph-header` = "true",
             display = "flex", align_items = "center", gap = "6px",
-            height = "30px", min_height = "30px", padding = "0 10px",
+            height = "40px", min_height = "40px", padding = "0 10px",
             border_bottom = "1px solid " & borderFaint,
             flex_shrink = "0"):
-        input(ref = searchInput, class = "editor-input",
-              `data-layer-search` = "true",
-              `aria-label` = "Search layers", placeholder = "Search layers",
-              background_color = bgSurface, border = "1px solid " & border,
-              border_radius = "4px", padding = "0 4px", height = "24px",
-              font_size = "12px", color = textSecondary,
-              outline = "none", flex = "1", min_width = "0")
+        # A search box rather than a "LAYERS" label. The panel is 61 rows
+        # deep on the grip pilot's Hero alone and the label was the least
+        # useful thing that could occupy the header: it told you what you
+        # were already looking at.
+        #
+        # Mounted from `renderSidebarSearchBox`, so it IS the story search's
+        # control rather than a second one that resembles it.
+        #
+        # The `data-scene-graph-*` attributes are deliberately NOT renamed:
+        # they are the test and tooling surface.
+        tdiv(ref = layerSearchSlot, display = "flex",
+              align_items = "center", flex = "1", min_width = "0")
         span(ref = countEl,
               `data-scene-graph-count` = "true",
               margin_left = "auto", font_size = "10px", color = textDim):
@@ -1146,15 +1298,44 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
             display = "flex", flex_direction = "column",
             overflow_y = "auto", overflow_x = "hidden",
             padding = "4px 0", flex = "1", min_height = "0")
+  block:
+    let layerSearch = renderSidebarSearchBox[R, E](r,
+      "data-scene-graph-search", "Search layers",
+      "Search layers")
+    r.setAttribute(layerSearch.root, "data-sidebar-search-field", "layers")
+    r.appendChild(layerSearchSlot, layerSearch.root)
+    layerSearchEl = layerSearch.input
+    r.setAttribute(layerSearchEl, "data-layer-search", "true")
+
+  # The preview tells us what the pointer is over; the rows show it softly.
+  # `hoveredElementId` already drives `ElementLayerRow.hovered`, which
+  # already renders a background four times fainter than the selection --
+  # nothing was setting it from the preview side.
+  when defined(js):
+    let hoverVm = vm
+    let onPreviewHover = proc(id: cstring) =
+      # `setLayerHover`, not the raw signal: the row flags are baked when the
+      # tree is PUBLISHED, and the reader only republishes when the tree's
+      # signature changes -- which hovering never does. Setting the id alone
+      # moved a value nothing re-read.
+      hoverVm.inspector.setLayerHover($id)
+    {.emit: ["""
+      (function (onHover) {
+        window.addEventListener('isonim-preview-element-hovered',
+          function (event) {
+            onHover(String((event.detail && event.detail.id) || ''));
+          });
+      })(""", onPreviewHover, ");"].}
+
   result = panel
   vm.installSceneGraphReader(r, rowsHost)
   let onSearch = proc() =
-    capturedVm.inspector.setLayerSearch(r.inputValue(searchInput))
-  r.addEventListener(searchInput, "input", onSearch)
-  r.addEventListener(searchInput, "change", onSearch)
+    capturedVm.inspector.setLayerSearch(r.inputValue(layerSearchEl))
+  r.addEventListener(layerSearchEl, "input", onSearch)
+  r.addEventListener(layerSearchEl, "change", onSearch)
   createRenderEffect proc() =
     let query = capturedVm.inspector.layerSearch.val
-    if r.inputValue(searchInput) != query: r.setInputValue(searchInput, query)
+    if r.inputValue(layerSearchEl) != query: r.setInputValue(layerSearchEl, query)
 
   # Rows are rebuilt by a render effect rather than by a `for` inside the DSL
   # block, because the row set changes identity wholesale on every republish
@@ -1202,7 +1383,7 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
       # panel, which is exactly how this feature was first reported.
       let empty = ui(r):
         tdiv(`data-scene-graph-empty` = "true",
-              padding = "10px 12px", font_size = "11px",
+              padding = "10px 12px", font_size = sidebarBodyFont,
               line_height = "1.5", color = textDim):
           text (if searching: "No matching layers" else:
             "Nothing to show: this preview renders no visible " &
@@ -1238,7 +1419,7 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
               display = "flex", align_items = "center", gap = "6px",
               padding = "0 8px 0 " & $indent & "px",
               height = "22px", min_height = "22px",
-              font_size = "11px", cursor = "pointer",
+              font_size = sidebarBodyFont, cursor = "pointer",
               white_space = "nowrap", overflow = "hidden",
               text_overflow = "ellipsis",
               background_color = bg, color = fg):
@@ -1247,7 +1428,7 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
           # what a designer expects. Clicking the label selects.
           span(ref = twisty,
                 `data-scene-graph-twisty` = (if rowChildCount > 0: rowId else: ""),
-                color = textDim, font_size = "9px", flex_shrink = "0",
+                color = textDim, font_size = sidebarCaptionFont, flex_shrink = "0",
                 width = "9px", text_align = "center",
                 cursor = (if rowChildCount > 0: "pointer" else: "default")):
             text (if rowChildCount == 0: "\xC2\xB7"
@@ -1262,6 +1443,40 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
       if rowChildCount > 0:
         capturedVm.bindSceneGraphTwisty(r, twisty, rowId)
       r.appendChild(rowsHost, rowEl)
+
+  # Bring the selection into view -- and only the selection.
+  #
+  # Selecting an element in the preview is a statement about which row you
+  # want, and a 61-row panel showing rows 1-14 is not showing it. Hovering
+  # is NOT such a statement: the pointer sweeps across a page and a panel
+  # that chased it would be unreadable, which is why this watches the
+  # selected id and nothing else.
+  #
+  # `block: "nearest"` so a row already on screen does not jump. Tracked by
+  # id rather than run on every rebuild, because the reader republishes the
+  # tree about twice a second and scrolling on each would fight the user's
+  # own scrolling.
+  when defined(js):
+    var lastScrolledTo = ""
+    createRenderEffect proc() =
+      let selectedId = capturedVm.inspector.selectedElement.val.id
+      if selectedId.len == 0 or selectedId == lastScrolledTo:
+        return
+      lastScrolledTo = selectedId
+      let host = rowsHost
+      let wanted = selectedId.cstring
+      {.emit: ["""
+        (function (host, id) {
+          // After the rebuild effect above has run.
+          requestAnimationFrame(function () {
+            if (!host) return;
+            var row = host.querySelector('[data-scene-graph-row="' +
+              (window.CSS && CSS.escape ? CSS.escape(id) : id) + '"]');
+            if (row && row.scrollIntoView) {
+              row.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+            }
+          });
+        })(""", host, ", ", wanted, ");"].}
 
 proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
   ## Left panel: storyboard navigation tree.
@@ -1286,10 +1501,19 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
           flex_shrink = "0",
           background_color = bgSidebar,
           border_right = "1px solid " & borderStrong,
-          overflow_y = "auto", overflow_x = "hidden"):
+          # NOT a scroll container. The story tree and the Layers panel are
+          # siblings inside it and each scrolls itself, so the column has two
+          # scroll regions stacked rather than one nested inside another.
+          #
+          # It used to scroll, with the Layers rows scrolling inside it:
+          # 1084px of content in 792px of sidebar, wrapped around 1350px of
+          # rows in 325px of panel. Two scrollbars, one inside the other,
+          # neither of which scrolled the thing under the pointer.
+          overflow = "hidden"):
 
-      # Search input
-      var searchInput: E
+      # Search input — mounted from `renderSidebarSearchBox` below, so it
+      # is the same control as the Layers search by construction.
+      var storySearchSlot: E
       # CHRM-M7 — sidebar header row holds the search input plus a
       # narrow-only history affordance.  At wide / laptop widths the
       # chrome-bar's history button (rendered inside the centre
@@ -1316,21 +1540,8 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
             flex_shrink = "0"):
         tdiv(display = "flex", align_items = "center",
               gap = "6px", width = "100%"):
-          tdiv(`data-sidebar-search-field` = "true", display = "flex", align_items = "center",
-                background_color = bgSurface,
-                border = "1px solid " & border,
-                border_radius = "5px", padding = "0 8px", height = "28px",
-                flex = "1"):
-            span(font_size = "11px", opacity = "0.5", margin_right = "6px"):
-              text "\xF0\x9F\x94\x8D"
-            input(class = "editor-input",
-                  ref = searchInput,
-                  `data-sidebar-search` = "true",
-                  background_color = "transparent", border = "none",
-                  font_size = "12px", color = textSecondary,
-                  outline = "none", flex = "1",
-                  `aria-label` = "Search stories",
-                  placeholder = "Search stories\xE2\x80\xA6")
+          tdiv(ref = storySearchSlot, display = "flex",
+                align_items = "center", flex = "1", min_width = "0")
           # Narrow-only history-button slot. ``mountHistoryButtonForEditor``
           # appends the 🕘 button into this slot. The
           # ``editor-sidebar-history-narrow`` class is gated by the
@@ -1354,6 +1565,12 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
         design_review_mount_view.mountSidebarHistoryButtonForEditor[R, E](
           r, sidebarHistorySlot, vm)
       block:
+        let storySearch = renderSidebarSearchBox[R, E](r,
+          "data-sidebar-search", "Search stories",
+          "Search stories\xE2\x80\xA6")
+        r.setAttribute(storySearch.root, "data-sidebar-search-field", "true")
+        r.appendChild(storySearchSlot, storySearch.root)
+        let searchInput = storySearch.input
         let onSearch = searchInputHandler[R, E](r, vm, searchInput)
         r.addEventListener(searchInput, "input", onSearch)
         r.addEventListener(searchInput, "change", onSearch)
@@ -1415,9 +1632,9 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
                   border_radius = "5px",
                   color = textMuted,
                   transition = "background-color 0.12s, color 0.12s"):
-              span(font_size = "13px", line_height = "1"):
+              span(font_size = sidebarIconFont, line_height = "1"):
                 text cIcon
-              span(font_size = "9px", line_height = "1.1",
+              span(font_size = sidebarCaptionFont, line_height = "1.1",
                     margin_top = "3px",
                     white_space = "nowrap", overflow = "hidden",
                     text_overflow = "ellipsis",
@@ -1432,8 +1649,14 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
               r.bindQuickNavIcon(iconNode, vm, cKind)
 
       # Story sections
-      tdiv(display = "flex", flex_direction = "column",
-            gap = "2px", padding = "8px 8px 16px 8px"):
+      tdiv(`data-sidebar-story-tree` = "true",
+            display = "flex", flex_direction = "column",
+            gap = "2px", padding = "8px 8px 16px 8px",
+            # `min-height: 0` is what lets a flex child shrink below its
+            # content and scroll; without it the tree pushes the Layers panel
+            # off the bottom instead.
+            flex = "1 1 auto", min_height = "0",
+            overflow_y = "auto", overflow_x = "hidden"):
         for section in sidebarSections:
           let sLabel = sectionLabel(section)
           let sIcon = sectionIcon(section)
@@ -1461,10 +1684,10 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
                     border_radius = "5px", cursor = "pointer",
                     background_color = (
                         if sExpanded: bgSurface else: "transparent")):
-                span(font_size = "10px", color = textMuted,
+                span(font_size = sidebarIconFont, color = textMuted,
                       opacity = "0.85"):
                   text sIcon
-                span(font_size = "10px", font_weight = "600",
+                span(font_size = sidebarCaptionFont, font_weight = "600",
                       color = textMuted, text_transform = "uppercase",
                       letter_spacing = "0.9px"):
                   text sLabel
@@ -1478,7 +1701,7 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
                     `aria-expanded` = (if sExpanded: "true" else: "false"),
                     onclick = toggleSection,
                     onkeydown = toggleSection,
-                    font_size = "9px", color = textMuted, cursor = "pointer"):
+                    font_size = sidebarIconFont, color = textMuted, cursor = "pointer"):
                 text sChevron
 
             tdiv(ref = sectionBody,
@@ -1534,7 +1757,7 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
                               if gShowsStories: toggleGroup else: openJourney),
                           gap = "6px", padding = "8px 8px 8px 18px",
                           border_radius = "4px", cursor = "pointer"):
-                      span(font_size = "10px", color = textMuted,
+                      span(font_size = sidebarIconFont, color = textMuted,
                             flex_shrink = "0"):
                         text gIcon
                       # v4: group names are typically "App / Story" — they
@@ -1542,16 +1765,16 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
                       # the row to a single line with ellipsis so the
                       # sidebar reads as a clean list rather than a
                       # rag-right scroll.
-                      span(font_size = "12px", font_weight = "500",
+                      span(font_size = sidebarBodyFont, font_weight = "500",
                             color = textPrimary,
-                            letter_spacing = "0.1px",
+
                             white_space = "nowrap",
                             overflow = "hidden",
                             text_overflow = "ellipsis",
                             flex = "1", min_width = "0"):
                         text gName
                       span(ref = groupChevron,
-                            font_size = "9px", color = textMuted,
+                            font_size = sidebarIconFont, color = textMuted,
                             margin_left = "auto",
                             flex_shrink = "0"):
                         if gShowsStories:
@@ -1610,7 +1833,7 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
                                 border_left_width = "3px",
                                 border_left_style = "solid",
                                 border_left_color = storyBorderColor):
-                            span(font_size = "12px", line_height = "1.4",
+                            span(font_size = sidebarBodyFont, line_height = "1.4",
                                   flex = "1", min_width = "0",
                                   overflow = "hidden",
                                   text_overflow = "ellipsis",
@@ -1638,7 +1861,7 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
                                     flex_shrink = "0",
                                     padding = "2px 6px",
                                     border_radius = "3px",
-                                    font_size = "10px",
+                                    font_size = sidebarCaptionFont,
                                     color = textSecondary,
                                     background_color = bgSurface,
                                     border = "1px solid " & border,
@@ -2293,39 +2516,10 @@ const inspectorSectionsWithPlusAction = [
   ## widget) that Phase G owns — for Phase B those sections render
   ## an empty action slot so the right margin still lines up.
 
-func selectionDisplayName(tag: string): string =
-  ## Map an ``ElementRef.tag`` to the selection-header display label
-  ## used in the dropdown trigger. The mapping leans on common HTML
-  ## semantics: container tags read as "Group" / "Frame"; text-bearing
-  ## tags read as "Text"; form controls keep their semantic name.
-  ## Unknown tags fall through to a capitalised echo of the tag so
-  ## new elements aren't relabelled as a generic "Element".
-  let lower = tag.toLowerAscii()
-  case lower
-  of "div", "section", "main", "article", "aside", "nav", "header",
-      "footer": "Group"
-  of "span", "p", "h1", "h2", "h3", "h4", "h5", "h6", "label",
-      "strong", "em", "small", "code", "pre": "Text"
-  of "button": "Button"
-  of "a": "Link"
-  of "img": "Image"
-  of "svg": "Vector"
-  of "input": "Input"
-  of "textarea": "Text area"
-  of "select": "Select"
-  of "ul", "ol", "li": "List"
-  of "table", "thead", "tbody", "tr", "td", "th": "Table"
-  of "form": "Form"
-  of "iframe": "Frame"
-  of "":
-    ""
-  else:
-    # Preserve unknown tag names verbatim — capitalised first letter
-    # so it reads as a noun in the dropdown without losing identity.
-    if lower.len > 0:
-      lower[0..0].toUpperAscii() & lower[1..^1]
-    else:
-      ""
+# `selectionDisplayName` moved to `editor/element_semantics.nim`: the Fill
+# section needs the same classification to decide which property it edits,
+# and two copies of "what kind of element is this" drift.
+
 
 proc renderSelectionHeader[R, E](r: R; vm: EditorVM): E =
   ## Phase B (2026-05-28): the always-visible selection header that
@@ -2396,7 +2590,7 @@ proc renderSelectionHeader[R, E](r: R; vm: EditorVM): E =
              `data-inspector-selection-chevron` = "true",
              `aria-hidden` = "true",
              color = textMuted,
-             font_size = "10px",
+             font_size = sidebarCaptionFont,
              line_height = "1"):
           text "\xE2\x96\xBE" # ▾
       # Right: 4 quick-action icon buttons. They share a uniform
@@ -2507,6 +2701,28 @@ proc renderSelectionHeader[R, E](r: R; vm: EditorVM): E =
       if visible: "true" else: "false")
     r.setStyle(visBtn, "color",
       if visible: textPrimary else: textMuted)
+    # And actually hide it in the preview. The signal used to recolour this
+    # button and nothing else, which is the definition of a control that
+    # does not work: it had a pressed state and no effect.
+    let selected = vm.inspector.selectedElement.val
+    let targetId =
+      if selected.id.len > 0: selected.id
+      elif selected.sourceKey.len > 0: selected.sourceKey
+      else: selected.schemaKey
+    dispatchPreviewElementVisibility(targetId, visible)
+
+  # A button that does nothing is worse than a button that is not there:
+  # it spends a click and teaches the user that this corner is dead.
+  #
+  # `duplicate` needs to write NEW source, which is a different capability
+  # from editing a declaration and one no workspace here grants -- so it
+  # follows `permissions.duplicate`. `more` has no menu behind it at all,
+  # so it is hidden outright rather than gated on something that might
+  # accidentally become true.
+  createRenderEffect proc() =
+    r.setStyle(dupBtn, "display",
+      if vm.workspacePermissions.val.duplicate: "flex" else: "none")
+  r.setStyle(moreBtn, "display", "none")
 
   # Click wiring. The "code" / "duplicate" / "more" actions hit the
   # Phase B placeholder procs on ``EditorVM``; the "visibility"
@@ -2609,7 +2825,7 @@ proc renderSectionFrame[R, E](r: R; vm: EditorVM;
              width = "12px", height = "12px",
              flex_shrink = "0",
              color = textMuted,
-             font_size = "10px",
+             font_size = sidebarCaptionFont,
              line_height = "1"):
           text "\xE2\x96\xBE" # ▾
       tdiv(ref = bodyEl,
@@ -2782,6 +2998,35 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
          flex = "1", min_height = "0", min_width = "0",
          overflow_y = "auto", overflow_x = "hidden")
 
+  # `openSourceForSelection` expands the Source section and asks for it to
+  # be brought into view; the scroll is here because only the view knows
+  # where the section landed.
+  when defined(js):
+    let revealVm = vm
+    var lastReveal = 0
+    createRenderEffect proc() =
+      let generation = revealVm.inspector.revealSectionRequest.val
+      if generation == lastReveal: return
+      lastReveal = generation
+      {.emit: ["""
+        requestAnimationFrame(function () {
+          var el = document.querySelector('[data-inspector-section-source]')
+            || document.querySelector('[data-inspector-section="source"]');
+          if (!el) {
+            var heads = document.querySelectorAll('[data-inspector-section-title]');
+            for (var i = 0; i < heads.length; i++) {
+              if (/^source$/i.test(heads[i].textContent.trim())) {
+                el = heads[i];
+                break;
+              }
+            }
+          }
+          if (el && el.scrollIntoView) {
+            el.scrollIntoView({ block: 'nearest' });
+          }
+        });
+      """].}
+
   for (slug, displayName) in inspectorPlaceholderSections:
     let frame = renderSectionFrame[R, E](r, vm, slug, displayName)
     r.appendChild(sectionList, frame.row)
@@ -2937,7 +3182,7 @@ proc renderCommandPalette[R, E](r: R; vm: EditorVM): E =
               `aria-live` = "polite",
               min_height = "18px",
               padding = "6px 10px 0 10px",
-              font_size = "10px",
+              font_size = sidebarCaptionFont,
               color = textDim):
           text "Use arrow keys to choose a command."
         tdiv(ref = listNode,
@@ -3136,12 +3381,12 @@ proc renderCommandPalette[R, E](r: R; vm: EditorVM): E =
                   overflow = "hidden", text_overflow = "ellipsis",
                   white_space = "nowrap"):
               text label
-            span(font_size = "10px", color = textDim,
+            span(font_size = sidebarCaptionFont, color = textDim,
                   overflow = "hidden", text_overflow = "ellipsis",
                   white_space = "nowrap",
                   id = diagnosticId):
               text section & " - " & diagnostic
-          span(font_size = "10px", color = textMuted,
+          span(font_size = sidebarIconFont, color = textMuted,
                 font_family = "monospace", white_space = "nowrap"):
             text shortcut
       bindPaletteItem(item, command)
@@ -3180,7 +3425,7 @@ proc renderTelemetryOverlay[R, E](r: R; vm: EditorVM): E =
           border_radius = "8px",
           background_color = "rgba(15, 23, 42, 0.96)",
           color = textSecondary,
-          font_size = "10px",
+          font_size = sidebarCaptionFont,
           box_shadow = "0 16px 48px rgba(0, 0, 0, 0.32)"):
       tdiv(display = "flex", align_items = "center",
             justify_content = "space-between", gap = "8px"):
@@ -3465,21 +3710,47 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
     "Toggle left sidebar", chromeIconSet.sidebarLeft)
   r.appendChild(toolbar, leftToggleBtn)
 
-  # Phase Q (2026-05-29): the cluster order is now
-  # ``[L-toggle] [Backend] [History] <spacer> [Viewport] <spacer>
-  #   [Mode] [R-toggle]``.
-  # Backend leads the cluster family (sidebar toggle is a bookend, not
-  # a cluster), History sits after Backend (still grouped with the
-  # leading family), Viewport is centred by the two flex-1 spacers,
-  # and Mode docks before the right-sidebar toggle. See the comment
-  # above ``modeWrapper`` for the right-dock invariant.
+  # Cluster order:
+  #
+  #   [L-toggle] [Backend] [History] <spacer> [Viewport] <spacer>
+  #     [Mode] [R-toggle]
+  #
+  # Viewport is CENTRED -- it is the control the eye returns to while
+  # looking at the centre column, and the two flex-1 spacers put it over the
+  # middle of the preview rather than over the sidebar.
+  #
+  # There is no Save cluster. Saving is automatic, so there is no state for
+  # a control to report and nothing to press; a failure surfaces in the
+  # status bar, where a message can sit without a toolbar slot standing
+  # reserved for the case that almost never happens.
   r.appendChild(toolbar, backendWrapper)
-
-  # History affordance — second-from-left, between Backend and the
-  # centring spacer. Phase O moved History into the cluster family
-  # (was: trailing edge); Phase Q moves it AFTER Backend so the
-  # leading bookend can be the sidebar toggle.
   design_review_mount_view.mountHistoryButtonForEditor[R, E](r, toolbar, vm)
+
+  # A chooser with one option is not a chooser. A project that declares a
+  # single target platform -- `allowedPlatforms = {pbWeb}`, which is every
+  # web-only site in the workspace -- gets a backend cluster containing
+  # exactly one chip that is already active and cannot be clicked to
+  # anything. Hiding it gives that space back to the controls that do
+  # something.
+  #
+  # `allowedPlatforms` is a plain field rather than a signal, so this reads
+  # it once inside a render effect that also touches the backend option list
+  # -- which IS reactive -- so a workspace swap re-runs it.
+  block singlePlatformBackend:
+    let capturedBackendWrapper = backendWrapper
+    let backendVm = vm
+    createRenderEffect proc() =
+      let allowed = backendVm.allowedPlatforms
+      # Touch the active backend so a workspace swap re-runs this.
+      discard backendVm.platform.val
+      let onlyOne = allowed.card == 1
+      r.setStyle(capturedBackendWrapper, "display",
+        if onlyOne: "none" else: "inline-flex")
+      # Left as a marker rather than unmounted: a test that asserts the
+      # cluster set should be able to see that the project HAS one platform,
+      # not that the editor forgot to render a backend cluster.
+      r.setAttribute(capturedBackendWrapper, "data-toolbar-cluster-hidden",
+        if onlyOne: "single-platform" else: "")
 
   # Spacer #1 — flex-grow:1 wedge that claims free horizontal space
   # so the Viewport cluster centres in the chrome bar. Paired with
@@ -3493,7 +3764,6 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
     tdiv(`data-preview-toolbar-spacer` = "leading",
          flex = "1",
          min_width = "8px")
-  r.appendChild(toolbar, leadingSpacer)
 
   # Phase Q (2026-05-29): viewport selector restructured from a single
   # chevron+popup to a segmented strip of the most-common viewports
@@ -3599,6 +3869,63 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
   createRenderEffect proc() =
     r.setTextContent(viewportCurrentLabel, capturedVm.viewport.val.label)
   r.appendChild(viewportClusterWrapper, viewportChevronWrap)
+
+  # The active breakpoint, immediately right of the screen-size chips.
+  #
+  # Ambient on purpose. Somebody editing an 840px-wide preview is editing
+  # inside `@media (max-width:1080px)` whether or not they remember writing
+  # it, and every property that block redeclares is written THERE -- so the
+  # change applies below 1080px and nowhere else. Told afterwards, that reads
+  # as the editor having done something surprising; shown continuously, it is
+  # just where you are. It sits next to the screen-size chips because that is
+  # the control that moves it.
+  #
+  # Silent when no query matches, because then there is nothing to say: edits
+  # are global, and a chip reading "Base" through every ordinary edit is noise
+  # that teaches people to stop reading the chip.
+  #
+  # The width it reports is the MEASURED one. On this layout the "Desktop"
+  # chip renders at ~840px, so the chip's nominal 1440 would name a breakpoint
+  # the user is not in -- which is exactly the confusion this is here to end.
+  var breakpointChip: E
+  var breakpointLabel: E
+  breakpointChip = ui(r):
+    tdiv(ref = breakpointChip,
+         `data-active-breakpoint` = "true",
+         display = "none", align_items = "center", gap = "4px",
+         min_height = "22px", padding = "2px 7px",
+         font_size = "10px", line_height = "1",
+         border_radius = "4px",
+         border = "1px solid rgba(99,102,241,0.55)",
+         background_color = "rgba(99,102,241,0.16)",
+         color = "#C7C9FF",
+         white_space = "nowrap",
+         cursor = "default",
+         user_select = "none"):
+      span(font_size = "9px", opacity = "0.7",
+           letter_spacing = "0.05em"):
+        text "SCOPE"
+      span(ref = breakpointLabel, font_weight = "600"):
+        text ""
+  r.appendChild(viewportClusterWrapper, breakpointChip)
+
+  createRenderEffect proc() =
+    let bp = capturedVm.activeBreakpoint.val
+    let width = capturedVm.previewRenderedWidth.val
+    let inBreakpoint = bp.condition.len > 0
+    r.setStyle(breakpointChip, "display",
+               if inBreakpoint: "inline-flex" else: "none")
+    r.setAttribute(breakpointChip, "data-active-breakpoint-condition",
+                   bp.condition)
+    if inBreakpoint:
+      r.setTextContent(breakpointLabel, bp.label)
+      # The consequence lives in the tooltip: it is the part that matters and
+      # it will not fit in a chip this size.
+      r.setAttribute(breakpointChip, "title",
+        "The preview is " & $width & "px wide, which matches " &
+        bp.condition & ". Changes to properties this breakpoint defines are " &
+        "written into it, so they apply at " & bp.label &
+        " and not at wider sizes.")
   block:
     let openSig = viewportDropdownOpen
     let toggleHandler = proc() = openSig.val = not openSig.val
@@ -3859,6 +4186,11 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
           viewportStripVm.activate(i)
         break
 
+  # Backend and viewport both answer "what am I looking at", so they sit
+  # together in the left group rather than one being bookended and the other
+  # centred. History and Save both answer "what has happened to the
+  # document", so they are the centred pair.
+  r.appendChild(toolbar, leadingSpacer)
   r.appendChild(toolbar, viewportClusterWrapper)
 
   # Spacer #2 — trailing flex-grow:1 wedge. Symmetric with the

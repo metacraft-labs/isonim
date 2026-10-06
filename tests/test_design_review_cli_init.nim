@@ -42,7 +42,7 @@ suite "REV-M4 isonim-review init":
     ## ``applied N`` and ``schema_migrations`` contains every migration
     ## file we ship (REV-M3's 001+002, REV-M7's 003, REV-M8's 004,
     ## CMP-M2's 005+006, CMP-M2.1's 007, CMP-M4's 008, CMP-M7's 009,
-    ## REV-M6-follow-up's 010).
+    ## REV-M6-follow-up's 010, the REV-M5 workspace-pin follow-up's 011).
     let f = newPgFixture(applyMigrations = false)
     defer: f.shutdown()
 
@@ -54,7 +54,7 @@ suite "REV-M4 isonim-review init":
     let outText = readFile(tmpLog)
     removeFile(tmpLog)
     check rc == 0
-    check countMigrations(f) == 10
+    check countMigrations(f) == 11
     check "apply 001" in outText
     check "apply 002" in outText
     check "apply 003" in outText
@@ -65,6 +65,7 @@ suite "REV-M4 isonim-review init":
     check "apply 008" in outText
     check "apply 009" in outText
     check "apply 010" in outText
+    check "apply 011" in outText
     check "applied 10 migration(s)" in outText
 
   test "test_cli_init_is_noop_on_already_migrated":
@@ -93,6 +94,7 @@ suite "REV-M4 isonim-review init":
     check "skip 002" in outText
     check "skip 009" in outText
     check "skip 010" in outText
+    check "skip 011" in outText
     check "no migrations to apply" in outText
 
   test "test_cli_init_refuses_dirty_migration_state":
@@ -144,15 +146,16 @@ suite "REV-M4 isonim-review init":
       let c = connectMigrator(f)
       defer: c.close()
       parseInt(c.getValue(sql"SELECT count(*) FROM public.schema_migrations"))
-    # Migrations 2..10 remain (1 was DELETEd above).  REV-M8
+    # Migrations 2..11 remain (1 was DELETEd above).  REV-M8
     # added migration 004 (``fetch_layout``); CMP-M2 added migrations
     # 005 + 006 (campaigns + campaign routines); CMP-M2.1 added
     # migration 007 (``next_campaign_round``); CMP-M4 added migration
     # 008 (``update_campaign_doc_sha``); CMP-M7 added migration 009
     # (``campaign_restart``); the REV-M6 follow-up added migration 010
-    # (``multi_agent_report``).  The dirty-state guard counts
-    # whatever rows survive the DELETE.
-    check after == 9
+    # (``multi_agent_report``); the REV-M5 workspace-pin follow-up
+    # added migration 011 (``workspace_pins``).  The dirty-state guard
+    # counts whatever rows survive the DELETE.
+    check after == 10
 
   test "test_cli_init_refuses_modified_migration_file":
     ## Apply, copy a migration to a scratch dir, mutate one byte,
@@ -203,6 +206,9 @@ suite "REV-M4 isonim-review init":
     copyFile(
       MigDir / "010_design_review_multi_agent_report.sql",
       scratch / "010_design_review_multi_agent_report.sql")
+    copyFile(
+      MigDir / "011_design_review_workspace_pins.sql",
+      scratch / "011_design_review_workspace_pins.sql")
     let altered = scratch / "001_design_review_schema.sql"
     var body = readFile(altered)
     body.add "\n-- drift marker\n"
@@ -239,12 +245,13 @@ suite "REV-M4 isonim-review init":
     # added migration 007 (``next_campaign_round``); CMP-M4 added
     # migration 008 (``update_campaign_doc_sha``); CMP-M7 added
     # migration 009 (``campaign_restart``); the REV-M6 follow-up added
-    # migration 010 (``multi_agent_report``).  The schema now
-    # tracks ten migration rows.
+    # migration 010 (``multi_agent_report``); the REV-M5 workspace-pin
+    # follow-up added migration 011 (``workspace_pins``).  The schema
+    # now tracks eleven migration rows.
     let after = block:
       let c = connectMigrator(f)
       defer: c.close()
       parseInt(c.getValue(sql"SELECT count(*) FROM public.schema_migrations"))
-    check after == 10
+    check after == 11
 
     removeDir(scratch)

@@ -163,11 +163,12 @@ const ProtectedFields = ["accumulatedEdits", "pendingSourceEdits", "designSystem
 
 const ElementIdentityV1 = ["id", "sourceKey", "domPath", "schemaKey", "tag", "sourceFile",
   "sourceLine", "sourceColumn", "properties", "children", "ancestors", "ancestorIds", "depth"]
+const ElementIdentityV2 = @ElementIdentityV1 & @["styleBindings"]
 
-proc validElementTuple(values: JsonNode): bool =
-  if values.kind != JArray or values.len != ElementIdentityV1.len: return false
+proc validElementTuple(values: JsonNode; version2 = false): bool =
+  if values.kind != JArray or values.len != (if version2: ElementIdentityV2.len else: ElementIdentityV1.len): return false
   for i in 0 ..< values.len:
-    let expected = if i < 6: JString elif i in [6, 7, 12]: JInt else: JArray
+    let expected = if i < 6 or i == 13: JString elif i in [6, 7, 12]: JInt else: JArray
     if values[i].kind != expected: return false
   true
 
@@ -180,12 +181,15 @@ proc protectedTuple(context: JsonNode): JsonNode =
   let element = context["selectedElement"]
   if story.kind != JObject or story.len != 4 or story{"group"} == nil or story{"name"} == nil or story{"kind"} == nil or story{"index"} == nil or
       story["group"].kind != JString or story["name"].kind != JString or story["kind"].kind != JInt or story["index"].kind != JInt: return nil
-  if element.kind != JObject or element.len != ElementIdentityV1.len: return nil
+  if element.kind != JObject: return nil
+  let version2 = element.hasKey("styleBindings")
+  let fields = if version2: @ElementIdentityV2 else: @ElementIdentityV1
+  if element.len != fields.len: return nil
   var identity = newJArray()
-  for field in ElementIdentityV1:
+  for field in fields:
     if element{field} == nil: return nil
     identity.add parseJson($element[field])
-  if not validElementTuple(identity): return nil
+  if not validElementTuple(identity, version2): return nil
   result = newJArray()
   for field in ProtectedFields[0 .. 3]: result.add parseJson($context[field])
   result.add(%* [story["group"], story["name"], story["kind"], story["index"]])
@@ -235,7 +239,7 @@ proc referenceContext*(current, delivered, sources: JsonNode): JsonNode =
   let exactProtected = protectedTuple(current)
   if exactProtected != nil:
     for field in ProtectedFields: changes.delete(field)
-    envelope["protectedV1"] = exactProtected
+    envelope[if exactProtected[5].len == ElementIdentityV2.len: "protectedV2" else: "protectedV1"] = exactProtected
   if bounded.len > 0: envelope["boundedInherited"] = bounded
   if runeLen($envelope) < runeLen($result): result = envelope
 
@@ -248,11 +252,14 @@ proc deliveredContext*(wire, previous: JsonNode; original: JsonNode = nil): Json
         wire{"current"} == nil or wire["current"].kind != JObject:
       raise newException(ValueError, "Invalid prior admitted context identity")
     for field, value in wire:
-      if field notin ["fromContext", "current", "protectedV1", "boundedInherited"]:
+      if field notin ["fromContext", "current", "protectedV1", "protectedV2", "boundedInherited"]:
         raise newException(ValueError, "Unknown context envelope key")
     result = parseJson($previous)
-    if wire{"protectedV1"} != nil:
-      let values = wire["protectedV1"]
+    if wire{"protectedV1"} != nil and wire{"protectedV2"} != nil:
+      raise newException(ValueError, "Duplicate protected context versions")
+    if wire{"protectedV1"} != nil or wire{"protectedV2"} != nil:
+      let version2 = wire.hasKey("protectedV2")
+      let values = wire[if version2: "protectedV2" else: "protectedV1"]
       if values.kind != JArray or values.len != 6:
         raise newException(ValueError, "Invalid protected context tuple arity")
       for i in 0 .. 3:
@@ -260,11 +267,12 @@ proc deliveredContext*(wire, previous: JsonNode; original: JsonNode = nil): Json
           raise newException(ValueError, "Invalid protected context tuple type")
         result[ProtectedFields[i]] = parseJson($values[i])
       if values[4].kind != JArray or values[4].len != 4 or
-          values[4][0].kind != JString or values[4][1].kind != JString or values[4][2].kind != JInt or values[4][3].kind != JInt or not validElementTuple(values[5]):
+          values[4][0].kind != JString or values[4][1].kind != JString or values[4][2].kind != JInt or values[4][3].kind != JInt or not validElementTuple(values[5], version2):
         raise newException(ValueError, "Invalid protected target tuple")
       result["selectedStory"] = %* {"group":values[4][0], "name":values[4][1], "kind":values[4][2], "index":values[4][3]}
       result["selectedElement"] = newJObject()
-      for i, field in ElementIdentityV1: result["selectedElement"][field] = parseJson($values[5][i])
+      let fields = if version2: @ElementIdentityV2 else: @ElementIdentityV1
+      for i, field in fields: result["selectedElement"][field] = parseJson($values[5][i])
       for field in ProtectedFields:
         if wire["current"]{field} != nil:
           raise newException(ValueError, "Duplicate protected context representation")

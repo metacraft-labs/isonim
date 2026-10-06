@@ -125,6 +125,27 @@ const sceneGraphWalkJs* = """
       try { el.setAttribute('data-isonim-element-id', id); } catch (e) {}
       return id;
     }
+    // The element's schema key: what identifies it to the project's edit
+    // adapter. Defined HERE because three places were computing it and two of
+    // them disagreed with the third -- the walk and the preview bridge both
+    // said `dom.<testid or tag>` while the editor's own fallback preferred
+    // the class list. The editor then received `dom.h1` for an element whose
+    // rule is `.tagline`, and the adapter went looking for a CSS rule named
+    // `.h1`.
+    //
+    // Classes before the tag, because a class is what a stylesheet can be
+    // addressed by and a tag generally is not.
+    function schemaKeyFor(el) {
+      if (!isElement(el)) return '';
+      var declared = el.getAttribute('data-isonim-schema-key');
+      if (declared) return declared;
+      var testId = el.getAttribute('data-testid');
+      if (testId) return 'dom.' + testId;
+      var cls = String(el.getAttribute('class') || '').trim()
+        .split(/\s+/).filter(Boolean);
+      if (cls.length) return 'dom.' + cls.join('.');
+      return 'dom.' + el.tagName.toLowerCase();
+    }
     function ancestorStack(target) {
       var stack = [];
       var el = isElement(target) ? target : (target && target.parentElement);
@@ -170,9 +191,7 @@ const sceneGraphWalkJs* = """
           label: labelFor(node),
           tag: node.tagName.toLowerCase(),
           sourceKey: sourceKeyFor(node),
-          schemaKey: node.getAttribute('data-isonim-schema-key') ||
-            ('dom.' + (node.getAttribute('data-testid') ||
-                       node.tagName.toLowerCase())),
+          schemaKey: schemaKeyFor(node),
           domPath: cssPath(node),
           sourceFile: source.file,
           sourceLine: Number(source.line) || 0,
@@ -196,6 +215,7 @@ const sceneGraphWalkJs* = """
       identityFor: identityFor,
       ancestorStack: ancestorStack,
       labelFor: labelFor,
+      schemaKeyFor: schemaKeyFor,
       layerTree: layerTree
     };
   };

@@ -3,6 +3,7 @@
 import std/strutils
 import nim_acp
 import isonim/editor/types
+import isonim/theming/theme
 
 proc storyToAcpContentBlocks*(story: StoryRef): seq[ContentBlock] =
   if story.group.len == 0 and story.name.len == 0:
@@ -177,3 +178,30 @@ proc editorContextToAcpContentBlocks*(story: StoryRef; element: ElementRef;
     accumulatedEdits: edits,
     sourceMap: sourceMap,
     platform: pbWeb), userPrompt)
+
+proc captureActiveThemeContext*(context: var AgentPromptContext) =
+  # This is the renderer framework's actual selected theme, separately labelled
+  # from source-backed project foundation tokens. Native mode has no color /
+  # spacing override; do not invent branded project values in that mode.
+  context.activeThemeContext.add "name=" & activeTheme.name
+  context.activeThemeContext.add "mode=" & $activeTheme.mode
+  context.activeThemeContext.add "dark=" & $isDarkMode
+  if activeTheme.mode != tmNative:
+    for name in ["primary", "secondary", "accent", "background", "surface",
+        "error", "on-primary", "on-secondary", "on-background", "on-surface",
+        "on-error", "border", "text-primary", "text-secondary", "text-disabled"]:
+      context.activeThemeContext.add "color." & name & "=" & themeColor(name)
+    for name in ["xs", "sm", "md", "lg", "xl", "xxl"]:
+      context.activeThemeContext.add "spacing." & name & "=" & $themeSpacing(name)
+    for name in ["none", "sm", "md", "lg", "xl", "full"]:
+      context.activeThemeContext.add "radius." & name & "=" & $themeRadius(name)
+  else:
+    context.contextAvailability.add "activeThemeContext: native platform defaults (no color/spacing override)"
+  for name in ["large-title", "title", "headline", "body", "callout", "caption", "footnote"]:
+    let style = themeTypography(name)
+    if style.size > 0 or style.weight.len > 0:
+      context.activeThemeContext.add "typography." & name & ".size=" & $style.size
+      context.activeThemeContext.add "typography." & name & ".weight=" & style.weight
+      context.activeThemeContext.add "typography." & name & ".letterSpacing=" & $style.letterSpacing
+    else:
+      context.contextAvailability.add "activeThemeContext.typography." & name & ": native platform default (no override)"

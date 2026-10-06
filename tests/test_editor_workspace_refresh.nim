@@ -2,7 +2,10 @@
 ## data and fixture preview hooks isolate reactive composition and metadata;
 ## they substitute only producer output for these focused state tests. Registered
 ## native/GUI source tests exercise actual files, compiler and mounted rendering.
-## No backend, source adapter or compiler behavior is mocked here.
+## The adapter identity regression uses callbacks that record prompt/cancel
+## invocation only: this isolates replacement by the production hot-reload/data
+## API without launching a model. Actual REST/CLI/source compiler boundaries stay
+## covered by registered native and mounted Harbor scenario integration tests.
 import std/[unittest, json, strutils]
 import isonim/core/[owner, signals, computation]
 import isonim/editor
@@ -29,7 +32,7 @@ suite "Workspace catalog refresh":
       rebuilt.storyGroups[0].items = @[
         StoryItem(group: "Card", name: "Busy", kind: skComponent),
         StoryItem(group: "Card", name: "Ready", kind: skComponent)]
-      vm.applyWorkspace(rebuilt)
+      vm.refreshWorkspaceCatalog(rebuilt)
       check vm.chats.val[0] == first
       check vm.chats.val[1] == second
       check vm.activeChatId.val == secondId
@@ -44,6 +47,129 @@ suite "Workspace catalog refresh":
       check vm.controlSnapshot()["revision"].getInt() > before
       dispose()
 
+  test "catalog and hot bundle refresh keep mounted adapters callable and session identity":
+    createRoot proc(dispose: proc()) =
+      let initial = newEditorWorkspace("Project", @[
+        StoryGroup(name: "Card", kind: skComponent, items: @[
+          StoryItem(group: "Card", name: "Ready", kind: skComponent)])], id = "project")
+      let vm = createEditorVM(initial)
+      discard vm.selectStory(StoryRef(group: "Card", name: "Ready", kind: skComponent))
+      let conversation = vm.chat
+      conversation.controlConversationId.val = "persistent-rest-session"
+      vm.controlInstanceId = "mounted-control-instance"
+      var prompts: seq[string] = @[]
+      var cancellations = 0
+      conversation.configureAgentAdapters(
+        proc(prompt: string; context: AgentPromptContext): bool =
+          check context.selectedStory.name == "Ready"
+          check context.backend == absAgentHarbor
+          prompts.add prompt
+          true,
+        proc(): bool =
+          inc cancellations
+          true,
+        absAgentHarbor)
+      conversation.addUserMessage("Existing conversation history")
+      conversation.inputText.val = "Draft after catalog refresh"
+      let history = conversation.messages.val
+      vm.refreshWorkspaceCatalog(initial)
+      check vm.chat == conversation
+      check vm.chat.messages.val == history
+      check vm.chat.inputText.val == "Draft after catalog refresh"
+      check vm.chat.controlConversationId.val == "persistent-rest-session"
+      check vm.controlInstanceId == "mounted-control-instance"
+      check vm.sendAgentPrompt()
+      check prompts == @["Draft after catalog refresh"]
+      # This is mountEditor's actual hot-bundle replacement entry point.
+      conversation.inputText.val = "Draft after hot bundle refresh"
+      let afterFirst = conversation.messages.val
+      let previewGeneration = vm.preview.sourceGeneration.val
+      vm.loadProjectData(initial)
+      check vm.chat == conversation
+      check conversation.messages.val == afterFirst
+      check conversation.inputText.val == "Draft after hot bundle refresh"
+      check conversation.controlConversationId.val == "persistent-rest-session"
+      check vm.controlInstanceId == "mounted-control-instance"
+      check vm.preview.sourceGeneration.val > previewGeneration
+      check vm.sendAgentPrompt()
+      check prompts == @["Draft after catalog refresh", "Draft after hot bundle refresh"]
+      check conversation.cancelAdapter()
+      check cancellations == 1
+      dispose()
+
+  test "foreign refresh is refused before project permissions adapters or sessions mutate":
+    createRoot proc(dispose: proc()) =
+      let initial = newEditorWorkspace("Project", @[
+        StoryGroup(name: "Card", kind: skComponent, items: @[
+          StoryItem(group: "Card", name: "Ready", kind: skComponent)])], id = "project",
+        permissions = EditorWorkspacePermissions(readSource: true, writeSource: true))
+      let vm = createEditorVM(initial)
+      discard vm.selectStory(StoryRef(group: "Card", name: "Ready", kind: skComponent))
+      let conversation = vm.chat
+      conversation.controlConversationId.val = "persistent-rest-session"
+      conversation.inputText.val = "Keep this draft"
+      vm.controlInstanceId = "mounted-control-instance"
+      var prompts = 0
+      conversation.configureAgentAdapters(
+        proc(prompt: string; context: AgentPromptContext): bool =
+          inc prompts
+          true,
+        nil, absAgentHarbor)
+      let before = vm.controlSnapshot()
+      let groups = vm.sidebar.groups.val
+      let selected = vm.selectedStory.val
+      let permissions = vm.workspacePermissions.val
+      let adapterReady = vm.sourceAdapterReady.val
+      let generation = vm.preview.sourceGeneration.val
+      let foreignProject = newEditorWorkspace("Foreign", @[], id = "foreign",
+        permissions = EditorWorkspacePermissions())
+      expect ValueError: vm.loadProjectData(foreignProject)
+      expect ValueError: vm.refreshWorkspaceCatalog(foreignProject)
+      check vm.workspaceId == "project"
+      check vm.sidebar.groups.val == groups
+      check vm.selectedStory.val == selected
+      check vm.workspacePermissions.val == permissions
+      check vm.sourceAdapterReady.val == adapterReady
+      check vm.preview.sourceGeneration.val == generation
+      check vm.chat == conversation
+      check conversation.controlConversationId.val == "persistent-rest-session"
+      check conversation.inputText.val == "Keep this draft"
+      check vm.controlInstanceId == "mounted-control-instance"
+      check vm.controlSnapshot() == before
+      check vm.sendAgentPrompt()
+      check prompts == 1
+      dispose()
+
+  test "bundle recovery clears only build and same-scope refusal diagnostics":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM(newEditorWorkspace("Project", @[], id = "project"))
+      let pending = SourceEditPlan(file: "source.nim", property: "width", newValue: "12px")
+      vm.inspector.pendingSourceEdits.val = @[pending]
+      let saveFailure = WorkspaceEditDiagnostic(kind: wedWriteFailed,
+        message: "Existing source write refusal.")
+      vm.workspaceEditDiagnostics.val = @[saveFailure]
+      vm.workspaceEditStage.val = wesFailed
+      vm.recordProjectRefreshRefusal("Foreign project refused.")
+      check vm.workspaceEditDiagnostics.val.len == 2
+      vm.recoverProjectBuild()
+      check vm.workspaceEditDiagnostics.val.len == 2
+      check vm.workspaceEditStage.val == wesFailed
+      vm.loadProjectData(newEditorWorkspace("Project", @[], id = "project"))
+      vm.clearProjectRefreshRefusal()
+      check vm.workspaceEditDiagnostics.val == @[saveFailure]
+      check vm.workspaceEditStage.val == wesFailed
+      check vm.inspector.pendingSourceEdits.val == @[pending]
+      vm.recoverProjectBuild()
+      check vm.workspaceEditDiagnostics.val == @[saveFailure]
+      check vm.workspaceEditStage.val == wesFailed
+      vm.workspaceEditDiagnostics.val = @[WorkspaceEditDiagnostic(
+        kind: wedCompileFailed, message: "The project failed to rebuild: actual build failure")]
+      vm.recoverProjectBuild()
+      check vm.workspaceEditDiagnostics.val.len == 0
+      check vm.workspaceEditStage.val == wesDirty
+      check vm.inspector.pendingSourceEdits.val == @[pending]
+      dispose()
+
   test "project switch requires acknowledged backend closure before resetting state":
     createRoot proc(dispose: proc()) =
       let vm = createEditorVM(newEditorWorkspace("First", @[], id = "first"))
@@ -54,6 +180,9 @@ suite "Workspace catalog refresh":
       check vm.workspaceId == "first"
       check vm.chat.inputText.val == "Unsaved conversation draft"
       check vm.chat.controlConversationId.val == "active-backend"
+      expect ValueError: vm.applyWorkspace(newEditorWorkspace("First", @[], id = "first"))
+      check vm.chat.controlConversationId.val == "active-backend"
+      check vm.chat.inputText.val == "Unsaved conversation draft"
       vm.chat.controlConversationId.val = ""
       vm.applyWorkspace(next)
       check vm.workspaceId == "second"
@@ -77,7 +206,7 @@ suite "Compiled catalog identity":
       let manifest = %* {"fixtures": []}
       let catalog = %* {"stories": [{"group":"Card", "name":"Ready", "kind":"component", "documentHtml":"new compiled title"}]}
       vm.workspacePermissions.val = defaultEditorPermissions()
-      vm.applyWorkspace(sourceCatalogWorkspace(catalog, manifest, base))
+      vm.refreshWorkspaceCatalog(sourceCatalogWorkspace(catalog, manifest, base))
       check vm.selectedStory.val == story
       check vm.preview.current.val.documentHtml == "new compiled title"
       check vm.preview.current.val.metadata.sourceFile == "consumer/component.nim"

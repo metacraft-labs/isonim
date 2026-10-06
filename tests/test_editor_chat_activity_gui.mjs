@@ -118,6 +118,44 @@ try{
   const controlAfter=JSON.parse(await controlPage.evaluate(()=>window.__chatTest.controlState()));
   assert.equal(controlAfter.storyId,controlBefore.stories.find(row=>row.name==='Details').id);
   await controlPage.close();record('local transport boundary preserves disconnected rejection and real mounted approval');
+  const reloadPage=await browser.newPage({viewport:{width:1440,height:900}});
+  await reloadPage.goto(origin);await mountedReady(reloadPage,'workspace-reload-scope');
+  await reloadPage.evaluate(()=>window.__chatTest.backend(true));
+  const originalScope=JSON.parse(await reloadPage.evaluate(()=>window.__chatTest.controlState()));
+  const originalConversation=JSON.parse(await reloadPage.evaluate(()=>window.__chatTest.state()));
+  const refused=JSON.parse(await reloadPage.evaluate(()=>window.__chatTest.remount(true)));
+  assert.equal(refused.sameVM,true);assert.equal(refused.workspace,originalScope.workspace);
+  assert.equal(refused.instance,originalScope.instance);assert.equal(refused.adapterReady,true);
+  assert.equal(refused.stage,'wesFailed');
+  const afterRefusal=JSON.parse(await reloadPage.evaluate(()=>window.__chatTest.controlState()));
+  for(const field of ['workspace','instance','storyId','selection','permissions','view','mode','viewport','approvalRequired','capabilities','conversations'])
+    assert.deepEqual(afterRefusal[field],originalScope[field],`foreign hot bundle preserves ${field}`);
+  assert.deepEqual(afterRefusal.stories,originalScope.stories);
+  assert(afterRefusal.buildDiagnostics.some(item=>item.message.includes("Cannot refresh workspace")));
+  assert.deepEqual(JSON.parse(await reloadPage.evaluate(()=>window.__chatTest.state())),originalConversation);
+  const refreshError=reloadPage.locator('[data-save-error="true"]');
+  assert(await refreshError.isVisible(),'rejected hot bundle has a visible diagnostic');
+  assert((await refreshError.textContent()).includes("Cannot refresh workspace 'foreign-project'"));
+  const recoveredForeign=JSON.parse(await reloadPage.evaluate(()=>window.__chatTest.recoverBuild()));
+  assert.equal(recoveredForeign.stage,'wesFailed');
+  assert(await refreshError.isVisible(),'asynchronous bundle completion cannot erase scope refusal');
+  const refreshed=JSON.parse(await reloadPage.evaluate(()=>window.__chatTest.remount(false)));
+  assert.equal(refreshed.sameVM,true);assert.equal(refreshed.workspace,originalScope.workspace);
+  assert.equal(refreshed.instance,originalScope.instance);assert.equal(refreshed.adapterReady,true);
+  assert.equal(refreshed.stage,'wesClean');
+  assert.equal(await refreshError.isVisible(),false);
+  await reloadPage.evaluate(()=>window.__chatTest.seedSaveFailure());
+  assert((await refreshError.textContent()).includes('Existing source write refusal.'));
+  await reloadPage.evaluate(()=>window.__chatTest.remount(true));
+  await reloadPage.evaluate(()=>window.__chatTest.recoverBuild());
+  const savePreserved=JSON.parse(await reloadPage.evaluate(()=>window.__chatTest.remount(false)));
+  assert.equal(savePreserved.stage,'wesFailed');
+  assert(await refreshError.isVisible());
+  assert((await refreshError.textContent()).includes('Existing source write refusal.'),
+    'valid same-scope refresh preserves the earlier source failure');
+  await reloadPage.evaluate(()=>window.__chatTest.recoverBuild());
+  assert((await refreshError.textContent()).includes('Existing source write refusal.'));
+  await reloadPage.close();record('production hot bundle rejects foreign workspace and retains mounted adapter scope');
   for (const [width,height] of [[1440,900],[1024,768]]) {
     const layersPage=await browser.newPage({viewport:{width,height}});
     await layersPage.goto(origin);
@@ -128,7 +166,7 @@ try{
     assert.equal(await search.getAttribute('placeholder'),'Search layers');
     assert.equal(await search.evaluate(el=>el.ownerDocument.activeElement===el),false);
     assert.deepEqual(await search.evaluate(el=>{
-      const css=getComputedStyle(el);
+      const css=getComputedStyle(el.closest('[data-sidebar-search-field="layers"]'));
       return [css.borderTopStyle,css.borderTopWidth,css.borderTopColor,css.backgroundColor];
     }),['solid','1px','rgb(42, 44, 58)','rgb(26, 27, 38)'],
     'unfocused Layers search paints a bounded input box');
@@ -150,9 +188,9 @@ try{
     await layersPage.keyboard.press('Shift+Tab');
     assert(await search.evaluate(el=>el.ownerDocument.activeElement===el),'keyboard returns to Layers search');
     assert.deepEqual(await search.evaluate(el=>{
-      const css=getComputedStyle(el);
-      return [css.borderTopStyle,css.borderTopWidth,css.borderTopColor];
-    }),['solid','1px','rgb(59, 130, 246)'],'keyboard focus paints the existing input border');
+      const css=getComputedStyle(el.closest('[data-sidebar-search-field="layers"]'));
+      return [css.outlineStyle,css.outlineWidth,css.outlineColor];
+    }),['solid','2px','rgb(59, 130, 246)'],'keyboard focus paints the shared bounded search field border');
     assert.equal(JSON.parse(await layersPage.evaluate(()=>window.__chatTest.controlState())).selection,initial.selection,
       'typing does not mutate selection');
     await search.fill('button');

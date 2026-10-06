@@ -21,6 +21,7 @@ class EditorScenarios(unittest.TestCase):
     def test_native_real_authoring_sessions_streaming_conflicts_and_denial(self):
         if not optional_sibling_available(HARBOR):self.skipTest('optional private Agent Harbor sibling absent')
         runtime=Runtime('native')
+        wait = runtime.preparationClock.wait
         evidence=[]
         try:
             def checked(number,label):

@@ -16,12 +16,12 @@ if not optional_sibling_available(HARBOR):
 else:
     runtime=Runtime('gui')
     try:
-        child=runtime.spawn([os.environ.get('ISONIM_SCENARIO_NODE','node'),str(ROOT/'tests/test_editor_scenarios_gui.mjs'),str(runtime.artifacts/'context.json')],'browser')
-        deadline=time.monotonic()+300
+        child=runtime.spawn([os.environ.get('ISONIM_SCENARIO_NODE','node'),str(ROOT/'tests/test_editor_scenarios_gui.mjs'),str(runtime.controllerContext)],'browser')
+        started=time.monotonic_ns()
         identity=None
         observed={}
         while child.poll() is None:
-            if time.monotonic()>=deadline:raise AssertionError('Actual browser workflow exceeded bounded lifetime')
+            if runtime.preparationClock.elapsed(started)>=300:raise AssertionError('Actual browser workflow exceeded bounded lifetime')
             phase=runtime.artifacts/'phase'
             current=phase.read_text() if phase.exists() else ''
             if current in ('2','10','14') and current not in observed:

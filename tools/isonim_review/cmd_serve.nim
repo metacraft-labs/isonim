@@ -32,7 +32,7 @@ import std/[asyncdispatch, asynchttpserver, atomics, json, os, posix, strutils,
 import nim_agents
 
 import ./config
-import ./local_harbor
+import ./harbor_preparation
 import ./cmd_db_health
 
 import isonim/editor/design_review/control_routes
@@ -433,10 +433,20 @@ proc cmdServe*(cfg: ReviewConfig; migDir: string = "";
   # The owned Harbor and every provider inherit ordinary credentials, never the
   # browser registration authority retained only in the control registry.
   delEnv("ISONIM_EDITOR_BROWSER_BOOTSTRAP")
-  var effectiveConfig = cfg
-  var harbor = prepareLocalHarbor(effectiveConfig, proc(): bool = GlobalStopFlag.load())
-  defer: harbor.stop()
-  let srv = newReviewServer(effectiveConfig, migDir, browserBootstrap)
+  var cfg = cfg
+  normalizeExplicitHarbor(cfg)
+  let preparation = newHarborPreparation(cfg)
+  defer: preparation.stop()
+  let srv = newReviewServer(cfg, migDir, browserBootstrap)
+  if preparation != nil:
+    srv.agentRegistry.prepareBackend = proc(): Future[void] {.async, gcsafe.} =
+      let url = await preparation.ensureReady()
+      if GlobalStopFlag.load():
+        raise newException(AgentBackendUnavailableError, "Editor is closing")
+      if url.len > 0:
+        srv.agentRegistry.harborUrl = url
+        srv.cfg.agent.backend = "harbor"
+        srv.cfg.agent.harborUrl = url
   defer: srv.agentRegistry.shutdownAll()
   if not agentRoutesOnly:
     try:
@@ -458,3 +468,9 @@ proc cmdServe*(cfg: ReviewConfig; migDir: string = "";
     error "daemon bind failed", reason = e.msg
     stderr.writeLine("isonim-review serve: bind/listen failed: " & e.msg)
     return 2
+
+proc cmdHarborPreparation*(repo, directory: string): int =
+  ## Internal owned subprocess entry; browser registration authority is removed
+  ## before any producer or provider starts.
+  installSignalHandlers()
+  runHarborPreparationChild(repo, directory, proc(): bool = GlobalStopFlag.load())

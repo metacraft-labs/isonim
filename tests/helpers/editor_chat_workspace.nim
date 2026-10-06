@@ -11,6 +11,9 @@
 ## real activity signal for restored-block replacement/removal; append-only
 ## public provider events cannot exercise these view disposal paths. No new event
 ## discriminator or test-only rendered control is introduced.
+## Refresh regression seeds a save diagnostic/pending plan to isolate error
+## ownership; it calls the actual hot-bundle mount/recovery policies. Actual
+## failed writes/compiler behavior remain covered by registered source suites.
 ## These substitute external event timing, not the EditorVM,
 ## reducer, signals, DOM, preview renderer or keyboard/scroll implementation. Real
 ## REST/official-provider integration remains in the registered chat/control suites.
@@ -36,6 +39,28 @@ let vm = mountEditor(newEditorWorkspace("Chat acceptance", @[
   id = "chat-acceptance", previewHook = preview))
 discard vm.selectStory(StoryRef(kind: skPage, group: "Pages", name: "Home"))
 
+# Re-enter the production mount path, as a freshly evaluated bundle does.
+# Only the project workspace is synthetic; no editor or refresh API is mocked.
+proc remount(foreign: bool): cstring =
+  let refreshed = mountEditor(newEditorWorkspace("Reloaded project", @[
+    StoryGroup(name: "Pages", kind: skPage, items: @[
+      StoryItem(name: "Home", group: "Pages", kind: skPage),
+      StoryItem(name: "Details", group: "Pages", kind: skPage)])],
+    id = (if foreign: "foreign-project" else: "chat-acceptance"),
+    previewHook = preview))
+  cstring($(%* {"sameVM": refreshed == vm, "workspace": vm.workspaceId,
+    "instance": vm.controlInstanceId, "adapterReady": vm.chat.promptAdapter != nil,
+    "stage": $vm.workspaceEditStage.val}))
+proc recoverBuild(): cstring =
+  vm.recoverProjectBuild()
+  cstring($(%* {"stage": $vm.workspaceEditStage.val}))
+proc seedSaveFailure() =
+  # Isolate diagnostic ownership; real filesystem refusal is tested separately.
+  vm.inspector.pendingSourceEdits.val = @[SourceEditPlan(file: "source.nim",
+    property: "width", newValue: "12px")]
+  vm.workspaceEditDiagnostics.val = @[WorkspaceEditDiagnostic(
+    kind: wedWriteFailed, message: "Existing source write refusal.")]
+  vm.workspaceEditStage.val = wesFailed
 proc event(payload: cstring) =
   vm.chat.applyAgentEvent(agentEventFromJson(parseJson($payload)))
 proc harborEvent(payload: cstring) =
@@ -90,7 +115,7 @@ proc repeatStoryReveal() = vm.controlStoryRevealAdapter()
 proc width(value: int) = vm.setRightPanelWidth(value)
 {.emit: ["window.__chatTest = {event:", event, ", harborEvent:", harborEvent, ", backend:", backend,
   ", busy:", busy, ", newChat:", newChat, ", switchChat:", switchChat,
-  ", state:", state, ", controlState:", fixtureControlState, ", control:", fixtureCommand,
+  ", remount:", remount, ", recoverBuild:", recoverBuild, ", seedSaveFailure:", seedSaveFailure, ", state:", state, ", controlState:", fixtureControlState, ", control:", fixtureCommand,
   ", controlDiagnostics:", fixtureControlDiagnostics, ", localApprovals:", localApprovals, ", approval:", fixtureApproval,
   ", replaceActivityText:", replaceActivityText, ", removeActivityEntries:", removeActivityEntries,
   ", repeatStoryReveal:", repeatStoryReveal, ", width:", width, "};"].}

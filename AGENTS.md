@@ -66,6 +66,47 @@ repro exec -- nim c -r tests/test_editor_shell_views.nim
 repro exec -- bash -lc 'cd tests/browser && npx playwright test --project=metacraft-web-editor'
 ```
 
+## Server functions, the route manifest and SSR hydration against nginx
+
+`just test-nginx` runs server functions over HTTP, the typed route manifest
+and the SSR -> hydrate -> interact round trip against real nginx with the
+real `ngx-isonim` module (the sibling checkout, built in its own dev shell,
+so it needs nix): the fixture is `tests/nginx` (see its README), the tests
+are `tests/test_route_manifest.nim`, the `nginx-rpc` and `ssr-hydration`
+Playwright projects and `tests/nginx/run_mutants.sh`.  It is not part of
+`just test`.
+
+## Browser tests
+
+`tests/browser` holds 98 Playwright tests in 10 spec files. They are runnable
+from a clean checkout after two one-time steps, both of which reach the
+network and so are not done by `just`:
+
+```sh
+git submodule update --init --depth 1 src/isonim/layout/yoga
+repro exec -- just browser-test-install
+```
+
+The submodule is the load-bearing one: `.gitmodules` declares
+`src/isonim/layout/yoga` and nothing initialises it, and without it
+`repro exec` itself fails — which is also what puts node on PATH, since there
+is no ambient node.
+
+Then:
+
+```sh
+repro exec -- just test-browser-all     # build every artifact, run 51 tests
+repro exec -- just test-browser-smoke   # the subset CI gates on
+```
+
+`playwright.config.ts` fails with a message naming the missing artifact and
+the `just` recipe that builds it, rather than skipping the project. Ports,
+the `metacraft-web` sibling requirement, and the currently-red tests (with
+their diagnoses) are documented in `tests/browser/README.md`. `.github/
+workflows/browser-tests.yml` runs a fast subset on every push to `dev`,
+`stable` and `main` and on pull requests into them (never on `agents`, which
+has no CI), and the full in-repo suite nightly.
+
 Before running metacraft-web consumer browser tests, rebuild the consumer bundle
 from the sibling repo when the editor framework or workspace integration
 changed:

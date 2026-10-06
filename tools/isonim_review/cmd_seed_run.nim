@@ -4,7 +4,7 @@
 ## without going through the clean-tree gate.  The typical use case is
 ## reviewing the corpus we captured for M-EVP-14 (and other historical
 ## milestones) against current briefs / agent backends: those PNGs
-## predate the design-review milestone, so there's no manifest pin to
+## predate the design-review milestone, so there's no workspace pin to
 ## bind them to.
 ##
 ## Usage:
@@ -36,7 +36,7 @@
 ## detects to fall back to reading the brief from the working tree.
 ##
 ## **Security / reproducibility caveat.**  Seeded runs are NOT
-## reproducible from source: there's no manifest pin to bind them to,
+## reproducible from source: there's no workspace pin to bind them to,
 ## and the brief body at review time is whatever's in the working tree
 ## then (not what existed when the PNGs were taken).  Prefer
 ## ``capture`` for runs you want to re-derive from a git revision.

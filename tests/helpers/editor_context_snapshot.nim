@@ -23,7 +23,8 @@ createRoot do (dispose: proc()):
   editor.inspector.selectedElement.val = ElementRef(id: "actual-target", sourceKey: "source.target",
     domPath: "main > button", schemaKey: "target.ariaLabel", tag: "button", sourceFile: "catalog.nim",
     sourceLine: 42, sourceColumn: 7, properties: @[PropertyInfo(name: "ariaLabel", value: "保持😀 exact")],
-    children: @["child"], ancestors: @["main"], ancestorIds: @["root"], depth: 2)
+    children: @["child"], ancestors: @["main"], ancestorIds: @["root"], depth: 2,
+    styleBindings: "  background: token(保持😀); opacity: 0.75  ")
   editor.chat.accumulatedEdits.val = @[EditRecord(file: "catalog.nim", line: 42,
     property: "ariaLabel", oldValue: "old 保持😀", newValue: "  exact current  ")]
   editor.inspector.pendingSourceEdits.val = @[SourceEditPlan(file: "catalog.nim", line: 42,

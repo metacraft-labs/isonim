@@ -101,15 +101,25 @@ proc startServeAndSeed*(): ServeFixture =
     env = environ,
     options = {poUsePath})
 
-  let drainer = startStderrDrainer(p)
+  var drainer: DaemonStderrDrainer
   var httpPort: int
   try:
+    drainer = startStderrDrainer(p)
     httpPort = waitForReady(drainer, timeoutSecs = 15.0)
-  except IOError as e:
-    drainer.shutdown()
+  except CatchableError as e:
+    try: drainer.shutdown()
+    except CatchableError as cleanupError:
+      stderr.writeLine("stderr-reader cleanup failed: " & cleanupError.msg)
     try: discard kill(p.processID.Pid, SIGKILL)
     except: discard
-    p.close()
+    try:
+      discard p.waitForExit()
+      p.close()
+    except CatchableError as cleanupError:
+      stderr.writeLine("daemon cleanup failed: " & cleanupError.msg)
+    try: pg.shutdown()
+    except CatchableError as cleanupError:
+      stderr.writeLine("Postgres cleanup failed: " & cleanupError.msg)
     raise newException(IOError, "design_review_http_fixture: " & e.msg)
 
   ServeFixture(
@@ -120,6 +130,7 @@ proc startServeAndSeed*(): ServeFixture =
 
 proc shutdown*(f: ServeFixture) =
   if f == nil: return
+  var failure: ref CatchableError
   if f.proc1 != nil:
     try: discard kill(f.proc1.processID.Pid, SIGTERM)
     except: discard
@@ -130,20 +141,22 @@ proc shutdown*(f: ServeFixture) =
     if f.proc1.running():
       try: discard kill(f.proc1.processID.Pid, SIGKILL)
       except: discard
-    discard f.proc1.waitForExit()
-    f.proc1.close()
+    retainCleanupFailure(failure): discard f.proc1.waitForExit()
+    retainCleanupFailure(failure): closeAfterDrainer(f.proc1, f.drainer)
+    f.drainer = nil
     f.proc1 = nil
   if f.drainer != nil:
-    f.drainer.shutdown()
+    retainCleanupFailure(failure): f.drainer.shutdown()
     f.drainer = nil
   if f.pg != nil:
-    f.pg.shutdown()
+    retainCleanupFailure(failure): f.pg.shutdown()
     f.pg = nil
   if f.storePath.len > 0:
     try: removeDir(f.storePath)
     except OSError: discard
 
 # --- HTTP helpers ----------------------------------------------------------
+  if failure != nil: raise failure
 
 proc httpGet*(f: ServeFixture; path: string):
     tuple[code: int; body: string; contentType: string; cacheControl: string] =

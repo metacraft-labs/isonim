@@ -549,17 +549,22 @@ class LifecycleTests(unittest.TestCase):
         delivered=context_of(self.received['prompt']);self.assertEqual(delivered,context)
         self.assertIn('event: admitted',self.post('/api/agent/prompts',payload)[1])
         repeated=context_of(self.followups[-1]['prompt'])
-        self.assertEqual(repeated['fromContext'],identity(delivered));self.assertIn('protectedV1',repeated)
+        self.assertEqual(repeated['fromContext'],identity(delivered));self.assertIn('protectedV2',repeated)
+        self.assertEqual(context['selectedElement']['styleBindings'],'  background: token(保持😀); opacity: 0.75  ')
+        self.assertLess(len(json.dumps(repeated,ensure_ascii=False,separators=(',',':'))),len(json.dumps(context,ensure_ascii=False,separators=(',',':'))))
         self.assertEqual(resolve_context(repeated,delivered),context)
+        self.assertEqual(self.current_chars,len(self.received['prompt'])+len(self.followups[-1]['prompt']),
+            'Provider quota accounting uses actual complete serialized prompts')
         changed=json.loads(json.dumps(context));changed['selectedStory']['index']=7
         changed['selectedElement']['sourceLine']=84
+        changed['selectedElement']['styleBindings']='  color: token(new 保持😀); opacity: 0.25  '
         changed['accumulatedEdits'][0]['newValue']='  changed 保持😀 exact  '
         changed['pendingSourceEdits'][0]['newValue']='  changed 保持😀 exact  '
         changed['designSystemConstraints'].append('new exact constraint')
         changed['currentFileDiffs'][0]['afterText']='  changed 保持😀 exact  '
         payload['context']=changed
         self.assertIn('event: admitted',self.post('/api/agent/prompts',payload)[1])
-        wire=context_of(self.followups[-1]['prompt']);self.assertIn('protectedV1',wire)
+        wire=context_of(self.followups[-1]['prompt']);self.assertIn('protectedV2',wire)
         self.assertEqual(resolve_context(wire,delivered),changed,'Every new protected value crosses actual worker/HTTP/provider bytes')
         self.assertIn('event: admitted',self.post('/api/agent/prompts',payload)[1])
         self.assertEqual(resolve_context(context_of(self.followups[-1]['prompt']),changed),changed)
@@ -567,6 +572,13 @@ class LifecycleTests(unittest.TestCase):
             dict(repeated,current={'diagnostics':{'fromPreviousItems':{}}}),
             dict(repeated,current={'diagnostics':{'fromPreviousItems':'bad'}})]:
             with self.assertRaises(AssertionError):resolve_context(malformed,delivered)
+        for invalid in [None,42,[],{}]:
+            malformed=json.loads(json.dumps(repeated));malformed['protectedV2'][5][13]=invalid
+            with self.assertRaises(AssertionError):resolve_context(malformed,delivered)
+        malformed=json.loads(json.dumps(repeated));malformed['protectedV2'][5].pop()
+        with self.assertRaises(AssertionError):resolve_context(malformed,delivered)
+        malformed=dict(repeated,protectedV1=repeated['protectedV2'])
+        with self.assertRaises(AssertionError):resolve_context(malformed,delivered)
 
     def test_actual_quota_retry_preserves_selected_hierarchy_beyond_512_with_real_ancestor_closure(self):
         self.allow_create.set();self.allow_finish.set();self.omit_operation=True

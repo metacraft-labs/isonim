@@ -11,14 +11,16 @@ import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {randomBytes} from 'node:crypto';
 import path from 'node:path';
+import {createPreparationClock} from './helpers/editor_preparation_clock.mjs';
 import {chromium} from '../node_modules/playwright/index.mjs';
 import {assertCloseAcknowledgement} from './helpers/editor_close_ack.mjs';
 const data=JSON.parse(readFileSync(process.argv[2],'utf8'));
 const {origin, repo, project, artifacts}=data;
+const preparationClock=await createPreparationClock(data.preparationClock);
 const exec=promisify(execFile);
 async function until(probe,label,ms=120000){
- const end=Date.now()+ms;
- while(Date.now()<end){const value=await probe();if(value)return value;await new Promise(r=>setTimeout(r,50));}
+ const started=preparationClock.now();
+ while(preparationClock.elapsed(started)<ms){const value=await probe();if(value)return value;await new Promise(r=>setTimeout(r,50));}
  throw new Error('Actual model observable deadline: '+label);
 }
 const env={...process.env};delete env.LD_LIBRARY_PATH;
@@ -29,6 +31,7 @@ const requests=[], acknowledgements=[];let turn=0;
 const timings={};
 function recordTiming(key){
  timings[turn]??={};timings[turn][key]=Date.now();
+ if(key==='submittedWallMs')timings[turn].submittedMonotonicNs=String(preparationClock.now());
  writeFileSync(path.join(artifacts,'real-turn-timing.json'),JSON.stringify({
   terminalWaitBoundMs:120000,enteredWaitBoundMs:30000,mountedWaitBoundMs:30000,turns:timings},null,2));
 }
@@ -65,7 +68,7 @@ async function ended(){
  const ready=data.scriptedNonce?mounted('Hero pane / example '+turn).then(()=>{
   writeFileSync(path.join(artifacts,'authoring-capture-ready-'+turn),'mounted');
  }):Promise.resolve();
- const scriptedRemaining=()=>Math.max(0,120000-(Date.now()-timings[turn].submittedWallMs));
+ const scriptedRemaining=()=>Math.max(0,120000-(preparationClock.elapsed(BigInt(timings[turn].submittedMonotonicNs))));
  await Promise.all([until(()=>page.evaluate(()=>!window.__authoringAcceptance.busy()),'actual provider terminal',data.scriptedNonce?scriptedRemaining():120000),ready]);
  if(data.scriptedNonce){
   const prefix=turn===1?'first':'second';
@@ -74,9 +77,11 @@ async function ended(){
    'actual scripted terminal completion and answered RPCs',scriptedRemaining());
   const proof=JSON.parse(readFileSync(path.join(artifacts,'private/scripted-turn-'+turn+'-terminal-fence.json'),'utf8'));
   assert.equal(proof.complete,true);assert.equal(proof.turn,turn);
-  assert(Date.now()-timings[turn].submittedWallMs<120000,'original scripted TURN-START120s bound');
+  assert(preparationClock.elapsed(BigInt(timings[turn].submittedMonotonicNs))<120000,'original scripted TURN-START120s bound');
  }
 
+ timings[turn].excludedPreparationMs=Number(preparationClock.excluded(BigInt(timings[turn].submittedMonotonicNs)))/1_000_000;
+ timings[turn].activeElapsedMs=preparationClock.elapsed(BigInt(timings[turn].submittedMonotonicNs));
  recordTiming('terminalObservedWallMs');
 }
 async function mounted(story){

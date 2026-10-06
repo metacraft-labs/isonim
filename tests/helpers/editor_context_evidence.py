@@ -12,18 +12,21 @@ def identity(value):
 
 def resolve_context(wire, previous):
     if isinstance(wire,dict) and 'fromContext' in wire:
-        if not {'fromContext','current'}.issubset(wire) or set(wire)-{'fromContext','current','boundedInherited','protectedV1'}:raise AssertionError('Malformed context envelope')
+        if not {'fromContext','current'}.issubset(wire) or set(wire)-{'fromContext','current','boundedInherited','protectedV1','protectedV2'}:raise AssertionError('Malformed context envelope')
         if not isinstance(previous,dict) or wire['fromContext']!=identity(previous):raise AssertionError('Context envelope mismatches actual prior delivered representation')
         if not isinstance(wire['current'],dict):raise AssertionError('Malformed current context fields')
         protected={'accumulatedEdits','pendingSourceEdits','designSystemConstraints','currentFileDiffs','selectedStory','selectedElement'}
         result=dict(previous)
-        if 'protectedV1' in wire:
-            values=wire['protectedV1']
+        if 'protectedV1' in wire and 'protectedV2' in wire:raise AssertionError('Duplicate protected versions')
+        if 'protectedV1' in wire or 'protectedV2' in wire:
+            version2='protectedV2' in wire
+            values=wire['protectedV2' if version2 else 'protectedV1']
             fields=['accumulatedEdits','pendingSourceEdits','designSystemConstraints','currentFileDiffs']
             element=['id','sourceKey','domPath','schemaKey','tag','sourceFile','sourceLine','sourceColumn','properties','children','ancestors','ancestorIds','depth']
+            if version2:element.append('styleBindings')
             if not isinstance(values,list) or len(values)!=6 or any(not isinstance(v,list) for v in values):raise AssertionError('Protected tuple arity/types')
-            if len(values[4])!=4 or any(type(values[4][i]) is not (str if i<2 else int) for i in range(4)) or len(values[5])!=13:raise AssertionError('Target tuple arity/types')
-            if any(type(v) is not (str if i<6 else int if i in (6,7,12) else list) for i,v in enumerate(values[5])):raise AssertionError('Element tuple field types')
+            if len(values[4])!=4 or any(type(values[4][i]) is not (str if i<2 else int) for i in range(4)) or len(values[5])!=len(element):raise AssertionError('Target tuple arity/types')
+            if any(type(v) is not (str if i<6 or i==13 else int if i in (6,7,12) else list) for i,v in enumerate(values[5])):raise AssertionError('Element tuple field types')
             if protected.intersection(wire['current']):raise AssertionError('Duplicate protected representation')
             result.update(zip(fields,values[:4]));result['selectedStory']=dict(zip(['group','name','kind','index'],values[4]));result['selectedElement']=dict(zip(element,values[5]))
         elif any(field in previous and field not in wire['current'] for field in protected):raise AssertionError('Protected fields must remain explicit')

@@ -34,6 +34,7 @@ import isonim/core/computation
 import isonim/dsl/ui
 import isonim/editor/types
 import isonim/editor/viewmodels
+import isonim/editor/views/widgets/property_commit
 import isonim/editor/views/widgets/property_row
 
 # --------------------------------------------------------------------------- #
@@ -161,6 +162,7 @@ proc mountSectionPosition*[R, E](r: R; parent: E; vm: EditorVM) =
           tdiv(role = "button", tabindex = "0",
                 `data-position-align` = slug,
                 `aria-label` = "Align " & slug,
+                title = "Align " & slug,
                 display = "flex", align_items = "center",
                 justify_content = "center",
                 width = "26px", height = "22px",
@@ -180,6 +182,7 @@ proc mountSectionPosition*[R, E](r: R; parent: E; vm: EditorVM) =
           tdiv(role = "button", tabindex = "0",
                 `data-position-valign` = slug,
                 `aria-label` = "Vertical align " & slug,
+                title = "Vertical align " & slug,
                 display = "flex", align_items = "center",
                 justify_content = "center",
                 width = "26px", height = "22px",
@@ -199,6 +202,7 @@ proc mountSectionPosition*[R, E](r: R; parent: E; vm: EditorVM) =
         tdiv(role = "button", tabindex = "0",
               `data-position-distribute` = "spacing",
               `aria-label` = "Distribute spacing",
+              title = "Distribute spacing",
               display = "flex", align_items = "center",
               justify_content = "center",
               width = "26px", height = "22px",
@@ -210,24 +214,29 @@ proc mountSectionPosition*[R, E](r: R; parent: E; vm: EditorVM) =
   r.appendChild(parent, alignmentRow)
 
   # ----- X / Y / rotation property rows ---------------------------- #
-  discard r.mountPropertyRow(parent, propertyRowNumeric(
+  # X and Y read together -- a position is a pair.
+  discard r.mountPropertyRowPair(parent,
+    propertyRowNumeric(
     name = "X", value = xValue, unit = xUnit,
     units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("left"),
     onBindRequest = vm.inspectorBindRequestHandler("left"),
-    onDetachRequest = vm.inspectorDetachRequestHandler("left")))
-  discard r.mountPropertyRow(parent, propertyRowNumeric(
+    onDetachRequest = vm.inspectorDetachRequestHandler("left"),
+    wiring = vm.inspectorRowWiring("left")),
+    propertyRowNumeric(
     name = "Y", value = yValue, unit = yUnit,
     units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("top"),
     onBindRequest = vm.inspectorBindRequestHandler("top"),
-    onDetachRequest = vm.inspectorDetachRequestHandler("top")))
+    onDetachRequest = vm.inspectorDetachRequestHandler("top"),
+    wiring = vm.inspectorRowWiring("top")))
   discard r.mountPropertyRow(parent, propertyRowNumeric(
     name = "Rotation", value = rotationValue, unit = rotUnit,
     units = @[degUnit],
     bindingReactive = vm.inspectorBindingThunk("transform"),
     onBindRequest = vm.inspectorBindRequestHandler("transform"),
-    onDetachRequest = vm.inspectorDetachRequestHandler("transform")))
+    onDetachRequest = vm.inspectorDetachRequestHandler("transform"),
+    wiring = vm.inspectorRowWiring("transform")))
 
   # ----- Flip buttons ---------------------------------------------- #
   # Phase H (2026-05-28): flip controls render as compact icon
@@ -248,6 +257,7 @@ proc mountSectionPosition*[R, E](r: R; parent: E; vm: EditorVM) =
         tdiv(role = "button", tabindex = "0",
               `data-position-flip` = "horizontal",
               `aria-label` = "Flip horizontally",
+              title = "Flip horizontally",
               display = "flex", align_items = "center",
               justify_content = "center",
               width = "26px", height = "22px",
@@ -258,6 +268,7 @@ proc mountSectionPosition*[R, E](r: R; parent: E; vm: EditorVM) =
         tdiv(role = "button", tabindex = "0",
               `data-position-flip` = "vertical",
               `aria-label` = "Flip vertically",
+              title = "Flip vertically",
               display = "flex", align_items = "center",
               justify_content = "center",
               width = "26px", height = "22px",

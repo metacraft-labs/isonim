@@ -17,9 +17,11 @@ import {readFileSync,writeFileSync,existsSync} from 'node:fs';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import path from 'node:path';
+import {createPreparationClock} from './helpers/editor_preparation_clock.mjs';
 import {chromium} from '../node_modules/playwright/index.mjs';
 const context=JSON.parse(readFileSync(process.argv[2],'utf8'));
 const {origin,project,repo,artifacts}=context;
+const preparationClock=await createPreparationClock(context.preparationClock);
 const exec=promisify(execFile);
 const outcomes=[];
 const evidence=(scenario,outcome)=>{
@@ -30,8 +32,8 @@ const evidence=(scenario,outcome)=>{
 const touch=name=>writeFileSync(path.join(artifacts,name),'observed');
 const phase=value=>writeFileSync(path.join(artifacts,'phase'),String(value));
 async function until(probe,label,ms=70000){
- const end=Date.now()+ms;
- while(Date.now()<end){const value=await probe();if(value)return value;await new Promise(resolve=>setTimeout(resolve,30));}
+ const started=preparationClock.now();
+ while(preparationClock.elapsed(started)<ms){const value=await probe();if(value)return value;await new Promise(resolve=>setTimeout(resolve,30));}
  throw Error('Observable barrier timeout: '+label);
 }
 async function controlUnchanged(before){
@@ -232,20 +234,27 @@ try{
  const followupWire=deliveredContext(providerTurns[1]);
  const firstDelivered=deliveredContext(providerTurns[0]);
  assert.equal(followupWire.fromContext,createHash('sha1').update(JSON.stringify(firstDelivered)).digest('hex').toUpperCase(),'Envelope identifies exact actual admitted context');
+ assert(followupWire.current&&typeof followupWire.current==='object'&&!Array.isArray(followupWire.current));
+ assert(Object.keys(followupWire).every(key=>['fromContext','current','boundedInherited','protectedV1','protectedV2'].includes(key)),'Unknown context envelope versions/fields fail');
+ assert(!('protectedV1' in followupWire&&'protectedV2' in followupWire),'Protected values have one exact version');
  assert.deepEqual(followupWire.boundedInherited??[],[],'Full first/followup equality cannot claim a bounded subset');
  const resolved={...firstDelivered};
  const protectedFields=['accumulatedEdits','pendingSourceEdits','designSystemConstraints','currentFileDiffs','selectedStory','selectedElement'];
- if('protectedV1' in followupWire){
-  const values=followupWire.protectedV1;assert.equal(values.length,6);values.forEach(value=>assert(Array.isArray(value)));
+ if('protectedV1' in followupWire||'protectedV2' in followupWire){
+  const version2='protectedV2' in followupWire;
+  const values=followupWire[version2?'protectedV2':'protectedV1'];assert(Array.isArray(values));assert.equal(values.length,6);values.forEach(value=>assert(Array.isArray(value)));
   assert.equal(values[4].length,4);values[4].forEach((value,i)=>assert(i<2?typeof value==='string':Number.isInteger(value)));
   const elementFields=['id','sourceKey','domPath','schemaKey','tag','sourceFile','sourceLine','sourceColumn','properties','children','ancestors','ancestorIds','depth'];
-  assert.equal(values[5].length,13);values[5].forEach((value,i)=>assert(i<6?typeof value==='string':[6,7,12].includes(i)?Number.isInteger(value):Array.isArray(value)));
+  if(version2)elementFields.push('styleBindings');
+  assert.equal(values[5].length,elementFields.length);values[5].forEach((value,i)=>assert(i<6||i===13?typeof value==='string':[6,7,12].includes(i)?Number.isInteger(value):Array.isArray(value)));
   protectedFields.slice(0,4).forEach((field,i)=>resolved[field]=values[i]);
   resolved.selectedStory={group:values[4][0],name:values[4][1],kind:values[4][2],index:values[4][3]};resolved.selectedElement=Object.fromEntries(elementFields.map((field,i)=>[field,values[5][i]]));
   protectedFields.forEach(field=>assert(!(field in followupWire.current),'Protected values have one exact representation'));
  }else protectedFields.forEach(field=>assert(field in followupWire.current,'Protected current fields stay explicit'));
  for(const [field,value] of Object.entries(followupWire.current)){
   if(value&&typeof value==='object'&&!Array.isArray(value)&&'fromPreviousItems' in value){
+   assert(!protectedFields.includes(field),'Protected current fields cannot inherit records');
+   assert.deepEqual(Object.keys(value),['fromPreviousItems']);assert(Array.isArray(value.fromPreviousItems));
    assert(Array.isArray(firstDelivered[field]));
    resolved[field]=value.fromPreviousItems.map(item=>{
     if('reuse' in item){assert.deepEqual(Object.keys(item),['reuse']);assert(Number.isInteger(item.reuse)&&item.reuse>=0&&item.reuse<firstDelivered[field].length);return firstDelivered[field][item.reuse];}

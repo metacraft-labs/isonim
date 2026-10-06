@@ -31,13 +31,13 @@ for case,(mode,response) in enumerate([('contamination','memory-sequencing-fixtu
     scenario.write_text(template)
     runtime=Runtime('authoring-sequence-case-'+str(case),project_source=ROOT.parent/'web-site-prototypes/grip/isonim',
         editor_directory=ROOT/'build/editor-authoring',source_file='src/editor/catalog.nim',scenario_path=scenario,observe_scenario_wire=True)
-    observed={};proofs={};responses={1:{},2:{}};prior=set();started=time.monotonic()
+    observed={};proofs={};responses={1:{},2:{}};prior=set();started=time.monotonic_ns()
     try:
-        context=json.loads((runtime.artifacts/'context.json').read_text());context['scriptedNonce']='memory-sequencing-fixture'
-        (runtime.artifacts/'context.json').write_text(json.dumps(context))
-        child=runtime.spawn([os.environ.get('ISONIM_SCENARIO_NODE','node'),str(ROOT/'tests/test_editor_authoring_real_gui.mjs'),str(runtime.artifacts/'context.json')],'sequencing-browser')
+        context=json.loads(runtime.controllerContext.read_text());context['scriptedNonce']='memory-sequencing-fixture'
+        runtime.controllerContext.write_text(json.dumps(context))
+        child=runtime.spawn([os.environ.get('ISONIM_SCENARIO_NODE','node'),str(ROOT/'tests/test_editor_authoring_real_gui.mjs'),str(runtime.controllerContext)],'sequencing-browser')
         while child.poll() is None:
-            if time.monotonic()-started>300:raise AssertionError('Original browser lifetime300s exceeded')
+            if runtime.preparationClock.elapsed(started)>300:raise AssertionError('Original browser lifetime300s exceeded')
             phase=runtime.artifacts/'phase';value=phase.read_text() if phase.exists() else ''
             if value in ('first-awaiting-terminal','second-awaiting-terminal'):
                 turn=1 if value.startswith('first') else 2
@@ -106,7 +106,7 @@ for case,(mode,response) in enumerate([('contamination','memory-sequencing-fixtu
             if not tool_html or checks['actualHtmlDescription'] is not False or assistant['checks']['actualAssistantHtmlDescription'] is not False:raise AssertionError('Real tool HTML must not satisfy either assistant description check')
         subprocess.run([sys.executable,str(ROOT/'tests/test_editor_scripted_terminal_fence.py'),str(runtime.artifacts)],check=True)
         result={'mode':mode,'artifacts':str(runtime.artifacts),'eightAppliedOperations':True,'sameActualRustKernel':True,
-            'genuineExplicitClose':True,'reapedBeforeFinally':True,'checks':checks,'hostFailure':failure,'assistantFailure':assistant_failure,'assistantChecks':assistant['checks'],'toolActivityContainsHtml':tool_html,'seconds':time.monotonic()-started}
+            'genuineExplicitClose':True,'reapedBeforeFinally':True,'checks':checks,'hostFailure':failure,'assistantFailure':assistant_failure,'assistantChecks':assistant['checks'],'toolActivityContainsHtml':tool_html,'seconds':runtime.preparationClock.elapsed(started),'wallSeconds':(time.monotonic_ns()-started)/1_000_000_000,'excludedPreparationSeconds':runtime.preparationClock.excluded_ns(started)/1_000_000_000}
         results.append(result)
         (runtime.artifacts/'sequencing-result.json').write_text(json.dumps(result,indent=2))
         print(json.dumps(result),flush=True)

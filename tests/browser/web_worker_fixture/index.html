@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8"><title>IsoNim web worker</title></head>
+  <body>
+    <textarea id="editor"></textarea>
+    <script>
+      window.beacon = new Worker("beacon.js");
+      window.beacon.onmessage = () => (window.beaconReady = true);
+    </script>
+    <script src="main.js"></script>
+  </body>
+</html>

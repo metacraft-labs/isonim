@@ -590,6 +590,54 @@ suite "Actual remaining-quota optional context policy":
     check referenceContext(changed,context,contextSourceIdentities(context)) == changed
     check deliveredContext(changed,context,changed) == changed
 
+  test "V2 protected tuples preserve current source style bindings and reject malformed or duplicate versions":
+    let context = %* {"accumulatedEdits":[{"newValue":" exact 保持😀 "}],
+      "pendingSourceEdits":[{"schemaKey":"current.key"}], "designSystemConstraints":["exact scope"],
+      "currentFileDiffs":[{"afterText":" exact source "}],
+      "selectedStory":{"group":"Hero", "name":"example", "kind":0, "index":2},
+      "selectedElement":{"id":"actual", "sourceKey":"source", "domPath":"main > button",
+        "schemaKey":"schema", "tag":"button", "sourceFile":"src/real.nim", "sourceLine":42,
+        "sourceColumn":7, "properties":[{"value":"exact"}], "children":["child"],
+        "ancestors":["main"], "ancestorIds":["root"], "depth":2,
+        "styleBindings":"  background: token(保持😀); opacity: 0.75  "},
+      "diagnostics":[{"message":"actual diagnostic".repeat(30)}], "contextAvailability":[]}
+    let before = $context
+    let wire = referenceContext(context,context,contextSourceIdentities(context))
+    check wire.hasKey("protectedV2")
+    check not wire.hasKey("protectedV1")
+    check wire["protectedV2"][5][13] == context["selectedElement"]["styleBindings"]
+    check deliveredContext(wire,context,context) == context
+    check runeLen($wire) < runeLen($context)
+    check $context == before
+    var changed = parseJson($context)
+    changed["selectedElement"]["styleBindings"] = %"  color: token(new 保持😀)  "
+    let next = referenceContext(changed,context,contextSourceIdentities(context))
+    check next.hasKey("protectedV2")
+    check deliveredContext(next,context,changed) == changed
+    for invalid in [newJNull(), %42, newJArray()]:
+      var malformed = parseJson($wire)
+      malformed["protectedV2"].elems[5].elems[13] = invalid
+      expect ValueError: discard deliveredContext(malformed,context)
+    var malformed = parseJson($wire)
+    malformed["protectedV2"].elems[5].elems.setLen(13)
+    expect ValueError: discard deliveredContext(malformed,context)
+    malformed = parseJson($wire)
+    malformed["protectedV1"] = parseJson($wire["protectedV2"])
+    expect ValueError: discard deliveredContext(malformed,context)
+    malformed = parseJson($wire)
+    malformed["current"]["selectedElement"] = parseJson($context["selectedElement"])
+    expect ValueError: discard deliveredContext(malformed,context)
+    changed["selectedElement"]["unknownIdentityField"] = %" preserve future scope "
+    let fallback = referenceContext(changed,context,contextSourceIdentities(context))
+    check not fallback.hasKey("protectedV1")
+    check not fallback.hasKey("protectedV2")
+    check deliveredContext(fallback,context,changed) == changed
+    changed = parseJson($context)
+    changed["selectedElement"]["styleBindings"] = %42
+    let typedFallback = referenceContext(changed,context,contextSourceIdentities(context))
+    check not typedFallback.hasKey("protectedV2")
+    check deliveredContext(typedFallback,context,changed) == changed
+
   test "quota compaction resolves inherited ownership before measuring re-encoded current data":
     var prior = %* {"designSystemSchema":[], "diagnostics":[], "contextAvailability":[],
       "accumulatedEdits":[{"property":"ariaLabel", "newValue":"exact"}],

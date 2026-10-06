@@ -15,6 +15,8 @@ import re
 import shlex
 import shutil
 import signal
+import secrets
+import stat
 import sqlite3
 import subprocess
 import sys
@@ -22,6 +24,7 @@ import tempfile
 import threading
 import time
 import urllib.request
+from helpers.editor_preparation_clock import PreparationClock, SCHEMA, COLD_BOUND_NS
 from helpers.editor_sdk_runtime import materialize
 from helpers.editor_process_observer import process_observer, optional_sibling_available
 
@@ -113,6 +116,15 @@ class Runtime:
             ('model='+json.dumps(real_model)+'\n' if real_model is not None else '')) if real_provider else '')
         self.handles=[]; self.children=[]; self.readers=[]; self.readerErrors=[]
         self.handoffStop=threading.Event()
+        self.controllerPrivate=root/'controller-private'
+        self.controllerPrivate.mkdir(mode=0o700)
+        assert not self.controllerPrivate.is_relative_to(self.project)
+        self.clockNonce=secrets.token_hex(32)
+        self.clockFile=self.controllerPrivate/'preparation-clock.json'
+        self.clockData={'schema':SCHEMA,'nonce':self.clockNonce,'generation':None,
+            'startNs':None,'lastAbsentNs':None,'publishedNs':None,'completed':False,'error':None}
+        self.publishClock()
+        self.preparationClock=PreparationClock(self.clockFile,self.clockNonce)
         self.lines=queue.Queue()
         self.harborBefore=set(Path(tempfile.gettempdir()).glob('isonim-harbor-*'))
         self.server=self.spawn([sys.executable,str(ROOT/'tools/editor_server.py'),'--directory',str(editor_directory or ROOT/'build/editor-source'),
@@ -135,39 +147,6 @@ class Runtime:
                 added = {pid for pid,row in owned.items() if row[0] in pids} - pids
                 if not added:break
                 pids.update(added)
-            # Harbor's server-start command may detach its service. Its actual
-            # newly created private pid file identifies that owned service even
-            # after reparenting; no unrelated pre-existing service is eligible.
-            states=set(Path(tempfile.gettempdir()).glob('isonim-harbor-*'))-self.harborBefore
-            candidates=[]
-            observations=[]
-            for state in states:
-                pidfile=state/'server.pid'
-                if not pidfile.exists():continue
-                declaration=json.loads(pidfile.read_text())
-                pid=declaration['pid']
-                identity=owned.get(pid)
-                observations.append({'state':str(state),'pidfile':declaration,'identity':identity})
-                if identity is None:continue
-                argv=identity[2] or []
-                executable=(identity[3] or '').removesuffix(' (deleted)')
-                if (executable==str((HARBOR/'build/bin/ah').resolve()) and
-                    len(argv)>1 and argv[0]==str(HARBOR/'build/bin/ah') and
-                    '--pid-file' in argv and argv[argv.index('--pid-file')+1]==str(pidfile) and
-                    '--rest-port' in argv and int(argv[argv.index('--rest-port')+1])==declaration['rest']['port'] and
-                    declaration['rest']['host']=='127.0.0.1'):
-                    candidates.append((state,pid,owned[pid]))
-            (self.artifacts/'harbor-service-observations.json').write_text(json.dumps(observations,indent=2))
-            if len(candidates)!=1:raise AssertionError('Exactly one actual private Harbor pid-file service required: '+repr([(str(s),p) for s,p,r in candidates]))
-            self.harborState,self.harborPid,self.harborIdentity=candidates[0]
-            if not (self.harborState/'daemon.sqlite').read_bytes().startswith(b'SQLite format 3\0'):
-                raise AssertionError('Actual private Harbor SQLite required')
-            match = re.search(r'via REST at (http://127\.0\.0\.1:\d+)',(self.artifacts/'launcher.log').read_text())
-            if not match:raise AssertionError('Production local Harbor REST selection required')
-            self.harborUrl = match[1]
-            actual_binary=Path('/proc')/str(self.harborPid)/'exe' if sys.platform=='linux' else Path(self.harborIdentity[3])
-            (self.artifacts/'owned-harbor.json').write_text(json.dumps({'state':str(self.harborState),'pid':self.harborPid,'identity':self.harborIdentity,'executable_sha256':hashlib.sha256(actual_binary.read_bytes()).hexdigest(),'rest':self.harborUrl}))
-            self.recordOriginalHandoff()
             self.host=None;self.hostOrigin=None;self.scope=None
             if host=='native':
                 html=urllib.request.urlopen(self.origin).read().decode()
@@ -194,11 +173,168 @@ class Runtime:
             identity['daemon']={'pid':daemonPid,'identity':owned[daemonPid],'binary':str(self.daemon),'loaded_sha256':hashlib.sha256(loaded.read_bytes()).hexdigest()}
             identity['provider_sha256']=hashlib.sha256(self.provider.read_bytes()).hexdigest()
             (self.artifacts/'identities.json').write_text(json.dumps(identity,indent=2))
-            (self.artifacts/'context.json').write_text(json.dumps({'origin':self.origin,'project':str(self.project),'repo':str(ROOT),'artifacts':str(self.artifacts)}))
+            publicContext={'origin':self.origin,'project':str(self.project),'repo':str(ROOT),'artifacts':str(self.artifacts)}
+            (self.artifacts/'context.json').write_text(json.dumps(publicContext))
+            self.controllerContext=self.controllerPrivate/'browser-context.json'
+            controller={**publicContext,'preparationClock':{'filename':str(self.clockFile),'nonce':self.clockNonce,'python':sys.executable}}
+            fd=os.open(self.controllerContext,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+            with os.fdopen(fd,'w') as output:json.dump(controller,output)
+            self.assertHostClockPrivate()
+            self.daemonPid=daemonPid
+            self.observeDeferredHarbor()
             print('M5 artifacts:',self.artifacts,flush=True)
         except BaseException:
             self.close()
             raise
+    def assertHostClockPrivate(self):
+        # Exercise the REAL bound filesystem and launch/wire artifacts. The
+        # browser controller carrier must never become model-readable context.
+        forbidden=[str(self.clockFile).encode(),str(self.controllerContext).encode(),self.clockNonce.encode()]
+        scanned=0
+        for filename in self.project.rglob('*'):
+            if filename.is_symlink():
+                if any(value in os.readlink(filename).encode() for value in forbidden):
+                    raise AssertionError('Host clock leaked through bound project symlink')
+                continue
+            if filename.is_file():
+                if any(value in filename.read_bytes() for value in forbidden):
+                    raise AssertionError('Host clock leaked into bound project/provider evidence: '+str(filename.relative_to(self.project)))
+                scanned+=1
+        if any(value.decode() in key or value.decode() in text for value in forbidden for key,text in os.environ.items()):
+            raise AssertionError('Host clock leaked into inherited environment')
+        public=json.loads((self.artifacts/'context.json').read_text())
+        if set(public)!={'origin','project','repo','artifacts'}:
+            raise AssertionError('Public scenario context must retain its original four keys')
+        proof={'boundFilesScanned':scanned,'projectClean':True,'inheritedEnvironmentClean':True,
+            'publicContextKeys':sorted(public)}
+        fd,name=tempfile.mkstemp(prefix='.host-separation-',dir=self.controllerPrivate)
+        with os.fdopen(fd,'w') as output:json.dump(proof,output)
+        os.replace(name,self.controllerPrivate/'host-separation-proof.json')
+
+    def publishClock(self):
+        fd,name=tempfile.mkstemp(prefix='.clock-',dir=self.controllerPrivate)
+        try:
+            with os.fdopen(fd,'w') as output:json.dump(self.clockData,output)
+            os.replace(name,self.clockFile)
+        finally:
+            if os.path.exists(name):os.unlink(name)
+
+    def observeDeferredHarbor(self):
+        # No API call or hidden draft: the FIRST original user send triggers the
+        # actual production helper. Observe concurrently so real terminal tools
+        # can consume the SAME persisted launch handoff without a first-turn wait
+        # cycle. Timing evidence stays outside the provider's bound workspace.
+        def observe():
+            try:
+                generation=None
+                while not self.handoffStop.is_set():
+                    owned=self.observer.snapshot()
+                    helpers=[]
+                    for pid,row in owned.items():
+                        argv=row[2] or []
+                        if (row[0]==self.daemonPid and len(argv)==4 and
+                            argv[0]==str(self.daemon) and argv[1]=='--internal-harbor-runtime' and
+                            Path(argv[2]).resolve()==HARBOR.resolve() and row[3]==str(self.daemon)):
+                            helpers.append((pid,row,Path(argv[3])))
+                    if len(helpers)>1:raise AssertionError('Exactly one owned current preparation helper required')
+                    if not helpers:
+                        if generation is not None:raise AssertionError('Owned preparation helper exited before publication')
+                        self.handoffStop.wait(.03);continue
+                    pid,row,directory=helpers[0]
+                    info=directory.lstat()
+                    if not stat.S_ISDIR(info.st_mode) or stat.S_IMODE(info.st_mode)!=0o700 or info.st_uid!=os.getuid():
+                        raise AssertionError('Actual helper directory must be private0700')
+                    if os.getsid(pid)!=pid:raise AssertionError('Actual helper must own its session')
+                    current={'pid':pid,'starttime':row[1],'directory':str(directory)}
+                    if generation is None:
+                        generation=current
+                        self.clockData['generation']=generation
+                        self.clockData['startNs']=str(time.monotonic_ns()) # AFTER actual identity verification.
+                        self.publishClock()
+                    elif generation!=current:raise AssertionError('Owned preparation generation changed')
+                    now=time.monotonic_ns()
+                    if now-int(self.clockData['startNs'])>=COLD_BOUND_NS:
+                        raise AssertionError('Owned preparation exceeded original cold900s bound')
+                    readyfile=directory/'ready.json'
+                    before=time.monotonic_ns() # BEFORE absence check, hence <= publication.
+                    if not readyfile.exists():
+                        self.clockData['lastAbsentNs']=str(before)
+                        self.publishClock()
+                        samplefd=os.open(self.controllerPrivate/'prepublication-samples.jsonl',os.O_WRONLY|os.O_CREAT|os.O_APPEND,0o600)
+                        with os.fdopen(samplefd,'w') as samples:
+                            samples.write(json.dumps({'generationPid':pid,'beforeAbsentCheckNs':str(before)})+'\n')
+                        self.handoffStop.wait(.03);continue
+                    info=readyfile.lstat()
+                    if (not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode)!=0o600 or
+                        info.st_uid!=os.getuid() or info.st_nlink!=1):
+                        raise AssertionError('Actual atomic helper handoff must be private0600')
+                    ready=json.loads(readyfile.read_text())
+                    if (set(ready)!={'epoch','pid','url','executable'} or ready['pid']!=pid or
+                        not isinstance(ready['epoch'],str) or not re.fullmatch('[0-9A-F]{64}',ready['epoch'])):
+                        raise AssertionError('Actual current generation handoff required')
+                    latest=self.observer.snapshot().get(pid)
+                    if latest is None or latest[1]!=row[1] or latest[2]!=row[2]:
+                        raise AssertionError('Published helper identity changed')
+                    self.clockData['publishedNs']=str(time.monotonic_ns())
+                    self.clockData['completed']=True
+                    self.publishClock()
+                    # Discovery is bounded separately from active scenario clocks.
+                    deadline=int(self.clockData['startNs'])+COLD_BOUND_NS
+                    while not self.handoffStop.is_set():
+                        if time.monotonic_ns()>=deadline:raise AssertionError('Owned service discovery exceeded cold900s bound')
+                        if self.discoverHarbor(pid,ready):
+                            self.recordOriginalHandoff()
+                            return
+                        self.handoffStop.wait(.03)
+            except BaseException as error:
+                self.clockData['error']=repr(error)
+                self.publishClock()
+                self.readerErrors.append(repr(error))
+        reader=threading.Thread(target=observe,daemon=True)
+        self.readers.append(reader);reader.start()
+
+    def discoverHarbor(self,helperPid,ready):
+        owned=self.observer.snapshot()
+        candidates=[];observations=[]
+        states=set(Path(tempfile.gettempdir()).glob('isonim-harbor-*'))-self.harborBefore
+        for state in states:
+            pidfile=state/'server.pid'
+            if not pidfile.exists():continue
+            declaration=json.loads(pidfile.read_text());pid=declaration['pid'];identity=owned.get(pid)
+            if identity is None:continue
+            argv=identity[2] or [];executable=(identity[3] or '').removesuffix(' (deleted)')
+            if (executable==str((HARBOR/'build/bin/ah').resolve()) and len(argv)>1 and
+                argv[0]==str(HARBOR/'build/bin/ah') and '--pid-file' in argv and
+                argv[argv.index('--pid-file')+1]==str(pidfile) and '--rest-port' in argv and
+                int(argv[argv.index('--rest-port')+1])==declaration['rest']['port'] and
+                declaration['rest']['host']=='127.0.0.1' and os.getsid(pid)==helperPid):
+                observations.append({'state':str(state),'pidfile':declaration,'identity':identity})
+                candidates.append((state,pid,identity))
+        if len(candidates)>1:raise AssertionError('Exactly one actual owned private Harbor service required')
+        if not candidates:return False
+        state,pid,identity=candidates[0]
+        info=state.lstat()
+        if not stat.S_ISDIR(info.st_mode) or stat.S_IMODE(info.st_mode)!=0o700 or info.st_uid!=os.getuid():
+            raise AssertionError('Actual Harbor state requires private0700')
+        if not (state/'daemon.sqlite').read_bytes().startswith(b'SQLite format 3\0'):
+            raise AssertionError('Actual private Harbor SQLite required')
+        match=re.search(r'via REST at (http://127\.0\.0\.1:\d+)',(self.artifacts/'launcher.log').read_text())
+        if not match:return False
+        url=match[1]
+        if ready['url']!=url or Path(ready['executable']).resolve()!=(HARBOR/'build/bin/ah').resolve():
+            raise AssertionError('Actual production producer/REST handoff differs')
+        exported=(HARBOR/'.repro/isonim-runtime/harbor-executable').read_text().strip()
+        if Path(exported).resolve()!=Path(ready['executable']).resolve():
+            raise AssertionError('Actual owning producer export differs')
+        self.harborState,self.harborPid,self.harborIdentity=state,pid,identity
+        self.harborUrl=url
+        actual_binary=Path('/proc')/str(pid)/'exe' if sys.platform=='linux' else Path(identity[3])
+        (self.artifacts/'harbor-service-observations.json').write_text(json.dumps(observations,indent=2))
+        (self.artifacts/'owned-harbor.json').write_text(json.dumps({'state':str(state),'pid':pid,
+            'identity':identity,'executable_sha256':hashlib.sha256(actual_binary.read_bytes()).hexdigest(),
+            'rest':url,'helperPid':helperPid,'privateDirectoryMode':0o700,'readyFileMode':0o600}))
+        return True
+
     def recordOriginalHandoff(self):
         # Read only THIS owned service's actual persisted launch configuration.
         # Match the exact bound project and provider wrapper, never host file
@@ -290,7 +426,7 @@ class Runtime:
         return json.loads(run.stdout)
     def turn(self,phase,text):
         self.phase(phase); self.action(action='send',text=text)
-        wait(lambda:not self.active()['busy'],'native turn '+str(phase))
+        self.preparationClock.wait(lambda:not self.active()['busy'],'native turn '+str(phase))
         if self.action()['errors']: raise AssertionError(self.action()['errors'])
     def providerIdentity(self):
         table=self.observer.snapshot()
@@ -348,6 +484,7 @@ class Runtime:
             if child.stdout:child.stdout.close()
         for handle in self.handles:handle.close()
         if self.readerErrors:raise AssertionError('Owned log reader failed: '+repr(self.readerErrors))
+        if hasattr(self,'controllerContext'):self.assertHostClockPrivate()
         secrets=[]
         if hasattr(self,'bootstrap'):secrets.append(self.bootstrap)
         for filename in self.private.glob('*.json'):
