@@ -1337,7 +1337,7 @@ proc defaultLongTailPropertyEvidenceMatrix*(): seq[LongTailPropertyEvidenceRow] 
       @["container-type", "container-name", "@container"],
       ltpesReadOnly, false, false, false, false, false,
       "Container-query metadata is represented in the matrix as read-only until source ownership and browser controls are implemented.",
-      @["docs/editor-long-tail-property-evidence.md",
+      @["docs/contributors/editor-long-tail-property-evidence.md",
         "tests/test_editor_release_gate.nim"])
   ]
 

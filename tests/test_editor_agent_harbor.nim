@@ -1,3 +1,9 @@
+# Existing HTTP/SSE transport callbacks are justified for this isolated adapter
+# request and event-parser boundary: they provide deterministic wire responses,
+# while the real task serializer and stream state reducers execute unchanged.
+# No filesystem/compiler boundary is mocked; real-server integration remains
+# a separate acceptance scope. Request field locations follow the immutable
+# public AgentHarbor OpenAPI CreateTaskRequest contract.
 import unittest
 import std/json
 import std/sequtils
@@ -87,11 +93,17 @@ suite "editor Agent Harbor adapter":
     check node["repo"]["branch"].getStr() == "feature/m22"
     check node["repo"]["commit"].getStr() == "abc123"
     check node["workspace"]["executionHostId"].getStr() == "linux-build-01"
-    check node["workspace"]["workingCopyMode"].getStr() == "overlay"
-    check node["prompt"].getElems().anyIt(it{"text"}.getStr("").contains("Make it clearer"))
-    check node["prompt"].getElems().anyIt(it{"text"}.getStr("").contains("story: TaskRow/Active"))
-    check node["prompt"].getElems().anyIt(it{"uri"}.getStr("").contains("Button.nim#L42"))
-    check node["agents"][0]["agent"]["software"].getStr() == "acp"
+    check node["working_copy_mode"].getStr() == "overlay"
+    check not node["workspace"].hasKey("workingCopyMode")
+    check node["prompt"].kind == JString
+    check node["prompt"].getStr.contains("Make it clearer")
+    check node["prompt"].getStr.contains("story: TaskRow/Active")
+    let resourceLines = node["prompt"].getStr.split("\n\n").filterIt(it.startsWith("resource: "))
+    doAssert resourceLines.len == 1, "exactly one selected source resource is required"
+    let sourceResource = parseJson(resourceLines[0]["resource: ".len .. ^1])
+    check sourceResource["uri"].getStr == "file:///work/isonim/src/Button.nim#L42"
+    check sourceResource["mimeType"].getStr == "text/x-nim"
+    check node["agents"][0]["type"].getStr() == "acp"
     check node["agents"][0]["acpStdioLaunchCommand"]["binary"].getStr() == "mock-agent"
 
   test "editor_agent_harbor_stream_updates_chat_state":

@@ -1,3 +1,9 @@
+## The deterministic upgrade-boundary cases below use production hello/packet
+## encoders and the original frame decoder as byte-stream vectors; they do not
+## replace the real bridge peer used by the launcher integration test. TCP may
+## coalesce HTTP headers and any prefix of the first frame in one receive.
+## Every received byte is retained across that boundary; no parser is relaxed.
+##
 ## RS-M7 — IsoNim Editor streaming-preview widget tests.
 ##
 ## Three layers:
@@ -33,6 +39,8 @@ import isonim/editor/streaming_preview
 # matches what `isonim-render-serve`'s own integration tests use
 # — no mock decoder, no looser parser.
 import isonim_render_serve/ws_frame
+import isonim_render_serve/packet
+import isonim_render_serve/bridge
 
 # ---------------------------------------------------------------------------
 # Real WebSocket client (hand-rolled, no network mocks)
@@ -45,7 +53,21 @@ proc recvSome(fd: AsyncFD; size: int): Future[string] {.async.} =
   buf.setLen(n)
   result = buf
 
-proc handshake(s: AsyncSocket; host: string; port: int) {.async.} =
+type PreviewWsConnection = ref object
+  socket: AsyncSocket
+  pendingFrameBytes: string
+
+proc upgradeFrameTail(response: string): string =
+  doAssert response.startsWith("HTTP/1.1 101"), "handshake failed: " & response
+  let headerEnd = response.find("\r\n\r\n")
+  doAssert headerEnd >= 0, "incomplete HTTP upgrade headers"
+  response[(headerEnd + 4) .. ^1]
+
+proc takePendingFrameBytes(conn: PreviewWsConnection): string =
+  result = conn.pendingFrameBytes
+  conn.pendingFrameBytes = ""
+
+proc handshake(s: AsyncSocket; host: string; port: int): Future[string] {.async.} =
   let key = encode("0123456789abcdef0123")
   let req = "GET / HTTP/1.1\r\n" &
             "Host: " & host & ":" & $port & "\r\n" &
@@ -60,22 +82,28 @@ proc handshake(s: AsyncSocket; host: string; port: int) {.async.} =
     let chunk = await recvSome(fd, 4096)
     if chunk.len == 0: break
     resp.add(chunk)
-  doAssert resp.startsWith("HTTP/1.1 101"),
-    "handshake failed: " & resp
+  result = upgradeFrameTail(resp)
 
-proc connectWs(port: int): Future[AsyncSocket] {.async.} =
+proc connectWs(port: int): Future[PreviewWsConnection] {.async.} =
   let sock = newAsyncSocket()
-  await sock.connect("127.0.0.1", Port(port))
-  await handshake(sock, "127.0.0.1", port)
-  result = sock
+  try:
+    await sock.connect("127.0.0.1", Port(port))
+    let pending = await handshake(sock, "127.0.0.1", port)
+    result = PreviewWsConnection(socket: sock, pendingFrameBytes: pending)
+  except Exception:
+    sock.close()
+    raise
 
-proc recvOneBinaryMessage(sock: AsyncSocket;
+proc recvOneBinaryMessage(conn: PreviewWsConnection;
                           timeoutPolls: int = 200):
                           Future[string] {.async.} =
   ## Pump the vendored `WsFrameDecoder` until it yields a complete
   ## message. Returns the payload string; empty string on timeout.
-  let fd = AsyncFD(getFd(sock))
+  let fd = AsyncFD(getFd(conn.socket))
   var dec = initWsFrameDecoder()
+  let pending = conn.takePendingFrameBytes()
+  if pending.len > 0:
+    dec.feed(pending)
   var msg = dec.popMessage()
   var attempts = 0
   while not msg.complete and attempts < timeoutPolls:
@@ -86,6 +114,38 @@ proc recvOneBinaryMessage(sock: AsyncSocket;
     inc attempts
   if msg.complete: return msg.payload
   result = ""
+
+suite "Real WebSocket HTTP upgrade byte boundary":
+  test "production hello survives every split and coalesced boundary":
+    let header = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
+    let packet = encodeMeta(MetaPacket(json: buildHelloJson("gpui", 256, 256)))
+    var payload = newString(packet.len)
+    for i, b in packet: payload[i] = char(b)
+    let frame = encodeWsBinaryFrame(payload)
+    let wire = header & frame
+    for split in 0 .. wire.len:
+      var received = wire[0 ..< split]
+      if "\r\n\r\n" notin received:
+        received.add(wire[split .. ^1])
+      let conn = PreviewWsConnection(pendingFrameBytes: upgradeFrameTail(received))
+      var decoder = initWsFrameDecoder()
+      decoder.feed(conn.takePendingFrameBytes())
+      check conn.takePendingFrameBytes() == ""
+      if received.len < wire.len:
+        decoder.feed(wire[received.len .. ^1])
+      let message = decoder.popMessage()
+      check message.complete
+      check message.payload == payload
+      check not decoder.popMessage().complete
+
+  test "complete header with empty frame tail retains no invented bytes":
+    check upgradeFrameTail("HTTP/1.1 101 Switching Protocols\r\n\r\n") == ""
+
+  test "incomplete header and non-upgrade status fail explicitly":
+    expect AssertionDefect:
+      discard upgradeFrameTail("HTTP/1.1 101 Switching Protocols\r\n")
+    expect AssertionDefect:
+      discard upgradeFrameTail("HTTP/1.1 200 OK\r\n\r\n")
 
 # ---------------------------------------------------------------------------
 # Locate the bridge binary
@@ -286,9 +346,10 @@ suite "RS-M7: bridge launcher integration":
 
           proc flow(): Future[string] {.async.} =
             let sock = await connectWs(bridge.port)
-            let payload = await recvOneBinaryMessage(sock)
-            sock.close()
-            return payload
+            try:
+              return await recvOneBinaryMessage(sock)
+            finally:
+              sock.socket.close()
 
           var helloPayload = ""
           try:

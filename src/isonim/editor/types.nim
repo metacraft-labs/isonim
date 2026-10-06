@@ -2287,7 +2287,7 @@ type
   # previously-linked history — as ADDITIVE editor-WORKSPACE metadata
   # written to a JSON sidecar (``<workspace-dir>/.isonim/bindings.json``),
   # NEVER the shipped framework code and NEVER the DTCG design-token
-  # source (``codetracer-design-system/*.json``). Both records are plain
+  # source owned by a consuming application. Both records are plain
   # value objects so the sidecar (de)serializer in ``workspace.nim`` can
   # round-trip them with no VM/DOM dependency.
   PersistedPropertyBinding* = object
