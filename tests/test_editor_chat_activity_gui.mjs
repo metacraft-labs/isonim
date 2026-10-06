@@ -29,6 +29,9 @@
  * it adds no provider discriminator or fake browser control.
  * Assert stable turn/tool nodes, unsafe text, IME, drafts/tabs, focus/selection, scrollback,
  * narrow/wide overflow and composer/preview reachability; capture named states.
+ * Layers search uses the real iframe DOM walk, shared InspectorVM and header input.
+ * It checks collapsed descendants, no matches, selection/expansion preservation,
+ * and independence from storyboard search without injecting a synthetic tree.
  */
 import assert from 'node:assert/strict';
 import {sidebarSearchFocusEvidence,requireSidebarSearchFocus} from '../tools/chat-focus-guard.mjs';
@@ -115,6 +118,63 @@ try{
   const controlAfter=JSON.parse(await controlPage.evaluate(()=>window.__chatTest.controlState()));
   assert.equal(controlAfter.storyId,controlBefore.stories.find(row=>row.name==='Details').id);
   await controlPage.close();record('local transport boundary preserves disconnected rejection and real mounted approval');
+  for (const [width,height] of [[1440,900],[1024,768]]) {
+    const layersPage=await browser.newPage({viewport:{width,height}});
+    await layersPage.goto(origin);
+    await mountedReady(layersPage,`layers-search-${width}`);
+    const layers=layersPage.getByRole('region',{name:'Layers',exact:true});
+    const search=layers.getByRole('textbox',{name:'Search layers',exact:true});
+    assert(await search.isVisible(),'Layers header exposes search');
+    assert.equal(await search.getAttribute('placeholder'),'Search layers');
+    assert.equal(await search.evaluate(el=>el.ownerDocument.activeElement===el),false);
+    assert.deepEqual(await search.evaluate(el=>{
+      const css=getComputedStyle(el);
+      return [css.borderTopStyle,css.borderTopWidth,css.borderTopColor,css.backgroundColor];
+    }),['solid','1px','rgb(42, 44, 58)','rgb(26, 27, 38)'],
+    'unfocused Layers search paints a bounded input box');
+    await layersPage.screenshot({path:path.join(artifacts,`layers-unfocused-${width}.png`),fullPage:true});
+    assert.equal(await layers.getByText('Scene graph',{exact:true}).count(),0);
+    const initial=JSON.parse(await layersPage.evaluate(()=>window.__chatTest.controlState()));
+    const root=initial.elements.find(row=>row.parentId==='');
+    assert(root,'real preview walker published a root');
+    const row=id=>layers.locator(`[data-scene-graph-row="${id}"]`);
+    await layers.locator(`[data-scene-graph-twisty="${root.id}"]`).click();
+    assert.equal(await row('primary').count(),0,'collapsed descendants are hidden');
+    await search.fill('  PRIMARY ACTION  ');
+    assert.equal(await row('primary').count(),1,'case-insensitive leaf-label search reveals collapsed descendant');
+    assert.equal(await row('secondary').count(),0,'non-matching leaf is excluded');
+    assert(await search.evaluate(el=>el.ownerDocument.activeElement===el),'filtering preserves input focus');
+    await search.press('Tab');
+    assert.equal(await row('primary').evaluate(el=>el.ownerDocument.activeElement===el),true,
+      'Tab reaches the matching layer');
+    await layersPage.keyboard.press('Shift+Tab');
+    assert(await search.evaluate(el=>el.ownerDocument.activeElement===el),'keyboard returns to Layers search');
+    assert.deepEqual(await search.evaluate(el=>{
+      const css=getComputedStyle(el);
+      return [css.borderTopStyle,css.borderTopWidth,css.borderTopColor];
+    }),['solid','1px','rgb(59, 130, 246)'],'keyboard focus paints the existing input border');
+    assert.equal(JSON.parse(await layersPage.evaluate(()=>window.__chatTest.controlState())).selection,initial.selection,
+      'typing does not mutate selection');
+    await search.fill('button');
+    assert.equal(await row('primary').count(),1);
+    assert.equal(await row('secondary').count(),1,'tag search includes both buttons');
+    await search.fill('no-such-layer');
+    assert.equal(await layers.locator('[data-scene-graph-row]').count(),0);
+    assert(await layers.getByText('No matching layers',{exact:true}).isVisible());
+    assert(await search.isVisible(),'empty results retain search');
+    await search.fill('');
+    assert.equal(await row(root.id).count(),1);
+    assert.equal(await row('primary').count(),0,'clearing preserves the previous collapsed state');
+    await layers.locator(`[data-scene-graph-twisty="${root.id}"]`).click();
+    assert.equal(await row('primary').count(),1);
+    await layersPage.getByRole('textbox',{name:'Search stories',exact:true}).fill('Home');
+    await search.fill('secondary');
+    assert.equal(await row('secondary').count(),1);
+    assert.equal(await layersPage.getByRole('textbox',{name:'Search stories',exact:true}).inputValue(),'Home',
+      'layer filtering preserves storyboard query');
+    await search.fill('');
+    await layersPage.close();record(`Layers header search through real preview hierarchy at ${width}`);
+  }
   // Real mounted hidden/visible documents have the same element IDs. Commands
   // must affect the visible production page, without touching the retained hidden
   // document; this is the negative control for URL-order frame selection.

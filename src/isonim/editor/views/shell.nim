@@ -1102,7 +1102,7 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
   ## The storyboard answers "which view am I looking at?"; this answers "what
   ## is it made of?". Both are questions about the same selection, which is
   ## why they share a panel rather than competing for one. See
-  ## `isonim-specs/isonim-editor.md` § "Scene Graph — the element tree".
+  ## Editor specification § "Layers — the element tree".
   ##
   ## It renders `vm.inspector.filteredLayers` — the SAME signal the Inspector's
   ## "Source / Cascade" tree reads. That is deliberate: one tree, two views of
@@ -1115,9 +1115,11 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
   let capturedVm = vm
   var rowsHost: E
   var countEl: E
+  var searchInput: E
   let panel = ui(r):
     tdiv(class = "editor-scene-graph",
           `data-scene-graph` = "true",
+          role = "region", `aria-label` = "Layers",
           display = "flex", flex_direction = "column",
           border_top = "1px solid " & borderFaint,
           flex_shrink = "0",
@@ -1128,9 +1130,13 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
             height = "30px", min_height = "30px", padding = "0 10px",
             border_bottom = "1px solid " & borderFaint,
             flex_shrink = "0"):
-        span(font_size = "10px", letter_spacing = "0.08em",
-              text_transform = "uppercase", color = textMuted):
-          text "Scene graph"
+        input(ref = searchInput, class = "editor-input",
+              `data-layer-search` = "true",
+              `aria-label` = "Search layers", placeholder = "Search layers",
+              background_color = bgSurface, border = "1px solid " & border,
+              border_radius = "4px", padding = "0 4px", height = "24px",
+              font_size = "12px", color = textSecondary,
+              outline = "none", flex = "1", min_width = "0")
         span(ref = countEl,
               `data-scene-graph-count` = "true",
               margin_left = "auto", font_size = "10px", color = textDim):
@@ -1142,6 +1148,13 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
             padding = "4px 0", flex = "1", min_height = "0")
   result = panel
   vm.installSceneGraphReader(r, rowsHost)
+  let onSearch = proc() =
+    capturedVm.inspector.setLayerSearch(r.inputValue(searchInput))
+  r.addEventListener(searchInput, "input", onSearch)
+  r.addEventListener(searchInput, "change", onSearch)
+  createRenderEffect proc() =
+    let query = capturedVm.inspector.layerSearch.val
+    if r.inputValue(searchInput) != query: r.setInputValue(searchInput, query)
 
   # Rows are rebuilt by a render effect rather than by a `for` inside the DSL
   # block, because the row set changes identity wholesale on every republish
@@ -1154,6 +1167,7 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
     # computed here rather than pruning the model. That keeps a collapsed
     # subtree searchable and keeps the selection valid while hidden.
     let expanded = capturedVm.inspector.expandedLayerIds.val
+    let searching = capturedVm.inspector.layerSearch.val.strip.len > 0
     var collapsedIds: seq[string] = @[]
     var rows: seq[ElementLayerRow] = @[]
     for i in 0 ..< allRows.len:
@@ -1161,7 +1175,7 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
       var hiddenByAncestor = false
       # Walk up to find a collapsed ancestor.
       var cursor = row.parentId
-      while cursor.len > 0:
+      while not searching and cursor.len > 0:
         if cursor in collapsedIds:
           hiddenByAncestor = true
           break
@@ -1173,7 +1187,7 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
             break
         if not found: break
       if hiddenByAncestor: continue
-      if row.childCount > 0 and row.id notin expanded:
+      if not searching and row.childCount > 0 and row.id notin expanded:
         collapsedIds.add row.id
       rows.add row
     r.setTextContent(countEl,
@@ -1190,8 +1204,9 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
         tdiv(`data-scene-graph-empty` = "true",
               padding = "10px 12px", font_size = "11px",
               line_height = "1.5", color = textDim):
-          text "Nothing to show: this preview renders no visible " &
-               "elements, or has not rendered yet."
+          text (if searching: "No matching layers" else:
+            "Nothing to show: this preview renders no visible " &
+            "elements, or has not rendered yet.")
       r.appendChild(rowsHost, empty)
       return
 

@@ -1204,6 +1204,73 @@ suite "Editor Shell Views (M2)":
 
       dispose()
 
+suite "Layers header search":
+
+  test "header search filters collapsed descendants without changing selection or expansion":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.inspector.setSelectionTree(@[
+        ElementLayerRow(id: "root", label: "Save panel", tag: "main", childCount: 2,
+          expanded: true),
+        ElementLayerRow(id: "title", parentId: "root", label: "Welcome title",
+          tag: "h1", depth: 1),
+        ElementLayerRow(id: "action", parentId: "root", label: "Save changes",
+          tag: "button", depth: 1)])
+      check vm.selectInspectorElementById("title")
+      vm.inspector.toggleLayerExpanded("root")
+      let savedExpansion = vm.inspector.expandedLayerIds.val
+      let panel = renderSceneGraphPanel[MockRenderer, MockNode](r, vm)
+      let search = panel.findByAttr("aria-label", "Search layers")
+      check panel.attributes["aria-label"] == "Layers"
+      check search != nil
+      check search.attributes["placeholder"] == "Search layers"
+      check search.styles["background-color"] == "#1A1B26"
+      check search.styles["border"] == "1px solid " & border
+      check not panel.textContent.contains("Scene graph")
+      check panel.findByAttr("data-scene-graph-row", "action") == nil
+      r.setInputValue(search, "  SAVE  ")
+      search.fireEvent("input")
+      check vm.inspector.layerSearch.val == "  SAVE  "
+      check panel.findByAttr("data-scene-graph-row", "action") != nil
+      check panel.findByAttr("data-scene-graph-row", "title") == nil
+      check vm.inspector.selectedElement.val.id == "title"
+      check vm.inspector.expandedLayerIds.val == savedExpansion
+      r.setInputValue(search, "unknown layer")
+      search.fireEvent("input")
+      check panel.findByAttr("data-scene-graph-empty", "true").textContent ==
+        "No matching layers"
+      r.setInputValue(search, "")
+      search.fireEvent("input")
+      check panel.findByAttr("data-scene-graph-row", "root") != nil
+      check panel.findByAttr("data-scene-graph-row", "action") == nil
+      check vm.inspector.selectedElement.val.id == "title"
+      check vm.inspector.expandedLayerIds.val == savedExpansion
+      vm.inspector.toggleLayerExpanded("root")
+      check panel.findByAttr("data-scene-graph-row", "action") != nil
+      dispose()
+
+  test "header search shares the inspector query and preserves story search":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.sidebar.setSearch("Home")
+      vm.inspector.setSelectionTree(@[
+        ElementLayerRow(id: "first", label: "Save", tag: "button"),
+        ElementLayerRow(id: "second", label: "Heading", tag: "h1")])
+      let panel = renderSceneGraphPanel[MockRenderer, MockNode](r, vm)
+      let search = panel.findByAttr("aria-label", "Search layers")
+      vm.inspector.setLayerSearch("h1")
+      check r.inputValue(search) == "h1"
+      check panel.findByAttr("data-scene-graph-row", "second") != nil
+      check panel.findByAttr("data-scene-graph-row", "first") == nil
+      check vm.sidebar.searchQuery.val == "Home"
+      r.setInputValue(search, "Save")
+      search.fireEvent("change")
+      check vm.inspector.layerSearch.val == "Save"
+      check vm.sidebar.searchQuery.val == "Home"
+      dispose()
+
 suite "Status-bar breadcrumb — the retained trail":
 
   proc sceneGraphRows(): seq[ElementLayerRow] =
