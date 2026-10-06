@@ -865,17 +865,17 @@ test-editor:
 
 # Run packaged editor browser tests.
 test-browser-editor-example: editor-build
-    cd tests/browser && npm install && npx playwright test --project=editor-example
+    cd tests/browser && npm install && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=editor-example
 
 # Run the M43 visual screenshot, pixel, layout, and review brief gates.
 test-editor-visual-gates: editor-build
     node --test tests/test_editor_visual_review_brief.mjs
-    cd tests/browser && npm install && npx playwright test --project=editor-example --grep "e2e_editor_visual_baselines_cover_all_primary_modes|e2e_editor_ui_quality_no_overlap_or_unexpected_scrollbars|e2e_long_tail_css_property_visual_evidence"
+    cd tests/browser && npm install && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=editor-example --grep "e2e_editor_visual_baselines_cover_all_primary_modes|e2e_editor_ui_quality_no_overlap_or_unexpected_scrollbars|e2e_long_tail_css_property_visual_evidence"
 
 # Run live consumer browser contract tests against metacraft-web.
 test-browser-editor-consumer:
     cd ../metacraft-web && just build-back-office-editor
-    cd tests/browser && npm install && npx playwright test --project=metacraft-web-editor
+    cd tests/browser && npm install && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=metacraft-web-editor
 
 # Run all editor browser tests.
 test-browser-editor: test-browser-editor-example test-browser-editor-consumer
@@ -1093,7 +1093,7 @@ build-hmr-fixture:
 
 # Run the HMR Playwright spec (requires: just build-hmr-fixture).
 test-browser-hmr: build-hmr-fixture
-    cd tests/browser && npx playwright test --project=hmr
+    cd tests/browser && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=hmr
 
 # Build the parametric-HMR fixture (JS target with -d:isonimHmr). The
 # fixture exercises the parametric `{.uiComponent.}` dispatch and
@@ -1104,7 +1104,7 @@ build-hmr-parametric-fixture:
 
 # Run the parametric-HMR Playwright spec.
 test-browser-hmr-parametric: build-hmr-parametric-fixture
-    cd tests/browser && npx playwright test --project=hmr-parametric
+    cd tests/browser && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=hmr-parametric
 
 # Build the SSE-transport fixture: the dev server, the "before" and
 # "after" client bundles, and the seeded main.js. The Playwright
@@ -1119,7 +1119,7 @@ build-hmr-transport-fixture:
 
 # Run the SSE-transport Playwright spec.
 test-browser-hmr-transport: build-hmr-transport-fixture
-    cd tests/browser && npx playwright test --project=hmr-transport
+    cd tests/browser && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=hmr-transport
 
 # Run Playwright browser tests (requires: just demo-build && cd tests/browser && npm install)
 test-browser: test-browser-demo test-browser-ssr test-browser-hmr test-browser-hmr-parametric test-browser-hmr-transport
@@ -1157,9 +1157,14 @@ browser-test-deps: build-tailwind demo-build build-hmr-fixture build-hmr-paramet
 # touches the network.
 
 # Install the browser-test npm deps + a chromium build.
+# On Linux the dev shell provides nixpkgs' chromium, and the suite drives it
+# through PLAYWRIGHT_CHROMIUM_EXECUTABLE (the smoke/demo/all recipes below).
+# Playwright's own download is a glibc build that cannot start on NixOS hosts
+# -- including the NixOS self-hosted CI runners -- so it is fetched only when
+# no chromium is on PATH (macOS).
 browser-test-install:
     npm --prefix tests/browser install
-    npx --prefix tests/browser playwright install chromium
+    if ! command -v chromium >/dev/null 2>&1; then npx --prefix tests/browser playwright install chromium; fi
 
 # Build everything, then run the six static in-repo Playwright projects (51 tests).
 test-browser-all: browser-test-deps
@@ -1181,11 +1186,11 @@ test-browser-all: browser-test-deps
 
 # The CI gate: the three HMR Playwright projects, 25 tests, ~56s cold.
 test-browser-smoke: build-tailwind build-hmr-fixture build-hmr-parametric-fixture build-hmr-transport-fixture
-    cd tests/browser && npx playwright test --project=hmr --project=hmr-parametric --project=hmr-transport
+    cd tests/browser && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=hmr --project=hmr-parametric --project=hmr-transport
 
 # Run Playwright demo app tests only
 test-browser-demo: demo-build
-    cd tests/browser && npx playwright test --project=demo-app
+    cd tests/browser && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=demo-app
 
 # The Web Worker build target's fixture (IFP-M3; IsoNim.md § Web Worker
 # Target): a compile module built as a worker chunk (preview.worker.js), the
