@@ -1163,7 +1163,13 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
     if vm.activeView.val == evComponentDetail and
         detailSelectedId.len > 0 and stamp != lastRestoredDetailSelection:
       lastRestoredDetailSelection = stamp
-      r.restorePreviewSelection(projectFrame, detailSelectedId)
+      r.restorePreviewSelection(projectFrame, detailSelectedId, proc(): bool =
+        vm.activeView.val == evComponentDetail and
+          detailSelectedElementId.val == detailSelectedId and
+          detailSrcdocGeneration.val == generation)
+    elif vm.activeView.val != evComponentDetail or detailSelectedId.len == 0:
+      lastRestoredDetailSelection = ""
+      r.restorePreviewSelection(projectFrame, "", proc(): bool = false)
 
   bindCanvasOverlayEffect(r, vm, canvasMnt)
 

@@ -5,7 +5,7 @@
 
 import std/[strutils, math, strformat]
 
-import isonim/core/[signals, computation]
+import isonim/core/[signals, computation, owner]
 import isonim/dsl/ui
 import isonim/editor/viewmodels
 import isonim/editor/preview_identity
@@ -1123,7 +1123,8 @@ __ISONIM_SCENE_GRAPH_WALK__
   // in the iframe, where the selection lives.
   setTimeout(function () {
     try {
-      window.__isonimRestoreSelection(parent.__isonimPendingPreviewSelectionId || '');
+      const request = window.frameElement?.__isonimSelectionRestore;
+      if (request?.valid()) window.__isonimRestoreSelection(request.id);
     } catch (error) {}
   }, 0);
 })();
@@ -1309,8 +1310,32 @@ __ISONIM_SCENE_GRAPH_WALK__
 proc applyInspectorValue(vm: EditorVM; propName, value: string;
     scope = pesLocal)
 
+proc ownPreviewSelectionRestore[E](frame: E) =
+  ## Bind once to the frame-construction owner, never the shorter selection
+  ## computation. Each selection replaces the request, not its cleanup owner.
+  when defined(js):
+    let lifetimeOwner = getOwner()
+    var cleanupLifetime: proc()
+    {.emit: ["""
+      (function () {
+        const frame = """, frame, """;
+        frame.__isonimSelectionRestoreLifetime?.dispose();
+        const lifetime = { disposed: false, owner: """, lifetimeOwner, """, dispose: () => {
+          lifetime.disposed = true;
+          if (frame.__isonimSelectionRestore?.lifetime === lifetime)
+            frame.__isonimSelectionRestore.cancel();
+        }};
+        frame.__isonimSelectionRestoreLifetime = lifetime;
+        """, cleanupLifetime, """ = lifetime.dispose;
+      })();
+    """].}
+    onCleanup(cleanupLifetime)
+  else:
+    discard frame
+
 proc installPreviewSelectionBridge*[R, E](r: R; frame: E; vm: EditorVM) =
   when defined(js):
+    ownPreviewSelectionRestore(frame)
     let selectFromBrowser = proc(elementId, sourceKey, schemaKey, tag, testId,
         className, role, elementPath, ancestry, ancestorIds, sourceFile,
         sourceLine, display, position, backgroundColor,
@@ -2009,28 +2034,60 @@ proc hoverPreviewElementById[R, E](r: R; frame: E; id: string) =
     discard frame
     discard id
 
-proc restorePreviewSelection*[R, E](r: R; frame: E; id: string) =
+proc restorePreviewSelection*[R, E](r: R; frame: E; id: string;
+    isCurrent: proc(): bool) =
+  ## One replaceable request belongs to each actual frame. Selection callbacks
+  ## can publish another selection, so an obsolete request must never replay.
   when defined(js):
     {.emit: ["""
       (function () {
-        const frame = """, frame,
-        """;
-        const toJsString = (raw) => Array.isArray(raw)
-          ? String.fromCharCode.apply(null, raw)
-          : String(raw || '');
-        const selectedId = toJsString(""", id,
-        """);
-        if (!frame || !selectedId) return;
-        window.__isonimPendingPreviewSelectionId = selectedId;
-        const restore = () => {
-          try {
-            if (frame.contentWindow && frame.contentWindow.__isonimRestoreSelection) {
-              frame.contentWindow.__isonimRestoreSelection(selectedId);
+        const frame = """, frame, """;
+        const semanticCurrent = """, isCurrent, """;
+        const selectedId = Array.isArray(""", id, """)
+          ? String.fromCharCode.apply(null, """, id, """) : String(""", id, """ || '');
+        if (!frame) return;
+        frame.__isonimSelectionRestore?.cancel();
+        const lifetime = frame.__isonimSelectionRestoreLifetime;
+        if (!selectedId || !lifetime || lifetime.disposed || !semanticCurrent()) return;
+        const source = frame.srcdoc;
+        let timer = null;
+        const request = {
+          id: selectedId, lifetime,
+          valid: () => frame.__isonimSelectionRestore === request &&
+            frame.__isonimSelectionRestoreLifetime === lifetime &&
+            !lifetime.disposed && frame.isConnected &&
+            frame.srcdoc === source && semanticCurrent(),
+          cancel: () => {
+            if (timer !== null) clearTimeout(timer);
+            timer = null;
+            frame.removeEventListener('load', loaded);
+            if (frame.__isonimSelectionRestore === request)
+              delete frame.__isonimSelectionRestore;
+            if (window.__isonimPendingPreviewSelection === request) {
+              delete window.__isonimPendingPreviewSelection;
+              window.__isonimPendingPreviewSelectionId = '';
             }
-          } catch (error) {}
+          }
         };
-        frame.addEventListener('load', () => setTimeout(restore, 0), { once: true });
-        setTimeout(restore, 0);
+        const schedule = () => {
+          if (timer !== null) clearTimeout(timer);
+          const doc = frame.contentDocument;
+          timer = setTimeout(() => {
+            timer = null;
+            if (!request.valid() || frame.contentDocument !== doc) return;
+            try { frame.contentWindow?.__isonimRestoreSelection?.(selectedId); }
+            catch (error) {}
+          }, 0);
+        };
+        const loaded = () => {
+          if (request.valid()) schedule();
+          else request.cancel();
+        };
+        frame.__isonimSelectionRestore = request;
+        window.__isonimPendingPreviewSelection = request;
+        window.__isonimPendingPreviewSelectionId = selectedId;
+        frame.addEventListener('load', loaded);
+        schedule();
       })();
     """].}
   else:
@@ -5131,6 +5188,11 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
     if vm.activeView.val == evComponentEdit and
         selectedId.len > 0 and stamp != lastRestoredSelection:
       lastRestoredSelection = stamp
-      r.restorePreviewSelection(projectFrame, selectedId)
+      r.restorePreviewSelection(projectFrame, selectedId, proc(): bool =
+        vm.activeView.val == evComponentEdit and
+          selectedElementId.val == selectedId and srcdocGeneration.val == generation)
+    elif vm.activeView.val != evComponentEdit or selectedId.len == 0:
+      lastRestoredSelection = ""
+      r.restorePreviewSelection(projectFrame, "", proc(): bool = false)
 
   container
