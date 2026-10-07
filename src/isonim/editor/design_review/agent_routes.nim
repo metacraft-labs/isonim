@@ -1085,6 +1085,7 @@ proc runAgentTurn*(reg: AgentRegistry; state: AgentSessionState;
     var restarted = false
     var starts = 0
     var hadReferences = false
+    var projectReferenced = false
     defer:
       if restarted:
         acquire(reg.lock)
@@ -1115,12 +1116,16 @@ proc runAgentTurn*(reg: AgentRegistry; state: AgentSessionState;
       parseJson(active.deliveredContextSources) else: newJObject()
     if editorContextIndex >= 0:
       let context = parseJson(promptBlocks[editorContextIndex].text[EditorContextLabel.len .. ^1])
-      deliveredBlocks[editorContextIndex] = textBlock(EditorContextLabel & $referenceContext(context, priorContext, priorSources))
+      let wireContext = referenceContext(context, priorContext, priorSources)
+      deliveredBlocks[editorContextIndex] = textBlock(EditorContextLabel & $wireContext)
       currentContextSources = contextSourceIdentities(context)
-      hadReferences = deliveredBlocks[editorContextIndex].text != promptBlocks[editorContextIndex].text
+      # A complete-data escape changes bytes without depending on prior data.
+      # Only the generated outer reference envelope requires that provider base.
+      hadReferences = wireContext.kind == JObject and wireContext.hasKey("fromContext")
     if projectContextIndex >= 0 and active.deliveredProjectContext.len > 0 and
         promptBlocks[projectContextIndex].text == active.deliveredProjectContext:
       hadReferences = true
+      projectReferenced = true
       deliveredBlocks[projectContextIndex] = textBlock("PROJECT CONTEXT: same " &
         $secureHash(active.deliveredProjectContext))
     if client.backend == abkHarbor and active.isDraft:
@@ -1233,7 +1238,8 @@ proc runAgentTurn*(reg: AgentRegistry; state: AgentSessionState;
         let fixedChars = runeLen(harborPromptText(compacted))
         let bounded = compactEditorContext(original, quota.remainingChars - fixedChars, priorContext)
         if bounded.isNone: raise
-        compacted[contextIndex] = textBlock(EditorContextLabel & $referenceContext(bounded.get, priorContext, nil))
+        let retryWire = referenceContext(bounded.get, priorContext, nil)
+        compacted[contextIndex] = textBlock(EditorContextLabel & $retryWire)
         if runeLen(harborPromptText(compacted)) > quota.remainingChars: raise
         acquire(reg.lock)
         try:
@@ -1252,6 +1258,10 @@ proc runAgentTurn*(reg: AgentRegistry; state: AgentSessionState;
             sourceType: "editor_context_budget",
             text: "Backend quota rejected this turn before delivery. Retrying once with bounded optional context; exact user text and pending edits are retained.",
             presentationFields: fields))
+        # Recompute semantic dependence for the actual intentional retry,
+        # preserving any independently referenced project guidance.
+        hadReferences = projectReferenced or
+          (retryWire.kind == JObject and retryWire.hasKey("fromContext"))
         retryBlocks = compacted
       # Leave the rejected request's exception frame before executing the one
       # genuine delivery retry; a second rejection propagates normally.

@@ -444,6 +444,81 @@ class LifecycleTests(unittest.TestCase):
         self.assertTrue(self.followups[0]['prompt'].startswith(text))
         self.assertNotIn('editor_context_budget',raw)
 
+    def test_complete_data_restart_succeeds_without_advancing_cache_and_project_reference_refuses(self):
+        self.omit_operation=True;self.allow_create.set();self.allow_finish.set()
+        literal={'fromContext':'literal future field', 'current':{'value':'exact 保持😀'},
+            'diagnostics':[{'message':'real complete data'}], 'accumulatedEdits':['exact edit'],
+            'contextAvailability':[]}
+        request=self.prompt();request['context']=literal
+        self.stream_restart=True
+        _,raw=self.post('/api/agent/prompts',request)
+        self.assertNotIn('Provider restarted during context-reference delivery',raw)
+        self.assertIn('event: admitted',raw,'Full current data requires no prior provider representation')
+        def decode(prompt):return json.loads(prompt.split('EDITOR CONTEXT:\n',1)[1].split('\n\nPROJECT CONTEXT:',1)[0])
+        self.assertEqual(resolve_context(decode(self.received['prompt']),None),literal)
+        self.assertIn('Project root:',self.received['prompt'])
+        self.assertIn('event: admitted',self.post('/api/agent/prompts',request)[1])
+        second=self.followups[-1]['prompt']
+        self.assertIn('Project root:',second,'Successful restarted full turn must not advance old cache')
+        self.assertNotIn('PROJECT CONTEXT: same ',second)
+        self.assertEqual(resolve_context(decode(second),literal),literal)
+        self.stream_restart=True
+        _,raw=self.post('/api/agent/prompts',request)
+        self.assertIn('PROJECT CONTEXT: same ',self.followups[-1]['prompt'])
+        self.assertIn('Provider restarted during context-reference delivery',raw,
+            'Complete editor data does not erase the real project-reference dependence')
+        self.assertNotIn('event: admitted',raw)
+        self.assertEqual(len(self.followups),2,'Uncertain provider admission is never retried')
+
+    def test_literal_reserved_context_shapes_cross_as_complete_data(self):
+        self.omit_operation=True;self.allow_create.set();self.allow_finish.set()
+        literal={'diagnostics':[{'message':'actual stable '.encode().decode()*120}],
+            'accumulatedEdits':['exact protected 保持😀'],
+            'selectedElement':{'id':'actual','future':'exact'},
+            'fromContext':'literal actual field, not an admitted hash',
+            'current':{'future':'exact current literal'},
+            'future':{'fromPreviousItems':[{'reuse':0}],'extra':'must remain literal'},
+            'future2':{'previouslyDelivered':'literal'},
+            'future3':{'fromDelivered':'literal','items':[]},
+            'contextAvailability':[]}
+        request=self.prompt();request['context']=literal
+        for turn in range(2):
+            self.assertIn('event: admitted',self.post('/api/agent/prompts',request)[1])
+            prompt=self.received['prompt'] if turn==0 else self.followups[-1]['prompt']
+            wire=json.loads(prompt.split('EDITOR CONTEXT:\n',1)[1].split('\n\nPROJECT CONTEXT:',1)[0])
+            self.assertEqual(set(wire),{'completeContext'})
+            self.assertEqual(wire['completeContext'],literal)
+            self.assertEqual(resolve_context(wire,literal if turn else None),literal)
+
+    def test_changed_record_patch_crosses_actual_admission_and_rejected_cache_boundary(self):
+        self.omit_operation=True;self.allow_create.set();self.allow_finish.set()
+        base={'renderedComponentTree':[{'id':'heading','label':'Original card',
+            'sourceFile':'src/card.nim','sourceLine':18,'future':{'set':'literal','reuse':4},
+            'stable':'exact 保持😀 '.encode().decode()*120}],
+            'selectedElement':{'id':'heading','unknown':'exact protected'},
+            'accumulatedEdits':['exact edit'], 'designSystemConstraints':['exact constraint'],
+            'contextAvailability':[]}
+        def context(prompt):return json.loads(prompt.split('EDITOR CONTEXT:\n',1)[1].split('\n\nPROJECT CONTEXT:',1)[0])
+        request=self.prompt();request['context']=base
+        self.assertIn('event: admitted',self.post('/api/agent/prompts',request)[1])
+        changed=json.loads(json.dumps(base));changed['renderedComponentTree'][0]['label']='Followup card'
+        changed['renderedComponentTree'][0]['sourceLine']=19
+        changed['renderedComponentTree'][0]['newUnknown']={'remove':['literal'],'value':'保持😀'}
+        request['context']=changed;self.budget_limit=self.current_chars+1
+        self.assertNotIn('event: admitted',self.post('/api/agent/prompts',request)[1])
+        rejected=context(self.followups[-1]['prompt'])
+        patch=rejected['current']['renderedComponentTree']['fromPreviousItems'][0]
+        self.assertEqual(set(patch),{'reuse','set','remove'})
+        self.assertEqual(patch['set']['label'],'Followup card')
+        self.assertEqual(resolve_context(rejected,base),changed)
+        self.budget_limit=None
+        self.assertIn('event: admitted',self.post('/api/agent/prompts',request)[1])
+        admitted=context(self.followups[-1]['prompt'])
+        self.assertEqual(admitted['fromContext'],identity(base),'Rejection cannot advance admitted cache')
+        self.assertEqual(resolve_context(admitted,base),changed)
+        self.assertIn('event: admitted',self.post('/api/agent/prompts',request)[1])
+        self.assertEqual(context(self.followups[-1]['prompt'])['fromContext'],identity(changed))
+
     def test_same_provider_delta_changes_rejection_and_new_conversation_invalidate_delivered_cache(self):
         self.omit_operation=True;self.allow_create.set();self.allow_finish.set()
         context={'diagnostics':[{'file':'catalog.nim','message':'actual 保持😀 '+str(i)} for i in range(40)],
@@ -620,7 +695,10 @@ class LifecycleTests(unittest.TestCase):
             'boundedInherited':['exact user data'], 'unexpected':True}
         payload['context']=reserved
         self.assertIn('event: admitted',self.post('/api/agent/prompts',payload)[1])
-        self.assertEqual(context_of(self.followups[-1]['prompt']),reserved,'User reserved keys have no generated-reference provenance')
+        wire=context_of(self.followups[-1]['prompt'])
+        self.assertEqual(set(wire),{'completeContext'},'Literal protocol keys require an unambiguous complete form')
+        self.assertEqual(wire['completeContext'],reserved,'Every original reserved-key value remains exact')
+        self.assertEqual(resolve_context(wire,removed),reserved,'Provider-independent decoding preserves literal user data')
         self.assertIn('event: admitted',self.post('/api/agent/prompts',payload)[1])
         self.assertEqual(resolve_context(context_of(self.followups[-1]['prompt']),reserved),reserved)
         payload['context']=removed

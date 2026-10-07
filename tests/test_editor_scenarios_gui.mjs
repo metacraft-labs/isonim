@@ -257,7 +257,16 @@ try{
    assert.deepEqual(Object.keys(value),['fromPreviousItems']);assert(Array.isArray(value.fromPreviousItems));
    assert(Array.isArray(firstDelivered[field]));
    resolved[field]=value.fromPreviousItems.map(item=>{
-    if('reuse' in item){assert.deepEqual(Object.keys(item),['reuse']);assert(Number.isInteger(item.reuse)&&item.reuse>=0&&item.reuse<firstDelivered[field].length);return firstDelivered[field][item.reuse];}
+    if('reuse' in item){
+     assert(Number.isInteger(item.reuse)&&item.reuse>=0&&item.reuse<firstDelivered[field].length);
+     if(!('set' in item)){assert.deepEqual(Object.keys(item),['reuse']);return firstDelivered[field][item.reuse];}
+     assert.deepEqual(Object.keys(item),['reuse','set','remove']);
+     const prior=firstDelivered[field][item.reuse];assert(prior&&typeof prior==='object'&&!Array.isArray(prior));
+     assert(item.set&&typeof item.set==='object'&&!Array.isArray(item.set));assert(Array.isArray(item.remove));
+     assert.equal(new Set(item.remove).size,item.remove.length);
+     const record={...prior};for(const key of item.remove){assert(typeof key==='string'&&Object.hasOwn(record,key)&&!Object.hasOwn(item.set,key));delete record[key];}
+     return {...record,...item.set};
+    }
     assert.deepEqual(Object.keys(item),['value']);return item.value;
    });
   }else resolved[field]=value;

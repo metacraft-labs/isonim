@@ -12,6 +12,19 @@ const OptionalArrays = ["diagnostics", "designSystemSchema", "selectedSchemaNode
 
 proc referenceContext*(current, delivered, sources: JsonNode): JsonNode
 
+proc requiresCompleteContext(context: JsonNode): bool =
+  ## Literal future fields must never be mistaken for protocol descriptors by
+  ## a provider that has no access to the producer's original-value guard.
+  if context == nil or context.kind != JObject: return false
+  for key in ["fromContext", "completeContext", "current", "boundedInherited", "protectedV1", "protectedV2"]:
+    if context.hasKey(key): return true
+  for key, value in context:
+    if value.kind == JObject:
+      for marker in ["fromPreviousItems", "previouslyDelivered", "fromDelivered"]:
+        if value.hasKey(marker): return true
+  false
+
+
 proc compactEditorContext*(original: JsonNode; maxChars: int; base: JsonNode = nil): Option[JsonNode] =
   if original == nil or original.kind != JObject or maxChars <= 0: return none(JsonNode)
   if original{"contextAvailability"} != nil and original["contextAvailability"].kind != JArray:
@@ -132,7 +145,7 @@ proc compactEditorContext*(original: JsonNode; maxChars: int; base: JsonNode = n
     if cachedWireChars < 0:
       # Without a prior admitted base, referenceContext emits a full clone of
       # this exact object. Measure those same bytes directly without reparsing.
-      cachedWireChars = if base == nil: runeLen($context)
+      cachedWireChars = if base == nil and not requiresCompleteContext(context): runeLen($context)
                         else: runeLen($referenceContext(context, base, nil))
     cachedWireChars
   var changed = true
@@ -204,6 +217,9 @@ proc referenceContext*(current, delivered, sources: JsonNode): JsonNode =
   ## representation. Every protected field remains explicit and exact. Optional
   ## fields absent from current inherit their prior delivered representation.
   result = parseJson($current)
+  if requiresCompleteContext(current):
+    result = %* {"completeContext":result}
+    return
   if delivered == nil or delivered.kind != JObject: return
   if current.len != delivered.len: return
   for field, value in current:
@@ -232,7 +248,26 @@ proc referenceContext*(current, delivered, sources: JsonNode): JsonNode =
         if previousIndex >= 0:
           items.add(%* {"reuse":previousIndex})
           reused = true
-        else: items.add(%* {"value":item})
+        else:
+          var encoded = %* {"value":item}
+          # Any object can be reconstructed exactly from an admitted object;
+          # no schema whitelist or identity guess drops future fields. Indices
+          # refer only to the hash-verified base and preserve duplicates/order.
+          if item.kind == JObject:
+            for i in 0 ..< delivered[field].len:
+              let prior = delivered[field][i]
+              if prior.kind != JObject: continue
+              var replacements = newJObject()
+              var removed = newJArray()
+              for key, currentValue in item:
+                if prior{key} == nil or prior[key] != currentValue:
+                  replacements[key] = parseJson($currentValue)
+              for key, priorValue in prior:
+                if not item.hasKey(key): removed.add %key
+              let patch = %* {"reuse":i, "set":replacements, "remove":removed}
+              if runeLen($patch) < runeLen($encoded): encoded = patch
+          if encoded.hasKey("reuse"): reused = true
+          items.add encoded
       let delta = %* {"fromPreviousItems":items}
       if reused and runeLen($delta) < runeLen($value): changes[field] = delta
   var envelope = %* {"fromContext": $secureHash($delivered), "current":changes}
@@ -244,6 +279,11 @@ proc referenceContext*(current, delivered, sources: JsonNode): JsonNode =
   if runeLen($envelope) < runeLen($result): result = envelope
 
 proc deliveredContext*(wire, previous: JsonNode; original: JsonNode = nil): JsonNode =
+  if wire.kind == JObject and wire.hasKey("completeContext") and
+      (original == nil or wire != original):
+    if wire.len != 1 or wire["completeContext"].kind != JObject:
+      raise newException(ValueError, "Invalid complete context representation")
+    return parseJson($wire["completeContext"])
   if wire.kind == JObject and wire.hasKey("fromContext") and
       (original == nil or wire != original):
     if previous == nil or previous.kind != JObject or
@@ -296,14 +336,29 @@ proc deliveredContext*(wire, previous: JsonNode; original: JsonNode = nil): Json
           raise newException(ValueError, "Invalid inherited context array")
         var reconstructed = newJArray()
         for item in value["fromPreviousItems"]:
-          if item.kind != JObject or item.len != 1:
+          if item.kind != JObject or (item.len != 1 and item.len != 3):
             raise newException(ValueError, "Invalid inherited context record")
           if item.hasKey("reuse"):
             if item["reuse"].kind != JInt: raise newException(ValueError, "Invalid inherited context index")
             let index = item["reuse"].getInt(-1)
             if index < 0 or index >= previous[field].len: raise newException(ValueError, "Invalid inherited context index")
-            reconstructed.add parseJson($previous[field][index])
-          elif item.hasKey("value"): reconstructed.add parseJson($item["value"])
+            var record = parseJson($previous[field][index])
+            if item.len == 3:
+              if not item.hasKey("set") or not item.hasKey("remove") or
+                  item["set"].kind != JObject or item["remove"].kind != JArray or
+                  record.kind != JObject:
+                raise newException(ValueError, "Invalid changed admitted record")
+              var removedKeys: seq[string]
+              for key in item["remove"]:
+                if key.kind != JString or key.getStr() in removedKeys or
+                    not record.hasKey(key.getStr()) or item["set"].hasKey(key.getStr()):
+                  raise newException(ValueError, "Invalid changed record removal")
+                removedKeys.add key.getStr()
+                record.delete(key.getStr())
+              for key, replacement in item["set"]:
+                record[key] = parseJson($replacement)
+            reconstructed.add record
+          elif item.len == 1 and item.hasKey("value"): reconstructed.add parseJson($item["value"])
           else: raise newException(ValueError, "Invalid inherited context record")
         result[field] = reconstructed
       else: result[field] = parseJson($value)

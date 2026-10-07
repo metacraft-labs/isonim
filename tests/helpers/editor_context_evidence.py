@@ -11,6 +11,9 @@ def identity(value):
     return hashlib.sha1(json.dumps(value,ensure_ascii=False,separators=(',',':')).encode()).hexdigest().upper()
 
 def resolve_context(wire, previous):
+    if isinstance(wire,dict) and 'completeContext' in wire:
+        if set(wire)!={'completeContext'} or not isinstance(wire['completeContext'],dict):raise AssertionError('Malformed complete context')
+        return wire['completeContext']
     if isinstance(wire,dict) and 'fromContext' in wire:
         if not {'fromContext','current'}.issubset(wire) or set(wire)-{'fromContext','current','boundedInherited','protectedV1','protectedV2'}:raise AssertionError('Malformed context envelope')
         if not isinstance(previous,dict) or wire['fromContext']!=identity(previous):raise AssertionError('Context envelope mismatches actual prior delivered representation')
@@ -40,10 +43,17 @@ def resolve_context(wire, previous):
                 if not isinstance(value['fromPreviousItems'],list):raise AssertionError('Current record order must be an array')
                 actual=[]
                 for item in value['fromPreviousItems']:
-                    if set(item)=={'reuse'}:
+                    if set(item) in ({'reuse'},{'reuse','set','remove'}):
                         index=item['reuse']
                         if type(index) is not int or index<0 or index>=len(previous[field]):raise AssertionError('Invalid actual prior record identity')
-                        actual.append(previous[field][index])
+                        record=previous[field][index]
+                        if 'set' in item:
+                            if not isinstance(record,dict) or not isinstance(item['set'],dict) or not isinstance(item['remove'],list):raise AssertionError('Malformed changed record')
+                            if any(not isinstance(key,str) for key in item['remove']) or len(set(item['remove']))!=len(item['remove']) or any(key not in record or key in item['set'] for key in item['remove']):raise AssertionError('Malformed removed keys')
+                            record=dict(record)
+                            for key in item['remove']:del record[key]
+                            record.update(item['set'])
+                        actual.append(record)
                     elif set(item)=={'value'}:actual.append(item['value'])
                     else:raise AssertionError('Malformed current context delta')
                 result[field]=actual

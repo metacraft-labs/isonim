@@ -675,3 +675,94 @@ suite "Actual remaining-quota optional context policy":
     check ($result.get["designSystemSchema"]).contains("current.key")
     check ($result.get["diagnostics"]).contains("actual warning")
     check result.get["pendingSourceEdits"]==context["pendingSourceEdits"]
+
+suite "Lossless admitted changed-record context":
+  test "complete current objects including unknown and reserved fields reconstruct exactly":
+    let base = %* {"renderedComponentTree":[
+      {"id":"heading", "label":"Original card", "sourceFile":"src/card.nim",
+       "sourceLine":18, "styleBindings":[{"property":"color", "value":"#2563EB"}],
+       "futureField":{"reuse":5,"set":{"unicode":"保持😀"},"remove":["literal"]},
+       "largeUnchangedValue":"meaningful complete source identity ".repeat(24)},
+      {"id":"other", "label":"Other", "futureData":"exact ".repeat(50)}],
+      "selectedElement":{"id":"heading","unknownProtected":"exact 保持😀"},
+      "accumulatedEdits":[{"oldValue":"  old  ","newValue":"保持😀"}],
+      "pendingSourceEdits":[], "designSystemConstraints":["exact constraint"],
+      "currentFileDiffs":[{"diff":"exact source diff"}], "selectedStory":{"unknown":"exact"}}
+    var current = parseJson($base)
+    current["renderedComponentTree"][0]["label"] = %"Followup card"
+    current["renderedComponentTree"][0]["sourceLine"] = %19
+    current["renderedComponentTree"][0]["styleBindings"][0]["value"] = %"#22C55E"
+    current["renderedComponentTree"][0].delete("sourceFile")
+    current["renderedComponentTree"][0]["newUnknown"] = %* {"fromPreviousItems":[{"reuse":0}], "value":"literal 保持😀"}
+    current["renderedComponentTree"][0]["__proto__"] = %* {"exact":"own JSON field"}
+    current["renderedComponentTree"][0]["constructor"] = %"exact constructor field"
+    current["renderedComponentTree"][0]["toString"] = %"exact toString field"
+    let changed = parseJson($current["renderedComponentTree"][0])
+    current["renderedComponentTree"] = %* [base["renderedComponentTree"][1], changed, changed,
+      {"id":"added","label":"追加😀","reuse":4,"set":{},"remove":[]}]
+    let wire = referenceContext(current,base,nil)
+    check wire.hasKey("fromContext")
+    check runeLen($wire) < runeLen($current)
+    check deliveredContext(wire,base,current) == current
+    check wire["current"]["selectedElement"] == current["selectedElement"]
+    check wire["current"]["renderedComponentTree"]["fromPreviousItems"][1].hasKey("set")
+    check $base["renderedComponentTree"][0]["label"] == "\"Original card\""
+    var stale = parseJson($wire)
+    stale["fromContext"] = %"stale admitted base"
+    expect ValueError: discard deliveredContext(stale,base)
+    let patch = wire["current"]["renderedComponentTree"]["fromPreviousItems"][1]
+    for malformed in [%* {"reuse": -1,"set":{},"remove":[]},
+        %* {"reuse":99,"set":{},"remove":[]},
+        %* {"reuse":0,"set":[],"remove":[]},
+        %* {"reuse":0,"set":{},"remove":["absent"]},
+        %* {"reuse":0,"set":{},"remove":["label","label"]},
+        %* {"reuse":0,"set":{"label":"conflict"},"remove":["label"]},
+        %* {"reuse":0,"set":{},"remove":[],"extra":true}]:
+      var broken = parseJson($wire)
+      broken["current"]["renderedComponentTree"]["fromPreviousItems"].elems[1] = malformed
+      expect ValueError: discard deliveredContext(broken,base)
+    var protectedAttack = parseJson($wire)
+    protectedAttack["current"]["selectedElement"] = %* {"fromPreviousItems":[patch]}
+    expect ValueError: discard deliveredContext(protectedAttack,base)
+
+  test "smaller-only selection and literal descriptor collisions remain complete":
+    let prior = %* {"records":[{"label":"a"}]}
+    let current = %* {"records":[{"label":"b"}]}
+    check referenceContext(current,prior,nil) == current
+    check deliveredContext(current,prior,current) == current
+    let literal = %* {"records":{"fromPreviousItems":[{"reuse":0,"set":{},"remove":[]}]}}
+    check deliveredContext(literal,prior,literal) == literal
+    for count in 0 .. 20:
+      let base = %* {"rows":[{"label":"😀保持".repeat(count), "future":"stable ".repeat(60)}]}
+      let next = %* {"rows":[{"label":"更新😀".repeat(count), "future":"stable ".repeat(60)}]}
+      let wire = referenceContext(next,base,nil)
+      check runeLen($wire) <= runeLen($next)
+      check deliveredContext(wire,base,next) == next
+
+  test "complete representations disambiguate future envelope and field markers":
+    let base = %* {"diagnostics":[{"message":"real complete diagnostic ".repeat(80)}],
+      "accumulatedEdits":["保持😀 exact edit"], "selectedElement":{"id":"actual"},
+      "selectedStory":{"name":"actual"}, "pendingSourceEdits":[],
+      "designSystemConstraints":["exact"], "currentFileDiffs":["exact"], "contextAvailability":[]}
+    for key in ["fromContext", "completeContext", "current", "boundedInherited", "protectedV1", "protectedV2"]:
+      var literal = parseJson($base)
+      literal[key] = %* {"unknown":"exact 保持😀"}
+      let wire = referenceContext(literal,base,nil)
+      check wire.len == 1
+      check wire["completeContext"] == literal
+      check deliveredContext(wire,base,literal) == literal
+      check deliveredContext(referenceContext(literal,nil,nil),nil) == literal
+    for marker in ["fromPreviousItems", "previouslyDelivered", "fromDelivered"]:
+      for extra in [false,true]:
+        var literal = parseJson($base)
+        literal["futureContext"] = newJObject()
+        literal["futureContext"][marker] = %* [{"reuse":0,"set":{"__proto__":"literal"},"remove":[]}]
+        if extra: literal["futureContext"]["unknown"] = %"exact extra field"
+        let wire = referenceContext(literal,base,nil)
+        check wire["completeContext"] == literal
+        check deliveredContext(wire,base,literal) == literal
+        let exactChars = runeLen($wire)
+        check compactEditorContext(literal,exactChars).isSome
+        check compactEditorContext(literal,exactChars-1).isNone
+    for malformed in [%* {"completeContext":[]}, %* {"completeContext":{},"extra":true}]:
+      expect ValueError: discard deliveredContext(malformed,base)
