@@ -70,6 +70,17 @@ proc injectEditorStyles*() =
     .editor-manual-inspector {
       scrollbar-width: thin;
     }
+    /* Use platform-sized, visible scrollbars in high-contrast mode. Keep
+     * the same specificity as panel rules and override legacy hidden tabs. */
+    @media (forced-colors: active) {
+      *, .editor-sidebar, .editor-chat, .editor-manual-inspector {
+        scrollbar-color: auto;
+        scrollbar-width: auto;
+      }
+      ::-webkit-scrollbar { width: auto; height: auto; }
+      ::-webkit-scrollbar-thumb { background-color: CanvasText; }
+      .editor-tabbar::-webkit-scrollbar { display: revert; }
+    }
     .editor-sidebar::-webkit-resizer {
       background: #334155;
     }
