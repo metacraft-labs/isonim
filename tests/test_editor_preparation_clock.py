@@ -5,6 +5,8 @@ Controlled integers/JSON are ordinary inputs to the pure interval/codec function
 not mocked OS metadata or claims of a running Harbor. No OS/process is replaced.
 The official native/stress/browser scenarios separately verify actual owned
 helper identity/publication, original first admission and provider handoff.
+The trace subclass below coordinates real os.replace after the reader's actual
+open; it substitutes no syscall, metadata, time sample or decoder result.
 """
 import json
 import os
@@ -13,7 +15,7 @@ import tempfile
 import time
 import threading
 import unittest
-from helpers.editor_preparation_clock import PreparationClock, decode, overlap_ns, COLD_BOUND_NS
+from helpers.editor_preparation_clock import PreparationClock, ClockTrace, decode, overlap_ns, COLD_BOUND_NS
 
 NONCE = 'unit-controller-nonce'
 
@@ -27,6 +29,72 @@ def evidence(start=100, absent=200, published=220, completed=True):
 
 
 class PreparationTiming(unittest.TestCase):
+    def test_real_retired_descriptor_trace_and_original_retry_exhaustion(self):
+        with tempfile.TemporaryDirectory(prefix='isonim-clock-retired-') as directory:
+            root=Path(directory);filename=root/'clock.json';tracefile=root/'trace.json'
+            now=time.monotonic_ns();value=evidence(now-100,now-40,now-20)
+            def publish(data):
+                fd,name=tempfile.mkstemp(dir=root)
+                with os.fdopen(fd,'w') as stream:json.dump(data,stream)
+                os.replace(name,filename)
+            publish({**value,'nonce':'stale-before-real-replacement'})
+            class RetireOpenedDescriptor(ClockTrace):
+                replacements=0
+                continuously=False
+                def record(self,operation,**values):
+                    super().record(operation,**values)
+                    if operation=='open' and (self.continuously or self.replacements==0):
+                        publish(value);self.replacements+=1
+            clock=PreparationClock(filename,NONCE);self.assertIsNone(clock.trace)
+            trace=RetireOpenedDescriptor(tracefile);clock.trace=trace
+            self.assertEqual(clock.excluded_ns(now-200,now),60)
+            zero=next(row for row in trace.events if row['operation']=='fstat' and row['stat']['nlink']==0)
+            replacement=next(row for row in trace.events if row['sequence']>zero['sequence'] and row['operation']=='lstat')
+            self.assertNotEqual((zero['stat']['dev'],zero['stat']['ino']),
+                (replacement['stat']['dev'],replacement['stat']['ino']))
+            self.assertEqual(replacement['stat']['nlink'],1)
+            self.assertEqual(trace.replacements,1)
+            before=filename.read_bytes();trace.flush();self.assertEqual(filename.read_bytes(),before)
+            self.assertEqual(tracefile.stat().st_mode&0o777,0o600)
+            self.assertNotIn(NONCE,tracefile.read_text());self.assertNotIn(directory,tracefile.read_text())
+            with self.assertRaisesRegex(AssertionError,'must not replace'):
+                PreparationClock(filename,NONCE,filename)
+            trace.continuously=True;trace.replacements=0;trace.events.clear()
+            with self.assertRaisesRegex(AssertionError,'continuously replaced'):
+                clock.excluded_ns(now-200,now)
+            self.assertEqual(trace.replacements,32)
+            self.assertEqual(sum(row['operation']=='open' for row in trace.events),32)
+            self.assertEqual(sum(row['operation']=='close' for row in trace.events),32)
+            self.assertFalse(any(row['operation']=='decoded' for row in trace.events))
+            self.assertEqual(json.loads(tracefile.read_text())['events'][-1]['operation'],'failure')
+
+    def test_trace_is_bounded_redacted_and_rejects_nonprivate_output(self):
+        with tempfile.TemporaryDirectory(prefix='isonim-clock-trace-') as directory:
+            root=Path(directory);filename=root/'clock.json';tracefile=root/'trace.json'
+            now=time.monotonic_ns();value=evidence(now-100,now-40,now-20)
+            value['generation']['directory']=directory
+            fd=os.open(filename,os.O_CREAT|os.O_WRONLY,0o600)
+            with os.fdopen(fd,'w') as stream:json.dump(value,stream)
+            clock=PreparationClock(filename,NONCE,tracefile)
+            original=filename.read_bytes()
+            for _ in range(200):self.assertEqual(clock.excluded_ns(now-200,now),60)
+            clock.trace.flush();data=json.loads(tracefile.read_text())
+            self.assertEqual(len(data['events']),512);self.assertGreater(data['totalEvents'],512)
+            self.assertEqual(data['events'][-1]['sequence'],data['totalEvents'])
+            self.assertNotIn(NONCE,tracefile.read_text());self.assertNotIn(directory,tracefile.read_text())
+            self.assertEqual(filename.read_bytes(),original)
+            self.assertTrue(any('directorySha256' in row.get('generation',{}) for row in data['events']))
+            filename.chmod(0o644)
+            with self.assertRaisesRegex(AssertionError,'private'):clock.interval(now)
+            self.assertEqual(json.loads(tracefile.read_text())['events'][-1]['operation'],'failure')
+            root.chmod(0o755)
+            with self.assertRaises(AssertionError):clock.trace.flush()
+            with self.assertRaisesRegex(AssertionError,'Preparation timing requires its private controller file') as caught:
+                clock.interval(now)
+            self.assertEqual(caught.exception.__notes__,
+                ['Private clock trace persistence failed: AssertionError'])
+            root.chmod(0o700)
+
     def test_interval_intersections_preserve_wait_overhead(self):
         for start,end,expected in [(0,90,0),(0,100,0),(0,150,50),(0,300,100),
             (100,200,100),(150,180,30),(150,300,50),(200,300,0),(250,300,0)]:

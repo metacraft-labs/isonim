@@ -16,9 +16,34 @@ import threading
 import unittest
 
 from helpers.editor_scenario_runtime import Runtime, process_observer, wait
+from helpers.editor_preparation_clock import ClockTrace, PreparationClock, SCHEMA
 
 
 class ScenarioCleanup(unittest.TestCase):
+    def enableClockDiagnosticsWithInvalidPublisherOutput(self):
+        runtime=self.runtime
+        runtime.controllerPrivate=Path(self.directory.name)/'controller-private'
+        runtime.controllerPrivate.mkdir(mode=0o700)
+        runtime.clockNonce='private-clock-cleanup-control'
+        runtime.clockFile=runtime.controllerPrivate/'clock.json'
+        runtime.clockFile.write_text(json.dumps(dict(schema=SCHEMA,nonce=runtime.clockNonce,
+            generation=None,startNs=None,lastAbsentNs=None,publishedNs=None,completed=False,error=None)))
+        runtime.clockFile.chmod(0o600)
+        runtime.controllerContext=runtime.controllerPrivate/'browser-context.json'
+        runtime.controllerContext.write_text('{}');runtime.controllerContext.chmod(0o600)
+        (runtime.artifacts/'context.json').write_text(json.dumps(dict(origin='cleanup-control',
+            project=str(runtime.project),repo='cleanup-control',artifacts=str(runtime.artifacts))))
+        bad=Path(self.directory.name)/'invalid-trace-output';bad.mkdir(mode=0o700)
+        # A real directory at the target makes actual os.replace fail, rather
+        # than substituting an exception or relying on privileged chmod rules.
+        (bad/'publisher.json').mkdir(mode=0o700)
+        runtime.clockPublishTrace=ClockTrace(bad/'publisher.json')
+        runtime.preparationClock=PreparationClock(runtime.clockFile,runtime.clockNonce,
+            runtime.controllerPrivate/'reader-trace.json')
+        # Actual file reads/stat metadata, never a mocked publisher or OS result.
+        self.assertIsNone(runtime.preparationClock.interval())
+        runtime.clockPublishTrace.record('publisher-file',info=runtime.clockFile.stat())
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
@@ -94,6 +119,31 @@ class ScenarioCleanup(unittest.TestCase):
         self.assertEqual(set(result['public_secret_scan']), set(public+['owned-cleanup-child.log']))
         # The private array remains available as evidence after cleanup.
         self.assertIsInstance(json.loads((runtime.private/'actual-tools.json').read_text()), list)
+
+    def test_actual_trace_output_failure_cannot_interrupt_privacy_and_credential_cleanup(self):
+        self.enableClockDiagnosticsWithInvalidPublisherOutput()
+        with self.assertRaisesRegex(AssertionError,'Private clock trace persistence failed: IsADirectoryError'):
+            self.runtime.close()
+        self.assertOwnedCleanup()
+        proof=json.loads((self.runtime.controllerPrivate/'host-separation-proof.json').read_text())
+        self.assertTrue(proof['projectClean']);self.assertTrue(proof['inheritedEnvironmentClean'])
+        cleanup=json.loads((self.runtime.artifacts/'cleanup.json').read_text())
+        self.assertIn('context.json',cleanup['public_secret_scan'])
+        self.assertIn('owned-cleanup-child.log',cleanup['public_secret_scan'])
+        # A failed publisher destination does not prevent the valid reader snapshot.
+        trace=json.loads((self.runtime.controllerPrivate/'reader-trace.json').read_text())
+        self.assertTrue(trace['events']);self.assertNotIn(self.runtime.clockNonce,json.dumps(trace))
+
+    def test_actual_credential_failure_has_priority_over_trace_failure(self):
+        self.enableClockDiagnosticsWithInvalidPublisherOutput()
+        (self.runtime.artifacts/'deliberate-leak.json').write_text(json.dumps({'leak':self.runtime.bootstrap}))
+        with self.assertRaisesRegex(AssertionError,'Credential leaked into public artifact: deliberate-leak.json') as caught:
+            self.runtime.close()
+        self.assertOwnedCleanup()
+        self.assertEqual(caught.exception.__notes__,['Private clock trace persistence failed: IsADirectoryError'])
+        self.assertTrue((self.runtime.controllerPrivate/'host-separation-proof.json').is_file())
+        self.assertTrue((self.runtime.controllerPrivate/'reader-trace.json').is_file())
+        self.assertFalse((self.runtime.artifacts/'cleanup.json').exists())
 
     def test_actual_public_scan_rejects_each_known_mapping_and_nested_credential(self):
         for secret in [self.runtime.bootstrap, 'mapping-browser-secret', 'mapping-control-secret',

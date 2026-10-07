@@ -24,7 +24,7 @@ import tempfile
 import threading
 import time
 import urllib.request
-from helpers.editor_preparation_clock import PreparationClock, SCHEMA, COLD_BOUND_NS
+from helpers.editor_preparation_clock import PreparationClock, ClockTrace, SCHEMA, COLD_BOUND_NS
 from helpers.editor_sdk_runtime import materialize
 from helpers.editor_process_observer import process_observer, optional_sibling_available
 
@@ -121,10 +121,12 @@ class Runtime:
         assert not self.controllerPrivate.is_relative_to(self.project)
         self.clockNonce=secrets.token_hex(32)
         self.clockFile=self.controllerPrivate/'preparation-clock.json'
+        self.clockPublishTrace = ClockTrace(self.controllerPrivate/'publisher-trace.json') if os.environ.get('ISONIM_PREPARATION_TRACE') == '1' else None
         self.clockData={'schema':SCHEMA,'nonce':self.clockNonce,'generation':None,
             'startNs':None,'lastAbsentNs':None,'publishedNs':None,'completed':False,'error':None}
         self.publishClock()
-        self.preparationClock=PreparationClock(self.clockFile,self.clockNonce)
+        self.preparationClock=PreparationClock(self.clockFile,self.clockNonce,
+            self.controllerPrivate/'python-reader-trace.json' if self.clockPublishTrace is not None else None)
         self.lines=queue.Queue()
         self.harborBefore=set(Path(tempfile.gettempdir()).glob('isonim-harbor-*'))
         self.server=self.spawn([sys.executable,str(ROOT/'tools/editor_server.py'),'--directory',str(editor_directory or ROOT/'build/editor-source'),
@@ -177,6 +179,8 @@ class Runtime:
             (self.artifacts/'context.json').write_text(json.dumps(publicContext))
             self.controllerContext=self.controllerPrivate/'browser-context.json'
             controller={**publicContext,'preparationClock':{'filename':str(self.clockFile),'nonce':self.clockNonce,'python':sys.executable}}
+            if self.clockPublishTrace is not None:
+                controller['preparationClock']['traceFilename']=str(self.controllerPrivate/'node-reader-trace.json')
             fd=os.open(self.controllerContext,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
             with os.fdopen(fd,'w') as output:json.dump(controller,output)
             self.assertHostClockPrivate()
@@ -190,6 +194,9 @@ class Runtime:
         # Exercise the REAL bound filesystem and launch/wire artifacts. The
         # browser controller carrier must never become model-readable context.
         forbidden=[str(self.clockFile).encode(),str(self.controllerContext).encode(),self.clockNonce.encode()]
+        if self.clockPublishTrace is not None:
+            forbidden.extend(str(self.controllerPrivate/name).encode() for name in
+                ['publisher-trace.json','python-reader-trace.json','node-reader-trace.json'])
         scanned=0
         for filename in self.project.rglob('*'):
             if filename.is_symlink():
@@ -214,8 +221,20 @@ class Runtime:
     def publishClock(self):
         fd,name=tempfile.mkstemp(prefix='.clock-',dir=self.controllerPrivate)
         try:
-            with os.fdopen(fd,'w') as output:json.dump(self.clockData,output)
+            if self.clockPublishTrace is not None:
+                self.clockPublishTrace.record('publish-mkstemp', info=os.fstat(fd), generation=self.clockData['generation'])
+            with os.fdopen(fd,'w') as output:
+                json.dump(self.clockData,output)
+                if self.clockPublishTrace is not None:
+                    output.flush()
+                    self.clockPublishTrace.record('publish-written', info=os.fstat(output.fileno()), generation=self.clockData['generation'])
+            if self.clockPublishTrace is not None:
+                try: previous=self.clockFile.lstat()
+                except FileNotFoundError: previous=None
+                self.clockPublishTrace.record('publish-before-replace', info=previous, generation=self.clockData['generation'])
             os.replace(name,self.clockFile)
+            if self.clockPublishTrace is not None:
+                self.clockPublishTrace.record('publish-replaced', info=self.clockFile.lstat(), generation=self.clockData['generation'])
         finally:
             if os.path.exists(name):os.unlink(name)
 
@@ -436,6 +455,26 @@ class Runtime:
         (self.artifacts/'provider-identity.json').write_text(json.dumps(result,indent=2))
         return result
     def close(self):
+        substantive_error = None
+        try:
+            self._close()
+        except BaseException as error:
+            substantive_error = error
+            raise
+        finally:
+            if getattr(self, 'clockPublishTrace', None) is not None:
+                trace_errors = []
+                # Diagnostics cannot interrupt owned-resource or privacy cleanup.
+                # Attempt both snapshots even when one private output is invalid.
+                for trace in [self.clockPublishTrace, self.preparationClock.trace]:
+                    try: trace.flush()
+                    except BaseException as error: trace_errors.append(type(error).__name__)
+                if trace_errors:
+                    message = 'Private clock trace persistence failed: ' + ', '.join(trace_errors)
+                    if substantive_error is not None: substantive_error.add_note(message)
+                    else: raise AssertionError(message)
+
+    def _close(self):
         self.handoffStop.set()
         # Save actual final source/catalog even on a failed assertion.
         if self.project.exists():
