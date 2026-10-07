@@ -52,6 +52,7 @@
 
 import std/strutils
 
+import isonim/editor/views/widgets/anchored_popover
 import isonim/core/signals
 import isonim/core/computation
 import isonim/dsl/ui
@@ -314,12 +315,12 @@ proc mountVariableChip*[R, E](r: R; parent: E;
   if cfg.onChevronClick != nil:
     let cb = cfg.onChevronClick
     r.addEventListener(chevronNode, "click", proc() = cb())
-    r.addEventListener(chevronNode, "keydown", proc() = cb())
+    installPopoverTrigger(chevronNode)
 
   if cfg.onNameClick != nil:
     let cb = cfg.onNameClick
     r.addEventListener(nameNode, "click", proc() = cb())
-    r.addEventListener(nameNode, "keydown", proc() = cb())
+    installPopoverTrigger(nameNode)
 
   if cfg.onDetach != nil:
     let cb = cfg.onDetach

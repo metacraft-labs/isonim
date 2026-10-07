@@ -182,9 +182,16 @@ try{
     assert.equal(await row('primary').count(),1,'case-insensitive leaf-label search reveals collapsed descendant');
     assert.equal(await row('secondary').count(),0,'non-matching leaf is excluded');
     assert(await search.evaluate(el=>el.ownerDocument.activeElement===el),'filtering preserves input focus');
+    assert.equal(await row(root.id).count(),1,'matching leaf retains its real ancestor path');
+    assert.equal(await row(root.id).getAttribute('aria-expanded'),'true','search visibly reveals the ancestor');
+    assert.equal(await row('primary').getAttribute('aria-expanded'),null,'leaf has no expansion state');
     await search.press('Tab');
-    assert.equal(await row('primary').evaluate(el=>el.ownerDocument.activeElement===el),true,
-      'Tab reaches the matching layer');
+    assert(await row(root.id).evaluate(el=>el.ownerDocument.activeElement===el),
+      'Tab reaches the first displayed ancestor without a redundant scrollport stop');
+    await layersPage.keyboard.press('ArrowRight');
+    assert(await row('primary').evaluate(el=>el.ownerDocument.activeElement===el),'Right navigates to the revealed matching child');
+    await layersPage.keyboard.press('Shift+Tab');
+    assert(await row(root.id).evaluate(el=>el.ownerDocument.activeElement===el),'reverse Tab visits the displayed ancestor');
     await layersPage.keyboard.press('Shift+Tab');
     assert(await search.evaluate(el=>el.ownerDocument.activeElement===el),'keyboard returns to Layers search');
     assert.deepEqual(await search.evaluate(el=>{
@@ -203,8 +210,35 @@ try{
     await search.fill('');
     assert.equal(await row(root.id).count(),1);
     assert.equal(await row('primary').count(),0,'clearing preserves the previous collapsed state');
-    await layers.locator(`[data-scene-graph-twisty="${root.id}"]`).click();
-    assert.equal(await row('primary').count(),1);
+    await row(root.id).focus();
+    await layersPage.keyboard.press('ArrowRight');
+    assert.equal(await row('primary').count(),1,'Right expands a saved collapsed ancestor');
+    assert.equal(await row(root.id).getAttribute('aria-expanded'),'true');
+    await layersPage.keyboard.press('ArrowLeft');
+    assert.equal(await row('primary').count(),0,'Left collapses without selecting');
+    assert.equal(JSON.parse(await layersPage.evaluate(()=>window.__chatTest.controlState())).selection,initial.selection);
+    await layersPage.keyboard.press('ArrowRight');
+    await layersPage.keyboard.press('ArrowDown');
+    const firstChild=initial.elements.find(item=>item.parentId===root.id);
+    assert(firstChild&&firstChild.id!=='primary','real heading precedes the primary action');
+    assert(await row(firstChild.id).evaluate(el=>el.ownerDocument.activeElement===el),'Down visits the actual first displayed child');
+    await layersPage.keyboard.press('ArrowDown');
+    assert(await row('primary').evaluate(el=>el.ownerDocument.activeElement===el),'Down next visits the actual primary action');
+    await layersPage.keyboard.press('Enter');
+    assert.equal(JSON.parse(await layersPage.evaluate(()=>window.__chatTest.controlState())).selection,'primary','Enter selects the real matching layer');
+    assert(await row('primary').evaluate(el=>el.ownerDocument.activeElement===el),'activation retains focus after the row rebuild');
+    await layersPage.keyboard.press('ArrowDown');
+    assert(await row('secondary').evaluate(el=>el.ownerDocument.activeElement===el));
+    await layersPage.keyboard.press('Space');
+    assert.equal(JSON.parse(await layersPage.evaluate(()=>window.__chatTest.controlState())).selection,'secondary','Space selects a distinct actual layer');
+    await row('primary').evaluate(el=>el.addEventListener('click',()=>document.querySelector('[data-layer-search]').focus(),{once:true}));
+    await row('primary').focus();
+    await layersPage.keyboard.press('Enter');
+    assert.equal(JSON.parse(await layersPage.evaluate(()=>window.__chatTest.controlState())).selection,'primary');
+    assert(await search.evaluate(el=>el.ownerDocument.activeElement===el),'activation preserves an explicitly changed user focus');
+    await layersPage.waitForTimeout(50);
+    assert(await search.evaluate(el=>el.ownerDocument.activeElement===el),'no deferred fallback steals newer focus');
+
     await layersPage.getByRole('textbox',{name:'Search stories',exact:true}).fill('Home');
     await search.fill('secondary');
     assert.equal(await row('secondary').count(),1);

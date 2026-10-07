@@ -1781,11 +1781,19 @@ suite "Editor ViewModels (M26 source-backed CSS property editors)":
       check vm.selectPreviousInspectorElement()
       check vm.inspector.selectedElement.val.id == "header"
 
+      let savedExpansion = vm.inspector.expandedLayerIds.val
       vm.inspector.setLayerSearch("section")
-      check vm.inspector.filteredLayers.val.len == 1
+      check vm.inspector.filteredLayers.val.mapIt(it.id) == @["root", "content"]
+      check vm.inspector.selectedElement.val.id == "header"
+      check vm.inspector.expandedLayerIds.val == savedExpansion
+      check vm.selectNextInspectorElement()
+      check vm.inspector.selectedElement.val.id == "root"
       check vm.selectNextInspectorElement()
       check vm.inspector.selectedElement.val.id == "content"
       vm.inspector.setLayerSearch("")
+      check vm.inspector.filteredLayers.val.mapIt(it.id) == @["root", "header", "title", "content"]
+      check vm.inspector.selectedElement.val.id == "content"
+      check vm.inspector.expandedLayerIds.val == savedExpansion
       vm.inspector.toggleLayerExpanded("root")
       check vm.inspector.filteredLayers.val.len == 1
       vm.clearInspectorSelection()

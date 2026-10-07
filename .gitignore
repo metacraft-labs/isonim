@@ -262,3 +262,5 @@ __pycache__/
 
 # CI logs (just ci-test-nginx)
 /test-logs/
+# Authored shared inspector popover controller (not generated Nim JS).
+!src/isonim/editor/views/widgets/anchored_popover.js

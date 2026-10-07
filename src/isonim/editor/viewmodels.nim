@@ -10315,9 +10315,29 @@ proc createInspectorVM*(designSystemSchema: Signal[DesignSystemSchema] = nil;
           return true
       true
 
+    var visibleIds: seq[string] = @[]
+    if query.len > 0:
+      for row in allRows:
+        if not row.matches(): continue
+        if row.id notin visibleIds: visibleIds.add row.id
+        var parentId = row.parentId
+        var visited: seq[string] = @[]
+        while parentId.len > 0 and parentId notin visited:
+          visited.add parentId
+          if parentId notin visibleIds: visibleIds.add parentId
+          let index = allRows.rowIndex(parentId)
+          if index < 0: break
+          parentId = allRows[index].parentId
     for row in allRows:
-      if row.matches() and row.parentExpanded():
-        result.add row
+      if (query.len > 0 and row.id in visibleIds) or
+          (query.len == 0 and row.parentExpanded()):
+        var displayed = row
+        if query.len > 0:
+          for child in allRows:
+            if child.parentId == row.id and child.id in visibleIds:
+              displayed.expanded = true
+              break
+        result.add displayed
   )
 
   let visibleSections = createMemo[seq[InspectorSection]](proc(): seq[

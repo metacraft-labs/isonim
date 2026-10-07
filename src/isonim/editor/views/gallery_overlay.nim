@@ -1,3 +1,4 @@
+import isonim/editor/views/view_lifecycle
 ## REV-M7 / REV-M8 — gallery overlay view + ViewModel.
 ##
 ## The gallery is a tile grid that surfaces every prior capture for the
@@ -1006,12 +1007,16 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM;
         var node = """, escKeyNode, """;
         if (!node || node.__isonimGalleryEscBound) return;
         node.__isonimGalleryEscBound = true;
-        document.addEventListener('keydown', function (event) {
+        function escape(event) {
           if (!event || event.key !== 'Escape') return;
           node.dispatchEvent(new Event('keydown', { bubbles: false }));
-        });
+        }
+        document.addEventListener('keydown', escape);
+        globalThis.__isonimViewCleanup(node, () => document.removeEventListener('keydown', escape));
       })();
     """].}
+
+  ownViewResources(escKeyNode)
 
   # REV-M8 follow-up — shared drag-source tracker.  ``dragstart`` on
   # any tile writes its captureId here; ``drop`` on any (possibly

@@ -8,6 +8,7 @@ when not defined(js):
   {.error: "isonim/editor/browser_vector_adapter is JS-only".}
 
 import isonim/editor/types
+import isonim/editor/views/view_lifecycle
 
 func toolSlug*(tool: VectorTool): string =
   case tool
@@ -93,8 +94,21 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
     };
     document.addEventListener('click', runDelegatedAction);
     document.addEventListener('keydown', runDelegatedAction);
+    globalThis.__isonimVectorDelegateCleanup = () => {
+      document.removeEventListener('click', runDelegatedAction);
+      document.removeEventListener('keydown', runDelegatedAction);
+      globalThis.__isonimVectorDelegatesInstalled = false;
+    };
   }
 
+  const delegateOwners = globalThis.__isonimVectorDelegateOwners ||= new Set();
+  delegateOwners.add(host);
+  globalThis.__isonimViewCleanup(host, () => {
+    delegateOwners.delete(host);
+    if (!delegateOwners.size && globalThis.__isonimVectorDelegateCleanup) {
+      globalThis.__isonimVectorDelegateCleanup();
+    }
+  });
   host.innerHTML = '';
   host.tabIndex = 0;
   host.style.position = 'relative';
@@ -387,6 +401,11 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
           };
           document.addEventListener('pointermove', move);
           document.addEventListener('pointerup', up);
+          globalThis.__isonimViewCleanup(host, () => {
+            document.removeEventListener('pointermove', move);
+            document.removeEventListener('pointerup', up);
+            if (anchor.hasPointerCapture(event.pointerId)) anchor.releasePointerCapture(event.pointerId);
+          });
         });
         overlay.appendChild(anchor);
         if (node.type !== 'corner') {
@@ -521,7 +540,7 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
       host.dataset.vectorSourcePending = String(this.sourceChangeSeq);
       host.dataset.vectorSourceOperation = operation;
       host.dataset.vectorSourceLength = String(exported.length);
-      setTimeout(() => {
+      globalThis.__isonimDeferView(host, () => {
         host.dispatchEvent(new CustomEvent('isonim-vector-source-change', {
           bubbles: true,
           detail: { operation, length: exported.length }
@@ -669,6 +688,7 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
         return false;
       }
       fabricLib.loadSVGFromString(wrapped).then(({ objects }) => {
+        if (host.__isonimViewDisposed) return;
         const imported = (objects || []).filter(Boolean);
         imported.forEach((obj, index) => {
           obj.set({
@@ -836,6 +856,11 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
   };
   host.__isonimVectorEditor = state;
   globalThis.__isonimVectorEditor = state;
+  globalThis.__isonimViewCleanup(host, () => {
+    if (globalThis.__isonimVectorEditor === state) delete globalThis.__isonimVectorEditor;
+    delete host.__isonimVectorEditor;
+    canvas.dispose();
+  });
 
   canvas.on('selection:created', () => state.syncSelection());
   canvas.on('selection:updated', () => state.syncSelection());

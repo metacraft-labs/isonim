@@ -1,3 +1,4 @@
+import isonim/editor/views/view_lifecycle
 ## IsoNim Editor — Component Detail View.
 ##
 ## Storybook-style: each variant gets its own section with title,
@@ -884,6 +885,7 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
   let detailSrcdocGeneration = createSignal(0)
   when defined(js):
     let bridgeBinding = newBridgeBinding()
+  ownViewResources(projectFrame)
   createRenderEffect proc() =
     let story = vm.selectedStory.val
     let preview = vm.preview.current.val
@@ -1097,7 +1099,7 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
               }
             });
           }
-          requestAnimationFrame(apply);
+          globalThis.__isonimFrameView(frame, apply);
         })(""", frame, ", ", variantScript, """);
       """].}
       {.emit: ["""
@@ -1127,9 +1129,9 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
             }
           };
           frame.addEventListener('load', resizeFrame);
-          requestAnimationFrame(resizeFrame);
+          globalThis.__isonimFrameView(frame, resizeFrame);
         } else if (frame) {
-          requestAnimationFrame(() => {
+          globalThis.__isonimFrameView(frame, () => {
             try {
               const doc = frame.contentDocument;
               const body = doc?.body;

@@ -60,6 +60,8 @@ import isonim/editor/types
 import isonim/editor/views/choice_row
 import isonim/editor/views/widgets/choice_group
 import isonim/editor/views/widgets/property_commit
+import isonim/editor/views/widgets/anchored_popover
+import isonim/editor/views/widgets/color_popover
 import isonim/editor/views/widgets/variable_chip
 
 # --------------------------------------------------------------------------- #
@@ -699,11 +701,12 @@ proc measureAnchorRect*[E](node: E): tuple[x, y, w, h: float] =
     {.emit: ["""
       (function (el) {
         if (!el || !el.getBoundingClientRect) return;
+        el.focus({preventScroll: true});
         var rc = el.getBoundingClientRect();
         var sx = window.scrollX || 0;
         var sy = window.scrollY || 0;
-        """, rx, """ = rc.left + sx;
-        """, ry, """ = rc.top + sy;
+        """, rx, """ = rc.left;
+        """, ry, """ = rc.top;
         """, rw, """ = rc.width;
         """, rh, """ = rc.height;
       })(""", node, """);
@@ -1283,12 +1286,19 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
         r.addEventListener(hexInput, "change", commit)
         r.addEventListener(hexInput, "blur", commit)
 
-        let openPicker = proc() =
-          # Phase G wires the real picker — Phase D leaves a no-op
-          # marker so behaviour tests can confirm the click reached
-          # the swatch.
-          r.setAttribute(swatchNode, "data-property-row-picker-requested", "true")
-        r.addEventListener(swatchNode, "click", openPicker)
+        let colorState = createColorPopoverState()
+        discard mountColorPopover(r, valueSlot, swatchNode, colorState,
+          proc(): string = cfg.colorValue.val,
+          proc(value: string): bool =
+            let rejected = if cfg.commitRejected != nil: cfg.commitRejected.val else: 0
+            # Refusal must not transiently mutate the reactive value: that
+            # rebuilds this slot and disposes the still-open error/draft UI.
+            if cfg.onCommitValue != nil: cfg.onCommitValue(value)
+            if cfg.commitRejected != nil and cfg.commitRejected.val != rejected:
+              return false
+            cfg.colorValue.val = value
+            if cfg.onChange != nil: cfg.onChange()
+            true)
 
       of prkChoice:
         var labels: seq[string] = @[]
@@ -1533,7 +1543,7 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
       let rc = measureAnchorRect(bindNode)
       cfg.onBindRequest(rc.x, rc.y, rc.w, rc.h)
   r.addEventListener(bindNode, "click", bindHandler)
-  r.addEventListener(bindNode, "keydown", bindHandler)
+  installPopoverTrigger(bindNode)
 
   let moreHandler = proc() =
     if cfg.onMore != nil: cfg.onMore()

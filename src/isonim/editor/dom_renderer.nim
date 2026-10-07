@@ -5,6 +5,7 @@ when not defined(js):
   {.error: "dom_renderer is JS-only".}
 
 import std/dom
+import isonim/core/owner
 
 type
   DomRenderer* = object
@@ -127,37 +128,42 @@ proc setInputValue*(r: DomRenderer; node: DomElement; value: string) =
   {.emit: [node, ".value = ", v].}
 
 proc enableDragScroll*(r: DomRenderer; node: DomElement) =
-  {.emit: [node, """
-    .style.cursor = 'grab';
-    (() => {
+  var dispose: proc()
+  {.emit: [dispose, """ = (() => {
       const el = """, node, """;
       let dragging = false;
-      let startX = 0;
-      let startY = 0;
-      let startLeft = 0;
-      let startTop = 0;
-      el.addEventListener('mousedown', (event) => {
-        if (event.button !== 0) return;
+      let disposed = false;
+      let startX = 0, startY = 0, startLeft = 0, startTop = 0;
+      el.style.cursor = 'grab';
+      const start = event => {
+        if (disposed || event.button !== 0) return;
         dragging = true;
-        startX = event.clientX;
-        startY = event.clientY;
-        startLeft = el.scrollLeft;
-        startTop = el.scrollTop;
+        startX = event.clientX; startY = event.clientY;
+        startLeft = el.scrollLeft; startTop = el.scrollTop;
         el.style.cursor = 'grabbing';
         event.preventDefault();
-      });
-      window.addEventListener('mousemove', (event) => {
-        if (!dragging) return;
+      };
+      const move = event => {
+        if (disposed || !dragging) return;
         el.scrollLeft = startLeft - (event.clientX - startX);
         el.scrollTop = startTop - (event.clientY - startY);
-      });
-      window.addEventListener('mouseup', () => {
-        if (!dragging) return;
+      };
+      const stop = () => {
         dragging = false;
         el.style.cursor = 'grab';
-      });
-    })()
-  """].}
+      };
+      el.addEventListener('mousedown', start);
+      window.addEventListener('mousemove', move);
+      window.addEventListener('mouseup', stop);
+      return () => {
+        if (disposed) return;
+        disposed = true; stop();
+        el.removeEventListener('mousedown', start);
+        window.removeEventListener('mousemove', move);
+        window.removeEventListener('mouseup', stop);
+      };
+    })()"""].}
+  onCleanup(dispose)
 
 proc firstChild*(r: DomRenderer; node: DomElement): DomElement =
   cast[Element](node.firstChild)

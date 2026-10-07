@@ -1,3 +1,4 @@
+import isonim/editor/views/view_lifecycle
 ## IsoNim Editor — Vector Graphics Editor View.
 ##
 ## Embedded SVG editor for design system symbols (icons, illustrations).
@@ -436,6 +437,7 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
 
   r.appendChild(mainArea, canvas)
   when defined(js):
+    ownViewResources(fabricHost)
     r.addEventListener(fabricHost, "isonim-vector-source-change", proc() =
       let exported = currentFabricVectorSvg(fabricHost)
       if exported.len > 0:

@@ -85,9 +85,23 @@ proc cleanNode*(node: OwnerBase) =
   ## For computations: unlinks from sources' observer lists.
   ## For all owners: runs cleanup callbacks and recursively cleans owned nodes.
 
-  # If it's a computation, unlink from all sources
-  if node of ComputationBase:
-    let comp = ComputationBase(node)
+  # A browser hot reload retains these owners but re-evaluates Nim's generated
+  # RTTI declarations. Their object identities no longer identify the old
+  # computation. The stable computation fields identify our own graph nodes;
+  # native targets continue using Nim's normal runtime type check.
+  var isComputation: bool
+  when defined(js):
+    {.emit: [isComputation, " = Object.prototype.hasOwnProperty.call(", node,
+      ", 'sources') && Object.prototype.hasOwnProperty.call(", node,
+      ", 'sourceSlots');"].}
+  else:
+    isComputation = node of ComputationBase
+  if isComputation:
+    var comp: ComputationBase
+    when defined(js):
+      {.emit: [comp, " = ", node, ";"].}
+    else:
+      comp = ComputationBase(node)
     for i in 0 ..< comp.sources.len:
       let source = comp.sources[i]
       let obsSlot = comp.sourceSlots[i]

@@ -69,6 +69,8 @@
 import isonim/core/signals
 import isonim/core/computation
 import isonim/dsl/ui
+import isonim/editor/views/widgets/color_popover
+import isonim/editor/views/widgets/anchored_popover
 import isonim/editor/types
 import isonim/editor/viewmodels
 
@@ -373,6 +375,9 @@ proc mountVariableInlineEditor*[R, E](r: R; parent: E; vm: EditorVM;
   # ------------------------------------------------------------------------- #
   # Visibility + positioning.
   # ------------------------------------------------------------------------- #
+  installAnchoredPopover(rootNode, "isonim-inline-close")
+  r.addEventListener(rootNode, "isonim-inline-close", proc() =
+    capturedState.closeVariableInlineEditor())
   createRenderEffect proc() =
     let open = capturedState.open.val
     let rect = capturedState.anchorRect.val
@@ -380,13 +385,8 @@ proc mountVariableInlineEditor*[R, E](r: R; parent: E; vm: EditorVM;
       if open: "true" else: "false")
     r.setStyle(rootNode, "display",
       if open: "flex" else: "none")
-    if not open:
-      return
     when defined(js):
-      let topPx = rect.y + rect.h + 6.0
-      let leftPx = rect.x
-      r.setStyle(rootNode, "top", $topPx & "px")
-      r.setStyle(rootNode, "left", $leftPx & "px")
+      syncAnchoredPopover(rootNode, capturedState, open, rect.x, rect.y, rect.w, rect.h)
     else:
       r.setAttribute(rootNode, "data-variable-inline-editor-anchor-x",
         $rect.x)
@@ -425,6 +425,7 @@ proc mountVariableInlineEditor*[R, E](r: R; parent: E; vm: EditorVM;
       r.setStyle(diagnosticNode, "display", "none")
       r.setTextContent(diagnosticNode, "")
 
+  r.setAttribute(nameInput, "readonly", "readonly")
   # Name input mirror — read-only at the source level for now; we
   # still surface the draft so the field tracks open events.
   createRenderEffect proc() =
@@ -461,21 +462,28 @@ proc mountVariableInlineEditor*[R, E](r: R; parent: E; vm: EditorVM;
     capturedState.diagnostic.val = ""
     capturedState.closeVariableInlineEditor()
   r.addEventListener(cancelBtn, "click", onCancel)
-  r.addEventListener(cancelBtn, "keydown", onCancel)
+
 
   # Save button.
   let onSave = proc() =
-    discard commitInlineEdit(capturedVm, capturedState)
+    if capturedState.open.val:
+      discard commitInlineEdit(capturedVm, capturedState)
   r.addEventListener(saveBtn, "click", onSave)
-  r.addEventListener(saveBtn, "keydown", onSave)
 
-  # Picker affordance — Phase G hookup; for now a marker attribute so
-  # the headless tests can observe the click reached the button.
-  let onPicker = proc() =
-    r.setAttribute(pickerBtn,
-      "data-variable-inline-editor-picker-requested", "true")
-  r.addEventListener(pickerBtn, "click", onPicker)
-  r.addEventListener(pickerBtn, "keydown", onPicker)
+
+  let colorState = createColorPopoverState()
+  discard mountColorPopover(r, rootNode, pickerBtn, colorState,
+    proc(): string = capturedState.draftValue.val,
+    proc(value: string): bool =
+      capturedState.draftValue.val = value
+      true)
+  createRenderEffect proc() =
+    if not capturedState.open.val: colorState.open.val = false
+    var colorValue = false
+    for token in capturedVm.foundations.tokens.val:
+      if token.key == capturedState.targetVariableKey.val:
+        colorValue = token.kind in {ftkColorPalette, ftkSemanticColor}
+    r.setStyle(pickerBtn, "display", if colorValue: "flex" else: "none")
 
   r.appendChild(parent, root)
   result = root
@@ -506,11 +514,12 @@ when defined(js):
         var rect = el.getBoundingClientRect();
         var sx = window.scrollX || 0;
         var sy = window.scrollY || 0;
-        """, rectX, """ = rect.left + sx;
-        """, rectY, """ = rect.top + sy;
+        """, rectX, """ = rect.left;
+        """, rectY, """ = rect.top;
         """, rectW, """ = rect.width;
         """, rectH, """ = rect.height;
       })(""", anchorEl, """);
     """].}
+    {.emit: [state, ".__isonimAnchor = ", anchorEl, ";"].}
     openVariableInlineEditorWithRect(vm, state, variableKey,
       rectX, rectY, rectW, rectH)

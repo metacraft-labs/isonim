@@ -17,6 +17,8 @@ import std/[options, strutils]
 import isonim/core/signals
 import isonim/core/computation
 import isonim/dsl/ui
+import isonim/editor/views/widgets/anchored_popover
+import isonim/editor/views/widgets/color_popover
 import isonim/editor/types
 import isonim/editor/element_semantics
 import isonim/editor/viewmodels
@@ -78,20 +80,21 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
   proc fillWiringNow(): InspectorRowWiring =
     if fillProperty() == "color": textFillWiring else: boxFillWiring
 
-  # Seed from the selection's background-color when an element is
-  # selected. The seeding happens once per selection change.
-  var lastElementId = ""
+  # Selection identity precedes asynchronously delivered computed properties.
+  # Track the actual fill-bearing input as well as ID so hydration/reload of the
+  # same selected element refreshes its controls. Unrelated property updates do
+  # not discard locally added fill rows or an in-progress draft.
+  var lastFillInput = (id: "", property: "", value: "", hasElement: false)
   createRenderEffect proc() =
     let el = vm.inspector.selectedElement.val
-    let id = el.id
-    if id != lastElementId:
-      lastElementId = id
-      if vm.inspector.hasElement.val:
-        let bg = findPropertyValue(el.properties, fillProperty(), "")
-        if bg.len > 0 and bg != "transparent" and bg != "none":
-          entries.val = @[FillEntry(color: bg, alpha: 1.0)]
-        else:
-          entries.val = @[]
+    let hasElement = vm.inspector.hasElement.val
+    let property = fillTargetProperty(el.tag)
+    let value = if hasElement: findPropertyValue(el.properties, property, "") else: ""
+    let input = (id: el.id, property: property, value: value, hasElement: hasElement)
+    if input != lastFillInput:
+      lastFillInput = input
+      if hasElement and value.len > 0 and value notin ["transparent", "none"]:
+        entries.val = @[FillEntry(color: value, alpha: 1.0)]
       else:
         entries.val = @[]
 
@@ -249,7 +252,7 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
         if idx == 0:
           (proc() =
             let rc = measureAnchorRect(chipRootRef)
-            vm.requestInspectorVariablePicker("background-color",
+            vm.requestInspectorVariablePicker(fillProperty(),
               rc.x, rc.y, rc.w, rc.h))
         else:
           nil
@@ -259,7 +262,7 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
       # ``pendingSourceEdits``. Additional fill rows have no canonical
       # CSS key yet, so their detach stays inert (honest gap — see M3+).
       let detachCb =
-        if idx == 0: vm.inspectorDetachRequestHandler("background-color")
+        if idx == 0: vm.inspectorDetachRequestHandler(fillProperty())
         else: nil
       let chipConfig = variableChipConfig(
         binding = binding.get,
@@ -273,10 +276,28 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
       # property, anchored to the slot. Only the primary fill (idx 0)
       # participates — extra fill rows have no canonical key yet.
       if idx == 0:
+        installPopoverTrigger(bindEl)
         r.addEventListener(bindEl, "click", proc() =
           let rc = measureAnchorRect(bindEl)
-          vm.requestInspectorVariablePicker("background-color",
+          vm.requestInspectorVariablePicker(fillProperty(),
             rc.x, rc.y, rc.w, rc.h))
+      let colorState = createColorPopoverState()
+      discard mountColorPopover(r, row, swatchEl, colorState,
+        proc(): string =
+          if idx < entries.val.len: entries.val[idx].color else: "",
+        proc(value: string): bool =
+          if idx != 0:
+            fillWiringNow().commitMessage.val = secondaryFillNotice
+            return false
+          let wiring = fillWiringNow()
+          let rejected = wiring.commitRejected.val
+          wiring.commit(value)
+          if wiring.commitRejected.val != rejected: return false
+          var next = entries.val
+          if idx >= next.len: return false
+          next[idx].color = value
+          entries.val = next
+          true)
       r.setInputValue(hexEl, entry.color)
       r.setInputValue(alphaEl, $int(entry.alpha * 100.0))
       r.addEventListener(hexEl, "change", proc() =

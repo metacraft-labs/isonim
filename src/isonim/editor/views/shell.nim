@@ -3,7 +3,8 @@
 ## Fully dogfoods IsoNim: all elements via ui macro with if/for/case.
 ## Only uses manual setStyle for reactive effects (createRenderEffect).
 
-import std/[options, sets, strutils, tables]
+import isonim/editor/views/view_lifecycle
+import std/[json, options, sets, strutils, tables]
 
 import isonim/core/[signals, computation, owner]
 import isonim/dsl/ui
@@ -1105,8 +1106,17 @@ proc installSceneGraphReader[R, E](vm: EditorVM; r: R; host: E) =
   let walkSource: cstring = cstring(sceneGraphWalkJs)
   when defined(js):
     {.emit: ["""
-      (function(ingest, host, walkSource) {
-        if (window.__isonimSceneGraphReaderInstalled) return;
+      (function(ingest, host, walkSource, model) {
+        if (!host || typeof host.closest !== 'function') return;
+        // One parent producer per model; UI mounts own their registrations.
+        // A replacement mount joins before old cleanup without losing its
+        // reader, and another editor's teardown cannot clear this record.
+        const runtime = window.__isonimSceneGraphReaderRuntime ||= {records: new Map()};
+        const existing = runtime.records.get(model);
+        if (existing && !existing.closed) { existing.register(host); return; }
+        const record = {owners: new Set(), preferred: host, closed: false,
+          frame: null, doc: null, docObserver: null, roots: new Map()};
+        runtime.records.set(model, record);
         window.__isonimSceneGraphReaderInstalled = true;
         // The walk is a Nim const shared with the injected preview bridge.
         // The editor's own window needs its own instance of it; a script
@@ -1128,7 +1138,17 @@ proc installSceneGraphReader[R, E](vm: EditorVM; r: R; host: E) =
           // most elements alone kept returning a still-mounted previous
           // story, so switching stories left the tree showing the old page --
           // measured, not hypothetical.
-          var frames = document.querySelectorAll('iframe');
+          var frames = [];
+          const preferredRoot = record.preferred && record.preferred.isConnected &&
+            record.preferred.closest('[data-isonim-editor="true"]');
+          for (const owner of record.owners) {
+            if (!owner.isConnected || owner.__isonimViewDisposed) continue;
+            const root = owner.closest('[data-isonim-editor="true"]');
+            if (!root) continue;
+            for (const frame of root.querySelectorAll('iframe')) {
+              if (!frames.includes(frame)) frames.push(frame);
+            }
+          }
           var best = null, bestScore = -1;
           for (var i = 0; i < frames.length; i++) {
             try {
@@ -1143,6 +1163,7 @@ proc installSceneGraphReader[R, E](vm: EditorVM; r: R; host: E) =
               // Visibility dominates: a visible frame always outranks a
               // hidden one however many elements the hidden one carries.
               var score = (visible ? 1000000 : 0) + n;
+              if (visible && preferredRoot && preferredRoot.contains(f)) score += 10000000;
               if (score > bestScore) { bestScore = score; best = d; }
             } catch (e) {}
           }
@@ -1161,39 +1182,153 @@ proc installSceneGraphReader[R, E](vm: EditorVM; r: R; host: E) =
         // is the threshold -- a reload is far quicker than that, and a story
         // that genuinely renders nothing never stops being empty.
         var emptyPolls = 0;
-        function tick() {
+        function tick(notificationOnly) {
+          if (record.closed) return;
+          updateRoots();
           try {
             var doc = previewDoc();
+            observeDocument(doc);
             if (!doc) {
-              emptyPolls++;
+              // Notifications do not shorten the two real-poll empty guard.
+              if (notificationOnly !== true) emptyPolls++;
               if (emptyPolls === 2 && lastSignature !== 'EMPTY') {
                 lastSignature = 'EMPTY';
                 ingest('[]');
               }
               return;
             }
-            emptyPolls = 0;
             var rows = build(doc);
+            // An empty loaded document can contain injected editor chrome.
+            // Its DOM count is nonzero while the shared walk has no layers;
+            // preserve the same temporal reload guard as a missing document.
+            if (!rows.length) {
+              if (notificationOnly !== true) emptyPolls++;
+              if (emptyPolls === 2 && lastSignature !== 'EMPTY') {
+                lastSignature = 'EMPTY'; ingest('[]');
+              }
+              return;
+            }
+            emptyPolls = 0;
             // Signature-gated: the walk is cheap but re-entering the reactive
             // graph is not, and an unconditional publish every poll would
             // re-render the panel forever.
-            // Include a mid-row in the signature: two different stories can
-            // share a row count and the same first/last element (both start
-            // with the site header), which made the gate treat a story switch
-            // as "no change".
-            var mid = rows.length ? rows[Math.floor(rows.length / 2)].id : '';
-            var sig = rows.length + ':' +
-              (rows.length ? rows[0].id + '|' + mid + '|' +
-                rows[rows.length - 1].id : '');
+            // Interior identities, labels and source metadata can change
+            // while count/first/middle/last remain the same. Hover/selection
+            // belong to the VM and must not create a publication feedback loop.
+            var sig = JSON.stringify(rows.map(function (row) {
+              const value = Object.assign({}, row);
+              delete value.hovered; delete value.selected;
+              return value;
+            }));
             if (sig === lastSignature) return;
             lastSignature = sig;
             ingest(JSON.stringify(rows));
           } catch (e) {}
         }
-        setInterval(tick, 700);
-        setTimeout(tick, 300);
-      })(""", ingest, """, """, host, """, """, walkSource, """);
+        function schedule() {
+          if (record.closed || record.frame !== null) return;
+          record.frame = requestAnimationFrame(function () {
+            record.frame = null; tick(true);
+          });
+        }
+        function relevantMutation(mutation, walker) {
+          if (walker.isEditorChrome && walker.isEditorChrome(mutation.target)) return false;
+          if (mutation.type === 'attributes' &&
+              ['data-isonim-hovered', 'data-isonim-selected',
+               'data-editor-agent-highlight'].includes(mutation.attributeName)) return false;
+          if (mutation.type !== 'childList') return true;
+          return [...mutation.addedNodes, ...mutation.removedNodes].some(function (node) {
+            return !walker.isEditorChrome || !walker.isEditorChrome(node);
+          });
+        }
+        function observeDocument(doc) {
+          if (record.doc === doc) return;
+          if (record.docObserver) record.docObserver.disconnect();
+          record.doc = doc; record.docObserver = null;
+          if (!doc || !doc.body || typeof MutationObserver === 'undefined') return;
+          const walker = window.__isonimSceneGraphWalk(doc);
+          record.docObserver = new MutationObserver(function (mutations) {
+            if (record.closed || record.doc !== doc) return;
+            if (mutations.some(mutation => relevantMutation(mutation, walker))) schedule();
+          });
+          record.docObserver.observe(doc.body, {subtree: true, childList: true,
+            characterData: true, attributes: true});
+        }
+        function updateRoots() {
+          const roots = new Set();
+          for (const owner of record.owners) {
+            if (!owner.isConnected || owner.__isonimViewDisposed) continue;
+            const root = owner.closest('[data-isonim-editor="true"]');
+            if (root) roots.add(root);
+          }
+          for (const [root, observer] of record.roots) {
+            if (!roots.has(root)) { observer.disconnect(); record.roots.delete(root); }
+          }
+          if (typeof MutationObserver === 'undefined') return;
+          for (const root of roots) {
+            if (record.roots.has(root)) continue;
+            const observer = new MutationObserver(function (mutations) {
+              if (record.closed) return;
+              // Layers rebuilding and overlay chrome are outside the frame
+              // visibility ancestry, so they cannot schedule another walk.
+              const frames = Array.from(root.querySelectorAll('iframe'));
+              const changed = mutations.some(function (mutation) {
+                if (mutation.type === 'attributes') {
+                  return frames.some(frame => mutation.target === frame || mutation.target.contains(frame));
+                }
+                return [...mutation.addedNodes, ...mutation.removedNodes].some(function (node) {
+                  return node.nodeType === 1 && (node.tagName === 'IFRAME' || node.querySelector('iframe'));
+                });
+              });
+              if (changed) schedule();
+            });
+            observer.observe(root, {subtree: true, childList: true, attributes: true,
+              attributeFilter: ['style', 'class', 'hidden', 'src', 'srcdoc']});
+            record.roots.set(root, observer);
+          }
+        }
+        function frameLoaded(event) {
+          if (record.closed || !event.target || event.target.tagName !== 'IFRAME') return;
+          for (const owner of record.owners) {
+            const root = owner.isConnected && owner.closest('[data-isonim-editor="true"]');
+            if (root && root.contains(event.target)) {
+              record.preferred = owner; schedule(); return;
+            }
+          }
+        }
+        var interval = setInterval(tick, 700);
+        var timer = setTimeout(tick, 300);
+        document.addEventListener('load', frameLoaded, true);
+        window.addEventListener('resize', schedule);
+        function detach(owner) {
+          record.owners.delete(owner);
+          if (record.closed) return;
+          if (record.preferred === owner) record.preferred = record.owners.values().next().value;
+          if (record.owners.size) { updateRoots(); observeDocument(previewDoc()); schedule(); return; }
+          record.closed = true;
+          clearInterval(interval); clearTimeout(timer);
+          if (record.frame !== null) cancelAnimationFrame(record.frame);
+          record.frame = null;
+          if (record.docObserver) record.docObserver.disconnect();
+          record.docObserver = null; record.doc = null;
+          for (const observer of record.roots.values()) observer.disconnect();
+          record.roots.clear();
+          document.removeEventListener('load', frameLoaded, true);
+          window.removeEventListener('resize', schedule);
+          if (runtime.records.get(model) === record) runtime.records.delete(model);
+          window.__isonimSceneGraphReaderInstalled = runtime.records.size > 0;
+        }
+        record.register = function (owner) {
+          if (record.closed) return;
+          record.owners.add(owner); record.preferred = owner;
+          owner.__isonimSceneGraphCleanup = function () { detach(owner); };
+          schedule();
+        };
+        record.register(host);
+      })(""", ingest, """, """, host, """, """, walkSource, """, """, capturedVm, """);
     """].}
+    onCleanup proc() =
+      {.emit: ["if (", host, ".__isonimSceneGraphCleanup) ", host, ".__isonimSceneGraphCleanup();"].}
 
 proc bindSceneGraphTwisty[R, E](vm: EditorVM; r: R; node: E; rowId: string) =
   ## Expand/collapse without selecting. `stopPropagation` is the whole point:
@@ -1294,7 +1429,8 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
               margin_left = "auto", font_size = "10px", color = textDim):
           text ""
       tdiv(ref = rowsHost,
-            `data-scene-graph-rows` = "true",
+            `data-scene-graph-rows` = "true", role = "region",
+            tabindex = "-1", `aria-label` = "Layers",
             display = "flex", flex_direction = "column",
             overflow_y = "auto", overflow_x = "hidden",
             padding = "4px 0", flex = "1", min_height = "0")
@@ -1320,15 +1456,81 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
       # moved a value nothing re-read.
       hoverVm.inspector.setLayerHover($id)
     {.emit: ["""
-      (function (onHover) {
-        window.addEventListener('isonim-preview-element-hovered',
-          function (event) {
-            onHover(String((event.detail && event.detail.id) || ''));
-          });
-      })(""", onPreviewHover, ");"].}
+      (function (onHover, panel) {
+        function hovered(event) {
+          onHover(String((event.detail && event.detail.id) || ''));
+        }
+        window.addEventListener('isonim-preview-element-hovered', hovered);
+        panel.__isonimHoverCleanup = function () {
+          window.removeEventListener('isonim-preview-element-hovered', hovered);
+        };
+      })(""", onPreviewHover, ", ", panel, ");"].}
+    onCleanup proc() =
+      {.emit: ["if (", panel, ".__isonimHoverCleanup) ", panel, ".__isonimHoverCleanup();"].}
 
   result = panel
+  ownViewResources(rowsHost)
   vm.installSceneGraphReader(r, rowsHost)
+  when defined(js):
+    let toggleExpanded = proc(id: cstring) =
+      capturedVm.inspector.toggleLayerExpanded($id)
+    {.emit: ["""
+      (function (host, search, toggle) {
+        if (!host || typeof host.querySelectorAll !== 'function') return;
+        function focusId(id, previous) {
+          function restore() {
+            const row = Array.from(host.querySelectorAll('[data-scene-graph-row]'))
+              .find(row => row.getAttribute('data-scene-graph-row') === id);
+            if (row) { row.focus(); return true; }
+            return false;
+          }
+          // Expansion/selection replaces the row synchronously. Keep rapid
+          // consecutive keyboard gestures on its real replacement, rather
+          // than leaving focus on body until the next animation frame.
+          const active = host.ownerDocument.activeElement;
+          if (!host.isConnected || host.__isonimViewDisposed) return;
+          if (active !== previous && active !== host.ownerDocument.body &&
+              active?.getAttribute('data-scene-graph-row') !== id) return;
+          restore();
+        }
+        function keydown(event) {
+          if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+          const row = event.target.closest('[data-scene-graph-row]');
+          if (!row || !host.contains(row)) return;
+          const rows = Array.from(host.querySelectorAll('[data-scene-graph-row]'));
+          const index = rows.indexOf(row), depth = Number(row.getAttribute('data-scene-graph-depth'));
+          const id = row.getAttribute('data-scene-graph-row');
+          const expanded = row.getAttribute('aria-expanded');
+          let target = null;
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault(); row.click(); focusId(id, row); return;
+          }
+          if (event.key === 'ArrowDown') target = rows[Math.min(index + 1, rows.length - 1)];
+          else if (event.key === 'ArrowUp') target = rows[Math.max(0, index - 1)];
+          else if (event.key === 'Home') target = rows[0];
+          else if (event.key === 'End') target = rows[rows.length - 1];
+          else if (event.key === 'ArrowRight') {
+            if (expanded === 'false' && !search.value.trim()) {
+              event.preventDefault(); toggle(id); focusId(id, row); return;
+            }
+            if (expanded === 'true' && rows[index + 1] &&
+                Number(rows[index + 1].getAttribute('data-scene-graph-depth')) > depth) target = rows[index + 1];
+          } else if (event.key === 'ArrowLeft') {
+            if (expanded === 'true' && !search.value.trim()) {
+              event.preventDefault(); toggle(id); focusId(id, row); return;
+            }
+            for (let i = index - 1; i >= 0; i--) {
+              if (Number(rows[i].getAttribute('data-scene-graph-depth')) < depth) {target = rows[i]; break;}
+            }
+          } else return;
+          event.preventDefault(); if (target) target.focus();
+        }
+        host.addEventListener('keydown', keydown);
+        host.__isonimLayerKeyboardCleanup = function () { host.removeEventListener('keydown', keydown); };
+      })(""", rowsHost, ", ", layerSearchEl, ", ", toggleExpanded, """);
+    """].}
+    onCleanup proc() =
+      {.emit: ["if (", rowsHost, ".__isonimLayerKeyboardCleanup) ", rowsHost, ".__isonimLayerKeyboardCleanup();"].}
   let onSearch = proc() =
     capturedVm.inspector.setLayerSearch(r.inputValue(layerSearchEl))
   r.addEventListener(layerSearchEl, "input", onSearch)
@@ -1401,7 +1603,8 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
       let rowChildCount = rows[i].childCount
       let rowSelected = rows[i].selected
       let rowHovered = rows[i].hovered
-      let rowExpanded = rowChildCount == 0 or rowId in expanded
+      let rowExpanded = rowChildCount == 0 or rowId in expanded or
+        (searching and rows[i].expanded)
       let indent = 8 + rowDepth * 12
       let bg = if rowSelected: "rgba(124,122,237,0.35)"
                elif rowHovered: "rgba(255,255,255,0.04)"
@@ -1428,6 +1631,7 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
           # what a designer expects. Clicking the label selects.
           span(ref = twisty,
                 `data-scene-graph-twisty` = (if rowChildCount > 0: rowId else: ""),
+                `aria-hidden` = "true",
                 color = textDim, font_size = sidebarCaptionFont, flex_shrink = "0",
                 width = "9px", text_align = "center",
                 cursor = (if rowChildCount > 0: "pointer" else: "default")):
@@ -1439,6 +1643,8 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
       # Selection routes through the same proc the preview's own click path
       # uses, so a tree click and a preview click are indistinguishable
       # downstream -- including to the Inspector, which is the point.
+      if rowChildCount > 0:
+        r.setAttribute(rowEl, "aria-expanded", if rowExpanded: "true" else: "false")
       capturedVm.bindSceneGraphRow(r, rowEl, rowId)
       if rowChildCount > 0:
         capturedVm.bindSceneGraphTwisty(r, twisty, rowId)
@@ -1468,7 +1674,7 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
       {.emit: ["""
         (function (host, id) {
           // After the rebuild effect above has run.
-          requestAnimationFrame(function () {
+          globalThis.__isonimFrameView(host, function () {
             if (!host) return;
             var row = host.querySelector('[data-scene-graph-row="' +
               (window.CSS && CSS.escape ? CSS.escape(id) : id) + '"]');
@@ -1649,13 +1855,16 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
               r.bindQuickNavIcon(iconNode, vm, cKind)
 
       # Story sections
-      tdiv(`data-sidebar-story-tree` = "true",
+      tdiv(`data-sidebar-story-tree` = "true", role = "region",
+            tabindex = "0", `aria-label` = "Stories",
             display = "flex", flex_direction = "column",
             gap = "2px", padding = "8px 8px 16px 8px",
             # `min-height: 0` is what lets a flex child shrink below its
             # content and scroll; without it the tree pushes the Layers panel
             # off the bottom instead.
-            flex = "1 1 auto", min_height = "0",
+            # Allocate from the shared viewport, not the long tree's intrinsic
+            # height; otherwise this sibling squeezes Layers down to one row.
+            flex = "1 1 55%", min_height = "0",
             overflow_y = "auto", overflow_x = "hidden"):
         for section in sidebarSections:
           let sLabel = sectionLabel(section)
@@ -1928,7 +2137,7 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
     let sidebarEl = sidebar
     {.emit: ["""
       (function (handle, sidebar) {
-        if (!handle || !document) return;
+        if (!handle || typeof document === 'undefined' || !document.addEventListener || !handle.addEventListener) return;
         var startX = 0;
         var startW = 0;
         var dragging = false;
@@ -1938,15 +2147,15 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
           document.body.style.cursor = '';
           document.body.style.userSelect = '';
         }
-        handle.addEventListener('mousedown', function (e) {
+        function startDrag(e) {
           dragging = true;
           startX = e.clientX;
           startW = sidebar.getBoundingClientRect().width;
           document.body.style.cursor = 'col-resize';
           document.body.style.userSelect = 'none';
           if (e.preventDefault) e.preventDefault();
-        });
-        document.addEventListener('mousemove', function (e) {
+        }
+        function moveDrag(e) {
           if (!dragging) return;
           var delta = e.clientX - startX;
           var w = Math.max(180, Math.min(420, Math.round(startW + delta)));
@@ -1954,11 +2163,23 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
               window.__isonimEditor.setLeftSidebarWidth) {
             window.__isonimEditor.setLeftSidebarWidth(w);
           }
-        });
+        }
+        handle.addEventListener('mousedown', startDrag);
+        document.addEventListener('mousemove', moveDrag);
         document.addEventListener('mouseup', endDrag);
         document.addEventListener('mouseleave', endDrag);
+        handle.__isonimResizeCleanup = function () {
+          endDrag();
+          handle.removeEventListener('mousedown', startDrag);
+          document.removeEventListener('mousemove', moveDrag);
+          document.removeEventListener('mouseup', endDrag);
+          document.removeEventListener('mouseleave', endDrag);
+        };
       })(""", handleEl, """, """, sidebarEl, """);
     """].}
+
+    onCleanup proc() =
+      {.emit: ["if (", handleEl, ".__isonimResizeCleanup) ", handleEl, ".__isonimResizeCleanup();"].}
 
   # SGR-M3: the scene graph sits below the storyboard in the same sidebar.
   # Appended after the resize wiring so the handle keeps covering the whole
@@ -2998,6 +3219,8 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
          flex = "1", min_height = "0", min_width = "0",
          overflow_y = "auto", overflow_x = "hidden")
 
+  ownViewResources(sectionListEl)
+
   # `openSourceForSelection` expands the Source section and asks for it to
   # be brought into view; the scroll is here because only the view knows
   # where the section landed.
@@ -3009,11 +3232,11 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
       if generation == lastReveal: return
       lastReveal = generation
       {.emit: ["""
-        requestAnimationFrame(function () {
-          var el = document.querySelector('[data-inspector-section-source]')
-            || document.querySelector('[data-inspector-section="source"]');
+        globalThis.__isonimFrameView(""", sectionListEl, """, function () {
+          var el = """, sectionListEl, """.querySelector('[data-inspector-section-source]')
+            || """, sectionListEl, """.querySelector('[data-inspector-section="source"]');
           if (!el) {
-            var heads = document.querySelectorAll('[data-inspector-section-title]');
+            var heads = """, sectionListEl, """.querySelectorAll('[data-inspector-section-title]');
             for (var i = 0; i < heads.length; i++) {
               if (/^source$/i.test(heads[i].textContent.trim())) {
                 el = heads[i];
@@ -3050,6 +3273,11 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
           overflow_x = "hidden")
 
   let sidebarRoot = result
+  createRenderEffect proc() =
+    let story = vm.selectedStory.val
+    r.setAttribute(sidebarRoot, "data-inspector-selection-context",
+      $(%*[story.group, story.name, $story.kind,
+        vm.inspector.selectedElement.val.id, $vm.preview.sourceGeneration.val]))
 
   # 2026-05-28: left-edge drag-resize handle. Symmetrical with the
   # left sidebar's right-edge handle; drives ``setRightPanelWidth``
@@ -3080,7 +3308,7 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
     let panelEl = sidebarRoot
     {.emit: ["""
       (function (handle, panel) {
-        if (!handle || !document) return;
+        if (!handle || typeof document === 'undefined' || !document.addEventListener || !handle.addEventListener) return;
         var startX = 0;
         var startW = 0;
         var dragging = false;
@@ -3090,15 +3318,15 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
           document.body.style.cursor = '';
           document.body.style.userSelect = '';
         }
-        handle.addEventListener('mousedown', function (e) {
+        function startDrag(e) {
           dragging = true;
           startX = e.clientX;
           startW = panel.getBoundingClientRect().width;
           document.body.style.cursor = 'col-resize';
           document.body.style.userSelect = 'none';
           if (e.preventDefault) e.preventDefault();
-        });
-        document.addEventListener('mousemove', function (e) {
+        }
+        function moveDrag(e) {
           if (!dragging) return;
           // Right panel grows when the cursor moves LEFT (delta < 0
           // means user wants a wider panel). Hence subtract.
@@ -3108,11 +3336,23 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
               window.__isonimEditor.setRightPanelWidth) {
             window.__isonimEditor.setRightPanelWidth(w);
           }
-        });
+        }
+        handle.addEventListener('mousedown', startDrag);
+        document.addEventListener('mousemove', moveDrag);
         document.addEventListener('mouseup', endDrag);
         document.addEventListener('mouseleave', endDrag);
+        handle.__isonimResizeCleanup = function () {
+          endDrag();
+          handle.removeEventListener('mousedown', startDrag);
+          document.removeEventListener('mousemove', moveDrag);
+          document.removeEventListener('mouseup', endDrag);
+          document.removeEventListener('mouseleave', endDrag);
+        };
       })(""", handleEl, """, """, panelEl, """);
     """].}
+
+    onCleanup proc() =
+      {.emit: ["if (", handleEl, ".__isonimResizeCleanup) ", handleEl, ".__isonimResizeCleanup();"].}
 
   # Phase C (2026-05-28): hydrate the inspector's expanded-section
   # set from ``localStorage`` BEFORE the first reactive paint so the
@@ -3195,6 +3435,7 @@ proc renderCommandPalette[R, E](r: R; vm: EditorVM): E =
           discard
 
   let paletteRoot = result
+  ownViewResources(paletteRoot)
   when defined(js):
     {.emit: ["""
       (function () {
@@ -3254,8 +3495,8 @@ proc renderCommandPalette[R, E](r: R; vm: EditorVM): E =
         const restoreReturnFocus = () => {
           const target = root.__isonimReturnFocus;
           if (target && target.focus) {
-            setTimeout(() => target.focus({ preventScroll: true }), 0);
-            setTimeout(() => target.focus({ preventScroll: true }), 25);
+            globalThis.__isonimDeferView(root, () => { if (target.isConnected) target.focus({ preventScroll: true }); }, 0);
+            globalThis.__isonimDeferView(root, () => { if (target.isConnected) target.focus({ preventScroll: true }); }, 25);
           }
         };
         root.__isonimPaletteReset = () => setActive(0, false);
@@ -3336,8 +3577,8 @@ proc renderCommandPalette[R, E](r: R; vm: EditorVM): E =
             const target = root.__isonimReturnFocus;
             root.__isonimReturnFocus = null;
             if (target && target.focus) {
-              setTimeout(() => target.focus({ preventScroll: true }), 0);
-              setTimeout(() => target.focus({ preventScroll: true }), 25);
+              globalThis.__isonimDeferView(root, () => { if (target.isConnected) target.focus({ preventScroll: true }); }, 0);
+              globalThis.__isonimDeferView(root, () => { if (target.isConnected) target.focus({ preventScroll: true }); }, 25);
             }
           })();
         """].}
@@ -3405,7 +3646,7 @@ proc renderCommandPalette[R, E](r: R; vm: EditorVM): E =
             }
             if (root && root.__isonimPaletteReset) root.__isonimPaletteReset();
             if (input && document.activeElement !== input) {
-              setTimeout(() => input.focus({ preventScroll: true }), 0);
+              globalThis.__isonimDeferView(root, () => input.focus({ preventScroll: true }), 0);
             }
           })();
         """].}
@@ -4440,7 +4681,7 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
     let panelEl = panelRoot
     {.emit: ["""
       (function (handle, panel) {
-        if (!handle || !document) return;
+        if (!handle || typeof document === 'undefined' || !document.addEventListener || !handle.addEventListener) return;
         var startX = 0;
         var startW = 0;
         var dragging = false;
@@ -4450,15 +4691,15 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
           document.body.style.cursor = '';
           document.body.style.userSelect = '';
         }
-        handle.addEventListener('mousedown', function (e) {
+        function startDrag(e) {
           dragging = true;
           startX = e.clientX;
           startW = panel.getBoundingClientRect().width;
           document.body.style.cursor = 'col-resize';
           document.body.style.userSelect = 'none';
           if (e.preventDefault) e.preventDefault();
-        });
-        document.addEventListener('mousemove', function (e) {
+        }
+        function moveDrag(e) {
           if (!dragging) return;
           var delta = startX - e.clientX;
           var w = Math.max(200, Math.min(420, Math.round(startW + delta)));
@@ -4466,11 +4707,23 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
               window.__isonimEditor.setRightPanelWidth) {
             window.__isonimEditor.setRightPanelWidth(w);
           }
-        });
+        }
+        handle.addEventListener('mousedown', startDrag);
+        document.addEventListener('mousemove', moveDrag);
         document.addEventListener('mouseup', endDrag);
         document.addEventListener('mouseleave', endDrag);
+        handle.__isonimResizeCleanup = function () {
+          endDrag();
+          handle.removeEventListener('mousedown', startDrag);
+          document.removeEventListener('mousemove', moveDrag);
+          document.removeEventListener('mouseup', endDrag);
+          document.removeEventListener('mouseleave', endDrag);
+        };
       })(""", handleEl, """, """, panelEl, """);
     """].}
+
+    onCleanup proc() =
+      {.emit: ["if (", handleEl, ".__isonimResizeCleanup) ", handleEl, ".__isonimResizeCleanup();"].}
 
   # Overflow-dropdown open signal.
   let dropdownOpen = createSignal(false)
@@ -4708,6 +4961,8 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
       discard cvm.activeChatId.val
       renderTabStrip()
 
+    ownViewResources(tabList)
+
     # Overflow detection — reveal the chevron when the tab list's
     # scrollWidth exceeds its clientWidth.
     when defined(js):
@@ -4718,7 +4973,7 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
         {.emit: ["""
           (function (list, btn) {
             if (!list || !btn) return;
-            setTimeout(function () {
+            globalThis.__isonimDeferView(list, function () {
               var overflowing = list.scrollWidth > list.clientWidth;
               btn.style.display = overflowing ? 'flex' : 'none';
             }, 0);
@@ -4734,7 +4989,7 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
         if (!panel || !dropdown) return;
         if (panel.__isonimAiAssistantReady) return;
         panel.__isonimAiAssistantReady = true;
-        document.addEventListener('mousedown', function (event) {
+        function outside(event) {
           if (dropdown.style.display === 'none') return;
           var target = event.target;
           if (!target) return;
@@ -4744,17 +4999,26 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
           if (trigger && trigger.contains(target)) return;
           dropdown.style.display = 'none';
           if (trigger) trigger.setAttribute('aria-expanded', 'false');
-        });
-        document.addEventListener('keydown', function (event) {
+        }
+        function escape(event) {
           if (event.key !== 'Escape') return;
           if (dropdown.style.display === 'none') return;
           dropdown.style.display = 'none';
           var trigger = panel.querySelector(
             '[data-ai-assistant-overflow="true"]');
           if (trigger) trigger.setAttribute('aria-expanded', 'false');
-        });
+        }
+        document.addEventListener('mousedown', outside);
+        document.addEventListener('keydown', escape);
+        panel.__isonimAiCleanup = function () {
+          document.removeEventListener('mousedown', outside);
+          document.removeEventListener('keydown', escape);
+        };
       })(""", panelJs, """, """, dropdownJs, """);
     """].}
+
+    onCleanup proc() =
+      {.emit: ["if (", panelJs, ".__isonimAiCleanup) ", panelJs, ".__isonimAiCleanup();"].}
 
   # TODO(spec): wire title summarization once agent emits summary
   # signal — the per-spec future-work item. Today titles default to
@@ -4769,7 +5033,7 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
   ## (`renderPreviewChromeBar`). The shell row sits edge-to-edge at the
   ## top of the viewport.
   let shellRoot = ui(r):
-    tdiv(display = "flex", flex_direction = "column",
+    tdiv(`data-isonim-editor` = "true", display = "flex", flex_direction = "column",
           width = "100%", height = "100%",
           font_family = "-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif",
           font_size = "14px", background_color = bgBase,
@@ -5297,6 +5561,20 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
       variablePickerState.previouslyLinked.val =
         vm.previouslyLinkedVariables(key)
       openVariablePickerWithRect(variablePickerState, key, x, y, w, h)
+  # Popups belong to the selection that invoked them. Changing selection
+  # cancels token/value drafts rather than applying them to a new element.
+  var popupSelection = (id: vm.inspector.selectedElement.val.id,
+    story: vm.selectedStory.val, generation: vm.preview.sourceGeneration.val)
+  createRenderEffect proc() =
+    let selected = (id: vm.inspector.selectedElement.val.id,
+      story: vm.selectedStory.val, generation: vm.preview.sourceGeneration.val)
+    if selected != popupSelection:
+      popupSelection = selected
+      when defined(js):
+        {.emit: ["if (globalThis.__isonimCloseInspectorPopovers) globalThis.__isonimCloseInspectorPopovers(", shellRoot, ");"].}
+      closeVariablePicker(variablePickerState)
+      closeVariableInlineEditor(variableInlineEditorState)
+
   # Wire the picker's per-row Edit affordance into the inline editor.
   # The picker's row knows the variable key; the inline editor opens
   # anchored to the picker by inheriting the picker's anchor rect.
@@ -5341,12 +5619,17 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
         const node = """, escKeyNode, """;
         if (!node || node.__isonimEscBound) return;
         node.__isonimEscBound = true;
-        document.addEventListener('keydown', function (event) {
+        function escape(event) {
           if (event.key !== 'Escape') return;
           const ev = new Event('keydown', { bubbles: false });
           node.dispatchEvent(ev);
-        });
+        }
+        document.addEventListener('keydown', escape);
+        node.__isonimEscapeCleanup = () => document.removeEventListener('keydown', escape);
       })();
     """].}
+
+    onCleanup proc() =
+      {.emit: ["if (", escKeyNode, ".__isonimEscapeCleanup) ", escKeyNode, ".__isonimEscapeCleanup();"].}
 
   shellRoot

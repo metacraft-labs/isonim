@@ -18,9 +18,12 @@ import isonim/editor/workspace
 import isonim/editor/editable_cells
 import isonim/editor/views/shell
 import isonim/editor/design_review/editor_agent_adapter
+from isonim/editor/design_review/browser_agent_client import BrowserAgentClient
 
 var
   routeSyncScheduled = false
+  routeWriteTimer = 0
+  routeOwnerGeneration = 0
   routeHistoryInitialized = false
   applyingRoute = false
   lastSyncedRoute = ""
@@ -324,8 +327,8 @@ proc writeRouteUrl(url: string; replace: bool) =
   else:
     {.emit: ["window.history.pushState({ isonimEditor: true }, '', ", next, ")"].}
 
-proc deferRouteWrite(cb: proc()) =
-  {.emit: ["setTimeout(", cb, ", 0)"].}
+proc deferRouteWrite(cb: proc()): int =
+  {.emit: [result, " = setTimeout(", cb, ", 0);"].}
 
 proc addPopstateListener(handler: proc()) =
   {.emit: ["window.addEventListener('popstate', ", handler, ")"].}
@@ -514,8 +517,12 @@ proc installEditorKeyboardShortcuts(vm: EditorVM) =
     discard vm.runEditorCommand(eckUndo)
   let redo = proc() =
     discard vm.runEditorCommand(eckRedo)
-  {.emit: ["""
+  var cleanup: proc()
+  {.emit: [cleanup, " = ", """
     (function () {
+      let disposed = false;
+      const timers = new Set();
+      function deferFocus(fn) { const id = setTimeout(() => { timers.delete(id); if(!disposed) fn(); }, 0); timers.add(id); }
       const openPalette = """, openPalette, """;
       const closePalette = """, closePalette, """;
       const editMode = """, editMode, """;
@@ -562,7 +569,7 @@ proc installEditorKeyboardShortcuts(vm: EditorVM) =
         const palette = document.querySelector('[data-editor-command-palette="true"]');
         return palette && palette.getAttribute('aria-hidden') === 'false';
       };
-      window.addEventListener('keydown', function (event) {
+      function key(event) {
         const key = event.key;
         const code = event.code;
         const lower = String(key || '').toLowerCase();
@@ -574,17 +581,17 @@ proc installEditorKeyboardShortcuts(vm: EditorVM) =
           openPalette();
           const palette = document.querySelector('[data-editor-command-palette="true"]');
           if (palette) palette.__isonimReturnFocus = returnFocus;
-          setTimeout(() => {
+          deferFocus(() => {
             const input = document.querySelector('[aria-label="Search editor commands"]');
             if (input && input.focus) input.focus({ preventScroll: true });
-          }, 0);
+          });
           return;
         }
         if (key === 'Escape' && paletteOpen()) {
           event.preventDefault();
           closePalette();
           if (returnFocus && returnFocus.focus) {
-            setTimeout(() => returnFocus.focus({ preventScroll: true }), 0);
+            deferFocus(() => returnFocus.focus({ preventScroll: true }));
           }
           return;
         }
@@ -634,14 +641,17 @@ proc installEditorKeyboardShortcuts(vm: EditorVM) =
         } else if (lower === 'i') {
           event.preventDefault();
           focusInspector();
-          setTimeout(() => {
+          deferFocus(() => {
             const input = document.querySelector('[data-isonim-focus-id="section-search"]');
             if (input && input.focus) input.focus({ preventScroll: true });
-          }, 0);
+          });
         }
-      });
+      }
+      window.addEventListener('keydown', key);
+      return function() { disposed = true; window.removeEventListener('keydown', key); for(const id of timers) clearTimeout(id); timers.clear(); };
     })();
   """].}
+  onCleanup(cleanup)
 
 proc editorRouteUrl(vm: EditorVM): string =
   var parts = @[
@@ -680,7 +690,10 @@ proc scheduleEditorRouteSync(vm: EditorVM) =
     return
 
   routeSyncScheduled = true
-  deferRouteWrite proc() =
+  let generation = routeOwnerGeneration
+  routeWriteTimer = deferRouteWrite proc() =
+    if generation != routeOwnerGeneration: return
+    routeWriteTimer = 0
     routeSyncScheduled = false
     if not applyingRoute:
       syncEditorRouteNow(vm, replace = not routeHistoryInitialized)
@@ -729,6 +742,7 @@ proc applyEditorRoute(vm: EditorVM) =
       vm.activeView.val = viewFromSlug(viewParam, vm.activeView.val)
 
 proc installEditorHistorySync(vm: EditorVM) =
+  routeOwnerGeneration.inc
   routeSyncScheduled = false
   routeHistoryInitialized = false
   lastSyncedRoute = ""
@@ -757,6 +771,10 @@ proc installEditorHistorySync(vm: EditorVM) =
   addPopstateListener(onPopstate)
   onCleanup proc() =
     removePopstateListener(onPopstate)
+    routeOwnerGeneration.inc
+    {.emit: ["clearTimeout(", routeWriteTimer, ");"].}
+    routeWriteTimer = 0
+    routeSyncScheduled = false
 
 proc exposeWindowEditorHandle*(vm: EditorVM) =
   ## REV-M2: install a small ``window.__isonimEditor`` helper that the
@@ -952,6 +970,9 @@ proc exposeWindowEditorHandle*(vm: EditorVM) =
         connect();
       })(""", buildFailed, ", ", buildRecovered, ");"].}
 
+  onCleanup proc() =
+    {.emit: "if (window.__isonimAutoSaveTimer) clearTimeout(window.__isonimAutoSaveTimer); window.__isonimAutoSaveTimer = null;".}
+
   # Auto-save. The VM bumps a generation when a commit stages an edit; the
   # debounce lives here because the VM has no timer and should not grow one
   # -- a commit that wrote immediately would write once per keystroke in a
@@ -1095,6 +1116,80 @@ proc onProjectCodeReplaced() =
   ## which is a deliberate act rather than a side effect of compiling.
   discard
 
+proc unmountEditor*(vm: EditorVM): bool {.discardable.} =
+  ## Dispose this UI mount, retaining the application's model and backend
+  ## conversations. Repeated disposal is a no-op; another model is untouched.
+  {.emit: ["const mountedUI = globalThis.__isonimEditorMount; ", result,
+    " = false; if (mountedUI && mountedUI.vm === ", vm, ") {",
+    "globalThis.__isonimEditorMount = null; mountedUI.shell.setAttribute('data-isonim-unmounting','true'); mountedUI.dispose(); mountedUI.shell.remove();",
+    "globalThis.__isonimEditor = null; ", result, " = true; }"].}
+
+proc mountEditor*(vm: EditorVM; root: Element = document.body;
+                  useHashRoute = true; injectStyles = true): EditorVM =
+  ## Mount a retained model through the production view path. Ownership of the
+  ## model remains with its host; unmounting these views does not close sessions.
+  if vm == nil: raise newException(ValueError, "An editor model is required.")
+  var alreadyMounted = false
+  {.emit: [alreadyMounted, " = !!globalThis.__isonimEditorMount;"].}
+  if alreadyMounted:
+    if liveEditorVM() == vm: return vm
+    raise newException(ValueError, "Another editor UI is already mounted.")
+  if injectStyles:
+    injectEditorStyles()
+
+  when defined(js):
+    # RS-M11 Pattern A: the JS bundle needs the streaming-preview
+    # VM so the non-Web canvas can route F/M/I packets and surface
+    # manifest selections back to the sidebar. createEditorVM
+    # leaves the field nil per the M57 headless contract; the
+    # JS mount path opts in here.  Web stays the default backend;
+    # the chip click flips `vm.platform` AND
+    # `streamingPreview.selectedBackend`.
+    if vm.streamingPreview == nil:
+      vm.streamingPreview = newStreamingPreviewVM(initial = pbWeb,
+        available = @[pbWeb, pbTui, pbGpui, pbFreya, pbCocoa,
+                      pbAndroid, pbIos])
+  createRoot proc(dispose: proc()) =
+    # Phase C: install the daemon-driven agent adapter on top of any
+    # workspace-supplied placeholder.  The chat panel and the brief
+    # tab's "Review this preview" button both drive the daemon's
+    # ``/api/agent/*`` routes via the resolved base URL.  This is the
+    # production wiring; VM tests inject a fake client via
+    # ``configureAgentAdaptersWithClient`` instead.
+
+    vm.setTelemetryOverlayVisible(editorDebugEnabled())
+    if useHashRoute:
+      installEditorHistorySync(vm)
+    installEditorKeyboardShortcuts(vm)
+
+    let r = DomRenderer()
+    let shell = renderEditorShell[DomRenderer, DomElement](r, vm)
+    {.emit: [shell, ".style.position='fixed'"].}
+    {.emit: [shell, ".style.inset='0'"].}
+    {.emit: [shell, ".style.overflow='hidden'"].}
+    root.appendChild(shell)
+    let controlBridge = vm.installControlBridge(shell)
+    vm.configureChat = proc(chat: AgentChatVM) =
+      var client: BrowserAgentClient
+      {.emit: ["globalThis.__isonimEditorAgentClients ||= new WeakMap(); ", client,
+        " = globalThis.__isonimEditorAgentClients.get(", chat, ") || null;"].}
+      if client == nil:
+        client = configureDaemonAgentAdapters(chat)
+        {.emit: ["globalThis.__isonimEditorAgentClients.set(", chat, ", ", client, ");"].}
+      controlBridge.bindClient(client)
+    for session in vm.chats.val: vm.configureChat(session.vm)
+    # REV-M2: expose a tiny window-level handle so Playwright e2e
+    # tests can drive story selection without having to scrape the
+    # sidebar DOM (which omits stories that aren't part of the demo
+    # workspace).  The handle is intentionally minimal — production
+    # consumers should not rely on it.
+    exposeWindowEditorHandle(vm)
+    # Last thing on the first-mount path: from here on a re-run of this bundle
+    # is a swap, and `liveEditorVM` above is how it finds out.
+    rememberLiveEditorVM(vm)
+    {.emit: ["globalThis.__isonimEditorMount = {vm:", vm, ", shell:", shell, ", dispose:", dispose, "};"].}
+  vm
+
 proc mountEditor*(workspace: EditorWorkspace;
                   root: Element = document.body;
                   useHashRoute = true;
@@ -1137,56 +1232,12 @@ proc mountEditor*(workspace: EditorWorkspace;
       onProjectCodeReplaced()
       live.loadProjectData(workspace)
       live.clearProjectRefreshRefusal()
-      return live
+      var hasView = false
+      {.emit: [hasView, " = !!document.querySelector('[data-sidebar-content=inspector]');"].}
+      if hasView: return live
+      return mountEditor(live, root, useHashRoute, injectStyles)
 
-  if injectStyles:
-    injectEditorStyles()
-
-  var mounted: EditorVM
-  createRoot proc(dispose: proc()) =
-    let vm = createEditorVM(workspace)
-    when defined(js):
-      # RS-M11 Pattern A: the JS bundle needs the streaming-preview
-      # VM so the non-Web canvas can route F/M/I packets and surface
-      # manifest selections back to the sidebar. createEditorVM
-      # leaves the field nil per the M57 headless contract; the
-      # JS mount path opts in here.  Web stays the default backend;
-      # the chip click flips `vm.platform` AND
-      # `streamingPreview.selectedBackend`.
-      vm.streamingPreview = newStreamingPreviewVM(initial = pbWeb,
-        available = @[pbWeb, pbTui, pbGpui, pbFreya, pbCocoa,
-                      pbAndroid, pbIos])
-    mounted = vm
-    # Phase C: install the daemon-driven agent adapter on top of any
-    # workspace-supplied placeholder.  The chat panel and the brief
-    # tab's "Review this preview" button both drive the daemon's
-    # ``/api/agent/*`` routes via the resolved base URL.  This is the
-    # production wiring; VM tests inject a fake client via
-    # ``configureAgentAdaptersWithClient`` instead.
-
-    vm.setTelemetryOverlayVisible(editorDebugEnabled())
-    if useHashRoute:
-      installEditorHistorySync(vm)
-    installEditorKeyboardShortcuts(vm)
-
-    let r = DomRenderer()
-    let shell = renderEditorShell[DomRenderer, DomElement](r, vm)
-    {.emit: [shell, ".style.position='fixed'"].}
-    {.emit: [shell, ".style.inset='0'"].}
-    {.emit: [shell, ".style.overflow='hidden'"].}
-    root.appendChild(shell)
-    let controlBridge = vm.installControlBridge(shell)
-    vm.configureChat = proc(chat: AgentChatVM) =
-      let client = configureDaemonAgentAdapters(chat)
-      controlBridge.bindClient(client)
-    for session in vm.chats.val: vm.configureChat(session.vm)
-    # REV-M2: expose a tiny window-level handle so Playwright e2e
-    # tests can drive story selection without having to scrape the
-    # sidebar DOM (which omits stories that aren't part of the demo
-    # workspace).  The handle is intentionally minimal — production
-    # consumers should not rely on it.
-    exposeWindowEditorHandle(vm)
-    # Last thing on the first-mount path: from here on a re-run of this bundle
-    # is a swap, and `liveEditorVM` above is how it finds out.
-    rememberLiveEditorVM(vm)
-  mounted
+  # Model computations belong to the host/session, independently of this
+  # disposable presentation root, so remounting the same VM keeps its state.
+  let vm = createEditorVM(workspace)
+  mountEditor(vm, root, useHashRoute, injectStyles)

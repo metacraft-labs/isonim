@@ -3,6 +3,7 @@
 ## Source-backed component editing: a real project preview iframe on the left
 ## and a functional inspector on the right.
 
+import isonim/editor/views/view_lifecycle
 import std/[strutils, math, strformat]
 
 import isonim/core/[signals, computation, owner]
@@ -10,6 +11,7 @@ import isonim/dsl/ui
 import isonim/editor/viewmodels
 import isonim/editor/preview_identity
 import isonim/editor/types
+import isonim/editor/views/widgets/anchored_popover
 import isonim/editor/views/choice_row
 import isonim/editor/views/preview_mount
 import isonim/editor/views/widgets/property_commit
@@ -121,7 +123,7 @@ proc restoreInspectorFocus[R, E](r: R; root: E; vm: EditorVM) =
         const target = root.querySelector('[data-isonim-focus-id="' +
           CSS.escape(focusId) + '"]');
         if (target && document.activeElement !== target) {
-          setTimeout(() => target.focus({ preventScroll: true }), 0);
+          globalThis.__isonimDeferView(root, () => { if (target.isConnected) target.focus({ preventScroll: true }); }, 0);
         }
       })();
     """].}
@@ -1336,6 +1338,7 @@ proc ownPreviewSelectionRestore[E](frame: E) =
 proc installPreviewSelectionBridge*[R, E](r: R; frame: E; vm: EditorVM) =
   when defined(js):
     ownPreviewSelectionRestore(frame)
+    ownViewResources(frame)
     let selectFromBrowser = proc(elementId, sourceKey, schemaKey, tag, testId,
         className, role, elementPath, ancestry, ancestorIds, sourceFile,
         sourceLine, display, position, backgroundColor,
@@ -1399,9 +1402,7 @@ proc installPreviewSelectionBridge*[R, E](r: R; frame: E; vm: EditorVM) =
       else:
         vm.inspector.activeSection.val = isLayout
     {.emit: ["""
-      if (!window.__isonimPreviewSelectionBridgeInstalled) {
-        window.__isonimPreviewSelectionBridgeInstalled = true;
-        window.addEventListener('isonim-preview-element-selected', function (event) {
+      globalThis.__isonimPreviewBridge(""", frame, """, 'isonim-preview-element-selected', function (event) {
           const d = event.detail || {};
           """, selectFromBrowser,
         """(
@@ -1419,8 +1420,7 @@ proc installPreviewSelectionBridge*[R, E](r: R; frame: E; vm: EditorVM) =
             d.layerTree || '', d.styleBindings || '',
             d.computedStyles || ''
           );
-        });
-      }
+      });
     """].}
 
     # SGR: there is no `isonim-preview-layer-tree` listener any more. The
@@ -1431,12 +1431,9 @@ proc installPreviewSelectionBridge*[R, E](r: R; frame: E; vm: EditorVM) =
     let clearFromBrowser = proc() =
       vm.clearInspectorSelection()
     {.emit: ["""
-      if (!window.__isonimPreviewSelectionClearBridgeInstalled) {
-        window.__isonimPreviewSelectionClearBridgeInstalled = true;
-        window.addEventListener('isonim-preview-selection-cleared', function () {
+      globalThis.__isonimPreviewBridge(""", frame, """, 'isonim-preview-selection-cleared', function () {
           """, clearFromBrowser, """();
-        });
-      }
+      });
     """].}
 
     let directManipulationFromBrowser = proc(kind, propName, value, oldValue,
@@ -1475,9 +1472,7 @@ proc installPreviewSelectionBridge*[R, E](r: R; frame: E; vm: EditorVM) =
         toIndex: toIndex,
         measurement: $measurement))
     {.emit: ["""
-      if (!window.__isonimPreviewDirectManipulationBridgeInstalled) {
-        window.__isonimPreviewDirectManipulationBridgeInstalled = true;
-        window.addEventListener('isonim-preview-direct-manipulation', function (event) {
+      globalThis.__isonimPreviewBridge(""", frame, """, 'isonim-preview-direct-manipulation', function (event) {
           const d = event.detail || {};
           """, directManipulationFromBrowser,
         """(
@@ -1486,8 +1481,7 @@ proc installPreviewSelectionBridge*[R, E](r: R; frame: E; vm: EditorVM) =
             d.measurement || '', Number(d.fromIndex || 0),
             Number(d.toIndex || 0)
           );
-        });
-      }
+      });
     """].}
 
     let addCommentToPrompt = proc(selector, ancestry, text, domSnapshot,
@@ -1496,14 +1490,11 @@ proc installPreviewSelectionBridge*[R, E](r: R; frame: E; vm: EditorVM) =
         ancestry = $ancestry, domSnapshot = $domSnapshot,
         screenshotRef = $screenshotRef)
     {.emit: ["""
-      if (!window.__isonimPreviewCommentBridgeInstalled) {
-        window.__isonimPreviewCommentBridgeInstalled = true;
-        window.addEventListener('isonim-preview-comment-added', function (event) {
+      globalThis.__isonimPreviewBridge(""", frame, """, 'isonim-preview-comment-added', function (event) {
           const d = event.detail || {};
           """, addCommentToPrompt,
         """(d.selector || '', d.ancestry || '', d.text || '', d.domSnapshot || '', d.screenshotRef || '');
-        });
-      }
+      });
     """].}
 
     # M-EVP-8: bridge for the iframe's vector-symbol dblclick handler.
@@ -1524,14 +1515,11 @@ proc installPreviewSelectionBridge*[R, E](r: R; frame: E; vm: EditorVM) =
               return
             inc idx
     {.emit: ["""
-      if (!window.__isonimPreviewVectorEditBridgeInstalled) {
-        window.__isonimPreviewVectorEditBridgeInstalled = true;
-        window.addEventListener('isonim-preview-vector-edit', function (event) {
+      globalThis.__isonimPreviewBridge(""", frame, """, 'isonim-preview-vector-edit', function (event) {
           const d = event.detail || {};
           """, openVectorFromBrowser,
         """(d.symbol || '', d.elementPath || '');
-        });
-      }
+      });
     """].}
 
     {.emit: ["""
@@ -1554,7 +1542,8 @@ proc installPreviewSelectionBridge*[R, E](r: R; frame: E; vm: EditorVM) =
           } catch (error) {}
         };
         frame.addEventListener('load', resizeFrame);
-        setTimeout(resizeFrame, 0);
+        globalThis.__isonimDeferView(frame, resizeFrame, 0);
+        globalThis.__isonimViewCleanup(frame, () => frame.removeEventListener('load', resizeFrame));
       }
     """].}
 
@@ -3888,6 +3877,7 @@ proc renderStyleManagerPanel[R, E](r: R; vm: EditorVM; frame: E;
   var createClassButton: E
   var renameClassButton: E
   var duplicateClassButton: E
+  var scopeDetails, scopeSummary, scopePopup: E
   result = ui(r):
     tdiv(display = "flex", flex_direction = "column", gap = "8px",
           padding = "8px 0"):
@@ -3999,18 +3989,18 @@ proc renderStyleManagerPanel[R, E](r: R; vm: EditorVM; frame: E;
                   font_size = "10px", text_align = "center",
                   cursor = "pointer"):
               text "Class"
-            details(height = "22px",
+            details(ref = scopeDetails, height = "22px",
                     position = "relative",
                     font_size = "10px",
                     color = textDim):
-              summary(display = "flex", align_items = "center",
+              summary(ref = scopeSummary, display = "flex", align_items = "center",
                       justify_content = "center",
                       width = "22px", height = "22px",
                       list_style = "none", cursor = "pointer",
                       `aria-label` = "More style scope choices for " &
                         snapshot.property):
                 text "⌄"
-              tdiv(position = "absolute", right = "0", top = "23px",
+              tdiv(ref = scopePopup, `data-style-scope-popup` = "true", position = "absolute", right = "0", top = "23px",
                     z_index = "20", min_width = "160px",
                     padding = "4px", border = "1px solid " & border,
                     border_radius = "5px", background_color = bgSidebar,
@@ -4093,6 +4083,7 @@ proc renderStyleManagerPanel[R, E](r: R; vm: EditorVM; frame: E;
             background_color = bgSurface, color = textMuted,
             font_size = "10px", text_align = "center", cursor = "pointer"):
         text "Promote local override"
+  installDetailsPopover(scopeDetails, scopeSummary, scopePopup)
   r.setAttribute(result, "aria-label", "Style class cascade token manager for " &
     snapshot.property)
 
@@ -4823,6 +4814,7 @@ proc populateInspectorManualBody*[R, E](r: R; target: E; vm: EditorVM;
   r.populateInspectorImpact(vm, frame, impactContent)
 
   let inspectorRoot = target
+  ownViewResources(inspectorRoot)
   createRenderEffect proc() =
     discard vm.activeView.val
     r.populateInspectorImpact(vm, frame, impactContent)
@@ -5036,11 +5028,15 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
         if (typeof ResizeObserver !== 'undefined') {
           // `host` only. `device` and `fit` are both written to above, so
           // observing either is the shortest path back into the loop.
-          new ResizeObserver(apply).observe(host);
+          const observer = new ResizeObserver(apply);
+          observer.observe(host);
+          globalThis.__isonimViewCleanup(host, () => observer.disconnect());
         } else {
           window.addEventListener('resize', apply);
+          globalThis.__isonimViewCleanup(host, () => window.removeEventListener('resize', apply));
         }
         frame.addEventListener('load', apply);
+        globalThis.__isonimViewCleanup(host, () => { frame.removeEventListener('load', apply); delete host.__isonimApplyFit; });
         // The viewport effect calls this after it changes the device width. A
         // polling timer would also work and would be worse: either slower than
         // the change, or still running long after it.
@@ -5048,6 +5044,8 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
         apply();
       })(""", scrollHost, ", ", fitHost, ", ", projectFrame, ", ",
       deviceFrame, ", ", reportWidth, ");"].}
+
+  ownViewResources(scrollHost)
 
   # Why the selected element is NOT read in the srcdoc effect below.
   #

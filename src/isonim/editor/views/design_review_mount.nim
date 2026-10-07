@@ -1,3 +1,4 @@
+import isonim/core/owner
 ## REV-M8 — production mount glue for the design-review gallery.
 ##
 ## REV-M7 shipped the components (``preview_chrome.mountHistoryButton``,
@@ -905,8 +906,7 @@ proc startNarrowViewportProbe*(st: DesignReviewState) =
   ## drives ``st.narrow`` reactively. The 768 px threshold matches
   ## ``browser.nim``'s ``@media (max-width: 768px)`` rule that
   ## collapses the centre column to sidebar-only. A single resize
-  ## listener is installed per state; the listener is intentionally
-  ## not removed because the editor mounts once per page load.
+  ## listener belongs to the current UI owner and is removed on disposal.
   ##
   ## On non-JS targets (native unit tests via the MockRenderer) the
   ## probe is a no-op — tests can drive ``st.narrow.val`` directly.
@@ -915,8 +915,8 @@ proc startNarrowViewportProbe*(st: DesignReviewState) =
     proc setNarrow(value: bool) =
       capturedState.narrow.val = value
     let cb = setNarrow
-    {.emit: ["""
-      (function() {
+    var cleanup: proc()
+    {.emit: [cleanup, """ = (function() {
         var fn = """, cb, """;
         var apply = function() {
           try {
@@ -927,9 +927,13 @@ proc startNarrowViewportProbe*(st: DesignReviewState) =
         apply();
         if (typeof window !== 'undefined' && window.addEventListener) {
           window.addEventListener('resize', apply);
+          return function () { window.removeEventListener('resize', apply); };
         }
+        return function () {};
       })();
     """].}
+
+    onCleanup(cleanup)
 
 proc mountGalleryHostForEditor*[R, E](r: R; parent: E; vm: EditorVM): E =
   ## Build the gallery overlay host: a positioned ``div`` that holds

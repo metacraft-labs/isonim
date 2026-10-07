@@ -38,6 +38,7 @@
 
 import std/sets
 
+import isonim/editor/views/widgets/anchored_popover
 import isonim/core/signals
 import isonim/core/computation
 import isonim/dsl/ui
@@ -734,6 +735,10 @@ proc mountChevronChoice*[R, E](r: R; parent: E; vm: ChoiceGroupVM;
   # rather than ``setStyle`` so the ``no setStyle outside reactive
   # effects`` lexer scan stays green. (And anyway, this *is* inside a
   # reactive effect.)
+  installAnchoredPopover(popupNode, "isonim-choice-close")
+  r.addEventListener(popupNode, "isonim-choice-close", proc() = capturedVm.closePopup())
+  when defined(js):
+    {.emit: [capturedVm, ".__isonimAnchor = ", triggerNode, ";"].}
   createRenderEffect proc() =
     let open = capturedVm.popupOpen.val
     r.setAttribute(triggerNode, "aria-expanded",
@@ -741,8 +746,12 @@ proc mountChevronChoice*[R, E](r: R; parent: E; vm: ChoiceGroupVM;
     r.setAttribute(popupNode, "data-popup-open",
                    if open: "true" else: "false")
     r.setAttribute(popupNode, "style",
-                   if open: "display: flex; flex-direction: column;"
-                   else: "display: none;")
+      "display: " & (if open: "flex" else: "none") &
+      "; flex-direction: column; position: fixed; width: 320px; padding: 4px;" &
+      " background-color: " & cgPopupBg & "; border: 1px solid " & cgPopupBorder &
+      "; border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,0.28); z-index: 1100;")
+    syncAnchoredPopover(popupNode, capturedVm, open, 0, 0, 0, 0)
+
 
   # Reactive active-label binding — updates trigger text + per-option
   # ``aria-selected``. CHRM-M2 also surfaces ``aria-disabled`` +
@@ -785,7 +794,7 @@ proc mountChevronChoice*[R, E](r: R; parent: E; vm: ChoiceGroupVM;
     let popupEl = popupNode
     {.emit: ["""
       (function(rootEl, triggerEl, popupEl) {
-        if (!rootEl || !document) return;
+        if (!rootEl || typeof document === 'undefined' || typeof rootEl.addEventListener !== 'function') return;
         function options() {
           return Array.from(popupEl.querySelectorAll(
             '[data-choice-group-option]'));
@@ -866,20 +875,13 @@ proc mountChevronChoice*[R, E](r: R; parent: E; vm: ChoiceGroupVM;
                 triggerEl.focus();
               }
             } else if (onTrigger) {
-              // The Nim-side ``keydown`` listener already toggled the
-              // popup; do not double-fire.
               ev.preventDefault();
+              triggerEl.click();
             }
             return;
           }
         });
-        document.addEventListener('mousedown', function(ev) {
-          var t = ev && ev.target;
-          if (!t) return;
-          if (rootEl.contains && rootEl.contains(t)) return;
-          if (popupEl.getAttribute('data-popup-open') !== 'true') return;
-          closePopup();
-        }, true);
+
       })(""", rootNode, """, """, triggerEl, """, """, popupEl, """);
     """].}
 

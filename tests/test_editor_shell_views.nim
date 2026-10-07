@@ -1238,6 +1238,14 @@ suite "Layers header search":
       check vm.inspector.layerSearch.val == "  SAVE  "
       check panel.findByAttr("data-scene-graph-row", "action") != nil
       check panel.findByAttr("data-scene-graph-row", "title") == nil
+      # A matching descendant retains a nonmatching, collapsed ancestor.
+      r.setInputValue(search, "changes")
+      search.fireEvent("input")
+      check panel.findByAttr("data-scene-graph-row", "action") != nil
+      check panel.findByAttr("data-scene-graph-row", "root") != nil
+      check panel.findByAttr("data-scene-graph-row", "root").attributes["aria-expanded"] == "true"
+      check panel.findByAttr("data-scene-graph-twisty", "root").textContent == "\xE2\x96\xBE"
+      check panel.findByAttr("data-scene-graph-row", "title") == nil
       check vm.inspector.selectedElement.val.id == "title"
       check vm.inspector.expandedLayerIds.val == savedExpansion
       r.setInputValue(search, "unknown layer")
@@ -1248,6 +1256,7 @@ suite "Layers header search":
       search.fireEvent("input")
       check panel.findByAttr("data-scene-graph-row", "root") != nil
       check panel.findByAttr("data-scene-graph-row", "action") == nil
+      check panel.findByAttr("data-scene-graph-row", "root").attributes["aria-expanded"] == "false"
       check vm.inspector.selectedElement.val.id == "title"
       check vm.inspector.expandedLayerIds.val == savedExpansion
       vm.inspector.toggleLayerExpanded("root")

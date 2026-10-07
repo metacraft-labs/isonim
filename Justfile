@@ -1466,3 +1466,27 @@ test-editor-chat-contract:
 # Runs `nix develop`, so it is not part of the in-shell test recipes.
 test-dev-shell:
     bash tests/test_dev_shell_writes_nothing_elsewhere.sh
+
+# Functional inspector popup geometry, focus and private-source acceptance.
+editor-popup-build:
+    mkdir -p build/editor-popup
+    nim js --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/editor-popup/editor.js tests/helpers/editor_popup_workspace.nim
+    "${ISONIM_SCENARIO_NODE:-node}" --check build/editor-popup/editor.js
+    nim js --path:src --path:. --path:../nim-everywhere/src -o:build/editor-popup/core-owner-hmr.js tests/helpers/core_owner_hmr.nim
+    "${ISONIM_SCENARIO_NODE:-node}" --check build/editor-popup/core-owner-hmr.js
+
+test-editor-popup: isonim-review-build editor-popup-build
+    nim c -r --out:build/test_editor_color_popover tests/test_editor_color_popover.nim
+    nim js -r --out:build/test_editor_color_popover.js tests/test_editor_color_popover.nim
+    nim c -r --out:build/test_signals_popup tests/test_signals.nim
+    nim js -r --out:build/test_signals_popup.js tests/test_signals.nim
+    "${ISONIM_SCENARIO_NODE:-node}" tests/test_core_owner_hmr.mjs
+    "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_popover_geometry.mjs
+    "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_selection_restore_gui.mjs
+    "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_popup_gui.mjs
+
+# Explicit required sibling: metacraft-web's production adapter is imported;
+# this never silently skips or substitutes an IsoNim-native writer.
+test-editor-color-source:
+    test -f ../metacraft-web/apps/back-office/src/backoffice_editor/workspace.nim
+    nim c -r --path:../metacraft-web/apps/back-office/src --path:../metacraft-web/packages/metacraft-design/src --out:build/test_editor_color_source tests/test_editor_color_source.nim

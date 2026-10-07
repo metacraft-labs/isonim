@@ -461,6 +461,7 @@ const isonimTestSpecs: seq[IsonimTestSpec] = @[
   spec("test_editor_vendor_dist_check"),
   spec("test_editor_viewport_resize_publisher"),
   spec("test_editor_widget_property_row"),
+  spec("test_editor_color_popover"),
   spec("test_editor_surface_toggle_vm"),
   spec("test_editor_chat_activity"),
   spec("test_editor_chat_tabs_vm"),
@@ -530,6 +531,7 @@ const isonimCompileOnlySpecs: seq[IsonimTestSpec] = @[
 # back-end. It is a ``nim js`` COMPILE-ONLY recipe entry (``-o:`` without
 # ``-r``), so it is modelled as a BUILD-only edge (no node run).
 const isonimJsTestSpecs: seq[string] = @[
+  "test_editor_color_popover",
   "test_editor_chat_activity",
   "test_editor_control",
   "test_editor_workspace_refresh",
@@ -778,6 +780,7 @@ package isonim:
 
     var testBuildActions: seq[BuildActionDef] = @[]
     var testExecuteActions: seq[BuildActionDef] = @[]
+    var popupHeadlessActions: seq[BuildActionDef] = @[]
 
     proc emitTest(source, binary: string; executeToo: bool;
                   buildActions, executeActions: var seq[BuildActionDef]) =
@@ -807,6 +810,8 @@ package isonim:
           actionId = "isonim.test_execute." & stem,
           registerImplicitName = false)
         executeActions.add(executeEdge)
+        if source in ["tests/test_editor_color_popover.nim", "tests/test_signals.nim"]:
+          popupHeadlessActions.add(executeEdge)
 
     # Full build+execute edges — the headless-runnable corpus.
     for s in isonimTestSpecs:
@@ -867,6 +872,45 @@ package isonim:
       extraInputs = @["tests/test_editor_admission_gui.mjs", "build/editor-chat"])
     testExecuteActions.add(admissionGuiEdge)
     discard collect("test-editor-admission", @[admissionGuiEdge])
+    let popupBrowserEdge = sh.shell(
+      command = "just editor-popup-build",
+      actionId = "isonim.popup_build.browser",
+      extraInputs = @["src", "tests/helpers/editor_popup_workspace.nim", "tests/helpers/core_owner_hmr.nim", "Justfile", "package.json"],
+      extraOutputs = @["build/editor-popup"])
+    testBuildActions.add(popupBrowserEdge)
+    let popupGeometryEdge = sh.shell(
+      command = "\"${ISONIM_SCENARIO_NODE:-node}\" tests/test_editor_popover_geometry.mjs", cacheable = false,
+      actionId = "isonim.popup_execute.geometry",
+      extraInputs = @["tests/test_editor_popover_geometry.mjs", "src/isonim/editor/views/widgets/anchored_popover.js"])
+    let popupOwnerHmrEdge = sh.shell(
+      command = "\"${ISONIM_SCENARIO_NODE:-node}\" tests/test_core_owner_hmr.mjs", cacheable = false,
+      actionId = "isonim.popup_execute.owner_hmr",
+      after = @[popupBrowserEdge],
+      extraInputs = @["tests/test_core_owner_hmr.mjs", "tests/helpers/core_owner_hmr.nim", "build/editor-popup/core-owner-hmr.js"])
+    let popupGuiEdge = sh.shell(
+      command = "\"${ISONIM_SCENARIO_NODE:-node}\" tests/test_editor_popup_gui.mjs", cacheable = false,
+      actionId = "isonim.popup_execute.gui",
+      after = @[popupBrowserEdge, reviewToolEdge.action],
+      extraInputs = @["tests/test_editor_popup_gui.mjs", "examples/source_project", "build/editor-popup"])
+    let popupSelectionRestoreEdge = sh.shell(
+      command = "\"${ISONIM_SCENARIO_NODE:-node}\" tests/test_editor_selection_restore_gui.mjs", cacheable = false,
+      actionId = "isonim.popup_execute.selection_restore",
+      after = @[popupBrowserEdge, reviewToolEdge.action],
+      extraInputs = @["tests/test_editor_selection_restore_gui.mjs", "tests/helpers/editor_control_peer.py",
+        "tools/editor_server.py", "tools/build_source_catalog.py", "examples/source_project",
+        "build/editor-popup", drReviewBin])
+    testExecuteActions.add(popupOwnerHmrEdge)
+    testExecuteActions.add(popupGeometryEdge)
+    testExecuteActions.add(popupSelectionRestoreEdge)
+    testExecuteActions.add(popupGuiEdge)
+    # Explicit integration with the real metacraft-web consumer adapter. It is
+    # outside default tests: public developers need not have the private repo.
+    # An explicit invocation fails if its required sibling/import is absent.
+    let colorSourceEdge = sh.shell(
+      command = "just test-editor-color-source", cacheable = false,
+      actionId = "isonim.popup_execute.consumer_source",
+      extraInputs = @["tests/test_editor_color_source.nim", "Justfile"])
+    discard collect("test-editor-color-source", @[colorSourceEdge])
     let sourceBrowserEdge = sh.shell(
       command = "just source-editor-build",
       actionId = "isonim.source_build.browser",
@@ -1213,6 +1257,7 @@ package isonim:
         extraInputs = @[jsOut])
       testExecuteActions.add(jsExecuteEdge)
       jsExecuteActions.add(jsExecuteEdge)
+      if stem in ["test_editor_color_popover", "test_signals"]: popupHeadlessActions.add(jsExecuteEdge)
 
     # FUP-J — JS compile-only stems: a ``nim.js`` BUILD edge with NO node
     # execute edge (the ``test-editor`` recipe compiles but never runs these).
@@ -1232,6 +1277,7 @@ package isonim:
       testBuildActions.add(jsCompileOnlyEdge)
       jsBuildActions.add(jsCompileOnlyEdge)
 
+    discard collect("test-editor-popup", popupHeadlessActions & @[popupOwnerHmrEdge, popupGeometryEdge, popupSelectionRestoreEdge, popupGuiEdge])
     discard collect("test", testExecuteActions)
     discard collect("test-builds", testBuildActions)
     discard collect("js-test", jsExecuteActions)

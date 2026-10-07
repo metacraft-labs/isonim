@@ -16,6 +16,7 @@
 ## listeners survive), removed chips are detached and their per-chip reactive
 ## owners disposed, and newly-added chips are spliced in at the right index.
 
+import isonim/editor/views/widgets/anchored_popover
 import isonim/core/owner
 import isonim/core/computation
 import isonim/dsl/ui
@@ -349,12 +350,14 @@ proc renderCompactChoiceRow*[R, E](r: R; label, ariaLabel: string;
                 `aria-label` = "More " & ariaLabel):
           text "\xE2\x8C\x84"
         tdiv(ref = popupListNode,
+              `data-compact-choice-popup` = "true",
               position = "absolute", right = "0", top = "22px",
               z_index = "30", min_width = "170px",
               padding = "4px", border = "1px solid " & border,
               border_radius = "4px", background_color = bgSidebar,
               box_shadow = "0 8px 24px rgba(0,0,0,0.28)")
     r.appendChild(stripNode, detailsNode)
+    installDetailsPopover(detailsNode, summaryNode, popupListNode)
     result.overflowNode = summaryNode
     for i in 0 ..< options.len:
       let chip = buildRowPopupChip[R, E](r, options[i])
@@ -451,6 +454,7 @@ proc renderCompactChoiceColumn*[R, E](r: R; ariaLabel: string;
                 `data-compact-choice-overflow` = "true"):
           text "\xE2\x96\xBE"
         tdiv(ref = popupListNode,
+              `data-compact-choice-popup` = "true",
               position = "absolute", left = chipWidth, top = "0",
               z_index = "30", min_width = "170px",
               padding = "4px", border = "1px solid " & border,
@@ -458,6 +462,7 @@ proc renderCompactChoiceColumn*[R, E](r: R; ariaLabel: string;
               box_shadow = "0 8px 24px rgba(0,0,0,0.28)",
               `data-compact-choice-overflow-popup` = "true")
     r.appendChild(primaryHost, detailsNode)
+    installDetailsPopover(detailsNode, summaryNode, popupListNode)
     result.overflowNode = summaryNode
     for i in 0 ..< options.len:
       let chip = buildColumnPopupChip[R, E](r, options[i])
@@ -523,12 +528,14 @@ proc renderCompactChoiceColumn*[R, E](r: R; ariaLabel: string;
               `data-compact-choice-overflow` = "true"):
         text "\xE2\x96\xBE"
       tdiv(ref = popupListNode,
+              `data-compact-choice-popup` = "true",
             position = "absolute", left = chipWidth, top = "0",
             z_index = "30", min_width = "170px",
             padding = "4px", border = "1px solid " & border,
             border_radius = "4px", background_color = bgSidebar,
             box_shadow = "0 8px 24px rgba(0,0,0,0.28)",
             `data-compact-choice-overflow-popup` = "true")
+  installDetailsPopover(detailsNode, summaryNode, popupListNode)
   # detailsNode is appended/removed by the rebuild effect when the
   # option count crosses the visibleLimit threshold.
 
