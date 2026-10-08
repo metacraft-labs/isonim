@@ -1637,3 +1637,11 @@ editor-renderer-boundaries-build: build-tailwind
 
 test-editor-renderer-boundaries-gui: editor-renderer-boundaries-build
     timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_renderer_boundary_gui.mjs
+
+# Current full shell logical controls: native and strict executed Node JS.
+test-editor-shell-current: build-tailwind
+    #!/usr/bin/env bash
+    set -euo pipefail
+    nim c -r --out:build/test_editor_shell_views tests/test_editor_shell_views.nim
+    nim js -d:nodejs --out:build/test_editor_shell_views.js tests/test_editor_shell_views.nim
+    python3 tools/run_nim_js_test.py build/test_editor_shell_views.js
