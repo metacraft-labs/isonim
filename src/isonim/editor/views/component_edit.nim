@@ -109,7 +109,7 @@ proc rememberPanelFocus(vm: EditorVM; id: string): proc() =
     vm.inspector.rememberInspectorFocus(captured)
 
 proc restoreInspectorFocus[R, E](r: R; root: E; vm: EditorVM) =
-  when defined(js):
+  when isDomViewHost(E):
     {.emit: ["""
       (function () {
         const root = """, root, """;
@@ -1356,7 +1356,7 @@ proc applyInspectorValue(vm: EditorVM; propName, value: string;
 proc ownPreviewSelectionRestore[E](frame: E) =
   ## Bind once to the frame-construction owner, never the shorter selection
   ## computation. Each selection replaces the request, not its cleanup owner.
-  when defined(js):
+  when isDomViewHost(E):
     let lifetimeOwner = getOwner()
     var cleanupLifetime: proc()
     {.emit: ["""
@@ -1377,7 +1377,7 @@ proc ownPreviewSelectionRestore[E](frame: E) =
     discard frame
 
 proc installPreviewSelectionBridge*[R, E](r: R; frame: E; vm: EditorVM) =
-  when defined(js):
+  when isDomViewHost(E):
     ownPreviewSelectionRestore(frame)
     ownViewResources(frame)
     let selectFromBrowser = proc(elementId, sourceKey, schemaKey, tag, testId,
@@ -1946,7 +1946,7 @@ proc applyInspectorValue(vm: EditorVM; propName, value: string;
     scope, peoInspector)
 
 proc applyLivePreviewStyle[R, E](r: R; frame: E; propName, value: string) =
-  when defined(js):
+  when isDomViewHost(E):
     {.emit: ["""
       (function () {
         let frame = """, frame,
@@ -1986,7 +1986,7 @@ proc applyLivePreviewStyle[R, E](r: R; frame: E; propName, value: string) =
     """].}
 
 proc revertLivePreviewStyles[R, E](r: R; frame: E) =
-  when defined(js):
+  when isDomViewHost(E):
     {.emit: ["""
       (function () {
         let frame = """, frame,
@@ -2012,7 +2012,7 @@ proc revertLivePreviewStyles[R, E](r: R; frame: E) =
     """].}
 
 proc commitLivePreviewStyles[R, E](r: R; frame: E) =
-  when defined(js):
+  when isDomViewHost(E):
     {.emit: ["""
       (function () {
         let frame = """, frame,
@@ -2029,7 +2029,7 @@ proc commitLivePreviewStyles[R, E](r: R; frame: E) =
     """].}
 
 proc selectPreviewElementById[R, E](r: R; frame: E; id: string) =
-  when defined(js):
+  when isDomViewHost(E):
     {.emit: ["""
       (function () {
       const toJsString = (raw) => Array.isArray(raw)
@@ -2047,7 +2047,7 @@ proc selectPreviewElementById[R, E](r: R; frame: E; id: string) =
     discard id
 
 proc hoverPreviewElementById[R, E](r: R; frame: E; id: string) =
-  when defined(js):
+  when isDomViewHost(E):
     {.emit: ["""
       (function () {
       const toJsString = (raw) => Array.isArray(raw)
@@ -2068,7 +2068,7 @@ proc restorePreviewSelection*[R, E](r: R; frame: E; id: string;
     isCurrent: proc(): bool) =
   ## One replaceable request belongs to each actual frame. Selection callbacks
   ## can publish another selection, so an obsolete request must never replay.
-  when defined(js):
+  when isDomViewHost(E):
     {.emit: ["""
       (function () {
         const frame = """, frame, """;
@@ -2144,7 +2144,7 @@ proc applyRawCss[R, E](r: R; vm: EditorVM; frame: E; raw: string) =
     r.applyCssValue(vm, frame, propName, value)
 
 proc attachLiveInputPreview[R, E](r: R; inputNode, frame: E; propName: string) =
-  when defined(js):
+  when isDomViewHost(E):
     {.emit: ["""
       (function () {
         const input = """, inputNode, """;
@@ -2190,7 +2190,7 @@ proc attachLiveInputPreview[R, E](r: R; inputNode, frame: E; propName: string) =
 
 proc attachPrimitiveInputKeys[R, E](r: R; inputNode, frame: E;
     propName: string) =
-  when defined(js):
+  when isDomViewHost(E):
     {.emit: ["""
       (function () {
         const input = """, inputNode,
@@ -2489,7 +2489,7 @@ proc propertyActionHandler[R, E](r: R; vm: EditorVM; frame: E;
 
 proc attachNumericScrubber[R, E](r: R; node: E; vm: EditorVM; frame: E;
     propName, value: string) =
-  when defined(js):
+  when isDomViewHost(E):
     let scrub = proc(nextValue: cstring) =
       r.applyCssValue(vm, frame, propName, $nextValue)
     {.emit: ["""
@@ -2549,7 +2549,7 @@ proc attachNumericScrubber[R, E](r: R; node: E; vm: EditorVM; frame: E;
 
 proc attachColorPlane[R, E](r: R; node: E; vm: EditorVM; frame: E;
     propName: string) =
-  when defined(js):
+  when isDomViewHost(E):
     let choose = proc(nextValue: cstring) =
       r.applyCssValue(vm, frame, propName, $nextValue)
     {.emit: ["""
@@ -2595,7 +2595,7 @@ proc attachColorPlane[R, E](r: R; node: E; vm: EditorVM; frame: E;
 
 proc attachHueStrip[R, E](r: R; node: E; vm: EditorVM; frame: E;
     plane: E; propName: string) =
-  when defined(js):
+  when isDomViewHost(E):
     let choose = proc(nextValue: cstring) =
       r.applyCssValue(vm, frame, propName, $nextValue)
     {.emit: ["""
@@ -4973,7 +4973,7 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
   # ~820 and every breakpoint question would be answered for a width the page
   # inside is not using. `clientWidth` is the layout width, which is the one
   # the browser evaluates media queries against.
-  when defined(js):
+  when isDomViewHost(E):
     let reportWidth = proc(width: int) =
       if vm.previewRenderedWidth.val != width:
         vm.previewRenderedWidth.val = width
@@ -4993,7 +4993,7 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
       # the scroll host, which a width change inside it does not necessarily
       # resize, so waiting for it would leave a 1440px frame unscaled in an
       # 840px column until something else moved.
-      when defined(js):
+      when isDomViewHost(E):
         {.emit: ["""
           (function (host) {
             if (host && host.__isonimApplyFit) host.__isonimApplyFit();
@@ -5198,7 +5198,7 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
   # request and this applies it -- through `applyPreviewStyle`, the same path a
   # fresh edit takes, so an undone value lands on the rule the cascade uses or
   # the cell it came from exactly as the original did.
-  when defined(js):
+  when isDomViewHost(E):
     var lastPreviewRequest = 0
     createRenderEffect proc() =
       let request = vm.inspector.previewValueRequest.val

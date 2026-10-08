@@ -1,6 +1,13 @@
 ## DOM resources belong to the reactive view that installed them. Persistent
 ## editor models and agent clients have independent lifetimes.
 import isonim/core/owner
+when defined(js):
+  from std/dom import Element
+
+template isDomViewHost*(E: typedesc): bool =
+  ## Browser bridges require a real renderer DOM host, independent of JS target.
+  when defined(js): E is Element
+  else: false
 
 when defined(js):
   {.emit: """

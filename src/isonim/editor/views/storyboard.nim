@@ -246,7 +246,7 @@ proc installFigmaCanvasNavigation[R, E](r: R; viewport, content: E;
   r.setAttribute(viewport, "data-figma-canvas", "true")
   r.setAttribute(content, "data-figma-canvas-content", "true")
 
-  when defined(js):
+  when isDomViewHost(E):
     ownViewResources(viewport)
     let panBy = proc(dx, dy: float) =
       vm.panStoryboard(dx, dy)

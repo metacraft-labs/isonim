@@ -192,7 +192,7 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
           block:
             let save = proc() =
               let state = vm.runEditorCommand(eckSave)
-              when defined(js):
+              when isDomViewHost(E):
                 if state.status == ecsSucceeded:
                   markFabricVectorSourceSaved(fabricHost)
             r.addEventListener(saveTop, "click", save)
@@ -436,7 +436,7 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
               r.bindVectorLayerState(layerNode, vm, i)
 
   r.appendChild(mainArea, canvas)
-  when defined(js):
+  when isDomViewHost(E):
     ownViewResources(fabricHost)
     r.addEventListener(fabricHost, "isonim-vector-source-change", proc() =
       let exported = currentFabricVectorSvg(fabricHost)

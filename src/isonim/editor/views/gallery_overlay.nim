@@ -1001,7 +1001,7 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM;
       # second ESC).  ESC must never be a no-op while a non-grid mode
       # is on screen, so fall through to the grid.
       capturedVm.mode.val = gmGrid)
-  when defined(js):
+  when isDomViewHost(E):
     {.emit: ["""
       (function () {
         var node = """, escKeyNode, """;
@@ -1141,7 +1141,7 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM;
       capturedVm.openDetail(capturedCaptureId)
     r.addEventListener(scoreChip, "click", openDetailHandler)
     r.addEventListener(scoreChip, "keydown", openDetailHandler)
-    when defined(js):
+    when isDomViewHost(E):
       # Inline JS shim — the production browser dispatches the same
       # ``click`` event up the tree, so we must stop propagation on
       # the score chip's click so the tile's plain "click" handler
@@ -1182,7 +1182,7 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM;
     # event names keep the e2e and VM paths sharing a signal.
     r.addEventListener(tileNode, "shift-click", shiftHandlerNoArg)
     r.addEventListener(tileNode, "meta-click", metaHandlerNoArg)
-    when defined(js):
+    when isDomViewHost(E):
       # Inline JS shim: distinguish shift / meta+ctrl+click in the
       # browser.  ``stopImmediatePropagation`` on the modifier branches
       # prevents the plain "click" listener (full-tab) from firing in
@@ -1242,7 +1242,7 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM;
       capturedDragSource[] = ""
     r.addEventListener(tileNode, "dragstart", dragStartHandler)
     r.addEventListener(tileNode, "drop", dropHandler)
-    when defined(js):
+    when isDomViewHost(E):
       # Browser path: the standard HTML5 drag-and-drop API requires
       # ``preventDefault`` on the ``dragover`` event for the
       # subsequent ``drop`` to fire.  We use the ``{.emit.}`` inline-JS
@@ -1295,7 +1295,7 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM;
     # idle render effect above). On mouseleave we restore the DSL
     # defaults; mouseenter/leave never write outline or box-shadow so
     # they coexist cleanly with the selected-state render effect.
-    when defined(js):
+    when isDomViewHost(E):
       {.emit: ["""
         (function(node) {
           if (!node || !node.addEventListener) return;
@@ -1798,7 +1798,7 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM;
     # the open/close transition without having to find the inner host.
     r.setAttribute(root, "data-design-review-gallery-detail-open",
                    if detailOpen: "true" else: "false")
-    when defined(js):
+    when isDomViewHost(E):
       let detailDisp: cstring =
         if detailOpen: "flex" else: "none"
       {.emit: ["""
@@ -1873,7 +1873,7 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM;
     # container that holds the grid + detail side panel. The mode
     # mirror now flips the bodyWrap's display in lockstep with the
     # gridHost so full-tab / compare modes hide the side panel too.
-    when defined(js):
+    when isDomViewHost(E):
       let gridDisp: cstring =
         if mode == gmGrid: "flex" else: "none"
       let fullDisp: cstring =
@@ -2193,7 +2193,7 @@ proc mountGalleryOverlay*[R, E](r: R; parent: E; vm: GalleryVM;
   # mount; the unique id guard prevents duplicate rules when the
   # overlay is re-mounted across mode flips. ``setStyle`` violations
   # don't apply here — we inject a stylesheet, not write inline.
-  when defined(js):
+  when isDomViewHost(E):
     {.emit: """
       (function() {
         var styleId = "design-review-gallery-focus-ring";

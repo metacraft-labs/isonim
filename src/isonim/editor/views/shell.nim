@@ -680,8 +680,8 @@ proc statusBreadcrumbParts(vm: EditorVM): seq[StatusBreadcrumbPart] =
       ancestorIndex: -1)
   result.add elementParts
 
-proc dispatchPreviewAncestorSelection(index: int) =
-  when defined(js):
+proc dispatchPreviewAncestorSelection[E](index: int) =
+  when isDomViewHost(E):
     {.emit: ["""
       window.dispatchEvent(new CustomEvent('isonim-select-preview-ancestor', {
         detail: { index: """, index, """ }
@@ -690,13 +690,13 @@ proc dispatchPreviewAncestorSelection(index: int) =
   else:
     discard index
 
-proc dispatchPreviewElementVisibility(id: string; visible: bool) =
+proc dispatchPreviewElementVisibility[E](id: string; visible: bool) =
   ## Show or hide the selected element in the preview.
   ##
   ## Preview-only and not written to source: this is the "what would it look
   ## like without this" gesture, and a source edit is a different intent
   ## that the inspector already has rows for.
-  when defined(js):
+  when isDomViewHost(E):
     let shown = visible
     {.emit: ["""
       (function () {
@@ -712,14 +712,14 @@ proc dispatchPreviewElementVisibility(id: string; visible: bool) =
     discard id
     discard visible
 
-proc dispatchPreviewElementHover(id: string) =
+proc dispatchPreviewElementHover[E](id: string) =
   ## Tell the preview which element the pointer is over, or "" for none.
   ##
   ## Window-scoped like the selection event: the injected bridge listens on
   ## `parent`, so the panel does not need a handle on the frame -- which
   ## matters because the Layers panel lives in the left sidebar and has no
   ## reason to know which view is currently mounting a preview.
-  when defined(js):
+  when isDomViewHost(E):
     {.emit: ["""
       (function () {
       const toJsString = (raw) => Array.isArray(raw)
@@ -733,8 +733,8 @@ proc dispatchPreviewElementHover(id: string) =
   else:
     discard id
 
-proc dispatchPreviewElementSelection(id: string) =
-  when defined(js):
+proc dispatchPreviewElementSelection[E](id: string) =
+  when isDomViewHost(E):
     {.emit: ["""
       (function () {
       const toJsString = (raw) => Array.isArray(raw)
@@ -748,11 +748,11 @@ proc dispatchPreviewElementSelection(id: string) =
   else:
     discard id
 
-proc previewAncestorSelectionHandler(vm: EditorVM; index: int; id: string): proc() =
+proc previewAncestorSelectionHandler[E](vm: EditorVM; index: int; id: string): proc() =
   let captured = index
   let capturedId = id
   result = proc() =
-    dispatchPreviewAncestorSelection(captured)
+    dispatchPreviewAncestorSelection[E](captured)
   if capturedId.len > 0:
     result = proc() =
       # ``soBreadcrumb`` is the whole difference between walking this
@@ -762,7 +762,7 @@ proc previewAncestorSelectionHandler(vm: EditorVM; index: int; id: string): proc
       # selection echo that the preview bridge sends back for the same
       # element a moment later.
       discard vm.selectInspectorElementById(capturedId, soBreadcrumb)
-      dispatchPreviewElementSelection(capturedId)
+      dispatchPreviewElementSelection[E](capturedId)
 
 func selectedOriginLabel(element: ElementRef): string =
   if element.properties.len == 0:
@@ -943,7 +943,7 @@ proc renderStatusBar[R, E](r: R; vm: EditorVM): E =
                   of sbsTrail: textMuted)):
             text label
         if part.state != sbsStory:
-          let selectAncestor = previewAncestorSelectionHandler(vm,
+          let selectAncestor = previewAncestorSelectionHandler[E](vm,
             part.ancestorIndex, part.id)
           r.addEventListener(chip, "click", selectAncestor)
           r.addEventListener(chip, "keydown", selectAncestor)
@@ -987,7 +987,7 @@ proc bindSceneGraphRow[R, E](vm: EditorVM; r: R; node: E; rowId: string) =
     # `String(detail.id)` then read "47,85,115,..." and matched nothing, so a
     # row click moved the Inspector but never outlined the element. That
     # helper converts, and is the same one the status-bar breadcrumb uses.
-    dispatchPreviewElementSelection(capturedId)
+    dispatchPreviewElementSelection[E](capturedId)
   )
   # Hovering a row outlines the element in the preview, dimmer than the
   # selection. The signal alone was never enough: it flagged the ROW, and
@@ -999,11 +999,11 @@ proc bindSceneGraphRow[R, E](vm: EditorVM; r: R; node: E; rowId: string) =
   # selected" needs no new styling -- only the message.
   r.addEventListener(node, "mouseenter", proc() =
     capturedVm.inspector.setLayerHover(capturedId)
-    dispatchPreviewElementHover(capturedId))
+    dispatchPreviewElementHover[E](capturedId))
   r.addEventListener(node, "mouseleave", proc() =
     if capturedVm.inspector.hoveredElementId.val == capturedId:
       capturedVm.inspector.setLayerHover("")
-      dispatchPreviewElementHover(""))
+      dispatchPreviewElementHover[E](""))
 
 proc installSceneGraphReader[R, E](vm: EditorVM; r: R; host: E) =
   ## Read the preview's element tree from the parent side. THE producer.
@@ -1104,7 +1104,7 @@ proc installSceneGraphReader[R, E](vm: EditorVM; r: R; host: E) =
     # lives at the producer, where the timing information is.
     capturedVm.inspector.setSelectionTree(parsed)
   let walkSource: cstring = cstring(sceneGraphWalkJs)
-  when defined(js):
+  when isDomViewHost(E):
     {.emit: ["""
       (function(ingest, host, walkSource, model) {
         if (!host || typeof host.closest !== 'function') return;
@@ -1339,7 +1339,7 @@ proc bindSceneGraphTwisty[R, E](vm: EditorVM; r: R; node: E; rowId: string) =
   let capturedId = rowId
   r.addEventListener(node, "click", proc() =
     capturedVm.inspector.toggleLayerExpanded(capturedId))
-  when defined(js):
+  when isDomViewHost(E):
     {.emit: [node, """.addEventListener('click', function (e) {
       e.stopPropagation();
     });"""].}
@@ -1447,7 +1447,7 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
   # `hoveredElementId` already drives `ElementLayerRow.hovered`, which
   # already renders a background four times fainter than the selection --
   # nothing was setting it from the preview side.
-  when defined(js):
+  when isDomViewHost(E):
     let hoverVm = vm
     let onPreviewHover = proc(id: cstring) =
       # `setLayerHover`, not the raw signal: the row flags are baked when the
@@ -1471,7 +1471,7 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
   result = panel
   ownViewResources(rowsHost)
   vm.installSceneGraphReader(r, rowsHost)
-  when defined(js):
+  when isDomViewHost(E):
     let toggleExpanded = proc(id: cstring) =
       capturedVm.inspector.toggleLayerExpanded($id)
     {.emit: ["""
@@ -1662,7 +1662,7 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
   # id rather than run on every rebuild, because the reader republishes the
   # tree about twice a second and scrolling on each would fight the user's
   # own scrolling.
-  when defined(js):
+  when isDomViewHost(E):
     var lastScrolledTo = ""
     createRenderEffect proc() =
       let selectedId = capturedVm.inspector.selectedElement.val.id
@@ -2125,7 +2125,7 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
       r.setStyle(captSidebar, "flex-basis", wpx)
       r.setAttribute(captSidebar, "data-left-sidebar-width", $w)
 
-  when defined(js):
+  when isDomViewHost(E):
     # Mousedown on the handle records the starting cursor X + sidebar
     # width; mousemove computes the delta and pushes the new width
     # through the ``window.__isonimEditor.setLeftSidebarWidth`` hook
@@ -2930,7 +2930,7 @@ proc renderSelectionHeader[R, E](r: R; vm: EditorVM): E =
       if selected.id.len > 0: selected.id
       elif selected.sourceKey.len > 0: selected.sourceKey
       else: selected.schemaKey
-    dispatchPreviewElementVisibility(targetId, visible)
+    dispatchPreviewElementVisibility[E](targetId, visible)
 
   # A button that does nothing is worse than a button that is not there:
   # it spends a click and teaches the user that this corner is dead.
@@ -3092,7 +3092,7 @@ proc renderSectionFrame[R, E](r: R; vm: EditorVM;
   r.addEventListener(headerEl, "keydown", proc() =
     vm.inspector.toggleSectionExpanded(section))
 
-  when defined(js):
+  when isDomViewHost(E):
     let headerJsEl = headerEl
     {.emit: ["""
       (function (header) {
@@ -3224,7 +3224,7 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
   # `openSourceForSelection` expands the Source section and asks for it to
   # be brought into view; the scroll is here because only the view knows
   # where the section landed.
-  when defined(js):
+  when isDomViewHost(E):
     let revealVm = vm
     var lastReveal = 0
     createRenderEffect proc() =
@@ -3308,7 +3308,7 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
   r.appendChild(sidebarRoot, selectionHeaderEl)
   r.appendChild(sidebarRoot, sectionListEl)
 
-  when defined(js):
+  when isDomViewHost(E):
     let handleEl = rightResizeHandle
     let panelEl = sidebarRoot
     {.emit: ["""
@@ -3373,7 +3373,7 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
   # ``localStorage["isonim:inspector:expanded"]``. The shim runs
   # only on JS targets; the native build still owns the
   # signal-write side but skips the storage emit.
-  when defined(js):
+  when isDomViewHost(E):
     createRenderEffect proc() =
       let payload = serializeExpandedSections(
         vm.inspector.expandedSections.val).cstring
@@ -3441,7 +3441,7 @@ proc renderCommandPalette[R, E](r: R; vm: EditorVM): E =
 
   let paletteRoot = result
   ownViewResources(paletteRoot)
-  when defined(js):
+  when isDomViewHost(E):
     {.emit: ["""
       (function () {
         const root = """, paletteRoot, """;
@@ -3573,7 +3573,7 @@ proc renderCommandPalette[R, E](r: R; vm: EditorVM): E =
     r.setAttribute(paletteRoot, "aria-hidden", if open: "false" else: "true")
     r.clearChildren(listNode)
     if not open:
-      when defined(js):
+      when isDomViewHost(E):
         {.emit: ["""
           (function () {
             const root = """, paletteRoot, """;
@@ -3638,7 +3638,7 @@ proc renderCommandPalette[R, E](r: R; vm: EditorVM): E =
       bindPaletteItem(item, command)
       r.appendChild(listNode, item)
       inc index
-    when defined(js):
+    when isDomViewHost(E):
       if open:
         {.emit: ["""
           (function () {
@@ -4216,7 +4216,7 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
     createRenderEffect proc() =
       let open = openSig.val
       discard viewportPopupPositionRevision.val
-      when defined(js):
+      when isDomViewHost(E):
         if open:
           let cluster = viewportClusterWrapper
           var popupLeft = 0.0
@@ -4287,7 +4287,7 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
 
   rebuildViewportDropdown(viewportDropdownEl, viewportOptionList(capturedVm.platform.value))
 
-  when defined(js):
+  when isDomViewHost(E):
     let trigger = viewportChevronBtn
     let dropdown = viewportDropdownEl
     {.emit: ["""
@@ -4690,7 +4690,7 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
          background_color = "transparent",
          z_index = "30")
   r.appendChild(panelRoot, aiResizeHandle)
-  when defined(js):
+  when isDomViewHost(E):
     let handleEl = aiResizeHandle
     let panelEl = panelRoot
     {.emit: ["""
@@ -4983,7 +4983,7 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
 
     # Overflow detection — reveal the chevron when the tab list's
     # scrollWidth exceeds its clientWidth.
-    when defined(js):
+    when isDomViewHost(E):
       let listJs = tabList
       let overflowJs = overflowBtn
       createRenderEffect proc() =
@@ -4999,7 +4999,7 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
         """].}
 
   # Click-outside / ESC closes the overflow dropdown when open.
-  when defined(js):
+  when isDomViewHost(E):
     let panelJs = panelRoot
     let dropdownJs = overflowDropdown
     {.emit: ["""
@@ -5590,7 +5590,7 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
       story: vm.selectedStory.val, generation: vm.preview.sourceGeneration.val)
     if selected != popupSelection:
       popupSelection = selected
-      when defined(js):
+      when isDomViewHost(E):
         {.emit: ["if (globalThis.__isonimCloseInspectorPopovers) globalThis.__isonimCloseInspectorPopovers(", shellRoot, ");"].}
       closeVariablePicker(variablePickerState)
       closeVariableInlineEditor(variableInlineEditorState)
@@ -5633,7 +5633,7 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
   r.addEventListener(escKeyNode, "keydown", proc() =
     if vm.activeView.val == evVectorEditor:
       vm.closeVectorEditor())
-  when defined(js):
+  when isDomViewHost(E):
     {.emit: ["""
       (function () {
         const node = """, escKeyNode, """;

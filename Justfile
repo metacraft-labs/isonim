@@ -1621,3 +1621,19 @@ editor-chat-lifetime-build: build-tailwind
 
 test-editor-chat-lifetime-gui: editor-chat-lifetime-build
     timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_chat_lifetime_gui.mjs
+
+# Logical renderer mounts execute without browser globals; DOM peers stay real.
+test-editor-renderer-boundaries: build-tailwind
+    #!/usr/bin/env bash
+    set -euo pipefail
+    nim c -r --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src tests/test_editor_renderer_boundaries.nim
+    nim js -d:nodejs --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:tests/test_editor_renderer_boundaries.js tests/test_editor_renderer_boundaries.nim
+    python3 tools/run_nim_js_test.py tests/test_editor_renderer_boundaries.js
+
+editor-renderer-boundaries-build: build-tailwind
+    mkdir -p build/editor-renderer-boundaries
+    nim js --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/editor-renderer-boundaries/editor.js tests/helpers/editor_renderer_boundary_browser.nim
+    "${ISONIM_SCENARIO_NODE:-node}" --check build/editor-renderer-boundaries/editor.js
+
+test-editor-renderer-boundaries-gui: editor-renderer-boundaries-build
+    timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_renderer_boundary_gui.mjs

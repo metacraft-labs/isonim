@@ -451,6 +451,7 @@ const isonimTestSpecs: seq[IsonimTestSpec] = @[
   spec("test_editor_workspace_refresh"),
   spec("test_editor_public_api"),
   spec("test_editor_source_scope_labels"),
+  spec("test_editor_renderer_boundaries"),
   spec("test_editor_shell_views"),
   spec("test_editor_task_views"),
   spec("test_editor_interactivity"),
@@ -537,6 +538,7 @@ const isonimCompileOnlySpecs: seq[IsonimTestSpec] = @[
 # ``-r``), so it is modelled as a BUILD-only edge (no node run).
 const isonimJsTestSpecs: seq[string] = @[
   "test_editor_chat_view_lifetime",
+  "test_editor_renderer_boundaries",
   "test_editor_section_source",
   "test_editor_section_appearance", "test_editor_section_component_props", "test_editor_section_layout", "test_editor_section_position",
   "test_editor_color_popover",
@@ -790,6 +792,7 @@ package isonim:
 
     var testBuildActions: seq[BuildActionDef] = @[]
     var sourceLabelActions: seq[BuildActionDef] = @[]
+    var rendererBoundaryActions: seq[BuildActionDef] = @[]
     var chatLifetimeActions: seq[BuildActionDef] = @[]
     var testExecuteActions: seq[BuildActionDef] = @[]
     var popupHeadlessActions: seq[BuildActionDef] = @[]
@@ -815,7 +818,7 @@ package isonim:
         # ``src`` + the nimble file are declared inputs so the monitor
         # tracks the transitively imported ``src/isonim/**`` module tree
         # (the reactive core / DSL / editor modules the tests pull in).
-        extraInputs = @["src", "isonim.nimble"] & (if stem == "test_editor_source_scope_labels": @["tests/helpers/editor_source_scope_label_cases.nim"] else: @[]))
+        extraInputs = @["src", "isonim.nimble"] & (if stem == "test_editor_renderer_boundaries": @["tests/test_editor_source_scope_labels.nim", "tests/test_editor_shell_chat_lifetime.nim", "tests/helpers/editor_source_scope_label_cases.nim"] else: @[]) & (if stem == "test_editor_source_scope_labels": @["tests/helpers/editor_source_scope_label_cases.nim"] else: @[]))
       buildActions.add(edge.action)
       # ``registerImplicitName = false``: the BUILD edge already owns the
       # binary basename as the implicit target name; the explicit
@@ -825,6 +828,7 @@ package isonim:
           actionId = "isonim.test_execute." & stem,
           registerImplicitName = false)
         executeActions.add(executeEdge)
+        if stem == "test_editor_renderer_boundaries": rendererBoundaryActions.add(executeEdge)
         if stem in ["test_editor_chat_view_lifetime", "test_editor_shell_chat_lifetime", "test_editor_chat_tabs_vm", "test_editor_chat_activity"]: chatLifetimeActions.add(executeEdge)
         if stem in ["test_editor_section_source", "test_editor_source_scope_labels", "test_editor_source_scope_row", "test_editor_section_component_props"]: sourceLabelActions.add(executeEdge)
         if stem in ["test_editor_section_appearance", "test_editor_section_component_props", "test_editor_section_layout", "test_editor_section_position"]: c4aHeadlessActions.add(executeEdge)
@@ -1373,18 +1377,19 @@ package isonim:
         warningsOff = true,
         actionId = "isonim.js_build." & stem,
         after = @[tailwindStylesEdge],
-        extraInputs = @["src", "build/tailwind-styles.json", "isonim.nimble"])
+        extraInputs = @["src", "build/tailwind-styles.json", "isonim.nimble"] & (if stem == "test_editor_renderer_boundaries": @["tests/test_editor_source_scope_labels.nim", "tests/test_editor_shell_chat_lifetime.nim", "tests/helpers/editor_source_scope_label_cases.nim"] else: @[]))
       testBuildActions.add(jsCompileEdge)
       jsBuildActions.add(jsCompileEdge)
       let guardedC2 = stem in ["test_effects", "test_editor_widget_property_row", "test_editor_color_popover", "test_editor_section_fill", "test_editor_source_scope_row"]
       let jsExecuteEdge =
-        if guardedC2 or stem in ["test_editor_chat_view_lifetime", "test_editor_chat_tabs_vm", "test_editor_chat_activity"] or stem == "test_editor_color_picker" or stem in ["test_editor_section_source", "test_editor_section_appearance", "test_editor_section_component_props", "test_editor_section_layout", "test_editor_section_position"]:
+        if stem == "test_editor_renderer_boundaries" or guardedC2 or stem in ["test_editor_chat_view_lifetime", "test_editor_chat_tabs_vm", "test_editor_chat_activity"] or stem == "test_editor_color_picker" or stem in ["test_editor_section_source", "test_editor_section_appearance", "test_editor_section_component_props", "test_editor_section_layout", "test_editor_section_position"]:
           sh.shell(command = "python3 tools/run_nim_js_test.py " & jsOut, cacheable = false,
             actionId = "isonim.js_execute." & stem, after = @[jsCompileEdge],
             extraInputs = @[jsOut, "tools/run_nim_js_test.py"])
         else:
           node(args = @[jsOut], actionId = "isonim.js_execute." & stem,
             after = @[jsCompileEdge], extraInputs = @[jsOut])
+      if stem == "test_editor_renderer_boundaries": rendererBoundaryActions.add(jsExecuteEdge)
       if guardedC2: c2HeadlessActions.add(jsExecuteEdge)
       if stem in ["test_editor_color_picker", "test_editor_color_popover"]:
         c3HeadlessActions.add(jsExecuteEdge)
@@ -1425,6 +1430,19 @@ package isonim:
     testBuildActions.add(sourceLabelsBrowserEdge)
     testExecuteActions.add(sourceLabelsGuiEdge)
     discard collect("test-editor-source-labels-gui", @[sourceLabelsGuiEdge])
+    let rendererBoundaryBrowserEdge = sh.shell(
+      command = "just editor-renderer-boundaries-build", cacheable = false,
+      actionId = "isonim.renderer_boundary_build.browser", after = @[tailwindStylesEdge],
+      extraInputs = @["src", "tests/helpers/editor_renderer_boundary_browser.nim", "Justfile", "build/tailwind-styles.json"],
+      extraOutputs = @["build/editor-renderer-boundaries"])
+    let rendererBoundaryGuiEdge = sh.shell(
+      command = "timeout --signal=TERM --kill-after=15s 180s \"${ISONIM_SCENARIO_NODE:-node}\" tests/test_editor_renderer_boundary_gui.mjs",
+      cacheable = false, actionId = "isonim.renderer_boundary_execute.gui", after = @[rendererBoundaryBrowserEdge],
+      extraInputs = @["tests/test_editor_renderer_boundary_gui.mjs", "build/editor-renderer-boundaries"])
+    testBuildActions.add(rendererBoundaryBrowserEdge)
+    testExecuteActions.add(rendererBoundaryGuiEdge)
+    discard collect("test-editor-renderer-boundaries", rendererBoundaryActions)
+    discard collect("test-editor-renderer-boundaries-gui", @[rendererBoundaryGuiEdge])
     let chatLifetimeBrowserEdge = sh.shell(
       command = "just editor-chat-lifetime-build", cacheable = false,
       actionId = "isonim.chat_lifetime_build.browser", after = @[tailwindStylesEdge],

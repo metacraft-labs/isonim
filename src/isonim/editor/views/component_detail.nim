@@ -258,7 +258,7 @@ proc attachComponentPropertyLivePreview[R, E](r: R; inputNode, frame: E;
   ## `input` event, apply the matching preview mutations directly to the iframe
   ## DOM. This lets the user see live changes while typing without triggering
   ## a reactive rebuild that would steal focus from the input.
-  when defined(js):
+  when isDomViewHost(E):
     {.emit: ["""
       (function () {
         const input = """, inputNode, """;
@@ -883,7 +883,7 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
   # Bumped when the frame is actually reloaded, so a restore still happens
   # even though the selected id did not change.
   let detailSrcdocGeneration = createSignal(0)
-  when defined(js):
+  when isDomViewHost(E):
     let bridgeBinding = newBridgeBinding()
   ownViewResources(projectFrame)
   createRenderEffect proc() =
@@ -1033,7 +1033,7 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
     # callback that walks the sidebar for the matching skVectorSymbol
     # story and mirrors the resulting activeView under the
     # `__isonimTestMode === true` gate.
-    when defined(js):
+    when isDomViewHost(E):
       let editor = vm
       let onVectorDbl = proc(componentPath: string) =
         var story: StoryRef
@@ -1041,7 +1041,7 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
             componentPath, story):
           return
         discard editor.openVectorEditor(story)
-        when defined(js):
+        when isDomViewHost(E):
           let activeView = $editor.activeView.val
           let targetPath =
             if editor.vectorEditorTarget.val.isSome:
@@ -1070,7 +1070,7 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
                       previewViewportWidth(vp),
                       previewViewportHeight(vp))
 
-    when defined(js):
+    when isDomViewHost(E):
       let frame = projectFrame
       let variantScript = vm.componentPreviewVariantScript(preview)
       {.emit: ["""

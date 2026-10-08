@@ -1,3 +1,4 @@
+import isonim/editor/views/view_lifecycle
 ## IsoNim Editor - Page Preview View.
 ##
 ## Renders project-owned preview documents in an editor-owned responsive frame.
@@ -166,7 +167,7 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
       r.appendChild(hitTestRoot, handle)
 
   # M-EVP-13: bridge attach/detach for the page-preview canvas.
-  when defined(js):
+  when isDomViewHost(E):
     let pageBridgeBinding = newBridgeBinding()
 
   createRenderEffect proc() =
@@ -278,7 +279,7 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
         r.setStyle(pageCanvasMnt.wrapper, "flex", "0 0 auto")
         r.setStyle(pageCanvasMnt.wrapper, "border-radius", borderRadius)
 
-    when defined(js):
+    when isDomViewHost(E):
       pageBridgeBinding.attachIfNeeded(vm, pageCanvasMnt.canvas, useCanvas)
       # VRS-M2: tell the launcher to re-render at the user-selected
       # viewport. The publisher closure (installed by

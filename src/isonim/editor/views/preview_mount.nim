@@ -20,6 +20,7 @@
 # Importing `std/dom` unconditionally broke every native test that reaches a
 # view, because that module refuses to compile off the JavaScript platform.
 import ../../core/owner
+import ./view_lifecycle
 import ../types
 import ../viewmodels
 
@@ -49,7 +50,7 @@ proc whenFrameReady[E](frame: E; reloaded: bool; then: proc()) =
   ## was rewritten the current document is already the right one and `then`
   ## runs now -- the common case, because selecting a different story inside an
   ## unchanged shell reloads nothing.
-  when defined(js):
+  when isDomViewHost(E):
     let cb = then
     {.emit: ["""
       (function (frame, reloaded, cb) {
@@ -66,7 +67,7 @@ proc whenFrameReady[E](frame: E; reloaded: bool; then: proc()) =
 
 proc mountNow[E](frame: E; story: StoryRef; hook: PreviewMountHook;
                  state: PreviewMountState) =
-  when defined(js):
+  when isDomViewHost(E):
     var body: PreviewMountHost = nil
     {.emit: [body, " = ", frame, ".contentDocument && ",
              frame, ".contentDocument.body;"].}

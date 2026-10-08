@@ -1,3 +1,4 @@
+import isonim/editor/views/view_lifecycle
 ## Dedicated foundations-page editor.
 
 import std/[sequtils, strutils]
@@ -32,7 +33,7 @@ proc categoryButtonHandler[R, E](r: R; node: E; vm: EditorVM;
     r.setAttribute(capturedNode, "aria-pressed", "true")
     r.setStyle(capturedNode, "background-color", accent)
     r.setStyle(capturedNode, "color", textPrimary)
-    when defined(js):
+    when isDomViewHost(E):
       let current = capturedNode
       {.emit: ["""
         const active = """, current, """;
@@ -147,7 +148,7 @@ proc renderFoundationsPage*[R, E](r: R; vm: EditorVM): E =
   r.appendChild(foundationProjectSection, foundationCanvasMnt.breadcrumb)
   r.appendChild(page, foundationProjectSection)
 
-  when defined(js):
+  when isDomViewHost(E):
     let foundationBridgeBinding = newBridgeBinding()
 
   var lastFoundationSrcdoc = ""
@@ -206,7 +207,7 @@ proc renderFoundationsPage*[R, E](r: R; vm: EditorVM): E =
         r.setStyle(foundationCanvasMnt.wrapper, "min-height", $vh & "px")
         r.setStyle(foundationCanvasMnt.wrapper, "flex", "0 0 auto")
         r.setStyle(foundationCanvasMnt.wrapper, "border-radius", radius)
-    when defined(js):
+    when isDomViewHost(E):
       foundationBridgeBinding.attachIfNeeded(vm, foundationCanvasMnt.canvas,
                                              useCanvas)
       # VRS-M2: fire a resize whenever the viewport changes so the
