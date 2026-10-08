@@ -467,6 +467,8 @@ const isonimTestSpecs: seq[IsonimTestSpec] = @[
   spec("test_editor_surface_toggle_vm"),
   spec("test_editor_chat_activity"),
   spec("test_editor_chat_tabs_vm"),
+  spec("test_editor_chat_view_lifetime"),
+  spec("test_editor_shell_chat_lifetime"),
   spec("test_editor_choice_group_vm"),
   spec("test_editor_choice_group_no_setstyle"),
   spec("test_editor_variable_binding_vm"),
@@ -534,6 +536,7 @@ const isonimCompileOnlySpecs: seq[IsonimTestSpec] = @[
 # back-end. It is a ``nim js`` COMPILE-ONLY recipe entry (``-o:`` without
 # ``-r``), so it is modelled as a BUILD-only edge (no node run).
 const isonimJsTestSpecs: seq[string] = @[
+  "test_editor_chat_view_lifetime",
   "test_editor_section_source",
   "test_editor_section_appearance", "test_editor_section_component_props", "test_editor_section_layout", "test_editor_section_position",
   "test_editor_color_popover",
@@ -787,6 +790,7 @@ package isonim:
 
     var testBuildActions: seq[BuildActionDef] = @[]
     var sourceLabelActions: seq[BuildActionDef] = @[]
+    var chatLifetimeActions: seq[BuildActionDef] = @[]
     var testExecuteActions: seq[BuildActionDef] = @[]
     var popupHeadlessActions: seq[BuildActionDef] = @[]
     var c2HeadlessActions: seq[BuildActionDef] = @[]
@@ -821,6 +825,7 @@ package isonim:
           actionId = "isonim.test_execute." & stem,
           registerImplicitName = false)
         executeActions.add(executeEdge)
+        if stem in ["test_editor_chat_view_lifetime", "test_editor_shell_chat_lifetime", "test_editor_chat_tabs_vm", "test_editor_chat_activity"]: chatLifetimeActions.add(executeEdge)
         if stem in ["test_editor_section_source", "test_editor_source_scope_labels", "test_editor_source_scope_row", "test_editor_section_component_props"]: sourceLabelActions.add(executeEdge)
         if stem in ["test_editor_section_appearance", "test_editor_section_component_props", "test_editor_section_layout", "test_editor_section_position"]: c4aHeadlessActions.add(executeEdge)
         if stem in ["test_editor_color_picker", "test_editor_color_popover"]:
@@ -1373,7 +1378,7 @@ package isonim:
       jsBuildActions.add(jsCompileEdge)
       let guardedC2 = stem in ["test_effects", "test_editor_widget_property_row", "test_editor_color_popover", "test_editor_section_fill", "test_editor_source_scope_row"]
       let jsExecuteEdge =
-        if guardedC2 or stem == "test_editor_color_picker" or stem in ["test_editor_section_source", "test_editor_section_appearance", "test_editor_section_component_props", "test_editor_section_layout", "test_editor_section_position"]:
+        if guardedC2 or stem in ["test_editor_chat_view_lifetime", "test_editor_chat_tabs_vm", "test_editor_chat_activity"] or stem == "test_editor_color_picker" or stem in ["test_editor_section_source", "test_editor_section_appearance", "test_editor_section_component_props", "test_editor_section_layout", "test_editor_section_position"]:
           sh.shell(command = "python3 tools/run_nim_js_test.py " & jsOut, cacheable = false,
             actionId = "isonim.js_execute." & stem, after = @[jsCompileEdge],
             extraInputs = @[jsOut, "tools/run_nim_js_test.py"])
@@ -1384,6 +1389,7 @@ package isonim:
       if stem in ["test_editor_color_picker", "test_editor_color_popover"]:
         c3HeadlessActions.add(jsExecuteEdge)
       testExecuteActions.add(jsExecuteEdge)
+      if stem in ["test_editor_chat_view_lifetime", "test_editor_chat_tabs_vm", "test_editor_chat_activity"]: chatLifetimeActions.add(jsExecuteEdge)
       if stem in ["test_editor_section_source", "test_editor_source_scope_row", "test_editor_section_component_props"]: sourceLabelActions.add(jsExecuteEdge)
       if stem in ["test_editor_section_appearance", "test_editor_section_component_props", "test_editor_section_layout", "test_editor_section_position"]: c4aHeadlessActions.add(jsExecuteEdge)
       jsExecuteActions.add(jsExecuteEdge)
@@ -1419,6 +1425,19 @@ package isonim:
     testBuildActions.add(sourceLabelsBrowserEdge)
     testExecuteActions.add(sourceLabelsGuiEdge)
     discard collect("test-editor-source-labels-gui", @[sourceLabelsGuiEdge])
+    let chatLifetimeBrowserEdge = sh.shell(
+      command = "just editor-chat-lifetime-build", cacheable = false,
+      actionId = "isonim.chat_lifetime_build.browser", after = @[tailwindStylesEdge],
+      extraInputs = @["src", "tests/helpers/editor_chat_lifetime_browser.nim", "Justfile", "build/tailwind-styles.json"],
+      extraOutputs = @["build/editor-chat-lifetime"])
+    let chatLifetimeGuiEdge = sh.shell(
+      command = "timeout --signal=TERM --kill-after=15s 180s \"${ISONIM_SCENARIO_NODE:-node}\" tests/test_editor_chat_lifetime_gui.mjs",
+      cacheable = false, actionId = "isonim.chat_lifetime_execute.gui", after = @[chatLifetimeBrowserEdge],
+      extraInputs = @["tests/test_editor_chat_lifetime_gui.mjs", "build/editor-chat-lifetime"])
+    testBuildActions.add(chatLifetimeBrowserEdge)
+    testExecuteActions.add(chatLifetimeGuiEdge)
+    discard collect("test-editor-chat-lifetime-headless", chatLifetimeActions)
+    discard collect("test-editor-chat-lifetime-gui", @[chatLifetimeGuiEdge])
     discard collect("test-editor-source-labels", sourceLabelActions)
     discard collect("test-editor-c4a-headless", c4aHeadlessActions)
     discard collect("test-editor-c4a-compounds", @[c4aCompoundEdge])

@@ -1601,3 +1601,23 @@ editor-source-labels-build: build-tailwind
 
 test-editor-source-labels-gui: editor-source-labels-build
     timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_source_scope_gui.mjs
+
+# Captured callback ownership; no provider/worker/filesystem outcomes.
+test-editor-chat-lifetime-headless: build-tailwind
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for stem in test_editor_chat_view_lifetime test_editor_shell_chat_lifetime test_editor_chat_tabs_vm test_editor_chat_activity; do
+      nim c -r --out:build/$stem tests/$stem.nim
+    done
+    for stem in test_editor_chat_view_lifetime test_editor_chat_tabs_vm test_editor_chat_activity; do
+      nim js -d:nodejs --out:build/$stem.js tests/$stem.nim
+      python3 tools/run_nim_js_test.py build/$stem.js
+    done
+
+editor-chat-lifetime-build: build-tailwind
+    mkdir -p build/editor-chat-lifetime
+    nim js --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/editor-chat-lifetime/editor.js tests/helpers/editor_chat_lifetime_browser.nim
+    "${ISONIM_SCENARIO_NODE:-node}" --check build/editor-chat-lifetime/editor.js
+
+test-editor-chat-lifetime-gui: editor-chat-lifetime-build
+    timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_chat_lifetime_gui.mjs

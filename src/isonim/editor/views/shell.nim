@@ -4591,6 +4591,15 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
   ## uses) so the inspector and AI assistant occupy the same
   ## horizontal slot.
   let capturedVm = vm
+  var panelAlive = true
+  onCleanup proc() = panelAlive = false
+  proc livePanel(): bool = panelAlive
+  let panelCurrent = livePanel
+  proc listen(node: E; event: string; callback: proc()) =
+    var listenerAlive = true
+    onCleanup proc() = listenerAlive = false
+    r.addEventListener(node, event, proc() =
+      if panelAlive and listenerAlive: callback())
 
   var tabStripEl: E
   var tabListEl: E
@@ -4685,18 +4694,22 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
     let handleEl = aiResizeHandle
     let panelEl = panelRoot
     {.emit: ["""
-      (function (handle, panel) {
+      (function (handle, panel, live) {
         if (!handle || typeof document === 'undefined' || !document.addEventListener || !handle.addEventListener) return;
         var startX = 0;
         var startW = 0;
         var dragging = false;
-        function endDrag() {
+        function releaseDrag() {
           if (!dragging) return;
           dragging = false;
           document.body.style.cursor = '';
           document.body.style.userSelect = '';
         }
+        function endDrag() {
+          if (live()) releaseDrag();
+        }
         function startDrag(e) {
+          if (!live()) return;
           dragging = true;
           startX = e.clientX;
           startW = panel.getBoundingClientRect().width;
@@ -4705,7 +4718,7 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
           if (e.preventDefault) e.preventDefault();
         }
         function moveDrag(e) {
-          if (!dragging) return;
+          if (!live() || !dragging) return;
           var delta = startX - e.clientX;
           var w = Math.max(200, Math.min(420, Math.round(startW + delta)));
           if (window.__isonimEditor &&
@@ -4718,13 +4731,13 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
         document.addEventListener('mouseup', endDrag);
         document.addEventListener('mouseleave', endDrag);
         handle.__isonimResizeCleanup = function () {
-          endDrag();
+          releaseDrag();
           handle.removeEventListener('mousedown', startDrag);
           document.removeEventListener('mousemove', moveDrag);
           document.removeEventListener('mouseup', endDrag);
           document.removeEventListener('mouseleave', endDrag);
         };
-      })(""", handleEl, """, """, panelEl, """);
+      })(""", handleEl, """, """, panelEl, """, """, panelCurrent, """);
     """].}
 
     onCleanup proc() =
@@ -4778,8 +4791,8 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
   block:
     let cvm = capturedVm
     let newClick = proc() = discard cvm.createNewChat()
-    r.addEventListener(newChatBtn, "click", newClick)
-    r.addEventListener(newChatBtn, "keydown", newClick)
+    listen(newChatBtn, "click", newClick)
+    listen(newChatBtn, "keydown", newClick)
 
   # Overflow dropdown.
   let dropdownEl = ui(r):
@@ -4814,8 +4827,8 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
   block:
     let openSig = dropdownOpen
     let toggleHandler = proc() = openSig.val = not openSig.val
-    r.addEventListener(overflowBtn, "click", toggleHandler)
-    r.addEventListener(overflowBtn, "keydown", toggleHandler)
+    listen(overflowBtn, "click", toggleHandler)
+    listen(overflowBtn, "keydown", toggleHandler)
 
   # Tab strip rebuild: reactive on ``chats`` + ``activeChatId``.
   block:
@@ -4897,8 +4910,8 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
         discard labelHost
 
         let click = tabClickHandler(cvm, sessionId)
-        r.addEventListener(tabEl, "click", click)
-        r.addEventListener(tabEl, "keydown", click)
+        listen(tabEl, "click", click)
+        listen(tabEl, "keydown", click)
         block:
           let dot = statusDot
           let chatVm = session.vm
@@ -4947,8 +4960,8 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
               text title
         r.appendChild(dropdown, entryEl)
         let entryClick = dropdownEntryClick(cvm, sessionId, openSig)
-        r.addEventListener(entryEl, "click", entryClick)
-        r.addEventListener(entryEl, "keydown", entryClick)
+        listen(entryEl, "click", entryClick)
+        listen(entryEl, "keydown", entryClick)
         block:
           let dot = dotEntryHost
           let chatVm = session.vm
@@ -4990,11 +5003,12 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
     let panelJs = panelRoot
     let dropdownJs = overflowDropdown
     {.emit: ["""
-      (function (panel, dropdown) {
+      (function (panel, dropdown, live) {
         if (!panel || !dropdown) return;
         if (panel.__isonimAiAssistantReady) return;
         panel.__isonimAiAssistantReady = true;
         function outside(event) {
+          if (!live()) return;
           if (dropdown.style.display === 'none') return;
           var target = event.target;
           if (!target) return;
@@ -5006,6 +5020,7 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
           if (trigger) trigger.setAttribute('aria-expanded', 'false');
         }
         function escape(event) {
+          if (!live()) return;
           if (event.key !== 'Escape') return;
           if (dropdown.style.display === 'none') return;
           dropdown.style.display = 'none';
@@ -5019,7 +5034,7 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
           document.removeEventListener('mousedown', outside);
           document.removeEventListener('keydown', escape);
         };
-      })(""", panelJs, """, """, dropdownJs, """);
+      })(""", panelJs, """, """, dropdownJs, """, """, panelCurrent, """);
     """].}
 
     onCleanup proc() =

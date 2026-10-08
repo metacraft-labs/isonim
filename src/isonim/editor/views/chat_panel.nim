@@ -7,7 +7,7 @@ import std/[json, sequtils, strutils]
 import nim_agents/activity_presentation
 import isonim/editor/control
 
-import isonim/core/[signals, computation]
+import isonim/core/[signals, computation, owner, batch]
 import isonim/viewmodel
 import isonim/dsl/ui
 import isonim/editor/viewmodels
@@ -81,6 +81,20 @@ proc proposalValidityText(validity: AgentEditProposalValidity): string =
 
 proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   let chat = vm.chat
+  let chatId = vm.activeChatId.val
+  var viewAlive = true
+  onCleanup proc() = viewAlive = false
+  proc currentView(): bool =
+    untrack proc(): bool =
+      viewAlive and vm.activeChatId.val == chatId and vm.chat == chat
+  proc listen(node: E; event: string; callback: proc()) =
+    # Row effects can retire their listeners before the conversation view ends.
+    # Saved callbacks must stay inert even if this conversation is revisited.
+    var listenerAlive = true
+    onCleanup proc() = listenerAlive = false
+    r.addEventListener(node, event, proc() =
+      if listenerAlive and currentView(): callback())
+  let liveView = currentView
   let agentState = signals.val(chat.sessionStatus)
   # Idle uses textSecondary (not textDim) so the connection-status dot reads
   # as an actual indicator, not body text. Loading/ready/error keep their
@@ -157,7 +171,7 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
           margin_top = "6px", font_size = "11px", line_height = "1.5",
           color = textSecondary):
         text "Turn off to let the agent focus, select, and highlight items automatically."
-  r.addEventListener(approvalSetting, "change", proc() =
+  listen(approvalSetting, "change", proc() =
     vm.agentControlApproval.val = not vm.agentControlApproval.val
     discard vm.refreshControlRevision())
   createRenderEffect proc() =
@@ -243,17 +257,17 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   r.setAttribute(narrowButton, "data-right-panel-resize-affordance", "narrow")
   r.setAttribute(resetButton, "data-right-panel-resize-affordance", "reset")
   r.setAttribute(widenButton, "data-right-panel-resize-affordance", "widen")
-  r.addEventListener(narrowButton, "click", proc() = vm.adjustRightPanelWidth(-40))
-  r.addEventListener(narrowButton, "keydown", proc() = vm.adjustRightPanelWidth(-40))
-  r.addEventListener(narrowButton, "focus", rememberPanelFocus(vm,
+  listen(narrowButton, "click", proc() = vm.adjustRightPanelWidth(-40))
+  listen(narrowButton, "keydown", proc() = vm.adjustRightPanelWidth(-40))
+  listen(narrowButton, "focus", rememberPanelFocus(vm,
     "right-panel-narrow"))
-  r.addEventListener(resetButton, "click", proc() = vm.setRightPanelWidth(260))
-  r.addEventListener(resetButton, "keydown", proc() = vm.setRightPanelWidth(260))
-  r.addEventListener(resetButton, "focus", rememberPanelFocus(vm,
+  listen(resetButton, "click", proc() = vm.setRightPanelWidth(260))
+  listen(resetButton, "keydown", proc() = vm.setRightPanelWidth(260))
+  listen(resetButton, "focus", rememberPanelFocus(vm,
     "right-panel-reset"))
-  r.addEventListener(widenButton, "click", proc() = vm.adjustRightPanelWidth(40))
-  r.addEventListener(widenButton, "keydown", proc() = vm.adjustRightPanelWidth(40))
-  r.addEventListener(widenButton, "focus", rememberPanelFocus(vm,
+  listen(widenButton, "click", proc() = vm.adjustRightPanelWidth(40))
+  listen(widenButton, "keydown", proc() = vm.adjustRightPanelWidth(40))
+  listen(widenButton, "focus", rememberPanelFocus(vm,
     "right-panel-widen"))
 
   # Messages area. Don't expand to fill the panel — at tall viewports that
@@ -342,7 +356,7 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
               white_space = "normal",
               overflow = "hidden"):
           text promptText
-    r.addEventListener(chip, "click", proc() =
+    listen(chip, "click", proc() =
       chat.inputText.val = promptText)
     r.appendChild(messagesArea, chip)
     suggestionNodes.add chip
@@ -463,7 +477,7 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
             color = textPrimary,
             cursor = "pointer"):
             text (if included: "Exclude" else: "Include")
-        r.addEventListener(includeBtn, "click", proc() =
+        listen(includeBtn, "click", proc() =
           discard vm.review.setReviewAnnotationPromptIncluded(annotationId,
             not included))
         let resolveBtn = ui(r):
@@ -479,7 +493,7 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
             color = textSecondary,
             cursor = "pointer"):
             text "Resolve"
-        r.addEventListener(resolveBtn, "click", proc() =
+        listen(resolveBtn, "click", proc() =
           discard vm.review.resolveReviewAnnotation(annotationId))
         let dismissBtn = ui(r):
           button(
@@ -494,7 +508,7 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
             color = textSecondary,
             cursor = "pointer"):
             text "Dismiss"
-        r.addEventListener(dismissBtn, "click", proc() =
+        listen(dismissBtn, "click", proc() =
           discard vm.review.dismissReviewAnnotation(annotationId))
         r.appendChild(actions, includeBtn)
         if state == ransOpen:
@@ -532,7 +546,7 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
             color = textPrimary,
             cursor = "pointer"):
             text "Allow"
-        r.addEventListener(allowBtn, "click", proc() =
+        listen(allowBtn, "click", proc() =
           discard chat.setAgentPermissionStatus(requestId, apsGranted))
         let denyBtn = ui(r):
           button(
@@ -547,7 +561,7 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
             color = textSecondary,
             cursor = "pointer"):
             text "Deny"
-        r.addEventListener(denyBtn, "click", proc() =
+        listen(denyBtn, "click", proc() =
           discard chat.setAgentPermissionStatus(requestId, apsDenied))
         r.appendChild(actions, allowBtn)
         r.appendChild(actions, denyBtn)
@@ -609,7 +623,7 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
             color = textPrimary,
             cursor = "pointer"):
             text "Accept"
-        r.addEventListener(acceptBtn, "click", proc() =
+        listen(acceptBtn, "click", proc() =
           discard vm.acceptAgentProposedEdit(proposalId))
         let rejectBtn = ui(r):
           button(
@@ -624,7 +638,7 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
             color = textSecondary,
             cursor = "pointer"):
             text "Reject"
-        r.addEventListener(rejectBtn, "click", proc() =
+        listen(rejectBtn, "click", proc() =
           discard vm.rejectAgentProposedEdit(proposalId))
         let revertBtn = ui(r):
           button(
@@ -639,7 +653,7 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
             color = textSecondary,
             cursor = "pointer"):
             text "Revert"
-        r.addEventListener(revertBtn, "click", proc() =
+        listen(revertBtn, "click", proc() =
           discard vm.revertAgentProposedEdit(proposalId))
         let rerunBtn = ui(r):
           button(
@@ -654,7 +668,7 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
             color = textSecondary,
             cursor = "pointer"):
             text "Re-run"
-        r.addEventListener(rerunBtn, "click", proc() =
+        listen(rerunBtn, "click", proc() =
           discard vm.rerunAgentProposedEdit(proposalId))
         let rebaseBtn = ui(r):
           button(
@@ -669,7 +683,7 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
             color = textSecondary,
             cursor = "pointer"):
             text "Rebase"
-        r.addEventListener(rebaseBtn, "click", proc() =
+        listen(rebaseBtn, "click", proc() =
           discard vm.rebaseAgentProposedEdit(proposalId))
         r.appendChild(actions, acceptBtn)
         r.appendChild(actions, rejectBtn)
@@ -707,19 +721,19 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
     let savedPosition = chat.scrollPosition
     let followInitially = chat.followOutput
     {.emit: ["""
-      (function(el, position, follow) {
+      (function(el, position, follow, live) {
         requestAnimationFrame(function() {
-          if (el.isConnected && !follow) el.scrollTop = position;
+          if (live() && el.isConnected && !follow) el.scrollTop = position;
         });
-      })(""", target, ",", savedPosition, ",", followInitially, ");"].}
-    r.addEventListener(messagesArea, "scroll", proc() =
+      })(""", target, ",", savedPosition, ",", followInitially, ",", liveView, ");"].}
+    listen(messagesArea, "scroll", proc() =
       var position, remaining: float
       {.emit: [position, " = ", target, ".scrollTop;", remaining, " = ",
         target, ".scrollHeight - ", target, ".scrollTop - ", target, ".clientHeight;"].}
       chat.scrollPosition = position
       chat.followOutput = remaining <= 24
       if chat.followOutput: r.setStyle(latest, "display", "none"))
-    r.addEventListener(latestButton, "click", proc() =
+    listen(latestButton, "click", proc() =
       chat.followOutput = true
       r.setStyle(latest, "display", "none")
       {.emit: [target, ".scrollTop = ", target, ".scrollHeight;"].})
@@ -736,13 +750,13 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
       if not initial and not changed: return
       let notifyLatest = not initial and changed
       {.emit: ["""
-        (function(el, latest, following, changed) {
+        (function(el, latest, following, changed, live) {
           requestAnimationFrame(function () {
-            if (!el.isConnected) return;
+            if (!live() || !el.isConnected) return;
             if (following()) el.scrollTop = el.scrollHeight;
             else if (changed) latest.style.display = 'block';
           });
-        })(""", target, ",", latest, ",", isFollowing, ",", notifyLatest, ");"].}
+        })(""", target, ",", latest, ",", isFollowing, ",", notifyLatest, ",", liveView, ");"].}
 
 
   # Input area
@@ -779,9 +793,9 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   createRenderEffect proc() =
     if r.inputValue(promptInput) != chat.inputText.val:
       r.setInputValue(promptInput, chat.inputText.val)
-  r.addEventListener(promptInput, "input", proc() =
+  listen(promptInput, "input", proc() =
     chat.inputText.val = r.inputValue(promptInput))
-  r.addEventListener(promptInput, "change", proc() =
+  listen(promptInput, "change", proc() =
     chat.inputText.val = r.inputValue(promptInput))
 
   let sendBtn = ui(r):
@@ -803,7 +817,9 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   r.setAttribute(sendBtn, "tabindex", "0")
   r.setAttribute(sendBtn, "aria-label", "Send agent prompt")
   proc submitPrompt() =
+    if not currentView(): return
     chat.inputText.val = r.inputValue(promptInput)
+    if not currentView(): return
     let active = vm.chat
     let generation = active.promptGeneration
     let ready = active.agentPromptReady()
@@ -816,7 +832,7 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
         ", ready:", ready, ", inFlight:", inFlight, ", closing:", closing,
         ", sameChat:", sameChat, ", accepted:", accepted, "});"].}
     r.setInputValue(promptInput, chat.inputText.val)
-  r.addEventListener(sendBtn, "click", submitPrompt)
+  listen(sendBtn, "click", submitPrompt)
   createRenderEffect proc() =
     let busy = not chat.agentPromptReady()
     r.setAttribute(sendBtn, "aria-disabled", $busy)
@@ -826,16 +842,17 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   when defined(js) and compiles(panel.ownerDocument):
     let submitCallback = submitPrompt
     {.emit: ["""
-      (function(el, submit) {
+      (function(el, submit, live) {
         let composing = false;
-        el.addEventListener('compositionstart', function() { composing = true; });
-        el.addEventListener('compositionend', function() { composing = false; });
+        el.addEventListener('compositionstart', function() { if (live()) composing = true; });
+        el.addEventListener('compositionend', function() { if (live()) composing = false; });
         el.addEventListener('keydown', function(event) {
+          if (!live()) return;
           if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && !composing && event.keyCode !== 229) {
             event.preventDefault(); submit();
           }
         });
-      })(""", promptInput, ",", submitCallback, ");"].}
+      })(""", promptInput, ",", submitCallback, ",", liveView, ");"].}
 
   let cancelBtn = ui(r):
     button(
@@ -855,7 +872,7 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   r.setAttribute(cancelBtn, "role", "button")
   r.setAttribute(cancelBtn, "tabindex", "0")
   r.setAttribute(cancelBtn, "aria-label", "Cancel agent prompt")
-  r.addEventListener(cancelBtn, "click", proc() = discard vm.cancelAgentPrompt())
+  listen(cancelBtn, "click", proc() = discard vm.cancelAgentPrompt())
 
   r.appendChild(inputRow, promptInput)
   r.appendChild(inputRow, sendBtn)
@@ -876,8 +893,8 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   r.setStyle(closeBtn, "color", textSecondary)
   r.setStyle(closeBtn, "background-color", bgSurface)
   r.setStyle(closeBtn, "border", "1px solid " & border)
-  r.addEventListener(closeBtn, "click", proc() =
-    discard vm.closeChat(vm.activeChatId.val))
+  listen(closeBtn, "click", proc() =
+    discard vm.closeChat(chatId))
   r.setStyle(closeBtn, "font-size", "10px")
   let sessionLabel = r.createElement("div")
   r.setAttribute(sessionLabel, "data-chat-session-status", "true")
