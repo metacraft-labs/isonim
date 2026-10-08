@@ -23,18 +23,72 @@ const
   warn = "#F59E0B"
   border = "#2A2C3A"
 
-proc deriveScopeLabel(element: ElementRef): string =
-  ## Derive a coarse scope label from the selection. The full schema-
-  ## aware derivation lives in the source-edit pipeline; for the
-  ## section body we mirror the four labels the spec calls out.
-  for prop in element.properties:
-    if prop.tokenName.len > 0:
+proc propertyScopeLabel(schema: DesignSystemSchema; element: ElementRef;
+    prop: PropertyInfo): string =
+  # An ownership edge identifies the owner even if its writer is unavailable or
+  # its source is unstructured. Editability is a separate concern.
+  if designSourceOwnershipIsAmbiguous(schema, element, prop): return "Unknown"
+  var nativeLabel: string
+  # Compiler-owned native mappings use the same complete declaration contract
+  # as the row's scope choices. Reserved identities alone are not ownership.
+  if prop.nativeSourceShared and prop.sourceFile.len > 0 and
+      prop.authoredValue.len > 0:
+    let token = prop.nativeSourceToken and prop.tokenName.len > 0 and
+      prop.schemaKey.startsWith("tokens.native.")
+    let shared = not prop.nativeSourceToken and
+      prop.schemaKey.startsWith("classes.native.")
+    if token or shared:
+      let kind = if token: sskSemanticToken else: sskSharedClass
+      for choice in sourceScopeChoices(schema, element, prop):
+        if choice.kind == kind and choice.schemaKey == prop.schemaKey and
+            choice.sourceFile == prop.sourceFile:
+          nativeLabel = if token: "Theme token" else: "Shared"
+
+  let mapped = resolveDesignSourceOwnership(schema, element, prop.name)
+  if mapped.nodeKey.len > 0:
+    if nativeLabel.len > 0:
+      let file = if mapped.ownership.sourceSpan.file.len > 0:
+        mapped.ownership.sourceSpan.file else: mapped.schemaNode.sourceSpan.file
+      let matchingKind = if nativeLabel == "Shared":
+        sourceScopeKindForNode(mapped.schemaNode.kind) == sskSharedClass
+        else: sourceScopeKindForNode(mapped.schemaNode.kind) in {
+          sskComponentToken, sskSemanticToken, sskGlobalPrimitiveToken}
+      if mapped.nodeKey != prop.schemaKey or file != prop.sourceFile or not matchingKind:
+        return "Unknown"
+    # A fallback/class-list rewrite mechanism does not establish the domain of
+    # its actual destination. Do not promote its incidental schema node to an
+    # ownership assertion when that destination is not mapped separately.
+    if mapped.planKind in {cspInlineStyleUpdate, cspTailwindClassReplacement}:
+      return "Unknown"
+    case sourceScopeKindForNode(mapped.schemaNode.kind)
+    of sskLocalInstance, sskStoryFixture: return "Local"
+    of sskComponentSchemaApi: return "Component schema"
+    of sskSharedClass: return "Shared"
+    of sskComponentToken, sskSemanticToken, sskGlobalPrimitiveToken:
       return "Theme token"
-    if prop.schemaKey.len > 0:
-      return "Component schema"
-    if prop.sharedCount > 0:
-      return "Shared"
-  "Local"
+
+  if nativeLabel.len > 0: return nativeLabel
+  if prop.origin == poThemeToken: return "Theme token"
+  if not prop.nativeSourceShared and not prop.nativeSourceToken and
+      prop.sourceFile.len > 0 and (prop.schemaKey.len == 0 or
+        prop.schemaKey.startsWith("dom.")) and
+      (prop.origin == poSetStyle or
+        (prop.directStyleAllowed and prop.authoredValue.len > 0)):
+    return "Local"
+  "Unknown"
+
+proc deriveScopeLabel(schema: DesignSystemSchema; element: ElementRef): string =
+  # This row summarizes all exposed properties, rather than promoting one
+  # guessed identity/count to a whole-element ownership assertion.
+  var known: seq[string]
+  var unknown = element.properties.len == 0
+  for prop in element.properties:
+    let label = propertyScopeLabel(schema, element, prop)
+    if label == "Unknown": unknown = true
+    elif label notin known: known.add label
+  if unknown: "Unknown"
+  elif known.len > 1: "Mixed"
+  else: known[0]
 
 proc mountSectionSource*[R, E](r: R; parent: E; vm: EditorVM) =
   ## Mount the Source section body. The section is read-only for
@@ -109,7 +163,7 @@ proc mountSectionSource*[R, E](r: R; parent: E; vm: EditorVM) =
         elif el.sourceFile.len > 0: el.sourceFile
         else: "—"
       r.setTextContent(fileLineEl, label)
-      r.setTextContent(scopeEl, deriveScopeLabel(el))
+      r.setTextContent(scopeEl, deriveScopeLabel(vm.designSystemSchema.val, el))
     else:
       r.setTextContent(fileLineEl, "—")
       r.setTextContent(scopeEl, "—")

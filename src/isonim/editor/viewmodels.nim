@@ -4711,6 +4711,40 @@ func ownershipMatches(ownership: DesignSourceOwnership; element: ElementRef;
     return true
   ownership.elementSourceKey.len > 0 or ownership.domPath.len > 0
 
+func designSourceOwnershipIsAmbiguous*(schema: DesignSystemSchema;
+    element: ElementRef; prop: PropertyInfo): bool =
+  ## Presentation requires known selectors and agreement on the owner node
+  ## and destination. Match using the writer's existing predicate;
+  ## leave its first-match admission/resolution behavior unchanged.
+  var seen = false
+  var ownerKey: string
+  var destination: DesignSourceOwnership
+  for ownership in schema.sourceOwnership:
+    if not ownership.ownershipMatches(element, prop): continue
+    # The legacy matcher accepts an unspecified selected path. Presentation
+    # cannot treat that as proof of this path-scoped owner, even when another
+    # alias matches; retain the writer predicate's behavior unchanged.
+    if ownership.domPath.len > 0 and element.domPath.len == 0: return true
+    let key = if ownership.nodeKey.len > 0: ownership.nodeKey else: ownership.schemaKey
+    let node = schema.findDesignNode(key)
+    if not node.ok: return true
+    for candidate in schema.nodes:
+      if candidate.key == key and candidate != node.node: return true
+    var target = ownership
+    # These fields select the edge; they are not the authored destination.
+    # Redundant aliases to the same node/destination retain its known owner.
+    target.elementSourceKey = ""
+    target.domPath = ""
+    target.property = ""
+    target.schemaKey = ""
+    target.nodeKey = ""
+    # Writer availability does not change the known owner destination.
+    target.unstructuredViewCode = false
+    if seen and (key != ownerKey or target != destination): return true
+    seen = true
+    ownerKey = key
+    destination = target
+
 func validateDesignSystemSchema*(schema: DesignSystemSchema): seq[
     DesignSchemaDiagnostic] =
   if schema.schemaVersion <= 0 or schema.schemaVersion > 1:
@@ -5464,7 +5498,7 @@ func sourceScopeChoiceLabel*(kind: SourceScopeChoiceKind): string =
   of sskSemanticToken: "Semantic token"
   of sskGlobalPrimitiveToken: "Global primitive token"
 
-func sourceScopeKindForNode(kind: DesignSchemaNodeKind): SourceScopeChoiceKind =
+func sourceScopeKindForNode*(kind: DesignSchemaNodeKind): SourceScopeChoiceKind =
   case kind
   of dsnStoryFixture:
     sskStoryFixture

@@ -1581,3 +1581,23 @@ test-editor-c4a-grip: isonim-review-build build-tailwind
     timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_source_style_values_gui.mjs
 
 test-editor-c4a: test-editor-c4a-headless test-editor-c4a-compounds test-editor-c4a-gestures test-editor-c4a-color test-editor-c4a-grip
+
+# Source ownership presentation; real native/JS signals and shell, no transports.
+test-editor-source-labels: build-tailwind
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for stem in test_editor_section_source test_editor_source_scope_labels test_editor_source_scope_row test_editor_section_component_props; do
+      nim c -r --out:build/$stem tests/$stem.nim
+    done
+    for stem in test_editor_section_source test_editor_source_scope_row test_editor_section_component_props; do
+      nim js -d:nodejs --out:build/$stem.js tests/$stem.nim
+      python3 tools/run_nim_js_test.py build/$stem.js
+    done
+
+editor-source-labels-build: build-tailwind
+    mkdir -p build/editor-source-labels
+    nim js --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/editor-source-labels/editor.js tests/helpers/editor_source_scope_browser.nim
+    "${ISONIM_SCENARIO_NODE:-node}" --check build/editor-source-labels/editor.js
+
+test-editor-source-labels-gui: editor-source-labels-build
+    timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_source_scope_gui.mjs
