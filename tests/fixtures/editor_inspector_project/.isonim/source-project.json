@@ -1,0 +1,94 @@
+{
+  "workspace": "source-project",
+  "title": "Inspector source acceptance",
+  "catalog": ".isonim/catalog.json",
+  "build": [
+    "python3",
+    "build_catalog.py"
+  ],
+  "fixtures": [],
+  "editableStyles": [
+    {
+      "key": "style.action",
+      "elementId": "action",
+      "storyId": "Card / default ready",
+      "file": "stories.nim",
+      "const": "cardStyles",
+      "selector": "#action",
+      "properties": [
+        "width",
+        "height",
+        "padding",
+        "border-radius",
+        "background-color",
+        "color",
+        "padding-top",
+        "padding-right",
+        "padding-bottom",
+        "padding-left",
+        "border-top-left-radius",
+        "border-top-right-radius",
+        "border-bottom-right-radius",
+        "border-bottom-left-radius"
+      ]
+    },
+    {
+      "key": "style.secondary-action",
+      "elementId": "secondary-action",
+      "storyId": "Card / default ready",
+      "file": "stories.nim",
+      "const": "cardStyles",
+      "selector": "#secondary-action",
+      "properties": [
+        "width",
+        "height",
+        "padding",
+        "border-radius",
+        "background-color",
+        "color"
+      ]
+    },
+    {
+      "key": "style.alternate-action",
+      "elementId": "alternate-action",
+      "storyId": "Alternate / default ready",
+      "file": "stories.nim",
+      "const": "alternateStyles",
+      "selector": "#alternate-action",
+      "properties": [
+        "width",
+        "height",
+        "padding",
+        "border-radius",
+        "background-color",
+        "color"
+      ]
+    },
+    {
+      "key": "style.reused.card",
+      "elementId": "reused",
+      "storyId": "Card / default ready",
+      "file": "stories.nim",
+      "const": "cardStyles",
+      "selector": "#reused-card",
+      "properties": [
+        "width",
+        "height",
+        "background-color"
+      ]
+    },
+    {
+      "key": "style.reused.alternate",
+      "elementId": "reused",
+      "storyId": "Alternate / default ready",
+      "file": "stories.nim",
+      "const": "alternateStyles",
+      "selector": "#reused-alternate",
+      "properties": [
+        "width",
+        "height",
+        "background-color"
+      ]
+    }
+  ]
+}

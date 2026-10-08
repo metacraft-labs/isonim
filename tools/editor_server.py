@@ -31,6 +31,15 @@ import urllib.parse
 import urllib.request
 
 REPO = Path(__file__).resolve().parent.parent
+
+
+def public_source_manifest(manifest: dict) -> dict:
+    """Expose catalog identity capabilities without private source locations."""
+    public = {name: manifest.get(name, []) for name in ("workspace", "title", "fixtures")}
+    if "editableStyleSources" in manifest:
+        public["editableStyleSources"] = []
+    return public
+
 # Two sequential native HTTP deadlines (creation/delivery and stop), then
 # owned Harbor TERM/KILL/reap and scheduling margin. Session stops run concurrently.
 SHUTDOWN_POLICY = json.loads((REPO / "tools/editor_shutdown.json").read_text())
@@ -285,9 +294,18 @@ class EditorHandler(http.server.SimpleHTTPRequestHandler):
                 if not catalog_path.is_relative_to(self.source_root):
                     raise ValueError("Catalog path escapes workspace")
                 output = {"catalog": json.loads(catalog_path.read_text()),
-                    "manifest": {key: manifest.get(key, []) for key in ("workspace", "title", "fixtures")}}
+                    "manifest": public_source_manifest(manifest)}
+                if "editableStyles" in manifest or "editableStyleSources" in manifest:
+                    if not self.source_binary:
+                        raise ValueError("Native editable source worker unavailable")
+                    described = subprocess.run([str(self.source_binary), "source-project", str(self.source_root), "--describe"],
+                        cwd=self.source_root, capture_output=True, text=True, timeout=5)
+                    metadata = json.loads(described.stdout)
+                    if described.returncode or not metadata.get("ok"):
+                        raise ValueError(metadata.get("diagnostic", "Invalid editable source metadata"))
+                    output["editableStyles"] = metadata["editableStyles"]
                 status = 200
-            except (OSError, ValueError, KeyError, TypeError) as error:
+            except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
                 output = {"ok": False, "diagnostic": "Source project contract is invalid: " + str(error)}
                 status = 400
             data = json.dumps(output).encode()
@@ -320,6 +338,10 @@ class EditorHandler(http.server.SimpleHTTPRequestHandler):
         # Only the registered browser's ACK credential authorizes source work.
         # Resolve the command from the registry rather than trust posted edits,
         # paths, templates, compiler arguments or a caller's claimed permissions.
+        timing_start = time.monotonic()
+        timings = {}
+        def checkpoint(name):
+            timings[name] = round((time.monotonic() - timing_start) * 1000, 3)
         try:
             length = int(self.headers.get("Content-Length", "0"))
             if length < 1 or length > 65536: raise ValueError("Invalid source request size")
@@ -336,6 +358,7 @@ class EditorHandler(http.server.SimpleHTTPRequestHandler):
                 if "error" in authorization: raise ValueError(authorization["error"]["message"])
                 return authorization["result"]
             authorize()
+            checkpoint("authorized")
             key = (params["instance"], params["epoch"], params["operationId"])
             # Serialize real project transactions and cache successful or failed
             # results so a lost response cannot create/build the same operation twice.
@@ -346,6 +369,7 @@ class EditorHandler(http.server.SimpleHTTPRequestHandler):
                     # Waiting is not admission. Re-check terminal revocation and
                     # current permissions only after acquiring the project lock.
                     command = authorize(admit=True)
+                    checkpoint("admitted")
                     with tempfile.TemporaryDirectory(prefix="isonim-source-") as temporary:
                         payload = Path(temporary) / "request.json"
                         payload.write_text(json.dumps(command))
@@ -373,15 +397,21 @@ class EditorHandler(http.server.SimpleHTTPRequestHandler):
                             try: os.killpg(process.pid, signal.SIGKILL)
                             except ProcessLookupError: pass
                             with self.server.source_jobs_lock: self.server.source_jobs.discard(process)
+                    checkpoint("native_exited")
                     if output.get("manifest"):
-                        output["manifest"] = {name: output["manifest"].get(name, []) for name in ("workspace", "title", "fixtures")}
+                        output["manifest"] = public_source_manifest(output["manifest"])
                     self.source_results[key] = output
             data = json.dumps(output).encode()
+            checkpoint("encoded")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
+            checkpoint("sent")
+            if os.environ.get("ISONIM_SOURCE_DIAGNOSTICS") == "timing":
+                # Private developer diagnostics: no credentials/source payload.
+                self.log_message("inspector-source-timing %s", json.dumps({**timings, "bytes": len(data)}))
         except (KeyError, ValueError, OSError, urllib.error.URLError, subprocess.SubprocessError) as error:
             data = json.dumps({"ok": False, "diagnostic": str(error)}).encode()
             self.send_response(400)

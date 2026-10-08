@@ -314,3 +314,103 @@ suite "Source transaction authorization":
       request["command"] = %"create-story"
       request["component"] = invalid
       check rpc(reg, "editor.command", request, browser["controlToken"].getStr())["error"]["message"].getStr() == "invalid_command_field_type"
+
+proc inspectorSource(browser: JsonNode; id = "inspector-1"; revision = 4): JsonNode =
+  result = target(browser)
+  result["state"] = %* {"revision": revision, "storyId": "Card / ready", "selection": "action", "viewportWidth":1440, "permissions": {"writeSource": true}}
+  result["request"] = %* {"commandId": id, "command": "inspector-edit", "storyId": "Card / ready",
+    "target": "action", "schemaKey": "style.action", "property": "width", "value": "150px",
+    "expectedValue": "120px", "expectedSourceHash": "0123456789012345678901234567890123456789",
+    "expectedRevision": revision, "viewportWidth": 1440}
+
+suite "browser-origin inspector source admission":
+  test "only the current browser credential can submit; exact replay is idempotent":
+    let registry = newEditorControlRegistry("browser-bootstrap")
+    let browser = register(registry)
+    let submission = inspectorSource(browser)
+    for invalid in ["", "wrong", browser["controlToken"].getStr()]:
+      check rpc(registry,"editor.inspector-source",submission,invalid)["error"]["message"].getStr() == "browser_credential_required"
+    let accepted = rpc(registry,"editor.inspector-source",submission,browser["browserToken"].getStr())["result"]
+    check accepted["status"].getStr() == "running"
+    check rpc(registry,"editor.inspector-source",submission,browser["browserToken"].getStr())["result"] == accepted
+    check rpc(registry,"editor.poll",target(browser),browser["browserToken"].getStr())["result"]["commands"].len == 0
+    let collision = submission.copy()
+    collision["request"]["value"] = %"160px"
+    check rpc(registry,"editor.inspector-source",collision,browser["browserToken"].getStr())["error"]["message"].getStr() == "command_id_collision"
+
+  test "unknown paths, missing fields and malformed field types cannot be admitted":
+    let registry = newEditorControlRegistry("browser-bootstrap")
+    let browser = register(registry)
+    let unknown = inspectorSource(browser)
+    unknown["request"]["file"] = %"../other.nim"
+    check rpc(registry,"editor.inspector-source",unknown,browser["browserToken"].getStr())["error"]["message"].getStr() == "unknown_inspector_source_field"
+    for key in ["commandId","command","storyId","target","schemaKey","property","value","expectedValue","expectedSourceHash","expectedRevision","viewportWidth"]:
+      let missing = inspectorSource(browser)
+      missing["request"].delete(key)
+      check rpc(registry,"editor.inspector-source",missing,browser["browserToken"].getStr())["error"]["message"].getStr() == "missing_inspector_source_field"
+      for malformed in [newJNull(), %true, newJArray(), newJObject()]:
+        let request = inspectorSource(browser)
+        request["request"][key] = malformed
+        check rpc(registry,"editor.inspector-source",request,browser["browserToken"].getStr())["error"]["message"].getStr() == "invalid_inspector_source_field_type"
+    let viewport = inspectorSource(browser)
+    viewport["request"]["viewportWidth"] = %0
+    check rpc(registry,"editor.inspector-source",viewport,browser["browserToken"].getStr())["error"]["message"].getStr() == "invalid_inspector_viewport"
+
+  test "selection, story and revision changes prevent admission":
+    let registry = newEditorControlRegistry("browser-bootstrap")
+    let browser = register(registry)
+    for (key, value) in [("target", "other"), ("storyId", "Other / story")]:
+      let request = inspectorSource(browser)
+      request["request"][key] = %value
+      check rpc(registry,"editor.inspector-source",request,browser["browserToken"].getStr())["error"]["message"].getStr() == "stale_inspector_source_target"
+    let request = inspectorSource(browser)
+    request["request"]["expectedRevision"] = %3
+    check rpc(registry,"editor.inspector-source",request,browser["browserToken"].getStr())["error"]["message"].getStr() == "stale_inspector_source_target"
+
+  test "waiting viewport changes refuse admission while admitted work keeps original viewport":
+    let registry = newEditorControlRegistry("browser-bootstrap")
+    let browser = register(registry)
+    let credential = browser["browserToken"].getStr()
+    let submitted = inspectorSource(browser)
+    discard rpc(registry,"editor.inspector-source",submitted,credential)
+    let authorization = target(browser)
+    authorization["operationId"] = %"inspector-1"
+    authorization["admit"] = %false
+    check rpc(registry,"editor.source-authorize",authorization,credential)["result"] == submitted["request"]
+    let poll = target(browser)
+    poll["state"] = submitted["state"].copy()
+    poll["state"]["viewportWidth"] = %720
+    discard rpc(registry,"editor.poll",poll,credential)
+    authorization["admit"] = %true
+    check rpc(registry,"editor.source-authorize",authorization,credential)["error"]["message"].getStr() == "stale_inspector_source_target"
+    poll["state"]["viewportWidth"] = %1440
+    discard rpc(registry,"editor.poll",poll,credential)
+    check rpc(registry,"editor.source-authorize",authorization,credential)["result"] == submitted["request"]
+    poll["state"]["viewportWidth"] = %720
+    discard rpc(registry,"editor.poll",poll,credential)
+    check rpc(registry,"editor.source-authorize",authorization,credential)["result"]["viewportWidth"].getInt() == 1440
+
+  test "waiting source work rechecks selection; admitted work retains its captured original target":
+    let registry = newEditorControlRegistry("browser-bootstrap")
+    let browser = register(registry)
+    let credential = browser["browserToken"].getStr()
+    let submitted = inspectorSource(browser)
+    discard rpc(registry,"editor.inspector-source",submitted,credential)
+    let authorization = target(browser)
+    authorization["operationId"] = %"inspector-1"
+    authorization["admit"] = %false
+    check rpc(registry,"editor.source-authorize",authorization,credential)["result"] == submitted["request"]
+    let poll = target(browser)
+    poll["state"] = %* {"revision":5,"storyId":"Card / ready","selection":"other","permissions":{"writeSource":true}}
+    discard rpc(registry,"editor.poll",poll,credential)
+    authorization["admit"] = %true
+    check rpc(registry,"editor.source-authorize",authorization,credential)["error"]["message"].getStr() == "stale_inspector_source_target"
+    let second = inspectorSource(browser,"inspector-2",6)
+    discard rpc(registry,"editor.inspector-source",second,credential)
+    authorization["operationId"] = %"inspector-2"
+    check rpc(registry,"editor.source-authorize",authorization,credential)["result"] == second["request"]
+    poll["state"]["revision"] = %7
+    discard rpc(registry,"editor.poll",poll,credential)
+    check rpc(registry,"editor.source-authorize",authorization,credential)["result"]["target"].getStr() == "action"
+    authorization["operationId"] = %"unregistered"
+    check rpc(registry,"editor.source-authorize",authorization,credential)["error"]["message"].getStr() == "unknown_operation"

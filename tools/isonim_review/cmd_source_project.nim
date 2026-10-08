@@ -2,9 +2,9 @@
 ## dispatcher and WorkspaceEditAdapter transaction against actual source files.
 ## The manifest belongs to the project, never to an RPC caller. Build stdout is
 ## a rendered catalog JSON document; failed builds never publish a new catalog.
-import std/[json, os, osproc, strutils, tempfiles]
+import std/[json, os, osproc, strutils, tempfiles, sha1]
 import isonim/core/[signals, owner]
-import isonim/editor/[control, source_catalog, workspace]
+import isonim/editor/[control, source_catalog, workspace, css_patch, viewmodels, source_style_bindings, source_style_values]
 
 proc safePath(root, relative: string): string =
   if relative.len == 0 or relative.isAbsolute:
@@ -42,6 +42,24 @@ proc recoverSourceTransaction(root: string) =
         "Interrupted source transaction conflicts with a later edit: " & row["file"].getStr())
   removeFile(journal)
 
+proc describeEditableStyles(root: string; manifest: JsonNode): JsonNode =
+  result = compiledStyleBindings(parseFile(safePath(root, manifest{"catalog"}.getStr())),
+    manifest, proc(file: string): string = readFile(safePath(root, file)))
+  if manifest{"editableStyles"} == nil: return
+  if manifest["editableStyles"].kind != JArray:
+    raise newException(ValueError, "Editable source declarations must be an array.")
+  for entry in manifest{"editableStyles"}:
+    let source = readFile(safePath(root, entry{"file"}.getStr()))
+    var values = newJObject()
+    for property in entry{"properties"}:
+      let probe = patchCssInNimConstAt(source, entry{"const"}.getStr(),
+        entry{"selector"}.getStr(), property.getStr(), "0", 0)
+      if probe.ok: values[property.getStr()] = %probe.oldValue
+    result.add(%* {"key": entry{"key"}.getStr(), "elementId": entry{"elementId"}.getStr(),
+      "storyId": entry{"storyId"}.getStr(), "file": entry{"file"}.getStr(),
+      "const": entry{"const"}, "selector": entry{"selector"}, "properties": entry{"properties"},
+      "sourceHash": $secureHash(source), "values": values})
+
 proc cmdSourceProject*(args: seq[string]): int =
   if args.len != 2:
     echo $(%* {"ok": false, "diagnostic": "source-project requires root and request file"})
@@ -53,7 +71,62 @@ proc cmdSourceProject*(args: seq[string]): int =
       echo $(%* {"ok": true})
       return 0
     let manifest = parseFile(safePath(root, ".isonim/source-project.json"))
+    if args[1] == "--describe":
+      echo $(%* {"ok": true, "editableStyles": describeEditableStyles(root, manifest)})
+      return 0
     let request = parseFile(args[1])
+    let inspectorEdit = request{"command"}.getStr() == "inspector-edit"
+    var literalMap: JsonNode
+    var nativeProperty, nativeBefore, nativeAfter: string
+    if inspectorEdit:
+      for key, value in request:
+        if key notin ["commandId", "command", "storyId", "target", "schemaKey", "property", "value", "expectedValue", "expectedSourceHash", "expectedRevision", "viewportWidth", "sourceValue"]:
+          raise newException(ValueError, "Unknown inspector source field.")
+        if key in ["expectedRevision", "viewportWidth"]:
+          if value.kind != JInt: raise newException(ValueError, "Invalid inspector source field type.")
+        elif value.kind != JString:
+          raise newException(ValueError, "Invalid inspector source field type.")
+      for key in ["commandId", "command", "storyId", "target", "schemaKey", "property", "value", "expectedValue", "expectedSourceHash", "expectedRevision", "viewportWidth"]:
+        if request{key} == nil: raise newException(ValueError, "Missing inspector source field.")
+      if request{"viewportWidth"}.getInt() < 1 or request{"expectedSourceHash"}.getStr().len != 40:
+        raise newException(ValueError, "Invalid inspector source revision.")
+      for delimiter in [";", "{", "}", "\n", "\r", "\x00", "\"\"\""]:
+        if delimiter in request{"value"}.getStr():
+          raise newException(ValueError, "A property value cannot contain declaration delimiters.")
+      for entry in describeEditableStyles(root, manifest):
+        if entry{"key"}.getStr() == request{"schemaKey"}.getStr():
+          if literalMap != nil: raise newException(ValueError, "Ambiguous editable source schema.")
+          literalMap = entry
+      if literalMap == nil: raise newException(ValueError, "Unsupported editable source schema.")
+      if literalMap{"elementId"}.getStr() != request{"target"}.getStr() or
+          literalMap{"storyId"}.getStr() != request{"storyId"}.getStr():
+        raise newException(ValueError, "Editable source target mismatch.")
+      var allowed = false
+      for property in literalMap{"properties"}:
+        if property.getStr() == request{"property"}.getStr(): allowed = true
+      if not allowed: raise newException(ValueError, "Property is not owned by this source schema.")
+      let source = readFile(safePath(root, literalMap{"file"}.getStr()))
+      if $secureHash(source) != request{"expectedSourceHash"}.getStr():
+        raise newException(ValueError, "Source changed since this inspector edit began.")
+      let parsed = parseCssPropertyValue(request{"property"}.getStr(), request{"value"}.getStr())
+      let validation = validateCssPropertyValue(PropertyInfo(name: request{"property"}.getStr(),
+        directStyleAllowed: true), PropertyEditRequest(property: request{"property"}.getStr(),
+        newValue: request{"value"}.getStr(), kind: pekCss, scope: pesLocal), parsed)
+      if validation.len > 0: raise newException(ValueError, validation[0].message)
+      if literalMap{"values", request["property"].getStr()} == nil or
+          literalMap["values"][request["property"].getStr()].getStr() != request["expectedValue"].getStr():
+        raise newException(ValueError, "Authored property changed before this edit.")
+      let declaration = literalMap{"sourceDeclarations", request["property"].getStr()}
+      nativeProperty = if declaration == nil: request["property"].getStr() else: declaration["property"].getStr()
+      nativeBefore = if declaration == nil: request["expectedValue"].getStr() else: declaration["value"].getStr()
+      if declaration != nil and declaration{"component"} != nil:
+        nativeAfter = patchCssQuad(nativeProperty,nativeBefore,request["value"].getStr(),
+          declaration["component"].getInt(),request{"sourceValue"}.getStr())
+        if nativeAfter.len == 0: raise newException(ValueError, "Unsupported compound edit or stale sibling restoration.")
+      else:
+        nativeAfter = request["value"].getStr()
+        if request{"sourceValue"} != nil and request["sourceValue"].getStr() != nativeAfter:
+          raise newException(ValueError, "Source restoration does not match this property value.")
     let catalogFile = safePath(root, manifest{"catalog"}.getStr())
     let catalog = parseFile(catalogFile)
     let journalFile = safePath(root, ".isonim/source-transaction.json")
@@ -95,6 +168,10 @@ proc cmdSourceProject*(args: seq[string]): int =
       adapter.schema.add WorkspaceEditableSchemaEntry(key: fixture{"schemaKey"}.getStr() & ".story",
         file: fixture{"file"}.getStr(), kind: wskStoryFixture,
         story: StoryRef(group: fixture{"component"}.getStr(), name: fixture{"variant"}.getStr() & " " & fixture{"state"}.getStr(), kind: skComponent))
+    if inspectorEdit:
+      adapter.schema.add WorkspaceEditableSchemaEntry(key: literalMap{"key"}.getStr(),
+        file: literalMap{"file"}.getStr(), kind: wskSourceMap,
+        property: request{"property"}.getStr())
     adapter.readFile = proc(file: string): WorkspaceReadResult =
       WorkspaceReadResult(ok: true, content: readFile(safePath(root, file)))
     adapter.writeFile = proc(file, content: string): WorkspaceOperationResult =
@@ -114,6 +191,15 @@ proc cmdSourceProject*(args: seq[string]): int =
       atomicSourceWrite(target, content)
       WorkspaceOperationResult(ok: true)
     adapter.patchFile = proc(plan: SourceEditPlan; content: string; schema: WorkspaceEditableSchemaEntry): WorkspacePatchResult =
+      if inspectorEdit:
+        let patched = patchCssInNimConstAt(content, literalMap{"const"}.getStr(),
+          literalMap{"selector"}.getStr(), nativeProperty, nativeAfter,
+          request{"viewportWidth"}.getInt())
+        if not patched.ok or patched.oldValue != nativeBefore:
+          return WorkspacePatchResult(ok: false, diagnostics: @[WorkspaceEditDiagnostic(
+            kind: wedSourceConflict, message: "Source declaration changed or cannot be safely patched.")])
+        return WorkspacePatchResult(ok: true, patch: WorkspaceFilePatch(file: schema.file,
+          beforeContent: content, afterContent: patched.content, fullReload: true))
       for fixture in manifest{"fixtures"}:
         if fixture{"schemaKey"}.getStr() & ".story" == plan.schemaKey:
           let marker = fixture{"marker"}.getStr()
@@ -137,16 +223,40 @@ proc cmdSourceProject*(args: seq[string]): int =
         editAdapter = adapter, permissions = EditorWorkspacePermissions(readSource: true, writeSource: true, createStory: true))
       let vm = createEditorVM(sourceCatalogWorkspace(catalog, manifest, base))
       vm.controlSourceFixtures = sourceFixtures(manifest)
-      let typed = commandRequest(request)
-      let outcome = vm.runEditorCommand(typed)
-      if outcome.status != ecsSucceeded:
+      var ok = false
+      var diagnostic = ""
+      var storyId = ""
+      if inspectorEdit:
+        vm.inspector.journalSourceEdit(SourceEditPlan(file: literalMap{"file"}.getStr(),
+          schemaKey: literalMap{"key"}.getStr(), property: request{"property"}.getStr(),
+          oldValue: request{"expectedValue"}.getStr(), expectedOldValue: nativeBefore,
+          newValue: request{"value"}.getStr(), scope: pesLocal, sourceScope: sskLocalInstance,
+          reversible: true))
+        let outcome = vm.applyWorkspaceFileEdits()
+        ok = outcome.ok
+        for row in outcome.diagnostics: diagnostic.add row.message & "\n"
+        storyId = request{"storyId"}.getStr()
+      else:
+        let typed = commandRequest(request)
+        let outcome = vm.runEditorCommand(typed)
+        ok = outcome.status == ecsSucceeded
+        diagnostic = outcome.diagnostic
+        if typed.kind == eckCreateStory:
+          storyId = request{"component"}.getStr() & " / " & request{"variantKey"}.getStr() & " " & request{"stateKey"}.getStr()
+      if not ok:
         recoverSourceTransaction(root)
-        echo $(%* {"ok": false, "diagnostic": outcome.diagnostic, "stage": $vm.workspaceEditStage.val, "variants": %vm.variants.variants.val, "pendingEdits": %vm.inspector.pendingSourceEdits.val})
+        echo $(%* {"ok": false, "diagnostic": diagnostic, "stage": $vm.workspaceEditStage.val,
+          "variants": %vm.variants.variants.val, "pendingEdits": %vm.inspector.pendingSourceEdits.val})
         exitCode = 4
       else:
+        # Validate the complete response before retiring rollback state. A
+        # malformed capability producer must not leave a write behind a failed ACK.
+        let refreshedStyles = describeEditableStyles(root, manifest)
+        var response = %* {"ok": true, "catalog": built, "manifest": manifest, "storyId": storyId,
+          "editableStyles": refreshedStyles}
+        if inspectorEdit: response["sourceEdit"] = %* {"before":nativeBefore,"after":nativeAfter}
         if fileExists(journalFile): removeFile(journalFile)
-        echo $(%* {"ok": true, "catalog": built, "manifest": manifest,
-          "storyId": if typed.kind == eckCreateStory: request{"component"}.getStr() & " / " & request{"variantKey"}.getStr() & " " & request{"stateKey"}.getStr() else: ""})
+        echo $response
       dispose()
     return exitCode
   except CatchableError as error:

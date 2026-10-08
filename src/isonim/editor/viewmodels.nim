@@ -10,6 +10,7 @@ import isonim/core/[signals, computation]
 import isonim/viewmodel
 import isonim/editor/types
 import isonim/editor/html_classes
+import isonim/editor/css_color_literal
 import isonim/editor/design_review/context_policy
 import isonim/editor/element_semantics
 import isonim/editor/streaming_preview
@@ -386,6 +387,18 @@ type
     controlFocusAdapter*: proc(target: string): bool {.closure.}
     controlHighlightAdapter*: proc(target: string): bool {.closure.}
     controlSelectionAdapter*: proc(target: string; focus, highlight: bool): bool {.closure.}
+    hasAsyncSourceProject*: bool
+    sourceProjectMappings*: Signal[JsonNode]
+    sourceProjectMappingDispose*: proc() {.closure.}
+      ## One model-owned mapping subscription, replaced during hot reload.
+      ## Pending transactions retain their mappings and operation identity.
+    sourceProjectBuildInFlight*: bool
+    sourceProjectOperationSerial*: int
+    inspectorSourceCommit*: proc(element: ElementRef; property, value: string;
+      scope: SourceScopeChoiceKind; done: proc(ok: bool; diagnostic: string) {.closure.}) {.closure.}
+      ## Optional asynchronous native source transaction. Completion is delivered
+      ## only after source validation, build and catalog publication or rollback.
+    inspectorSourceHistory*: proc(redo: bool): bool {.closure.}
     controlSourceFixtures*: seq[ComponentVariantDefinition]
     controlAsyncCommandAdapter*: proc(request: JsonNode; done: proc(ok: bool; data: JsonNode) {.closure.}) {.closure.}
     controlSourceTransport*: proc(request: JsonNode; done: proc(data: JsonNode) {.closure.}) {.closure.}
@@ -1270,7 +1283,8 @@ func cssPropertyCategory*(property: string): CSSPropertyCategory =
   elif prop in ["background-position"]:
     cpcPosition
   elif prop in ["border", "border-width", "border-color", "border-style",
-      "border-radius", "border-top-width", "border-right-width",
+      "border-radius", "border-top-left-radius", "border-top-right-radius",
+      "border-bottom-right-radius", "border-bottom-left-radius", "border-top-width", "border-right-width",
       "border-bottom-width", "border-left-width", "border-top-color",
       "border-right-color", "border-bottom-color", "border-left-color",
       "border-top-style", "border-right-style", "border-bottom-style",
@@ -1353,7 +1367,7 @@ func cssSourcePlanKind*(prop: PropertyInfo; request: PropertyEditRequest;
 proc tryParseFloatValue(raw: string; value: var float): bool =
   try:
     value = raw.parseFloat()
-    true
+    classify(value) notin {fcNan, fcInf, fcNegInf}
   except ValueError:
     false
 
@@ -1538,9 +1552,9 @@ proc parseCssPropertyValue*(property, raw: string;
   if prop == "aspect-ratio" and text.contains("/"):
     result.kind = cvkLengthPercentage
     return
-  if text.startsWith("#") or text.startsWith("rgb(") or
-      text.startsWith("rgba(") or text.startsWith("hsl(") or
-      text.startsWith("hsla("):
+  if text.startsWith("#") or text.toLowerAscii().startsWith("rgb(") or
+      text.toLowerAscii().startsWith("rgba(") or text.toLowerAscii().startsWith("hsl(") or
+      text.toLowerAscii().startsWith("hsla("):
     result.kind = cvkColor
     result.canonical = text.toLowerAscii()
     return
@@ -1600,6 +1614,24 @@ func validAspectRatio(raw: string): bool =
 func validKeywordForProperty(propName, raw: string): bool =
   let text = raw.strip().toLowerAscii()
   case propName
+  of "width", "height", "min-width", "min-height", "max-width", "max-height",
+      "top", "right", "bottom", "left", "inset", "margin", "margin-top",
+      "margin-right", "margin-bottom", "margin-left", "padding", "padding-top",
+      "padding-right", "padding-bottom", "padding-left", "gap", "row-gap",
+      "column-gap", "font-size", "letter-spacing", "word-spacing", "border-width",
+      "border-radius", "border-top-left-radius", "border-top-right-radius",
+      "border-bottom-right-radius", "border-bottom-left-radius", "border-top-width", "border-right-width", "border-bottom-width",
+      "border-left-width":
+    var numeric = 0.0
+    if tryParseFloatValue(text, numeric): return numeric == 0
+    if text in ["inherit", "initial", "unset", "revert", "revert-layer"]: return true
+    if text == "auto": return propName in ["width", "height", "min-width", "min-height",
+      "top", "right", "bottom", "left", "inset", "margin", "margin-top", "margin-right", "margin-bottom", "margin-left"]
+    if text == "none": return propName in ["max-width", "max-height"]
+    if text == "normal": return propName in ["gap", "row-gap", "column-gap", "letter-spacing", "word-spacing"]
+    if text in ["min-content", "max-content", "fit-content", "stretch"]:
+      return propName in ["width", "height", "min-width", "min-height", "max-width", "max-height"]
+    false
   of "overflow", "overflow-x", "overflow-y":
     text in ["visible", "hidden", "clip", "scroll", "auto"]
   of "overscroll-behavior":
@@ -1677,8 +1709,12 @@ proc validateCssPropertyValue*(prop: PropertyInfo; request: PropertyEditRequest;
   let allowed = allowedValueKinds(category)
   let propName = prop.name.normalizedCssName()
   let raw = normalized.raw.strip()
-  if normalized.kind notin allowed and not (
-      propName == "opacity" and normalized.kind == cvkOpacity):
+  let isRadius = propName == "border-radius" or
+    (propName.startsWith("border-") and propName.endsWith("-radius"))
+  if (isRadius and normalized.kind notin {cvkKeyword, cvkLength,
+      cvkPercentage, cvkLengthPercentage, cvkTokenReference}) or
+      (not isRadius and normalized.kind notin allowed and not (
+      propName == "opacity" and normalized.kind == cvkOpacity)):
     result.add cssDiagnostic(pedInvalidCssValue, prop,
       "This property does not accept " & $normalized.kind & " values.")
 
@@ -1694,6 +1730,9 @@ proc validateCssPropertyValue*(prop: PropertyInfo; request: PropertyEditRequest;
     if not tryParseFloatValue(raw[0 ..< raw.len - normalized.unit.len], parsed):
       result.add cssDiagnostic(pedInvalidCssValue, prop,
         "CSS length values must use a numeric amount.")
+    if normalized.unit in ["ms","s"] and propName notin
+        ["transition-duration","transition-delay","animation-duration","animation-delay"]:
+      result.add cssDiagnostic(pedInvalidCssValue,prop,"This property requires a spatial CSS length unit.")
   if normalized.kind == cvkPercentage:
     var parsed = 0.0
     if raw.len <= 1 or not tryParseFloatValue(raw[0 ..< raw.len - 1], parsed):
@@ -1701,9 +1740,10 @@ proc validateCssPropertyValue*(prop: PropertyInfo; request: PropertyEditRequest;
         "CSS percentage values must use a numeric amount.")
   if normalized.kind in {cvkLength, cvkPercentage} and
       propName notin ["z-index", "rotate"] and
-      normalized.numeric < 0 and propName.startsWith("padding"):
+      normalized.numeric < 0 and (propName.startsWith("padding") or
+        (propName.startsWith("border-") and propName.endsWith("radius"))):
     result.add cssDiagnostic(pedInvalidCssValue, prop,
-      "Padding values cannot be negative.")
+      "Padding and corner radius values cannot be negative.")
   if propName in ["transition-duration", "transition-delay", "animation-duration",
       "animation-delay"] and normalized.kind == cvkLength and
       normalized.numeric < 0:
@@ -1725,6 +1765,9 @@ proc validateCssPropertyValue*(prop: PropertyInfo; request: PropertyEditRequest;
         not tryParseFloatValue(normalized.canonical, parsed):
       result.add cssDiagnostic(pedInvalidCssValue, prop,
         "z-index must be an integer.")
+  if normalized.kind == cvkColor and not validCssColorLiteral(raw):
+    result.add cssDiagnostic(pedInvalidCssValue, prop,
+      "Color literals must contain complete finite color channels.")
   if normalized.kind == cvkColor and raw.startsWith("#"):
     let hex = raw[1 .. ^1]
     if hex.len notin [3, 4, 6, 8] or
@@ -3620,12 +3663,16 @@ proc runEditorCommand*(editor: EditorVM;
   of eckDecrementProperty:
     discard editor.nudgeFirstNumericProperty(-1)
   of eckUndo:
-    if not editor.inspector.undoCssPropertyEdit():
+    if editor.inspectorSourceHistory != nil and editor.inspectorSourceHistory(false):
+      discard
+    elif not editor.inspector.undoCssPropertyEdit():
       if not editor.undoVectorEdit():
         if not editor.undoFoundationTokenEdit():
           discard editor.undoComponentVariantEdit()
   of eckRedo:
-    if not editor.inspector.redoCssPropertyEdit():
+    if editor.inspectorSourceHistory != nil and editor.inspectorSourceHistory(true):
+      discard
+    elif not editor.inspector.redoCssPropertyEdit():
       if not editor.redoVectorEdit():
         if not editor.redoFoundationTokenEdit():
           discard editor.redoComponentVariantEdit()
@@ -4148,20 +4195,25 @@ proc selectPreviousElement*(inspector: InspectorVM): bool {.discardable.} =
     return inspector.selectElementById(rows[rows.high].id)
   inspector.selectElementById(rows[max(0, index - 1)].id)
 
-proc editProperty*(inspector: InspectorVM;
-    request: PropertyEditRequest): PropertyEditResult {.discardable.} =
-  ## Update the selected element and produce source-aware edit data.
+type PreparedPropertyEdit* = object
+  outcome*: PropertyEditResult
+  transaction*: CSSPropertyEditTransaction
+
+proc preparePropertyEdit*(inspector: InspectorVM;
+    request: PropertyEditRequest): PreparedPropertyEdit =
+  ## Validate and plan without changing selection, journal or history. Native
+  ## asynchronous writes use this same plan and publish it only after their ACK.
+  var outcome: PropertyEditResult
   var normalizedRequest = request
   normalizedRequest.newValue = normalizePrimitiveInputValue(
     request.property, request.newValue)
   let element = inspector.selectedElement.val
   if element.tag.len == 0:
-    result = withStatus(pesRejected, @[
+    outcome = withStatus(pesRejected, @[
       diagnostic(pedMissingSelection, element, normalizedRequest.property,
         "Select an element before editing inspector properties.")
     ])
-    inspector.editDiagnostics.val = result.diagnostics
-    return
+    return PreparedPropertyEdit(outcome: outcome)
 
   var propIndex = -1
   var prop = PropertyInfo()
@@ -4173,12 +4225,11 @@ proc editProperty*(inspector: InspectorVM;
 
   if propIndex < 0:
     if normalizedRequest.newValue.strip.len == 0 or element.sourceFile.len == 0:
-      result = withStatus(pesRejected, @[
+      outcome = withStatus(pesRejected, @[
         diagnostic(pedUnknownProperty, element, normalizedRequest.property,
           "The selected element does not expose this property.")
       ])
-      inspector.editDiagnostics.val = result.diagnostics
-      return
+      return PreparedPropertyEdit(outcome: outcome)
     prop = PropertyInfo(
       name: normalizedRequest.property,
       value: "",
@@ -4192,9 +4243,8 @@ proc editProperty*(inspector: InspectorVM;
   if prop.isShared and normalizedRequest.scope == pesUnspecified:
     diagnostics.add diagnostic(pedSharedScopeRequired, prop,
       "Shared properties require an explicit local or shared scope.")
-    result = withStatus(pesNeedsScope, diagnostics)
-    inspector.editDiagnostics.val = diagnostics
-    return
+    outcome = withStatus(pesNeedsScope, diagnostics)
+    return PreparedPropertyEdit(outcome: outcome)
 
   if prop.origin == poSetStyle and not prop.directStyleAllowed:
     diagnostics.add diagnostic(pedUnsupportedDirectStyle, prop,
@@ -4205,7 +4255,8 @@ proc editProperty*(inspector: InspectorVM;
     diagnostics.add diagnostic(pedViewModelBoundary, prop,
       "CSS and layout edits cannot be applied from ViewModel-owned source.")
 
-  if prop.isTokenDrift(normalizedRequest.newValue):
+  if prop.isTokenDrift(normalizedRequest.newValue) and not
+      (prop.nativeSourceToken and normalizedRequest.scope == pesShared):
     diagnostics.add diagnostic(pedTokenDrift, prop,
       "Theme-token properties must stay on token values instead of literal colors.")
 
@@ -4217,9 +4268,8 @@ proc editProperty*(inspector: InspectorVM;
   diagnostics.add prop.validateCssPropertyValue(normalizedRequest, normalized)
 
   if diagnostics.len > 0:
-    result = withStatus(pesRejected, diagnostics)
-    inspector.editDiagnostics.val = diagnostics
-    return
+    outcome = withStatus(pesRejected, diagnostics)
+    return PreparedPropertyEdit(outcome: outcome)
 
   var updated = element
   if propIndex >= 0:
@@ -4228,25 +4278,39 @@ proc editProperty*(inspector: InspectorVM;
     var added = prop
     added.value = normalized.canonical
     updated.properties.add added
-  inspector.selectedElement.val = updated
-  inspector.editDiagnostics.val = @[]
-
   let sourceChoices = sourceScopeChoices(inspector.designSystemSchema.val,
     element, prop)
   let record = prop.editRecord(normalizedRequest, sourceChoices)
   let plan = prop.sourcePlan(normalizedRequest, sourceChoices)
-  inspector.journalSourceEdit(plan)
-  inspector.undoStack.update proc(prev: seq[CSSPropertyEditTransaction]): seq[
-      CSSPropertyEditTransaction] =
+  PreparedPropertyEdit(outcome: PropertyEditResult(status: pesAccepted,
+    record: record, sourceEdit: plan), transaction: CSSPropertyEditTransaction(
+      record: record, sourceEdit: plan, beforeElement: element, afterElement: updated))
+
+proc acceptPreparedPropertyEdit*(inspector: InspectorVM; prepared: PreparedPropertyEdit;
+    saved = false; applySelection = true) =
+  if prepared.outcome.status != pesAccepted: return
+  let transaction = prepared.transaction
+  # A completed source write belongs to its captured element. Changing selection
+  # while a build runs must not write the result into the new element's controls.
+  if applySelection and inspector.selectedElement.val.fallbackElementId() == transaction.beforeElement.fallbackElementId():
+    inspector.selectedElement.val = transaction.afterElement
+  inspector.editDiagnostics.val = @[]
+  if not saved: inspector.journalSourceEdit(transaction.sourceEdit)
+  var confirmed = transaction
+  confirmed.saved = saved
+  inspector.undoStack.update proc(prev: seq[CSSPropertyEditTransaction]): seq[CSSPropertyEditTransaction] =
     result = prev
-    result.add CSSPropertyEditTransaction(
-      record: record,
-      sourceEdit: plan,
-      beforeElement: element,
-      afterElement: updated)
+    result.add confirmed
   inspector.redoStack.val = @[]
 
-  PropertyEditResult(status: pesAccepted, record: record, sourceEdit: plan)
+proc editProperty*(inspector: InspectorVM;
+    request: PropertyEditRequest): PropertyEditResult {.discardable.} =
+  let prepared = inspector.preparePropertyEdit(request)
+  result = prepared.outcome
+  if result.status == pesAccepted:
+    inspector.acceptPreparedPropertyEdit(prepared)
+  else:
+    inspector.editDiagnostics.val = result.diagnostics
 
 proc editInspectorProperty*(editor: EditorVM;
     request: PropertyEditRequest): PropertyEditResult {.discardable.} =
@@ -5445,13 +5509,15 @@ proc sourceScopeChoices*(schema: DesignSystemSchema; element: ElementRef;
       usageCount = 0; affectedComponents: seq[string] = @[];
       affectedStories: seq[StoryRef] = @[]; reason = "";
       impact = DesignSchemaImpact()): SourceScopeChoice =
-    let risk = sourceScopeRisk(impact, usageCount)
+    let risk = if prop.nativeSourceToken and kind == sskSemanticToken: ssrHigh else: sourceScopeRisk(impact, usageCount)
     let label = kind.sourceScopeChoiceLabel()
     let owner =
       if ownerLabel.len > 0: ownerLabel
       elif schema.ownerPackage.len > 0: schema.ownerPackage
       else: "Project"
-    let summary = sourceScopeSummary(kind, max(usageCount, impact.usageCount))
+    let summary = if prop.nativeSourceToken and kind == sskSemanticToken:
+      "Known direct matches: " & $usageCount & ". Inherited or unsupported references may also change."
+      else: sourceScopeSummary(kind, max(usageCount, impact.usageCount))
     let scopeImpact = SourceScopeImpact(
       ownerLabel: owner,
       sourceFile: file,
@@ -5477,11 +5543,26 @@ proc sourceScopeChoices*(schema: DesignSystemSchema; element: ElementRef;
     if prop.sourceFile.len > 0: prop.sourceFile else: element.sourceFile,
     if prop.sourceLine > 0: prop.sourceLine else: element.sourceLine,
     if prop.schemaKey.len > 0: prop.schemaKey else: element.schemaKey,
-    prop.hasSource or prop.directStyleAllowed or element.hasSource,
-    1, reason = "Edit this element without changing shared sources.")
+    (prop.hasSource or prop.directStyleAllowed or element.hasSource) and not prop.nativeSourceShared,
+    1, reason = if prop.nativeSourceShared: "This declaration belongs to a shared stylesheet rule."
+      else: "Edit this element without changing shared sources.")
 
   for kind in [sskStoryFixture, sskComponentSchemaApi, sskSharedClass,
       sskComponentToken, sskSemanticToken, sskGlobalPrimitiveToken]:
+    let nativeKind = if prop.nativeSourceToken: sskSemanticToken else: sskSharedClass
+    if prop.nativeSourceShared and kind == nativeKind and
+        prop.sourceFile.len > 0 and prop.authoredValue.len > 0 and
+        ((prop.nativeSourceToken and prop.tokenName.len > 0 and prop.schemaKey.startsWith("tokens.native.")) or
+          (not prop.nativeSourceToken and prop.schemaKey.startsWith("classes.native."))):
+      # The native manifest owns an exact declaration, including derived sides
+      # that have no independent legacy source-line entry. Its guarded writer
+      # validates file/key/hash/value; do not invent a line or substitute an
+      # unrelated design-schema owner for this capability.
+      result.add makeChoice(kind, ownerLabel = prop.originDetail,
+        file = prop.sourceFile, line = prop.sourceLine, schemaKey = prop.schemaKey,
+        editable = true, usageCount = prop.sharedCount,
+        reason = "This edit changes the shared source declaration.")
+      continue
     var best = DesignSchemaNode()
     for node in schema.nodes:
       if node.property != prop.name:
@@ -5499,7 +5580,7 @@ proc sourceScopeChoices*(schema: DesignSystemSchema; element: ElementRef;
         (kind == sskStoryFixture and prop.schemaKey.startsWith("fixtures.")) or
         (kind == sskComponentSchemaApi and
           (prop.schemaKey.startsWith("components.") or prop.variantKey.len > 0)) or
-        (kind == sskSharedClass and
+        (kind == sskSharedClass and not prop.nativeSourceToken and
           (prop.schemaKey.startsWith("classes.") or prop.sharedCount > 0)) or
         (kind == sskComponentToken and
           (prop.tokenName.startsWith("component.") or

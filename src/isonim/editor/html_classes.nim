@@ -2,7 +2,7 @@
 ## Uses the standard library single-codepoint entity table; the supplementary
 ## WHATWG names below cover its missing values and ten differing mappings.
 ## They are data, not a second renderer or browser dependency.
-import std/[htmlparser, strutils]
+import std/[htmlparser, strutils, tables, sequtils]
 from std/unicode import Rune, toUTF8
 
 const HtmlSpace = {' ', '\t', '\n', '\r', '\f'}
@@ -189,7 +189,13 @@ proc attributeText(value: string): string =
 proc tagBoundary(text: string; at: int): bool =
   at == text.len or text[at] in HtmlSpace + {'/', '>'}
 
-proc htmlClassNames*(html: string): seq[string] =
+type HtmlElementToken* = object
+  tag*: string
+  start*, finish*: int
+  closing*: bool
+  attributes*: OrderedTable[string, string]
+
+proc htmlElementTokens*(html: string): seq[HtmlElementToken] =
   ## Extract completed start-tag attributes in source order. This is a tokenizer
   ## for compiler-produced HTML, not tree construction/error-repair. It ignores
   ## comments/declarations, inert template content and text-only element bodies;
@@ -233,8 +239,7 @@ proc htmlClassNames*(html: string): seq[string] =
     let nameStart = at
     while at < html.len and html[at] notin HtmlSpace + {'/', '>'}: inc at
     let tag = lower[nameStart ..< at]
-    var firstClass = false
-    var classes = ""
+    var attributes = initOrderedTable[string, string]()
     var complete = false
     while at < html.len:
       while at < html.len and html[at] in HtmlSpace + {'/'}: inc at
@@ -270,21 +275,17 @@ proc htmlClassNames*(html: string): seq[string] =
           let valueStart = at
           while at < html.len and html[at] notin HtmlSpace + {'>'}: inc at
           value = html[valueStart ..< at]
-      if attr == "class" and not firstClass:
-        firstClass = true
-        classes = attributeText(value)
+      if not attributes.hasKey(attr): attributes[attr] = attributeText(value)
     if not complete: break
     if closing:
+      if templateDepth == 0:
+        result.add HtmlElementToken(tag: tag, start: start, finish: at,
+          closing: true, attributes: attributes)
       if tag == "template" and templateDepth > 0: dec templateDepth
       continue
     if templateDepth == 0:
-      var tokenStart = 0
-      for i in 0 .. classes.len:
-        if i == classes.len or classes[i] in HtmlSpace:
-          if i > tokenStart:
-            let item = classes[tokenStart ..< i]
-            if item notin result: result.add item
-          tokenStart = i + 1
+      result.add HtmlElementToken(tag: tag, start: start, finish: at,
+        closing: false, attributes: attributes)
     if tag == "template": inc templateDepth
     if tag == "plaintext": break
     if tag in ["script", "style", "title", "textarea", "xmp", "iframe",
@@ -315,3 +316,52 @@ proc htmlClassNames*(html: string): seq[string] =
             continue
           break
         inc at
+
+
+proc htmlClassNames*(html: string): seq[string] =
+  ## Class relevance and source binding share one lossless markup tokenizer.
+  for token in htmlElementTokens(html):
+    if token.closing: continue
+    let classes = token.attributes.getOrDefault("class")
+    var tokenStart = 0
+    for i in 0 .. classes.len:
+      if i == classes.len or classes[i] in HtmlSpace:
+        if i > tokenStart:
+          let item = classes[tokenStart ..< i]
+          if item notin result: result.add item
+        tokenStart = i + 1
+
+type SourceHtmlElement* = object
+  id*: string
+  tag*: string
+  attributes*: OrderedTable[string, string]
+
+proc sourceElementMarkup*(html, identityPrefix: string): tuple[html: string,
+    elements: seq[SourceHtmlElement]] =
+  ## Stamp compiler-owned identities into original markup offsets. No HTML is
+  ## reserialized: scripts, CSS, text, Unicode and authored attributes retain
+  ## their exact bytes. The prefix belongs to the catalog producer, not an RPC.
+  if identityPrefix.len == 0 or identityPrefix.anyIt(it notin
+      {'a'..'z', 'A'..'Z', '0'..'9', '-', '_'}):
+    raise newException(ValueError, "Invalid compiler element identity prefix.")
+  var cursor = 0
+  var ordinal = 0
+  var ids: seq[string]
+  for token in htmlElementTokens(html):
+    if token.closing or token.tag in ["html", "head", "body", "script", "style",
+        "title", "meta", "link", "base", "template", "noscript"]: continue
+    inc ordinal
+    let existing = token.attributes.getOrDefault("data-isonim-element-id")
+    let id = if existing.len > 0: existing else: identityPrefix & "-" & $ordinal
+    if id in ids: raise newException(ValueError, "Duplicate compiler element identity.")
+    ids.add id
+    var attributes = token.attributes
+    attributes["data-isonim-element-id"] = id
+    result.elements.add SourceHtmlElement(id: id, tag: token.tag, attributes: attributes)
+    if existing.len > 0: continue
+    var insertion = token.finish - 1
+    if insertion > token.start and html[insertion - 1] == '/': dec insertion
+    result.html.add html[cursor ..< insertion]
+    result.html.add " data-isonim-element-id=\"" & id & "\""
+    cursor = insertion
+  result.html.add html[cursor ..< html.len]

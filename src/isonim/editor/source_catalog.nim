@@ -1,7 +1,22 @@
 ## Portable catalog data for an opt-in project source/build bridge. The producer
 ## owns rendering and source schemas; this module only reads its typed output.
-import std/[json, tables, sets]
-import isonim/editor/[types, workspace]
+import std/[json, tables, sets, strutils]
+import isonim/editor/[types, workspace, html_classes]
+
+proc sourceStoryIdentityPrefix*(storyId: string): string =
+  result = "isonim-source"
+  for character in storyId:
+    result.add toHex(ord(character), 2)
+
+proc sourceCatalogMarkup*(catalog, manifest: JsonNode): JsonNode =
+  ## The opt-in producer declares source capability; compiler-owned identities
+  ## are inserted with the same lossless tokenizer used for native bindings.
+  result = catalog.copy()
+  if manifest{"editableStyleSources"} == nil: return
+  for row in result{"stories"}:
+    let storyId = row{"group"}.getStr() & " / " & row{"name"}.getStr()
+    row["documentHtml"] = %sourceElementMarkup(row{"documentHtml"}.getStr(),
+      sourceStoryIdentityPrefix(storyId)).html
 
 proc sourceStoryKind*(row: JsonNode): StoryKind =
   case row{"kind"}.getStr()
@@ -77,7 +92,11 @@ proc sourceCatalogWorkspace*(catalog, manifest: JsonNode; base: EditorWorkspace)
         rendered.status = ppsRendered
         rendered.story = story
         if rendered.title.len == 0: rendered.title = story.name
-        rendered.documentHtml = row{"documentHtml"}.getStr()
+        rendered.documentHtml = if manifest{"editableStyleSources"} == nil:
+          row{"documentHtml"}.getStr()
+        else:
+          sourceElementMarkup(row{"documentHtml"}.getStr(),
+            sourceStoryIdentityPrefix(story.group & " / " & story.name)).html
         rendered.metadata.story = story
         for fixture in manifest{"fixtures"}:
           if fixture{"component"}.getStr() == story.group and

@@ -602,7 +602,10 @@ type
   PropertyInfo* = object
     ## A single CSS property with its value and source origin.
     name*: string         ## CSS property name (e.g. "padding")
-    value*: string        ## Resolved value (e.g. "16")
+    value*: string        ## Resolved/computed value (e.g. "16px")
+    authoredValue*: string ## Optional exact declared value, kept distinct from geometry.
+    nativeSourceShared*: bool ## Compiler binding owns a shared CSS rule, never a local override.
+    nativeSourceToken*: bool ## Verified direct reference edits its declared literal token owner.
     origin*: PropertyOrigin
     originDetail*: string ## e.g. "class:p-4" or "themeColor(\"primary\")"
     sourceLine*: int      ## Line in source file
@@ -1044,6 +1047,7 @@ type
       ## selector and the property has to guess, and guessing wrong writes a
       ## declaration the cascade discards. Zero means "not supplied", which
       ## adapters read as the unconditional base-rule behaviour.
+    nativeSourceBefore*, nativeSourceAfter*: string ## Guarded owned declaration receipts for exact undo.
 
   SourceEditAdapter* = proc(plan: SourceEditPlan): bool {.closure.}
 

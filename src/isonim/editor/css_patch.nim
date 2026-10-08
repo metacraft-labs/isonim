@@ -169,6 +169,15 @@ type DeclSpan = object
   valueStart: int  ## first byte after the `:`
   valueEnd: int    ## exclusive; the `;` or the closing `}`
 
+func skipCssQuotedValue(css: string; at, limit: int): int =
+  let quote = css[at]
+  result = at + 1
+  while result < limit:
+    if css[result] == '\\': result += 2
+    elif css[result] == quote: return result + 1
+    else: inc result
+  result = min(result,limit)
+
 func findDeclaration(css: string; body: RuleSpan;
                      property: string): DeclSpan =
   ## Locate `property`'s value inside a rule body, or return `valueStart < 0`.
@@ -180,6 +189,9 @@ func findDeclaration(css: string; body: RuleSpan;
   result = DeclSpan(valueStart: -1, valueEnd: -1)
   var i = body.bodyStart
   while i < body.bodyEnd:
+    if css[i] in {'\'', '"'}:
+      i = css.skipCssQuotedValue(i,body.bodyEnd)
+      continue
     if i + 1 < css.len and css[i] == '/' and css[i + 1] == '*':
       let close = css.find("*/", i + 2)
       i = if close < 0 or close > body.bodyEnd: body.bodyEnd else: close + 2
@@ -196,6 +208,9 @@ func findDeclaration(css: string; body: RuleSpan;
         if j < body.bodyEnd and css[j] == ':':
           var valueEnd = j + 1
           while valueEnd < body.bodyEnd and css[valueEnd] != ';':
+            if css[valueEnd] in {'\'', '"'}:
+              valueEnd = css.skipCssQuotedValue(valueEnd,body.bodyEnd)
+              continue
             # A comment inside the value is part of the value's span but must
             # not hide a `;` that follows it.
             if valueEnd + 1 < css.len and css[valueEnd] == '/' and
@@ -831,3 +846,97 @@ func editTargetInNimConst*(nimSource, constName, selector, property: string;
   if bodyEnd < 0:
     return CssEditTarget(found: false)
   nimSource[bodyStart ..< bodyEnd].editTargetAtWidth(selector, property, width)
+
+proc cssRuleSelectors*(css: string): seq[string] =
+  ## Read candidates through the same rule scanner used by source patching.
+  ## Conditions are deliberately included: native binding must account for
+  ## every potentially overriding rule before advertising a direct writer.
+  for rule in css.allRules():
+    for selector in rule.selector.withoutComments().split(','):
+      let candidate = selector.strip()
+      if candidate.len > 0 and candidate notin result: result.add candidate
+
+type CssLiteralRule* = object
+  selector*: string
+  values*: seq[tuple[property, value: string]]
+  declarationPositions*: seq[tuple[property: string, position: int]]
+  blockedProperties*: seq[string]
+
+proc cssCustomPropertyOwners*(css: string; properties: seq[string]): seq[tuple[selector, condition, property: string]] =
+  ## Capability discovery must see overriding/duplicate owners even though
+  ## their declarations cannot themselves become writable capabilities.
+  for rule in css.allRules():
+    let body = RuleSpan(selector:rule.selector,bodyStart:rule.bodyStart,bodyEnd:rule.bodyEnd)
+    for property in properties:
+      if not property.startsWith("--"): continue
+      var remaining = body
+      while remaining.bodyStart < remaining.bodyEnd:
+        let declaration = css.findDeclaration(remaining,property)
+        if declaration.valueStart < 0: break
+        result.add (rule.selector.withoutComments().strip(),rule.condition,property)
+        remaining.bodyStart = declaration.valueEnd + 1
+
+func capabilityResetters(property: string): seq[string] =
+  ## CSS all excludes custom properties, direction and unicode-bidi. Discovery
+  ## sees the reset without changing the ordinary property patcher's grammar.
+  result = property.resettersOf()
+  if not property.startsWith("--") and property.toLowerAscii() notin ["direction", "unicode-bidi"]:
+    result.add "all"
+
+proc cssPropertyOwners*(css: string; properties: seq[string]): seq[tuple[selector, condition, property: string]] =
+  ## Read every possible owner, including shorthand resets and unsupported
+  ## conditions. Attribution uses this projection; it does not authorize edits.
+  for rule in css.allRules():
+    let body = RuleSpan(selector:rule.selector,bodyStart:rule.bodyStart,bodyEnd:rule.bodyEnd)
+    for property in properties:
+      for resetter in property.capabilityResetters():
+        if css.findDeclaration(body, resetter).valueStart >= 0:
+          for member in rule.selector.withoutComments().split(','):
+            result.add (member.strip(),rule.condition,property)
+          break
+
+proc cssUnconditionalLiterals*(css: string; properties: seq[string]): seq[CssLiteralRule] =
+  ## Read supported direct declarations once through the patcher's scanner.
+  ## Conditional/resetting owners and duplicate base rules are withheld rather
+  ## than presenting a guessed viewport/state value as source authority.
+  var rules: seq[NestedRule]
+  for rule in css.allRules(): rules.add rule
+  for base in rules:
+    if base.condition.len > 0: continue
+    for member in base.selector.withoutComments().split(','):
+      let selector = member.strip()
+      var owners = 0
+      for rule in rules:
+        if rule.condition.len == 0 and rule.selector.selectorMatches(selector): inc owners
+      if owners != 1: continue
+      var literal = CssLiteralRule(selector: selector)
+      let body = RuleSpan(selector: base.selector, bodyStart: base.bodyStart, bodyEnd: base.bodyEnd)
+      for property in properties:
+        if property.len == 0: continue
+        # A global reset is an unsupported effective owner for ordinary
+        # properties. Conservatively refuse either order, including priority.
+        if "all" in property.capabilityResetters() and css.findDeclaration(body,"all").valueStart >= 0:
+          literal.blockedProperties.add property
+          continue
+        var conditional = false
+        for rule in rules:
+          if rule.condition.len == 0 or not rule.selector.selectorMatches(selector): continue
+          let other = RuleSpan(selector: rule.selector, bodyStart: rule.bodyStart, bodyEnd: rule.bodyEnd)
+          for resetter in property.capabilityResetters():
+            if css.findDeclaration(other, resetter).valueStart >= 0: conditional = true
+        if conditional:
+          literal.blockedProperties.add property
+          continue
+        let declaration = css.findDeclaration(body, property)
+        if declaration.valueStart < 0: continue
+        let remaining = RuleSpan(selector:body.selector,bodyStart:declaration.valueEnd + 1,bodyEnd:body.bodyEnd)
+        if css.findDeclaration(remaining,property).valueStart >= 0:
+          literal.blockedProperties.add property
+          continue
+        let existing = css[declaration.valueStart ..< declaration.valueEnd]
+        let comment = existing.trailingComment()
+        let value = (if comment.len > 0: existing[0 ..< existing.find("/*")] else: existing).strip()
+        if value.len > 0:
+          literal.values.add((property, value))
+          literal.declarationPositions.add((property,declaration.valueStart))
+      if literal.values.len > 0: result.add literal

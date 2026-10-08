@@ -152,7 +152,7 @@ proc rpcDispatch*(reg: EditorControlRegistry; request: JsonNode; token: string):
       # browser credential. Explicit disconnect/replacement remains revoked;
       # agents cannot renew leases and remain denied until a successful poll.
       let instance = reg.requireInstance(params, allowExpiredLease = methodName == "editor.poll")
-      if methodName in ["editor.poll", "editor.ack", "editor.disconnect", "editor.preference", "editor.approve", "editor.source-authorize"]:
+      if methodName in ["editor.poll", "editor.ack", "editor.disconnect", "editor.preference", "editor.approve", "editor.source-authorize", "editor.inspector-source"]:
         instance.browserAuthorized(token)
       else: discard reg.agentAuthorized(instance, token)
       case methodName
@@ -172,22 +172,67 @@ proc rpcDispatch*(reg: EditorControlRegistry; request: JsonNode; token: string):
         instance.publishSnapshot(params{"state"})
         var commands = newJArray()
         for operation in instance.operations.values:
+          if operation{"sourceKind"}.getStr() == "inspector": continue
           if operation{"status"}.getStr() in ["queued", "pending", "approved", "running"] or
               (operation{"status"}.getStr() in ["rejected", "failed"] and
                 operation{"operationId"}.getStr() notin instance.acknowledgedOperations): commands.add operation
         output = %* {"commands": commands}
+      of "editor.inspector-source":
+        instance.browserAuthorized(token)
+        instance.publishSnapshot(params{"state"})
+        let request = params{"request"}
+        if request == nil or request.kind != JObject:
+          raise newException(ControlError, "invalid_inspector_source_request")
+        for key, value in request:
+          if key notin ["commandId", "command", "storyId", "target", "schemaKey", "property", "value", "expectedValue", "expectedSourceHash", "expectedRevision", "viewportWidth", "sourceValue"]:
+            raise newException(ControlError, "unknown_inspector_source_field")
+          if key in ["expectedRevision", "viewportWidth"]:
+            if value.kind != JInt: raise newException(ControlError, "invalid_inspector_source_field_type")
+          elif value.kind != JString:
+            raise newException(ControlError, "invalid_inspector_source_field_type")
+        for key in ["commandId", "command", "storyId", "target", "schemaKey", "property", "value", "expectedValue", "expectedSourceHash", "expectedRevision", "viewportWidth"]:
+          if request{key} == nil: raise newException(ControlError, "missing_inspector_source_field")
+        if request{"viewportWidth"}.getInt() < 1:
+          raise newException(ControlError, "invalid_inspector_viewport")
+        if request{"command"}.getStr() != "inspector-edit" or
+            request{"commandId"}.getStr().len == 0 or request{"schemaKey"}.getStr().len == 0:
+          raise newException(ControlError, "invalid_inspector_source_request")
+        if not instance.snapshot{"permissions", "writeSource"}.getBool():
+          raise newException(ControlError, "source_permission_denied")
+        if request{"expectedRevision"}.getInt(-1) != instance.snapshot{"revision"}.getInt(-2) or
+            request{"storyId"}.getStr() != instance.snapshot{"storyId"}.getStr() or
+            request{"target"}.getStr() != instance.snapshot{"selection"}.getStr() or
+            request{"viewportWidth"}.getInt() != instance.snapshot{"viewportWidth"}.getInt(-1):
+          raise newException(ControlError, "stale_inspector_source_target")
+        let id = request{"commandId"}.getStr()
+        if instance.operations.hasKey(id):
+          if instance.operations[id]["request"] != request:
+            raise newException(ControlError, "command_id_collision")
+          output = instance.operations[id]
+        else:
+          let operation = %* {"operationId": id, "status": "running", "request": request,
+            "sourceKind": "inspector", "revision": instance.snapshot{"revision"}}
+          instance.operations[id] = operation
+          output = operation
       of "editor.source-authorize":
         instance.browserAuthorized(token)
         let id = params{"operationId"}.getStr()
         if not instance.operations.hasKey(id): raise newException(ControlError, "unknown_operation")
         let operation = instance.operations[id]
         if operation{"status"}.getStr() notin ["queued", "running"] or
-            operation{"request", "command"}.getStr() notin ["create-story", "build"]:
+            (operation{"request", "command"}.getStr() notin ["create-story", "build"] and not
+              (operation{"sourceKind"}.getStr() == "inspector" and
+                operation{"request", "command"}.getStr() == "inspector-edit")):
           raise newException(ControlError, "source_operation_not_running")
         if not instance.snapshot{"permissions", "writeSource"}.getBool() or
             (operation{"request", "command"}.getStr() == "create-story" and
               not instance.snapshot{"permissions", "createStory"}.getBool()):
           raise newException(ControlError, "source_permission_denied")
+        if operation{"sourceKind"}.getStr() == "inspector" and operation{"sourcePhase"}.getStr() != "admitted":
+          if operation{"request", "target"}.getStr() != instance.snapshot{"selection"}.getStr() or
+              operation{"request", "storyId"}.getStr() != instance.snapshot{"storyId"}.getStr() or
+              operation{"request", "viewportWidth"}.getInt(-1) != instance.snapshot{"viewportWidth"}.getInt(-2):
+            raise newException(ControlError, "stale_inspector_source_target")
         if params{"admit"} != nil and params["admit"].kind != JBool:
           raise newException(ControlError, "invalid_source_admission")
         if params{"admit"}.getBool():

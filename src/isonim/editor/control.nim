@@ -58,7 +58,7 @@ proc controlState*(vm: EditorVM): JsonNode =
     "rightSidebarTab": $vm.rightSidebarTab.val,
     "selection": vm.inspector.selectedElement.val.id,
     "focus": vm.controlFocusTarget.val, "highlight": vm.controlHighlightTarget.val,
-    "viewport": vm.viewport.val.slug, "approvalRequired": vm.agentControlApproval.val,
+    "viewport": vm.viewport.val.slug, "viewportWidth": vm.viewport.val.width, "approvalRequired": vm.agentControlApproval.val,
     "buildStage": $vm.workspaceEditStage.val,
     "previewGeneration": vm.livePreviewReloadGeneration.val,
     "fixtures": fixtures, "buildDiagnostics": %vm.workspaceEditDiagnostics.val,
