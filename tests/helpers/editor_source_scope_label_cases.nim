@@ -61,7 +61,7 @@ template sourceScopeLabelCases*(renderTree: untyped) =
         check vm.inspector.selectedElement.val.properties.len==element.properties.len
         check label.textContent=="Local"
         dispose()
-  
+
     test "actual scope choices and Source labels agree for native and mapped alias owners":
       createRoot do(dispose:proc()):
         let r=MockRenderer();let vm=createEditorVM()
