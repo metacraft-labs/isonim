@@ -226,22 +226,44 @@ proc installControlBridge*(vm: EditorVM; root: Element): BrowserControlBridge =
     if bridge.disposed or not bridge.connected:
       done(%* {"ok": false, "diagnostic": "Editor control connection unavailable."})
       return
-    var params = bridge.scope()
-    params["operationId"] = request{"commandId"}
-    let sourceUrl = (bridge.endpoint & "/api/editor/source/operation").cstring
-    let sourceAuth = bridge.browserToken.cstring
-    let sourceBody = ($params).cstring
-    proc receiveSource(raw: cstring) =
-      if bridge.disposed: return
-      try: done(parseJson($raw))
-      except CatchableError: done(%* {"ok": false, "diagnostic": "Source bridge returned an invalid response."})
-    let receiveSourceCallback = receiveSource
-    {.emit: ["""
-      fetch(""", sourceUrl, """, {method:'POST',credentials:'omit',headers:{
-        'Content-Type':'application/json','X-IsoNim-Control':""", sourceAuth, """},body:""", sourceBody, """})
-        .then(r=>r.text()).then(""", receiveSourceCallback, """)
-        .catch(()=>""", receiveSourceCallback, """('{"ok":false,"diagnostic":"Source bridge connection failed."}'));
-    """].}
+    var registered: JsonNode
+    proc sendSource() =
+      var params = bridge.scope()
+      params["operationId"] = request{"commandId"}
+      let sourceUrl = (bridge.endpoint & "/api/editor/source/operation").cstring
+      let sourceAuth = bridge.browserToken.cstring
+      let sourceBody = ($params).cstring
+      proc receiveSource(raw: cstring) =
+        if bridge.disposed: return
+        var reply: JsonNode
+        try: reply = parseJson($raw)
+        except CatchableError: reply = %* {"ok": false, "diagnostic": "Source bridge returned an invalid response."}
+        done(reply)
+        if registered != nil:
+          registered["status"] = %(if reply{"ok"}.getBool(): "applied" else: "failed")
+          if not reply{"ok"}.getBool(): registered["error"] = reply{"diagnostic"}
+          bridge.acknowledge(registered)
+      let receiveSourceCallback = receiveSource
+      {.emit: ["""
+        fetch(""", sourceUrl, """, {method:'POST',credentials:'omit',headers:{
+          'Content-Type':'application/json','X-IsoNim-Control':""", sourceAuth, """},body:""", sourceBody, """})
+          .then(r=>r.text()).then(""", receiveSourceCallback, """)
+          .catch(()=>""", receiveSourceCallback, """('{"ok":false,"diagnostic":"Source bridge connection failed."}'));
+      """].}
+    if request{"command"}.getStr() == "inspector-edit":
+      var registration = bridge.scope()
+      let state = vm.controlSnapshot()
+      request["expectedRevision"] = state["revision"]
+      registration["request"] = request
+      registration["state"] = state
+      bridge.fetchRpc("editor.inspector-source", registration, proc(reply: JsonNode) =
+        if reply{"result"} == nil:
+          done(%* {"ok": false, "diagnostic": reply{"error", "message"}.getStr("Inspector source admission failed.")})
+        else:
+          registered = reply["result"]
+          sendSource())
+    else:
+      sendSource()
   vm.controlCaptureAdapter = proc(): JsonNode =
     let captureShell = root
     let expectedStory = controlStoryId(vm.selectedStory.val).cstring

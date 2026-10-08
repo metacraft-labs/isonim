@@ -119,6 +119,9 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
   r.setStyle(pageCanvasMnt.breadcrumb, "align-self", "flex-start")
   r.appendChild(frameHostNode, pageCanvasMnt.breadcrumb)
   r.appendChild(container, frameHostNode)
+  # Pages use the same overlay and guarded rendered-property selection path
+  # as component previews. A layer record alone has no computed properties.
+  installPreviewSelectionBridge[R, E](r, previewFrame, vm)
   r.enableDragScroll(frameHost)
 
   # M-EVP-8: vector-symbol hit-test handles. The Nim-rendered tree gets

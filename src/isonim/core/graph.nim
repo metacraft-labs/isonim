@@ -80,7 +80,7 @@ proc removeSourceObserver(source: SignalStateBase; obsSlot: int) =
   source.observers.setLen(lastIdx)
   source.observerSlots.setLen(lastIdx)
 
-proc cleanNode*(node: OwnerBase) =
+proc cleanNode*(node: OwnerBase; dispose: bool = false) =
   ## Removes a node from the reactive graph.
   ## For computations: unlinks from sources' observer lists.
   ## For all owners: runs cleanup callbacks and recursively cleans owned nodes.
@@ -108,10 +108,17 @@ proc cleanNode*(node: OwnerBase) =
       removeSourceObserver(source, obsSlot)
     comp.sources.setLen(0)
     comp.sourceSlots.setLen(0)
+    if dispose:
+      # A replaced child may already be in the scheduler's captured queue.
+      # Unlinking its dependencies alone leaves it stale and able to resurrect
+      # subscriptions after the parent has discarded its ownership. Current
+      # computations remain callable when cleaning before their own rerun.
+      comp.state = csClean
+      comp.fn = nil
 
   # Recursively clean owned computations
   for child in node.owned:
-    cleanNode(child)
+    cleanNode(child, dispose = true)
   node.owned.setLen(0)
   node.resourceStates.setLen(0)
 

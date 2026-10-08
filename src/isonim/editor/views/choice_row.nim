@@ -202,8 +202,10 @@ proc buildRowChip[R, E](r: R; option: CompactChoiceOption): E =
   let choose = compactChoiceHandler(enabled, option.onChoose)
   result = ui(r):
     tdiv(role = "button", tabindex = (if enabled: "0" else: "-1"),
+          title = option.label,
           `aria-label` = option.ariaLabel,
           `aria-pressed` = (if selected: "true" else: "false"),
+          `aria-disabled` = (if enabled: "false" else: "true"),
           `data-compact-choice-enabled` = (
               if enabled: "true" else: "false"),
           min_width = "0",
@@ -223,14 +225,11 @@ proc buildRowChip[R, E](r: R; option: CompactChoiceOption): E =
           cursor = (if enabled: "pointer" else: "default"),
           white_space = "nowrap", overflow = "hidden",
           text_overflow = "ellipsis",
-          onclick = choose,
-          onkeydown = choose):
+          onclick = choose):
       text option.visibleText()
   for (key, value) in option.dataAttrs:
     r.setAttribute(result, key, value)
-  if enabled and option.onChoose != nil:
-    r.addEventListener(result, "click", option.onChoose)
-    r.addEventListener(result, "keydown", option.onChoose)
+  if enabled: installPopoverTrigger(result)
 
 proc buildRowPopupChip[R, E](r: R; option: CompactChoiceOption): E =
   ## Build a single overflow-popup row for the horizontal row.
@@ -239,8 +238,10 @@ proc buildRowPopupChip[R, E](r: R; option: CompactChoiceOption): E =
   let choose = compactChoiceHandler(enabled, option.onChoose)
   result = ui(r):
     tdiv(role = "button", tabindex = (if enabled: "0" else: "-1"),
+          title = option.label,
           `aria-label` = option.ariaLabel,
           `aria-pressed` = (if selected: "true" else: "false"),
+          `aria-disabled` = (if enabled: "false" else: "true"),
           `data-compact-choice-enabled` = (
               if enabled: "true" else: "false"),
           display = "grid",
@@ -254,8 +255,7 @@ proc buildRowPopupChip[R, E](r: R; option: CompactChoiceOption): E =
           color = (if enabled: textPrimary else: textDim),
           font_size = "10px",
           cursor = (if enabled: "pointer" else: "default"),
-          onclick = choose,
-          onkeydown = choose):
+          onclick = choose):
       span(color = (if selected: accent else: textMuted),
             white_space = "nowrap", overflow = "hidden",
             text_overflow = "ellipsis"):
@@ -265,9 +265,7 @@ proc buildRowPopupChip[R, E](r: R; option: CompactChoiceOption): E =
         text option.label
   for (key, value) in option.dataAttrs:
     r.setAttribute(result, key, value)
-  if enabled and option.onChoose != nil:
-    r.addEventListener(result, "click", option.onChoose)
-    r.addEventListener(result, "keydown", option.onChoose)
+  if enabled: installPopoverTrigger(result)
 
 # ---- horizontal row (static + thunk overloads) -----------------------------
 
@@ -369,18 +367,70 @@ proc renderCompactChoiceRow*[R, E](r: R; label, ariaLabel: string;
     optionsThunk: proc(): seq[CompactChoiceOption]; visibleLimit = 2;
     labelWidth = "72px"; minHeight = "24px";
     onChipMounted: ChipMountedHook[E] = nil): CompactChoiceRow[E] =
-  ## Thunk-driven horizontal variant. Mirrors the static overload but
-  ## wraps the chip-construction body in `createRenderEffect` so the
-  ## strip's chip set diffs / patches when the underlying signal set
-  ## changes. See the file header for the M58 backward-compat strategy.
-  let snapshot = optionsThunk()
-  result = renderCompactChoiceRow[R, E](r, label, ariaLabel, snapshot,
-    visibleLimit, labelWidth, minHeight)
-  if onChipMounted != nil:
-    for k in 0 ..< result.optionNodes.len:
-      let idx = result.optionIndexes[k]
-      if idx >= 0 and idx < snapshot.len:
-        onChipMounted(result.optionNodes[k], snapshot[idx], idx)
+  ## Horizontal source choices mount before selected properties arrive. Track
+  ## only the option thunk; draft-value changes do not own or rebuild controls.
+  let host = r.createElement("div")
+  r.setStyle(host, "display", "contents")
+  var mounted: CompactChoiceRow[E]
+  var latest: seq[CompactChoiceOption]
+  var previousOptions: seq[CompactChoiceOption]
+  var previousSignature = ""
+  var disposeChildren: proc()
+  var first = true
+  let parentOwner = getOwner()
+  onCleanup(proc() =
+    if disposeChildren != nil: disposeChildren())
+  createRenderEffect proc() =
+    let options = optionsThunk()
+    latest = options
+    var signature = ""
+    for option in options:
+      signature.add option.label & "\x1f" & option.shortLabel & "\x1f" &
+        option.ariaLabel & "\x1f" & $option.enabled & "\x1f" & $option.selected
+      for (key,value) in option.dataAttrs: signature.add key & "=" & value & "\x1e"
+      signature.add "\x1d"
+    if not first and signature == previousSignature: return
+    first = false
+    previousSignature = signature
+    let focused = r.activeElement()
+    var focusedLabel = ""
+    for k,node in mounted.optionNodes:
+      if node == focused and k < mounted.optionIndexes.len:
+        let index = mounted.optionIndexes[k]
+        if index < previousOptions.len: focusedLabel = previousOptions[index].ariaLabel
+    previousOptions = options
+    if disposeChildren != nil: disposeChildren()
+    r.clearChildren(host)
+    runWithOwner(parentOwner, proc() =
+      createRoot(proc(dispose: proc()) =
+        disposeChildren = dispose
+        var active = true
+        onCleanup(proc() = active = false)
+        proc guardedOption(option:CompactChoiceOption; position:int):CompactChoiceOption =
+          CompactChoiceOption(label:option.label,shortLabel:option.shortLabel,
+            ariaLabel:option.ariaLabel,selected:option.selected,enabled:option.enabled,
+            dataAttrs:option.dataAttrs,onChoose:proc() =
+              if active and position < latest.len and latest[position].enabled and latest[position].onChoose != nil:
+                latest[position].onChoose())
+        var safeOptions: seq[CompactChoiceOption]
+        for index,option in options: safeOptions.add guardedOption(option,index)
+        mounted = renderCompactChoiceRow[R,E](r,label,ariaLabel,safeOptions,
+          visibleLimit,labelWidth,minHeight)
+        r.appendChild(host,mounted.root)
+        if onChipMounted != nil:
+          for k,node in mounted.optionNodes:
+            let index = mounted.optionIndexes[k]
+            if index < options.len: onChipMounted(node,options[index],index)
+        if focusedLabel.len > 0:
+          var replacement: E
+          for k,node in mounted.optionNodes:
+            let index = mounted.optionIndexes[k]
+            if index < options.len and options[index].enabled:
+              if options[index].ariaLabel == focusedLabel: replacement = node; break
+              if options[index].selected: replacement = node
+          if replacement != default(E): r.focus(replacement)))
+  result = mounted
+  result.root = host
 
 # ---- vertical column (static + thunk overloads) ----------------------------
 

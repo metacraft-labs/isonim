@@ -480,6 +480,7 @@ const isonimTestSpecs: seq[IsonimTestSpec] = @[
   spec("test_editor_section_effects"),
   spec("test_editor_section_export"),
   spec("test_editor_section_fill"),
+  spec("test_editor_source_scope_row"),
   spec("test_editor_section_layout"),
   spec("test_editor_section_position"),
   spec("test_editor_section_selection_colors"),
@@ -532,6 +533,7 @@ const isonimCompileOnlySpecs: seq[IsonimTestSpec] = @[
 # ``-r``), so it is modelled as a BUILD-only edge (no node run).
 const isonimJsTestSpecs: seq[string] = @[
   "test_editor_color_popover",
+  "test_editor_widget_property_row", "test_editor_section_fill", "test_editor_source_scope_row",
   "test_editor_chat_activity",
   "test_editor_control",
   "test_editor_workspace_refresh",
@@ -781,6 +783,7 @@ package isonim:
     var testBuildActions: seq[BuildActionDef] = @[]
     var testExecuteActions: seq[BuildActionDef] = @[]
     var popupHeadlessActions: seq[BuildActionDef] = @[]
+    var c2HeadlessActions: seq[BuildActionDef] = @[]
 
     proc emitTest(source, binary: string; executeToo: bool;
                   buildActions, executeActions: var seq[BuildActionDef]) =
@@ -810,6 +813,8 @@ package isonim:
           actionId = "isonim.test_execute." & stem,
           registerImplicitName = false)
         executeActions.add(executeEdge)
+        if stem in ["test_effects", "test_editor_widget_property_row", "test_editor_color_popover", "test_editor_section_fill", "test_editor_source_scope_row"]:
+          c2HeadlessActions.add(executeEdge)
         if source in ["tests/test_editor_color_popover.nim", "tests/test_signals.nim"]:
           popupHeadlessActions.add(executeEdge)
 
@@ -885,6 +890,29 @@ package isonim:
       extraInputs = @["src", "tests/helpers/editor_popup_workspace.nim", "tests/helpers/core_owner_hmr.nim", "Justfile", "package.json"],
       extraOutputs = @["build/editor-popup"])
     testBuildActions.add(popupBrowserEdge)
+    let inspectorBrowserEdge = sh.shell(
+      command = "just editor-inspector-build", actionId = "isonim.c2_build.inspector",
+      extraInputs = @["src", "tests/helpers/editor_popup_workspace.nim", "Justfile", "package.json"],
+      extraOutputs = @["build/editor-inspector"])
+    testBuildActions.add(inspectorBrowserEdge)
+    let c2GuardEdge = sh.shell(
+      command = "python3 tests/test_nim_js_guard.py", cacheable = false,
+      actionId = "isonim.c2_execute.js_guard_controls",
+      extraInputs = @["tests/test_nim_js_guard.py", "tools/run_nim_js_test.py"])
+    testExecuteActions.add(c2GuardEdge)
+    c2HeadlessActions.add(c2GuardEdge)
+    var c2SourceActions: seq[BuildActionDef] = @[]
+    for stem in ["test_editor_fill_readonly_gui", "test_editor_inspector_source_gui"]:
+      let edge = sh.shell(
+        command = "\"${ISONIM_SCENARIO_NODE:-node}\" tests/" & stem & ".mjs", cacheable = false,
+        actionId = "isonim.c2_execute." & stem,
+        after = @[inspectorBrowserEdge, reviewToolEdge.action],
+        extraInputs = @["tests/" & stem & ".mjs", "tests/helpers/editor_control_peer.py",
+          "tests/fixtures/editor_inspector_project", "tools/editor_server.py", "tools/build_source_catalog.py",
+          "build/editor-inspector", drReviewBin])
+      c2SourceActions.add(edge)
+      testExecuteActions.add(edge)
+
     let popupGeometryEdge = sh.shell(
       command = "\"${ISONIM_SCENARIO_NODE:-node}\" tests/test_editor_popover_geometry.mjs", cacheable = false,
       actionId = "isonim.popup_execute.geometry",
@@ -1257,11 +1285,16 @@ package isonim:
         extraInputs = @["src", "build/tailwind-styles.json", "isonim.nimble"])
       testBuildActions.add(jsCompileEdge)
       jsBuildActions.add(jsCompileEdge)
-      let jsExecuteEdge = node(
-        args = @[jsOut],
-        actionId = "isonim.js_execute." & stem,
-        after = @[jsCompileEdge],
-        extraInputs = @[jsOut])
+      let guardedC2 = stem in ["test_effects", "test_editor_widget_property_row", "test_editor_color_popover", "test_editor_section_fill", "test_editor_source_scope_row"]
+      let jsExecuteEdge =
+        if guardedC2:
+          sh.shell(command = "python3 tools/run_nim_js_test.py " & jsOut, cacheable = false,
+            actionId = "isonim.js_execute." & stem, after = @[jsCompileEdge],
+            extraInputs = @[jsOut, "tools/run_nim_js_test.py"])
+        else:
+          node(args = @[jsOut], actionId = "isonim.js_execute." & stem,
+            after = @[jsCompileEdge], extraInputs = @[jsOut])
+      if guardedC2: c2HeadlessActions.add(jsExecuteEdge)
       testExecuteActions.add(jsExecuteEdge)
       jsExecuteActions.add(jsExecuteEdge)
       if stem in ["test_editor_color_popover", "test_signals"]: popupHeadlessActions.add(jsExecuteEdge)
@@ -1284,6 +1317,10 @@ package isonim:
       testBuildActions.add(jsCompileOnlyEdge)
       jsBuildActions.add(jsCompileOnlyEdge)
 
+    discard collect("test-editor-c2-headless", c2HeadlessActions)
+    discard collect("test-editor-c2-source", c2SourceActions)
+    discard collect("test-editor-c2-lifetime", @[popupOwnerHmrEdge, popupGeometryEdge, popupSelectionRestoreEdge])
+    discard collect("test-editor-c2", c2HeadlessActions & c2SourceActions & @[popupOwnerHmrEdge, popupGeometryEdge, popupSelectionRestoreEdge, popupGuiEdge])
     discard collect("test-editor-popup", popupHeadlessActions & @[popupOwnerHmrEdge, popupGeometryEdge, popupSelectionRestoreEdge, popupGuiEdge])
     discard collect("test", testExecuteActions)
     discard collect("test-builds", testBuildActions)

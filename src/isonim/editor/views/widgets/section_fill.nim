@@ -12,13 +12,16 @@
 ## selected element. Phase H lifts the signal onto the inspector so
 ## multi-fill compositing is a first-class VM concept.
 
-import std/[options, strutils]
+import std/[options, strutils, math]
 
+import isonim/core/owner
 import isonim/core/signals
 import isonim/core/computation
+import isonim/core/batch
 import isonim/dsl/ui
 import isonim/editor/views/widgets/anchored_popover
 import isonim/editor/views/widgets/color_popover
+import isonim/editor/views/choice_row
 import isonim/editor/types
 import isonim/editor/element_semantics
 import isonim/editor/viewmodels
@@ -46,6 +49,8 @@ const
   secondaryFillNotice =
     "Only the first fill maps to a source property; additional fills " &
     "are preview-only."
+  fillDeleteNotice =
+    "The editor cannot remove this fill from its source yet."
   fillAlphaNotice =
     "Fill opacity is preview-only until fills compose an rgba() source value."
 
@@ -84,17 +89,21 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
   # Track the actual fill-bearing input as well as ID so hydration/reload of the
   # same selected element refreshes its controls. Unrelated property updates do
   # not discard locally added fill rows or an in-progress draft.
-  var lastFillInput = (id: "", property: "", value: "", hasElement: false)
+  var lastFillInput = (id: "", story: "", property: "", value: "", hasElement: false)
+  let fillTargetIdentity = createSignal("")
   createRenderEffect proc() =
     let el = vm.inspector.selectedElement.val
+    let selectedStory = vm.selectedStory.val
+    let story = selectedStory.group & " / " & selectedStory.name & " / " & $selectedStory.kind
     let hasElement = vm.inspector.hasElement.val
     let property = fillTargetProperty(el.tag)
     let value = if hasElement: findPropertyValue(el.properties, property, "") else: ""
-    let input = (id: el.id, property: property, value: value, hasElement: hasElement)
+    let input = (id: el.id, story: story, property: property, value: value, hasElement: hasElement)
+    fillTargetIdentity.val = story & " / " & el.id & " / " & property
     if input != lastFillInput:
       lastFillInput = input
       if hasElement and value.len > 0 and value notin ["transparent", "none"]:
-        entries.val = @[FillEntry(color: value, alpha: 1.0)]
+        entries.val = @[FillEntry(color: value, alpha: colorChannels(value).alpha.float / 255)]
       else:
         entries.val = @[]
 
@@ -142,6 +151,22 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
             `aria-label` = "Add fill",
             display = "none")
   r.appendChild(parent, body)
+  let sourceChoices = renderCompactChoiceRow[R,E](r,"","Choose fill source scope",
+    proc(): seq[CompactChoiceOption] = fillWiringNow().scopeOptions(), visibleLimit = 1)
+  r.setAttribute(sourceChoices.root,"data-fill-source-scope","true")
+  r.appendChild(body,sourceChoices.root)
+  let sourceImpact = ui(r):
+    tdiv(`data-fill-source-impact` = "true", role = "note",
+      font_size = "10px", line_height = "1.35", color = textMuted)
+  r.appendChild(body,sourceImpact)
+  createRenderEffect proc() =
+    var description = ""
+    for option in fillWiringNow().scopeOptions():
+      for (key,value) in option.dataAttrs:
+        if key == "data-source-scope-token" and value.len > 0 and option.selected:
+          description = option.shortLabel & ": " & option.label
+    r.setTextContent(sourceImpact,description)
+    r.setStyle(sourceImpact,"display",if description.len > 0: "block" else: "none")
 
   proc mountRow(idx: int; entry: FillEntry) =
     ## Isolating helper — closure-captures ``idx`` from this proc's
@@ -161,6 +186,14 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
     ## Only the primary fill (idx 0) participates in M1: multi-fill
     ## compositing has no per-index canonical CSS property yet, so
     ## additional fill rows stay literal (honest M1 gap — see M2/M3).
+    let targetId = vm.inspector.selectedElement.val.id
+    let targetStory = vm.selectedStory.val
+    proc currentTarget(): bool =
+      let current = vm.selectedStory.val
+      vm.inspector.selectedElement.val.id == targetId and
+        current.group == targetStory.group and current.name == targetStory.name and current.kind == targetStory.kind
+    var rowActive = true
+    onCleanup(proc() = rowActive = false)
     let binding =
       if idx == 0: vm.inspectorBindingFor(fillProperty())
       else: none(VariableBinding)
@@ -234,6 +267,8 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
               role = "button", tabindex = "0",
               `data-fill-row-delete` = $idx,
               `aria-label` = "Delete fill",
+              `aria-disabled` = "true",
+              title = fillDeleteNotice,
               width = "20px", height = "20px",
               display = "flex", align_items = "center",
               justify_content = "center",
@@ -282,70 +317,119 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
           vm.requestInspectorVariablePicker(fillProperty(),
             rc.x, rc.y, rc.w, rc.h))
       let colorState = createColorPopoverState()
+      proc commitColor(value: string; done: proc(ok: bool) {.closure.}) =
+        if not rowActive or not currentTarget():
+          done(false)
+          return
+        if idx != 0:
+          fillWiringNow().commitMessage.val = secondaryFillNotice
+          done(false)
+          return
+        let sourceReason = fillWiringNow().readOnlyReason()
+        if sourceReason.len > 0:
+          fillWiringNow().commitMessage.val = sourceReason
+          done(false)
+          return
+        let normalized = normalizedHexColor(value)
+        if normalized.len == 0:
+          fillWiringNow().commitMessage.val = "Enter a complete hex color."
+          done(false)
+          return
+        if normalized == normalizedHexColor(entry.color):
+          done(true)
+          return
+        fillWiringNow().commitAsync(normalized, proc(ok: bool) =
+          if ok and rowActive and currentTarget():
+            var next = entries.val
+            if idx < next.len:
+              next[idx].color = normalized
+              next[idx].alpha = colorChannels(normalized).alpha.float / 255
+              entries.val = next
+          done(ok))
       discard mountColorPopover(r, row, swatchEl, colorState,
-        proc(): string =
-          if idx < entries.val.len: entries.val[idx].color else: "",
+        proc(): string = entry.color,
         proc(value: string): bool =
-          if idx != 0:
-            fillWiringNow().commitMessage.val = secondaryFillNotice
-            return false
-          let wiring = fillWiringNow()
-          let rejected = wiring.commitRejected.val
-          wiring.commit(value)
-          if wiring.commitRejected.val != rejected: return false
-          var next = entries.val
-          if idx >= next.len: return false
-          next[idx].color = value
-          entries.val = next
-          true)
+          colorState.pending.val = true
+          var completed = false
+          var accepted = false
+          commitColor(value, proc(ok: bool) =
+            completed = true
+            accepted = ok
+            if not rowActive or not currentTarget(): return
+            colorState.pending.val = false
+            if ok: colorState.open.val = false
+            else: colorState.diagnostic.val = fillWiringNow().commitMessage.val)
+          completed and accepted)
       r.setInputValue(hexEl, entry.color)
-      r.setInputValue(alphaEl, $int(entry.alpha * 100.0))
+      r.setInputValue(alphaEl, $int(round(entry.alpha * 100.0)))
+      createRenderEffect proc() =
+        let reason = fillWiringNow().readOnlyReason()
+        r.setAttribute(row, "data-fill-row-readonly", if reason.len > 0: "true" else: "false")
+        r.setAttribute(row, "data-fill-row-readonly-reason", reason)
+        when defined(js):
+          {.emit: [hexEl,".readOnly = ",reason,".length > 0;",alphaEl,".readOnly = ",reason,".length > 0;"].}
+      # Disclosure is inspection, including when the source cannot be edited.
+      # The live commitColor guard refuses Apply and literal/alpha mutations;
+      # mountColorPopover owns pointer/Enter/Space disclosure and cleanup.
       r.addEventListener(hexEl, "change", proc() =
-        var next = entries.val
-        if idx >= 0 and idx < next.len:
-          next[idx].color = r.inputValue(hexEl)
-          entries.val = next
-          if idx == 0:
-            fillWiringNow().commit(next[idx].color)
-          else:
-            fillWiringNow().commitMessage.val = secondaryFillNotice)
+        commitColor(r.inputValue(hexEl), proc(ok: bool) =
+          if not ok and rowActive: r.setInputValue(hexEl, entry.color)))
       r.addEventListener(alphaEl, "change", proc() =
-        var next = entries.val
-        if idx >= 0 and idx < next.len:
-          var parsed = 100.0
-          try: parsed = parseFloat(r.inputValue(alphaEl))
-          except ValueError: discard
-          next[idx].alpha = max(0.0, min(1.0, parsed / 100.0))
-          entries.val = next
-          # Alpha has no standalone source property: the section never
-          # composed an rgba() value, so there is nothing to write.
-          # Reported rather than dropped.
-          fillWiringNow().commitMessage.val = fillAlphaNotice)
+        if not rowActive or not currentTarget(): return
+        try:
+          let parsed = parseFloat(r.inputValue(alphaEl))
+          if classify(parsed) in {fcNan, fcInf, fcNegInf} or parsed < 0 or parsed > 100:
+            raise newException(ValueError, "Invalid alpha")
+          var channels = colorChannels(entry.color)
+          channels.alpha = int(round(parsed * 255 / 100))
+          commitColor(channelsHex(channels), proc(ok: bool) =
+            if not ok and rowActive: r.setInputValue(alphaEl, $int(round(entry.alpha*100))))
+        except ValueError:
+          fillWiringNow().commitMessage.val = "Fill opacity must be from 0 to 100%."
+          r.setInputValue(alphaEl, $int(round(entry.alpha*100))))
     r.addEventListener(deleteEl, "click", proc() =
-      var next = entries.val
-      if idx >= 0 and idx < next.len:
-        next.delete(idx)
-        entries.val = next)
+      if not rowActive or not currentTarget(): return
+      let reason = fillWiringNow().readOnlyReason()
+      if reason.len > 0:
+        fillWiringNow().commitMessage.val = reason
+        return
+      # Removal has no authored source operation. Keep the selected fill and
+      # explain refusal; a local row deletion would misrepresent persistence.
+      fillWiringNow().commitMessage.val = fillDeleteNotice)
+    installPopoverTrigger(deleteEl)
 
   proc rebuildList() =
     r.clearChildren(listEl)
     for i in 0 ..< entries.val.len:
-      mountRow(i, entries.val[i])
+      let entry = entries.val[i]
+      untrack(proc() = mountRow(i, entry))
 
   createRenderEffect proc() =
+    discard fillTargetIdentity.val
+    discard vm.inspectorBindingFor(fillProperty())
     rebuildList()
     r.setStyle(emptyEl, "display",
       if entries.val.len == 0: "block" else: "none")
 
+  var sectionActive = true
+  onCleanup(proc() = sectionActive = false)
   let onAdd = proc() =
+    if not sectionActive: return
+    let reason = fillWiringNow().readOnlyReason()
+    if reason.len > 0:
+      fillWiringNow().commitMessage.val = reason
+      return
     var next = entries.val
     next.add FillEntry(color: "#FFFFFF", alpha: 1.0)
     entries.val = next
   r.addEventListener(addBtnEl, "click", onAdd)
-  r.addEventListener(addBtnEl, "keydown", onAdd)
+  installPopoverTrigger(addBtnEl)
 
   createRenderEffect proc() =
-    let text = fillWiringNow().commitMessage.val
+    let wiring = fillWiringNow()
+    let refusal = wiring.commitMessage.val
+    let reason = wiring.readOnlyReason()
+    let text = if refusal.len > 0: refusal else: reason
     r.setTextContent(messageEl, text)
     r.setAttribute(messageEl, "data-fill-message-visible",
       if text.len > 0: "true" else: "false")

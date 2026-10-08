@@ -93,7 +93,11 @@
           const box = parent.getBoundingClientRect(), item = control.getBoundingClientRect();
           const scale = parent.offsetHeight ? box.height / parent.offsetHeight : 1;
           const top = box.top + parent.clientTop * scale, bottom = top + parent.clientHeight * scale;
-          if (item.top < top) parent.scrollTop -= (top - item.top) / scale;
+          // Large controls (such as the color plane in a short viewport)
+          // cannot fit wholly. Keep their central interactive point visible.
+          if (item.height > bottom - top)
+            parent.scrollTop += ((item.top + item.bottom) / 2 - (top + bottom) / 2) / scale;
+          else if (item.top < top) parent.scrollTop -= (top - item.top) / scale;
           else if (item.bottom > bottom) parent.scrollTop += (item.bottom - bottom) / scale;
         }
         if (parent === root) break;

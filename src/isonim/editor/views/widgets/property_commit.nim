@@ -312,6 +312,9 @@ proc commitInspectorValue*(vm: EditorVM; property, rawValue: string;
   if not vm.workspacePermissions.val.writeSource:
     return refusal("This workspace is read-only for source changes.", scope)
 
+  if vm.hasAsyncSourceProject:
+    return refusal("The editor must confirm the source edit before applying it.", scope)
+
   let normalized = normalizePrimitiveInputValue(property, rawValue)
 
   if scope == sskLocalInstance:
@@ -379,6 +382,9 @@ type
       ## lying about the document.
     scopeOptions*: proc(): seq[CompactChoiceOption]
     commit*: proc(value: string)
+    authoredValue*: proc(): string {.closure.}
+    readOnlyReason*: proc(): string {.closure.}
+    commitAsync*: proc(value: string; done: proc(ok: bool) {.closure.}) {.closure.}
 
 proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
   ## Wire one row to ``property``.
@@ -422,6 +428,8 @@ proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
       rejected.val = rejected.val + 1
 
   proc scopeOptions(): seq[CompactChoiceOption] =
+    let found = vm.inspectorProperty(capturedProperty)
+    let prop = if found.isSome: found.get else: PropertyInfo()
     let choices = currentChoices()
     if choices.len == 0:
       return @[]
@@ -439,8 +447,10 @@ proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
       let label = choice.label
       let risk = choice.riskLevel.sourceScopeRiskLabel()
       result.add CompactChoiceOption(
-        label: label & " " & risk,
-        shortLabel: kind.sourceScopeAbbrev(),
+        label: label & (if kind == sskSemanticToken and prop.tokenName.len > 0: " " & prop.tokenName else: "") & " " & risk &
+          (if kind == sskSemanticToken and prop.nativeSourceToken: ". Known direct matches; inherited or unsupported references may also change." else: ""),
+        shortLabel: (if kind == sskSemanticToken and prop.nativeSourceToken: prop.tokenName else: kind.sourceScopeAbbrev()) &
+          (if kind in {sskSharedClass,sskSemanticToken} and choice.usageCount > 0: "·" & $choice.usageCount & (if prop.nativeSourceToken: "+" else: "") else: ""),
         # Same phrasing as the old row so a caller (or a test) that
         # knows one knows the other.
         ariaLabel: "Apply " & kind.sourceScopeApplyLabel() &
@@ -449,7 +459,12 @@ proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
         enabled: editable,
         dataAttrs: @[("data-source-scope-editable",
           if editable: "true" else: "false"),
-          ("data-source-scope-kind", $kind)],
+          ("data-source-scope-kind", $kind),
+          ("data-source-scope-schema", choice.schemaKey),
+          ("data-source-scope-token", prop.tokenName),
+          ("data-source-scope-count", $choice.usageCount),
+          ("data-source-scope-target", vm.inspector.selectedElement.val.id),
+          ("data-source-scope-story", vm.selectedStory.val.group & " / " & vm.selectedStory.val.name)],
         onChoose: (proc() =
           if editable:
             selected.val = kind
@@ -465,10 +480,43 @@ proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
               else: "This scope has no source-backed writer in the " &
                 "project schema."))
 
+  let asyncCommit = proc(value: string; done: proc(ok: bool) {.closure.}) =
+    # Sections can mount before attachSourceProject installs its connection.
+    # Resolve the optional boundary when the user edits, never at row creation.
+    if vm.inspectorSourceCommit != nil:
+      let element = vm.inspector.selectedElement.val
+      vm.inspectorSourceCommit(element, capturedProperty, value, effectiveScope(),
+        proc(ok: bool; diagnostic: string) =
+          message.val = diagnostic
+          if not ok: rejected.val = rejected.val + 1
+          done(ok))
+    else:
+      let before = rejected.val
+      commit(value)
+      done(rejected.val == before)
+
   InspectorRowWiring(
     cssProperty: capturedProperty,
     scopeSelected: selected,
     commitMessage: message,
     commitRejected: rejected,
     scopeOptions: scopeOptions,
-    commit: commit)
+    commit: commit, commitAsync: asyncCommit,
+    authoredValue: proc(): string =
+      let property = vm.inspectorProperty(capturedProperty)
+      if property.isNone: return ""
+      let found = property.get
+      if found.authoredValue.len > 0: return found.authoredValue
+      # Existing synchronous adapters already provide authoring units in value.
+      # Unitless display transforms (such as opacity percent) remain section-owned.
+      let parsed = parseCssPropertyValue(capturedProperty, found.value)
+      if parsed.unit.len > 0: found.value else: "",
+    readOnlyReason: proc(): string =
+      if not vm.workspacePermissions.val.writeSource:
+        return "This workspace is read-only for source changes."
+      let ready = vm.sourceAdapterReady.val
+      if not vm.hasAsyncSourceProject: return ""
+      if not ready: return "Loading editable properties."
+      let property = vm.inspectorProperty(capturedProperty)
+      if property.isSome and property.get.authoredValue.len > 0: return ""
+      "Read-only: the editor cannot safely edit this value’s source.")

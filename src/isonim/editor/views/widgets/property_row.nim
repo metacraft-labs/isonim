@@ -55,8 +55,11 @@ import std/[math, options, strutils]
 
 import isonim/core/signals
 import isonim/core/computation
+import isonim/core/owner
+import isonim/core/batch
 import isonim/dsl/ui
 import isonim/editor/types
+import isonim/editor/viewmodels
 import isonim/editor/views/choice_row
 import isonim/editor/views/widgets/choice_group
 import isonim/editor/views/widgets/property_commit
@@ -154,6 +157,8 @@ type
     # is what ``tests/test_editor_widget_property_row.nim`` and any
     # non-inspector caller get. The inspector sections fill them from
     # ``property_commit.inspectorRowWiring``.
+    authoredValue*: proc(): string {.closure.}
+    readOnlyReason*: proc(): string {.closure.}
     cssProperty*: string
       ## The CSS property this row edits (``"padding-top"``,
       ## ``"font-size"``, …). The row had no representation for this
@@ -179,6 +184,7 @@ type
       ## rendered inline under the row. Nil means the row has no
       ## message surface — acceptable only for rows that cannot
       ## commit at all.
+    onAsyncCommitValue*: proc(value: string; done: proc(ok: bool) {.closure.}) {.closure.}
     onCommitValue*: proc(value: string)
       ## Called with the row's value rendered as the CSS string that
       ## should reach the source-edit pipeline (``"24px"``,
@@ -288,6 +294,8 @@ proc formatNumber*(value: float): string =
   ## without a trailing ``.0`` (so the user sees ``150`` not
   ## ``150.0``); otherwise we round to 2 decimal places to keep the
   ## input box compact.
+  if abs(value) > 9.0e15:
+    return $value
   if abs(value - float(int(value))) < 1e-6:
     return $int(value)
   let rounded = round(value * 100.0) / 100.0
@@ -336,6 +344,13 @@ proc parseNumber(p: var MathParser): Option[float] =
       sawDigit = true
   if not sawDigit:
     return none(float)
+  if p.peek in {'e', 'E'} and p.pos + 1 < p.src.len and
+      p.src[p.pos + 1] in {'0'..'9', '+', '-'}:
+    inc p.pos
+    if p.peek in {'+', '-'}: inc p.pos
+    let exponentStart = p.pos
+    while p.peek in {'0'..'9'}: inc p.pos
+    if exponentStart == p.pos: return none(float)
   try:
     return some(parseFloat(p.src[start ..< p.pos]))
   except ValueError:
@@ -347,7 +362,8 @@ proc parsePrimary(p: var MathParser): Option[float] =
     inc p.pos
     let inner = parseExpr(p)
     skipSpaces(p)
-    if p.peek == ')': inc p.pos
+    if p.peek != ')': return none(float)
+    inc p.pos
     return inner
   parseNumber(p)
 
@@ -446,22 +462,21 @@ func scrubbedValue*(startValue, dx, dy, step: float; shift, alt: bool;
   if minValue.isSome and result < minValue.get: result = minValue.get
   if maxValue.isSome and result > maxValue.get: result = maxValue.get
 
-proc evalMathExpr*(raw: string): Option[float] =
-  ## Evaluate ``raw`` as a tiny arithmetic expression. Returns
-  ## ``some(value)`` on success; ``none`` when the input is empty or
-  ## malformed. The parser drops a trailing unit suffix
-  ## (``"100+50px"`` → ``150``) so the value input can carry the
-  ## currently-active unit on the chip without the user having to
-  ## strip it before editing.
-  ##
-  ## A bare number (``"150"``) is the trivial case. The exposed
-  ## visibility lets the test fixture exercise the parser directly
-  ## without round-tripping through a DOM event.
-  if raw.len == 0:
-    return none(float)
-  var p = MathParser(src: raw, pos: 0)
+proc parseNumericInput*(raw: string): tuple[value: Option[float], unit: string] =
+  ## Parse the entire expression, retaining an explicit CSS unit for validation
+  ## by the row. Arbitrary suffixes, unmatched syntax and infinities are refused.
+  var p = MathParser(src: raw.strip(), pos: 0)
   let value = parseExpr(p)
-  value
+  if value.isNone: return
+  skipSpaces(p)
+  let suffix = p.src[p.pos ..< p.src.len]
+  if suffix notin ["", "px", "em", "rem", "%", "vw", "vh", "vmin", "vmax", "deg", "s", "ms", "fr", "ch", "ex"]:
+    return
+  if classify(value.get) in {fcNan, fcInf, fcNegInf}: return
+  result = (value, suffix)
+
+proc evalMathExpr*(raw: string): Option[float] =
+  parseNumericInput(raw).value
 
 # --------------------------------------------------------------------------- #
 #  PropertyRowConfig constructors — keeps the call sites in
@@ -483,20 +498,33 @@ proc propertyRowNumeric*(name: string;
                          onDetachRequest: proc() = nil;
                          onVariableNameClick: proc() = nil;
                          wiring = InspectorRowWiring()): PropertyRowConfig =
+  var supportedUnits = units
+  if wiring.cssProperty.len > 0:
+    for code in ["px", "em", "rem", "%", "vw", "vh", "ch", "deg", "ms", "s", ""]:
+      if wiring.cssProperty == "opacity" and code != "%": continue
+      let raw = "1" & code
+      let prop = PropertyInfo(name: wiring.cssProperty, directStyleAllowed: true)
+      let parsed = parseCssPropertyValue(wiring.cssProperty, raw)
+      if validateCssPropertyValue(prop, PropertyEditRequest(property: wiring.cssProperty,
+          newValue: raw, kind: pekCss), parsed).len > 0: continue
+      var present = false
+      for available in supportedUnits:
+        if available.code == code: present = true
+      if not present: supportedUnits.add PropertyUnitOption(label: (if code.len == 0: "number" else: code), code: code)
   PropertyRowConfig(
     name: name, kind: prkNumeric,
-    numericValue: value, numericUnit: unit, availableUnits: units,
+    numericValue: value, numericUnit: unit, availableUnits: supportedUnits,
     numericMin: minValue, numericMax: maxValue, numericStep: step,
     binding: binding,
     bindingReactive: bindingReactive,
     onChange: onChange, onBindRequest: onBindRequest, onMore: onMore,
     onDetachRequest: onDetachRequest,
     onVariableNameClick: onVariableNameClick,
-    cssProperty: wiring.cssProperty,
+    cssProperty: wiring.cssProperty, authoredValue: wiring.authoredValue, readOnlyReason: wiring.readOnlyReason,
     scopeOptions: wiring.scopeOptions,
     commitMessage: wiring.commitMessage,
     commitRejected: wiring.commitRejected,
-    onCommitValue: wiring.commit)
+    onCommitValue: wiring.commit, onAsyncCommitValue: wiring.commitAsync)
 
 proc propertyRowColor*(name: string;
                        value: Signal[string];
@@ -517,11 +545,11 @@ proc propertyRowColor*(name: string;
     onChange: onChange, onBindRequest: onBindRequest, onMore: onMore,
     onDetachRequest: onDetachRequest,
     onVariableNameClick: onVariableNameClick,
-    cssProperty: wiring.cssProperty,
+    cssProperty: wiring.cssProperty, authoredValue: wiring.authoredValue, readOnlyReason: wiring.readOnlyReason,
     scopeOptions: wiring.scopeOptions,
     commitMessage: wiring.commitMessage,
     commitRejected: wiring.commitRejected,
-    onCommitValue: wiring.commit)
+    onCommitValue: wiring.commit, onAsyncCommitValue: wiring.commitAsync)
 
 proc propertyRowChoice*(name: string;
                         value: Signal[string];
@@ -542,11 +570,11 @@ proc propertyRowChoice*(name: string;
     onChange: onChange, onBindRequest: onBindRequest, onMore: onMore,
     onDetachRequest: onDetachRequest,
     onVariableNameClick: onVariableNameClick,
-    cssProperty: wiring.cssProperty,
+    cssProperty: wiring.cssProperty, authoredValue: wiring.authoredValue, readOnlyReason: wiring.readOnlyReason,
     scopeOptions: wiring.scopeOptions,
     commitMessage: wiring.commitMessage,
     commitRejected: wiring.commitRejected,
-    onCommitValue: wiring.commit)
+    onCommitValue: wiring.commit, onAsyncCommitValue: wiring.commitAsync)
 
 proc propertyRowText*(name: string;
                       value: Signal[string];
@@ -566,11 +594,11 @@ proc propertyRowText*(name: string;
     onChange: onChange, onBindRequest: onBindRequest, onMore: onMore,
     onDetachRequest: onDetachRequest,
     onVariableNameClick: onVariableNameClick,
-    cssProperty: wiring.cssProperty,
+    cssProperty: wiring.cssProperty, authoredValue: wiring.authoredValue, readOnlyReason: wiring.readOnlyReason,
     scopeOptions: wiring.scopeOptions,
     commitMessage: wiring.commitMessage,
     commitRejected: wiring.commitRejected,
-    onCommitValue: wiring.commit)
+    onCommitValue: wiring.commit, onAsyncCommitValue: wiring.commitAsync)
 
 proc propertyRowBoolean*(name: string;
                          value: Signal[bool];
@@ -590,11 +618,11 @@ proc propertyRowBoolean*(name: string;
     onChange: onChange, onBindRequest: onBindRequest, onMore: onMore,
     onDetachRequest: onDetachRequest,
     onVariableNameClick: onVariableNameClick,
-    cssProperty: wiring.cssProperty,
+    cssProperty: wiring.cssProperty, authoredValue: wiring.authoredValue, readOnlyReason: wiring.readOnlyReason,
     scopeOptions: wiring.scopeOptions,
     commitMessage: wiring.commitMessage,
     commitRejected: wiring.commitRejected,
-    onCommitValue: wiring.commit)
+    onCommitValue: wiring.commit, onAsyncCommitValue: wiring.commitAsync)
 
 # --------------------------------------------------------------------------- #
 #  Mount.
@@ -742,12 +770,13 @@ proc attachNumericKeySteps*[R, E](r: R; inputNode: E; step: float) =
     {.emit: ["""
       (function () {
         const input = """, inputNode, """;
-        if (!input || input.__isonimRowKeyStepsInstalled) return;
+        if (!input || typeof input.addEventListener !== 'function' || input.__isonimRowKeyStepsInstalled) return;
         input.__isonimRowKeyStepsInstalled = true;
+        input.addEventListener('focus', function () { if (typeof input.select === 'function') input.select(); });
         const baseStep = Number(""", step, """) || 1;
         function split(raw) {
           const text = String(raw || '').trim();
-          const match = text.match(/^([+-]?(?:\d+\.?\d*|\.\d+))(.*)$/);
+          const match = text.match(/^([+-]?(?:\d+\.?\d*|\.\d+))(px|em|rem|%|vw|vh|vmin|vmax|deg|s|ms|fr|ch|ex)?$/);
           if (!match) return null;
           return { number: Number(match[1]), unit: match[2] || '' };
         }
@@ -964,6 +993,9 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
     of prkBoolean:
       if cfg.booleanValue.val: "true" else: "false"
 
+  var rowAlive = true
+  var valueSlotGeneration = 0
+  onCleanup(proc() = rowAlive = false)
   proc commitValue(restore: proc() {.closure.} = nil) =
     ## Commit the row's current value, and put the control back if the
     ## pipeline refuses it.
@@ -975,6 +1007,20 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
     ## the field makes the panel disagree with the document -- grip showed
     ## `42` in Font size while the element stayed at `34`, with a one-line
     ## message the eye slides past as the only correction.
+    if not rowAlive: return
+    if cfg.readOnlyReason != nil and cfg.readOnlyReason().len > 0:
+      if restore != nil: restore()
+      return
+    if cfg.onAsyncCommitValue != nil:
+      let submittedGeneration = valueSlotGeneration
+      cfg.onAsyncCommitValue(currentCssValue(), proc(ok: bool) =
+        # A native result belongs to the submitted target. Rebuilt selection
+        # controls must not receive an old draft's rollback or notification.
+        if not rowAlive or submittedGeneration != valueSlotGeneration: return
+        if not ok:
+          if restore != nil: restore()
+        elif cfg.onChange != nil: cfg.onChange())
+      return
     let hadRejections =
       if cfg.commitRejected != nil: cfg.commitRejected.val else: 0
     if cfg.onCommitValue != nil:
@@ -994,6 +1040,8 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
   # ------------------------------------------------------------------------- #
 
   proc buildValueSlot(activeBinding: Option[VariableBinding]) =
+    inc valueSlotGeneration
+    var literalInput: E
     ## VBIND-M2: (re)build the value slot for the current binding
     ## state. Called once for the static path, or from a render
     ## effect for the reactive (hot-swap) path so the chip vs.
@@ -1114,6 +1162,28 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
               flex_shrink = "0"):
               text currentUnitLabel(cfg)
         r.appendChild(valueSlot, row)
+        literalInput = inputNode
+        let unparsedSource = createSignal("")
+        if cfg.authoredValue != nil:
+          createRenderEffect proc() =
+            let source = cfg.authoredValue()
+            if source.len == 0: return
+            let parsed = parseNumericInput(source)
+            if parsed.value.isSome:
+              # Unitless zero is a valid CSS length; retain the field's current
+              # length unit for its next real gesture instead of treating it as
+              # an unsupported expression.
+              var supported = parsed.unit.len == 0 and parsed.value.get == 0
+              for unit in cfg.availableUnits:
+                if unit.code == parsed.unit:
+                  cfg.numericUnit.val = unit
+                  supported = true
+                  break
+              if supported:
+                unparsedSource.val = ""
+                cfg.numericValue.val = parsed.value.get
+              else: unparsedSource.val = source
+            else: unparsedSource.val = source
         r.setInputValue(inputNode, formatNumber(cfg.numericValue.val))
 
         # Reactive bind — when ``numericValue`` mutates externally the
@@ -1122,25 +1192,45 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
         # math expression back through ``numericValue.val``.
         createRenderEffect proc() =
           let v = cfg.numericValue.val
-          r.setInputValue(inputNode, formatNumber(v))
+          let displayed = if unparsedSource.val.len > 0: unparsedSource.val else: formatNumber(v)
+          r.setInputValue(inputNode, displayed)
+          r.setAttribute(inputNode, "data-committed-value", displayed)
 
         createRenderEffect proc() =
           r.setTextContent(unitNode, currentUnitLabel(cfg))
 
+        var valueSlotActive = true
+        onCleanup(proc() = valueSlotActive = false)
         let commit = proc() =
+          if not valueSlotActive: return
           let raw = r.inputValue(inputNode)
-          let parsed = evalMathExpr(raw)
-          if parsed.isSome:
-            var v = parsed.get
+          let parsed = parseNumericInput(raw)
+          var nextUnit = cfg.numericUnit.val
+          var supported = parsed.unit.len == 0
+          for unit in cfg.availableUnits:
+            if parsed.unit.len > 0 and unit.code == parsed.unit:
+              nextUnit = unit
+              supported = true
+          if parsed.value.isSome and supported:
+            var v = parsed.value.get
             if cfg.numericMin.isSome and v < cfg.numericMin.get:
               v = cfg.numericMin.get
             if cfg.numericMax.isSome and v > cfg.numericMax.get:
               v = cfg.numericMax.get
             let priorValue = cfg.numericValue.val
+            let priorUnit = cfg.numericUnit.val
+            let priorRaw = unparsedSource.val
+            if v == priorValue and nextUnit.code == priorUnit.code:
+              r.setInputValue(inputNode, formatNumber(v))
+              return
+            unparsedSource.val = ""
+            cfg.numericUnit.val = nextUnit
             cfg.numericValue.val = v
             r.setInputValue(inputNode, formatNumber(v))
             commitValue(proc() =
               cfg.numericValue.val = priorValue
+              cfg.numericUnit.val = priorUnit
+              unparsedSource.val = priorRaw
               r.setInputValue(inputNode, formatNumber(priorValue)))
           else:
             # Reject garbage — restore the previous value so the input
@@ -1151,11 +1241,14 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
         attachNumericKeySteps(r, inputNode, cfg.numericStep)
 
         let cycleUnit = proc() =
+          if not valueSlotActive: return
           let nxt = nextUnit(cfg)
+          let priorUnit = cfg.numericUnit.val
+          if nxt.code == priorUnit.code: return
           cfg.numericUnit.val = nxt
-          commitValue()
+          commitValue(proc() = cfg.numericUnit.val = priorUnit)
         r.addEventListener(unitNode, "click", cycleUnit)
-        r.addEventListener(unitNode, "keydown", cycleUnit)
+        installPopoverTrigger(unitNode)
 
         # ---- Scrub-drag on the label -------------------------------- #
         #
@@ -1168,6 +1261,7 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
         # Scrub-drag on the label. Figma's model: drag right to increase,
         # left to decrease, with four speeds chosen by how far the pointer
         # has strayed vertically.
+        var active = true
         var dragArmed = false
         var dragStartX = 0.0
         var dragStartY = 0.0
@@ -1176,15 +1270,18 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
 
         let applyScrub = proc(x, y: float; shift, alt: bool) =
           if not dragArmed: return
-          dragMoved = true
           let v = scrubbedValue(dragStartValue,
             x - dragStartX, y - dragStartY,
             cfg.numericStep, shift, alt,
             cfg.numericMin, cfg.numericMax)
+          dragMoved = v != dragStartValue
           cfg.numericValue.val = v
           r.setInputValue(inputNode, formatNumber(v))
 
         let scrubStart = proc(x, y: float; shift, alt: bool) =
+          if not active or unparsedSource.val.len > 0:
+            if cfg.commitMessage != nil: cfg.commitMessage.val = "Type a numeric value to replace this expression."
+            return
           dragArmed = true
           dragMoved = false
           dragStartX = x
@@ -1201,14 +1298,83 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
           # edits. The signal updates live so the preview follows the
           # pointer; the source is written once, when the hand stops.
           if dragMoved:
-            commitValue()
+            commitValue(proc() =
+              cfg.numericValue.val = dragStartValue
+              r.setInputValue(inputNode, formatNumber(dragStartValue)))
         # On the in-field label, and on the legacy gutter node too: the
         # gutter is display:none now, but the headless scrub tests resolve
         # `label-scrubber` and firing at it must still drive the drag.
-        for handle in [fieldLabelNode, labelNode]:
-          r.addPointerListener(handle, "mousedown", scrubStart)
-          r.addPointerListener(handle, "mousemove", applyScrub)
-          r.addPointerListener(handle, "mouseup", scrubEnd)
+        let cancelScrub = proc() =
+          if not dragArmed: return
+          dragArmed = false
+          cfg.numericValue.val = dragStartValue
+          r.setInputValue(inputNode, formatNumber(dragStartValue))
+        onCleanup(proc() =
+          cancelScrub()
+          active = false)
+        when defined(js):
+          let startCallback = scrubStart
+          let moveCallback = applyScrub
+          let endCallback = scrubEnd
+          let cancelCallback = cancelScrub
+          var cleanup: proc()
+          {.emit: ["""
+            """, cleanup, """ = (function(handle, input, start, move, end, cancel) {
+              if(!handle || typeof handle.addEventListener !== 'function') return function() {};
+              let pointer = null;
+              function stop(e, abort) {
+                if(pointer === null || (e.pointerId != null && e.pointerId !== pointer)) return;
+                const id = pointer; pointer = null;
+                if(abort) cancel(); else end(e.clientX, e.clientY, e.shiftKey, e.altKey);
+                if(handle.hasPointerCapture(id)) handle.releasePointerCapture(id);
+              }
+              function down(e) {
+                if(e.button !== 0 || pointer !== null) return;
+                pointer = e.pointerId;
+                handle.setPointerCapture(pointer);
+                start(e.clientX, e.clientY, e.shiftKey, e.altKey);
+                e.preventDefault();
+              }
+              function moving(e) {
+                if(e.pointerId === pointer) move(e.clientX,e.clientY,e.shiftKey,e.altKey);
+              }
+              const up = e => stop(e,false), aborted = e => stop(e,true);
+              function key(e) {
+                if(pointer === null && e.target !== input) return;
+                if(e.key === 'Escape') { aborted(e); input.value = input.getAttribute('data-committed-value') || input.value; e.preventDefault(); }
+                if(e.key === 'Enter' && e.target === input) { input.dispatchEvent(new Event('change',{bubbles:true})); e.preventDefault(); }
+              }
+              function blurred() { if(pointer !== null) aborted({}); }
+              handle.addEventListener('pointerdown',down);
+              handle.addEventListener('pointermove',moving);
+              handle.addEventListener('pointerup',up);
+              handle.addEventListener('pointercancel',aborted);
+              handle.addEventListener('lostpointercapture',aborted);
+              window.addEventListener('blur',blurred);
+              document.addEventListener('keydown',key);
+              return function() {
+                blurred();
+                handle.removeEventListener('pointerdown',down);
+                handle.removeEventListener('pointermove',moving);
+                handle.removeEventListener('pointerup',up);
+                handle.removeEventListener('pointercancel',aborted);
+                handle.removeEventListener('lostpointercapture',aborted);
+                window.removeEventListener('blur',blurred);
+                document.removeEventListener('keydown',key);
+              };
+            })(""", fieldLabelNode, ",", inputNode, ",", startCallback, ",", moveCallback, ",", endCallback, ",", cancelCallback, ");"].}
+          onCleanup(proc() = cleanup())
+        var fallbackHandles = @[labelNode]
+        when defined(js):
+          var browserHandle = false
+          {.emit: [browserHandle, " = typeof ", fieldLabelNode, ".addEventListener === 'function';"].}
+          if not browserHandle: fallbackHandles.add fieldLabelNode
+        else: fallbackHandles.add fieldLabelNode
+        for handle in fallbackHandles:
+            r.addPointerListener(handle, "mousedown", scrubStart)
+            r.addPointerListener(handle, "mousemove", applyScrub)
+            r.addPointerListener(handle, "mouseup", scrubEnd)
+            r.addEventListener(handle, "pointercancel", cancelScrub)
 
       of prkColor:
         var swatchNode: E
@@ -1280,16 +1446,42 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
 
         let commit = proc() =
           let raw = r.inputValue(hexInput).strip()
-          if raw.len > 0:
-            cfg.colorValue.val = raw
-            commitValue()
+          let normalized = normalizedHexColor(raw)
+          if normalized.len == 0:
+            r.setInputValue(hexInput, cfg.colorValue.val)
+            return
+          let previous = cfg.colorValue.val
+          if normalized == normalizedHexColor(previous): return
+          cfg.colorValue.val = normalized
+          commitValue(proc() =
+            cfg.colorValue.val = previous
+            r.setInputValue(hexInput, previous))
         r.addEventListener(hexInput, "change", commit)
         r.addEventListener(hexInput, "blur", commit)
 
+        literalInput = hexInput
         let colorState = createColorPopoverState()
         discard mountColorPopover(r, valueSlot, swatchNode, colorState,
           proc(): string = cfg.colorValue.val,
           proc(value: string): bool =
+            if not rowAlive: return false
+            let reason = if cfg.readOnlyReason != nil: cfg.readOnlyReason() else: ""
+            if reason.len > 0:
+              colorState.diagnostic.val = "The color edit was refused. " & reason
+              return false
+            if cfg.onAsyncCommitValue != nil:
+              let submittedGeneration = valueSlotGeneration
+              colorState.pending.val = true
+              cfg.onAsyncCommitValue(value, proc(ok: bool) =
+                if not rowAlive or submittedGeneration != valueSlotGeneration: return
+                colorState.pending.val = false
+                if ok:
+                  cfg.colorValue.val = value
+                  colorState.open.val = false
+                  if cfg.onChange != nil: cfg.onChange()
+                else:
+                  colorState.diagnostic.val = "The source color edit was refused.")
+              return false
             let rejected = if cfg.commitRejected != nil: cfg.commitRejected.val else: 0
             # Refusal must not transiently mutate the reactive value: that
             # rebuilds this slot and disposes the still-open error/draft UI.
@@ -1344,9 +1536,10 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
             min_width = "0")
         r.appendChild(choiceWrap, host)
         let onPick = proc(i: int) {.closure.} =
-          if i >= 0 and i < values.len:
+          if rowAlive and i >= 0 and i < values.len and values[i] != cfg.choiceValue.val:
+            let previous = cfg.choiceValue.val
             cfg.choiceValue.val = values[i]
-            commitValue()
+            commitValue(proc() = cfg.choiceValue.val = previous)
         # Segmented strips only fit while their labels do. The container
         # clips rather than scrolls, so an overlong strip does not compress
         # -- it slices the last option mid-word. The grip pilot showed
@@ -1437,6 +1630,7 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
               padding = "0",
               height = "100%")
         r.appendChild(valueSlot, row)
+        literalInput = inputNode
         r.setInputValue(inputNode, cfg.textValue.val)
 
         createRenderEffect proc() =
@@ -1444,10 +1638,17 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
           r.setInputValue(inputNode, v)
 
         let commit = proc() =
-          cfg.textValue.val = r.inputValue(inputNode)
-          commitValue()
+          if not rowAlive: return
+          let value = r.inputValue(inputNode)
+          let previous = cfg.textValue.val
+          if value == previous: return
+          cfg.textValue.val = value
+          commitValue(proc() = cfg.textValue.val = previous)
         r.addEventListener(inputNode, "change", commit)
         r.addEventListener(inputNode, "blur", commit)
+        when defined(js):
+          let textSignal = cfg.textValue
+          {.emit: ["if (typeof ", inputNode, ".addEventListener === 'function') ", inputNode, ".addEventListener('keydown', function(e) { if(e.key === 'Enter') { e.preventDefault(); ", inputNode, ".dispatchEvent(new Event('change', {bubbles:true})); } else if(e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); ", inputNode, ".value = ", textSignal, ".val; } });"].}
 
       of prkBoolean:
         var checkboxNode: E
@@ -1483,13 +1684,12 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
         # could collide with the Nim ``type`` keyword). Apply it via
         # ``setAttribute`` so the rendered DOM is a real checkbox.
         r.setAttribute(checkboxNode, "type", "checkbox")
-        r.setAttribute(checkboxNode, "checked",
-          if cfg.booleanValue.val: "true" else: "false")
-
         createRenderEffect proc() =
           let v = cfg.booleanValue.val
-          r.setAttribute(checkboxNode, "checked",
-            if v: "true" else: "false")
+          if v: r.setAttribute(checkboxNode, "checked", "")
+          else: r.removeAttribute(checkboxNode, "checked")
+          when defined(js):
+            {.emit: [checkboxNode, ".checked = ", v, ";"].}
           r.setAttribute(checkboxNode, "data-property-row-boolean-value",
             if v: "true" else: "false")
 
@@ -1497,7 +1697,17 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
           cfg.booleanValue.val = not cfg.booleanValue.val
           commitValue()
         r.addEventListener(checkboxNode, "click", toggle)
-        r.addEventListener(checkboxNode, "change", toggle)
+
+    # This watcher belongs to the current value-slot subtree. A binding or
+    # selection refresh replaces its inputs even when the readonly reason
+    # stays equal, so a row-level watcher cannot initialize the new controls.
+    if cfg.readOnlyReason != nil and literalInput != nil:
+      createRenderEffect proc() =
+        let readonly = cfg.readOnlyReason().len > 0
+        if readonly: r.setAttribute(literalInput, "readonly", "")
+        else: r.removeAttribute(literalInput, "readonly")
+        when defined(js):
+          {.emit: [literalInput, ".readOnly = ", readonly, ";"].}
 
   # ------------------------------------------------------------------------- #
   #  Build the value slot. When ``bindingReactive`` is supplied the build
@@ -1529,7 +1739,10 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
     createRenderEffect proc() =
       let active = bindingReactive()
       r.clearChildren(valueSlot)
-      buildValueSlot(active)
+      # Initial reads inside control construction belong to each control's
+      # value effects, not to the binding decision. Tracking a numeric draft
+      # here destroys its own captured pointer handle on the first move.
+      untrack(proc() = buildValueSlot(active))
   else:
     buildValueSlot(cfg.binding)
 
@@ -1573,6 +1786,12 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
   #  waits for the next keystroke would look inert.
   # ------------------------------------------------------------------------- #
   if cfg.scopeOptions != nil:
+    # Compound rows may occupy half an inspector column. Keep native source
+    # choices on their own line so their labels/counts cannot squeeze a real
+    # typing/scrubbing control to zero width.
+    r.appendChild(root, scopeSlot)
+    r.setStyle(scopeSlot, "justify-content", "flex-end")
+    r.setStyle(scopeSlot, "width", "100%")
     let scopeOptionsThunk = cfg.scopeOptions
     let rowName = cfg.name
     proc wrappedScopeOptions(): seq[CompactChoiceOption] =
@@ -1621,11 +1840,43 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
         text ""
     r.appendChild(root, messageEl)
     createRenderEffect proc() =
-      let text = messageSignal.val
+      let refusal = messageSignal.val
+      let reason = if cfg.readOnlyReason != nil: cfg.readOnlyReason() else: ""
+      let text = if refusal.len > 0: refusal else: reason
       r.setTextContent(messageNode, text)
       r.setAttribute(messageNode, "data-property-row-message-visible",
         if text.len > 0: "true" else: "false")
       r.setStyle(messageNode, "display", if text.len > 0: "block" else: "none")
+
+  if cfg.readOnlyReason != nil:
+    createRenderEffect proc() =
+      let reason = cfg.readOnlyReason()
+      r.setAttribute(root, "data-property-row-readonly", if reason.len > 0: "true" else: "false")
+      r.setAttribute(root, "data-property-row-readonly-reason", reason)
+    when defined(js):
+      {.emit: ["""(function(root,slot) {
+        if(!slot || !slot.addEventListener) return;
+        function guard(event) {
+          if(root.getAttribute('data-property-row-readonly') !== 'true') return;
+          const target=event.target,closest=selector=>target && target.closest && target.closest(selector);
+          // Disclosure and uncommitted inspection drafts do not edit source.
+          // Their Apply callback independently checks the current owner/reason.
+          if(closest('[data-property-row-swatch]') || closest('[data-color-popover]')) return;
+          if(closest('[data-choice-group-trigger]')) return;
+          if(closest('[data-choice-group-popup]') && event.type==='keydown' && ['ArrowUp','ArrowDown','Home','End','Tab','Escape'].includes(event.key)) return;
+          const input=closest('input,textarea');
+          if(input && input.readOnly) {
+            if(event.type==='pointerdown' || event.type==='click') return;
+            if(event.type==='keydown' && (['ArrowLeft','ArrowRight','Home','End'].includes(event.key) ||
+                ((event.ctrlKey || event.metaKey) && ['a','c'].includes(event.key.toLowerCase())))) return;
+          }
+          if(event.type==='keydown' && ['Tab','Escape'].includes(event.key)) return;
+          event.preventDefault();event.stopImmediatePropagation();
+        }
+        slot.addEventListener('pointerdown',guard,true);slot.addEventListener('click',guard,true);slot.addEventListener('keydown',guard,true);
+        slot.__isonimReadOnlyCleanup=()=>{slot.removeEventListener('pointerdown',guard,true);slot.removeEventListener('click',guard,true);slot.removeEventListener('keydown',guard,true);};
+      })(""",root,",",valueSlot,");"].}
+      onCleanup(proc() = {.emit: ["if (",valueSlot,".__isonimReadOnlyCleanup) ",valueSlot,".__isonimReadOnlyCleanup();"].})
 
   r.appendChild(parent, root)
   result = root

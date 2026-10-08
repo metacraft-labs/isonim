@@ -1474,14 +1474,15 @@ test-dev-shell:
 # Functional inspector popup geometry, focus and private-source acceptance.
 editor-popup-build:
     mkdir -p build/editor-popup
-    nim js --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/editor-popup/editor.js tests/helpers/editor_popup_workspace.nim
+    nim js -d:isonimCatalogOnlyPopup --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/editor-popup/editor.js tests/helpers/editor_popup_workspace.nim
     "${ISONIM_SCENARIO_NODE:-node}" --check build/editor-popup/editor.js
     nim js --path:src --path:. --path:../nim-everywhere/src -o:build/editor-popup/core-owner-hmr.js tests/helpers/core_owner_hmr.nim
     "${ISONIM_SCENARIO_NODE:-node}" --check build/editor-popup/core-owner-hmr.js
 
 test-editor-popup: isonim-review-build editor-popup-build
     nim c -r --out:build/test_editor_color_popover tests/test_editor_color_popover.nim
-    nim js -r --out:build/test_editor_color_popover.js tests/test_editor_color_popover.nim
+    nim js -d:nodejs --out:build/test_editor_color_popover.js tests/test_editor_color_popover.nim
+    python3 tools/run_nim_js_test.py build/test_editor_color_popover.js
     nim c -r --out:build/test_signals_popup tests/test_signals.nim
     nim js -r --out:build/test_signals_popup.js tests/test_signals.nim
     "${ISONIM_SCENARIO_NODE:-node}" tests/test_core_owner_hmr.mjs
@@ -1494,3 +1495,32 @@ test-editor-popup: isonim-review-build editor-popup-build
 test-editor-color-source:
     test -f ../metacraft-web/apps/back-office/src/backoffice_editor/workspace.nim
     nim c -r --path:../metacraft-web/apps/back-office/src --path:../metacraft-web/packages/metacraft-design/src --out:build/test_editor_color_source tests/test_editor_color_source.nim
+
+# Authoritative native-inspector composition; legacy popup tests opt in above.
+editor-inspector-build:
+    mkdir -p build/editor-inspector
+    nim js --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/editor-inspector/editor.js tests/helpers/editor_popup_workspace.nim
+    "${ISONIM_SCENARIO_NODE:-node}" --check build/editor-inspector/editor.js
+
+# Only the accepted C2 unittest units use the semantic JS outcome guard.
+test-editor-c2-headless:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    python3 tests/test_nim_js_guard.py
+    for stem in test_effects test_editor_widget_property_row test_editor_color_popover test_editor_section_fill test_editor_source_scope_row; do
+      nim c -r --out:build/"$stem" tests/"$stem".nim
+      nim js -d:nodejs --out:build/"$stem".js tests/"$stem".nim
+      python3 tools/run_nim_js_test.py build/"$stem".js
+    done
+
+# Genuine temporary source, authenticated native transactions/compiler/preview.
+test-editor-c2-source: isonim-review-build editor-inspector-build
+    "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_fill_readonly_gui.mjs
+    "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_inspector_source_gui.mjs
+
+test-editor-c2-lifetime: isonim-review-build editor-popup-build
+    "${ISONIM_SCENARIO_NODE:-node}" tests/test_core_owner_hmr.mjs
+    "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_popover_geometry.mjs
+    "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_selection_restore_gui.mjs
+
+test-editor-c2: test-editor-c2-headless test-editor-c2-source test-editor-c2-lifetime test-editor-popup

@@ -287,6 +287,47 @@ __ISONIM_SCENE_GRAPH_WALK__
   const fallbackSource = "__ISONIM_SOURCE__";
   const fallbackLine = "__ISONIM_LINE__";
   const editorMode = "__ISONIM_MODE__";
+  const bridgeDocument = document;
+  const bridgeFrame = window.frameElement;
+  const parentListeners = [];
+  let bridgeDisposed = false;
+  let releaseOwner = null;
+  function disposeParentBridge() {
+    if (bridgeDisposed) return;
+    bridgeDisposed = true;
+    for (const [type, listener] of parentListeners)
+      parent.removeEventListener(type, listener);
+    parentListeners.length = 0;
+    window.removeEventListener('pagehide', disposeParentBridge);
+    window.removeEventListener('unload', disposeParentBridge);
+    if (releaseOwner) releaseOwner();
+    if (bridgeFrame && bridgeFrame.__isonimEmbeddedBridgeCleanup === disposeParentBridge)
+      delete bridgeFrame.__isonimEmbeddedBridgeCleanup;
+  }
+  function bindParent(type, callback) {
+    if (bridgeDisposed) return;
+    const listener = function (event) {
+      if (bridgeDisposed || !bridgeFrame || !bridgeFrame.isConnected ||
+          bridgeFrame.__isonimViewDisposed ||
+          bridgeFrame.contentDocument !== bridgeDocument) {
+        disposeParentBridge(); return;
+      }
+      if (!bridgeFrame.getClientRects().length ||
+          parent.getComputedStyle(bridgeFrame).visibility === 'hidden') return;
+      callback(event);
+    };
+    parentListeners.push([type, listener]);
+    parent.addEventListener(type, listener);
+  }
+  if (bridgeFrame) {
+    if (bridgeFrame.__isonimEmbeddedBridgeCleanup)
+      bridgeFrame.__isonimEmbeddedBridgeCleanup();
+    bridgeFrame.__isonimEmbeddedBridgeCleanup = disposeParentBridge;
+    if (parent.__isonimViewCleanup)
+      releaseOwner = parent.__isonimViewCleanup(bridgeFrame, disposeParentBridge);
+  }
+  window.addEventListener('pagehide', disposeParentBridge);
+  window.addEventListener('unload', disposeParentBridge);
   const editorIds = new Set([
     'isonim-editor-hover-label',
     'isonim-editor-selection-handles',
@@ -1008,7 +1049,7 @@ __ISONIM_SCENE_GRAPH_WALK__
   window.addEventListener('resize', function () {
     if (window.__isonimSelectedElement) placeHandles(window.__isonimSelectedElement);
   });
-  parent.addEventListener('isonim-select-preview-ancestor', function (event) {
+  bindParent('isonim-select-preview-ancestor', function (event) {
     if (editorMode === 'view') return;
     const selected = window.__isonimSelectedElement;
     const index = Number(event.detail && event.detail.index);
@@ -1017,7 +1058,7 @@ __ISONIM_SCENE_GRAPH_WALK__
     const target = stack[Math.max(0, Math.min(index, stack.length - 1))];
     if (target) selectElement(target);
   });
-  parent.addEventListener('isonim-select-preview-element-id', function (event) {
+  bindParent('isonim-select-preview-element-id', function (event) {
     if (editorMode === 'view') return;
     const id = String(event.detail && event.detail.id || '');
     if (!id) return;
@@ -1066,7 +1107,7 @@ __ISONIM_SCENE_GRAPH_WALK__
   })();
   // The resolver lives in the head script (see `declarationRuntime`), which
   // runs before this document is painted. This is only the channel.
-  parent.addEventListener('isonim-preview-set-declaration', function (event) {
+  bindParent('isonim-preview-set-declaration', function (event) {
     const d = event.detail || {};
     try {
       window.__isonimSetDeclaration(String(d.id || ''), String(d.path || ''),
@@ -1075,7 +1116,7 @@ __ISONIM_SCENE_GRAPH_WALK__
     } catch (e) {}
   });
 
-  parent.addEventListener('isonim-preview-element-visibility', function (event) {
+  bindParent('isonim-preview-element-visibility', function (event) {
     const id = String(event.detail && event.detail.id || '');
     if (!id) return;
     const target = document.querySelector(
@@ -1090,7 +1131,7 @@ __ISONIM_SCENE_GRAPH_WALK__
       target.style.setProperty('visibility', 'hidden', 'important');
     }
   });
-  parent.addEventListener('isonim-hover-preview-element-id', function (event) {
+  bindParent('isonim-hover-preview-element-id', function (event) {
     if (editorMode === 'view') return;
     const id = String(event.detail && event.detail.id || '');
     document.querySelectorAll('[data-isonim-hovered="true"]').forEach((node) => {

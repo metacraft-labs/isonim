@@ -4,6 +4,8 @@
  * decision peer solely to satisfy daemon startup, because these scenarios make
  * no agent requests; that zero count is asserted. This suite does not prove
  * Harbor integration (official real Harbor scenario E2E remains separate).
+ * This catalog-only attachment preserves genuine legacy preview edits while
+ * native-inspector source writes are proven by the separately registered suites.
  * Focus availability conditions use actual DOM disabled/hidden/inert state;
  * focus/network/listener audits forward native operations without substitutions. Foundation metadata is ordinary fixture data only; the
  * project's genuine read-only permission is explicitly tested as refusal.
@@ -38,7 +40,7 @@ const verifyNativeDeliveries=(events,deliveries)=>{
  }
 };
 const beforeSourceHash=hash(readFileSync(project+'/stories.nim'));
-const proof={bundleSha256:hash(readFileSync(pub+'/editor.js')),sourceRoot:project,cases:[],pageErrors:[],agentRequests:[]};
+const proof={bundleSha256:hash(readFileSync(pub+'/editor.js')),sourceRoot:project,cases:[],pageErrors:[],agentRequests:[],sourceRequests:[]};
 let src=readFileSync(project+'/stories.nim','utf8').replace('button(id = "action",','button(style = "background-color:#112233", id = "action",');
 src=src.replace('var stories = newJArray()',`var stories = newJArray()\nfor i in 0 ..< 100:\n  stories.add(%* {"group": "Card", "name": "long story " & $i, "kind": "component", "documentHtml": card("Ready card")})`);
 src=src.replace('          button(style',`          for i in 0 ..< 100:\n            tdiv(\`data-isonim-element-id\` = "long-layer-" & $i):\n              span(id = "long-text-" & $i, \`data-isonim-element-id\` = "long-text-" & $i, style = "color:#334455"): text "Long layer " & $i\n          button(style`);
@@ -112,7 +114,7 @@ try{
       if(!window.__nativeSelectionIdentities.has(event))window.__nativeSelectionIdentities.set(event,++selectionSerial);
       window.__nativeSelectionEvents.push({eventId:window.__nativeSelectionIdentities.get(event),id:event.detail.elementId});
       window.__actualSelectionEvents.push({id:event.detail.elementId,backgroundColor:event.detail.backgroundColor,before:JSON.parse(window.__popupAcceptance.snapshot())});},true);});
-  page.on('request',request=>{if(new URL(request.url()).pathname.startsWith('/api/agent/'))proof.agentRequests.push({method:request.method(),url:request.url()});});
+  page.on('request',request=>{const pathname=new URL(request.url()).pathname;if(pathname.startsWith('/api/agent/'))proof.agentRequests.push({method:request.method(),url:request.url()});if(pathname==='/api/editor/source/operation')proof.sourceRequests.push(request.postDataJSON());});
   await page.goto(origin);
   await page.waitForFunction(()=>!!window.__popupAcceptance);
   await page.locator('[data-scene-graph-row="action"]').waitFor();
@@ -348,7 +350,13 @@ try{
   const forcedBeforeFocus=await forcedPanelGeometry();
   await layers.evaluate(el=>el.scrollTop=0);
   await page.locator('[data-scene-graph-row]').first().focus();
+  // The preceding Storyboard PageDown animates across forced-colors setup.
+  // Settle that earlier action BEFORE protecting the sibling scroll snapshot.
+  await story.evaluate(el=>new Promise(resolve=>{let previous=el.scrollTop,stable=0;const frame=()=>{const current=el.scrollTop;stable=current===previous?stable+1:0;previous=current;if(stable>=3)resolve();else requestAnimationFrame(frame);};requestAnimationFrame(frame);}));
   const forcedAfterFocus=await forcedPanelGeometry(),forcedStoryTop=forcedAfterFocus.storyTop;
+  // Owning falsifier: a genuine forbidden sibling move after the baseline must
+  // still fail the identical equality below. No outcome/assertion is replaced.
+  if(process.env.ISONIM_POPUP_SCROLL_FALSIFIER==='1')await story.evaluate(el=>el.scrollTop+=1);
   await page.keyboard.press('PageDown');
   await page.waitForFunction(()=>document.querySelector('[data-scene-graph-rows]').scrollTop>0);
   assert.equal(await story.evaluate(el=>el.scrollTop),forcedStoryTop,'Forced-colors Layers keyboard scroll leaves Storyboard fixed');
@@ -412,6 +420,72 @@ try{
   // fixed positioning isolates anchor geometry without replacing the renderer.
   const literal=page.locator('[data-property-row-swatch]').first();
   const originalStyle=await literal.getAttribute('style');
+  await page.evaluate(()=>window.__popupAcceptance.readOnly(true));
+  const readonlyRow=literal.locator('xpath=ancestor::*[@data-property-row][1]');
+  assert.equal(await readonlyRow.getAttribute('data-property-row-readonly'),'true');
+  const readonlyInput=readonlyRow.locator('[data-property-row-input]').first();
+  assert(await readonlyInput.evaluate(el=>el.readOnly));
+  const inspectBefore=await page.evaluate(()=>window.__popupAcceptance.snapshot());
+  proof.readonlyObserverAudit={before:JSON.parse(await page.evaluate(()=>window.__popupAcceptance.observerDetails()))};
+  const inspectValue=await readonlyInput.inputValue();
+  const inspectRequests=proof.sourceRequests.length;
+  await page.context().grantPermissions(['clipboard-read','clipboard-write'],{origin});
+  await readonlyInput.click();
+  assert(await readonlyInput.evaluate(el=>el===document.activeElement));
+  await page.keyboard.press('ControlOrMeta+A');
+  assert.deepEqual(await readonlyInput.evaluate(el=>[el.selectionStart,el.selectionEnd]),[0,inspectValue.length]);
+  await page.keyboard.press('ControlOrMeta+C');
+  assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),inspectValue);
+  for(const key of ['ArrowLeft','ArrowRight','Home','End','ArrowUp','ArrowDown']) await page.keyboard.press(key);
+  assert.equal(await readonlyInput.inputValue(),inspectValue);
+
+  const readonlyNumeric=page.locator('[data-property-row-kind="numeric"][data-property-row-readonly="true"]:visible').first();
+  await readonlyNumeric.scrollIntoViewIfNeeded();
+  const numericInput=readonlyNumeric.locator('[data-property-row-input]');
+  const numericValue=await numericInput.inputValue();
+  await numericInput.focus();
+  for(const key of ['ArrowUp','ArrowDown']) await page.keyboard.press(key);
+  assert.equal(await numericInput.inputValue(),numericValue);
+  const readonlyUnit=readonlyNumeric.locator('[data-property-row-unit]');
+  assert.equal(await readonlyUnit.count(),1);
+  const unitText=await readonlyUnit.innerText();
+  await readonlyUnit.focus();
+  for(const key of ['Enter','Space']) await page.keyboard.press(key);
+  assert.equal(await readonlyUnit.innerText(),unitText);
+  const readonlyScrubber=readonlyNumeric.locator('[data-property-row-field-label]');
+  await readonlyScrubber.scrollIntoViewIfNeeded();
+  const scrubBox=await readonlyScrubber.boundingBox();
+  assert(scrubBox && scrubBox.width>0 && scrubBox.height>0);
+  await page.mouse.move(scrubBox.x+scrubBox.width/2,scrubBox.y+scrubBox.height/2);
+  await page.mouse.down();await page.mouse.move(scrubBox.x+scrubBox.width/2+30,scrubBox.y+scrubBox.height/2,{steps:4});await page.mouse.up();
+  assert.equal(await numericInput.inputValue(),numericValue);
+  assert.equal(await page.evaluate(()=>window.__popupAcceptance.snapshot()),inspectBefore);
+  assert.equal(proof.sourceRequests.length,inspectRequests);
+  for(const activation of ['pointer','Enter','Space']){
+    await literal.scrollIntoViewIfNeeded();
+    if(activation==='pointer') await literal.click();
+    else {await literal.focus();await page.keyboard.press(activation);}
+    await page.locator('[data-color-popover-open="true"]').waitFor();
+    const openInspectBefore=await page.evaluate(()=>window.__popupAcceptance.snapshot());
+    proof.readonlyObserverAudit.open=JSON.parse(await page.evaluate(()=>window.__popupAcceptance.observerDetails()));
+    const inspectDraft=page.locator('[data-color-popover-open="true"] [data-color-popover-input]');
+    assert(!(await inspectDraft.evaluate(el=>el.readOnly)));
+    await inspectDraft.fill('#AABBCC');
+    await page.locator('[data-color-popover-open="true"] [data-color-popover-apply]').click();
+    assert.equal(await inspectDraft.inputValue(),'#AABBCC');
+    assert((await page.locator('[data-color-popover-open="true"] [data-color-popover-error]').innerText()).includes('refused'));
+    assert.equal(await readonlyInput.inputValue(),inspectValue);
+    assert.equal(await page.evaluate(()=>window.__popupAcceptance.snapshot()),openInspectBefore);
+    assert.equal(proof.sourceRequests.length,inspectRequests,'Readonly inspection must not submit a native source edit');
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('[data-color-popover-open="true"]').count(),0);
+    assert(await literal.evaluate(el=>el===document.activeElement));
+    proof.readonlyObserverAudit.after=JSON.parse(await page.evaluate(()=>window.__popupAcceptance.observerDetails()));
+    assert.equal(await page.evaluate(()=>window.__popupAcceptance.snapshot()),inspectBefore);
+  }
+  proof.cases.push({width,name:'readonly color pointer and keyboard inspection, real clipboard copy and refused draft Apply preserve value and history'});
+  await page.evaluate(()=>window.__popupAcceptance.readOnly(false));
+
   for(const [edge,x,y] of [['top-left',1,1],['top-right',width-18,1],['bottom-left',1,881],['bottom-right',width-18,881]]){
     await literal.evaluate((el,{x,y})=>{el.style.position='fixed';el.style.left=x+'px';el.style.top=y+'px';el.style.zIndex='1400';},{x,y});
     await literal.click();
@@ -551,6 +625,15 @@ try{
   assert(await page.evaluate(()=>document.activeElement===document.body),'Selection changes invalidate delayed focus restoration');
   assert(await page.evaluate(()=>window.__popupAcceptance.select('action')));
   await page.locator('[data-fill-row-linked-chip]').waitFor();
+  // Conditional controls remain real mounted scope menus. Reveal their actual
+  // owning configuration before sweeping every summary; no hidden row is skipped.
+  const conditionalBefore=JSON.parse(await page.evaluate(()=>window.__popupAcceptance.snapshot())).undoCount;
+  await page.locator('[data-layout-mode="vertical"]').click();
+  await page.locator('[data-layout-gap-host]').waitFor({state:'visible'});
+  const perCornerToggle=page.locator('[data-property-row="per-corner"] input[type="checkbox"]');
+  assert.equal(await perCornerToggle.count(),1);await perCornerToggle.check();assert(await perCornerToggle.isChecked());
+  await page.locator('[data-appearance-percorner-host]').waitFor({state:'visible'});
+  assert.equal(JSON.parse(await page.evaluate(()=>window.__popupAcceptance.snapshot())).undoCount,conditionalBefore,'Disclosure configuration creates no property edit');
   const summaries=page.locator('.editor-inspector summary');const summaryCount=await summaries.count();assert(summaryCount>0);
   for(let index=0;index<summaryCount;index++){
     const trigger=summaries.nth(index);await trigger.scrollIntoViewIfNeeded();await trigger.focus();await page.keyboard.press('Enter');
@@ -729,6 +812,36 @@ try{
   const readerObserversBefore=await page.evaluate(()=>window.__actualUiResources().observers.length);
   await page.evaluate(()=>{
     window.__actualReaderModel=[...window.__isonimSceneGraphReaderRuntime.records.keys()][0];
+    window.__actualModelOwnerAudit=()=>{
+      const model=window.__actualReaderModel;
+      const signals={selected:model.inspector.selectedElement,preview:model.preview.current.signal,reload:model.livePreviewReloadGeneration};
+      const memoPaths=new Map(),seen=new Set();
+      const visit=(value,path,depth=0)=>{
+        if(!value || typeof value!=='object' || seen.has(value) || depth>8)return;
+        seen.add(value);
+        if(value.computation && (value.signal || value.observers)){
+          memoPaths.set(value.computation,[...(memoPaths.get(value.computation)||[]),path]);return;
+        }
+        for(const [key,child] of Object.entries(value)){
+          if(['m_type','observers','observerSlots','sources','sourceSlots','owned','owner','fn','cleanups','contextTable','computation'].includes(key))continue;
+          if(key==='value' && value.observers)continue;
+          if(Array.isArray(child) && child.every(item=>!item || typeof item!=='object'))continue;
+          visit(child,path+'.'+key,depth+1);
+        }
+      };
+      visit(model,'EditorVM');
+      const describe=node=>{
+        const fn=node?.fn?.ClP_0||node?.fn;
+        const match=fn && String(fn).match(/filename:\s*"([^"]+)"/);
+        return {name:fn?.name||null,file:match?.[1]||null};
+      };
+      return Object.fromEntries(Object.entries(signals).map(([key,signal])=>[key,[...new Set(signal.observers)].map(node=>{
+        const owners=[];for(let owner=node.owner;owner;owner=owner.owner)owners.push(describe(owner));
+        const callback=node.fn?.ClE_0?.fn0;
+        return {computation:describe(node),callback:callback?describe({fn:callback}):null,
+          memoPaths:memoPaths.get(node)||[],owners,sourceEdges:node.sources.length};
+      }).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)))]));
+    };
     window.__actualGraphAudit=()=>{
       const result={};
       for(const key of ['selectedElement','designSystemSchema','propertyBindings','properties']){
@@ -799,13 +912,35 @@ try{
   assert.deepEqual(lifecycle.resources.listeners,[],'Whole UI disposal removes actual parent UI registrations');
   assert.deepEqual(lifecycle.resources.observers,[],'Whole UI disposal disconnects actual UI observers');
   assert.deepEqual(lifecycle.resources.pending,[],'Whole UI disposal cancels actual queued UI work and polling');
+  const stateAfterUnmount=await page.evaluate(()=>window.__popupAcceptance.snapshot());
+  // The original oracle covers retained VM state. M3's additional diagnostic
+  // observer counts describe mounted UI ownership and must decrease on disposal.
+  const persistentState=raw=>{const state=JSON.parse(raw);delete state.reactiveObservers;return state;};
+  assert.deepEqual(persistentState(stateAfterUnmount),persistentState(stateBefore));
+  const mountedGraph=JSON.parse(stateBefore).reactiveObservers,disposedGraph=JSON.parse(stateAfterUnmount).reactiveObservers;
+  assert.equal(disposedGraph.preview,0,'Disposed UI retains no preview subscriptions');
+  assert(disposedGraph.selected<mountedGraph.selected,'Actual selected-element UI subscriptions are disposed');
+  assert(disposedGraph.reload<mountedGraph.reload,'Actual UI reload subscriptions are disposed');
+  assert(Object.values(await page.evaluate(()=>window.__actualGraphAudit())).every(value=>value.bad===0),'Retained VM subscriptions still have valid reciprocal slots');
+  const modelOwnerBaseline=await page.evaluate(()=>window.__actualModelOwnerAudit());
+  proof.modelOwnerAudits??=[];proof.modelOwnerAudits.push({width,phase:'first settled unmount',graph:modelOwnerBaseline});
+  assert.equal(modelOwnerBaseline.preview.length,0);
+  for(const node of [...modelOwnerBaseline.selected,...modelOwnerBaseline.reload]){
+    const lineage=[node.computation,...(node.callback?[node.callback]:[]),...node.owners];
+    assert(node.computation.name,'A retained computation must still be live');
+    assert(lineage.every(owner=>!owner.file || !/\/editor\/views\/|\/dsl\/|\/dom\//.test(owner.file)),'Disposed UI computations and their owned children cannot remain subscribed');
+    assert(node.memoPaths.length>0,'Retained memo identity is held by an actual VM field, excluding observer/owner graphs');
+    assert(lineage.some(owner=>owner.file && /\/editor\/(viewmodels|source_browser|streaming_preview)\.nim$/.test(owner.file)),'Every retained subscription has actual model/source callback provenance');
+  }
+
+
   assert.equal(await page.evaluate(()=>window.__isonimSceneGraphReaderRuntime.records.size),0,'Last real mount releases its parent reader record');
   assert(await page.evaluate(()=>window.__readerControl.closed&&window.__readerControl.doc===null&&window.__readerControl.roots.size===0),'Disposed reader retains no document/observer/root');
   await page.mouse.move(dragRect.x+70,dragRect.y+50);
   await page.evaluate(()=>window.dispatchEvent(new CustomEvent('isonim-preview-element-hovered',{detail:{id:'stale-owner-hover'}})));
   await page.waitForTimeout(800);
   assert.deepEqual(await page.evaluate(()=>window.__lifecycleFocusAudit.attempts),[],'Disposed shortcuts/popovers cannot restore focus later');
-  assert.equal(await page.evaluate(()=>window.__popupAcceptance.snapshot()),stateBefore);
+  assert.equal(await page.evaluate(()=>window.__popupAcceptance.snapshot()),stateAfterUnmount,'Stale UI events cannot mutate retained VM state or resurrect subscriptions');
   await page.evaluate(()=>{HTMLElement.prototype.focus=window.__lifecycleFocusAudit.focus;delete window.__lifecycleFocusAudit;});
   assert(await page.evaluate(()=>window.__popupAcceptance.remount()));assert(await page.evaluate(()=>window.__popupAcceptance.sameClient()));
   assert.equal(await page.locator('[data-isonim-editor]').count(),1);
@@ -819,6 +954,10 @@ try{
   const remountedListeners=await page.evaluate(()=>window.__actualUiResources().listeners.map(({type,target,name})=>({type,target,name})).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b))));
   assert(await page.evaluate(()=>window.__popupAcceptance.unmount()));
   assert.deepEqual(await page.evaluate(()=>window.__actualUiResources()),{listeners:[],pending:[],observers:[]});
+  const repeatedModelOwnerBaseline=await page.evaluate(()=>window.__actualModelOwnerAudit());
+  assert.deepEqual(repeatedModelOwnerBaseline,modelOwnerBaseline,'Repeated mount/unmount retains exactly the same model-owned graph');
+  proof.modelOwnerAudits.push({width,phase:'repeated settled unmount',graph:repeatedModelOwnerBaseline});
+
   assert(await page.evaluate(()=>window.__popupAcceptance.remount()));
   const repeatedListeners=await page.evaluate(()=>window.__actualUiResources().listeners.map(({type,target,name})=>({type,target,name})).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b))));
   assert.deepEqual(repeatedListeners,remountedListeners,'Remount has exactly one identical UI listener roster');
