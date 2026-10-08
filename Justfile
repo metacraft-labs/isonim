@@ -400,6 +400,10 @@ isonim-review-build:
     cp build/bin/isonim-review build/bin/isonim
     @echo "Built: build/bin/isonim-review and build/bin/isonim"
 
+# Read-only metadata and recovery across genuine native compiler transactions.
+test-editor-source-metadata: isonim-review-build
+    python3 tests/test_editor_source_metadata_transactions.py
+
 # Run REV-M1's design-review unit + integration tests.
 test-design-review: isonim-review-build
     nim c -r tests/test_design_review_brief_format.nim

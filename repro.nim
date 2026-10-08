@@ -841,6 +841,13 @@ package isonim:
       actionId = "isonim.tool_build.isonim_review",
       extraInputs = @["src", "tools", "db", "isonim.nimble"])
     testBuildActions.add(reviewToolEdge.action)
+    let sourceMetadataEdge = sh.shell(
+      command = "python3 tests/test_editor_source_metadata_transactions.py", cacheable = false,
+      actionId = "isonim.source_metadata_execute",
+      after = @[reviewToolEdge.action],
+      extraInputs = @["tests/test_editor_source_metadata_transactions.py", "tests/fixtures/editor_inspector_project",
+        "tools/build_source_catalog.py", "tools/editor_server.py", "tools/isonim_review/source_project_lock.nim", drReviewBin])
+    testExecuteActions.add(sourceMetadataEdge)
 
     let controlCliEdge = sh.shell(
       command = "cp build/bin/isonim-review build/bin/isonim",

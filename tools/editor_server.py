@@ -288,27 +288,37 @@ class EditorHandler(http.server.SimpleHTTPRequestHandler):
             manifest_path = self.source_root / ".isonim/source-project.json"
             if not manifest_path.exists() and not manifest_path.is_symlink():
                 return self.send_error(404, "Project source bridge unavailable")
-            try:
-                manifest = json.loads(manifest_path.read_text())
-                catalog_path = (self.source_root / manifest["catalog"]).resolve()
-                if not catalog_path.is_relative_to(self.source_root):
-                    raise ValueError("Catalog path escapes workspace")
-                output = {"catalog": json.loads(catalog_path.read_text()),
-                    "manifest": public_source_manifest(manifest)}
-                if "editableStyles" in manifest or "editableStyleSources" in manifest:
-                    if not self.source_binary:
-                        raise ValueError("Native editable source worker unavailable")
-                    described = subprocess.run([str(self.source_binary), "source-project", str(self.source_root), "--describe"],
-                        cwd=self.source_root, capture_output=True, text=True, timeout=5)
-                    metadata = json.loads(described.stdout)
-                    if described.returncode or not metadata.get("ok"):
-                        raise ValueError(metadata.get("diagnostic", "Invalid editable source metadata"))
-                    output["editableStyles"] = metadata["editableStyles"]
-                status = 200
-            except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
-                output = {"ok": False, "diagnostic": "Source project contract is invalid: " + str(error)}
-                status = 400
-            data = json.dumps(output).encode()
+            # Protect the complete manifest/catalog/capability snapshot, not
+            # only the later describe call. Native snapshot also owns the OS
+            # project lock, so another native worker cannot publish mid-read.
+            with self.source_lock:
+                try:
+                    if self.source_binary:
+                        described = subprocess.run([str(self.source_binary), "source-project", str(self.source_root), "--snapshot"],
+                            cwd=self.source_root, capture_output=True, text=True, timeout=5)
+                        snapshot = json.loads(described.stdout)
+                        if described.returncode or not snapshot.get("ok"):
+                            raise ValueError(snapshot.get("diagnostic", "Invalid editable source metadata"))
+                        manifest = snapshot["manifest"]
+                        output = {"catalog": snapshot["catalog"], "manifest": public_source_manifest(manifest)}
+                        if "editableStyles" in manifest or "editableStyleSources" in manifest:
+                            output["editableStyles"] = snapshot["editableStyles"]
+                    else:
+                        # Catalog-only consumers expose no native writer. Keep
+                        # their existing read contract; editable projects require
+                        # the native transaction/snapshot boundary.
+                        manifest = json.loads(manifest_path.read_text())
+                        if "editableStyles" in manifest or "editableStyleSources" in manifest:
+                            raise ValueError("Native editable source worker unavailable")
+                        catalog_path = (self.source_root / manifest["catalog"]).resolve()
+                        if not catalog_path.is_relative_to(self.source_root):
+                            raise ValueError("Catalog path escapes workspace")
+                        output = {"catalog": json.loads(catalog_path.read_text()), "manifest": public_source_manifest(manifest)}
+                    status = 200
+                except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+                    output = {"ok": False, "diagnostic": "Source project contract is invalid: " + str(error)}
+                    status = 400
+                data = json.dumps(output).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(data)))

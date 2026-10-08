@@ -3,6 +3,7 @@
 ## The manifest belongs to the project, never to an RPC caller. Build stdout is
 ## a rendered catalog JSON document; failed builds never publish a new catalog.
 import std/[json, os, osproc, strutils, tempfiles, sha1]
+import source_project_lock
 import isonim/core/[signals, owner]
 import isonim/editor/[control, source_catalog, workspace, css_patch, viewmodels, source_style_bindings, source_style_values]
 
@@ -66,14 +67,23 @@ proc cmdSourceProject*(args: seq[string]): int =
     return 2
   try:
     let root = args[0].absolutePath.normalizedPath
+    let transactionLock = acquireSourceProjectLock(root)
+    defer: transactionLock.release()
+    if args[1] in ["--describe", "--snapshot"]:
+      if fileExists(safePath(root, ".isonim/source-transaction.json")):
+        raise newException(ValueError, "Interrupted source transaction requires explicit recovery.")
+      let manifest = parseFile(safePath(root, ".isonim/source-project.json"))
+      var response = %* {"ok": true, "editableStyles": describeEditableStyles(root, manifest)}
+      if args[1] == "--snapshot":
+        response["manifest"] = manifest
+        response["catalog"] = parseFile(safePath(root, manifest{"catalog"}.getStr()))
+      echo $response
+      return 0
     recoverSourceTransaction(root)
     if args[1] == "--recover":
       echo $(%* {"ok": true})
       return 0
     let manifest = parseFile(safePath(root, ".isonim/source-project.json"))
-    if args[1] == "--describe":
-      echo $(%* {"ok": true, "editableStyles": describeEditableStyles(root, manifest)})
-      return 0
     let request = parseFile(args[1])
     let inspectorEdit = request{"command"}.getStr() == "inspector-edit"
     var literalMap: JsonNode
