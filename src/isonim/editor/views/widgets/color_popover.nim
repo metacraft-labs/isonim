@@ -13,6 +13,8 @@ type ColorPopoverState* = ref object
   draft*: Signal[string]
   diagnostic*: Signal[string]
   pending*: Signal[bool]
+  hue*, saturation*, brightness*: Signal[float]
+  projectedDraft: string
 
 func normalizedHexColor*(raw: string): string =
   let value = raw.strip()
@@ -83,15 +85,72 @@ func hsvChannels*(hue, saturation, value: float; alpha = 255): ColorChannels =
 
 proc createColorPopoverState*(): ColorPopoverState =
   ColorPopoverState(open: createSignal(false), draft: createSignal(""),
-    diagnostic: createSignal(""), pending: createSignal(false))
+    diagnostic: createSignal(""), pending: createSignal(false),
+    hue: createSignal(0.0), saturation: createSignal(0.0), brightness: createSignal(0.0))
+
+type ColorDraftSnapshot* = object
+  draft*: string
+  hue*, saturation*, brightness*: float
+
+proc captureColorDraft*(state: ColorPopoverState): ColorDraftSnapshot =
+  ColorDraftSnapshot(draft: state.draft.val, hue: state.hue.val,
+    saturation: state.saturation.val, brightness: state.brightness.val)
+
+proc restoreColorDraft*(state: ColorPopoverState; snapshot: ColorDraftSnapshot) =
+  batch(proc() =
+    state.projectedDraft = snapshot.draft
+    state.hue.val = snapshot.hue
+    state.saturation.val = snapshot.saturation
+    state.brightness.val = snapshot.brightness
+    state.draft.val = snapshot.draft)
+
+proc setColorHsv*(state: ColorPopoverState; hue, saturation, brightness: float; alpha: int) =
+  ## Coordinates retain user intent through black/grey and RGB quantization.
+  for coordinate in [hue, saturation, brightness]:
+    if classify(coordinate) in {fcNan, fcInf, fcNegInf}: return
+  batch(proc() =
+    state.hue.val = clamp(hue, 0, 359)
+    state.saturation.val = clamp(saturation, 0, 1)
+    state.brightness.val = clamp(brightness, 0, 1)
+    let value = channelsHex(hsvChannels(state.hue.val, state.saturation.val,
+      state.brightness.val, alpha))
+    state.projectedDraft = value
+    state.draft.val = value)
+
+proc syncColorCoordinates*(state: ColorPopoverState) =
+  let raw = state.draft.val
+  if raw == state.projectedDraft: return
+  state.projectedDraft = raw
+  if normalizedSourceColor(raw).len == 0: return
+  let hsv = colorHsv(colorChannels(raw))
+  batch(proc() =
+    if hsv.saturation > 0: state.hue.val = hsv.hue
+    state.saturation.val = hsv.saturation
+    state.brightness.val = hsv.value)
+
+proc adjustColorPlane*(state: ColorPopoverState; key: string): bool =
+  if not state.open.val or state.pending.val: return false
+  var saturation = state.saturation.val
+  var brightness = state.brightness.val
+  case key
+  of "ArrowLeft": saturation -= 0.01
+  of "ArrowRight": saturation += 0.01
+  of "ArrowUp": brightness += 0.01
+  of "ArrowDown": brightness -= 0.01
+  else: return false
+  state.setColorHsv(state.hue.val, saturation, brightness, colorChannels(state.draft.val).alpha)
+  state.diagnostic.val = ""
+  true
 
 proc mountColorPopover*[R, E](r: R; parent, invoker: E;
     state: ColorPopoverState; current: proc(): string;
     commit: proc(value: string): bool): E =
   var rootNode, inputNode, errorNode, previewNode, applyNode, cancelNode: E
-  var planeNode, hueNode, alphaNode, channelHost: E
+  var planeNode, markerNode, hueNode, alphaNode, channelHost: E
   var channelInputs: array[4, E]
-  let hue = createSignal(0.0)
+  let hue = state.hue
+  var canceledRangeInput = false
+  var mountedActive = true
   let root = ui(r):
     tdiv(ref = rootNode, `data-color-popover` = "true", role = "dialog",
          `aria-label` = "Edit color", display = "none", width = "280px",
@@ -104,9 +163,16 @@ proc mountColorPopover*[R, E](r: R; parent, invoker: E;
            min_height = "36px", border_radius = "4px")
       tdiv(ref = planeNode, `data-color-plane` = "true", tabindex = "0",
            role = "slider", `aria-label` = "Color saturation and brightness",
-           height = "130px", min_height = "130px", flex_shrink = "0",
-           border_radius = "4px", cursor = "crosshair",
-           touch_action = "none")
+           `aria-description` = "Left and right adjust saturation; up and down adjust brightness by one percent.",
+           `aria-keyshortcuts` = "ArrowLeft ArrowRight ArrowUp ArrowDown",
+           width = "100%", flex_shrink = "0",
+           position = "relative", border_radius = "4px", cursor = "crosshair",
+           touch_action = "none"):
+        tdiv(ref = markerNode, `data-color-plane-marker` = "true", `aria-hidden` = "true",
+             position = "absolute", width = "12px", height = "12px",
+             border = "2px solid #FFFFFF", border_radius = "50%",
+             box_shadow = "0 0 0 1px #000000, inset 0 0 0 1px #000000",
+             transform = "translate(-50%, -50%)", pointer_events = "none")
       input(ref = hueNode, `type` = "range", min = "0", max = "359", step = "1",
             `data-color-hue` = "true", `aria-label` = "Hue", width = "100%")
       input(ref = alphaNode, `type` = "range", min = "0", max = "100", step = "1",
@@ -127,8 +193,9 @@ proc mountColorPopover*[R, E](r: R; parent, invoker: E;
              `data-color-popover-apply` = "true", padding = "6px 12px",
              background_color = "#7C7AED", border_radius = "4px", cursor = "pointer"):
           text "Apply"
+  r.setStyle(planeNode, "aspect-ratio", "1 / 1")
   proc updateChannel(index: int; node: E) =
-    if not state.open.val or state.pending.val: return
+    if not mountedActive or not state.open.val or state.pending.val: return
     let raw = r.inputValue(node).strip()
     try:
       let number = parseInt(raw)
@@ -140,7 +207,10 @@ proc mountColorPopover*[R, E](r: R; parent, invoker: E;
       of 1: channels.green = number
       of 2: channels.blue = number
       else: channels.alpha = int(round(number.float * 255 / 100))
-      state.draft.val = channelsHex(channels)
+      if index == 3:
+        state.setColorHsv(hue.val, state.saturation.val, state.brightness.val, channels.alpha)
+      else:
+        state.draft.val = channelsHex(channels)
       state.diagnostic.val = ""
     except ValueError:
       state.diagnostic.val = if index == 3: "Opacity must be from 0 to 100%."
@@ -158,38 +228,70 @@ proc mountColorPopover*[R, E](r: R; parent, invoker: E;
     r.addEventListener(node, "change", proc() = updateChannel(index, node))
   for index, label in ["Red", "Green", "Blue", "Alpha %"]: addChannel(index, label)
   proc setHsv(saturation, brightness: float) =
-    if state.open.val and not state.pending.val:
-      state.draft.val = channelsHex(hsvChannels(hue.val, saturation, brightness,
-        colorChannels(state.draft.val).alpha))
+    if mountedActive and state.open.val and not state.pending.val:
+      state.setColorHsv(hue.val, saturation, brightness, colorChannels(state.draft.val).alpha)
       state.diagnostic.val = ""
   r.addEventListener(hueNode, "input", proc() =
-    if not state.open.val or state.pending.val: return
+    if canceledRangeInput:
+      r.setInputValue(hueNode, $int(round(hue.val)))
+      return
+    if not mountedActive or not state.open.val or state.pending.val: return
     try:
       let nextHue = parseFloat(r.inputValue(hueNode))
       if classify(nextHue) in {fcNan, fcInf, fcNegInf} or nextHue < 0 or nextHue > 359: return
-      let hsv = colorHsv(colorChannels(state.draft.val))
-      batch(proc() =
-        hue.val = nextHue
-        setHsv(hsv.saturation, hsv.value))
+      state.setColorHsv(nextHue, state.saturation.val, state.brightness.val,
+        colorChannels(state.draft.val).alpha)
     except ValueError: discard)
-  r.addEventListener(alphaNode, "input", proc() = updateChannel(3, alphaNode))
+  r.addEventListener(alphaNode, "input", proc() =
+    if canceledRangeInput:
+      r.setInputValue(alphaNode, $int(round(colorChannels(state.draft.val).alpha.float * 100 / 255)))
+    else: updateChannel(3, alphaNode))
   when defined(js):
     let planeChange = proc(saturation, brightness: float) = setHsv(saturation, brightness)
-    let planeCancel = proc(original: cstring) = state.draft.val = $original
-    let currentDraft = proc(): cstring = cstring(state.draft.val)
+    let planeCancel = proc(original: ColorDraftSnapshot) = state.restoreColorDraft(original)
+    let currentDraft = proc(): ColorDraftSnapshot = state.captureColorDraft()
+    let planeKey = proc(key: cstring): bool = state.adjustColorPlane($key)
     var removePointerListeners: proc() {.closure.}
     {.emit: ["if (typeof ", planeNode, ".addEventListener === 'function') {\n",
-      "const plane = ", planeNode, "; let active = null, before = '';\n",
+      "const plane = ", planeNode, "; let active = null, before = null;\n",
       "function move(e) { if(active !== e.pointerId) return; const b=plane.getBoundingClientRect(); ",
       planeChange, "(Math.max(0,Math.min(1,(e.clientX-b.left)/b.width)), Math.max(0,Math.min(1,1-(e.clientY-b.top)/b.height))); }\n",
-      "function down(e) { if(e.button!==0) return; e.preventDefault(); active=e.pointerId; before=", currentDraft, "(); plane.setPointerCapture(active); move(e); }\n",
+      "function down(e) { if(e.button!==0) return; e.preventDefault(); plane.focus({preventScroll:true}); active=e.pointerId; before=", currentDraft, "(); plane.setPointerCapture(active); move(e); }\n",
       "function finish(e) { if(active!==e.pointerId) return; move(e); const id=active; active=null; if(plane.hasPointerCapture(id)) plane.releasePointerCapture(id); }\n",
       "function cancel() { if(active===null) return; const id=active; active=null; ", planeCancel, "(before); if(plane.hasPointerCapture(id)) plane.releasePointerCapture(id); }\n",
-      "function key(e) { if(e.key==='Escape') cancel(); }\n",
-      "plane.addEventListener('pointerdown',down); plane.addEventListener('pointermove',move); plane.addEventListener('pointerup',finish); plane.addEventListener('pointercancel',cancel); plane.addEventListener('lostpointercapture',cancel); window.addEventListener('blur',cancel); window.addEventListener('keydown',key);\n",
-      removePointerListeners, "=function() { cancel(); plane.removeEventListener('pointerdown',down); plane.removeEventListener('pointermove',move); plane.removeEventListener('pointerup',finish); plane.removeEventListener('pointercancel',cancel); plane.removeEventListener('lostpointercapture',cancel); window.removeEventListener('blur',cancel); window.removeEventListener('keydown',key); }; }"].}
+      "function key(e) { if(e.key==='Escape' && active!==null) { cancel(); e.preventDefault(); e.stopImmediatePropagation(); } }\n",
+      "function planeKeys(e) { if(e.key==='Escape' && active!==null) { cancel(); e.preventDefault(); e.stopImmediatePropagation(); return; } if(", planeKey, "(e.key)) { e.preventDefault(); e.stopImmediatePropagation(); } }\n",
+      "plane.addEventListener('keydown',planeKeys); plane.addEventListener('pointerdown',down); plane.addEventListener('pointermove',move); plane.addEventListener('pointerup',finish); plane.addEventListener('pointercancel',cancel); plane.addEventListener('lostpointercapture',cancel); window.addEventListener('blur',cancel); window.addEventListener('keydown',key,true);\n",
+      removePointerListeners, "=function() { cancel(); plane.removeEventListener('keydown',planeKeys); plane.removeEventListener('pointerdown',down); plane.removeEventListener('pointermove',move); plane.removeEventListener('pointerup',finish); plane.removeEventListener('pointercancel',cancel); plane.removeEventListener('lostpointercapture',cancel); window.removeEventListener('blur',cancel); window.removeEventListener('keydown',key,true); }; }"].}
     onCleanup(proc() =
       if removePointerListeners != nil: removePointerListeners())
+  createRenderEffect proc() =
+    discard state.draft.val
+    untrack(proc() = state.syncColorCoordinates())
+  let trackStyle = r.createElement("style")
+  r.setTextContent(trackStyle, """
+[data-color-popover] input[type=range] { appearance:none; -webkit-appearance:none; height:14px; flex-shrink:0; margin:2px 0; border-radius:7px; cursor:pointer; }
+[data-color-popover] [data-color-hue] { background:linear-gradient(to right,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00); }
+[data-color-popover] input[type=range]::-webkit-slider-runnable-track { height:14px; background:transparent; border-radius:7px; }
+[data-color-popover] input[type=range]::-moz-range-track { height:14px; background:transparent; border-radius:7px; }
+[data-color-popover] input[type=range]::-webkit-slider-thumb { appearance:none; -webkit-appearance:none; width:14px; height:14px; border:2px solid white; border-radius:50%; background:#242633; box-shadow:0 0 0 1px black; }
+[data-color-popover] input[type=range]::-moz-range-thumb { width:10px; height:10px; border:2px solid white; border-radius:50%; background:#242633; box-shadow:0 0 0 1px black; }
+[data-color-popover] input[type=range]:focus-visible, [data-color-popover] [data-color-plane]:focus-visible { outline:2px solid #a5b4fc; outline-offset:2px; }
+""")
+  r.appendChild(rootNode, trackStyle)
+  when defined(js):
+    let captureRange = proc(): ColorDraftSnapshot = state.captureColorDraft()
+    let restoreRange = proc(snapshot: ColorDraftSnapshot) = state.restoreColorDraft(snapshot)
+    var cleanupRanges: proc() {.closure.}
+    {.emit: ["if (typeof ", hueNode, ".addEventListener === 'function') { const nodes=[", hueNode, ",", alphaNode, "]; let active=null, before=null, canceledId=null, generation=0, disposed=false;\n",
+      "function down(e) { if(disposed || e.button!==0) return; generation++; canceledId=null; ", canceledRangeInput, "=false; active={node:e.currentTarget,id:e.pointerId}; before=", captureRange, "(); active.node.setPointerCapture(active.id); }\n",
+      "function finish(e) { if(canceledId===e.pointerId) { canceledId=null; const g=generation; queueMicrotask(()=>{if(!disposed && generation===g) ", canceledRangeInput, "=false;}); return; } if(!active || active.id!==e.pointerId) return; const a=active; active=null; if(a.node.hasPointerCapture(a.id)) a.node.releasePointerCapture(a.id); }\n",
+      "function cancel() { if(!active) return; const a=active; active=null; canceledId=a.id; ", canceledRangeInput, "=true; ", restoreRange, "(before); if(a.node.hasPointerCapture(a.id)) a.node.releasePointerCapture(a.id); }\n",
+      "function key(e) { if(e.key==='Escape' && active) { cancel(); e.preventDefault(); e.stopImmediatePropagation(); } else if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End','PageUp','PageDown'].includes(e.key)) e.stopImmediatePropagation(); }\n",
+      "function escape(e) { if(e.key==='Escape' && active) key(e); } nodes.forEach(n=>{n.addEventListener('pointerdown',down);n.addEventListener('pointerup',finish);n.addEventListener('pointercancel',cancel);n.addEventListener('lostpointercapture',cancel);n.addEventListener('keydown',key);});window.addEventListener('blur',cancel);window.addEventListener('keydown',escape,true);document.addEventListener('pointerup',finish,true);\n",
+      cleanupRanges, "=function(){disposed=true;generation++;cancel();nodes.forEach(n=>{n.removeEventListener('pointerdown',down);n.removeEventListener('pointerup',finish);n.removeEventListener('pointercancel',cancel);n.removeEventListener('lostpointercapture',cancel);n.removeEventListener('keydown',key);});window.removeEventListener('blur',cancel);window.removeEventListener('keydown',escape,true);document.removeEventListener('pointerup',finish,true);}; }"].}
+    onCleanup(proc() =
+      if cleanupRanges != nil: cleanupRanges())
   var paletteHost: E
   let palette = ui(r):
     tdiv(ref = paletteHost, `data-color-popover-palette` = "true",
@@ -204,15 +306,22 @@ proc mountColorPopover*[R, E](r: R; parent, invoker: E;
            border = "1px solid #A0A2B0", border_radius = "4px",
            cursor = "pointer", background_color = color)
     r.appendChild(paletteHost, tile)
-    r.addEventListener(swatch, "click", proc() = state.draft.val = color)
+    r.addEventListener(swatch, "click", proc() =
+      if mountedActive and state.open.val and not state.pending.val: state.draft.val = color)
   for color in ["#FFFFFF", "#000000", "#EF4444", "#F59E0B", "#22C55E", "#3B82F6", "#7C7AED", "#EC4899"]:
     addSwatch(color)
   installAnchoredPopover(rootNode, "isonim-color-close")
-  r.addEventListener(rootNode, "isonim-color-close", proc() = state.open.val = false)
-  r.addEventListener(cancelNode, "click", proc() = state.open.val = false)
-  onCleanup(proc() = state.open.val = false)
+  var openingDraft: ColorDraftSnapshot
+  proc cancelDraft() =
+    if state.open.val: state.restoreColorDraft(openingDraft)
+    state.open.val = false
+  r.addEventListener(rootNode, "isonim-color-close", cancelDraft)
+  r.addEventListener(cancelNode, "click", cancelDraft)
+  onCleanup(proc() =
+    cancelDraft()
+    mountedActive = false)
   let apply = proc() =
-    if not state.open.val or state.pending.val: return
+    if not mountedActive or not state.open.val or state.pending.val: return
     when defined(js):
       var connected = false
       {.emit: [connected, " = ", rootNode, ".isConnected !== false;"].}
@@ -229,10 +338,15 @@ proc mountColorPopover*[R, E](r: R; parent, invoker: E;
         state.diagnostic.val = "The color edit was refused."
   r.addEventListener(applyNode, "click", apply)
   r.addEventListener(inputNode, "input", proc() =
+    if not mountedActive or not state.open.val or state.pending.val: return
     state.draft.val = r.inputValue(inputNode)
     state.diagnostic.val = "")
   r.addEventListener(invoker, "click", proc() =
+    if not mountedActive: return
+    state.projectedDraft = ""
     state.draft.val = normalizedSourceColor(current())
+    state.syncColorCoordinates()
+    openingDraft = state.captureColorDraft()
     state.diagnostic.val = ""
     when defined(js):
       {.emit: [state, ".__isonimAnchor = ", invoker, ";"].}
@@ -250,15 +364,20 @@ proc mountColorPopover*[R, E](r: R; parent, invoker: E;
   createRenderEffect proc() =
     r.setInputValue(inputNode, state.draft.val)
     let channels = colorChannels(state.draft.val)
-    let hsv = colorHsv(channels)
-    if hsv.saturation > 0 and abs(hue.val-hsv.hue) > 0.5: hue.val = hsv.hue
+    let saturation = state.saturation.val
+    let brightness = state.brightness.val
     r.setInputValue(hueNode, $int(round(hue.val)))
     let opacity = int(round(channels.alpha.float * 100 / 255))
     r.setInputValue(alphaNode, $opacity)
     for index, number in [channels.red, channels.green, channels.blue, opacity]:
       r.setInputValue(channelInputs[index], $number)
     r.setStyle(planeNode, "background", "linear-gradient(to top, #000, transparent), linear-gradient(to right, #fff, transparent), " & channelsHex(hsvChannels(hue.val, 1, 1)))
-    r.setAttribute(planeNode, "aria-valuetext", "Saturation " & $int(round(hsv.saturation*100)) & "%, brightness " & $int(round(hsv.value*100)) & "%")
+    r.setAttribute(planeNode, "aria-valuetext", "Saturation " & $int(round(saturation*100)) & "%, brightness " & $int(round(brightness*100)) & "%")
+    r.setStyle(markerNode, "left", $(saturation * 100) & "%")
+    r.setStyle(markerNode, "top", $((1 - brightness) * 100) & "%")
+    let rgb = "rgb(" & $channels.red & ", " & $channels.green & ", " & $channels.blue & ")"
+    r.setStyle(alphaNode, "background", "linear-gradient(to right, rgba(" & $channels.red & ", " & $channels.green & ", " & $channels.blue & ", 0), " & rgb & "), conic-gradient(#747785 25%, #333642 0 50%, #747785 0 75%, #333642 0)")
+    r.setStyle(alphaNode, "background-size", "auto, 8px 8px")
     r.setStyle(previewNode, "background-color", normalizedHexColor(state.draft.val))
     r.setTextContent(errorNode, if state.pending.val: "Saving source…" else: state.diagnostic.val)
     r.setAttribute(applyNode, "aria-disabled", if state.pending.val: "true" else: "false")

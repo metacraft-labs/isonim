@@ -1524,3 +1524,18 @@ test-editor-c2-lifetime: isonim-review-build editor-popup-build
     "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_selection_restore_gui.mjs
 
 test-editor-c2: test-editor-c2-headless test-editor-c2-source test-editor-c2-lifetime test-editor-popup
+
+# ColorPicker draft coordinates and existing source popup compatibility.
+test-editor-c3-headless:
+    nim c -r --out:build/test_editor_color_picker tests/test_editor_color_picker.nim
+    nim js -d:nodejs --out:build/test_editor_color_picker.js tests/test_editor_color_picker.nim
+    python3 tools/run_nim_js_test.py build/test_editor_color_picker.js
+    nim c -r --out:build/test_editor_color_popover tests/test_editor_color_popover.nim
+    nim js -d:nodejs --out:build/test_editor_color_popover.js tests/test_editor_color_popover.nim
+    python3 tools/run_nim_js_test.py build/test_editor_color_popover.js
+
+# Actual default-native ColorPicker/source/compiler acceptance.
+test-editor-c3-source: isonim-review-build editor-inspector-build
+    "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_color_picker_gui.mjs
+
+test-editor-c3: test-editor-c3-headless test-editor-c3-source test-editor-popup

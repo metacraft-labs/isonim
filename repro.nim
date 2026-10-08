@@ -462,6 +462,7 @@ const isonimTestSpecs: seq[IsonimTestSpec] = @[
   spec("test_editor_viewport_resize_publisher"),
   spec("test_editor_widget_property_row"),
   spec("test_editor_color_popover"),
+  spec("test_editor_color_picker"),
   spec("test_editor_surface_toggle_vm"),
   spec("test_editor_chat_activity"),
   spec("test_editor_chat_tabs_vm"),
@@ -533,6 +534,7 @@ const isonimCompileOnlySpecs: seq[IsonimTestSpec] = @[
 # ``-r``), so it is modelled as a BUILD-only edge (no node run).
 const isonimJsTestSpecs: seq[string] = @[
   "test_editor_color_popover",
+  "test_editor_color_picker",
   "test_editor_widget_property_row", "test_editor_section_fill", "test_editor_source_scope_row",
   "test_editor_chat_activity",
   "test_editor_control",
@@ -784,6 +786,7 @@ package isonim:
     var testExecuteActions: seq[BuildActionDef] = @[]
     var popupHeadlessActions: seq[BuildActionDef] = @[]
     var c2HeadlessActions: seq[BuildActionDef] = @[]
+    var c3HeadlessActions: seq[BuildActionDef] = @[]
 
     proc emitTest(source, binary: string; executeToo: bool;
                   buildActions, executeActions: var seq[BuildActionDef]) =
@@ -813,6 +816,8 @@ package isonim:
           actionId = "isonim.test_execute." & stem,
           registerImplicitName = false)
         executeActions.add(executeEdge)
+        if stem in ["test_editor_color_picker", "test_editor_color_popover"]:
+          c3HeadlessActions.add(executeEdge)
         if stem in ["test_effects", "test_editor_widget_property_row", "test_editor_color_popover", "test_editor_section_fill", "test_editor_source_scope_row"]:
           c2HeadlessActions.add(executeEdge)
         if source in ["tests/test_editor_color_popover.nim", "tests/test_signals.nim"]:
@@ -895,6 +900,14 @@ package isonim:
       extraInputs = @["src", "tests/helpers/editor_popup_workspace.nim", "Justfile", "package.json"],
       extraOutputs = @["build/editor-inspector"])
     testBuildActions.add(inspectorBrowserEdge)
+    let c3GuiEdge = sh.shell(
+      command = "\"${ISONIM_SCENARIO_NODE:-node}\" tests/test_editor_color_picker_gui.mjs", cacheable = false,
+      actionId = "isonim.c3_execute.color_picker_gui",
+      after = @[inspectorBrowserEdge, reviewToolEdge.action],
+      extraInputs = @["tests/test_editor_color_picker_gui.mjs", "tests/helpers/editor_control_peer.py",
+        "tests/fixtures/editor_inspector_project", "tools/editor_server.py", "tools/build_source_catalog.py",
+        "build/editor-inspector", drReviewBin])
+    testExecuteActions.add(c3GuiEdge)
     let c2GuardEdge = sh.shell(
       command = "python3 tests/test_nim_js_guard.py", cacheable = false,
       actionId = "isonim.c2_execute.js_guard_controls",
@@ -1287,7 +1300,7 @@ package isonim:
       jsBuildActions.add(jsCompileEdge)
       let guardedC2 = stem in ["test_effects", "test_editor_widget_property_row", "test_editor_color_popover", "test_editor_section_fill", "test_editor_source_scope_row"]
       let jsExecuteEdge =
-        if guardedC2:
+        if guardedC2 or stem == "test_editor_color_picker":
           sh.shell(command = "python3 tools/run_nim_js_test.py " & jsOut, cacheable = false,
             actionId = "isonim.js_execute." & stem, after = @[jsCompileEdge],
             extraInputs = @[jsOut, "tools/run_nim_js_test.py"])
@@ -1295,6 +1308,8 @@ package isonim:
           node(args = @[jsOut], actionId = "isonim.js_execute." & stem,
             after = @[jsCompileEdge], extraInputs = @[jsOut])
       if guardedC2: c2HeadlessActions.add(jsExecuteEdge)
+      if stem in ["test_editor_color_picker", "test_editor_color_popover"]:
+        c3HeadlessActions.add(jsExecuteEdge)
       testExecuteActions.add(jsExecuteEdge)
       jsExecuteActions.add(jsExecuteEdge)
       if stem in ["test_editor_color_popover", "test_signals"]: popupHeadlessActions.add(jsExecuteEdge)
@@ -1317,6 +1332,9 @@ package isonim:
       testBuildActions.add(jsCompileOnlyEdge)
       jsBuildActions.add(jsCompileOnlyEdge)
 
+    discard collect("test-editor-c3-headless", c3HeadlessActions)
+    discard collect("test-editor-c3-source", @[c3GuiEdge])
+    discard collect("test-editor-c3", c3HeadlessActions & @[c3GuiEdge, popupGuiEdge])
     discard collect("test-editor-c2-headless", c2HeadlessActions)
     discard collect("test-editor-c2-source", c2SourceActions)
     discard collect("test-editor-c2-lifetime", @[popupOwnerHmrEdge, popupGeometryEdge, popupSelectionRestoreEdge])
