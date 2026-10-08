@@ -1269,6 +1269,35 @@ package isonim:
       extraOutputs = @["build/tailwind-styles.json", "build/tailwind.css"])
     testBuildActions.add(tailwindStylesEdge)
 
+    # Production flex-direction selection metadata prerequisite. No source/ACK
+    # substitution; standard Just entries execute the strict JS guard.
+    let flexMetadataHeadlessEdge = sh.shell(
+      command = "just test-editor-flex-metadata-headless", cacheable = false,
+      actionId = "isonim.flex_metadata_execute.headless",
+      after = @[tailwindStylesEdge],
+      extraInputs = @["src", "tests/test_editor_flex_metadata.nim", "tools/run_nim_js_test.py",
+        "Justfile", "tests/config.nims", "config.nims", "build/tailwind-styles.json"])
+    let flexMetadataBrowserEdge = sh.shell(
+      command = "just editor-flex-metadata-build",
+      actionId = "isonim.flex_metadata_build.browser",
+      after = @[tailwindStylesEdge],
+      extraInputs = @["src", "tests/helpers/editor_flex_metadata_workspace.nim",
+        "tests/helpers/editor_popup_workspace.nim", "Justfile", "build/tailwind-styles.json"],
+      extraOutputs = @["build/editor-flex-metadata"])
+    let flexMetadataGuiEdge = sh.shell(
+      command = "timeout --signal=TERM --kill-after=15s 180s \"${ISONIM_SCENARIO_NODE:-node}\" tests/test_editor_flex_metadata_gui.mjs",
+      cacheable = false, actionId = "isonim.flex_metadata_execute.gui",
+      after = @[flexMetadataBrowserEdge, reviewToolEdge.action],
+      extraInputs = @["tests/test_editor_flex_metadata_gui.mjs", "tests/helpers/editor_control_peer.py",
+        "tests/fixtures/editor_inspector_project", "tools/editor_server.py", "tools/build_source_catalog.py",
+        "build/editor-flex-metadata", drReviewBin])
+    testBuildActions.add(flexMetadataBrowserEdge)
+    testExecuteActions.add(flexMetadataHeadlessEdge)
+    testExecuteActions.add(flexMetadataGuiEdge)
+    discard collect("test-editor-flex-metadata", @[flexMetadataHeadlessEdge, flexMetadataGuiEdge])
+    discard collect("test-editor-flex-metadata-headless", @[flexMetadataHeadlessEdge])
+    discard collect("test-editor-flex-metadata-source", @[flexMetadataGuiEdge])
+
     # JS execute/build halves are ALSO folded into a dedicated ``js-test`` /
     # ``js-test-builds`` target so ``repro build js-test`` materialises just
     # the JS-backend closure (tailwind extract + ``nim js`` compiles + node

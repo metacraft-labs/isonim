@@ -1539,3 +1539,19 @@ test-editor-c3-source: isonim-review-build editor-inspector-build
     "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_color_picker_gui.mjs
 
 test-editor-c3: test-editor-c3-headless test-editor-c3-source test-editor-popup
+
+# Actual production preview capture and selected metadata normalization.
+editor-flex-metadata-build: build-tailwind
+    mkdir -p build/editor-flex-metadata
+    nim js --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/editor-flex-metadata/editor.js tests/helpers/editor_flex_metadata_workspace.nim
+    "${ISONIM_SCENARIO_NODE:-node}" --check build/editor-flex-metadata/editor.js
+
+test-editor-flex-metadata-headless: build-tailwind
+    nim c -r --out:build/test_editor_flex_metadata tests/test_editor_flex_metadata.nim
+    nim js -d:nodejs --out:build/test_editor_flex_metadata.js tests/test_editor_flex_metadata.nim
+    python3 tools/run_nim_js_test.py build/test_editor_flex_metadata.js
+
+test-editor-flex-metadata-source: isonim-review-build editor-flex-metadata-build
+    timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_flex_metadata_gui.mjs
+
+test-editor-flex-metadata: test-editor-flex-metadata-headless test-editor-flex-metadata-source
