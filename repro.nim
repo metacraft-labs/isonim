@@ -533,6 +533,7 @@ const isonimCompileOnlySpecs: seq[IsonimTestSpec] = @[
 # back-end. It is a ``nim js`` COMPILE-ONLY recipe entry (``-o:`` without
 # ``-r``), so it is modelled as a BUILD-only edge (no node run).
 const isonimJsTestSpecs: seq[string] = @[
+  "test_editor_section_appearance", "test_editor_section_component_props", "test_editor_section_layout", "test_editor_section_position",
   "test_editor_color_popover",
   "test_editor_color_picker",
   "test_editor_widget_property_row", "test_editor_section_fill", "test_editor_source_scope_row",
@@ -787,6 +788,7 @@ package isonim:
     var popupHeadlessActions: seq[BuildActionDef] = @[]
     var c2HeadlessActions: seq[BuildActionDef] = @[]
     var c3HeadlessActions: seq[BuildActionDef] = @[]
+    var c4aHeadlessActions: seq[BuildActionDef] = @[]
 
     proc emitTest(source, binary: string; executeToo: bool;
                   buildActions, executeActions: var seq[BuildActionDef]) =
@@ -816,6 +818,7 @@ package isonim:
           actionId = "isonim.test_execute." & stem,
           registerImplicitName = false)
         executeActions.add(executeEdge)
+        if stem in ["test_editor_section_appearance", "test_editor_section_component_props", "test_editor_section_layout", "test_editor_section_position"]: c4aHeadlessActions.add(executeEdge)
         if stem in ["test_editor_color_picker", "test_editor_color_popover"]:
           c3HeadlessActions.add(executeEdge)
         if stem in ["test_effects", "test_editor_widget_property_row", "test_editor_color_popover", "test_editor_section_fill", "test_editor_source_scope_row"]:
@@ -895,9 +898,18 @@ package isonim:
       extraInputs = @["src", "tests/helpers/editor_popup_workspace.nim", "tests/helpers/core_owner_hmr.nim", "Justfile", "package.json"],
       extraOutputs = @["build/editor-popup"])
     testBuildActions.add(popupBrowserEdge)
+    # The frontend compiler reads the generated Tailwind input.
+    let tailwindStylesEdge = node(
+      args = @["tools/tailwind-extract.mjs"],
+      actionId = "isonim.tailwind_extract",
+      extraInputs = @["tools/tailwind-extract.mjs", "package.json", "src"],
+      extraOutputs = @["build/tailwind-styles.json", "build/tailwind.css"])
+    testBuildActions.add(tailwindStylesEdge)
+
     let inspectorBrowserEdge = sh.shell(
       command = "just editor-inspector-build", actionId = "isonim.c2_build.inspector",
-      extraInputs = @["src", "tests/helpers/editor_popup_workspace.nim", "Justfile", "package.json"],
+      after = @[tailwindStylesEdge],
+      extraInputs = @["src", "tests/helpers/editor_popup_workspace.nim", "Justfile", "package.json", "build/tailwind-styles.json"],
       extraOutputs = @["build/editor-inspector"])
     testBuildActions.add(inspectorBrowserEdge)
     let c3GuiEdge = sh.shell(
@@ -1262,12 +1274,6 @@ package isonim:
     # own ``build-tailwind`` recipe runs ``[ -d node_modules ] || yarn
     # install`` before the extract; once installed the extract is offline
     # (``npx`` resolves the local install, no network).
-    let tailwindStylesEdge = node(
-      args = @["tools/tailwind-extract.mjs"],
-      actionId = "isonim.tailwind_extract",
-      extraInputs = @["tools/tailwind-extract.mjs", "package.json", "src"],
-      extraOutputs = @["build/tailwind-styles.json", "build/tailwind.css"])
-    testBuildActions.add(tailwindStylesEdge)
 
     # Production flex-direction selection metadata prerequisite. No source/ACK
     # substitution; standard Just entries execute the strict JS guard.
@@ -1303,6 +1309,40 @@ package isonim:
     # the JS-backend closure (tailwind extract + ``nim js`` compiles + node
     # runs) — the reprobuild-native analogue of the ``Justfile`` ``test-js``
     # recipe — without pulling the native + design-review corpus.
+
+    # Remaining section/source parity: real source/compiler/browser boundaries.
+    let c4aCompoundEdge = sh.shell(
+      command = "timeout --signal=TERM --kill-after=15s 180s \"${ISONIM_SCENARIO_NODE:-node}\" tests/test_editor_inspector_compounds_gui.mjs",
+      cacheable = false, actionId = "isonim.c4a_execute.compounds",
+      after = @[inspectorBrowserEdge, reviewToolEdge.action],
+      extraInputs = @["tests/test_editor_inspector_compounds_gui.mjs", "tests/helpers/editor_control_peer.py",
+        "tests/fixtures/editor_inspector_project", "tools/editor_server.py", "tools/build_source_catalog.py",
+        "build/editor-inspector", drReviewBin])
+    let c4aGestureEdge = sh.shell(
+      command = "timeout --signal=TERM --kill-after=15s 180s \"${ISONIM_SCENARIO_NODE:-node}\" tests/test_editor_inspector_gestures_gui.mjs",
+      cacheable = false, actionId = "isonim.c4a_execute.gestures",
+      after = @[inspectorBrowserEdge, reviewToolEdge.action],
+      extraInputs = @["tests/test_editor_inspector_gestures_gui.mjs", "tests/helpers/editor_control_peer.py",
+        "tests/fixtures/editor_inspector_project", "tools/editor_server.py", "tools/build_source_catalog.py",
+        "build/editor-inspector", drReviewBin])
+    let c4aColorEdge = sh.shell(
+      command = "timeout --signal=TERM --kill-after=15s 180s \"${ISONIM_SCENARIO_NODE:-node}\" tests/test_editor_color_parity.mjs",
+      cacheable = false, actionId = "isonim.c4a_execute.color_parity",
+      after = @[tailwindStylesEdge],
+      extraInputs = @["src", "tests/test_editor_color_parity.mjs", "tests/helpers/editor_color_validation.nim",
+        "config.nims", "tests/config.nims", "build/tailwind-styles.json"])
+    var c4aGuiActions = @[c4aCompoundEdge, c4aGestureEdge, c4aColorEdge]
+    for name in ["test_editor_source_style_gui", "test_editor_source_style_values_gui"]:
+      let gripEdge = sh.shell(
+        command = "timeout --signal=TERM --kill-after=15s 180s \"${ISONIM_SCENARIO_NODE:-node}\" tests/" & name & ".mjs",
+        cacheable = false, actionId = "isonim.c4a_execute." & name,
+        after = @[tailwindStylesEdge, reviewToolEdge.action],
+        extraInputs = @["src", "tests/" & name & ".mjs", "tests/helpers/editor_source_style_workspace.nim",
+          "tests/helpers/editor_control_peer.py", "tools/editor_server.py", "tools/build_source_catalog.py",
+          "../web-site-prototypes/grip/isonim", "build/tailwind-styles.json", drReviewBin])
+      c4aGuiActions.add(gripEdge)
+    for action in c4aGuiActions: testExecuteActions.add(action)
+
     var jsBuildActions: seq[BuildActionDef] = @[tailwindStylesEdge]
     var jsExecuteActions: seq[BuildActionDef] = @[]
     for stem in isonimJsTestSpecs:
@@ -1329,7 +1369,7 @@ package isonim:
       jsBuildActions.add(jsCompileEdge)
       let guardedC2 = stem in ["test_effects", "test_editor_widget_property_row", "test_editor_color_popover", "test_editor_section_fill", "test_editor_source_scope_row"]
       let jsExecuteEdge =
-        if guardedC2 or stem == "test_editor_color_picker":
+        if guardedC2 or stem == "test_editor_color_picker" or stem in ["test_editor_section_appearance", "test_editor_section_component_props", "test_editor_section_layout", "test_editor_section_position"]:
           sh.shell(command = "python3 tools/run_nim_js_test.py " & jsOut, cacheable = false,
             actionId = "isonim.js_execute." & stem, after = @[jsCompileEdge],
             extraInputs = @[jsOut, "tools/run_nim_js_test.py"])
@@ -1340,6 +1380,7 @@ package isonim:
       if stem in ["test_editor_color_picker", "test_editor_color_popover"]:
         c3HeadlessActions.add(jsExecuteEdge)
       testExecuteActions.add(jsExecuteEdge)
+      if stem in ["test_editor_section_appearance", "test_editor_section_component_props", "test_editor_section_layout", "test_editor_section_position"]: c4aHeadlessActions.add(jsExecuteEdge)
       jsExecuteActions.add(jsExecuteEdge)
       if stem in ["test_editor_color_popover", "test_signals"]: popupHeadlessActions.add(jsExecuteEdge)
 
@@ -1361,6 +1402,12 @@ package isonim:
       testBuildActions.add(jsCompileOnlyEdge)
       jsBuildActions.add(jsCompileOnlyEdge)
 
+    discard collect("test-editor-c4a-headless", c4aHeadlessActions)
+    discard collect("test-editor-c4a-compounds", @[c4aCompoundEdge])
+    discard collect("test-editor-c4a-gestures", @[c4aGestureEdge])
+    discard collect("test-editor-c4a-color", @[c4aColorEdge])
+    discard collect("test-editor-c4a-grip", c4aGuiActions[3 .. ^1])
+    discard collect("test-editor-c4a", c4aHeadlessActions & c4aGuiActions)
     discard collect("test-editor-c3-headless", c3HeadlessActions)
     discard collect("test-editor-c3-source", @[c3GuiEdge])
     discard collect("test-editor-c3", c3HeadlessActions & @[c3GuiEdge, popupGuiEdge])

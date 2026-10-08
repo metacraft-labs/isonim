@@ -27,7 +27,7 @@
 ## reactive effect tears down + remounts on selection change so the
 ## seed values stay aligned with the new properties.
 
-import std/[options, strutils]
+import std/[options, strutils, parseutils, math]
 
 import isonim/core/signals
 import isonim/core/computation
@@ -59,28 +59,29 @@ proc findPropertyValue*(properties: seq[PropertyInfo]; name,
   ## seeds without recreating the lookup.
   for prop in properties:
     if prop.name == name:
-      return prop.value
+      return if prop.authoredValue.len > 0: prop.authoredValue else: prop.value
   fallback
 
 proc parseLeadingFloat*(raw: string; fallback: float): float =
   ## Parse the leading numeric prefix of ``raw`` (drops a trailing unit
   ## suffix like ``"px"`` / ``"%"`` / ``"deg"``). Used to seed
   ## ``Signal[float]`` from a CSS-string property.
-  let trimmed = raw.strip()
-  if trimmed.len == 0:
-    return fallback
-  var i = 0
-  if i < trimmed.len and trimmed[i] in {'+', '-'}:
-    inc i
-  let numStart = i
-  while i < trimmed.len and trimmed[i] in {'0'..'9', '.'}:
-    inc i
-  if i == numStart:
-    return fallback
-  try:
-    return parseFloat(trimmed[0 ..< i])
-  except ValueError:
-    return fallback
+  let text = raw.strip()
+  var finish = 0
+  if finish < text.len and text[finish] in {'+', '-'}: inc finish
+  while finish < text.len and text[finish] in {'0'..'9', '.'}: inc finish
+  # 'em' and 'ex' start with e too; only consume a complete numeric exponent.
+  if finish < text.len and text[finish] in {'e', 'E'}:
+    var exponentEnd = finish + 1
+    if exponentEnd < text.len and text[exponentEnd] in {'+', '-'}: inc exponentEnd
+    let exponentStart = exponentEnd
+    while exponentEnd < text.len and text[exponentEnd] in {'0'..'9'}: inc exponentEnd
+    if exponentEnd > exponentStart: finish = exponentEnd
+  var parsed = 0.0
+  if finish > 0 and parseutils.parseFloat(text[0 ..< finish], parsed) == finish and
+      classify(parsed) notin {fcNan, fcInf, fcNegInf}:
+    return parsed
+  fallback
 
 # --------------------------------------------------------------------------- #
 #  Unit option constants — shared between the four numeric rows so the
@@ -159,10 +160,10 @@ proc mountSectionPosition*[R, E](r: R; parent: E; vm: EditorVM) =
             border_radius = "4px",
             padding = "1px"):
         for slug in ["left", "center", "right"]:
-          tdiv(role = "button", tabindex = "0",
+          tdiv(role = "button", tabindex = "0", `aria-disabled` = "true",
                 `data-position-align` = slug,
                 `aria-label` = "Align " & slug,
-                title = "Align " & slug,
+                title = "Alignment source editing is not available.",
                 display = "flex", align_items = "center",
                 justify_content = "center",
                 width = "26px", height = "22px",
@@ -179,10 +180,10 @@ proc mountSectionPosition*[R, E](r: R; parent: E; vm: EditorVM) =
             border_radius = "4px",
             padding = "1px"):
         for slug in ["top", "middle", "bottom"]:
-          tdiv(role = "button", tabindex = "0",
+          tdiv(role = "button", tabindex = "0", `aria-disabled` = "true",
                 `data-position-valign` = slug,
                 `aria-label` = "Vertical align " & slug,
-                title = "Vertical align " & slug,
+                title = "Alignment source editing is not available.",
                 display = "flex", align_items = "center",
                 justify_content = "center",
                 width = "26px", height = "22px",
@@ -199,10 +200,10 @@ proc mountSectionPosition*[R, E](r: R; parent: E; vm: EditorVM) =
             border_radius = "4px",
             padding = "1px",
             margin_left = "auto"):
-        tdiv(role = "button", tabindex = "0",
+        tdiv(role = "button", tabindex = "0", `aria-disabled` = "true",
               `data-position-distribute` = "spacing",
               `aria-label` = "Distribute spacing",
-              title = "Distribute spacing",
+              title = "Distribution source editing is not available.",
               display = "flex", align_items = "center",
               justify_content = "center",
               width = "26px", height = "22px",
@@ -254,10 +255,10 @@ proc mountSectionPosition*[R, E](r: R; parent: E; vm: EditorVM) =
             border_radius = "4px",
             padding = "1px",
             margin_left = "auto"):
-        tdiv(role = "button", tabindex = "0",
+        tdiv(role = "button", tabindex = "0", `aria-disabled` = "true",
               `data-position-flip` = "horizontal",
               `aria-label` = "Flip horizontally",
-              title = "Flip horizontally",
+              title = "Flip source editing is not available.",
               display = "flex", align_items = "center",
               justify_content = "center",
               width = "26px", height = "22px",
@@ -265,10 +266,10 @@ proc mountSectionPosition*[R, E](r: R; parent: E; vm: EditorVM) =
               color = textMuted, font_size = "13px",
               cursor = "pointer"):
           text "\xE2\x96\xB7\xE2\x97\x81"  # ▷◁
-        tdiv(role = "button", tabindex = "0",
+        tdiv(role = "button", tabindex = "0", `aria-disabled` = "true",
               `data-position-flip` = "vertical",
               `aria-label` = "Flip vertically",
-              title = "Flip vertically",
+              title = "Flip source editing is not available.",
               display = "flex", align_items = "center",
               justify_content = "center",
               width = "26px", height = "22px",

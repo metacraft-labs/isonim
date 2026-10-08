@@ -3254,6 +3254,11 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
     let frame = renderSectionFrame[R, E](r, vm, slug, displayName)
     r.appendChild(sectionList, frame.row)
     mountInspectorSectionBody[R, E](r, vm, slug, frame.body)
+    if slug == "component-properties":
+      let componentFrame = frame.row
+      createRenderEffect proc() =
+        r.setStyle(componentFrame, "display",
+          if isComponentInstance(vm.inspector.selectedElement.val): "flex" else: "none")
 
   result = ui(r):
     tdiv(class = "editor-inspector",

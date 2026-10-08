@@ -1497,7 +1497,7 @@ test-editor-color-source:
     nim c -r --path:../metacraft-web/apps/back-office/src --path:../metacraft-web/packages/metacraft-design/src --out:build/test_editor_color_source tests/test_editor_color_source.nim
 
 # Authoritative native-inspector composition; legacy popup tests opt in above.
-editor-inspector-build:
+editor-inspector-build: build-tailwind
     mkdir -p build/editor-inspector
     nim js --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/editor-inspector/editor.js tests/helpers/editor_popup_workspace.nim
     "${ISONIM_SCENARIO_NODE:-node}" --check build/editor-inspector/editor.js
@@ -1555,3 +1555,29 @@ test-editor-flex-metadata-source: isonim-review-build editor-flex-metadata-build
     timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_flex_metadata_gui.mjs
 
 test-editor-flex-metadata: test-editor-flex-metadata-headless test-editor-flex-metadata-source
+
+# Remaining approved inspector section parity; real source suites follow.
+test-editor-c4a-headless: build-tailwind
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for stem in test_editor_section_appearance test_editor_section_component_props test_editor_section_layout test_editor_section_position; do
+      nim c -r --out:build/"$stem" tests/"$stem".nim
+      nim js -d:nodejs --out:build/"$stem".js tests/"$stem".nim
+      python3 tools/run_nim_js_test.py build/"$stem".js
+    done
+
+# Actual source/compiler/preview/undo controls; each original GUI bound retained.
+test-editor-c4a-compounds: isonim-review-build editor-inspector-build
+    timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_inspector_compounds_gui.mjs
+
+test-editor-c4a-gestures: isonim-review-build editor-inspector-build
+    timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_inspector_gestures_gui.mjs
+
+test-editor-c4a-color: build-tailwind
+    timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_color_parity.mjs
+
+test-editor-c4a-grip: isonim-review-build build-tailwind
+    timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_source_style_gui.mjs
+    timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_source_style_values_gui.mjs
+
+test-editor-c4a: test-editor-c4a-headless test-editor-c4a-compounds test-editor-c4a-gestures test-editor-c4a-color test-editor-c4a-grip

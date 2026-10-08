@@ -1,3 +1,5 @@
+## MockRenderer isolates property/control seeding; it supplies no source/compiler
+## outcome. Genuine mounted pointer and source persistence is covered separately.
 ## Phase G — section_position widget unit test.
 ##
 ## Verifies:
@@ -104,3 +106,11 @@ suite "Phase G section_position":
       check yInput != nil
       check r.inputValue(yInput) == "32"
       dispose()
+
+  test "leading authored exponents seed finite coordinates and reject nonfinite values":
+    check parseLeadingFloat("1e-1em", 9) == 0.1
+    check parseLeadingFloat("-2.5e2px", 9) == -250
+    check parseLeadingFloat("1em", 9) == 1
+    check parseLeadingFloat("1e309px", 9) == 9
+    check parseLeadingFloat("NaN", 9) == 9
+    check parseLeadingFloat("rotate(20deg)", 9) == 9
