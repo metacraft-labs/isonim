@@ -6,6 +6,18 @@
 import std/[os, osproc, tempfiles, unittest, strtabs, strutils, monotimes, times, net]
 import ../tools/isonim_review/local_harbor
 
+if (paramCount() == 3 and paramStr(1) == "--own-producer-build") or
+    (paramCount() == 4 and paramStr(1) == "--own-producer-build-cancel"):
+  let environment = newStringTable(modeCaseSensitive)
+  for key, value in envPairs(): environment[key] = value
+  try:
+    echo buildLocalHarbor(paramStr(2), paramStr(3), environment, proc(): bool =
+      paramCount() == 4 and fileExists(paramStr(4)))
+  except CatchableError as failure:
+    stderr.writeLine(failure.msg)
+    quit(1)
+  quit(0)
+
 proc main() =
   let root = createTempDir("isonim-repro-test-", "")
   defer: removeDir(root)
@@ -141,6 +153,21 @@ package testHarbor:
         removeFile(producer / "build/bin/ah")
         writeFile(producer / "build.sh", original)
         check execProcess(buildLocalHarbor(producer, consumer, env)).strip() == "LOCAL_V2"
+
+    test "absent owning launcher preserves an imported executable declaration":
+      let originalRecipe = readFile(producer / "repro.nim")
+      # Repro's package macro consumes its body before nested user macros
+      # expand. Emit the complete package through the imported macro so the
+      # actual compiler presents the package DSL a real executable declaration.
+      let importsEnd = originalRecipe.find("package testHarbor:")
+      let packageBody = originalRecipe[importsEnd .. ^1]
+      writeFile(producer / "export_declaration.nim", "import std/macros\n" &
+        "macro harborDeclaration*(): untyped =\n  result = parseStmt(" &
+        escape(packageBody) & ")\n")
+      writeFile(producer / "repro.nim", originalRecipe[0 ..< importsEnd] &
+        "import export_declaration\nharborDeclaration()\n")
+      defer: writeFile(producer / "repro.nim", originalRecipe)
+      check execProcess(buildLocalHarbor(producer, consumer, env)).strip() == "LOCAL_V2"
 
     test "failed selected build refuses stale and installed binaries":
       writeFile(producer / "build.sh", "exit 42\n")

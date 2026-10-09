@@ -508,6 +508,9 @@ test-design-review-harbor-build:
     mkdir -p build/bin
     nim c -r --out:build/bin/test-design-review-harbor-build --path:src --path:../nim-everywhere/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src --hints:off tests/test_design_review_harbor_build.nim
 
+test-design-review-harbor-own-producer: test-design-review-harbor-build
+    ISONIM_HARBOR_BUILD_DRIVER="$PWD/build/bin/test-design-review-harbor-build" python3 tests/test_design_review_harbor_own_producer.py
+
 
 # Private-repository acceptance: explicitly requires the selected local checkout.
 test-design-review-harbor-live:
@@ -902,7 +905,7 @@ editor-screenshot-list:
     node tools/editor-screenshot.mjs --list
 
 # Run editor ViewModel tests
-test-editor: test-design-review-local-harbor test-design-review-harbor-build test-editor-control test-editor-source test-editor-chat-activity
+test-editor: test-design-review-local-harbor test-design-review-harbor-build test-design-review-harbor-own-producer test-editor-control test-editor-source test-editor-chat-activity
     nim c -r tests/test_editor_workspace.nim
     nim c -r tests/test_editor_public_api.nim
     nim js --path:src -o:build/test_editor_public_browser_imports.js tests/test_editor_public_browser_imports.nim

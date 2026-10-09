@@ -213,6 +213,8 @@ proc writeBuildInput(path, contents: string) =
   finally:
     if fileExists(temporary): removeFile(temporary)
 
+const HarborProducerScript = staticRead("harbor_producer.py")
+
 proc resolveSelectedHarborExecutable*(repo, binary: string;
     failureMessage = "Unexpected local Harbor executable"): string =
   # Compare canonical filesystem paths. Repro may report a canonical path for
@@ -224,10 +226,88 @@ proc resolveSelectedHarborExecutable*(repo, binary: string;
   let relative = relativePath(executablePath, sourcePath)
   if relative == ".." or relative.startsWith(".." & $DirSep) or relative.isAbsolute:
     raise newException(IOError, failureMessage)
+  let selection = sourcePath / ".repro" / "isonim-runtime" / "producer-interface.json"
+  let staged = relative.startsWith(".repro" & $DirSep & "isonim-runtime" & $DirSep & "produced" & $DirSep)
+  let selectedOwnProducer = fileExists(selection) and
+    parseJson(readFile(selection))["interface"].getStr == "own"
+  if staged or selectedOwnProducer:
+    # The producer's external cache is never admitted directly. The embedded
+    # verifier pins private receipt bytes, source state and canonical stage.
+    let python = if startupEnumerationPython.len > 0: startupEnumerationPython else: findExe("python3")
+    let verification = execCmdEx(quoteShell(python) & " -c " &
+      quoteShell(HarborProducerScript) & " verify " & quoteShell(sourcePath) & " " &
+      quoteShell(executablePath))
+    if verification.exitCode != 0:
+      raise newException(IOError, failureMessage & ": " & verification.output.strip())
   result = executablePath
 
 proc buildLocalHarbor*(repo, buildDir: string; env: StringTableRef;
     shouldStop: proc(): bool = nil): string =
+  let canonicalRepo = expandFilename(repo)
+  for directory in [canonicalRepo / ".repro",
+      canonicalRepo / ".repro" / "isonim-runtime"]:
+    if dirExists(directory) and expandFilename(directory) != directory:
+      raise newException(IOError, "Escaping Harbor stage parent")
+  createDir(buildDir)
+  let interfacePath = buildDir / "producer-interface.json"
+  if fileExists(interfacePath): removeFile(interfacePath)
+  var query: LocalHarbor
+  query.startOwnedProcess("python3", workingDir = repo, env = env,
+    args = @["-c", HarborProducerScript, "select", repo, interfacePath])
+  try:
+    while query.process.running:
+      if shouldStop != nil and shouldStop():
+        raise newException(IOError, "Local Agent Harbor build interrupted")
+      sleep(100)
+    if query.process.waitForExit() != 0 or not fileExists(interfacePath):
+      raise newException(IOError, "Local Agent Harbor producer plan failed; refusing an installed fallback")
+  finally: query.stop()
+  if parseJson(readFile(interfacePath))["interface"].getStr == "own":
+    createDir(buildDir)
+    setFilePermissions(buildDir, {fpUserRead, fpUserWrite, fpUserExec})
+    let publication = buildDir / "harbor-executable"
+    if fileExists(publication): removeFile(publication)
+    stderr.writeLine("IsoNim: building workspace Agent Harbor through its own Repro environment from " & repo)
+    let stage = expandFilename(repo) / ".repro" / "isonim-runtime" / "produced"
+    let reproDirectory = expandFilename(repo) / ".repro"
+    if dirExists(reproDirectory) and expandFilename(reproDirectory) != reproDirectory:
+      raise newException(IOError, "Escaping Harbor stage root")
+    createDir(stage.parentDir)
+    if expandFilename(stage.parentDir) != stage.parentDir:
+      raise newException(IOError, "Escaping Harbor stage parent")
+    if dirExists(stage) and expandFilename(stage) != stage:
+      raise newException(IOError, "Escaping Harbor stage")
+    # Existing directories must already be private. Never repair a poisoned
+    # stage before the owning producer can reject it.
+    if dirExists(stage):
+      let admission = execCmdEx("python3 -c " & quoteShell(HarborProducerScript) &
+        " stage " & quoteShell(repo) & " " & quoteShell(stage), env = env)
+      if admission.exitCode != 0:
+        raise newException(IOError, admission.output.strip())
+    else:
+      createDir(stage)
+      setFilePermissions(stage, {fpUserRead, fpUserWrite, fpUserExec})
+    let transient = createTempDir("pending-", "", stage)
+    setFilePermissions(transient, {fpUserRead, fpUserWrite, fpUserExec})
+    # The parent knows the exact transient before spawning. Even cancellation
+    # reclaims only its own unfinished copy, after the owned descendants stop.
+    defer:
+      if dirExists(transient): removeDir(transient)
+    var producer: LocalHarbor
+    producer.startOwnedProcess("python3", workingDir = repo, env = env,
+      args = @["-c", HarborProducerScript, "build", repo, publication, transient])
+    defer: producer.stop()
+    while producer.process.running:
+      if shouldStop != nil and shouldStop():
+        raise newException(IOError, "Local Agent Harbor build interrupted")
+      sleep(100)
+    let code = producer.process.waitForExit()
+    if code != 0:
+      raise newException(IOError, "Local Agent Harbor build failed (exit " & $code & "); refusing an installed fallback")
+    if not fileExists(publication):
+      raise newException(IOError, "Owning producer did not report an Agent Harbor executable")
+    return resolveSelectedHarborExecutable(repo, readFile(publication).strip(),
+      "Owning producer selected an unexpected Harbor executable")
   # This private dependency belongs only to the selected runtime, never the
   # public editor package. The build consumer asks Repro to resolve the local
   # producer and materialize its executable export before launching anything.

@@ -337,6 +337,10 @@ class Runtime:
     def discoverHarbor(self,helperPid,ready):
         owned=self.observer.snapshot()
         candidates=[];observations=[]
+        selected=Path(ready['executable']).resolve()
+        exported=(HARBOR/'.repro/isonim-runtime/harbor-executable').read_text().strip()
+        if not selected.is_relative_to(HARBOR.resolve()) or Path(exported).resolve()!=selected:
+            raise AssertionError('Actual source-bound owning producer selection differs')
         states=set(Path(tempfile.gettempdir()).glob('isonim-harbor-*'))-self.harborBefore
         for state in states:
             pidfile=state/'server.pid'
@@ -344,8 +348,8 @@ class Runtime:
             declaration=json.loads(pidfile.read_text());pid=declaration['pid'];identity=owned.get(pid)
             if identity is None:continue
             argv=identity[2] or [];executable=(identity[3] or '').removesuffix(' (deleted)')
-            if (executable==str((HARBOR/'build/bin/ah').resolve()) and len(argv)>1 and
-                Path(argv[0]).resolve()==(HARBOR/'build/bin/ah').resolve() and '--pid-file' in argv and
+            if (executable==str(selected) and len(argv)>1 and
+                Path(argv[0]).resolve()==selected and '--pid-file' in argv and
                 argv[argv.index('--pid-file')+1]==str(pidfile) and '--rest-port' in argv and
                 int(argv[argv.index('--rest-port')+1])==declaration['rest']['port'] and
                 declaration['rest']['host']=='127.0.0.1' and os.getsid(pid)==helperPid):
@@ -362,7 +366,7 @@ class Runtime:
         match=re.search(r'via REST at (http://127\.0\.0\.1:\d+)',(self.artifacts/'launcher.log').read_text())
         if not match:return False
         url=match[1]
-        if ready['url']!=url or Path(ready['executable']).resolve()!=(HARBOR/'build/bin/ah').resolve():
+        if ready['url']!=url or Path(ready['executable']).resolve()!=selected:
             raise AssertionError('Actual production producer/REST handoff differs')
         exported=(HARBOR/'.repro/isonim-runtime/harbor-executable').read_text().strip()
         if Path(exported).resolve()!=Path(ready['executable']).resolve():
