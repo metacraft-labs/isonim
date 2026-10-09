@@ -265,7 +265,8 @@ test-hcr-shim:
 # hiding: this lane never got past `test_signals` while the siblings were
 # missing, so it had never reached `test_dsl` to fail there.
 test-js: build-tailwind
-    nim js -r --out:build/test_editor_workspace_refresh.js tests/test_editor_workspace_refresh.nim
+    nim js -d:nodejs --out:build/test_editor_workspace_refresh.js tests/test_editor_workspace_refresh.nim
+    python3 tools/run_nim_js_test.py build/test_editor_workspace_refresh.js
     nim js -r --out:build/test_editor_control.js tests/test_editor_control.nim
     nim js -r tests/test_signals.nim
     nim js -r tests/test_effects.nim
@@ -925,17 +926,17 @@ test-editor: test-design-review-local-harbor test-design-review-harbor-build tes
 
 # Run packaged editor browser tests.
 test-browser-editor-example: editor-build
-    cd tests/browser && npm install && npx playwright test --project=editor-example
+    cd tests/browser && npm install && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=editor-example
 
 # Run the M43 visual screenshot, pixel, layout, and review brief gates.
 test-editor-visual-gates: editor-build
     node --test tests/test_editor_visual_review_brief.mjs
-    cd tests/browser && npm install && npx playwright test --project=editor-example --grep "e2e_editor_visual_baselines_cover_all_primary_modes|e2e_editor_ui_quality_no_overlap_or_unexpected_scrollbars|e2e_long_tail_css_property_visual_evidence"
+    cd tests/browser && npm install && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=editor-example --grep "e2e_editor_visual_baselines_cover_all_primary_modes|e2e_editor_ui_quality_no_overlap_or_unexpected_scrollbars|e2e_long_tail_css_property_visual_evidence"
 
 # Run live consumer browser contract tests against metacraft-web.
 test-browser-editor-consumer:
     cd ../metacraft-web && just build-back-office-editor
-    cd tests/browser && npm install && npx playwright test --project=metacraft-web-editor
+    cd tests/browser && npm install && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=metacraft-web-editor
 
 # Run all editor browser tests.
 test-browser-editor: test-browser-editor-example test-browser-editor-consumer
@@ -1153,7 +1154,7 @@ build-hmr-fixture:
 
 # Run the HMR Playwright spec (requires: just build-hmr-fixture).
 test-browser-hmr: build-hmr-fixture
-    cd tests/browser && npx playwright test --project=hmr
+    cd tests/browser && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=hmr
 
 # Build the parametric-HMR fixture (JS target with -d:isonimHmr). The
 # fixture exercises the parametric `{.uiComponent.}` dispatch and
@@ -1164,7 +1165,7 @@ build-hmr-parametric-fixture:
 
 # Run the parametric-HMR Playwright spec.
 test-browser-hmr-parametric: build-hmr-parametric-fixture
-    cd tests/browser && npx playwright test --project=hmr-parametric
+    cd tests/browser && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=hmr-parametric
 
 # Build the SSE-transport fixture: the dev server, the "before" and
 # "after" client bundles, and the seeded main.js. The Playwright
@@ -1179,7 +1180,7 @@ build-hmr-transport-fixture:
 
 # Run the SSE-transport Playwright spec.
 test-browser-hmr-transport: build-hmr-transport-fixture
-    cd tests/browser && npx playwright test --project=hmr-transport
+    cd tests/browser && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=hmr-transport
 
 # Run Playwright browser tests (requires: just demo-build && cd tests/browser && npm install)
 test-browser: test-browser-demo test-browser-ssr test-browser-hmr test-browser-hmr-parametric test-browser-hmr-transport
@@ -1219,7 +1220,7 @@ browser-test-deps: build-tailwind demo-build build-hmr-fixture build-hmr-paramet
 # Install the browser-test npm deps + a chromium build.
 browser-test-install:
     npm --prefix tests/browser install
-    npx --prefix tests/browser playwright install chromium
+    if ! command -v chromium >/dev/null 2>&1; then npx --prefix tests/browser playwright install chromium; fi
 
 # Build everything, then run the six static in-repo Playwright projects (51 tests).
 test-browser-all: browser-test-deps
@@ -1241,11 +1242,11 @@ test-browser-all: browser-test-deps
 
 # The CI gate: the three HMR Playwright projects, 25 tests, ~56s cold.
 test-browser-smoke: build-tailwind build-hmr-fixture build-hmr-parametric-fixture build-hmr-transport-fixture
-    cd tests/browser && npx playwright test --project=hmr --project=hmr-parametric --project=hmr-transport
+    cd tests/browser && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=hmr --project=hmr-parametric --project=hmr-transport
 
 # Run Playwright demo app tests only
 test-browser-demo: demo-build
-    cd tests/browser && npx playwright test --project=demo-app
+    cd tests/browser && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=demo-app
 
 # The Web Worker build target's fixture (IFP-M3; IsoNim.md § Web Worker
 # Target): a compile module built as a worker chunk (preview.worker.js), the
@@ -1366,7 +1367,8 @@ source-editor-serve: isonim-review-build source-editor-build
 # Native persistence/compiler and full mounted GUI acceptance, no substitute compiler.
 test-editor-source: isonim-review-build source-editor-build
     nim c -r tests/test_editor_workspace_refresh.nim
-    nim js -r --out:build/test_editor_workspace_refresh.js tests/test_editor_workspace_refresh.nim
+    nim js -d:nodejs --out:build/test_editor_workspace_refresh.js tests/test_editor_workspace_refresh.nim
+    python3 tools/run_nim_js_test.py build/test_editor_workspace_refresh.js
     python3 tests/test_editor_source_project.py
     python3 tests/test_editor_native_acp_shutdown.py
     node tests/test_editor_source_gui.mjs
@@ -1661,3 +1663,18 @@ test-editor-preview-mount: build-tailwind
     nim c -r --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/test_editor_preview_mount tests/test_editor_preview_mount.nim
     nim js -d:nodejs --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/test_editor_preview_mount.js tests/test_editor_preview_mount.nim
     python3 tools/run_nim_js_test.py build/test_editor_preview_mount.js
+
+# Full committed inspector closure; every prerequisite owning entry remains.
+test-editor-inspector: test-editor-shell-current test-editor-inspector-native-source test-editor-c2 test-editor-c3 test-editor-c4a test-editor-flex-metadata test-editor-source-labels test-editor-source-labels-gui test-editor-chat-lifetime-headless test-editor-chat-lifetime-gui test-editor-renderer-boundaries test-editor-renderer-boundaries-gui test-editor-preview-mount test-editor-preview-mount-gui test-editor-source-metadata
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for stem in test_editor_source_markup test_editor_source_style_bindings test_editor_control_routes; do
+      nim c -r --out:build/$stem tests/$stem.nim
+    done
+    nim js -d:nodejs --out:build/test_editor_source_markup.js tests/test_editor_source_markup.nim
+    python3 tools/run_nim_js_test.py build/test_editor_source_markup.js
+
+# Real native guarded-source transactions and disposable compiled GRIP provider.
+test-editor-inspector-native-source: isonim-review-build
+    python3 tests/test_editor_inspector_source.py
+    python3 tests/test_editor_source_style_provider.py
