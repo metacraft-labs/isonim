@@ -22,6 +22,7 @@
 import ../../core/owner
 import ./view_lifecycle
 import ../types
+import ../preview_identity
 import ../viewmodels
 
 type
@@ -31,6 +32,12 @@ type
     ## does not tear the preview down and build it again.
     dispose*: proc()
     lastStory*: StoryRef
+    documentGeneration*: int
+    readyDocumentGeneration*: int
+    mountedDocumentGeneration*: int
+    ownerDisposed*: bool
+    cancelLoad: proc()
+    pendingMount: proc()
     generation*: int
       ## Bumped on every mount request. A pending mount that is waiting for a
       ## frame `load` compares against it and gives up if another request has
@@ -39,31 +46,73 @@ type
       ## never torn down. Its effects stay subscribed to the cells they read,
       ## so every later edit does their work again as well as the real one.
 
-proc newPreviewMountState*(): PreviewMountState =
-  PreviewMountState(dispose: nil, lastStory: StoryRef(), generation: 0)
+proc cancelPendingPreviewMount*(state: PreviewMountState) =
+  ## Retire the action, retaining a loaded document and its live mounted root.
+  state.generation = state.generation + 1
+  state.pendingMount = nil
 
-proc whenFrameReady[E](frame: E; reloaded: bool; then: proc()) =
-  ## Run `then` once the frame's document is the one we just asked for.
-  ##
-  ## A srcdoc write reloads the frame asynchronously, so mounting straight
-  ## after it would build into a document about to be thrown away. When nothing
-  ## was rewritten the current document is already the right one and `then`
-  ## runs now -- the common case, because selecting a different story inside an
-  ## unchanged shell reloads nothing.
+proc newPreviewMountState*(): PreviewMountState =
+  result = PreviewMountState()
+  let state = result
+  onCleanup proc() =
+    state.ownerDisposed = true
+    state.cancelPendingPreviewMount()
+    if state.cancelLoad != nil:
+      state.cancelLoad()
+      state.cancelLoad = nil
+    if state.dispose != nil:
+      state.dispose()
+      state.dispose = nil
+
+proc observeRequestedDocument[E](frame: E; state: PreviewMountState;
+    revision: int): proc() =
   when isDomViewHost(E):
-    let cb = then
-    {.emit: ["""
-      (function (frame, reloaded, cb) {
-        if (!reloaded) { cb(); return; }
-        frame.addEventListener('load', function onLoad() {
-          frame.removeEventListener('load', onLoad);
-          cb();
-        });
-      })(""", frame, ", ", reloaded, ", ", cb, ");"].}
+    let ready = proc() =
+      if state.ownerDisposed or state.documentGeneration != revision: return
+      state.readyDocumentGeneration = revision
+      if state.pendingMount != nil: state.pendingMount()
+    {.emit: [result, " = ", """
+      (function (frame, revision, ready) {
+        let live = true;
+        function onPreviewMountDocumentLoad() {
+          if (!live || frame.__isonimViewDisposed || !frame.isConnected) return;
+          const doc = frame.contentDocument;
+          if (!doc || doc.readyState !== 'complete' || !doc.body ||
+              doc.querySelector('meta[name="isonim-mount-document"]')?.content !== String(revision)) return;
+          live = false;
+          frame.removeEventListener('load', onPreviewMountDocumentLoad);
+          ready();
+        }
+        // Registered BEFORE srcdoc is assigned, including a hidden view's
+        // request. An earlier navigation's load cannot satisfy this revision.
+        frame.addEventListener('load', onPreviewMountDocumentLoad);
+        return function () {
+          live = false;
+          frame.removeEventListener('load', onPreviewMountDocumentLoad);
+        };
+      })(""", frame, ", ", revision, ", ", ready, ");"].}
   else:
     discard frame
-    discard reloaded
-    then()
+    state.readyDocumentGeneration = revision
+
+proc requestedPreviewMountDocument*[E](frame: E; state: PreviewMountState;
+    html: string): string =
+  ## Called on EVERY actual srcdoc rewrite, before assigning it. Readiness is
+  ## per requested document, not the latest render effect's changed boolean.
+  if state.ownerDisposed: return html
+  state.cancelPendingPreviewMount()
+  if state.cancelLoad != nil:
+    state.cancelLoad()
+    state.cancelLoad = nil
+  if state.dispose != nil:
+    state.dispose()
+    state.dispose = nil
+  state.documentGeneration = state.documentGeneration + 1
+  state.readyDocumentGeneration = 0
+  if html.len == 0: return ""
+  state.cancelLoad = observeRequestedDocument(frame, state, state.documentGeneration)
+  stampedPreviewDocument(html, "<meta name=\"isonim-mount-document\" content=\"" &
+    $state.documentGeneration & "\">")
 
 proc mountNow[E](frame: E; story: StoryRef; hook: PreviewMountHook;
                  state: PreviewMountState) =
@@ -158,35 +207,25 @@ proc mountNow[E](frame: E; story: StoryRef; hook: PreviewMountHook;
     discard state
 
 proc mountPreviewInto*[E](frame: E; story: StoryRef; hook: PreviewMountHook;
-                          state: PreviewMountState; reloaded: bool) =
-  ## Mount `story` into `frame`, unless it is already the one mounted.
-  ##
-  ## Re-mounting on every render would discard the tree the user is working in
-  ## several times a second, so this returns early when nothing relevant moved.
-  ## A srcdoc rewrite counts as relevant even for the same story: the document
-  ## it mounted into no longer exists.
-  if hook.isNil: return
-  if not reloaded and story == state.lastStory: return
+                          state: PreviewMountState; reloaded: bool;
+                          stillCurrent: proc(): bool = nil) =
+  ## Request only one mount of this story in this exact loaded document.
+  if state.ownerDisposed or hook.isNil: return
+  if not reloaded and story == state.lastStory and
+      state.mountedDocumentGeneration == state.documentGeneration: return
+  state.cancelPendingPreviewMount()
   state.lastStory = story
-  state.generation = state.generation + 1
-
-  # Only the LATEST request may mount.
-  #
-  # A srcdoc rewrite makes the mount wait for the frame's `load`, and edits can
-  # arrive faster than rebuilds: each one writes the file, each write triggers a
-  # rebuild, and each rebuild reloads the frame. Several mounts were then in
-  # flight at once, every one of them calling `createRoot` and overwriting
-  # `dispose` -- so all but the last root leaked, still subscribed to the cells
-  # it read. Each subsequent edit ran every orphaned root's effects as well as
-  # the live one's, which is why the editor degraded over a handful of edits
-  # and then stopped responding rather than failing outright.
-  #
-  # Reproduced at ten edits 1.5s apart: the preview and the inspector desynced
-  # at the fifth and the tab wedged at the seventh.
-  let captured = state
-  let capturedHook = hook
-  let capturedStory = story
   let mine = state.generation
-  whenFrameReady(frame, reloaded, proc() =
-    if captured.generation == mine:
-      mountNow(frame, capturedStory, capturedHook, captured))
+  let revision = state.documentGeneration
+  let current = stillCurrent
+  state.pendingMount = proc() =
+    if state.ownerDisposed or state.generation != mine or
+        state.documentGeneration != revision or
+        (current != nil and not current()): return
+    state.pendingMount = nil
+    mountNow(frame, story, hook, state)
+    state.mountedDocumentGeneration = revision
+  # Logical renderer hosts retain their prior non-DOM behavior. A real host
+  # reaches this fast path only after its matching actual document load.
+  if state.readyDocumentGeneration == revision:
+    state.pendingMount()

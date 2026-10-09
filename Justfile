@@ -1645,3 +1645,19 @@ test-editor-shell-current: build-tailwind
     nim c -r --out:build/test_editor_shell_views tests/test_editor_shell_views.nim
     nim js -d:nodejs --out:build/test_editor_shell_views.js tests/test_editor_shell_views.nim
     python3 tools/run_nim_js_test.py build/test_editor_shell_views.js
+
+editor-preview-mount-build: build-tailwind
+    mkdir -p build/editor-preview-mount
+    nim js --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/editor-preview-mount/editor.js tests/helpers/editor_preview_mount_browser.nim
+    "${ISONIM_SCENARIO_NODE:-node}" --check build/editor-preview-mount/editor.js
+
+test-editor-preview-mount-gui: editor-preview-mount-build
+    timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_preview_mount_gui.mjs
+
+# Requested-document ownership on real reactive roots; strict Node execution.
+test-editor-preview-mount: build-tailwind
+    #!/usr/bin/env bash
+    set -euo pipefail
+    nim c -r --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/test_editor_preview_mount tests/test_editor_preview_mount.nim
+    nim js -d:nodejs --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/test_editor_preview_mount.js tests/test_editor_preview_mount.nim
+    python3 tools/run_nim_js_test.py build/test_editor_preview_mount.js

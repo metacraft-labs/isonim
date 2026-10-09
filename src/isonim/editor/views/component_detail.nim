@@ -942,7 +942,8 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
       nextProjectSrcdoc.len != lastProjectSrcdoc.len or
       nextProjectSrcdoc != lastProjectSrcdoc
     if projectSrcdocChanged:
-      r.setAttribute(projectFrame, "srcdoc", nextProjectSrcdoc)
+      r.setAttribute(projectFrame, "srcdoc",
+        requestedPreviewMountDocument(projectFrame, mountState, nextProjectSrcdoc))
       lastProjectSrcdoc = nextProjectSrcdoc
       detailSrcdocGeneration.val = detailSrcdocGeneration.val + 1
 
@@ -968,7 +969,11 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
     if showProject and vm.platform.val == pbWeb and
         vm.activeView.val == evComponentDetail:
       mountPreviewInto(projectFrame, story, vm.previewMount, mountState,
-                       projectSrcdocChanged)
+                       projectSrcdocChanged, proc(): bool =
+                         vm.platform.val == pbWeb and vm.activeView.val == evComponentDetail and
+                         vm.selectedStory.val == story)
+    else:
+      mountState.cancelPendingPreviewMount()
     r.setStyle(projectFrame, "width", "100%")
     r.setStyle(projectFrame, "min-height", "1px")
     r.setStyle(projectFrame, "overflow", "hidden")

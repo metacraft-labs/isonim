@@ -5151,7 +5151,8 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
       nextSrcdoc.len != lastSrcdoc.len or nextSrcdoc != lastSrcdoc
     if srcdocChanged:
       lastSrcdoc = nextSrcdoc
-      r.setAttribute(projectFrame, "srcdoc", nextSrcdoc)
+      r.setAttribute(projectFrame, "srcdoc",
+        requestedPreviewMountDocument(projectFrame, mountState, nextSrcdoc))
       # Reloading the frame drops the selection outline, so ask for a restore
       # even when the selected element itself did not change.
       srcdocGeneration.val = srcdocGeneration.val + 1
@@ -5186,8 +5187,13 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
     # Reading `activeView` also makes this effect re-run on a view switch,
     # which is what mounts the story into the view the user just moved to.
     if vm.platform.val == pbWeb and vm.activeView.val == evComponentEdit:
-      mountPreviewInto(projectFrame, vm.selectedStory.val, vm.previewMount,
-                       mountState, srcdocChanged)
+      let mountStory = vm.selectedStory.val
+      mountPreviewInto(projectFrame, mountStory, vm.previewMount,
+                       mountState, srcdocChanged, proc(): bool =
+                         vm.platform.val == pbWeb and vm.activeView.val == evComponentEdit and
+                         vm.selectedStory.val == mountStory)
+    else:
+      mountState.cancelPendingPreviewMount()
     r.setStyle(projectFrame, "min-height", "320px")
     r.setStyle(projectFrame, "overflow", "hidden")
 

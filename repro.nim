@@ -452,6 +452,7 @@ const isonimTestSpecs: seq[IsonimTestSpec] = @[
   spec("test_editor_public_api"),
   spec("test_editor_source_scope_labels"),
   spec("test_editor_renderer_boundaries"),
+  spec("test_editor_preview_mount"),
   spec("test_editor_shell_views"),
   spec("test_editor_task_views"),
   spec("test_editor_interactivity"),
@@ -539,6 +540,7 @@ const isonimCompileOnlySpecs: seq[IsonimTestSpec] = @[
 const isonimJsTestSpecs: seq[string] = @[
   "test_editor_chat_view_lifetime",
   "test_editor_renderer_boundaries",
+  "test_editor_preview_mount",
   "test_editor_shell_views",
   "test_editor_section_source",
   "test_editor_section_appearance", "test_editor_section_component_props", "test_editor_section_layout", "test_editor_section_position",
@@ -795,6 +797,7 @@ package isonim:
     var sourceLabelActions: seq[BuildActionDef] = @[]
     var currentShellActions: seq[BuildActionDef] = @[]
     var rendererBoundaryActions: seq[BuildActionDef] = @[]
+    var previewMountActions: seq[BuildActionDef] = @[]
     var chatLifetimeActions: seq[BuildActionDef] = @[]
     var testExecuteActions: seq[BuildActionDef] = @[]
     var popupHeadlessActions: seq[BuildActionDef] = @[]
@@ -832,6 +835,7 @@ package isonim:
         executeActions.add(executeEdge)
         if stem == "test_editor_shell_views": currentShellActions.add(executeEdge)
         if stem == "test_editor_renderer_boundaries": rendererBoundaryActions.add(executeEdge)
+        if stem == "test_editor_preview_mount": previewMountActions.add(executeEdge)
         if stem in ["test_editor_chat_view_lifetime", "test_editor_shell_chat_lifetime", "test_editor_chat_tabs_vm", "test_editor_chat_activity"]: chatLifetimeActions.add(executeEdge)
         if stem in ["test_editor_section_source", "test_editor_source_scope_labels", "test_editor_source_scope_row", "test_editor_section_component_props"]: sourceLabelActions.add(executeEdge)
         if stem in ["test_editor_section_appearance", "test_editor_section_component_props", "test_editor_section_layout", "test_editor_section_position"]: c4aHeadlessActions.add(executeEdge)
@@ -1385,7 +1389,7 @@ package isonim:
       jsBuildActions.add(jsCompileEdge)
       let guardedC2 = stem in ["test_effects", "test_editor_widget_property_row", "test_editor_color_popover", "test_editor_section_fill", "test_editor_source_scope_row"]
       let jsExecuteEdge =
-        if stem in ["test_editor_shell_views", "test_editor_renderer_boundaries"] or guardedC2 or stem in ["test_editor_chat_view_lifetime", "test_editor_chat_tabs_vm", "test_editor_chat_activity"] or stem == "test_editor_color_picker" or stem in ["test_editor_section_source", "test_editor_section_appearance", "test_editor_section_component_props", "test_editor_section_layout", "test_editor_section_position"]:
+        if stem in ["test_editor_shell_views", "test_editor_renderer_boundaries", "test_editor_preview_mount"] or guardedC2 or stem in ["test_editor_chat_view_lifetime", "test_editor_chat_tabs_vm", "test_editor_chat_activity"] or stem == "test_editor_color_picker" or stem in ["test_editor_section_source", "test_editor_section_appearance", "test_editor_section_component_props", "test_editor_section_layout", "test_editor_section_position"]:
           sh.shell(command = "python3 tools/run_nim_js_test.py " & jsOut, cacheable = false,
             actionId = "isonim.js_execute." & stem, after = @[jsCompileEdge],
             extraInputs = @[jsOut, "tools/run_nim_js_test.py"])
@@ -1394,6 +1398,7 @@ package isonim:
             after = @[jsCompileEdge], extraInputs = @[jsOut])
       if stem == "test_editor_shell_views": currentShellActions.add(jsExecuteEdge)
       if stem == "test_editor_renderer_boundaries": rendererBoundaryActions.add(jsExecuteEdge)
+      if stem == "test_editor_preview_mount": previewMountActions.add(jsExecuteEdge)
       if guardedC2: c2HeadlessActions.add(jsExecuteEdge)
       if stem in ["test_editor_color_picker", "test_editor_color_popover"]:
         c3HeadlessActions.add(jsExecuteEdge)
@@ -1434,6 +1439,19 @@ package isonim:
     testBuildActions.add(sourceLabelsBrowserEdge)
     testExecuteActions.add(sourceLabelsGuiEdge)
     discard collect("test-editor-source-labels-gui", @[sourceLabelsGuiEdge])
+    let previewMountBrowserEdge = sh.shell(
+      command = "just editor-preview-mount-build", cacheable = false,
+      actionId = "isonim.preview_mount_build.browser", after = @[tailwindStylesEdge],
+      extraInputs = @["src", "tests/helpers/editor_preview_mount_browser.nim", "Justfile", "build/tailwind-styles.json"],
+      extraOutputs = @["build/editor-preview-mount"])
+    let previewMountGuiEdge = sh.shell(
+      command = "timeout --signal=TERM --kill-after=15s 180s \"${ISONIM_SCENARIO_NODE:-node}\" tests/test_editor_preview_mount_gui.mjs",
+      cacheable = false, actionId = "isonim.preview_mount_execute.gui", after = @[previewMountBrowserEdge],
+      extraInputs = @["tests/test_editor_preview_mount_gui.mjs", "build/editor-preview-mount"])
+    testBuildActions.add(previewMountBrowserEdge)
+    testExecuteActions.add(previewMountGuiEdge)
+    discard collect("test-editor-preview-mount", previewMountActions)
+    discard collect("test-editor-preview-mount-gui", @[previewMountGuiEdge])
     let rendererBoundaryBrowserEdge = sh.shell(
       command = "just editor-renderer-boundaries-build", cacheable = false,
       actionId = "isonim.renderer_boundary_build.browser", after = @[tailwindStylesEdge],

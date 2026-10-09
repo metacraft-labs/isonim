@@ -64,9 +64,14 @@ proc stampPosition(html: string): int =
     cursor = finish + 1
   cursor
 
+proc stampedPreviewDocument*(html, identity: string): string =
+  ## Add editor metadata at the existing lossless head boundary.
+  if html.len == 0: return ""
+  let position = stampPosition(html)
+  html[0 ..< position] & identity & html[position ..< html.len]
+
 proc identifiedPreviewDocument*(html: string; story: StoryRef; generation: int): string =
   if html.len == 0: return ""
   let identity = "<meta name=\"isonim-rendered-story\" content=\"" &
     escapeAttr(story.group & " / " & story.name) & "\"><meta name=\"isonim-rendered-generation\" content=\"" & $generation & "\">"
-  let position = stampPosition(html)
-  html[0 ..< position] & identity & html[position ..< html.len]
+  stampedPreviewDocument(html, identity)
