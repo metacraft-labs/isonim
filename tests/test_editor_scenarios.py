@@ -31,6 +31,7 @@ class EditorScenarios(unittest.TestCase):
             runtime.phase(1)
             runtime.action(action='send',text='Create the busy Card story, compile it, open it and capture its HTML.')
             wait(lambda:(runtime.artifacts/'entered-1').exists(),'actual provider tool entered')
+            runtime.assertResourceVisibility()
             wait(lambda:any('ISONIM_M5_STREAM_BEGIN' in message['text'] for message in runtime.active()['messages']),'incremental real SSE reaches VM')
             self.assertTrue(runtime.active()['busy'])
             terminal=json.loads((runtime.artifacts/'terminal-network.json').read_text())['original_handoff']

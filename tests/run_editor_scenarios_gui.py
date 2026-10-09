@@ -31,6 +31,7 @@ else:
                 observed[current]=actual
             time.sleep(.03)
         if child.returncode:raise subprocess.CalledProcessError(child.returncode,child.args)
+        runtime.assertResourceVisibility()
         if set(observed)!=set(('2','10','14')):raise AssertionError('Browser followup/reconnect/late turn provider observation required')
         if any(row[2] and row[2][0]==str(runtime.provider) and str(runtime.scenario) in row[2] for row in runtime.observer.snapshot().values()):
             raise AssertionError('Actual browser closed session left its provider alive')

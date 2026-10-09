@@ -528,7 +528,10 @@ test-editor-server: isonim-review-build
 # Real editor routes and sibling producer, official deterministic agent only.
 # Public workspaces skip only when the optional private checkout is absent.
 # Private workspaces set ISONIM_HARBOR_SCENARIO_PROVIDER to built mock-agent.
-test-editor-harbor-scenario: isonim-review-build
+test-editor-harbor-scenario:
+    python3 tests/helpers/editor_scenario_checkout.py _editor-harbor-scenario
+
+_editor-harbor-scenario: isonim-review-build
     python3 tests/test_editor_process_observer.py
     python3 tests/test_editor_harbor_scenario.py
 
@@ -1400,13 +1403,23 @@ test-editor-preparation-clock:
 editor-scenario-host-build:
     nim c --out:build/bin/editor-scenario-host tests/test_editor_scenario_host.nim
 
-test-editor-scenarios-native: test-editor-preparation-clock isonim-review-build source-editor-build editor-scenario-host-build
-    python3 tests/test_editor_scenarios.py
+test-editor-scenarios-native:
+    python3 tests/helpers/editor_scenario_checkout.py _editor-scenarios-native
 
-test-editor-scenarios-gui: test-editor-preparation-clock isonim-review-build source-editor-build
+_editor-scenarios-native: test-editor-preparation-clock isonim-review-build source-editor-build editor-scenario-host-build
+    python3 tests/test_editor_scenarios.py
+    python3 tests/test_editor_scenario_resources.py
+
+test-editor-scenarios-gui:
+    python3 tests/helpers/editor_scenario_checkout.py _editor-scenarios-gui
+
+_editor-scenarios-gui: test-editor-preparation-clock isonim-review-build source-editor-build
     python3 tests/run_editor_scenarios_gui.py
 
-test-editor-scenarios-stress: test-editor-preparation-clock isonim-review-build source-editor-build editor-scenario-host-build
+test-editor-scenarios-stress:
+    python3 tests/helpers/editor_scenario_checkout.py _editor-scenarios-stress
+
+_editor-scenarios-stress: test-editor-preparation-clock isonim-review-build source-editor-build editor-scenario-host-build
     python3 tests/test_editor_scenario_stress.py
 
 test-editor-scenarios: test-editor-scenarios-native test-editor-scenarios-gui test-editor-scenarios-stress

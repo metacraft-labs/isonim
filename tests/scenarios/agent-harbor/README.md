@@ -20,7 +20,25 @@ non-mutation checks cover every project file outside this fixture directory.
 Production launch handoffs use privately owned application data outside hidden
 host `/tmp` and runtime IPC, and remain read-only to the isolated provider.
 
-The native suite is one stateful integration test, with named workflow outcomes;
+The four public scenario commands also handle a compiler checkout whose canonical
+path lies under Linux `/tmp`. `editor_scenario_checkout.py` makes a genuine Git
+snapshot outside private `/tmp`, copies the current authored edits and deletions,
+retains real sibling/submodule dependencies and rebuilds with the same owning
+recipe. Snapshot provenance and exit status are retained in an owned 0700
+`~/.local/share/isonim-test-fixtures/harbor-checkout-*` directory, with 0600
+manifests. User settings, credentials and private editor state are not copied.
+The runner records generated Tailwind input hashes and does not regenerate them;
+prepare them through the normal locked dependency/build mechanism first. It does
+not change Harbor isolation or expose the compiler checkout as a writable project.
+
+Every shared scenario terminal verifies the exact readable helper, CLI, role
+prompt and official provider bytes, a readable bound sentinel and a host-existing
+unbound `/tmp` sentinel that must remain hidden. Native, stress and GUI drivers
+consume this actual terminal evidence. An additional stateful native resource
+case poisons a resource hash and then names a bound file as the negative sentinel;
+both actual commands must fail before CLI effects or a proof file are produced.
+
+The original native suite is one stateful integration test, with named workflow outcomes;
 the GUI runner records its own named outcomes. These are workflow checks, not
 twelve independent unit tests. Each completed outcome is saved immediately, so a
 later failure retains earlier evidence. Existing control/chat unit inventories

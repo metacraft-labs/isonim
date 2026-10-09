@@ -27,6 +27,7 @@ import urllib.request
 from helpers.editor_preparation_clock import PreparationClock, ClockTrace, SCHEMA, COLD_BOUND_NS
 from helpers.editor_sdk_runtime import materialize
 from helpers.editor_process_observer import process_observer, optional_sibling_available
+from helpers.editor_scenario_registration import verify_recipe
 
 ROOT = Path(__file__).resolve().parents[2]
 HARBOR = ROOT.parent / 'agent-harbor'
@@ -68,6 +69,7 @@ class Runtime:
                  editor_directory=None, source_file="stories.nim", instructions_path=None, real_model=None, scenario_path=None, observe_scenario_wire=False):
         self.source_file = source_file
         if not optional_sibling_available(HARBOR): raise FileNotFoundError('optional private Agent Harbor sibling absent')
+        verify_recipe((ROOT/'repro.nim').read_text())
         self.observer = process_observer()
         self.daemon = (ROOT/'build/bin/isonim-review').resolve()
         if self.daemon.parent!=(ROOT/'build/bin').resolve() or not self.daemon.is_file() or not os.access(self.daemon,os.X_OK):
@@ -92,10 +94,30 @@ class Runtime:
         build = subprocess.run(build_argv,cwd=self.project,env=self.env,text=True,capture_output=True,timeout=120)
         (self.artifacts/'initial-build.log').write_text(build.stdout+build.stderr)
         if build.returncode: raise AssertionError('Real initial source build failed: '+str(self.artifacts))
+        # The terminal tests the real readable compiler resources and the exact
+        # isolation boundary, rather than admitting paths by host-side stat alone.
+        sentinel_directory = Path(tempfile.mkdtemp(prefix='isonim-unbound-resource-', dir='/tmp' if sys.platform == 'linux' else None))
+        sentinel_directory.chmod(0o700)
+        self.resourceSentinelDirectory = sentinel_directory
+        sentinel = secrets.token_bytes(32)
+        unbound = sentinel_directory/'sentinel'; unbound.write_bytes(sentinel); unbound.chmod(0o600)
+        positive = self.private/'bound-resource-sentinel'; positive.write_bytes(sentinel); positive.chmod(0o600)
+        resources = [ROOT/'tools/editor_agent_env.py', ROOT/'tools/agent_session_launcher.py',
+                     ROOT/'prompts/ai-assistant.md', ROOT/'build/bin/isonim', self.provider,
+                     ROOT/'tests/helpers/editor_scenario_provider.py',
+                     ROOT/'tests/helpers/editor_scenario_barrier.py',
+                     ROOT/'tests/helpers/editor_scenario_network_probe.py',
+                     ROOT/'tests/helpers/editor_scenario_filesystem_probe.py']
+        resource_manifest = self.private/'resource-manifest.json'
+        resource_manifest.write_text(json.dumps({'resources': {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in resources},
+            'boundSentinel': str(positive), 'unboundSentinel': str(unbound),
+            'sentinelSha256': hashlib.sha256(sentinel).hexdigest()}))
+        resource_manifest.chmod(0o600)
         scenario = Path(scenario_path or ROOT/'tests/scenarios/agent-harbor/editor-workflows.yaml').read_text()
         values = {'PROJECT':self.project,'ARTIFACTS':self.artifacts,'PYTHON':Path(sys.executable),
                   'WRAPPER':ROOT/'tools/editor_agent_env.py','PRIVATE':self.private,'CLI':ROOT/'build/bin/isonim',
-                  'BARRIER':ROOT/'tests/helpers/editor_scenario_barrier.py','NETPROBE':ROOT/'tests/helpers/editor_scenario_network_probe.py'}
+                  'BARRIER':ROOT/'tests/helpers/editor_scenario_barrier.py','NETPROBE':ROOT/'tests/helpers/editor_scenario_network_probe.py',
+                  'FSPROBE':ROOT/'tests/helpers/editor_scenario_filesystem_probe.py', 'RESOURCE_MANIFEST':resource_manifest}
         for key,value in values.items(): scenario=scenario.replace('@'+key+'@',str(value))
         self.scenario = self.artifacts/'scenario.yaml'; self.scenario.write_text(scenario)
         if real_provider:
@@ -454,6 +476,17 @@ class Runtime:
         result={str(pid):list(row) for pid,row in candidates.items()}
         (self.artifacts/'provider-identity.json').write_text(json.dumps(result,indent=2))
         return result
+    def assertResourceVisibility(self):
+        manifest = json.loads((self.private/'resource-manifest.json').read_text())
+        proof = json.loads((self.artifacts/'resource-visibility.json').read_text())
+        assert sorted(proof['readableResources']) == sorted(manifest['resources'])
+        assert proof['boundSentinelReadable'] is True
+        assert hashlib.sha256(Path(manifest['unboundSentinel']).read_bytes()).hexdigest() == manifest['sentinelSha256']
+        if sys.platform == 'linux':
+            assert proof['unboundTemporarySentinelHidden'] is True
+            assert proof['mountNamespace'] != os.readlink('/proc/self/ns/mnt')
+            assert any(' - tmpfs ' in line for line in proof['privateTmpMount'])
+
     def close(self):
         substantive_error = None
         try:
@@ -462,6 +495,16 @@ class Runtime:
             substantive_error = error
             raise
         finally:
+            cleanup_errors = []
+            directory = getattr(self, 'resourceSentinelDirectory', None)
+            if directory is not None:
+                try:
+                    info = directory.lstat()
+                    assert stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o700
+                    (directory/'sentinel').unlink()
+                    directory.rmdir()
+                except BaseException as error:
+                    cleanup_errors.append('Owned resource sentinel cleanup failed: ' + type(error).__name__)
             if getattr(self, 'clockPublishTrace', None) is not None:
                 trace_errors = []
                 # Diagnostics cannot interrupt owned-resource or privacy cleanup.
@@ -470,9 +513,11 @@ class Runtime:
                     try: trace.flush()
                     except BaseException as error: trace_errors.append(type(error).__name__)
                 if trace_errors:
-                    message = 'Private clock trace persistence failed: ' + ', '.join(trace_errors)
-                    if substantive_error is not None: substantive_error.add_note(message)
-                    else: raise AssertionError(message)
+                    cleanup_errors.append('Private clock trace persistence failed: ' + ', '.join(trace_errors))
+            if cleanup_errors:
+                message = '; '.join(cleanup_errors)
+                if substantive_error is not None: substantive_error.add_note(message)
+                else: raise AssertionError(message)
 
     def _close(self):
         self.handoffStop.set()

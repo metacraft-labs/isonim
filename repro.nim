@@ -1135,35 +1135,38 @@ package isonim:
       actionId = "isonim.scenario_build.native_host",
       extraInputs = @["src", "tests/test_editor_scenario_host.nim"])
     testBuildActions.add(scenarioHostEdge.action)
-    testExecuteActions.add(pythonUnittest.run(
+    let scenarioNativeEdge = pythonUnittest.run(
       source = "tests/test_editor_scenarios.py",
       actionId = "isonim.scenario_execute.native",
       after = @[controlCliEdge, sourceBrowserEdge, scenarioHostEdge.action, preparationClockPythonEdge, preparationClockNodeEdge],
       extraInputs = @["tests/test_editor_scenarios.py", "tests/helpers/editor_context_evidence.py", "tests/helpers/editor_scenario_runtime.py", "tests/helpers/editor_preparation_clock.py", "tests/helpers/editor_preparation_clock.mjs",
         "tests/helpers/editor_scenario_provider.py", "tests/helpers/editor_scenario_barrier.py",
-        "tests/helpers/editor_scenario_network_probe.py",
+        "tests/helpers/editor_scenario_network_probe.py", "tests/helpers/editor_scenario_filesystem_probe.py", "tests/helpers/editor_scenario_registration.py", "repro.nim",
         "tests/scenarios/agent-harbor/editor-workflows.yaml", "tests/scenarios/agent-harbor/README.md", "tools/editor_server.py",
-        "tools/editor_agent_env.py", "examples/source_project", "build/bin/editor-scenario-host",
-        "build/bin/isonim", "build/editor-source"]))
-    testExecuteActions.add(pythonUnittest.run(
+        "tools/editor_agent_env.py", "tools/agent_session_launcher.py", "prompts/ai-assistant.md", "examples/source_project", "build/bin/editor-scenario-host",
+        "build/bin/isonim", "build/editor-source"])
+    testExecuteActions.add(scenarioNativeEdge)
+    let scenarioStressEdge = pythonUnittest.run(
       source = "tests/test_editor_scenario_stress.py",
       actionId = "isonim.scenario_execute.stream_ownership",
       after = @[controlCliEdge, sourceBrowserEdge, scenarioHostEdge.action, preparationClockPythonEdge, preparationClockNodeEdge],
       extraInputs = @["tests/test_editor_scenario_stress.py", "tests/helpers/editor_scenario_runtime.py", "tests/helpers/editor_preparation_clock.py", "tests/helpers/editor_preparation_clock.mjs",
         "tests/helpers/editor_scenario_provider.py", "tests/helpers/editor_scenario_barrier.py",
-        "tests/helpers/editor_scenario_network_probe.py", "tests/scenarios/agent-harbor/editor-workflows.yaml",
-        "tests/scenarios/agent-harbor/README.md", "tools/editor_server.py", "tools/editor_agent_env.py",
-        "examples/source_project", "build/bin/editor-scenario-host", "build/bin/isonim", "build/editor-source"]))
-    testExecuteActions.add(pythonUnittest.run(
+        "tests/helpers/editor_scenario_network_probe.py", "tests/helpers/editor_scenario_filesystem_probe.py", "tests/helpers/editor_scenario_registration.py", "repro.nim", "tests/scenarios/agent-harbor/editor-workflows.yaml",
+        "tests/scenarios/agent-harbor/README.md", "tools/editor_server.py", "tools/editor_agent_env.py", "tools/agent_session_launcher.py", "prompts/ai-assistant.md",
+        "examples/source_project", "build/bin/editor-scenario-host", "build/bin/isonim", "build/editor-source"])
+    testExecuteActions.add(scenarioStressEdge)
+    let scenarioGuiEdge = pythonUnittest.run(
       source = "tests/run_editor_scenarios_gui.py",
       actionId = "isonim.scenario_execute.gui",
       after = @[controlCliEdge, sourceBrowserEdge, preparationClockPythonEdge, preparationClockNodeEdge],
       extraInputs = @["tests/run_editor_scenarios_gui.py", "tests/test_editor_scenarios_gui.mjs",
         "tests/helpers/editor_scenario_runtime.py", "tests/helpers/editor_preparation_clock.py", "tests/helpers/editor_preparation_clock.mjs", "tests/helpers/editor_scenario_provider.py", "tests/helpers/editor_provider_wire.py", "tests/helpers/editor_provider_closure.py",
-        "tests/helpers/editor_scenario_barrier.py", "tests/helpers/editor_scenario_network_probe.py",
+        "tests/helpers/editor_scenario_barrier.py", "tests/helpers/editor_scenario_network_probe.py", "tests/helpers/editor_scenario_filesystem_probe.py", "tests/helpers/editor_scenario_registration.py", "repro.nim",
         "tests/scenarios/agent-harbor/editor-workflows.yaml", "tests/scenarios/agent-harbor/README.md",
-        "tools/editor_server.py", "tools/editor_agent_env.py", "examples/source_project",
-        "build/bin/isonim", "build/editor-source"]))
+        "tools/editor_server.py", "tools/editor_agent_env.py", "tools/agent_session_launcher.py", "prompts/ai-assistant.md", "examples/source_project",
+        "build/bin/isonim", "build/editor-source"])
+    testExecuteActions.add(scenarioGuiEdge)
 
     testExecuteActions.add(pythonUnittest.run(
       source = "tests/test_editor_source_project.py",
@@ -1513,6 +1516,27 @@ package isonim:
     discard collect("test-editor-c2", c2HeadlessActions & c2SourceActions & @[popupOwnerHmrEdge, popupGeometryEdge, popupSelectionRestoreEdge, popupGuiEdge])
     discard collect("test-editor-popup", popupHeadlessActions & @[popupOwnerHmrEdge, popupGeometryEdge, popupSelectionRestoreEdge, popupGuiEdge])
     discard collect("test-editor-inspector", currentShellActions & popupHeadlessActions & inspectorNativeSourceActions & inspectorFoundationActions & c2HeadlessActions & c3HeadlessActions & c4aHeadlessActions & c2SourceActions & c4aGuiActions & sourceLabelActions & chatLifetimeActions & rendererBoundaryActions & previewMountActions & @[flexMetadataHeadlessEdge, flexMetadataGuiEdge, sourceLabelsGuiEdge, chatLifetimeGuiEdge, rendererBoundaryGuiEdge, previewMountGuiEdge, c3GuiEdge, popupOwnerHmrEdge, popupGeometryEdge, popupSelectionRestoreEdge, popupGuiEdge, sourceMetadataEdge])
+    # Keep the original inventory order/action IDs. This additional real
+    # resource case is a separate required execute edge, never a shell rebuild.
+    # Repro fixtures compile outside private /tmp; Just handles temporary
+    # compiler checkouts before its own build recipes begin.
+    let scenarioResourcesEdge = pythonUnittest.run(
+      source = "tests/test_editor_scenario_resources.py",
+      actionId = "isonim.scenario_execute.resource_visibility",
+      after = @[controlCliEdge, sourceBrowserEdge, scenarioHostEdge.action, preparationClockPythonEdge, preparationClockNodeEdge],
+      extraInputs = @["tests/test_editor_scenario_resources.py", "tests/helpers/editor_scenario_runtime.py",
+        "tests/helpers/editor_preparation_clock.py", "tests/helpers/editor_preparation_clock.mjs",
+        "tests/helpers/editor_process_observer.py", "tests/helpers/editor_context_evidence.py",
+        "tests/helpers/editor_scenario_provider.py", "tests/helpers/editor_scenario_barrier.py",
+        "tests/helpers/editor_scenario_network_probe.py", "tests/helpers/editor_scenario_filesystem_probe.py", "tests/helpers/editor_scenario_registration.py", "repro.nim",
+        "tests/scenarios/agent-harbor/editor-workflows.yaml", "tools/editor_server.py",
+        "tools/editor_agent_env.py", "tools/agent_session_launcher.py", "prompts/ai-assistant.md",
+        "examples/source_project", "build/bin/editor-scenario-host", "build/bin/isonim", "build/editor-source"])
+    testExecuteActions.add(scenarioResourcesEdge)
+    discard collect("test-editor-scenarios-native", @[scenarioNativeEdge, scenarioResourcesEdge])
+    discard collect("test-editor-scenarios-stress", @[scenarioStressEdge])
+    discard collect("test-editor-scenarios-gui", @[scenarioGuiEdge])
+    discard collect("test-editor-scenarios", @[scenarioNativeEdge, scenarioResourcesEdge, scenarioStressEdge, scenarioGuiEdge])
     discard collect("test", testExecuteActions)
     discard collect("test-builds", testBuildActions)
     discard collect("js-test", jsExecuteActions)
