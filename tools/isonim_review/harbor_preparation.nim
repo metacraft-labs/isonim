@@ -69,10 +69,7 @@ proc readyUrl(preparation: HarborPreparation): string =
       port notin 1 .. 65535:
     raise newException(IOError, "Invalid local Harbor endpoint")
   let executable = data["executable"].getStr
-  let relative = relativePath(executable, preparation.repository)
-  if not executable.isAbsolute or relative == ".." or
-      relative.startsWith(".." & $DirSep) or not fileExists(executable):
-    raise newException(IOError, "Unexpected local Harbor executable")
+  discard resolveSelectedHarborExecutable(preparation.repository, executable)
   result = url
 
 proc prepare(preparation: HarborPreparation): Future[string] {.async, gcsafe.} =

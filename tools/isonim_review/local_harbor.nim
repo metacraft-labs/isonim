@@ -213,6 +213,19 @@ proc writeBuildInput(path, contents: string) =
   finally:
     if fileExists(temporary): removeFile(temporary)
 
+proc resolveSelectedHarborExecutable*(repo, binary: string;
+    failureMessage = "Unexpected local Harbor executable"): string =
+  # Compare canonical filesystem paths. Repro may report a canonical path for
+  # a symlinked sibling. A lexical child can also escape through a symlink.
+  if not binary.isAbsolute or not fileExists(binary):
+    raise newException(IOError, failureMessage)
+  let sourcePath = expandFilename(repo)
+  let executablePath = expandFilename(binary)
+  let relative = relativePath(executablePath, sourcePath)
+  if relative == ".." or relative.startsWith(".." & $DirSep) or relative.isAbsolute:
+    raise newException(IOError, failureMessage)
+  result = executablePath
+
 proc buildLocalHarbor*(repo, buildDir: string; env: StringTableRef;
     shouldStop: proc(): bool = nil): string =
   # This private dependency belongs only to the selected runtime, never the
@@ -282,11 +295,8 @@ finally:
   let binary = readFile(artifactFile).strip()
   # Repro owns the output layout. The selected executable must still belong
   # to the selected source tree, so an ambient installed ah cannot pass.
-  let relative = relativePath(binary, repo)
-  if not binary.isAbsolute or relative == ".." or
-      relative.startsWith(".." & $DirSep) or not fileExists(binary):
-    raise newException(IOError, "Reprobuild selected an unexpected Harbor executable: " & binary)
-  result = binary
+  result = resolveSelectedHarborExecutable(repo, binary,
+    "Reprobuild selected an unexpected Harbor executable: " & binary)
 
 proc prepareLocalHarbor*(cfg: var ReviewConfig;
     shouldStop: proc(): bool = nil): LocalHarbor =

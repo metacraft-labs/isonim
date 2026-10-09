@@ -323,7 +323,7 @@ class Runtime:
             if identity is None:continue
             argv=identity[2] or [];executable=(identity[3] or '').removesuffix(' (deleted)')
             if (executable==str((HARBOR/'build/bin/ah').resolve()) and len(argv)>1 and
-                argv[0]==str(HARBOR/'build/bin/ah') and '--pid-file' in argv and
+                Path(argv[0]).resolve()==(HARBOR/'build/bin/ah').resolve() and '--pid-file' in argv and
                 argv[argv.index('--pid-file')+1]==str(pidfile) and '--rest-port' in argv and
                 int(argv[argv.index('--rest-port')+1])==declaration['rest']['port'] and
                 declaration['rest']['host']=='127.0.0.1' and os.getsid(pid)==helperPid):

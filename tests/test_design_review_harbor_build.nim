@@ -104,6 +104,44 @@ package testHarbor:
       writeFile(producer / "main.sh", "#!/bin/sh\nprintf 'LOCAL_V2\\n'\n")
       let binary = buildLocalHarbor(producer, consumer, env)
       check execProcess(binary).strip() == "LOCAL_V2"
+    when defined(posix):
+      test "symlinked selected source accepts its canonical producer output":
+        let alias = root / "workspace" / "agent-harbor"
+        createDir(alias.parentDir)
+        createSymlink(producer, alias)
+        let binary = buildLocalHarbor(alias, root / "alias-consumer", env)
+        check getFileInfo(binary).id == getFileInfo(producer / "build/bin/ah").id
+        check execProcess(binary).strip() == "LOCAL_V2"
+        # Repro can report either spelling. Also admit the canonical path of
+        # the real produced file against the selected source's symlink alias.
+        let canonicalReport = expandFilename(binary)
+        let admitted = resolveSelectedHarborExecutable(alias, canonicalReport)
+        check getFileInfo(admitted).id == getFileInfo(binary).id
+        check execProcess(admitted).strip() == "LOCAL_V2"
+
+      test "producer output symlinks cannot admit outside or prefix-lookalike executables":
+        let original = readFile(producer / "build.sh")
+        defer: writeFile(producer / "build.sh", original)
+        let lookalike = producer & "-installed"
+        createDir(lookalike)
+        writeFile(lookalike / "ah", "#!/bin/sh\nprintf 'LOOKALIKE_POISON\\n'\n")
+        setFilePermissions(lookalike / "ah", {fpUserRead, fpUserWrite, fpUserExec})
+        for outside in [ambient / "ah", lookalike / "ah"]:
+          # The real producer deliberately publishes an escaping executable
+          # symlink. Its version command succeeds, so admission must reject it.
+          writeFile(producer / "build.sh", "set -eu\nrm -f build/bin/ah\nln -s " &
+            quoteShell(outside) & " build/bin/ah\n")
+          try:
+            discard buildLocalHarbor(producer, consumer, env)
+            check false
+          except IOError as e:
+            check e.msg.startsWith("Reprobuild selected an unexpected Harbor executable:")
+          check symlinkExists(producer / "build/bin/ah")
+          check expandFilename(producer / "build/bin/ah") == outside
+        removeFile(producer / "build/bin/ah")
+        writeFile(producer / "build.sh", original)
+        check execProcess(buildLocalHarbor(producer, consumer, env)).strip() == "LOCAL_V2"
+
     test "failed selected build refuses stale and installed binaries":
       writeFile(producer / "build.sh", "exit 42\n")
       expect IOError:

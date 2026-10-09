@@ -10,6 +10,8 @@ Producer interfaces are first materialized through the actual CLI; their output
 executable is then removed and the action barrier reset. Thus compiler/tool
 prerequisites are separate from the bounded held-action assertions. Cold HTTP
 readiness and responsiveness are also checked during that real materialization.
+The handoff control pauses only its owned daemon with SIGSTOP and modifies the
+actual private result file before admission; no metadata/process API is replaced.
 Control snapshots here are explicit protocol fixtures for authority/registry
 continuity; mounted editor catalog behavior is covered in the GUI suite.
 """
@@ -125,6 +127,11 @@ server.serve_forever()
                     'ISONIM_AGENT_BACKEND', 'ISONIM_AGENT_COMMAND']:
             self.environ.pop(key, None)
         self.environ['ISONIM_AGENT_HARBOR_SIBLING'] = str(self.repo)
+        if self._testMethodName == 'test_cold_prepare_singleflight_responsive_scope_recheck_and_post_ready_retry':
+            alias = self.root / 'linked-agent-harbor'
+            if not alias.exists(): alias.symlink_to(self.repo, target_is_directory=True)
+            self.assertEqual(alias.resolve(), self.repo)
+            self.environ['ISONIM_AGENT_HARBOR_SIBLING'] = str(alias)
         self.environ['ISONIM_EDITOR_BROWSER_BOOTSTRAP'] = 'test-browser-authority'
         self.environ['ISONIM_REVIEW_PORT'] = '0'
         self.config = self.root / 'review.toml'
@@ -223,6 +230,48 @@ server.serve_forever()
                 self.assertFalse(reply['schema_version_current'])
             if data:
                 self.assertEqual(reply['result'], [{'name':'Current story'}])
+
+    def test_ready_handoff_rejects_escaping_and_prefix_lookalike_executable_aliases(self):
+        for outside_directory in [self.root / 'installed', self.repo.with_name('agent-harbor-installed')]:
+            outside_directory.mkdir(exist_ok=True)
+            outside = outside_directory / 'ah'
+            outside.write_text('#!/bin/sh\nprintf "outside source\\n"\n')
+            outside.chmod(0o700)
+            for path in ['release', 'producer-port', 'runtime-pid']:
+                (self.repo / path).unlink(missing_ok=True)
+            daemon, port = self.start()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                pending = pool.submit(request, port, '/api/agent/sessions', {}, '', 120)
+                wait_for(lambda: (self.repo / 'producer-port').exists(), 90)
+                helper_pid, directory = self.helper(daemon)
+                metadata = Path(directory) / 'ready.json'
+                os.kill(daemon.pid, signal.SIGSTOP)
+                try:
+                    (self.repo / 'release').touch()
+                    wait_for(metadata.exists, 90)
+                    original = json.loads(metadata.read_text())
+                    self.assertEqual(original['pid'], helper_pid)
+                    self.assertEqual(Path(original['executable']).resolve(), (self.repo / 'build/bin/ah').resolve())
+                    self.assertEqual(metadata.stat().st_mode & 0o777, 0o600)
+                    alias = self.repo / 'build/bin/handoff-alias'
+                    alias.unlink(missing_ok=True)
+                    alias.symlink_to(outside)
+                    self.assertEqual(alias.resolve(), outside)
+                    # Preserve the real generation authority and private-file
+                    # metadata; only the producer identity claim is poisoned.
+                    poisoned = {**original, 'executable': str(alias)}
+                    metadata.write_text(json.dumps(poisoned))
+                    self.assertEqual(metadata.stat().st_nlink, 1)
+                    self.assertEqual(metadata.stat().st_mode & 0o777, 0o600)
+                finally:
+                    os.kill(daemon.pid, signal.SIGCONT)
+                status, result = pending.result()
+                self.assertEqual(status, 500)
+                self.assertEqual(result['error'], 'agent_init_failed')
+                self.assertEqual(result['reason'], 'Unexpected local Harbor executable')
+                wait_for(lambda: process_exited(helper_pid), 15)
+            self.stop_all()
+            self.daemons.clear()
 
     def test_cold_prepare_singleflight_responsive_scope_recheck_and_post_ready_retry(self):
         daemon, port = self.start()
