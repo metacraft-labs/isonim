@@ -35,10 +35,17 @@
 ## foundation tokens are byte-identical before and after — so nothing about the
 ## binding ever reaches the design-token source.
 
+## MockRenderer exercises actual model/widget click dispatch and rendered state,
+## not browser key defaults, geometry or successful compiler persistence. The
+## sidecar consumer uses real temporary files and the production serializer;
+## detach assertions here prove the source journal only. Compounds GUI owns
+## physical keys, real source/compiler boundaries and preview assertions.
+
 import std/[options, os, strutils, tables, tempfiles, unittest]
 
 import isonim/core/[signals, computation, owner]
 import isonim/editor
+import isonim/editor/views/widgets/section_selection_colors
 import isonim/editor/views/widgets/section_stroke
 import isonim/editor/views/widgets/variable_picker
 import isonim/testing/mock_dom
@@ -281,4 +288,63 @@ suite "VBIND-M7 backward-compat control: empty metadata renders as pre-initiativ
       check pickerNode != nil
       check findByAttr(pickerNode,
         "data-variable-picker-previously-linked", "true") == nil
+      dispose()
+
+suite "Selection Colors real workspace binding persistence":
+  test "unique mapped color links through compatible picker and sidecar reload":
+    createRoot do (dispose: proc()):
+      let dir = createTempDir("selection_colors_", "_bindings")
+      defer: removeDir(dir)
+      let file = dir / bindingSidecarRelPath
+      let ws = newEditorWorkspace(title = "Selection binding", storyGroups = @[],
+        foundationTokens = fixtureTokens(),
+        permissions = EditorWorkspacePermissions(readSource: true, writeSource: true))
+      let vm = createEditorVM(ws)
+      vm.inspector.onBindingsChanged = proc() =
+        let metadata = vm.collectWorkspaceBindingMetadata()
+        createDir(file.parentDir)
+        writeFile(file, bindingSidecarJson(metadata.bindings, metadata.history))
+      let picker = createVariablePickerState()
+      vm.wireShellPickerHook(picker)
+      vm.inspector.selectedElement.val = boundElement()
+      let r = MockRenderer()
+      let root = r.createElement("div")
+      mountSectionSelectionColors[MockRenderer, MockNode](r, root, vm)
+      discard r.mountVariablePicker(root, vm, picker)
+      let bindControl = findByAttr(root, "data-selection-color-bind", "0")
+      check bindControl.attributes.getOrDefault("aria-disabled") == "false"
+      fireEvent(bindControl, "click")
+      check picker.open.val
+      let popup = findByAttr(root, "data-variable-picker", "true")
+      check findByAttr(popup, "data-variable-picker-row", "spacing/4") == nil
+      fireEvent(findByAttr(popup, "data-variable-picker-row", "color/surface"), "click")
+      check not picker.open.val
+      let chip = findByAttr(root, "data-selection-color-linked-chip", "true")
+      check chip != nil
+      check chip.attributes["data-variable-chip-key"] == "color/surface"
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check parseBindingSidecar(readFile(file)).bindings[0].propertyName == "border-color"
+      var reloaded = newEditorWorkspace(title = "Restored", storyGroups = @[],
+        foundationTokens = fixtureTokens(), permissions = ws.permissions)
+      reloaded.loadBindingSidecar(readFile(file))
+      let restored = createEditorVM(reloaded)
+      restored.inspector.selectedElement.val = boundElement()
+      let restoredRoot = r.createElement("div")
+      mountSectionSelectionColors[MockRenderer, MockNode](r, restoredRoot, restored)
+      check findByAttr(restoredRoot, "data-variable-chip-key", "color/surface") != nil
+      let oldDetach = findByAttr(chip, "data-variable-chip-detach", "true")
+      fireEvent(oldDetach, "click")
+      check vm.propertyBindingFor(BorderKey).isNone
+      check parseBindingSidecar(readFile(file)).bindings.len == 0
+      check vm.inspector.pendingSourceEdits.val.len == 1
+      check vm.inspector.pendingSourceEdits.val[0].property == "border-color"
+      check vm.inspector.pendingSourceEdits.val[0].newValue == "#0f172a"
+      fireEvent(findByAttr(root, "data-selection-color-bind", "0"), "click")
+      fireEvent(findByAttr(root, "data-variable-picker-row", "color/accent"), "click")
+      check vm.propertyBindingFor(BorderKey).get.variableKey == "color/accent"
+      check parseBindingSidecar(readFile(file)).bindings[0].variableKey == "color/accent"
+      vm.inspector.selectedElement.val = ElementRef(tag: "div", id: "next")
+      fireEvent(oldDetach, "click")
+      check vm.propertyBindingFor(BorderKey).get.variableKey == "color/accent"
+      check vm.inspector.pendingSourceEdits.val.len == 1
       dispose()

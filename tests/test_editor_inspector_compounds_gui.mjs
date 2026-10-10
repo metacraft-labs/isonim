@@ -20,7 +20,7 @@ cpSync(repo+'/tests/fixtures/editor_inspector_project',project,{recursive:true})
 // Opt in the real disposable fixture's already-supported literal display,
 // direction and opacity owners. This changes no production/native capability.
 const setupSource=readFileSync(project+'/stories.nim','utf8');assert(setupSource.includes('#action { width:120px;'));
-writeFileSync(project+'/stories.nim',setupSource.replace('#action { width:120px;','#action { box-shadow:1px 2px 3px #123456; border-style:dashed; display:inline-flex; flex-direction:row; opacity:80%; width:120px;').replace('#secondary-action { width:160px;', '#secondary-action { box-shadow:1px 2px 3px #123456; width:160px;'));
+writeFileSync(project+'/stories.nim',setupSource.replace('#action { width:120px;','#action { box-shadow:1px 2px 3px #123456; border-style:dashed; display:inline-flex; flex-direction:row; opacity:80%; width:120px;').replace('#secondary-action { width:160px;', '#secondary-action { box-shadow:1px 2px 3px #123456; border-color:#FFFFFF; width:160px;').replace('background-color:#334455;', 'background-color:rgba(18,52,86,0.5);'));
 const setupManifest=JSON.parse(readFileSync(project+'/.isonim/source-project.json','utf8'));
 setupManifest.editableStyles.find(row=>row.elementId==='action').properties.push('display','flex-direction','opacity','box-shadow');
 assert(!setupManifest.editableStyles.find(row=>row.elementId==='secondary-action').properties.includes('box-shadow'),'Computed fallback fixture must have no editable box-shadow owner');
@@ -314,6 +314,62 @@ try {
  await exportAdd.click();assert.deepEqual(await exportConfig(),[{size:'1x',format:'PNG',suffix:''}]);await exportBody.locator('[data-export-row-delete="0"]').click();assert.deepEqual(await exportConfig(),[]);assert(await exportAdd.evaluate(node=>document.activeElement===node));await exportUnchanged();
  await exportAdd.click();await exportHeader.focus();const programmaticDelete=await exportBody.locator('[data-export-row-delete="0"]').evaluate(node=>{const before=document.activeElement;node.click();return document.activeElement===before;});assert(programmaticDelete,'Programmatic deletion must not steal unrelated header focus');assert.deepEqual(await exportConfig(),[]);await exportUnchanged();
  record('real Export local configuration native keys/pointer/presets/suffix/delete retain focus/natural Tab and full source/catalog/preview/undo/redo');
+ // Literal alpha and a unique editable owner come from the actual compiled
+ // source. Bind records workspace metadata; detach below explicitly inspects
+ // the existing journal boundary and never calls an unpersisted draft a save.
+ await page.evaluate(()=>window.__popupAcceptance.openStory('Card','default ready'));
+ await page.waitForFunction(()=>[...document.querySelectorAll('iframe')].some(frame=>frame.getClientRects().length&&frame.contentDocument?.querySelector('#secondary-action')));
+ await page.locator('[data-scene-graph-row="secondary-action"]').click();
+ const selectionColorsHeader=page.locator('[data-inspector-section-header="selection-colors"]');
+ if(await selectionColorsHeader.getAttribute('aria-expanded')==='false')await selectionColorsHeader.click();
+ const colorsBody=page.locator('[data-inspector-section-body="selection-colors"]');
+ const alphaIndex=await colorsBody.evaluate(body=>[...body.querySelectorAll('[data-selection-color-row]')].find(row=>getComputedStyle(row.querySelector('[data-selection-color-swatch]')).backgroundColor==='rgba(18, 52, 86, 0.5)')?.getAttribute('data-selection-color-row'));
+ assert.notEqual(alphaIndex,undefined,'Actual authored translucent document color must be inspected');
+ const alphaRow=colorsBody.locator('[data-selection-color-row="'+alphaIndex+'"]'),colorBind=alphaRow.locator('[data-selection-color-bind]');
+ await page.evaluate(()=>window.__popupAcceptance.tokens());
+ const observedAlpha=await alphaRow.locator('[data-selection-color-opacity]').textContent();
+ await colorBind.focus();await page.keyboard.press('Enter');
+ const observedPicker=await page.locator('[data-variable-picker-open="true"]').count();
+ proof.selectionColorOracles={observedAlpha,observedPicker};writeFileSync(root+'/selection-color-oracles.json',JSON.stringify(proof.selectionColorOracles,null,2));
+ assert.equal(observedAlpha,'50%');assert.equal(observedPicker,1);assert.equal(await alphaRow.locator('[data-selection-color-hex]').textContent(),'#123456');assert.equal(await alphaRow.getAttribute('data-selection-color-property'),'background-color');
+ await page.keyboard.press('Escape');assert(await colorBind.evaluate(node=>document.activeElement===node));
+ await page.mouse.move(0,0);await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+ const colorsBefore={source:source(),catalog:readFileSync(project+'/.isonim/catalog.json','utf8'),state:await snapshot(),preview:await headerPreview(),requests:proof.sourceRequests.length};assert(Number.isInteger(colorsBefore.state.undoCount));assert(Number.isInteger(colorsBefore.state.redoCount));
+ const colorFilesUnchanged=async()=>{assert.equal(source(),colorsBefore.source);assert.equal(readFileSync(project+'/.isonim/catalog.json','utf8'),colorsBefore.catalog);assert.equal(proof.sourceRequests.length,colorsBefore.requests);};
+ const colorsUnchanged=async()=>{await colorFilesUnchanged();assert.deepEqual(await snapshot(),colorsBefore.state);assert.deepEqual(await headerPreview(),colorsBefore.preview);};
+ for(const key of ['Tab','Shift+Tab','Escape','a','ArrowDown']){await colorBind.focus();await page.keyboard.press(key);assert.equal(await page.locator('[data-variable-picker-open="true"]').count(),0);await colorsUnchanged();if(key==='Tab'||key==='Shift+Tab')assert(!await colorBind.evaluate(node=>document.activeElement===node));}
+ for(const activation of ['Space','pointer']){if(activation==='pointer')await colorBind.click();else{await colorBind.focus();await page.keyboard.press(activation);}const popup=page.locator('[data-variable-picker-open="true"]');assert.equal(await popup.count(),1);assert.equal(await popup.locator('[data-variable-picker-row]').count(),90);await popup.locator('[data-variable-picker-row="color/test-0"]').focus();await page.keyboard.press('Tab');assert(await popup.evaluate(node=>node.contains(document.activeElement)));await page.keyboard.press('Escape');assert(await colorBind.evaluate(node=>document.activeElement===node));await colorsUnchanged();}
+ await colorBind.focus();await page.keyboard.press('Enter');
+ const compatiblePicker=page.locator('[data-variable-picker-open="true"]');await compatiblePicker.locator('[data-variable-picker-row="color/test-0"]').focus();await page.keyboard.press('Space');
+ assert.equal((await snapshot()).bindings['background-color'],'color/test-0');
+ const alphaChip=alphaRow.locator('[data-selection-color-linked-chip]'),alphaChevron=alphaChip.locator('[data-variable-chip-chevron]'),alphaDetach=alphaChip.locator('[data-variable-chip-detach]');
+ assert.equal(await alphaChip.locator('[data-variable-chip-name]').getAttribute('aria-disabled'),'true');assert.equal(await alphaChip.locator('[data-variable-chip-name]').getAttribute('tabindex'),'-1');
+ await page.mouse.move(0,0);await alphaChevron.focus();
+ assert(await alphaDetach.isVisible(),'Keyboard focus reveals the real unlink action');
+ await page.keyboard.press('Shift+Tab');assert(await alphaDetach.evaluate(node=>document.activeElement===node),'Reverse natural Tab reaches preceding detach');
+ await page.keyboard.press('Tab');assert(await alphaChevron.evaluate(node=>document.activeElement===node),'Forward natural Tab returns to chevron without hiding focused actions');
+ const linkedBefore=await snapshot();assert.equal(linkedBefore.undoCount,colorsBefore.state.undoCount);assert.equal(linkedBefore.redoCount,colorsBefore.state.redoCount);assert.equal(linkedBefore.sourcePlans,colorsBefore.state.sourcePlans);
+ for(const key of ['Tab','Shift+Tab','Escape','a','ArrowDown']){await alphaDetach.focus();await page.keyboard.press(key);assert.deepEqual(await snapshot(),linkedBefore,'Nonactivation key must preserve the complete binding/history/source state');await colorFilesUnchanged();assert.deepEqual(await headerPreview(),colorsBefore.preview);if(key==='Tab'||key==='Shift+Tab')assert(!await alphaDetach.evaluate(node=>document.activeElement===node));}
+ // A real persisted link remains readable when permission changes, while every
+ // child action is visibly and semantically unavailable and cannot mutate it.
+ await page.evaluate(()=>window.__popupAcceptance.readOnly(true));await alphaChip.hover();
+ const readonlyBefore=await snapshot();
+ for(const attr of ['name','chevron','detach']){const action=alphaChip.locator('[data-variable-chip-'+attr+']');assert.equal(await action.getAttribute('aria-disabled'),'true');assert.equal(await action.getAttribute('tabindex'),'-1');assert((await action.getAttribute('title')).length>0);assert.equal(await action.evaluate(node=>getComputedStyle(node).cursor),'default');await alphaChip.hover();const box=await action.boundingBox();assert(box);await page.mouse.click(box.x+box.width/2,box.y+box.height/2);for(const key of ['Enter','Space','Tab','Escape','a']){await action.focus();await page.keyboard.press(key);assert.deepEqual(await snapshot(),readonlyBefore);assert.equal(await page.locator('[data-variable-picker-open="true"]').count(),0);await colorFilesUnchanged();}}
+ assert((await alphaRow.locator('[data-selection-color-reason]').innerText()).length>0);
+ await page.evaluate(()=>window.__popupAcceptance.readOnly(false));await page.mouse.move(0,0);
+ // Repeated selection replaces owned row roots; a stale detached DOM control
+ // cannot open a picker or detach a binding belonging to a later selection.
+ const staleChevron=await alphaChevron.elementHandle(),staleDetach=await alphaDetach.elementHandle();
+ const selectedObservers=(await snapshot()).reactiveObservers;
+ for(let cycle=0;cycle<3;cycle++){await page.locator('[data-scene-graph-row="action"]').click();const state=await snapshot();await staleChevron.evaluate(node=>node.click());await staleDetach.evaluate(node=>node.click());assert.deepEqual(await snapshot(),state);assert.equal(await page.locator('[data-variable-picker-open="true"]').count(),0);await page.locator('[data-scene-graph-row="secondary-action"]').click();assert.equal((await snapshot()).bindings['background-color'],'color/test-0');assert.deepEqual((await snapshot()).reactiveObservers,selectedObservers);await colorFilesUnchanged();}
+ // Distinct bindings resolve to the same literal; each explicit detach journals
+ // one history transaction while the pending owner plan merges. This is
+ // explicitly a draft boundary: files/catalog/native source requests stay put.
+ for(const [key,token] of [['Enter','color/test-0'],['Space','color/test-1']]){const before=await snapshot();await alphaChevron.focus();await page.keyboard.press('Enter');const popup=page.locator('[data-variable-picker-open="true"]');await popup.locator('[data-variable-picker-row="'+token+'"]').click();await alphaChevron.focus();await page.keyboard.press('Shift+Tab');await page.keyboard.press(key);const detached=await snapshot();proof.selectionColorUnlinks??=[];proof.selectionColorUnlinks.push({key,token,before,detached});writeFileSync(root+'/selection-color-unlinks.json',JSON.stringify(proof.selectionColorUnlinks,null,2));assert.equal(detached.bindings['background-color'],'');assert.equal(detached.undoCount,before.undoCount+1);assert.equal(detached.redoCount,0);assert.equal(detached.sourcePlans,before.sourcePlans+(key==='Enter'?1:0));assert.equal(detached.properties.find(property=>property.name==='background-color').value,'#112233');await colorFilesUnchanged();assert.equal(await colorsBody.locator('[data-selection-color-property="background-color"] [data-selection-color-linked-chip]').count(),0);await colorBind.click();await page.locator('[data-variable-picker-open="true"] [data-variable-picker-row="'+token+'"]').click();}
+ const ambiguity=colorsBody.locator('[data-selection-color-row]').filter({hasText:'multiple properties'});assert(await ambiguity.count()>0);const ambiguous=ambiguity.first(),ambiguousBind=ambiguous.locator('[data-selection-color-bind]');assert.equal(await ambiguousBind.getAttribute('aria-disabled'),'true');const ambiguousBefore=await snapshot();await ambiguousBind.scrollIntoViewIfNeeded();const ambiguousBox=await ambiguousBind.boundingBox();assert(ambiguousBox);await page.mouse.click(ambiguousBox.x+ambiguousBox.width/2,ambiguousBox.y+ambiguousBox.height/2);for(const key of ['Enter','Space','Tab','Escape']){await ambiguousBind.focus();await page.keyboard.press(key);assert.deepEqual(await snapshot(),ambiguousBefore);assert.equal(await page.locator('[data-variable-picker-open="true"]').count(),0);await colorFilesUnchanged();}
+ proof.selectionColorsFinal=await snapshot();
+ record('Selection Colors actual alpha/unique compatible binding/natural keys/read-only ambiguity/stale selection/journal boundary retain real source/catalog');
+
  assert.deepEqual(proof.errors,[]);assert.deepEqual(proof.agentRequests,[]);writeFileSync(root+'/proof.json',JSON.stringify(proof,null,2));console.log('Inspector compound GUI passed:',root,proof.cases.length);
 } finally {
  if(browser)await browser.close();if(browserServer)await browserServer.close();

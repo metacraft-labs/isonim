@@ -51,6 +51,8 @@
 ##   * ``data-variable-chip-detach="true"`` on the detach button.
 
 import std/strutils
+when defined(js):
+  from std/dom import nil
 
 import isonim/editor/views/widgets/anchored_popover
 import isonim/core/signals
@@ -87,6 +89,8 @@ type
       ## no-op. The picker / property row chooses what to do (open a
       ## confirmation mini-popup, detach with the resolved value,
       ## etc.).
+    unavailableReason*: string
+      ## Explanation shown on actions whose callback is unavailable.
     extraRootAttr*: string
       ## Optional ``key=value`` pair stamped on the chip root. Used by
       ## the property row to preserve the legacy
@@ -135,6 +139,7 @@ proc variableChipConfig*(binding: VariableBinding;
                           onChevronClick: proc() = nil;
                           onNameClick: proc() = nil;
                           onDetach: proc() = nil;
+                          unavailableReason: string = "Variable action is unavailable here.";
                           extraRootAttr: string = "";
                           extraNameAttr: string = ""): VariableChipConfig =
   ## Convenience constructor that keeps the call sites in property_row
@@ -145,6 +150,7 @@ proc variableChipConfig*(binding: VariableBinding;
     onChevronClick: onChevronClick,
     onNameClick: onNameClick,
     onDetach: onDetach,
+    unavailableReason: unavailableReason,
     extraRootAttr: extraRootAttr,
     extraNameAttr: extraNameAttr)
 
@@ -231,7 +237,8 @@ proc mountVariableChip*[R, E](r: R; parent: E;
         ref = nameNode,
         `data-variable-chip-name` = "true",
         role = "button",
-        tabindex = "0",
+        tabindex = (if cfg.onNameClick != nil: "0" else: "-1"),
+        `aria-disabled` = (if cfg.onNameClick != nil: "false" else: "true"),
         flex = "1",
         min_width = "0",
         color = vcTextPrimary,
@@ -239,7 +246,8 @@ proc mountVariableChip*[R, E](r: R; parent: E;
         font_family = vcNameFamily,
         overflow = "hidden",
         text_overflow = "ellipsis",
-        cursor = "pointer"):
+        title = (if cfg.onNameClick == nil: cfg.unavailableReason else: ""),
+        cursor = (if cfg.onNameClick != nil: "pointer" else: "default")):
         text varKey
       # Detach affordance — hidden by default, surfaces on hover via
       # the ``data-variable-chip-hover`` flip.  The mount sets the
@@ -249,9 +257,9 @@ proc mountVariableChip*[R, E](r: R; parent: E;
         ref = detachNode,
         `data-variable-chip-detach` = "true",
         role = "button",
-        tabindex = "0",
+        tabindex = (if cfg.onDetach != nil: "0" else: "-1"),
+        `aria-disabled` = (if cfg.onDetach != nil: "false" else: "true"),
         `aria-label` = "Detach variable",
-        title = "Detach variable",
         flex_shrink = "0",
         display = "none",
         align_items = "center",
@@ -261,7 +269,8 @@ proc mountVariableChip*[R, E](r: R; parent: E;
         margin_right = "2px",
         color = vcTextMuted,
         font_size = vcDetachFont,
-        cursor = "pointer",
+        title = (if cfg.onDetach == nil: cfg.unavailableReason else: "Detach variable"),
+        cursor = (if cfg.onDetach != nil: "pointer" else: "default"),
         user_select = "none"):
         # U+2195 UP DOWN ARROW — matches the spec's "thin ↕ detach
         # affordance" copy.
@@ -272,7 +281,8 @@ proc mountVariableChip*[R, E](r: R; parent: E;
         ref = chevronNode,
         `data-variable-chip-chevron` = "true",
         role = "button",
-        tabindex = "0",
+        tabindex = (if cfg.onChevronClick != nil: "0" else: "-1"),
+        `aria-disabled` = (if cfg.onChevronClick != nil: "false" else: "true"),
         `aria-label` = "Change variable binding for " & varKey,
         `aria-haspopup` = "listbox",
         flex_shrink = "0",
@@ -283,7 +293,8 @@ proc mountVariableChip*[R, E](r: R; parent: E;
         height = "16px",
         color = vcTextMuted,
         font_size = vcChevronFont,
-        cursor = "pointer",
+        title = (if cfg.onChevronClick == nil: cfg.unavailableReason else: ""),
+        cursor = (if cfg.onChevronClick != nil: "pointer" else: "default"),
         user_select = "none"):
         text "\xE2\x96\xBE"
 
@@ -294,17 +305,32 @@ proc mountVariableChip*[R, E](r: R; parent: E;
   # also reflects the same state so the headless tests can observe
   # both transitions.
   let hovered = createSignal(false)
+  let focused = createSignal(false)
 
   let setHover = proc(value: bool) =
     hovered.val = value
 
   createRenderEffect proc() =
-    let show = hovered.val
+    let show = hovered.val or focused.val
     r.setAttribute(rootNode,
       "data-variable-chip-hover",
       if show: "true" else: "false")
     r.setStyle(detachNode, "display",
       if show: "inline-flex" else: "none")
+
+  # The browser event retains keyboard visibility when focus moves between
+  # children. Headless renderers expose logical focus ownership separately.
+  r.addEventListener(rootNode, "focusin", proc() = focused.val = true)
+  when defined(js):
+    when E is dom.Element:
+      r.addEventListener(rootNode, "focusout", proc(event: dom.Event) =
+        var inside = false
+        {.emit: [inside, " = ", rootNode, ".contains(", event, ".relatedTarget);"].}
+        if not inside: focused.val = false)
+    else:
+      r.addEventListener(rootNode, "focusout", proc() = focused.val = false)
+  else:
+    r.addEventListener(rootNode, "focusout", proc() = focused.val = false)
 
   r.addEventListener(rootNode, "mouseenter", proc() = setHover(true))
   r.addEventListener(rootNode, "mouseleave", proc() = setHover(false))
@@ -325,7 +351,7 @@ proc mountVariableChip*[R, E](r: R; parent: E;
   if cfg.onDetach != nil:
     let cb = cfg.onDetach
     r.addEventListener(detachNode, "click", proc() = cb())
-    r.addEventListener(detachNode, "keydown", proc() = cb())
+    installPopoverTrigger(detachNode)
 
   # Optional legacy attributes — used by the property row to preserve
   # the ``data-property-row-linked-chip="true"`` +
