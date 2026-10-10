@@ -556,11 +556,31 @@ try{
   proof.cases.push({width,name:'two distinct actual token activations after full menu mount'});
   // Exercise every mounted chevron choice and every source-scope disclosure,
   // including native summary activation, actual top-layer theme and focus return.
+  const ordinarySelection=await page.evaluate(()=>{
+    const element=globalThis.__isonimEditorVm.inspector.selectedElement.value;
+    const text=value=>typeof value==='string'?value:String.fromCharCode(...value);
+    return {id:text(element.id),schema:text(element.schemaKey),
+      propertySchemas:element.properties.map(property=>text(property.schemaKey))};
+  });
+  assert.equal(ordinarySelection.id,'action');assert.equal(ordinarySelection.schema,'dom.button');
+  assert(ordinarySelection.propertySchemas.length>0);assert(ordinarySelection.propertySchemas.every(schema=>schema.startsWith('dom.button.')));
   const sections=page.locator('[data-inspector-section-body]');
+  const expectedSections=['position','layout','appearance','fill','stroke','effects','typography','selection-colors','source','component-properties','state','export'];
+  assert.deepEqual(await sections.evaluateAll(nodes=>nodes.map(node=>node.dataset.inspectorSectionBody)),expectedSections);
+  let applicableSections=0;
   for(let index=0;index<await sections.count();index++){
     const body=sections.nth(index),slug=await body.getAttribute('data-inspector-section-body');
-    if(!await body.isVisible())await page.locator('[data-inspector-section-header="'+slug+'"]').click();
+    const header=page.locator('[data-inspector-section-header="'+slug+'"]');
+    if(slug==='component-properties'){
+      assert.equal(await header.isVisible(),false,'Ordinary DOM ownership must not expose component-instance controls');
+      assert.equal(await body.isVisible(),false);assert.equal(await body.locator('[data-component-prop-schema]').count(),0);
+    }else{
+      assert(await header.isVisible(),'Every applicable section header must be exposed: '+slug);
+      if(!await body.isVisible())await header.click();
+      assert(await body.isVisible(),'Every applicable section body must open: '+slug);applicableSections++;
+    }
   }
+  assert.equal(applicableSections,11);proof.cases.push({width,name:'ordinary DOM selection exposes all11 applicable sections and excludes component-instance parameters',ordinarySelection});
   const choices=page.locator('[data-choice-group-trigger]');
   const choiceCount=await choices.count(); assert(choiceCount>0);
   for(let index=0;index<choiceCount;index++){
