@@ -155,7 +155,7 @@ proc editablePreviewDocument*(documentHtml: string;
 
   let bridge = """
 <script>var ISONIM_EDITABLE_PROPS = """ & editablePropsJs & """;</script>
-<style id="isonim-editor-selection-style">
+<style id="isonim-editor-selection-paint-style">
   [data-isonim-selected="true"] {
     outline: 2px solid #3B82F6 !important;
     outline-offset: 2px !important;
@@ -165,6 +165,8 @@ proc editablePreviewDocument*(documentHtml: string;
     outline: 1px dashed rgba(59,130,246,.75) !important;
     outline-offset: 3px !important;
   }
+</style>
+<style id="isonim-editor-selection-style">
   #isonim-editor-hover-label {
     position: fixed;
     z-index: 2147483647;
@@ -611,64 +613,75 @@ __ISONIM_SCENE_GRAPH_WALK__
     drillSync(el);
     placeHandles(el);
     const source = parseSource(el.getAttribute('data-isonim-src'));
-    const style = window.getComputedStyle(el);
-    const rect = el.getBoundingClientRect();
-    const stack = ancestorStack(el).reverse().map(stableSelector);
-    const stackIds = ancestorStack(el).reverse().map(identityFor);
-    const elementId = identityFor(el);
-    // One definition, shared with the scene-graph walk: see `schemaKeyFor`
-    // there for why the class list comes before the tag.
-    const schemaKey = schemaKeyFor(el);
-    parent.dispatchEvent(new CustomEvent('isonim-preview-element-selected', {
-      detail: {
-        elementId: elementId,
-        sourceKey: sourceKeyFor(el),
-        schemaKey: schemaKey,
-        tag: el.tagName.toLowerCase(),
-        testId: el.getAttribute('data-testid') || '',
-        className: el.getAttribute('class') || '',
-        role: el.getAttribute('role') || '',
-        elementPath: cssPath(el),
-        ancestry: stack.join(' > '),
-        ancestorIds: stackIds.join(' > '),
-        sourceFile: source.file,
-        sourceLine: source.line,
-        display: style.display || '',
-        position: style.position || '',
-        backgroundColor: style.backgroundColor || '',
-        color: style.color || '',
-        padding: style.padding || '',
-        margin: style.margin || '',
-        width: style.width || '',
-        height: style.height || '',
-        borderRadius: style.borderRadius || '',
-        borderWidth: style.borderWidth || '',
-        borderStyle: style.borderStyle || '',
-        borderColor: style.borderColor || '',
-        fontSize: style.fontSize || '',
-        fontWeight: style.fontWeight || '',
-        lineHeight: style.lineHeight || '',
-        boxShadow: style.boxShadow || '',
-        opacity: style.opacity || '',
-        rectWidth: String(Math.round(rect.width)),
-        rectHeight: String(Math.round(rect.height)),
-        textContent: String(el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 240),
-        layerTree: JSON.stringify(layerTree(el)),
-        // The authored style provenance the `ui` DSL stamped at macro time.
-        // Every other style field above is a COMPUTED value, and a computed
-        // value has already lost the answer to "was this a binding?". This is
-        // the only field in the payload that still knows.
-        styleBindings: el.getAttribute('data-isonim-props') || '',
-        // Every property the inspector has a row for, from the single list in
-        // `style_provenance_decode`. The named fields above are a fixed 17;
-        // the panel renders 51 rows, and a row whose property the selection
-        // does not carry refuses the commit with "does not expose ...".
-        computedStyles: ISONIM_EDITABLE_PROPS
-          .map(function (p) {
-            return p + '=' + (style.getPropertyValue(p) || '');
-          }).join(';')
-      }
-    }));
+    // Selection/hover chrome is editor-owned CSS, not a document property.
+    // Computed style objects are live: eagerly copy every value while that
+    // paint stylesheet is disabled, retaining overlay layout, then restore it
+    // before notifying the inspector.
+    const chromeSheet = document.getElementById('isonim-editor-selection-paint-style').sheet;
+    const chromeDisabled = chromeSheet.disabled;
+    let detail;
+    try {
+      chromeSheet.disabled = true;
+      const style = window.getComputedStyle(el);
+      const rect = el.getBoundingClientRect();
+      const stack = ancestorStack(el).reverse().map(stableSelector);
+      const stackIds = ancestorStack(el).reverse().map(identityFor);
+      const elementId = identityFor(el);
+      // One definition, shared with the scene-graph walk: see `schemaKeyFor`
+      // there for why the class list comes before the tag.
+      const schemaKey = schemaKeyFor(el);
+      detail = {
+          elementId: elementId,
+          sourceKey: sourceKeyFor(el),
+          schemaKey: schemaKey,
+          tag: el.tagName.toLowerCase(),
+          testId: el.getAttribute('data-testid') || '',
+          className: el.getAttribute('class') || '',
+          role: el.getAttribute('role') || '',
+          elementPath: cssPath(el),
+          ancestry: stack.join(' > '),
+          ancestorIds: stackIds.join(' > '),
+          sourceFile: source.file,
+          sourceLine: source.line,
+          display: style.display || '',
+          position: style.position || '',
+          backgroundColor: style.backgroundColor || '',
+          color: style.color || '',
+          padding: style.padding || '',
+          margin: style.margin || '',
+          width: style.width || '',
+          height: style.height || '',
+          borderRadius: style.borderRadius || '',
+          borderWidth: style.borderWidth || '',
+          borderStyle: style.borderStyle || '',
+          borderColor: style.borderColor || '',
+          fontSize: style.fontSize || '',
+          fontWeight: style.fontWeight || '',
+          lineHeight: style.lineHeight || '',
+          boxShadow: style.boxShadow || '',
+          opacity: style.opacity || '',
+          rectWidth: String(Math.round(rect.width)),
+          rectHeight: String(Math.round(rect.height)),
+          textContent: String(el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 240),
+          layerTree: JSON.stringify(layerTree(el)),
+          // The authored style provenance the `ui` DSL stamped at macro time.
+          // Every other style field above is a COMPUTED value, and a computed
+          // value has already lost the answer to "was this a binding?". This is
+          // the only field in the payload that still knows.
+          styleBindings: el.getAttribute('data-isonim-props') || '',
+          // Every property the inspector has a row for, from the single list in
+          // `style_provenance_decode`. The named fields above are a fixed 17;
+          // the panel renders 51 rows, and a row whose property the selection
+          // does not carry refuses the commit with "does not expose ...".
+          computedStyles: ISONIM_EDITABLE_PROPS
+            .map(function (p) {
+              return p + '=' + (style.getPropertyValue(p) || '');
+            }).join(';')
+      };
+    } finally {
+      chromeSheet.disabled = chromeDisabled;
+    }
+    parent.dispatchEvent(new CustomEvent('isonim-preview-element-selected', {detail: detail}));
   }
   function firstEditableStyle(el) {
     const style = window.getComputedStyle(el);

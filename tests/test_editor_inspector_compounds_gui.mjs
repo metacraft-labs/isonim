@@ -20,9 +20,10 @@ cpSync(repo+'/tests/fixtures/editor_inspector_project',project,{recursive:true})
 // Opt in the real disposable fixture's already-supported literal display,
 // direction and opacity owners. This changes no production/native capability.
 const setupSource=readFileSync(project+'/stories.nim','utf8');assert(setupSource.includes('#action { width:120px;'));
-writeFileSync(project+'/stories.nim',setupSource.replace('#action { width:120px;','#action { box-shadow:1px 2px 3px #123456; border-style:dashed; display:inline-flex; flex-direction:row; opacity:80%; width:120px;'));
+writeFileSync(project+'/stories.nim',setupSource.replace('#action { width:120px;','#action { box-shadow:1px 2px 3px #123456; border-style:dashed; display:inline-flex; flex-direction:row; opacity:80%; width:120px;').replace('#secondary-action { width:160px;', '#secondary-action { box-shadow:1px 2px 3px #123456; width:160px;'));
 const setupManifest=JSON.parse(readFileSync(project+'/.isonim/source-project.json','utf8'));
 setupManifest.editableStyles.find(row=>row.elementId==='action').properties.push('display','flex-direction','opacity','box-shadow');
+assert(!setupManifest.editableStyles.find(row=>row.elementId==='secondary-action').properties.includes('box-shadow'),'Computed fallback fixture must have no editable box-shadow owner');
 writeFileSync(project+'/.isonim/source-project.json',JSON.stringify(setupManifest));
 
 for(const [from,to] of [['src/isonim/editor/index.html','index.html'],['build/editor-inspector/editor.js','editor.js'],['node_modules/fabric/dist/index.min.js','fabric.min.js'],['node_modules/paper/dist/paper-core.min.js','paper-core.min.js'],['node_modules/svgo/dist/svgo.browser.js','svgo.browser.js']])copyFileSync(repo+'/'+from,pub+'/'+to);
@@ -102,6 +103,46 @@ try {
  record('actual plain DOM CSS selection has no component parameter rows or public section');
 
  const snapshot=()=>page.evaluate(()=>JSON.parse(window.__popupAcceptance.snapshot()));
+ // Read actual bridge events from the real compiled document. The expected CSS
+ // is a literal independent of bridge implementation and source-owner lookup.
+ const selectionBefore={source:readFileSync(project+'/stories.nim','utf8'),catalog:readFileSync(project+'/.isonim/catalog.json','utf8'),state:await snapshot(),requests:proof.sourceRequests.length};
+ assert(Number.isInteger(selectionBefore.state.undoCount));assert(Number.isInteger(selectionBefore.state.redoCount));
+ await page.evaluate(()=>{window.__documentStyleSelections=[];window.__documentStyleListener=event=>window.__documentStyleSelections.push(event.detail);window.addEventListener('isonim-preview-element-selected',window.__documentStyleListener);});
+
+ // A real responsive document exposes layout corruption if overlay positioning
+ // is suppressed with selection paint. Temporary literal author CSS uses the
+ // same browser/compiler preview; restore its exact declarations afterwards.
+ await page.evaluate(()=>{const frame=[...document.querySelectorAll('iframe')].find(frame=>frame.getClientRects().length&&frame.contentWindow?.__isonimSelectedElement),doc=frame.contentDocument,target=doc.querySelector('#secondary-action');let owner=target;while(owner.parentElement!==doc.body)owner=owner.parentElement;const style=doc.createElement('style');style.textContent='body { display:flex!important; flex-direction:row!important; width:800px!important; margin:0!important; }';window.__responsiveAuthorStyles={owner,target,ownerStyle:owner.getAttribute('style'),targetStyle:target.getAttribute('style'),style};doc.head.appendChild(style);owner.style.cssText+=';flex:1 1 0%!important;min-width:0!important';target.style.cssText+=';width:100%!important;box-sizing:border-box!important';});
+ await page.locator('[data-scene-graph-row="secondary-action"]').click();await page.mouse.move(0,0);await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+ const responsive=await page.evaluate(()=>{const saved=window.__responsiveAuthorStyles,doc=saved.target.ownerDocument,win=doc.defaultView,target=saved.target,rect=target.getBoundingClientRect(),style=win.getComputedStyle(target),handles=doc.querySelector('#isonim-editor-selection-handles');return{detail:window.__documentStyleSelections.at(-1),rendered:{width:style.width,rectWidth:String(Math.round(rect.width))},layoutDisabled:doc.querySelector('#isonim-editor-selection-style').sheet.disabled,paintDisabled:doc.querySelector('#isonim-editor-selection-paint-style')?.sheet.disabled,handlesPosition:win.getComputedStyle(handles).position,handlesVisible:!handles.hidden&&!!handles.getClientRects().length,handleCount:handles.querySelectorAll('[data-handle]').length,state:JSON.parse(window.__popupAcceptance.snapshot())};});
+ proof.responsiveLayout=responsive;writeFileSync(root+'/responsive-layout.json',JSON.stringify(responsive,null,2));
+ assert.equal(responsive.rendered.width,'800px');assert.equal(responsive.rendered.rectWidth,'800');
+ assert.equal(responsive.detail.width,'800px','Sampling must preserve actual responsive authored width');assert.equal(responsive.detail.rectWidth,'800','Sampling must preserve actual responsive authored rectangle');assert(responsive.detail.computedStyles.split(';').includes('width=800px'));
+ assert.equal(responsive.layoutDisabled,false);assert.equal(responsive.paintDisabled,false);assert.equal(responsive.handlesPosition,'fixed');assert(responsive.handlesVisible);assert.equal(responsive.handleCount,5);
+ for(const key of ['undoCount','redoCount','stage'])assert.equal(responsive.state[key],selectionBefore.state[key]);assert.equal(readFileSync(project+'/stories.nim','utf8'),selectionBefore.source);assert.equal(readFileSync(project+'/.isonim/catalog.json','utf8'),selectionBefore.catalog);assert.equal(proof.sourceRequests.length,selectionBefore.requests);
+ const responsiveFocus=await page.evaluate(()=>{const saved=window.__responsiveAuthorStyles,doc=saved.target.ownerDocument,target=saved.target;target.focus();const focused=doc.activeElement;window.dispatchEvent(new CustomEvent('isonim-select-preview-element-id',{detail:{id:target.dataset.isonimElementId}}));return{focusedBefore:focused===target,focusUnchanged:doc.activeElement===focused,detail:window.__documentStyleSelections.at(-1),chromeShadow:doc.defaultView.getComputedStyle(target).boxShadow,layoutDisabled:doc.querySelector('#isonim-editor-selection-style').sheet.disabled,paintDisabled:doc.querySelector('#isonim-editor-selection-paint-style').sheet.disabled,state:JSON.parse(window.__popupAcceptance.snapshot())};});
+ proof.responsiveFocus=responsiveFocus;assert(responsiveFocus.focusedBefore);assert(responsiveFocus.focusUnchanged);assert.equal(responsiveFocus.detail.width,'800px');assert.equal(responsiveFocus.detail.rectWidth,'800');assert(responsiveFocus.detail.computedStyles.split(';').includes('width=800px'));assert.equal(responsiveFocus.chromeShadow,'rgba(59, 130, 246, 0.22) 0px 0px 0px 4px');assert.equal(responsiveFocus.layoutDisabled,false);assert.equal(responsiveFocus.paintDisabled,false);for(const key of ['undoCount','redoCount','stage'])assert.equal(responsiveFocus.state[key],selectionBefore.state[key]);assert.equal(readFileSync(project+'/stories.nim','utf8'),selectionBefore.source);assert.equal(readFileSync(project+'/.isonim/catalog.json','utf8'),selectionBefore.catalog);assert.equal(proof.sourceRequests.length,selectionBefore.requests);
+ await page.evaluate(()=>{const saved=window.__responsiveAuthorStyles;for(const [node,value] of [[saved.owner,saved.ownerStyle],[saved.target,saved.targetStyle]]){if(value===null)node.removeAttribute('style');else node.setAttribute('style',value);}saved.style.remove();delete window.__responsiveAuthorStyles;});
+ record('real responsive document metadata preserves authored width/rectangle/overlay positioning/focus/source/catalog/undo/redo');
+ const documentStyles=[];
+ for(let cycle=0;cycle<2;cycle++)for(const [id,expectedShadow] of [['secondary-action','rgb(18, 52, 86) 1px 2px 3px 0px'],['reused','none']]){
+  await page.locator('[data-scene-graph-row="'+id+'"]').click();
+  await page.mouse.move(0,0);await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+  const inspected=await page.evaluate(()=>{const detail=window.__documentStyleSelections.at(-1),frame=[...document.querySelectorAll('iframe')].find(frame=>frame.getClientRects().length&&frame.contentWindow?.__isonimSelectedElement),doc=frame.contentDocument,node=frame.contentWindow.__isonimSelectedElement,style=frame.contentWindow.getComputedStyle(node),handles=doc.querySelector('#isonim-editor-selection-handles');return{detail,selected:node.dataset.isonimElementId,chromeShadow:style.boxShadow,outline:style.outline,selectedAttribute:node.getAttribute('data-isonim-selected'),sheetDisabled:doc.querySelector('#isonim-editor-selection-style').sheet.disabled,paintDisabled:doc.querySelector('#isonim-editor-selection-paint-style').sheet.disabled,handlesVisible:!!handles&&!handles.hidden&&!!handles.getClientRects().length,handleCount:handles?.querySelectorAll('[data-handle]').length,state:JSON.parse(window.__popupAcceptance.snapshot())};});
+  documentStyles.push(inspected);proof.documentStyleSelections=documentStyles;writeFileSync(root+'/document-style-selections.json',JSON.stringify(documentStyles,null,2));
+  assert.equal(inspected.selected,id);assert.equal(inspected.detail.boxShadow,expectedShadow,'Inspector must sample document shadow without selection chrome');
+  assert(inspected.detail.computedStyles.split(';').includes('box-shadow='+expectedShadow),'Universal computed metadata must match document CSS');
+  assert.equal(inspected.selectedAttribute,'true');assert.equal(inspected.sheetDisabled,false);assert.equal(inspected.paintDisabled,false);assert.equal(inspected.chromeShadow,'rgba(59, 130, 246, 0.22) 0px 0px 0px 4px');assert.equal(inspected.outline,'rgb(59, 130, 246) solid 2px');assert(inspected.handlesVisible);assert.equal(inspected.handleCount,5);
+  const header=page.locator('[data-inspector-section-header="effects"]');if(await header.getAttribute('aria-expanded')==='false')await header.click();
+  const effects=page.locator('[data-inspector-section-body="effects"]');if(expectedShadow==='none'){assert.equal(await effects.locator('[data-effects-row]').count(),0);assert(await effects.locator('[data-effects-empty]').isVisible());}else{assert((await effects.locator('[data-effects-list]').innerText()).includes(expectedShadow),'Unowned document shadow must reach actual inspector Effects');assert.equal(await effects.locator('[data-effects-empty]').isVisible(),false);}
+  await header.click();
+  for(const key of ['undoCount','redoCount','stage'])assert.equal(inspected.state[key],selectionBefore.state[key]);
+  assert.equal(readFileSync(project+'/stories.nim','utf8'),selectionBefore.source);assert.equal(readFileSync(project+'/.isonim/catalog.json','utf8'),selectionBefore.catalog);assert.equal(proof.sourceRequests.length,selectionBefore.requests);
+ }
+ await page.locator('[data-scene-graph-row="action"]').click();
+ await page.evaluate(()=>{window.removeEventListener('isonim-preview-element-selected',window.__documentStyleListener);delete window.__documentStyleListener;});
+ record('real repeated unowned-shadow and no-shadow selections inspect document CSS while retaining blue chrome/handles/source/catalog/history');
+
  let staleVerified=false;
  async function waitApplied(count){
   const started=performance.now();

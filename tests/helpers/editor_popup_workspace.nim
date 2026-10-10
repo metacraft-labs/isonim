@@ -81,7 +81,7 @@ proc snapshot(): cstring =
     "reactiveObservers": {"selected": editor.inspector.selectedElement.observers.len,
       "preview": editor.preview.current.signal.observers.len,
       "reload": editor.livePreviewReloadGeneration.observers.len},
-    "sourcePlans": editor.inspector.pendingSourceEdits.val.len, "undoCount": editor.inspector.undoStack.val.len,
+    "sourcePlans": editor.inspector.pendingSourceEdits.val.len, "undoCount": editor.inspector.undoStack.val.len, "redoCount": editor.inspector.redoStack.val.len,
     "sourceInFlight": editor.sourceProjectBuildInFlight, "sourceOperationSerial": editor.sourceProjectOperationSerial,
     "sourceMappingObservers": (if editor.sourceProjectMappings != nil: editor.sourceProjectMappings.observers.len else: 0),
     "sourceGeneration": editor.preview.sourceGeneration.val, "properties": properties}))
