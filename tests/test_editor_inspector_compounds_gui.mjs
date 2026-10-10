@@ -284,6 +284,36 @@ try {
   assert.equal(observed.disabled,'true');assert(observed.reason?.startsWith('Adding another '));assert.equal(observed.cursor,'default');assert.deepEqual(observed.hoverColors,observed.idleColors,'Unavailable header Add must not receive enabled hover styling');
  }
  record('all four unsupported header Add pointer and keys retain expansion/full source/catalog/preview/selection/undo/redo and natural Tab');
+
+ // Export settings are local configuration, not a generated-file or source
+ // transaction. Exercise actual native key defaults and physical input while
+ // retaining the complete real source/catalog/preview/inspector history state.
+ const exportHeader=page.locator('[data-inspector-section-header="export"]');if(await exportHeader.getAttribute('aria-expanded')==='false')await exportHeader.click();
+ const exportBody=page.locator('[data-inspector-section-body="export"]'),exportAdd=exportBody.locator('[data-export-add]');
+ await page.mouse.move(0,0);await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+ const exportBefore={source:source(),catalog:readFileSync(project+'/.isonim/catalog.json','utf8'),state:await snapshot(),preview:await headerPreview(),requests:proof.sourceRequests.length};assert(Number.isInteger(exportBefore.state.undoCount));assert(Number.isInteger(exportBefore.state.redoCount));
+ const exportUnchanged=async()=>{assert.equal(source(),exportBefore.source);assert.equal(readFileSync(project+'/.isonim/catalog.json','utf8'),exportBefore.catalog);assert.deepEqual(await snapshot(),exportBefore.state);assert.deepEqual(await headerPreview(),exportBefore.preview);assert.equal(proof.sourceRequests.length,exportBefore.requests);assert.equal(await exportHeader.getAttribute('aria-expanded'),'true');};
+ const exportConfig=()=>exportBody.evaluate(body=>[...body.querySelectorAll('[data-export-row]')].map(row=>({size:row.querySelector('[data-export-row-size]').textContent,format:row.querySelector('[data-export-row-format]').textContent,suffix:row.querySelector('[data-export-row-suffix]').value})));
+ proof.exportKeys=[];
+ for(const key of ['Tab','Shift+Tab','Escape','a','ArrowDown']){await exportAdd.focus();const before=await exportConfig();await page.keyboard.press(key);const after=await exportConfig();proof.exportKeys.push({control:'add',key,before,after});writeFileSync(root+'/export-keyboard.json',JSON.stringify(proof.exportKeys,null,2));assert.deepEqual(after,before,'Export Add must ignore nonactivation '+key);await exportUnchanged();if(key==='Tab'||key==='Shift+Tab')assert.equal(await exportAdd.evaluate(node=>document.activeElement===node),false);}
+ assert.equal(await exportAdd.evaluate(node=>node.tagName),'BUTTON');assert.equal(await exportAdd.getAttribute('type'),'button');
+ await exportAdd.focus();await page.keyboard.press('Enter');assert.deepEqual(await exportConfig(),[{size:'1x',format:'PNG',suffix:''}]);assert(await exportAdd.evaluate(node=>document.activeElement===node));await exportUnchanged();
+ const size=exportBody.locator('[data-export-row-size="0"]'),format=exportBody.locator('[data-export-row-format="0"]'),suffix=exportBody.locator('[data-export-row-suffix="0"]');
+ const sizeIdentity=await size.elementHandle();await size.focus();
+ for(const [key,value] of [['Enter','2x'],['Space','3x'],['Enter','1x']]){await page.keyboard.press(key);assert.equal(await size.textContent(),value);assert(await sizeIdentity.evaluate(node=>node.isConnected&&document.activeElement===node),'Size cycles retain the exact focused native button');await exportUnchanged();}
+ const formatIdentity=await format.elementHandle();await format.focus();
+ for(const [key,value] of [['Space','SVG'],['Enter','PDF'],['Space','PNG']]){await page.keyboard.press(key);assert.equal(await format.textContent(),value);assert(await formatIdentity.evaluate(node=>node.isConnected&&document.activeElement===node),'Format cycles retain the exact focused native button');await exportUnchanged();}
+ for(const control of [size,format])for(const key of ['Escape','a','ArrowDown','Tab','Shift+Tab']){await control.focus();const before=await exportConfig();await page.keyboard.press(key);assert.deepEqual(await exportConfig(),before);await exportUnchanged();if(key==='Tab'||key==='Shift+Tab')assert.equal(await control.evaluate(node=>document.activeElement===node),false);}
+ const suffixIdentity=await suffix.elementHandle();await suffix.fill('-wide');await suffix.press('Tab');assert.deepEqual(await exportConfig(),[{size:'1x',format:'PNG',suffix:'-wide'}]);assert(await suffixIdentity.evaluate(node=>node.isConnected));await exportUnchanged();
+ await size.click();await format.click();assert.deepEqual(await exportConfig(),[{size:'2x',format:'SVG',suffix:'-wide'}]);await exportUnchanged();
+ await exportAdd.focus();await page.keyboard.press('Space');assert.deepEqual(await exportConfig(),[{size:'2x',format:'SVG',suffix:'-wide'},{size:'1x',format:'PNG',suffix:''}]);assert(await exportAdd.evaluate(node=>document.activeElement===node));await exportUnchanged();
+ const secondDelete=exportBody.locator('[data-export-row-delete="1"]');
+ for(const key of ['Escape','a','ArrowDown','Tab','Shift+Tab']){await secondDelete.focus();const before=await exportConfig();await page.keyboard.press(key);assert.deepEqual(await exportConfig(),before);await exportUnchanged();if(key==='Tab'||key==='Shift+Tab')assert.equal(await secondDelete.evaluate(node=>document.activeElement===node),false);}
+ await secondDelete.focus();await page.keyboard.press('Space');assert.deepEqual(await exportConfig(),[{size:'2x',format:'SVG',suffix:'-wide'}]);assert(await exportBody.locator('[data-export-row-delete="0"]').evaluate(node=>document.activeElement===node));await exportUnchanged();
+ await page.keyboard.press('Enter');assert.deepEqual(await exportConfig(),[]);assert(await exportAdd.evaluate(node=>document.activeElement===node));await exportUnchanged();
+ await exportAdd.click();assert.deepEqual(await exportConfig(),[{size:'1x',format:'PNG',suffix:''}]);await exportBody.locator('[data-export-row-delete="0"]').click();assert.deepEqual(await exportConfig(),[]);assert(await exportAdd.evaluate(node=>document.activeElement===node));await exportUnchanged();
+ await exportAdd.click();await exportHeader.focus();const programmaticDelete=await exportBody.locator('[data-export-row-delete="0"]').evaluate(node=>{const before=document.activeElement;node.click();return document.activeElement===before;});assert(programmaticDelete,'Programmatic deletion must not steal unrelated header focus');assert.deepEqual(await exportConfig(),[]);await exportUnchanged();
+ record('real Export local configuration native keys/pointer/presets/suffix/delete retain focus/natural Tab and full source/catalog/preview/undo/redo');
  assert.deepEqual(proof.errors,[]);assert.deepEqual(proof.agentRequests,[]);writeFileSync(root+'/proof.json',JSON.stringify(proof,null,2));console.log('Inspector compound GUI passed:',root,proof.cases.length);
 } finally {
  if(browser)await browser.close();if(browserServer)await browserServer.close();
