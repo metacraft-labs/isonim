@@ -17,6 +17,13 @@ const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const root=mkdtempSync(path.join(process.env.ISONIM_POPUP_ARTIFACTS||tmpdir(),'inspector-gestures-'));
 const project=root+'/project',pub=root+'/public';
 cpSync(repo+'/tests/fixtures/editor_inspector_project',project,{recursive:true});mkdirSync(pub);
+// Real declared transform owners in this private Nim/SSR project. The matrix
+// owner is deliberately unsupported by numeric Rotation, while remaining valid CSS.
+const storyFile=project+'/stories.nim';
+writeFileSync(storyFile,readFileSync(storyFile,'utf8').replace('background-color:#112233; color:#FFFFFF; }','background-color:#112233; color:#FFFFFF; transform:translateX(8px) rotate(20deg) scale(1.2); }').replace('background-color:#334455; color:#FFFFFF; }','background-color:#334455; color:#FFFFFF; transform:matrix(1,0,0,1,0,0); }'));
+const ownerFile=project+'/.isonim/source-project.json',owners=JSON.parse(readFileSync(ownerFile,'utf8'));
+for(const owner of owners.editableStyles)if(['action','secondary-action'].includes(owner.elementId))owner.properties.push('transform');
+writeFileSync(ownerFile,JSON.stringify(owners,null,2));
 for(const [from,to] of [['src/isonim/editor/index.html','index.html'],['build/editor-inspector/editor.js','editor.js'],['node_modules/fabric/dist/index.min.js','fabric.min.js'],['node_modules/paper/dist/paper-core.min.js','paper-core.min.js'],['node_modules/svgo/dist/svgo.browser.js','svgo.browser.js']])copyFileSync(repo+'/'+from,pub+'/'+to);
 const build=spawnSync('python3',[repo+'/tools/build_source_catalog.py',project],{env:{...process.env,ISONIM_SOURCE_FRAMEWORK:repo},encoding:'utf8',timeout:70000});
 writeFileSync(root+'/catalog-build.log',build.stdout+build.stderr);assert.equal(build.status,0,build.stdout+build.stderr);
@@ -94,6 +101,20 @@ try {
  await page.locator('[data-scene-graph-row="reused"]').click();
  await waitApplied(++count);assert.equal((await snapshot()).story,'Alternate / default ready');assert.equal((await snapshot()).selected,'reused');assert.equal(await input.inputValue(),'210');
  assert(source().includes('#reused-alternate { width:210px;'));assert(source().includes('#reused-card { width:140px;'));record('admitted pending source edit preserves another story with the same authored element ID');
+ assert(await page.evaluate(()=>window.__popupAcceptance.openStory('Card','default ready')));await page.locator('[data-scene-graph-row="action"]').click();
+ const position=page.locator('[data-inspector-section-header="position"]');if(await position.getAttribute('aria-expanded')==='false')await position.click();
+ const rotation=page.locator('[data-property-row="rotation"]'),angle=rotation.locator('[data-property-row-input]'),rotationHandle=rotation.locator('[data-property-row-field-label]');
+ assert.equal(await angle.inputValue(),'20');let expectedAngle=20;
+ for(const [dx,modifier,delta] of [[-5,null,-10],[1,'Shift',20],[5,'Alt',1]]){
+  const box=await rotationHandle.boundingBox();assert(box);const x=box.x+box.width/2,y=box.y+box.height/2,before=proof.sourceRequests.length;
+  if(modifier)await page.keyboard.down(modifier);await page.mouse.move(x,y);await page.mouse.down();await page.mouse.move(x+dx,y);await page.mouse.up();if(modifier)await page.keyboard.up(modifier);
+  expectedAngle+=delta;await waitApplied(++count);assert.equal(await angle.inputValue(),String(expectedAngle));assert(source().includes('transform:translateX(8px) rotate('+expectedAngle+'deg) scale(1.2);'));assert.equal(proof.sourceRequests.length,before+1);
+  const preview=await page.evaluate(()=>{const f=[...document.querySelectorAll('iframe')].find(f=>f.getClientRects().length&&f.contentDocument?.querySelector('#action'));const m=new f.contentWindow.DOMMatrix(f.contentWindow.getComputedStyle(f.contentDocument.querySelector('#action')).transform);return {angle:Math.atan2(m.b,m.a)*180/Math.PI,scale:Math.hypot(m.a,m.b),x:m.e};});assert(Math.abs(preview.angle-expectedAngle)<.0001);assert(Math.abs(preview.scale-1.2)<.00001);assert.equal(preview.x,8);
+  record('Rotation captured '+(modifier||'reverse')+' drag preserves literal siblings with one native compiler/preview/history operation');
+ }
+ const rotationSource=source(),rotationCatalog=readFileSync(project+'/.isonim/catalog.json','utf8'),rotationCalls=proof.sourceRequests.length;
+ for(const kind of ['zero','return','cancel']){const box=await rotationHandle.boundingBox();const x=box.x+box.width/2,y=box.y+box.height/2;await page.mouse.move(x,y);await page.mouse.down();if(kind!=='zero')await page.mouse.move(x+10,y);if(kind==='return')await page.mouse.move(x,y);if(kind==='cancel'){assert(await position.evaluate(el=>el===document.activeElement),'Natural section-header focus must survive captured scrubbing');await page.keyboard.press('Escape');}await page.mouse.up();assert.equal(await angle.inputValue(),String(expectedAngle));assert.equal(source(),rotationSource);assert.equal(readFileSync(project+'/.isonim/catalog.json','utf8'),rotationCatalog);assert.equal((await snapshot()).undoCount,count);assert.equal(proof.sourceRequests.length,rotationCalls);}
+ record('Rotation zero movement return-to-origin and Escape pointer cancellation retain source/catalog/history without transactions');
  assert.deepEqual(proof.errors,[]);assert.deepEqual(proof.agentRequests,[]);writeFileSync(root+'/proof.json',JSON.stringify(proof,null,2));console.log('Inspector gesture GUI passed:',root,proof.cases.length);
 } finally {
  if(browser)await browser.close();if(browserServer)await browserServer.close();

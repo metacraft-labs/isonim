@@ -22,6 +22,13 @@ const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const root=mkdtempSync(path.join(process.env.ISONIM_POPUP_ARTIFACTS||tmpdir(),'inspector-source-'));
 const project=root+'/project',pub=root+'/public';
 cpSync(repo+'/tests/fixtures/editor_inspector_project',project,{recursive:true});mkdirSync(pub);
+// Real declared transform owners in this private Nim/SSR project. The matrix
+// owner is deliberately unsupported by numeric Rotation, while remaining valid CSS.
+const storyFile=project+'/stories.nim';
+writeFileSync(storyFile,readFileSync(storyFile,'utf8').replace('background-color:#112233; color:#FFFFFF; }','background-color:#112233; color:#FFFFFF; transform:translateX(8px) rotate(20deg) scale(1.2); }').replace('background-color:#334455; color:#FFFFFF; }','background-color:#334455; color:#FFFFFF; transform:matrix(1,0,0,1,0,0); }'));
+const ownerFile=project+'/.isonim/source-project.json',owners=JSON.parse(readFileSync(ownerFile,'utf8'));
+for(const owner of owners.editableStyles)if(['action','secondary-action'].includes(owner.elementId))owner.properties.push('transform');
+writeFileSync(ownerFile,JSON.stringify(owners,null,2));
 for(const [from,to] of [['src/isonim/editor/index.html','index.html'],['build/editor-inspector/editor.js','editor.js'],['node_modules/fabric/dist/index.min.js','fabric.min.js'],['node_modules/paper/dist/paper-core.min.js','paper-core.min.js'],['node_modules/svgo/dist/svgo.browser.js','svgo.browser.js']])copyFileSync(repo+'/'+from,pub+'/'+to);
 const build=spawnSync('python3',[repo+'/tools/build_source_catalog.py',project],{env:{...process.env,ISONIM_SOURCE_FRAMEWORK:repo},encoding:'utf8',timeout:70000});
 writeFileSync(root+'/catalog-build.log',build.stdout+build.stderr);assert.equal(build.status,0,build.stdout+build.stderr);
@@ -207,6 +214,53 @@ try {
  assert.equal(source(),unsupportedSource);assert.equal(readFileSync(project+'/.isonim/catalog.json','utf8'),unsupportedCatalog);
  await page.keyboard.press('Escape');assert(await unsupportedSwatch.evaluate(el=>el===document.activeElement));assert.deepEqual(await snapshot(),unsupportedBefore);
  record('default native inspector allows unsupported value inspection but refuses Apply with zero source/catalog/history changes');
+ // Rotation uses the same authenticated source/compiler/history path, retaining
+ // literal sibling functions rather than interpreting computed matrix values.
+ await page.locator('[data-scene-graph-row="action"]').click();
+ const position=page.locator('[data-inspector-section-header="position"]');
+ if(await position.getAttribute('aria-expanded')==='false')await position.click();
+ const rotation=page.locator('[data-property-row="rotation"]'),angle=rotation.locator('[data-property-row-input]');
+ await angle.waitFor();assert.equal(await angle.inputValue(),'20');
+ const rotationPreview=()=>page.evaluate(()=>{const frame=[...document.querySelectorAll('iframe')].find(f=>f.getClientRects().length&&f.contentDocument?.querySelector('#action'));const matrix=new frame.contentWindow.DOMMatrix(frame.contentWindow.getComputedStyle(frame.contentDocument.querySelector('#action')).transform);return {degrees:Math.atan2(matrix.b,matrix.a)*180/Math.PI,scale:Math.hypot(matrix.a,matrix.b),x:matrix.e,y:matrix.f};});
+ const expectRotation=async(degrees)=>{await page.waitForFunction(degrees=>{const frame=[...document.querySelectorAll('iframe')].find(f=>f.getClientRects().length&&f.contentDocument?.querySelector('#action'));if(!frame)return false;const m=new frame.contentWindow.DOMMatrix(frame.contentWindow.getComputedStyle(frame.contentDocument.querySelector('#action')).transform);return Math.abs(Math.atan2(m.b,m.a)*180/Math.PI-degrees)<.0001;},degrees);const actual=await rotationPreview();assert(Math.abs(actual.degrees-degrees)<.0001);assert(Math.abs(actual.scale-1.2)<.00001);assert.equal(actual.x,8);assert.equal(actual.y,0);};
+ let rotationHistory=(await snapshot()).undoCount;const rotationRequests=proof.sourceRequests.length;
+ await angle.fill('3^3deg');await angle.press('Enter');writeFileSync(root+'/rotation-first-commit.json',JSON.stringify({state:await snapshot(),value:await angle.inputValue(),text:await rotation.innerText(),requests:proof.sourceRequests,source:source()},null,2));await waitApplied(++rotationHistory);
+ assert(source().includes('transform:translateX(8px) rotate(27deg) scale(1.2);'));await expectRotation(27);
+ await angle.press('ArrowUp');await waitApplied(++rotationHistory);assert.equal(await angle.inputValue(),'28');await expectRotation(28);
+ assert.equal(proof.sourceRequests.length,rotationRequests+2);
+ const rotatedSource=source(),rotatedCatalog=JSON.parse(readFileSync(project+'/.isonim/catalog.json','utf8'));
+ await page.locator('[data-preview-chrome-bar="true"]').click({position:{x:1,y:1}});assert(await page.evaluate(()=>!document.activeElement.closest('[data-inspector-section-header]')&&!['INPUT','TEXTAREA'].includes(document.activeElement.tagName)));await page.keyboard.press('ControlOrMeta+z');await waitApplied(--rotationHistory);assert(source().includes('rotate(27deg)'));await expectRotation(27);
+ await page.keyboard.press('ControlOrMeta+Shift+z');await waitApplied(++rotationHistory);assert.equal(source(),rotatedSource);assert.deepEqual(JSON.parse(readFileSync(project+'/.isonim/catalog.json','utf8')),rotatedCatalog);await expectRotation(28);
+ await page.reload();await page.waitForFunction(()=>!!window.__popupAcceptance);await page.locator('[data-toolbar-cluster="mode"] [aria-label="Edit"]').click();await page.locator('[data-scene-graph-row="action"]').click();
+ if(await position.getAttribute('aria-expanded')==='false')await position.click();
+ assert.equal(await angle.inputValue(),'28');await expectRotation(28);assert.equal(source(),rotatedSource);
+ record('Rotation arithmetic and arrows preserve siblings through real source/compiler/preview, physical undo/redo and reload');
+ const stableSource=source(),stableCatalog=readFileSync(project+'/.isonim/catalog.json','utf8'),stableHistory=await snapshot(),stableCalls=proof.sourceRequests.length;
+ await angle.fill('41deg');await angle.press('Escape');assert.equal(await angle.inputValue(),'28');
+ for(const invalid of ['1e999deg','NaNdeg','45px','calc(10deg + 1deg)']){await angle.fill(invalid);await angle.press('Enter');await angle.press('Escape');assert.equal(await angle.inputValue(),'28');}
+ assert.equal(source(),stableSource);assert.equal(readFileSync(project+'/.isonim/catalog.json','utf8'),stableCatalog);assert.equal((await snapshot()).undoCount,stableHistory.undoCount);assert.equal(proof.sourceRequests.length,stableCalls);
+ // The authoritative real-file hash must refuse a stale rotation source edit.
+ writeFileSync(storyFile,stableSource+'\n# external revision\n');await angle.fill('32deg');await angle.press('Enter');
+ await page.waitForFunction(()=>JSON.parse(window.__popupAcceptance.snapshot()).stage==='wesFailed');
+ assert.equal(source(),stableSource+'\n# external revision\n');assert.equal(readFileSync(project+'/.isonim/catalog.json','utf8'),stableCatalog);assert.equal((await snapshot()).undoCount,stableHistory.undoCount);assert.equal(await angle.inputValue(),'28');await expectRotation(28);writeFileSync(storyFile,stableSource);
+ record('Rotation cancel malformed/unit/nonfinite refusal and actual stale source preserve exact files/catalog/preview/history');
+ await page.locator('[data-scene-graph-row="secondary-action"]').click();
+ assert.equal(await angle.inputValue(),'matrix(1,0,0,1,0,0)');assert(await angle.evaluate(el=>el.readOnly));assert((await rotation.locator('[data-property-row-message]').innerText()).includes('Read-only'));
+ const opaqueCalls=proof.sourceRequests.length,opaqueState=await snapshot();await angle.click();await page.keyboard.press('ControlOrMeta+A');await page.keyboard.type('45deg');await angle.press('Enter');
+ const opaqueHandle=await rotation.locator('[data-property-row-field-label]').boundingBox();assert(opaqueHandle);await page.mouse.move(opaqueHandle.x+opaqueHandle.width/2,opaqueHandle.y+opaqueHandle.height/2);await page.mouse.down();await page.mouse.move(opaqueHandle.x+opaqueHandle.width/2+20,opaqueHandle.y+opaqueHandle.height/2);await page.mouse.up();
+ assert.equal(await angle.inputValue(),'matrix(1,0,0,1,0,0)');assert.equal(proof.sourceRequests.length,opaqueCalls);assert.equal((await snapshot()).undoCount,opaqueState.undoCount);assert.equal(source(),stableSource);assert.equal(readFileSync(project+'/.isonim/catalog.json','utf8'),stableCatalog);
+ record('Ambiguous computed matrix exposes a visible readonly reason and refuses physical keyboard and drag without source writes');
+ // The real admitted Rotation transaction remains owned by its captured target.
+ await page.locator('[data-scene-graph-row="action"]').click();const raceHistory=(await snapshot()).undoCount;
+ await angle.fill('45deg');await angle.press('Enter');
+ const rotationDeadline=Date.now()+15000;while(!source().includes('rotate(45deg)')&&Date.now()<rotationDeadline)await new Promise(resolve=>setTimeout(resolve,20));
+ assert(source().includes('transform:translateX(8px) rotate(45deg) scale(1.2);'));assert.equal((await snapshot()).stage,'wesCompiling');
+ await page.locator('[data-scene-graph-row="secondary-action"]').click();await waitApplied(raceHistory+1);
+ assert.equal((await snapshot()).selected,'secondary-action');assert.equal(await angle.inputValue(),'matrix(1,0,0,1,0,0)');assert(await angle.evaluate(el=>el.readOnly));
+ record('Admitted Rotation compiler result preserves the next selected opaque transform and source target ownership');
+ await page.locator('[data-scene-graph-row="action"]').click();await angle.fill('0.25turn');await angle.press('Enter');await waitApplied(raceHistory+2);
+ assert(source().includes('transform:translateX(8px) rotate(0.25turn) scale(1.2);'));assert.equal(await angle.inputValue(),'0.25');assert.equal(await rotation.locator('[data-property-row-unit]').textContent(),'turn');await expectRotation(90);
+ record('Rotation typed turn units serialize full CSS and preserve sibling geometry through actual compiler/preview');
  assert.deepEqual(proof.errors,[]);assert.deepEqual(proof.agentRequests,[]);
  writeFileSync(root+'/proof.json',JSON.stringify(proof,null,2));console.log('Inspector source GUI passed:',root,proof.cases.length);
 } finally {

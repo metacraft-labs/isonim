@@ -383,6 +383,8 @@ type
     scopeOptions*: proc(): seq[CompactChoiceOption]
     commit*: proc(value: string)
     authoredValue*: proc(): string {.closure.}
+    numericCssValue*: proc(value: string): string {.closure.}
+      ## Optional numeric display-to-CSS adapter; nil preserves ordinary rows.
     readOnlyReason*: proc(): string {.closure.}
     commitAsync*: proc(value: string; done: proc(ok: bool) {.closure.}) {.closure.}
 

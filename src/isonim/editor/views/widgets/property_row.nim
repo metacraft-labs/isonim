@@ -158,6 +158,7 @@ type
     # non-inspector caller get. The inspector sections fill them from
     # ``property_commit.inspectorRowWiring``.
     authoredValue*: proc(): string {.closure.}
+    numericCssValue*: proc(value: string): string {.closure.}
     readOnlyReason*: proc(): string {.closure.}
     cssProperty*: string
       ## The CSS property this row edits (``"padding-top"``,
@@ -470,7 +471,7 @@ proc parseNumericInput*(raw: string): tuple[value: Option[float], unit: string] 
   if value.isNone: return
   skipSpaces(p)
   let suffix = p.src[p.pos ..< p.src.len]
-  if suffix notin ["", "px", "em", "rem", "%", "vw", "vh", "vmin", "vmax", "deg", "s", "ms", "fr", "ch", "ex"]:
+  if suffix notin ["", "px", "em", "rem", "%", "vw", "vh", "vmin", "vmax", "deg", "rad", "grad", "turn", "s", "ms", "fr", "ch", "ex"]:
     return
   if classify(value.get) in {fcNan, fcInf, fcNegInf}: return
   result = (value, suffix)
@@ -500,9 +501,14 @@ proc propertyRowNumeric*(name: string;
                          wiring = InspectorRowWiring()): PropertyRowConfig =
   var supportedUnits = units
   if wiring.cssProperty.len > 0:
-    for code in ["px", "em", "rem", "%", "vw", "vh", "ch", "deg", "ms", "s", ""]:
+    var codes = @["px", "em", "rem", "%", "vw", "vh", "ch", "deg", "ms", "s", ""]
+    if wiring.numericCssValue != nil:
+      codes = @[]
+      for option in units: codes.add option.code
+    for code in codes:
       if wiring.cssProperty == "opacity" and code != "%": continue
-      let raw = "1" & code
+      let displayed = "1" & code
+      let raw = if wiring.numericCssValue != nil: wiring.numericCssValue(displayed) else: displayed
       let prop = PropertyInfo(name: wiring.cssProperty, directStyleAllowed: true)
       let parsed = parseCssPropertyValue(wiring.cssProperty, raw)
       if validateCssPropertyValue(prop, PropertyEditRequest(property: wiring.cssProperty,
@@ -520,6 +526,7 @@ proc propertyRowNumeric*(name: string;
     onChange: onChange, onBindRequest: onBindRequest, onMore: onMore,
     onDetachRequest: onDetachRequest,
     onVariableNameClick: onVariableNameClick,
+    numericCssValue: wiring.numericCssValue,
     cssProperty: wiring.cssProperty, authoredValue: wiring.authoredValue, readOnlyReason: wiring.readOnlyReason,
     scopeOptions: wiring.scopeOptions,
     commitMessage: wiring.commitMessage,
@@ -983,7 +990,8 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
     ## to be rejoined here or the pipeline receives a unitless length.
     case cfg.kind
     of prkNumeric:
-      formatNumber(cfg.numericValue.val) & currentUnitCode(cfg)
+      let displayed = formatNumber(cfg.numericValue.val) & currentUnitCode(cfg)
+      if cfg.numericCssValue != nil: cfg.numericCssValue(displayed) else: displayed
     of prkColor:
       cfg.colorValue.val
     of prkChoice:
@@ -1344,6 +1352,11 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
                 if(e.key === 'Escape') { aborted(e); input.value = input.getAttribute('data-committed-value') || input.value; e.preventDefault(); }
                 if(e.key === 'Enter' && e.target === input) { input.dispatchEvent(new Event('change',{bubbles:true})); e.preventDefault(); }
               }
+              // A section header may retain focus during pointer capture and
+              // contain its keyboard events. An active drag still owns Escape.
+              function capturedKey(e) {
+                if(pointer !== null && e.key === 'Escape') key(e);
+              }
               function blurred() { if(pointer !== null) aborted({}); }
               handle.addEventListener('pointerdown',down);
               handle.addEventListener('pointermove',moving);
@@ -1352,6 +1365,7 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
               handle.addEventListener('lostpointercapture',aborted);
               window.addEventListener('blur',blurred);
               document.addEventListener('keydown',key);
+              document.addEventListener('keydown',capturedKey,true);
               return function() {
                 blurred();
                 handle.removeEventListener('pointerdown',down);
@@ -1361,6 +1375,7 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
                 handle.removeEventListener('lostpointercapture',aborted);
                 window.removeEventListener('blur',blurred);
                 document.removeEventListener('keydown',key);
+                document.removeEventListener('keydown',capturedKey,true);
               };
             })(""", fieldLabelNode, ",", inputNode, ",", startCallback, ",", moveCallback, ",", endCallback, ",", cancelCallback, ");"].}
           onCleanup(proc() = cleanup())

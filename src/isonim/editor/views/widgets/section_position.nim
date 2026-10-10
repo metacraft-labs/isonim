@@ -13,13 +13,10 @@
 ##   * Rotation         — numeric input with ``°`` unit.
 ##   * Flip horizontal / vertical — 2 buttons.
 ##
-## Source-of-truth: the X / Y / rotation inputs reactively follow the
-## current selection's ``left`` / ``top`` / ``transform`` CSS properties
-## via ``vm.inspector.properties`` (the memo exposed in
-## ``viewmodels.nim``). Editing a row's value writes back to the local
-## signal; Phase G+1 will plumb the writeback through the source-edit
-## pipeline. For now the widget keeps section autonomy: the section
-## owns small local Signal[T] state seeded from the selection.
+## X/Y and Rotation follow the selected property metadata. Rotation adapts one
+## literal planar angle to a numeric field while preserving supported 2D sibling
+## functions. The common guarded commit path owns validation, source/compiler,
+## preview and history; unsupported transforms expose an inspection-only reason.
 ##
 ## Empty-state contract: when no element is selected the section
 ## renders a single ``textMuted`` placeholder ("Select an element");
@@ -31,9 +28,11 @@ import std/[options, strutils, parseutils, math]
 
 import isonim/core/signals
 import isonim/core/computation
+import isonim/core/batch
 import isonim/dsl/ui
 import isonim/editor/types
 import isonim/editor/viewmodels
+import isonim/editor/source_style_values
 import isonim/editor/views/widgets/property_commit
 import isonim/editor/views/widgets/property_row
 
@@ -124,16 +123,12 @@ proc mountSectionPosition*[R, E](r: R; parent: E; vm: EditorVM) =
     let props = vm.inspector.properties.val
     xValue.val = parseLeadingFloat(findPropertyValue(props, "left", "0"), 0.0)
     yValue.val = parseLeadingFloat(findPropertyValue(props, "top", "0"), 0.0)
-    # Pull a ``rotate(Ndeg)`` style hint out of ``transform`` — best-
-    # effort; users with arbitrary transform strings see 0 until they
-    # commit a rotation.
-    let raw = findPropertyValue(props, "transform", "")
-    var rot = 0.0
-    let idx = raw.find("rotate(")
-    if idx >= 0:
-      let inner = raw.substr(idx + len("rotate("))
-      rot = parseLeadingFloat(inner, 0.0)
-    rotationValue.val = rot
+    let property = vm.inspectorProperty("transform")
+    let raw = if property.isSome and property.get.authoredValue.len > 0:
+      property.get.authoredValue else: findPropertyValue(props, "transform", "")
+    let rotation = rotationLiteral(raw)
+    rotationValue.val = if rotation.supported: rotation.value else: 0.0
+    rotUnit.val = PropertyUnitOption(label: (if rotation.unit == "deg": "°" else: rotation.unit), code: rotation.unit)
     let justify = findPropertyValue(props, "justify-self",
       findPropertyValue(props, "text-align", "left"))
     hAlign.val = justify
@@ -231,13 +226,40 @@ proc mountSectionPosition*[R, E](r: R; parent: E; vm: EditorVM) =
     onBindRequest = vm.inspectorBindRequestHandler("top"),
     onDetachRequest = vm.inspectorDetachRequestHandler("top"),
     wiring = vm.inspectorRowWiring("top")))
+  var rotationWiring = vm.inspectorRowWiring("transform")
+  let authoredTransform = rotationWiring.authoredValue
+  let sourceReason = rotationWiring.readOnlyReason
+  proc currentTransform(): string =
+    let authored = authoredTransform()
+    if authored.len > 0: authored
+    else: findPropertyValue(vm.inspector.properties.val, "transform", "")
+  rotationWiring.authoredValue = proc(): string =
+    let literal = rotationLiteral(currentTransform())
+    if literal.supported: formatNumber(literal.value) & literal.unit else: currentTransform()
+  rotationWiring.numericCssValue = proc(value: string): string =
+    patchRotationLiteral(currentTransform(), value)
+  rotationWiring.readOnlyReason = proc(): string =
+    let reason = sourceReason()
+    if reason.len > 0: return reason
+    rotationLiteral(currentTransform()).reason
+  var previousRotationReason = ""
+  createRenderEffect proc() =
+    let reason = rotationWiring.readOnlyReason()
+    if reason.len > 0:
+      previousRotationReason = reason
+      rotationWiring.commitMessage.val = reason
+    elif previousRotationReason.len > 0:
+      if untrack(proc(): string = rotationWiring.commitMessage.val) == previousRotationReason:
+        rotationWiring.commitMessage.val = ""
+      previousRotationReason = ""
   discard r.mountPropertyRow(parent, propertyRowNumeric(
     name = "Rotation", value = rotationValue, unit = rotUnit,
-    units = @[degUnit],
+    units = @[degUnit, PropertyUnitOption(label:"rad",code:"rad"),
+      PropertyUnitOption(label:"grad",code:"grad"), PropertyUnitOption(label:"turn",code:"turn")],
     bindingReactive = vm.inspectorBindingThunk("transform"),
     onBindRequest = vm.inspectorBindRequestHandler("transform"),
     onDetachRequest = vm.inspectorDetachRequestHandler("transform"),
-    wiring = vm.inspectorRowWiring("transform")))
+    wiring = rotationWiring))
 
   # ----- Flip buttons ---------------------------------------------- #
   # Phase H (2026-05-28): flip controls render as compact icon
