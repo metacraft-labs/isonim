@@ -26,7 +26,7 @@ import db_connector/db_postgres
 import isonim/editor/design_review/brief_format
 import isonim/editor/design_review/brief_index
 import isonim/editor/design_review/capture
-import isonim/editor/design_review/clean_tree
+import isonim/editor/design_review/workspace_gate
 import isonim/editor/design_review/db
 
 import ./config
@@ -46,29 +46,6 @@ proc resolveBriefsDir(projectPath: string): string =
   let direct = projectPath / "briefs"
   if dirExists(direct): return direct
   projectPath
-
-proc reasonLabel(r: DirtyRepoReason): string =
-  case r
-  of drUncommitted: "uncommitted changes"
-  of drUntracked:   "untracked files"
-  of drUnpublishedHead: "HEAD is not on the declared remote"
-  of drWorkspaceUnreadable: "workspace unreadable"
-
-proc formatDirty(report: DirtyRepoReport): string =
-  result = report.repoPath & ": " & reasonLabel(report.reason)
-  if report.files.len > 0:
-    result.add " ("
-    result.add report.files.join(", ")
-    result.add ")"
-  case report.reason
-  of drUnpublishedHead:
-    result.add fmt" [HEAD={report.headSha}; push it so the run's pin " &
-               "can be replayed elsewhere"
-    if report.detail.len > 0: result.add "; " & report.detail
-    result.add "]"
-  of drWorkspaceUnreadable:
-    result.add " [" & report.detail & "]"
-  else: discard
 
 proc stdoutReporter*(ev: CaptureProgressEvent) {.gcsafe.} =
   case ev.kind
@@ -185,7 +162,7 @@ proc cmdCapture*(cfg: ReviewConfig;
   except WorkspaceDirtyError as e:
     stderr.writeLine("isonim-review capture: workspace is not clean:")
     for r in e.dirty:
-      stderr.writeLine("  " & formatDirty(r))
+      stderr.writeLine("  " & formatDirtyReport(r))
     return 3
   except CaptureError as e:
     stderr.writeLine("isonim-review capture: " & e.msg)
