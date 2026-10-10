@@ -7,7 +7,8 @@
 ##      says otherwise); fail if any of its repos is dirty, has
 ##      untracked files, or has an unpublished HEAD.
 ##   2. ``captureWorkspacePin`` — the workspace lock for that same
-##      observation; ``record_workspace_pin`` stores it.
+##      observation; ``record_workspace_pin`` stores it.  Steps 1 and 2
+##      are ``workspace_gate.pinCleanWorkspace``, shared with campaigns.
 ##   3. ``design_review.start_run`` with the pin via the DB routine.
 ##   4. For each (preview, viewport) in
 ##      ``brief.coversPreviews × brief.captureViewports``:
@@ -33,8 +34,7 @@ import std/[os, options, strformat, strutils]
 import db_connector/db_postgres
 
 import ./brief_format
-import ./clean_tree
-import ./workspace_pin
+import ./workspace_gate
 import ./pin_db
 import ./capture_store
 import ./bridge_client
@@ -182,19 +182,17 @@ proc runCapture*(briefId: string; workspaceRoot, bridgeUrl, storePath: string;
   let project =
     if opts.workspaceProject.len > 0: opts.workspaceProject
     else: DesignReviewProject
-  let cleanStatus = checkCleanTree(workspaceRoot, project)
-  if not cleanStatus.ok:
-    var err = WorkspaceDirtyError.newException("workspace is not clean")
-    err.dirty = cleanStatus.dirty
-    raise err
-
-  # Pin the very observation the gate accepted: a second look at the
-  # workspace could see a different state than the one just gated.
+  # Gate + pin in one step (``workspace_gate.pinCleanWorkspace``), the
+  # same step a campaign takes for its start and for every round.
   let pin =
     try:
-      captureWorkspacePin(cleanStatus.observation)
-    except WorkspacePinError as e:
-      raise newException(CaptureError, "cannot pin the workspace: " & e.msg)
+      pinCleanWorkspace(workspaceRoot, project)
+    except WorkspaceNotPinnableError as e:
+      if e.dirty.len > 0:
+        var err = WorkspaceDirtyError.newException("workspace is not clean")
+        err.dirty = e.dirty
+        raise err
+      raise newException(CaptureError, e.msg)
 
   let store = newCaptureStore(storePath)
 
