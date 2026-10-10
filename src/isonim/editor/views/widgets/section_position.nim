@@ -235,7 +235,8 @@ proc mountSectionPosition*[R, E](r: R; parent: E; vm: EditorVM) =
     else: findPropertyValue(vm.inspector.properties.val, "transform", "")
   rotationWiring.authoredValue = proc(): string =
     let literal = rotationLiteral(currentTransform())
-    if literal.supported: formatNumber(literal.value) & literal.unit else: currentTransform()
+    if literal.supported: formatExactNumber(literal.value) & literal.unit else: currentTransform()
+  rotationWiring.numericFormat = proc(value: float): string = formatExactNumber(value)
   rotationWiring.numericCssValue = proc(value: string): string =
     patchRotationLiteral(currentTransform(), value)
   rotationWiring.readOnlyReason = proc(): string =

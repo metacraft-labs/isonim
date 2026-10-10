@@ -159,6 +159,7 @@ type
     # ``property_commit.inspectorRowWiring``.
     authoredValue*: proc(): string {.closure.}
     numericCssValue*: proc(value: string): string {.closure.}
+    numericFormat*: proc(value: float): string {.closure.}
     readOnlyReason*: proc(): string {.closure.}
     cssProperty*: string
       ## The CSS property this row edits (``"padding-top"``,
@@ -301,6 +302,15 @@ proc formatNumber*(value: float): string =
     return $int(value)
   let rounded = round(value * 100.0) / 100.0
   result = $rounded
+
+proc formatExactNumber*(value: float): string =
+  ## Roundtrip representation for numeric rows whose precision is authored data.
+  ## Nim's native/JS float conversion retains every significant binary64 digit.
+  result = $value
+  if result.endsWith(".0"): result.setLen(result.len - 2)
+
+proc formatNumeric(cfg: PropertyRowConfig; value: float): string =
+  if cfg.numericFormat != nil: cfg.numericFormat(value) else: formatNumber(value)
 
 # ----- Tiny math expression evaluator ------------------------------------ #
 #
@@ -526,7 +536,7 @@ proc propertyRowNumeric*(name: string;
     onChange: onChange, onBindRequest: onBindRequest, onMore: onMore,
     onDetachRequest: onDetachRequest,
     onVariableNameClick: onVariableNameClick,
-    numericCssValue: wiring.numericCssValue,
+    numericCssValue: wiring.numericCssValue, numericFormat: wiring.numericFormat,
     cssProperty: wiring.cssProperty, authoredValue: wiring.authoredValue, readOnlyReason: wiring.readOnlyReason,
     scopeOptions: wiring.scopeOptions,
     commitMessage: wiring.commitMessage,
@@ -990,7 +1000,7 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
     ## to be rejoined here or the pipeline receives a unitless length.
     case cfg.kind
     of prkNumeric:
-      let displayed = formatNumber(cfg.numericValue.val) & currentUnitCode(cfg)
+      let displayed = formatNumeric(cfg, cfg.numericValue.val) & currentUnitCode(cfg)
       if cfg.numericCssValue != nil: cfg.numericCssValue(displayed) else: displayed
     of prkColor:
       cfg.colorValue.val
@@ -1192,7 +1202,7 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
                 cfg.numericValue.val = parsed.value.get
               else: unparsedSource.val = source
             else: unparsedSource.val = source
-        r.setInputValue(inputNode, formatNumber(cfg.numericValue.val))
+        r.setInputValue(inputNode, formatNumeric(cfg, cfg.numericValue.val))
 
         # Reactive bind — when ``numericValue`` mutates externally the
         # input mirrors it (e.g. variable updates, undo). When the user
@@ -1200,7 +1210,7 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
         # math expression back through ``numericValue.val``.
         createRenderEffect proc() =
           let v = cfg.numericValue.val
-          let displayed = if unparsedSource.val.len > 0: unparsedSource.val else: formatNumber(v)
+          let displayed = if unparsedSource.val.len > 0: unparsedSource.val else: formatNumeric(cfg, v)
           r.setInputValue(inputNode, displayed)
           r.setAttribute(inputNode, "data-committed-value", displayed)
 
@@ -1229,21 +1239,21 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
             let priorUnit = cfg.numericUnit.val
             let priorRaw = unparsedSource.val
             if v == priorValue and nextUnit.code == priorUnit.code:
-              r.setInputValue(inputNode, formatNumber(v))
+              r.setInputValue(inputNode, formatNumeric(cfg, v))
               return
             unparsedSource.val = ""
             cfg.numericUnit.val = nextUnit
             cfg.numericValue.val = v
-            r.setInputValue(inputNode, formatNumber(v))
+            r.setInputValue(inputNode, formatNumeric(cfg, v))
             commitValue(proc() =
               cfg.numericValue.val = priorValue
               cfg.numericUnit.val = priorUnit
               unparsedSource.val = priorRaw
-              r.setInputValue(inputNode, formatNumber(priorValue)))
+              r.setInputValue(inputNode, formatNumeric(cfg, priorValue)))
           else:
             # Reject garbage — restore the previous value so the input
             # never displays an unparseable string after losing focus.
-            r.setInputValue(inputNode, formatNumber(cfg.numericValue.val))
+            r.setInputValue(inputNode, formatNumeric(cfg, cfg.numericValue.val))
         r.addEventListener(inputNode, "change", commit)
         r.addEventListener(inputNode, "blur", commit)
         attachNumericKeySteps(r, inputNode, cfg.numericStep)
@@ -1284,7 +1294,7 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
             cfg.numericMin, cfg.numericMax)
           dragMoved = v != dragStartValue
           cfg.numericValue.val = v
-          r.setInputValue(inputNode, formatNumber(v))
+          r.setInputValue(inputNode, formatNumeric(cfg, v))
 
         let scrubStart = proc(x, y: float; shift, alt: bool) =
           if not active or unparsedSource.val.len > 0:
@@ -1308,7 +1318,7 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
           if dragMoved:
             commitValue(proc() =
               cfg.numericValue.val = dragStartValue
-              r.setInputValue(inputNode, formatNumber(dragStartValue)))
+              r.setInputValue(inputNode, formatNumeric(cfg, dragStartValue)))
         # On the in-field label, and on the legacy gutter node too: the
         # gutter is display:none now, but the headless scrub tests resolve
         # `label-scrubber` and firing at it must still drive the drag.
@@ -1316,7 +1326,7 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
           if not dragArmed: return
           dragArmed = false
           cfg.numericValue.val = dragStartValue
-          r.setInputValue(inputNode, formatNumber(dragStartValue))
+          r.setInputValue(inputNode, formatNumeric(cfg, dragStartValue))
         onCleanup(proc() =
           cancelScrub()
           active = false)

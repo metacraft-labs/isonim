@@ -20,6 +20,7 @@ import isonim/editor/types
 import isonim/editor/viewmodels
 import isonim/editor/source_style_values
 import isonim/editor/views/widgets/section_position
+import isonim/editor/views/widgets/property_row
 import isonim/testing/mock_dom
 
 proc findByAttr(node: MockNode; attr, value: string): MockNode =
@@ -176,4 +177,47 @@ suite "Rotation literal source adapter":
       setInputValue(r,opaqueInput,"45deg")
       fireEvent(opaqueInput,"change")
       check received.len == 1
+      dispose()
+
+  test "Rotation precision roundtrips and mounted row retains authored fractions through no-op and refused edits":
+    for value in [0.125, -0.125, 0.0009765625, 3.141592653589793, 1e-300, 1e300]:
+      var encoded = formatExactNumber(value)
+      for iteration in 0 .. 3:
+        let parsed = parseNumericInput(encoded)
+        check parsed.value.isSome
+        check parsed.value.get == value
+        encoded = formatExactNumber(parsed.value.get)
+    check formatExactNumber(0.125) == "0.125"
+    check formatExactNumber(20) == "20"
+    check formatNumber(0.125) == "0.13" # ordinary nil/default formatting is retained
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let root = r.createElement("div")
+      let vm = createEditorVM()
+      let original = "translateX(8px) rotate(0.125turn) scale(1.2)"
+      vm.workspacePermissions.val = EditorWorkspacePermissions(readSource:true,writeSource:true)
+      vm.inspector.selectedElement.val = ElementRef(id:"precise-owner", properties: @[
+        PropertyInfo(name:"transform",value:original,authoredValue:original,directStyleAllowed:true)])
+      var received: seq[string]
+      vm.inspectorSourceCommit = proc(element: ElementRef; property,value: string;
+          scope: SourceScopeChoiceKind; done: proc(ok: bool; diagnostic: string)) =
+        received.add value
+        done(false, "admission-only refusal control")
+      mountSectionPosition[MockRenderer,MockNode](r,root,vm)
+      let row = findByAttr(root,"data-property-row","rotation")
+      let input = findByAttr(row,"data-property-row-input","true")
+      check r.inputValue(input) == "0.125"
+      setInputValue(r,input,"0.125turn")
+      fireEvent(input,"change")
+      check received.len == 0
+      check r.inputValue(input) == "0.125"
+      setInputValue(r,input,"45deg")
+      fireEvent(input,"change")
+      check received == @[original]
+      check r.inputValue(input) == "0.125"
+      setInputValue(r,input,"1/1024turn")
+      fireEvent(input,"change")
+      check received[^1] == "translateX(8px) rotate(0.0009765625turn) scale(1.2)"
+      check r.inputValue(input) == "0.125"
+      check vm.inspector.selectedElement.val.properties[0].authoredValue == original
       dispose()

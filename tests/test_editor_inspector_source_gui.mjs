@@ -11,7 +11,7 @@
  * The source fixture's compile-time constraint is a real negative compiler control.
  */
 import {spawn,spawnSync} from 'node:child_process';
-import {mkdtempSync,cpSync,readFileSync,writeFileSync,mkdirSync,openSync,copyFileSync} from 'node:fs';
+import {mkdtempSync,cpSync,readFileSync,writeFileSync,mkdirSync,openSync,copyFileSync,statSync} from 'node:fs';
 import {chromium} from '../node_modules/playwright/index.mjs';
 import assert from 'node:assert/strict';
 import path from 'node:path';
@@ -261,6 +261,20 @@ try {
  await page.locator('[data-scene-graph-row="action"]').click();await angle.fill('0.25turn');await angle.press('Enter');await waitApplied(raceHistory+2);
  assert(source().includes('transform:translateX(8px) rotate(0.25turn) scale(1.2);'));assert.equal(await angle.inputValue(),'0.25');assert.equal(await rotation.locator('[data-property-row-unit]').textContent(),'turn');await expectRotation(90);
  record('Rotation typed turn units serialize full CSS and preserve sibling geometry through actual compiler/preview');
+ // Authored fractional units must never be rounded on explicit re-entry.
+ await angle.fill('0.125turn');await angle.press('Enter');await waitApplied(raceHistory+3);await expectRotation(45);
+ assert.equal(await angle.inputValue(),'0.125');
+ const preciseSource=source(),preciseCatalog=readFileSync(project+'/.isonim/catalog.json','utf8'),preciseHistory=await snapshot();
+ assert(Number.isInteger(preciseHistory.undoCount)&&Number.isInteger(preciseHistory.redoCount));
+ const preciseTimes=[statSync(storyFile).mtimeMs,statSync(project+'/.isonim/catalog.json').mtimeMs];
+ for(const originalAngle of ['0.125turn','45deg']){await angle.fill(originalAngle);await angle.press('Enter');await page.waitForFunction(()=>!JSON.parse(window.__popupAcceptance.snapshot()).sourceInFlight);assert.equal(source(),preciseSource);assert.equal(readFileSync(project+'/.isonim/catalog.json','utf8'),preciseCatalog);assert.deepEqual([statSync(storyFile).mtimeMs,statSync(project+'/.isonim/catalog.json').mtimeMs],preciseTimes);assert.equal((await snapshot()).undoCount,preciseHistory.undoCount);assert.equal((await snapshot()).redoCount,preciseHistory.redoCount);await expectRotation(45);}
+ record('Explicit authored fractional and equivalent degree re-entry retain exact source/catalog mtimes and history through authoritative no-op');
+ await angle.fill('0.126turn');await angle.press('Enter');await waitApplied(preciseHistory.undoCount+1);await expectRotation(45.36);
+ assert(source().includes('transform:translateX(8px) rotate(0.126turn) scale(1.2);'));assert.equal(await angle.inputValue(),'0.126');
+ await page.locator('[data-preview-chrome-bar="true"]').click({position:{x:1,y:1}});await page.keyboard.press('ControlOrMeta+z');await waitApplied(preciseHistory.undoCount);assert.equal(source(),preciseSource);assert.deepEqual(JSON.parse(readFileSync(project+'/.isonim/catalog.json','utf8')),JSON.parse(preciseCatalog));await expectRotation(45);
+ await page.keyboard.press('ControlOrMeta+Shift+z');await waitApplied(preciseHistory.undoCount+1);await expectRotation(45.36);
+ await page.reload();await page.waitForFunction(()=>!!window.__popupAcceptance);await page.locator('[data-toolbar-cluster="mode"] [aria-label="Edit"]').click();await page.locator('[data-scene-graph-row="action"]').click();if(await position.getAttribute('aria-expanded')==='false')await position.click();assert.equal(await angle.inputValue(),'0.126');assert(source().includes('rotate(0.126turn)'));await expectRotation(45.36);
+ record('Changed fractional Rotation survives genuine source/compiler/preview physical undo/redo and reload without rounding');
  assert.deepEqual(proof.errors,[]);assert.deepEqual(proof.agentRequests,[]);
  writeFileSync(root+'/proof.json',JSON.stringify(proof,null,2));console.log('Inspector source GUI passed:',root,proof.cases.length);
 } finally {
