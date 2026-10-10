@@ -4,9 +4,13 @@
 ## line.  Sub-subcommands:
 ##
 ##   * ``start --doc <path>``    — open the campaign doc, validate
-##     brief references, POST ``/api/campaign/start``, stream the SSE
-##     response.  Stdout receives the orchestrator's text chunks;
-##     lifecycle events land on stderr.  This is the ONLY way to
+##     brief references, pin the workspace exactly as ``capture`` does
+##     (``workspace_gate.pinCleanWorkspace``; refused, exit 3, when the
+##     reprobuild project is dirty or unpublished), POST
+##     ``/api/campaign/start`` with that pin, stream the SSE
+##     response.  The first start pins the campaign's start; every
+##     start pins its own round.  Stdout receives the orchestrator's
+##     text chunks; lifecycle events land on stderr.  This is the ONLY way to
 ##     drive a campaign turn in the single-turn (CMP-M6) model — the
 ##     orchestrator drives any further work itself inside this single
 ##     ACP turn.
@@ -32,7 +36,9 @@ import std/[httpclient, json, net, os, sha1, strutils, tables]
 import isonim/editor/design_review/brief_format
 import isonim/editor/design_review/brief_index
 import isonim/editor/design_review/campaign_format
+import isonim/editor/design_review/campaign_pin
 import isonim/editor/design_review/log_setup
+import isonim/editor/design_review/workspace_gate
 
 import ./cmd_chat
 import ./config
@@ -49,6 +55,9 @@ type
     briefsDir*: string
     projectDir*: string
     startedBy*: string
+    workspaceRoot*: string
+      ## Workspace to gate and pin; empty means the config's
+      ## ``[workspace] root``.
 
   CampaignListOptions* = object
     daemonUrl*: string
@@ -285,7 +294,32 @@ proc cmdCampaignStart*(cfg: ReviewConfig; opts: CampaignStartOptions): int =
   var refsJson = newJArray()
   for r in doc.briefRefs: refsJson.add(%r)
 
-  let manifestHash = "local"
+  # Pin the workspace for this round (and, on the first start, for the
+  # campaign's start) the way ``capture`` pins a run.  A workspace that
+  # cannot be pinned refuses the start; no unpinned round is recorded.
+  let workspaceRoot =
+    if opts.workspaceRoot.len > 0: opts.workspaceRoot
+    else: cfg.workspace.root
+  let project =
+    if cfg.workspace.project.len > 0: cfg.workspace.project
+    else: DesignReviewProject
+  let pin =
+    try:
+      pinCleanWorkspace(workspaceRoot, project)
+    except WorkspaceNotPinnableError as e:
+      stderr.writeLine "isonim-review campaign start: cannot pin the " &
+        "workspace — a campaign records a workspace pin for its start " &
+        "and for every round:"
+      if e.dirty.len == 0:
+        stderr.writeLine "  " & e.msg
+      for r in e.dirty:
+        stderr.writeLine "  " & formatDirtyReport(r, pinOwner = "campaign")
+      stderr.writeLine "commit and push the changes above (reprobuild " &
+        "project '" & project & "' in " & workspaceRoot &
+        "), then run `campaign start` again"
+      return 3
+  stderr.writeLine "campaign workspace pin: " & pin.pin
+
   var startedBy = opts.startedBy
   if startedBy.len == 0:
     startedBy = getEnv("USER", "cli")
@@ -298,7 +332,7 @@ proc cmdCampaignStart*(cfg: ReviewConfig; opts: CampaignStartOptions): int =
     "body":         doc.bodyMarkdown,
     "briefs":       briefsJson,
     "latestReport": "",
-    "manifestHash": manifestHash,
+    "workspacePin": workspacePinJson(pin),
     "startedBy":    startedBy,
     "notesToOrchestrator": doc.notesToOrchestrator,
   }
@@ -436,7 +470,10 @@ proc cmdCampaignShow*(cfg: ReviewConfig; opts: CampaignShowOptions): int =
     echo "brief_refs:     " & rs.join(", ")
   echo "target_score:   " & $node{"target_score"}
   echo "max_iterations: " & $node{"max_iterations"}.getInt(0)
-  echo "manifest_hash:  " & node{"manifest_hash"}.getStr("")
+  # Provenance: the start pin and every round's pin.  A campaign from
+  # before migration 012 shows as legacy, unpinned.
+  for line in renderCampaignProvenance(parseCampaignProvenance(node)):
+    echo line
   echo "status:         " & node{"status"}.getStr("")
   let reason = node{"status_reason"}.getStr("")
   if reason.len > 0:

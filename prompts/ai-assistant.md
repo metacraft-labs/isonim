@@ -351,6 +351,12 @@ Concrete steps. Follow all of them. Do not improvise.
 4. **Start the orchestrator.** On confirmation, run
    `isonim-review campaign start --doc <project>/campaigns/<slug>.md`.
    This:
+   - Pins the workspace, the way `isonim-review capture` does: it refuses
+     (exit 3, listing each repo and path) unless every repo of the
+     `isonim` reprobuild project is committed and pushed — the campaign
+     doc and its briefs included. Tell the user what has to be committed
+     and pushed, then start again. Every later `campaign start` on the same doc pins its round the
+     same way.
    - Persists a `design_review.campaigns` row.
    - Spawns the Orchestrator agent (system prompt:
      `isonim/prompts/campaign-orchestrator.md`).

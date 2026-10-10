@@ -12,8 +12,11 @@
 ##
 ## Routes:
 ##
-##   * ``POST /api/campaign/start``  — open an ACP session, INSERT a
-##     campaign row + ``'started'`` event, send the single composite
+##   * ``POST /api/campaign/start``  — verify and store the workspace pin
+##     the CLI took (``workspacePin``; see ``campaign_pin.nim``), INSERT
+##     or reopen the campaign row and begin a pinned round
+##     (``campaign_db.openCampaignRound``), open an ACP session, send the
+##     single composite
 ##     prompt to the orchestrator and stream the agent's
 ##     ``session/update`` events back to the caller as an SSE
 ##     response.  Closes with ``event: end`` + a ``round_complete``
@@ -50,9 +53,12 @@ import nim_acp
 import nim_agents
 
 import ./agent_routes
+import ./campaign_db
 import ./campaign_format
+import ./campaign_pin
 import ./db as dr_db
 import ./log_setup
+import ./workspace_pin
 
 logScope:
   topics = "campaign"
@@ -212,37 +218,6 @@ proc peekPendingInjectionEventIds*(reg: CampaignRegistry;
 
 proc escSql(s: string): string =
   s.replace("'", "''")
-
-proc dbStartCampaign(reg: CampaignRegistry;
-    docPath, docSha: string;
-    briefRefs: seq[string];
-    targetScore: float; hasTargetScore: bool;
-    maxIterations: int; manifestHash: string;
-    agentBackend, agentModel, startedBy: string): string =
-  reg.db.asApp()
-  var arrLit = "ARRAY["
-  for i, b in briefRefs:
-    if i > 0: arrLit.add ", "
-    arrLit.add "'" & escSql(b) & "'"
-  arrLit.add "]::text[]"
-  let scoreLit =
-    if hasTargetScore: $targetScore else: "NULL"
-  let modelLit =
-    if agentModel.len == 0: "NULL" else: "'" & escSql(agentModel) & "'"
-  let stmt = "SELECT design_review.start_campaign(" &
-    "'" & escSql(docPath) & "', " &
-    "'" & escSql(docSha) & "', " &
-    arrLit & ", " &
-    scoreLit & "::real, " &
-    $maxIterations & ", " &
-    "'" & escSql(manifestHash) & "', " &
-    "'" & escSql(agentBackend) & "', " &
-    modelLit & ", " &
-    "'" & escSql(startedBy) & "')::text"
-  result = reg.db.conn.getValue(sql(stmt))
-  if result.len == 0:
-    raise newException(CampaignSchedulerError,
-      "start_campaign returned empty id")
 
 proc dbBindAcpSession(reg: CampaignRegistry; campaignId, sessionId: string) =
   reg.db.asApp()
@@ -787,16 +762,16 @@ proc handleStart*(reg: CampaignRegistry; req: Request) {.async, gcsafe.} =
       body:      string
       briefs:    seq[tuple[briefId: string; body: string]]
       latestReport: string
-      manifestHash: string
       startedBy: string
       notesToOrchestrator: string
   var body: CampaignStartBody
+  var pinNode: JsonNode
   try:
     let node = parseJson(req.body)
+    pinNode = node{"workspacePin"}
     body.docPath = node{"docPath"}.getStr("")
     body.docSha = node{"docSha"}.getStr("")
     body.body = node{"body"}.getStr("")
-    body.manifestHash = node{"manifestHash"}.getStr("local")
     body.startedBy = node{"startedBy"}.getStr("cli")
     body.maxIterations = node{"maxIterations"}.getInt(30)
     body.latestReport = node{"latestReport"}.getStr("")
@@ -830,25 +805,54 @@ proc handleStart*(reg: CampaignRegistry; req: Request) {.async, gcsafe.} =
     await respondJson(req, Http400, $(%* {"error": "missing_briefRefs"}))
     return
 
-  # Phase 1: ensure the campaign row exists.  ``start_campaign`` is
-  # idempotent on (doc_path, doc_sha) so a repeat call returns the same
-  # id without writing a second 'started' event.
-  var campaignId = ""
+  # Phase 0: the round's workspace pin.  The CLI took it exactly as a
+  # capture does (clean-tree gate + canonical lock record); re-verify the
+  # record against the pin here so nothing but a real workspace lock —
+  # never a placeholder like the pre-012 ``manifestHash: "local"`` — can
+  # become a campaign's or a round's pin.
+  var pin: WorkspacePin
+  if pinNode == nil:
+    await respondJson(req, Http400, $(%* {
+      "error": "workspace_pin_required",
+      "reason": "campaign start needs the workspace pin of the round " &
+                "(`workspacePin`: {pin, lockToml, lockRecord}); run " &
+                "`isonim-review campaign start`, which pins the workspace"}))
+    return
   try:
-    campaignId = dbStartCampaign(reg, body.docPath, body.docSha,
-      body.briefRefs, body.targetScore, body.hasTargetScore,
-      body.maxIterations, body.manifestHash,
-      $reg.agents.backend, "", body.startedBy)
+    pin = parseWorkspacePinJson(pinNode)
+  except WorkspacePinError as e:
+    await respondJson(req, Http400, $(%* {
+      "error": "invalid_workspace_pin", "reason": e.msg}))
+    return
+
+  # Phase 1: store the pin, ensure the campaign row exists (its start pin
+  # is this pin when the row is new) and begin the round against the pin.
+  # ``start_campaign`` is idempotent on (doc_path, doc_sha) so a repeat
+  # call returns the same id without writing a second 'started' event.
+  var campaignId = ""
+  var round = 0
+  try:
+    let opened = openCampaignRound(reg.db, CampaignStart(
+      docPath: body.docPath, docSha: body.docSha,
+      briefRefs: body.briefRefs,
+      targetScore: body.targetScore, hasTargetScore: body.hasTargetScore,
+      maxIterations: body.maxIterations,
+      agentBackend: $reg.agents.backend, agentModel: "",
+      startedBy: body.startedBy), pin)
+    campaignId = opened.campaignId
+    round = opened.round
   except DbError as e:
     error "campaign start: DB insert failed", reason = e.msg
     await respondJson(req, Http500,
       $(%* {"error": "db_error", "reason": e.msg}))
     return
-  except CampaignSchedulerError as e:
-    error "campaign start: scheduler error", reason = e.msg
+  except ValueError as e:
+    error "campaign start: unreadable round number", reason = e.msg
     await respondJson(req, Http500,
-      $(%* {"error": "scheduler_error", "reason": e.msg}))
+      $(%* {"error": "db_error", "reason": e.msg}))
     return
+  info "campaign round opened", campaignId = campaignId, round = round,
+    workspacePin = pin.pin
 
   # Phase 2: open or re-use the ACP session bound to the campaign.
   var sessionId = reg.lookupSession(campaignId)
@@ -892,7 +896,8 @@ proc handleStart*(reg: CampaignRegistry; req: Request) {.async, gcsafe.} =
     campaignId = campaignId, sessionId = sessionId,
     promptBytes = firstPrompt.len
 
-  let extra = %* {"campaignId": campaignId}
+  let extra = %* {"campaignId": campaignId, "round": round,
+                  "workspacePin": pin.pin}
   let res = await streamPromptToSocket(reg, sessionId, campaignId,
     "round_complete", firstPrompt, extra, req.client)
   try: req.client.close() except CatchableError: discard

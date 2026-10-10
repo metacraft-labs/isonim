@@ -138,12 +138,16 @@ Usage:
 
   isonim-review campaign start --doc <path> [--backend claude|codex|custom]
                                 [--no-tail] [--daemon <url>] [--briefs-dir <path>]
-                                [--config <path>]
+                                [--workspace <path>] [--config <path>]
       (CMP-M2) Start a design campaign from the given campaign doc.
-      Resolves brief refs from the on-disk project, opens an ACP session,
+      Resolves brief refs from the on-disk project, pins the workspace
+      exactly as `capture` does (refuses, exit 3, unless every repo of
+      the reprobuild project is clean and pushed), opens an ACP session,
       POSTs /api/campaign/start to the daemon, and streams the agent's
-      first-round response on stdout.  --no-tail prints just the new
-      campaign id and exits without streaming.
+      first-round response on stdout.  The first start records the
+      campaign's start pin; every start records its round's pin.
+      --no-tail prints just the new campaign id and exits without
+      streaming.
 
   isonim-review campaign list [--status <status>] [--limit N] [--offset N]
                               [--daemon <url>] [--config <path>]
@@ -526,6 +530,7 @@ proc dispatchCampaign(rest: seq[string]): int =
     opts.briefsDir = parseSubArgs(tail, "briefs-dir")
     opts.projectDir = parseSubArgs(tail, "project")
     opts.startedBy = parseSubArgs(tail, "started-by")
+    opts.workspaceRoot = parseSubArgs(tail, "workspace")
     if opts.docPath.len == 0:
       stderr.writeLine "isonim-review campaign start: --doc <path> required"
       return 2
