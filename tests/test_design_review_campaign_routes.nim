@@ -19,6 +19,8 @@ import std/[json, os, strutils, times, unittest]
 
 import isonim/editor/design_review/campaign_pin
 import isonim/editor/design_review/workspace_pin
+from isonim/editor/design_review/campaign_routes import
+  CampaignPromptInputs, assembleFirstPrompt
 
 import helpers/campaign_routes_fixture
 
@@ -323,6 +325,34 @@ test "test_campaign_start_records_start_pin_and_every_round_pin":
       completed.add (payload{"round"}.getInt(0),
                      payload{"workspacePin"}.getStr(""))
   check completed == @[(1, a.pin), (2, b.pin)]
+
+  # Each turn's orchestrator prompt names the round it runs as and the
+  # round's pin, so the orchestrator knows the state it starts from.
+  var prompted: seq[(bool, bool)]
+  for e in readContentLogEntries(f):
+    let text = e{"promptText"}.getStr("")
+    if "CAMPAIGN ROUND:" notin text: continue
+    prompted.add (("  round:         1\n" in text) and
+                    ("  workspace pin: " & a.pin) in text,
+                  ("  round:         2\n" in text) and
+                    ("  workspace pin: " & b.pin) in text)
+  check prompted == @[(true, false), (false, true)]
+
+test "test_first_prompt_names_the_round_and_its_workspace_pin":
+  ## Pure: the CAMPAIGN ROUND section sits between the system prompt and
+  ## the campaign doc, and is omitted when no round is known.
+  let pin = fixtureWorkspacePin('c').pin
+  let text = assembleFirstPrompt("SYS", CampaignPromptInputs(
+    docPath: "/c/doc.md", docBody: "DOC", campaignId: "cid-1", round: 3,
+    workspacePin: pin))
+  check ("\n\nCAMPAIGN ROUND:\n  campaign:      cid-1\n" &
+         "  round:         3\n  workspace pin: " & pin & "\n") in text
+  check text.find("SYS") < text.find("CAMPAIGN ROUND:")
+  check text.find("CAMPAIGN ROUND:") < text.find("CAMPAIGN DOCUMENT")
+  let bare = assembleFirstPrompt("SYS", CampaignPromptInputs(
+    docPath: "/c/doc.md", docBody: "DOC"))
+  check "CAMPAIGN ROUND:" notin bare
+  check "CAMPAIGN DOCUMENT (/c/doc.md):\nDOC" in bare
 
 test "test_list_campaigns_filters_by_status":
   ## With the post-turn fallback running every campaign that never

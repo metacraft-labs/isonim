@@ -387,10 +387,11 @@ proc dbRecentEvents(reg: CampaignRegistry;
 
 # ---------------------------------------------------------------------------
 # Prompt assembly.  The single user message we send to the orchestrator
-# carries the system prompt verbatim, the campaign doc, every referenced
-# brief, and the latest report.  After this prompt the daemon does NOT
-# send a second one — the orchestrator drives any further work itself
-# inside this same ACP turn.
+# carries the system prompt verbatim, the round this turn runs as (with
+# its workspace pin), the campaign doc, every referenced brief, and the
+# latest report.  After this prompt the daemon does NOT send a second
+# one — the orchestrator drives any further work itself inside this same
+# ACP turn.
 # ---------------------------------------------------------------------------
 
 type
@@ -399,6 +400,13 @@ type
     docBody*:     string
     briefs*:      seq[tuple[briefId: string; body: string]]
     latestReport*: string
+    campaignId*:  string
+    round*:       int
+      ## The round this turn runs as (``begin_campaign_round``); 0 omits
+      ## the CAMPAIGN ROUND section.
+    workspacePin*: string
+      ## The round's workspace pin: the committed and pushed source state
+      ## the turn starts from.
 
 proc assembleFirstPrompt*(orchestratorPrompt: string;
                           inputs: CampaignPromptInputs): string =
@@ -408,6 +416,15 @@ proc assembleFirstPrompt*(orchestratorPrompt: string;
   ## does afterwards is driven by its own tool-call loop.
   result = "SYSTEM CONTEXT — orchestrator system prompt:\n"
   result.add orchestratorPrompt
+  if inputs.round > 0:
+    result.add "\n\nCAMPAIGN ROUND:\n"
+    if inputs.campaignId.len > 0:
+      result.add "  campaign:      " & inputs.campaignId & "\n"
+    result.add "  round:         " & $inputs.round & "\n"
+    if inputs.workspacePin.len > 0:
+      result.add "  workspace pin: " & inputs.workspacePin & "\n"
+      result.add "  (the committed and pushed source state this round " &
+                 "starts from; resolve briefs at this pin)\n"
   result.add "\n\nCAMPAIGN DOCUMENT (" & inputs.docPath & "):\n"
   result.add inputs.docBody
   result.add "\n\nBRIEFS REFERENCED:\n"
@@ -890,6 +907,9 @@ proc handleStart*(reg: CampaignRegistry; req: Request) {.async, gcsafe.} =
     docBody: body.body,
     briefs: body.briefs,
     latestReport: body.latestReport,
+    campaignId: campaignId,
+    round: round,
+    workspacePin: pin.pin,
   )
   let firstPrompt = assembleFirstPrompt(orchestratorPrompt, promptInputs)
   info "campaign start streaming",
