@@ -10,6 +10,8 @@
 ## not physical browser listener removal. Authored metadata fixtures exercise
 ## ownership presentation/admission, not discovery. The source-text assertion
 ## reads the same production file at runtime natively and compile time in JS.
+## Header Add checks prove guard metadata and direct-dispatch no-ops only;
+## the mounted GUI owns actual event bubbling, keyboard and focus claims.
 
 import std/[unittest, strutils, tables]
 import isonim/core/[signals, computation, owner]
@@ -1893,3 +1895,47 @@ suite "Agent navigation sidebar binding lifetime":
     oldVm.sidebar.searchQuery.val = "obsolete update after remount"
     check r.inputValue(freshInput) == "fresh update"
     check r.inputValue(oldInput) == "before disposal"
+
+suite "Unsupported inspector header Add guards":
+  test "header Add is unavailable while body export configuration remains functional":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.inspector.selectedElement.val = ElementRef(id: "header-selection", tag: "div")
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      let exportAdd = findByAttr(panel, "data-export-add", "true")
+      check exportAdd != nil
+      exportAdd.fireEvent("click")
+      findByAttr(panel, "data-export-row-size", "0").fireEvent("click")
+      findByAttr(panel, "data-export-row-format", "0").fireEvent("click")
+      let suffix = findByAttr(panel, "data-export-row-suffix", "0")
+      r.setInputValue(suffix, "-configured")
+      suffix.fireEvent("change")
+      let selected = vm.inspector.selectedElement.val
+      let expanded = vm.inspector.expandedSections.val
+      let stage = vm.workspaceEditStage.val
+      let generation = vm.preview.sourceGeneration.val
+      for slug in ["fill", "stroke", "effects", "export"]:
+        let header = findByAttr(panel, "data-inspector-section-header", slug)
+        let add = findByAttr(header, "data-inspector-section-action", "add")
+        check add != nil
+        check add.attributes.getOrDefault("aria-disabled") == "true"
+        check add.attributes.getOrDefault("title").startsWith("Adding another ")
+        check add.attributes.getOrDefault("tabindex") == "0"
+        check add.styles.getOrDefault("cursor") == "default"
+        add.fireEvent("click")
+        add.fireEvent("keydown")
+        check vm.inspector.expandedSections.val == expanded
+        check vm.inspector.selectedElement.val == selected
+        check vm.workspaceEditStage.val == stage
+        check vm.preview.sourceGeneration.val == generation
+        check vm.inspector.undoStack.val.len == 0
+        check vm.inspector.redoStack.val.len == 0
+        check vm.inspector.pendingSourceEdits.val.len == 0
+        check countByAttr(panel, "data-export-row", "0") == 1
+        check findByAttr(panel, "data-export-row-size", "0").textContent == "2x"
+        check findByAttr(panel, "data-export-row-format", "0").textContent == "SVG"
+        check r.inputValue(findByAttr(panel, "data-export-row-suffix", "0")) == "-configured"
+      findByAttr(panel, "data-export-row-delete", "0").fireEvent("click")
+      check countByAttr(panel, "data-export-row", "0") == 0
+      dispose()

@@ -232,7 +232,7 @@ proc injectEditorStyles*() =
     [data-inspector-section-header]:hover [data-inspector-section-title] {
       color: #FFFFFF !important;
     }
-    [data-inspector-section-action="add"]:hover {
+    [data-inspector-section-action="add"]:not([aria-disabled="true"]):hover {
       background-color: #1F212C !important;
       color: #ECEDF3 !important;
     }

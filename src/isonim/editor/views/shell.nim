@@ -2729,13 +2729,14 @@ const inspectorPlaceholderSections* = [
   ## ``component_edit.nim`` into per-section widget files.
 
 const inspectorSectionsWithPlusAction = [
-  "fill", "stroke", "effects", "export"]
-  ## Phase B — sections whose header right slot renders a ``+`` plus
-  ## button placeholder ("add fill", "add stroke", "add effect",
-  ## "add export entry"). Selection colors / Appearance / Layout
-  ## carry richer affordances (swatches / eye+droplet / constraint
-  ## widget) that Phase G owns — for Phase B those sections render
-  ## an empty action slot so the right margin still lines up.
+  ("fill", "Adding another fill layer from this header is unavailable."),
+  ("stroke", "Adding another stroke layer from this header is unavailable."),
+  ("effects", "Adding another effect from this header is unavailable."),
+  ("export", "Adding another export target from this header is unavailable.")]
+  ## Reserved header Add slots have no action callback. Keep their reasons
+  ## together with slot membership so they cannot appear enabled by omission.
+  ## Body widgets retain their independent value/configuration controls.
+  ## Other section action slots stay empty for consistent chevron alignment.
 
 # `selectionDisplayName` moved to `editor/element_semantics.nim`: the Fill
 # section needs the same classification to decide which property it edits,
@@ -2981,9 +2982,12 @@ proc renderSectionFrame[R, E](r: R; vm: EditorVM;
   ## Phase B only Fill / Stroke / Effects / Export carry a ``+`` plus
   ## button placeholder — the other sections leave the slot empty so
   ## the right margin lines up but the chrome stays quiet.
-  let hasPlus = slug in inspectorSectionsWithPlusAction
+  var addUnavailableReason = ""
+  for (addSlug, reason) in inspectorSectionsWithPlusAction:
+    if addSlug == slug:
+      addUnavailableReason = reason
+  let hasPlus = addUnavailableReason.len > 0
   let section = inspectorSectionFromAttr(slug)
-  let unsupportedEffectAdd = section == isEffects
   var plusIcon: E
   var headerEl: E
   var bodyEl: E
@@ -3032,7 +3036,7 @@ proc renderSectionFrame[R, E](r: R; vm: EditorVM;
                  width = "20px", height = "20px",
                  border_radius = "4px",
                  color = textMuted,
-                 cursor = (if unsupportedEffectAdd: "default" else: "pointer")):
+                 cursor = "default"):
               tdiv(ref = plusIcon,
                    `aria-hidden` = "true",
                    display = "flex", align_items = "center",
@@ -3061,9 +3065,8 @@ proc renderSectionFrame[R, E](r: R; vm: EditorVM;
   # the slot to be rendered.
   if hasPlus:
     r.setInnerHtml(plusIcon, plusSvg)
-    if unsupportedEffectAdd:
-      r.setAttribute(addBtn, "aria-disabled", "true")
-      r.setAttribute(addBtn, "title", "Effect source editing is unavailable in the inspector.")
+    r.setAttribute(addBtn, "aria-disabled", "true")
+    r.setAttribute(addBtn, "title", addUnavailableReason)
 
   # Phase C reactive bind: the header's ``data-expanded`` /
   # ``aria-expanded`` attributes, the chevron glyph, and the body's
