@@ -24,6 +24,7 @@ import re
 import shlex
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -33,7 +34,10 @@ import unittest
 from helpers.editor_context_evidence import resolve_context, identity as context_identity
 import urllib.error
 import urllib.request
-from helpers.editor_process_observer import process_observer, optional_sibling_available
+from helpers.editor_process_observer import (
+    process_observer, optional_sibling_available, capture_owned, reap_owned,
+    require_exit,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 HARBOR = ROOT.parent / 'agent-harbor'
@@ -61,6 +65,16 @@ def descendants(table, root):
 
 class EditorHarborScenario(unittest.TestCase):
     def test_production_routes_keep_isolated_provider_sessions_alive_until_close(self):
+        self.exercise_production_routes()
+
+    def test_parallel_native_shutdown_of_two_actual_backend_sessions(self):
+        # A focused native-ownership gate, independent of provider continuity:
+        # both actual REST conversations launch their first official scenario
+        # turn, then the SAME loaded daemon shuts down with both still open.
+        # The original persistent-session test above retains every assertion.
+        self.exercise_production_routes(shutdown_only=True)
+
+    def exercise_production_routes(self, shutdown_only=False):
         global OBSERVER
         if not optional_sibling_available(HARBOR):
             self.skipTest('optional private Agent Harbor sibling absent')
@@ -164,6 +178,7 @@ os.execv(provider, [provider, '--scenario', scenarios[index], '--disable-followe
         reader = threading.Thread(target=drain, daemon=True)
         reader.start()
         workers = {}
+        cleanup_owned = capture_owned(processes(), [child.pid])
         try:
             harbor_url = None
             base = None
@@ -187,6 +202,13 @@ os.execv(provider, [provider, '--scenario', scenarios[index], '--disable-followe
                     break
             self.assertIsNotNone(base, 'bounded daemon readiness failed')
             self.base = base
+            native = processes()[child.pid]
+            self.assertEqual(native[2][0], str(daemon))
+            loaded = Path(f'/proc/{child.pid}/exe') if sys.platform == 'linux' else Path(native[3])
+            self.assertEqual(hashlib.sha256(loaded.read_bytes()).hexdigest(), identities['daemon_sha256'])
+            (artifacts / 'native-loaded-identity.json').write_text(json.dumps({
+                'pid': child.pid, 'starttime': native[1], 'starttime_kind': OBSERVER.starttime_kind,
+                'kernelExecutable': native[3], 'loadedSha256': identities['daemon_sha256']}, indent=2))
             # HTTP is ready independently of the optional producer. Trigger its
             # actual owned preparation through the first validated session API.
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
@@ -219,6 +241,7 @@ os.execv(provider, [provider, '--scenario', scenarios[index], '--disable-followe
             self.assertIsNotNone(harbor_url,'automatic local producer REST selection was not used')
             self.harbor_url = harbor_url
             owned = processes()
+            cleanup_owned = capture_owned(owned, [child.pid], cleanup_owned)
             services = [owned[pid][2] for pid in descendants(owned, child.pid) if pid in owned
                         and owned[pid][2] and owned[pid][2][0] == str(executable)
                         and '--rest-port' in owned[pid][2] and '--pid-file' in owned[pid][2]]
@@ -271,8 +294,20 @@ os.execv(provider, [provider, '--scenario', scenarios[index], '--disable-followe
                 self.assertEqual(len(new), 1)
                 backend_ids.append(new.pop())
                 self.assertEqual(event_ids, {backend_ids[index]}, 'first stream must identify its real backend')
+                if shutdown_only:
+                    actual_prompts = [json.loads(line) for line in
+                                      (fixture / f'provider-prompts-{index}.jsonl').read_text().splitlines()]
+                    self.assertEqual(len(actual_prompts), 1)
+                    self.assertTrue(actual_prompts[0].startswith(FIRST.replace('ISONIM_CONTEXT_7309', token)))
+                    continue
                 self.assertEqual({s['status'] for s in sessions}, {'paused'}, 'turn end is idle, never session completion')
                 table = processes()
+                cleanup_owned = capture_owned(table, [child.pid], cleanup_owned)
+                # Save all actually owned native metadata before any argv
+                # predicate. A rejected predicate cannot erase its evidence.
+                (artifacts / f'owned-processes-after-turn-{index}.json').write_text(
+                    json.dumps({pid: row for pid, row in table.items()
+                                if pid in cleanup_owned and row[1] == cleanup_owned[pid][1]}, indent=2))
                 owned = descendants(table, child.pid)
                 candidates = {pid: table[pid] for pid in owned if pid in table and table[pid][2]
                               and table[pid][2][0] == str(provider)}
@@ -312,6 +347,12 @@ os.execv(provider, [provider, '--scenario', scenarios[index], '--disable-followe
                                  'unsupported_capability')
                 self.assert_workers(workers)
             (artifacts / 'workers.json').write_text(json.dumps(workers, indent=2))
+            if shutdown_only:
+                self.assertEqual(len(backend_ids), 2)
+                self.assertEqual(len(set(backend_ids)), 2)
+                self.assertEqual((fixture / 'provider-counter').read_text(), '2')
+                self.assertEqual({s['id'] for s in self.sessions()}, set(backend_ids))
+                return  # Finally still requires native0, owned reaping and EOF.
             # Reuse conversation handles in reverse order: no backend restart.
             for index in (1, 0):
                 self.assert_workers(workers)
@@ -385,6 +426,9 @@ os.execv(provider, [provider, '--scenario', scenarios[index], '--disable-followe
             self.assertEqual(self.wait_workers(workers, expected=0), {})
             self.assertEqual(inherited.read_text(), 'parent state must remain untouched')
         finally:
+            original_error = sys.exc_info()[1]
+            cleanup_errors = []
+            cleanup_owned = capture_owned(processes(), [child.pid], cleanup_owned)
             if child.poll() is None:
                 child.send_signal(signal.SIGTERM)
                 try:
@@ -392,10 +436,53 @@ os.execv(provider, [provider, '--scenario', scenarios[index], '--disable-followe
                 except subprocess.TimeoutExpired:
                     os.killpg(child.pid, signal.SIGKILL)
                     child.wait(timeout=5)
-                    self.fail('owned daemon shutdown exceeded its normal deadline')
+                    cleanup_errors.append('owned daemon shutdown exceeded its normal deadline')
+            # The isolated preparation helper can outlive a crashed native
+            # daemon and keep stderr open. Revalidate only captured identities,
+            # even when the direct child was already reaped before finally.
+            try:
+                reap_owned(OBSERVER, cleanup_owned, [child], seconds=15)
+            except AssertionError as error:
+                cleanup_errors.append(str(error))
             reader.join(timeout=5)
-            child.stderr.close()
-            log.close()
+            if reader.is_alive():
+                cleanup_errors.append('owned stderr reader did not reach EOF')
+            else:
+                child.stderr.close()  # Never block acquiring an active reader's lock.
+                log.close()
+            (artifacts / 'native-exit.json').write_text(json.dumps({
+                'pid': child.pid, 'returncode': child.returncode,
+                'readerEof': not reader.is_alive(), 'cleanupErrors': cleanup_errors}, indent=2))
+            try:
+                require_exit(child, {0}, 'editor daemon')
+            except AssertionError as error:
+                cleanup_errors.append(str(error))
+            if cleanup_errors:
+                error = AssertionError('; '.join(cleanup_errors))
+                if original_error is not None:
+                    original_error.add_note(str(error))
+                else:
+                    raise error
+            if shutdown_only and original_error is None:
+                self.assertFalse(helper_directory.exists(), 'owned helper handoff must be removed')
+                self.assertNotIn(helper_pid, processes(), 'owned helper must be physically reaped')
+                self.assertNotIn(service_pids[0], processes(), 'owned service must be physically reaped')
+                self.assertEqual(inherited.read_text(), 'parent state must remain untouched')
+                with sqlite3.connect(state_dir / 'daemon.sqlite') as database:
+                    status_events = [(sid, json.loads(payload)) for sid, payload in
+                        database.execute("select session_id,payload from session_events where kind='status'")
+                        if sid in backend_ids]
+                stopping = {sid: min(event['timestamp'] for session, event in status_events
+                                    if session == sid and event['status'] == 'stopping') for sid in backend_ids}
+                stopped = {sid: min(event['timestamp'] for session, event in status_events
+                                   if session == sid and event['status'] == 'stopped') for sid in backend_ids}
+                self.assertLess(max(stopping.values()), min(stopped.values()),
+                                'both real REST stops must begin before either completes')
+                (artifacts / 'parallel-stop-proof.json').write_text(json.dumps({
+                    'backendIds': backend_ids, 'stopping': stopping, 'stopped': stopped,
+                    'normalNativeExit': child.returncode, 'readerEof': not reader.is_alive()}, indent=2))
+                (artifacts / 'SHUTDOWN-PASS').write_text(
+                    'two real backend sessions, two official first prompts; native0; owned helper/service reaping and stderr EOF\n')
         self.assertEqual(child.returncode, 0, 'normal owned shutdown must succeed')
         self.assertFalse(helper_directory.exists(),'owned helper handoff must be removed')
         self.assertNotIn(helper_pid,processes(),'owned helper must be reaped')

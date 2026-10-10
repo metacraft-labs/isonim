@@ -168,6 +168,27 @@ proc release*(reg: AgentRegistry; sessionId: string) =
   finally:
     release(reg.lock)
 
+proc finishSessionRelease(reg: AgentRegistry; state: var AgentSessionState) =
+  ## Dispose daemon-owned transport/state only on its owner thread.
+  let sessionId = state.sessionId
+  shutdown(state.client)
+  info "agent client shutdown end", sessionId = sessionId
+  if reg.controlRegistry != nil: reg.controlRegistry.revokeConversation(sessionId)
+  try:
+    cleanupControlEnvironment(state.controlEnvFile)
+  except OSError as error:
+    warn "closed agent control environment cleanup failed", sessionId = sessionId, reason = error.msg
+  # Closing the backend can return before its stream worker finishes. Move
+  # the owner without changing reference counts; the post-join handler alone
+  # disposes it. Check current membership under the same lock: a worker that
+  # already joined while close was pending needs no retired holder.
+  acquire(reg.lock)
+  try:
+    if reg.activePrompts.hasKey(sessionId):
+      reg.retiredSessions[sessionId] = move(state)
+  finally:
+    release(reg.lock)
+
 proc shutdownAndRelease*(reg: AgentRegistry; sessionId: string) =
   ## CMP-M7 — take a session out of the registry AND terminate its
   ## ACP transport (including the spawned stdio child).  Used by the
@@ -192,8 +213,7 @@ proc shutdownAndRelease*(reg: AgentRegistry; sessionId: string) =
       if state.client.backend == abkHarbor and not state.isDraft:
         {.cast(gcsafe).}:
           state.client.closeSession(state.session)
-      shutdown(state.client)
-      info "agent client shutdown end", sessionId = sessionId
+      reg.finishSessionRelease(state)
     except CatchableError as e:
       warn "agent client shutdown raised",
         sessionId = sessionId, reason = e.msg
@@ -205,21 +225,6 @@ proc shutdownAndRelease*(reg: AgentRegistry; sessionId: string) =
       finally:
         release(reg.lock)
       raise
-    if reg.controlRegistry != nil: reg.controlRegistry.revokeConversation(sessionId)
-    try:
-      cleanupControlEnvironment(state.controlEnvFile)
-    except OSError as error:
-      warn "closed agent control environment cleanup failed", sessionId = sessionId, reason = error.msg
-    # Closing the backend can return before its stream worker finishes. Move
-    # the owner without changing reference counts; the post-join handler alone
-    # disposes it. Check current membership under the same lock: a worker that
-    # already joined while close was pending needs no retired holder.
-    acquire(reg.lock)
-    try:
-      if reg.activePrompts.hasKey(sessionId):
-        reg.retiredSessions[sessionId] = move(state)
-    finally:
-      release(reg.lock)
   else:
     info "agent client shutdown skipped (not in registry)",
       sessionId = sessionId
@@ -240,15 +245,36 @@ proc shutdownAll*(reg: AgentRegistry) =
       else: ids.add(id)
   finally:
     release(reg.lock)
-  type CloseArgs = tuple[registry: AgentRegistry, id: string]
-  proc closeOne(args: CloseArgs) {.thread, gcsafe.} =
+  type HarborCloseWork = object
+    state: AgentSessionState
+    succeeded: bool
+  # Move ownership on the daemon thread. Workers borrow stable addresses solely
+  # for the blocking REST call; they must never move or destroy this state (Nim's
+  # GC heap belongs to its allocating thread). Keep it until stream workers join.
+  var work = newSeq[HarborCloseWork](ids.len)
+  var captured = 0
+  acquire(reg.lock)
+  try:
+    for id in ids:
+      if reg.sessions.hasKey(id):
+        work[captured].state = move(reg.sessions[id])
+        reg.sessions.del(id)
+        inc captured
+  finally:
+    release(reg.lock)
+  work.setLen(captured)              # Finalize stable addresses before spawning.
+  proc closeOne(work: ptr HarborCloseWork) {.thread, gcsafe.} =
     {.cast(gcsafe).}:
-      try: args.registry.shutdownAndRelease(args.id)
+      try:
+        if not work.state.isDraft:
+          work.state.client.closeSession(work.state.session)
+        work.succeeded = true
       except CatchableError as e:
-        warn "agent shutdown failed", sessionId = args.id, reason = e.msg
-  var closers = newSeq[Thread[CloseArgs]](ids.len)
-  for i, id in ids:
-    createThread(closers[i], closeOne, (reg, id))
+        warn "agent shutdown failed", sessionId = work.state.sessionId, reason = e.msg
+  var closers = newSeq[Thread[ptr HarborCloseWork]](work.len)
+  for i in 0 ..< work.len:
+    info "agent client shutdown begin", sessionId = work[i].state.sessionId
+    createThread(closers[i], closeOne, addr work[i])
   # ACP transport callbacks and captured state belong to the daemon thread.
   # Release them here; independent blocking REST closes remain concurrent above.
   for id in acpIds:
@@ -256,6 +282,26 @@ proc shutdownAll*(reg: AgentRegistry) =
     except CatchableError as e:
       warn "agent shutdown failed", sessionId = id, reason = e.msg
   for closer in closers.mitems: joinThread(closer)
+  for item in work.mitems:
+    if item.succeeded:
+      try: reg.finishSessionRelease(item.state)
+      except CatchableError as e:
+        warn "agent shutdown failed", sessionId = item.state.sessionId, reason = e.msg
+        let id = item.state.sessionId
+        acquire(reg.lock)
+        try:
+          if reg.activePrompts.hasKey(id):
+            reg.retiredSessions[id] = move(item.state)
+        finally:
+          release(reg.lock)
+    else:
+      let id = item.state.sessionId
+      acquire(reg.lock)
+      try:
+        if reg.activePrompts.hasKey(id):
+          reg.retiredSessions[id] = move(item.state)
+      finally:
+        release(reg.lock)
   # Do not wait for event streams: their provider has been closed above. Do
   # wait for admitted creation AND its compensating close to actually finish.
   # A shorter independent drain timer would abandon a newly returned ID.

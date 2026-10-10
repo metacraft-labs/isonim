@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import queue
+import signal
 import sys
 import tempfile
 import threading
@@ -62,6 +63,8 @@ class ScenarioCleanup(unittest.TestCase):
         runtime.env = dict(os.environ)
         runtime.handoffStop = threading.Event()
         runtime.handles, runtime.children, runtime.readers, runtime.readerErrors = [], [], [], []
+        runtime.childRoles = {}
+        runtime.ownedProcesses = {}
         runtime.lines = queue.Queue()
         # The actual trace shape that previously crashed cleanup, alongside
         # genuine mapping-shaped registration and provider-scope evidence.
@@ -78,7 +81,8 @@ class ScenarioCleanup(unittest.TestCase):
         self.writePrivate('provider-scope.json', {'ISONIM_EDITOR_TOKEN':'mapping-provider-secret'})
         self.child = runtime.spawn([
             sys.executable, '-u', '-c',
-            'import time; print("CLEANUP_CHILD_READY", flush=True); time.sleep(60)',
+            'import signal,sys,time; signal.signal(signal.SIGTERM,lambda *_:sys.exit(0)); '
+            'print("CLEANUP_CHILD_READY", flush=True); time.sleep(60)',
         ], 'owned-cleanup-child')
         self.addCleanup(self.emergencyReap)
         wait(lambda: not runtime.lines.empty(), 'real cleanup control child ready', 5)
@@ -104,6 +108,28 @@ class ScenarioCleanup(unittest.TestCase):
         self.assertTrue(self.child.stdout.closed)
         self.assertTrue(all(handle.closed for handle in runtime.handles))
         self.assertEqual(runtime.readerErrors, [])
+
+    def test_unknown_live_helper_default_sigterm_is_reaped_but_rejected(self):
+        # Genuine unknown-role signal control; no fake status or OS metadata.
+        # First release the normal helper, then exercise the same real owner.
+        self.runtime.close()
+        self.assertOwnedCleanup()
+        self.child = self.runtime.spawn([
+            sys.executable, '-u', '-c',
+            'import time; print("UNKNOWN_HELPER_READY", flush=True); time.sleep(60)',
+        ], 'unknown-live-helper')
+        wait(lambda: self.runtime.lines.get_nowait() == 'UNKNOWN_HELPER_READY\n'
+             if not self.runtime.lines.empty() else False,
+             'real unknown-role default-signal helper ready', 5)
+        self.identity = self.runtime.observer.snapshot()[self.child.pid][1]
+        self.assertIsNone(self.child.poll())
+        with self.assertRaisesRegex(AssertionError,'unknown-live-helper native exit -15; expected \\[0\\]'):
+            self.runtime.close()
+        self.assertOwnedCleanup()
+        exits=json.loads((self.runtime.artifacts/'native-exits.json').read_text())
+        unknown=next(row for row in exits if row['pid']==self.child.pid)
+        self.assertEqual(unknown,{'role':'unknown-live-helper','pid':self.child.pid,
+            'returncode':-signal.SIGTERM,'allowed':[0]})
 
     def test_array_trace_and_mapping_credentials_complete_actual_cleanup(self):
         runtime = self.runtime

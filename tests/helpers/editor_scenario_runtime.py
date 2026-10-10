@@ -26,7 +26,10 @@ import time
 import urllib.request
 from helpers.editor_preparation_clock import PreparationClock, ClockTrace, SCHEMA, COLD_BOUND_NS
 from helpers.editor_sdk_runtime import materialize
-from helpers.editor_process_observer import process_observer, optional_sibling_available
+from helpers.editor_process_observer import (
+    process_observer, optional_sibling_available, capture_owned, reap_owned,
+    require_exit,
+)
 from helpers.editor_scenario_registration import verify_recipe
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -137,6 +140,7 @@ class Runtime:
         config.write_text(('[agent]\nassistant_prompt_path='+json.dumps(str(scoped_instructions))+'\n'+
             ('model='+json.dumps(real_model)+'\n' if real_model is not None else '')) if real_provider else '')
         self.handles=[]; self.children=[]; self.readers=[]; self.readerErrors=[]
+        self.ownedProcesses={}; self.childRoles={}
         self.handoffStop=threading.Event()
         self.controllerPrivate=root/'controller-private'
         self.controllerPrivate.mkdir(mode=0o700)
@@ -270,6 +274,7 @@ class Runtime:
                 generation=None
                 while not self.handoffStop.is_set():
                     owned=self.observer.snapshot()
+                    self.ownedProcesses=capture_owned(owned, [child.pid for child in self.children], self.ownedProcesses)
                     helpers=[]
                     for pid,row in owned.items():
                         argv=row[2] or []
@@ -430,6 +435,7 @@ class Runtime:
         log=(self.artifacts/(name+'.log')).open('w');self.handles.append(log)
         child=subprocess.Popen(args,env=env or self.env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,start_new_session=True)
         self.children.append(child)
+        self.childRoles[child.pid]=name
         def drain():
             try:
                 for line in child.stdout:
@@ -529,14 +535,9 @@ class Runtime:
         if self.project.exists():
             import difflib
             (self.artifacts/'source.diff').write_text(''.join(difflib.unified_diff(self.before.splitlines(True),(self.project/self.source_file).read_text().splitlines(True))))
-        owned=set()
         table=self.observer.snapshot()
-        for child in self.children: owned.add(child.pid)
-        if hasattr(self,'harborPid') and self.harborPid in table and table[self.harborPid][1]==self.harborIdentity[1]:owned.add(self.harborPid)
-        while True:
-            added={pid for pid,row in table.items() if row[0] in owned}-owned
-            if not added:break
-            owned.update(added)
+        captured=capture_owned(table, [child.pid for child in self.children], self.ownedProcesses)
+        owned=set(captured)
         if hasattr(self,'harborState'):
             import sqlite3
             with closing(sqlite3.connect(self.harborState/'daemon.sqlite')) as database:
@@ -549,22 +550,21 @@ class Runtime:
                 for value in json.loads(private.read_text()).values():
                     if value:log=log.replace(value,'[private-scope]')
             (self.artifacts/'harbor.log').write_text(log)
+        expected_exits={}
         for child in reversed(self.children):
+            role=self.childRoles[child.pid]
+            expected_exits[child.pid]={0}
             if child.poll() is None:
+                # The launcher deliberately unwinds with 128+SIGTERM; the
+                # test-only native host has the default signal disposition.
+                if role=='launcher':expected_exits[child.pid].add(128+signal.SIGTERM)
+                if role in ('host','reload-host'):expected_exits[child.pid].add(-signal.SIGTERM)
                 os.killpg(child.pid,signal.SIGTERM)
                 try:child.wait(timeout=10)
                 except subprocess.TimeoutExpired:os.killpg(child.pid,signal.SIGKILL);child.wait(timeout=5)
         # Launcher can leave a producer service in its own session. Only captured
         # owned descendants with unchanged kernel identity are eligible here.
-        remaining=self.observer.snapshot()
-        for pid in owned:
-            if pid in remaining and pid in table and remaining[pid][1]==table[pid][1]:
-                try:os.kill(pid,signal.SIGTERM)
-                except ProcessLookupError:pass
-        def reaped():
-            current=self.observer.snapshot()
-            return not any(pid in current and current[pid][1]==table[pid][1] for pid in owned if pid in table)
-        wait(reaped,'owned cleanup',15)
+        reap_owned(self.observer,captured,self.children,seconds=15)
         for reader in self.readers:
             reader.join(timeout=5)
             if reader.is_alive():raise AssertionError('Owned stdout reader did not reach EOF')
@@ -585,6 +585,12 @@ class Runtime:
                 if any(secret in contents for secret in secrets):raise AssertionError('Credential leaked into public artifact: '+filename.name)
                 scanned.append(filename.name)
         (self.artifacts/'cleanup.json').write_text(json.dumps({'owned_processes':len(owned),'readers':len(self.readers),'reaped':True,'public_secret_scan':scanned},indent=2))
+        exits=[{'role':self.childRoles[child.pid],'pid':child.pid,
+                'returncode':child.returncode,'allowed':sorted(expected_exits[child.pid])}
+               for child in self.children]
+        (self.artifacts/'native-exits.json').write_text(json.dumps(exits,indent=2))
+        for child in self.children:
+            require_exit(child,expected_exits[child.pid],self.childRoles[child.pid])
 
 
 def scripted_terminal_fence(wire, turn):

@@ -1223,7 +1223,9 @@ package isonim:
       source = "tests/test_editor_process_observer.py",
       actionId = "isonim.chat_execute.process_observer",
       extraInputs = @["tests/test_editor_process_observer.py", "tests/helpers/editor_process_observer.py",
-        "tests/helpers/editor_context_evidence.py", "tests/test_editor_harbor_scenario.py"]))
+        "tests/helpers/editor_context_evidence.py", "tests/test_editor_harbor_scenario.py",
+        "tests/helpers/editor_scenario_runtime.py", "tests/helpers/editor_sdk_runtime.py",
+        "tests/helpers/editor_preparation_clock.py", "tests/helpers/editor_scenario_registration.py"]))
     # Optional private producer acceptance. With the sibling present, the built
     # official scenario provider must be configured and all real boundaries run.
     # The script delegates producer compilation/environment to the local launcher.

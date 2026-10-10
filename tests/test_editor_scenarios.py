@@ -12,12 +12,59 @@ import hashlib
 from pathlib import Path
 import subprocess
 import sys
+import signal
 import unittest
 from helpers.editor_scenario_runtime import Runtime, wait, post, ROOT, HARBOR
 from helpers.editor_process_observer import optional_sibling_available
 from helpers.editor_context_evidence import resolve_context, identity as context_identity
 
 class EditorScenarios(unittest.TestCase):
+    def test_fresh_native_registration_reload_and_normal_teardown(self):
+        # No protocol peer or model turn: real Runtime initialization, catalog,
+        # registration and freshNative drive both production VMs and cleanup.
+        if not optional_sibling_available(HARBOR):self.skipTest('optional private Agent Harbor sibling absent')
+        runtime=Runtime('native')
+        identities=[]
+        try:
+            initial=runtime.action()
+            reloaded,registration=runtime.freshNative()
+            self.assertNotEqual(registration['instance'],runtime.scope['instance'])
+            self.assertEqual(registration['workspace'],runtime.scope['workspace'])
+            self.assertTrue(initial['state']['stories'])
+            self.assertEqual(reloaded['state']['stories'],initial['state']['stories'])
+            self.assertEqual(reloaded['chats'][0]['messages'],[])
+            hosts=[child for child in runtime.children if runtime.childRoles[child.pid] in ('host','reload-host')]
+            self.assertEqual([runtime.childRoles[child.pid] for child in hosts],['host','reload-host'])
+            binary=(ROOT/'build/bin/editor-scenario-host').resolve()
+            expected=hashlib.sha256(binary.read_bytes()).hexdigest()
+            table=runtime.observer.snapshot()
+            for child in hosts:
+                self.assertIsNone(child.poll())
+                row=table[child.pid]
+                self.assertTrue(row[1])
+                self.assertEqual(Path(row[3]).resolve(),binary)
+                self.assertEqual(row[2][0],str(binary))
+                loaded=Path('/proc')/str(child.pid)/'exe' if sys.platform=='linux' else binary
+                actual=hashlib.sha256(loaded.read_bytes()).hexdigest()
+                self.assertEqual(actual,expected)
+                if sys.platform=='linux':
+                    from helpers.editor_process_observer import LinuxProcessObserver
+                    self.assertEqual(LinuxProcessObserver().snapshot()[child.pid],row)
+                identities.append({'role':runtime.childRoles[child.pid],'pid':child.pid,
+                    'identity':row,'loadedSha256':actual})
+            (runtime.artifacts/'reload-native-identities.json').write_text(json.dumps(identities,indent=2))
+        finally:
+            runtime.close()
+        exits=json.loads((runtime.artifacts/'native-exits.json').read_text())
+        for native in identities:
+            entry=next(row for row in exits if row['pid']==native['pid'])
+            self.assertEqual(entry['returncode'],-signal.SIGTERM)
+            self.assertEqual(entry['allowed'],[-signal.SIGTERM,0])
+            self.assertNotIn(native['pid'],runtime.observer.snapshot())
+        self.assertTrue(all(not reader.is_alive() for reader in runtime.readers))
+        self.assertTrue(all(child.poll() is not None for child in runtime.children))
+        self.assertTrue(json.loads((runtime.artifacts/'cleanup.json').read_text())['reaped'])
+
     def test_native_real_authoring_sessions_streaming_conflicts_and_denial(self):
         if not optional_sibling_available(HARBOR):self.skipTest('optional private Agent Harbor sibling absent')
         runtime=Runtime('native')

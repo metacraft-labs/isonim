@@ -13,6 +13,78 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
+
+
+def capture_owned(table, roots, known=None):
+    """Retain native identities while their observed ancestry proves ownership.
+
+    An already recorded start identity remains a seed after reparenting. A reused
+    PID never becomes a seed. Do not discover ownership from a path or a name.
+    """
+    result = dict(known or {})
+    seeds = {pid for pid in roots if pid in table and
+             (pid not in result or table[pid][1] == result[pid][1])}
+    seeds.update(pid for pid, row in result.items()
+                 if pid in table and table[pid][1] == row[1])
+    while True:
+        added = {pid for pid, row in table.items() if row[0] in seeds and
+                 (pid not in result or row[1] == result[pid][1])} - seeds
+        if not added:
+            break
+        seeds.update(added)
+    for pid in seeds:
+        if pid in table:
+            result[pid] = table[pid]
+    return result
+
+
+def reap_owned(observer, identities, children=(), seconds=15):
+    """Bound exceptional cleanup; require actual disappearance, including zombies.
+
+    Every signal rechecks native start identity and the captured executable.
+    Cleanup does not certify a crashed native process as a successful exit.
+    """
+    deadline = time.monotonic() + seconds
+
+    def remaining():
+        for child in children:
+            child.poll()  # Reap only our actual Popen children.
+        table = observer.snapshot()
+        return {pid: row for pid, row in table.items() if pid in identities and
+                row[1] == identities[pid][1]}
+
+    def signal_remaining(signum):
+        for pid, row in remaining().items():
+            if row[3] is None:
+                continue  # A zombie/inaccessible executable is not safe to signal.
+            if row[3] != identities[pid][3]:
+                raise AssertionError('Owned process executable changed before cleanup')
+            try:
+                os.kill(pid, signum)
+            except ProcessLookupError:
+                pass
+
+    signal_remaining(signal.SIGTERM)
+    grace = min(deadline, time.monotonic() + 5)
+    while remaining() and time.monotonic() < grace:
+        time.sleep(.03)
+    if remaining():
+        signal_remaining(signal.SIGKILL)
+    while remaining() and time.monotonic() < deadline:
+        time.sleep(.03)
+    outstanding = remaining()
+    if outstanding:
+        raise AssertionError('Owned processes were not physically reaped: ' +
+                             repr({pid: row[1] for pid, row in outstanding.items()}))
+
+
+def require_exit(process, allowed, role):
+    """Use actual wait status; signal/core failures never pass through log text."""
+    code = process.poll()
+    if code is None or code not in allowed:
+        raise AssertionError(f'{role} native exit {code}; expected {sorted(allowed)}')
+    return code
 
 
 def linux_identity(pid):

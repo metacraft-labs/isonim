@@ -33,6 +33,7 @@ class LifecycleTests(unittest.TestCase):
         self.streamed = threading.Event()
         self.allow_finish = threading.Event()
         self.stopped = threading.Event()
+        self.stop_attempted = threading.Event()
         self.fail_stop = False
         self.fail_completion = False
         self.received = None
@@ -67,6 +68,7 @@ class LifecycleTests(unittest.TestCase):
                         return
                     self.respond({'session_id': 'backend', 'status': 'queued'})
                 elif self.path.endswith('/stop'):
+                    owner.stop_attempted.set()
                     if owner.fail_stop:
                         self.respond({'error': 'controlled close failure'}, 503)
                         return
@@ -132,7 +134,8 @@ class LifecycleTests(unittest.TestCase):
                 self.daemon_lines.append(line)
                 if line.startswith('READY '):
                     ready.put(int(line.split()[1]))
-        threading.Thread(target=drain, daemon=True).start()
+        self.daemon_reader = threading.Thread(target=drain, daemon=True)
+        self.daemon_reader.start()
         self.port = ready.get(timeout=20)
         status, body = self.post('/api/agent/sessions', {})
         self.assertEqual(status, 200, body)
@@ -859,6 +862,29 @@ class LifecycleTests(unittest.TestCase):
         self.daemon.terminate()
         self.assertEqual(self.daemon.wait(timeout=10), 0)
         self.assertTrue(self.stopped.is_set(), 'Shutdown did not close admitted backend')
+
+    def test_shutdown_close_failure_retains_state_until_active_worker_finishes(self):
+        # Controlled failure is the header-justified protocol peer's purpose:
+        # actual HTTP/native workers must retain the owner even when stop fails.
+        # Native0 here proves safe lifetime, never successful provider closure.
+        self.allow_create.set()
+        self.fail_stop = True
+        connection = http.client.HTTPConnection('127.0.0.1', self.port, timeout=5)
+        connection.request('POST', '/api/agent/prompts', json.dumps(self.prompt()))
+        response = connection.getresponse()
+        self.assertEqual(response.status, 200)
+        self.assertTrue(self.streamed.wait(5))
+        response.close(); connection.close()
+        self.daemon.terminate()
+        self.assertTrue(self.stop_attempted.wait(5), 'real close request did not reach the failing peer')
+        self.assertIsNone(self.daemon.poll(), 'active stream owner was disposed before its worker finished')
+        self.allow_finish.set()
+        self.assertEqual(self.daemon.wait(timeout=10), 0)
+        self.daemon_reader.join(timeout=5)
+        self.assertFalse(self.daemon_reader.is_alive(), 'native log reader did not reach EOF')
+        self.assertFalse(self.stopped.is_set(), 'controlled failed stop cannot be reported as acknowledged')
+        self.assertTrue(any('agent shutdown failed' in line for line in self.daemon_lines),
+                        'real failed backend close must remain visible')
 
 
 if __name__ == '__main__':
