@@ -474,3 +474,9 @@ proc cmdHarborPreparation*(repo, directory: string): int =
   ## before any producer or provider starts.
   installSignalHandlers()
   runHarborPreparationChild(repo, directory, proc(): bool = GlobalStopFlag.load())
+
+proc cmdHarborVerification*(repo, executable, output, epoch: string): int =
+  ## Full filesystem/receipt validation runs in an owned child, never the HTTP loop.
+  delEnv("ISONIM_EDITOR_BROWSER_BOOTSTRAP")
+  delEnv("ISONIM_INTERNAL_HARBOR_EPOCH")
+  runHarborVerificationChild(repo, executable, output, epoch)
