@@ -2983,6 +2983,7 @@ proc renderSectionFrame[R, E](r: R; vm: EditorVM;
   ## the right margin lines up but the chrome stays quiet.
   let hasPlus = slug in inspectorSectionsWithPlusAction
   let section = inspectorSectionFromAttr(slug)
+  let unsupportedEffectAdd = section == isEffects
   var plusIcon: E
   var headerEl: E
   var bodyEl: E
@@ -3031,7 +3032,7 @@ proc renderSectionFrame[R, E](r: R; vm: EditorVM;
                  width = "20px", height = "20px",
                  border_radius = "4px",
                  color = textMuted,
-                 cursor = "pointer"):
+                 cursor = (if unsupportedEffectAdd: "default" else: "pointer")):
               tdiv(ref = plusIcon,
                    `aria-hidden` = "true",
                    display = "flex", align_items = "center",
@@ -3060,6 +3061,9 @@ proc renderSectionFrame[R, E](r: R; vm: EditorVM;
   # the slot to be rendered.
   if hasPlus:
     r.setInnerHtml(plusIcon, plusSvg)
+    if unsupportedEffectAdd:
+      r.setAttribute(addBtn, "aria-disabled", "true")
+      r.setAttribute(addBtn, "title", "Effect source editing is unavailable in the inspector.")
 
   # Phase C reactive bind: the header's ``data-expanded`` /
   # ``aria-expanded`` attributes, the chevron glyph, and the body's
@@ -3126,6 +3130,13 @@ proc renderSectionFrame[R, E](r: R; vm: EditorVM;
           btn.addEventListener('click', function (ev) {
             if (ev && ev.stopPropagation) ev.stopPropagation();
           }, false);
+          if(btn.getAttribute('aria-disabled') === 'true') {
+            btn.addEventListener('keydown', function (ev) {
+              if(ev && (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Spacebar')) {
+                ev.preventDefault();ev.stopPropagation();
+              }
+            }, true);
+          }
         })(""", addBtnJsEl, """);
       """].}
 

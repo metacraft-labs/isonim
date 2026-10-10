@@ -20,9 +20,9 @@ cpSync(repo+'/tests/fixtures/editor_inspector_project',project,{recursive:true})
 // Opt in the real disposable fixture's already-supported literal display,
 // direction and opacity owners. This changes no production/native capability.
 const setupSource=readFileSync(project+'/stories.nim','utf8');assert(setupSource.includes('#action { width:120px;'));
-writeFileSync(project+'/stories.nim',setupSource.replace('#action { width:120px;','#action { display:inline-flex; flex-direction:row; opacity:80%; width:120px;'));
+writeFileSync(project+'/stories.nim',setupSource.replace('#action { width:120px;','#action { box-shadow:1px 2px 3px #123456; border-style:dashed; display:inline-flex; flex-direction:row; opacity:80%; width:120px;'));
 const setupManifest=JSON.parse(readFileSync(project+'/.isonim/source-project.json','utf8'));
-setupManifest.editableStyles.find(row=>row.elementId==='action').properties.push('display','flex-direction','opacity');
+setupManifest.editableStyles.find(row=>row.elementId==='action').properties.push('display','flex-direction','opacity','box-shadow');
 writeFileSync(project+'/.isonim/source-project.json',JSON.stringify(setupManifest));
 
 for(const [from,to] of [['src/isonim/editor/index.html','index.html'],['build/editor-inspector/editor.js','editor.js'],['node_modules/fabric/dist/index.min.js','fabric.min.js'],['node_modules/paper/dist/paper-core.min.js','paper-core.min.js'],['node_modules/svgo/dist/svgo.browser.js','svgo.browser.js']])copyFileSync(repo+'/'+from,pub+'/'+to);
@@ -119,6 +119,55 @@ try {
  const source=()=>readFileSync(project+'/stories.nim','utf8');
  let expectedSource=source(),count=0;
  const propertyRow=(property,name)=>page.locator('[data-property-row-css-property="'+property+'"][data-property-row="'+name+'"]');
+ // Unsupported specialized controls must inspect the real current selection,
+ // never simulate an edit with section-local state. Physical pointer and keys
+ // retain the exact source, compiled catalog, preview declarations and history.
+ const unsupportedPreview=()=>page.evaluate(()=>{const frame=[...document.querySelectorAll('iframe')].find(frame=>frame.getClientRects().length&&frame.contentDocument?.querySelector('#action'));if(!frame)throw Error('Actual source preview is required');const node=frame.contentDocument.querySelector('#action');return{shadow:frame.contentWindow.getComputedStyle(node).boxShadow,rules:[...frame.contentDocument.styleSheets].map(sheet=>[...sheet.cssRules].map(rule=>rule.cssText))};});
+ await page.mouse.move(0,0);await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+ // First focus restoration can register existing visibility-effect source
+ // dependencies. Record that first-use behavior, then hold the complete stable
+ // snapshot (including observer counts) across every repeated rejected edit.
+ const warmHeader=page.locator('[data-inspector-section-header="stroke"]');if(await warmHeader.getAttribute('aria-expanded')==='false')await warmHeader.click();
+ const warmPosition=page.locator('[data-inspector-section-body="stroke"] [data-property-row="position"]'),warmTrigger=warmPosition.locator('[data-choice-group-trigger]');
+ const warmBefore={state:await snapshot(),source:source(),catalog:readFileSync(project+'/.isonim/catalog.json','utf8'),preview:await unsupportedPreview(),requests:proof.sourceRequests.length};
+ await warmTrigger.click();await warmPosition.locator('[data-choice-group-option="0"]').focus();await page.keyboard.press('Escape');await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+ assert.equal(await warmTrigger.getAttribute('aria-expanded'),'false');assert.equal(await warmPosition.locator('[data-choice-group-popup]').getAttribute('data-popup-open'),'false');assert(await warmTrigger.evaluate(node=>document.activeElement===node));
+ const warmAfter=await snapshot();const {reactiveObservers:warmBeforeObservers,...warmBeforeState}=warmBefore.state,{reactiveObservers:warmAfterObservers,...warmAfterState}=warmAfter;assert.deepEqual(warmAfterState,warmBeforeState);assert.equal(source(),warmBefore.source);assert.equal(readFileSync(project+'/.isonim/catalog.json','utf8'),warmBefore.catalog);assert.deepEqual(await unsupportedPreview(),warmBefore.preview);assert.equal(proof.sourceRequests.length,warmBefore.requests);proof.firstPositionDisclosure={beforeObservers:warmBeforeObservers,afterObservers:warmAfterObservers};
+ const unsupportedBefore={source:source(),catalog:readFileSync(project+'/.isonim/catalog.json','utf8'),state:await snapshot(),preview:await unsupportedPreview(),requests:proof.sourceRequests.length};
+ const unsupportedUnchanged=async()=>{assert.equal(source(),unsupportedBefore.source);assert.equal(readFileSync(project+'/.isonim/catalog.json','utf8'),unsupportedBefore.catalog);assert.deepEqual(await snapshot(),unsupportedBefore.state);assert.deepEqual(await unsupportedPreview(),unsupportedBefore.preview);assert.equal(proof.sourceRequests.length,unsupportedBefore.requests);};
+ const effectsHeader=page.locator('[data-inspector-section-header="effects"]'),headerAdd=effectsHeader.locator('[data-inspector-section-action="add"]');
+ const expandedBefore=await effectsHeader.getAttribute('aria-expanded');await headerAdd.scrollIntoViewIfNeeded();const headerAddBox=await headerAdd.boundingBox();assert(headerAddBox);await page.mouse.click(headerAddBox.x+headerAddBox.width/2,headerAddBox.y+headerAddBox.height/2);assert.equal(await headerAdd.getAttribute('aria-disabled'),'true');assert((await headerAdd.getAttribute('title')).length>0);
+ for(const key of ['Enter','Space','a','ArrowDown','Tab','Shift+Tab','Escape']){await headerAdd.focus();await page.keyboard.press(key);assert.equal(await effectsHeader.getAttribute('aria-expanded'),expandedBefore);await unsupportedUnchanged();if(key==='Tab'||key==='Shift+Tab')assert.equal(await headerAdd.evaluate(node=>document.activeElement===node),false,'Disabled header action retains natural focus traversal');}
+ record('unsupported Effects header Add physical click and keyboard preserve expansion/source/catalog/preview/history and natural Tab traversal');
+ await page.locator('[data-inspector-section-header="effects"]').click();
+ const effects=page.locator('[data-inspector-section-body="effects"]'),addEffect=effects.locator('[data-effects-add]');
+ await addEffect.scrollIntoViewIfNeeded();const addBox=await addEffect.boundingBox();assert(addBox);await page.mouse.click(addBox.x+addBox.width/2,addBox.y+addBox.height/2);
+ assert.equal(await effects.locator('[data-effects-row-delete]').count(),0,'Unsupported Add must not fabricate editable effect rows');
+ assert.equal(await addEffect.getAttribute('aria-disabled'),'true');
+ for(const key of ['Enter','Space','a','ArrowDown','Tab','Escape']){await addEffect.focus();await page.keyboard.press(key);await unsupportedUnchanged();}
+ assert((await effects.locator('[data-effects-readonly-message]').innerText()).length>0);
+ assert((await effects.locator('[data-effects-list]').innerText()).includes('1px 2px 3px'),'Actual selected box shadow must remain inspectable');
+ assert.equal(await effects.locator('[data-effects-empty]').isVisible(),false,'Existing computed effects cannot be labelled empty');
+ await unsupportedUnchanged();record('unsupported Effects physical click and all keys preserve actual effect/source/catalog/preview/selection/history');
+ await page.locator('[data-inspector-section-header="effects"]').click();
+ const strokeHeader=page.locator('[data-inspector-section-header="stroke"]');
+ if(await strokeHeader.getAttribute('aria-expanded')==='false')await strokeHeader.click();
+ const stroke=page.locator('[data-inspector-section-body="stroke"]'),position=stroke.locator('[data-property-row="position"]');
+ const beforePositionDisclosure=await snapshot();
+ proof.positionObserversBefore=await page.evaluate(()=>JSON.parse(window.__popupAcceptance.observerDetails()));
+ await position.locator('[data-choice-group-trigger]').click();
+ unsupportedBefore.state=await snapshot();
+ const positionBefore=await position.innerText(),inside=position.locator('[data-choice-group-option="0"]');await inside.scrollIntoViewIfNeeded();const insideBox=await inside.boundingBox();assert(insideBox);await page.mouse.click(insideBox.x+insideBox.width/2,insideBox.y+insideBox.height/2);
+ assert.equal(await position.getAttribute('data-property-row-readonly'),'true');assert.equal(await position.innerText(),positionBefore);
+ for(const key of ['Enter','Space']){await inside.focus();await inside.press(key);assert.equal(await position.innerText(),positionBefore);await unsupportedUnchanged();}
+ await inside.press('Escape');
+ await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+ proof.positionDisclosureAfterClose={expanded:await position.locator('[data-choice-group-trigger]').getAttribute('aria-expanded'),open:await position.locator('[data-choice-group-popup]').getAttribute('data-popup-open'),focused:await position.locator('[data-choice-group-trigger]').evaluate(node=>document.activeElement===node),state:await snapshot(),observers:await page.evaluate(()=>JSON.parse(window.__popupAcceptance.observerDetails()))};writeFileSync(root+'/position-disclosure-diagnostic.json',JSON.stringify({before:proof.positionObserversBefore,after:proof.positionDisclosureAfterClose},null,2));assert.equal(proof.positionDisclosureAfterClose.expanded,'false');assert.equal(proof.positionDisclosureAfterClose.open,'false');assert.equal(proof.positionDisclosureAfterClose.focused,true);
+ assert.deepEqual(await snapshot(),beforePositionDisclosure,'Repeated inspection popup closure preserves stable observer ownership and the complete prior state');unsupportedBefore.state=beforePositionDisclosure;
+ for(let cycle=0;cycle<2;cycle++){await position.locator('[data-choice-group-trigger]').click();await inside.focus();await inside.press('Escape');await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));assert.equal(await position.locator('[data-choice-group-trigger]').getAttribute('aria-expanded'),'false');assert(await position.locator('[data-choice-group-trigger]').evaluate(node=>document.activeElement===node));await unsupportedUnchanged();}
+ const dash=stroke.locator('[data-property-row="dash-pattern"]'),dashInput=dash.locator('[data-property-row-input]');assert(await dashInput.evaluate(node=>node.readOnly));await dashInput.click();await dashInput.press('ControlOrMeta+A');await page.keyboard.type('4 8');await dashInput.press('Enter');await dashInput.press('Tab');assert.equal(await dashInput.inputValue(),'');assert((await dash.locator('[data-property-row-message]').innerText()).length>0);
+ await unsupportedUnchanged();record('unsupported Stroke position and dash pointer/keyboard refuse without local value/source/catalog/preview/history success');
+ await page.locator('[data-inspector-section-header="stroke"]').click();
  async function expectStyle(property,value){await page.waitForFunction(([property,value])=>{const frame=[...document.querySelectorAll('iframe')].find(frame=>frame.getClientRects().length&&frame.contentDocument?.querySelector('#action'));return frame&&frame.contentWindow.getComputedStyle(frame.contentDocument.querySelector('#action')).getPropertyValue(property)===value;},[property,value]);}
  async function applyTyped(row,property,oldValue,newValue,label,sourceValue=newValue){const before=proof.sourceRequests.length;const input=row.locator('[data-property-row-input]');assert.equal(await input.count(),1);await input.waitFor({state:'visible'});await input.scrollIntoViewIfNeeded();assert(await input.isVisible());await input.fill(newValue);await input.press('Enter');await input.press('Tab');await waitApplied(++count);expectedSource=expectedSource.replace(property+':'+oldValue+';',property+':'+sourceValue+';');assert.equal(source(),expectedSource);assert.equal(proof.sourceRequests.length,before+1);record(label);}
  async function applyScrub(row,property,oldValue,newValue,dx,label,sourceValue=newValue){const handle=row.locator('[data-property-row-field-label]');await handle.waitFor({state:'visible'});await handle.scrollIntoViewIfNeeded();const box=await handle.boundingBox();assert(box);assert(await handle.evaluate(el=>{const b=el.getBoundingClientRect();return el.contains(document.elementFromPoint(b.x+b.width/2,b.y+b.height/2));}));const before=proof.sourceRequests.length;await handle.evaluate(node=>{window.__compoundHandle=node;window.__compoundHandleLost=false;new MutationObserver(()=>{if(!node.isConnected)window.__compoundHandleLost=true;}).observe(document.body,{childList:true,subtree:true});});await page.mouse.move(box.x+box.width/2,box.y+box.height/2);await page.mouse.down();await page.mouse.move(box.x+box.width/2+dx,box.y+box.height/2);assert(await page.evaluate(()=>window.__compoundHandle.isConnected&&!window.__compoundHandleLost));await page.mouse.up();await waitApplied(++count);expectedSource=expectedSource.replace(property+':'+oldValue+';',property+':'+sourceValue+';');assert.equal(source(),expectedSource);assert.equal(proof.sourceRequests.length,before+1);record(label);}

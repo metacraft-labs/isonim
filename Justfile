@@ -1585,7 +1585,7 @@ test-editor-flex-metadata: test-editor-flex-metadata-headless test-editor-flex-m
 test-editor-c4a-headless: build-tailwind
     #!/usr/bin/env bash
     set -euo pipefail
-    for stem in test_editor_section_appearance test_editor_section_component_props test_editor_section_layout test_editor_section_position; do
+    for stem in test_editor_section_appearance test_editor_section_component_props test_editor_section_layout test_editor_section_position test_editor_section_stroke test_editor_section_effects; do
       nim c -r --out:build/"$stem" tests/"$stem".nim
       nim js -d:nodejs --out:build/"$stem".js tests/"$stem".nim
       python3 tools/run_nim_js_test.py build/"$stem".js
