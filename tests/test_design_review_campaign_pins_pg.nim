@@ -8,7 +8,7 @@
 ## that a record hashes to its pin, not that its revisions exist
 ## (``test_design_review_campaign_pins`` covers taking real pins).
 
-import std/[json, strutils, unittest]
+import std/[json, os, strutils, unittest]
 
 import db_connector/db_postgres
 
@@ -181,3 +181,75 @@ suite "campaign pins (PostgreSQL, migration 012)":
     check after.rounds[0].round == 3
     check after.rounds[0].pin == pin.pin
     check after.unpinnedRounds == 2
+
+suite "campaign pins (PostgreSQL, upgrading to migration 012)":
+
+  test "test_migration_012_keeps_campaigns_written_before_it_working":
+    # A database that ran 001..011 and holds campaigns written the
+    # pre-012 way (the CLI's placeholder "local" as manifest_hash), then
+    # upgraded: 012 must apply over those rows, and they must keep
+    # loading, listing, changing status and restarting.
+    let f = newPgFixture(applyMigrations = false)
+    defer: f.shutdown()
+    var pending: seq[string]
+    for path in migrationFiles():
+      if path.extractFilename < "012": f.applyMigrationFile(path)
+      else: pending.add path
+    check pending.len >= 1
+    check pending[0].extractFilename == "012_design_review_campaign_pins.sql"
+
+    let db = openApp(f)
+    defer: db.close()
+    db.asApp()
+    proc legacyStart(docPath: string): string =
+      db.conn.getValue(sql(
+        "SELECT design_review.start_campaign('" & docPath & "', 'sha-old', " &
+        "ARRAY['render.demo-app']::text[], NULL, 3, 'local', 'claude', " &
+        "NULL, 'cli')::text"))
+    let finished = legacyStart("/c/old-finished.md")
+    let running = legacyStart("/c/old-running.md")
+    check finished.len > 0 and running.len > 0
+    for i in 1 .. 2:
+      discard db.conn.getValue(sql(
+        "SELECT design_review.record_campaign_event('" & finished &
+        "'::uuid, 'round_complete', '{}'::jsonb)"))
+    discard db.conn.getValue(sql(
+      "SELECT design_review.transition_campaign('" & finished &
+      "'::uuid, 'failed', 'turn over')"))
+
+    for path in pending: f.applyMigrationFile(path)
+
+    # Loads: the legacy start pin is reported as is, as legacy-unpinned.
+    let c = fetchCampaign(db, finished)
+    check c["manifest_hash"].getStr == "local"
+    check c["rounds"].len == 0
+    check c["rounds_completed"].getInt == 2
+    let p = parseCampaignProvenance(c)
+    check p.startState == cpsLegacyUnpinned
+    check p.unpinnedRounds == 2
+    # Lists.
+    var listed: seq[string]
+    for row in db.conn.fastRows(sql(
+        "SELECT design_review.list_campaigns(NULL, 50, 0)::text")):
+      listed.add parseJson(row[0])["campaign_id"].getStr
+    check finished in listed and running in listed
+    # Changes status (no CHECK on manifest_hash trips over 'local').
+    discard db.conn.getValue(sql(
+      "SELECT design_review.transition_campaign('" & running &
+      "'::uuid, 'stopped', 'upgrade test')"))
+    check fetchCampaign(db, running)["status"].getStr == "stopped"
+    # Restarts: the new round is pinned and numbered after the two the
+    # campaign already ran; the legacy start pin is not rewritten.
+    let pin = pinFor('f')
+    let opened = openCampaignRound(db,
+      startFor("/c/old-finished.md", "sha-old"), pin)
+    check opened.campaignId == finished
+    check opened.round == 3
+    let after = parseCampaignProvenance(fetchCampaign(db, finished))
+    check after.startPin == "local"
+    check after.rounds.len == 1
+    check after.rounds[0].round == 3
+    check after.rounds[0].pin == pin.pin
+    # And a new campaign can no longer be started with the placeholder.
+    expect DbError:
+      discard legacyStart("/c/new-after-upgrade.md")

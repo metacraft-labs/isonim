@@ -134,6 +134,15 @@ proc waitForReady(binDir: string; port: int; timeoutSeconds = 30) =
 
 # ----- public API ----------------------------------------------------------
 
+proc migrationFiles*(): seq[string] =
+  ## ``db/migrations/NNN_*.sql``, in the order they are applied.
+  for kind, path in walkDir(MigrationsDir):
+    if kind == pcFile and path.endsWith(".sql"):
+      let base = path.extractFilename
+      if base.len >= 4 and base[0..2].allCharsInSet({'0'..'9'}) and base[3] == '_':
+        result.add path
+  result.sort()
+
 proc newPgFixture*(applyMigrations = true): PgFixture =
   ## 1) Allocate a genuinely-free ephemeral port atomically (bind :0).
   ## 2) Create a tmpdir as $PGDATA.
@@ -252,16 +261,18 @@ proc newPgFixture*(applyMigrations = true): PgFixture =
             "version INT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL " &
             "DEFAULT NOW(), content_sha TEXT)",
             role = "design_review_migrator")
-    var files: seq[string]
-    for kind, path in walkDir(MigrationsDir):
-      if kind == pcFile and path.endsWith(".sql"):
-        let base = path.extractFilename
-        if base.len >= 4 and base[0..2].allCharsInSet({'0'..'9'}) and base[3] == '_':
-          files.add path
-    files.sort()
-    for f in files:
+    for f in migrationFiles():
       runPsqlFile(binDir, port, "isonim_design_review", f,
                   role = "design_review_migrator")
+
+proc applyMigrationFile*(f: PgFixture; path: string) =
+  ## Apply one migration file as the migrator role, the way
+  ## ``newPgFixture`` applies each of them.  For upgrade tests: build a
+  ## ``newPgFixture(applyMigrations = false)`` cluster, apply the
+  ## migrations up to some version, write rows the way that schema
+  ## wrote them, then apply the rest.
+  runPsqlFile(detectPgBinDir(), f.port, "isonim_design_review", path,
+              role = "design_review_migrator")
 
 proc reset*(f: PgFixture) =
   ## TRUNCATE every base table.  Useful between tests in the same suite
