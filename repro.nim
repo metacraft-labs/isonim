@@ -599,6 +599,11 @@ const isonimDesignReviewSpecs: seq[DrSpec] = @[
   # named by ``ISONIM_REVIEW_REPRO``.
   dr("test_design_review_clean_tree"),
   dr("test_design_review_workspace_pin"),
+  # Campaign start / round pins (migration 012): the same gate + pin as
+  # capture over hermetic reprobuild workspaces, and the pin routines
+  # against an ephemeral PgFixture.
+  dr("test_design_review_campaign_pins"),
+  dr("test_design_review_campaign_pins_pg"),
   dr("test_design_review_capture_store"),
   dr("test_design_review_bridge_client"),
   dr("test_design_review_capture_native_dimensions"),

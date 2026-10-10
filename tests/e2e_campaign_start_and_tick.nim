@@ -9,7 +9,15 @@
 
 import std/[os, osproc, strutils, times, unittest]
 
+import isonim/editor/design_review/workspace_gate
+
 import helpers/campaign_routes_fixture
+import helpers/repro_workspace_fixture
+
+var cliConfig = ""
+  ## ``--config`` for every CLI call: names the hermetic reprobuild
+  ## workspace ``campaign start`` pins, so the CLI never reads
+  ## ``~/.isonim/config.toml`` or gates the developer's workspace.
 
 proc writeCampaignFixture(): tuple[campaignPath, briefPath, projectDir: string] =
   let projectDir = getTempDir() / ("cmp_m2_e2e_" &
@@ -65,7 +73,8 @@ proc invokeCli(baseUrl: string;
   defer:
     try: removeFile(outPath) except OSError: discard
     try: removeFile(errPath) except OSError: discard
-  let parts = @[CliPath, "campaign"] & @args & @["--daemon=" & baseUrl]
+  let parts = @[CliPath, "campaign"] & @args &
+    @["--daemon=" & baseUrl, quoteShell("--config=" & cliConfig)]
   let cmd = parts.join(" ") &
     " > " & quoteShell(outPath) & " 2> " & quoteShell(errPath)
   let exitCode = execShellCmd(cmd)
@@ -82,6 +91,9 @@ test "e2e_campaign_full_lifecycle":
   defer: f.shutdown()
   let (campaignPath, _, projectDir) = writeCampaignFixture()
   defer: removeDir(projectDir)
+  let ws = newReproWorkspace("e2e_cmp", ["isonim"])
+  defer: ws.cleanup()
+  cliConfig = writeCliConfig(projectDir, ws.root)
 
   # 1) Start (with streaming).
   let (startExit, startOut, startErr) = invokeCli(f.baseUrl,
@@ -111,6 +123,10 @@ test "e2e_campaign_full_lifecycle":
   let (shExit, shOut, _) = invokeCli(f.baseUrl, ["show", campaignId])
   check shExit == 0
   check shOut.contains("render.demo-app")
+  # The campaign's start pin (= round 1's pin) is the workspace pin.
+  let pin = pinCleanWorkspace(ws.root)
+  check shOut.contains("start_pin:      " & pin.pin)
+  check shOut.contains("  round 1: " & pin.pin)
   check shOut.contains("status:         active") or
         shOut.contains("status:         failed")
 

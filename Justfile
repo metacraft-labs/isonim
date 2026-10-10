@@ -939,8 +939,14 @@ test-design-review-acceptance: isonim-review-build
 
 # CMP-M2: Run the campaign storage + route + CLI + e2e tests.  The
 # route + CLI + e2e tests spawn a real ``isonim-review serve`` daemon
-# against an ephemeral PgFixture and a fake-ACP backend.
+# against an ephemeral PgFixture and a fake-ACP backend.  The campaign-pin
+# tests (migration 012) read hermetic reprobuild workspaces through
+# ``repro`` and an ephemeral PgFixture; they need no daemon.
 test-design-review-campaigns: isonim-review-build fake-acp-agent-build
+    nim c -r --path:. --path:src --path:vendor/db_connector/src \
+        --hints:off tests/test_design_review_campaign_pins.nim
+    nim c -r --path:. --path:src --path:vendor/db_connector/src \
+        --hints:off tests/test_design_review_campaign_pins_pg.nim
     nim c -r --path:. --path:src \
         --path:vendor/db_connector/src --path:vendor/chronicles \
         --path:vendor/serialization --path:vendor/json_serialization \

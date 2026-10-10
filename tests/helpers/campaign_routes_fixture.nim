@@ -17,6 +17,8 @@
 import std/[net, os, osproc, posix, strtabs, strutils, times]
 import std/httpclient
 
+import isonim/editor/design_review/workspace_pin
+
 import ./design_review_pg_fixture
 import ./daemon_ready_handshake
 
@@ -33,6 +35,27 @@ type
     baseUrl*: string
     promptDir*: string
     contentLog*: string
+
+proc fixtureWorkspacePin*(rev = 'a'; project = "isonim"): WorkspacePin =
+  ## A canonical workspace pin for route tests that POST
+  ## ``/api/campaign/start`` directly.  The daemon verifies that the record
+  ## hashes to the pin (``campaign_pin.parseWorkspacePinJson``); taking a
+  ## real pin is the CLI's job and is covered with a hermetic reprobuild
+  ## workspace (``test_design_review_campaign_pins``,
+  ## ``test_design_review_cli_campaign``).
+  let toml = renderCanonicalLock(WorkspaceLock(project: project,
+    scope: ProjectScope, repos: @[LockedRepo(name: "isonim", path: "isonim",
+      remote: "origin", revision: repeat(rev, 40))]))
+  WorkspacePin(pin: pinOf(toml), lockToml: toml)
+
+proc writeCliConfig*(dir, workspaceRoot: string): string =
+  ## An ``isonim-review`` config for CLI subprocesses: the workspace the
+  ## campaign pins is ``workspaceRoot`` (a hermetic reprobuild fixture),
+  ## so the CLI never reads ``~/.isonim/config.toml`` or gates the
+  ## developer's real workspace.  Pass it as ``--config=<path>``.
+  result = dir / "cli-config.toml"
+  writeFile(result, "[workspace]\nroot = \"" &
+    workspaceRoot.replace('\\', '/') & "\"\nproject = \"isonim\"\n")
 
 proc pickFreePort*(): int {.deprecated:
     "prefer ISONIM_REVIEW_PORT=0 + waitForReady — the TOCTOU pattern " &

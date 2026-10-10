@@ -11,7 +11,7 @@ import helpers/design_review_pg_fixture
 
 const ExpectedTables = [
   "agent_reports", "audit_events",
-  "campaign_events", "campaigns",
+  "campaign_events", "campaign_rounds", "campaigns",
   "captures", "gallery_layouts", "runs",
   "workspace_pins"]
 

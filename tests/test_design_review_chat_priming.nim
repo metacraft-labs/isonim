@@ -16,6 +16,8 @@ import std/[json, os, strutils, times, unittest]
 
 import db_connector/db_postgres
 
+import isonim/editor/design_review/campaign_pin
+
 import helpers/agent_routes_fixture
 import helpers/campaign_routes_fixture
   # for the regression test that confirms campaign sessions don't
@@ -183,13 +185,19 @@ test "test_chat_session_primer_includes_active_campaigns":
   let docBody = "---\ncampaignId: cmp-m5-chat\n---\n# Probe campaign\n"
   writeFile(docPath, docBody)
   # Seed directly via the SQL routine to leave the campaign ``active``.
+  # Since migration 012 a campaign's start pin must be a recorded
+  # workspace pin, so record one first.
   let db = connectMigrator(f)
   defer: db.close()
+  let pin = fixtureWorkspacePin()
+  discard db.getValue(sql(
+    "SELECT design_review.record_workspace_pin(?, ?, '', 'test')"),
+    pin.pin, pin.lockToml)
   let stmt = "SELECT design_review.start_campaign(" &
     "'" & docPath.replace("'", "''") & "', " &
     "'fakesha', " &
     "ARRAY['render.probe']::text[], " &
-    "NULL, 3, 'local', 'claude', NULL, 'test')::text"
+    "NULL, 3, '" & pin.pin & "', 'claude', NULL, 'test')::text"
   let campaignId = db.getValue(sql(stmt))
   check campaignId.len > 0
   check countCampaigns(f) >= 1
@@ -367,7 +375,7 @@ test "test_campaign_session_does_not_receive_assistant_primer":
     "docSha": "regsha",
     "briefRefs": ["render.probe"],
     "body": docBody,
-    "manifestHash": "local",
+    "workspacePin": workspacePinJson(fixtureWorkspacePin()),
     "startedBy": "test",
   })
   discard f.campaignPost("/api/campaign/start", startBody)

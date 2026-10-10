@@ -17,6 +17,9 @@
 
 import std/[json, os, strutils, times, unittest]
 
+import isonim/editor/design_review/campaign_pin
+import isonim/editor/design_review/workspace_pin
+
 import helpers/campaign_routes_fixture
 
 import tools/isonim_review/config as cli_config
@@ -100,10 +103,11 @@ proc writeDocFixture(docPath, body: string) =
   writeFile(docPath, body)
 
 proc startBody(docPath, docSha, briefBody, docBody: string;
-               briefRefs: seq[string] = @["render.demo-app"]):
+               briefRefs: seq[string] = @["render.demo-app"];
+               pin = fixtureWorkspacePin()):
     string =
   ## Compose the JSON body the daemon's POST /api/campaign/start
-  ## handler expects.
+  ## handler expects, carrying ``pin`` as the round's workspace pin.
   var refsJson = newJArray()
   for r in briefRefs: refsJson.add(%r)
   var briefsJson = newJArray()
@@ -116,15 +120,16 @@ proc startBody(docPath, docSha, briefBody, docBody: string;
     "maxIterations": 3,
     "body":         docBody,
     "briefs":       briefsJson,
-    "manifestHash": "test:fixture",
+    "workspacePin": workspacePinJson(pin),
     "startedBy":    "tester",
     "latestReport": "",
   }
   return $body
 
 proc startBodyDefault(docPath, docSha, briefBody: string;
-                     briefRefs: seq[string] = @["render.demo-app"]): string =
-  startBody(docPath, docSha, briefBody, FixtureCampaignDoc, briefRefs)
+                     briefRefs: seq[string] = @["render.demo-app"];
+                     pin = fixtureWorkspacePin()): string =
+  startBody(docPath, docSha, briefBody, FixtureCampaignDoc, briefRefs, pin)
 
 # ---------------------------------------------------------------------------
 # Lifecycle smoke tests.
@@ -145,7 +150,7 @@ test "test_start_campaign_persists_row_and_started_event":
   let rows = fetchCampaignByDoc(f, docPath)
   check rows.len == 1
   check rows[0][2] == "3"               # max_iterations
-  check rows[0][3] == "test:fixture"    # manifest_hash
+  check rows[0][3] == fixtureWorkspacePin().pin  # manifest_hash = start pin
   check rows[0][5] == "tester"          # started_by
   check rows[0][6] == "sha-fixture-1"   # doc_sha
 
@@ -234,7 +239,7 @@ test "test_start_campaign_rejects_missing_briefRefs":
     "maxIterations": 3,
     "body": FixtureCampaignDoc,
     "briefs": newJArray(),
-    "manifestHash": "test:fixture",
+    "workspacePin": workspacePinJson(fixtureWorkspacePin()),
     "startedBy": "tester",
   })
   let (code, respBody) = campaignPost(f, "/api/campaign/start", body)
@@ -242,6 +247,82 @@ test "test_start_campaign_rejects_missing_briefRefs":
   let node = parseJson(respBody)
   check node{"error"}.getStr("") == "missing_briefRefs"
   check countCampaigns(f) == 0
+
+test "test_start_campaign_refuses_a_missing_or_placeholder_pin":
+  ## REV-M5 follow-up (migration 012): ``/api/campaign/start`` must carry
+  ## the round's workspace pin (``workspacePin``), verified against its
+  ## record.  The pre-012 placeholder ``manifestHash: "local"`` is not a
+  ## pin, and neither is a pin paired with some other record.  Nothing is
+  ## written for a refused start.
+  let f = startCampaignDaemon()
+  defer: f.shutdown()
+  let docPath = "/tmp/cmp-m6-fixture/campaigns/no-pin.md"
+  writeDocFixture(docPath, FixtureCampaignDoc)
+  var legacy = parseJson(startBodyDefault(docPath, "sha-no-pin",
+                                          FixtureBriefBody))
+  legacy.delete("workspacePin")
+  legacy["manifestHash"] = %"local"
+  let (c1, b1) = campaignPost(f, "/api/campaign/start", $legacy)
+  check c1 == 400
+  check parseJson(b1){"error"}.getStr("") == "workspace_pin_required"
+
+  var forged = parseJson(startBodyDefault(docPath, "sha-no-pin",
+                                          FixtureBriefBody))
+  forged["workspacePin"] = %*{"pin": fixtureWorkspacePin('a').pin,
+                              "lockToml": fixtureWorkspacePin('b').lockToml}
+  let (c2, b2) = campaignPost(f, "/api/campaign/start", $forged)
+  check c2 == 400
+  check parseJson(b2){"error"}.getStr("") == "invalid_workspace_pin"
+
+  forged["workspacePin"] = %*{"pin": "local", "lockToml": ""}
+  let (c3, b3) = campaignPost(f, "/api/campaign/start", $forged)
+  check c3 == 400
+  check parseJson(b3){"error"}.getStr("") == "invalid_workspace_pin"
+  check countCampaigns(f) == 0
+
+test "test_campaign_start_records_start_pin_and_every_round_pin":
+  ## REV-M5 follow-up (migration 012): the first start's pin is the
+  ## campaign's start pin and round 1's pin; a later ``campaign start``
+  ## on the same doc is round 2 with its own pin, and the start pin stays.
+  let f = startCampaignDaemon()
+  defer: f.shutdown()
+  let docPath = "/tmp/cmp-m6-fixture/campaigns/round-pins.md"
+  writeDocFixture(docPath, FixtureCampaignDoc)
+  let a = fixtureWorkspacePin('a')
+  let b = fixtureWorkspacePin('b')
+  let (s1, _) = rawPostStream(f.baseUrl, "/api/campaign/start",
+    startBodyDefault(docPath, "sha-round-pins", FixtureBriefBody, pin = a))
+  check s1 == 200
+  check waitForCampaignStatus(f, docPath, "failed")
+  let (s2, _) = rawPostStream(f.baseUrl, "/api/campaign/start",
+    startBodyDefault(docPath, "sha-round-pins", FixtureBriefBody, pin = b))
+  check s2 == 200
+  let rows = fetchCampaignByDoc(f, docPath)
+  check rows.len == 1
+  check rows[0][3] == a.pin
+  let campaignId = rows[0][0]
+
+  let (code, respBody) = campaignGet(f,
+    "/api/campaign/fetch?campaignId=" & campaignId & "&eventLimit=50")
+  check code == 200
+  let node = parseJson(respBody)
+  check node{"manifest_hash"}.getStr("") == a.pin
+  let p = parseCampaignProvenance(node)
+  check p.startState == cpsPinned
+  check p.rounds.len == 2
+  check p.rounds[0].round == 1
+  check p.rounds[0].pin == a.pin
+  check p.rounds[1].round == 2
+  check p.rounds[1].pin == b.pin
+
+  # Each round's ``round_complete`` names its round and pin.
+  var completed: seq[(int, string)]
+  for e in eventsForCampaign(f, campaignId):
+    if e.kind == "round_complete":
+      let payload = parseJson(e.payload)
+      completed.add (payload{"round"}.getInt(0),
+                     payload{"workspacePin"}.getStr(""))
+  check completed == @[(1, a.pin), (2, b.pin)]
 
 test "test_list_campaigns_filters_by_status":
   ## With the post-turn fallback running every campaign that never
