@@ -355,7 +355,8 @@ Concrete steps. Follow all of them. Do not improvise.
      (exit 3, listing each repo and path) unless every repo of the
      `isonim` reprobuild project is committed and pushed — the campaign
      doc and its briefs included. Tell the user what has to be committed
-     and pushed, then start again. Every later `campaign start` on the same doc pins its round the
+     and pushed, then start again. Every later `campaign start` on the
+     same doc is the campaign's next round and pins its own state the
      same way.
    - Persists a `design_review.campaigns` row.
    - Spawns the Orchestrator agent (system prompt:
@@ -488,7 +489,8 @@ You are still bound by the campaign's discipline:
 - **Do not weaken tests.** If a test fails after a fix, that's a
   signal, not an obstacle.
 - **Do not commit on the orchestrator's behalf.** The orchestrator
-  owns its own commits, one per defect, after verification.
+  owns its own commits, one per defect, and lands each on `agents`
+  before capturing it.
 
 If the user pushes on any of these, explain the contract briefly and
 offer a durable alternative.
@@ -598,9 +600,12 @@ authoring, campaign supervision, orchestrator interventions.
 
 7. **Always verify a fix with another capture+review.** The fix-
    agent claiming "done" doesn't mean the defect is resolved. The
-   verification flow is: dispatch → fix → capture → review →
-   confirm defect ID is gone → only then commit and move on.
-   Otherwise the orchestrator might claim a fix that didn't land.
+   verification flow is: dispatch → fix → tests → commit and push
+   to `agents` → capture → review → confirm defect ID is gone →
+   move on (or revert with a new commit). A capture is pinned to
+   published source, so the fix is landed before it is captured;
+   it is not *done* until the review confirms it. Otherwise the
+   orchestrator might claim a fix that didn't land.
 
 8. **Memory accumulates across campaigns** (see section H). Durable
    lessons go to persistent memory. Per-campaign lessons go to the
@@ -614,7 +619,10 @@ authoring, campaign supervision, orchestrator interventions.
    - You've hit the iteration cap without convergence.
 
 10. **One commit per fix.** Each defect resolution is its own
-    commit. The orchestrator stages and commits after verification.
+    commit. The orchestrator commits once the tests pass and pushes
+    to `agents` before the capture that verifies it; a fix that
+    fails verification is reverted by a new commit, never by
+    rewriting pushed history.
     Squash commits are not used during a campaign — the per-defect
     granularity is part of the audit trail.
 
