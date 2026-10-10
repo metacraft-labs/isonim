@@ -300,7 +300,8 @@ class EditorHandler(http.server.SimpleHTTPRequestHandler):
                         if described.returncode or not snapshot.get("ok"):
                             raise ValueError(snapshot.get("diagnostic", "Invalid editable source metadata"))
                         manifest = snapshot["manifest"]
-                        output = {"catalog": snapshot["catalog"], "manifest": public_source_manifest(manifest)}
+                        output = {"catalog": snapshot["catalog"], "manifest": public_source_manifest(manifest),
+                                  "bindingSidecar": snapshot["bindingSidecar"], "bindingHash": snapshot["bindingHash"]}
                         if "editableStyles" in manifest or "editableStyleSources" in manifest:
                             output["editableStyles"] = snapshot["editableStyles"]
                     else:

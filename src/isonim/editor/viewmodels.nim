@@ -194,6 +194,8 @@ type
       ## so the picker (VBIND-M6) can render a "Previously linked" group.
       ## Empty for every pilot until a binding is recorded / seeded, so it
       ## is byte-inert by default.
+    bindingRevision*: int
+      ## Changes on explicit binding mutation or rehydration, guarding async unlink.
     onBindingsChanged*: proc() {.closure.}
       ## VBIND-M5 SAVE SEAM: fired after ``bindPropertyToVariable`` /
       ## ``detachPropertyBinding`` mutate the persisted state. The
@@ -398,6 +400,13 @@ type
       scope: SourceScopeChoiceKind; done: proc(ok: bool; diagnostic: string) {.closure.}) {.closure.}
       ## Optional asynchronous native source transaction. Completion is delivered
       ## only after source validation, build and catalog publication or rollback.
+    sourceBindingMetadataHash*, sourceBindingMetadataSaved*: string
+    sourceBindingMetadataSaving*, sourceBindingMetadataSaveAgain*: bool
+    sourceBindingMetadataWaiters*: seq[proc(ok: bool; diagnostic: string) {.closure.}]
+    sourceBindingMetadataDirty*: Signal[bool]
+      ## Nil for hosts without the opt-in project sidecar consumer.
+    sourceBindingMetadataSave*: proc(done: proc(ok: bool; diagnostic: string) {.closure.}) {.closure.}
+    inspectorSourceDetach*: proc(key: PropertyBindingKey; value: string) {.closure.}
     inspectorSourceHistory*: proc(redo: bool): bool {.closure.}
     controlSourceFixtures*: seq[ComponentVariantDefinition]
     controlAsyncCommandAdapter*: proc(request: JsonNode; done: proc(ok: bool; data: JsonNode) {.closure.}) {.closure.}
@@ -3326,6 +3335,11 @@ proc commandRequirementFailure(editor: EditorVM;
   let permissions = editor.workspacePermissions.val
   let source = editor.selectedSourceContext()
 
+  if kind == eckSave and editor.sourceBindingMetadataDirty != nil and editor.sourceBindingMetadataDirty.val:
+    if not permissions.writeSource: return "This workspace is read-only for binding metadata changes."
+    if editor.sourceBindingMetadataSave == nil: return "Binding metadata connection unavailable."
+    return ""
+
   if kind in {eckOpenStory, eckSetViewport, eckOpenPanel, eckSelectItem,
       eckFocusTarget, eckHighlightItem}:
     return "This command requires a typed target payload."
@@ -3636,6 +3650,23 @@ proc runEditorCommand*(editor: EditorVM;
     editor.workspaceEditRequiredTestCommands.val = @[]
     editor.workspaceEditReviewDiagnostics.val = @[]
   of eckSave:
+    if editor.sourceBindingMetadataDirty != nil and editor.sourceBindingMetadataDirty.val:
+      editor.sourceBindingMetadataSave(proc(ok: bool; diagnostic: string) =
+        var completed = running
+        var saved = ok
+        var message = diagnostic
+        if saved and editor.inspector.pendingSourceEdits.val.len > 0:
+          let sourceResult = editor.applyWorkspaceFileEdits()
+          saved = sourceResult.ok
+          if not saved:
+            message = if sourceResult.diagnostics.len > 0: sourceResult.diagnostics[0].message else: "Source edits remain unsaved."
+        if saved and editor.workspaceEditStage.val == wesFailed and editor.workspaceEditDiagnostics.val.len > 0:
+          saved = false
+          message = editor.workspaceEditDiagnostics.val[0].message
+        completed.status = if saved: ecsSucceeded else: ecsFailed
+        completed.diagnostic = message
+        editor.setCommandState(completed))
+      return running
     let saveResult = editor.applyWorkspaceFileEdits()
     if not saveResult.ok:
       return editor.failCommand(kind,
@@ -8332,7 +8363,8 @@ proc saveIndicator*(editor: EditorVM): SaveIndicator =
   ## The label is never empty. Colour alone is unreadable to a colour-blind
   ## user and invisible in a screenshot review, so each state changes the
   ## text too.
-  let pending = editor.inspector.pendingSourceEdits.val.len
+  let pending = editor.inspector.pendingSourceEdits.val.len +
+    (if editor.sourceBindingMetadataDirty != nil and editor.sourceBindingMetadataDirty.val: 1 else: 0)
   case editor.workspaceEditStage.val
   of wesApplying, wesFormatting, wesRegenerating, wesCompiling,
      wesReloading, wesReviewing:
@@ -9940,12 +9972,17 @@ proc pushVariableBindingHistory*(vm: EditorVM; elementId, propertyName,
           keys.add k
       result[idx].variableKeys = keys)
 
+proc ensureBindingRevision*(inspector: InspectorVM) =
+  ## Hot replacement can retain an inspector built before this counter existed.
+  when defined(js):
+    {.emit: ["if (!Number.isInteger(", inspector, ".bindingRevision)) ", inspector, ".bindingRevision = 0;"].}
+
 proc bindPropertyToVariable*(vm: EditorVM; key: PropertyBindingKey;
     variableKey: string) =
   ## Adds or replaces a binding under ``key``. Updates the live VM signal
   ## and (VBIND-M5) records the variable in the previously-linked history
   ## and fires the consumer's ``onBindingsChanged`` save hook so the
-  ## sidecar can be persisted. Phase E.4 also stages a source-edit plan.
+  ## sidecar can be persisted; linking does not change component CSS.
   if key.elementId.len == 0 or key.propertyName.len == 0 or
       variableKey.len == 0:
     return
@@ -9961,6 +9998,8 @@ proc bindPropertyToVariable*(vm: EditorVM; key: PropertyBindingKey;
       binding.sourceFileRef = token.sourceFile
       binding.sourceLineRef = token.sourceLine
       break
+  vm.inspector.ensureBindingRevision()
+  inc vm.inspector.bindingRevision
   vm.inspector.propertyBindings.update(proc(
       prev: Table[PropertyBindingKey, VariableBinding]):
       Table[PropertyBindingKey, VariableBinding] =
@@ -9972,9 +10011,14 @@ proc bindPropertyToVariable*(vm: EditorVM; key: PropertyBindingKey;
     vm.inspector.onBindingsChanged()
 
 proc detachPropertyBinding*(vm: EditorVM; key: PropertyBindingKey;
-    detachedValue: string) =
+    detachedValue: string; sourceConfirmed = false) =
   ## VBIND-M3: UNLINK → LOCAL LITERAL OVERRIDE.
   ##
+  ## Native source hosts confirm the file/build first and retain the binding
+  ## on refusal or an unresolved literal. ``sourceConfirmed`` is used only by
+  ## that owning bridge after confirmation; it avoids a second draft/undo.
+  ## Other hosts retain the staged adapter contract below, including explicit
+  ## empty detach semantics.
   ## Removes the binding under ``key`` and converts the property into a
   ## LOCAL literal override for the selected element, seeded with
   ## ``detachedValue`` — typically the binding's previously-resolved
@@ -9996,6 +10040,14 @@ proc detachPropertyBinding*(vm: EditorVM; key: PropertyBindingKey;
   ## name the currently-selected element — ``editCssProperty`` edits the
   ## selection, so journaling a detach for an off-screen element would
   ## mis-target; such a detach only removes the in-memory binding.
+  vm.inspector.ensureBindingRevision()
+  # Opted-in native hosts confirm the actual file/build before removing the
+  # chip. Other consumers retain the existing journal + save-adapter contract.
+  if not sourceConfirmed and vm.inspectorSourceDetach != nil:
+    vm.inspectorSourceDetach(key, detachedValue)
+    return
+  vm.inspector.ensureBindingRevision()
+  inc vm.inspector.bindingRevision
   # VBIND-M5: capture the variable being unlinked BEFORE removal so it
   # floats to the front of the previously-linked history (so re-opening
   # the picker offers the just-unlinked variable at the top — VBIND-M6).
@@ -10013,7 +10065,7 @@ proc detachPropertyBinding*(vm: EditorVM; key: PropertyBindingKey;
     vm.pushVariableBindingHistory(key.elementId, key.propertyName, detachedKey)
   if vm.inspector.onBindingsChanged != nil:
     vm.inspector.onBindingsChanged()
-  if detachedValue.len == 0:
+  if sourceConfirmed or detachedValue.len == 0:
     return
   if key.propertyName.len == 0:
     return
@@ -10156,6 +10208,8 @@ proc rehydratePropertyBindings*(vm: EditorVM;
   ## ``applyWorkspace`` never touched ``propertyBindings``). Because every
   ## pilot's workspace defaults to empty metadata, this seeds nothing and
   ## the inspector renders exactly as before.
+  vm.inspector.ensureBindingRevision()
+  inc vm.inspector.bindingRevision
   var tbl = initTable[PropertyBindingKey, VariableBinding]()
   for pb in persisted:
     if pb.elementId.len == 0 or pb.propertyName.len == 0 or

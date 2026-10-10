@@ -315,8 +315,8 @@ try {
  await exportAdd.click();await exportHeader.focus();const programmaticDelete=await exportBody.locator('[data-export-row-delete="0"]').evaluate(node=>{const before=document.activeElement;node.click();return document.activeElement===before;});assert(programmaticDelete,'Programmatic deletion must not steal unrelated header focus');assert.deepEqual(await exportConfig(),[]);await exportUnchanged();
  record('real Export local configuration native keys/pointer/presets/suffix/delete retain focus/natural Tab and full source/catalog/preview/undo/redo');
  // Literal alpha and a unique editable owner come from the actual compiled
- // source. Bind records workspace metadata; detach below explicitly inspects
- // the existing journal boundary and never calls an unpersisted draft a save.
+ // source. The default source host persists metadata separately and confirms
+ // unlink through the actual native source/compiler transaction.
  await page.evaluate(()=>window.__popupAcceptance.openStory('Card','default ready'));
  await page.waitForFunction(()=>[...document.querySelectorAll('iframe')].some(frame=>frame.getClientRects().length&&frame.contentDocument?.querySelector('#secondary-action')));
  await page.locator('[data-scene-graph-row="secondary-action"]').click();
@@ -325,7 +325,7 @@ try {
  const colorsBody=page.locator('[data-inspector-section-body="selection-colors"]');
  const alphaIndex=await colorsBody.evaluate(body=>[...body.querySelectorAll('[data-selection-color-row]')].find(row=>getComputedStyle(row.querySelector('[data-selection-color-swatch]')).backgroundColor==='rgba(18, 52, 86, 0.5)')?.getAttribute('data-selection-color-row'));
  assert.notEqual(alphaIndex,undefined,'Actual authored translucent document color must be inspected');
- const alphaRow=colorsBody.locator('[data-selection-color-row="'+alphaIndex+'"]'),colorBind=alphaRow.locator('[data-selection-color-bind]');
+ const alphaRow=colorsBody.locator('[data-selection-color-property="background-color"]'),colorBind=alphaRow.locator('[data-selection-color-bind]');
  await page.evaluate(()=>window.__popupAcceptance.tokens());
  const observedAlpha=await alphaRow.locator('[data-selection-color-opacity]').textContent();
  await colorBind.focus();await page.keyboard.press('Enter');
@@ -341,7 +341,10 @@ try {
  for(const activation of ['Space','pointer']){if(activation==='pointer')await colorBind.click();else{await colorBind.focus();await page.keyboard.press(activation);}const popup=page.locator('[data-variable-picker-open="true"]');assert.equal(await popup.count(),1);assert.equal(await popup.locator('[data-variable-picker-row]').count(),90);await popup.locator('[data-variable-picker-row="color/test-0"]').focus();await page.keyboard.press('Tab');assert(await popup.evaluate(node=>node.contains(document.activeElement)));await page.keyboard.press('Escape');assert(await colorBind.evaluate(node=>document.activeElement===node));await colorsUnchanged();}
  await colorBind.focus();await page.keyboard.press('Enter');
  const compatiblePicker=page.locator('[data-variable-picker-open="true"]');await compatiblePicker.locator('[data-variable-picker-row="color/test-0"]').focus();await page.keyboard.press('Space');
+ await page.waitForFunction(()=>!globalThis.__isonimEditorVm.sourceBindingMetadataDirty.value&&!globalThis.__isonimEditorVm.sourceBindingMetadataSaving);
  assert.equal((await snapshot()).bindings['background-color'],'color/test-0');
+ assert.equal(proof.sourceRequests.length,colorsBefore.requests+1);colorsBefore.requests=proof.sourceRequests.length;
+ assert(JSON.parse(readFileSync(project+'/.isonim/bindings.json','utf8')).variableBindings.some(binding=>binding.elementId==='secondary-action'&&binding.propertyName==='background-color'&&binding.variableKey==='color/test-0'));
  const alphaChip=alphaRow.locator('[data-selection-color-linked-chip]'),alphaChevron=alphaChip.locator('[data-variable-chip-chevron]'),alphaDetach=alphaChip.locator('[data-variable-chip-detach]');
  assert.equal(await alphaChip.locator('[data-variable-chip-name]').getAttribute('aria-disabled'),'true');assert.equal(await alphaChip.locator('[data-variable-chip-name]').getAttribute('tabindex'),'-1');
  await page.mouse.move(0,0);await alphaChevron.focus();
@@ -362,13 +365,31 @@ try {
  const staleChevron=await alphaChevron.elementHandle(),staleDetach=await alphaDetach.elementHandle();
  const selectedObservers=(await snapshot()).reactiveObservers;
  for(let cycle=0;cycle<3;cycle++){await page.locator('[data-scene-graph-row="action"]').click();const state=await snapshot();await staleChevron.evaluate(node=>node.click());await staleDetach.evaluate(node=>node.click());assert.deepEqual(await snapshot(),state);assert.equal(await page.locator('[data-variable-picker-open="true"]').count(),0);await page.locator('[data-scene-graph-row="secondary-action"]').click();assert.equal((await snapshot()).bindings['background-color'],'color/test-0');assert.deepEqual((await snapshot()).reactiveObservers,selectedObservers);await colorFilesUnchanged();}
- // Distinct bindings resolve to the same literal; each explicit detach journals
- // one history transaction while the pending owner plan merges. This is
- // explicitly a draft boundary: files/catalog/native source requests stay put.
- for(const [key,token] of [['Enter','color/test-0'],['Space','color/test-1']]){const before=await snapshot();await alphaChevron.focus();await page.keyboard.press('Enter');const popup=page.locator('[data-variable-picker-open="true"]');await popup.locator('[data-variable-picker-row="'+token+'"]').click();await alphaChevron.focus();await page.keyboard.press('Shift+Tab');await page.keyboard.press(key);const detached=await snapshot();proof.selectionColorUnlinks??=[];proof.selectionColorUnlinks.push({key,token,before,detached});writeFileSync(root+'/selection-color-unlinks.json',JSON.stringify(proof.selectionColorUnlinks,null,2));assert.equal(detached.bindings['background-color'],'');assert.equal(detached.undoCount,before.undoCount+1);assert.equal(detached.redoCount,0);assert.equal(detached.sourcePlans,before.sourcePlans+(key==='Enter'?1:0));assert.equal(detached.properties.find(property=>property.name==='background-color').value,'#112233');await colorFilesUnchanged();assert.equal(await colorsBody.locator('[data-selection-color-property="background-color"] [data-selection-color-linked-chip]').count(),0);await colorBind.click();await page.locator('[data-variable-picker-open="true"] [data-variable-picker-row="'+token+'"]').click();}
+ // First unlink persists the actual resolved source literal and compiler
+ // preview. A later equal authored literal is a source no-op; metadata/history
+ // still persist without inventing a source undo or pending owner plan.
+ for(const [key,token] of [['Enter','color/test-0'],['Space','color/test-1']]){
+  await alphaChevron.focus();await page.keyboard.press('Enter');const popup=page.locator('[data-variable-picker-open="true"]');await popup.locator('[data-variable-picker-row="'+token+'"]').click();
+  await page.waitForFunction(()=>!globalThis.__isonimEditorVm.sourceBindingMetadataDirty.value&&!globalThis.__isonimEditorVm.sourceBindingMetadataSaving);
+  const before=await snapshot(),beforeSource=source(),beforeCatalog=readFileSync(project+'/.isonim/catalog.json','utf8'),beforeRequests=proof.sourceRequests.length;
+  await alphaChevron.focus();await page.keyboard.press('Shift+Tab');await page.keyboard.press(key);
+  await page.waitForFunction(()=>{const state=JSON.parse(window.__popupAcceptance.snapshot());return state.bindings['background-color']===''&&!globalThis.__isonimEditorVm.sourceBindingMetadataDirty.value&&!globalThis.__isonimEditorVm.sourceBindingMetadataSaving&&!globalThis.__isonimEditorVm.sourceProjectBuildInFlight;},null,{timeout:70000});
+  const detached=await snapshot();proof.selectionColorUnlinks??=[];proof.selectionColorUnlinks.push({key,token,before,detached});writeFileSync(root+'/selection-color-unlinks.json',JSON.stringify(proof.selectionColorUnlinks,null,2));
+  assert.equal(detached.bindings['background-color'],'');assert.equal(detached.undoCount,before.undoCount+(key==='Enter'?1:0));assert.equal(detached.redoCount,0);assert.equal(detached.sourcePlans,before.sourcePlans);
+  assert.equal(detached.properties.find(property=>property.name==='background-color').value,'rgb(17, 34, 51)');
+  assert.equal(proof.sourceRequests.length,beforeRequests+2);
+  if(key==='Enter'){assert.equal(source(),beforeSource.replace('background-color:rgba(18,52,86,0.5);','background-color:#112233;'));assert.notEqual(readFileSync(project+'/.isonim/catalog.json','utf8'),beforeCatalog);}
+  else {assert.equal(source(),beforeSource);assert.equal(readFileSync(project+'/.isonim/catalog.json','utf8'),beforeCatalog);}
+  await page.waitForFunction(()=>[...document.querySelectorAll('iframe')].some(frame=>frame.getClientRects().length&&frame.contentDocument?.querySelector('#secondary-action')&&frame.contentWindow.getComputedStyle(frame.contentDocument.querySelector('#secondary-action')).backgroundColor==='rgb(17, 34, 51)'));
+  const metadata=JSON.parse(readFileSync(project+'/.isonim/bindings.json','utf8'));assert(!metadata.variableBindings.some(binding=>binding.elementId==='secondary-action'&&binding.propertyName==='background-color'));assert.equal(metadata.variableBindingHistory.find(binding=>binding.elementId==='secondary-action'&&binding.propertyName==='background-color').variableKeys[0],token);
+  assert.equal(await colorsBody.locator('[data-selection-color-property="background-color"] [data-selection-color-linked-chip]').count(),0);
+  proof.relinkOwnerBefore={row:await alphaRow.evaluate(node=>node.outerHTML),state:await snapshot(),tokenCount:await page.evaluate(()=>globalThis.__isonimEditorVm.foundations.tokens.value.length)};writeFileSync(root+'/relink-owner.json',JSON.stringify(proof.relinkOwnerBefore,null,2));assert.equal(proof.relinkOwnerBefore.tokenCount,90,'Declared fixture tokens must survive real source catalog reload');
+  await colorBind.click();proof.relinkOwnerBefore.afterClick={row:await alphaRow.evaluate(node=>node.outerHTML),pickerCount:await page.locator('[data-variable-picker-open="true"]').count(),state:await snapshot()};writeFileSync(root+'/relink-owner.json',JSON.stringify(proof.relinkOwnerBefore,null,2));await page.locator('[data-variable-picker-open="true"] [data-variable-picker-row="'+token+'"]').click();await page.waitForFunction(()=>!globalThis.__isonimEditorVm.sourceBindingMetadataDirty.value&&!globalThis.__isonimEditorVm.sourceBindingMetadataSaving);
+  colorsBefore.source=source();colorsBefore.catalog=readFileSync(project+'/.isonim/catalog.json','utf8');colorsBefore.requests=proof.sourceRequests.length;
+ }
  const ambiguity=colorsBody.locator('[data-selection-color-row]').filter({hasText:'multiple properties'});assert(await ambiguity.count()>0);const ambiguous=ambiguity.first(),ambiguousBind=ambiguous.locator('[data-selection-color-bind]');assert.equal(await ambiguousBind.getAttribute('aria-disabled'),'true');const ambiguousBefore=await snapshot();await ambiguousBind.scrollIntoViewIfNeeded();const ambiguousBox=await ambiguousBind.boundingBox();assert(ambiguousBox);await page.mouse.click(ambiguousBox.x+ambiguousBox.width/2,ambiguousBox.y+ambiguousBox.height/2);for(const key of ['Enter','Space','Tab','Escape']){await ambiguousBind.focus();await page.keyboard.press(key);assert.deepEqual(await snapshot(),ambiguousBefore);assert.equal(await page.locator('[data-variable-picker-open="true"]').count(),0);await colorFilesUnchanged();}
  proof.selectionColorsFinal=await snapshot();
- record('Selection Colors actual alpha/unique compatible binding/natural keys/read-only ambiguity/stale selection/journal boundary retain real source/catalog');
+ record('Selection Colors actual alpha/unique compatible binding/natural keys/read-only ambiguity/stale selection persist metadata and native unlink source/catalog');
 
  assert.deepEqual(proof.errors,[]);assert.deepEqual(proof.agentRequests,[]);writeFileSync(root+'/proof.json',JSON.stringify(proof,null,2));console.log('Inspector compound GUI passed:',root,proof.cases.length);
 } finally {

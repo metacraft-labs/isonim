@@ -61,6 +61,36 @@ proc describeEditableStyles(root: string; manifest: JsonNode): JsonNode =
       "const": entry{"const"}, "selector": entry{"selector"}, "properties": entry{"properties"},
       "sourceHash": $secureHash(source), "values": values})
 
+proc bindingSnapshot(root: string): JsonNode =
+  let file = safePath(root, bindingSidecarRelPath)
+  let raw = if fileExists(file): readFile(file) else: ""
+  %* {"bindingSidecar": raw, "bindingHash": $secureHash(raw)}
+
+proc validateBindingMetadata(raw: string) =
+  let document = parseJson(raw)
+  if document.kind != JObject or document{"version"}.getInt() != 1:
+    raise newException(ValueError, "Invalid binding metadata version.")
+  for key, value in document:
+    if key notin ["version", "variableBindings", "variableBindingHistory"]:
+      raise newException(ValueError, "Invalid binding metadata field.")
+  for field in ["variableBindings", "variableBindingHistory"]:
+    if document{field} == nil or document[field].kind != JArray:
+      raise newException(ValueError, "Invalid binding metadata collection.")
+    for row in document[field]:
+      if row.kind != JObject or row{"elementId"} == nil or row["elementId"].kind != JString or
+          row["elementId"].getStr().len == 0 or row{"propertyName"} == nil or
+          row["propertyName"].kind != JString or row["propertyName"].getStr().len == 0:
+        raise newException(ValueError, "Invalid binding metadata owner.")
+      if field == "variableBindings":
+        if row{"variableKey"} == nil or row["variableKey"].kind != JString or row["variableKey"].getStr().len == 0:
+          raise newException(ValueError, "Invalid binding metadata variable.")
+      else:
+        if row{"variableKeys"} == nil or row["variableKeys"].kind != JArray:
+          raise newException(ValueError, "Invalid binding metadata history.")
+        for key in row["variableKeys"]:
+          if key.kind != JString or key.getStr().len == 0:
+            raise newException(ValueError, "Invalid binding metadata history key.")
+
 proc cmdSourceProject*(args: seq[string]): int =
   if args.len != 2:
     echo $(%* {"ok": false, "diagnostic": "source-project requires root and request file"})
@@ -77,6 +107,9 @@ proc cmdSourceProject*(args: seq[string]): int =
       if args[1] == "--snapshot":
         response["manifest"] = manifest
         response["catalog"] = parseFile(safePath(root, manifest{"catalog"}.getStr()))
+        let bindings = bindingSnapshot(root)
+        response["bindingSidecar"] = bindings["bindingSidecar"]
+        response["bindingHash"] = bindings["bindingHash"]
       echo $response
       return 0
     recoverSourceTransaction(root)
@@ -85,6 +118,26 @@ proc cmdSourceProject*(args: seq[string]): int =
       return 0
     let manifest = parseFile(safePath(root, ".isonim/source-project.json"))
     let request = parseFile(args[1])
+    if request{"command"}.getStr() == "bindings-save":
+      for key, value in request:
+        if key notin ["command", "commandId", "bindingSidecar", "expectedBindingHash", "expectedRevision", "storyId", "target", "viewportWidth"]:
+          raise newException(ValueError, "Unknown binding metadata request field.")
+        if key in ["expectedRevision", "viewportWidth"]:
+          if value.kind != JInt: raise newException(ValueError, "Invalid binding metadata request type.")
+        elif value.kind != JString:
+          raise newException(ValueError, "Invalid binding metadata request type.")
+      if request{"expectedBindingHash"}.getStr().len != 40 or request{"bindingSidecar"} == nil:
+        raise newException(ValueError, "Missing binding metadata revision.")
+      let current = bindingSnapshot(root)
+      if request["expectedBindingHash"] != current["bindingHash"]:
+        raise newException(ValueError, "Binding metadata changed in another editor. Reload before retrying.")
+      let raw = request["bindingSidecar"].getStr()
+      validateBindingMetadata(raw)
+      atomicSourceWrite(safePath(root, bindingSidecarRelPath), raw)
+      var reply = bindingSnapshot(root)
+      reply["ok"] = %true
+      echo $reply
+      return 0
     let inspectorEdit = request{"command"}.getStr() == "inspector-edit"
     var literalMap: JsonNode
     var nativeProperty, nativeBefore, nativeAfter: string
@@ -137,6 +190,19 @@ proc cmdSourceProject*(args: seq[string]): int =
         nativeAfter = request["value"].getStr()
         if request{"sourceValue"} != nil and request["sourceValue"].getStr() != nativeAfter:
           raise newException(ValueError, "Source restoration does not match this property value.")
+      # Even a canonical no-op must validate the actual declaration under the
+      # project lock. An explicit restoration may still change compound siblings.
+      if parseCssPropertyValue(request["property"].getStr(),
+          request["expectedValue"].getStr()).canonical == parsed.canonical and
+          (request{"sourceValue"} == nil or nativeAfter == nativeBefore):
+        let validated = patchCssInNimConstAt(source, literalMap{"const"}.getStr(),
+          literalMap{"selector"}.getStr(), nativeProperty, nativeAfter,
+          request{"viewportWidth"}.getInt())
+        if not validated.ok or validated.oldValue != nativeBefore:
+          raise newException(ValueError, "Source declaration changed or cannot be safely patched.")
+        echo $(%* {"ok": true, "sourceEdit": {"before": nativeBefore,
+          "after": nativeBefore, "unchanged": true}})
+        return 0
     let catalogFile = safePath(root, manifest{"catalog"}.getStr())
     let catalog = parseFile(catalogFile)
     let journalFile = safePath(root, ".isonim/source-transaction.json")

@@ -61,6 +61,33 @@ class InspectorSourceTransactionTests(unittest.TestCase):
         self.assertEqual(self.catalog.read_bytes(), self.original_catalog)
         self.assertFalse((self.project / ".isonim/source-transaction.json").exists())
 
+    def test_equal_literal_validates_real_source_without_write_or_build(self):
+        request = self.request(value="120px")
+        # Temporarily make the actual project compiler entry unavailable. A
+        # validated no-op must not invoke it or publish/write anything.
+        build_entry = self.project / "build_catalog.py"
+        parked_entry = self.project / "build_catalog.py.parked"
+        build_entry.rename(parked_entry)
+        before_times = (self.source.stat().st_mtime_ns, self.catalog.stat().st_mtime_ns)
+        try:
+            result = self.operate(request)
+        finally:
+            parked_entry.rename(build_entry)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["sourceEdit"]["unchanged"])
+        self.assertEqual(result["sourceEdit"]["before"], "120px")
+        self.assertEqual(result["sourceEdit"]["after"], "120px")
+        self.assertEqual((self.source.stat().st_mtime_ns, self.catalog.stat().st_mtime_ns), before_times)
+        self.unchanged()
+        external = self.original.replace(b"width:120px", b"width:121px")
+        self.source.write_bytes(external)
+        refused = self.operate(request, expected=4)
+        self.assertFalse(refused["ok"])
+        self.assertIn("Source changed", refused["diagnostic"])
+        self.assertEqual(self.source.read_bytes(), external)
+        self.assertEqual(self.catalog.read_bytes(), self.original_catalog)
+        self.assertFalse((self.project / ".isonim/source-transaction.json").exists())
+
     def test_distinct_declared_targets_and_properties_compile_and_persist(self):
         for target, property, value in [("action", "width", "240px"),
                                          ("secondary-action", "height", "64px"),
@@ -439,6 +466,57 @@ writeFileSync(process.argv[2],JSON.stringify(proof,null,2));console.log('Actual 
         self.check_compiled_css(rows,prefix="all-reset")
         self.assertEqual(len(json.loads((self.directory / "all-reset-proof.json").read_text())),12)
         print("All reset source transaction proof:",self.directory)
+
+    def test_owned_binding_sidecar_revision_save_reload_and_source_isolation(self):
+        sidecar = self.project / ".isonim/bindings.json"
+        raw = json.dumps({"version": 1, "variableBindings": [
+            {"elementId": "action", "propertyName": "background-color", "variableKey": "color/surface"}],
+            "variableBindingHistory": [{"elementId": "action", "propertyName": "background-color",
+                                        "variableKeys": ["color/surface"]}]})
+        snapshot = subprocess.run([str(self.binary), "source-project", str(self.project), "--snapshot"],
+                                  env=self.env, capture_output=True, text=True, timeout=5)
+        self.assertEqual(snapshot.returncode, 0, snapshot.stdout + snapshot.stderr)
+        initial = json.loads(snapshot.stdout)
+        self.assertEqual(initial["bindingSidecar"], "")
+        saved = self.operate({"command": "bindings-save", "commandId": "binding-save",
+                              "expectedBindingHash": initial["bindingHash"], "bindingSidecar": raw})
+        self.assertTrue(saved["ok"])
+        self.assertEqual(json.loads(sidecar.read_text()), json.loads(raw))
+        self.assertEqual(saved["bindingHash"], hashlib.sha1(sidecar.read_bytes()).hexdigest().upper())
+        self.unchanged()
+        # Independent tab still carries the actual initial revision. It must
+        # not overwrite the first tab's durable metadata with an empty set.
+        before = sidecar.read_bytes()
+        rejected = self.operate({"command": "bindings-save", "commandId": "second-tab",
+                                 "expectedBindingHash": initial["bindingHash"],
+                                 "bindingSidecar": json.dumps({"version": 1, "variableBindings": [],
+                                                              "variableBindingHistory": []})}, expected=4)
+        self.assertFalse(rejected["ok"])
+        self.assertIn("Binding metadata changed", rejected["diagnostic"])
+        self.assertEqual(sidecar.read_bytes(), before)
+        self.unchanged()
+        reloaded = subprocess.run([str(self.binary), "source-project", str(self.project), "--snapshot"],
+                                   env=self.env, capture_output=True, text=True, timeout=5)
+        self.assertEqual(reloaded.returncode, 0)
+        self.assertEqual(json.loads(json.loads(reloaded.stdout)["bindingSidecar"]), json.loads(raw))
+
+    def test_binding_sidecar_rejects_escape_symlink_and_invalid_metadata(self):
+        outside = self.directory / "outside-bindings.json"
+        outside.write_text("do not overwrite")
+        sidecar = self.project / ".isonim/bindings.json"
+        sidecar.symlink_to(outside)
+        request = {"command": "bindings-save", "commandId": "unsafe",
+                   "expectedBindingHash": hashlib.sha1(b"").hexdigest().upper(),
+                   "bindingSidecar": '{"version":1,"variableBindings":[],"variableBindingHistory":[]}'}
+        refused = self.operate(request, expected=4)
+        self.assertIn("symlinks", refused["diagnostic"])
+        self.assertEqual(outside.read_text(), "do not overwrite")
+        sidecar.unlink()
+        request["bindingSidecar"] = '{"version":1,"variableBindings":"invalid","variableBindingHistory":[]}'
+        refused = self.operate(request, expected=4)
+        self.assertIn("Invalid binding metadata", refused["diagnostic"])
+        self.assertFalse(sidecar.exists())
+        self.unchanged()
 
 if __name__ == "__main__":
     unittest.main()

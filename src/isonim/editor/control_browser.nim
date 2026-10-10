@@ -250,13 +250,13 @@ proc installControlBridge*(vm: EditorVM; root: Element): BrowserControlBridge =
           .then(r=>r.text()).then(""", receiveSourceCallback, """)
           .catch(()=>""", receiveSourceCallback, """('{"ok":false,"diagnostic":"Source bridge connection failed."}'));
       """].}
-    if request{"command"}.getStr() == "inspector-edit":
+    if request{"command"}.getStr() in ["inspector-edit", "bindings-save"]:
       var registration = bridge.scope()
       let state = vm.controlSnapshot()
       request["expectedRevision"] = state["revision"]
       registration["request"] = request
       registration["state"] = state
-      bridge.fetchRpc("editor.inspector-source", registration, proc(reply: JsonNode) =
+      bridge.fetchRpc(if request{"command"}.getStr() == "bindings-save": "editor.bindings-source" else: "editor.inspector-source", registration, proc(reply: JsonNode) =
         if reply{"result"} == nil:
           done(%* {"ok": false, "diagnostic": reply{"error", "message"}.getStr("Inspector source admission failed.")})
         else:

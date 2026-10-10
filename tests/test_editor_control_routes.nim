@@ -414,3 +414,51 @@ suite "browser-origin inspector source admission":
     check rpc(registry,"editor.source-authorize",authorization,credential)["result"]["target"].getStr() == "action"
     authorization["operationId"] = %"unregistered"
     check rpc(registry,"editor.source-authorize",authorization,credential)["error"]["message"].getStr() == "unknown_operation"
+
+suite "browser-origin binding metadata admission":
+  test "sidecar writes require browser credential current target and permission again at admission":
+    let registry = newEditorControlRegistry("browser-bootstrap")
+    let browser = register(registry)
+    let credential = browser["browserToken"].getStr()
+    var submission = inspectorSource(browser, "bindings-1")
+    submission["request"] = %* {"commandId": "bindings-1", "command": "bindings-save",
+      "storyId": "Card / ready", "target": "action", "viewportWidth": 1440,
+      "expectedRevision": 4, "expectedBindingHash": "0123456789012345678901234567890123456789",
+      "bindingSidecar": "{\"version\":1,\"variableBindings\":[],\"variableBindingHistory\":[]}"}
+    for invalid in ["", "wrong", browser["controlToken"].getStr()]:
+      check rpc(registry,"editor.bindings-source",submission,invalid)["error"]["message"].getStr() == "browser_credential_required"
+    var denied = submission.copy()
+    denied["state"]["permissions"]["writeSource"] = %false
+    check rpc(registry,"editor.bindings-source",denied,credential)["error"]["message"].getStr() == "source_permission_denied"
+    let accepted = rpc(registry,"editor.bindings-source",submission,credential)["result"]
+    check accepted["status"].getStr() == "running"
+    check rpc(registry,"editor.bindings-source",submission,credential)["result"] == accepted
+    var collision = submission.copy()
+    collision["request"]["bindingSidecar"] = %"different metadata"
+    check rpc(registry,"editor.bindings-source",collision,credential)["error"]["message"].getStr() == "command_id_collision"
+    var staleRevision = submission.copy()
+    staleRevision["request"]["commandId"] = %"bindings-stale"
+    staleRevision["request"]["expectedRevision"] = %3
+    check rpc(registry,"editor.bindings-source",staleRevision,credential)["error"]["message"].getStr() == "stale_inspector_source_target"
+    var unknown = submission.copy()
+    unknown["request"]["file"] = %"../outside.json"
+    check rpc(registry,"editor.bindings-source",unknown,credential)["error"]["message"].getStr() == "unknown_binding_source_field"
+    for field in ["expectedBindingHash", "bindingSidecar", "expectedRevision"]:
+      var missing = submission.copy()
+      missing["request"].delete(field)
+      check rpc(registry,"editor.bindings-source",missing,credential)["error"]["message"].getStr() == "missing_binding_source_field"
+    var authorization = target(browser)
+    authorization["operationId"] = %"bindings-1"
+    authorization["admit"] = %false
+    check rpc(registry,"editor.source-authorize",authorization,credential)["result"] == submission["request"]
+    var poll = target(browser)
+    poll["state"] = submission["state"].copy()
+    poll["state"]["revision"] = %5
+    poll["state"]["permissions"]["writeSource"] = %false
+    discard rpc(registry,"editor.poll",poll,credential)
+    authorization["admit"] = %true
+    check rpc(registry,"editor.source-authorize",authorization,credential)["error"]["message"].getStr() == "source_permission_denied"
+    poll["state"]["permissions"]["writeSource"] = %true
+    poll["state"]["selection"] = %"another-element"
+    discard rpc(registry,"editor.poll",poll,credential)
+    check rpc(registry,"editor.source-authorize",authorization,credential)["error"]["message"].getStr() == "stale_inspector_source_target"

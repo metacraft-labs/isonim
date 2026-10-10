@@ -903,6 +903,13 @@ package isonim:
           "tools/build_source_catalog.py", "tools/isonim_review", "src", drReviewBin])
       inspectorNativeSourceActions.add(edge)
       testExecuteActions.add(edge)
+    let sourceBindingsGuiEdge = sh.shell(
+      command = "timeout --signal=TERM --kill-after=15s 180s node tests/test_editor_source_bindings_gui.mjs", cacheable = false,
+      actionId = "isonim.inspector_bindings_gui_execute", after = @[reviewToolEdge.action],
+      extraInputs = @["tests/test_editor_source_bindings_gui.mjs", "tests/fixtures/editor_inspector_project",
+        "examples/source_project/editor.nim", "tools/editor_server.py", "tools/build_source_catalog.py", "src", drReviewBin])
+    inspectorNativeSourceActions.add(sourceBindingsGuiEdge)
+    testExecuteActions.add(sourceBindingsGuiEdge)
     discard collect("test-editor-inspector-native-source", inspectorNativeSourceActions)
 
     let controlCliEdge = sh.shell(

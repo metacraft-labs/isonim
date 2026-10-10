@@ -11,6 +11,12 @@
 ## * ``variableCategoryFor``
 ## * ``InspectorVM.availableVariables`` Memo
 ##
+## The appended Save coordination test deliberately defers the consumer's
+## metadata completion callback to prove running/refusal sequencing. This one
+## callback is an admission spy, not simulated durable metadata success: its
+## success phase writes an actual sidecar and uses the production CSS patcher,
+## actual files and Nim compiler for the staged source draft. Production browser
+## tests separately prove authenticated sidecar admission, picker and reload.
 ## No UI here. The picker chip (E.2), picker popover (E.3), and
 ## inline variable editor (E.4) live in later phases; they consume
 ## the data model exercised below.
@@ -18,6 +24,9 @@
 import std/[options, tables, unittest]
 import isonim/core/[signals, computation, owner]
 import isonim/editor/viewmodels
+when not defined(js):
+  import std/[os, osproc, strutils, tempfiles]
+  import isonim/editor/css_patch
 
 suite "Editor variable binding VM (Phase E.1)":
 
@@ -323,3 +332,68 @@ suite "Editor variable binding VM (VBIND-M3 unlink → local override)":
       check edits[^1].property == "gap"
       check edits[^1].newValue == "24px"
       dispose()
+
+when not defined(js):
+  suite "binding metadata Save coordinates real source drafts":
+    test "Save stays running until metadata completes; refusal preserves draft and retry writes real source":
+      let directory = createTempDir("binding_save_", "_source")
+      defer: removeDir(directory)
+      let source = directory / "styles.nim"
+      let original = "const styles* = \"\"\"#action { width:120px; }\"\"\"\necho styles\n"
+      writeFile(source, original)
+      createRoot proc(dispose: proc()) =
+        let vm = createEditorVM()
+        vm.workspacePermissions.val = EditorWorkspacePermissions(readSource: true, writeSource: true)
+        vm.sourceAdapterReady.val = true
+        vm.selectedStory.val = StoryRef(group: "Card", name: "ready", kind: skComponent)
+        vm.inspector.selectedElement.val = ElementRef(id: "action", tag: "button", sourceFile: source,
+          properties: @[PropertyInfo(name: "width", value: "120px", schemaKey: "style.width", sourceFile: source, directStyleAllowed: true)])
+        vm.inspector.journalSourceEdit(SourceEditPlan(file: source, schemaKey: "style.width", property: "width",
+          oldValue: "120px", expectedOldValue: "120px", newValue: "240px", scope: pesLocal,
+          sourceScope: sskLocalInstance, reversible: true))
+        let adapter = WorkspaceEditAdapter(schema: @[WorkspaceEditableSchemaEntry(key: "style.width", file: source, kind: wskSourceMap, property: "width")])
+        adapter.readFile = proc(file: string): WorkspaceReadResult =
+          WorkspaceReadResult(ok: true, content: readFile(file))
+        adapter.writeFile = proc(file, content: string): WorkspaceOperationResult =
+          writeFile(file, content)
+          WorkspaceOperationResult(ok: true)
+        adapter.patchFile = proc(plan: SourceEditPlan; content: string; schema: WorkspaceEditableSchemaEntry): WorkspacePatchResult =
+          let patch = patchCssInNimConst(content, "styles", "#action", plan.property, plan.newValue)
+          WorkspacePatchResult(ok: patch.ok, patch: WorkspaceFilePatch(file: schema.file, afterContent: patch.content, fullReload: true))
+        let binary = directory / "compiled"
+        adapter.compile = proc(stories: seq[StoryRef]): WorkspaceOperationResult =
+          let built = execCmdEx(@["nim", "c", "--hints:off", "--nimcache:" & directory / "cache", "--out:" & binary, source].quoteShellCommand())
+          WorkspaceOperationResult(ok: built.exitCode == 0, message: built.output)
+        adapter.reloadPreview = proc(stories: seq[StoryRef]; fullReload: bool): WorkspaceOperationResult =
+          let rendered = execCmdEx(binary.quoteShell)
+          if rendered.exitCode == 0: writeFile(directory / "preview.txt", rendered.output)
+          WorkspaceOperationResult(ok: rendered.exitCode == 0, message: rendered.output)
+        vm.workspaceEditAdapter = adapter
+        vm.sourceBindingMetadataDirty = createSignal(true)
+        vm.workspaceEditStage.val = wesDirty
+        check vm.saveIndicator.state == sisDirty
+        check vm.saveIndicator.pending == 2
+        var completion: proc(ok: bool; diagnostic: string) {.closure.}
+        vm.sourceBindingMetadataSave = proc(done: proc(ok: bool; diagnostic: string) {.closure.}) = completion = done
+        check vm.runEditorCommand(eckSave).status == ecsRunning
+        check readFile(source) == original
+        check vm.inspector.pendingSourceEdits.val.len == 1
+        vm.workspaceEditStage.val = wesFailed
+        vm.workspaceEditDiagnostics.val = @[WorkspaceEditDiagnostic(kind: wedWriteFailed, message: "Owned sidecar refused")]
+        completion(false, "Owned sidecar refused")
+        check vm.commandState(eckSave).status == ecsFailed
+        check vm.saveIndicator.state == sisFailed
+        check vm.sourceBindingMetadataDirty.val
+        check vm.inspector.pendingSourceEdits.val.len == 1
+        check readFile(source) == original
+        check vm.runEditorCommand(eckSave).status == ecsRunning
+        writeFile(directory / "bindings.json", "{\"version\":1,\"variableBindings\":[],\"variableBindingHistory\":[]}")
+        vm.sourceBindingMetadataDirty.val = false
+        completion(true, "")
+        check vm.commandState(eckSave).status == ecsSucceeded
+        check fileExists(directory / "bindings.json")
+        check "width:240px" in readFile(source)
+        check "width:240px" in readFile(directory / "preview.txt")
+        check vm.inspector.pendingSourceEdits.val.len == 0
+        check vm.saveIndicator.state == sisClean
+        dispose()

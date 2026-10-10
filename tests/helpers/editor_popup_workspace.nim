@@ -13,9 +13,14 @@ var items: seq[StoryItem] = @[]
 for i in 0 ..< 100:
   items.add StoryItem(name: "long story " & $i, group: "Card", kind: skComponent)
 items.add StoryItem(name: "default ready", group: "Card", kind: skComponent)
+proc fixtureTokens(): seq[FoundationTokenEntry] =
+  for i in 0 ..< 90:
+    result.add FoundationTokenEntry(key: "color/test-" & $i,
+      kind: ftkSemanticColor, value: "#112233")
 let project = newEditorWorkspace("Popup acceptance", @[StoryGroup(name: "Card", kind: skComponent, items: items)], id = "source-project",
   initialView = evComponentDetail,
   initialStory = some(StoryRef(kind: skComponent, group: "Card", name: "default ready")),
+  foundationTokens = fixtureTokens(),
   permissions = EditorWorkspacePermissions(readSource: true, writeSource: true, createStory: true))
 let editor = mountEditor(project)
 editor.attachSourceProject(project, inspectorEditing = not defined(isonimCatalogOnlyPopup))
@@ -36,11 +41,7 @@ proc readOnly(value: bool) =
   permissions.writeSource = not value
   editor.workspacePermissions.val = permissions
 proc tokens() =
-  var entries: seq[FoundationTokenEntry] = @[]
-  for i in 0 ..< 90:
-    entries.add FoundationTokenEntry(key: "color/test-" & $i,
-      kind: ftkSemanticColor, value: "#112233")
-  editor.foundations.tokens.val = entries
+  editor.foundations.tokens.val = fixtureTokens()
 proc select(id: cstring): bool = editor.selectInspectorElementById($id)
 proc openStory(group, name: cstring): bool =
   for entry in editor.sidebar.groups.val:

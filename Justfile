@@ -1712,3 +1712,4 @@ test-editor-inspector: test-editor-shell-current test-editor-inspector-native-so
 test-editor-inspector-native-source: isonim-review-build
     python3 tests/test_editor_inspector_source.py
     python3 tests/test_editor_source_style_provider.py
+    timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_source_bindings_gui.mjs
