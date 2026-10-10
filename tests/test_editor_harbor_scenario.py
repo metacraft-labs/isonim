@@ -50,6 +50,25 @@ SECOND = ('What token did I ask you to remember? Reply with that token and the i
 OBSERVER = None
 
 
+class OwnedStderrReader(threading.Thread):
+    """Keep actual iterator EOF separate from a reader that died on an error."""
+    def __init__(self, stream, log, lines):
+        super().__init__(daemon=True)
+        self.stream, self.log, self.lines = stream, log, lines
+        self.eof = False
+        self.errors = []
+
+    def run(self):
+        try:
+            for line in self.stream:
+                self.log.write(line)
+                self.log.flush()
+                self.lines.put(line)
+            self.eof = True
+        except BaseException as error:
+            self.errors.append(repr(error))
+
+
 def processes():
     return OBSERVER.snapshot()
 
@@ -170,12 +189,7 @@ os.execv(provider, [provider, '--scenario', scenarios[index], '--disable-followe
                                   '--default-assistant-prompt', str(ROOT / 'prompts/ai-assistant.md')],
                                  cwd=workspace, env=env, stdout=log, stderr=subprocess.PIPE, text=True,
                                  start_new_session=True)
-        def drain():
-            for line in child.stderr:
-                log.write(line)
-                log.flush()
-                lines.put(line)
-        reader = threading.Thread(target=drain, daemon=True)
+        reader = OwnedStderrReader(child.stderr, log, lines)
         reader.start()
         workers = {}
         cleanup_owned = capture_owned(processes(), [child.pid])
@@ -448,15 +462,25 @@ os.execv(provider, [provider, '--scenario', scenarios[index], '--disable-followe
             if reader.is_alive():
                 cleanup_errors.append('owned stderr reader did not reach EOF')
             else:
-                child.stderr.close()  # Never block acquiring an active reader's lock.
-                log.close()
-            (artifacts / 'native-exit.json').write_text(json.dumps({
-                'pid': child.pid, 'returncode': child.returncode,
-                'readerEof': not reader.is_alive(), 'cleanupErrors': cleanup_errors}, indent=2))
+                # Never block acquiring an active reader's lock. A buffered
+                # failed log can raise again at close; retain that evidence too.
+                for handle in (child.stderr, log):
+                    try:
+                        handle.close()
+                    except BaseException as error:
+                        cleanup_errors.append('owned stderr handle close failed: ' + repr(error))
+            if reader.errors:
+                cleanup_errors.append('owned stderr reader failed: ' + repr(reader.errors))
+            elif not reader.eof and not reader.is_alive():
+                cleanup_errors.append('owned stderr reader ended without EOF')
             try:
                 require_exit(child, {0}, 'editor daemon')
             except AssertionError as error:
                 cleanup_errors.append(str(error))
+            (artifacts / 'native-exit.json').write_text(json.dumps({
+                'pid': child.pid, 'returncode': child.returncode,
+                'readerEof': reader.eof, 'readerAlive': reader.is_alive(),
+                'readerErrors': reader.errors, 'cleanupErrors': cleanup_errors}, indent=2))
             if cleanup_errors:
                 error = AssertionError('; '.join(cleanup_errors))
                 if original_error is not None:
@@ -480,7 +504,7 @@ os.execv(provider, [provider, '--scenario', scenarios[index], '--disable-followe
                                 'both real REST stops must begin before either completes')
                 (artifacts / 'parallel-stop-proof.json').write_text(json.dumps({
                     'backendIds': backend_ids, 'stopping': stopping, 'stopped': stopped,
-                    'normalNativeExit': child.returncode, 'readerEof': not reader.is_alive()}, indent=2))
+                    'normalNativeExit': child.returncode, 'readerEof': reader.eof}, indent=2))
                 (artifacts / 'SHUTDOWN-PASS').write_text(
                     'two real backend sessions, two official first prompts; native0; owned helper/service reaping and stderr EOF\n')
         self.assertEqual(child.returncode, 0, 'normal owned shutdown must succeed')

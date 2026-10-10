@@ -3,6 +3,10 @@
 Real children and argument paths containing spaces, punctuation and empty values
 exercise both the portable ps enumeration and native identity boundary. Linux
 runs both observers; Darwin's native APIs are exercised when run on that host.
+Controlled Python children also exercise the original acceptance stderr reader
+without starting Harbor or inference: real subprocess pipes, a real log file,
+Linux /dev/full, and a live owned writer distinguish EOF, error and blocking.
+No streams, log sinks or queue operations are mocked.
 """
 import os
 from pathlib import Path
@@ -21,9 +25,93 @@ from helpers.editor_process_observer import (
     LinuxProcessObserver, PosixProcessObserver, optional_sibling_available,
     capture_owned, reap_owned,
 )
+from test_editor_harbor_scenario import OwnedStderrReader
 
 
 class ProcessObserverTests(unittest.TestCase):
+    def test_original_stderr_reader_reaches_actual_eof_and_preserves_log_and_queue(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'stderr.log'
+            with path.open('w') as log:
+                child = subprocess.Popen([sys.executable, '-c',
+                    'import sys; sys.stderr.write("first\\nsecond\\n"); sys.stderr.flush()'],
+                    stderr=subprocess.PIPE, text=True)
+                lines = queue.Queue()
+                reader = OwnedStderrReader(child.stderr, log, lines)
+                reader.start()
+                try:
+                    self.assertEqual(child.wait(timeout=5), 0)
+                    reader.join(timeout=5)
+                    self.assertFalse(reader.is_alive())
+                    self.assertTrue(reader.eof)
+                    self.assertEqual(reader.errors, [])
+                    self.assertEqual(path.read_text(), 'first\nsecond\n')
+                    self.assertEqual([lines.get_nowait(), lines.get_nowait()], ['first\n', 'second\n'])
+                    self.assertTrue(lines.empty())
+                finally:
+                    if child.poll() is None: child.kill()
+                    child.wait(timeout=5)
+                    reader.join(timeout=5)
+                    if not reader.is_alive(): child.stderr.close()
+
+    @unittest.skipUnless(sys.platform == 'linux', 'real /dev/full failure boundary requires Linux')
+    def test_original_stderr_reader_dead_after_real_log_failure_is_not_eof(self):
+        log = open('/dev/full', 'w')
+        child = subprocess.Popen([sys.executable, '-c',
+            'import sys; sys.stderr.write("cannot persist this line\\n"); sys.stderr.flush()'],
+            stderr=subprocess.PIPE, text=True)
+        lines = queue.Queue()
+        reader = OwnedStderrReader(child.stderr, log, lines)
+        reader.start()
+        try:
+            self.assertEqual(child.wait(timeout=5), 0)
+            reader.join(timeout=5)
+            # The former not-is_alive predicate accepts this failed reader.
+            self.assertFalse(reader.is_alive())
+            self.assertFalse(reader.eof)
+            self.assertEqual(len(reader.errors), 1)
+            self.assertIn('OSError(28,', reader.errors[0])
+            self.assertTrue(lines.empty(), 'unpersisted line must not become readiness evidence')
+        finally:
+            if child.poll() is None: child.kill()
+            child.wait(timeout=5)
+            reader.join(timeout=5)
+            if not reader.is_alive(): child.stderr.close()
+            try: log.close()
+            except OSError as error:
+                self.assertEqual(error.errno, 28)  # Actual buffered sink can fail again at close.
+
+    def test_original_stderr_reader_waits_for_owned_writer_to_close_before_eof(self):
+        with tempfile.TemporaryDirectory() as directory:
+            gate = Path(directory) / 'close'
+            with (Path(directory) / 'stderr.log').open('w') as log:
+                child = subprocess.Popen([sys.executable, '-c',
+                    'import sys,time; from pathlib import Path; '
+                    'sys.stderr.write("writer ready\\n"); sys.stderr.flush(); '
+                    'exec("while not Path(sys.argv[1]).exists(): time.sleep(.01)")', str(gate)],
+                    stderr=subprocess.PIPE, text=True)
+                lines = queue.Queue()
+                reader = OwnedStderrReader(child.stderr, log, lines)
+                reader.start()
+                try:
+                    self.assertEqual(lines.get(timeout=5), 'writer ready\n')
+                    reader.join(timeout=.05)
+                    self.assertTrue(reader.is_alive())
+                    self.assertFalse(reader.eof)
+                    self.assertEqual(reader.errors, [])
+                    self.assertIsNone(child.poll())
+                    gate.touch()
+                    self.assertEqual(child.wait(timeout=5), 0)
+                    reader.join(timeout=5)
+                    self.assertFalse(reader.is_alive())
+                    self.assertTrue(reader.eof)
+                    self.assertEqual(reader.errors, [])
+                finally:
+                    if child.poll() is None: child.kill()
+                    child.wait(timeout=5)
+                    reader.join(timeout=5)
+                    if not reader.is_alive(): child.stderr.close()
+
     def test_already_dead_reload_host_sigterm_is_not_normal_cleanup(self):
         # Isolate the real cleanup resource owner without producer/model setup.
         # Actual child signal, wait status, readers and filesystem are unchanged.
