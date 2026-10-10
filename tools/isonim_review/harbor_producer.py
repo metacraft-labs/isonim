@@ -8,7 +8,7 @@ import hashlib
 import json
 import os
 import re
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import shutil
 import stat
 import subprocess
@@ -26,6 +26,25 @@ GENERATED_ROOTS = tuple(Path(p) for p in (
     'ah-lib/dist', 'packages/loop-driver/dist', 'packages/workflow-sdk/dist',
     'js-libs/rest-client/dist', 'js-libs/milestones-file/dist',
     'js-libs/sse-client/dist', 'js-libs/sdk/dist'))
+# is_relative_to constructs every ancestor in supported Python versions. These
+# policy roots are lexical and static; compare normalized components once per
+# candidate while preserving Windows' case-insensitive path membership.
+GENERATED_ROOT_PARTS = tuple(path.parts for path in GENERATED_ROOTS)
+GENERATED_WINDOWS_ROOT_PARTS = tuple(
+    tuple(part.lower() for part in PureWindowsPath(path.as_posix()).parts)
+    for path in GENERATED_ROOTS)
+
+
+def generated_location(path):
+    if isinstance(path, PureWindowsPath):
+        parts = tuple(part.lower() for part in path.parts)
+        roots = GENERATED_WINDOWS_ROOT_PARTS
+    else:
+        parts = path.parts
+        roots = GENERATED_ROOT_PARTS
+    return any(parts[:len(root)] == root for root in roots)
+
+
 GENERATED_RUNTIME_FILES = frozenset(
     '.repro/isonim-runtime/' + p for p in (
         'repro.nim', 'publish.py', 'harbor-executable', 'producer-interface.json',
@@ -35,7 +54,7 @@ GENERATED_CACHE_FILES = frozenset(('.cspellcache', '.lycheecache', '.yarn'))
 
 def generated_input(repo, name):
     path = Path(name)
-    if any(path.is_relative_to(root) for root in GENERATED_ROOTS):
+    if generated_location(path):
         return True
     if name in GENERATED_RUNTIME_FILES or name in GENERATED_CACHE_FILES:
         return True

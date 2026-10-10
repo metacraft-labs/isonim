@@ -109,6 +109,73 @@ else:
                                str(self.publication.parent)],check=check,
                               stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
 
+    def test_generated_policy_matches_normalized_posix_and_windows_paths(self):
+        from pathlib import PurePosixPath, PureWindowsPath
+        import cProfile
+        candidates=['target/file','target-prefix/file','./target//file',
+                    'target/../authored','../target/file','/target/file',
+                    '.repro/build/file','.repro/build-prefix/file',
+                    'docs/.repro/build/file','TARGET/file','C:/target/file',
+                    r'target\file','ah-lib/dist/file','ah-lib/distribution/file']
+        for path_type in [PurePosixPath,PureWindowsPath]:
+            for name in candidates:
+                path=path_type(name)
+                expected=any(path.is_relative_to(path_type(root.as_posix()))
+                             for root in producer.GENERATED_ROOTS)
+                self.assertEqual(producer.generated_location(path),expected,(path_type,name))
+        # The regression is repeated construction of every lexical ancestor,
+        # not wall-clock noise. Profile the real classifier over actual ignored
+        # files and require zero is_relative_to calls; no OS/API is substituted.
+        directory=self.repo/'.repro/build/deep/inputs'
+        directory.mkdir(parents=True)
+        for index in range(128):(directory/str(index)).write_text('producer output')
+        ignored=[os.fsdecode(name) for name in producer.git(self.repo,'ls-files',
+                  '--others','--ignored','--exclude-standard','-z').split(b'\0') if name]
+        profile=cProfile.Profile();profile.enable()
+        classifications=[producer.generated_input(self.repo,name) for name in ignored]
+        profile.disable()
+        self.assertTrue(all(classifications))
+        self.assertEqual(sum(entry.callcount for entry in profile.getstats()
+            if hasattr(entry.code,'co_name') and entry.code.co_name=='is_relative_to'),0)
+
+    def test_snapshot_retains_tracked_generated_and_ignored_lookalike_gitlink_sources(self):
+        # Real Git/gitlink/filesystem controls, including inputs below generated
+        # names. Tracked inputs override classification; ignored authored assets
+        # outside precisely identified output roots remain source inputs.
+        tracked=self.repo/'target/tracked.inc';tracked.parent.mkdir(exist_ok=True)
+        tracked.write_text('tracked beneath generated root')
+        (self.repo/'.gitignore').write_text('.repro/\ntarget/\nassets/\ndocs/\n')
+        subprocess.run(['git','add','-f','target/tracked.inc','.gitignore'],cwd=self.repo,check=True)
+        authored=self.repo/'assets/target-prefix/input.inc';authored.parent.mkdir(parents=True)
+        authored.write_text('ignored authored lookalike')
+        nested=self.repo/'docs/.repro/build/input.inc';nested.parent.mkdir(parents=True)
+        nested.write_text('authored nested policy lookalike')
+        generated=self.repo/'target/generated.inc';generated.write_text('generated output')
+        source=self.root/'nested-source';source.mkdir(exist_ok=True)
+        subprocess.run(['git','init','-q'],cwd=source,check=True)
+        (source/'.gitignore').write_text('assets/\n')
+        (source/'input.inc').write_text('real gitlink source')
+        subprocess.run(['git','add','.'],cwd=source,check=True)
+        subprocess.run(['git','-c','user.name=Fixture','-c','user.email=fixture@example.invalid',
+                        'commit','--allow-empty','-qm','gitlink fixture'],cwd=source,check=True)
+        subprocess.run(['git','-c','protocol.file.allow=always','submodule','add','-q',str(source),'nested'],cwd=self.repo,check=True)
+        ignored=self.repo/'nested/assets/node_modules/input.inc';ignored.parent.mkdir(parents=True)
+        ignored.write_text('gitlink ignored authored asset without package owner')
+        first=producer.snapshot(self.repo)
+        for name in ['target/tracked.inc','assets/target-prefix/input.inc',
+                     'docs/.repro/build/input.inc','nested/input.inc',
+                     'nested/assets/node_modules/input.inc']:
+            self.assertIn(name,first['files'])
+        self.assertNotIn('target/generated.inc',first['files'])
+        self.assertIn('nested/',first['revisions'])
+        self.assertEqual(producer.snapshot(self.repo,first),first)
+        previous=ignored.stat();ignored.write_text('changed gitlink ignored authored asset')
+        os.utime(ignored,ns=(previous.st_atime_ns,previous.st_mtime_ns))
+        changed=producer.snapshot(self.repo,first)
+        self.assertNotEqual(changed['sha256'],first['sha256'])
+        self.assertNotEqual(changed['files']['nested/assets/node_modules/input.inc']['sha256'],
+                            first['files']['nested/assets/node_modules/input.inc']['sha256'])
+
     def test_real_entry_refuses_insecure_stage_and_selected_build_failure(self):
         stage=self.repo/producer.STAGE
         stage.mkdir(parents=True,exist_ok=True);stage.chmod(0o755)
