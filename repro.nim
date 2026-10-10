@@ -1146,6 +1146,20 @@ package isonim:
         "tools/editor_agent_env.py", "tools/agent_session_launcher.py", "prompts/ai-assistant.md", "examples/source_project", "build/bin/editor-scenario-host",
         "build/bin/isonim", "build/editor-source"])
     testExecuteActions.add(scenarioNativeEdge)
+    let harborOutputModesEdge = pythonUnittest.run(
+      source = "tests/test_editor_harbor_output_modes.py",
+      actionId = "isonim.scenario_execute.harbor_output_modes",
+      after = @[controlCliEdge, sourceBrowserEdge, preparationClockPythonEdge],
+      extraInputs = @["tests/test_editor_harbor_output_modes.py", "tests/helpers/editor_scenario_runtime.py",
+        "tests/helpers/editor_process_observer.py", "tests/helpers/editor_preparation_clock.py",
+        "tests/helpers/editor_scenario_registration.py", "tests/helpers/editor_sdk_runtime.py",
+        "tests/helpers/editor_scenario_provider.py", "tests/helpers/editor_scenario_barrier.py",
+        "tests/helpers/editor_scenario_network_probe.py", "tests/helpers/editor_scenario_filesystem_probe.py",
+        "tests/scenarios/agent-harbor/editor-workflows.yaml", "tools/editor_server.py", "tools/editor_agent_env.py",
+        "tools/agent_session_launcher.py", "tools/build_source_catalog.py", "examples/source_project",
+        "prompts/ai-assistant.md", drReviewBin, "build/bin/isonim", "build/editor-source", "repro.nim"])
+    testExecuteActions.add(harborOutputModesEdge)
+    discard collect("test-editor-harbor-output-modes", @[harborOutputModesEdge])
     let scenarioStressEdge = pythonUnittest.run(
       source = "tests/test_editor_scenario_stress.py",
       actionId = "isonim.scenario_execute.stream_ownership",

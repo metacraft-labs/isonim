@@ -126,7 +126,7 @@ def main():
     if len(sys.argv) != 2:
         raise SystemExit('usage: editor_scenario_checkout.py <owning-internal-recipe>')
     recipes = {'_editor-scenarios-native', '_editor-scenarios-gui',
-               '_editor-scenarios-stress', '_editor-harbor-scenario'}
+               '_editor-scenarios-stress', '_editor-harbor-scenario', '_editor-harbor-output-modes'}
     recipe = sys.argv[1]
     if recipe not in recipes:
         raise SystemExit('Unknown Harbor acceptance recipe')

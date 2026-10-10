@@ -1406,6 +1406,13 @@ test-editor-preparation-clock:
 editor-scenario-host-build:
     nim c --out:build/bin/editor-scenario-host tests/test_editor_scenario_host.nim
 
+# Output-mode compatibility through the owned current sibling and real provider.
+test-editor-harbor-output-modes:
+    python3 tests/helpers/editor_scenario_checkout.py _editor-harbor-output-modes
+
+_editor-harbor-output-modes: isonim-review-build source-editor-build
+    python3 tests/test_editor_harbor_output_modes.py
+
 test-editor-scenarios-native:
     python3 tests/helpers/editor_scenario_checkout.py _editor-scenarios-native
 
