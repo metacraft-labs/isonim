@@ -7,7 +7,7 @@
 ##   * Blend mode — choice (normal / multiply / screen / overlay / …).
 ##   * Individual corner radii toggle — when on, four numeric inputs.
 
-import std/[options, strutils]
+import std/[options, strutils, math]
 
 import isonim/core/signals
 import isonim/core/computation
@@ -21,6 +21,13 @@ import isonim/editor/views/widgets/section_position
 const
   pctUnit = PropertyUnitOption(label: "%", code: "%")
   pxUnit = PropertyUnitOption(label: "px", code: "px")
+
+proc opacityPercent(ratio: float): float =
+  ## Prefer a whole percent only when converting it back preserves the exact
+  ## authored ratio. Keep distinct fractions and authored percent literals precise.
+  let projected = ratio * 100.0
+  let whole = round(projected)
+  if whole / 100.0 == ratio: whole else: projected
 
 proc mountSectionAppearance*[R, E](r: R; parent: E; vm: EditorVM) =
   let opacity = createSignal(100.0)
@@ -45,7 +52,7 @@ proc mountSectionAppearance*[R, E](r: R; parent: E; vm: EditorVM) =
     # ``opacity: 1`` is shown as 100 % on the unit-chip row; we keep the
     # ratio→percentage conversion local to the section so the inspector
     # signal speaks user units.
-    opacity.val = if raw.strip().endsWith("%"): parsed else: parsed * 100.0
+    opacity.val = if raw.strip().endsWith("%"): parsed else: opacityPercent(parsed)
     # Read the source once; reading the local radius draft here would make
     # this seeding effect overwrite a typed/scrubbed value before submission.
     let authoredRadius = parseLeadingFloat(findPropertyValue(props, "border-radius", "0"), 0.0)
@@ -67,7 +74,7 @@ proc mountSectionAppearance*[R, E](r: R; parent: E; vm: EditorVM) =
     let authored = opacityAuthoredValue()
     if authored.len == 0: return ""
     if authored.strip().endsWith("%"): return authored.strip()
-    formatNumber(parseLeadingFloat(authored, 1.0) * 100) & "%"
+    formatExactNumber(opacityPercent(parseLeadingFloat(authored, 1.0))) & "%"
   discard r.mountPropertyRowPair(parent,
     propertyRowNumeric(
     name = "Opacity", value = opacity, unit = opacityUnit,

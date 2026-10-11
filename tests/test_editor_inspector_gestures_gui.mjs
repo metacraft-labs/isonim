@@ -6,7 +6,7 @@
  * The source fixture's compile-time constraint is a real negative compiler control.
  */
 import {spawn,spawnSync} from 'node:child_process';
-import {mkdtempSync,cpSync,readFileSync,writeFileSync,mkdirSync,openSync,copyFileSync} from 'node:fs';
+import {mkdtempSync,cpSync,readFileSync,writeFileSync,mkdirSync,openSync,copyFileSync,statSync} from 'node:fs';
 import {chromium} from '../node_modules/playwright/index.mjs';
 import assert from 'node:assert/strict';
 import path from 'node:path';
@@ -121,6 +121,20 @@ try {
  assert.equal(await angle.inputValue(),'0.325');assert(source().includes('transform:translateX(8px) rotate(0.325turn) scale(1.2);'));assert.equal(proof.sourceRequests.length,preciseRequests+1);
  const fineAngle=await page.evaluate(()=>{const f=[...document.querySelectorAll('iframe')].find(f=>f.getClientRects().length&&f.contentDocument?.querySelector('#action'));const m=new f.contentWindow.DOMMatrix(f.contentWindow.getComputedStyle(f.contentDocument.querySelector('#action')).transform);return Math.atan2(m.b,m.a)*180/Math.PI;});assert(Math.abs(fineAngle-117)<.0001);
  record('Fine Alt Rotation drag preserves fractional turn precision in input/source/compiler/preview/history');
+ await input.fill('120.125px');await input.press('Enter');await waitApplied(++count);assert.equal(await input.inputValue(),'120.125');
+ for(const [key,expectedWidth] of [['ArrowUp','121.125'],['Shift+ArrowDown','111.125'],['Alt+ArrowUp','111.225']]){await input.press(key);await waitApplied(++count);assert.equal(await input.inputValue(),expectedWidth);assert(source().includes('#action { width:'+expectedWidth+'px;'));}
+ record('Ordinary fraction Arrow/Shift/Alt preserves unrounded values through native source/compiler/history');
+ await input.fill('120.125px');await input.press('Enter');await waitApplied(++count);const fractionalSource=source(),fractionalCatalog=readFileSync(project+'/.isonim/catalog.json','utf8'),fractionalTimes=[statSync(project+'/stories.nim').mtimeMs,statSync(project+'/.isonim/catalog.json').mtimeMs],fractionalCalls=proof.sourceRequests.length;
+ for(const returned of [false,true]){const box=await handle.boundingBox();const x=box.x+box.width/2,y=box.y+box.height/2;await page.mouse.move(x,y);await page.mouse.down();if(returned){await page.mouse.move(x+10,y);await page.mouse.move(x,y);}await page.mouse.up();assert.equal(await input.inputValue(),'120.125');assert.equal(source(),fractionalSource);assert.equal(readFileSync(project+'/.isonim/catalog.json','utf8'),fractionalCatalog);assert.deepEqual([statSync(project+'/stories.nim').mtimeMs,statSync(project+'/.isonim/catalog.json').mtimeMs],fractionalTimes);assert.equal((await snapshot()).undoCount,count);assert.equal(proof.sourceRequests.length,fractionalCalls);}
+ const fractionalBox=await handle.boundingBox(),fx=fractionalBox.x+fractionalBox.width/2,fy=fractionalBox.y+fractionalBox.height/2;await page.keyboard.down('Alt');await page.mouse.move(fx,fy);await page.mouse.down();await page.mouse.move(fx+1,fy);await page.mouse.up();await page.keyboard.up('Alt');await waitApplied(++count);assert.equal(await input.inputValue(),'120.325');assert(source().includes('#action { width:120.325px;'));
+ record('Ordinary fraction zero/returned drag retains files/mtimes/history and fine Alt release saves exact fraction');
+ // Literal exponent forms enter the real shim: a tiny value becomes one, while
+ // a large value whose binary64 successor is unchanged makes no fictitious edit.
+ await input.fill('1e-20px');await input.press('Enter');await waitApplied(++count);assert.equal(await input.inputValue(),'1e-20');await input.press('ArrowUp');await waitApplied(++count);assert.equal(await input.inputValue(),'1');assert(source().includes('#action { width:1px;'));
+ await input.fill('1e20px');await input.press('Enter');await waitApplied(++count);const hugeSource=source(),hugeHistory=count,hugeCalls=proof.sourceRequests.length;await input.fill('1e20px');await input.press('ArrowUp');assert.equal(source(),hugeSource);assert.equal((await snapshot()).undoCount,hugeHistory);assert.equal(proof.sourceRequests.length,hugeCalls);assert.equal(Number(await input.inputValue()),1e20);
+ // The same DOM shim must recognize actual angle units rather than px-only text.
+ await angle.fill('0.125turn');await angle.press('Enter');await waitApplied(++count);await angle.fill('0.125turn');await angle.press('Alt+ArrowUp');await waitApplied(++count);assert.equal(await angle.inputValue(),'0.225');assert(source().includes('rotate(0.225turn)'));
+ record('Actual numeric DOM arrow shim handles tiny/large exponents and fractional turn literals without rounding or fake no-op history');
  assert.deepEqual(proof.errors,[]);assert.deepEqual(proof.agentRequests,[]);writeFileSync(root+'/proof.json',JSON.stringify(proof,null,2));console.log('Inspector gesture GUI passed:',root,proof.cases.length);
 } finally {
  if(browser)await browser.close();if(browserServer)await browserServer.close();

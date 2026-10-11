@@ -310,7 +310,7 @@ proc formatExactNumber*(value: float): string =
   if result.endsWith(".0"): result.setLen(result.len - 2)
 
 proc formatNumeric(cfg: PropertyRowConfig; value: float): string =
-  if cfg.numericFormat != nil: cfg.numericFormat(value) else: formatNumber(value)
+  if cfg.numericFormat != nil: cfg.numericFormat(value) else: formatExactNumber(value)
 
 # ----- Tiny math expression evaluator ------------------------------------ #
 #
@@ -793,15 +793,12 @@ proc attachNumericKeySteps*[R, E](r: R; inputNode: E; step: float) =
         const baseStep = Number(""", step, """) || 1;
         function split(raw) {
           const text = String(raw || '').trim();
-          const match = text.match(/^([+-]?(?:\d+\.?\d*|\.\d+))(px|em|rem|%|vw|vh|vmin|vmax|deg|s|ms|fr|ch|ex)?$/);
+          const match = text.match(/^([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)(px|em|rem|%|vw|vh|vmin|vmax|deg|rad|grad|turn|s|ms|fr|ch|ex)?$/);
           if (!match) return null;
           return { number: Number(match[1]), unit: match[2] || '' };
         }
         function format(number, unit) {
-          const rounded = Math.abs(number - Math.round(number)) < 0.0001
-            ? String(Math.round(number))
-            : String(Math.round(number * 100) / 100);
-          return rounded + unit;
+          return String(number) + unit;
         }
         input.addEventListener('keydown', (event) => {
           if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;

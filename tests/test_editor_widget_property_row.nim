@@ -1,5 +1,6 @@
 ## MockRenderer is used only to exercise renderer-independent control state and
-## callback cardinality without a browser layout engine. Compiler/filesystem
+## callback cardinality without a browser layout engine. Recording submission
+## callbacks and rejection counters are admission-only spies, not source writers. Compiler/filesystem
 ## persistence is verified separately against the production native source worker
 ## and mounted browser; these widget tests do not stand in for that boundary.
 ## Phase D — ViewModel + headless mount tests for the property row
@@ -878,3 +879,59 @@ suite "readonly color inspection":
       check r.inputValue(newInput) == "#445566"
       check changed == 0
       dispose())
+
+suite "shared numeric source precision":
+  test "mounted default row retains precise source through blur same-value math edits and refusal":
+    createRoot do (dispose: proc()):
+      let value = createSignal(120.125)
+      let unit = createSignal(pxUnit)
+      var seen: seq[string]
+      let rejected = createSignal(0)
+      var cfg = propertyRowNumeric(name="W", value=value, unit=unit, units= @[pxUnit])
+      cfg.cssProperty = "width"
+      cfg.authoredValue = proc(): string = "120.125px"
+      cfg.commitRejected = rejected
+      cfg.onCommitValue = proc(next: string) = seen.add next
+      let (r,root) = mkRoot()
+      discard r.mountPropertyRow(root,cfg)
+      let input = findByAttr(root,"data-property-row-input","true")
+      check r.inputValue(input) == "120.125"
+      fireEvent(input,"blur")
+      r.setInputValue(input,"120+1/8px")
+      fireEvent(input,"change")
+      check seen.len == 0
+      check r.inputValue(input) == "120.125"
+      r.setInputValue(input,"120.126px")
+      fireEvent(input,"change")
+      check seen == @["120.126px"]
+      check value.val == 120.126
+      check r.inputValue(input) == "120.126"
+      cfg.onCommitValue = proc(next: string) =
+        seen.add next
+        rejected.val = rejected.val + 1
+      # A separately mounted refusing row exercises exact rollback ownership.
+      let rejectedRoot = r.createElement("div")
+      discard r.mountPropertyRow(rejectedRoot,cfg)
+      let refused = findByAttr(rejectedRoot,"data-property-row-input","true")
+      r.setInputValue(refused,"121.123456789px")
+      fireEvent(refused,"change")
+      check seen[^1] == "121.123456789px"
+      check r.inputValue(refused) == "120.125"
+      dispose()
+
+  test "default mounted rows parse repeated tiny exponent and long-fraction representations":
+    for v in [1e-300, 1e20, 0.1234567890123456, -0.1234567890123456]:
+      var text = formatExactNumber(v)
+      for iteration in 0 .. 3:
+        let parsed = parseNumericInput(text & "em")
+        check parsed.value.isSome
+        check parsed.value.get == v
+        text = formatExactNumber(parsed.value.get)
+      createRoot do (dispose: proc()):
+        let value = createSignal(v)
+        var cfg = propertyRowNumeric(name="Spacing", value=value, unit=createSignal(PropertyUnitOption(label:"em",code:"em")))
+        let (r,root) = mkRoot()
+        discard r.mountPropertyRow(root,cfg)
+        let input = findByAttr(root,"data-property-row-input","true")
+        check parseNumericInput(r.inputValue(input)).value.get == v
+        dispose()

@@ -129,3 +129,28 @@ suite "Phase G section_appearance":
         check r.inputValue(findByAttr(row, "data-property-row-input", "true")) == value
         check textContent(findByAttr(row, "data-property-row-unit", "true")) == unit
       dispose()
+
+  test "authored fractional opacity projection retains precision without blur submission":
+    for (authored,expected) in [("0.800125","80.0125"),("0.125125","12.5125"),("12.5125%","12.5125"),("0.07","7"),("0.29","29"),("0.58","58"),("0.07000000000000002","7.000000000000002"),("7.000000000000001%","7.000000000000001"),("1e-20%","1e-20"),("12.5125123456789%","12.5125123456789")]:
+      createRoot do (dispose: proc()):
+        let r = MockRenderer()
+        let root = r.createElement("div")
+        let vm = createEditorVM()
+        vm.workspacePermissions.val = EditorWorkspacePermissions(readSource:true,writeSource:true)
+        vm.inspector.selectedElement.val = ElementRef(id:"precise-opacity",properties: @[
+          PropertyInfo(name:"opacity",value:authored,authoredValue:authored,directStyleAllowed:true)])
+        var submitted: seq[string]
+        vm.inspectorSourceCommit = proc(element: ElementRef; property,value: string;
+            scope: SourceScopeChoiceKind; done: proc(ok: bool; diagnostic: string)) =
+          submitted.add value
+          done(false,"admission-only refusal")
+        mountSectionAppearance[MockRenderer,MockNode](r,root,vm)
+        let input = findByAttr(findByAttr(root,"data-property-row","opacity"),"data-property-row-input","true")
+        check r.inputValue(input) == expected
+        fireEvent(input,"blur")
+        check submitted.len == 0
+        r.setInputValue(input,"80.0126%")
+        fireEvent(input,"change")
+        check submitted == @["80.0126%"]
+        check r.inputValue(input) == expected
+        dispose()
