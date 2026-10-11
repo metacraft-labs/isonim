@@ -224,6 +224,7 @@ proc applyPreviewStyle*(elementId, domPath, property, value: string) =
       setEditableValue($sceneId, property, value)
     {.emit: ["""
       (function (writeCell) {
+      if (typeof document === 'undefined' || typeof window === 'undefined') return;
       const toJsString = (raw) => Array.isArray(raw)
         ? String.fromCharCode.apply(null, raw)
         : String(raw || '');
@@ -381,6 +382,8 @@ type
       ## eye slides past. A control that keeps a value the system rejected is
       ## lying about the document.
     scopeOptions*: proc(): seq[CompactChoiceOption]
+    selectedSourceScope*: proc(): Option[SourceScopeChoice]
+      ## Optional read-only projection of the exact choice used by commit.
     commit*: proc(value: string)
     authoredValue*: proc(): string {.closure.}
     numericCssValue*: proc(value: string): string {.closure.}
@@ -430,6 +433,19 @@ proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
     if not outcome.ok:
       rejected.val = rejected.val + 1
 
+  proc scopeChoiceHandler(choice: SourceScopeChoice): proc() =
+    # Each displayed choice owns its callback values; capturing loop variables
+    # would make every chip act on the last choice in the list.
+    result = proc() =
+      if choice.editable:
+        selected.val = choice.kind
+        userPicked.val = true
+        message.val = ""
+      else:
+        message.val =
+          if choice.reason.len > 0: choice.reason
+          else: "This scope has no source-backed writer in the project schema."
+
   proc scopeOptions(): seq[CompactChoiceOption] =
     let found = vm.inspectorProperty(capturedProperty)
     let prop = if found.isSome: found.get else: PropertyInfo()
@@ -468,20 +484,7 @@ proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
           ("data-source-scope-count", $choice.usageCount),
           ("data-source-scope-target", vm.inspector.selectedElement.val.id),
           ("data-source-scope-story", vm.selectedStory.val.group & " / " & vm.selectedStory.val.name)],
-        onChoose: (proc() =
-          if editable:
-            selected.val = kind
-            userPicked.val = true
-            message.val = ""
-          else:
-            # A non-editable scope is not silently inert. The old row
-            # made the chip unclickable and said nothing; saying why
-            # costs one line and is the difference between "this
-            # control is broken" and "this scope is read-only".
-            message.val =
-              if choice.reason.len > 0: choice.reason
-              else: "This scope has no source-backed writer in the " &
-                "project schema."))
+        onChoose: scopeChoiceHandler(choice))
 
   let asyncCommit = proc(value: string; done: proc(ok: bool) {.closure.}) =
     # Sections can mount before attachSourceProject installs its connection.
@@ -504,6 +507,11 @@ proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
     commitMessage: message,
     commitRejected: rejected,
     scopeOptions: scopeOptions,
+    selectedSourceScope: proc(): Option[SourceScopeChoice] =
+      let active = effectiveScope()
+      for choice in currentChoices():
+        if choice.kind == active: return some(choice)
+      none(SourceScopeChoice),
     commit: commit, commitAsync: asyncCommit,
     authoredValue: proc(): string =
       let property = vm.inspectorProperty(capturedProperty)

@@ -81,74 +81,85 @@ function currentTopbarPaddingMarker() {
 }
 
 test.describe("metacraft-web IsoNim editor consumer", () => {
-  test("e2e_metacraft_editor_writes_real_design_schema_files", async ({
-    page,
-  }) => {
+  // Current case1 keeps the real consumer file/preview/CAS responsibility.
+  // The frontend is compiled; consumer post-write compile callbacks are
+  // declarative descriptors, not evidence of a subsequent compiler execution.
+  test("e2e_metacraft_editor_writes_real_design_schema_files", async ({ page }) => {
     await page.goto("/?writeBridge=1");
-    await expect
-      .poll(() => readFileSync(devBridgeSourceFile, "utf8"))
+    await expect.poll(() => readFileSync(devBridgeSourceFile, "utf8"))
       .toContain("component-topbar");
     const beforeText = readFileSync(devBridgeSourceFile, "utf8");
-    await expect(page.locator(".editor-statusbar")).toContainText(
-      "write writable",
-    );
-
-    await page.getByRole("button", { name: "Open Components section" }).click();
-    await page
-      .getByRole("button", {
-        name: "Select story Operational components / Topbar",
-      })
-      .click();
-    await page
-      .getByRole("button", { name: "Open selected component in edit mode" })
-      .click();
-
-    const editFrame = page.frameLocator(
-      'iframe[title="Editable component preview"]',
-    );
-    const topbar = editFrame.getByTestId("component-topbar");
-    const title = topbar.locator("h1.bo-title");
-    await title.click({ force: true, modifiers: ["Shift"] });
-    await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
-
-    await page.getByRole("tab", { name: "Show Layout edit controls" }).click();
-    await page.getByRole("button", { name: "Set display to flex" }).click();
-    await page
-      .getByRole("button", { name: "Save inspector source edits" })
-      .click();
-
-    await expect(page.getByText("Unsaved source edit")).toHaveCount(0);
-    await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
-    await expect
-      .poll(() => readFileSync(devBridgeSourceFile, "utf8"))
-      .toContain("display=flex");
-
-    const afterText = readFileSync(devBridgeSourceFile, "utf8");
-    expect(afterText).not.toBe(beforeText);
-    const reverted = await page.evaluate(
-      async ({ beforeText, afterText }) => {
-        const response = await fetch("/__isonim-dev-bridge/transaction", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            mode: "revert",
-            files: [
-              {
-                file: "apps/back-office/src/backoffice_ui/components.nim",
-                beforeText,
-                afterText,
-              },
-            ],
-          }),
-        });
-        return await response.json();
-      },
-      { beforeText, afterText },
-    );
-    expect(reverted.ok).toBe(true);
-    await expect
-      .poll(() => readFileSync(devBridgeSourceFile, "utf8"))
-      .toBe(beforeText);
+    const errors: string[] = [];
+    page.on("pageerror", error => errors.push(error.message));
+    const applies: any[] = [];
+    page.on("request", request => {
+      if (request.url().endsWith("/__isonim-dev-bridge/transaction")) {
+        const body = request.postDataJSON();
+        if (body.mode === "apply") applies.push(body);
+      }
+    });
+    try {
+      await page.getByRole("button", { name: "Open Components section" }).click();
+      await page.getByRole("button", {
+        name: "Select story Operational components / Topbar", exact: true,
+      }).click();
+      await page.locator('[data-toolbar-cluster="mode"] [data-choice-group-label="View"]').click();
+      await page.locator('[data-toolbar-cluster="mode"] [data-choice-group-label="Edit"]').click();
+      const topbar = page.frameLocator('iframe[title="Editable component preview"]')
+        .getByTestId("component-topbar");
+      await expect(topbar).toBeVisible();
+      await page.getByRole("button", {
+        name: "header[data-testid=component-topbar]", exact: true,
+      }).click();
+      await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
+      await expect.poll(() => topbar.evaluate(node => getComputedStyle(node).display)).toBe("flex");
+      const beforeHistory = await page.evaluate(() => {
+        const inspector = (window as any).__isonimEditorVm.inspector;
+        if (!Array.isArray(inspector.undoStack.value)) throw new Error("Missing actual history");
+        return inspector.undoStack.value.length;
+      });
+      await page.locator('[data-layout-source-scope-property="display"]')
+        .getByRole("button", { name: "Apply local instance scope for display", exact: true }).click();
+      const displayImpact = page.locator('[data-layout-source-impact-property="display"]');
+      await expect(displayImpact).toContainText("display · Local instance");
+      await expect(displayImpact).toContainText("Owner: Selected instance");
+      await expect(displayImpact).toContainText("Known uses: 1");
+      await expect(displayImpact).toContainText("Source: apps/back-office/src/backoffice_ui/components.nim");
+      await expect(displayImpact).not.toContainText("Changes the shared source definition");
+      // 'flex' is already the authored value; choose a genuinely different
+      // supported mode instead of demanding a source write for a valid no-op.
+      await page.getByRole("button", { name: "Set layout to none", exact: true }).click();
+      await expect.poll(() => topbar.evaluate(node => getComputedStyle(node).display)).toBe("block");
+      await expect.poll(() => readFileSync(devBridgeSourceFile, "utf8"))
+        .toContain("# isonim-editor dom.component-topbar.display display=block");
+      await expect.poll(() => page.evaluate(() => (window as any).__isonimEditor.pendingSourceEdits())).toBe(0);
+      await expect(page.locator('[data-save-error="true"]')).toBeHidden();
+      await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
+      expect(await page.evaluate(() => (window as any).__isonimEditorVm.inspector.undoStack.value.length))
+        .toBe(beforeHistory + 1);
+      expect(applies).toHaveLength(1);
+      expect(applies[0].files).toHaveLength(1);
+      expect(applies[0].files[0].file).toBe("apps/back-office/src/backoffice_ui/components.nim");
+      expect(readFileSync(devBridgeSourceFile, "utf8")).not.toBe(beforeText);
+      expect(errors).toEqual([]);
+    } finally {
+      const afterText = readFileSync(devBridgeSourceFile, "utf8");
+      if (afterText !== beforeText) {
+        await revertDevBridgeFiles(page, [{
+          file: "apps/back-office/src/backoffice_ui/components.nim", beforeText, afterText,
+        }]);
+      }
+      expect(readFileSync(devBridgeSourceFile, "utf8")).toBe(beforeText);
+    }
+    await page.goto("/?writeBridge=1");
+    await page.getByRole("button", { name: "Select story Operational components / Topbar", exact: true }).click();
+    await page.locator('[data-toolbar-cluster="mode"] [data-choice-group-label="View"]').click();
+    await page.locator('[data-toolbar-cluster="mode"] [data-choice-group-label="Edit"]').click();
+    const restoredTopbar = page.frameLocator('iframe[title="Editable component preview"]')
+      .getByTestId("component-topbar");
+    await expect(restoredTopbar).toBeVisible();
+    await expect.poll(() => restoredTopbar.evaluate(node => getComputedStyle(node).display)).toBe("flex");
+    expect(errors).toEqual([]);
   });
 
   test("e2e_metacraft_foundations_page_file_backed_edit_revert", async ({
@@ -159,49 +170,58 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       .poll(() => readFileSync(devBridgeTokenFile, "utf8"))
       .toContain("--mcl-space-3");
     await expect(page.locator('[data-foundations-page="true"]')).toBeVisible();
-    await expect(page.locator(".editor-statusbar")).toContainText(
-      "write writable",
-    );
 
     const beforeText = readFileSync(devBridgeTokenFile, "utf8");
-    await page
-      .getByRole("button", { name: "Select foundation category Spacing" })
-      .click();
-    await page
-      .getByRole("button", { name: "Select foundation token space.table.cell" })
-      .click();
-    await page
-      .getByRole("textbox", { name: "Foundation token value" })
-      .fill("1rem");
-    await page
-      .getByRole("button", { name: "Apply foundation token value" })
-      .click();
-    await expect(page.locator("[data-foundation-impact]")).toContainText(
-      "space.table.cell",
-    );
-    await page
-      .getByRole("button", { name: "Save foundation source edits" })
-      .click();
-    await expect(page.getByText("Clean - source ready")).toBeVisible();
-    await expect
-      .poll(() => readFileSync(devBridgeTokenFile, "utf8"))
-      .toContain("--mcl-space-3: 1rem");
+    try {
+      await page
+        .getByRole("button", { name: "Select foundation category Spacing" })
+        .click();
+      await page
+        .getByRole("button", { name: "Select foundation token space.table.cell" })
+        .click();
+      await page
+        .getByRole("textbox", { name: "Foundation token value" })
+        .fill("1rem");
+      await page
+        .getByRole("button", { name: "Apply foundation token value" })
+        .click();
+      await expect(page.locator("[data-foundation-impact]")).toContainText(
+        "space.table.cell",
+      );
+      await page
+        .getByRole("button", { name: "Save foundation source edits" })
+        .click();
+      await expect.poll(() => page.evaluate(() => (window as any).__isonimEditor.pendingSourceEdits())).toBe(0);
+      await expect(page.locator('[data-save-error="true"]')).toBeHidden();
+      await expect
+        .poll(() => readFileSync(devBridgeTokenFile, "utf8"))
+        .toContain("--mcl-space-3: 1rem");
 
-    await page
-      .getByRole("textbox", { name: "Foundation token value" })
-      .fill("0.75rem");
-    await page
-      .getByRole("button", { name: "Apply foundation token value" })
-      .click();
-    await page
-      .getByRole("button", { name: "Save foundation source edits" })
-      .click();
-    await expect
-      .poll(() => readFileSync(devBridgeTokenFile, "utf8"))
-      .toContain("--mcl-space-3: 0.75rem");
+      await page
+        .getByRole("textbox", { name: "Foundation token value" })
+        .fill("0.75rem");
+      await page
+        .getByRole("button", { name: "Apply foundation token value" })
+        .click();
+      await page
+        .getByRole("button", { name: "Save foundation source edits" })
+        .click();
+      await expect
+        .poll(() => readFileSync(devBridgeTokenFile, "utf8"))
+        .toContain("--mcl-space-3: 0.75rem");
 
-    const revertedText = readFileSync(devBridgeTokenFile, "utf8");
-    expect(revertedText.trimEnd()).toBe(beforeText.trimEnd());
+      const revertedText = readFileSync(devBridgeTokenFile, "utf8");
+      expect(revertedText.trimEnd()).toBe(beforeText.trimEnd());
+    } finally {
+      const afterText = readFileSync(devBridgeTokenFile, "utf8");
+      if (afterText !== beforeText) {
+        await revertDevBridgeFiles(page, [{
+          file: "packages/metacraft-design/src/metacraft_design/tokens.nim",
+          beforeText, afterText,
+        }]);
+      }
+      expect(readFileSync(devBridgeTokenFile, "utf8")).toBe(beforeText);
+    }
   });
 
   test("metacraft_long_tail_properties_validate_real_components", async ({

@@ -18,6 +18,7 @@ import isonim/core/owner
 import isonim/dsl/ui
 import isonim/editor/types
 import isonim/editor/viewmodels
+import isonim/editor/views/choice_row
 import isonim/editor/views/widgets/property_commit
 import isonim/editor/views/widgets/property_row
 import isonim/editor/views/widgets/section_position
@@ -136,13 +137,87 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
       text modeMessage.val
   r.appendChild(parent, diagnostic)
 
+  proc hasSourceWriter(): bool =
+    vm.hasAsyncSourceProject or vm.workspaceEditAdapter != nil or
+      vm.inspectorSourceCommit != nil
+
+  # Choices and commits share the same identity-owned wiring. Replacing the
+  # selected element/story disposes its choices and resets explicit scope picks.
+  let scopeHost = r.createElement("div")
+  r.setAttribute(scopeHost, "data-layout-source-scopes", "true")
+  r.appendChild(parent, scopeHost)
+  let scopeGeneration = createSignal(0)
+  var generation = 0
+  var displayWiring, directionWiring: InspectorRowWiring
+  var disposeScopes: proc()
+  var scopeStory: StoryRef
+  var scopeElement = ""
+  var scopesMounted = false
+  let mountOwner = getOwner()
+  onCleanup(proc() =
+    if disposeScopes != nil: disposeScopes())
+  proc mountScopeDetails(property: string; wiring: InspectorRowWiring) =
+    proc details(): string =
+      let selected = wiring.selectedSourceScope()
+      if selected.isNone: return property & ": no mapped source scope."
+      let choice = selected.get
+      result = property & " · " & choice.label & " · Owner: " & choice.ownerLabel
+      if choice.sourceFile.len > 0:
+        result.add "\nSource: " & choice.sourceFile
+        if choice.sourceLine > 0: result.add ":" & $choice.sourceLine
+      elif choice.schemaKey.len > 0: result.add "\nSchema: " & choice.schemaKey
+      else: result.add "\nSource: not mapped"
+      result.add " · Known uses: " & (if choice.usageCount > 0: $choice.usageCount else: "unknown")
+      if choice.kind == sskStoryFixture and
+          (choice.sourceFile.len > 0 or choice.schemaKey.len > 0):
+        result.add "\nChanges this story fixture."
+        if choice.impact.summary.len > 0: result.add " " & choice.impact.summary
+      elif choice.kind in {sskComponentSchemaApi, sskSharedClass, sskComponentToken,
+          sskSemanticToken, sskGlobalPrimitiveToken} and
+          (choice.sourceFile.len > 0 or choice.schemaKey.len > 0):
+        result.add "\nChanges the shared source definition; other mapped uses may change."
+        if choice.impact.summary.len > 0: result.add " " & choice.impact.summary
+    let info = ui(r):
+      tdiv(`data-layout-source-impact-property` = property, role = "note",
+           white_space = "pre-line", font_size = "10px", color = textMuted,
+           margin = "2px 0 6px", overflow_wrap = "anywhere"):
+        text details()
+    r.appendChild(scopeHost, info)
+
+  createRenderEffect proc() =
+    let story = vm.selectedStory.val
+    let element = vm.inspector.selectedElement.val.id
+    if scopesMounted and story == scopeStory and element == scopeElement: return
+    scopesMounted = true
+    scopeStory = story
+    scopeElement = element
+    if disposeScopes != nil: disposeScopes()
+    r.clearChildren(scopeHost)
+    runWithOwner(mountOwner, proc() =
+      createRoot(proc(dispose: proc()) =
+        disposeScopes = dispose
+        displayWiring = vm.inspectorRowWiring("display")
+        directionWiring = vm.inspectorRowWiring("flex-direction")
+        for (property, wiring) in [("display", displayWiring), ("flex-direction", directionWiring)]:
+          let strip = renderCompactChoiceRow[R, E](r, property,
+            "Choose layout source scope for " & property, wiring.scopeOptions,
+            visibleLimit = 2)
+          r.setAttribute(strip.root, "data-layout-source-scope-property", property)
+          r.appendChild(scopeHost, strip.root)
+          mountScopeDetails(property, wiring)))
+    inc generation
+    scopeGeneration.val = generation
+
+  proc layoutWiring(property: string): InspectorRowWiring =
+    if property == "display": displayWiring else: directionWiring
+
   proc bindModeClick(btn: E; slug: string) =
     let activate = proc() =
       if not modeAlive or modePending: return
       if not vm.workspacePermissions.val.writeSource:
         modeMessage.val = "This workspace is read-only for source changes."
         return
-      if not vm.hasAsyncSourceProject:
+      if not hasSourceWriter():
         layoutMode.val = slug # Explicit preview/library composition.
         return
       if not vm.sourceAdapterReady.val:
@@ -159,12 +234,12 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
         modeMessage.val = "The editor cannot safely change both layout declarations together yet."
         return
       let change = changes[0]
-      let wiring = vm.inspectorRowWiring(change.property)
+      let wiring = layoutWiring(change.property)
       let reason = wiring.readOnlyReason()
       if reason.len > 0:
         modeMessage.val = reason
         return
-      # One existing guarded native operation. Compound changes never issue two
+      # One existing guarded source operation. Compound changes never issue two
       # independent writes or optimistically change the active layout pill.
       let story = vm.selectedStory.val
       let selected = vm.inspector.selectedElement.val.id
@@ -179,15 +254,16 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
         else:
           modeMessage.val = wiring.commitMessage.val)
     createRenderEffect proc() =
+      discard scopeGeneration.val
       let props = vm.inspector.properties.val
       let changes = layoutModeChanges(findPropertyValue(props, "display", "block"),
         findPropertyValue(props, "flex-direction", "row"), slug)
       var reason = ""
       if not vm.workspacePermissions.val.writeSource: reason = "This workspace is read-only for source changes."
-      elif vm.hasAsyncSourceProject:
+      elif hasSourceWriter():
         if not vm.sourceAdapterReady.val: reason = "Loading editable properties."
         elif changes.len > 1: reason = "The editor cannot safely change both layout declarations together yet."
-        elif changes.len == 1: reason = vm.inspectorRowWiring(changes[0].property).readOnlyReason()
+        elif changes.len == 1: reason = layoutWiring(changes[0].property).readOnlyReason()
       r.setAttribute(btn, "aria-disabled", if reason.len > 0: "true" else: "false")
       r.setAttribute(btn, "title", if reason.len > 0: reason else: "Set layout to " & slug)
     r.addEventListener(btn, "click", activate)
