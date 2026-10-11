@@ -1611,6 +1611,18 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
                else: "transparent"
       let fg = if rowSelected: textPrimary else: textSecondary
       let label = if rows[i].label.len > 0: rows[i].label else: rows[i].tag
+      # Attribution is optional: a rendered string/client-built node still
+      # belongs in Layers without a compiler source stamp. Keep the full path
+      # available while the visible suffix fits beside an ellipsised label.
+      let sourceFile = rows[i].sourceFile
+      let sourceLine = rows[i].sourceLine
+      let sourcePath = sourceFile.replace('\\', '/')
+      let sourceName = sourcePath.split('/')[^1]
+      let sourceLabel = if sourceFile.len > 0:
+        sourceName & (if sourceLine > 0: ":" & $sourceLine else: "")
+        else: ""
+      let sourceDetail = sourceFile &
+        (if sourceLine > 0: ":" & $sourceLine else: "")
       var twisty: E
       let rowEl = ui(r):
         tdiv(class = "editor-scene-graph-row",
@@ -1638,8 +1650,15 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
             text (if rowChildCount == 0: "\xC2\xB7"
                   elif rowExpanded: "\xE2\x96\xBE"
                   else: "\xE2\x96\xB8")
-          span(overflow = "hidden", text_overflow = "ellipsis"):
+          span(flex = "1", min_width = "0", overflow = "hidden",
+                text_overflow = "ellipsis", title = label):
             text label
+          if sourceLabel.len > 0:
+            span(`data-scene-graph-source` = rowId, title = sourceDetail,
+                  color = textDim, font_size = sidebarCaptionFont,
+                  max_width = "45%", overflow = "hidden",
+                  text_overflow = "ellipsis", flex_shrink = "0"):
+              text sourceLabel
       # Selection routes through the same proc the preview's own click path
       # uses, so a tree click and a preview click are indistinguishable
       # downstream -- including to the Inspector, which is the point.

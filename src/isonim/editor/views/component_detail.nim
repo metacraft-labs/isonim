@@ -912,12 +912,16 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
 
     r.setTextContent(projectName,
       if story.kind in {skComponent, skPattern, skGuideline}: story.name else: "")
-    r.setTextContent(projectDescription,
+    let projectDescriptionText =
       if story.kind in {skComponent, skPattern, skGuideline} and
           preview.bodyText.len > 0:
         preview.bodyText
       else:
-        "Project-owned component state")
+        "Project-owned component state"
+    r.setTextContent(projectDescription, projectDescriptionText)
+    # The duplicate painted card header is retired. Keep the real story
+    # description attached to the preview's accessible identity instead.
+    r.setAttribute(projectFrame, "aria-description", projectDescriptionText)
     r.setAttribute(projectFrame, "title", "Component preview " & title)
     r.setAttribute(projectFrame, "height", "1")
     let reloadGeneration = vm.livePreviewReloadGeneration.val

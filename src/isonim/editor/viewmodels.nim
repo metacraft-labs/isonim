@@ -3096,6 +3096,11 @@ proc selectInspectorElementById*(editor: EditorVM; id: string;
       editor.inspector.selectedElement.val = fromRow
       editor.seedStyleProvenanceBindings(fromRow)
       editor.inspector.applyKindDefaultExpansion(fromRow)
+      # By-id actions from Layers, keyboard navigation or commands are
+      # explicit selections, even when they target the breadcrumb's current
+      # parent. Only the preview's returned ElementRef may be its own echo.
+      if origin == soExternal:
+        editor.inspector.breadcrumbWalkId.val = ""
       editor.inspector.noteBreadcrumbSelection(
         editor.inspector.selectedElement.val, origin)
       editor.inspector.refreshLayerFlags()

@@ -1153,13 +1153,14 @@ suite "Editor Shell Views (M2)":
                       kind: skComponent, group: "Components")
         ])
       ]
+      var storyDescription = "Rendered by project-owned component code."
       vm.preview.hook = proc(story: StoryRef;
           platform: Platform): ProjectPreview =
         ProjectPreview(
           status: ppsRendered,
           story: story,
           title: story.group & " / " & story.name,
-          bodyText: "Rendered by project-owned component code.",
+          bodyText: storyDescription,
           documentHtml: "<main data-testid=\"real-component\">Button</main>")
       discard vm.selectStory(componentStory)
 
@@ -1173,6 +1174,11 @@ suite "Editor Shell Views (M2)":
       check frame.styles["overflow"] == "hidden"
       check frame.attributes["height"] == "1"
       check detail.textContent.contains("Rendered by project-owned component code.")
+      check frame.attributes["aria-description"] ==
+        "Rendered by project-owned component code."
+      storyDescription = "Updated story description."
+      vm.preview.sourceGeneration.val = vm.preview.sourceGeneration.val + 1
+      check frame.attributes["aria-description"] == "Updated story description."
 
       dispose()
 
@@ -1368,6 +1374,37 @@ suite "Editor Shell Views (M2)":
 
 suite "Layers header search":
 
+  test "rendered rows retain known source attribution without inventing unknown locations":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.inspector.setSelectionTree(@[
+        ElementLayerRow(id: "known", label: "h1.title", tag: "h1",
+          sourceFile: "apps/back-office/src/backoffice_ui/components.nim", sourceLine: 42),
+        ElementLayerRow(id: "file-only", label: "header", tag: "header",
+          sourceFile: "C:\\project\\components.nim"),
+        ElementLayerRow(id: "unknown", label: "span.client", tag: "span")])
+      let panel = renderSceneGraphPanel[MockRenderer, MockNode](r, vm)
+      let known = panel.findByAttr("data-scene-graph-source", "known")
+      require known != nil
+      check known.textContent == "components.nim:42"
+      check known.attributes["title"] ==
+        "apps/back-office/src/backoffice_ui/components.nim:42"
+      check known.styles["max-width"] == "45%"
+      let fileOnly = panel.findByAttr("data-scene-graph-source", "file-only")
+      require fileOnly != nil
+      check fileOnly.textContent == "components.nim"
+      check not fileOnly.textContent.contains(":0")
+      check panel.findByAttr("data-scene-graph-row", "unknown") != nil
+      check panel.findByAttr("data-scene-graph-source", "unknown") == nil
+      check vm.selectInspectorElementById("known")
+      vm.inspector.setLayerSearch("  COMPONENTS.NIM  ")
+      check panel.findByAttr("data-scene-graph-row", "known") != nil
+      check panel.findByAttr("data-scene-graph-row", "file-only") != nil
+      check panel.findByAttr("data-scene-graph-row", "unknown") == nil
+      check vm.inspector.selectedElement.val.id == "known"
+      dispose()
+
   test "header search filters collapsed descendants without changing selection or expansion":
     createRoot do (dispose: proc()):
       let r = MockRenderer()
@@ -1528,6 +1565,34 @@ suite "Status-bar breadcrumb — the retained trail":
       check vm.selectInspectorElementById("root")
       check shell.breadcrumbStates() == @[("root", "selected")]
 
+      dispose()
+
+  test "an explicit same-target Layers click replaces the breadcrumb trail":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      # The parent DOM reader seeds shallow IDs on first publication; this
+      # native view binding consumes the equivalent already published tree.
+      vm.inspector.expandedLayerIds.val = @["root", "header"]
+      vm.inspector.setSelectionTree(sceneGraphRows())
+      check vm.selectInspectorElementById("title")
+      let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
+      check vm.selectInspectorElementById("header", soBreadcrumb)
+      check shell.breadcrumbStates() == @[("root", "ancestor"),
+        ("header", "selected"), ("title", "trail")]
+      let panel = renderSceneGraphPanel[MockRenderer, MockNode](r, vm)
+      let headerRow = panel.findByAttr("data-scene-graph-row", "header")
+      require headerRow != nil
+      headerRow.fireEvent("click")
+      check vm.inspector.selectedElement.val.id == "header"
+      check shell.breadcrumbStates() == @[("root", "ancestor"),
+        ("header", "selected")]
+      check vm.inspector.breadcrumbWalkId.val == ""
+      # The actual preview reply after that explicit click cannot revive a tail.
+      check vm.selectInspectorElement(ElementRef(id: "header", tag: "header",
+        ancestors: @["root", "header"], ancestorIds: @["root", "header"]))
+      check shell.breadcrumbStates() == @[("root", "ancestor"),
+        ("header", "selected")]
       dispose()
 
   test "a retained tail the preview no longer renders is dropped":

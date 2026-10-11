@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { test, expect } from "@playwright/test";
 
@@ -124,7 +124,11 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       await expect(displayImpact).toContainText("display · Local instance");
       await expect(displayImpact).toContainText("Owner: Selected instance");
       await expect(displayImpact).toContainText("Known uses: 1");
-      await expect(displayImpact).toContainText("Source: apps/back-office/src/backoffice_ui/components.nim");
+      const compilerStamp = await topbar.getAttribute("data-isonim-src");
+      const compilerLocation = compilerStamp?.match(/^(.*):(\d+):\d+$/);
+      if (!compilerLocation) throw new Error("Missing actual compiler source location");
+      expect(realpathSync(compilerLocation[1])).toBe(realpathSync(resolve("../../../metacraft-web/apps/back-office/src/backoffice_ui/components.nim")));
+      await expect(displayImpact).toContainText(`Source: ${compilerLocation[1]}:${compilerLocation[2]}`);
       await expect(displayImpact).not.toContainText("Changes the shared source definition");
       // 'flex' is already the authored value; choose a genuinely different
       // supported mode instead of demanding a source write for a valid no-op.
@@ -358,12 +362,15 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       .click();
     await expect(
       page.getByRole("button", {
-        name: "Select story Partner operations / Partner invitation",
+        name: "Open Partner operations journey", exact: true,
       }),
-    ).toHaveCount(0);
+    ).toBeHidden();
     await page
       .getByRole("button", { name: "Toggle User Journeys section" })
       .click();
+    await expect(page.getByRole("button", {
+      name: "Open Partner operations journey", exact: true,
+    })).toBeVisible();
 
     await page
       .getByRole("button", { name: "Open User Journeys section" })
@@ -400,13 +407,25 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
         .getByTestId("back-office-app"),
     ).toBeVisible();
 
+    // Exact preset dimensions are the approved viewport table (desktop,
+    // tablet, phone), superseding the former 1280/834/mobile vocabulary.
     const frame = page.getByLabel("Preview device frame");
-    await expect(frame).toHaveCSS("width", "1280px");
+    await expect(frame).toHaveCSS("width", "1440px");
     await expect(frame).toHaveCSS("height", "900px");
 
+    const dashboardStory = page.getByRole("button", {
+      name: "Select story Back-office pages / Operations dashboard", exact: true,
+    });
+    await expect(dashboardStory).toBeVisible();
+    await expect(dashboardStory).toHaveAttribute("aria-current", "true");
     await page
       .getByRole("textbox", { name: "Search stories" })
       .fill("customer detail");
+    // Search must hide a row proven present, while leaving the actual preview
+    // selection intact; an already absent journey story is not that oracle.
+    await expect(dashboardStory).toHaveCount(0);
+    await expect(page.frameLocator('iframe[title="Project preview"]')
+      .getByTestId("back-office-app")).toBeVisible();
     await expect(
       page.getByRole("button", {
         name: "Select story Back-office pages / Customer detail",
@@ -418,32 +437,33 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       }),
     ).toHaveCount(0);
     await page.getByRole("textbox", { name: "Search stories" }).fill("");
+    await expect(dashboardStory).toBeVisible();
+    await expect(dashboardStory).toHaveAttribute("aria-current", "true");
 
     await expect(
-      page.getByRole("button", { name: "Preview Desktop viewport" }),
+      page.locator('[data-toolbar-cluster="viewport"]').getByRole("button", { name: "Desktop", exact: true }),
     ).toHaveAttribute("aria-pressed", "true");
 
-    await page.getByRole("button", { name: "Preview Tablet viewport" }).click();
+    await page.locator('[data-toolbar-cluster="viewport"]').getByRole("button", { name: "Tablet", exact: true }).click();
     await expect(
-      page.getByRole("button", { name: "Preview Tablet viewport" }),
+      page.locator('[data-toolbar-cluster="viewport"]').getByRole("button", { name: "Tablet", exact: true }),
     ).toHaveAttribute("aria-pressed", "true");
     await expect(
-      page.getByRole("button", { name: "Preview Desktop viewport" }),
+      page.locator('[data-toolbar-cluster="viewport"]').getByRole("button", { name: "Desktop", exact: true }),
     ).toHaveAttribute("aria-pressed", "false");
-    await expect(frame).toHaveCSS("width", "834px");
-    await expect(frame).toHaveCSS("height", "1112px");
+    await expect(frame).toHaveCSS("width", "1024px");
+    await expect(frame).toHaveCSS("height", "768px");
 
-    await page.getByRole("button", { name: "Preview Mobile viewport" }).click();
+    await page.locator('[data-toolbar-cluster="viewport"]').getByRole("button", { name: "Phone", exact: true }).click();
     await expect(
-      page.getByRole("button", { name: "Preview Mobile viewport" }),
+      page.locator('[data-toolbar-cluster="viewport"]').getByRole("button", { name: "Phone", exact: true }),
     ).toHaveAttribute("aria-pressed", "true");
     await expect(frame).toHaveCSS("width", "390px");
     await expect(frame).toHaveCSS("height", "844px");
 
-    await page
-      .getByRole("button", { name: "Preview Desktop viewport" })
-      .click();
-    await expect(frame).toHaveCSS("width", "1280px");
+    await page.locator('[data-toolbar-cluster="viewport"]')
+      .getByRole("button", { name: "Desktop", exact: true }).click();
+    await expect(frame).toHaveCSS("width", "1440px");
 
     await expect(page).toHaveURL(/view=page/);
     await expect(page).toHaveURL(/viewport=desktop/);
@@ -460,14 +480,16 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(page.locator(".editor-sidebar")).toBeVisible();
     await expect(page.locator(".editor-chat")).toBeVisible();
 
-    await page.getByRole("button", { name: "Switch to edit mode" }).click();
+    await page.locator('[data-toolbar-cluster="mode"]').getByRole("button", { name: "Edit", exact: true }).click();
     await expect(
-      page.getByRole("button", { name: "Switch to edit mode" }),
+      page.locator('[data-toolbar-cluster="mode"]').getByRole("button", { name: "Edit", exact: true }),
     ).toHaveAttribute("aria-pressed", "true");
     await expect(
-      page.getByRole("button", { name: "Switch to view mode" }),
+      page.locator('[data-toolbar-cluster="mode"]').getByRole("button", { name: "View", exact: true }),
     ).toHaveAttribute("aria-pressed", "false");
-    await expect(page.getByText("Click an element to select it")).toBeVisible();
+    await expect(page.locator('[data-sidebar-content="inspector"]')).toBeVisible();
+    await expect(page.locator('[data-sidebar-content="ai-assistant"]')).toHaveCount(0);
+    await expect(page.locator('[data-inspector-section-header]').first()).toBeVisible();
     await expect(page.getByText("Project component preview")).toHaveCount(0);
 
     await expect(
@@ -492,11 +514,10 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
         .frameLocator('iframe[title="Project preview"]')
         .getByTestId("customer-detail"),
     ).toBeVisible();
-    await expect(
-      page
-        .getByText("apps/back-office/src/backoffice_ui/components.nim")
-        .last(),
-    ).toBeVisible();
+    const pageSource = page.locator('[data-scene-graph-source]')
+      .filter({ hasText: /components\.nim:\d+/ }).first();
+    await expect(pageSource).toBeVisible();
+    await expect(pageSource).toHaveAttribute("title", /apps\/back-office\/src\/backoffice_ui\/components\.nim:\d+$/);
 
     await page.getByRole("button", { name: "Open Components section" }).click();
     await page
@@ -553,13 +574,9 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
         }),
       )
       .toBe(true);
-    await expect(
-      page
-        .getByText(
-          "Topbar renders from the same IsoNim component function used by the back-office pages.",
-        )
-        .first(),
-    ).toBeVisible();
+    await expect(topbarFrame).toHaveAccessibleDescription(
+      "Topbar renders from the same IsoNim component function used by the back-office pages.",
+    );
     await expect(
       page
         .frameLocator(
@@ -610,11 +627,8 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
         .frameLocator('iframe[title="Project preview"]')
         .getByTestId("customer-detail"),
     ).toBeVisible();
-    await expect(
-      page
-        .getByText("apps/back-office/src/backoffice_ui/components.nim")
-        .last(),
-    ).toBeVisible();
+    await expect(pageSource).toBeVisible();
+    await expect(pageSource).toHaveAttribute("title", /apps\/back-office\/src\/backoffice_ui\/components\.nim:\d+$/);
 
     await page.goto("/?view=vector#vector-editor");
     await expect(page.getByText("Vector Editor")).toBeVisible();
@@ -1565,91 +1579,162 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     expect(tabletOverflow).toBe(true);
   });
 
-  test("e2e_canvas_selection_matches_layer_tree_and_breadcrumbs", async ({
-    page,
-  }) => {
+  test("e2e_canvas_selection_matches_layer_tree_and_breadcrumbs", async ({ page }) => {
     await page.goto("/");
+    const layers = page.locator('[data-scene-graph="true"]');
+    const layerSearch = layers.getByRole("textbox", { name: "Search layers", exact: true });
+    const stories = page.locator('[data-sidebar-story-tree="true"]');
+    const layerRows = page.locator('[data-scene-graph-rows="true"]');
+    await expect(layerSearch).toHaveAttribute("placeholder", "Search layers");
+    await expect(page.locator('[data-scene-graph-row]').first()).toBeVisible();
+    // Actual long consumer DOM, with separately bounded sibling scroll areas.
+    const geometry = await layers.evaluate(node => {
+      const story = document.querySelector('[data-sidebar-story-tree="true"]')!;
+      const sidebar = node.parentElement!;
+      const rows = node.querySelector('[data-scene-graph-rows="true"]')!;
+      return {
+        siblings: node.parentElement === story.parentElement,
+        outerOverflow: getComputedStyle(sidebar).overflowY,
+        rowsOverflow: getComputedStyle(rows).overflowY,
+        storiesOverflow: getComputedStyle(story).overflowY,
+        outerScrollHeight: sidebar.scrollHeight, outerHeight: sidebar.clientHeight,
+        layerHeight: rows.clientHeight, storyHeight: story.clientHeight,
+        layerScrollHeight: rows.scrollHeight,
+      };
+    });
+    expect(geometry.siblings).toBe(true);
+    expect(geometry.outerOverflow).toBe("hidden");
+    expect(geometry.rowsOverflow).toBe("auto");
+    expect(geometry.storiesOverflow).toBe("auto");
+    expect(geometry.outerScrollHeight).toBeLessThanOrEqual(geometry.outerHeight + 1);
+    expect(geometry.layerHeight).toBeGreaterThan(80);
+    expect(geometry.storyHeight).toBeGreaterThan(80);
+    expect(geometry.layerScrollHeight).toBeGreaterThan(geometry.layerHeight);
+    const storyScrollBefore = await stories.evaluate(node => node.scrollTop);
+    await layerRows.focus();
+    await page.keyboard.press("PageDown");
+    await expect.poll(() => layerRows.evaluate(node => node.scrollTop)).toBeGreaterThan(0);
+    expect(await stories.evaluate(node => node.scrollTop)).toBe(storyScrollBefore);
+    await expect(layerSearch).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "Search stories" })).toBeVisible();
 
-    await page.getByRole("button", { name: "Open Components section" }).click();
-    await page
-      .getByRole("button", {
-        name: "Select story Operational components / Topbar",
-      })
-      .click();
-    await page
-      .getByRole("button", { name: "Open selected component in edit mode" })
-      .click();
-
-    const editFrame = page.frameLocator(
-      'iframe[title="Editable component preview"]',
-    );
+    await page.getByRole("button", { name: "Open Components section", exact: true }).click();
+    await page.getByRole("button", {
+      name: "Select story Operational components / Topbar", exact: true,
+    }).click();
+    const mode = page.locator('[data-toolbar-cluster="mode"]');
+    await mode.getByRole("button", { name: "View", exact: true }).click();
+    await mode.getByRole("button", { name: "Edit", exact: true }).click();
+    const editFrame = page.frameLocator('iframe[title="Editable component preview"]');
     const topbar = editFrame.getByTestId("component-topbar");
     const title = topbar.locator("h1.bo-title");
-    await title.click({ force: true });
-
+    await title.click();
     await expect(title).toHaveAttribute("data-isonim-selected", "true");
     const titleId = await title.getAttribute("data-isonim-element-id");
-    if (!titleId) {
-      throw new Error("Selected title did not receive a stable element id");
-    }
     const headerId = await topbar.getAttribute("data-isonim-element-id");
-    if (!headerId) {
-      throw new Error("Topbar ancestor did not receive a stable element id");
-    }
-    const headerLayerRow = page.locator(`[data-isonim-layer-id="${headerId}"]`);
+    if (!titleId || !headerId) throw new Error("Selected title/ancestor require stable element ids");
+    const headerStamp = await topbar.getAttribute("data-isonim-src");
+    const titleStamp = await title.getAttribute("data-isonim-src");
+    if (!headerStamp || !titleStamp) throw new Error("Consumer editor build requires genuine compiler source stamps");
+    const sourceLocation = (stamp: string) => {
+      const match = stamp.match(/^(.*):(\d+):\d+$/);
+      if (!match) throw new Error(`Malformed compiler stamp: ${stamp}`);
+      return `${match[1]}:${match[2]}`;
+    };
+    const headerLayerRow = page.locator(`[data-scene-graph-row="${headerId}"]`);
+    const titleLayerRow = page.locator(`[data-scene-graph-row="${titleId}"]`);
     await expect(headerLayerRow).toContainText(/components\.nim:\d+/);
-    const titleLayerRow = page.locator(`[data-isonim-layer-id="${titleId}"]`);
-    const titleLayer = titleLayerRow.getByRole("button", {
-      name: "Select layer h1.bo-title",
-    });
-    await expect(titleLayer).toBeVisible();
     await expect(titleLayerRow).toContainText(/components\.nim:\d+/);
-    await expect(
-      page.locator('[data-isonim-layer-selected="true"]'),
-    ).toContainText("h1.bo-title");
-    await expect(
-      page.getByRole("button", { name: /Select breadcrumb h1\.bo-title/ }),
-    ).toBeVisible();
-
-    const headerToggle = headerLayerRow.getByRole("button", {
-      name: /Toggle layer header/,
-    });
+    await expect(headerLayerRow.locator('[data-scene-graph-source]')).toHaveAttribute("title", sourceLocation(headerStamp));
+    await expect(titleLayerRow.locator('[data-scene-graph-source]')).toHaveAttribute("title", sourceLocation(titleStamp));
+    await expect(titleLayerRow).toBeVisible();
+    await expect(titleLayerRow).toHaveAttribute("data-selected", "true");
+    const titleCrumb = page.locator(`[data-breadcrumb-id="${titleId}"]`);
+    const headerCrumb = page.locator(`[data-breadcrumb-id="${headerId}"]`);
+    await expect(titleCrumb).toBeVisible();
+    await expect(titleCrumb).toHaveAttribute("data-breadcrumb-state", "selected");
+    const headerToggle = headerLayerRow.locator('[data-scene-graph-twisty]');
     await headerToggle.click();
-    await expect(titleLayer).toHaveCount(0);
+    await expect(titleLayerRow).toHaveCount(0);
     await headerToggle.click();
-    await expect(titleLayer).toBeVisible();
-
-    await title.click({ force: true });
-    await title.click({ force: true });
+    await expect(titleLayerRow).toBeVisible();
+    // Repeated physical clicks retain the existing ancestor-cycle outcome.
+    await title.click();
+    await title.click();
     await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
     await expect(topbar).toHaveAttribute("data-isonim-element-id", headerId);
-    await expect(
-      page.locator('[data-isonim-layer-selected="true"]'),
-    ).toContainText(/header/);
+    await expect(headerLayerRow).toHaveAttribute("data-selected", "true");
 
-    await page
-      .getByRole("textbox", { name: "Search element layers" })
-      .fill("h1");
-    await titleLayer.click();
+    await headerToggle.click();
+    await expect(headerLayerRow).toHaveAttribute("aria-expanded", "false");
+    await expect(titleLayerRow).toHaveCount(0);
+    const savedExpansion = await page.evaluate(() =>
+      [...(window as any).__isonimEditorVm.inspector.expandedLayerIds.value]);
+    await page.getByRole("textbox", { name: "Search stories" }).fill("Topbar");
+    await layerSearch.fill("  H1.BO-TITLE  ");
+    await expect(headerLayerRow).toBeVisible();
+    await expect(titleLayerRow).toBeVisible();
+    await expect(layers.getByRole("button", { name: /^p\.bo-subtitle/ })).toHaveCount(0);
+    await expect(headerLayerRow).toHaveAttribute("data-selected", "true");
+    await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
+    expect(await page.evaluate(() =>
+      [...(window as any).__isonimEditorVm.inspector.expandedLayerIds.value])).toEqual(savedExpansion);
+    await expect(page.getByRole("textbox", { name: "Search stories" })).toHaveValue("Topbar");
+    await titleLayerRow.click();
     await expect(title).toHaveAttribute("data-isonim-selected", "true");
     await expect(title).toHaveAttribute("data-isonim-element-id", titleId);
-    await expect(titleLayerRow).toHaveAttribute(
-      "data-isonim-layer-selected",
-      "true",
-    );
+    await expect(titleLayerRow).toHaveAttribute("data-selected", "true");
+    await layerSearch.fill("no-consumer-layer-matches-this");
+    await expect(layers.getByText("No matching layers", { exact: true })).toBeVisible();
+    await expect(title).toHaveAttribute("data-isonim-selected", "true");
+    expect(await page.evaluate(() =>
+      [...(window as any).__isonimEditorVm.inspector.expandedLayerIds.value])).toEqual(savedExpansion);
+    await layerSearch.fill("");
+    await expect(headerLayerRow).toHaveAttribute("aria-expanded", "false");
+    await expect(titleLayerRow).toHaveCount(0);
+    await headerToggle.click();
+    await expect(titleLayerRow).toBeVisible();
+    await page.getByRole("textbox", { name: "Search stories" }).fill("");
+    await layerSearch.fill("  COMPONENTS.NIM  ");
+    await expect(headerLayerRow).toBeVisible();
+    await expect(titleLayerRow).toBeVisible();
+    await layerSearch.fill("");
 
-    await page.getByRole("textbox", { name: "Search element layers" }).fill("");
-    await page
-      .getByRole("button", { name: /Select breadcrumb header/ })
-      .click();
+    await headerCrumb.click();
     await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
     await expect(topbar).toHaveAttribute("data-isonim-element-id", headerId);
-    await expect(headerLayerRow).toHaveAttribute(
-      "data-isonim-layer-selected",
-      "true",
-    );
+    await expect(headerLayerRow).toHaveAttribute("data-selected", "true");
+    await expect(titleCrumb).toHaveAttribute("data-breadcrumb-state", "trail");
+    await titleCrumb.click();
+    await expect(title).toHaveAttribute("data-isonim-selected", "true");
+    await expect(titleLayerRow).toHaveAttribute("data-selected", "true");
+    await expect(titleCrumb).toHaveAttribute("data-breadcrumb-state", "selected");
+    await headerCrumb.click();
+    await headerLayerRow.click();
+    await expect(titleCrumb).toHaveCount(0);
+    await expect(headerCrumb).toHaveAttribute("data-breadcrumb-state", "selected");
+    await titleLayerRow.click();
+    await expect(titleCrumb).toHaveAttribute("data-breadcrumb-state", "selected");
+    await headerCrumb.click();
+    await expect(titleCrumb).toHaveAttribute("data-breadcrumb-state", "trail");
+    await headerLayerRow.focus();
+    await page.keyboard.press("Enter");
+    await expect(titleCrumb).toHaveCount(0);
+    await expect(headerCrumb).toHaveAttribute("data-breadcrumb-state", "selected");
+    // Layers and its query remain available in all four actual mode choices.
+    for (const choice of ["View", "Comment", "Spec", "Edit"]) {
+      await mode.getByRole("button", { name: choice, exact: true }).click();
+      await expect(mode.getByRole("button", { name: choice, exact: true })).toHaveAttribute("aria-pressed", "true");
+      await expect(layerSearch).toBeVisible();
+      await layerSearch.fill("component-topbar");
+      await expect(headerLayerRow).toBeVisible();
+      await expect(headerLayerRow).toHaveAttribute("data-selected", "true");
+      await layerSearch.fill("");
+    }
+    await expect(topbar).toHaveAttribute("data-isonim-element-id", headerId);
+    await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
+    expect(await layerRows.evaluate(node => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
   });
-
   test("e2e_selection_survives_mode_viewport_and_save_cycles", async ({
     page,
   }) => {
@@ -2288,8 +2373,8 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
         .getByTestId("back-office-app"),
     ).toBeVisible();
 
-    await page.getByRole("button", { name: "Preview Mobile viewport" }).click();
-    await expect(page).toHaveURL(/viewport=mobile/);
+    await page.locator('[data-toolbar-cluster="viewport"]').getByRole("button", { name: "Phone", exact: true }).click();
+    await expect(page).toHaveURL(/viewport=phone/);
     await expect(page.getByLabel("Preview device frame")).toHaveCSS(
       "width",
       "390px",
@@ -2308,7 +2393,7 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     ).toBeVisible();
 
     await page.goBack();
-    await expect(page).toHaveURL(/viewport=mobile/);
+    await expect(page).toHaveURL(/viewport=phone/);
     await expect(page).not.toHaveURL(/story=Customer%20detail/);
     await expect(
       page
@@ -2321,7 +2406,7 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(page).toHaveURL(/viewport=desktop/);
     await expect(page.getByLabel("Preview device frame")).toHaveCSS(
       "width",
-      "1280px",
+      "1440px",
     );
 
     await page.goBack();
@@ -2331,7 +2416,7 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await page.goForward();
     await expect(page).toHaveURL(/view=page/);
     await page.goForward();
-    await expect(page).toHaveURL(/viewport=mobile/);
+    await expect(page).toHaveURL(/viewport=phone/);
     await page.goForward();
     await expect(page).toHaveURL(/story=Customer%20detail/);
     await expect(
@@ -2382,8 +2467,9 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
 
 // Current consumer regression: genuine compiled frontend, owned filesystem
 // bridge and physical inspector interactions. The consumer's declarative
-// compile callbacks are not a post-write compiler-execution oracle. All 22
-// historical cases above remain unchanged pending their separate reconciliation.
+// compile callbacks are not a post-write compiler-execution oracle. Cases 1/2
+// and the Layers/public navigation cases use the current supported UI; the
+// remaining historical cases still require separate reconciliation.
 // Additional cascade/foreign/malformed markers are owned source fixtures applied
 // through the real CAS bridge, not simulated inspector or compiler results.
 // A temporary sibling DOM reference uses independent browser font-unit CSS;
