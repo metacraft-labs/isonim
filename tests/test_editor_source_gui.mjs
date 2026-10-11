@@ -325,6 +325,10 @@ try{
  await page.frameLocator('iframe[data-component-project-frame="true"]').locator('head[data-authored-double="1 > 0"]').waitFor({state:'attached'});
  assert.equal(await page.frameLocator('iframe[data-component-project-frame="true"]').locator('head').getAttribute('data-authored-double'),'1 > 0');
  await stable(scope);
+ // Hydrate both real editors before holding a transaction that metadata reads await.
+ const waitingPage=await browser.newPage({viewport:{width:1440,height:1000}});
+ const waitingScope=await mounted(waitingPage);
+ await stable(waitingScope);
  // Deterministically hold the real producer while unrelated HTTP/UI remain live.
  const barrier=path.join(artifacts,'release-build');
  const started=path.join(artifacts,'build-started');
@@ -337,9 +341,6 @@ try{
  const running=cli(scope,['wait',pending.operationId,'--timeout-ms','300'],5);
  assert.equal(running.operation.status,'running');
  assert.equal(running.operation.sourcePhase,'admitted');
- const waitingPage=await browser.newPage({viewport:{width:1440,height:1000}});
- const waitingScope=await mounted(waitingPage);
- await stable(waitingScope);
  const waitingResponse=waitingPage.waitForResponse(response=>response.url().endsWith('/api/editor/source/operation'));
  waitingResponse.catch(()=>{}); // Preserve the primary assertion if cleanup closes this page.
  const waitingBuild=cli(waitingScope,['build','--command-id','revoked-waiting-build']);
