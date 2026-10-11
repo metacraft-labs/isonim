@@ -249,7 +249,7 @@ def select(root, publication):
         sys.stderr.write(query.stderr)
         if query.returncode==0:
             interface='own'
-        elif query.returncode==1 and re.search(r"(?m)^error: justfile does not contain recipe `build-rust-unit-test-binaries`$",query.stderr):
+        elif query.returncode==1 and re.search(r"(?m)^error: [Jj]ustfile does not contain recipe `build-rust-unit-test-binaries`$",query.stderr):
             # This exact command-interface diagnostic is absence before build.
             # Parse errors, activation errors and selected build failures refuse.
             interface='export'
