@@ -1636,7 +1636,7 @@ test-editor-c4a-grip: isonim-review-build build-tailwind
     timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_source_style_gui.mjs
     timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_source_style_values_gui.mjs
 
-test-editor-c4a: test-editor-c4a-headless test-editor-c4a-compounds test-editor-c4a-properties test-editor-c4a-remaining test-editor-inline-preview test-editor-c4a-gestures test-editor-c4a-color test-editor-c4a-grip
+test-editor-c4a: test-editor-selection-keys test-editor-c4a-headless test-editor-c4a-compounds test-editor-c4a-properties test-editor-c4a-remaining test-editor-inline-preview test-editor-c4a-gestures test-editor-c4a-color test-editor-c4a-grip
 
 # Source ownership presentation; real native/JS signals and shell, no transports.
 test-editor-source-labels: build-tailwind
@@ -1733,3 +1733,13 @@ test-editor-inspector-native-source: isonim-review-build
     python3 tests/test_editor_inspector_source.py
     python3 tests/test_editor_source_style_provider.py
     timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_source_bindings_gui.mjs
+
+# Finite Selection Colors key admission and native bind/unlink/compiler matrix.
+# Separate180s entry preserves the original bindings and compounds bounds.
+test-editor-selection-keys-headless: build-tailwind
+    nim c -r --out:build/test_editor_section_selection_colors tests/test_editor_section_selection_colors.nim
+    nim js -d:nodejs --out:build/test_editor_section_selection_colors.js tests/test_editor_section_selection_colors.nim
+    python3 tools/run_nim_js_test.py build/test_editor_section_selection_colors.js
+
+test-editor-selection-keys: test-editor-selection-keys-headless isonim-review-build
+    timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_selection_keys_gui.mjs

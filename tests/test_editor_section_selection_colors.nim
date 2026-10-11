@@ -8,6 +8,7 @@ import std/[options, tables, unittest]
 
 import isonim/core/[signals, computation, owner]
 import isonim/editor/types
+import isonim/editor/style_provenance_decode
 import isonim/editor/viewmodels
 import isonim/editor/views/widgets/section_selection_colors
 import isonim/testing/mock_dom
@@ -22,6 +23,12 @@ proc findByAttr(node: MockNode; attr, value: string): MockNode =
   return nil
 
 suite "Phase G section_selection_colors":
+
+  test "preview collector exposes every Selection Colors key":
+    for name in ["background-color", "color", "border-color", "outline-color",
+        "border-top-color", "border-right-color", "border-bottom-color", "border-left-color"]:
+      check name in inspectorEditableCssProperties
+
 
   test "looksLikeColor accepts hex + rgb / rejects junk":
     check looksLikeColor("#fff")
