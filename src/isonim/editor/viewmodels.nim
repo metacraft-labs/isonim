@@ -100,6 +100,7 @@ type
     ## payloads would drop every second one.
     generation*: int
     elementId*, domPath*, property*, value*: string
+    sourceScope*: SourceScopeChoiceKind
 
   InspectorVM* = ref object of ViewModel
     designSystemSchema*: Signal[DesignSystemSchema]
@@ -4474,7 +4475,8 @@ func invertPlan(plan: SourceEditPlan): SourceEditPlan =
   result.expectedOldValue = plan.newValue
 
 proc requestPreviewValue(inspector: InspectorVM; element: ElementRef;
-                         property, value: string) =
+                         property, value: string;
+                         sourceScope = sskLocalInstance) =
   ## Ask the preview view to show `value`. See `PreviewValueRequest`.
   let elementId =
     if element.id.len > 0: element.id
@@ -4484,7 +4486,7 @@ proc requestPreviewValue(inspector: InspectorVM; element: ElementRef;
   inspector.previewValueRequest.val = PreviewValueRequest(
     generation: inspector.previewValueRequest.val.generation + 1,
     elementId: elementId, domPath: element.domPath,
-    property: property, value: value)
+    property: property, value: value, sourceScope: sourceScope)
 
 proc undoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
   ## Walk one edit back: in the model, in the preview, and in the file.
@@ -4520,7 +4522,7 @@ proc undoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
   else:
     inspector.journalSourceEdit(txn.sourceEdit.invertPlan())
   inspector.requestPreviewValue(txn.beforeElement, txn.sourceEdit.property,
-                                txn.sourceEdit.oldValue)
+                                txn.sourceEdit.oldValue, txn.sourceEdit.sourceScope)
   true
 
 proc redoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
@@ -4540,7 +4542,7 @@ proc redoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
     result.add txn
   inspector.journalSourceEdit(txn.sourceEdit)
   inspector.requestPreviewValue(txn.afterElement, txn.sourceEdit.property,
-                                txn.sourceEdit.newValue)
+                                txn.sourceEdit.newValue, txn.sourceEdit.sourceScope)
   true
 
 proc discardCssPropertyEdits*(inspector: InspectorVM) =

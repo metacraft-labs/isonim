@@ -1113,7 +1113,7 @@ __ISONIM_SCENE_GRAPH_WALK__
       if (pending) {
         Object.keys(pending).forEach(function (key) {
           const d = pending[key];
-          window.__isonimSetDeclaration(d.id, d.path, d.property, d.value);
+          window.__isonimSetDeclaration(d.id, d.path, d.property, d.value, d.scope);
         });
       }
     } catch (e) {}
@@ -1125,7 +1125,7 @@ __ISONIM_SCENE_GRAPH_WALK__
     try {
       window.__isonimSetDeclaration(String(d.id || ''), String(d.path || ''),
                                     String(d.property || ''),
-                                    String(d.value == null ? '' : d.value));
+                                    String(d.value == null ? '' : d.value), String(d.scope || 'sskLocalInstance'));
     } catch (e) {}
   });
 
@@ -1310,7 +1310,47 @@ __ISONIM_SCENE_GRAPH_WALK__
     return winner || fallback;
   }
 
-  window.__isonimSetDeclaration = function (id, path, property, value) {
+  // A normal inline declaration cannot win against an active important rule.
+  // Local edits must refuse that owner instead of mutating its shared rule.
+  // This scans important precedence only, independently of the legacy last-match
+  // rule resolver. It does not attempt a general specificity/cascade solver.
+  window.__isonimLocalDeclarationRefusal = function (id, path, property) {
+    var el = null;
+    if (id) el = document.querySelector('[data-isonim-element-id="' + CSS.escape(id) + '"]');
+    if (!el && path) { try { el = document.querySelector(path); } catch (e) {} }
+    if (!el) return '';
+    var names = [property].concat(SHORTHANDS[property] || []);
+    if (!names.some(function (name) { return el.style.getPropertyValue(name) !== ''; })) return '';
+    if (names.some(function (name) { return el.style.getPropertyPriority(name) === 'important'; })) return '';
+    function important(rules) {
+      for (var i = 0; i < rules.length; i++) {
+        var rule = rules[i];
+        if (rule.type === CSSRule.MEDIA_RULE) {
+          if (matchMedia(rule.conditionText).matches && important(rule.cssRules)) return true;
+        } else if (rule.type === CSSRule.SUPPORTS_RULE) {
+          if (CSS.supports(rule.conditionText) && important(rule.cssRules)) return true;
+        } else if (typeof CSSLayerBlockRule !== 'undefined' && rule instanceof CSSLayerBlockRule) {
+          if (important(rule.cssRules)) return true;
+        } else if (rule.type === CSSRule.STYLE_RULE && rule.selectorText) {
+          var matches = false;
+          try { matches = el.matches(rule.selectorText); } catch (e) {}
+          if (matches && names.some(function (name) {
+            return rule.style.getPropertyPriority(name) === 'important';
+          })) return true;
+        }
+      }
+      return false;
+    }
+    for (var i = 0; i < document.styleSheets.length; i++) {
+      var sheet = document.styleSheets[i], owner = sheet.ownerNode;
+      if (sheet.disabled || (owner && owner.id && owner.id.indexOf('isonim-editor') === 0)) continue;
+      if (sheet.media.mediaText && !matchMedia(sheet.media.mediaText).matches) continue;
+      try { if (important(sheet.cssRules)) return 'Read-only: an important stylesheet declaration overrides this inline value; local editing is unavailable.'; } catch (e) {}
+    }
+    return '';
+  };
+
+  window.__isonimSetDeclaration = function (id, path, property, value, scope) {
     if (!property) return false;
     // Id first, DOM path second. On a freshly loaded document there are no
     // ids at all -- the scene-graph walk stamps them lazily and has not run
@@ -1325,18 +1365,44 @@ __ISONIM_SCENE_GRAPH_WALK__
       try { el = document.querySelector(path); } catch (e) {}
     }
     if (!el) return false;
+    var local = !scope || scope === 'sskLocalInstance';
+    if (local && window.__isonimLocalDeclarationRefusal(id, path, property)) return false;
     var rule = governingRule(el, property);
-    if (!rule) {
-      // Nothing in the cascade reaches this element for this property. An
-      // inline style is the only place left -- and it is also what the file
-      // edit will not be able to express, so this case is worth looking
-      // different.
-      if (value === '') el.style.removeProperty(property);
-      else el.style.setProperty(property, value);
-      return true;
+    function priority(style) {
+      var names = [property].concat(SHORTHANDS[property] || []);
+      for (var i = 0; i < names.length; i++) {
+        if (style.getPropertyPriority(names[i]) === 'important') return 'important';
+      }
+      return '';
     }
-    if (value === '') rule.style.removeProperty(property);
-    else rule.style.setProperty(property, value);
+    function hasDeclaration(style) {
+      var names = [property].concat(SHORTHANDS[property] || []);
+      return names.some(function (name) { return style.getPropertyValue(name) !== ''; });
+    }
+    // A local edit of the winning inline owner must not change a discarded
+    // lower rule or siblings. Retain its priority; never manufacture important.
+    // An important stylesheet declaration still outranks normal inline style.
+    var style = rule ? rule.style : el.style;
+    if (local && hasDeclaration(el.style)) {
+      style = el.style;
+    }
+    // Token edits retain their var() use-sites, including inline references.
+    // Resolve the directly referenced root declaration rather than detaching
+    // the selected element from the binding. Other shared scopes keep their
+    // stylesheet declaration owner.
+    if (scope === 'sskComponentToken' || scope === 'sskSemanticToken' ||
+        scope === 'sskGlobalPrimitiveToken') {
+      var declared = el.style.getPropertyValue(property) || style.getPropertyValue(property);
+      var token = /^var\(\s*(--[\w-]+)(?:\s*,[^)]*)?\s*\)$/.exec(declared.trim());
+      if (token) {
+        property = token[1];
+        var tokenRule = governingRule(document.documentElement, property);
+        style = tokenRule ? tokenRule.style : document.documentElement.style;
+      }
+    }
+    var importance = priority(style);
+    if (value === '') style.removeProperty(property);
+    else style.setProperty(property, value, importance);
     return true;
   };
 
@@ -5225,7 +5291,7 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
         return
       lastPreviewRequest = request.generation
       applyPreviewStyle(request.elementId, request.domPath,
-                        request.property, request.value)
+                        request.property, request.value, request.sourceScope)
       # The write that follows must not reload the preview out from under it,
       # for the same reason a commit sets this.
       vm.previewShowsPendingEdits.val = true

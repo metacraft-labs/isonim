@@ -1616,6 +1616,16 @@ test-editor-c4a-properties: isonim-review-build editor-inspector-build
 test-editor-c4a-remaining: isonim-review-build editor-inspector-build
     timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_inspector_remaining_gui.mjs
 
+# Catalog-only actual inline declaration ownership and physical State workflow.
+# Separate finite180s entry; original source and inspector bounds stay unchanged.
+test-editor-inline-preview-headless:
+    nim c -r --out:build/test_editor_section_state tests/test_editor_section_state.nim
+    nim js -d:nodejs --out:build/test_editor_section_state.js tests/test_editor_section_state.nim
+    python3 tools/run_nim_js_test.py build/test_editor_section_state.js
+
+test-editor-inline-preview: test-editor-inline-preview-headless isonim-review-build editor-popup-build
+    timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_inline_preview_gui.mjs
+
 test-editor-c4a-gestures: isonim-review-build editor-inspector-build
     timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_inspector_gestures_gui.mjs
 
@@ -1626,7 +1636,7 @@ test-editor-c4a-grip: isonim-review-build build-tailwind
     timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_source_style_gui.mjs
     timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_source_style_values_gui.mjs
 
-test-editor-c4a: test-editor-c4a-headless test-editor-c4a-compounds test-editor-c4a-properties test-editor-c4a-remaining test-editor-c4a-gestures test-editor-c4a-color test-editor-c4a-grip
+test-editor-c4a: test-editor-c4a-headless test-editor-c4a-compounds test-editor-c4a-properties test-editor-c4a-remaining test-editor-inline-preview test-editor-c4a-gestures test-editor-c4a-color test-editor-c4a-grip
 
 # Source ownership presentation; real native/JS signals and shell, no transports.
 test-editor-source-labels: build-tailwind

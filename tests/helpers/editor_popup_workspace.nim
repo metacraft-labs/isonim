@@ -9,6 +9,7 @@
 import std/[json, options]
 import isonim/editor/[browser, source_browser, workspace, viewmodels, types]
 import isonim/core/signals
+import isonim/editor/views/widgets/property_commit
 var items: seq[StoryItem] = @[]
 for i in 0 ..< 100:
   items.add StoryItem(name: "long story " & $i, group: "Card", kind: skComponent)
@@ -75,6 +76,11 @@ proc attemptSelectedNativeProperty(property, value: cstring): cstring =
     $value, sskLocalInstance, proc(ok: bool; diagnostic: string) =
       reply = %*{"completed": true, "ok": ok, "diagnostic": diagnostic})
   cstring($reply)
+proc attemptCatalogOnlyProperty(property, value: cstring): cstring =
+  ## Supplementary real guarded transaction check on the actual selection.
+  ## Physical rows and compiled browser outcomes are exercised separately.
+  let outcome = editor.commitInspectorValue($property, $value, sskLocalInstance)
+  cstring($(%*{"ok": outcome.ok, "message": outcome.message}))
 proc snapshot(): cstring =
   var properties = newJArray()
   for property in editor.inspector.selectedElement.val.properties:
@@ -95,4 +101,4 @@ proc snapshot(): cstring =
     "sourceInFlight": editor.sourceProjectBuildInFlight, "sourceOperationSerial": editor.sourceProjectOperationSerial,
     "sourceMappingObservers": (if editor.sourceProjectMappings != nil: editor.sourceProjectMappings.observers.len else: 0),
     "sourceGeneration": editor.preview.sourceGeneration.val, "properties": properties}))
-{.emit: ["window.__popupAcceptance = {attemptSelectedNativeProperty:", attemptSelectedNativeProperty, ",catalogOnlyAttempt:", catalogOnlyAttempt, ", observerDetails:", observerDetails, ", openStory:", openStory, ", history:", history, ", clear:", clear, ", activeView:", activeView, ", unmount:", unmount, ", remount:", remount, ", sameClient:", sameClient, ", readOnly:", readOnly, ", tokens:", tokens, ", select:", select, ", snapshot:", snapshot, "};"].}
+{.emit: ["window.__popupAcceptance = {attemptCatalogOnlyProperty:", attemptCatalogOnlyProperty, ",attemptSelectedNativeProperty:", attemptSelectedNativeProperty, ",catalogOnlyAttempt:", catalogOnlyAttempt, ", observerDetails:", observerDetails, ", openStory:", openStory, ", history:", history, ", clear:", clear, ", activeView:", activeView, ", unmount:", unmount, ", remount:", remount, ", sameClient:", sameClient, ", readOnly:", readOnly, ", tokens:", tokens, ", select:", select, ", snapshot:", snapshot, "};"].}
