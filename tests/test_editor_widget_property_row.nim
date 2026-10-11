@@ -935,3 +935,43 @@ suite "shared numeric source precision":
         let input = findByAttr(root,"data-property-row-input","true")
         check parseNumericInput(r.inputValue(input)).value.get == v
         dispose()
+
+suite "choice actual value projection":
+  test "unlisted and empty current values display honestly and restore on refusal":
+    for initial in ["650", "var(--choice)", ""]:
+      createRoot proc(dispose: proc()) =
+        let value = createSignal(initial)
+        let rejected = createSignal(0)
+        var calls = 0
+        var cfg = propertyRowChoice(name = "Current choice", value = value,
+          options = @[(label: "First ordinary option", value: "first"),
+                      (label: "Second ordinary option", value: "second")])
+        cfg.commitRejected = rejected
+        cfg.onCommitValue = proc(v: string) =
+          inc calls
+          check v == "first"
+          rejected.val = rejected.val + 1
+        let (r, root) = mkRoot()
+        discard r.mountPropertyRow(root, cfg)
+        let label = findByAttr(root, "data-choice-group-trigger-label", "true")
+        let first = findByAttr(root, "data-choice-group-option", "0")
+        let second = findByAttr(root, "data-choice-group-option", "1")
+        require label != nil
+        check textContent(label) == initial
+        check first.attributes.getOrDefault("aria-selected") == "false"
+        check second.attributes.getOrDefault("aria-selected") == "false"
+        check calls == 0
+        fireEvent(first, "click")
+        check calls == 1
+        check value.val == initial
+        check textContent(label) == initial
+        value.val = "second"
+        check textContent(label) == "Second ordinary option"
+        check second.attributes.getOrDefault("aria-selected") == "true"
+        fireEvent(second, "click")
+        check calls == 1
+        value.val = "unlisted later"
+        check textContent(label) == "unlisted later"
+        check first.attributes.getOrDefault("aria-selected") == "false"
+        check second.attributes.getOrDefault("aria-selected") == "false"
+        dispose()

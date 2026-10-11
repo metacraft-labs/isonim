@@ -1520,13 +1520,17 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
         for opt in cfg.choiceOptions:
           labels.add opt.label
           values.add opt.value
-        var initialIdx = 0
+        var initialIdx = -1
         let current = cfg.choiceValue.val
         for i in 0 ..< values.len:
           if values[i] == current:
             initialIdx = i
             break
         let vm = createSegmentedChoiceVM(labels, initialIndex = initialIdx)
+        vm.currentUnlistedLabel = createSignal("")
+        if initialIdx < 0:
+          vm.currentUnlistedLabel.val = current
+          vm.activeIndex.val = -1
         # A choice row gets the same in-well label as a numeric one. Without
         # it, decoration / transform / list style all read "None" and named
         # nothing -- three consecutive rows saying the same word.
@@ -1607,10 +1611,16 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
         # sync.
         createRenderEffect proc() =
           let v = cfg.choiceValue.val
+          var matched = false
           for i in 0 ..< values.len:
             if values[i] == v:
+              vm.currentUnlistedLabel.val = ""
               vm.activate(i)
+              matched = true
               break
+          if not matched:
+            vm.currentUnlistedLabel.val = v
+            vm.activeIndex.val = -1
 
       of prkText:
         var inputNode: E

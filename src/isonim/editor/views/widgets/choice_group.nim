@@ -99,6 +99,9 @@ type
     variant*: ChoiceGroupVariant
     labels*: seq[string]
     icons*: seq[string]
+    currentUnlistedLabel*: Signal[string]
+      ## Optional actual value when a property has no matching fixed option.
+      ## It is display metadata, not an additional selectable menu choice.
     activeIndex*: Signal[int]
     popupOpen*: Signal[bool]
     disabledIndices*: Signal[HashSet[int]]
@@ -767,7 +770,9 @@ proc mountChevronChoice*[R, E](r: R; parent: E; vm: ChoiceGroupVM;
     if safe >= 0:
       r.setTextContent(triggerLabelNode, labels[safe])
     else:
-      r.setTextContent(triggerLabelNode, "")
+      r.setTextContent(triggerLabelNode,
+        if capturedVm.currentUnlistedLabel != nil: capturedVm.currentUnlistedLabel.val
+        else: "")
     for i in 0 ..< optionNodes.len:
       let isDisabled = i in disabled
       r.setAttribute(optionNodes[i], "aria-selected",
