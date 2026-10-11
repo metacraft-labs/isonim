@@ -529,5 +529,7 @@ proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
       if not vm.hasAsyncSourceProject: return ""
       if not ready: return "Loading editable properties."
       let property = vm.inspectorProperty(capturedProperty)
+      if property.isSome and property.get.origin == poSetStyle:
+        return "Read-only: native source editing does not own this inline declaration."
       if property.isSome and property.get.authoredValue.len > 0: return ""
       "Read-only: the editor cannot safely edit this value’s source.")

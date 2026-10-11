@@ -135,6 +135,10 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
         for mapping in editableStyles.val:
           if mapping{"elementId"}.getStr() != element.id or mapping{"storyId"}.getStr() != storyId: continue
           for property in selected.properties.mitems:
+            # This native capability owns const CSS declarations, never the
+            # winning inline/DSL setStyle value reported by real provenance.
+            # A matching lower stylesheet declaration is not its source owner.
+            if property.origin == poSetStyle: continue
             if mapping{"values", property.name} == nil: continue
             let authored = mapping["values"][property.name].getStr()
             let token = mapping{"scope"}.getStr() == "semantic-token"
@@ -215,6 +219,10 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
   if inspectorEditing:
     vm.inspectorSourceCommit = proc(element: ElementRef; property, value: string;
         scope: SourceScopeChoiceKind; done: proc(ok: bool; diagnostic: string) {.closure.}) =
+      for currentProperty in vm.inspector.selectedElement.val.properties:
+        if currentProperty.name == property and currentProperty.origin == poSetStyle:
+          done(false, "The native source writer cannot edit this inline declaration.")
+          return
       var shared = false
       var token = false
       for candidate in element.properties:

@@ -66,6 +66,15 @@ proc observerDetails(): cstring =
     }
     return {uniqueComputations:unique.size,groups:[...groups.values()].sort((a,b)=>b.computations-a.computations)};
   })(""", state, "));"].}
+proc attemptSelectedNativeProperty(property, value: cstring): cstring =
+  ## Supplementary admission check calls the installed real writer with the
+  ## actual selected DOM-derived ElementRef. It is not physical input evidence
+  ## or an alternative compiler path; the GUI source edits prove those paths.
+  var reply = %*{"completed": false}
+  editor.inspectorSourceCommit(editor.inspector.selectedElement.val, $property,
+    $value, sskLocalInstance, proc(ok: bool; diagnostic: string) =
+      reply = %*{"completed": true, "ok": ok, "diagnostic": diagnostic})
+  cstring($reply)
 proc snapshot(): cstring =
   var properties = newJArray()
   for property in editor.inspector.selectedElement.val.properties:
@@ -86,4 +95,4 @@ proc snapshot(): cstring =
     "sourceInFlight": editor.sourceProjectBuildInFlight, "sourceOperationSerial": editor.sourceProjectOperationSerial,
     "sourceMappingObservers": (if editor.sourceProjectMappings != nil: editor.sourceProjectMappings.observers.len else: 0),
     "sourceGeneration": editor.preview.sourceGeneration.val, "properties": properties}))
-{.emit: ["window.__popupAcceptance = {catalogOnlyAttempt:", catalogOnlyAttempt, ", observerDetails:", observerDetails, ", openStory:", openStory, ", history:", history, ", clear:", clear, ", activeView:", activeView, ", unmount:", unmount, ", remount:", remount, ", sameClient:", sameClient, ", readOnly:", readOnly, ", tokens:", tokens, ", select:", select, ", snapshot:", snapshot, "};"].}
+{.emit: ["window.__popupAcceptance = {attemptSelectedNativeProperty:", attemptSelectedNativeProperty, ",catalogOnlyAttempt:", catalogOnlyAttempt, ", observerDetails:", observerDetails, ", openStory:", openStory, ", history:", history, ", clear:", clear, ", activeView:", activeView, ", unmount:", unmount, ", remount:", remount, ", sameClient:", sameClient, ", readOnly:", readOnly, ", tokens:", tokens, ", select:", select, ", snapshot:", snapshot, "};"].}

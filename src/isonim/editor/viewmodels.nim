@@ -5696,8 +5696,14 @@ proc sourceScopeChoices*(schema: DesignSystemSchema; element: ElementRef;
 
 proc sourceScopeChoices*(editor: EditorVM; prop: PropertyInfo): seq[
     SourceScopeChoice] =
-  sourceScopeChoices(editor.designSystemSchema.val,
+  result = sourceScopeChoices(editor.designSystemSchema.val,
     editor.inspector.selectedElement.val, prop)
+  # Native source editing owns CSS constants, not winning inline declarations.
+  # Keep their disclosure metadata while projecting the adapter's refusal.
+  if editor.hasAsyncSourceProject and prop.origin == poSetStyle:
+    for choice in result.mitems:
+      choice.editable = false
+      choice.reason = "Read-only: native source editing does not own this inline declaration."
 
 proc sourceScopeImpacts*(schema: DesignSystemSchema; element: ElementRef;
     prop: PropertyInfo): seq[SourceScopeImpact] =
