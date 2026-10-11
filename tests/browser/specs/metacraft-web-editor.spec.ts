@@ -2359,3 +2359,175 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       .not.toBe("translate(80px, 40px) scale(1)");
   });
 });
+
+// Current consumer regression: genuine compiled frontend, owned filesystem
+// bridge and physical inspector interactions. The consumer's declarative
+// compile callbacks are not a post-write compiler-execution oracle. All 22
+// historical cases above remain unchanged pending their separate reconciliation.
+// Additional cascade/foreign/malformed markers are owned source fixtures applied
+// through the real CAS bridge, not simulated inspector or compiler results.
+// A temporary sibling DOM reference uses independent browser font-unit CSS;
+// it measures expected em/ex pixels without changing editor models.
+test("metacraft_topbar_padding_edges_survive_actual_save_and_reload", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", error => errors.push(error.message));
+  const writes: any[] = [];
+  page.on("request", request => {
+    if (request.url().endsWith("/__isonim-dev-bridge/transaction")) {
+      writes.push(request.postDataJSON());
+    }
+  });
+  await page.goto("/?writeBridge=1");
+  const original = readFileSync(devBridgeSourceFile, "utf8");
+  let saved = original;
+  const selectTopbar = async () => {
+    await page.getByRole("button", {
+      name: "Select story Operational components / Topbar", exact: true,
+    }).click();
+    await page.locator('[data-toolbar-cluster="mode"] [data-choice-group-label="View"]').click();
+    await page.locator('[data-toolbar-cluster="mode"] [data-choice-group-label="Edit"]').click();
+    const topbar = page.frameLocator('iframe[title="Editable component preview"]')
+      .getByTestId("component-topbar");
+    await expect(topbar).toBeVisible();
+    await expect.poll(() => topbar.evaluate(node => node.ownerDocument.readyState)).toBe("complete");
+    // A restored same-ID selection is already selected in the VM. Choose the
+    // real child first so the physical header selection reaches the new frame.
+    await page.getByRole("button", { name: /h1\.bo-title.*Operations dashboard/ }).click();
+    await page.getByRole("button", {
+      name: "header[data-testid=component-topbar]", exact: true,
+    }).click();
+    await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
+    return topbar;
+  };
+  const history = async () => page.evaluate(() => {
+    const inspector = (window as any).__isonimEditorVm.inspector;
+    if (!Array.isArray(inspector.undoStack.value) || !Array.isArray(inspector.redoStack.value)) {
+      throw new Error("Missing actual inspector history");
+    }
+    return { undo: inspector.undoStack.value.length, redo: inspector.redoStack.value.length };
+  });
+  const paddings = async (topbar) => topbar.evaluate(node => {
+    const style = getComputedStyle(node);
+    return [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft];
+  });
+  try {
+    let topbar = await selectTopbar();
+    await expect.poll(() => paddings(topbar)).toEqual(["0px", "0px", "0px", "0px"]);
+    const beforeHistory = await history();
+    let commits = 0;
+    for (const [edge, value] of [["top", "17"], ["right", "19"], ["bottom", "23"], ["left", "29"]]) {
+      const input = page.locator(`[data-property-row="pad-${edge}"] input[data-property-row-input]`);
+      await expect(input).toBeEditable();
+      await input.click();
+      await input.fill(value);
+      await input.press("Enter");
+      await expect.poll(() => readFileSync(devBridgeSourceFile, "utf8"))
+        .toContain(`# isonim-editor dom.component-topbar.padding-${edge} padding-${edge}=${value}px`);
+      commits++;
+      await expect.poll(history).toEqual({ undo: beforeHistory.undo + commits, redo: 0 });
+    }
+    saved = readFileSync(devBridgeSourceFile, "utf8");
+    expect(saved).not.toBe(original);
+    expect(writes.filter(write => write.mode === "apply")).toHaveLength(4);
+    await expect.poll(() => paddings(topbar)).toEqual(["17px", "19px", "23px", "29px"]);
+    await page.reload();
+    topbar = await selectTopbar();
+    await expect.poll(() => paddings(topbar)).toEqual(["17px", "19px", "23px", "29px"]);
+    expect(readFileSync(devBridgeSourceFile, "utf8")).toBe(saved);
+    // Untouched focus/Tab must not append another marker or source operation.
+    const input = page.locator('[data-property-row="pad-top"] input[data-property-row-input]');
+    await expect(input).toHaveValue("17");
+    const untouchedHistory = await history();
+    await input.click();
+    await input.press("Tab");
+    expect(await history()).toEqual(untouchedHistory);
+    expect(readFileSync(devBridgeSourceFile, "utf8")).toBe(saved);
+    expect(writes.filter(write => write.mode === "apply")).toHaveLength(4);
+    expect(errors).toEqual([]);
+    const cascade = saved +
+      "# isonim-editor dom.component-panel-header.padding padding=90px\n" +
+      "# isonim-editor dom.component-topbar.padding padding=3px 4px\n" +
+      "# isonim-editor dom.component-topbar.padding-left padding-left=31px\n" +
+      "# isonim-editor dom.component-topbar.padding-top padding-top=NaNpx\n" +
+      "# isonim-editor dom.component-topbar.padding padding=9px; color:red\n";
+    const applied = await page.evaluate(async ({ beforeText, afterText }) => {
+      const response = await fetch("/__isonim-dev-bridge/transaction", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mode: "apply", files: [{
+          file: "apps/back-office/src/backoffice_ui/components.nim", beforeText, afterText,
+        }] }),
+      });
+      return response.json();
+    }, { beforeText: saved, afterText: cascade });
+    expect(applied.ok).toBe(true);
+    expect(readFileSync(devBridgeSourceFile, "utf8")).toBe(cascade);
+    await page.reload();
+    topbar = await selectTopbar();
+    await expect.poll(() => paddings(topbar)).toEqual(["3px", "4px", "3px", "31px"]);
+    expect(readFileSync(devBridgeSourceFile, "utf8")).toBe(cascade);
+    expect(errors).toEqual([]);
+    // Exercise the actual compiled pure reader, including exponent/unit
+    // boundaries, against fixed literal CSS expectations (no parser mirror).
+    for (const unit of ["px", "em", "rem", "%", "vw", "vh", "vmin", "vmax", "ch", "ex"]) {
+      for (const magnitude of ["1.25", "1e2", "1.25e-2", "0"]) {
+        const value = magnitude + unit;
+        const declarations = await page.evaluate(value =>
+          (window as any).__metacraftTopbarPaddingDeclarations(
+            "# isonim-editor dom.component-topbar.padding-top padding-top=" + value), value);
+        expect(declarations).toBe("padding-top:" + value + " !important;");
+      }
+    }
+    for (const value of ["1epx", "1e+em", "1e-ex", "1e2remjunk", "1.25.3em", "1e309em"]) {
+      expect(await page.evaluate(value =>
+        (window as any).__metacraftTopbarPaddingDeclarations(
+          "# isonim-editor dom.component-topbar.padding-top padding-top=" + value), value)).toBe("");
+    }
+    const fontUnits = cascade + "# isonim-editor dom.component-topbar.padding padding=1.25em 1.25ex\n";
+    const unitApplied = await page.evaluate(async ({ beforeText, afterText }) => {
+      const response = await fetch("/__isonim-dev-bridge/transaction", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mode: "apply", files: [{
+          file: "apps/back-office/src/backoffice_ui/components.nim", beforeText, afterText,
+        }] }),
+      });
+      return response.json();
+    }, { beforeText: cascade, afterText: fontUnits });
+    expect(unitApplied.ok).toBe(true);
+    await page.reload();
+    topbar = await selectTopbar();
+    const unitStyles = await topbar.evaluate(node => {
+      const style = getComputedStyle(node);
+      const reference = node.ownerDocument.createElement("div");
+      reference.style.font = style.font;
+      reference.style.padding = "1.25em 1.25ex";
+      node.parentElement!.appendChild(reference);
+      try {
+        const expected = getComputedStyle(reference);
+        return {
+          actual: [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft],
+          expected: [expected.paddingTop, expected.paddingRight, expected.paddingBottom, expected.paddingLeft],
+          rule: node.ownerDocument.getElementById("metacraft-editor-topbar-padding")!.textContent,
+        };
+      } finally { reference.remove(); }
+    });
+    expect(unitStyles.actual).toEqual(unitStyles.expected);
+    expect(unitStyles.actual[0]).not.toBe("0px");
+    expect(unitStyles.actual[1]).not.toBe("0px");
+    expect(unitStyles.rule).toContain("padding:1.25em 1.25ex !important;");
+    expect(readFileSync(devBridgeSourceFile, "utf8")).toBe(fontUnits);
+    expect(errors).toEqual([]);
+  } finally {
+    const afterText = readFileSync(devBridgeSourceFile, "utf8");
+    if (afterText !== original) {
+      await revertDevBridgeFiles(page, [{
+        file: "apps/back-office/src/backoffice_ui/components.nim",
+        beforeText: original, afterText,
+      }]);
+    }
+    expect(readFileSync(devBridgeSourceFile, "utf8")).toBe(original);
+  }
+  await page.reload();
+  const restoredTopbar = await selectTopbar();
+  await expect.poll(() => paddings(restoredTopbar)).toEqual(["0px", "0px", "0px", "0px"]);
+  expect(errors).toEqual([]);
+});
