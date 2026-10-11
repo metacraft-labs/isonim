@@ -5,18 +5,31 @@
 // compiler, HTTP, registration, session creation and prompt delivery remain real.
 // Full Harbor REST/provider scenarios are separately registered in the chat suite.
 // Launcher clean exit proves its owned daemon/provider teardown; no live ports or
-// served developer assets are needed. Legacy covered-story assertions remain.
+// served developer assets are needed. The obsolete
+// e2e_editor_review_this_preview_button_submits_context_loaded_prompt case maps
+// to e2e_editor_composer_delivers_selected_context_on_same_peer_session: current
+// physical real-catalogue/empty-Spec/composer actions replace removed controls.
+// The owning demo is Wanderlust; the old helper fabricated an Inbox StoryRef.
+// Covered/multiple-brief responsibilities remain in the registered Spec/index
+// tests; this case asserts the honest empty Spec for Home / Discover.
+// An owned temporary native helper uses the production deliveredContext decoder
+// only to observe real peer receipts; it does not intercept or replace delivery.
+// Actual PID/start-time descendants prove peer continuity; canned response text
+// proves output delivery, not model memory or instructions (primer is disabled).
+// Captured-record poison controls are observation/oracle checks, not transport
+// mutations. Filesystem, native compiler and production context decoder are real.
 // The new failure cases transparently clone only their real SSE response for
 // raw wire assertions after the production reader cancels at its terminal frame.
 // They await that clone to EOF before context close; this observer is not proof
 // of production reader cleanup. Existing uninstrumented lifecycle cases remain.
 
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import { existsSync, readFileSync, mkdtempSync, writeFileSync, createWriteStream } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { once } from "node:events";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import assert from "node:assert/strict";
 
@@ -212,67 +225,208 @@ test("e2e_editor_chat_panel_hello_streams_response_from_daemon", async (t) => {
   }
 });
 
-test("e2e_editor_review_this_preview_button_submits_context_loaded_prompt", async (t) => {
-  if (skipIfPrereqsMissing(t)) return;
+test("e2e_editor_composer_delivers_selected_context_on_same_peer_session", async () => {
+  assert.ok(existsSync(reviewBin) && existsSync(fakeAcpBin) && existsSync(join(editorDir, 'editor.js')),
+    'Required built runtime must exist');
+  const receipts = mkdtempSync(join(tmpdir(), 'isonim-chat-context-'));
+  const peerLog = join(receipts, 'peer.jsonl');
+  const decoderSource = join(receipts, 'decode_context.nim');
+  const decoder = join(receipts, 'decode-context');
+  writeFileSync(decoderSource, `import std/json
+import isonim/editor/design_review/context_budget
+let input = parseJson(stdin.readAll())
+echo $deliveredContext(input["wire"], input["previous"])
+`);
+  execFileSync('nim', ['c', '--hints:off', '--path:' + join(projectRoot, 'src'),
+    '--nimcache:' + join(receipts, 'decoder-cache'), '--out:' + decoder, decoderSource],
+    {cwd: projectRoot, timeout: 30000});
+  const decode = (wire, previous) => JSON.parse(execFileSync(decoder, [], {
+    input: JSON.stringify({wire, previous}), encoding: 'utf8', timeout: 10000,
+  }));
+  const peerRecords = () => readFileSync(peerLog, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  function ownedPeer() {
+    const rows = execFileSync('ps', ['-eo', 'pid=,ppid=,lstart=,args='], {
+      encoding: 'utf8', env: {...process.env, LC_ALL: 'C'}, timeout: 10000,
+    }).split('\n').map(line => line.match(/^\s*(\d+)\s+(\d+)\s+(.{24})\s+(.+)$/)).filter(Boolean)
+      .map(match => ({pid: Number(match[1]), parent: Number(match[2]), started: match[3], args: match[4]}));
+    const owned = new Set([editorProc.pid]);
+    for (let size = -1; size !== owned.size;) {
+      size = owned.size;
+      for (const row of rows) if (owned.has(row.parent)) owned.add(row.pid);
+    }
+    const peers = rows.filter(row => owned.has(row.pid) &&
+      (row.args === fakeAcpBin || row.args.startsWith(fakeAcpBin + ' ')));
+    assert.equal(peers.length, 1, 'Exactly one real ACP executable is owned by this launcher');
+    return peers[0];
+  }
+  function assertDelivery(records, submitted, sessionId) {
+    const created = records.filter(row => row.source === 'role_instructions');
+    const prompts = records.filter(row => row.source === 'fake_acp');
+    assert.equal(created.length, 1, 'One actual session/new must reach the peer');
+    assert.equal(created[0].sessionId, sessionId);
+    assert.equal(prompts.length, 2, 'Both actual session/prompt requests must reach the peer');
+    const admissions = records.filter(row => !Object.hasOwn(row, 'source'));
+    assert.equal(admissions.length, 2, 'Both daemon admission summaries remain accounted');
+    assert.equal(records.length, 5, 'No unknown receipts or duplicate delivery');
+    for (let i = 0; i < admissions.length; i++) {
+      const row = admissions[i];
+      assert.deepEqual(Object.keys(row).sort(), ['sessionId','promptBlocks','textBlocks','imageBlocks','blocks'].sort());
+      assert.equal(row.sessionId, sessionId);
+      assert.equal(row.promptBlocks, 3);
+      assert.equal(row.textBlocks, 3);
+      assert.equal(row.imageBlocks, 0);
+      assert.equal(row.blocks.length, 3);
+      for (const block of row.blocks) {
+        assert.deepEqual(Object.keys(block).sort(), ['textLen','type']);
+        assert.equal(block.type, 'text');
+        assert.ok(Number.isInteger(block.textLen) && block.textLen > 0);
+      }
+      assert.equal(row.blocks[0].textLen, Buffer.byteLength(submitted[i].messages[0].content[0].text, 'utf8'));
+    }
+    let previous = {};
+    for (let i = 0; i < prompts.length; i++) {
+      const row = prompts[i], request = submitted[i];
+      assert.equal(row.sessionId, sessionId, 'Actual peer session must match browser admission');
+      assert.equal(row.textBlocks, 3, 'User, editor and project context blocks must be delivered');
+      const label = 'EDITOR CONTEXT:\n';
+      assert.equal(row.promptText.split(label).length, 2, 'One labelled real editor context block');
+      const offset = row.promptText.indexOf(label);
+      assert.equal(row.promptText.slice(0, offset).trim(), request.messages[0].content[0].text,
+        'The peer must receive the exact physically submitted prompt');
+      const body = row.promptText.slice(offset + label.length);
+      const project = body.indexOf('PROJECT CONTEXT:');
+      assert.ok(project > 0, 'Real project context follows editor context');
+      const wire = JSON.parse(body.slice(0, project).trim());
+      assert.ok(wire && typeof wire === 'object' && !Array.isArray(wire));
+      if ('fromContext' in wire) {
+        assert.equal(wire.fromContext, createHash('sha1').update(JSON.stringify(previous)).digest('hex').toUpperCase(),
+          'Envelope must identify the exact prior admitted delivered context');
+        assert.ok(wire.current && typeof wire.current === 'object' && !Array.isArray(wire.current));
+        assert.ok(Object.keys(wire).every(key => ['fromContext','current','boundedInherited','protectedV1','protectedV2'].includes(key)));
+        assert.ok(!('protectedV1' in wire && 'protectedV2' in wire));
+      } else if ('completeContext' in wire) {
+        assert.deepEqual(Object.keys(wire), ['completeContext']);
+        assert.ok(wire.completeContext && typeof wire.completeContext === 'object' && !Array.isArray(wire.completeContext));
+      } else {
+        assert.deepEqual(Object.keys(wire).sort(), Object.keys(request.context).sort());
+      }
+      const resolved = decode(wire, previous);
+      assert.deepEqual(resolved, request.context, 'Exact complete browser context must reach the real peer');
+      previous = resolved;
+    }
+  }
   try {
-    await startEditor();
-    const { page, context } = await openEditor();
+    await startEditor({FAKE_ACP_CONTENT_LOG: peerLog});
+    const {page, context} = await openEditor();
     try {
-      // Navigate to a story covered by the built-in brief index so the
-      // brief tab actually shows a covered preview (the review button
-      // is mounted regardless, but its parent container hides itself
-      // when no brief covers the active story).
-      const navigated = await page.evaluate(() => {
-        if (window.__isonimEditor && window.__isonimEditor.selectStoryByName) {
-          return window.__isonimEditor.selectStoryByName(
-            "Task App / Pages",
-            "Inbox",
-          );
-        }
-        return null;
+      const errors = [];
+      page.on('pageerror', error => errors.push(error.message));
+      await page.getByRole('button', {name: 'Focus Pages category', exact: true}).click();
+      const group = page.getByRole('button', {name: 'Toggle Pages stories', exact: true});
+      await group.waitFor({state: 'visible', timeout: 10000});
+      if (await group.getAttribute('aria-expanded') !== 'true') await group.click();
+      const story = page.locator('[data-story-row="Pages/Home / Discover"]');
+      await story.click();
+      assert.equal(await story.getAttribute('aria-current'), 'true');
+      await page.locator('[data-toolbar-cluster="mode"] [data-choice-group-label="Spec"]').click();
+      const spec = page.locator('[data-preview-spec-pane="true"]');
+      await spec.waitFor({state: 'visible', timeout: 10000});
+      assert.equal(await spec.locator('[data-spec-pane-mode]').getAttribute('data-spec-pane-mode'), 'edit');
+      const tiptap = spec.locator('[data-spec-pane-tiptap-host]');
+      await page.waitForFunction(() => document.querySelector('[data-spec-pane-tiptap-host]')?.getAttribute('data-tiptap-editable') === 'true', null, {timeout: 10000});
+      assert.equal((await tiptap.textContent()).trim(), '# Spec\n\nNo brief available for the selected story.');
+      const panel = page.locator('.editor-chat[data-chat-local-id]');
+      const input = panel.locator("textarea[aria-label='Agent prompt']");
+      const send = panel.locator("[aria-label='Send agent prompt']");
+      await input.waitFor({state: 'visible', timeout: 10000});
+      const localId = await panel.getAttribute('data-chat-local-id');
+      assert.ok(localId);
+      const submitted = [], sessions = [];
+      page.on('response', response => {
+        if (new URL(response.url()).pathname === '/api/agent/sessions' && response.request().method() === 'POST') sessions.push(response);
       });
-      if (!navigated) {
-        t.diagnostic(
-          "__isonimEditor.selectStoryByName missing — editor mount may have failed",
-        );
-        return;
+      const prompts = ['Review the selected Home / Discover page and its current editor context.',
+        'Continue this Home / Discover page review in the same conversation.'];
+      let sessionId, peer;
+      for (let turn = 0; turn < prompts.length; turn++) {
+        await input.click();
+        await input.pressSequentially(prompts[turn]);
+        const delivered = page.waitForRequest(request => new URL(request.url()).pathname === '/api/agent/prompts' && request.method() === 'POST', {timeout: 30000});
+        delivered.catch(() => {});
+        await send.click();
+        const request = (await delivered).postDataJSON();
+        submitted.push(request);
+        assert.equal(request.messages[0].content[0].text, prompts[turn]);
+        assert.deepEqual(request.context.selectedStory, {group: 'Pages', name: 'Home / Discover', kind: 3, index: 0});
+        assert.equal(request.context.backend, 'absAcp');
+        assert.equal(request.context.platform, 'pbWeb');
+        for (const field of ['accumulatedEdits','sourceMap','renderedComponentTree','availableTailwindClasses','themeTokens','activeThemeContext']) assert.ok(field in request.context);
+        if (turn === 0) {
+          assert.equal(sessions.length, 1);
+          assert.equal(sessions[0].status(), 200);
+          sessionId = (await sessions[0].json()).sessionId;
+          assert.ok(sessionId);
+          actualSessions.push(sessionId);
+        }
+        assert.equal(request.sessionId, sessionId);
+        const assistant = panel.locator(`[data-chat-role="arAssistant"][data-chat-turn="${turn + 1}"] [data-chat-markdown="paragraph"]`);
+        await assistant.waitFor({state: 'visible', timeout: 10000});
+        await page.waitForFunction(n => Array.from(document.querySelectorAll(`[data-chat-role="arAssistant"][data-chat-turn="${n}"] [data-chat-markdown="paragraph"]`)).some(node => node.textContent === 'M4_HTTP_HELLO_REPLY'), turn + 1, {timeout: 10000});
+        assert.deepEqual(await assistant.allTextContents(), ['M4_HTTP_HELLO_REPLY']);
+        assert.deepEqual(await panel.locator(`[data-chat-role="arUser"][data-chat-turn="${turn + 1}"] [data-chat-markdown="paragraph"]`).allTextContents(), [prompts[turn]]);
+        await page.waitForFunction(() => document.querySelector("[aria-label='Send agent prompt']")?.getAttribute('aria-disabled') === 'false', null, {timeout: 10000});
+        assert.equal(await input.inputValue(), '');
+        assert.equal(await panel.getAttribute('data-chat-local-id'), localId);
+        assert.equal(await page.locator(`[data-ai-assistant-tab="${localId}"]`).getAttribute('aria-selected'), 'true');
+        const identity = ownedPeer();
+        if (turn === 0) peer = identity;
+        else assert.deepEqual(identity, peer, 'Same actual peer PID/start time across both turns');
+        const mounted = await page.evaluate(() => {
+          const vm = globalThis.__isonimEditorVm;
+          const text = value => {
+            if (typeof value === 'string' && value.length > 0) return value;
+            if (!(Array.isArray(value) || value instanceof Uint8Array) || value.length === 0 ||
+                !Array.from(value).every(byte => Number.isInteger(byte) && byte >= 0 && byte <= 255)) {
+              throw new Error('Malformed or missing mounted session ID');
+            }
+            return new TextDecoder('utf-8', {fatal: true}).decode(Uint8Array.from(value));
+          };
+          const localId = text(vm.activeChatId.value);
+          const session = vm.chats.value.find(row => text(row.id) === localId);
+          if (!session) throw new Error('Active mounted session is missing');
+          return {localId, backendId: text(session.vm.controlConversationId.value)};
+        });
+        assert.equal(mounted.localId, localId);
+        assert.equal(mounted.backendId, sessionId);
       }
-      await page.waitForTimeout(500);
-      const briefTabBtn = page.locator("[data-preview-pane-tab='brief']");
-      await briefTabBtn.first().click();
-      await page.waitForTimeout(300);
-
-      const reviewBtn = page.locator(
-        "[data-design-review-review-button='true']",
-      );
-      if ((await reviewBtn.count()) === 0) {
-        t.diagnostic("no covered preview in the demo workspace — skipping");
-        return;
+      assert.equal(sessions.length, 1, 'Second turn must reuse the actual backend session');
+      const records = peerRecords();
+      assertDelivery(records, submitted, sessionId);
+      // Observation/oracle controls poison actual receipts, not transport.
+      for (const poison of ['context', 'session', 'prompt', 'anchor']) {
+        const changed = structuredClone(records);
+        const row = changed.filter(item => item.source === 'fake_acp')[poison === 'anchor' ? 1 : 0];
+        if (poison === 'context') row.promptText = row.promptText.replace('"Home / Discover"', '"Wrong story"');
+        if (poison === 'session') row.sessionId = 'wrong-session';
+        if (poison === 'prompt') row.promptText = 'not delivered' + row.promptText;
+        if (poison === 'anchor') {
+          const label = 'EDITOR CONTEXT:\n', offset = row.promptText.indexOf(label) + label.length;
+          const end = row.promptText.indexOf('PROJECT CONTEXT:', offset);
+          const wire = JSON.parse(row.promptText.slice(offset, end).trim());
+          assert.ok('fromContext' in wire, 'This real follow-up exercises the anchored envelope');
+          wire.fromContext = '0000000000000000000000000000000000000000';
+          row.promptText = row.promptText.slice(0, offset) + JSON.stringify(wire) + row.promptText.slice(end);
+        }
+        assert.notDeepEqual(changed, records, 'Control must change actual evidence');
+        assert.throws(() => assertDelivery(changed, submitted, sessionId), undefined, `${poison} control must fail the exact delivery oracle`);
       }
-      const parentVisible = await reviewBtn
-        .first()
-        .evaluate((el) =>
-          el.parentElement?.getAttribute("data-design-review-visible"),
-        );
-      if (parentVisible !== "true") {
-        t.diagnostic(
-          `review actions parent reports data-design-review-visible=${parentVisible}; ` +
-            "the brief index didn't bake the Task App / Pages / Inbox story — skipping",
-        );
-        return;
-      }
-      await reviewBtn.first().click();
-      await page.waitForFunction(
-        () => document.body.innerText.includes("Review the preview"),
-        { timeout: 10_000 },
-      );
-      const transcript = await page.evaluate(() => document.body.innerText);
-      assert.ok(
-        transcript.includes("Review the preview"),
-        "the composed review prompt should appear in the chat transcript",
-      );
+      assert.deepEqual(errors, []);
+      const log = readFileSync(join(artifacts, 'server.log'), 'utf8');
+      assert.equal(log.split('\n').filter(line => line.includes('agent session created') && line.includes('sessionId=' + sessionId)).length, 1);
+      assert.equal(log.split('\n').filter(line => line.includes('agent prompt submitted') && line.includes('sessionId=' + sessionId)).length, 2);
+      writeFileSync(join(artifacts, 'context-proof.json'), JSON.stringify({sessionId, localId, peer, submitted, records, errors, receiptDirectory: receipts}, null, 2));
     } finally {
-      await bounded(context.close(),30000,'Owned editor context shutdown');
+      await bounded(context.close(), 30000, 'Owned editor context shutdown');
     }
   } finally {
     await stopEditor();
