@@ -1596,7 +1596,7 @@ test-editor-flex-metadata: test-editor-flex-metadata-headless test-editor-flex-m
 test-editor-c4a-headless: build-tailwind
     #!/usr/bin/env bash
     set -euo pipefail
-    for stem in test_editor_section_appearance test_editor_section_component_props test_editor_section_layout test_editor_section_position test_editor_section_stroke test_editor_section_effects; do
+    for stem in test_editor_section_appearance test_editor_section_component_props test_editor_section_layout test_editor_section_position test_editor_section_typography test_editor_section_stroke test_editor_section_effects; do
       nim c -r --out:build/"$stem" tests/"$stem".nim
       nim js -d:nodejs --out:build/"$stem".js tests/"$stem".nim
       python3 tools/run_nim_js_test.py build/"$stem".js
@@ -1605,6 +1605,11 @@ test-editor-c4a-headless: build-tailwind
 # Actual source/compiler/preview/undo controls; each original GUI bound retained.
 test-editor-c4a-compounds: isonim-review-build editor-inspector-build
     timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_inspector_compounds_gui.mjs
+
+# Additive bounded ordinary-property matrix: 39 real source/compiler edits,
+# undo/redo/reload and refusal. Original compounds/gesture bounds stay 180s.
+test-editor-c4a-properties: isonim-review-build editor-inspector-build
+    timeout --signal=TERM --kill-after=15s 240s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_inspector_properties_gui.mjs
 
 test-editor-c4a-gestures: isonim-review-build editor-inspector-build
     timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_inspector_gestures_gui.mjs
@@ -1616,7 +1621,7 @@ test-editor-c4a-grip: isonim-review-build build-tailwind
     timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_source_style_gui.mjs
     timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_source_style_values_gui.mjs
 
-test-editor-c4a: test-editor-c4a-headless test-editor-c4a-compounds test-editor-c4a-gestures test-editor-c4a-color test-editor-c4a-grip
+test-editor-c4a: test-editor-c4a-headless test-editor-c4a-compounds test-editor-c4a-properties test-editor-c4a-gestures test-editor-c4a-color test-editor-c4a-grip
 
 # Source ownership presentation; real native/JS signals and shell, no transports.
 test-editor-source-labels: build-tailwind

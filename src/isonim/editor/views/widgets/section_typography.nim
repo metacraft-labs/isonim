@@ -41,7 +41,7 @@ func isTextLikeTag*(tag: string): bool =
 
 proc mountSectionTypography*[R, E](r: R; parent: E; vm: EditorVM) =
   let fontFamily = createSignal("Inter")
-  let fontWeight = createSignal("regular")
+  let fontWeight = createSignal("400")
   let fontSize = createSignal(16.0)
   let lineHeight = createSignal(1.5)
   let letterSpacing = createSignal(0.0)
@@ -61,13 +61,13 @@ proc mountSectionTypography*[R, E](r: R; parent: E; vm: EditorVM) =
     let weight = findPropertyValue(props, "font-weight", "400")
     fontWeight.val =
       case weight
-      of "100", "thin": "thin"
-      of "300", "light": "light"
-      of "400", "normal", "regular": "regular"
-      of "500", "medium": "medium"
-      of "600", "semibold": "semibold"
-      of "700", "bold": "bold"
-      else: "regular"
+      of "100", "thin": "100"
+      of "300", "light": "300"
+      of "400", "normal", "regular": "400"
+      of "500", "medium": "500"
+      of "600", "semibold": "600"
+      of "700", "bold": "700"
+      else: weight
     fontSize.val = parseLeadingFloat(findPropertyValue(props, "font-size",
       "16"), 16.0)
     lineHeight.val = parseLeadingFloat(findPropertyValue(props, "line-height",
@@ -106,12 +106,12 @@ proc mountSectionTypography*[R, E](r: R; parent: E; vm: EditorVM) =
   discard r.mountPropertyRow(parent, propertyRowChoice(
     name = "Font weight", value = fontWeight,
     options = @[
-      (label: "Thin", value: "thin"),
-      (label: "Light", value: "light"),
-      (label: "Regular", value: "regular"),
-      (label: "Medium", value: "medium"),
-      (label: "Semibold", value: "semibold"),
-      (label: "Bold", value: "bold")],
+      (label: "Thin", value: "100"),
+      (label: "Light", value: "300"),
+      (label: "Regular", value: "400"),
+      (label: "Medium", value: "500"),
+      (label: "Semibold", value: "600"),
+      (label: "Bold", value: "700")],
     bindingReactive = vm.inspectorBindingThunk("font-weight"),
     onBindRequest = vm.inspectorBindRequestHandler("font-weight"),
     onDetachRequest = vm.inspectorDetachRequestHandler("font-weight"),
