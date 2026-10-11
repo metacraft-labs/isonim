@@ -5059,7 +5059,10 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
   # "New chat" / "New chat 2" / ... via ``createChatSession``.
   discard panelRoot
 
-proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
+proc renderEditorShell*[R, E](r: R; vm: EditorVM;
+    onSpecPaneMounted: proc(vm: spec_pane_view.SpecPaneVM) {.closure.} = nil): E =
+  ## Optionally observe the actual Spec VM once per mount. Its subscriptions
+  ## belong to this mount's owner; the default nil observer changes no behavior.
   ## Top-level editor layout: [sidebar | center column | inspector chat] +
   ## status bar. The global title bar and the M57 left/right edge strips
   ## are gone — backend / viewport / mode chips now live in the shared
@@ -5179,6 +5182,8 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
       cancelEdits(specPaneVm),
   )
   spec_pane_view.mountSpecPane[R, E](r, specPaneEl, specPaneVm, specPaneCallbacks)
+  if onSpecPaneMounted != nil:
+    onSpecPaneMounted(specPaneVm)
   # Reactively feed the active brief's markdown into the spec pane VM.
   # ``resolveBriefId`` follows the active story + selected backend.
   # We prepend the brief's ``title`` as an H1 so the rendered TipTap
