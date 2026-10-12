@@ -231,6 +231,39 @@ suite "Phase E.3 variable_picker mount":
       check usage != nil
       dispose()
 
+  test "each category header toggles its own category":
+    ## The header handlers are bound in a loop over the categories. A
+    ## Nim closure made in a loop body shares one environment across
+    ## the iterations, so a naive binding makes every header toggle the
+    ## LAST category.
+    createRoot do (dispose: proc()):
+      let vm = createEditorVM()
+      seedTokens(vm)
+      let state = createVariablePickerState()
+      let (r, root) = mkRoot()
+      discard r.mountVariablePicker(root, vm, state)
+      openVariablePickerWithRect(state, TargetKey, 0, 0, 0, 0)
+
+      for (slug, category) in [("colour", vpcColour),
+                               ("spacing", vpcSpacing),
+                               ("radius", vpcRadius)]:
+        # The picker re-renders on every toggle, so look the header up
+        # afresh each time.
+        let header = findByAttr(root,
+          "data-variable-picker-category-header", slug)
+        check header != nil
+        let before = state.expandedCategories.val
+        fireEvent(header, "click")
+        let after = state.expandedCategories.val
+        for other in [vpcColour, vpcSpacing, vpcRadius]:
+          if other == category:
+            check after.getOrDefault(other, true) !=
+              before.getOrDefault(other, true)
+          else:
+            check after.getOrDefault(other, true) ==
+              before.getOrDefault(other, true)
+      dispose()
+
   test "typing into the search input filters visible rows":
     createRoot do (dispose: proc()):
       let vm = createEditorVM()

@@ -421,6 +421,42 @@ proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
     if not outcome.ok:
       rejected.val = rejected.val + 1
 
+  proc scopeOption(choice: SourceScopeChoice;
+                   isSelected: bool): CompactChoiceOption =
+    ## Built in its own proc, not inline in ``scopeOptions``'s loop: a
+    ## closure created in a Nim loop body shares one environment across
+    ## the iterations, so every chip's ``onChoose`` would act on the
+    ## LAST choice while its label still described its own.
+    let kind = choice.kind
+    let editable = choice.editable
+    let risk = choice.riskLevel.sourceScopeRiskLabel()
+    CompactChoiceOption(
+      label: choice.label & " " & risk,
+      shortLabel: kind.sourceScopeAbbrev(),
+      # Same phrasing as the old row so a caller (or a test) that
+      # knows one knows the other.
+      ariaLabel: "Apply " & kind.sourceScopeApplyLabel() &
+        " scope for " & capturedProperty,
+      selected: isSelected,
+      enabled: editable,
+      dataAttrs: @[("data-source-scope-editable",
+        if editable: "true" else: "false"),
+        ("data-source-scope-kind", $kind)],
+      onChoose: (proc() =
+        if editable:
+          selected.val = kind
+          userPicked.val = true
+          message.val = ""
+        else:
+          # A non-editable scope is not silently inert. The old row
+          # made the chip unclickable and said nothing; saying why
+          # costs one line and is the difference between "this
+          # control is broken" and "this scope is read-only".
+          message.val =
+            if choice.reason.len > 0: choice.reason
+            else: "This scope has no source-backed writer in the " &
+              "project schema."))
+
   proc scopeOptions(): seq[CompactChoiceOption] =
     let choices = currentChoices()
     if choices.len == 0:
@@ -433,37 +469,7 @@ proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
         break
     result = @[]
     for i in orderedScopeIndexes(choices, selectedIndex):
-      let choice = choices[i]
-      let kind = choice.kind
-      let editable = choice.editable
-      let label = choice.label
-      let risk = choice.riskLevel.sourceScopeRiskLabel()
-      result.add CompactChoiceOption(
-        label: label & " " & risk,
-        shortLabel: kind.sourceScopeAbbrev(),
-        # Same phrasing as the old row so a caller (or a test) that
-        # knows one knows the other.
-        ariaLabel: "Apply " & kind.sourceScopeApplyLabel() &
-          " scope for " & capturedProperty,
-        selected: i == selectedIndex,
-        enabled: editable,
-        dataAttrs: @[("data-source-scope-editable",
-          if editable: "true" else: "false"),
-          ("data-source-scope-kind", $kind)],
-        onChoose: (proc() =
-          if editable:
-            selected.val = kind
-            userPicked.val = true
-            message.val = ""
-          else:
-            # A non-editable scope is not silently inert. The old row
-            # made the chip unclickable and said nothing; saying why
-            # costs one line and is the difference between "this
-            # control is broken" and "this scope is read-only".
-            message.val =
-              if choice.reason.len > 0: choice.reason
-              else: "This scope has no source-backed writer in the " &
-                "project schema."))
+      result.add scopeOption(choices[i], i == selectedIndex)
 
   InspectorRowWiring(
     cssProperty: capturedProperty,
