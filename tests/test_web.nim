@@ -538,6 +538,9 @@ import isonim/editor/views/choice_row
 proc dispatchChoiceEvent[N](node: N; event, key: cstring): bool
   {.importjs: "((n,t,k) => { const e = {key:k, defaultPrevented:false, preventDefault(){this.defaultPrevented=true;}}; (n._eventListeners[t] || []).slice().forEach(h => h(e)); return e.defaultPrevented; })(#, #, #)".}
 
+proc dispatchPlainChoiceEvent[N](node: N): bool
+  {.importjs: "((n) => { const e = new Event('keydown', {cancelable:true}); (n._eventListeners.keydown || []).slice().forEach(h => h(e)); return e.defaultPrevented; })(#)".}
+
 template checkChoiceDom(R, N: typedesc) =
   createRoot proc(dispose: proc()) =
     var calls = 0
@@ -548,6 +551,8 @@ template checkChoiceDom(R, N: typedesc) =
     for chip in row.optionNodes:
       let before = calls
       discard dispatchChoiceEvent(chip, "click", "")
+      check calls == before + 1
+      check not dispatchPlainChoiceEvent(chip)
       check calls == before + 1
       check not dispatchChoiceEvent(chip, "keydown", "Tab")
       check calls == before + 1

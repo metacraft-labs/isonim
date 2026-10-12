@@ -265,6 +265,8 @@ test-hcr-shim:
 # hiding: this lane never got past `test_signals` while the siblings were
 # missing, so it had never reached `test_dsl` to fail there.
 test-js: build-tailwind
+    nim js -r tests/test_choice_row_activation.nim
+    nim js -r tests/test_loop_accessors.nim
     nim js -r tests/test_signals.nim
     nim js -r tests/test_effects.nim
     nim js -r tests/test_clock.nim

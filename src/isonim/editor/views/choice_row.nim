@@ -92,15 +92,26 @@ proc compactChoiceHandler(enabled: bool; callback: proc()): proc() =
     if capturedEnabled and capturedCallback != nil:
       capturedCallback()
 
+when defined(js):
+  import std/dom
+  import isonim/web/dom_api
+
+  proc readChoiceKey[E: dom.Event | dom_api.Event](ev: E): cstring
+    {.importjs: "(#.key || '')".}
+
+  proc choiceKey(ev: dom.Event | dom_api.Event): string =
+    # A plain Event has no key; normalize it before Nim string conversion.
+    $readChoiceKey(ev)
+
+proc choiceKey[E](ev: E): string =
+  ev.key
+
 proc bindChoiceKeyboard[R, E](r: R; node: E; enabled: bool; choose: proc()) =
+  mixin preventDefault
   # The click path is installed by the DSL. Keydown needs the event payload:
   # a no-argument callback would also choose while tabbing through the strip.
   r.addEventListener(node, "keydown", proc(ev: auto) =
-    when defined(js) and not compiles(ev.key):
-      proc keyOf(event: typeof(ev)): cstring {.importjs: "#.key".}
-      let key = $keyOf(ev)
-    else:
-      let key = $ev.key
+    let key = choiceKey(ev)
     if enabled and key in ["Enter", " "]:
       when compiles(ev.preventDefault()):
         ev.preventDefault()

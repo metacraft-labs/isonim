@@ -257,3 +257,7 @@ __pycache__/
 
 # CI logs (just ci-test-nginx)
 /test-logs/
+
+tests/test_choice_row_activation
+tests/test_loop_accessors
+tests/test_editor_loop_handlers

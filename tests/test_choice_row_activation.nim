@@ -26,7 +26,7 @@ suite "Compact choice activation":
           let before = calls
           node.fireEvent("click")
           check calls == before + int(enabled)
-          for key in ["Tab", "Escape", "ArrowRight", "Enter", " "]:
+          for key in ["", "Tab", "Escape", "ArrowRight", "Enter", " "]:
             let beforeKey = calls
             let ev = MockEvent(key: key)
             node.fireEventWith("keydown", ev)
