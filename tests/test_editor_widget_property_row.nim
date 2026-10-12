@@ -624,11 +624,6 @@ suite "property_row scope chips":
         chosen = @[]
         commits = @[]
         fireEvent(chip, "click")
-        # ``choice_row`` currently registers a chip's handler twice (the
-        # ``onclick`` attribute and an explicit listener), so one click
-        # runs it twice. What this test pins is WHICH callback runs.
-        check chosen.len > 0
-        check chosen.allIt(it == name)
-        check commits.len == chosen.len
-        check commits.allIt(it == "20px")
+        check chosen == @[name]
+        check commits == @["20px"]
       dispose()

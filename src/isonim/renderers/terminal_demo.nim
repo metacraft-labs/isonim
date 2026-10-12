@@ -21,6 +21,7 @@ type
     `type`*: string
     target*: TerminalNode
     currentTarget*: TerminalNode
+    key*: string             ## KeyboardEvent.key spelling for activation keys.
     defaultPrevented*: bool
     propagationStopped*: bool
 

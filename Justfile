@@ -849,6 +849,7 @@ test-editor:
     nim c -r tests/test_editor_agent_harbor.nim
     nim c -r tests/test_editor_user_project.nim
     nim c -r tests/test_editor_shell_views.nim
+    nim c -r tests/test_choice_row_activation.nim
     nim c -r tests/test_editor_task_views.nim
     nim c -r tests/test_editor_interactivity.nim
     nim c -r tests/test_editor_responsive.nim

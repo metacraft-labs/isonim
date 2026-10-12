@@ -92,6 +92,23 @@ proc compactChoiceHandler(enabled: bool; callback: proc()): proc() =
     if capturedEnabled and capturedCallback != nil:
       capturedCallback()
 
+proc bindChoiceKeyboard[R, E](r: R; node: E; enabled: bool; choose: proc()) =
+  # The click path is installed by the DSL. Keydown needs the event payload:
+  # a no-argument callback would also choose while tabbing through the strip.
+  r.addEventListener(node, "keydown", proc(ev: auto) =
+    when defined(js) and not compiles(ev.key):
+      proc keyOf(event: typeof(ev)): cstring {.importjs: "#.key".}
+      let key = $keyOf(ev)
+    else:
+      let key = $ev.key
+    if enabled and key in ["Enter", " "]:
+      when compiles(ev.preventDefault()):
+        ev.preventDefault()
+      elif defined(js):
+        proc prevent(event: typeof(ev)) {.importjs: "#.preventDefault()".}
+        prevent(ev)
+      choose())
+
 func chipIdentity*(option: CompactChoiceOption): string =
   ## M58 chip-set diff identity. `CompactChoiceOption` has no stable id
   ## field; `(label, shortLabel)` is the best-available natural key for
@@ -104,8 +121,8 @@ func chipIdentity*(option: CompactChoiceOption): string =
 proc buildColumnChip[R, E](r: R; option: CompactChoiceOption;
     chipWidth, chipHeight: string): E =
   ## Build a single primary-strip chip for the vertical column. Returns
-  ## the chip's outer element with text content + onclick / onkeydown
-  ## handlers already installed by the `ui` macro. The caller is
+  ## the chip's outer element with text content, a DSL click handler and
+  ## an activation-key listener. The caller is
   ## responsible for any per-chip live reactive bindings.
   ##
   ## M-EVP-14: each chip is a real pill — rounded radius, padding
@@ -148,9 +165,9 @@ proc buildColumnChip[R, E](r: R; option: CompactChoiceOption;
           white_space = "nowrap", overflow = "hidden",
           text_overflow = "ellipsis",
           transition = "background-color 120ms ease, color 120ms ease, border-color 120ms ease",
-          onclick = choose,
-          onkeydown = choose):
+          onclick = choose):
       text option.visibleText()
+  bindChoiceKeyboard(r, result, enabled and option.onChoose != nil, choose)
   for (key, value) in option.dataAttrs:
     r.setAttribute(result, key, value)
 
@@ -178,8 +195,7 @@ proc buildColumnPopupChip[R, E](r: R; option: CompactChoiceOption): E =
           color = (if enabled: textPrimary else: textDim),
           font_size = "10px",
           cursor = (if enabled: "pointer" else: "default"),
-          onclick = choose,
-          onkeydown = choose):
+          onclick = choose):
       span(color = (if selected: accent else: textMuted),
             white_space = "nowrap", overflow = "hidden",
             text_overflow = "ellipsis"):
@@ -187,6 +203,7 @@ proc buildColumnPopupChip[R, E](r: R; option: CompactChoiceOption): E =
       span(white_space = "nowrap", overflow = "hidden",
             text_overflow = "ellipsis"):
         text option.label
+  bindChoiceKeyboard(r, result, enabled and option.onChoose != nil, choose)
   for (key, value) in option.dataAttrs:
     r.setAttribute(result, key, value)
 
@@ -222,14 +239,11 @@ proc buildRowChip[R, E](r: R; option: CompactChoiceOption): E =
           cursor = (if enabled: "pointer" else: "default"),
           white_space = "nowrap", overflow = "hidden",
           text_overflow = "ellipsis",
-          onclick = choose,
-          onkeydown = choose):
+          onclick = choose):
       text option.visibleText()
+  bindChoiceKeyboard(r, result, enabled and option.onChoose != nil, choose)
   for (key, value) in option.dataAttrs:
     r.setAttribute(result, key, value)
-  if enabled and option.onChoose != nil:
-    r.addEventListener(result, "click", option.onChoose)
-    r.addEventListener(result, "keydown", option.onChoose)
 
 proc buildRowPopupChip[R, E](r: R; option: CompactChoiceOption): E =
   ## Build a single overflow-popup row for the horizontal row.
@@ -253,8 +267,7 @@ proc buildRowPopupChip[R, E](r: R; option: CompactChoiceOption): E =
           color = (if enabled: textPrimary else: textDim),
           font_size = "10px",
           cursor = (if enabled: "pointer" else: "default"),
-          onclick = choose,
-          onkeydown = choose):
+          onclick = choose):
       span(color = (if selected: accent else: textMuted),
             white_space = "nowrap", overflow = "hidden",
             text_overflow = "ellipsis"):
@@ -262,11 +275,9 @@ proc buildRowPopupChip[R, E](r: R; option: CompactChoiceOption): E =
       span(white_space = "nowrap", overflow = "hidden",
             text_overflow = "ellipsis"):
         text option.label
+  bindChoiceKeyboard(r, result, enabled and option.onChoose != nil, choose)
   for (key, value) in option.dataAttrs:
     r.setAttribute(result, key, value)
-  if enabled and option.onChoose != nil:
-    r.addEventListener(result, "click", option.onChoose)
-    r.addEventListener(result, "keydown", option.onChoose)
 
 # ---- horizontal row (static + thunk overloads) -----------------------------
 
