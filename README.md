@@ -233,6 +233,24 @@ IsoNim is layered so each concern is isolated:
 
 ## DSL Gotchas
 
+### Build per-item callbacks in a helper proc
+
+On Nim 2.2.4, both C and JS closures created in a `for` body share the
+loop's environment. A loop-body `let` does not freeze the value. Pass the
+item into a helper proc, or use `std/sugar.closureScope`, before creating
+callbacks or effects that outlive the iteration:
+
+```nim
+proc filterHandler(value: Filter): proc() =
+  result = proc() = store.setFilter(value)
+
+for value in filters:
+  renderer.addEventListener(buttonFor(value), "click", filterHandler(value))
+```
+
+When an effect captures both an item and its rendered node, build and bind
+the whole item in the helper so both retain their own identities.
+
 ### Bare proc calls inside `ui()` blocks can be silently dropped
 
 The DSL macro recognises an `nnkCall` / `nnkCommand` node as a DSL

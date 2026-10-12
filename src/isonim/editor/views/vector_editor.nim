@@ -709,7 +709,8 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
         r.setStyle(carouselNext, "opacity", if atLast: "0.4" else: "1")
         # Rebuild dot indicators.
         r.clearChildren(carouselDots)
-        for i in 0 ..< count:
+        proc appendDot(i: int) =
+          # A proc call gives this item its own callback/effect environment.
           let capturedIdx = i
           let isActive = i == idx
           var dotNode: E
@@ -730,5 +731,8 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
           r.addEventListener(dotNode, "keydown", proc() =
             capturedVm.vectorEditorUsageIndex.val = capturedIdx)
           r.appendChild(carouselDots, dot)
+
+        for i in 0 ..< count:
+          appendDot(i)
 
   container

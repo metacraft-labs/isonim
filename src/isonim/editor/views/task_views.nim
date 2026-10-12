@@ -163,7 +163,8 @@ proc renderTaskApp*[R, E](r: R; vm: TaskAppVM): E =
     let options = vm.filterBar.options.val
     # Reactive filter pill styling handled by effect
 
-  for filt in [fmAll, fmActive, fmCompleted]:
+  proc appendFilter(filt: FilterMode) =
+    # A proc call gives this item its own callback/effect environment.
     let label = case filt
       of fmAll: "All"
       of fmActive: "Active"
@@ -187,6 +188,9 @@ proc renderTaskApp*[R, E](r: R; vm: TaskAppVM): E =
 
     r.addEventListener(btn, "click", proc() = vm.store.setFilter(filtCapture))
     r.appendChild(filterBar, btn)
+
+  for filt in [fmAll, fmActive, fmCompleted]:
+    appendFilter(filt)
 
   r.appendChild(root, filterBar)
 

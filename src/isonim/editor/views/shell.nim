@@ -906,7 +906,8 @@ proc renderStatusBar[R, E](r: R; vm: EditorVM): E =
           text "No selection"
       r.appendChild(breadcrumbNode, empty)
     else:
-      for i, part in parts:
+      proc appendBreadcrumb(i: int; part: StatusBreadcrumbPart) =
+        # A proc call gives this item its own callback/effect environment.
         let label = part.label
         # Three element states, three fills. The selected segment is the
         # only one wearing the editor's selection colour; ancestors sit
@@ -964,6 +965,9 @@ proc renderStatusBar[R, E](r: R; vm: EditorVM): E =
             span(color = textDim):
               text "/"
           r.appendChild(breadcrumbNode, sep)
+
+      for i, part in parts:
+        appendBreadcrumb(i, part)
 
 proc bindSceneGraphRow[R, E](vm: EditorVM; r: R; node: E; rowId: string) =
   ## Route a scene-graph row click into the ONE selection the editor has.
@@ -4470,7 +4474,8 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
       let sessions = cvm.chats.val
       let activeId = cvm.activeChatId.val
 
-      for session in sessions:
+      proc appendSession(session: ChatSession) =
+        # A proc call gives this item its own callback/effect environment.
         let sessionId = session.id
         let title = session.title.val
         let isActive = sessionId == activeId
@@ -4590,6 +4595,9 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
               of asReady: "#22C55E"
               of asError: "#EF4444"
             r.setStyle(dot, "background-color", color)
+
+      for session in sessions:
+        appendSession(session)
 
     createRenderEffect proc() =
       discard cvm.chats.val

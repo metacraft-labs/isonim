@@ -268,7 +268,8 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
     "Trace where this padding value is shared across the design system",
     "Generate a missing variant story for this component"
   ]
-  for prompt in suggestions:
+  proc appendPrompt(prompt: string) =
+    # A proc call gives this item its own callback/effect environment.
     let promptText = $prompt
     let chip = ui(r):
       tdiv(
@@ -296,6 +297,9 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
     r.addEventListener(chip, "keydown", proc() =
       vm.chat.inputText.val = promptText)
     r.appendChild(messagesArea, chip)
+
+  for prompt in suggestions:
+    appendPrompt(prompt)
 
   for msg in messages:
     let isUser = msg.kind == cmkUser
@@ -388,7 +392,8 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
     if vm.review.annotations.val.len == 0:
       appendReviewSummary("No review comments")
     else:
-      for annotation in vm.review.annotations.val:
+      proc appendAnnotation(annotation: ReviewAnnotation) =
+        # A proc call gives this item its own callback/effect environment.
         let annotationId = annotation.id
         let included = annotation.includedInPrompt
         let state = annotation.state
@@ -467,11 +472,15 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
         r.appendChild(card, actions)
         r.appendChild(reviewLoopArea, card)
 
+      for annotation in vm.review.annotations.val:
+        appendAnnotation(annotation)
+
     appendReviewHeading("Permission Requests")
     if vm.chat.permissionRequests.val.len == 0:
       appendReviewSummary("No pending agent permissions")
     else:
-      for request in vm.chat.permissionRequests.val:
+      proc appendPermission(request: AgentPermissionRequest) =
+        # A proc call gives this item its own callback/effect environment.
         let requestId = request.id
         let requestSummary = request.title & " - " &
           permissionStatusText(request.status)
@@ -516,11 +525,15 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
         r.appendChild(row, actions)
         r.appendChild(reviewLoopArea, row)
 
+      for request in vm.chat.permissionRequests.val:
+        appendPermission(request)
+
     appendReviewHeading("Agent Proposed Edits")
     if vm.chat.proposedEdits.val.len == 0:
       appendReviewSummary("No proposed agent edits")
     else:
-      for proposal in vm.chat.proposedEdits.val:
+      proc appendProposal(proposal: AgentEditProposal) =
+        # A proc call gives this item its own callback/effect environment.
         let proposalId = proposal.id
         let proposalSummary = proposal.summary & " - " &
           proposalStatusText(proposal.status) & " - " &
@@ -636,6 +649,9 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
           r.appendChild(actions, rebaseBtn)
         r.appendChild(card, actions)
         r.appendChild(reviewLoopArea, card)
+
+      for proposal in vm.chat.proposedEdits.val:
+        appendProposal(proposal)
 
   syncReviewLoop()
   createRenderEffect proc() =
