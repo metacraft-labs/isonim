@@ -1636,7 +1636,15 @@ test-editor-c4a-grip: isonim-review-build build-tailwind
     timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_source_style_gui.mjs
     timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_source_style_values_gui.mjs
 
-test-editor-c4a: test-editor-selection-keys test-editor-c4a-headless test-editor-c4a-compounds test-editor-c4a-properties test-editor-c4a-remaining test-editor-inline-preview test-editor-c4a-gestures test-editor-c4a-color test-editor-c4a-grip
+# Undo/redo restores exactly the source lines each written inspector edit
+# wrote, refuses unsafe restorations, and never re-targets a sibling edit that
+# shares the value text. Native and strict executed Node JS.
+test-editor-source-write-receipts:
+    nim c -r --out:build/test_editor_source_write_receipts tests/test_editor_source_write_receipts.nim
+    nim js -d:nodejs --out:build/test_editor_source_write_receipts.js tests/test_editor_source_write_receipts.nim
+    python3 tools/run_nim_js_test.py build/test_editor_source_write_receipts.js
+
+test-editor-c4a: test-editor-selection-keys test-editor-source-write-receipts test-editor-c4a-headless test-editor-c4a-compounds test-editor-c4a-properties test-editor-c4a-remaining test-editor-inline-preview test-editor-c4a-gestures test-editor-c4a-color test-editor-c4a-grip
 
 # Source ownership presentation; real native/JS signals and shell, no transports.
 test-editor-source-labels: build-tailwind

@@ -148,6 +148,8 @@ type
     conflicts*: Signal[seq[CSSSourceConflict]]
     undoStack*: Signal[seq[CSSPropertyEditTransaction]]
     redoStack*: Signal[seq[CSSPropertyEditTransaction]]
+    lastHistoryId*: int
+      ## Last ``SourceEditPlan.historyId`` handed to a history entry.
     hasElement*: Memo[bool]
     properties*: Memo[seq[PropertyInfo]]
     filteredLayers*: Memo[seq[ElementLayerRow]]
@@ -3515,6 +3517,17 @@ proc failCommand(editor: EditorVM; kind: EditorCommandKind;
   editor.setCommandState(result)
 
 proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardable.}
+proc inspectorHistoryRefusal(editor: EditorVM; redo: bool): PropertyEditDiagnostic
+
+proc refuseInspectorHistory(editor: EditorVM; kind: EditorCommandKind;
+    refusal: PropertyEditDiagnostic): EditorCommandState =
+  ## A refused undo/redo changes nothing but what it reports: the history,
+  ## the journal, the preview and the file stay exactly as they were.
+  editor.inspector.editDiagnostics.val = @[refusal]
+  editor.workspaceEditStage.val = wesFailed
+  editor.workspaceEditDiagnostics.val = @[workspaceDiagnostic(wedSourceConflict,
+    refusal.message, file = refusal.file, property = refusal.property)]
+  editor.failCommand(kind, refusal.message)
 proc sendAgentPrompt*(editor: EditorVM): bool {.discardable.}
 
 proc setEditMode*(editor: EditorVM; mode: EditMode) =
@@ -3702,17 +3715,25 @@ proc runEditorCommand*(editor: EditorVM;
   of eckUndo:
     if editor.inspectorSourceHistory != nil and editor.inspectorSourceHistory(false):
       discard
-    elif not editor.inspector.undoCssPropertyEdit():
-      if not editor.undoVectorEdit():
-        if not editor.undoFoundationTokenEdit():
-          discard editor.undoComponentVariantEdit()
+    else:
+      let refusal = editor.inspectorHistoryRefusal(redo = false)
+      if refusal.message.len > 0:
+        return editor.refuseInspectorHistory(kind, refusal)
+      if not editor.inspector.undoCssPropertyEdit():
+        if not editor.undoVectorEdit():
+          if not editor.undoFoundationTokenEdit():
+            discard editor.undoComponentVariantEdit()
   of eckRedo:
     if editor.inspectorSourceHistory != nil and editor.inspectorSourceHistory(true):
       discard
-    elif not editor.inspector.redoCssPropertyEdit():
-      if not editor.redoVectorEdit():
-        if not editor.redoFoundationTokenEdit():
-          discard editor.redoComponentVariantEdit()
+    else:
+      let refusal = editor.inspectorHistoryRefusal(redo = true)
+      if refusal.message.len > 0:
+        return editor.refuseInspectorHistory(kind, refusal)
+      if not editor.inspector.redoCssPropertyEdit():
+        if not editor.redoVectorEdit():
+          if not editor.redoFoundationTokenEdit():
+            discard editor.redoComponentVariantEdit()
   of eckToggleSidebar:
     editor.togglePanel(epSidebar)
   of eckToggleInspector:
@@ -4097,28 +4118,58 @@ func sameSourceJournalEntry(a, b: SourceEditPlan): bool =
     a.newValue == b.newValue and a.previewBefore == b.previewBefore and
     a.previewAfter == b.previewAfter
 
+func replacesJournaledPlan(plan, existing: SourceEditPlan): bool =
+  ## A later edit to a slot replaces the earlier pending plan for it -- except
+  ## a pending restoration of an already-written edit. That one removes text
+  ## the file really contains; dropping it would leave the undone edit on
+  ## disk while the model says it is gone.
+  plan.sameSourceJournalSlot(existing) and not existing.restoreWrite.recorded
+
 proc journalSourceEdit*(inspector: InspectorVM; plan: SourceEditPlan;
     replaceExisting = true) =
   ## Single source-edit journal used by manual controls and accepted AI plans.
-  inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
-      SourceEditPlan] =
-    result = @[]
-    for existing in prev:
-      if replaceExisting and existing.sameSourceJournalSlot(plan):
-        continue
-      result.add existing
-    result.add plan
-  inspector.sourcePreviews.update proc(prev: seq[CSSSourcePreview]): seq[
-      CSSSourcePreview] =
-    result = @[]
-    for existing in prev:
-      if replaceExisting and existing.plan.sameSourceJournalSlot(plan):
-        continue
-      result.add existing
-    result.add CSSSourcePreview(plan: plan, beforeText: plan.previewBefore,
-      afterText: plan.previewAfter)
+  var displaced: seq[int] = @[]
+  var kept: seq[SourceEditPlan] = @[]
+  for existing in inspector.pendingSourceEdits.val:
+    if replaceExisting and plan.replacesJournaledPlan(existing):
+      if existing.historyId > 0 and existing.historyId != plan.historyId:
+        displaced.add existing.historyId
+      continue
+    kept.add existing
+  kept.add plan
+  inspector.pendingSourceEdits.val = kept
+  var previews: seq[CSSSourcePreview] = @[]
+  for existing in inspector.sourcePreviews.val:
+    if replaceExisting and plan.replacesJournaledPlan(existing.plan):
+      continue
+    previews.add existing
+  previews.add CSSSourcePreview(plan: plan, beforeText: plan.previewBefore,
+    afterText: plan.previewAfter)
+  inspector.sourcePreviews.val = previews
+  if displaced.len > 0:
+    # The replaced plan's edit will never be written on its own, so its
+    # history entry must not be undone as if it had been. See `superseded`.
+    var stack = inspector.undoStack.val
+    for i in 0 ..< stack.len:
+      if stack[i].sourceEdit.historyId in displaced:
+        stack[i].superseded = true
+    inspector.undoStack.val = stack
   inspector.conflicts.val = @[]
   inspector.editDiagnostics.val = @[]
+
+proc stampHistoryEntry(inspector: InspectorVM; plan: var SourceEditPlan) =
+  ## Give a new history entry's plan its identity. See `historyId`.
+  if plan.historyId == 0:
+    inc inspector.lastHistoryId
+    plan.historyId = inspector.lastHistoryId
+
+proc dropPendingHistoryPlans(inspector: InspectorVM; historyId: int) =
+  inspector.pendingSourceEdits.val =
+    inspector.pendingSourceEdits.val.filterIt(it.historyId != historyId)
+  inspector.sourcePreviews.val =
+    inspector.sourcePreviews.val.filterIt(it.plan.historyId != historyId)
+  if inspector.pendingSourceEdits.val.len == 0:
+    inspector.conflicts.val = @[]
 
 proc removeJournaledSourceEdit*(inspector: InspectorVM; plan: SourceEditPlan) =
   inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
@@ -4326,7 +4377,8 @@ proc preparePropertyEdit*(inspector: InspectorVM;
 proc acceptPreparedPropertyEdit*(inspector: InspectorVM; prepared: PreparedPropertyEdit;
     saved = false; applySelection = true) =
   if prepared.outcome.status != pesAccepted: return
-  let transaction = prepared.transaction
+  var transaction = prepared.transaction
+  inspector.stampHistoryEntry(transaction.sourceEdit)
   # A completed source write belongs to its captured element. Changing selection
   # while a build runs must not write the result into the new element's controls.
   if applySelection and inspector.selectedElement.val.fallbackElementId() == transaction.beforeElement.fallbackElementId():
@@ -4461,18 +4513,209 @@ proc applyPendingSourceEdits*(inspector: InspectorVM;
     inspector.clearSourceEditJournal()
 
 func invertPlan(plan: SourceEditPlan): SourceEditPlan =
-  ## The edit that puts the file back the way it was.
+  ## The edit that puts a VALUE-VERIFIED write back the way it was.
   ##
   ## Same target, values swapped. `expectedOldValue` becomes what the original
   ## edit wrote, because that is what is on disk now -- the conflict check has
   ## to be told the truth about the state it is overwriting, or an undo would
   ## be refused as a stale write.
+  ##
+  ## Only valid when the forward plan itself verified a value
+  ## (`expectedOldValue` non-empty), i.e. when the writer rewrote text it
+  ## found. A forward plan with no expectation is written by APPENDING a
+  ## declaration; its new value is then not a locator for anything, and
+  ## using it as one is how an undo rewrote a sibling edit that happened to
+  ## share the value. Such edits are undone through their write receipt
+  ## (`restoreWrite`) or not at all -- see `inspectorHistoryStep`.
   result = plan
   result.oldValue = plan.newValue
   result.newValue = plan.oldValue
   result.previewBefore = plan.previewAfter
   result.previewAfter = plan.previewBefore
   result.expectedOldValue = plan.newValue
+  result.restoreWrite = SourceWriteReceipt()
+
+func lineAlignedOccurrences(content, lines: string): seq[int] =
+  if lines.len == 0:
+    return
+  var at = content.find(lines)
+  while at >= 0:
+    let startsLine = at == 0 or content[at - 1] == '\n'
+    let endsLine = lines[^1] == '\n' or at + lines.len == content.len or
+      content[at + lines.len] == '\n'
+    if startsLine and endsLine:
+      result.add at
+    at = content.find(lines, at + 1)
+
+func sourceWriteReceipt*(file, before, after: string): SourceWriteReceipt =
+  ## Describe one write by the whole lines it replaced.
+  ##
+  ## The changed span is the part between the longest common prefix and the
+  ## longest common suffix, widened to line boundaries. A whole line is what
+  ## identifies a declaration or an appended marker; the value inside it does
+  ## not (`6px` names every declaration that happens to be `6px`).
+  result = SourceWriteReceipt(recorded: true, file: file, afterContent: after)
+  let limit = min(before.len, after.len)
+  var prefix = 0
+  while prefix < limit and before[prefix] == after[prefix]:
+    inc prefix
+  var suffix = 0
+  while suffix < limit - prefix and
+      before[before.len - 1 - suffix] == after[after.len - 1 - suffix]:
+    inc suffix
+  var start = prefix
+  while start > 0 and before[start - 1] != '\n':
+    dec start
+  var beforeEnd = before.len - suffix
+  var afterEnd = after.len - suffix
+  while suffix > 0 and
+      ((afterEnd > start and after[afterEnd - 1] != '\n') or
+       (beforeEnd > start and before[beforeEnd - 1] != '\n')):
+    inc beforeEnd
+    inc afterEnd
+    dec suffix
+  result.offset = start
+  result.before = before[start ..< beforeEnd]
+  result.after = after[start ..< afterEnd]
+  result.uniqueWhenWritten = result.after.len > 0 and
+    after.lineAlignedOccurrences(result.after).len == 1
+
+func restoreSourceWrite*(content: string; receipt: SourceWriteReceipt;
+    action = "Undo"): tuple[ok: bool; content, message: string] =
+  ## Put back exactly the lines `receipt` replaced, where it wrote them.
+  ##
+  ## Safe only while the written lines can still be identified:
+  ##
+  ## - the file is byte-identical to how that write left it (the normal case:
+  ##   history is a stack, so everything written after it has been undone), or
+  ## - the written lines occurred exactly once when they were written AND
+  ##   occur exactly once now, on line boundaries. Uniqueness now alone is not
+  ##   enough: if identical lines already existed when the edit wrote its
+  ##   copy, the one left after someone else deleted a copy may be the
+  ##   pre-existing line, and restoring it would delete an edit nobody undid.
+  ##
+  ## Anything else is refused without a change. Guessing would restore over
+  ## an edit the user did not undo, which is the specification's "unsafe
+  ## restoration".
+  if not receipt.recorded:
+    return (false, content, action & " refused: no record of the source lines this edit wrote.")
+  let fileName = if receipt.file.len > 0: receipt.file else: "the source file"
+  if content == receipt.afterContent:
+    return (true,
+      content[0 ..< receipt.offset] & receipt.before &
+        content[receipt.offset + receipt.after.len .. ^1], "")
+  if receipt.after.len == 0:
+    return (false, content, action & " refused: " & fileName &
+      " changed after this edit was written, and the place it removed text " &
+      "from can no longer be identified. No source was changed.")
+  if not receipt.uniqueWhenWritten:
+    return (false, content, action & " refused: " & fileName & " changed " &
+      "after this edit was written, and the lines it wrote were not unique " &
+      "when written, so the copy it wrote cannot be identified. No source " &
+      "was changed.")
+  let hits = content.lineAlignedOccurrences(receipt.after)
+  if hits.len == 1:
+    let at = hits[0]
+    return (true,
+      content[0 ..< at] & receipt.before & content[at + receipt.after.len .. ^1],
+      "")
+  if hits.len == 0:
+    return (false, content, action & " refused: the source lines this edit " &
+      "wrote are no longer in " & fileName & ", so restoring them could " &
+      "overwrite other changes. No source was changed.")
+  (false, content, action & " refused: the source lines this edit wrote " &
+    "appear " & $hits.len & " times in " & fileName & " and the one it wrote " &
+    "cannot be identified. No source was changed.")
+
+type
+  InspectorHistoryStepKind* = enum
+    ihsNone          ## Nothing to undo/redo in the inspector history.
+    ihsDropPending   ## The entry's last plan is still unwritten: drop it.
+    ihsRestoreWrite  ## Invert the entry's last completed write exactly.
+    ihsReplayPlan    ## Journal the entry's forward plan again.
+    ihsInvertPlan    ## Journal a value-verified inverse (no receipt known).
+    ihsRefuse        ## Unsafe: nothing identifies what to restore.
+
+  InspectorHistoryStep* = object
+    kind*: InspectorHistoryStepKind
+    plan*: SourceEditPlan
+    message*: string
+
+func restorePlan(txn: CSSPropertyEditTransaction; redo: bool): SourceEditPlan =
+  result = txn.sourceEdit
+  if not redo:
+    result.oldValue = txn.sourceEdit.newValue
+    result.newValue = txn.sourceEdit.oldValue
+    result.previewBefore = txn.sourceEdit.previewAfter
+    result.previewAfter = txn.sourceEdit.previewBefore
+  result.expectedOldValue = ""
+  result.restoreWrite = txn.lastWrite
+
+proc inspectorHistoryStep*(inspector: InspectorVM;
+    redo: bool): InspectorHistoryStep =
+  ## Decide how the top inspector history entry is undone or redone, without
+  ## changing anything. One decision shared by the command (which checks it
+  ## against the file first) and by `undoCssPropertyEdit`/`redoCssPropertyEdit`.
+  let stack = if redo: inspector.redoStack.val else: inspector.undoStack.val
+  if stack.len == 0:
+    return InspectorHistoryStep(kind: ihsNone)
+  let txn = stack[^1]
+  let id = txn.sourceEdit.historyId
+  if id > 0 and inspector.pendingSourceEdits.val.anyIt(it.historyId == id):
+    # Its last plan never reached disk; withdrawing it is the whole step.
+    return InspectorHistoryStep(kind: ihsDropPending)
+  if not redo:
+    if not txn.saved:
+      return InspectorHistoryStep(kind: ihsDropPending)
+    if txn.lastWrite.recorded and txn.lastWriteApplied:
+      return InspectorHistoryStep(kind: ihsRestoreWrite,
+        plan: txn.restorePlan(redo = false))
+    if txn.sourceEdit.expectedOldValue.len > 0:
+      return InspectorHistoryStep(kind: ihsInvertPlan,
+        plan: txn.sourceEdit.invertPlan())
+    return InspectorHistoryStep(kind: ihsRefuse,
+      plan: txn.sourceEdit,
+      message: "Undo refused: this " & txn.sourceEdit.property & " edit was " &
+        "added to the source without a recorded location, so the line it " &
+        "wrote cannot be identified and undoing it could overwrite other " &
+        "edits. No source was changed.")
+  # Redo. An appended declaration is position-independent: appending it again
+  # restores it exactly and cannot touch anything else.
+  if txn.sourceEdit.expectedOldValue.len == 0:
+    return InspectorHistoryStep(kind: ihsReplayPlan, plan: txn.sourceEdit)
+  if txn.lastWrite.recorded and not txn.lastWriteApplied:
+    return InspectorHistoryStep(kind: ihsRestoreWrite,
+      plan: txn.restorePlan(redo = true))
+  InspectorHistoryStep(kind: ihsReplayPlan, plan: txn.sourceEdit)
+
+proc journalSupersededBelow(inspector: InspectorVM; plan: SourceEditPlan) =
+  ## After undoing an edit, the previous edit to the same slot is current
+  ## again. If its plan was replaced in the journal before being written, its
+  ## effect is not on disk, so journal it again.
+  var stack = inspector.undoStack.val
+  for i in countdown(stack.high, 0):
+    if stack[i].sourceEdit.sameSourceJournalSlot(plan):
+      if stack[i].superseded:
+        stack[i].superseded = false
+        stack[i].saved = false
+        inspector.undoStack.val = stack
+        inspector.journalSourceEdit(stack[i].sourceEdit)
+      return
+
+proc supersedePendingBelow(inspector: InspectorVM; plan: SourceEditPlan) =
+  ## Before an exact redo of an edit, withdraw a still-unwritten plan of the
+  ## previous edit to the same slot: the redo restores text written on top of
+  ## the state BEFORE that plan, and the redone edit wins the slot anyway.
+  var stack = inspector.undoStack.val
+  for i in countdown(stack.high, 0):
+    if stack[i].sourceEdit.sameSourceJournalSlot(plan):
+      let id = stack[i].sourceEdit.historyId
+      if id > 0 and inspector.pendingSourceEdits.val.anyIt(
+          it.historyId == id and not it.restoreWrite.recorded):
+        inspector.dropPendingHistoryPlans(id)
+        stack[i].superseded = true
+        inspector.undoStack.val = stack
+      return
 
 proc requestPreviewValue(inspector: InspectorVM; element: ElementRef;
                          property, value: string;
@@ -4488,6 +4731,11 @@ proc requestPreviewValue(inspector: InspectorVM; element: ElementRef;
     elementId: elementId, domPath: element.domPath,
     property: property, value: value, sourceScope: sourceScope)
 
+proc refuseHistoryStep(inspector: InspectorVM; step: InspectorHistoryStep) =
+  inspector.editDiagnostics.val = @[PropertyEditDiagnostic(
+    kind: pedSourceConflict, message: step.message, file: step.plan.file,
+    line: step.plan.line, property: step.plan.property)]
+
 proc undoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
   ## Walk one edit back: in the model, in the preview, and in the file.
   ##
@@ -4497,15 +4745,23 @@ proc undoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
   ## undo ONLY while the edit is still pending -- and under auto-save it never
   ## is. The value stayed on disk and stayed on screen.
   ##
-  ## Journalling the inverse works in both cases. The journal is keyed by edit
-  ## slot, so when the original edit is still pending the inverse replaces it
-  ## and nothing is ever written; when it has already been saved, the inverse
-  ## is a new edit that auto-save writes, which is exactly what undoing after a
-  ## save means.
-  let stack = inspector.undoStack.val
-  if stack.len == 0:
+  ## An edit that has not been written yet is undone by dropping its plan --
+  ## the file never changed. Once it HAS been written, the undo is a new plan
+  ## that auto-save writes. That plan restores exactly the lines the edit's
+  ## own write replaced (its receipt), never "whatever text equals the value",
+  ## so a sibling edit that shares the value is untouched. When nothing
+  ## identifies those lines the undo is refused and nothing changes.
+  let step = inspector.inspectorHistoryStep(redo = false)
+  case step.kind
+  of ihsNone:
     return false
+  of ihsRefuse:
+    inspector.refuseHistoryStep(step)
+    return false
+  else:
+    discard
 
+  let stack = inspector.undoStack.val
   let txn = stack[^1]
   inspector.selectedElement.val = txn.beforeElement
   inspector.undoStack.val = stack[0 ..< stack.len - 1]
@@ -4513,37 +4769,102 @@ proc undoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
       CSSPropertyEditTransaction] =
     result = prev
     result.add txn
-  # An edit that has not been written yet is undone by dropping it -- the file
-  # never changed, so there is nothing to put back and journalling an inverse
-  # would queue a pointless write. Once it HAS been written, the inverse is the
-  # only way back, and auto-save will carry it to disk.
-  if not txn.saved:
-    inspector.removeJournaledSourceEdit(txn.sourceEdit)
-  else:
-    inspector.journalSourceEdit(txn.sourceEdit.invertPlan())
+  case step.kind
+  of ihsDropPending:
+    if txn.sourceEdit.historyId > 0:
+      inspector.dropPendingHistoryPlans(txn.sourceEdit.historyId)
+    else:
+      inspector.removeJournaledSourceEdit(txn.sourceEdit)
+  of ihsRestoreWrite:
+    inspector.journalSourceEdit(step.plan, replaceExisting = false)
+  of ihsInvertPlan, ihsReplayPlan:
+    inspector.journalSourceEdit(step.plan)
+  of ihsNone, ihsRefuse:
+    discard
+  inspector.journalSupersededBelow(txn.sourceEdit)
+  inspector.editDiagnostics.val = @[]
   inspector.requestPreviewValue(txn.beforeElement, txn.sourceEdit.property,
                                 txn.sourceEdit.oldValue, txn.sourceEdit.sourceScope)
   true
 
 proc redoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
   ## The same, forwards. Symmetric with `undoCssPropertyEdit` on purpose: redo
-  ## is an edit like any other, so it journals the original plan and shows the
-  ## value it restores.
-  let stack = inspector.redoStack.val
-  if stack.len == 0:
+  ## withdraws a still-unwritten undo, appends an appended declaration again,
+  ## or exactly inverts the written undo, and shows the value it restores.
+  let step = inspector.inspectorHistoryStep(redo = true)
+  case step.kind
+  of ihsNone:
     return false
+  of ihsRefuse:
+    inspector.refuseHistoryStep(step)
+    return false
+  else:
+    discard
 
+  let stack = inspector.redoStack.val
   let txn = stack[^1]
   inspector.selectedElement.val = txn.afterElement
   inspector.redoStack.val = stack[0 ..< stack.len - 1]
+  case step.kind
+  of ihsDropPending:
+    if txn.sourceEdit.historyId > 0:
+      inspector.dropPendingHistoryPlans(txn.sourceEdit.historyId)
+    else:
+      inspector.removeJournaledSourceEdit(txn.sourceEdit)
+  of ihsRestoreWrite:
+    inspector.supersedePendingBelow(txn.sourceEdit)
+    inspector.journalSourceEdit(step.plan, replaceExisting = false)
+  of ihsInvertPlan, ihsReplayPlan:
+    inspector.journalSourceEdit(step.plan)
+  of ihsNone, ihsRefuse:
+    discard
   inspector.undoStack.update proc(prev: seq[CSSPropertyEditTransaction]): seq[
       CSSPropertyEditTransaction] =
     result = prev
     result.add txn
-  inspector.journalSourceEdit(txn.sourceEdit)
+  inspector.editDiagnostics.val = @[]
   inspector.requestPreviewValue(txn.afterElement, txn.sourceEdit.property,
                                 txn.sourceEdit.newValue, txn.sourceEdit.sourceScope)
   true
+
+proc recordSourceWrites*(inspector: InspectorVM;
+    patches: seq[WorkspaceFilePatch]) =
+  ## Credit each completed write to the history entry whose plan produced it.
+  ##
+  ## Called by the workspace transaction once the bytes are on disk. An entry
+  ## on the undo stack was written forwards (an edit or a redo); one on the
+  ## redo stack was written backwards (an undo). The receipt is what the next
+  ## undo/redo of that entry inverts.
+  var undo = inspector.undoStack.val
+  var redo = inspector.redoStack.val
+  var changedUndo, changedRedo = false
+  for patch in patches:
+    let id = patch.plan.historyId
+    if id <= 0:
+      continue
+    let receipt = sourceWriteReceipt(patch.file, patch.beforeContent,
+      patch.afterContent)
+    var credited = false
+    for i in countdown(undo.high, 0):
+      if undo[i].sourceEdit.historyId == id:
+        undo[i].lastWrite = receipt
+        undo[i].lastWriteApplied = true
+        undo[i].superseded = false
+        changedUndo = true
+        credited = true
+        break
+    if credited:
+      continue
+    for i in countdown(redo.high, 0):
+      if redo[i].sourceEdit.historyId == id:
+        redo[i].lastWrite = receipt
+        redo[i].lastWriteApplied = false
+        changedRedo = true
+        break
+  if changedUndo:
+    inspector.undoStack.val = undo
+  if changedRedo:
+    inspector.redoStack.val = redo
 
 proc discardCssPropertyEdits*(inspector: InspectorVM) =
   ## Throw the work away: the element, the journal AND the history.
@@ -5202,6 +5523,8 @@ proc stageDirectCanvasPlan(editor: EditorVM; operation: DirectCanvasOperation;
     isShared: plan.scope == pesShared,
     editOrigin: peoInspector,
     sourcePlanKind: plan.planKind)
+  var plan = plan
+  editor.inspector.stampHistoryEntry(plan)
   editor.inspector.selectedElement.val = afterElement
   editor.inspector.journalSourceEdit(plan)
   editor.inspector.undoStack.update proc(prev: seq[CSSPropertyEditTransaction]): seq[
@@ -6030,7 +6353,8 @@ proc editSharedDesignProperty*(editor: EditorVM; property, newValue: string;
     editor.inspector.editDiagnostics.val = result.diagnostics
     return
 
-  let plan = result.sourceEdit
+  var plan = result.sourceEdit
+  editor.inspector.stampHistoryEntry(plan)
   let beforeElement = editor.inspector.selectedElement.val
   var afterElement = beforeElement
   for i, prop in afterElement.properties:
@@ -8365,6 +8689,60 @@ proc requireWorkspaceAdapter(editor: EditorVM): tuple[ok: bool,
     return
   result.ok = true
 
+proc inspectorHistoryRefusal(editor: EditorVM; redo: bool): PropertyEditDiagnostic =
+  ## Why the next inspector undo/redo must be refused, or an empty message.
+  ##
+  ## Checked against the file as it is NOW, before anything moves, so a
+  ## refusal leaves history, journal, preview and source untouched. When a
+  ## pending plan for the same file would be written first, the file on disk
+  ## is not what the restoration will meet; the write itself re-checks then.
+  let step = editor.inspector.inspectorHistoryStep(redo)
+  let action = if redo: "Redo" else: "Undo"
+  case step.kind
+  of ihsRefuse:
+    return PropertyEditDiagnostic(kind: pedSourceConflict,
+      message: step.message.replace("Undo refused", action & " refused"),
+      file: step.plan.file, line: step.plan.line, property: step.plan.property)
+  of ihsRestoreWrite:
+    discard
+  else:
+    return
+  let receipt = step.plan.restoreWrite
+  if not editor.workspacePermissions.val.writeSource:
+    return
+  # Pending restorations of the same file are simulated in order, exactly as
+  # the transaction will apply them (they are pure). A pending NON-restore
+  # plan for the file goes through the project's `patchFile` at write time
+  # and cannot be simulated here; then the restoration is checked when it is
+  # written, and a refusal at that point leaves history and preview moved
+  # with the plans pending and the status-bar alert shown until Revert.
+  var pendingRestores: seq[SourceWriteReceipt] = @[]
+  for plan in editor.inspector.pendingSourceEdits.val:
+    if plan.restoreWrite.recorded:
+      if plan.restoreWrite.file == receipt.file:
+        pendingRestores.add plan.restoreWrite
+    elif plan.file.len == 0 or plan.file == receipt.file:
+      return
+  let adapterReq = editor.requireWorkspaceAdapter()
+  if not adapterReq.ok:
+    return
+  let read = adapterReq.adapter.readFile(receipt.file)
+  if not read.ok:
+    return
+  var content = read.content
+  for pending in pendingRestores:
+    let applied = restoreSourceWrite(content, pending, action)
+    if not applied.ok:
+      return PropertyEditDiagnostic(kind: pedSourceConflict,
+        message: applied.message, file: receipt.file, line: step.plan.line,
+        property: step.plan.property)
+    content = applied.content
+  let restored = restoreSourceWrite(content, receipt, action)
+  if not restored.ok:
+    return PropertyEditDiagnostic(kind: pedSourceConflict,
+      message: restored.message, file: receipt.file, line: step.plan.line,
+      property: step.plan.property)
+
 proc saveIndicator*(editor: EditorVM): SaveIndicator =
   ## What the chrome bar's save control shows right now.
   ##
@@ -8555,6 +8933,37 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
         currentContent: read.content)
       draftPos = drafts.high
 
+    if plan.restoreWrite.recorded:
+      # Undo/redo of a written edit: put back exactly the lines that write
+      # replaced. Owned here rather than by the project's `patchFile`, whose
+      # contract is "apply this value", because a value is not a location --
+      # see `restoreSourceWrite`.
+      if plan.restoreWrite.file.len > 0 and plan.restoreWrite.file != targetFile:
+        diagnostics.add workspaceDiagnostic(wedUnsafeSourceMap,
+          "Undo/redo refused: the edit was written to " &
+            plan.restoreWrite.file & " but now resolves to " & targetFile &
+            ". No source was changed.",
+          file = targetFile, schemaKey = resolved.entry.key,
+          property = plan.property)
+        continue
+      let restored = restoreSourceWrite(drafts[draftPos].currentContent,
+        plan.restoreWrite, "Undo/redo")
+      if not restored.ok:
+        diagnostics.add workspaceDiagnostic(wedSourceConflict,
+          restored.message, file = targetFile,
+          schemaKey = resolved.entry.key, property = plan.property)
+        continue
+      let restorePatch = WorkspaceFilePatch(plan: plan, schema: resolved.entry,
+        file: targetFile, beforeContent: drafts[draftPos].currentContent,
+        afterContent: restored.content, affectedStory: resolved.entry.story)
+      drafts[draftPos].currentContent = restored.content
+      patches.add restorePatch
+      files.addUniqueFile restorePatch.file
+      if resolved.entry.key.len > 0 and resolved.entry.key notin schemaKeys:
+        schemaKeys.add resolved.entry.key
+      affectedStories.addUniqueStory restorePatch.affectedStory
+      continue
+
     if plan.expectedOldValue.len > 0 and
         not adapter.allowMissingExpectedOldValue and
         plan.expectedOldValue notin drafts[draftPos].currentContent:
@@ -8723,6 +9132,7 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
     requiredTestCommands.add reloaded.requiredTestCommands
     reviewDiagnostics.add reloaded.reviewDiagnostics
 
+  editor.inspector.recordSourceWrites(patches)
   editor.inspector.markCssPropertyEditsSaved()
   editor.vectorEditor.undoStack.val = @[]
   editor.vectorEditor.redoStack.val = @[]

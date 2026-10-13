@@ -1048,6 +1048,37 @@ type
       ## declaration the cascade discards. Zero means "not supplied", which
       ## adapters read as the unconditional base-rule behaviour.
     nativeSourceBefore*, nativeSourceAfter*: string ## Guarded owned declaration receipts for exact undo.
+    historyId*: int
+      ## The inspector history transaction this plan belongs to; 0 for plans
+      ## that no history entry owns. Lets a completed write be credited to
+      ## the exact entry whose plan produced it, rather than to whichever
+      ## entry happens to share its property slot.
+    restoreWrite*: SourceWriteReceipt
+      ## Set (``restoreWrite.recorded``) on the plan that undoes or redoes an
+      ## already-written edit. The framework puts back exactly the text that
+      ## write replaced, at the place it wrote it, and refuses when that text
+      ## is no longer identifiable. It never calls the project's ``patchFile``
+      ## for such a plan: a value string cannot say WHICH declaration to
+      ## restore, and asking a writer to find one is how an undo rewrote an
+      ## unrelated sibling edit that happened to share its value.
+
+  SourceWriteReceipt* = object
+    ## The exact text one applied source plan replaced in one file.
+    ##
+    ## Line-granular: ``before`` and ``after`` are whole lines, so the block a
+    ## write appended (a marker line) or rewrote (a declaration) is identified
+    ## by its full text rather than by the value inside it.
+    recorded*: bool
+    file*: string
+    offset*: int          ## Where the block starts in ``afterContent``.
+    before*: string       ## The lines the write replaced (may be empty).
+    after*: string        ## The lines the write put there (may be empty).
+    afterContent*: string ## The whole file immediately after the write.
+    uniqueWhenWritten*: bool
+      ## ``after`` occurred exactly once, on line boundaries, in
+      ## ``afterContent``. Only then can a later single occurrence be known
+      ## to be the one this write produced rather than an identical,
+      ## pre-existing line.
 
   SourceEditAdapter* = proc(plan: SourceEditPlan): bool {.closure.}
 
@@ -1291,6 +1322,19 @@ type
       ## a later pending `padding` edit occupy the same slot, so asking "is
       ## there a pending plan matching this one" said yes for both and
       ## Revert threw away work the user had already saved.
+    lastWrite*: SourceWriteReceipt
+      ## The most recent completed write of this entry's plan, or of the plan
+      ## that undid it. On the undo stack it describes the edit as it is on
+      ## disk; on the redo stack it describes the undo as it is on disk.
+      ## Restoring always inverts this receipt, so undo and redo put back
+      ## exactly the lines that were replaced and touch nothing else.
+    lastWriteApplied*: bool
+      ## ``lastWrite`` applied this entry's edit (written while on the undo
+      ## stack) rather than undoing it (written while on the redo stack).
+    superseded*: bool
+      ## A later edit to the same source slot replaced this entry's plan in
+      ## the journal before it was written. Its effect is therefore not on
+      ## disk; undoing the later edit journals this plan again.
 
   AgentEditProposalStatus* = enum
     aepsProposed

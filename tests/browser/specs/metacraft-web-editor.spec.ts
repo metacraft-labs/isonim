@@ -1,4 +1,4 @@
-import { readFileSync, realpathSync } from "node:fs";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { test, expect } from "@playwright/test";
 
@@ -2631,6 +2631,203 @@ test("metacraft_topbar_padding_edges_survive_actual_save_and_reload", async ({ p
       }]);
     }
     expect(readFileSync(devBridgeSourceFile, "utf8")).toBe(original);
+  }
+  await page.reload();
+  const restoredTopbar = await selectTopbar();
+  await expect.poll(() => paddings(restoredTopbar)).toEqual(["0px", "0px", "0px", "0px"]);
+  expect(errors).toEqual([]);
+});
+
+// Sibling-undo data-loss regression: isonim-specs issue
+// 2026-10-13-undo-of-an-appended-edit-expects-the-bare-value and metacraft-web
+// issue 2026-10-13-patch-file-replaces-every-occurrence-of-the-expected-value.
+// No mocks: the genuine compiled consumer bundle, the real dev write bridge
+// over the generated dist/editor-dev-workspace source copy, and real Chromium.
+// Edits are typed into the Layout pad rows; history is driven by Ctrl/Cmd+Z,
+// Ctrl/Cmd+Shift+Z and by pointer clicks on the command palette's Undo/Redo
+// options. The VM is only read (history counts). Expected file contents are
+// literal marker lines, not values recomputed by an editor model.
+test("metacraft_topbar_sibling_padding_undo_restores_only_its_own_marker", async ({ page }) => {
+  // Twelve auto-saved writes (each after the editor's 900 ms debounce),
+  // three reloads and a refusal hold; the shared 30 s default is too small
+  // for the sequence, so this case declares its own explicit budget.
+  test.setTimeout(150_000);
+  const errors: string[] = [];
+  page.on("pageerror", error => errors.push(error.message));
+  const writes: any[] = [];
+  page.on("request", request => {
+    if (request.url().endsWith("/__isonim-dev-bridge/transaction")) {
+      writes.push(request.postDataJSON());
+    }
+  });
+  const sourceFile = "apps/back-office/src/backoffice_ui/components.nim";
+  const read = () => readFileSync(devBridgeSourceFile, "utf8");
+  const marker = (edge: string, value: string) =>
+    `# isonim-editor dom.component-topbar.padding-${edge} padding-${edge}=${value}\n`;
+  // The writer appends after the trimmed file and one newline.
+  const append = (text: string, line: string) => text.replace(/\s+$/, "") + "\n" + line;
+  await page.goto("/?writeBridge=1");
+  const original = read();
+  const afterTop = append(original, marker("top", "6px"));
+  const afterBoth = append(afterTop, marker("left", "6px"));
+  const applies = () => writes.filter(write => write.mode === "apply").length;
+  const selectTopbar = async () => {
+    await page.getByRole("button", {
+      name: "Select story Operational components / Topbar", exact: true,
+    }).click();
+    await page.locator('[data-toolbar-cluster="mode"] [data-choice-group-label="View"]').click();
+    await page.locator('[data-toolbar-cluster="mode"] [data-choice-group-label="Edit"]').click();
+    const topbar = page.frameLocator('iframe[title="Editable component preview"]')
+      .getByTestId("component-topbar");
+    await expect(topbar).toBeVisible();
+    await expect.poll(() => topbar.evaluate(node => node.ownerDocument.readyState)).toBe("complete");
+    await page.getByRole("button", { name: /h1\.bo-title.*Operations dashboard/ }).click();
+    await page.getByRole("button", {
+      name: "header[data-testid=component-topbar]", exact: true,
+    }).click();
+    await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
+    return topbar;
+  };
+  const history = async () => page.evaluate(() => {
+    const inspector = (window as any).__isonimEditorVm.inspector;
+    if (!Array.isArray(inspector.undoStack.value) || !Array.isArray(inspector.redoStack.value)) {
+      throw new Error("Missing actual inspector history");
+    }
+    return { undo: inspector.undoStack.value.length, redo: inspector.redoStack.value.length };
+  });
+  const paddings = async (topbar) => topbar.evaluate(node => {
+    const style = getComputedStyle(node);
+    return [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft];
+  });
+  const commit = async (edge: string, value: string) => {
+    const input = page.locator(`[data-property-row="pad-${edge}"] input[data-property-row-input]`);
+    await expect(input).toBeEditable();
+    await input.click();
+    await input.fill(value);
+    await input.press("Enter");
+  };
+  // Keyboard history needs a non-editable focus target; the shortcut is
+  // deliberately ignored while a text field owns the keys.
+  // The selected Layers row is a real, non-editable control.
+  const layersRow = () => page.getByRole("button", {
+    name: "header[data-testid=component-topbar]", exact: true,
+  });
+  const keyboardHistory = async (redo: boolean) => {
+    const target = layersRow();
+    await target.focus();
+    await expect(target).toBeFocused();
+    await page.keyboard.press(redo ? "ControlOrMeta+Shift+Z" : "ControlOrMeta+Z");
+  };
+  const pointerHistory = async (redo: boolean) => {
+    const target = layersRow();
+    await target.focus();
+    await page.keyboard.press("ControlOrMeta+K");
+    const option = page.locator(
+      `[data-editor-command-option="true"][data-command-kind="${redo ? "eckRedo" : "eckUndo"}"]`);
+    await expect(option).toBeVisible();
+    await option.click();
+    await expect(page.locator('[data-editor-command-palette="true"]'))
+      .toHaveAttribute("aria-hidden", "true");
+  };
+  const settled = async (text: string, hist, pads, topbar) => {
+    await expect.poll(read).toBe(text);
+    await expect.poll(history).toEqual(hist);
+    await expect.poll(() => paddings(topbar)).toEqual(pads);
+    // The auto-save debounce has nothing left to write.
+    await expect.poll(() => page.evaluate(() =>
+      (window as any).__isonimEditorVm.inspector.pendingSourceEdits.value.length)).toBe(0);
+    expect(read()).toBe(text);
+  };
+  try {
+    let topbar = await selectTopbar();
+    await expect.poll(() => paddings(topbar)).toEqual(["0px", "0px", "0px", "0px"]);
+    const h0 = await history();
+    const at = (undo: number, redo: number) => ({ undo: h0.undo + undo, redo: h0.redo + redo });
+    const zero = ["0px", "0px", "0px", "0px"];
+    const top = ["6px", "0px", "0px", "0px"];
+    const both = ["6px", "0px", "0px", "6px"];
+
+    // Two sibling edits whose values have the same text.
+    await commit("top", "6");
+    await settled(afterTop, at(1, 0), top, topbar);
+    await commit("left", "6");
+    await settled(afterBoth, at(2, 0), both, topbar);
+    expect(read().split("padding-top=6px").length - 1).toBe(1);
+
+    // Undo once (pointer): only padding-left's own marker line goes.
+    await pointerHistory(false);
+    await settled(afterTop, at(1, 1), top, topbar);
+    // Redo (pointer): the line comes back, byte-identical to the edit.
+    await pointerHistory(true);
+    await settled(afterBoth, at(2, 0), both, topbar);
+    // Undo twice (keyboard): one edit at a time, back to the original bytes.
+    await keyboardHistory(false);
+    await settled(afterTop, at(1, 1), top, topbar);
+    await keyboardHistory(false);
+    await settled(original, at(0, 2), zero, topbar);
+    await keyboardHistory(true);
+    await settled(afterTop, at(1, 1), top, topbar);
+    await keyboardHistory(true);
+    await settled(afterBoth, at(2, 0), both, topbar);
+
+    // Unsafe restoration: someone else rewrites padding-left's written line.
+    // Undo must refuse, say why, and change nothing.
+    const external = afterBoth.replace(marker("left", "6px"), marker("left", "7px"));
+    const rewrite = async (beforeText: string, afterText: string) => page.evaluate(
+      async ({ file, beforeText, afterText }) => {
+        const response = await fetch("/__isonim-dev-bridge/transaction", {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ mode: "apply", files: [{ file, beforeText, afterText }] }),
+        });
+        return response.json();
+      }, { file: sourceFile, beforeText, afterText });
+    expect((await rewrite(afterBoth, external)).ok).toBe(true);
+    const appliesBeforeRefusal = applies();
+    await keyboardHistory(false);
+    const refusal = page.locator('[data-save-error="true"]');
+    await expect(refusal).toBeVisible();
+    await expect(refusal).toContainText("Undo refused");
+    expect(await history()).toEqual(at(2, 0));
+    await expect.poll(() => paddings(topbar)).toEqual(both);
+    await page.waitForTimeout(1500);
+    expect(read()).toBe(external);
+    expect(applies()).toBe(appliesBeforeRefusal);
+    expect((await rewrite(external, afterBoth)).ok).toBe(true);
+
+    // Undo once more, then reload: the un-undone padding-top edit survives.
+    await keyboardHistory(false);
+    await settled(afterTop, at(1, 1), top, topbar);
+    await expect(refusal).toBeHidden();
+    await page.reload();
+    topbar = await selectTopbar();
+    await expect.poll(() => paddings(topbar)).toEqual(top);
+    expect(read()).toBe(afterTop);
+
+    // Single-edit regression on the reloaded editor (fresh history): one
+    // appended edit, keyboard undo restores the exact bytes, redo re-appends.
+    const r0 = await history();
+    const afterBottom = append(afterTop, marker("bottom", "6px"));
+    const topBottom = ["6px", "0px", "6px", "0px"];
+    await commit("bottom", "6");
+    await settled(afterBottom, { undo: r0.undo + 1, redo: r0.redo }, topBottom, topbar);
+    await keyboardHistory(false);
+    await settled(afterTop, { undo: r0.undo, redo: r0.redo + 1 }, top, topbar);
+    await keyboardHistory(true);
+    await settled(afterBottom, { undo: r0.undo + 1, redo: r0.redo }, topBottom, topbar);
+    expect(errors).toEqual([]);
+  } finally {
+    const afterText = read();
+    if (afterText !== original) {
+      try {
+        await revertDevBridgeFiles(page, [{ file: sourceFile, beforeText: original, afterText }]);
+      } catch (error) {
+        // The page is gone (e.g. a timeout): restore the generated copy
+        // directly so a failure here cannot leak into later cases.
+        writeFileSync(devBridgeSourceFile, original);
+        throw error;
+      }
+    }
+    expect(read()).toBe(original);
   }
   await page.reload();
   const restoredTopbar = await selectTopbar();
