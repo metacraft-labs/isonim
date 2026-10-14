@@ -50,10 +50,10 @@ proc forEachKeyed*[T, R, N](
         # Create new node
         let itemSig = createSignal(item)
         let idxSig = createSignal(i)
-        let node = body(
-          proc(): T = itemSig.val,
-          proc(): int = idxSig.val
-        )
+        proc accessor[V](signal: Signal[V]): proc(): V =
+          # Accessors escape through body; a loop-local let is shared.
+          result = proc(): V = signal.val
+        let node = body(accessor(itemSig), accessor(idxSig))
         newNodes.add(node)
         newItemSignals.add(itemSig)
         newIndexSignals.add(idxSig)

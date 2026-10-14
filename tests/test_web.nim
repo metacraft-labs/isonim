@@ -529,3 +529,39 @@ suite "Web Renderer - counter demo compilation":
       check span.textContent == "99"
 
       dispose()
+
+# The existing DOM shim records all listener registrations. Dispatch its full
+# listener list, so duplicate DSL/imperative registration cannot hide here.
+import isonim/web/web_renderer
+import isonim/editor/views/choice_row
+
+proc dispatchChoiceEvent[N](node: N; event, key: cstring): bool
+  {.importjs: "((n,t,k) => { const e = {key:k, defaultPrevented:false, preventDefault(){this.defaultPrevented=true;}}; (n._eventListeners[t] || []).slice().forEach(h => h(e)); return e.defaultPrevented; })(#, #, #)".}
+
+proc dispatchPlainChoiceEvent[N](node: N): bool
+  {.importjs: "((n) => { const e = new Event('keydown', {cancelable:true}); (n._eventListeners.keydown || []).slice().forEach(h => h(e)); return e.defaultPrevented; })(#)".}
+
+template checkChoiceDom(R, N: typedesc) =
+  createRoot proc(dispose: proc()) =
+    var calls = 0
+    let row = renderCompactChoiceRow[R, N](R(), "", "Choices", @[
+      CompactChoiceOption(label: "First", enabled: true, onChoose: proc() = inc calls),
+      CompactChoiceOption(label: "Second", enabled: true, onChoose: proc() = inc calls)],
+      visibleLimit = 1)
+    for chip in row.optionNodes:
+      let before = calls
+      discard dispatchChoiceEvent(chip, "click", "")
+      check calls == before + 1
+      check not dispatchPlainChoiceEvent(chip)
+      check calls == before + 1
+      check not dispatchChoiceEvent(chip, "keydown", "Tab")
+      check calls == before + 1
+      check dispatchChoiceEvent(chip, "keydown", "Enter")
+      check calls == before + 2
+      check dispatchChoiceEvent(chip, "keydown", " ")
+      check calls == before + 3
+    dispose()
+
+suite "Choice-row DOM registrations":
+  test "WebRenderer dispatches each choice exactly once":
+    checkChoiceDom(WebRenderer, dom_api.Element)

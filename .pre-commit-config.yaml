@@ -20,7 +20,8 @@
 # defect: before this file there was neither a `.pre-commit-config.yaml` nor a
 # `.git/hooks/pre-commit` here, so §4.3 was satisfied on paper by nothing at all.
 #
-# Install:  prek install        (or: pre-commit install)
+# Install:  automatic on dev-shell entry (scripts/install-git-hooks.sh);
+#           elsewhere `prek install` (or: pre-commit install)
 # Run:      prek run --all-files
 #
 # ON NixOS, `uv` MUST BE ON PATH BEFORE EITHER OF THOSE. prek otherwise
@@ -46,6 +47,20 @@
 # TO FINISH THE ADOPTION: add the `- repo: local` block from
 # `git-hooks/mcl-standard-hooks.yaml` verbatim plus `end-of-file-fixer`, run
 # this repository's own gates, and delete this paragraph.
+
+# ----------------------------------------------------------------------------
+# THIS FILE IS WHAT RUNS ON COMMIT; THE FLAKE'S HOOK SET RUNS IN `checks`
+# ----------------------------------------------------------------------------
+#
+# Entering the dev shell (`nix develop`, direnv) installs THIS file as the
+# pre-commit hook: scripts/install-git-hooks.sh, called from the shellHook in
+# flake.nix, points `.git/hooks/pre-commit` (or its `.repro-local` chain under a
+# Reprobuild dispatcher) at this committed config, run by the flake's
+# pre-commit. The flake provides the tool; this file provides the rules.
+# git-hooks.nix's own installer is not used: it refuses when a non-symlink
+# exists at this path and then installs nothing. The hook set `./flake.nix`
+# wires through git-hooks.nix is NOT installed on commit; it runs wherever the
+# flake's `checks` output is evaluated (`nix flake check`).
 
 minimum_pre_commit_version: '3.0.0'
 

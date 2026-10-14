@@ -1826,13 +1826,17 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
     r.setStyle(scopeSlot, "width", "100%")
     let scopeOptionsThunk = cfg.scopeOptions
     let rowName = cfg.name
+    proc thenCommit(inner: proc()): proc() =
+      ## Its own proc so each chip keeps its own ``inner``: a closure
+      ## made in the loop below would share one environment across the
+      ## iterations and every chip would run the last chip's callback.
+      result = proc() =
+        if inner != nil: inner()
+        commitValue()
     proc wrappedScopeOptions(): seq[CompactChoiceOption] =
       result = scopeOptionsThunk()
       for option in result.mitems:
-        let inner = option.onChoose
-        option.onChoose = proc() =
-          if inner != nil: inner()
-          commitValue()
+        option.onChoose = thenCommit(option.onChoose)
     let strip = renderCompactChoiceRow[R, E](r, "",
       "Choose source scope for " & rowName, wrappedScopeOptions,
       visibleLimit = 1, labelWidth = "0", minHeight = prInputHeight)

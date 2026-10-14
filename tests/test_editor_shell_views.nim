@@ -2004,3 +2004,43 @@ suite "Unsupported inspector header Add guards":
       findByAttr(panel, "data-export-row-delete", "0").fireEvent("click")
       check countByAttr(panel, "data-export-row", "0") == 0
       dispose()
+
+suite "Per-item shell effects":
+  test "every chat tab and overflow status follows its own session":
+    createRoot do (dispose: proc()):
+      let vm = createEditorVM()
+      discard vm.createNewChat()
+      discard vm.createNewChat()
+      let root = renderAiAssistantPanel[MockRenderer, MockNode](MockRenderer(), vm)
+      let tabs = findAllByAttr(root, "role", "tab")
+      let entries = findAllByAttr(root, "role", "option")
+      require tabs.len == 3
+      require entries.len == 3
+      for i, session in vm.chats.val:
+        session.vm.sessionStatus.val = asLoading
+        for j in 0 ..< 3:
+          let status = if j <= i: "loading" else: "idle"
+          check findByAttr(tabs[j], "data-ai-assistant-tab-status", status) != nil
+          check entries[j].children[0].styles["background-color"] ==
+            (if j <= i: "#F59E0B" else: "#A0A2B0")
+      dispose()
+
+  test "hovering each retained breadcrumb changes only that chip":
+    createRoot do (dispose: proc()):
+      let vm = createEditorVM()
+      vm.inspector.setSelectionTree(@[
+        ElementLayerRow(id: "root", label: "root", tag: "div", childCount: 1, expanded: true),
+        ElementLayerRow(id: "middle", parentId: "root", label: "middle", tag: "div", childCount: 1, depth: 1, expanded: true),
+        ElementLayerRow(id: "leaf", parentId: "middle", label: "leaf", tag: "span", depth: 2)])
+      require vm.selectInspectorElementById("leaf")
+      let root = renderEditorShell[MockRenderer, MockNode](MockRenderer(), vm)
+      require vm.selectInspectorElementById("root", soBreadcrumb)
+      let chips = findAllByAttr(root, "data-breadcrumb-state", "trail")
+      require chips.len == 2
+      for i, chip in chips:
+        chip.fireEvent("mouseenter")
+        check chip.styles["color"] == "#9CA0B0"
+        check chips[1-i].styles["color"] != chip.styles["color"]
+        chip.fireEvent("mouseleave")
+        check chip.styles["color"] == chips[1-i].styles["color"]
+      dispose()

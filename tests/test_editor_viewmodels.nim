@@ -6644,6 +6644,51 @@ suite "Editor ViewModels (cross-surface integration)":
       check vm.inspector.pendingSourceEdits.val[0].newValue == "26px"
       dispose()
 
+  test "section_row_each_scope_chip_chooses_its_own_scope":
+    ## Every chip's ``onChoose`` must act on the choice that chip
+    ## displays. The callbacks are built in a loop, and a Nim closure
+    ## created in a loop body shares one environment across iterations,
+    ## so a naive build makes every chip run the LAST option's callback:
+    ## the labels are right and every click selects the same scope.
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("writeback-scope-each")
+      defer: removeDir(root)
+      let sourceFile = root / "card.nim"
+      atomicWrite(sourceFile, "card-title.font-size=20px\n")
+      let tree = cardTreeJson.replace("SRC", sourceFile)
+      let vm = writebackVm(root, sourceFile, tree)
+
+      let wiring = vm.inspectorRowWiring("font-size")
+      let options = wiring.scopeOptions()
+      # With a shared callback every chip acts as the last one, so any
+      # two chips of different kinds expose it. An editable and a
+      # read-only chip also cover both branches of ``onChoose``.
+      check options.len >= 2
+      check options.anyIt(it.enabled)
+      check options.anyIt(not it.enabled)
+      for option in options:
+        var kindText = ""
+        for (name, value) in option.dataAttrs:
+          if name == "data-source-scope-kind":
+            kindText = value
+        check kindText.len > 0
+        let kind = parseEnum[SourceScopeChoiceKind](kindText)
+        # Seed a scope the chip does not name, so a no-op callback
+        # cannot pass by leaving the previous value in place.
+        let sentinel =
+          if kind == sskGlobalPrimitiveToken: sskLocalInstance
+          else: sskGlobalPrimitiveToken
+        wiring.scopeSelected.val = sentinel
+        wiring.commitMessage.val = ""
+        option.onChoose()
+        if option.enabled:
+          check wiring.scopeSelected.val == kind
+          check wiring.commitMessage.val == ""
+        else:
+          check wiring.scopeSelected.val == sentinel
+          check wiring.commitMessage.val.len > 0
+      dispose()
+
   test "section_row_refuses_out_loud_on_a_read_only_workspace":
     ## The founder's actual complaint was silence, and a read-only
     ## workspace is the case with a correct sentence already written

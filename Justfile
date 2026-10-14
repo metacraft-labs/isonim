@@ -268,6 +268,8 @@ test-js: build-tailwind
     nim js -d:nodejs --out:build/test_editor_workspace_refresh.js tests/test_editor_workspace_refresh.nim
     python3 tools/run_nim_js_test.py build/test_editor_workspace_refresh.js
     nim js -r --out:build/test_editor_control.js tests/test_editor_control.nim
+    nim js -r tests/test_choice_row_activation.nim
+    nim js -r tests/test_loop_accessors.nim
     nim js -r tests/test_signals.nim
     nim js -r tests/test_effects.nim
     nim js -r tests/test_clock.nim
@@ -916,6 +918,9 @@ test-editor: test-design-review-local-harbor test-design-review-harbor-build tes
     nim c -r tests/test_editor_agent_harbor.nim
     nim c -r tests/test_editor_user_project.nim
     nim c -r tests/test_editor_shell_views.nim
+    nim c -r tests/test_editor_loop_handlers.nim
+    nim c -r tests/test_loop_accessors.nim
+    nim c -r tests/test_choice_row_activation.nim
     nim c -r tests/test_editor_task_views.nim
     nim c -r tests/test_editor_interactivity.nim
     nim c -r tests/test_editor_responsive.nim

@@ -31,10 +31,11 @@
 ## drive interactions via the VM OR via ``fireEvent``, and assert
 ## the resulting attribute / structure invariants.
 
-import std/[options, tables, unittest]
+import std/[options, sequtils, tables, unittest]
 
 import isonim/core/[signals, computation, owner]
 import isonim/editor/types
+import isonim/editor/views/choice_row
 import isonim/editor/views/widgets/property_row
 import isonim/testing/mock_dom
 
@@ -975,3 +976,38 @@ suite "choice actual value projection":
         check first.attributes.getOrDefault("aria-selected") == "false"
         check second.attributes.getOrDefault("aria-selected") == "false"
         dispose()
+
+suite "property_row scope chips":
+
+  test "each scope chip runs its own callback before re-committing":
+    ## The row wraps every chip's ``onChoose`` so choosing a scope also
+    ## re-commits. The wrappers are built in a loop, and a Nim closure
+    ## made in a loop body shares one environment across the
+    ## iterations, so a naive wrap makes every chip run the LAST chip's
+    ## callback.
+    createRoot do (dispose: proc()):
+      let value = createSignal("20px")
+      var chosen: seq[string] = @[]
+      var commits: seq[string] = @[]
+      proc option(name: string): CompactChoiceOption =
+        CompactChoiceOption(label: name, shortLabel: name,
+          ariaLabel: "Apply " & name, enabled: true,
+          dataAttrs: @[("data-test-scope", name)],
+          onChoose: proc() = chosen.add name)
+      var cfg = propertyRowText(name = "Font size", value = value)
+      cfg.cssProperty = "font-size"
+      cfg.scopeOptions = proc(): seq[CompactChoiceOption] =
+        @[option("local"), option("shared"), option("token")]
+      cfg.onCommitValue = proc(v: string) = commits.add v
+
+      let (r, root) = mkRoot()
+      discard r.mountPropertyRow(root, cfg)
+      for name in ["local", "shared", "token"]:
+        let chip = findByAttr(root, "data-test-scope", name)
+        check chip != nil
+        chosen = @[]
+        commits = @[]
+        fireEvent(chip, "click")
+        check chosen == @[name]
+        check commits == @["20px"]
+      dispose()

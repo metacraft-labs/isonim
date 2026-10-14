@@ -611,6 +611,16 @@ proc mountVariablePicker*[R, E](r: R; parent: E; vm: EditorVM;
       for entry in priorEntries:
         renderRow(entry)
 
+    proc bindCategoryToggle(header: E; category: VariablePickerCategory) =
+      ## Its own proc so each header keeps its own ``category``: a
+      ## closure made in the loop below would share one environment
+      ## across the iterations and every header would toggle the last
+      ## category.
+      r.addEventListener(header, "click", proc() =
+        capturedState.toggleCategoryExpansion(category))
+      r.addEventListener(header, "keydown", proc() =
+        capturedState.toggleCategoryExpansion(category))
+
     let grouped = categoriseTokens(filtered)
     for groupIndex in 0 ..< grouped.len:
       let category = grouped[groupIndex].category
@@ -656,11 +666,7 @@ proc mountVariablePicker*[R, E](r: R; parent: E; vm: EditorVM;
               # when collapsed.
               text (if expanded: "\xE2\x96\xBE" else: "\xE2\x96\xB8")
       r.appendChild(bodyNode, section)
-      let capturedCategory = category
-      r.addEventListener(headerNode, "click", proc() =
-        capturedState.toggleCategoryExpansion(capturedCategory))
-      r.addEventListener(headerNode, "keydown", proc() =
-        capturedState.toggleCategoryExpansion(capturedCategory))
+      bindCategoryToggle(headerNode, category)
       if not expanded:
         continue
       for entry in entries:

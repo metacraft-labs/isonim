@@ -264,3 +264,7 @@ __pycache__/
 /test-logs/
 # Authored shared inspector popover controller (not generated Nim JS).
 !src/isonim/editor/views/widgets/anchored_popover.js
+
+tests/test_choice_row_activation
+tests/test_loop_accessors
+tests/test_editor_loop_handlers

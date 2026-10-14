@@ -454,6 +454,9 @@ const isonimTestSpecs: seq[IsonimTestSpec] = @[
   spec("test_editor_renderer_boundaries"),
   spec("test_editor_preview_mount"),
   spec("test_editor_shell_views"),
+  spec("test_editor_loop_handlers"),
+  spec("test_loop_accessors"),
+  spec("test_choice_row_activation"),
   spec("test_editor_task_views"),
   spec("test_editor_interactivity"),
   spec("test_editor_responsive"),
@@ -565,6 +568,8 @@ const isonimJsTestSpecs: seq[string] = @[
   "test_web_components_advanced", "test_third_party", "poc_monaco_host",
   "test_accessibility", "test_router", "test_server_functions",
   "test_data_loading",
+  # Per-item captures and activation are contracts on both backends.
+  "test_choice_row_activation", "test_loop_accessors",
   # JS-back-end-only (``{.error.}`` head unless ``defined(js)``).
   "test_custom_elements",
   "test_editor_section_stroke", "test_editor_section_effects",
