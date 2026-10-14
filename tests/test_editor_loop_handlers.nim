@@ -39,11 +39,11 @@ suite "Loop callback identity":
       let root = renderChatPanel[MockRenderer, MockNode](MockRenderer(), vm)
       let chips = root.byAttr("aria-label", "Insert suggested prompt")
       require chips.len == 4
+      # Prompt chips are native buttons: keyboard activation arrives as click.
       for chip in chips:
-        for event in ["click", "keydown"]:
-          vm.chat.inputText.val = ""
-          chip.fireEvent(event)
-          check vm.chat.inputText.val == chip.children[1].textContent
+        vm.chat.inputText.val = ""
+        chip.fireEvent("click")
+        check vm.chat.inputText.val == chip.children[1].textContent
       dispose()
 
   test "each Allow and Deny answers only its own permission request":
@@ -54,16 +54,19 @@ suite "Loop callback identity":
         AgentPermissionRequest(id: "second", title: "Second"),
         AgentPermissionRequest(id: "third", title: "Third")]
       let root = renderChatPanel[MockRenderer, MockNode](MockRenderer(), vm)
-      # Retain every handler from the same render before any click rebuilds it.
-      var allow, deny: seq[MockNode]
-      for id in ["first", "second", "third"]:
-        allow.add root.byAttr("aria-label", "Allow agent permission " & id)[0]
-        deny.add root.byAttr("aria-label", "Deny agent permission " & id)[0]
-      for i in 0 ..< allow.len:
-        allow[i].fireEvent("click")
+      # Each answer rebuilds the review rows and retires the replaced rows'
+      # listeners, so every click targets the row currently displayed.
+      let ids = ["first", "second", "third"]
+      proc current(label: string): MockNode =
+        let found = root.byAttr("aria-label", label)
+        doAssert found.len == 1, "expected one control labelled " & label &
+          ", found " & $found.len
+        found[0]
+      for i, id in ids:
+        current("Allow agent permission " & id).fireEvent("click")
         for j, request in vm.chat.permissionRequests.val:
           check request.status == (if j < i: apsDenied elif j == i: apsGranted else: apsPending)
-        deny[i].fireEvent("click")
+        current("Deny agent permission " & id).fireEvent("click")
         for j, request in vm.chat.permissionRequests.val:
           check request.status == (if j <= i: apsDenied else: apsPending)
       dispose()
@@ -99,20 +102,26 @@ suite "Loop callback identity":
         ReviewAnnotation(id: "second", includedInPrompt: false),
         ReviewAnnotation(id: "third", includedInPrompt: true)]
       let root = renderChatPanel[MockRenderer, MockNode](MockRenderer(), vm)
-      var toggles, resolves, dismisses: seq[MockNode]
+      # Each action rebuilds the review rows and retires the replaced rows'
+      # listeners, so every click targets the row currently displayed.
+      proc current(label: string): MockNode =
+        let found = root.byAttr("aria-label", label)
+        doAssert found.len == 1, "expected one control labelled " & label &
+          ", found " & $found.len
+        found[0]
       for i, id in ["first", "second", "third"]:
-        toggles.add root.byAttr("aria-label",
-          (if i == 1: "Include" else: "Exclude") & " review comment " & id)[0]
-        resolves.add root.byAttr("aria-label", "Resolve review comment " & id)[0]
-        dismisses.add root.byAttr("aria-label", "Dismiss review comment " & id)[0]
-      for i in 0 ..< 3:
-        toggles[i].fireEvent("click")
+        current((if i == 1: "Include" else: "Exclude") & " review comment " & id).fireEvent("click")
         check vm.review.annotations.val[i].includedInPrompt == (i == 1)
-        resolves[i].fireEvent("click")
+        # Resolve and Dismiss are offered only while a comment is open, so
+        # alternate them: each must address only its own comment.
+        let closed = if i mod 2 == 0: ransResolved else: ransDismissed
+        current((if i mod 2 == 0: "Resolve" else: "Dismiss") &
+          " review comment " & id).fireEvent("click")
         for j, annotation in vm.review.annotations.val:
-          check annotation.state == (if j < i: ransDismissed elif j == i: ransResolved else: ransOpen)
-        dismisses[i].fireEvent("click")
-        check vm.review.annotations.val[i].state == ransDismissed
+          check annotation.state == (
+            if j < i: (if j mod 2 == 0: ransResolved else: ransDismissed)
+            elif j == i: closed
+            else: ransOpen)
       dispose()
 
   test "rejecting a proposed edit addresses only that proposal":
@@ -122,11 +131,12 @@ suite "Loop callback identity":
         AgentEditProposal(id: "first"), AgentEditProposal(id: "second"),
         AgentEditProposal(id: "third")]
       let root = renderChatPanel[MockRenderer, MockNode](MockRenderer(), vm)
-      var buttons: seq[MockNode]
-      for id in ["first", "second", "third"]:
-        buttons.add root.byAttr("aria-label", "Reject agent edit " & id)[0]
-      for i, button in buttons:
-        button.fireEvent("click")
+      # Each rejection rebuilds the proposal rows and retires the replaced
+      # rows' listeners, so every click targets the row currently displayed.
+      for i, id in ["first", "second", "third"]:
+        let found = root.byAttr("aria-label", "Reject agent edit " & id)
+        require found.len == 1
+        found[0].fireEvent("click")
         for j, proposal in vm.chat.proposedEdits.val:
           check (proposal.status == aepsRejected) == (j <= i)
       dispose()
