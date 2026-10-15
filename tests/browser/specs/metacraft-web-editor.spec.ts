@@ -2312,9 +2312,10 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
         )
         .toContain("135deg");
 
-      // Corner radius defaults to the component-token scope, which this host
-      // cannot write (refused at save; recorded separately). The owned local
-      // instance scope is the writable route.
+      // This host cannot write the component-token scope, so that chip is
+      // disabled with its reason and is not the default (see
+      // metacraft_unwritable_corner_radius_scope_is_refused_when_chosen_not_at_save).
+      // The owned local instance scope is the writable route.
       const radiusRow = page.locator('[data-property-row="corner-radius"]');
       const localRadius = radiusRow.locator(
         '[aria-label="Apply local instance scope for border-radius"]').first();
@@ -2385,6 +2386,89 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
 
       await expectNoPendingSourceEdits(page);
       await undoInspectorHistoryTo(page, startHistory);
+      await expectNoPendingSourceEdits(page);
+    } finally {
+      await restoreDevWorkspace(page, workspaceBefore);
+    }
+  });
+
+  // isonim-pm issue 2026-10-14-consumer-corner-radius-edit-is-previewed-then-
+  // refused-only-at-save. The topbar's Corner radius row defaulted to the
+  // component-token scope (owner metacraft.backoffice.components.panel.radius
+  // in tokens.nim), which no entry of this host's writer owns: typing 12 +
+  // Enter previewed 12px, added a history entry and was then refused by the
+  // automatic write ("Not saved -- No project schema or source map entry can
+  // safely represent this edit."), leaving the preview at 12px and the
+  // per-corner rows at 0. Editor spec "Saving" (an edit no rule owns is
+  // refused at the commit) and "Planned interaction parity" (a refused source
+  // edit restores the control and preview and explains the refusal). The
+  // refusal now happens where the user chooses: the chip is disabled and
+  // carries the reason, the default is a scope the host can write, and an
+  // edit at that default is written, with the per-corner rows following it.
+  test("metacraft_unwritable_corner_radius_scope_is_refused_when_chosen_not_at_save", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    const workspaceBefore = snapshotDevWorkspace();
+    try {
+      await expectWritableBridge(page);
+      const { topbar } = await openTopbarInEditMode(page);
+      await selectTopbarElement(page, topbar);
+      const history = () => page.evaluate(() =>
+        (window as any).__isonimEditorVm.inspector.undoStack.value.length);
+      const pending = () => page.evaluate(() =>
+        (window as any).__isonimEditorVm.inspector.pendingSourceEdits.value.length);
+      const startHistory = await history();
+      const corners = () => topbar.evaluate((node) => {
+        const style = getComputedStyle(node);
+        return [style.borderTopLeftRadius, style.borderTopRightRadius,
+          style.borderBottomRightRadius, style.borderBottomLeftRadius];
+      });
+      const before = await corners();
+
+      const radiusRow = page.locator('[data-property-row="corner-radius"]');
+      await radiusRow.scrollIntoViewIfNeeded();
+      const tokenChip = radiusRow.locator(
+        '[aria-label="Apply component token scope for border-radius"]').first();
+      if (!(await tokenChip.isVisible())) {
+        await radiusRow.locator('[aria-label^="More Choose source scope for "]').first().click();
+      }
+      await expect(tokenChip).toBeVisible();
+      await expect(tokenChip).toHaveAttribute("aria-disabled", "true");
+      await expect(tokenChip).toHaveAttribute("data-source-scope-editable", "false");
+      await expect(tokenChip).toHaveAttribute("title",
+        /No project schema or source map entry can safely represent this edit/);
+      // Choosing it changes nothing: not the scope, the history or the journal.
+      await tokenChip.click({ force: true });
+      await expect(tokenChip).toHaveAttribute("aria-pressed", "false");
+      expect(await history()).toBe(startHistory);
+      expect(await pending()).toBe(0);
+      await page.keyboard.press("Escape");
+
+      // The scope the row will commit at is one this host can write.
+      const pressed = radiusRow.locator(
+        '[data-source-scope-kind][aria-pressed="true"]').first();
+      await expect(pressed).toHaveAttribute("data-source-scope-editable", "true");
+      await expect(pressed).not.toHaveAttribute("data-source-scope-kind", "sskComponentToken");
+
+      const radius = propertyRowInput(page, "corner-radius");
+      await radius.click();
+      await radius.fill("12");
+      await radius.press("Enter");
+      await expect.poll(corners).toEqual(["12px", "12px", "12px", "12px"]);
+      await expect.poll(history).toBe(startHistory + 1);
+      await expectNoPendingSourceEdits(page);
+      await expect(radius).toHaveValue("12");
+      const perCorner = page.getByRole("checkbox", { name: "Toggle Per-corner" });
+      await perCorner.click();
+      await expect(perCorner).toBeChecked();
+      for (const corner of ["tl", "tr", "br", "bl"]) {
+        await expect(propertyRowInput(page, corner)).toHaveValue("12");
+      }
+      await perCorner.click();
+
+      await undoInspectorHistoryTo(page, startHistory);
+      await expect.poll(corners).toEqual(before);
       await expectNoPendingSourceEdits(page);
     } finally {
       await restoreDevWorkspace(page, workspaceBefore);
@@ -2653,6 +2737,11 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
 // A temporary sibling DOM reference uses independent browser font-unit CSS;
 // it measures expected em/ex pixels without changing editor models.
 test("metacraft_topbar_padding_edges_survive_actual_save_and_reload", async ({ page }) => {
+  // Three full reloads and six real bridge writes: 17-20 s on an idle host,
+  // 26 s and a 30 s timeout under a loaded full run (UX-M3 act-time refusals
+  // review). The default 30 s budget measured the host, not the editor; the
+  // sibling-padding case below already carries its own budget.
+  test.setTimeout(90_000);
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
   const writes: any[] = [];
@@ -2801,13 +2890,12 @@ test("metacraft_topbar_padding_edges_survive_actual_save_and_reload", async ({ p
     expect(readFileSync(devBridgeSourceFile, "utf8")).toBe(fontUnits);
     expect(errors).toEqual([]);
   } finally {
-    const afterText = readFileSync(devBridgeSourceFile, "utf8");
-    if (afterText !== original) {
-      await revertDevBridgeFiles(page, [{
-        file: "apps/back-office/src/backoffice_ui/components.nim",
-        beforeText: original, afterText,
-      }]);
-    }
+    // Through the bridge while the page is alive, else written directly: a
+    // timeout closes the page, and a revert that needed it left the markers
+    // in the dev workspace for the next case to start from.
+    await restoreDevBridgeFile(page,
+      "apps/back-office/src/backoffice_ui/components.nim",
+      devBridgeSourceFile, original);
     expect(readFileSync(devBridgeSourceFile, "utf8")).toBe(original);
   }
   await page.reload();

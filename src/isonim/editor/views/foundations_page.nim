@@ -55,8 +55,22 @@ proc editTokenHandler[R, E](r: R; vm: EditorVM; input: E): proc() =
     if token.key.len > 0:
       discard vm.editFoundationToken(token.key, r.inputValue(capturedInput))
 
+proc foundationUndoIsNext(vm: EditorVM): bool =
+  ## Whether the next undo on the one timeline is a foundation token edit.
+  vm.nextHistoryKind(redo = false) == ehkFoundation
+
 proc undoHandler(vm: EditorVM): proc() =
-  result = proc() = discard vm.undoFoundationTokenEdit()
+  ## The page's Undo is the editor's undo command, not a private one.
+  ##
+  ## It called `undoFoundationTokenEdit` directly, which skipped the one
+  ## recency-ordered timeline and the keystroke-time refusal check (editor
+  ## spec "Saving"): it could undo a token edit older than an inspector edit
+  ## made after it, and stage a restoration the write then refused, with the
+  ## history already moved. It now runs exactly what Mod+Z runs, and only
+  ## while the next undo is a foundation token edit, so the label stays true.
+  result = proc() =
+    if vm.foundationUndoIsNext:
+      discard vm.runEditorCommand(eckUndo)
 
 proc searchHandler[R, E](r: R; vm: EditorVM; input: E): proc() =
   let captured = input
@@ -449,9 +463,18 @@ proc renderFoundationsPage*[R, E](r: R; vm: EditorVM): E =
     else:
       r.setTextContent(impactNode, "No impact analysis yet")
 
+
+  # Its own effect: the timeline reads every history, and an inspector edit
+  # must not rebuild the token list above.
+  createRenderEffect proc() =
+    let enabled = vm.foundationUndoIsNext
     r.setAttribute(undoButton, "aria-disabled",
-      if vm.foundations.undoStack.val.len == 0: "true" else: "false")
-    r.setStyle(undoButton, "opacity",
-      if vm.foundations.undoStack.val.len == 0: "0.5" else: "1")
+      if enabled: "false" else: "true")
+    r.setAttribute(undoButton, "title",
+      if enabled: "Undo the last foundation token edit"
+      elif vm.foundations.undoStack.val.len > 0:
+        "A more recent edit comes first; undo it with Mod+Z"
+      else: "No foundation token edit to undo")
+    r.setStyle(undoButton, "opacity", if enabled: "1" else: "0.5")
 
   page

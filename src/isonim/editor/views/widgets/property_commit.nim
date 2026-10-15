@@ -509,6 +509,13 @@ proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
       let editable = choice.editable
       let label = choice.label
       let risk = choice.riskLevel.sourceScopeRiskLabel()
+      # A disabled chip cannot be chosen, so its click never reaches
+      # `scopeChoiceHandler`'s message: the reason travels on the chip
+      # itself, where the pointer and assistive technology find it.
+      var refusalAttrs: seq[(string, string)] = @[]
+      if not editable and choice.reason.len > 0:
+        refusalAttrs = @[("title", choice.reason),
+          ("data-source-scope-reason", choice.reason)]
       result.add CompactChoiceOption(
         label: label & (if kind == sskSemanticToken and prop.tokenName.len > 0: " " & prop.tokenName else: "") & " " & risk &
           (if kind == sskSemanticToken and prop.nativeSourceToken: ". Known direct matches; inherited or unsupported references may also change." else: ""),
@@ -527,7 +534,8 @@ proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
           ("data-source-scope-token", prop.tokenName),
           ("data-source-scope-count", $choice.usageCount),
           ("data-source-scope-target", vm.inspector.selectedElement.val.id),
-          ("data-source-scope-story", vm.selectedStory.val.group & " / " & vm.selectedStory.val.name)],
+          ("data-source-scope-story", vm.selectedStory.val.group & " / " & vm.selectedStory.val.name)] &
+          refusalAttrs,
         onChoose: scopeChoiceHandler(choice))
 
   let asyncCommit = proc(value: string; done: proc(ok: bool) {.closure.}) =

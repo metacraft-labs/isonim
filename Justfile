@@ -1658,7 +1658,17 @@ test-editor-save-pipeline:
     nim js -d:nodejs --out:build/test_editor_save_pipeline.js tests/test_editor_save_pipeline.nim
     python3 tools/run_nim_js_test.py build/test_editor_save_pipeline.js
 
-test-editor-c4a: test-editor-selection-keys test-editor-source-write-receipts test-editor-save-pipeline test-editor-c4a-headless test-editor-c4a-compounds test-editor-c4a-properties test-editor-c4a-remaining test-editor-inline-preview test-editor-c4a-gestures test-editor-c4a-color test-editor-c4a-grip
+# A refusal happens when the user acts, not at the write: an edit no project
+# schema entry can write is refused at the commit (and its scope shown
+# disabled), an undo/redo the write transaction would refuse is refused at the
+# keystroke, and the Foundations page Undo is the shared undo command. Native
+# and strict executed Node JS.
+test-editor-act-time-refusals:
+    nim c -r --out:build/test_editor_act_time_refusals tests/test_editor_act_time_refusals.nim
+    nim js -d:nodejs --out:build/test_editor_act_time_refusals.js tests/test_editor_act_time_refusals.nim
+    python3 tools/run_nim_js_test.py build/test_editor_act_time_refusals.js
+
+test-editor-c4a: test-editor-selection-keys test-editor-source-write-receipts test-editor-save-pipeline test-editor-act-time-refusals test-editor-c4a-headless test-editor-c4a-compounds test-editor-c4a-properties test-editor-c4a-remaining test-editor-inline-preview test-editor-c4a-gestures test-editor-c4a-color test-editor-c4a-grip
 
 # Source ownership presentation; real native/JS signals and shell, no transports.
 test-editor-source-labels: build-tailwind

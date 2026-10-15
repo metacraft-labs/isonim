@@ -499,6 +499,7 @@ const isonimTestSpecs: seq[IsonimTestSpec] = @[
   spec("test_editor_section_state"),
   spec("test_editor_source_write_receipts"),
   spec("test_editor_save_pipeline"),
+  spec("test_editor_act_time_refusals"),
   spec("test_editor_section_stroke"),
   spec("test_editor_section_typography"),
   # --- SC-11 sibling-exercising editor tests (the reason for the five
@@ -560,6 +561,7 @@ const isonimJsTestSpecs: seq[string] = @[
   "test_editor_workspace_refresh",
   "test_editor_source_write_receipts",
   "test_editor_save_pipeline",
+  "test_editor_act_time_refusals",
   "test_editor_agent_harbor",
   "test_browser_agent_lifecycle",
   # Reactive core (dual-backend; also in the native corpus above).
@@ -1456,7 +1458,7 @@ package isonim:
       jsBuildActions.add(jsCompileEdge)
       let guardedC2 = stem in ["test_effects", "test_editor_widget_property_row", "test_editor_color_popover", "test_editor_section_fill", "test_editor_source_scope_row"]
       let jsExecuteEdge =
-        if stem in ["test_editor_shell_views", "test_editor_renderer_boundaries", "test_editor_preview_mount", "test_editor_source_markup", "test_editor_workspace_refresh", "test_editor_source_write_receipts", "test_editor_save_pipeline"] or guardedC2 or stem in ["test_editor_chat_view_lifetime", "test_editor_chat_tabs_vm", "test_editor_chat_activity"] or stem == "test_editor_color_picker" or stem in ["test_editor_section_source", "test_editor_section_appearance", "test_editor_section_component_props", "test_editor_section_layout", "test_editor_section_position", "test_editor_section_stroke", "test_editor_section_effects"]:
+        if stem in ["test_editor_shell_views", "test_editor_renderer_boundaries", "test_editor_preview_mount", "test_editor_source_markup", "test_editor_workspace_refresh", "test_editor_source_write_receipts", "test_editor_save_pipeline", "test_editor_act_time_refusals"] or guardedC2 or stem in ["test_editor_chat_view_lifetime", "test_editor_chat_tabs_vm", "test_editor_chat_activity"] or stem == "test_editor_color_picker" or stem in ["test_editor_section_source", "test_editor_section_appearance", "test_editor_section_component_props", "test_editor_section_layout", "test_editor_section_position", "test_editor_section_stroke", "test_editor_section_effects"]:
           sh.shell(command = "python3 tools/run_nim_js_test.py " & jsOut, cacheable = false,
             actionId = "isonim.js_execute." & stem, after = @[jsCompileEdge],
             extraInputs = @[jsOut, "tools/run_nim_js_test.py"])

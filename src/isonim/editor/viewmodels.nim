@@ -4273,22 +4273,54 @@ func replacesJournaledPlan(plan, existing: SourceEditPlan): bool =
 proc inheritUnwrittenExpectation(inspector: InspectorVM;
     plan: var SourceEditPlan)
 
+func unwrittenExpectation(pending: seq[SourceEditPlan];
+    plan: SourceEditPlan): SourceEditPlan =
+  ## ``plan`` with the expectation of the still-unwritten plan it replaces.
+  ## See `inheritUnwrittenExpectation`.
+  result = plan
+  if result.expectedOldValue.len == 0:
+    return
+  for existing in pending:
+    if result.replacesJournaledPlan(existing) and
+        existing.expectedOldValue.len > 0:
+      result.expectedOldValue = existing.expectedOldValue
+
+func journaledPlans(pending: seq[SourceEditPlan]; plan: SourceEditPlan;
+    replaceExisting: bool): tuple[plans: seq[SourceEditPlan],
+                                  displaced: seq[int]] =
+  ## The journal after `journalSourceEdit(plan, replaceExisting)`, and the
+  ## history ids of the plans it displaced. Pure, so the undo/redo pre-check
+  ## (`inspectorHistoryRefusal`) computes the journal a command will leave
+  ## with the very rule the command applies.
+  var plan = plan
+  if replaceExisting and not plan.restoreWrite.recorded:
+    plan = pending.unwrittenExpectation(plan)
+  for existing in pending:
+    if replaceExisting and plan.replacesJournaledPlan(existing):
+      if existing.historyId > 0 and existing.historyId != plan.historyId:
+        result.displaced.add existing.historyId
+      continue
+    result.plans.add existing
+  result.plans.add plan
+
+func withoutHistoryPlans(pending: seq[SourceEditPlan];
+    historyId: int): seq[SourceEditPlan] =
+  pending.filterIt(it.historyId != historyId)
+
+func withoutJournalEntry(pending: seq[SourceEditPlan];
+    plan: SourceEditPlan): seq[SourceEditPlan] =
+  pending.filterIt(not it.sameSourceJournalEntry(plan))
+
 proc journalSourceEdit*(inspector: InspectorVM; plan: SourceEditPlan;
     replaceExisting = true) =
   ## Single source-edit journal used by manual controls and accepted AI plans.
   var plan = plan
   if replaceExisting and not plan.restoreWrite.recorded:
-    inspector.inheritUnwrittenExpectation(plan)
-  var displaced: seq[int] = @[]
-  var kept: seq[SourceEditPlan] = @[]
-  for existing in inspector.pendingSourceEdits.val:
-    if replaceExisting and plan.replacesJournaledPlan(existing):
-      if existing.historyId > 0 and existing.historyId != plan.historyId:
-        displaced.add existing.historyId
-      continue
-    kept.add existing
-  kept.add plan
-  inspector.pendingSourceEdits.val = kept
+    plan = inspector.pendingSourceEdits.val.unwrittenExpectation(plan)
+  let journaled = inspector.pendingSourceEdits.val.journaledPlans(plan,
+    replaceExisting)
+  let displaced = journaled.displaced
+  inspector.pendingSourceEdits.val = journaled.plans
   var previews: seq[CSSSourcePreview] = @[]
   for existing in inspector.sourcePreviews.val:
     if replaceExisting and plan.replacesJournaledPlan(existing.plan):
@@ -4325,28 +4357,19 @@ proc inheritUnwrittenExpectation(inspector: InspectorVM;
   ## write was refused as a source conflict. Applied by `journalSourceEdit`
   ## to every replacing plan; history-recording paths also call it first so
   ## the entry they keep carries the same expectation as the journal.
-  if plan.expectedOldValue.len == 0:
-    return
-  for existing in inspector.pendingSourceEdits.val:
-    if plan.replacesJournaledPlan(existing) and
-        existing.expectedOldValue.len > 0:
-      plan.expectedOldValue = existing.expectedOldValue
+  plan = inspector.pendingSourceEdits.val.unwrittenExpectation(plan)
 
 proc dropPendingHistoryPlans(inspector: InspectorVM; historyId: int) =
   inspector.pendingSourceEdits.val =
-    inspector.pendingSourceEdits.val.filterIt(it.historyId != historyId)
+    inspector.pendingSourceEdits.val.withoutHistoryPlans(historyId)
   inspector.sourcePreviews.val =
     inspector.sourcePreviews.val.filterIt(it.plan.historyId != historyId)
   if inspector.pendingSourceEdits.val.len == 0:
     inspector.conflicts.val = @[]
 
 proc removeJournaledSourceEdit*(inspector: InspectorVM; plan: SourceEditPlan) =
-  inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
-      SourceEditPlan] =
-    result = @[]
-    for existing in prev:
-      if not existing.sameSourceJournalEntry(plan):
-        result.add existing
+  inspector.pendingSourceEdits.val =
+    inspector.pendingSourceEdits.val.withoutJournalEntry(plan)
   inspector.sourcePreviews.update proc(prev: seq[CSSSourcePreview]): seq[
       CSSSourcePreview] =
     result = @[]
@@ -4362,9 +4385,9 @@ proc clearSourceEditJournal*(inspector: InspectorVM) =
   inspector.conflicts.val = @[]
   inspector.editDiagnostics.val = @[]
 
-proc sourceJournalOwnershipDiagnostics*(inspector: InspectorVM): seq[
+func sourceJournalOwnershipDiagnostics(plans: seq[SourceEditPlan]): seq[
     PropertyEditDiagnostic] =
-  for plan in inspector.pendingSourceEdits.val:
+  for plan in plans:
     if plan.scope == pesUnspecified:
       result.add PropertyEditDiagnostic(kind: pedSchemaViolation,
         message: "Pending source edit must use an explicit ownership scope.",
@@ -4374,6 +4397,10 @@ proc sourceJournalOwnershipDiagnostics*(inspector: InspectorVM): seq[
       result.add PropertyEditDiagnostic(kind: pedSchemaViolation,
         message: "Pending source edit is missing a stable source owner key.",
         file: plan.file, line: plan.line, property: plan.property)
+
+proc sourceJournalOwnershipDiagnostics*(inspector: InspectorVM): seq[
+    PropertyEditDiagnostic] =
+  sourceJournalOwnershipDiagnostics(inspector.pendingSourceEdits.val)
 
 proc selectElementById*(inspector: InspectorVM; id: string;
     origin = soExternal): bool {.discardable.} =
@@ -4451,6 +4478,55 @@ proc selectPreviousElement*(inspector: InspectorVM): bool {.discardable.} =
   if index < 0:
     return inspector.selectElementById(rows[rows.high].id)
   inspector.selectElementById(rows[max(0, index - 1)].id)
+
+const shorthandSideProperties = [
+  ("border-radius", ["border-top-left-radius", "border-top-right-radius",
+    "border-bottom-right-radius", "border-bottom-left-radius"]),
+  ("padding", ["padding-top", "padding-right", "padding-bottom",
+    "padding-left"])]
+
+func shorthandSideValues(value: string): seq[string] =
+  ## The four side values of a simple 1-4 value shorthand, in CSS clockwise
+  ## order, or nothing when the value is not that simple (an elliptical
+  ## radius with `/`, a function such as `var()` or `calc()`, a keyword list).
+  let text = value.strip()
+  if text.len == 0 or '/' in text or '(' in text:
+    return
+  let parts = text.splitWhitespace()
+  case parts.len
+  of 1: @[parts[0], parts[0], parts[0], parts[0]]
+  of 2: @[parts[0], parts[1], parts[0], parts[1]]
+  of 3: @[parts[0], parts[1], parts[2], parts[1]]
+  of 4: parts
+  else: @[]
+
+func withShorthandSides(element: ElementRef; property,
+    value: string): ElementRef =
+  ## ``element`` with the captured sides of a simple shorthand following an
+  ## edit of that shorthand (editor spec "Native project source capabilities":
+  ## simple padding and corner-radius shorthands expose their individual
+  ## sides).
+  ##
+  ## The side rows read the element's side properties, captured off the
+  ## rendered DOM; the shorthand row read the edit. After Corner radius 12 the
+  ## row said 12 and the preview showed 12px on every corner, while TL/TR/BR/
+  ## BL still said 0 -- before and after the write (isonim-pm issue
+  ## 2026-10-14-consumer-corner-radius-edit-is-previewed-then-refused-only-at-save).
+  ##
+  ## Only sides without an authored value follow: an authored side is its own
+  ## source declaration, which this edit did not change.
+  result = element
+  for (shorthand, sides) in shorthandSideProperties:
+    if property != shorthand:
+      continue
+    let values = shorthandSideValues(value)
+    if values.len != 4:
+      return
+    for i, side in sides:
+      for prop in result.properties.mitems:
+        if prop.name == side and prop.authoredValue.len == 0:
+          prop.value = values[i]
+    return
 
 type PreparedPropertyEdit* = object
   outcome*: PropertyEditResult
@@ -4535,6 +4611,7 @@ proc preparePropertyEdit*(inspector: InspectorVM;
     var added = prop
     added.value = normalized.canonical
     updated.properties.add added
+  updated = updated.withShorthandSides(prop.name, normalized.canonical)
   let sourceChoices = sourceScopeChoices(inspector.designSystemSchema.val,
     element, prop)
   let record = prop.editRecord(normalizedRequest, sourceChoices)
@@ -4572,9 +4649,117 @@ proc editProperty*(inspector: InspectorVM;
   else:
     inspector.editDiagnostics.val = result.diagnostics
 
+func workspacePlanKeys(plan: SourceEditPlan): seq[string] =
+  if plan.schemaKey.len > 0:
+    result.add plan.schemaKey
+    result.add "schema:" & plan.schemaKey
+  if plan.tokenName.len > 0:
+    result.add plan.tokenName
+    result.add "token:" & plan.tokenName
+  if plan.variantKey.len > 0:
+    result.add plan.variantKey
+    result.add "variant:" & plan.variantKey
+  if plan.conflictKey.len > 0:
+    result.add plan.conflictKey
+    result.add "source:" & plan.conflictKey
+  if plan.originDetail.len > 0:
+    result.add plan.originDetail
+
+func resolveWorkspaceSchema(adapter: WorkspaceEditAdapter;
+    plan: SourceEditPlan): tuple[ok: bool, entry: WorkspaceEditableSchemaEntry,
+                                 entryOwnsFile: bool] =
+  ## `entryOwnsFile` says the ENTRY's file is authoritative and the plan's is
+  ## not to be checked against it -- which is true exactly when the match was
+  ## made despite the plan naming a different file, or none.
+  if adapter.isNil:
+    return
+  let keys = workspacePlanKeys(plan)
+  for key in keys:
+    for entry in adapter.schema:
+      if entry.key == key:
+        return (true, entry, false)
+  # Exact file match first: a plan that names a file the schema owns is
+  # unambiguous and keeps its old behaviour.
+  for entry in adapter.schema:
+    if entry.file == plan.file and
+        (entry.property == plan.property or entry.property.len == 0):
+      return (true, entry, false)
+
+  # Then a plan that names NO file. Provenance records which class or token
+  # set a value; which file that lives in is what the schema is here to
+  # answer, and requiring the plan to already know made the schema useful
+  # only for edits that did not need it.
+  #
+  # Then a plan whose file is the ELEMENT's rather than the value's. A
+  # property captured off the rendered DOM carries the element's source
+  # location because the capture has no other to offer -- `font-size` on a
+  # `span.tagline-clause` is set by a CSS rule while the span is in
+  # `home.nim`. Matching that path against the stylesheet's and refusing is
+  # true of the path and false of the edit, and it answered a design system's
+  # commonest edit with "No project schema or source map entry can safely
+  # represent this edit".
+  #
+  # Both fall back only to an entry with an EMPTY property -- a project
+  # saying "this file owns whatever you send me". A schema that names its
+  # properties individually keeps refusing, which is the stricter contract
+  # and still available.
+  let capturedOnly =
+    plan.originDetail.startsWith("iframe-dom:") or
+    plan.originDetail.startsWith("computed:")
+  if plan.file.len == 0 or capturedOnly:
+    for entry in adapter.schema:
+      if entry.property.len == 0:
+        return (true, entry, true)
+
+const UnrepresentableSourceEditMessage =
+  "No project schema or source map entry can safely represent this edit."
+
+proc sourcePlanAdmissionRefusal(editor: EditorVM;
+    plan: SourceEditPlan): string =
+  ## Why the project's writer can never write ``plan``, or "" when it can.
+  ##
+  ## The automatic write resolves every plan against the adapter's schema
+  ## before reading a file (`applyWorkspaceFileEdits`). That answer depends on
+  ## the plan and the schema only, so it is already known when the user
+  ## commits. Asked only at the write, the edit was previewed, journaled and
+  ## put in history first, and then refused by a status-bar alert while the
+  ## preview kept showing it (isonim-pm issue
+  ## 2026-10-14-consumer-corner-radius-edit-is-previewed-then-refused-only-at-save).
+  ## Editor spec "Saving": an edit no rule owns is refused at the commit.
+  ##
+  ## No adapter means nothing to ask: such an edit is reported as staged but
+  ## unwritable where it was made. The native asynchronous source project owns
+  ## its own admission (`inspectorSourceCommit`).
+  let adapter = editor.workspaceEditAdapter
+  if adapter.isNil or editor.hasAsyncSourceProject:
+    return ""
+  let resolved = adapter.resolveWorkspaceSchema(plan)
+  if not resolved.ok:
+    return UnrepresentableSourceEditMessage
+  if not resolved.entryOwnsFile and resolved.entry.file.len > 0 and
+      plan.file.len > 0 and resolved.entry.file != plan.file:
+    return "The source plan file does not match the resolved project " &
+      "schema file."
+  ""
+
 proc editInspectorProperty*(editor: EditorVM;
     request: PropertyEditRequest): PropertyEditResult {.discardable.} =
-  result = editor.inspector.editProperty(request)
+  var prepared = editor.inspector.preparePropertyEdit(request)
+  if prepared.outcome.status == pesAccepted:
+    # Refused here, before the model, history or journal move, rather than
+    # by the automatic write afterwards. See `sourcePlanAdmissionRefusal`.
+    let plan = prepared.transaction.sourceEdit
+    let refusal = editor.sourcePlanAdmissionRefusal(plan)
+    if refusal.len > 0:
+      prepared.outcome = PropertyEditResult(status: pesRejected,
+        diagnostics: @[PropertyEditDiagnostic(kind: pedSchemaViolation,
+          message: refusal & " Nothing was changed.", file: plan.file, line: plan.line,
+          property: plan.property)])
+  result = prepared.outcome
+  if result.status == pesAccepted:
+    editor.inspector.acceptPreparedPropertyEdit(prepared)
+  else:
+    editor.inspector.editDiagnostics.val = result.diagnostics
   if result.status == pesAccepted:
     editor.workspaceEditStage.val = wesDirty
     editor.workspaceEditDiagnostics.val = @[]
@@ -6383,6 +6568,9 @@ proc sourceScopeChoices*(schema: DesignSystemSchema; element: ElementRef;
         reason = "Source-backed " & kind.sourceScopeChoiceLabel().toLowerAscii(),
         impact = impact)
 
+func sharedScopePlan(prop: PropertyInfo; request: PropertyEditRequest;
+    choices: seq[SourceScopeChoice]; choice: SourceScopeChoice): SourceEditPlan
+
 proc sourceScopeChoices*(editor: EditorVM; prop: PropertyInfo): seq[
     SourceScopeChoice] =
   result = sourceScopeChoices(editor.designSystemSchema.val,
@@ -6393,6 +6581,24 @@ proc sourceScopeChoices*(editor: EditorVM; prop: PropertyInfo): seq[
     for choice in result.mitems:
       choice.editable = false
       choice.reason = "Read-only: native source editing does not own this inline declaration."
+  # A shared scope whose edit the project's writer has no entry for is shown
+  # disabled, with the reason, instead of being offered (and, when it is the
+  # first writable-looking scope, pre-selected) and then refused by the
+  # automatic write. The plan's identity -- file, schema key, token -- does
+  # not depend on the value typed, so the current value stands in for it.
+  # Local scope is checked when committed (`editInspectorProperty`).
+  if not editor.workspaceEditAdapter.isNil and not editor.hasAsyncSourceProject:
+    let request = PropertyEditRequest(property: prop.name, newValue: prop.value,
+      kind: pekCss, scope: pesShared, origin: peoInspector)
+    let choices = result
+    for choice in result.mitems:
+      if choice.kind == sskLocalInstance or not choice.editable:
+        continue
+      let refusal = editor.sourcePlanAdmissionRefusal(
+        prop.sharedScopePlan(request, choices, choice))
+      if refusal.len > 0:
+        choice.editable = false
+        choice.reason = refusal
 
 proc sourceScopeImpacts*(schema: DesignSystemSchema; element: ElementRef;
     prop: PropertyInfo): seq[SourceScopeImpact] =
@@ -6717,6 +6923,18 @@ proc editSharedDesignProperty*(editor: EditorVM; property, newValue: string;
     editor.inspector.editDiagnostics.val = result.diagnostics
     return
 
+  # The scope was admitted on the field's current value, but a plan's
+  # identity can depend on the value committed (a token reference sets its
+  # token). Check the plan that will actually be journaled.
+  let admission = editor.sourcePlanAdmissionRefusal(result.sourceEdit)
+  if admission.len > 0:
+    let refused = PropertyEditDiagnostic(kind: pedSchemaViolation,
+      message: admission & " Nothing was changed.",
+      file: result.sourceEdit.file, line: result.sourceEdit.line,
+      property: property)
+    editor.inspector.editDiagnostics.val = @[refused]
+    return SharedDesignEditResult(status: pesRejected, editor: result.editor,
+      diagnostics: @[refused])
   var plan = result.sourceEdit
   editor.inspector.inheritUnwrittenExpectation(plan)
   editor.inspector.stampHistoryEntry(plan)
@@ -6731,6 +6949,7 @@ proc editSharedDesignProperty*(editor: EditorVM; property, newValue: string;
       afterElement.properties[i].tokenName = plan.tokenName
       afterElement.properties[i].originDetail = plan.originDetail
       break
+  afterElement = afterElement.withShorthandSides(property, plan.newValue)
 
   let record = EditRecord(file: plan.file, line: plan.line,
     property: plan.property, oldValue: plan.oldValue, newValue: plan.newValue,
@@ -8900,68 +9119,6 @@ proc redoComponentVariantEdit*(editor: EditorVM): bool {.discardable.} =
   editor.applySourceHistoryStep(step, entry.sourceEdit, replaceExisting = true)
   true
 
-func workspacePlanKeys(plan: SourceEditPlan): seq[string] =
-  if plan.schemaKey.len > 0:
-    result.add plan.schemaKey
-    result.add "schema:" & plan.schemaKey
-  if plan.tokenName.len > 0:
-    result.add plan.tokenName
-    result.add "token:" & plan.tokenName
-  if plan.variantKey.len > 0:
-    result.add plan.variantKey
-    result.add "variant:" & plan.variantKey
-  if plan.conflictKey.len > 0:
-    result.add plan.conflictKey
-    result.add "source:" & plan.conflictKey
-  if plan.originDetail.len > 0:
-    result.add plan.originDetail
-
-func resolveWorkspaceSchema(adapter: WorkspaceEditAdapter;
-    plan: SourceEditPlan): tuple[ok: bool, entry: WorkspaceEditableSchemaEntry,
-                                 entryOwnsFile: bool] =
-  ## `entryOwnsFile` says the ENTRY's file is authoritative and the plan's is
-  ## not to be checked against it -- which is true exactly when the match was
-  ## made despite the plan naming a different file, or none.
-  if adapter.isNil:
-    return
-  let keys = workspacePlanKeys(plan)
-  for key in keys:
-    for entry in adapter.schema:
-      if entry.key == key:
-        return (true, entry, false)
-  # Exact file match first: a plan that names a file the schema owns is
-  # unambiguous and keeps its old behaviour.
-  for entry in adapter.schema:
-    if entry.file == plan.file and
-        (entry.property == plan.property or entry.property.len == 0):
-      return (true, entry, false)
-
-  # Then a plan that names NO file. Provenance records which class or token
-  # set a value; which file that lives in is what the schema is here to
-  # answer, and requiring the plan to already know made the schema useful
-  # only for edits that did not need it.
-  #
-  # Then a plan whose file is the ELEMENT's rather than the value's. A
-  # property captured off the rendered DOM carries the element's source
-  # location because the capture has no other to offer -- `font-size` on a
-  # `span.tagline-clause` is set by a CSS rule while the span is in
-  # `home.nim`. Matching that path against the stylesheet's and refusing is
-  # true of the path and false of the edit, and it answered a design system's
-  # commonest edit with "No project schema or source map entry can safely
-  # represent this edit".
-  #
-  # Both fall back only to an entry with an EMPTY property -- a project
-  # saying "this file owns whatever you send me". A schema that names its
-  # properties individually keeps refusing, which is the stricter contract
-  # and still available.
-  let capturedOnly =
-    plan.originDetail.startsWith("iframe-dom:") or
-    plan.originDetail.startsWith("computed:")
-  if plan.file.len == 0 or capturedOnly:
-    for entry in adapter.schema:
-      if entry.property.len == 0:
-        return (true, entry, true)
-
 func workspaceOpFailed(op: WorkspaceOperationResult): bool =
   not op.ok
 
@@ -9070,6 +9227,142 @@ proc requireWorkspaceAdapter(editor: EditorVM): tuple[ok: bool,
     return
   result.ok = true
 
+type DraftedWorkspacePlan = object
+  ok: bool
+  patch: WorkspaceFilePatch
+  diagnostics: seq[WorkspaceEditDiagnostic]
+
+proc stampedForWrite(editor: EditorVM; plan: SourceEditPlan): SourceEditPlan =
+  ## ``plan`` as the write sends it: stamped with the width the preview is
+  ## showing (see `applyWorkspaceFileEdits`).
+  result = plan
+  result.viewportWidth =
+    if editor.previewRenderedWidth.val > 0: editor.previewRenderedWidth.val
+    else: editor.viewport.val.width
+
+proc draftWorkspacePlan(adapter: WorkspaceEditAdapter;
+    drafts: var seq[WorkspaceFileDraft]; plan: SourceEditPlan): DraftedWorkspacePlan =
+  ## Resolve ``plan`` and apply it to the in-memory draft of its file,
+  ## reading the file on first use. Nothing is written.
+  ##
+  ## The single per-plan step of the write transaction. `applyWorkspaceFileEdits`
+  ## runs it for every pending plan before writing anything, and the undo/redo
+  ## pre-check (`inspectorHistoryRefusal`) runs the same steps for the pending
+  ## plans plus the one the command would stage, so a command the write would
+  ## refuse is refused at the keystroke instead.
+  let resolved = adapter.resolveWorkspaceSchema(plan)
+  if not resolved.ok:
+    result.diagnostics.add workspaceDiagnostic(wedMissingSchema,
+      UnrepresentableSourceEditMessage,
+      file = plan.file,
+      schemaKey = if plan.schemaKey.len > 0: plan.schemaKey else: plan.conflictKey,
+      property = plan.property)
+    return
+
+  # Skipped when the entry owns the file: the resolution already knew the
+  # plan named a different path and matched anyway, because the path it
+  # named is the element's rather than the value's. Re-checking it here
+  # would refuse the edit the fallback exists to allow.
+  if not resolved.entryOwnsFile and
+      resolved.entry.file.len > 0 and plan.file.len > 0 and
+      resolved.entry.file != plan.file:
+    result.diagnostics.add workspaceDiagnostic(wedUnsafeSourceMap,
+      "The source plan file does not match the resolved project schema file.",
+      file = plan.file,
+      schemaKey = resolved.entry.key,
+      property = plan.property)
+    return
+
+  let targetFile =
+    if resolved.entryOwnsFile: resolved.entry.file
+    elif plan.file.len > 0: plan.file
+    else: resolved.entry.file
+  var draftPos = drafts.draftIndex(targetFile)
+  if draftPos < 0:
+    let read = adapter.readFile(targetFile)
+    if not read.ok:
+      if read.diagnostics.len > 0:
+        result.diagnostics.add read.diagnostics
+      else:
+        result.diagnostics.add workspaceDiagnostic(wedReadFailed,
+          "Could not read " & targetFile & ".", file = targetFile,
+          schemaKey = resolved.entry.key, property = plan.property)
+      return
+    drafts.add WorkspaceFileDraft(file: targetFile,
+      beforeContent: read.content,
+      currentContent: read.content)
+    draftPos = drafts.high
+
+  if plan.restoreWrite.recorded:
+    # Undo/redo of a written edit: put back exactly the lines that write
+    # replaced. Owned here rather than by the project's `patchFile`, whose
+    # contract is "apply this value", because a value is not a location --
+    # see `restoreSourceWrite`.
+    if plan.restoreWrite.file.len > 0 and plan.restoreWrite.file != targetFile:
+      result.diagnostics.add workspaceDiagnostic(wedUnsafeSourceMap,
+        "Undo/redo refused: the edit was written to " &
+          plan.restoreWrite.file & " but now resolves to " & targetFile &
+          ". No source was changed.",
+        file = targetFile, schemaKey = resolved.entry.key,
+        property = plan.property)
+      return
+    let restored = restoreSourceWrite(drafts[draftPos].currentContent,
+      plan.restoreWrite, "Undo/redo")
+    if not restored.ok:
+      result.diagnostics.add workspaceDiagnostic(wedSourceConflict,
+        restored.message, file = targetFile,
+        schemaKey = resolved.entry.key, property = plan.property)
+      return
+    result.patch = WorkspaceFilePatch(plan: plan, schema: resolved.entry,
+      file: targetFile, beforeContent: drafts[draftPos].currentContent,
+      afterContent: restored.content, affectedStory: resolved.entry.story)
+    drafts[draftPos].currentContent = restored.content
+    result.ok = true
+    return
+
+  if plan.expectedOldValue.len > 0 and
+      not adapter.allowMissingExpectedOldValue and
+      plan.expectedOldValue notin drafts[draftPos].currentContent:
+    result.diagnostics.add workspaceDiagnostic(wedSourceConflict,
+      "Source changed before the pending edit could be applied; reload or rebase the stale source plan, then retry.",
+      file = targetFile,
+      schemaKey = resolved.entry.key,
+      property = plan.property)
+    return
+
+  let patchResult = adapter.patchFile(plan, drafts[draftPos].currentContent,
+    resolved.entry)
+  if not patchResult.ok:
+    if patchResult.diagnostics.len > 0:
+      result.diagnostics.add patchResult.diagnostics
+    else:
+      result.diagnostics.add workspaceDiagnostic(wedPatchFailed,
+        "Could not create a patch for " & plan.property & ".",
+        file = plan.file,
+        schemaKey = resolved.entry.key,
+        property = plan.property)
+    return
+
+  var patch = patchResult.patch
+  if patch.file.len == 0:
+    patch.file = targetFile
+  patch.plan = plan
+  patch.schema = resolved.entry
+  patch.beforeContent = drafts[draftPos].currentContent
+  if patch.affectedStory.isEmptyStoryRef:
+    patch.affectedStory = resolved.entry.story
+  if patch.afterContent.len == 0 and drafts[draftPos].currentContent.len > 0:
+    result.diagnostics.add workspaceDiagnostic(wedPatchFailed,
+      "Project adapter returned an empty patched source.",
+      file = targetFile,
+      schemaKey = resolved.entry.key,
+      property = plan.property)
+    return
+
+  drafts[draftPos].currentContent = patch.afterContent
+  result.patch = patch
+  result.ok = true
+
 proc nextHistoryStep(editor: EditorVM; redo: bool): InspectorHistoryStep =
   ## The step the next undo/redo command will take, in the history the
   ## timeline says it acts on (`nextHistoryKind`).
@@ -9088,16 +9381,140 @@ proc nextHistoryStep(editor: EditorVM; redo: bool): InspectorHistoryStep =
     editor.inspector.sourceHistoryStep(editor.variants.undoStack.val,
       editor.variants.redoStack.val, redo)
 
+func stepJournal(pending: seq[SourceEditPlan]; step: InspectorHistoryStep;
+    entryPlan: SourceEditPlan; replaceExisting: bool): seq[SourceEditPlan] =
+  ## The journal after `applySourceHistoryStep` (and the identical arms of
+  ## `undoCssPropertyEdit` / `redoCssPropertyEdit`).
+  case step.kind
+  of ihsDropPending:
+    if entryPlan.historyId > 0: pending.withoutHistoryPlans(entryPlan.historyId)
+    else: pending.withoutJournalEntry(entryPlan)
+  of ihsRestoreWrite:
+    pending.journaledPlans(step.plan, replaceExisting = false).plans
+  of ihsInvertPlan, ihsReplayPlan:
+    pending.journaledPlans(step.plan, replaceExisting).plans
+  of ihsNone, ihsRefuse:
+    pending
+
+func withdrawnBelow[T](pending: seq[SourceEditPlan]; undoStack: seq[T];
+    plan: SourceEditPlan): seq[SourceEditPlan] =
+  ## The journal after `withdrawPendingHistoryBelow` / `supersedePendingBelow`:
+  ## the nearest same-slot entry below loses its unwritten forward plan.
+  result = pending
+  for i in countdown(undoStack.high, 0):
+    if undoStack[i].sourceEdit.sameSourceJournalSlot(plan):
+      let id = undoStack[i].sourceEdit.historyId
+      if id > 0 and pending.anyIt(it.historyId == id and
+          not it.restoreWrite.recorded):
+        result = pending.withoutHistoryPlans(id)
+      return
+
+func restagedBelow[T](pending: seq[SourceEditPlan]; stackBelow: seq[T];
+    plan: SourceEditPlan): seq[SourceEditPlan] =
+  ## The journal after `journalSupersededHistoryBelow`: the nearest same-slot
+  ## entry below, if its plan is neither on disk nor pending, is staged again.
+  result = pending
+  for i in countdown(stackBelow.high, 0):
+    if stackBelow[i].sourceEdit.sameSourceJournalSlot(plan):
+      let below = stackBelow[i]
+      let id = below.sourceEdit.historyId
+      if id > 0 and not below.historyEntryOnDisk and
+          not pending.anyIt(it.historyId == id):
+        result = pending.journaledPlans(below.sourceEdit,
+          replaceExisting = true).plans
+      return
+
+func restagedSupersededBelow(pending: seq[SourceEditPlan];
+    stackBelow: seq[CSSPropertyEditTransaction];
+    plan: SourceEditPlan): seq[SourceEditPlan] =
+  ## The journal after the inspector's `journalSupersededBelow`.
+  result = pending
+  for i in countdown(stackBelow.high, 0):
+    if stackBelow[i].sourceEdit.sameSourceJournalSlot(plan):
+      if stackBelow[i].superseded:
+        result = pending.journaledPlans(stackBelow[i].sourceEdit,
+          replaceExisting = true).plans
+      return
+
+func historyJournal[T](pending: seq[SourceEditPlan]; undoStack, redoStack: seq[T];
+    step: InspectorHistoryStep; redo, replaceExisting,
+    restagesBelow: bool): seq[SourceEditPlan] =
+  ## The journal the component-property, foundation or vector undo/redo
+  ## leaves: the same steps, in the same order, as `undoFoundationTokenEdit`,
+  ## `redoFoundationTokenEdit`, the component-property pair and the vector
+  ## pair (vector neither withdraws nor re-stages).
+  if not redo:
+    let entry = undoStack[^1]
+    result = pending.stepJournal(step, entry.sourceEdit, replaceExisting)
+    if restagesBelow:
+      result = result.restagedBelow(undoStack[0 ..< undoStack.high],
+        entry.sourceEdit)
+  else:
+    let entry = redoStack[^1]
+    result = pending
+    if restagesBelow and step.kind in {ihsDropPending, ihsRestoreWrite}:
+      result = result.withdrawnBelow(undoStack, entry.sourceEdit)
+    result = result.stepJournal(step, entry.sourceEdit, replaceExisting)
+
+proc journalAfterHistoryCommand(editor: EditorVM; redo: bool;
+    step: InspectorHistoryStep): seq[SourceEditPlan] =
+  ## The journal the next undo/redo command will leave, computed with the
+  ## same journal rules (`journaledPlans`, `withoutHistoryPlans`, ...) in the
+  ## same order as the command applies them -- including the earlier edit an
+  ## undo stages again and the plan a redo withdraws. Nothing changes.
+  let pending = editor.inspector.pendingSourceEdits.val
+  case editor.nextHistoryKind(redo)
+  of ehkNone:
+    pending
+  of ehkInspector:
+    let inspector = editor.inspector
+    if not redo:
+      let stack = inspector.undoStack.val
+      let txn = stack[^1]
+      pending.stepJournal(step, txn.sourceEdit, replaceExisting = true)
+        .restagedSupersededBelow(stack[0 ..< stack.high], txn.sourceEdit)
+    else:
+      let txn = inspector.redoStack.val[^1]
+      var journal = pending
+      if step.kind == ihsRestoreWrite:
+        journal = journal.withdrawnBelow(inspector.undoStack.val,
+          txn.sourceEdit)
+      journal.stepJournal(step, txn.sourceEdit, replaceExisting = true)
+  of ehkVector:
+    pending.historyJournal(editor.vectorEditor.undoStack.val,
+      editor.vectorEditor.redoStack.val, step, redo,
+      replaceExisting = false, restagesBelow = false)
+  of ehkFoundation:
+    pending.historyJournal(editor.foundations.undoStack.val,
+      editor.foundations.redoStack.val, step, redo,
+      replaceExisting = true, restagesBelow = true)
+  of ehkVariant:
+    pending.historyJournal(editor.variants.undoStack.val,
+      editor.variants.redoStack.val, step, redo,
+      replaceExisting = true, restagesBelow = true)
+
 proc inspectorHistoryRefusal(editor: EditorVM; redo: bool): PropertyEditDiagnostic =
-  ## Why the next inspector undo/redo must be refused, or an empty message.
+  ## Why the next undo/redo must be refused, or an empty message.
   ##
-  ## Checked against the file as it is NOW, before anything moves, so a
-  ## refusal leaves history, journal, preview and source untouched. When a
-  ## pending plan for the same file would be written first, the file on disk
-  ## is not what the restoration will meet; the write itself re-checks then.
+  ## Decided before anything moves, so a refusal leaves history, journal,
+  ## preview and source untouched. The write that follows the command is one
+  ## transaction over the journal the command leaves, so the check computes
+  ## that journal (`journalAfterHistoryCommand`: the step's own plan, the
+  ## earlier edit an undo stages again, the plans a redo withdraws) and drafts
+  ## it in memory, in order, with the write's own per-plan step
+  ## (`draftWorkspacePlan`) after the write's journal-ownership check.
+  ## Nothing is written.
   ##
-  ## Covers the component-property, foundation and vector histories too:
-  ## they restore written edits through the same receipts.
+  ## It used to simulate only pending restorations, and then only the step's
+  ## own plan. The command succeeded and the write refused the transaction:
+  ## history and preview had moved, the plans stayed pending (isonim-pm issue
+  ## 2026-10-13-unsafe-undo-with-a-pending-same-file-edit-is-refused-only-at-save).
+  ##
+  ## A command that only withdraws plans adds nothing the write could refuse,
+  ## so it is never refused here, even while another pending edit cannot be
+  ## written. Not simulated: a project's `review` hook (it runs after the
+  ## patches are built); no current project's review refuses
+  ## deterministically.
   let step = editor.nextHistoryStep(redo)
   let action = if redo: "Redo" else: "Undo"
   case step.kind
@@ -9105,45 +9522,57 @@ proc inspectorHistoryRefusal(editor: EditorVM; redo: bool): PropertyEditDiagnost
     return PropertyEditDiagnostic(kind: pedSourceConflict,
       message: step.message.replace("Undo refused", action & " refused"),
       file: step.plan.file, line: step.plan.line, property: step.plan.property)
-  of ihsRestoreWrite:
-    discard
-  else:
+  of ihsNone:
     return
-  let receipt = step.plan.restoreWrite
+  of ihsRestoreWrite, ihsInvertPlan, ihsReplayPlan, ihsDropPending:
+    discard
   if not editor.workspacePermissions.val.writeSource:
     return
-  # Pending restorations of the same file are simulated in order, exactly as
-  # the transaction will apply them (they are pure). A pending NON-restore
-  # plan for the file goes through the project's `patchFile` at write time
-  # and cannot be simulated here; then the restoration is checked when it is
-  # written, and a refusal at that point leaves history and preview moved
-  # with the plans pending and the status-bar alert shown until Revert.
-  var pendingRestores: seq[SourceWriteReceipt] = @[]
-  for plan in editor.inspector.pendingSourceEdits.val:
-    if plan.restoreWrite.recorded:
-      if plan.restoreWrite.file == receipt.file:
-        pendingRestores.add plan.restoreWrite
-    elif plan.file.len == 0 or plan.file == receipt.file:
-      return
   let adapterReq = editor.requireWorkspaceAdapter()
   if not adapterReq.ok:
     return
-  let read = adapterReq.adapter.readFile(receipt.file)
-  if not read.ok:
+  let adapter = adapterReq.adapter
+  let before = editor.inspector.pendingSourceEdits.val
+  let after = editor.journalAfterHistoryCommand(redo, step)
+  if not after.anyIt(it notin before):
     return
-  var content = read.content
-  for pending in pendingRestores:
-    let applied = restoreSourceWrite(content, pending, action)
-    if not applied.ok:
+  var drafts: seq[WorkspaceFileDraft] = @[]
+  for plan in after:
+    # The write refuses the journal outright for a plan without an owner
+    # (`sourceJournalOwnershipDiagnostics`), before drafting anything.
+    var drafted = DraftedWorkspacePlan()
+    let ownership = sourceJournalOwnershipDiagnostics(@[plan])
+    if ownership.len > 0:
+      drafted.diagnostics.add workspaceDiagnostic(wedUnsafeSourceMap,
+        ownership[0].message, file = plan.file, property = plan.property)
+    else:
+      drafted = adapter.draftWorkspacePlan(drafts,
+        editor.stampedForWrite(plan))
+    if drafted.ok:
+      continue
+    let reason =
+      if drafted.diagnostics.len > 0: drafted.diagnostics[0].message
+      else: "it cannot be written"
+    if plan in before:
+      # Already pending before the command: the command would be written
+      # together with an edit that cannot be.
+      let what =
+        if plan.property.len > 0: "the pending " & plan.property & " edit"
+        else: "a pending edit"
       return PropertyEditDiagnostic(kind: pedSourceConflict,
-        message: applied.message, file: receipt.file, line: step.plan.line,
-        property: step.plan.property)
-    content = applied.content
-  let restored = restoreSourceWrite(content, receipt, action)
-  if not restored.ok:
+        message: action & " refused: " & what &
+          (if plan.file.len > 0: " to " & plan.file else: "") &
+          " cannot be written (" & reason.strip(chars = {'.', ' '}) &
+          "), and this " & action.toLowerAscii & " would be written with it. " &
+          "No source was changed.",
+        file: plan.file, line: plan.line, property: plan.property)
+    var message = reason.replace("Undo/redo refused", action & " refused")
+    if not message.startsWith(action & " refused"):
+      message = action & " refused: " & message.strip(chars = {' '}) &
+        (if message.endsWith("."): "" else: ".") & " No source was changed."
     return PropertyEditDiagnostic(kind: pedSourceConflict,
-      message: restored.message, file: receipt.file, line: step.plan.line,
-      property: step.plan.property)
+      message: message, file: plan.file, line: plan.line,
+      property: plan.property)
 
 proc saveIndicator*(editor: EditorVM): SaveIndicator =
   ## What the chrome bar's save control shows right now.
@@ -9288,128 +9717,16 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
     # passes through; the cost is that switching viewport during the
     # auto-save debounce targets the NEW width, which is also the width whose
     # rendering the user is looking at when the write lands.
-    var plan = basePlan
-    plan.viewportWidth =
-      if editor.previewRenderedWidth.val > 0: editor.previewRenderedWidth.val
-      else: editor.viewport.val.width
-    let resolved = adapter.resolveWorkspaceSchema(plan)
-    if not resolved.ok:
-      diagnostics.add workspaceDiagnostic(wedMissingSchema,
-        "No project schema or source map entry can safely represent this edit.",
-        file = plan.file,
-        schemaKey = if plan.schemaKey.len > 0: plan.schemaKey else: plan.conflictKey,
-        property = plan.property)
+    let drafted = adapter.draftWorkspacePlan(drafts,
+      editor.stampedForWrite(basePlan))
+    if not drafted.ok:
+      diagnostics.add drafted.diagnostics
       continue
-
-    # Skipped when the entry owns the file: the resolution already knew the
-    # plan named a different path and matched anyway, because the path it
-    # named is the element's rather than the value's. Re-checking it here
-    # would refuse the edit the fallback exists to allow.
-    if not resolved.entryOwnsFile and
-        resolved.entry.file.len > 0 and plan.file.len > 0 and
-        resolved.entry.file != plan.file:
-      diagnostics.add workspaceDiagnostic(wedUnsafeSourceMap,
-        "The source plan file does not match the resolved project schema file.",
-        file = plan.file,
-        schemaKey = resolved.entry.key,
-        property = plan.property)
-      continue
-
-    let targetFile =
-      if resolved.entryOwnsFile: resolved.entry.file
-      elif plan.file.len > 0: plan.file
-      else: resolved.entry.file
-    var draftPos = drafts.draftIndex(targetFile)
-    if draftPos < 0:
-      let read = adapter.readFile(targetFile)
-      if not read.ok:
-        if read.diagnostics.len > 0:
-          diagnostics.add read.diagnostics
-        else:
-          diagnostics.add workspaceDiagnostic(wedReadFailed,
-            "Could not read " & targetFile & ".", file = targetFile,
-            schemaKey = resolved.entry.key, property = plan.property)
-        continue
-      drafts.add WorkspaceFileDraft(file: targetFile,
-        beforeContent: read.content,
-        currentContent: read.content)
-      draftPos = drafts.high
-
-    if plan.restoreWrite.recorded:
-      # Undo/redo of a written edit: put back exactly the lines that write
-      # replaced. Owned here rather than by the project's `patchFile`, whose
-      # contract is "apply this value", because a value is not a location --
-      # see `restoreSourceWrite`.
-      if plan.restoreWrite.file.len > 0 and plan.restoreWrite.file != targetFile:
-        diagnostics.add workspaceDiagnostic(wedUnsafeSourceMap,
-          "Undo/redo refused: the edit was written to " &
-            plan.restoreWrite.file & " but now resolves to " & targetFile &
-            ". No source was changed.",
-          file = targetFile, schemaKey = resolved.entry.key,
-          property = plan.property)
-        continue
-      let restored = restoreSourceWrite(drafts[draftPos].currentContent,
-        plan.restoreWrite, "Undo/redo")
-      if not restored.ok:
-        diagnostics.add workspaceDiagnostic(wedSourceConflict,
-          restored.message, file = targetFile,
-          schemaKey = resolved.entry.key, property = plan.property)
-        continue
-      let restorePatch = WorkspaceFilePatch(plan: plan, schema: resolved.entry,
-        file: targetFile, beforeContent: drafts[draftPos].currentContent,
-        afterContent: restored.content, affectedStory: resolved.entry.story)
-      drafts[draftPos].currentContent = restored.content
-      patches.add restorePatch
-      files.addUniqueFile restorePatch.file
-      if resolved.entry.key.len > 0 and resolved.entry.key notin schemaKeys:
-        schemaKeys.add resolved.entry.key
-      affectedStories.addUniqueStory restorePatch.affectedStory
-      continue
-
-    if plan.expectedOldValue.len > 0 and
-        not adapter.allowMissingExpectedOldValue and
-        plan.expectedOldValue notin drafts[draftPos].currentContent:
-      diagnostics.add workspaceDiagnostic(wedSourceConflict,
-        "Source changed before the pending edit could be applied; reload or rebase the stale source plan, then retry.",
-        file = targetFile,
-        schemaKey = resolved.entry.key,
-        property = plan.property)
-      continue
-
-    let patchResult = adapter.patchFile(plan, drafts[draftPos].currentContent,
-      resolved.entry)
-    if not patchResult.ok:
-      if patchResult.diagnostics.len > 0:
-        diagnostics.add patchResult.diagnostics
-      else:
-        diagnostics.add workspaceDiagnostic(wedPatchFailed,
-          "Could not create a patch for " & plan.property & ".",
-          file = plan.file,
-          schemaKey = resolved.entry.key,
-          property = plan.property)
-      continue
-
-    var patch = patchResult.patch
-    if patch.file.len == 0:
-      patch.file = targetFile
-    patch.plan = plan
-    patch.schema = resolved.entry
-    patch.beforeContent = drafts[draftPos].currentContent
-    if patch.affectedStory.isEmptyStoryRef:
-      patch.affectedStory = resolved.entry.story
-    if patch.afterContent.len == 0 and drafts[draftPos].currentContent.len > 0:
-      diagnostics.add workspaceDiagnostic(wedPatchFailed,
-        "Project adapter returned an empty patched source.",
-        file = targetFile,
-        schemaKey = resolved.entry.key,
-        property = plan.property)
-      continue
-
-    drafts[draftPos].currentContent = patch.afterContent
+    let patch = drafted.patch
     patches.add patch
     files.addUniqueFile patch.file
-    if resolved.entry.key.len > 0 and resolved.entry.key notin schemaKeys:
-      schemaKeys.add resolved.entry.key
+    if patch.schema.key.len > 0 and patch.schema.key notin schemaKeys:
+      schemaKeys.add patch.schema.key
     affectedStories.addUniqueStory patch.affectedStory
     fullReload = fullReload or patch.fullReload
 
